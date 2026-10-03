@@ -76,7 +76,6 @@ func TestWireEnvironment_DecodesConvergesPromotions(t *testing.T) {
       "project": "acme",
       "kind": "DEPLOY_ENVIRONMENT_KIND_PERSISTENT",
       "namespace": "acme-prod",
-      "imagePushBase": "registry.example.com/acme",
       "convergesPromotions": true
     }`
 	var w wireEnvironment
@@ -86,7 +85,7 @@ func TestWireEnvironment_DecodesConvergesPromotions(t *testing.T) {
 	if !w.ConvergesPromotions {
 		t.Error("convergesPromotions did not decode")
 	}
-	if w.ID != "env_prod" || w.ImagePushBase != "registry.example.com/acme" {
+	if w.ID != "env_prod" || w.Project != "acme" {
 		t.Errorf("environment = %+v", w)
 	}
 

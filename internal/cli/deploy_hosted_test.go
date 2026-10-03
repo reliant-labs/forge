@@ -39,6 +39,8 @@ _bundle = forge.Bundle {
     control_plane = forge.ControlPlane {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
+        registry_host = "` + testHostedRegistryHost + `"
+        organization = "` + testHostedOrg + `"
     }
     secret_provider = forge.HostedSecrets {}
     workloads = [_w | {runtime = forge.OnHosted {}} if not _w.runtime else _w for _w in [fw.Workload {
@@ -67,17 +69,28 @@ output = forge.render(_bundle)
 // (hostedBackendDigestResolver, stubbed per test), and the deploy must publish
 // THAT digest — a deploy that shipped the declared reference would publish a
 // tag, and the e2e test would see it.
-const hostedOnBandSpec = `        image = "localhost:5051/acme/api:v1"
+// The env's DECLARED registry, and the push base it composes. The fixture's
+// images sit under it because that is the only shape the platform admits —
+// `<registry_host>/<organization>/<project>/<image>` — and the pre-publish
+// check refuses anything else.
+const (
+	testHostedRegistryHost = "localhost:5051"
+	testHostedOrg          = "4f3c2b1a-0000-4000-8000-000000000001"
+	testHostedPushBase     = testHostedRegistryHost + "/" + testHostedOrg + "/acme"
+	testHostedAPIImage     = testHostedPushBase + "/api"
+)
+
+const hostedOnBandSpec = `        image = "` + testHostedAPIImage + `:v1"
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
         env = {GREETING = forge.ManagedSecret {name = "GREETING"}}`
 
-// stubHostedRegistry answers the cut's tag → digest lookup for
-// localhost:5051/acme/api:v1 with hostedTestDigest, and fails any other ref.
+// stubHostedRegistry answers the cut's tag → digest lookup for the fixture's
+// api image with hostedTestDigest, and fails any other ref.
 func stubHostedRegistry(t *testing.T) {
 	t.Helper()
 	prev := hostedBackendDigestResolver
 	hostedBackendDigestResolver = func(_ context.Context, ref string) (string, []string, error) {
-		if ref == "localhost:5051/acme/api:v1" {
+		if ref == testHostedAPIImage+":v1" {
 			return hostedTestDigest, []string{"linux/amd64"}, nil
 		}
 		return "", nil, fmt.Errorf("no such image %s", ref)
@@ -240,7 +253,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	if d == nil || !d.Published || d.Tier != "DEPLOY_TIER_BACKEND" {
 		t.Fatalf("deployment = %+v", d)
 	}
-	if d.Spec["image"] != "localhost:5051/acme/api@"+hostedTestDigest {
+	if d.Spec["image"] != testHostedAPIImage+"@"+hostedTestDigest {
 		t.Errorf("published image = %v", d.Spec["image"])
 	}
 
@@ -437,7 +450,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 	})
 
 	t.Run("off-band", func(t *testing.T) {
-		fake, _ := setup(t, `        image = "localhost:5051/acme/api:v1"
+		fake, _ := setup(t, `        image = "`+testHostedAPIImage+`:v1"
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
         resources = fw.Resources {cpuRequestMillicores = 500, memoryRequestBytes = 1073741824}`)
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
@@ -455,13 +468,23 @@ func TestHostedDeployRefusals(t *testing.T) {
 		}
 	})
 
-	// The control plane admits only registry.reliant.dev/org-1/…; the project
-	// ships localhost:5051/acme/api. Refused after EnsureEnvironment (which
-	// reports the base) and before any EnsureDeployment or publish.
+	// The env declares its registry, and the workload names an image on a
+	// DIFFERENT one — the mistake ADR-0003 F1 is about. Refused before any
+	// EnsureDeployment or publish, so it costs no write.
+	//
+	// The off-base case is produced by DECLARING a foreign host rather than
+	// by a server reply, because the base is forge's own composition now;
+	// the server advertises none.
 	// MUTATION VERIFIED RED: deleting checkImagePushBase from Deploy.
 	t.Run("foreign registry", func(t *testing.T) {
-		fake, _ := setup(t, hostedOnBandSpec)
-		fake.imagePushBase = "registry.reliant.dev/org-1"
+		fake, _ := setup(t, `        image = "ghcr.io/elsewhere/api:v1"
+        ports = [fw.Port {name = "http", port = 8080, expose = True}]
+        env = {GREETING = forge.ManagedSecret {name = "GREETING"}}`)
+		prev := hostedBackendDigestResolver
+		hostedBackendDigestResolver = func(_ context.Context, _ string) (string, []string, error) {
+			return hostedTestDigest, []string{"linux/amd64"}, nil
+		}
+		t.Cleanup(func() { hostedBackendDigestResolver = prev })
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
@@ -471,7 +494,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 		// and forge composes the platform's base onto the bare name. They
 		// do not push this image anywhere themselves.
 		if err == nil || !strings.Contains(err.Error(), "drop the registry host") ||
-			!strings.Contains(err.Error(), "registry.reliant.dev/org-1/api") {
+			!strings.Contains(err.Error(), testHostedPushBase+"/api") {
 			t.Fatalf("err = %v, want the push-base refusal naming the drop-the-host fix", err)
 		}
 		for _, b := range fake.bodies {
@@ -579,10 +602,10 @@ func TestHostedArtifactKey(t *testing.T) {
 		w.Image = "e2eh/abc/echo"
 		w.Spec.Image = "localhost:5051/e2eh/abc/echo:t1"
 	})
-	if got := hostedArtifactKey("prod", w); got != "e2eh/abc/echo" {
+	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
+	if got := hostedArtifactKey(e, w); got != "e2eh/abc/echo" {
 		t.Fatalf("key = %q, want the workload's artifact name", got)
 	}
-	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
 	groups, err := buildDeployGroups("prod", e, "")
 	if err != nil || groups[0].Services[0].Hosted.Artifact != "e2eh/abc/echo" {
 		t.Fatalf("group artifact = %+v err=%v", groups, err)
@@ -591,7 +614,7 @@ func TestHostedArtifactKey(t *testing.T) {
 		t.Errorf("published image = %q, want the artifact name the release pins", img)
 	}
 	w.Image = ""
-	if got := hostedArtifactKey("prod", w); got != "echo" {
+	if got := hostedArtifactKey(e, w); got != "echo" {
 		t.Fatalf("fallback key = %q, want echo", got)
 	}
 }

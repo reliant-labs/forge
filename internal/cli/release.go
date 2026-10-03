@@ -360,7 +360,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 			// against the platform's base, so deriving the key from the
 			// declared reference here would look up an entry the push never
 			// wrote and refuse a complete build.
-			if _, ok := artifacts[hostedStaticDestinationForEnv(opts.env, imageRepository(fe.Image))]; !ok {
+			if _, ok := artifacts[hostedStaticDestinationForDecl(entities, imageRepository(fe.Image))]; !ok {
 				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge env build %s --push)", fe.Name, envNameOr(opts.env)))
 			}
 			continue

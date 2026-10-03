@@ -857,8 +857,9 @@ _frontend_violations = lambda f: Frontend -> [str] {
             if _t == "hosted" and not f.image else []) \
         # A BARE image is accepted on forge.OnHosted, exactly as it is on a
         # hosted workload (ADR-0003 F1, _check_image_names_registry): forge
-        # resolves it against the base the control plane reports, and appends
-        # the platform's static.v1 layout to the result. The image is still
+        # resolves it against the base the env DECLARES
+        # (<registry_host>/<organization>/<project>) and appends the
+        # platform's static.v1 layout to the result. The image is still
         # REQUIRED — the release is pushed to a registry and keyed by its
         # repository — but its host is the platform's to supply.
 }

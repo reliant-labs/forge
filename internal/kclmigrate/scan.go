@@ -591,6 +591,52 @@ func stripRegistry(src string) string {
 	return registryInlineRe.ReplaceAllString(out, "")
 }
 
+// controlPlaneOpenRe matches a `forge.ControlPlane {` that opens a multi-line
+// or inline literal, capturing its indentation.
+var controlPlaneOpenRe = regexp.MustCompile(`(?m)^([ \t]*)(\w+[ \t]*=[ \t]*)?forge\.ControlPlane[ \t]*\{`)
+
+// organizationDeclaredRe is an `organization = "…"` already present, in
+// either the inline or the own-line form.
+//
+// The leading `[^#\n]*` is what keeps a COMMENTED example from reading as a
+// declaration: the pre-migration trees carry several, and seeding on top of
+// one would write a second real declaration — a KCL duplicate key, which
+// fails at load. Anchored per line, so a `#` anywhere earlier on the same
+// line disqualifies it.
+var organizationDeclaredRe = regexp.MustCompile(`(?m)^[^#\n]*[{,\s]organization[ \t]*=[ \t]*"`)
+
+// seedOrganization adds `organization = "<placeholder>"` to a ControlPlane
+// that declares none.
+//
+// WITHOUT THIS THE MIGRATION LEAVES A TREE THAT DOES NOT RENDER, which is the
+// one outcome it exists to prevent — and the failure is a schema check the
+// author has no way to connect to a migration that reported success. A hosted
+// env now REQUIRES an organization, and the pre-migration trees this runs on
+// predate the field entirely, so every one of them is missing it.
+//
+// The PLACEHOLDER rather than a guess: forge cannot know the org, and the
+// value is checked by the registry's realm at the first push. So the migration
+// writes the same `REPLACE_ME_ORG_ID` the scaffold writes, which `forge env
+// new --check` and `forge lint` already gate on — the author is told to fill
+// it in by the tools they already run, rather than by a migration note they
+// may not read.
+func seedOrganization(src, placeholder string) string {
+	if organizationDeclaredRe.MatchString(src) {
+		return src
+	}
+	loc := controlPlaneOpenRe.FindStringSubmatchIndex(src)
+	if loc == nil {
+		return src
+	}
+	indent := src[loc[2]:loc[3]]
+	decl := "\n" + indent + "    # REPLACE THIS with your organization's id: forge pushes this env's\n" +
+		indent + "    # hosted images and config bundle to\n" +
+		indent + "    # <registry_host>/<organization>/<project>, so nothing hosted has an\n" +
+		indent + "    # address until it is set. `forge lint` fails while it reads " + placeholder + ".\n" +
+		indent + "    organization = \"" + placeholder + "\""
+	return src[:loc[1]] + decl + src[loc[1]:]
+}
+
 // hasRegistryHost mirrors kcl/lib/images.k: the first path segment is a
 // registry host iff it contains a `.` or a `:`, or is exactly `localhost`.
 func hasRegistryHost(image string) bool {

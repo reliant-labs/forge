@@ -157,7 +157,7 @@ func TestPreflightHostedAdmitsAHostedJob(t *testing.T) {
 func TestHostedDeployRefusesADanglingReference(t *testing.T) {
 	g := preflightGroup(publicBackend())
 	g.Services = g.Services[:2] // no database for DATABASE_URL's databaseRef
-	g.Hosted = &HostedTarget{Release: "v1",
+	g.Hosted = &HostedTarget{Release: "v1", PushBase: "ghcr.io/acme",
 		Digests:    map[string]string{"hounders": digestA, "web": digestB},
 		Registries: map[string]string{"hounders": "ghcr.io/acme"}}
 	if _, err := planHosted(g); err == nil || !strings.Contains(err.Error(), `databaseRef "hounders"`) {

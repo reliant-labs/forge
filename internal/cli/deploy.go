@@ -3289,11 +3289,10 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 		return fmt.Errorf("docker build for %s failed: %w", cfg.Name, err)
 	}
 
-	pushCmd := exec.CommandContext(ctx, "docker", "push", imageRef)
-	pushCmd.Stdout = os.Stdout
-	pushCmd.Stderr = os.Stderr
-	if err := pushCmd.Run(); err != nil {
-		return fmt.Errorf("docker push for %s failed: %w", cfg.Name, err)
+	// No organization: this is the dev path, whose destination is a local
+	// k3d registry that takes no credentials and so never refuses a push.
+	if err := dockerPush(ctx, imageRef, ""); err != nil {
+		return fmt.Errorf("%s: %w", cfg.Name, err)
 	}
 
 	return nil

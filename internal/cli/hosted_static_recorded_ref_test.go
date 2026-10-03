@@ -34,14 +34,13 @@ func TestHostedStaticBareImageRecordsExactlyTheRefItPushed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
 	}
-	const pushBase = "registry.reliant.dev/org-7"
+	// The base the env DECLARES, composed the one way forge composes it:
+	// `<registry_host>/<organization>/<project>`. The control plane is
+	// never asked, so there is no loop to seed and nothing on disk to go
+	// stale — which is precisely what makes the two halves below agree.
+	const pushBase = testStaticRegistryHost + "/" + testStaticOrg + "/acme"
 
 	fake := newFakeDeployService(map[string]string{})
-	// The base the control plane reports. Nothing is pre-seeded on disk: the
-	// build's own EnsureEnvironment is what learns it, caches it, and makes
-	// it available to the resolution — so this test exercises that loop
-	// rather than asserting over a hand-written record.
-	fake.imagePushBase = pushBase
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)
 	dir := writeBareHostedStaticProject(t, srv.URL)
@@ -114,6 +113,11 @@ func TestHostedStaticBareImageRecordsExactlyTheRefItPushed(t *testing.T) {
 // writeBareHostedStaticProject is writeHostedStaticProject with a BARE
 // frontend image: the shape ADR-0003 F1 makes legal, and the one this test
 // exists to follow all the way to the published spec.
+const (
+	testStaticRegistryHost = "registry.reliant.dev"
+	testStaticOrg          = "4f3c2b1a-0000-4000-8000-000000000001"
+)
+
 func writeBareHostedStaticProject(t *testing.T, endpoint string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -128,6 +132,8 @@ _bundle = forge.Bundle {
     control_plane = forge.ControlPlane {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
+        registry_host = "` + testStaticRegistryHost + `"
+        organization = "` + testStaticOrg + `"
     }
     frontends = [forge.Frontend {
         name = "web"

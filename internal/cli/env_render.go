@@ -354,13 +354,13 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// hostedOffBaseImageFinding.Message) rather than asserting something
 	// forge did not verify.
 	//
-	// VERIFIED off-base is an error; UNVERIFIED is a warning. forge knows the
-	// base only when an ensure has stated it, and failing a render over an
-	// image it could not compare would be asserting something it never
-	// checked — on a project whose registry IS the platform's, that assertion
-	// would be false. So the half forge can prove stops the render, and the
-	// half it cannot prove says so and gets out of the way.
-	offBase := hostedOffBaseImageFindings(entities, cachedHostedPushBase(projectDir, envName))
+	// VERIFIED off-base is an error; UNVERIFIED is a warning. The base is
+	// composed from the env's OWN declaration, so it is known whenever the
+	// env declares an organization — which KCL requires of anything hosted.
+	// The unverified half therefore survives only for an env that declares a
+	// control plane and nothing hosted, where forge has no base to compare
+	// against and failing a render would assert something it never checked.
+	offBase := hostedOffBaseImageFindings(entities, declaredPushBase(entities))
 	if verified := verifiedOffBaseImages(offBase); len(verified) > 0 {
 		return errHostedImagesOffBase(envName, verified)
 	}

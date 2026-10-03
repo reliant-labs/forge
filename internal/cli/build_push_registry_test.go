@@ -282,16 +282,19 @@ func TestBuildCmd_HostedEnvPushesToTheWorkloadReference(t *testing.T) {
 }
 
 // TestBuildCmd_HostedBareImageWithNoPushBaseFails: a hosted workload whose
-// image names no registry host, in a project that has never learned the
-// platform's push base, fails --push with the full-reference remedy.
+// image names no registry host, in an env that declares no organization,
+// fails --push — and the remedy is to DECLARE THE ORG.
 //
-// This is the NARROWED version of a rule that used to be absolute. Before
-// ADR-0003 F1 a bare hosted image was refused outright, because forge had no
-// registry to resolve it against and would not invent one. It now resolves
-// against the base the control plane reports (TestResolveHostedImageBase), so
-// the refusal survives only for the case that is still genuinely unresolvable:
-// no base known, nothing to compose. The remedy is unchanged for that case,
-// because declaring the reference is still the only thing the author can do.
+// THE REMEDY INVERTED, and that is the change worth pinning. Before
+// ADR-0003 F1 a bare hosted image was refused outright and the author was
+// told to write a full reference. Then the base was learned from the control
+// plane, so the refusal narrowed to "no base known" but the remedy stayed
+// "declare the reference" — because there was no field to point at; the base
+// was read, never declared. Now there is one, so the author is sent to it.
+//
+// Telling a hosted author to write a registry host would be telling them to
+// transcribe a value forge composes, which is the exact defect ADR-0003 F1
+// closed: get it wrong and you learn at publish time.
 func TestBuildCmd_HostedBareImageWithNoPushBaseFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
 
@@ -299,17 +302,19 @@ func TestBuildCmd_HostedBareImageWithNoPushBaseFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("--push with a bare hosted image and no push base: want an error, got nil")
 	}
-	for _, want := range []string{"image", "declare the full reference"} {
+	for _, want := range []string{"image", "declares no organization", "organization = "} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("runbook error should name %q; got: %v", want, err)
 		}
 	}
-	// It must NOT point at an env-level field: there is none to set. The
-	// platform's base is not one either — it is read from the control plane,
-	// never declared.
-	for _, gone := range []string{"forge.ControlPlane", "ClusterTarget"} {
+	// It must name the file the field lives in, and must NOT revive the
+	// advice to transcribe a registry host.
+	if !strings.Contains(err.Error(), "deploy/kcl/prod/main.k") {
+		t.Errorf("runbook must name the file to edit; got: %v", err)
+	}
+	for _, gone := range []string{"declare the full reference", "ClusterTarget"} {
 		if strings.Contains(err.Error(), gone) {
-			t.Errorf("runbook must not name the removed env field %q; got: %v", gone, err)
+			t.Errorf("runbook must not carry the superseded advice %q; got: %v", gone, err)
 		}
 	}
 }

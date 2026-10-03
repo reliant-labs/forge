@@ -36,7 +36,7 @@ func staticGroup(release string, digests map[string]string) ServiceGroup {
 	keep := int32(5)
 	return ServiceGroup{
 		Env: "prod", ProviderID: HostedProviderID,
-		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: release, Digests: digests},
+		Hosted: &HostedTarget{Endpoint: "https://cp.example", Release: release, Digests: digests, PushBase: "ghcr.io/acme"},
 		Services: []ResolvedService{{Name: "web", Hosted: &HostedWorkload{
 			// A site's artifact key IS the repository it was pushed to, so
 			// it carries a registry host exactly as buildHostedGroup's does.

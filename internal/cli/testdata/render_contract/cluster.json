@@ -39,6 +39,7 @@
         "metadata": {
           "labels": {
             "app.kubernetes.io/managed-by": "forge",
+            "forge.dev/cluster": "k3d-acme",
             "forge.dev/env": "dev",
             "pod-security.kubernetes.io/audit": "restricted",
             "pod-security.kubernetes.io/enforce": "restricted",

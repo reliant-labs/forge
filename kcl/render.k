@@ -662,6 +662,16 @@ _render_database = lambda db: any, bundle: Bundle -> any {
 # namespace), primary target first. RenderWorkloads does not emit them: the
 # namespace belongs to the ENV (restricted PSA, forge.dev/env), not to a
 # workload.
+#
+# EVERY Namespace is stamped with its own cluster, including the primary's —
+# the rule _raw_manifests already follows, and for the same reason. The deploy
+# router replicates an object carrying no forge.dev/cluster to every cluster
+# of a multi-cluster env rather than guessing a primary, so leaving the
+# primary's Namespace unstamped sent it to every cluster AND made it collide
+# with the stamped Namespace each of those clusters already had. Two
+# documents then reached one (cluster, Namespace, name) with different bodies,
+# which `kubectl apply` resolves last-wins — silently deciding a namespace's
+# pod-security level by document order.
 _namespaces = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _pairs = ([[_pt.cluster, _pt.namespace]] if _pt else []) \
@@ -681,7 +691,7 @@ _render_namespace = lambda namespace: str, context: str, primary: any -> any {
                 "pod-security.kubernetes.io/enforce" = "restricted"
                 "pod-security.kubernetes.io/audit" = "restricted"
                 "pod-security.kubernetes.io/warn" = "restricted"
-            } | ({} if primary and primary.cluster == context else {"forge.dev/cluster" = context})
+            } | ({"forge.dev/cluster" = context} if context else {})
         }
     }
 }

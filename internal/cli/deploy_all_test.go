@@ -442,7 +442,7 @@ func TestDeployConfirm_PromptDefaultsToNo(t *testing.T) {
 			return false, nil
 		},
 		out: os.Stderr,
-	})
+	}, false)
 	if out.Confirmed {
 		t.Error("a bare Enter confirmed the deploy")
 	}

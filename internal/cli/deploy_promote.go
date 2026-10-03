@@ -237,7 +237,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 
 	if !opts.DryRun && opts.Confirm != nil {
 		plan.renderForConfirmation(opts.JSON)
-		outcome := confirmDeployPlan(env, plan, *opts.Confirm)
+		outcome := confirmDeployPlan(env, plan, *opts.Confirm, opts.JSON)
 		if outcome.Err != nil {
 			return outcome.Err
 		}
@@ -245,6 +245,16 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			// Declined, or --plan-only. Nothing was written, and that is a
 			// SUCCESS: the caller asked what would happen and found out.
 			plan.Confirmed = false
+			// --plan-only's next_step is the command that approves THIS
+			// plan, carrying the digest and the stop-class codes. It is the
+			// string the gate already printed, not a second construction of
+			// it: a pipeline reads next_step and a human reads the rendered
+			// line, and those must be the same command or one of them is
+			// wrong. The plan's default next_step ("forge env deploy <env>")
+			// stays for every other caller.
+			if outcome.NextStep != "" {
+				plan.NextStep = outcome.NextStep
+			}
 			plan.stamp(nil)
 			if opts.JSON {
 				return emitJSONDocument(plan)

@@ -101,14 +101,12 @@ contracts:
     - "internal/checksums" # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
     - "cmd/forge" # Linker-set version metadata; -X flags require exported package vars.
     - "cmd/contractlint" # Tool entry point; main package, no test seam.
-docs: {}
 features:
   orm: false
   codegen: false
   migrations: false
   ci: true
   contracts: true
-  docs: true
   frontend: false
   observability: false
   hot_reload: false

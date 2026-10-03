@@ -242,7 +242,8 @@ type hostedBundleClient struct {
 // env is the environment NAME, for the returned record; environmentID is what
 // the wire is keyed on. repository is where the bytes were pushed, which the
 // control plane checks against the registry subtree it admits for the caller's
-// organization (the env's `imagePushBase`) or the env's declared BYO registry.
+// organization (the subtree its realm admits) or the env's declared BYO
+// registry.
 // run is the CI run that built the bundle, or the zero Run when a human did.
 //
 // THE BYTES ARE PARAMETERS, and there is deliberately no struct bundling them

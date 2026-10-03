@@ -677,7 +677,7 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		services = append(services, deploytarget.ResolvedService{
 			Name: w.Name,
 			Hosted: &deploytarget.HostedWorkload{
-				Tier: deploytarget.HostedTierWorkload, Workload: &spec, Artifact: hostedArtifactKey(envName, w),
+				Tier: deploytarget.HostedTierWorkload, Workload: &spec, Artifact: hostedArtifactKey(entities, w),
 			},
 		})
 		names = append(names, w.Name)
@@ -693,7 +693,7 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 				// so the deploy must look it up under the same key — through
 				// the one rule the build pushed by, which resolves a bare
 				// hosted image against the platform's base.
-				Artifact: hostedStaticDestinationForEnv(envName, imageRepository(f.Image))},
+				Artifact: hostedStaticDestinationForDecl(entities, imageRepository(f.Image))},
 		})
 		names = append(names, f.Name)
 	}
@@ -764,10 +764,10 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 //     keyed by the address it was actually pushed to (ADR-0003 F1);
 //   - otherwise the spec image's last path segment
 //     (deploytarget.HostedArtifactName), for an image built elsewhere.
-func hostedArtifactKey(envName string, w WorkloadEntity) string {
+func hostedArtifactKey(e *KCLEntities, w WorkloadEntity) string {
 	if w.Image != "" {
 		// The declared REPOSITORY, host included: the release ledger's key.
-		return hostedImageForEnv(envName, imageRepository(w.Image))
+		return hostedImageForDecl(e, imageRepository(w.Image))
 	}
 	return deploytarget.HostedArtifactName(w.Spec.Image)
 }

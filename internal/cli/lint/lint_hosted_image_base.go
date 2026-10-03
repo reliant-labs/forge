@@ -3,11 +3,12 @@
 // hosted-image-base — reports a host-bearing image on a forge.OnHosted item.
 //
 // A hosted workload's registry is NOT the author's to choose (ADR-0003 F1):
-// the control plane admits images from exactly one subtree,
-// `<registry_base>/<org>`, and refuses every other. So forge resolves a bare
-// `image = "api"` against the base the platform reports, and an author who
-// writes a host is transcribing a value forge already knows — which is fine
-// when they get it right and a publish-time refusal when they do not.
+// the platform admits images from exactly one subtree,
+// `<registry_host>/<organization>/<project>`, and refuses every other. So
+// forge resolves a bare `image = "api"` against the base the env DECLARES,
+// and an author who writes a host is transcribing a value forge already
+// composes — which is fine when they get it right and a publish-time refusal
+// when they do not.
 //
 // This is where that is noticed early. `forge env render <env>` performs the
 // authoritative version of the same check against the real render; this one
@@ -33,22 +34,37 @@ import (
 )
 
 // hostedImageBaseFindings scans the project's deploy KCL and judges every
-// hosted image against the push base cached for its env, when one is known.
+// hosted image against the push base the same tree DECLARES.
 //
-// THE BASE IS READ PER ENV AND THE BEST ONE WINS. A scan cannot attribute a
-// workload to an env — that is what rendering would tell us — so there is no
-// single correct base to compare against. Using any cached base makes the
-// finding STRONGER (it can then name the subtree and the exact replacement);
-// using none leaves it at the weaker wording, which is still worth printing.
-// Either way the comparison only ever reports an image whose host is not the
-// platform's, so a project with one env and one registry gets the precise
-// message and a multi-env project gets at least the general one.
+// BOTH HALVES COME OUT OF THE CHECKOUT, which is what makes this lint work
+// offline on a fresh clone. Before, the base was whatever the control plane
+// had last told forge, cached under .forge/state — so this rule was silent
+// until someone had run an authenticated deploy, and after a stale cache it
+// compared against the wrong subtree. Now the org and the registry host are
+// declared beside the images they judge, so there is one source and no
+// staleness.
+//
+// A scan still cannot attribute a declaration to an env (ScanPushBase says
+// why, and why the first org in file order is the right approximation). Using
+// SOME declared base only ever makes a finding stronger — it can then name
+// the subtree and the exact replacement — and the comparison reports nothing
+// but an image whose host is not the platform's either way.
 func hostedImageBaseFindings(projectDir string, cfg *config.ProjectConfig) []hostedimage.Finding {
-	items := hostedimage.ScanTree(filepath.Join(projectDir, deployKCLDirFor(cfg)))
+	kclDir := filepath.Join(projectDir, deployKCLDirFor(cfg))
+	items := hostedimage.ScanTree(kclDir)
 	if len(items) == 0 {
 		return nil
 	}
-	return hostedimage.OffBase(items, hostedimage.AnyCachedBase(projectDir))
+	return hostedimage.OffBase(items, hostedimage.ScanPushBase(kclDir, projectName(cfg)))
+}
+
+// projectName is the forge project name — the `<project>` segment of the push
+// base.
+func projectName(cfg *config.ProjectConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Name
 }
 
 // deployKCLDirFor is the project's deploy KCL tree.

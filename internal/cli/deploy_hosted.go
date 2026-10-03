@@ -222,7 +222,8 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		groups[i].DryRun = opts.dryRun
 		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release,
 			PromotionID: promotionID, Digests: digests, Registries: registries,
-			Shape: shape, DeclaredBy: declaredBy}
+			PushBase: declaredPushBase(entities),
+			Shape:    shape, DeclaredBy: declaredBy}
 	}
 
 	registry := &deploytarget.Registry{}

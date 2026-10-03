@@ -1,66 +1,57 @@
 package cli
 
-// Writing the push-base cache internal/hostedimage defines.
+// Resolving an env's platform push base from its DECLARATION.
 //
-// The format, the read side, and WHY the base is cached at all live in
-// internal/hostedimage/cache.go — `forge lint` reads the same records and
-// cannot import this package, so a second definition of the filename would be
-// a cache one side silently never finds.
+// There is one rule — `<registry_host>/<organization>/<project>` — and it
+// lives in internal/hostedimage.PushBase, which also records why forge
+// composes it rather than asking the control plane for it. What lives here is
+// the KCLEntities-shaped adapter over it, plus the two errors a caller needs
+// when the declaration cannot produce an address.
 //
-// What lives here is the WRITE, which only this package performs: it happens
-// on the EnsureEnvironment forge was already making
-// (ensureHostedEnvRecordingPushBase), so the base is learned with no extra
-// call and refreshed by every command that could care.
+// EVERY CONSUMER READS THIS, AND NOTHING ELSE. The build, the deploy, the
+// release-coverage gate, `forge env render` and `forge lint` all resolve a
+// hosted address through this one function, so the address a build pushes to
+// is the address a deploy pins and the address a render judges. Before this,
+// the base arrived from the server and was cached on disk, and "resolve it
+// again over here" was a defect waiting to happen — it shipped once already,
+// pushing a site to `web/static.v1` with no registry in it at all while the
+// release recorded the resolved address.
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/reliant-labs/forge/internal/hostedimage"
-	"github.com/reliant-labs/forge/internal/statefile"
 )
 
-// rememberHostedPushBase records what the control plane just said.
+// declaredPushBase is the platform registry subtree this env's hosted
+// artifacts go to, composed from its control-plane declaration.
 //
-// An EMPTY base writes nothing, and that is the load-bearing case: "the
-// server did not tell us" must not be stored as "the server says there is
-// none". The two produce different messages — one notes that a host was
-// declared at all, the other asserts it is outside the admitted subtree — and
-// only one of them would be true.
-func rememberHostedPushBase(projectDir, env, base string) error {
-	base = hostedimage.NormalizeBase(base)
-	if base == "" {
-		return nil
+// "" when the env declares no control plane, or declares one with no
+// organization. Both are legitimate states for this function to be asked
+// about — an env with nothing hosted never needs a base — so neither is an
+// error here. KCL refuses the one combination that IS a mistake (something
+// hosted with no organization) at load, which is earlier and names the field.
+func declaredPushBase(e *KCLEntities) string {
+	if e == nil || e.ControlPlane == nil {
+		return ""
 	}
-	if cachedHostedPushBase(projectDir, env) == base {
-		// Unchanged: skip the write so a deploy does not touch a file —
-		// and an mtime the render's write scan reads — for no reason.
-		return nil
-	}
-	return statefile.Write(hostedimage.CachePath(projectDir, env), "image push base", hostedimage.CacheRecord{
-		Env: env, PushBase: base, RecordedAt: time.Now().UTC().Format(time.RFC3339),
-	})
+	return hostedimage.PushBase(e.ControlPlane.RegistryHost, e.ControlPlane.Organization, hostedProjectName())
 }
 
-// cachedHostedPushBase is the last base recorded for this env, or "" when
-// none ever was — including when the record is unreadable, because a corrupt
-// cache must degrade to "unknown" (which has its own, weaker message) rather
-// than fail a render over a file that exists only to sharpen one.
-func cachedHostedPushBase(projectDir, env string) string {
-	return hostedimage.CachedBase(projectDir, env)
-}
-
-// errHostedImageNeedsPushBase is a bare hosted image with no base to resolve
-// it under: an older control plane that reports none, or none configured.
+// errHostedImageNeedsPushBase is a bare hosted image in an env that resolves
+// no push base: it declares a control plane with no `organization`, so there
+// is no subtree to compose the image under.
 //
-// The remedy is the pre-ADR-0003 behaviour — declare the full reference —
-// because that is the only thing the author can do from here. It names the
-// workload rather than the rule, since a project may declare several and only
-// one of them is bare.
+// The remedy is to declare the org, NOT to write a full reference. That
+// inverts the pre-ADR-0003 advice on purpose: a hosted author's registry is
+// the platform's, so telling them to transcribe a host would be telling them
+// to restate a value forge already knows the shape of — which is the defect
+// ADR-0003 F1 closed. It names the workload rather than the rule, since a
+// project may declare several and only one of them is bare.
 func errHostedImageNeedsPushBase(env, owner, image string) error {
 	return fmt.Errorf("workload %q declares image %q, which names no registry host, and it is bound to forge.OnHosted.\n"+
-		"  The control plane for env %q reports no image push base, so there is nothing to resolve it under.\n"+
-		"  fix: declare the full reference on the workload (image = \"ghcr.io/<owner>/%s\"), "+
-		"or upgrade the control plane to one that reports its registry",
-		owner, image, env, image)
+		"  Env %q declares no organization, so there is no registry subtree to resolve it under.\n"+
+		"  fix: set `organization = \"<your org id>\"` on control_plane in deploy/kcl/%s/main.k; "+
+		"forge then resolves the image to %s/<organization>/<project>/%s",
+		owner, image, env, env, hostedimage.DefaultRegistryHost, image)
 }

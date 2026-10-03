@@ -50,7 +50,7 @@ type pushPlan struct {
 	env string
 	// pushBase is the platform registry subtree a BARE hosted image was
 	// resolved under (resolveHostedImageBase), or "" when the env has no
-	// control plane or the platform stated none. Recorded on the plan so a
+	// control plane or declares no organization. Recorded on the plan so a
 	// consumer can say WHERE a resolved reference came from rather than
 	// leaving the author to guess which half of it they wrote.
 	pushBase string
@@ -110,9 +110,10 @@ func hostedStaticDestination(pushBase, image string) string {
 	return deploytarget.HostedStaticRepository(imageRepository(resolveHostedImageBase(pushBase, image)))
 }
 
-// hostedStaticDestinationForEnv is hostedStaticDestination for the callers
-// that hold an env name rather than a resolved plan: the release-coverage
-// gate, the hosted deploy group, and the build plan's preview.
+// hostedStaticDestinationForDecl is hostedStaticDestination for the callers
+// that hold an env's RENDER rather than a resolved plan: the
+// release-coverage gate, the hosted deploy group, and the build plan's
+// preview.
 //
 // They must agree with the build's push to the byte, because the address is
 // the ledger's KEY: the coverage gate looks the artifact up under it, the
@@ -121,14 +122,14 @@ func hostedStaticDestination(pushBase, image string) string {
 // they agreed by accident; once a bare image needs the platform's base
 // composed on, agreeing by accident stops working — which is what this
 // function exists to prevent.
-func hostedStaticDestinationForEnv(env, image string) string {
-	return hostedStaticDestination(cachedHostedPushBase(projectDirForKCL(), env), image)
+func hostedStaticDestinationForDecl(e *KCLEntities, image string) string {
+	return hostedStaticDestination(declaredPushBase(e), image)
 }
 
-// hostedImageForEnv resolves any hosted item's image against the env's cached
-// push base. The workload twin of hostedStaticDestinationForEnv.
-func hostedImageForEnv(env, image string) string {
-	return resolveHostedImageBase(cachedHostedPushBase(projectDirForKCL(), env), image)
+// hostedImageForDecl resolves any hosted item's image against the env's
+// declared push base. The workload twin of hostedStaticDestinationForDecl.
+func hostedImageForDecl(e *KCLEntities, image string) string {
+	return resolveHostedImageBase(declaredPushBase(e), image)
 }
 
 // repositoryName is a repository's last path segment — the artifact name
@@ -185,14 +186,12 @@ func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *bui
 // env whose workloads declare no pullable image builds locally instead of
 // failing: a host-only env has no cluster to pull from.
 func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error) {
-	// The platform's push base, as last stated by the control plane. A bare
-	// hosted image resolves under it; an env with no hosted item never reads
-	// it. Cached rather than fetched because resolving a push destination
-	// must not depend on a credential being present — see hosted_push_base.go.
-	pushBase := ""
-	if declared != nil && declared.ControlPlane != nil {
-		pushBase = cachedHostedPushBase(projectDirForKCL(), opts.env)
-	}
+	// The platform's push base, composed from the env's own declaration. A
+	// bare hosted image resolves under it; an env with no hosted item never
+	// reads it. Declared rather than fetched because resolving a push
+	// destination must not depend on a credential being present — see
+	// hosted_push_base.go.
+	pushBase := declaredPushBase(declared)
 	if err := checkHostedImagesResolve(opts.env, declared, pushBase); err != nil {
 		return pushPlan{}, err
 	}
@@ -225,9 +224,9 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 // defect this closes. A host-bearing reference is still used VERBATIM, because
 // an author who named one meant it, and the admit check is what judges it.
 //
-// base "" means the platform did not state one. That is NOT a licence to
-// invent a default: a bare image with nowhere to go is refused, naming the
-// full-reference remedy (errHostedImageNeedsPushBase).
+// base "" means the env declared no organization, so no base composes. That
+// is NOT a licence to invent one: a bare image with nowhere to go is refused,
+// naming the field to declare (errHostedImageNeedsPushBase).
 //
 // Non-hosted runtimes are untouched. A bare image on a cluster workload is
 // still refused at render, by KCL, because no platform owns that registry.

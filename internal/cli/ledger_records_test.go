@@ -3,10 +3,16 @@ package cli
 // The three new record seams, exercised through the interfaces their
 // consumers will hold.
 //
-// F6a consumes bundleRecorder, F6b consumes applyRecorder and
-// sessionReporter. These tests take the machine backend AS those interfaces,
-// so a method whose signature drifts away from the seam fails here rather
-// than in the task that comes to use it.
+// F6a consumes bundleRecorder and F6b consumes sessionReporter. These tests
+// take the machine backend AS those interfaces, so a method whose signature
+// drifts away from the seam fails here rather than in the task that comes to
+// use it.
+//
+// There is no apply seam to exercise: the applyRecorder interface was deleted
+// as dead code (no caller ever bracketed an apply with it). The machine
+// ledger's apply records are HISTORY an older forge wrote, and the storage
+// semantics below are tested against the store directly — what
+// `forge ledger show` and `forge ledger export` read back.
 
 import (
 	"context"
@@ -96,18 +102,22 @@ func TestBundleRecorder_IsIdempotentOnDigest(t *testing.T) {
 	}
 }
 
-// An apply is BRACKETED: begun, then reported. The gap between the two is a
-// real state — an apply with no outcome past its deadline reads as
-// ABANDONED, which is deliberately distinct from failed, because "we could
-// not look" is its own answer and a stored "assume success" would be a lie
-// (failure mode F-2).
-func TestApplyRecorder_BracketsAnApplyAndDerivesItsState(t *testing.T) {
+// The machine ledger's APPLY STORAGE, which is what `forge ledger show` and
+// `forge ledger export` read. Nothing in forge writes one any more — these are
+// records an older forge left behind — but the file's semantics still have to
+// hold, because a reader joins outcomes to applies by id and derives a state
+// from the pair.
+//
+// An apply is two lines: begun, then reported. The gap between them is a real
+// state — one with no outcome past its deadline reads as ABANDONED, which is
+// deliberately distinct from failed, because "we could not look" is its own
+// answer and a stored "assume success" would be a lie (failure mode F-2).
+func TestMachineLedgerApplyStorage_JoinsOutcomesAndDerivesState(t *testing.T) {
 	dir := newLedgerTestProject(t, "apply-project")
-	var recorder applyRecorder = testRecordStore(t, dir)
-	ctx := context.Background()
+	store := testRecordStore(t, dir).store
 	now := time.Now().UTC().Truncate(time.Second)
 
-	begun, err := recorder.BeginApply(ctx, release.Apply{
+	begun, err := store.BeginApply(release.Apply{
 		Env:        "prod",
 		BundleID:   "bundle-1",
 		CreatedAt:  now,
@@ -122,7 +132,7 @@ func TestApplyRecorder_BracketsAnApplyAndDerivesItsState(t *testing.T) {
 
 	// In flight, so a second apply is refused — the same serialization the
 	// hosted ledger enforces under its env row lock (failure mode F-5).
-	_, err = recorder.BeginApply(ctx, release.Apply{
+	_, err = store.BeginApply(release.Apply{
 		Env:        "prod",
 		BundleID:   "bundle-2",
 		CreatedAt:  now,
@@ -133,7 +143,7 @@ func TestApplyRecorder_BracketsAnApplyAndDerivesItsState(t *testing.T) {
 	}
 
 	// With supersede it lands, and records that it overrode one.
-	superseding, err := recorder.BeginApply(ctx, release.Apply{
+	superseding, err := store.BeginApply(release.Apply{
 		Env:        "prod",
 		BundleID:   "bundle-2",
 		CreatedAt:  now,
@@ -153,17 +163,17 @@ func TestApplyRecorder_BracketsAnApplyAndDerivesItsState(t *testing.T) {
 		Summary:    "2 workloads updated",
 		FinishedAt: now.Add(time.Minute),
 	}
-	if err := recorder.FinishApply(ctx, "prod", outcome); err != nil {
+	if err := store.FinishApply("prod", outcome); err != nil {
 		t.Fatalf("FinishApply: %v", err)
 	}
-	if err := recorder.FinishApply(ctx, "prod", outcome); err != nil {
+	if err := store.FinishApply("prod", outcome); err != nil {
 		t.Fatalf("re-reporting the SAME outcome is a retry and must succeed: %v", err)
 	}
 
 	// ...and refuses a CONTRADICTORY one: an apply ended once.
 	conflicting := outcome
 	conflicting.Status = release.ApplyFailed
-	if err := recorder.FinishApply(ctx, "prod", conflicting); err == nil {
+	if err := store.FinishApply("prod", conflicting); err == nil {
 		t.Error("an apply that already reported succeeded must not also report failed")
 	}
 }

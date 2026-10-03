@@ -258,41 +258,14 @@ func refusalHint(reason string) string {
 	}
 }
 
-// applyRefusalFromWire turns a refused BeginApply into the same domain
-// refusal a refused Promote produces, or nil when err is not a refusal.
-//
-// ONE TYPE FOR BOTH WRITES. BeginApply applies the same CAS, the same
-// plan-digest recompute and the same stop-class check as Promote, under the
-// same row lock, and refuses with the same reasons — so a second error type
-// would mean a second exit-code mapping and a second --json refusal object,
-// which could then disagree about what reason 3 means.
-//
-// It takes no env name, which is why it is a function rather than a method
-// like hostedStore.refusalFromWire: an apply refusal's ActualCurrent is not
-// decoded. A promotion needs an env name to validate, the store caches those,
-// and an apply client has no such cache — while the reason, the detail and
-// the recomputed plan, which are what the operator acts on, need none.
-func applyRefusalFromWire(err error) *promoteRefusedError {
-	out := &promoteRefusedError{Reason: hostedErrorReason(err), cause: err}
-	if w, ok := promoteRefusalOf(err); ok {
-		out.Reason = w.Reason
-		out.ExpectedCurrentPromotionID = w.ExpectedCurrentPromotionID
-		out.ExpectedUnbound = w.ExpectedUnbound
-		out.ActualPhase = w.ActualPhase
-		out.Detail = w.Detail
-		out.adoptCurrentPlan(w.CurrentPlan)
-	}
-	if out.Reason == "" {
-		return nil
-	}
-	if out.Detail == "" {
-		var cerr *cloud.Error
-		if errors.As(err, &cerr) {
-			out.Detail = strings.TrimSpace(cerr.Message)
-		}
-	}
-	return out
-}
+// There is no apply-refusal decoder, because there is no apply request to be
+// refused. It existed so a refused BeginApply produced the same domain
+// refusal a refused Promote does — the same CAS, the same plan-digest
+// recompute, the same stop-class check, under the same row lock. The PROMOTE
+// is now the only write that carries any of that, so hostedStore's own
+// refusalFromWire is the single decoder, and the exit-code mapping and the
+// --json refusal object have one source by construction rather than by two
+// implementations agreeing.
 
 // adoptCurrentPlan decodes the recomputed plan a refusal carried, and the
 // stop codes it holds.

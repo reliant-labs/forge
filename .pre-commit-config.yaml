@@ -77,8 +77,17 @@ repos:
         # exclude it: fixtures are captured tool output (e.g. the KCL
         # projection goldens forge render emits), and reformatting one
         # rewrites the capture rather than anything a human authored.
+        #
+        # .forge/ is excluded for the SAME reason gen/ and *.pb.go are, and
+        # it bit exactly that way: forge owns every file in it and rewrites
+        # them from its own encoder. prettier collapses
+        # .forge/scaffolded.json's one-element array onto a single line,
+        # forge's json.MarshalIndent writes it multi-line, and the next
+        # `forge generate` reverts the hook — so the two disagree forever and
+        # the hook loses. CI then fails on a formatting round-trip neither
+        # tool is wrong about.
         files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
-        exclude: ^(gen/|.*\.pb\.go$|.*/skills/.*\.md$)|(^|/)testdata/
+        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$)|(^|/)testdata/
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.

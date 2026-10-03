@@ -386,6 +386,28 @@ func importBundleRows(in []importBundle) ([]map[string]any, error) {
 	return rows, nil
 }
 
+// applyWorkloadsStruct renders an imported outcome's per-resource results as
+// the generic object a google.protobuf.Struct holds. It goes through release's
+// own JSON so there is exactly one spelling of ApplyWorkload on the wire.
+//
+// It lives beside its one caller, the IMPORT, which is now the only thing in
+// forge that encodes an apply outcome. The four RPCs that used to were deleted
+// as dead code (binding_store.go explains), so this encoder would otherwise
+// have no home. An import carries records a PREVIOUS forge wrote, as history,
+// and the server labels them with the importing credential precisely because
+// nobody can attest to who observed a deploy from last year.
+func applyWorkloadsStruct(in []release.ApplyWorkload) (map[string]any, error) {
+	raw, err := json.Marshal(map[string]any{"workloads": in})
+	if err != nil {
+		return nil, fmt.Errorf("apply outcome workloads: %w", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("apply outcome workloads: %w", err)
+	}
+	return out, nil
+}
+
 func importApplyRows(in []importApply) []map[string]any {
 	rows := make([]map[string]any, 0, len(in))
 	for _, a := range in {

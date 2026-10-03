@@ -154,30 +154,36 @@ type bundleRecorder interface {
 	Bundle(ctx context.Context, id string) (*release.BundleRecord, error)
 }
 
-// applyRecorder brackets an apply: one call before the bytes move, one after.
+// THERE IS NO applyRecorder SEAM, because nothing ever called one.
 //
-// TWO METHODS, NOT ONE, and that is the point of the record. An apply that
-// began and never reported is a DIFFERENT fact from one that failed — past
-// its deadline it reads as abandoned, and "we could not look" is its own
-// answer. A single Record("it worked") call after the fact could not express
-// that, and would have nothing to say when the applier crashed mid-apply.
+// F3 declared it — BeginApply before the bytes moved, FinishApply after — and
+// F4 asked to widen it with a compare-and-set. Neither half ever acquired a
+// production caller: the apply path (cluster.Apply, through the deploy
+// dispatch) reports its outcome by SUCCEEDING OR FAILING, and no verb in this
+// package brackets it with a record. So the seam, the two methods satisfying
+// it, and the hosted client's write half were an interface with no consumer on
+// either side.
 //
-// NOT WIDENED TO CARRY A COMPARE-AND-SET, and that is now a decision rather
-// than an omission. F4 asked for a guard parameter here so a forge-driven
-// apply could assert "the env's current promotion is still the one my plan
-// read" — necessary when forge was the actuator. Forge is not: the reconciler
-// converges every env, and nothing imperative is a source of truth. An
-// "I am applying now" API has no caller to guard.
+// It is deleted on that ground alone — dead code, removed — and NOT on the
+// stronger claim that forge does not apply. Forge DOES apply today, and this
+// deletion does not change when it stops.
 //
-// It is left exactly as F3 declared it rather than deleted, because this
-// package still SATISFIES it from the machine ledger and the hosted client,
-// and the records themselves are being repurposed as the observer's
-// "converged to B at T". Deleting the seam is F-BUNDLE-FLUX's call, with the
-// imperative apply path it removes wholesale.
-type applyRecorder interface {
-	BeginApply(ctx context.Context, a release.Apply, supersede bool) (release.Apply, error)
-	FinishApply(ctx context.Context, env string, o release.ApplyOutcome) error
-}
+// Where that is heading, so the next reader is not misled either way: every
+// real env is moving to build -> OCI bundle -> version store -> Flux applies
+// to the target cluster, control-plane included, and forge's direct apply then
+// narrows to dev and ephemeral clusters. That removal is a LATER step, after
+// control-plane is on the Flux path; nothing here does it, and the client
+// apply is untouched by this branch.
+//
+// If a verb ever does want to bracket an apply with a durable record, a seam
+// for it should be designed against that verb's needs rather than restored
+// from this one.
+//
+// The READ side survives and is used: a convergence record is an observation
+// the control plane's own observer writes, which forge reads through
+// GetLiveView (hosted_apply.go decodes it). internal/ledgerfile keeps the
+// reader for a machine ledger's existing apply lines, which `forge ledger
+// show` and `forge ledger export` render as history.
 
 // sessionReporter records that a local stack is running here.
 //
@@ -538,9 +544,10 @@ func (l machineReleaseLedger) Location() string { return l.store.Dir() }
 
 // ─── The machine ledger: the new records ─────────────────────────────────────
 
-// machineRecordStore implements bundleRecorder, applyRecorder and
-// sessionReporter against the machine ledger. The hosted half arrives with
-// the RPC wiring.
+// machineRecordStore implements bundleRecorder and sessionReporter against
+// the machine ledger. It writes no apply record, because no caller ever asked
+// it to — see the note on the absent applyRecorder seam above. The underlying
+// ledgerfile.Store still reads existing apply lines for `forge ledger show`.
 //
 // A separate type from machineBindingStore rather than more methods on it:
 // the two have disjoint consumers, and a store that is handed to `forge env
@@ -589,14 +596,6 @@ func (s machineRecordStore) Bundle(_ context.Context, id string) (*release.Bundl
 	return s.store.Bundle(id)
 }
 
-func (s machineRecordStore) BeginApply(_ context.Context, a release.Apply, supersede bool) (release.Apply, error) {
-	return s.store.BeginApply(a, supersede)
-}
-
-func (s machineRecordStore) FinishApply(_ context.Context, env string, o release.ApplyOutcome) error {
-	return s.store.FinishApply(env, o)
-}
-
 func (s machineRecordStore) ReportSession(_ context.Context, sess release.LocalSession) error {
 	return s.store.ReportSession(sess)
 }
@@ -609,6 +608,5 @@ var (
 	_ bindingHistoryReader = machineBindingStore{}
 	_ releaseLedger        = machineReleaseLedger{}
 	_ bundleRecorder       = machineRecordStore{}
-	_ applyRecorder        = machineRecordStore{}
 	_ sessionReporter      = machineRecordStore{}
 )

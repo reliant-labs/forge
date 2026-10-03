@@ -166,8 +166,6 @@ type Fetched struct {
 	// [Unpack] — which is where the hostile-input discipline lives, and
 	// the reason this is not handed back as a directory.
 	Manifests []byte
-	// Charts is the optional charts layer, still packed.
-	Charts []byte
 }
 
 // Fetch resolves a reference and pulls the bundle it names, verifying every
@@ -236,8 +234,6 @@ func Fetch(ctx context.Context, res Resolver, reference string) (Fetched, error)
 		switch layer.MediaType {
 		case release.BundleManifestsLayer:
 			out.Manifests = data
-		case release.BundleChartsLayer:
-			out.Charts = data
 		default:
 			// Refused rather than ignored. A layer forge does not
 			// understand may be the one carrying what a deploy

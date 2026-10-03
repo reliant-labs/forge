@@ -3,20 +3,15 @@ package cli
 // The HOSTED half of F3's record seams (binding_store.go): the twin of
 // machineRecordStore.
 //
-// TWO OF THE THREE ARE IMPLEMENTED HERE, and the third is deliberate.
-//
 // `bundleRecorder` is satisfied in full: F4 left it unsatisfied because the
 // seam as declared could not carry the bundle's own BYTES, and the server
 // records what it VERIFIES rather than what a client describes. The seam is
 // now wide enough — see binding_store.go.
 //
-// `applyRecorder` is NOT implemented here, and no longer needs to be. F4's
-// note asked for a compare-and-set parameter so a forge-driven apply could
-// assert the env had not moved under it. Forge does not apply: the reconciler
-// converges every env, and an "I am applying now" API has no caller. The
-// hosted apply CLIENT stays complete (hosted_apply.go) because the apply
-// records are being repurposed as the observer's "converged to B at T"; what
-// is gone is forge driving them.
+// There is no apply recorder, here or anywhere, because no caller ever wanted
+// one — see binding_store.go on the absent seam. The convergence records that
+// DO exist are written by the control plane's own observer and READ through
+// GetLiveView.
 
 import (
 	"context"
@@ -147,19 +142,7 @@ var (
 	_ bundleRecorder  = hostedRecordStore{}
 )
 
-// Applies is the configured apply client, for the paths that need more of it
-// than the applyRecorder seam exposes — ListApplies for a reader, and
-// FinishApplyWithObserved for the drift objects a self-managed deploy reads
-// back (F-17), which is optional and so deliberately not on the seam.
-//
-// ONE place to get a configured client, rather than assembling a
-// hostedApplyClient and an env resolver at each call site and risking two
-// different opinions about which env.
-func (s hostedRecordStore) Applies() hostedApplyClient {
-	return hostedApplyClient{client: s.client}
-}
-
-// Bundles is the same, for bundles.
+// Bundles is the configured bundle client.
 func (s hostedRecordStore) Bundles() hostedBundleClient {
 	return hostedBundleClient{client: s.client}
 }

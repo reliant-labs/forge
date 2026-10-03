@@ -1,13 +1,37 @@
 package bundle
 
-// Building a bundle: the immutable record of what was shipped.
+// Building a bundle: the immutable record of what was shipped, and the SOURCE
+// THE RECONCILER APPLIES.
 //
 // One bundle is one OCI image manifest (doc §4.1):
 //
 //	manifest   artifactType application/vnd.forge.bundle.v1
 //	 ├─ config  application/vnd.forge.bundle.config.v1+json   the BundleDoc
-//	 ├─ layer 0 ….bundle.manifests.v1.tar+gzip                manifests/<cluster>/<NNN>-<kind>-<name>.yaml
-//	 └─ layer 1 ….bundle.charts.v1.tar+gzip                   optional, helm template output
+//	 └─ layer   ….bundle.manifests.v1.tar+gzip                manifests/<cluster>/<NNN>-<kind>-<name>.yaml
+//
+// IT IS FLUX'S SOURCE, WHICH IS WHY THE LAYOUT IS A CONTRACT. A Flux
+// OCIRepository selects the one layer by media type with
+// `operation: extract`, and a Kustomization per target cluster applies the
+// YAML under [release.BundleClusterPath]'s answer for that cluster. forge
+// writes those paths; the control plane reads them off the BundleDoc. Neither
+// side re-derives them — see release.BundleClusterPath on why a second
+// spelling fails silently and green.
+//
+// EXACTLY ONE LAYER, AND NO CHART LAYER. A layerSelector picks one layer, so a
+// second one is invisible to the reconciler: anything in it would be recorded
+// as shipped and never applied. The bundle therefore carries the env's own
+// objects and nothing else.
+//
+// PLATFORM CHARTS ARE DELIBERATELY NOT IN HERE, and that is a safety property
+// rather than a simplification. Every forge.HelmChart is by declaration a
+// platform DEPENDENCY — Flux itself, the CNPG operator, Envoy Gateway with
+// its Gateway API CRDs, cert-manager — and the hub Kustomization prunes what
+// its path no longer carries. A bundle that owned those objects could delete
+// its own reconciler, orphan every Postgres cluster whose CRD it removed, or
+// revoke every certificate, and it would do so from a render that merely
+// failed to select a chart. Platform infra stays on forge's explicit
+// cluster-bootstrap path (`forge env deploy <env> --target <chart>`), where it
+// is applied by a human naming it, against a cluster, once.
 //
 // EVERY BYTE IS A FUNCTION OF THE INPUT. The tar entries are sorted, their
 // mtimes, uid/gid and modes are fixed, the gzip header carries no time, and
@@ -57,12 +81,8 @@ const (
 )
 
 // manifestsPrefix is the directory the manifest layer's entries live under.
-// Named rather than bare so an unpacked bundle can grow a second tree (the
-// charts layer uses `charts/`) without the two colliding.
-const manifestsPrefix = "manifests"
-
-// chartsPrefix is the charts layer's directory.
-const chartsPrefix = "charts"
+// pkg/release owns it, because the reconciler's path is built from it.
+const manifestsPrefix = release.BundleManifestsPrefix
 
 // fixedModTime pins every tar entry's timestamp. Unix zero rather than the
 // build time: the bundle's digest must depend on the render and nothing else.
@@ -104,10 +124,6 @@ type BuildInput struct {
 	// CreatedAt is the bundle's creation time. Required, and the caller's:
 	// see the determinism note at the top of this file.
 	CreatedAt time.Time
-	// Charts is the optional `helm template` output for declared
-	// forge.HelmChart entities, keyed by chart name. Absent with
-	// --no-charts.
-	Charts map[string]string
 }
 
 // Bundle is a built bundle, in memory: its identity, its document, and the
@@ -199,7 +215,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 
-	manifestsLayer, err := packManifests(docs)
+	manifestsLayer, trees, err := packManifests(docs)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
 	}
@@ -217,6 +233,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Pins:         in.Pins,
 		Provenance:   in.Provenance,
 		Shape:        shape,
+		ClusterPaths: trees,
 		CreatedAt:    in.CreatedAt.UTC(),
 	}
 	if err := doc.Validate(); err != nil {
@@ -240,20 +257,10 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	configDesc := content.NewDescriptorFromBytes(release.BundleConfigMediaType, configBlob)
 	manifestsDesc := content.NewDescriptorFromBytes(release.BundleManifestsLayer, manifestsLayer)
 	blobs := []blob{{configDesc, configBlob}, {manifestsDesc, manifestsLayer}}
+	// ONE layer. A Flux layerSelector selects exactly one, so a second
+	// would be recorded as shipped and never applied — see the package
+	// note on why platform charts are not here.
 	layers := []ocispec.Descriptor{manifestsDesc}
-
-	if len(in.Charts) > 0 {
-		chartsLayer, cerr := packCharts(in.Charts)
-		if cerr != nil {
-			return Bundle{}, fmt.Errorf("bundle %s/%s: pack charts: %w", in.Project, in.Env, cerr)
-		}
-		if cerr := refuseSecretValues(chartsLayer); cerr != nil {
-			return Bundle{}, fmt.Errorf("bundle %s/%s: charts: %w", in.Project, in.Env, cerr)
-		}
-		chartsDesc := content.NewDescriptorFromBytes(release.BundleChartsLayer, chartsLayer)
-		blobs = append(blobs, blob{chartsDesc, chartsLayer})
-		layers = append(layers, chartsDesc)
-	}
 
 	ociManifest := ocispec.Manifest{
 		Versioned:    specs.Versioned{SchemaVersion: 2},
@@ -305,52 +312,29 @@ func annotationsFor(doc release.BundleDoc) map[string]string {
 
 // ─── The manifest layer ─────────────────────────────────────────────────────
 
-// manifestEntryName is `manifests/<cluster>/<NNN>-<kind>-<name>.yaml`
-// (doc §4.1).
+// manifestEntryName is `<cluster path>/<NNN>-<kind>-<name>.yaml` (doc §4.1),
+// where the cluster path is [release.BundleClusterPath]'s — the same string
+// the reconciler sets as Kustomization.spec.path.
 //
 // The NNN is the document's position in the render, zero-padded, because the
 // apply ORDER is part of the stream's meaning — a Namespace must land before
 // the objects in it — and an unpacked directory listing is sorted
 // lexicographically. Padding is what keeps entry 10 after entry 9.
 //
-// A document attributed to no cluster goes under `_` rather than directly
-// under `manifests/`, so every entry is at the same depth and a consumer
-// walking the tree does not need two cases.
+// kustomize applies a path's resources in the order it reads them, and a
+// generated kustomization.yaml lists them in that lexicographic order, so the
+// padding carries the render's ordering through Flux as well as through a
+// local unpack.
 func manifestEntryName(doc parsedDoc, cluster string) string {
-	if cluster == "" {
-		cluster = "_"
-	}
-	return fmt.Sprintf("%s/%s/%03d-%s-%s.yaml",
-		manifestsPrefix, pathSegment(cluster), doc.index,
+	return fmt.Sprintf("%s/%03d-%s-%s.yaml",
+		release.BundleClusterPath(cluster), doc.index,
 		pathSegment(strings.ToLower(doc.meta.kind)), pathSegment(doc.meta.name))
 }
 
-// pathSegment makes one name safe as a single path component: anything that
-// is not alphanumeric, dash, underscore or dot becomes a dash.
-//
-// A Kubernetes name cannot contain a separator, but a CLUSTER name is a
-// kubectl context and very much can (`gke_project_region_name` is the tame
-// case; a context is free-form). An unsanitized segment would put entries at
-// an unexpected depth, and the unpacker would be the only thing standing
-// between a context name and a path the archive should never ask for.
-func pathSegment(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
-		}
-	}
-	out := b.String()
-	// A segment of dots would be "." or "..", which name a directory
-	// rather than a file.
-	if strings.Trim(out, ".") == "" {
-		return "-"
-	}
-	return out
-}
+// pathSegment sanitizes one path component. pkg/release owns the rule, so
+// forge and the control plane cannot disagree about a cluster's path; this is
+// the local spelling for the kind and name halves of a filename.
+func pathSegment(s string) string { return release.BundlePathSegment(s) }
 
 // packManifests writes the redacted documents into the deterministic tar.gz
 // that is layer 0.
@@ -361,27 +345,37 @@ func pathSegment(s string) string {
 // text would ship one however carefully the shape was redacted. Re-
 // serializing costs a canonical YAML encoding and buys the guarantee that no
 // unredacted byte can reach a bundle.
-func packManifests(docs []parsedDoc) ([]byte, error) {
+// It returns the layer AND the per-cluster trees it wrote, which is what the
+// BundleDoc publishes. The trees come from the entries actually written rather
+// than from the env's declared cluster list: a declared cluster with no
+// documents routed to it must not get a Kustomization, because an empty path
+// reconciles green over an env nothing applied.
+func packManifests(docs []parsedDoc) ([]byte, []release.BundleClusterTree, error) {
 	type entry struct {
-		name string
-		data []byte
+		name    string
+		cluster string
+		data    []byte
 	}
 	var entries []entry
 	for _, doc := range docs {
 		encoded, err := encodeDocument(doc.body)
 		if err != nil {
-			return nil, fmt.Errorf("encode %s %s: %w", doc.meta.kind, doc.meta.name, err)
+			return nil, nil, fmt.Errorf("encode %s %s: %w", doc.meta.kind, doc.meta.name, err)
 		}
 		clusters := doc.clusters
 		if len(clusters) == 0 {
 			clusters = []string{""}
 		}
 		for _, cluster := range clusters {
-			entries = append(entries, entry{name: manifestEntryName(doc, cluster), data: encoded})
+			entries = append(entries, entry{
+				name: manifestEntryName(doc, cluster), cluster: cluster, data: encoded,
+			})
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 	files := make([]tarEntry, 0, len(entries))
+	counts := map[string]int{}
+	var order []string
 	for i, e := range entries {
 		// Two documents that render to the same (cluster, index, kind,
 		// name) would silently collapse into one entry, and the layer
@@ -390,28 +384,28 @@ func packManifests(docs []parsedDoc) ([]byte, error) {
 		// pairs, and the names are sanitized, so two different cluster
 		// contexts can sanitize to the same segment.
 		if i > 0 && entries[i-1].name == e.name {
-			return nil, fmt.Errorf("two rendered documents both map to %s", e.name)
+			return nil, nil, fmt.Errorf("two rendered documents both map to %s", e.name)
 		}
 		files = append(files, tarEntry{name: e.name, data: e.data})
+		if _, seen := counts[e.cluster]; !seen {
+			order = append(order, e.cluster)
+		}
+		counts[e.cluster]++
 	}
-	return writeTarGz(files)
-}
-
-// packCharts writes `helm template` output into layer 1, one file per chart.
-func packCharts(charts map[string]string) ([]byte, error) {
-	names := make([]string, 0, len(charts))
-	for name := range charts {
-		names = append(names, name)
+	layer, err := writeTarGz(files)
+	if err != nil {
+		return nil, nil, err
 	}
-	sort.Strings(names)
-	files := make([]tarEntry, 0, len(names))
-	for _, name := range names {
-		files = append(files, tarEntry{
-			name: fmt.Sprintf("%s/%s.yaml", chartsPrefix, pathSegment(name)),
-			data: []byte(charts[name]),
+	sort.Strings(order)
+	trees := make([]release.BundleClusterTree, 0, len(order))
+	for _, cluster := range order {
+		trees = append(trees, release.BundleClusterTree{
+			Cluster:   cluster,
+			Path:      release.BundleClusterPath(cluster),
+			Documents: counts[cluster],
 		})
 	}
-	return writeTarGz(files)
+	return layer, trees, nil
 }
 
 // encodeDocument serializes one document back to YAML, deterministically.

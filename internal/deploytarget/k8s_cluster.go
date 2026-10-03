@@ -59,8 +59,16 @@ func (p K8sClusterProvider) declaredContext(group ServiceGroup) string {
 	return group.Cluster
 }
 
+// K8sClusterProviderID is the registry id of the cluster provider — the
+// groups whose deploy is a `kubectl apply` against a cluster.
+//
+// Named rather than spelled as a bare literal at each site, the way
+// HostedProviderID already is. There is no behavioural weight to it: the
+// dispatcher looks a provider up by this id, and the string is unchanged.
+const K8sClusterProviderID = "k8s-cluster"
+
 // Name returns the provider identifier.
-func (K8sClusterProvider) Name() string { return "k8s-cluster" }
+func (K8sClusterProvider) Name() string { return K8sClusterProviderID }
 
 // Deploy invokes cluster.Apply for the group. The provider doesn't
 // re-render KCL or re-walk services — that work is already done at

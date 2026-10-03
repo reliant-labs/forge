@@ -248,12 +248,11 @@ func TestCacheRefusesANonCanonicalDigest(t *testing.T) {
 	}
 }
 
-// A charts layer lands beside the manifests, under its own prefix, so a
-// caller walking either tree needs no special case.
-func TestCacheUnpacksTheChartsLayerToo(t *testing.T) {
-	in := buildFixture()
-	in.Charts = map[string]string{"nats": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: nats\n"}
-	built := mustBuild(t, in)
+// Everything an unpacked bundle holds is under the manifests prefix, and
+// ManifestFiles names all of it. There is no second tree: a bundle carries one
+// layer, because that is the one Flux applies.
+func TestCacheUnpacksOnlyTheManifestTree(t *testing.T) {
+	built := mustBuild(t, buildFixture())
 	cache, err := NewCache(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -262,15 +261,15 @@ func TestCacheUnpacksTheChartsLayerToo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, serr := os.Stat(filepath.Join(cached.Dir, chartsPrefix, "nats.yaml")); serr != nil {
-		t.Errorf("the charts layer was not unpacked: %v", serr)
+	if len(cached.ManifestFiles) == 0 {
+		t.Fatal("the manifest tree unpacked empty")
 	}
-	// ManifestFiles names the manifest layer ONLY: it is the apply order,
-	// and a chart is a platform dependency's objects rather than this
-	// project's, applied by helm rather than from this list.
 	for _, rel := range cached.ManifestFiles {
-		if strings.HasPrefix(rel, chartsPrefix+"/") {
-			t.Errorf("ManifestFiles includes a chart entry: %s", rel)
+		if !strings.HasPrefix(rel, manifestsPrefix+"/") {
+			t.Errorf("unpacked entry %s is outside %s/", rel, manifestsPrefix)
+		}
+		if _, serr := os.Stat(filepath.Join(cached.Dir, rel)); serr != nil {
+			t.Errorf("ManifestFiles names %s, which is not on disk: %v", rel, serr)
 		}
 	}
 }

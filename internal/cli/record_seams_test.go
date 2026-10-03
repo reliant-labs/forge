@@ -85,23 +85,27 @@ func TestRecordBundle_HostedSeamSendsBytesNotTheDescription(t *testing.T) {
 	}
 }
 
-// TestBeginApply_AnAbandonedApplyDoesNotBlockTheNextOne is failure mode F-2.
+// TestMachineLedgerApply_AnAbandonedApplyDoesNotBlockTheNextOne is failure
+// mode F-2, in the machine ledger's storage.
 //
 // An apply that began and never reported is a DIFFERENT fact from one that
 // failed: past its deadline nobody is ever going to report, so the row reads
-// ABANDONED. The next apply must not be refused by it. The opposite — an
-// in-flight refusal that outlives the applier — would wedge an env
-// permanently after one crashed deploy, with no way through but a flag whose
-// whole meaning is "override a live apply".
-func TestBeginApply_AnAbandonedApplyDoesNotBlockTheNextOne(t *testing.T) {
+// ABANDONED. The next must not be refused by it. The opposite — an in-flight
+// refusal that outlives the writer — would wedge an env permanently after one
+// crash, with no way through but a flag whose whole meaning is "override a
+// live apply".
+//
+// Exercised against the store rather than a seam, because the applyRecorder
+// seam was deleted as dead code. The file semantics still matter — a stale
+// in-flight row must not be able to wedge a reader or a future import.
+func TestMachineLedgerApply_AnAbandonedApplyDoesNotBlockTheNextOne(t *testing.T) {
 	dir := newLedgerTestProject(t, "abandoned-apply-project")
-	var recorder applyRecorder = testRecordStore(t, dir)
-	ctx := context.Background()
+	store := testRecordStore(t, dir).store
 
 	// An apply whose deadline has already passed, and which never
-	// reported — the shape a crashed or network-partitioned applier leaves.
+	// reported — the shape a crashed or network-partitioned writer leaves.
 	past := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
-	abandoned, err := recorder.BeginApply(ctx, release.Apply{
+	abandoned, err := store.BeginApply(release.Apply{
 		Env: "prod", BundleID: "bundle-1",
 		CreatedAt: past, DeadlineAt: past.Add(10 * time.Minute),
 	}, false)
@@ -110,7 +114,7 @@ func TestBeginApply_AnAbandonedApplyDoesNotBlockTheNextOne(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
-	next, err := recorder.BeginApply(ctx, release.Apply{
+	next, err := store.BeginApply(release.Apply{
 		Env: "prod", BundleID: "bundle-2",
 		CreatedAt: now, DeadlineAt: now.Add(10 * time.Minute),
 	}, false)

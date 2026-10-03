@@ -42,12 +42,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/bundle"
-	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -134,9 +132,6 @@ type bundleBuildInputs struct {
 	// the env's ledger is: a registry reference to bytes nobody pushed
 	// would be a record of a deploy that cannot be performed.
 	Pushed bool
-	// NoCharts omits the optional charts layer (doc §4.1). --no-charts on
-	// the build, and the default for a build that cannot run helm.
-	NoCharts bool
 	// Now is the bundle's creation time. The caller's, because
 	// bundle.Build never reads a clock — its digest must depend on the
 	// render and nothing else, and every env in one --bundle-envs pass
@@ -182,11 +177,6 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{Env: env, Skipped: true}, nil
 	}
 
-	charts, err := bundleCharts(ctx, projectDir, env, in)
-	if err != nil {
-		return bundleWriteOutcome{}, err
-	}
-
 	built, err := bundle.Build(ctx, bundle.BuildInput{
 		Project:    doc.Project,
 		Env:        env,
@@ -194,7 +184,6 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Pins:       in.Pins,
 		Provenance: doc.Provenance,
 		Shape:      bundleShapeInputOf(doc),
-		Charts:     charts,
 		CreatedAt:  in.Now,
 	})
 	if err != nil {
@@ -261,68 +250,42 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 	}
 }
 
-// bundleCharts is layer 1: `helm template` output for the env's declared
-// forge.HelmChart platform deps, keyed by chart name (doc §4.1).
+// NO CHART GOES IN THE BUNDLE, because nothing could consume one there.
 //
-// WHY THE BUNDLE CARRIES THEM AT ALL, when the shape deliberately does not.
-// A chart's objects are a platform dependency's, not this project's
-// declaration — which is why `forge env shape` leaves them out, so a
-// declaration stays derivable with no helm and no network. But the bundle is
-// what a deploy APPLIES, and a deploy expands those charts into the same
-// apply stream as everything else. A bundle without them would describe a
-// deploy missing its cert-manager and its gateway.
+// A bundle used to carry `helm template` output for the env's declared
+// forge.HelmChart platform deps, in a SECOND OCI layer. That layer was
+// unreachable by construction: a Flux OCIRepository selects exactly ONE layer
+// by media type, so whatever rode in a second one was recorded as shipped and
+// never applied — the worst available outcome, because the record would say
+// the cert-manager install went out while no cluster ever received it.
 //
-// It uses the deploy path's own renderer (cluster.RenderChartStreams, through
-// resolveDeployHelmSpecs), not a second expansion: a bundle whose charts were
-// templated differently from the way the deploy templates them would be a
-// record of a deploy nobody performs.
+// They are not folded into the manifest layer instead, for two reasons that
+// survive forge keeping its own cluster apply:
 //
-// NO HELM IS NOT A FAILURE HERE, unlike in `forge env render`. A build runs
-// in CI and on a developer's machine, and refusing to write a bundle because
-// helm is absent would make the record conditional on a tool that has nothing
-// to do with the project's own code. The charts layer is OPTIONAL by design
-// (doc §4.1 marks it "absent with --no-charts"), so it is omitted and said so
-// — and the shape, which is what every reader indexes, is unaffected either
-// way.
-func bundleCharts(ctx context.Context, projectDir, env string, in bundleBuildInputs) (map[string]string, error) {
-	if in.NoCharts {
-		return nil, nil
-	}
-	entities, err := RenderKCL(ctx, projectDir, env)
-	if err != nil || entities == nil || len(entities.HelmCharts) == 0 {
-		// A render failure is not fatal for the same reason
-		// recordEnvBuildDeclaration tolerates one: the bundle's own
-		// render already succeeded (projectEnvShapeFn above), so this
-		// second read failing means something unrelated to the charts.
-		return nil, nil //nolint:nilerr // charts are the optional layer; the bundle stands without them
-	}
-	if _, lookErr := exec.LookPath("helm"); lookErr != nil {
-		fmt.Fprintf(in.errWriter(),
-			"[bundle] Note: env %s declares %d helm chart(s) and helm is not on PATH, so its bundle carries no charts layer.\n"+
-				"[bundle]   The shape and the manifests are unaffected; install helm, or pass --no-charts to state the omission.\n",
-			env, len(entities.HelmCharts))
-		return nil, nil
-	}
-	specs, err := resolveDeployHelmSpecs(ctx, entities, nil)
-	if err != nil {
-		return nil, err
-	}
-	streams, err := cluster.RenderChartStreams(ctx, specs)
-	if err != nil {
-		return nil, fmt.Errorf("render env %s's helm charts for its bundle (pass --no-charts to omit them): %w", env, err)
-	}
-	out := make(map[string]string, len(streams))
-	for _, cs := range streams {
-		if strings.TrimSpace(cs.Stream) == "" {
-			continue
-		}
-		out[cs.Name] = cs.Stream
-	}
-	if len(out) == 0 {
-		return nil, nil
-	}
-	return out, nil
-}
+//   - A chart is a PLATFORM DEPENDENCY, by its own declaration. The real ones
+//     are substrate every other object rests on — the CNPG operator that owns
+//     each Postgres Cluster, Envoy Gateway with the Gateway API CRDs every
+//     HTTPRoute needs, cert-manager. They are installed deliberately, at a
+//     moment someone chose, not swept along by whichever app deploy happened
+//     to run.
+//   - The bundle's consumer PRUNES what its path no longer carries. Anything
+//     the bundle owns can be removed by a render that merely failed to select
+//     it, and for an operator or a CRD that means orphaning every custom
+//     resource defined by it. A platform dependency must not be deletable by
+//     omission.
+//
+// So platform infra stays on the path that already installs it, where it is
+// applied by a person naming it:
+//
+//	forge env deploy <env> --target <chart>
+//
+// which renders and applies that chart against the cluster
+// (resolveDeployHelmSpecs -> cluster.Apply), scoped to the one chart, with
+// nothing pruning from it. That path is unchanged by this.
+//
+// `forge env shape` already left charts out, for its own reason — a chart's
+// objects are a dependency's, not this project's declaration — so the shape,
+// which is what every reader indexes, is unaffected either way.
 
 // bundlePushTarget opens the registry a bundle is pushed to.
 //

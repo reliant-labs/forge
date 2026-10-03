@@ -555,13 +555,34 @@ func gatewayAPIChartValues(spec HelmChartSpec) []string {
 }
 
 // standardGatewayAPIGroup is the CRD group forge OWNS at a pinned version
-// (the standard-channel Gateway API CRDs, v1.5.1). A chart that bundles its
+// (the standard-channel Gateway API CRDs). A chart that bundles its
 // OWN copy of this group (envoy gateway-helm ships an older,
 // experimental-channel copy) must NOT have it supplied from the chart render
 // — forge pins it separately so the chart's copy never trips the
 // safe-upgrades ValidatingAdmissionPolicy. chartOwnCRDs filters this group
 // out of the `--include-crds` render.
 const standardGatewayAPIGroup = "gateway.networking.k8s.io"
+
+// envoyGatewayOwnGroup is Envoy Gateway's OWN CRD group — the eight kinds its
+// controller starts informers on, and the group forge's rendered Backend /
+// BackendTrafficPolicy live in. Named for the tests that assert the harvest
+// yields this group and nothing else.
+const envoyGatewayOwnGroup = "gateway.envoyproxy.io"
+
+// experimentalChannelAnnotation is the annotation upstream stamps on every CRD
+// in an EXPERIMENTAL-channel Gateway API bundle, and the one the safe-upgrades
+// ValidatingAdmissionPolicy reads to deny an experimental CRD written over a
+// standard one.
+//
+// It is the discriminator chartOwnCRDs filters on, because the GROUP NAME is
+// not sufficient. gateway-helm's bundled gatewayapi-crds.yaml spans TWO groups
+// — `gateway.networking.k8s.io` AND `gateway.networking.x-k8s.io` (xbackends,
+// xbackendtrafficpolicies, xmeshes) — so excluding the standard group by name
+// left the x-k8s.io three in the harvest and forge applied experimental CRDs
+// out of the very file it means to exclude. Every CRD in that file carries this
+// annotation; EG's own generated CRDs carry none. So the annotation separates
+// the two sources exactly, and keeps doing so if upstream regroups the bundle.
+const experimentalChannelAnnotation = "gateway.networking.k8s.io/channel: experimental"
 
 // chartOwnCRDs renders a chart with `--include-crds` and returns the chart's
 // OWN CRDs that forge does NOT already own — i.e. every CRD in the chart's
@@ -576,32 +597,54 @@ const standardGatewayAPIGroup = "gateway.networking.k8s.io"
 // cache-sync fails → it never goes Ready → ingress is dead. forge must supply
 // the chart's OWN CRDs IN ADDITION to the standard Gateway API CRDs it pins.
 //
-// Why filter the standard Gateway API group OUT: the chart bundles an older,
-// experimental-channel copy of `gateway.networking.k8s.io` that the
-// safe-upgrades ValidatingAdmissionPolicy (activated by forge's pinned
-// standard v1.5.1) DENIES. forge keeps owning that group at v1.5.1; only the
-// chart's NON-standard-Gateway-API CRDs (its `gateway.envoyproxy.io` +
-// x-k8s.io ones) are taken from the chart render. A chart that bundles no
-// CRDs (cert-manager, rendered --skip-crds and supplied separately) yields ""
-// here.
+// Why the chart's Gateway API bundle is filtered OUT: the chart bundles an
+// EXPERIMENTAL-channel copy of the Gateway API CRDs that the safe-upgrades
+// ValidatingAdmissionPolicy (activated by forge's pinned standard channel)
+// DENIES. forge keeps owning that surface at its own pin; only the chart's own
+// CRDs are taken from the chart render. A chart that bundles no CRDs
+// (cert-manager, rendered --skip-crds and supplied separately) yields "" here.
+//
+// THE VERSION TIE. The CRDs are harvested from the SAME chart, resolved at the
+// SAME version, as the controller manifests forge applies beside them — not
+// from a vendored copy or a release URL. So a chart bump moves the CRDs and the
+// controller together, and there is no second list that can silently disagree
+// with the pin. That is the tie TestChartOwnCRDs_RealChartYieldsOnlyEnvoyGatewaysOwnCRDs
+// asserts structurally.
 func chartOwnCRDs(ctx context.Context, spec HelmChartSpec) (string, error) {
 	rendered, err := helmTemplateIncludeCRDs(ctx, spec)
 	if err != nil {
 		return "", err
 	}
+	return keepChartOwnCRDs(rendered), nil
+}
+
+// keepChartOwnCRDs is the pure filter over an `--include-crds` render: it keeps
+// the CRDs forge does NOT own and drops the chart's experimental Gateway API
+// bundle whole. Split from chartOwnCRDs so the exclusion rule — the part that
+// was wrong — is testable without a network fetch.
+func keepChartOwnCRDs(rendered string) string {
 	var kept []string
 	for _, doc := range splitDocs(rendered) {
 		m, ok := parseDoc(doc)
 		if !ok || m.Kind != "CustomResourceDefinition" {
 			continue
 		}
+		// forge owns the standard Gateway API channel at its pinned version —
+		// never from the chart.
 		if crdGroup(doc) == standardGatewayAPIGroup {
-			// forge owns this group at its pinned version — never from the chart.
+			continue
+		}
+		// The rest of the chart's Gateway API bundle. Excluding it by GROUP
+		// NAME missed the `gateway.networking.x-k8s.io` CRDs that share the
+		// file, so forge applied experimental CRDs the controller is not even
+		// granted RBAC to watch. The channel annotation is what identifies the
+		// bundle; EG's own generated CRDs carry none.
+		if strings.Contains(doc, experimentalChannelAnnotation) {
 			continue
 		}
 		kept = append(kept, doc)
 	}
-	return strings.Join(kept, docDelimiter), nil
+	return strings.Join(kept, docDelimiter)
 }
 
 // crdGroup extracts spec.group from a CustomResourceDefinition document

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
-	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/gitsource"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -356,7 +355,12 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		// frontend name (buildHostedStaticSites); the hosted deploy pins it
 		// as liveDigest, so a release without it cannot deploy the site.
 		if frontendIsHosted(fe) {
-			if _, ok := artifacts[deploytarget.HostedStaticRepository(imageRepository(fe.Image))]; !ok {
+			// The SAME address the build pushed to, through the one rule
+			// (hostedStaticDestination). A bare hosted image resolves
+			// against the platform's base, so deriving the key from the
+			// declared reference here would look up an entry the push never
+			// wrote and refuse a complete build.
+			if _, ok := artifacts[hostedStaticDestinationForEnv(opts.env, imageRepository(fe.Image))]; !ok {
 				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge env build %s --push)", fe.Name, envNameOr(opts.env)))
 			}
 			continue

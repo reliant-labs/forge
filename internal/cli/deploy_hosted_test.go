@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
@@ -144,7 +145,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	if !ok || len(rel.Artifacts) != 1 || rel.Artifacts[0].Name != "api" || rel.Artifacts[0].Digest != hostedTestDigest {
 		t.Fatalf("cut release = %+v, want one artifact api@%s", rel, hostedTestDigest)
 	}
-	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
+	if out, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait"); err != nil {
 		t.Fatalf("promote: %v\n%s", err, out)
 	}
 	envID := fake.envs["hosted"]
@@ -153,7 +154,32 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	}
 
 	fake.bodies = nil
-	out, err := runForge(t, "env", "deploy", "hosted", "--json", "--rollout-timeout", "2s")
+	// The APPLY of release v1, reported as its own --json document.
+	//
+	// It is driven through runDeployReported rather than the command,
+	// because after O-15 neither spelling emits THIS document alone: the
+	// no-version form builds and cuts first and the promote owns the single
+	// document on stdout, while `deploy <env> <v>` emits the promote's.
+	// Both of those are covered elsewhere (the call sequence below, and
+	// TestDeployNoVersion_*). What this test is for is the apply report's
+	// CONTENTS — the guard verdict, the hosted target, the rollout outcome —
+	// and the apply is the only thing that knows them.
+	report := newDeployReport("hosted", true)
+	outR, outW, perr := os.Pipe()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	realStdout := os.Stdout
+	os.Stdout = outW
+	outC := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(outR); outC <- string(b) }()
+	err := runDeployReported(context.Background(), "hosted", report, deployOptions{
+		report:  report,
+		rollout: cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 2 * time.Second},
+	})
+	os.Stdout = realStdout
+	outW.Close()
+	out := <-outC
 	if err != nil {
 		t.Fatalf("deploy: %v\n%s", err, out)
 	}
@@ -342,8 +368,8 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"env", "build", "hosted", "--release", "v1", "--no-build"},
-		{"env", "deploy", "hosted", "v1", "--no-wait"},
-		{"env", "deploy", "hosted", "--rollout-timeout", "2s"},
+		{"env", "deploy", "hosted", "v1", "--yes", "--no-wait"},
+		{"env", "deploy", "hosted", "--yes", "--no-wait", "--rollout-timeout", "2s"},
 	} {
 		if out, err := runForge(t, args...); err != nil {
 			t.Fatalf("forge %v: %v\n%s", args, err, out)
@@ -363,11 +389,19 @@ func TestHostedDeployRefusals(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
+	// The writes that constitute PUBLISHING something the platform will
+	// run. EnsureEnvironment is deliberately NOT among them: it is how
+	// forge declares what the env IS (F-DECL's shape, and the ensure the
+	// release cut performs), it carries no workload, and after O-15 a
+	// no-version deploy legitimately makes one before it can discover that
+	// a workload is inadmissible. What must still be true is the guarantee
+	// the hosted path's header states and this test exists for: nothing a
+	// deploy would REFUSE is ever published.
 	writes := func(f *fakeDeployService) int {
 		n := 0
 		for _, b := range f.bodies {
 			switch b.Path[strings.LastIndex(b.Path, "/")+1:] {
-			case "EnsureEnvironment", "EnsureDeployment", "PublishDeploymentConfig":
+			case "EnsureDeployment", "PublishDeploymentConfig":
 				n++
 			}
 		}
@@ -385,11 +419,17 @@ func TestHostedDeployRefusals(t *testing.T) {
 		return fake, dir
 	}
 
+	// An env nobody has promoted anything to, deployed by NAMING a release
+	// that was never cut. That is the reachable shape of "unbound" after
+	// O-15: the no-version form would build, push and cut one, so the only
+	// way to ask a hosted env to ship a digest it does not have is to name
+	// a version — and the refusal's fix is the verb that builds it.
 	t.Run("unbound", func(t *testing.T) {
 		fake, _ := setup(t, hostedOnBandSpec)
-		_, err := runForge(t, "env", "deploy", "hosted")
-		if err == nil || !strings.Contains(err.Error(), "forge env deploy") {
-			t.Fatalf("err = %v, want the promote fix", err)
+		_, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait")
+		if err == nil || !strings.Contains(err.Error(), "was never cut") ||
+			!strings.Contains(err.Error(), "forge env deploy hosted") {
+			t.Fatalf("err = %v, want the never-cut refusal naming the deploy fix", err)
 		}
 		if n := writes(fake); n != 0 {
 			t.Fatalf("%d write(s) for an unbound env", n)
@@ -403,11 +443,10 @@ func TestHostedDeployRefusals(t *testing.T) {
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
-			t.Fatal(err)
-		}
 		fake.bodies = nil
-		_, err := runForge(t, "env", "deploy", "hosted")
+		// The publish is part of the deploy, so the refusal fires HERE —
+		// there is no separate re-apply step to reach it from.
+		_, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait")
 		if err == nil || !strings.Contains(err.Error(), "shape band") {
 			t.Fatalf("err = %v, want the shape-band refusal", err)
 		}
@@ -426,13 +465,14 @@ func TestHostedDeployRefusals(t *testing.T) {
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--no-wait"); err != nil {
-			t.Fatal(err)
-		}
 		fake.bodies = nil
-		_, err := runForge(t, "env", "deploy", "hosted")
-		if err == nil || !strings.Contains(err.Error(), "push the image to registry.reliant.dev/org-1/api") {
-			t.Fatalf("err = %v, want the push-base refusal naming the fix", err)
+		_, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait")
+		// The fix, as of ADR-0003 F1: the author drops the registry host
+		// and forge composes the platform's base onto the bare name. They
+		// do not push this image anywhere themselves.
+		if err == nil || !strings.Contains(err.Error(), "drop the registry host") ||
+			!strings.Contains(err.Error(), "registry.reliant.dev/org-1/api") {
+			t.Fatalf("err = %v, want the push-base refusal naming the drop-the-host fix", err)
 		}
 		for _, b := range fake.bodies {
 			switch b.Path[strings.LastIndex(b.Path, "/")+1:] {
@@ -539,7 +579,7 @@ func TestHostedArtifactKey(t *testing.T) {
 		w.Image = "e2eh/abc/echo"
 		w.Spec.Image = "localhost:5051/e2eh/abc/echo:t1"
 	})
-	if got := hostedArtifactKey(w); got != "e2eh/abc/echo" {
+	if got := hostedArtifactKey("prod", w); got != "e2eh/abc/echo" {
 		t.Fatalf("key = %q, want the workload's artifact name", got)
 	}
 	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
@@ -551,7 +591,7 @@ func TestHostedArtifactKey(t *testing.T) {
 		t.Errorf("published image = %q, want the artifact name the release pins", img)
 	}
 	w.Image = ""
-	if got := hostedArtifactKey(w); got != "echo" {
+	if got := hostedArtifactKey("prod", w); got != "echo" {
 		t.Fatalf("fallback key = %q, want echo", got)
 	}
 }

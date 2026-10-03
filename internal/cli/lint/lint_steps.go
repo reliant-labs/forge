@@ -478,6 +478,31 @@ func lintPipeline() []linterStep {
 			collect:   collectComponentDriftJSON,
 		},
 
+		// 13d-quater. Hosted-image-base — flags a host-bearing image on a
+		// forge.OnHosted item, which the control plane admits only from its
+		// own registry (ADR-0003 F1). Warnings only: `forge env render <env>`
+		// performs the authoritative check against the real render, and this
+		// text scan under-reports by construction, so it must not gate.
+		{
+			name:  "hosted-image-base lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cwd == "" {
+					return false, ""
+				}
+				// Nothing to judge without a deploy tree.
+				if !dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))) {
+					return false, ""
+				}
+				return true, ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runHostedImageBaseLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "⚠️  hosted-image-base lint: %v\n",
+			collect:   collectHostedImageBaseJSON,
+		},
+
 		// 13d-bis. Column-markers — flags a COMMENT ON COLUMN/CONSTRAINT
 		// whose text contains forge: but matches no known column marker
 		// (see lint_column_markers.go). Warnings only.

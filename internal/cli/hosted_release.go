@@ -35,13 +35,13 @@ var hostedBackendDigestResolver = func(ctx context.Context, ref string) (string,
 // pushed it) wins: it is the digest of the bytes this very pipeline produced.
 // Artifacts are keyed by hostedArtifactKey, the same rule the hosted provider
 // pins by, so the cut and the deploy cannot disagree.
-func harvestHostedBackendArtifacts(ctx context.Context, entities *KCLEntities, out map[string]release.Artifact) error {
+func harvestHostedBackendArtifacts(ctx context.Context, envName string, entities *KCLEntities, out map[string]release.Artifact) error {
 	if entities == nil {
 		return nil
 	}
 	var errs []string
 	for _, svc := range entities.WorkloadsOn(RuntimeHosted) {
-		name := hostedArtifactKey(svc)
+		name := hostedArtifactKey(envName, svc)
 		if _, have := out[name]; have || svc.Image != "" {
 			// forge built and pushed it (the build state's digest wins), or
 			// forge builds it and this cut simply did not — the release

@@ -89,6 +89,21 @@ func runHostedPromote(t *testing.T, store *hostedStore, version string, opts pro
 		opts.Ledger = envLedger{Bindings: store, Releases: store, Hosted: true}
 	}
 	opts.Run.None = true // the test process may itself be running in CI
+	// A PURE hosted deploy publishes (applyHostedPublish), through the same
+	// client-side apply a self-managed env uses. These tests have no project
+	// on disk and no cluster, so it is stubbed — unless the test installed
+	// its OWN capturedClientDeploy, which is how the mixed-env tests assert
+	// what the apply received. Checked rather than assigned, because a
+	// blanket stub here would clobber theirs.
+	if !promoteClientDeployStubbed {
+		prevApply := runPromoteClientDeploy
+		promoteClientDeployStubbed = true
+		runPromoteClientDeploy = func(context.Context, string, deployOptions) error { return nil }
+		t.Cleanup(func() {
+			runPromoteClientDeploy = prevApply
+			promoteClientDeployStubbed = false
+		})
+	}
 	var err error
 	out := captureStdout(t, func() { err = runPromote(context.Background(), version, "prod", opts) })
 	return out, err

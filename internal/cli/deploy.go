@@ -70,6 +70,30 @@ refuses (exit 5) having built, pushed and cut but written NO promotion, so
 approving it afterwards needs no rebuild. --plan-only stops after the plan and
 is the first stage of a two-stage pipeline.
 
+--yes AND --approve ARE NOT THE SAME APPROVAL. --yes means "I read the plan"
+and approves whatever forge computes at the moment that command runs.
+--approve <digest> approves the plan you actually READ: if Live moved in
+between — another deploy landed, a new bundle was applied, drift appeared —
+the digest no longer matches and the deploy is refused (exit 3) instead of
+shipping a change set nobody saw. Use --yes for a one-shot deploy; use
+--approve whenever the plan and the approval are separate steps.
+
+THE TWO-STAGE PIPELINE, in full:
+
+  PLAN=$(forge env deploy prod --plan-only --json)    # builds, cuts, writes NO promotion
+  VERSION=$(jq -r .target.release    <<<"$PLAN")      # the release stage one cut
+  DIGEST=$( jq -r .deploy_plan.digest <<<"$PLAN")     # the plan to bind the approval to
+  forge env deploy prod "$VERSION" --approve "$DIGEST"
+
+` + "`next_step`" + ` in stage one's document is that final command already assembled,
+including ` + "`--acknowledge-destructive <codes>`" + ` when the plan carries stop-class
+findings — those codes cannot be written in advance, because a code is not
+known until the plan is computed. Paste it rather than rebuilding it.
+
+A nil ` + "`deploy_plan`" + ` means no plan could be computed (a never-built env, or a
+control plane that predates bundles) — NOT "no changes". There is then no
+digest to approve, so ` + "`next_step`" + ` falls back to the --yes form and says why.
+
 THE VERB IS record + apply + wait, AND THAT IS NOT OPTIONAL. Recording a
 binding ships nothing, so a step that only recorded one reported success before
 any byte had moved and the release's actual failure surfaced minutes later with

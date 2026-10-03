@@ -94,38 +94,19 @@ A nil ` + "`deploy_plan`" + ` means no plan could be computed (a never-built env
 control plane that predates bundles) — NOT "no changes". There is then no
 digest to approve, so ` + "`next_step`" + ` falls back to the --yes form and says why.
 
-THE VERB IS record + converge + wait, AND THE WAIT IS NOT OPTIONAL. Recording
-a binding ships nothing on its own, so a step that only recorded one reported
-success before any byte had moved and the release's actual failure surfaced
-minutes later with nothing connecting the two. So the health gate is ON by
-default; --no-wait is how you opt out, and it says what to run instead.
+THE VERB IS record + apply + wait, AND THAT IS NOT OPTIONAL. Recording a
+binding ships nothing, so a step that only recorded one reported success before
+any byte had moved and the release's actual failure surfaced minutes later with
+nothing connecting the two. So the health gate is ON by default; --no-wait is
+how you opt out, and it says what to run instead.
 
-FORGE DOES NOT APPLY TO A CLUSTER. The promotion this command records IS the
-deploy: it is declarative intent — "this env should run this bundle" — and a
-reconciler converges the cluster to it from the bundle's manifests. So for an
-env whose KCL declares forge.ControlPlane, this command builds, pushes the
-images and the bundle, plans, takes your approval, records the promotion, and
-then WAITS on the convergence the reconciler performs. It runs no kubectl
-apply and needs no kubeconfig.
-
-It still deploys what no reconciler converges: a compose workload, host infra,
-a shipped frontend, and the PUBLISH of a hosted workload to its control plane.
-Those are not Kubernetes objects under any Kustomization, so if this command
-did not deploy them nothing would.
-
-An env with NO control plane has no reconciler yet, so its cluster objects are
-still applied from this machine and that apply's per-resource rollout wait is
-its health gate. That is transitional.
-
-Either way the command reaches "the release is live or this is red"; what
-differs is who made it live.
-
-A PLATFORM CHART IS INSTALLED BY NAMING IT. forge.HelmChart declarations
-(cert-manager, the gateway, a database operator) are deliberately NOT in the
-env bundle: the reconciler prunes what its bundle no longer carries, and a
-bundle that owned the operators would be able to delete the reconciler itself
-or the CRDs every other object depends on. Install one explicitly, against a
-cluster, with ` + "`forge env deploy <env> --target <chart>`" + `.
+WHO APPLIES IT IS DECLARED, NOT CHOSEN. An env whose KCL declares
+forge.ControlPlane is converged by that control plane — forge records the
+promotion and waits on the rollout the server computes. Every other env is
+SELF-MANAGED: the same command renders the new binding and applies it from this
+machine, and that apply's per-resource rollout wait IS the health gate. Both
+reach "the release is live or this command is red"; which machinery got there
+is an implementation detail of where the env runs.
 
 ` + "`forge env build <env> --release <version>`" + ` builds the env-agnostic images
 ONCE, captures their content-addressed digests, and cuts a release. Naming that
@@ -427,8 +408,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 
 	// The health gate, opt-OUT.
 	flags.BoolVar(&f.noWait, "no-wait", false,
-		"Record the promotion and deploy what no reconciler converges, but do NOT wait for it to converge. Gate on it later with `forge env status <env> --wait`")
-	flags.DurationVar(&f.timeout, "timeout", 0, "Whole health-gate budget (default 15m for a convergence wait, 5m per resource applied from here)")
+		"Record and apply, but do NOT wait for health. Gate on it later with `forge env status <env> --wait`")
+	flags.DurationVar(&f.timeout, "timeout", 0, "Whole health-gate budget (default 15m hosted, 5m per resource self-managed)")
 	flags.BoolVar(&f.failFast, "fail-fast", false, "Exit 1 on the first DEGRADED observation instead of waiting out --timeout")
 
 	// Evidence.
@@ -650,8 +631,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 // never ran. Same for --gate (evidence attached to nothing) and --supersede.
 //
 // The flags NOT listed here are the ones that mean something either way:
-// --no-wait/--timeout/--fail-fast tune the health gate (the convergence wait,
-// and the rollout wait over whatever is still applied from here), and --json
+// --no-wait/--timeout/--fail-fast tune the apply's own rollout wait, and --json
 // and --dry-run are shared by both halves.
 func refusePromoteFlagsWithoutRelease(f promoteCmdFlags) error {
 	var set []string
@@ -935,27 +915,6 @@ type deployOptions struct {
 	// runs the identical code path. That is what makes the JSON a record of
 	// what happened instead of a second opinion about it.
 	report *deployReport
-
-	// reconcilerOwnsClusters: a reconciler converges this env's cluster
-	// objects from its promoted bundle, so this deploy must apply NONE of
-	// them. Set for every env whose ledger is a control plane
-	// (followPromote); see deploy_promote_follow.go.
-	//
-	// IT SUPPRESSES EVERY CLUSTER-SIDE STEP, not just the apply, and that
-	// is the point rather than an over-reach. forge is not merely declining
-	// to write — it has no business reaching the cluster at all, and in a
-	// hosted deployment it has no credential for one. So the preflight
-	// against the live target, the dotenv Secret projection, the kubeconfig
-	// mint, the kubectl-context resolution and the declared-cluster
-	// reconcile all go with it. Leaving any of them would make the deploy
-	// fail on a kubeconfig it should never have needed, which is how
-	// "forge does not apply" turns into "forge cannot deploy".
-	//
-	// The env's OTHER halves still run: compose, host infra and shipped
-	// frontends are not cluster objects and nothing converges them, and a
-	// hosted workload is PUBLISHED to the control plane rather than applied
-	// to a cluster.
-	reconcilerOwnsClusters bool
 }
 
 // runDeployReported runs the deploy and, in --json mode, emits the report.
@@ -1102,16 +1061,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if len(targets) > 0 && !opts.frontendsOnly {
 		hasK8sServices = kclEntitiesHaveK8sCluster(fullEntities)
 	}
-	// A reconciler owns this env's cluster objects, so as far as THIS
-	// command is concerned the env has no cluster. hasK8sServices gates
-	// every cluster-side step below — the declared-cluster reconcile, the
-	// kubectl-context resolution, the live preflight, the Secret
-	// projection, the kubeconfig mint and the apply itself — so clearing it
-	// is what makes "forge never applies" true for all of them at once
-	// rather than per step. See deployOptions.reconcilerOwnsClusters.
-	if opts.reconcilerOwnsClusters {
-		hasK8sServices = false
-	}
 
 	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
 	// a project-prefixed `*.svc.cluster.local` reference that disagrees
@@ -1201,16 +1150,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		}
 		groups = targetedK8sGroups(cluster.SelectManifestsByGroup(full, targets), topology, groups, fullEntities)
 	}
-	// Drop the cluster groups when a reconciler owns them — AFTER the
-	// topology is settled, and deliberately so. `topology` is the routing
-	// model that decides which cluster each object belongs to, and it must
-	// keep every cluster: it is what the render and the bundle are scoped
-	// against, so a topology with its clusters removed would attribute
-	// those objects to no cluster and the bundle would carry them under no
-	// cluster's path. Only the DISPATCH set loses them.
-	if opts.reconcilerOwnsClusters {
-		groups = dropClusterGroups(groups)
-	}
 
 	// Env-wide kubectl context for the consumers that don't iterate groups
 	// (secrets pre-apply, empty-groups direct apply). Fails fast on
@@ -1228,20 +1167,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 
 	// Env's declared platform deps (forge.HelmChart) rendered into
 	// cluster.HelmChartSpec values. See resolveDeployHelmSpecs.
-	//
-	// Not resolved at all when a reconciler owns the clusters: the specs
-	// feed cluster.Apply, which does not run, and resolving one FETCHES its
-	// CRD bundle over the network. A deploy that reaches the internet for a
-	// chart it will not install is a failure mode it has no business
-	// having. A chart is installed by naming it —
-	// `forge env deploy <env> --target <chart>` — which is a bootstrap
-	// deploy and does not take this path.
-	var helmSpecs []cluster.HelmChartSpec
-	if !opts.reconcilerOwnsClusters {
-		helmSpecs, err = resolveDeployHelmSpecs(ctx, entities, targets)
-		if err != nil {
-			return err
-		}
+	helmSpecs, err := resolveDeployHelmSpecs(ctx, entities, targets)
+	if err != nil {
+		return err
 	}
 
 	// Platform dependencies (cert-manager, Envoy Gateway, …) are NOT
@@ -1315,7 +1243,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
 		targets: targets, helmSpecs: helmSpecs,
 		rollout: opts.rollout, report: report,
-		reconcilerOwnsClusters: opts.reconcilerOwnsClusters,
 	}); err != nil {
 		return err
 	}
@@ -1556,9 +1483,6 @@ type deployApplyInput struct {
 	// report, when non-nil, receives the applied manifest stream and the
 	// per-resource rollout outcomes. Nil-safe.
 	report *deployReport
-	// reconcilerOwnsClusters suppresses the no-groups fallback apply. See
-	// deployOptions.reconcilerOwnsClusters.
-	reconcilerOwnsClusters bool
 }
 
 // applyDeployGroups applies the rendered deploy groups. With no groups (and not
@@ -1570,33 +1494,6 @@ type deployApplyInput struct {
 // pipeline, so both branches are skipped and the frontend dispatch does the
 // real work.
 func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
-	// A reconciler owns the clusters, so the no-groups fallback must not
-	// fire. That fallback exists for an env whose render carries only a
-	// support stream (a Namespace, ConfigMaps, extra manifests) that no
-	// workload group covers — and those are exactly cluster objects the
-	// bundle now carries and a Kustomization now applies. Reaching
-	// cluster.Apply here would be forge applying the one part of a
-	// reconciled env nothing told it to leave alone.
-	if in.reconcilerOwnsClusters {
-		if len(in.groups) == 0 {
-			return nil
-		}
-		// A cluster group must already have been dropped
-		// (dropClusterGroups). If one reaches here, the registry below
-		// would apply it with a default provider and this deploy would
-		// write to a cluster it was told not to touch — silently, and
-		// looking like success. So it is refused rather than dispatched:
-		// the whole point of this path is that forge does not apply, and
-		// a bug in the split must not be the thing that breaks it.
-		for _, g := range in.groups {
-			if g.ProviderID == deploytarget.K8sClusterProviderID {
-				return fmt.Errorf(
-					"internal: env %s's cluster group %q reached the apply path, but a reconciler converges this env's clusters from its bundle — refusing to apply it",
-					in.envName, g.Cluster)
-			}
-		}
-		return dispatchDeployGroupsBeforeClusters(ctx, deploytarget.NewRegistry(), in.groups, nil)
-	}
 	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasShippableFrontend(in.entities)
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{

@@ -252,30 +252,6 @@ func splitHostedGroups(groups []deploytarget.ServiceGroup) (local, hosted []depl
 	return local, hosted
 }
 
-// dropClusterGroups removes the groups a RECONCILER converges, leaving the
-// ones this machine still deploys.
-//
-// THE BOUNDARY IS THE PROVIDER, not the env. An env is not "a cluster env" or
-// "a reconciled env" — it is a set of groups, and only the cluster-provider
-// ones are converged from a bundle. Compose, host infra and shipped frontends
-// are not Kubernetes objects, no Kustomization carries them, and nothing on
-// the control plane would converge them if forge stopped: dropping them along
-// with the clusters would silently stop deploying half of a mixed env.
-//
-// That is the same cut splitHostedGroups makes on the other side, and for the
-// same reason — hosting and reconciliation are both per WORKLOAD, never a mode
-// an env is in.
-func dropClusterGroups(groups []deploytarget.ServiceGroup) []deploytarget.ServiceGroup {
-	out := make([]deploytarget.ServiceGroup, 0, len(groups))
-	for _, g := range groups {
-		if g.ProviderID == deploytarget.K8sClusterProviderID {
-			continue
-		}
-		out = append(out, g)
-	}
-	return out
-}
-
 // rolloutApplier is a provider whose deploy is an apply followed by a wait
 // for the target to converge, and which can do the apply alone. The k8s
 // cluster provider is one: its wait is the rollout wait, and splitting it off

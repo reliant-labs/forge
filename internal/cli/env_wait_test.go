@@ -230,17 +230,10 @@ func TestEnvWait_FailFastExitsOnTheFirstDegraded(t *testing.T) {
 	}
 }
 
-// TestEnvWait_NonConvergingEnvRefusesFast: when no reconciler is converging
-// the env, waiting can only ever time out — and a timeout would blame the
-// release for a missing reconciler. So it refuses immediately.
-//
-// AND IT MUST NOT ADVISE `forge env deploy`, which is what it used to do when
-// forge was the actuator. A deploy no longer applies this env's cluster
-// objects: it records the promotion and waits, which is exactly what already
-// happened. So that advice is a loop with no exit, and the second pass is
-// indistinguishable from the first. The refusal has to name the real gap,
-// which is platform-side — the env has no reconciler bound to it — and say
-// that the promotion is already recorded so nothing is lost by not retrying.
+// TestEnvWait_NonConvergingEnvRefusesFast: when nothing on the control plane
+// will apply the promotion, waiting can only ever time out — and a timeout
+// would blame the release for a missing converger. So it refuses immediately,
+// with the command that would actually ship it.
 func TestEnvWait_NonConvergingEnvRefusesFast(t *testing.T) {
 	fake := newFakeRollout(wireRolloutPhasePending)
 	fake.converges = false
@@ -254,16 +247,10 @@ func TestEnvWait_NonConvergingEnvRefusesFast(t *testing.T) {
 	if n := fake.callCount(); n != 1 {
 		t.Errorf("the refusal must be immediate, polled %d times", n)
 	}
-	for _, want := range []string{"no reconciler converging it", "promotion IS recorded"} {
+	for _, want := range []string{"does not converge promotions", "forge env deploy prod"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal must say %q, got:\n%s", want, err)
 		}
-	}
-	// The circular advice, pinned as an ABSENCE. forge env deploy is what
-	// the caller just ran; sending them back to it is a loop.
-	if strings.Contains(err.Error(), "forge env deploy") {
-		t.Errorf("the refusal must not send the caller back to `forge env deploy` — a deploy "+
-			"records this same promotion and waits again, so that is a loop with no exit. Got:\n%s", err)
 	}
 }
 

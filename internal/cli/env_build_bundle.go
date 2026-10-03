@@ -250,43 +250,42 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 	}
 }
 
-// NO CHART GOES IN THE BUNDLE, and the omission is the safety property.
+// NO CHART GOES IN THE BUNDLE, because nothing could consume one there.
 //
 // A bundle used to carry `helm template` output for the env's declared
-// forge.HelmChart platform deps, in a second OCI layer, on the reasoning that
-// the bundle is what a deploy applies and a deploy expands those charts into
-// the same stream as everything else. Both halves of that reasoning stopped
-// holding when the bundle became the RECONCILER's source.
+// forge.HelmChart platform deps, in a SECOND OCI layer. That layer was
+// unreachable by construction: a Flux OCIRepository selects exactly ONE layer
+// by media type, so whatever rode in a second one was recorded as shipped and
+// never applied — the worst available outcome, because the record would say
+// the cert-manager install went out while no cluster ever received it.
 //
-// First, a second layer is unreachable. Flux's OCIRepository selects ONE layer
-// by media type, so a charts layer would be recorded as shipped and never
-// applied — the worst available outcome, because the record would say the
-// cert-manager install went out.
+// They are not folded into the manifest layer instead, for two reasons that
+// survive forge keeping its own cluster apply:
 //
-// Second, and this is why they are not simply folded into the manifest layer
-// instead: the hub Kustomization applies its path with prune, so whatever the
-// bundle carries, it OWNS. Every forge.HelmChart is by declaration a platform
-// dependency, and the real ones are the reconciler's own substrate — Flux
-// itself (control-plane prod declares flux_chart_with_gar_identity), the CNPG
-// operator that owns every Postgres cluster, Envoy Gateway with the Gateway
-// API CRDs every HTTPRoute needs, cert-manager. A bundle that owned those
-// could delete its own reconciler, orphan every database by removing the CRD
-// that defines it, or revoke every certificate — and a render that merely
-// failed to select a chart is enough to do it. A bad env bundle must not be
-// able to take down the thing that would roll it back.
+//   - A chart is a PLATFORM DEPENDENCY, by its own declaration. The real ones
+//     are substrate every other object rests on — the CNPG operator that owns
+//     each Postgres Cluster, Envoy Gateway with the Gateway API CRDs every
+//     HTTPRoute needs, cert-manager. They are installed deliberately, at a
+//     moment someone chose, not swept along by whichever app deploy happened
+//     to run.
+//   - The bundle's consumer PRUNES what its path no longer carries. Anything
+//     the bundle owns can be removed by a render that merely failed to select
+//     it, and for an operator or a CRD that means orphaning every custom
+//     resource defined by it. A platform dependency must not be deletable by
+//     omission.
 //
-// So platform infra stays on forge's cluster-bootstrap path, where it is
+// So platform infra stays on the path that already installs it, where it is
 // applied by a person naming it:
 //
 //	forge env deploy <env> --target <chart>
 //
-// which still renders and applies that chart against the cluster
-// (resolveDeployHelmSpecs → cluster.Apply). That path is explicit, scoped to
-// one chart, and nothing prunes from it.
+// which renders and applies that chart against the cluster
+// (resolveDeployHelmSpecs -> cluster.Apply), scoped to the one chart, with
+// nothing pruning from it. That path is unchanged by this.
 //
 // `forge env shape` already left charts out, for its own reason — a chart's
 // objects are a dependency's, not this project's declaration — so the shape,
-// which is what every reader indexes, is unchanged by this.
+// which is what every reader indexes, is unaffected either way.
 
 // bundlePushTarget opens the registry a bundle is pushed to.
 //

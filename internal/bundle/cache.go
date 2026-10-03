@@ -104,8 +104,8 @@ type Cached struct {
 	Digest string
 	// Doc is the bundle document.
 	Doc release.BundleDoc
-	// Dir is the directory the layers were unpacked into: `manifests/…`
-	// and, when present, `charts/…`.
+	// Dir is the directory the manifest layer was unpacked into:
+	// `manifests/<cluster>/…`.
 	Dir string
 	// ManifestFiles are the manifest-layer paths relative to Dir, in APPLY
 	// ORDER (the render order the filenames encode).
@@ -184,11 +184,6 @@ func (c *Cache) Get(ctx context.Context, res Resolver, reference string) (Cached
 	files, uerr := Unpack(newReader(fetched.Manifests), staging)
 	if uerr != nil {
 		return Cached{}, stats, uerr
-	}
-	if len(fetched.Charts) > 0 {
-		if _, cerr := Unpack(newReader(fetched.Charts), staging); cerr != nil {
-			return Cached{}, stats, cerr
-		}
 	}
 	docBytes, merr := json.Marshal(fetched.Doc)
 	if merr != nil {

@@ -374,30 +374,36 @@ func TestBuildConfigDigestIsBlindToImagesAndTheBundleDigestIsNot(t *testing.T) {
 	}
 }
 
-func TestBuildPacksChartsWhenGiven(t *testing.T) {
-	in := buildFixture()
-	in.Charts = map[string]string{"nats": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: nats\n"}
-	built := mustBuild(t, in)
+// TestBuildWritesExactlyOneLayer pins the property Flux depends on.
+//
+// An OCIRepository's layerSelector selects ONE layer, so a bundle with two
+// would have a layer nobody applies — and the bundle would still be RECORDED
+// as what shipped, which is the worst available outcome: a record saying the
+// platform install went out, over a cluster that never received it. That is
+// why the charts layer was removed rather than reordered, and why this asserts
+// the count rather than the absence of one media type.
+func TestBuildWritesExactlyOneLayer(t *testing.T) {
+	built := mustBuild(t, buildFixture())
 
-	layer, ok := built.Layer(release.BundleChartsLayer)
-	if !ok {
-		t.Fatal("no charts layer")
-	}
-	files := unpackLayer(t, layer)
-	if _, ok := files[chartsPrefix+"/nats.yaml"]; !ok {
-		t.Errorf("charts layer holds %v, want %s/nats.yaml", keysOf(files), chartsPrefix)
-	}
 	var manifest ocispec.Manifest
 	if err := jsonUnmarshal(built.Manifest, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Layers) != 2 {
-		t.Fatalf("want two layers with charts, got %d", len(manifest.Layers))
+	if len(manifest.Layers) != 1 {
+		t.Fatalf("a bundle carries exactly one layer (Flux selects one); got %d: %v",
+			len(manifest.Layers), layerMediaTypes(manifest))
 	}
-	// A charts layer changes the bundle, so it must change the digest.
-	if built.Digest == mustBuild(t, buildFixture()).Digest {
-		t.Error("adding a charts layer did not change the digest")
+	if got := manifest.Layers[0].MediaType; got != release.BundleManifestsLayer {
+		t.Errorf("the one layer is %q, want the manifests layer %q", got, release.BundleManifestsLayer)
 	}
+}
+
+func layerMediaTypes(m ocispec.Manifest) []string {
+	out := make([]string, 0, len(m.Layers))
+	for _, l := range m.Layers {
+		out = append(out, l.MediaType)
+	}
+	return out
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

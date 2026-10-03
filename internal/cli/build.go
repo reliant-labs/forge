@@ -129,10 +129,7 @@ type buildOptions struct {
 	// have moved. Naming them here binds every env's manifests to the same
 	// release and the same source.
 	bundleEnvs string
-	// noCharts omits the bundle's optional charts layer (--no-charts),
-	// the same escape `forge env render` offers for the same reason: a
-	// chart render needs helm and usually a network.
-	noCharts bool
+
 	// bundleRelease overrides the version a bundle NAMES, when it differs
 	// from the version this build CUTS.
 	//
@@ -1496,12 +1493,11 @@ func writeBuildBundle(ctx context.Context, opts buildOptions) error {
 	// resolveDeployImageDigests reads at deploy time, so the bundle pins
 	// what the release pins.
 	written, err := writeBundlesFn(ctx, projectDir, parseBundleEnvs(opts.bundleEnvs, opts.env), bundleBuildInputs{
-		Release:  opts.bundleReleaseVersion(),
-		Pins:     buildBundlePins(projectDir, opts.env),
-		Run:      run,
-		Pushed:   opts.push || opts.pushIfDeclared,
-		NoCharts: opts.noCharts,
-		Now:      time.Now().UTC().Truncate(time.Second),
+		Release: opts.bundleReleaseVersion(),
+		Pins:    buildBundlePins(projectDir, opts.env),
+		Run:     run,
+		Pushed:  opts.push || opts.pushIfDeclared,
+		Now:     time.Now().UTC().Truncate(time.Second),
 	})
 	printBundleWrites(os.Stdout, written)
 	return err

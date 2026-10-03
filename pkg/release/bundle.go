@@ -13,16 +13,100 @@ import (
 const BundleSchema = "forge.dev/bundle/v1"
 
 // Bundle OCI media types. One bundle is one OCI image manifest whose config
-// blob is the [BundleDoc] and whose first layer is the manifest stream.
+// blob is the [BundleDoc] and whose single layer is the manifest stream.
+//
+// THE MANIFEST LAYER IS WHAT FLUX APPLIES. A Flux OCIRepository selects it by
+// media type and `operation: extract`, which untars it into the source
+// controller's artifact; a Kustomization then applies the YAML under
+// `spec.path`. So the layer's media type and its internal layout are a
+// CONTRACT with the reconciler, not an internal detail — see
+// [BundleClusterPath].
+//
+// There is deliberately no charts layer. A second layer would be invisible to
+// Flux (a layerSelector picks exactly one), so anything put there would be
+// recorded as shipped and never applied. Platform charts are a
+// cluster-bootstrap concern and stay off the bundle entirely; see
+// internal/bundle's package doc.
 const (
 	BundleArtifactType    = "application/vnd.forge.bundle.v1"
 	BundleConfigMediaType = "application/vnd.forge.bundle.config.v1+json"
 	BundleManifestsLayer  = "application/vnd.forge.bundle.manifests.v1.tar+gzip"
-	BundleChartsLayer     = "application/vnd.forge.bundle.charts.v1.tar+gzip"
 	// RedactedSecretPrefix marks a Secret value replaced by its hash before a
 	// render is hashed or packaged: "forge.dev/redacted: sha256:<hex>".
 	RedactedSecretPrefix = "forge.dev/redacted: "
 )
+
+// BundleManifestsPrefix is the directory the manifest layer's entries live
+// under, inside the extracted layer. Every entry is at
+// `<prefix>/<cluster>/<file>.yaml`.
+const BundleManifestsPrefix = "manifests"
+
+// bundleUnclusteredSegment is the path segment for a document attributed to
+// NO cluster — a host-only env's objects, which are part of the render and
+// which nothing applies.
+//
+// It is a real segment rather than placing such documents directly under the
+// prefix, so every entry is at the same depth and a consumer walking the tree
+// needs one case instead of two. `_` cannot collide with a kubectl context,
+// which [BundleClusterPath] sanitizes to the same alphabet but can never
+// reduce to a bare underscore: a context has at least one character that
+// survives sanitization, and an empty one is not a cluster.
+const bundleUnclusteredSegment = "_"
+
+// BundleClusterPath is the path, within the extracted manifests layer, that
+// holds the documents a deploy routes to one cluster. It is what the control
+// plane sets as `Kustomization.spec.path` for that cluster.
+//
+// THIS FUNCTION IS THE CONTRACT, AND BOTH SIDES CALL IT. forge writes the tar
+// entries under it and the control plane's Kustomization builder reads it. Two
+// spellings of the same rule would be a silent, total failure: a Kustomization
+// whose path does not exist in the artifact reconciles to "nothing to apply"
+// and reports Ready — so the env would look converged while running the
+// previous release forever. That is why the sanitizer lives here, beside the
+// media type, rather than in whichever package happened to write the tar.
+//
+// An empty cluster name is the unclustered tree. A multi-cluster env has one
+// path per cluster and ONE bundle: a document routed to two clusters appears
+// under both paths, because each cluster's Kustomization applies its own path
+// and prunes anything it owns that the path no longer carries.
+func BundleClusterPath(cluster string) string {
+	segment := BundlePathSegment(cluster)
+	if strings.TrimSpace(cluster) == "" {
+		segment = bundleUnclusteredSegment
+	}
+	return BundleManifestsPrefix + "/" + segment
+}
+
+// BundlePathSegment makes one name safe as a single path component: anything
+// that is not alphanumeric, dash, underscore or dot becomes a dash.
+//
+// A Kubernetes name cannot contain a separator, but a CLUSTER name is a
+// kubectl context and very much can (`gke_project_region_name` is the tame
+// case; a context is free-form). An unsanitized segment would put entries at
+// an unexpected depth, and the unpacker would be the only thing standing
+// between a context name and a path the archive should never ask for.
+//
+// Exported because the control plane sanitizes the same cluster names when it
+// builds a Kustomization path, and a second implementation that disagreed on
+// one character would point it at a path the artifact does not hold.
+func BundlePathSegment(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	// A segment of dots would be "." or "..", which name a directory
+	// rather than a file.
+	if strings.Trim(out, ".") == "" {
+		return "-"
+	}
+	return out
+}
 
 // MaxShapeBytes bounds a shape's canonical JSON. It is what a hosted ledger
 // indexes per bundle, and what Live reads per env in one round trip, so it is
@@ -49,7 +133,38 @@ type BundleDoc struct {
 	Pins         BundlePins `json:"pins"`
 	Provenance   Provenance `json:"provenance"`
 	Shape        Shape      `json:"shape"`
-	CreatedAt    time.Time  `json:"created_at"`
+	// ClusterPaths is one entry per path the manifest layer actually
+	// carries: the cluster, and the path under which its documents live.
+	//
+	// THE BUNDLE DESCRIBES ITS OWN LAYOUT so the reconciler's operator
+	// builds one Kustomization per cluster without re-deriving anything.
+	// It could compute the paths from Shape.Clusters and
+	// [BundleClusterPath], and that is exactly the coupling this removes:
+	// Shape.Clusters is the env's DECLARED cluster list, while these are
+	// the paths the layer HOLDS, and the two differ whenever a declared
+	// cluster ends up with no documents routed to it. A Kustomization
+	// built for the declared-but-empty cluster points at a path that does
+	// not exist, which reconciles green over an env that was never
+	// applied.
+	//
+	// So it is written from the tar entries themselves, after they are
+	// written, and a reader can trust it the way it trusts the digest.
+	ClusterPaths []BundleClusterTree `json:"cluster_paths,omitempty"`
+	CreatedAt    time.Time           `json:"created_at"`
+}
+
+// BundleClusterTree is one cluster's documents inside the manifest layer.
+type BundleClusterTree struct {
+	// Cluster is the kubectl context the documents are routed to, or ""
+	// for the unclustered tree (objects nothing applies).
+	Cluster string `json:"cluster,omitempty"`
+	// Path is [BundleClusterPath]'s answer for Cluster: what a
+	// Kustomization sets as spec.path.
+	Path string `json:"path"`
+	// Documents is how many documents the path holds. Carried so a reader
+	// can tell an empty tree from an absent one without fetching the
+	// layer, and so a Kustomization is never built over zero documents.
+	Documents int `json:"documents"`
 }
 
 // BundlePins is the pin set a bundle was rendered with: the same two halves
@@ -82,6 +197,51 @@ func (d BundleDoc) Validate() error {
 	}
 	if err := d.Shape.Validate(); err != nil {
 		return fmt.Errorf("bundle: %w", err)
+	}
+	if err := validateClusterPaths(d.ClusterPaths); err != nil {
+		return fmt.Errorf("bundle: %w", err)
+	}
+	return nil
+}
+
+// validateClusterPaths checks the layout the document claims.
+//
+// Each path must be the one [BundleClusterPath] computes for its cluster, and
+// no cluster or path may appear twice. Both rules exist because the reconciler
+// TRUSTS these strings: it sets them as Kustomization.spec.path, and a path
+// that disagrees with the function the artifact was written by points at
+// nothing — which reconciles as "no resources" and reports Ready, so a wrong
+// path here is an env that looks converged and was never applied. Checking it
+// against the function is what makes that unrepresentable rather than merely
+// unlikely.
+//
+// A tree with no documents is refused for the same reason: a Kustomization
+// over an empty path is the same green-over-nothing outcome, so an empty tree
+// must not be written rather than being written and skipped by every reader.
+func validateClusterPaths(trees []BundleClusterTree) error {
+	clusters, paths := map[string]bool{}, map[string]bool{}
+	for _, t := range trees {
+		want := BundleClusterPath(t.Cluster)
+		if t.Path != want {
+			return fmt.Errorf("%w: cluster %q claims path %q, but the layout puts it at %q",
+				ErrInvalid, t.Cluster, t.Path, want)
+		}
+		if t.Documents <= 0 {
+			return fmt.Errorf("%w: cluster path %s holds %d documents; an empty path would reconcile green over an env nothing applied",
+				ErrInvalid, t.Path, t.Documents)
+		}
+		if clusters[t.Cluster] {
+			return fmt.Errorf("%w: bundle names cluster %q twice", ErrInvalid, t.Cluster)
+		}
+		if paths[t.Path] {
+			// Two DIFFERENT cluster names that sanitize to one
+			// segment. Their documents share a path, so each
+			// cluster's Kustomization would apply the other's
+			// objects as well as its own.
+			return fmt.Errorf("%w: cluster %q shares path %s with another cluster; two contexts that differ only in characters the path sanitizes would apply each other's objects",
+				ErrInvalid, t.Cluster, t.Path)
+		}
+		clusters[t.Cluster], paths[t.Path] = true, true
 	}
 	return nil
 }

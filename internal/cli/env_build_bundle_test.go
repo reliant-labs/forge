@@ -96,11 +96,10 @@ func TestEnvBuildBundle_FileLedgerEnvWritesLocallyAndRecords(t *testing.T) {
 	stubEnvShape(t, "bundle-build-project")
 
 	written, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
-		Release:  "v1.4.0",
-		Pins:     release.BundlePins{Images: map[string]string{"api": "sha256:" + rep64('1')}},
-		Now:      bundleTestNow,
-		NoCharts: true,
-		errOut:   io.Discard,
+		Release: "v1.4.0",
+		Pins:    release.BundlePins{Images: map[string]string{"api": "sha256:" + rep64('1')}},
+		Now:     bundleTestNow,
+		errOut:  io.Discard,
 	})
 	if err != nil {
 		t.Fatalf("writeEnvBundles: %v", err)
@@ -167,7 +166,7 @@ func TestEnvBuildBundle_FileLedgerEnvWritesLocallyAndRecords(t *testing.T) {
 func TestEnvBuildBundle_IsIdempotentOnItsOwnBytes(t *testing.T) {
 	dir := newLedgerTestProject(t, "bundle-retry-project")
 	stubEnvShape(t, "bundle-retry-project")
-	in := bundleBuildInputs{Release: "v1.4.0", Now: bundleTestNow, NoCharts: true, errOut: io.Discard}
+	in := bundleBuildInputs{Release: "v1.4.0", Now: bundleTestNow, errOut: io.Discard}
 
 	first, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, in)
 	if err != nil {
@@ -205,7 +204,7 @@ func TestEnvBuildBundle_BundleEnvsWritesOnePerEnv(t *testing.T) {
 	stubEnvShape(t, "bundle-multi-project")
 
 	written, err := writeEnvBundles(context.Background(), dir, []string{"staging", "prod"}, bundleBuildInputs{
-		Release: "v1.4.0", Now: bundleTestNow, NoCharts: true, errOut: io.Discard,
+		Release: "v1.4.0", Now: bundleTestNow, errOut: io.Discard,
 	})
 	if err != nil {
 		t.Fatalf("writeEnvBundles: %v", err)
@@ -284,7 +283,7 @@ func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
 	t.Cleanup(func() { bundleRecorderForEnv = prevRecorder })
 
 	written, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
-		Release: "v1.4.0", Now: bundleTestNow, NoCharts: true, Pushed: true, errOut: io.Discard,
+		Release: "v1.4.0", Now: bundleTestNow, Pushed: true, errOut: io.Discard,
 	})
 	if err != nil {
 		t.Fatalf("writeEnvBundles: %v", err)
@@ -345,7 +344,7 @@ func TestEnvBuildBundle_HostedEnvWithNoPushBaseFallsBackLocally(t *testing.T) {
 
 	var warnings strings.Builder
 	written, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
-		Release: "v1.4.0", Now: bundleTestNow, NoCharts: true, Pushed: true, errOut: &warnings,
+		Release: "v1.4.0", Now: bundleTestNow, Pushed: true, errOut: &warnings,
 	})
 	if err != nil {
 		t.Fatalf("a hosted env with no known push base must still write a bundle: %v", err)
@@ -385,7 +384,7 @@ func TestEnvBuildBundle_RefusesARecordThatNamesOtherBytes(t *testing.T) {
 	t.Cleanup(func() { bundleRecorderForEnv = prevRecorder })
 
 	_, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
-		Release: "v1.4.0", Now: bundleTestNow, NoCharts: true, errOut: io.Discard,
+		Release: "v1.4.0", Now: bundleTestNow, errOut: io.Discard,
 	})
 	if err == nil {
 		t.Fatal("a record naming different bytes than were pushed must fail the build: " +
@@ -595,7 +594,7 @@ func TestEnvBuildBundle_AFailedPushFallsBackLocallyAndDoesNotFailTheBuild(t *tes
 
 	var warnings strings.Builder
 	written, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
-		Release: "v1.4.0", Now: bundleTestNow, NoCharts: true, Pushed: true, errOut: &warnings,
+		Release: "v1.4.0", Now: bundleTestNow, Pushed: true, errOut: &warnings,
 	})
 	if err != nil {
 		t.Fatalf("a bundle push that cannot reach the registry must not fail the build: %v", err)

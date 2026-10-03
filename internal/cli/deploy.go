@@ -49,6 +49,14 @@ then promote, apply and wait. A release whose provenance tree already matches
 this checkout is REUSED rather than cut again, so a retried deploy never cuts
 twice.
 
+A SCOPED DEPLOY NEEDS A RELEASE. --frontends-only and --target ship part of the
+env, so they are refused with NO version: a no-version deploy cuts a release
+over every artifact, and cutting one that ships only some of them would record
+a release that does not describe what is running. Name the version
+(` + "`forge env deploy prod v1.7.1 --frontends-only`" + `) or deploy everything
+(` + "`forge env deploy prod`" + `). --dry-run and --explain are unaffected: they cut
+nothing, so a scoped preview is an honest question.
+
 NAMING A VERSION BUILDS NOTHING. It deploys a release that was already cut — a
 redeploy, a move to an older one, or a spec-change deploy (the KCL moved and the
 release did not: name the version the env already runs). A version nobody cut is
@@ -435,6 +443,13 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) er
 	// happen. So they keep the apply-only path.
 	if f.explain || f.dryRun {
 		return dispatchSpecChangeDeploy(ctx, envName, f)
+	}
+	// A SCOPE FLAG IS REFUSED HERE, before anything is built. A no-version
+	// deploy cuts a release over EVERY artifact, so scoping the apply
+	// would pay for the whole build to ship one part of it and record a
+	// release that does not describe what shipped (deploy_scoped.go).
+	if err := refuseScopedDeployWithoutRelease(envName, f); err != nil {
+		return err
 	}
 	// O-15: no version means DO EVERYTHING — build at this checkout, push,
 	// cut, plan, confirm, promote, apply, wait.

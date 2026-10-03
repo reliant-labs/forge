@@ -183,7 +183,8 @@ _bundle = forge.Bundle {
     # Where each frontend runs here, one binding each — rebind by editing its
     # line (`_hosted_frontend(_{{.FrontendIdent}}_frontend)`), or as the env
     # is created: `forge env new <name> --bind {{.FrontendName}}=hosted`.
-    # `forge env deploy {{.EnvName}} --frontends-only` ships just this.
+    # `forge env deploy {{.EnvName}} VERSION --frontends-only` ships just
+    # this, out of a release that exists (a scope flag needs a version).
     frontends = [
         _on_bucket(_{{.FrontendIdent}}_frontend)
     ]

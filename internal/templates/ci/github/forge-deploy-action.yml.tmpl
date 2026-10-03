@@ -22,8 +22,13 @@
 # EXIT CODES ARE THE CONTROL FLOW. The deploy's code is this step's code:
 #   0 ok · 1 failed (bad release / DEGRADED) · 2 could not determine · 3 conflict
 #   (someone else moved the env — stop, do not retry) · 4 refused (rollout in
-#   flight / pinned — wait and retry) · 5 still rolling out at the deadline
-#   (retry the WAIT, not the deploy) · 6 superseded
+#   flight / pinned — wait and retry) · 5 plan_unconfirmed (the plan was printed
+#   and nobody approved it — NOTHING was promoted; add --yes) · 6 superseded ·
+#   8 still rolling out at the deadline (retry the WAIT, not the deploy)
+#
+# 5 USED TO MEAN THE TIMEOUT, which is now 8. The confirmation gate took 5
+# because it is the one outcome that must be impossible to misread as success.
+# This action passes --yes, so a correctly configured pipeline never sees it.
 name: forge env deploy + gate
 description: Deploy a release to an environment (record + apply + wait) and record the evidence.
 
@@ -81,7 +86,10 @@ runs:
         set -uo pipefail
         args=(env deploy "$ENV")
         [ -n "$VERSION" ] && args+=("$VERSION")
-        args+=(--json --timeout "$TIMEOUT")
+        # CI has no TTY; --yes is "I read the plan", and the plan is printed
+        # into this job's log before the write. Without it forge exits 5,
+        # plan_unconfirmed, having written no promotion.
+        args+=(--json --yes --timeout "$TIMEOUT")
         [ -n "$FROM" ] && args+=(--from "$FROM")
         [ -n "$FROM_PROMOTION" ] && args+=(--from-promotion "$FROM_PROMOTION")
         [ -n "$EXPECT_CURRENT" ] && args+=(--expect-current "$EXPECT_CURRENT")
@@ -102,7 +110,7 @@ runs:
     - name: Record the rollout as evidence
       # always(): a degraded, timed-out or superseded rollout is evidence too.
       # `gate record --from` maps the document's exit_code to a status — 1 is
-      # the only `failed`; 2/3/4/5 are `error` and 6 is `skipped` — so a slow
+      # the only `failed`; 2/3/4/5/8 are `error` and 6 is `skipped` — so a slow
       # rollout never appends a false "the release failed" gate.
       if: always() && steps.deploy.outputs.promotion-id != ''
       shell: bash

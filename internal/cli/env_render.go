@@ -375,7 +375,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		digests = nil
 	}
 
-	manifests, rerr := cluster.RenderManifests(ctx, mainK, imageTag, namespace, envName, loadDeployEnvConfigKV(projectDir, envName), digests)
+	manifests, appliedOverrides, rerr := cluster.RenderManifestsWithOverrides(ctx, mainK, imageTag, namespace, envName, loadDeployEnvConfigKV(projectDir, envName), digests)
 	if rerr != nil {
 		return fmt.Errorf("render %s: %w", mainK, rerr)
 	}
@@ -434,6 +434,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		boundRelease: boundRelease,
 		namespace:    namespace,
 	}, clusters, objects, totalRendered)
+	writeOverridesSummary(errOut, appliedOverrides)
 	writeChartSummary(errOut, charts)
 	writeHostedAndHostSummary(errOut, envName, entities)
 
@@ -746,6 +747,24 @@ func writeRenderSummary(w io.Writer, p renderProvenance, clusters []string, obje
 	}
 	if replicated > 0 {
 		fmt.Fprintf(w, "[render]   (%d object(s) land on more than one cluster and are counted for each)\n", replicated)
+	}
+}
+
+// writeOverridesSummary reports which Bundle.overrides landed, key → object.
+//
+// It prints the RESOLVED object next to the key the author wrote, because an
+// override key may be partial (`Deployment/api` with no namespace or cluster)
+// and the mistake worth catching is a key that matched something other than
+// what its author pictured. A silent success would make that invisible —
+// forge refuses an AMBIGUOUS key, but a key with exactly one match in a
+// single-namespace env is unambiguous and still worth showing.
+func writeOverridesSummary(w io.Writer, applied []cluster.AppliedOverride) {
+	if len(applied) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "[render]   overrides applied: %d\n", len(applied))
+	for _, a := range applied {
+		fmt.Fprintf(w, "[render]     %-36s → %s\n", a.Key, a.Object())
 	}
 }
 

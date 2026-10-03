@@ -294,6 +294,7 @@
       "ingress_namespace": "",
       "telemetry_namespace": ""
     },
+    "overrides": {},
     "project": "acme",
     "rendered_secrets": [],
     "required_dns": [],

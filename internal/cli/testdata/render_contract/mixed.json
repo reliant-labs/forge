@@ -181,6 +181,7 @@
       }
     ],
     "network_policy": null,
+    "overrides": {},
     "project": "acme",
     "rendered_secrets": [],
     "required_dns": [],

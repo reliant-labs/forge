@@ -24,7 +24,10 @@ package bundle
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -257,6 +260,68 @@ func TestFluxExtractKeepsUnclusteredDocumentsInTheirOwnPath(t *testing.T) {
 	}
 	if !found {
 		t.Error("the unclustered tree is not published in ClusterPaths")
+	}
+}
+
+// TestBundleDigestIsTheRevisionFluxWillReport pins the comparand the whole
+// convergence read rests on.
+//
+// The control plane writes this digest to the hub OCIRepository's
+// `spec.ref.digest`, and a convergence read compares
+// `Kustomization.status.lastAppliedRevision` against it with plain string
+// equality (control-plane's fluxobserve.judge: `applied == promoted`). So the
+// two have to be the same STRING, not merely the same digest — a tag prefix,
+// an `oci://` scheme, a bare hex without the algorithm, or an uppercase hex
+// would each compare unequal forever, and every env would read as permanently
+// progressing while being perfectly converged. That failure is silent: nothing
+// errors, the deploy just never reports success.
+//
+// Measured read-only on the dev hub, Flux keeps one unchanged string across
+// the chain — spec.ref.digest == status.artifact.revision ==
+// lastAppliedRevision, all `sha256:<64 hex>` — so this asserts the bundle
+// produces exactly that lexical form.
+//
+// It is the MANIFEST digest, not the manifests LAYER's: a bundle's identity,
+// what a promotion names, and what Flux resolves ref.digest to are all this
+// one value. Selecting a layer changes which bytes reach the artifact, not
+// which revision the source reports.
+func TestBundleDigestIsTheRevisionFluxWillReport(t *testing.T) {
+	built := mustBuild(t, buildFixture())
+
+	if !release.ValidDigest(built.Digest) {
+		t.Fatalf("the bundle digest %q is not a canonical sha256 digest, so it cannot be compared "+
+			"against lastAppliedRevision as a string", built.Digest)
+	}
+	// The exact lexical form Flux reports, spelled out rather than deferred
+	// to ValidDigest, because THIS is the shape the comparison needs.
+	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(built.Digest) {
+		t.Errorf("bundle digest %q is not `sha256:<64 lowercase hex>` — the form Flux reports as "+
+			"lastAppliedRevision, compared by string equality", built.Digest)
+	}
+
+	// And it is the digest OF THE MANIFEST BYTES, which is what a registry
+	// resolves `@<digest>` to. Recomputed here rather than trusted, so a
+	// change that set Digest from anything else — a layer, the config blob,
+	// the shape — fails instead of silently making every env look
+	// unconverged.
+	sum := sha256.Sum256(built.Manifest)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	if built.Digest != want {
+		t.Errorf("bundle digest %q is not the digest of the manifest bytes %q; a promotion would name "+
+			"a revision no OCIRepository can resolve", built.Digest, want)
+	}
+
+	// It must NOT be the manifests layer's digest. Distinct values, and
+	// confusing them is the one mistake that would survive every other test
+	// in this file: the layer extracts correctly, the paths are right, and
+	// convergence never reports.
+	layer, ok := built.Layer(release.BundleManifestsLayer)
+	if !ok {
+		t.Fatal("no manifests layer")
+	}
+	layerSum := sha256.Sum256(layer)
+	if built.Digest == "sha256:"+hex.EncodeToString(layerSum[:]) {
+		t.Error("the bundle digest is the LAYER's digest; the revision Flux reports is the manifest's")
 	}
 }
 

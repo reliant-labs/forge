@@ -273,7 +273,38 @@ type BundleRecord struct {
 	Env string `json:"env"`
 	// Release is the version pinned, "" for an unreleased bundle.
 	Release string `json:"release,omitempty"`
-	// Digest is the OCI manifest digest: the bundle's identity.
+	// Digest is the OCI MANIFEST digest: the bundle's identity, and the
+	// revision a reconciler reports.
+	//
+	// THIS IS THE VALUE THE CONTROL PLANE WRITES TO THE HUB OCIRepository'S
+	// `spec.ref.digest`, and therefore the value a convergence read compares
+	// `Kustomization.status.lastAppliedRevision` against. Measured
+	// read-only on the dev hub, the chain is one unchanged string:
+	//
+	//	spec.ref.digest  ==  status.artifact.revision  ==  lastAppliedRevision
+	//	sha256:<64 hex>      sha256:<64 hex>              sha256:<64 hex>
+	//
+	// and this field is produced in exactly that form ([ValidDigest]
+	// enforces it). So the comparison is a plain string equality, which is
+	// what control-plane's fluxobserve.judge performs — no normalization,
+	// no tag prefix, nothing to strip on either side.
+	//
+	// It is the MANIFEST digest rather than the manifests LAYER's, and the
+	// distinction is the one thing to get right when the hub moves from
+	// per-deployment config artifacts to `bundle.v1/<env>`: a bundle's
+	// identity, what a promotion names, and what Flux resolves `ref.digest`
+	// to are all this one value, while the layer digest is an internal
+	// detail of the artifact that nothing outside the bundle addresses.
+	// Selecting a layer with `layerSelector` changes which bytes land in the
+	// artifact, not which revision the source reports.
+	//
+	// That last sentence is reasoned from Flux's model (the revision is the
+	// resolved manifest digest, fixed before layer extraction) and NOT
+	// measured: no OCIRepository on the dev hub sets a layerSelector today,
+	// and confirming it needs a cluster that does. It is worth one assertion
+	// in the first integration test that points a Kustomization at a bundle
+	// — if it were ever false, every env would read as permanently
+	// progressing while being perfectly converged.
 	Digest string `json:"digest"`
 	// Reference is repo@digest, or an OCI-layout reference for a file
 	// ledger.

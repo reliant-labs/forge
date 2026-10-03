@@ -433,10 +433,9 @@ and every failure: load `deploy/overrides`.
 
 ## Reaching another cluster's API server
 
-A workload that needs a kubeconfig for ANOTHER cluster (a Flux controller, an
-operator, a proxy) declares `forge.KubeconfigSecret`, which forge mints on
-every deploy so nothing stale is committed. Load the `deploy/cluster-access`
-skill for the two credential models, the address modes, and rotation.
+A workload needing a kubeconfig for ANOTHER cluster declares
+`forge.KubeconfigSecret`, minted on every deploy: `deploy/cluster-access`.
+To have the control plane deploy INTO your cluster: `deploy/cluster-connect`.
 
 ## `features:` block — disabling subsystems
 

@@ -696,6 +696,7 @@ type ComposeRuntime struct {
 type ClusterRuntime struct {
 	Cluster          string   `json:"cluster,omitempty"`
 	Namespace        string   `json:"namespace,omitempty"`
+	ConnectedCluster string   `json:"connected_cluster,omitempty"`
 	Registry         string   `json:"registry,omitempty"`
 	Domain           string   `json:"domain,omitempty"`
 	Platform         string   `json:"platform,omitempty"` // GOARCH override; empty = forge.yaml deploy.target_arch
@@ -1121,6 +1122,10 @@ type ClusterTargetEntity struct {
 	Registry  string `json:"registry,omitempty"`
 	Domain    string `json:"domain,omitempty"`
 	Platform  string `json:"platform,omitempty"`
+	// ConnectedCluster is the control-plane cluster this target names, by
+	// the name `forge cluster connect` registered. Empty for a k3d cluster,
+	// which forge applies to directly.
+	ConnectedCluster string `json:"connected_cluster,omitempty"`
 }
 
 // field returns one env-wide coordinate by the name the "first K8sCluster
@@ -1177,7 +1182,17 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if err != nil {
 		return nil, err
 	}
-	return parseKCLEntities(raw)
+	entities, err := parseKCLEntities(raw)
+	if err != nil {
+		return nil, err
+	}
+	// Refused HERE, at the render, because this is the one place every path
+	// that could ship the env passes through — and the author is still
+	// looking at the KCL that is wrong. See refuseUnboundClusterTargets.
+	if err := refuseUnboundClusterTargets(env, entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
 }
 
 // renderKCLRaw is the side-effecting half — shell or fixture file —

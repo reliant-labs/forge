@@ -2,6 +2,7 @@
   "output": {
     "cluster_target": {
       "cluster": "k3d-acme",
+      "connected_cluster": null,
       "domain": null,
       "image_pull_secrets": [],
       "namespace": "acme-dev",
@@ -334,6 +335,7 @@
         "name": "search",
         "runtime": {
           "cluster": "k3d-acme",
+          "connected_cluster": null,
           "domain": null,
           "image_pull_secrets": [],
           "namespace": "acme-dev",

@@ -127,6 +127,7 @@ func (p promotePlan) renderForConfirmation(jsonMode bool) {
 //  3. A TTY prompts, defaulting to NO. A bare Enter must not deploy.
 //  4. Anything else refuses with exit 5, printing the plan and the exact
 //     flag to add.
+//
 // jsonMode is --json: it decides only WHERE the gate's human text goes.
 // Under --json stdout belongs to the document, so the plan line and the
 // prompt go to stderr — the same split renderForConfirmation uses. Without

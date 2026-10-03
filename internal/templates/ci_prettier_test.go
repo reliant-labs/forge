@@ -51,6 +51,10 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		{"ci minimal", "ci.yml.tmpl", minimal},
 		{"proto-breaking", "proto-breaking.yml.tmpl", full},
 		{"build-images", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true}},
+		// The hosted build job is a different document — no registry login,
+		// a control-plane token instead — so it goes through prettier,
+		// actionlint and the no-registry rules on its own.
+		{"build-images hosted", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, Hosted: true}},
 		{"release", "release.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, nil)}},
 		{"release mixed", "release.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, map[string]bool{"prod": true})}},
 		{"forge-deploy action", "forge-deploy-action.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, nil)}},

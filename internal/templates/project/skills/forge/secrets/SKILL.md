@@ -135,6 +135,14 @@ _bundle = forge.Bundle {
   control plane (endpoint + credential from `control_plane`, i.e. `--token` /
   `$FORGE_CONTROL_PLANE_TOKEN` / `forge login`), scoped to the control-plane
   environment addressed by (this project's forge.yaml `name`, the env's NAME).
+
+  **That one credential also authenticates the platform CONTAINER REGISTRY**,
+  which is why a hosted project has no registry secret to manage. `forge
+  registry login <env>` takes no `--username` and no `--password-*` for our
+  host (it refuses them), and `forge env build --push` / `forge env deploy` log
+  in on their own before the first push. So the only image-related secret a
+  hosted CI job needs is the one it already has. See the `deploy` and `ci`
+  skills.
   What happens to the values depends on the env's KIND, which forge derives
   from the env's own workloads:
   - **persistent** — the env declares ≥1 hosted tier (SimpleBackend /

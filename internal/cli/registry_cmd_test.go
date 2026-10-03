@@ -20,10 +20,24 @@ type loginCall struct{ host, username, password string }
 
 func stubDockerLogin(t *testing.T) *[]loginCall {
 	t.Helper()
+	resetPlatformLogins(t)
 	var calls []loginCall
 	prev := dockerLogin
-	dockerLogin = func(_ context.Context, host, username string, password io.Reader) error {
+	dockerLogin = func(_ context.Context, args []string, password io.Reader) error {
 		b, _ := io.ReadAll(password)
+		// The seam carries the ARGV, so the host and username are read
+		// back out of it — which is the point: a test that was handed them
+		// separately could not see the credential if it reached argv.
+		// hosted_registry_login_test.go's stub asserts on the raw args.
+		host, username := "", ""
+		if len(args) > 1 {
+			host = args[1]
+		}
+		for i, a := range args {
+			if a == "--username" && i+1 < len(args) {
+				username = args[i+1]
+			}
+		}
 		calls = append(calls, loginCall{host, username, string(b)})
 		return nil
 	}

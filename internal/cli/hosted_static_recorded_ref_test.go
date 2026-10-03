@@ -51,6 +51,13 @@ func TestHostedStaticBareImageRecordsExactlyTheRefItPushed(t *testing.T) {
 	hostedPollInterval = time.Millisecond
 	t.Cleanup(func() { hostedPollInterval = prevPoll })
 
+	// The env declares a platform registry_host, so the build authenticates
+	// to it before pushing (ADR-0003 F3). Stubbed for the same reason the
+	// push below is: the subject here is the ADDRESS the build recorded, and
+	// a real `docker login` would make this test need a reachable registry
+	// and write a credential into the developer's own keychain.
+	stubDockerLoginArgs(t)
+
 	// Capture the repository the build PUSHED to. This is the left-hand side
 	// of the equality under test; nothing else in the test is allowed to
 	// recompute it.

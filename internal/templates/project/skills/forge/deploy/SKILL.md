@@ -167,7 +167,7 @@ forge doctor --signal deploy   # probes, resources, Secrets, migrations
 ```
 forge build <env>                 # what <env> declares (host workloads need no image)
 forge env build <env> --push          # and push each image to the reference its workload declares
-forge registry login <env> -u <user> --password-stdin   # login to every host they name
+forge registry login <env>        # hosted: nothing to pass; -u/--password-stdin for your own
 forge registry ref <env>          # <image>@<digest> per image the last build pushed
 forge build <env> --plan          # resolve + preflight the build set; build nothing
 forge build --tag=<tag>           # override image tag (default: commit SHA)
@@ -178,7 +178,18 @@ One project image carries every binary. Its ENTRYPOINT is the binary and
 its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
-A hosted env declares no registry either: each workload — and each hosted
+### The hosted registry takes your control-plane credential
+
+A hosted env's images go to the PLATFORM registry, authenticated with the same
+`rlat_` forge reaches the control plane with — no registry password, and
+`--push` / `forge env deploy` log themselves in before their first push.
+`forge registry login <env>` REFUSES `--username`/`--password-*` for that host.
+A bare `image = "api"` resolves under `<registry_host>/<organization>/<project>/`.
+
+Load `deploy/hosted-registry` for the credential sources, the CI shape, and
+denied-push triage (a realm 401 is nearly always a mis-declared `organization`).
+
+A non-hosted env declares no registry: each workload — and each hosted
 frontend, via `forge.Frontend.image` — names its own.
 
 ### Docker build contexts
@@ -373,8 +384,11 @@ release is an ordinary promote labelled `direction BEHIND`; see
 - Image tags are immutable — commit SHA by default, digest-pinned on deploy.
 - Secrets never live in KCL — it is checked in. Reference them
   (`config_secrets`, `forge.SecretRef`, `forge.ManagedSecret`).
-- EVERY image names its registry host (`ghcr.io/acme/api`). A hostless one is
-  refused at render, naming the workload: no env registry exists to complete it.
+- EVERY image on a CLUSTER or COMPOSE workload names its registry host
+  (`ghcr.io/acme/api`). A hostless one is refused at render, naming the
+  workload: no env registry exists to complete it. A `forge.OnHosted` workload
+  may name a bare image — the platform admits exactly one subtree, so forge
+  composes the address from the env's declaration.
 
 ## Per-env config — KCL is the surface
 

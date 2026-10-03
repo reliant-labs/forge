@@ -38,6 +38,22 @@ func IsComponentConstructor(fn *ast.FuncDecl) bool {
 	return fn.Name.Name == "New"
 }
 
+// HasConstructorMarkerOn reports whether THIS declaration carries
+// `// forge:constructor`, as opposed to the package containing one somewhere
+// (HasConstructorMarker).
+//
+// The per-decl answer is what tells a lint whether the marker is advice the
+// author has already taken. The marker frees a constructor's NAME and has
+// never affected its signature, so prescribing it for a signature gap on a
+// func that already carries it is advice that cannot work — and an author who
+// tries it concludes the rule is unsatisfiable.
+func HasConstructorMarkerOn(fn *ast.FuncDecl) bool {
+	if fn == nil {
+		return false
+	}
+	return anyCommentGroupHasDirective(directiveConstructorMarker, fn.Doc)
+}
+
 // DefaultConstructorName is the constructor name forge assumes when a package
 // declares no `// forge:constructor` marker — the zero-annotation shape every
 // scaffold is born with.

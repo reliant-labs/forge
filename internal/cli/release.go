@@ -334,7 +334,16 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		// Compare by REPOSITORY, which is how the ledger is keyed: the declared
 		// reference minus its tag. A workload pinning `repo:e2e` and the ledger
 		// entry for `repo` are the same artifact.
+		//
+		// A HOSTED workload's image is resolved against the platform's push
+		// base first (hostedImageForDecl), because that — not the bare name the
+		// author wrote — is the address the build pushed to and the key every
+		// producer records. Comparing the raw declaration refused a cut whose
+		// ledger was correct.
 		repo := imageRepository(s.Image)
+		if s.OnRuntime(RuntimeHosted) {
+			repo = hostedImageForDecl(entities, repo)
+		}
 		if _, ok := artifacts[repo]; ok {
 			continue
 		}

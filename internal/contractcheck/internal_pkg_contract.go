@@ -419,7 +419,11 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 	if !facts.hasDepsStruct {
 		findings = append(findings, missingDepsFinding(relPath, facts))
 	}
-	if !facts.hasConstructor {
+	// A SEAM contract is consumed, not produced, so `func(Deps) <Contract>`
+	// is not the shape its constructor can have — see contractIsSeam for why
+	// demanding it made the multi-impl refusal's own remedy impossible to
+	// complete.
+	if !facts.hasConstructor && !facts.contractIsSeam() {
 		findings = append(findings, missingConstructorFinding(relPath, facts))
 	}
 
@@ -470,6 +474,81 @@ type contractShapeFacts struct {
 	firstStructPos  token.Position
 	firstCtorName   string
 	firstCtorPos    token.Position
+	// firstCtorMarked records whether the near-miss constructor already
+	// carries `//forge:constructor`. The marker frees a constructor's NAME
+	// and has never touched its signature, so prescribing it to an author
+	// who has already written it is advice that cannot work — see
+	// missingConstructorFinding.
+	firstCtorMarked bool
+	// depsConstructor is a `func(Deps) …` the package declares whose results
+	// are NOT the contract — the seam shape's entry point. Distinct from
+	// hasConstructor (which requires the contract return) and from
+	// firstCtorName (any near miss): this one positively took Deps, which is
+	// what makes it a forge-shaped component entry rather than an arbitrary
+	// helper.
+	depsConstructor bool
+	// ctorReturnBase is that constructor's first result type with pointer
+	// stars stripped (`*Handler` → `Handler`), or "" when there is none. Used
+	// to tell a SEAM contract (implemented in-package by something the
+	// constructor does not return) from the package's OWN surface.
+	ctorReturnBase string
+	// contractIfaceMethods is the marked/canonical contract interface's
+	// method names, and methodsByType is every in-package named type's
+	// method set. Together they answer "is this contract implemented here by
+	// a type other than the one the constructor returns" — the seam test.
+	contractIfaceMethods []string
+	methodsByType        map[string]map[string]bool
+}
+
+// contractIsSeam reports whether the package's contract interface is a SEAM
+// the package CONSUMES rather than the behavioral surface it PRODUCES.
+//
+// The distinction decides whether `func(Deps) <Contract>` is the right demand,
+// and the multi-impl refusal is what makes it load-bearing. That rule refuses
+// a package's `//forge:exclude-contract` when an exported interface it
+// declares has two or more implementations in the module — correctly, because
+// interchangeable implementations ARE a contract — and prescribes moving the
+// interface into a contract.go. Doing that makes the package a contract
+// package, at which point the shape rule used to demand a constructor
+// returning that interface.
+//
+// For a seam that demand is incoherent: control-plane's registryauth declares
+// `PushGate` with an in-package default (`AllowAllPushes`) and a second
+// implementation at the composition root, and its constructor builds the token
+// realm (`*Handler`) TAKING a PushGate in Deps. A constructor returning
+// PushGate would mean the quota gate constructs a quota gate. So the remedy
+// the gate prescribed could not be completed, the marker the shape rule
+// offered in turn was a no-op on a signature gap, and the only exit was a
+// forge.yaml exclude that covers one of the two rules.
+//
+// The test is structural, not a new annotation: the contract is implemented
+// in this package by a named type that the constructor does NOT return. When
+// the implementor IS the constructor's return type (the ordinary component,
+// `New(Deps) (Service, error)` over an unexported `service`), nothing here
+// fires and the signature requirement stands.
+func (f contractShapeFacts) contractIsSeam() bool {
+	if !f.depsConstructor || len(f.contractIfaceMethods) == 0 {
+		return false
+	}
+	for typeName, methods := range f.methodsByType {
+		if typeName == f.ctorReturnBase {
+			continue
+		}
+		if coversMethods(methods, f.contractIfaceMethods) {
+			return true
+		}
+	}
+	return false
+}
+
+// coversMethods reports whether set contains every name in want.
+func coversMethods(set map[string]bool, want []string) bool {
+	for _, m := range want {
+		if !set[m] {
+			return false
+		}
+	}
+	return true
 }
 
 // scanPackageContractShape walks every non-test, non-gen .go file in
@@ -545,6 +624,9 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 			switch ts.Type.(type) {
 			case *ast.InterfaceType:
 				facts.interfaceCount++
+				if ts.Name.Name == facts.serviceIfaceName {
+					facts.contractIfaceMethods = interfaceMethodNames(ts)
+				}
 				// The package's contract interface is `serviceIfaceName` —
 				// "Service" by default, or the marker-freed name. An
 				// interface under that name (canonical or marked) satisfies
@@ -570,8 +652,19 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 		}
 	case *ast.FuncDecl:
 		// Only top-level (no receiver) functions count as the
-		// constructor candidate; methods on the impl struct are fine.
+		// constructor candidate; methods on the impl struct are fine —
+		// but their receiver type's method set is what tells a seam
+		// contract from the package's own surface (contractIsSeam).
 		if d.Recv != nil {
+			if recv := receiverTypeName(d); recv != "" && d.Name != nil {
+				if facts.methodsByType == nil {
+					facts.methodsByType = map[string]map[string]bool{}
+				}
+				if facts.methodsByType[recv] == nil {
+					facts.methodsByType[recv] = map[string]bool{}
+				}
+				facts.methodsByType[recv][d.Name.Name] = true
+			}
 			return
 		}
 		// The constructor is identified the way CODEGEN identifies it
@@ -580,6 +673,13 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 		// requires is the SIGNATURE — `func(Deps) <Contract>` — so a package
 		// can call its entry point Open / Connect / NewReadOnly and still wire.
 		isCtor := codegen.IsComponentConstructor(d)
+		// A `func(Deps) …` entry point, whatever it returns. This is the
+		// seam test's precondition: taking Deps is what makes a func the
+		// package's forge-shaped entry rather than an arbitrary helper.
+		if isCtor && takesOnlyDeps(d.Type) {
+			facts.depsConstructor = true
+			facts.ctorReturnBase = firstResultBaseType(d.Type)
+		}
 		if isCtor && isDepsContractSignature(d.Type, facts.serviceIfaceName) {
 			facts.hasConstructor = true
 		} else if facts.firstCtorName == "" && (isCtor || strings.HasPrefix(d.Name.Name, "New")) {
@@ -589,8 +689,69 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 			// and left the author hunting for a func they had already written.
 			facts.firstCtorName = d.Name.Name
 			facts.firstCtorPos = fset.Position(d.Name.NamePos)
+			facts.firstCtorMarked = codegen.HasConstructorMarkerOn(d)
 		}
 	}
+}
+
+// interfaceMethodNames is the method names an interface declares directly.
+// Embedded interfaces are skipped: they have no name at this level, and a
+// contract satisfied only through an embed is not a shape this rule needs to
+// recognize.
+func interfaceMethodNames(ts *ast.TypeSpec) []string {
+	iface, ok := ts.Type.(*ast.InterfaceType)
+	if !ok || iface.Methods == nil {
+		return nil
+	}
+	var out []string
+	for _, m := range iface.Methods.List {
+		if _, isFunc := m.Type.(*ast.FuncType); !isFunc {
+			continue
+		}
+		for _, n := range m.Names {
+			out = append(out, n.Name)
+		}
+	}
+	return out
+}
+
+// baseTypeName strips pointer stars and returns the identifier, or "" when
+// expr is not a plain (possibly pointed-to) named type.
+func baseTypeName(expr ast.Expr) string {
+	for {
+		star, ok := expr.(*ast.StarExpr)
+		if !ok {
+			break
+		}
+		expr = star.X
+	}
+	if id, ok := expr.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+// takesOnlyDeps reports whether ft's parameter list is exactly one `Deps`.
+// The same parameter rule isDepsContractSignature applies, read on its own so
+// the seam test can ask about the parameter without the result.
+func takesOnlyDeps(ft *ast.FuncType) bool {
+	if ft == nil || ft.Params == nil || len(ft.Params.List) != 1 {
+		return false
+	}
+	p := ft.Params.List[0]
+	if len(p.Names) > 1 {
+		return false
+	}
+	return isIdent(p.Type, "Deps")
+}
+
+// firstResultBaseType is ft's first result type with pointer stars stripped,
+// or "" when it declares no results.
+func firstResultBaseType(ft *ast.FuncType) string {
+	if ft == nil || ft.Results == nil || len(ft.Results.List) == 0 {
+		return ""
+	}
+	return baseTypeName(ft.Results.List[0].Type)
 }
 
 // shouldSkipContractShapeCheck reports whether the package cannot be a
@@ -741,6 +902,17 @@ func missingConstructorFinding(relPath string, facts contractShapeFacts) forgeco
 	if contract == "" {
 		contract = "Service"
 	}
+	// The marker is advice about the NAME. Offering it to an author whose
+	// constructor already carries it prescribes a line they have written,
+	// which reads as "the rule cannot be satisfied" — the reported failure.
+	// So the name half is included only when it is still available to take.
+	nameNote := " — the NAME is yours (`New` needs no annotation; any other name works with " +
+		"`//forge:constructor` on the line directly above it), but the SIGNATURE is what the " +
+		"injector binds"
+	if facts.firstCtorMarked {
+		nameNote = fmt.Sprintf(" — `//forge:constructor` already frees the name %s, and that is all it "+
+			"does; what is left is the signature", found)
+	}
 	return forgeconv.Finding{
 		Rule:     string(RuleInternalPackageContractNames),
 		Severity: forgeconv.SeverityError,
@@ -748,14 +920,15 @@ func missingConstructorFinding(relPath string, facts contractShapeFacts) forgeco
 		Line:     line,
 		Message: fmt.Sprintf(
 			"forge convention: the package needs a constructor with the signature `func(Deps) %[1]s` "+
-				"or `func(Deps) (%[1]s, error)`. Found %[2]s — give it that signature; if you want to keep "+
-				"its name, add a `//forge:constructor` marker on the line above it. See skill: contracts.",
-			contract, found),
+				"or `func(Deps) (%[1]s, error)`. Found %[2]s%[3]s. See skill: contracts.",
+			contract, found, nameNote),
 		Remediation: fmt.Sprintf(
-			"give the constructor the signature `func(Deps) %[1]s` (or `func(Deps) (%[1]s, error)`). "+
-				"The name is yours: `New` works with no annotation, and any other name — `Open`, `Connect`, "+
-				"`NewReadOnly` — works once you put `//forge:constructor` on the line directly above it, "+
-				"which is the same marker codegen reads to emit `<pkg>.<name>(<pkg>.Deps{...})`.",
+			"give the constructor the signature `func(Deps) %[1]s` (or `func(Deps) (%[1]s, error)`), "+
+				"which is what codegen emits as `<pkg>.<name>(<pkg>.Deps{...})` and types the wired field "+
+				"off. If %[1]s is a SEAM this package consumes rather than the surface it produces — an "+
+				"interface with other implementations, taken in Deps — then it is not this constructor's "+
+				"return type, and the package wants that interface in contract.go with its own concrete "+
+				"entry point left as it is.",
 			contract),
 	}
 }

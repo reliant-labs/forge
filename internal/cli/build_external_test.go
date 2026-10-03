@@ -540,3 +540,76 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 		t.Errorf("resolved imageRef: got %q, want the tag %q (no digest pinned)", ref, "e2e")
 	}
 }
+
+// TestBuildExternalServices_ResolvesBareHostedImageAgainstPushBase pins the
+// ADR-0003 F1 resolution on the SHELL side.
+//
+// A hosted workload declares its image BARE (`echo`) — the default and
+// correct form, because the control plane admits exactly one registry subtree
+// and so the author does not transcribe it. forge resolves that to
+// `<push base>/echo`, and the ShellBuild's rendered `cmd` pushes there,
+// because the reference was composed in the same render.
+//
+// Before this, the dispatcher read the UNRESOLVED `svc.Image` for both the
+// digest lookup and the state it wrote. So the registry query ran against the
+// bare name — which names no host, resolves nothing, and misses every time —
+// and the build state recorded `e2eh/<run>/echo` with `digest: ""`. The push
+// itself was correct; what was wrong was forge's record OF it, which left a
+// release cut with nothing to pin and a deploy on the mutable tag.
+func TestBuildExternalServices_ResolvesBareHostedImageAgainstPushBase(t *testing.T) {
+	projDir := t.TempDir()
+
+	const (
+		pushBase = "registry.example.com/acme/shop"
+		digest   = "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	)
+
+	// The resolver stands in for the registry. It records the ref it was
+	// asked about, which IS the assertion: a lookup against the bare name is
+	// the defect.
+	var askedFor string
+	orig := externalImageDigestResolver
+	t.Cleanup(func() { externalImageDigestResolver = orig })
+	externalImageDigestResolver = func(_ context.Context, ref string) (string, []string, error) {
+		askedFor = ref
+		if ref != pushBase+"/echo:e2e" {
+			return "", nil, fmt.Errorf("not in registry: %s", ref)
+		}
+		return digest, []string{"linux/amd64"}, nil
+	}
+
+	svc := shellSvc("echo", "echo", "true", "", nil)
+	svc.Runtime = RuntimeEntity{Type: RuntimeHosted}
+	opts := buildOptions{env: "e2eh", pushPlan: pushPlan{env: "e2eh", push: true, pushBase: pushBase}}
+
+	results := buildExternalServices(context.Background(), []WorkloadEntity{svc}, opts, "e2e", projDir)
+	if len(results) != 1 || results[0].err != nil {
+		t.Fatalf("build: %+v", results)
+	}
+
+	if want := pushBase + "/echo:e2e"; askedFor != want {
+		t.Errorf("digest lookup ref: got %q, want %q (the RESOLVED ref the cmd pushed)", askedFor, want)
+	}
+
+	st, err := buildtarget.ReadState(projDir, "e2eh", "echo")
+	if err != nil || st == nil {
+		t.Fatalf("ReadState: st=%+v err=%v", st, err)
+	}
+	if st.Image != pushBase+"/echo" {
+		t.Errorf("per-service image: got %q, want the resolved %q", st.Image, pushBase+"/echo")
+	}
+	if st.Digest != digest {
+		t.Errorf("per-service digest: got %q, want %q", st.Digest, digest)
+	}
+
+	dst, err := ReadBuildState(projDir, "e2eh")
+	if err != nil || dst == nil {
+		t.Fatalf("ReadBuildState: dst=%+v err=%v", dst, err)
+	}
+	if dst.Image != pushBase+"/echo" {
+		t.Errorf("deploy-aggregate image: got %q, want the resolved %q", dst.Image, pushBase+"/echo")
+	}
+	if dst.Digest != digest {
+		t.Errorf("deploy-aggregate digest: got %q, want %q (a cut has nothing to pin without it)", dst.Digest, digest)
+	}
+}

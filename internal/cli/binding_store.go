@@ -162,22 +162,20 @@ type bundleRecorder interface {
 // answer. A single Record("it worked") call after the fact could not express
 // that, and would have nothing to say when the applier crashed mid-apply.
 //
-// BeginApply TAKES THE GUARD, not a supersede bool. An apply asserts the same
-// compare-and-set a promote does — the env's current promotion must be the
-// one the plan was read against, or the env must be unbound — and the server
-// checks it under the env row lock before anything moves (doc §6.3, F-5,
-// F-19). A bool could carry only the in-flight override, so the CAS would
-// reach the server asserting NOTHING: connect-go discards what is not sent,
-// the anti-stomp guard would not fire, and the failure would be invisible —
-// no error, no log line, just a deploy that overwrote whatever landed under
-// it. appendGuard already holds SupersedeInFlight, so the bool folds into it
-// and the parameter count does not grow.
+// NOT WIDENED TO CARRY A COMPARE-AND-SET, and that is now a decision rather
+// than an omission. F4 asked for a guard parameter here so a forge-driven
+// apply could assert "the env's current promotion is still the one my plan
+// read" — necessary when forge was the actuator. Forge is not: the reconciler
+// converges every env, and nothing imperative is a source of truth. An
+// "I am applying now" API has no caller to guard.
 //
-// Filling the expectation from a client-side read of Current(env) is NOT the
-// alternative: read-then-write from a client is precisely the race the
-// server's row lock exists to close.
+// It is left exactly as F3 declared it rather than deleted, because this
+// package still SATISFIES it from the machine ledger and the hosted client,
+// and the records themselves are being repurposed as the observer's
+// "converged to B at T". Deleting the seam is F-BUNDLE-FLUX's call, with the
+// imperative apply path it removes wholesale.
 type applyRecorder interface {
-	BeginApply(ctx context.Context, a release.Apply, guard appendGuard) (release.Apply, error)
+	BeginApply(ctx context.Context, a release.Apply, supersede bool) (release.Apply, error)
 	FinishApply(ctx context.Context, env string, o release.ApplyOutcome) error
 }
 
@@ -591,72 +589,8 @@ func (s machineRecordStore) Bundle(_ context.Context, id string) (*release.Bundl
 	return s.store.Bundle(id)
 }
 
-// BeginApply applies the same compare-and-set rule the control plane applies
-// under its env row lock.
-//
-// A refused guard is a *promoteRefusedError, the type a refused promote
-// produces, so the exit code and the --json refusal object have one source
-// whichever write was declined and whichever backend declined it.
-//
-// NOT YET ONE CRITICAL SECTION, and that is a named gap rather than an
-// oversight. internal/ledgerfile takes its lock per CALL: reading the
-// promotion history and appending the apply are two separate acquisitions, so
-// a concurrent promote between them would be admitted — the very
-// read-then-write race the lock exists to close, and which
-// machineBindingStore.Append avoids by handing ledgerfile an Admit callback
-// that runs INSIDE its critical section.
-//
-// The fix is the same shape: ledgerfile.Store.BeginApply needs to accept an
-// admit callback the way AppendPromotion already does, so this guard is
-// evaluated against the history on disk at the instant of the write. That is
-// a change to internal/ledgerfile, which this task consumes rather than owns,
-// so it is raised with the orchestrator rather than worked around here. The
-// window is small and local-only (the hosted backend forwards the guard and
-// the server checks it under a real row lock), but it is a window, and
-// pretending otherwise in a comment would be worse than saying so.
-func (s machineRecordStore) BeginApply(_ context.Context, a release.Apply, guard appendGuard) (release.Apply, error) {
-	if guard.expects() {
-		history, err := s.store.Promotions(a.Env)
-		if err != nil {
-			return release.Apply{}, err
-		}
-		if err := admitApplyGuard(a.Env, history, guard); err != nil {
-			return release.Apply{}, err
-		}
-	}
-	return s.store.BeginApply(a, guard.SupersedeInFlight)
-}
-
-// admitApplyGuard is the CAS an apply asserts, over the promotion history.
-//
-// It is admitPromotion's guard half without release.Decide: an apply is never
-// an idempotent no-op the way a re-promote of the current state is — it moves
-// bytes — so there is nothing to collapse, only an expectation to check.
-func admitApplyGuard(env string, history []release.Promotion, guard appendGuard) error {
-	var current *release.Promotion
-	if n := len(history); n > 0 {
-		current = &history[n-1]
-	}
-	switch {
-	case guard.ExpectUnbound && current == nil:
-		return nil
-	case !guard.ExpectUnbound && current != nil && current.ID == guard.ExpectedCurrentID:
-		return nil
-	}
-	refusal := &promoteRefusedError{
-		Reason:                     reasonPromotionConflict,
-		ExpectedCurrentPromotionID: guard.ExpectedCurrentID,
-		ExpectedUnbound:            guard.ExpectUnbound,
-	}
-	if current != nil {
-		cur := *current
-		refusal.ActualCurrent = &cur
-		refusal.Detail = fmt.Sprintf("%s is on %s (promotion %s), not on the %s this apply expected",
-			env, cur.Release, cur.ID, guard.describe())
-	} else {
-		refusal.Detail = fmt.Sprintf("%s has no promotion, not the %s this apply expected", env, guard.describe())
-	}
-	return refusal
+func (s machineRecordStore) BeginApply(_ context.Context, a release.Apply, supersede bool) (release.Apply, error) {
+	return s.store.BeginApply(a, supersede)
 }
 
 func (s machineRecordStore) FinishApply(_ context.Context, env string, o release.ApplyOutcome) error {

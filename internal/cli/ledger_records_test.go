@@ -112,7 +112,7 @@ func TestApplyRecorder_BracketsAnApplyAndDerivesItsState(t *testing.T) {
 		BundleID:   "bundle-1",
 		CreatedAt:  now,
 		DeadlineAt: now.Add(10 * time.Minute),
-	}, appendGuard{})
+	}, false)
 	if err != nil {
 		t.Fatalf("BeginApply: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestApplyRecorder_BracketsAnApplyAndDerivesItsState(t *testing.T) {
 		BundleID:   "bundle-2",
 		CreatedAt:  now,
 		DeadlineAt: now.Add(10 * time.Minute),
-	}, appendGuard{})
+	}, false)
 	if err == nil {
 		t.Fatal("a second apply on an env with one in flight must be refused without --supersede")
 	}
@@ -138,7 +138,7 @@ func TestApplyRecorder_BracketsAnApplyAndDerivesItsState(t *testing.T) {
 		BundleID:   "bundle-2",
 		CreatedAt:  now,
 		DeadlineAt: now.Add(10 * time.Minute),
-	}, appendGuard{SupersedeInFlight: true})
+	}, true)
 	if err != nil {
 		t.Fatalf("BeginApply --supersede: %v", err)
 	}

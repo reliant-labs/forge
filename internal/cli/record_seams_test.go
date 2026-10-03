@@ -1,88 +1,29 @@
 package cli
 
-// The two seams F4 left narrow on purpose, now that they carry what the
-// hosted RPCs require.
+// The bundle recorder seam F4 left narrow, now that it carries what the
+// hosted RPC requires — plus the one apply property that survives.
 //
-// WHAT IS ACTUALLY UNDER TEST. Both widenings exist to close a failure that
-// COMPILES: a seam that cannot express a safety property produces a hosted
-// path silently weaker than the file one, and connect-go's JSON codec
-// discards what is not sent — so the symptom is not an error but an absent
-// check. These tests therefore assert on the REQUEST BODY, not only on the
-// return value: "the guard reached the server" is the property, and a
-// misspelled or missing field is indistinguishable from success at every
-// other layer.
+// WHAT IS ACTUALLY UNDER TEST. The widening exists to close a failure that
+// COMPILES: a seam that cannot carry the bundle's own bytes forces a client
+// to DESCRIBE the bundle instead, and every reader downstream then trusts the
+// description over the artifact. So the first test asserts on the REQUEST
+// BODY, not only the return value — both what is present and what must be
+// absent.
+//
+// The apply-guard tests that stood here are GONE, not moved. They pinned a
+// compare-and-set forge sent when forge was the actuator; forge does not
+// apply, so there is no such request to assert on. What remains is F-2, which
+// is a property of the RECORD rather than of any apply forge performs: an
+// apply that began and never reported must not block the next one.
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
-
-// TestBeginApply_SendsTheGuardToTheServer is the anti-stomp property. An
-// apply asserts the same compare-and-set a promote does, and the server
-// checks it under the env row lock before anything moves (doc §6.3, F-5).
-// With the pre-widening `supersede bool` seam there was nowhere to put the
-// expectation, so it would have reached the server asserting NOTHING — no
-// error, no log line, just a deploy that overwrote whatever landed under it.
-func TestBeginApply_SendsTheGuardToTheServer(t *testing.T) {
-	t.Parallel()
-	f := &fakeDSOTCaller{replies: map[string]any{
-		procBeginApply: map[string]any{"apply": json.RawMessage(cpApplyFixture)},
-	}}
-	var recorder applyRecorder = hostedRecordStore{
-		client:   f,
-		project:  "app",
-		resolver: stubEnvResolver{id: "env_prod"},
-	}
-
-	if _, err := recorder.BeginApply(context.Background(), testApplyRecord(), appendGuard{
-		ExpectedCurrentID: "pr_0",
-	}); err != nil {
-		t.Fatalf("BeginApply: %v", err)
-	}
-
-	body := f.body(t, procBeginApply)
-	// `expectedCurrentPromotionId`, NOT promote's `expectCurrent`:
-	// BeginDeployApplyRequest and PromoteReleaseRequest express the identical
-	// CAS and disagree on the field name. The wrong spelling is discarded
-	// server-side, which is why this is pinned literally.
-	wantFields(t, body, map[string]any{
-		"environmentId":              "env_prod",
-		"bundleId":                   "bnd_1",
-		"expectedCurrentPromotionId": "pr_0",
-	})
-}
-
-// TestBeginApply_SendsExpectedUnboundForAFirstApply is the same property for
-// the other half of the oneof. A first apply asserts "this env has no
-// promotion", and BeginApply spells that `expected_unbound` where Promote
-// spells it `expect_unbound` — so the two encoders are deliberately separate
-// and each needs its own proof.
-func TestBeginApply_SendsExpectedUnboundForAFirstApply(t *testing.T) {
-	t.Parallel()
-	f := &fakeDSOTCaller{replies: map[string]any{
-		procBeginApply: map[string]any{"apply": json.RawMessage(cpApplyFixture)},
-	}}
-	var recorder applyRecorder = hostedRecordStore{
-		client: f, project: "app", resolver: stubEnvResolver{id: "env_prod"},
-	}
-
-	if _, err := recorder.BeginApply(context.Background(), testApplyRecord(), appendGuard{
-		ExpectUnbound: true,
-	}); err != nil {
-		t.Fatalf("BeginApply: %v", err)
-	}
-
-	body := f.body(t, procBeginApply)
-	wantFields(t, body, map[string]any{"expectedUnbound": true})
-	if _, present := body["expectedCurrentPromotionId"]; present {
-		t.Error("the CAS is a oneof: asserting unbound must not also name a promotion")
-	}
-}
 
 // TestRecordBundle_HostedSeamSendsBytesNotTheDescription is the bundle half.
 // The server records what it VERIFIES: it checks digest = sha256(manifest),
@@ -144,71 +85,6 @@ func TestRecordBundle_HostedSeamSendsBytesNotTheDescription(t *testing.T) {
 	}
 }
 
-// TestBeginApply_MachineBackendRefusesAStaleGuard proves the machine backend
-// applies the SAME rule rather than accepting the parameter and ignoring it.
-//
-// That is the failure the widening is guarding against on this side: a
-// backend that took the guard and dropped it would satisfy the interface, the
-// hosted path would be protected, and the file path — control-plane's own
-// prod, after F3 — would not be.
-func TestBeginApply_MachineBackendRefusesAStaleGuard(t *testing.T) {
-	dir := newLedgerTestProject(t, "apply-guard-project")
-	var recorder applyRecorder = testRecordStore(t, dir)
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
-
-	// The env IS bound, so an apply expecting it to be unbound is stale.
-	testPromote(t, dir, release.Promotion{
-		Env: "prod", Release: "v1.0.0", Kind: release.KindPromote,
-		Resolved: map[string]string{"api": sha("a")},
-	})
-
-	_, err := recorder.BeginApply(ctx, release.Apply{
-		Env: "prod", BundleID: "bundle-1",
-		CreatedAt: now, DeadlineAt: now.Add(10 * time.Minute),
-	}, appendGuard{ExpectUnbound: true})
-	if err == nil {
-		t.Fatal("an apply asserting 'unbound' against a bound env must be refused; " +
-			"accepting the guard and ignoring it leaves the file path unprotected")
-	}
-	// The refusal must be the SAME type a refused promote produces, so the
-	// exit code and the --json refusal object have one source whichever
-	// write was declined.
-	var refusal *promoteRefusedError
-	if !errors.As(err, &refusal) {
-		t.Fatalf("a refused apply must be a *promoteRefusedError, got %T: %v", err, err)
-	}
-	if refusal.Reason != reasonPromotionConflict {
-		t.Errorf("reason = %q, want %q", refusal.Reason, reasonPromotionConflict)
-	}
-}
-
-// TestBeginApply_MachineBackendAdmitsAMatchingGuard is the other side: the
-// guard must not refuse a correct expectation. Without this, a backend that
-// refused everything would pass the test above.
-func TestBeginApply_MachineBackendAdmitsAMatchingGuard(t *testing.T) {
-	dir := newLedgerTestProject(t, "apply-guard-ok-project")
-	var recorder applyRecorder = testRecordStore(t, dir)
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
-
-	promoted := testPromote(t, dir, release.Promotion{
-		Env: "prod", Release: "v1.0.0", Kind: release.KindPromote,
-		Resolved: map[string]string{"api": sha("a")},
-	})
-
-	begun, err := recorder.BeginApply(ctx, release.Apply{
-		Env: "prod", BundleID: "bundle-1", PromotionID: promoted.ID,
-		CreatedAt: now, DeadlineAt: now.Add(10 * time.Minute),
-	}, appendGuard{ExpectedCurrentID: promoted.ID})
-	if err != nil {
-		t.Fatalf("an apply naming the env's current promotion must be admitted: %v", err)
-	}
-	if begun.ID == "" {
-		t.Fatal("the backend must stamp an apply id")
-	}
-}
-
 // TestBeginApply_AnAbandonedApplyDoesNotBlockTheNextOne is failure mode F-2.
 //
 // An apply that began and never reported is a DIFFERENT fact from one that
@@ -228,7 +104,7 @@ func TestBeginApply_AnAbandonedApplyDoesNotBlockTheNextOne(t *testing.T) {
 	abandoned, err := recorder.BeginApply(ctx, release.Apply{
 		Env: "prod", BundleID: "bundle-1",
 		CreatedAt: past, DeadlineAt: past.Add(10 * time.Minute),
-	}, appendGuard{})
+	}, false)
 	if err != nil {
 		t.Fatalf("BeginApply: %v", err)
 	}
@@ -237,7 +113,7 @@ func TestBeginApply_AnAbandonedApplyDoesNotBlockTheNextOne(t *testing.T) {
 	next, err := recorder.BeginApply(ctx, release.Apply{
 		Env: "prod", BundleID: "bundle-2",
 		CreatedAt: now, DeadlineAt: now.Add(10 * time.Minute),
-	}, appendGuard{})
+	}, false)
 	if err != nil {
 		t.Fatalf("an apply past its deadline with no outcome is ABANDONED and must not block the next: %v", err)
 	}

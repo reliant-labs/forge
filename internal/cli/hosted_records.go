@@ -3,14 +3,20 @@ package cli
 // The HOSTED half of F3's record seams (binding_store.go): the twin of
 // machineRecordStore.
 //
-// ALL THREE ARE IMPLEMENTED HERE. F4 left two of them unsatisfied on purpose,
-// because the seams as declared could not express what the hosted RPCs
-// require and satisfying them anyway would have produced a hosted path
-// silently weaker than the file one. Both seams are now wide enough:
-// bundleRecorder carries the bundle's own BYTES (the server records what it
-// verifies), and applyRecorder.BeginApply carries the appendGuard (the
-// compare-and-set the server checks under the env row lock). See
-// binding_store.go for why each is shaped that way.
+// TWO OF THE THREE ARE IMPLEMENTED HERE, and the third is deliberate.
+//
+// `bundleRecorder` is satisfied in full: F4 left it unsatisfied because the
+// seam as declared could not carry the bundle's own BYTES, and the server
+// records what it VERIFIES rather than what a client describes. The seam is
+// now wide enough — see binding_store.go.
+//
+// `applyRecorder` is NOT implemented here, and no longer needs to be. F4's
+// note asked for a compare-and-set parameter so a forge-driven apply could
+// assert the env had not moved under it. Forge does not apply: the reconciler
+// converges every env, and an "I am applying now" API has no caller. The
+// hosted apply CLIENT stays complete (hosted_apply.go) because the apply
+// records are being repurposed as the observer's "converged to B at T"; what
+// is gone is forge driving them.
 
 import (
 	"context"
@@ -102,30 +108,6 @@ func (s hostedRecordStore) RecordBundle(ctx context.Context, b release.BundleRec
 		ctx, b.Env, envID, blobs.Repository, blobs.Manifest, blobs.Config, b.Run)
 }
 
-// BeginApply satisfies applyRecorder, forwarding the guard so the server
-// checks the compare-and-set under the env row lock.
-//
-// Nothing is pre-checked with a read here. A client-side read of the env's
-// current promotion, followed by a write asserting what it saw, is exactly
-// the race the server's lock exists to close.
-func (s hostedRecordStore) BeginApply(ctx context.Context, a release.Apply, guard appendGuard) (release.Apply, error) {
-	envID, err := s.envID(ctx, a.Env)
-	if err != nil {
-		return release.Apply{}, err
-	}
-	return hostedApplyClient{client: s.client}.BeginApply(ctx, envID, a, guard)
-}
-
-// FinishApply reports the outcome. The `created` flag the client returns is
-// dropped: to a CALLER, "this call recorded the outcome" and "the same
-// outcome was already recorded" are the same success — an apply ended once,
-// and a retry after a lost response must not read as a failure (F-2). A
-// DIFFERENT outcome for one apply is still an error, from the server.
-func (s hostedRecordStore) FinishApply(ctx context.Context, env string, o release.ApplyOutcome) error {
-	_, _, err := hostedApplyClient{client: s.client}.FinishApply(ctx, env, o)
-	return err
-}
-
 // hostedKindForRecord maps a shape's env kind to the hosted kind an ensure
 // carries — the inverse of hostedControlPlaneKindName.
 //
@@ -163,7 +145,6 @@ func (s hostedRecordStore) envID(ctx context.Context, env string) (string, error
 var (
 	_ sessionReporter = hostedRecordStore{}
 	_ bundleRecorder  = hostedRecordStore{}
-	_ applyRecorder   = hostedRecordStore{}
 )
 
 // Applies is the configured apply client, for the paths that need more of it

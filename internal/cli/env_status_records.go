@@ -1,22 +1,31 @@
 package cli
 
 // The RECORDS half of `forge env status <env>` (doc §6.3, §7.4, §13): where
-// what is bound came FROM, whether the last apply of it finished, and which
-// local stacks are running it.
+// what is bound came FROM, what the reconciler did with it, and which local
+// stacks are running it.
 //
 // WHY THIS BELONGS IN env status AND NOT A NEW VERB. The command already
 // answers "is this env running what it declares" by comparing a binding
 // against a cluster. These three are the facts a reader needs the moment that
-// answer is interesting: a DRIFT whose cause is an apply that never finished
-// is a different problem from one whose cause is a bad release, and a reader
-// who has to run a second command to tell them apart will not.
+// answer is interesting: a DRIFT whose cause is a convergence that failed is a
+// different problem from one whose cause is a bad release, and a reader who
+// has to run a second command to tell them apart will not.
+//
+// FORGE NEVER APPLIES, SO IT NEVER REPORTS AN APPLY. A reconciler converges
+// each env to its promoted bundle, and what succeeded is a SECONDARY
+// OBSERVATION written by the control plane's observer. So the convergence
+// shown here is read from the control plane and labelled as its observation;
+// forge contributes no apply record of its own, and this file deliberately
+// ignores the fields that carry forge-written ones. An env with no control
+// plane has no reconciler, and says so in one line rather than showing an
+// empty apply that would read as "nothing has deployed".
 //
 // IT NEVER CHANGES THE VERDICT, AND THAT IS LOAD-BEARING. Every exit code
 // this command returns is computed by envStatusReleaseVerdict from the
-// binding and the cluster, exactly as before. Records are DESCRIPTION: an
-// abandoned apply is not an error here (the cluster comparison already has an
-// opinion about whether the bytes landed), an unreachable records backend is
-// not an error (it says so and the verdict stands), and an env with no
+// binding and the cluster, exactly as before. Records are DESCRIPTION: a
+// failed convergence is not an error here (the cluster comparison already has
+// an opinion about whether the bytes landed), an unreachable records backend
+// is not an error (it says so and the verdict stands), and an env with no
 // records at all prints an empty state and exits 0. A records read that could
 // fail the command would make `forge env status` depend on a control plane
 // being reachable to answer a question about a local cluster.
@@ -54,11 +63,28 @@ type envStatusRecords struct {
 	// the binding was made. Nil when the env is unbound or the release
 	// record predates provenance.
 	Provenance *envStatusProvenance `json:"provenance,omitempty"`
-	// Apply is the LATEST apply of this env, with its derived state. Nil
-	// means none was ever recorded — which is normal for an env whose
-	// deploys predate apply records, and is rendered as "no apply
-	// recorded", never as a failure.
-	Apply *envStatusApply `json:"apply,omitempty"`
+	// Convergence is what THE RECONCILER did, as the control plane's
+	// observer recorded it: converged to a bundle at a time, or failed at
+	// a time with a reason.
+	//
+	// IT ONLY EVER COMES FROM A CONTROL PLANE, and that is an
+	// architectural fact rather than a current limitation. forge never
+	// applies to a cluster — one reconciler converges every env to its
+	// promoted bundle — so forge is not a witness to convergence and has
+	// nothing truthful to say about it. A record forge wrote would be a
+	// claim about work it did not do.
+	//
+	// So it is a SECONDARY OBSERVATION, labelled as one wherever it is
+	// rendered. A machine-ledger env has no reconciler and therefore no
+	// convergence record, which is a different fact from "nothing has
+	// converged yet" and is rendered as such (ConvergenceDetail).
+	//
+	// Nil means none is known. Never a failure: see the file header.
+	Convergence *envStatusConvergence `json:"convergence,omitempty"`
+	// ConvergenceDetail says why there is none to show. Two structural
+	// cases, which must not render alike: this env has no reconciler, or
+	// its control plane has not reported one yet.
+	ConvergenceDetail string `json:"convergence_detail,omitempty"`
 	// Sessions are the local stacks. Always non-nil when SessionsRead is
 	// true, so a consumer sees `[]` rather than `null` for "none
 	// running".
@@ -125,33 +151,34 @@ type envStatusBinding struct {
 	Note               string `json:"note,omitempty"`
 }
 
-// envStatusApply is the latest apply with its DERIVED state.
+// envStatusConvergence is what the reconciler did, as the control plane's
+// observer reported it.
 //
-// The state is derived here through release.DeriveApplyState rather than left
-// to the consumer, for the reason ledger_show.go gives: that is the one
-// implementation of the rule, and a UI that re-derived "is this abandoned"
-// from a deadline and a clock would eventually disagree with what forge
-// prints in a terminal.
-type envStatusApply struct {
-	ID       string `json:"id"`
-	State    string `json:"state"`
-	BundleID string `json:"bundle_id,omitempty"`
-	// BundleDigest is the config artifact's identity — the bundle IS its
-	// content, so this is the only field that says which config landed.
+// EVERY FIELD IS AN OBSERVATION, not a thing forge established, and the
+// renderer says so once rather than hedging each line. There is no identity
+// field for "who applied": the reconciler applied it, that is the only
+// answer, and a field inviting a reader to look for a human would misdescribe
+// the model.
+type envStatusConvergence struct {
+	// State is the reconciler's verdict as the control plane spells it.
+	// Whatever vocabulary it uses is passed through rather than remapped:
+	// forge is relaying another system's observation, and a translation
+	// layer here would eventually disagree with what the control plane's
+	// own surfaces show for the same env.
+	State string `json:"state"`
+	// BundleID and BundleDigest name WHAT it converged to. The bundle IS
+	// its content, so the digest is the field that actually says which
+	// config is running.
+	BundleID     string `json:"bundle_id,omitempty"`
 	BundleDigest string `json:"bundle_digest,omitempty"`
-	PromotionID  string `json:"promotion_id,omitempty"`
-	// AppliedBy and ReportedBy are the two identities, and they are NOT
-	// the same claim. AppliedBy is what the applier said about itself;
-	// ReportedBy is set by the backend from the credential on a hosted
-	// env, which makes it the only one of the two a reader may trust.
-	AppliedBy  string `json:"applied_by,omitempty"`
-	ReportedBy string `json:"reported_by,omitempty"`
-	StartedAt  string `json:"started_at,omitempty"`
-	// DeadlineAt is what "abandoned" is measured against, carried so a
-	// reader can see how long ago the answer stopped being expected.
-	DeadlineAt string `json:"deadline_at,omitempty"`
-	FinishedAt string `json:"finished_at,omitempty"`
-	Summary    string `json:"summary,omitempty"`
+	// PromotionID is the binding the reconciler was converging toward.
+	PromotionID string `json:"promotion_id,omitempty"`
+	// ObservedAt is when the control plane recorded this. NOT when the
+	// reconciler acted: it is an observation of convergence, and the gap
+	// between the two is why the field is named for the observation.
+	ObservedAt string `json:"observed_at,omitempty"`
+	// Detail is the reason on a failure, verbatim from the observer.
+	Detail string `json:"detail,omitempty"`
 }
 
 // envStatusSession is one presence row with the verdicts a renderer needs.
@@ -213,24 +240,30 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 	return readMachineEnvRecords(env, projectDir, target, now)
 }
 
-// readMachineEnvRecords reads the file ledger.
+// readMachineEnvRecords reads the file ledger: provenance and sessions.
 //
-// It reuses F7's ledgerShow rather than walking the store again. That reader
-// already joins each apply to its outcome, derives the state from ONE clock
-// reading, and applies the live/quiet verdicts to sessions — so `forge ledger
-// show` and `forge env status` cannot come to disagree about whether the same
-// apply is abandoned.
+// NO CONVERGENCE, BY CONSTRUCTION. An env with no control plane has no
+// reconciler converging it, so there is nothing to report and nothing to
+// read — forge does not apply to clusters, so it is not the witness. The
+// reason is stated rather than left as an absence, because "no reconciler for
+// this env" and "the reconciler has not reported" send a reader to different
+// places.
+//
+// It reuses F7's ledgerShow rather than walking the store again, so
+// `forge ledger show` and `forge env status` cannot come to disagree about
+// the same env's sessions.
 func readMachineEnvRecords(env, projectDir string, target sessionTarget, now time.Time) (envStatusRecords, error) {
 	store, err := openMachineLedger(projectDir)
 	if err != nil {
 		return envStatusRecords{}, err
 	}
 	out := envStatusRecords{
-		Source:         "machine ledger",
-		Location:       store.Dir(),
-		Sessions:       []envStatusSession{},
-		SessionsRead:   target.Report,
-		SessionsDetail: target.Skip,
+		Source:            "machine ledger",
+		Location:          store.Dir(),
+		Sessions:          []envStatusSession{},
+		SessionsRead:      target.Report,
+		SessionsDetail:    target.Skip,
+		ConvergenceDetail: "no reconciler for this env",
 	}
 	doc, err := ledgerShow(store, hostedProjectName(), env, now)
 	if err != nil {
@@ -251,10 +284,6 @@ func readMachineEnvRecords(env, projectDir string, target sessionTarget, now tim
 			rel, _ := store.Release(shown.Current.Release)
 			out.Provenance = provenanceOf(*shown.Current, rel)
 		}
-		if len(shown.Applies) > 0 {
-			latest := shown.Applies[0] // ledgerShow orders newest first
-			out.Apply = applyOf(latest.Apply, latest.Outcome, latest.State)
-		}
 	}
 	if target.Report {
 		for _, s := range doc.Sessions {
@@ -266,12 +295,22 @@ func readMachineEnvRecords(env, projectDir string, target sessionTarget, now tim
 
 // readHostedEnvRecords reads the control plane's Live view.
 //
-// ONE RPC, not four. GetLiveView already returns the current promotion, the
-// current release, the current bundle, the latest apply and the sessions for
-// every env of a project — assembled server-side against one snapshot. Four
-// per-env calls would be four round trips that could each see a different
-// instant, which is how a view ends up showing an apply of a bundle it also
-// says is not current.
+// ONE RPC, not several. GetLiveView already returns the current promotion,
+// the current release, the current bundle, the rollout phase, the observer's
+// drift record and the sessions for every env of a project — assembled
+// server-side against one snapshot. Several per-env calls would be several
+// round trips that could each see a different instant, which is how a view
+// ends up describing a convergence onto a bundle it also says is not current.
+//
+// IT DELIBERATELY IGNORES row.LatestApply. That field carries the records
+// forge's own BeginApply / FinishApply wrote, and forge no longer applies to
+// clusters — a reconciler does. So those records describe work forge did not
+// do, the seams that write them are being deleted, and a reader built on them
+// would show a "latest apply" that stops updating the moment the unified
+// model lands. The convergence shown here comes from the control plane's OWN
+// computation (the rollout phase) and its OWN observer (the drift record),
+// both of which are secondary observations of what the reconciler actually
+// did.
 func readHostedEnvRecords(ctx context.Context, env string, entities *KCLEntities, now time.Time) (envStatusRecords, error) {
 	ledger, err := ledgerForEntities(env, entities, projectDirForKCL())
 	if err != nil {
@@ -297,19 +336,7 @@ func readHostedEnvRecords(ctx context.Context, env string, entities *KCLEntities
 		if row.CurrentPromotion != nil {
 			out.Provenance = provenanceOf(*row.CurrentPromotion, row.CurrentRelease)
 		}
-		if row.LatestApply != nil {
-			out.Apply = applyOf(row.LatestApply.Apply, row.LatestApply.Outcome, row.LatestApply.State)
-			if row.CurrentBundle != nil && row.CurrentBundle.ID == row.LatestApply.Apply.BundleID {
-				// Only when the ids MATCH. The latest apply may
-				// be of a bundle that is not the current one —
-				// that is the whole point of carrying both —
-				// and pasting the current bundle's digest onto
-				// a different apply would state that the
-				// running config is one forge never said had
-				// landed.
-				out.Apply.BundleDigest = row.CurrentBundle.Digest
-			}
-		}
+		out.Convergence, out.ConvergenceDetail = convergenceOf(row)
 		// Sessions come back only for a LOCAL env; the server's trigger
 		// confines them. So the presence of the row IS the answer to
 		// "were sessions read", and a non-local env reports none
@@ -363,28 +390,49 @@ func promoterName(a release.Actor) string {
 	return ""
 }
 
-// applyOf projects an apply, its outcome and its derived state onto the view.
-func applyOf(a release.Apply, outcome *release.ApplyOutcome, state release.ApplyState) *envStatusApply {
-	out := &envStatusApply{
-		ID:          a.ID,
-		State:       string(state),
-		BundleID:    a.BundleID,
-		PromotionID: a.PromotionID,
-		AppliedBy:   a.AppliedBy,
+// convergenceOf projects the control plane's own observations of one env onto
+// the view, or says why there is nothing to project.
+//
+// It reads the rollout PHASE (the control plane's server-side computation)
+// and the observer's DRIFT record. Neither is written by forge, which is the
+// property that makes them usable under the unified-apply model: forge is
+// relaying what another system saw, not reporting work it claims to have
+// done.
+//
+// WHAT IT CONVERGED TO comes from the CURRENT BUNDLE, which is the right
+// source here and was not under the old model: the reconciler's whole job is
+// to converge the env to its promoted bundle, so the bundle the control plane
+// calls current IS the target, and the phase says how far that got. There is
+// no second bundle id to reconcile against — which is why dropping
+// LatestApply loses no information a reader had.
+func convergenceOf(row LiveEnvironment) (*envStatusConvergence, string) {
+	phase := rolloutPhaseName(row.Phase)
+	// "unspecified" is the control plane saying it has nothing to report —
+	// an env it knows about but whose reconciler has not acted or has not
+	// been observed. That is the "not yet reported" case, which must not
+	// render as a state.
+	if phase == "" || phase == "unspecified" {
+		return nil, "not yet reported by the control plane"
 	}
-	if !a.CreatedAt.IsZero() {
-		out.StartedAt = a.CreatedAt.UTC().Format(time.RFC3339)
+	out := &envStatusConvergence{State: phase}
+	if row.CurrentBundle != nil {
+		out.BundleID, out.BundleDigest = row.CurrentBundle.ID, row.CurrentBundle.Digest
 	}
-	if !a.DeadlineAt.IsZero() {
-		out.DeadlineAt = a.DeadlineAt.UTC().Format(time.RFC3339)
+	if row.CurrentPromotion != nil {
+		out.PromotionID = row.CurrentPromotion.ID
 	}
-	if outcome != nil {
-		out.ReportedBy, out.Summary = outcome.ReportedBy, outcome.Summary
-		if !outcome.FinishedAt.IsZero() {
-			out.FinishedAt = outcome.FinishedAt.UTC().Format(time.RFC3339)
+	// The drift record carries the observer's own timestamp and reason.
+	// Used for WHEN and WHY only — its in_sync/drifted verdict is a
+	// different question from the phase and is already reported by the
+	// verify half of this command, so restating it here would give a
+	// reader two places to look for one answer.
+	if row.Drift != nil {
+		if row.Drift.ObservedAt != nil {
+			out.ObservedAt = row.Drift.ObservedAt.UTC().Format(time.RFC3339)
 		}
+		out.Detail = row.Drift.Detail
 	}
-	return out
+	return out, ""
 }
 
 // sessionOf projects a presence row onto the view.
@@ -466,28 +514,26 @@ func writeEnvStatusRecords(w io.Writer, r envStatusRecords) {
 		fmt.Fprintf(w, "  bound by      %s\n", boundByLine(p.BoundBy))
 	}
 
-	if r.Apply == nil {
-		fmt.Fprintf(w, "  apply         no apply recorded\n")
+	if r.Convergence == nil {
+		// One plain line, and it names WHICH of the two structural
+		// reasons applies. "No reconciler for this env" and "the
+		// control plane has not reported" are different facts, and a
+		// reader who confuses them goes looking for the wrong thing.
+		fmt.Fprintf(w, "  convergence   %s\n", emptyAs(r.ConvergenceDetail, "not reported"))
 	} else {
-		a := *r.Apply
-		fmt.Fprintf(w, "  apply         %s %s\n", strings.ToUpper(a.State), applyWhen(a))
-		if a.BundleDigest != "" {
-			fmt.Fprintf(w, "                bundle %s (%s)\n", a.BundleID, a.BundleDigest)
-		} else if a.BundleID != "" {
-			fmt.Fprintf(w, "                bundle %s\n", a.BundleID)
+		c := *r.Convergence
+		fmt.Fprintf(w, "  convergence   %s%s\n", strings.ToUpper(c.State), convergenceWhen(c))
+		if c.BundleDigest != "" {
+			fmt.Fprintf(w, "                bundle %s (%s)\n", c.BundleID, c.BundleDigest)
+		} else if c.BundleID != "" {
+			fmt.Fprintf(w, "                bundle %s\n", c.BundleID)
 		}
-		if who := applyWho(a); who != "" {
-			fmt.Fprintf(w, "                %s\n", who)
-		}
-		if a.State == string(release.ApplyAbandoned) {
-			// Named rather than left to inference. An abandoned
-			// apply is the single most misread state here: it is
-			// not a failure report, it is the ABSENCE of one past
-			// the deadline, and the bytes may well have landed.
-			fmt.Fprintf(w, "                no outcome arrived by %s — whether it landed is unknown from the records alone\n", a.DeadlineAt)
-		}
-		if a.Summary != "" {
-			fmt.Fprintf(w, "                %s\n", a.Summary)
+		// Said ONCE, for the whole block, rather than hedged per line.
+		// Every field above is something another system saw; forge did
+		// not apply this and is not the witness.
+		fmt.Fprintf(w, "                observed by the control plane (forge does not apply; a reconciler converges this env)\n")
+		if c.Detail != "" {
+			fmt.Fprintf(w, "                %s\n", c.Detail)
 		}
 	}
 
@@ -562,28 +608,15 @@ func boundByLine(b envStatusBinding) string {
 	return strings.Join(parts, ", ")
 }
 
-func applyWhen(a envStatusApply) string {
-	if a.FinishedAt != "" {
-		return "at " + a.FinishedAt
+// convergenceWhen names the OBSERVATION time, not an action time. A
+// convergence forge can see is one the control plane recorded seeing, and
+// labelling it "at T" would invite a reader to treat T as when the reconciler
+// acted.
+func convergenceWhen(c envStatusConvergence) string {
+	if c.ObservedAt == "" {
+		return ""
 	}
-	if a.StartedAt != "" {
-		return "started " + a.StartedAt
-	}
-	return ""
-}
-
-// applyWho renders the two identities, and says which one is authority.
-func applyWho(a envStatusApply) string {
-	switch {
-	case a.ReportedBy != "":
-		// The backend set this from the credential, so it is the one a
-		// reader may trust. Said explicitly, because the other field
-		// looks identical and is not.
-		return "reported by " + a.ReportedBy + " (server-set identity)"
-	case a.AppliedBy != "":
-		return "applied by " + a.AppliedBy + " (as the applier reported itself)"
-	}
-	return ""
+	return ", observed " + c.ObservedAt
 }
 
 func sessionLine(s envStatusSession) string {

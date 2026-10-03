@@ -78,14 +78,21 @@ WHAT ONE ENV'S REPORT CARRIES:
   * LEDGER FRESHNESS — whether this checkout's copy of the promotion log is
     the newest one;
   * RECORDS — the PROVENANCE of the bound release (tree, commit, branch,
-    dirty) and how the binding was made; the LATEST APPLY of it (in flight /
-    succeeded / failed / abandoned past its deadline, who reported it, which
-    bundle, when); and the LOCAL SESSIONS running it.
+    dirty) and how the binding was made; the CONVERGENCE of it (what the
+    reconciler did, onto which bundle, when it was observed); and the LOCAL
+    SESSIONS running it.
 
-RECORDS DESCRIBE, THEY DO NOT JUDGE. An abandoned apply or an unreadable
-records store never changes the exit code — the cluster comparison above
-already has an opinion about whether the bytes landed. An environment with no
-records shows "no apply recorded", which is an answer, never an error.
+CONVERGENCE IS AN OBSERVATION, NOT FORGE'S REPORT. forge never applies to a
+cluster — a reconciler converges each environment to its promoted bundle — so
+this is read from the environment's control plane and labelled as what the
+control plane observed. An environment with no control plane has no reconciler
+and shows one plain line saying so. If a control plane has not reported yet,
+the report says that rather than inventing a state.
+
+RECORDS DESCRIBE, THEY DO NOT JUDGE. An unreadable records store never
+changes the exit code — the cluster comparison above already has an opinion
+about whether the bytes landed. An environment with no records shows the empty
+state plainly, which is an answer, never an error.
 
 LOCAL SESSIONS are PRESENCE ONLY: one row per worktree per machine, recorded
 best-effort by ` + "`forge env up`" + `, and never a promotion, a deploy target or an

@@ -42,7 +42,7 @@ func TestCollectEnvRecordsFoldsAReadFailureIntoTheDocument(t *testing.T) {
 	if !strings.Contains(out.String(), "could not read the records") {
 		t.Fatalf("the failure does not read as a failure:\n%s", out.String())
 	}
-	if strings.Contains(out.String(), "no apply recorded") {
+	if strings.Contains(out.String(), "no reconciler for this env") {
 		t.Fatalf("a read failure rendered as an empty result — the one thing it must never do:\n%s", out.String())
 	}
 }
@@ -52,14 +52,15 @@ func TestCollectEnvRecordsFoldsAReadFailureIntoTheDocument(t *testing.T) {
 func TestWriteEnvStatusRecordsEmptyStateIsPlain(t *testing.T) {
 	var out strings.Builder
 	writeEnvStatusRecords(&out, envStatusRecords{
-		Source:       "machine ledger",
-		Location:     "/tmp/ledger",
-		Sessions:     []envStatusSession{},
-		SessionsRead: true,
+		Source:            "machine ledger",
+		Location:          "/tmp/ledger",
+		Sessions:          []envStatusSession{},
+		SessionsRead:      true,
+		ConvergenceDetail: "no reconciler for this env",
 	})
 	got := out.String()
 	for _, want := range []string{
-		"no apply recorded",
+		"convergence   no reconciler for this env",
 		"provenance    not recorded",
 		"no local stacks running",
 	} {
@@ -95,37 +96,141 @@ func TestWriteEnvStatusRecordsDistinguishesNotReadFromNone(t *testing.T) {
 	}
 }
 
-// TestWriteEnvStatusRecordsNamesAnAbandonedApply pins the state the design
-// calls out: no outcome arrived by the deadline, which is NOT a failure
-// report and NOT a success.
-func TestWriteEnvStatusRecordsNamesAnAbandonedApply(t *testing.T) {
+// TestWriteEnvStatusRecordsLabelsConvergenceAsObserved is the
+// unified-apply-model assertion: forge never applies, so a convergence it
+// shows must be attributed to the system that did.
+func TestWriteEnvStatusRecordsLabelsConvergenceAsObserved(t *testing.T) {
 	var out strings.Builder
 	writeEnvStatusRecords(&out, envStatusRecords{
 		Source:       "control plane",
 		Location:     "https://cp.example.com",
 		SessionsRead: true,
 		Sessions:     []envStatusSession{},
-		Apply: &envStatusApply{
-			ID:           "ap-1",
-			State:        string(release.ApplyAbandoned),
+		Convergence: &envStatusConvergence{
+			State:        "degraded",
 			BundleID:     "bd-1",
 			BundleDigest: "sha256:abc",
-			ReportedBy:   "ci@example.com",
-			StartedAt:    recordsNow().Format(time.RFC3339),
-			DeadlineAt:   recordsNow().Add(10 * time.Minute).Format(time.RFC3339),
+			ObservedAt:   recordsNow().Format(time.RFC3339),
+			Detail:       "deployment/api: 1 of 3 replicas available",
 		},
 	})
 	got := out.String()
-	if !strings.Contains(got, "ABANDONED") {
-		t.Errorf("the abandoned state is not shown:\n%s", got)
+	if !strings.Contains(got, "DEGRADED") {
+		t.Errorf("the convergence state is not shown:\n%s", got)
 	}
-	if !strings.Contains(got, "whether it landed is unknown") {
-		t.Errorf("abandoned rendered without saying what it means — the most misread state here:\n%s", got)
+	if !strings.Contains(got, "observed by the control plane") {
+		t.Errorf("convergence is not attributed to the control plane — forge did not apply it:\n%s", got)
 	}
-	// The server-set identity must be labelled as such: applied_by and
-	// reported_by look identical and only one is authority.
-	if !strings.Contains(got, "server-set identity") {
-		t.Errorf("reported_by is not labelled as the server-set identity:\n%s", got)
+	if !strings.Contains(got, "a reconciler converges this env") {
+		t.Errorf("the report does not say a reconciler did the work:\n%s", got)
+	}
+	// The observation time must be labelled as such, not as when the
+	// reconciler acted.
+	if !strings.Contains(got, "observed "+recordsNow().Format(time.RFC3339)) {
+		t.Errorf("the timestamp is not labelled as an observation time:\n%s", got)
+	}
+	if !strings.Contains(got, "sha256:abc") {
+		t.Errorf("the bundle digest — the only field that says which config is running — is missing:\n%s", got)
+	}
+}
+
+// TestWriteEnvStatusRecordsSeparatesNoReconcilerFromNotReported pins the two
+// structural reasons there is no convergence. They send a reader to different
+// places, so they must not render alike.
+func TestWriteEnvStatusRecordsSeparatesNoReconcilerFromNotReported(t *testing.T) {
+	render := func(detail string) string {
+		var out strings.Builder
+		writeEnvStatusRecords(&out, envStatusRecords{
+			Source: "machine ledger", Sessions: []envStatusSession{},
+			SessionsRead: true, ConvergenceDetail: detail,
+		})
+		return out.String()
+	}
+	none := render("no reconciler for this env")
+	pending := render("not yet reported by the control plane")
+
+	if !strings.Contains(none, "no reconciler for this env") {
+		t.Errorf("the no-reconciler case is not named:\n%s", none)
+	}
+	if !strings.Contains(pending, "not yet reported by the control plane") {
+		t.Errorf("the not-yet-reported case is not named:\n%s", pending)
+	}
+	if none == pending {
+		t.Error("the two structural reasons render identically")
+	}
+	for _, got := range []string{none, pending} {
+		if strings.Contains(strings.ToLower(got), "error") {
+			t.Errorf("a missing convergence reads as an error:\n%s", got)
+		}
+	}
+}
+
+// TestConvergenceOfIgnoresForgeWrittenApplyRecords is the regression guard
+// for the decision itself.
+//
+// row.LatestApply carries the records forge's own BeginApply / FinishApply
+// wrote. forge no longer applies to clusters, those seams are being deleted,
+// and a reader built on them would silently stop updating. So a row whose
+// ONLY apply information is LatestApply must yield no convergence at all.
+func TestConvergenceOfIgnoresForgeWrittenApplyRecords(t *testing.T) {
+	now := recordsNow()
+	row := LiveEnvironment{
+		Env: release.EnvRecord{Name: "prod"},
+		// A forge-written apply record, fully populated, and a phase
+		// the control plane never computed.
+		LatestApply: &ApplyRecord{
+			Apply: release.Apply{
+				ID: "ap-forge", Env: "prod", BundleID: "bd-1",
+				CreatedAt: now.Add(-time.Hour), DeadlineAt: now.Add(-time.Minute),
+			},
+			State: release.ApplyAbandoned,
+		},
+		CurrentBundle: &release.BundleRecord{ID: "bd-1", Digest: "sha256:abc"},
+	}
+	got, detail := convergenceOf(row)
+	if got != nil {
+		t.Fatalf("convergenceOf read a forge-written apply record: %+v", got)
+	}
+	if detail != "not yet reported by the control plane" {
+		t.Fatalf("detail = %q, want the not-yet-reported reason", detail)
+	}
+}
+
+// TestConvergenceOfReadsThePhaseAndTheObserver pins what it DOES read: the
+// control plane's own rollout computation, and its observer's timestamp and
+// reason. Neither is written by forge.
+func TestConvergenceOfReadsThePhaseAndTheObserver(t *testing.T) {
+	now := recordsNow()
+	observed := now.Add(-2 * time.Minute)
+	row := LiveEnvironment{
+		Env:              release.EnvRecord{Name: "prod"},
+		Phase:            wireRolloutPhaseSucceeded,
+		CurrentBundle:    &release.BundleRecord{ID: "bd-9", Digest: "sha256:beef"},
+		CurrentPromotion: &release.Promotion{ID: "pr-3", Env: "prod", Release: "v2.0.0"},
+		Drift: &LiveDrift{
+			State: "in_sync", ObservedAt: &observed, Detail: "all objects match",
+		},
+	}
+	got, detail := convergenceOf(row)
+	if got == nil {
+		t.Fatalf("no convergence for a row carrying a computed phase (detail %q)", detail)
+	}
+	if detail != "" {
+		t.Errorf("detail = %q, want empty when a convergence is present", detail)
+	}
+	if got.State != "succeeded" {
+		t.Errorf("state = %q, want the phase name", got.State)
+	}
+	// The reconciler converges the env to its PROMOTED BUNDLE, so the
+	// current bundle is the target and needs no second id to agree with.
+	if got.BundleID != "bd-9" || got.BundleDigest != "sha256:beef" {
+		t.Errorf("bundle = %s/%s, want the current bundle", got.BundleID, got.BundleDigest)
+	}
+	if got.PromotionID != "pr-3" {
+		t.Errorf("promotion = %q, want the current promotion", got.PromotionID)
+	}
+	if got.ObservedAt != observed.UTC().Format(time.RFC3339) {
+		t.Errorf("observed_at = %q, want the observer's timestamp", got.ObservedAt)
 	}
 }
 
@@ -222,8 +327,9 @@ func TestEnvStatusDocumentRecordsAreAdditive(t *testing.T) {
 }
 
 // TestReadMachineEnvRecordsReadsWhatTheLedgerHolds is the end-to-end machine
-// path: a promotion, a release with provenance, an apply and a session all
-// come back through the SAME reader `forge ledger show` uses.
+// path: a promotion, a release with provenance and a session all come back
+// through the SAME reader `forge ledger show` uses — and NO convergence,
+// because an env with no control plane has no reconciler.
 func TestReadMachineEnvRecordsReadsWhatTheLedgerHolds(t *testing.T) {
 	dir := newLedgerTestProject(t, "f6b-records")
 	store := testStore(t, dir)
@@ -250,13 +356,6 @@ func TestReadMachineEnvRecordsReadsWhatTheLedgerHolds(t *testing.T) {
 		Resolved:   map[string]string{"ghcr.io/example/app": "sha256:" + strings.Repeat("a", 64)},
 		PromotedBy: release.Actor{User: "alice"}, PromotedAt: now.Add(-30 * time.Minute),
 	})
-	apply, err := store.BeginApply(release.Apply{
-		Env: "dev", BundleID: "bd-1", AppliedBy: "forge",
-		CreatedAt: now.Add(-10 * time.Minute), DeadlineAt: now.Add(-5 * time.Minute),
-	}, false)
-	if err != nil {
-		t.Fatalf("begin apply: %v", err)
-	}
 	if err := store.ReportSession(release.LocalSession{
 		ID: sessionIDFor("dev", "host-abc", "wt-1"), Env: "dev",
 		Worktree:   release.Worktree{Key: "wt-1", Label: "feat-x", Host: "host-abc"},
@@ -282,16 +381,14 @@ func TestReadMachineEnvRecordsReadsWhatTheLedgerHolds(t *testing.T) {
 	if got.Provenance.BoundBy.PromotedBy != "alice" {
 		t.Errorf("bound_by.promoted_by = %q, want alice", got.Provenance.BoundBy.PromotedBy)
 	}
-	if got.Apply == nil {
-		t.Fatal("no apply for an env with one recorded")
+	// NO CONVERGENCE on the machine ledger, whatever else the store holds.
+	// forge does not apply to clusters, so it is not a witness, and this
+	// env has no reconciler to be one either.
+	if got.Convergence != nil {
+		t.Fatalf("the machine ledger produced a convergence record: %+v", got.Convergence)
 	}
-	if got.Apply.ID != apply.ID {
-		t.Errorf("apply id = %q, want %q", got.Apply.ID, apply.ID)
-	}
-	// The deadline passed with no outcome, so the DERIVED state is
-	// abandoned — not stored, derived, through the one implementation.
-	if got.Apply.State != string(release.ApplyAbandoned) {
-		t.Errorf("apply state = %q, want abandoned (deadline passed with no outcome)", got.Apply.State)
+	if got.ConvergenceDetail != "no reconciler for this env" {
+		t.Errorf("convergence detail = %q, want the no-reconciler reason", got.ConvergenceDetail)
 	}
 	if !got.SessionsRead || len(got.Sessions) != 1 {
 		t.Fatalf("sessions_read = %v, sessions = %d, want true and 1", got.SessionsRead, len(got.Sessions))
@@ -311,7 +408,7 @@ func TestReadMachineEnvRecordsOnAnEmptyLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an empty ledger is an answer, not an error: %v", err)
 	}
-	if got.Provenance != nil || got.Apply != nil {
+	if got.Provenance != nil || got.Convergence != nil {
 		t.Fatalf("an empty ledger produced records: %+v", got)
 	}
 	if got.Sessions == nil {

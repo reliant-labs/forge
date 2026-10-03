@@ -121,7 +121,7 @@ type envStatusDocument struct {
 	// that may not be the one this env is bound to.
 	Ledger *ledgerFreshnessReport `json:"ledger,omitempty"`
 	// Records is the deploy-source-of-truth half: the bound release's
-	// PROVENANCE, the LATEST APPLY of it, and the LOCAL SESSIONS running
+	// PROVENANCE, the reconciler's CONVERGENCE of it, and the LOCAL SESSIONS running
 	// it (doc §6.3, §7.4). Nested for the same reason Runtime is — a
 	// different question with its own vocabulary — and ADDITIVE: nothing
 	// above it is renamed or repurposed, so `forge gate record --from`

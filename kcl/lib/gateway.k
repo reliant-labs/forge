@@ -430,13 +430,273 @@ _lookup_gateway = lambda gateways: [any], gateway_name: str -> any {
     _matches[0] if _matches else None
 }
 
-render_http_route = lambda route: any, gateways: [any], namespace: str -> [any] {
+# ---------------------------------------------------------------------------
+# Backend resolution — where a route's traffic actually goes.
+#
+# A route names its backend as a SERVICE (a name, used verbatim) or as a
+# WORKLOAD (resolved per env from the runtime that env binds it to). The
+# workload case is the ADR-0003 F2 primitive: control-plane declares
+# `/auth/token -> admin-server` ONCE and it renders as the Service in prod,
+# where admin-server is cluster-bound, and as the HOST PROCESS in dev,
+# where it is not.
+#
+# WHY A `Backend` CRD FOR THE HOST CASE. Envoy Gateway refuses an
+# ExternalName Service as a backendRef outright — "Service ... is of type
+# ExternalName, which is not supported as a backend; use an Envoy Gateway
+# Backend resource with an FQDN endpoint instead" (verified against EG
+# v1.9.2). So the host backend is a gateway.envoyproxy.io/v1alpha1 Backend
+# with an fqdn endpoint at the cluster's host gateway. Nothing
+# machine-specific is rendered: the host is the constant host.k3d.internal
+# and the port is the workload's own declared listen_port.
+# ---------------------------------------------------------------------------
+
+# The k3d kubectl-context prefix. A route lands on a LOCAL cluster when the
+# context it lands on is a k3d one — that is the whole signal, and it is
+# declarative: k3d's own convention is `k3d-<name>`, which forge.Cluster
+# denormalizes into `.context` and a ClusterTarget spells directly.
+_K3D_CONTEXT_PREFIX = "k3d-"
+
+# A host-process backend is only reachable from a cluster running on the
+# SAME machine. On a cloud cluster `host.k3d.internal` resolves to nothing
+# (or worse, to a node), so the route is refused rather than rendered into
+# a 503 nobody can explain.
+_is_local_cluster = lambda context: str -> bool {
+    context.startswith(_K3D_CONTEXT_PREFIX)
+}
+
+# The kubectl context a route lands on: its own cluster pin, else its
+# gateway's, else the env's primary cluster_target. Mirrors
+# _route_cluster_context, which answers the same question for the routing
+# LABEL; this one needs the fallback too, because an unpinned route in a
+# single-cluster env still lands somewhere.
+_route_landing_context = lambda route: any, gw: any, bundle: any -> str {
+    _pinned = _route_cluster_context(route, gw)
+    _target = _bundle_cluster_target(bundle)
+    _pinned if _pinned else (_target.cluster if _target else "")
+}
+
+# The hostname a POD in the landing cluster dials to reach the machine
+# running it. Declared per target (ClusterTarget.host_gateway), defaulting
+# to k3d's host.k3d.internal — never a literal invented here.
+_route_host_gateway = lambda bundle: any -> str {
+    _target = _bundle_cluster_target(bundle)
+    _target.host_gateway if _target and _target.host_gateway else "host.k3d.internal"
+}
+
+# `bundle` is Undefined when a consumer calls the public route builder
+# without it, which is legal for a `service` backend. Reading
+# `.workloads` off Undefined is an EvaluationError, not a falsy value, so
+# the Undefined check has to gate the attribute access itself rather than
+# ride along in the same expression.
+_bundle_workloads = lambda bundle: any -> [any] {
+    bundle.workloads if bundle is not Undefined and bundle else []
+}
+
+_bundle_cluster_target = lambda bundle: any -> any {
+    _ct = bundle.cluster_target if bundle is not Undefined and bundle else None
+    _ct if _ct else None
+}
+
+_lookup_workload = lambda bundle: any, name: str -> any {
+    _matches = [w for w in _bundle_workloads(bundle) if w.name == name]
+    _matches[0] if _matches else None
+}
+
+# A workload's exposed ports, as plain ints. Used for inference and for
+# the "which port did you mean" refusal.
+_workload_ports = lambda w: any -> [int] {
+    [p.port for p in (w.ports or [])] if w else []
+}
+
+_host_listen_ports = lambda rt: any -> [int] {
+    rt.listen_ports if rt and rt.listen_ports is not Undefined else []
+}
+
+# The name a route's HOST backend renders as. Derived from the route so two
+# routes to the same host workload cannot collide on one Backend object
+# whose port only one of them meant.
+_host_backend_name = lambda route: any -> str {
+    "${route.name}-host"
+}
+
+# THE RESOLUTION. Returns the backendRef entry for the route's rule, and
+# asserts — naming the route, the workload and its runtime — when the
+# target cannot be reached from where the route lands.
+#
+# `kind` is omitted for a Service backendRef (Gateway API defaults to
+# Service) and stated explicitly for the EG Backend.
+_backend_ref = lambda route: any, gw: any, bundle: any -> any {
+    _wl_name = route.workload if route.workload else ""
+    _w = _lookup_workload(bundle, _wl_name) if _wl_name else None
+    _rt = _w.runtime if _w else None
+    _rt_type = _rt.type if _rt else ""
+    _context = _route_landing_context(route, gw, bundle)
+
+    # A workload-backed route needs the Bundle to resolve against. The
+    # public re-exported builders accept a route + gateways only, which is
+    # enough for a `service` backend; a `workload` backend is a statement
+    # about the ENV, so it needs the env.
+    assert not (_wl_name and (bundle is Undefined or not bundle)), \
+        "route '${route.name}' targets workload '${_wl_name}', which is resolved from the environment — render it through forge.render(bundle), or pass the bundle to the route builder. A `service` backend needs no bundle; a `workload` backend is a statement about where that workload runs in THIS env"
+
+    assert not (_wl_name and bundle is not Undefined and bundle and not _w), \
+        "route '${route.name}' targets workload '${_wl_name}', which this env declares no workload for. Declare it in Bundle.workloads, or name a Service directly with `service = \"...\"`. Workloads this env has: ${[w.name for w in _bundle_workloads(bundle)]}"
+
+    assert not (_w and not _rt), \
+        "route '${route.name}' targets workload '${_wl_name}', which binds no runtime in this env, so there is nowhere to send the traffic. Bind it, e.g. `wl.${_wl_name} | {runtime = forge.OnCluster {target = ...}}` or `forge.OnHost {}`"
+
+    # OnHost is reachable ONLY from a cluster on the same machine.
+    assert not (_rt_type == "host" and not _is_local_cluster(_context)), \
+        "route '${route.name}' targets workload '${_wl_name}', which runs on the HOST (forge.OnHost) while the route lands on cluster context '${_context}', which is not a local k3d cluster. A host process is reachable from a cluster running on the same machine (via its host gateway) and from nowhere else — bind '${_wl_name}' to forge.OnCluster in this env, or declare this route only in the envs where it runs on the host"
+
+    # Every other runtime has no address a gateway can route to.
+    assert not (_rt_type in ["compose", "hosted", "build-only"]), \
+        "route '${route.name}' targets workload '${_wl_name}', whose runtime is ${_rt_type} — there is no address a Gateway can route to. A route's backend must be a cluster workload (forge.OnCluster, reached via its Service) or a host process on a local k3d cluster (forge.OnHost, reached via the cluster's host gateway). ${'An OnHosted workload is addressed by the control plane, not by a route in this env' if _rt_type == 'hosted' else ('A compose service publishes its ports on the host, so bind it to forge.OnHost if a route must reach it' if _rt_type == 'compose' else 'A build-only workload never runs')}"
+
+    _cluster_ports = _workload_ports(_w) if _rt_type == "cluster" else []
+    _listen = _host_listen_ports(_rt) if _rt_type == "host" else []
+    _candidates = _cluster_ports if _rt_type == "cluster" else _listen
+
+    # Port inference: unambiguous only when the target exposes exactly one.
+    assert not (_w and route.port == Undefined and len(_candidates) == 0), \
+        "route '${route.name}' targets workload '${_wl_name}' and sets no `port`, and that workload declares no port to infer one from. ${'Declare `listen_ports` on its forge.OnHost runtime (the host port it binds, from fp.allocate_port)' if _rt_type == 'host' else 'Declare `ports` on the workload'}, or set `port` on the route"
+
+    assert not (_w and route.port == Undefined and len(_candidates) > 1), \
+        "route '${route.name}' targets workload '${_wl_name}', which exposes ${len(_candidates)} ports (${_candidates}), so `port` cannot be inferred — set it on the route to say which one this route reaches"
+
+    _port = route.port if route.port != Undefined else (_candidates[0] if _candidates else 0)
+
+    # A Service backendRef states no `kind` — Gateway API defaults to
+    # Service. The host backend states group+kind, and carries no port:
+    # the port lives on the Backend's own fqdn endpoint.
+    _service_ref = {name = route.service, port = _port}
+    _cluster_ref = {name = _wl_name, port = _port}
+    _host_ref = {group = "gateway.envoyproxy.io", kind = "Backend", name = _host_backend_name(route)}
+    _workload_ref = _cluster_ref if _rt_type == "cluster" else _host_ref
+
+    _service_ref if not _wl_name else _workload_ref
+}
+
+# True when this route's backend is the host process — the case that needs
+# a Backend object rendered beside the route.
+_needs_host_backend = lambda route: any, gw: any, bundle: any -> bool {
+    _w = _lookup_workload(bundle, route.workload) if route.workload else None
+    _rt = _w.runtime if _w else None
+    True if _rt and _rt.type == "host" else False
+}
+
+# The EG Backend for a host-process target: one fqdn endpoint at the
+# cluster's host gateway, on the port the workload itself declares.
+_render_host_backend = lambda route: any, gw: any, bundle: any, namespace: str -> [any] {
+    _w = _lookup_workload(bundle, route.workload)
+    _rt = _w.runtime
+    _listen = _host_listen_ports(_rt)
+    _port = route.port if route.port != Undefined else (_listen[0] if _listen else 0)
+    [{
+        apiVersion = "gateway.envoyproxy.io/v1alpha1"
+        kind = "Backend"
+        metadata = {
+            name = _host_backend_name(route)
+            namespace = namespace
+            labels = _managed_labels(route.name) | _cluster_label(_route_cluster_context(route, gw))
+        }
+        spec = {
+            endpoints = [
+                {
+                    fqdn = {
+                        hostname = _route_host_gateway(bundle)
+                        port = _port
+                    }
+                }
+            ]
+        }
+    }]
+}
+
+# ---------------------------------------------------------------------------
+# Traffic policy — one BackendTrafficPolicy per route that declares one.
+# Field names are Envoy Gateway v1.9.2's, verified against the CRD.
+# ---------------------------------------------------------------------------
+
+_render_retry = lambda r: any -> any {
+    {
+        numRetries = r.attempts
+        retryOn = {triggers = r.on}
+        if r.per_try_timeout != Undefined:
+            perRetry = {timeout = r.per_try_timeout}
+    }
+}
+
+_render_active_health_check = lambda hc: any -> any {
+    {
+        type = "HTTP"
+        interval = hc.interval
+        timeout = hc.timeout
+        healthyThreshold = hc.healthy_threshold
+        unhealthyThreshold = hc.unhealthy_threshold
+        http = {
+            path = hc.path
+            if hc.expected_statuses != Undefined:
+                expectedStatuses = hc.expected_statuses
+        }
+    }
+}
+
+_render_passive_health_check = lambda od: any -> any {
+    {
+        consecutive5XxErrors = od.consecutive_5xx
+        consecutiveGatewayErrors = od.consecutive_gateway_errors
+        interval = od.interval
+        baseEjectionTime = od.base_ejection_time
+        maxEjectionPercent = od.max_ejection_percent
+    }
+}
+
+# `kind` is the route's own kind so the policy targets the route it was
+# declared on — a BackendTrafficPolicy attaches by targetRef, and the
+# policy and its target must be in the same namespace.
+render_route_traffic_policy = lambda route: any, gw: any, route_kind: str, namespace: str -> [any] {
+    _t = route.traffic
+    _hc = _t.health_check if _t and _t.health_check else None
+    _od = _t.outlier_detection if _t and _t.outlier_detection else None
+    [{
+        apiVersion = "gateway.envoyproxy.io/v1alpha1"
+        kind = "BackendTrafficPolicy"
+        metadata = {
+            name = route.name
+            namespace = namespace
+            labels = _managed_labels(route.name) | _cluster_label(_route_cluster_context(route, gw))
+        }
+        spec = {
+            targetRefs = [
+                {
+                    group = "gateway.networking.k8s.io"
+                    kind = route_kind
+                    name = route.name
+                }
+            ]
+            if _t.retries != Undefined:
+                retry = _render_retry(_t.retries)
+            if _t.timeout != Undefined:
+                timeout = {http = {requestTimeout = _t.timeout}}
+            if _hc or _od:
+                healthCheck = {
+                    if _hc:
+                        active = _render_active_health_check(_hc)
+                    if _od:
+                        passive = _render_passive_health_check(_od)
+                }
+        }
+    }] if _t else []
+}
+
+render_http_route = lambda route: any, gateways: [any], namespace: str, bundle: any = Undefined -> [any] {
     _gw = _lookup_gateway(gateways, route.gateway)
     _listener = _lookup_listener(_gw, route.listener) if _gw else None
     _host = _route_host(route, _gw, _listener) if _gw else ""
     _path = _route_path(route, _listener) if _listener else "/"
     _labels = _managed_labels(route.name) | _cluster_label(_route_cluster_context(route, _gw))
-    [{
+    ([{
         apiVersion = "gateway.networking.k8s.io/v1"
         kind = "HTTPRoute"
         metadata = {
@@ -463,19 +723,15 @@ render_http_route = lambda route: any, gateways: [any], namespace: str -> [any] 
                             }
                         }
                     ]
-                    backendRefs = [
-                        {
-                            name = route.service
-                            port = route.port
-                        }
-                    ]
+                    backendRefs = [_backend_ref(route, _gw, bundle)]
                 }
             ]
         }
-    }] if _gw and _listener else []
+    }] + (_render_host_backend(route, _gw, bundle, namespace) if _needs_host_backend(route, _gw, bundle) else []) \
+       + render_route_traffic_policy(route, _gw, "HTTPRoute", namespace)) if _gw and _listener else []
 }
 
-render_grpc_route = lambda route: any, gateways: [any], namespace: str -> [any] {
+render_grpc_route = lambda route: any, gateways: [any], namespace: str, bundle: any = Undefined -> [any] {
     _gw = _lookup_gateway(gateways, route.gateway)
     _listener = _lookup_listener(_gw, route.listener) if _gw else None
     _host = _route_host(route, _gw, _listener) if _gw else ""
@@ -483,7 +739,7 @@ render_grpc_route = lambda route: any, gateways: [any], namespace: str -> [any] 
     # GRPCRoute path matches a gRPC service+method. Empty path means
     # match-everything; explicit path is interpreted as a method match
     # when prefixed with "/".
-    [{
+    ([{
         apiVersion = "gateway.networking.k8s.io/v1"
         kind = "GRPCRoute"
         metadata = {
@@ -502,14 +758,10 @@ render_grpc_route = lambda route: any, gateways: [any], namespace: str -> [any] 
                 hostnames = [_host]
             rules = [
                 {
-                    backendRefs = [
-                        {
-                            name = route.service
-                            port = route.port
-                        }
-                    ]
+                    backendRefs = [_backend_ref(route, _gw, bundle)]
                 }
             ]
         }
-    }] if _gw and _listener else []
+    }] + (_render_host_backend(route, _gw, bundle, namespace) if _needs_host_backend(route, _gw, bundle) else []) \
+       + render_route_traffic_policy(route, _gw, "GRPCRoute", namespace)) if _gw and _listener else []
 }

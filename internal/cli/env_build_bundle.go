@@ -192,6 +192,20 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 
 	ledger, err := bundleLedgerFor(ctx, projectDir, env)
 	if err != nil {
+		// #404's rule, applied to the bundle: a build never needs a
+		// reachable control plane. Opening a hosted env's ledger needs a
+		// credential and a server, and when neither answers there is
+		// nowhere to say where the bytes go — so nothing is written, the
+		// same outcome as a projection failure, and `forge env deploy`
+		// renders one on demand. A control plane that ANSWERS and refuses
+		// is a fact about the env and still fails the build.
+		if declarationUndeliverable(err) {
+			fmt.Fprintf(in.errWriter(),
+				"[bundle] Warning: env %s's bundle was not written: %v\n"+
+					"[bundle]   The build continues; the next build or deploy that reaches the control plane writes it.\n",
+				env, err)
+			return bundleWriteOutcome{Env: env, Skipped: true}, nil
+		}
 		return bundleWriteOutcome{}, err
 	}
 
@@ -401,6 +415,16 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 ) (bundleWriteOutcome, error) {
 	recorder, err := bundleRecorderForEnv(ctx, projectDir, env, ledger)
 	if err != nil {
+		// Opening the records half can fail the same way the record call
+		// can — no credential, no transport — and it is classified the same
+		// way, by the one classifier the declaration and RecordBundle use.
+		if declarationUndeliverable(err) {
+			fmt.Fprintf(in.errWriter(),
+				"[bundle] Warning: env %s's bundle %s was written but not recorded: %v\n"+
+					"[bundle]   The build continues; recording is idempotent on (env, digest), so the next build or deploy records it.\n",
+				env, shortDigest(placed.Digest), err)
+			return placed.bundleWriteOutcome, nil
+		}
 		return placed.bundleWriteOutcome, err
 	}
 	stored, created, err := recorder.RecordBundle(ctx, record, blobs)

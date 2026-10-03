@@ -400,8 +400,13 @@ func planReleaseCoverage(in planInputs, report buildPlanReport) ([]string, error
 				would[imageRepositoryOfPlanStep(in, s)] = placeholder
 			}
 		case "external":
+			// The RESOLVED repository the ShellBuild's cmd pushed to, which is
+			// what its build state records and what the coverage gate looks
+			// up — see externalPushedRepository. Keying the preview by the raw
+			// declaration made `--plan` disagree with the cut it exists to
+			// gate on, for exactly the bare hosted image that needs it most.
 			if svc := in.entities.FindWorkload(s.name); svc != nil && svc.Image != "" {
-				would[imageRepository(svc.Image)] = placeholder
+				would[externalPushedRepository(*svc, in.opts.pushPlan.pushBase)] = placeholder
 			}
 		case "static":
 			// Keyed by the REPOSITORY the release lands in, which is what

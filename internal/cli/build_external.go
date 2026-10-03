@@ -202,7 +202,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// registry manifest — the e2e workspace-base/reliant case — or an
 		// unreachable registry) records no digest and deploy falls back to the
 		// tag exactly as before. NEVER fails the build.
-		pushedRef := externalPushedRef(svc.Image, svcTag)
+		pushedRef := externalPushedRef(svc, svcTag, opts.pushPlan.pushBase)
 		digest, platforms := "", []string(nil)
 		if d, p, derr := externalImageDigestResolver(ctx, pushedRef); derr == nil {
 			digest, platforms = d, p
@@ -217,8 +217,11 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// the build itself stays successful (a future deploy will
 		// fall back to git-derived tag resolution).
 		state := buildtarget.State{
-			Service:   svc.Name,
-			Image:     imageRepository(svc.Image),
+			Service: svc.Name,
+			// The RESOLVED repository — the address the cmd pushed and the
+			// deploy pulls, which for a bare hosted image is not what the
+			// workload declared. See externalPushedRepository.
+			Image:     externalPushedRepository(svc, opts.pushPlan.pushBase),
 			Tag:       svcTag,
 			PushedAt:  nowRFC3339(),
 			Digest:    digest,
@@ -241,7 +244,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// describe on a missing file. Last successful service wins; this
 		// matches the single-file-per-env shape the --push path uses.
 		deployState := BuildState{
-			Image: imageRepository(svc.Image),
+			Image: externalPushedRepository(svc, opts.pushPlan.pushBase),
 			Tag:   svcTag,
 			// The user's build_cmd owns build AND push; we record the
 			// registry coordinates but can't prove a push happened, so
@@ -306,12 +309,39 @@ func externalBuildTag(svc WorkloadEntity, buildTag string, opts buildOptions) st
 }
 
 // externalPushedRef reconstructs the image reference the ShellBuild's command
-// pushed, so the post-build digest lookup queries the same manifest. The
-// registry host comes from the image's own declared reference — there is no
-// env-level registry to compose in — so an image that names no host (a local
-// build tagging `<image>:<tag>`, e.g. the e2e workspace-base/reliant images)
-// yields a local-only ref. That simply won't resolve a registry digest, so the
-// best-effort lookup returns empty and deploy stays on the tag.
-func externalPushedRef(image, tag string) string {
-	return imageRepository(image) + ":" + tag
+// pushed, so the post-build digest lookup queries the same manifest and the
+// state records the address the deploy will pull.
+//
+// It is externalPushedRepository plus the tag — one derivation, so the ref
+// asked about and the repository recorded cannot name different places.
+func externalPushedRef(svc WorkloadEntity, tag, pushBase string) string {
+	return externalPushedRepository(svc, pushBase) + ":" + tag
+}
+
+// externalPushedRepository is the repository a ShellBuild's command pushed to.
+//
+// For every runtime whose registry the AUTHOR chooses, that is the declared
+// reference's own repository: the host is part of what they wrote, and an
+// image naming no host (a local build tagging `<image>:<tag>`, e.g. the e2e
+// workspace-base / reliant images) is a local-only ref that resolves no
+// registry digest — the best-effort lookup returns empty and deploy stays on
+// the tag.
+//
+// forge.OnHosted is the one runtime where the author does NOT choose it
+// (ADR-0003 F1): the control plane admits exactly one registry subtree, so a
+// BARE image is the correct, default declaration and forge composes
+// `<push base>/<name>` onto it. That resolution happened in the render, which
+// is what the ShellBuild's `cmd` was composed from and therefore what it
+// pushed — so reading the unresolved `svc.Image` here described a push that
+// did not happen. The registry query ran against a hostless name and missed
+// every time, and the state recorded the bare name with an empty digest,
+// leaving a release cut nothing to pin. Resolving through the same
+// resolveHostedImageBase the docker/frontend paths use is what keeps all
+// three naming one address.
+func externalPushedRepository(svc WorkloadEntity, pushBase string) string {
+	repo := imageRepository(svc.Image)
+	if svc.Runtime.Type == RuntimeHosted {
+		repo = resolveHostedImageBase(pushBase, repo)
+	}
+	return repo
 }

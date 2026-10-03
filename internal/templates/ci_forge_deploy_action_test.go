@@ -136,7 +136,7 @@ func TestForgeDeployAction_DeployByVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	want := "env deploy staging v1.4.0 --json --timeout 15m --gate gates/lint.json --gate gates/test.json"
+	want := "env deploy staging v1.4.0 --json --yes --timeout 15m --gate gates/lint.json --gate gates/test.json"
 	if len(argv) != 1 || argv[0] != want {
 		t.Errorf("forge argv = %q, want %q", argv, want)
 	}
@@ -159,7 +159,7 @@ func TestForgeDeployAction_DeployFromIsRefusedWithExit3(t *testing.T) {
 	if code != 3 {
 		t.Fatalf("a refused deploy must fail the step with ITS code (3), got %d", code)
 	}
-	want := "env deploy prod --json --timeout 15m --from staging --from-promotion prom_1 --expect-current unbound"
+	want := "env deploy prod --json --yes --timeout 15m --from staging --from-promotion prom_1 --expect-current unbound"
 	if len(argv) != 1 || argv[0] != want {
 		t.Errorf("forge argv = %q, want %q", argv, want)
 	}
@@ -179,7 +179,7 @@ func TestForgeDeployAction_DeployFromIsRefusedWithExit3(t *testing.T) {
 // the one release that needed it.
 //
 // The exit codes are the ADR's, and `gate record --from` maps them to statuses:
-// 1 failed; 2/3/4/5 error; 6 skipped. Nothing here folds 5 or 6 into a failure.
+// 1 failed; 2/3/4/5/8 error; 6 skipped. Nothing here folds 8 or 6 into a failure.
 func TestForgeDeployAction_FailedWaitStillPublishesThePromotionID(t *testing.T) {
 	t.Parallel()
 	step := forgeDeploySteps(t)["deploy"]
@@ -189,7 +189,7 @@ func TestForgeDeployAction_FailedWaitStillPublishesThePromotionID(t *testing.T) 
 	}{
 		{"degraded", 1},
 		{"undetermined", 2},
-		{"timed out while still progressing", 5},
+		{"timed out while still progressing", 8},
 		{"superseded by a newer promotion", 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -70,7 +70,7 @@ func stubDeployBuild(t *testing.T, dir string, artifacts map[string]string) *[]b
 			Commit: strings.Repeat("c", 40),
 			Tree:   deployTestTree,
 		}
-		if _, err := (fileReleaseLedger{projectDir: dir}).Cut(context.Background(), rel); err != nil {
+		if _, err := testStore(t, dir).CutRelease(rel); err != nil {
 			t.Fatalf("stub build: cut %s: %v", opts.release, err)
 		}
 		return nil
@@ -94,7 +94,7 @@ func TestDeployNoVersion_BuildsCutsThenPromotes(t *testing.T) {
 	t.Chdir(dir)
 	calls := stubDeployBuild(t, dir, map[string]string{"api": sha("1")})
 
-	ledger := fileLedger(dir)
+	ledger := testLedger(t, dir)
 	prov := release.Provenance{Commit: strings.Repeat("c", 40), Tree: deployTestTree}
 	cut, err := buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestDeployNoVersion_RetryOfTheSameTreeReusesTheRelease(t *testing.T) {
 	dir := deployAllProject(t)
 	t.Chdir(dir)
 	calls := stubDeployBuild(t, dir, map[string]string{"api": sha("1")})
-	ledger := fileLedger(dir)
+	ledger := testLedger(t, dir)
 
 	first, err := buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
 	if err != nil {
@@ -230,10 +230,10 @@ func TestAutoVersion(t *testing.T) {
 // commit would pin a release to bytes it was not cut from.
 func TestReusableReleaseForTree_UnhashedTreeIsNeverReused(t *testing.T) {
 	dir := t.TempDir()
-	store := fileReleaseLedger{projectDir: dir}
+	store := testReleases(t, dir)
 	rel := ociRelease("v1", map[string]string{"api": sha("1")})
 	rel.Provenance = &release.Provenance{Commit: strings.Repeat("c", 40)} // no Tree
-	if _, err := store.Cut(context.Background(), rel); err != nil {
+	if err := testCutRelease(t, dir, rel); err != nil {
 		t.Fatal(err)
 	}
 	// An empty tree finds nothing, even though a release with the same
@@ -252,11 +252,11 @@ func TestReusableReleaseForTree_UnhashedTreeIsNeverReused(t *testing.T) {
 // --release v1.4.0` deploys v1.4.0 rather than cutting a duplicate.
 func TestReusableReleaseForTree_FindsAHandNamedRelease(t *testing.T) {
 	dir := t.TempDir()
-	store := fileReleaseLedger{projectDir: dir}
+	store := testReleases(t, dir)
 	tree := strings.Repeat("b", 40)
 	rel := ociRelease("v1.4.0", map[string]string{"api": sha("1")})
 	rel.Provenance = &release.Provenance{Commit: strings.Repeat("c", 40), Tree: tree}
-	if _, err := store.Cut(context.Background(), rel); err != nil {
+	if err := testCutRelease(t, dir, rel); err != nil {
 		t.Fatal(err)
 	}
 	got, err := reusableReleaseForTree(context.Background(), store, tree)
@@ -274,7 +274,7 @@ func TestDeployUnknownVersion_FixIsTheDeployVerbNotNoBuild(t *testing.T) {
 	dir := deployAllProject(t)
 	t.Chdir(dir)
 	err := runPromote(context.Background(), "v9.9.9", "prod", promoteOptions{
-		Ledger: fileLedger(dir), ProjectDir: dir,
+		Ledger: testLedger(t, dir), ProjectDir: dir,
 	})
 	if err == nil {
 		t.Fatal("deploying a version nobody cut must fail")
@@ -306,7 +306,7 @@ func TestDeployConfirm_NoTTYNoYesExits5AndWritesNoPromotion(t *testing.T) {
 	dir := deployAllProject(t)
 	t.Chdir(dir)
 	stubDeployBuild(t, dir, map[string]string{"api": sha("1")})
-	ledger := fileLedger(dir)
+	ledger := testLedger(t, dir)
 
 	cut, err := buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
 	if err != nil {
@@ -354,7 +354,7 @@ func TestDeployConfirm_PlanOnlyWritesNoPromotionAndSucceeds(t *testing.T) {
 	dir := deployAllProject(t)
 	t.Chdir(dir)
 	stubDeployBuild(t, dir, map[string]string{"api": sha("1")})
-	ledger := fileLedger(dir)
+	ledger := testLedger(t, dir)
 
 	cut, err := buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
 	if err != nil {
@@ -392,7 +392,7 @@ func TestDeployConfirm_YesWritesAndDeclineDoesNot(t *testing.T) {
 	dir := deployAllProject(t)
 	t.Chdir(dir)
 	stubDeployBuild(t, dir, map[string]string{"api": sha("1")})
-	ledger := fileLedger(dir)
+	ledger := testLedger(t, dir)
 	cut, err := buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
 	if err != nil {
 		t.Fatalf("build and cut: %v", err)

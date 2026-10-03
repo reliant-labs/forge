@@ -55,7 +55,7 @@ func (f *rolloutCP) Call(_ context.Context, proc string, req, out any) error {
 	var reply string
 	switch short {
 	case "EnsureEnvironment":
-		reply = `{"environment":{"id":"env-1","name":"prod","namespace":"env-env-1","imagePushBase":"ghcr.io/acme"},"created":true}`
+		reply = `{"environment":{"id":"env-1","name":"prod","namespace":"env-env-1"},"created":true}`
 	case "EnsureDeployment":
 		reply = fmt.Sprintf(`{"deployment":{"id":"dep-%s","name":%q},"created":true}`, body["name"], body["name"])
 	case "PublishDeploymentConfig":

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
@@ -103,20 +104,26 @@ func TestEnvRender_RefusesAVerifiedOffBaseHostedImage(t *testing.T) {
 	}
 }
 
-// With NO organization declared, the same declaration renders and WARNS
-// rather than failing: forge has no base, so refusing would assert a
-// comparison it never made.
-func TestEnvRender_UnknownPushBaseWarnsAndStillRenders(t *testing.T) {
+// With the SCAFFOLDED PLACEHOLDER still in place, the same declaration
+// renders and WARNS rather than failing.
+//
+// This is the one reachable unverified state, and it is reachable precisely
+// because the placeholder is syntactically a value: KCL's "organization is
+// required" check passes on it, so the render proceeds — but it is not an
+// address, so forge has no base and refusing would assert a comparison it
+// never made. `forge lint` is what gates on the placeholder, with a message
+// about the placeholder rather than about this image.
+func TestEnvRender_PlaceholderOrgWarnsAndStillRenders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, "ghcr.io/acme/api", "")
+	dir := writeHostedRenderProject(t, "ghcr.io/acme/api", hostedimage.OrgPlaceholder)
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
 	stdout, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
 	if err != nil {
-		t.Fatalf("render must SUCCEED when the base is unknown: %v\nstderr:\n%s", err, stderr)
+		t.Fatalf("render must SUCCEED when no base composes: %v\nstderr:\n%s", err, stderr)
 	}
 	if !strings.Contains(stderr, "drop the host and forge resolves it") {
 		t.Errorf("stderr should carry the weaker warning:\n%s", stderr)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
@@ -234,4 +235,80 @@ func TestForgeLogin_UnrenderableEnvRefusesTheDefault(t *testing.T) {
 	if _, err := lookupStored(t, cloud.DefaultEndpoint); err == nil {
 		t.Fatal("a refused login must store nothing")
 	}
+}
+
+// TestRegistryDefault_KCLMatchesGo pins the SECOND fact forge holds twice:
+// KCL's forge.RELIANT_REGISTRY_HOST (what `forge.ControlPlane {}` renders for
+// registry_host) and internal/hostedimage.DefaultRegistryHost (the Go copy,
+// for the surfaces with no KCL in front of them).
+//
+// Drift here is worse than drift in the endpoint, because it is silent for
+// longer. The two copies would compose two different push bases, so a build
+// would push to one registry and a render would judge an image against
+// another — and both would look internally consistent. The failure surfaces
+// as a pull of an image nobody can find.
+//
+// It renders REAL KCL through the real render seam, like its sibling above.
+func TestRegistryDefault_KCLMatchesGo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL; skipped in -short")
+	}
+	const org = "4f3c2b1a-0000-4000-8000-000000000001"
+	for _, tc := range []struct {
+		name, block, wantHost string
+	}{
+		{"an empty declaration is Reliant's registry",
+			`forge.ControlPlane {organization = "` + org + `"}`,
+			hostedimage.DefaultRegistryHost},
+		{"an explicit host wins",
+			`forge.ControlPlane {organization = "` + org + `", registry_host = "registry.example.com"}`,
+			"registry.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := renderControlPlaneEntity(t, controlPlaneMainK(tc.block))
+			if cp == nil {
+				t.Fatalf("%s must render a control-plane declaration; got none", tc.block)
+			}
+			if cp.RegistryHost != tc.wantHost {
+				t.Errorf("registry_host = %q, want %q", cp.RegistryHost, tc.wantHost)
+			}
+			if cp.Organization != org {
+				t.Errorf("organization = %q, want %q", cp.Organization, org)
+			}
+			// And the base the whole design rests on, composed end to end
+			// from what KCL actually rendered.
+			hostedProjectNameRestore := hostedProjectName
+			hostedProjectName = func() string { return "acme" }
+			t.Cleanup(func() { hostedProjectName = hostedProjectNameRestore })
+			got := declaredPushBase(&KCLEntities{ControlPlane: cp})
+			if want := tc.wantHost + "/" + org + "/acme"; got != want {
+				t.Errorf("declaredPushBase = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// renderControlPlaneEntity is renderControlPlaneDecl's twin, returning the
+// rendered ENTITY rather than the cloud declaration: the registry host is
+// forge's own resolution input and deliberately absent from
+// cloud.Declaration, which models only how to REACH the control plane.
+func renderControlPlaneEntity(t *testing.T, main string) *ControlPlaneEntity {
+	t.Helper()
+	kclplugin.Register()
+	dir := t.TempDir()
+	kclMod := "[package]\nname = \"controlplane\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
+	for f, c := range map[string]string{"kcl.mod": kclMod, "main.k": main} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := kclrender.Run(dir, dir, nil)
+	if err != nil {
+		t.Fatalf("render:\n%s\n%v", main, err)
+	}
+	entities, err := parseKCLEntities(out)
+	if err != nil {
+		t.Fatalf("parse entities: %v\n%s", err, out)
+	}
+	return entities.ControlPlane
 }

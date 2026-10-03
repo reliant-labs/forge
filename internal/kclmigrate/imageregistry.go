@@ -28,6 +28,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
 // ImageRegistryResult is what a migration run did or refused to do.
@@ -290,13 +292,21 @@ func ImageRegistry(projectDir string, apply bool) (ImageRegistryResult, error) {
 	changed, frontendDone, frontendRewrites := applyHostedFrontends(tree, frontendPlan)
 	res.Rewrites = append(res.Rewrites, frontendRewrites...)
 
-	// Remove every registry declaration, everywhere it appears.
+	// Remove every registry declaration, everywhere it appears — and seed
+	// the organization the hosted path now requires.
+	//
+	// The seed rides this pass rather than one of its own because it edits
+	// the same files, and because the two halves are one migration: the
+	// registry moved OFF the env and onto the workload, and the platform
+	// subtree that replaced it is composed from an organization these trees
+	// predate. Stripping without seeding leaves a tree that no longer
+	// renders, from a migration that reported success.
 	for _, s := range sites {
 		src, ok := changed[s.File]
 		if !ok {
 			src = tree.files[relOf(s.File)]
 		}
-		changed[s.File] = stripRegistry(src)
+		changed[s.File] = seedOrganization(stripRegistry(src), hostedimage.OrgPlaceholder)
 	}
 	strip := stripReport{
 		changed: changed, envs: envs, envRegistry: envRegistry,

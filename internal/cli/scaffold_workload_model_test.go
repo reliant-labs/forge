@@ -79,6 +79,11 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 			"REPLACE_ME_CLUSTER_CONTEXT": "gke_acme_cloud", "REPLACE_ME_PLATFORM": "amd64",
 			"REPLACE_ME_NAMESPACE": "acme-cloud", "REPLACE_ME_REGISTRY": "ghcr.io/acme",
 			"REPLACE_ME_BUCKET": "acme-cloud-web",
+			// The scaffolded organization. It is a REPLACE_ME_* like every
+			// other knob, so `forge env new --check` already gates on it
+			// with no new rule — which is why the placeholder was spelled
+			// to match placeholderRe rather than invented separately.
+			hostedimage.OrgPlaceholder: "4f3c2b1a-0000-4000-8000-000000000001",
 		}[p]
 	})
 	writeEnv(t, dir, "cloud", filled, filepath.Join(dir, "deploy", "kcl", "prod"))

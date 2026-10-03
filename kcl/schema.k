@@ -3335,6 +3335,20 @@ schema NetworkPolicy:
     check:
         all p in egress_ports { p > 0 and p < 65536 }, "NetworkPolicy.egress_ports entries must be 1..65535"
 
+# A Bundle.overrides KEY: which rendered object a patch targets.
+#
+#     Kind/name                 Deployment/api
+#     Kind/namespace/name       Deployment/acme-dev/api
+#     ...@cluster               Deployment/api@k3d-cp
+#
+# Kind is UpperCamelCase (a k8s kind, including a CRD's); name and namespace
+# are RFC-1123 labels; the cluster is a kubectl context name, which may carry
+# the `_`, `.` and `:` a cloud context uses
+# (`gke_reliant-labs_us-central1_prod`). The namespace is OPTIONAL rather
+# than required because most envs render one namespace, where demanding it
+# would be noise on every key; it is what disambiguates when they do not.
+_OVERRIDE_KEY_RE = r"^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?(@[A-Za-z0-9][-A-Za-z0-9_.:]*)?$"
+
 schema Bundle:
     """Everything one environment runs and declares.
 
@@ -3500,8 +3514,62 @@ schema Bundle:
     # verify external DNS). Empty => no declared prereqs (today's behavior).
     required_secrets: [ExternalSecret] = []
     required_dns: [DNSRecord] = []
+    # TYPED OVERRIDES of forge's own rendered objects, keyed by the object.
+    # The 20%'s escape hatch: forge renders an opinionated object and the
+    # author changes ONE field of it, without forking the template and
+    # without re-declaring the object.
+    #
+    #     overrides = {
+    #         "Deployment/api" = {spec.replicas = 10}
+    #         "Namespace/acme-dev" = {metadata.labels = {
+    #             "pod-security.kubernetes.io/enforce" = "baseline"
+    #         }}
+    #     }
+    #
+    # The VALUE is a patch, written as a KCL nested selector so a deep field
+    # costs one line (`spec.replicas = 10`, not four nested braces). A path
+    # segment that is not an identifier — any label or annotation key, which
+    # all contain `/` and `.` — needs a map literal at that level, as the
+    # Namespace example shows.
+    #
+    # The KEY names the object: `Kind/name`, `Kind/namespace/name` when one
+    # kind+name occurs in two namespaces, and an optional `@<cluster>` suffix
+    # when a multi-cluster env renders the same object to several clusters
+    # (`Deployment/api@k3d-cp`). Give only as much of the key as it takes to
+    # be unambiguous; forge refuses an ambiguous one and tells you which
+    # qualifier to add.
+    #
+    # Patches apply in Go, AFTER forge expands its Workload records into
+    # Deployments, Services and the rest — which is the only reason a
+    # Deployment is addressable at all: it does not exist in this KCL. Built-in
+    # kinds take a STRATEGIC merge patch, so a patch naming one container by
+    # `name` merges into that container instead of replacing the list; CRDs and
+    # unknown kinds take an RFC 7386 JSON merge patch. `None` deletes a field.
+    #
+    # EVERY MISMATCH FAILS THE RENDER, naming the key and the fix: a target
+    # that does not exist (with the closest candidates), a key that matches
+    # two objects, two keys that resolve to one object, a patch that would
+    # change apiVersion/kind/metadata.name/metadata.namespace, and a target
+    # that is a HOSTED workload — the control plane renders those, so this
+    # env has no object to patch.
+    #
+    # See the `deploy/overrides` skill. Empty => forge's objects render as
+    # forge renders them.
+    overrides: {str: any} = {}
 
     check:
+        # The key grammar, checked at load so a typo'd key is a KCL error
+        # pointing at the declaration rather than a "target not found" from
+        # the Go apply — which would read as "forge rendered no such object"
+        # when the real fault is the key's shape.
+        all k, _p in overrides { regex.match(k, _OVERRIDE_KEY_RE) }, \
+            "Bundle.overrides keys ${[k for k, _p in overrides if not regex.match(k, _OVERRIDE_KEY_RE)]} are not override keys. The grammar is `Kind/name`, `Kind/namespace/name`, either with an optional `@<cluster>`: e.g. `Deployment/api`, `Deployment/acme-dev/api`, `Deployment/api@k3d-cp`. Kind is UpperCamelCase; name and namespace are RFC-1123 labels"
+        # A patch is a MAP. A scalar or a list at the top would have no field
+        # to merge onto, and `{spec.replicas = 10}` is the whole ergonomic
+        # point — so the one wrong shape an author might reach for is named
+        # here rather than failing as a type error inside the Go apply.
+        all _k, p in overrides { typeof(p) == "dict" }, \
+            "Bundle.overrides values ${[k for k, p in overrides if typeof(p) != 'dict']} are not patches: an override's value is a map of the fields to change, e.g. {spec.replicas = 10}"
         # THE PROJECT IS DECLARED: it is every object's part-of, the handle a
         # CD pipeline selects one release's workloads by.
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"

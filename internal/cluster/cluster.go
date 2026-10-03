@@ -1157,6 +1157,23 @@ func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, 
 	return extractManifests(out)
 }
 
+// RenderManifestsWithOverrides is RenderManifests, additionally reporting
+// which Bundle.overrides landed — what `forge env render` summarizes.
+func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, []AppliedOverride, error) {
+	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
+	workDir := projectRootFromMainK(mainK)
+	if workDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			workDir = wd
+		}
+	}
+	out, err := kclrender.Run(workDir, mainK, dArgs)
+	if err != nil {
+		return "", nil, err
+	}
+	return ExtractManifestsWithOverrides(out)
+}
+
 // extractManifests is ExtractManifests; kept as the package-internal name
 // RenderManifests calls.
 func extractManifests(kclOutput []byte) (string, error) {
@@ -1176,17 +1193,26 @@ func extractManifests(kclOutput []byte) (string, error) {
 // kubectl apply` could consume would be a path that looks right and silently
 // is not. Any other public top-level var warns.
 func ExtractManifests(kclOutput []byte) (string, error) {
+	stream, _, err := ExtractManifestsWithOverrides(kclOutput)
+	return stream, err
+}
+
+// ExtractManifestsWithOverrides is ExtractManifests, additionally reporting
+// which Bundle.overrides landed and on what. Only the surfaces that SHOW the
+// overrides need the second return (`forge env render`'s summary and its
+// --json); every other caller wants the stream and uses ExtractManifests.
+func ExtractManifestsWithOverrides(kclOutput []byte) (string, []AppliedOverride, error) {
 	var doc map[string]any
 	if err := yaml.Unmarshal(kclOutput, &doc); err != nil {
-		return "", fmt.Errorf("parse kcl output: %w", err)
+		return "", nil, fmt.Errorf("parse kcl output: %w", err)
 	}
 	if _, legacy := doc["manifests"]; legacy {
-		return "", fmt.Errorf("kcl output has a top-level `manifests` var: main.k must end with `output = forge.render(bundle)`, " +
+		return "", nil, fmt.Errorf("kcl output has a top-level `manifests` var: main.k must end with `output = forge.render(bundle)`, " +
 			"the one entrypoint — the applyable stream is output.manifests, and forge expands the Workload records in it")
 	}
 	out, ok := doc["output"].(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("kcl output has no top-level `output` object; main.k must end with `output = forge.render(bundle)` " +
+		return "", nil, fmt.Errorf("kcl output has no top-level `output` object; main.k must end with `output = forge.render(bundle)` " +
 			"and other top-level vars must be private (underscore-prefix)")
 	}
 	for k := range doc {
@@ -1199,21 +1225,35 @@ func ExtractManifests(kclOutput []byte) (string, error) {
 	var items []any
 	if present && raw != nil {
 		if items, ok = raw.([]any); !ok {
-			return "", fmt.Errorf("`output.manifests` is not a list (got %T)", raw)
+			return "", nil, fmt.Errorf("`output.manifests` is not a list (got %T)", raw)
 		}
 	}
 	network, err := decodeNetworkPolicy(out["network_policy"])
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	pullSecrets, err := decodePullSecrets(out["workloads"])
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	items, err = expandTierDeclarations(items, network, pullSecrets)
 	if err != nil {
-		return "", err
+		return "", nil, err
+	}
+
+	// Bundle.overrides, applied HERE: after expansion, so a Deployment that
+	// only exists because forge expanded a Workload record is addressable,
+	// and before anything reads the stream, so `forge env render`, the deploy,
+	// `forge env shape` and the bundle all see post-override objects from the
+	// one hook. See overrides.go.
+	overrides, err := decodeOverrides(out["overrides"])
+	if err != nil {
+		return "", nil, err
+	}
+	items, applied, err := applyOverrides(items, overrides, decodeHostedNames(out["workloads"]))
+	if err != nil {
+		return "", nil, err
 	}
 
 	var sb strings.Builder
@@ -1223,11 +1263,11 @@ func ExtractManifests(kclOutput []byte) (string, error) {
 		}
 		b, err := yaml.Marshal(it)
 		if err != nil {
-			return "", fmt.Errorf("marshal manifest item %d: %w", i, err)
+			return "", nil, fmt.Errorf("marshal manifest item %d: %w", i, err)
 		}
 		sb.Write(b)
 	}
-	return sb.String(), nil
+	return sb.String(), applied, nil
 }
 
 // decodePullSecrets reads the image-pull Secrets each Cluster runtime in

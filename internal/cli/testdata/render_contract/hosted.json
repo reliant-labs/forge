@@ -62,6 +62,7 @@
     "kubeconfig_secrets": [],
     "manifests": [],
     "network_policy": null,
+    "overrides": {},
     "project": "acme",
     "rendered_secrets": [],
     "required_dns": [],

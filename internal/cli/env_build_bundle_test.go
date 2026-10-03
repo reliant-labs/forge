@@ -18,8 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -397,12 +395,19 @@ func TestEnvBuildBundle_AnUnreachableControlPlaneDoesNotFailTheBuild(t *testing.
 }
 
 // TestEnvBuildBundle_HostedEnvWithNoPushBaseFallsBackLocally: an env whose
-// control plane has not yet reported an image push base still gets a bundle.
+// DECLARATION composes no registry subtree still gets a bundle.
 //
 // NOT an error, deliberately. The images were pushed to their own declared
-// references and the build stands; there is simply nowhere to put the bundle
-// yet. Failing here would make a build depend on a cache warmed by a previous
-// command.
+// references and the build stands; there is simply nowhere to put the bundle.
+// Failing here would make a build fail over an address it needs only in order
+// to push a RECORD.
+//
+// The cause changed with F-REGISTRY-DEFAULT and the message had to follow. It
+// used to be "the control plane has not reported a base yet", which implied a
+// later build would learn one — so the note promised exactly that. The base is
+// now composed from the env's own declaration, so there is no "yet": an env
+// that declares no organization will not acquire a base by being rebuilt, and
+// the note has to say what to declare instead of what to wait for.
 func TestEnvBuildBundle_HostedEnvWithNoPushBaseFallsBackLocally(t *testing.T) {
 	dir := newLedgerTestProject(t, "bundle-nobase-project")
 	stubEnvShape(t, "bundle-nobase-project")
@@ -431,8 +436,14 @@ func TestEnvBuildBundle_HostedEnvWithNoPushBaseFallsBackLocally(t *testing.T) {
 	if written[0].Pushed {
 		t.Error("with no push base there is nowhere to push, so the bundle must be local")
 	}
-	if !strings.Contains(warnings.String(), "push base") {
+	if !strings.Contains(warnings.String(), "declares no platform registry subtree") {
 		t.Errorf("the fallback must say why it was local; warnings were %q", warnings.String())
+	}
+	// And it must NOT promise that a later build will learn the address,
+	// which was true of the cache and is not true of a declaration.
+	if strings.Contains(warnings.String(), "next build") {
+		t.Errorf("the note must not promise a later build learns the base — the address comes from "+
+			"the declaration, so rebuilding changes nothing. Got %q", warnings.String())
 	}
 }
 
@@ -524,17 +535,26 @@ func mustBundles(t *testing.T, dir, env string) []release.BundleRecord {
 	return rows
 }
 
-// writeHostedPushBaseFixture states the control plane's reported image push
-// base, which an ensure would otherwise have cached.
+// writeHostedPushBaseFixture states the env's DECLARED platform registry
+// subtree.
+//
+// It stubs the resolution rather than writing a declaration, because these
+// projects have no deploy/kcl tree at all — stubEnvShape points the projection
+// at a literal for the same reason. What these tests are about is the
+// PLACEMENT (pushed to the env's bundle repository, or written to the local
+// layout), not how an address is composed from a declaration, which
+// internal/hostedimage owns and tests.
 func writeHostedPushBaseFixture(t *testing.T, dir, env, base string) {
 	t.Helper()
-	if err := rememberHostedPushBase(dir, env, base); err != nil {
-		t.Fatalf("cache the push base: %v", err)
+	prev := bundlePushBaseFor
+	bundlePushBaseFor = func(_ context.Context, _, gotEnv string) string {
+		if gotEnv != env {
+			return ""
+		}
+		return base
 	}
-	if got := cachedHostedPushBase(dir, env); got != base {
-		t.Fatalf("precondition: cached push base = %q, want %q", got, base)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(dir, ".forge")) })
+	t.Cleanup(func() { bundlePushBaseFor = prev })
+	_ = dir
 }
 
 // hostedBindingsStub / hostedReleasesStub stand in for a control-plane ledger

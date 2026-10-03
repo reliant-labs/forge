@@ -235,6 +235,83 @@ func TestRebaseRefusesAnAlreadyMergedMigration(t *testing.T) {
 	}
 }
 
+// SAME VERSION, DIFFERENT FILE IS A COLLISION TO FIX, NOT A MERGE TO REFUSE.
+//
+// The refusal exists for ONE file: the one whose version a database has
+// already recorded under that exact name. A different migration that happens
+// to claim the same number is the opposite case — it has never been applied
+// anywhere, it is precisely what `duplicate-migration-version` tells the
+// author to rebase, and it is the single most likely way two branches
+// allocating in the same second collide.
+//
+// Matching on the version alone conflated the two. Rebase saw the number on
+// the default branch, called the file already-merged, and told the author to
+// "write a NEW forward migration instead" — advice that cannot fix a
+// duplicate version, for a file that was safe to rename all along. The lint
+// named this command and this command refused.
+func TestRebaseFixesASameVersionDifferentFileCollision(t *testing.T) {
+	const contested = "20260101120000"
+
+	_, migDir := gitRepo(t,
+		[]string{contested + "_add_users.up.sql"},
+		nil,
+	)
+
+	// The branch's own migration, claiming the same version under a
+	// different name. This file exists only here; nothing has applied it.
+	ours := filepath.Join(migDir, contested+"_add_sessions.up.sql")
+	if err := os.WriteFile(ours, []byte("CREATE TABLE sessions (id INT);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := RebaseMigrations(migDir, []string{ours})
+	if err != nil {
+		t.Fatalf("RebaseMigrations refused a same-version DIFFERENT file: %v\n"+
+			"This file has never been applied anywhere — it is the duplicate-version "+
+			"collision the lint tells the author to fix with this very command.", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1: %+v", len(results), results)
+	}
+
+	// It must clear the contested version, or the duplicate persists.
+	if results[0].NewVersion <= versionOf(t, contested+"_add_users.up.sql") {
+		t.Errorf("rebased to %d, which does not clear the contested version %s — still a duplicate",
+			results[0].NewVersion, contested)
+	}
+	if got := filepath.Base(results[0].NewPath); !strings.HasSuffix(got, "_add_sessions.up.sql") {
+		t.Errorf("rebased file %q lost its stem", got)
+	}
+
+	// The merged file is untouched: it is the one that must keep its
+	// version, and only the branch's file moves.
+	merged := filepath.Join(migDir, contested+"_add_users.up.sql")
+	if _, statErr := os.Stat(merged); statErr != nil {
+		t.Errorf("the already-merged file was moved: %v — that is the database-corrupting rename the refusal exists to prevent", statErr)
+	}
+}
+
+// THE REFUSAL STILL HOLDS FOR THE SAME FILE. Narrowing the check to compare
+// filenames must not weaken it: the file that is on the default branch under
+// this name is the one every database recorded, and it must still be refused.
+//
+// This is the guard on the fix above — a version-only check was too broad, a
+// check that stopped refusing would be catastrophic.
+func TestRebaseStillRefusesTheSameFileOnTheDefaultBranch(t *testing.T) {
+	_, migDir := gitRepo(t,
+		[]string{"20260101120000_add_users.up.sql"},
+		[]string{"20260501000000_add_sessions.up.sql"},
+	)
+
+	merged := filepath.Join(migDir, "20260101120000_add_users.up.sql")
+	if _, err := RebaseMigrations(migDir, []string{merged}); err == nil {
+		t.Fatal("rebase renamed a migration that is on the default branch under this exact name")
+	}
+	if _, statErr := os.Stat(merged); statErr != nil {
+		t.Errorf("refused file was moved anyway: %v", statErr)
+	}
+}
+
 // THE REFUSAL MUST HOLD WITH THE PATHS THE CLI ACTUALLY PASSES.
 //
 // `--dir` defaults to the relative "db/migrations" and nothing makes it

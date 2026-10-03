@@ -31,6 +31,10 @@ type fakeDSOTCaller struct {
 	replies map[string]any
 	// errs is what a procedure returns instead of a reply.
 	errs map[string]error
+	// reply, when set and when it claims a procedure, answers from the
+	// REQUEST — for a test whose server has to be self-consistent with the
+	// bytes it was sent rather than canned. Checked before replies.
+	reply func(proc string, body map[string]any) (any, bool)
 }
 
 func (f *fakeDSOTCaller) Call(_ context.Context, proc string, req, out any) error {
@@ -41,6 +45,11 @@ func (f *fakeDSOTCaller) Call(_ context.Context, proc string, req, out any) erro
 	f.calls = append(f.calls, fakeCPCall{Proc: proc, Body: body})
 	err := f.errs[proc]
 	reply, ok := f.replies[proc]
+	if f.reply != nil {
+		if dynamic, claimed := f.reply(proc, body); claimed {
+			reply, ok = dynamic, true
+		}
+	}
 	f.mu.Unlock()
 	if err != nil {
 		return err

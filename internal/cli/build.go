@@ -119,6 +119,34 @@ type buildOptions struct {
 	// pull from. Unlike push, having none is not a failure. Resolved by
 	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
+	// bundleEnvs is --bundle-envs: write a bundle for each env named,
+	// comma-separated, from this one build and this one cut. Empty means
+	// the env being built.
+	//
+	// A release is env-agnostic and a bundle is not, so a pipeline that
+	// cuts one release and ships it to three envs would otherwise have to
+	// re-render each env later, at deploy time, from a checkout that may
+	// have moved. Naming them here binds every env's manifests to the same
+	// release and the same source.
+	bundleEnvs string
+	// noCharts omits the bundle's optional charts layer (--no-charts),
+	// the same escape `forge env render` offers for the same reason: a
+	// chart render needs helm and usually a network.
+	noCharts bool
+	// bundleRelease overrides the version a bundle NAMES, when it differs
+	// from the version this build CUTS.
+	//
+	// They differ in exactly one case, and it is a real one: the no-version
+	// `forge env deploy` reuses an existing release whose provenance tree
+	// matches this checkout, so it blanks `release` to skip a re-cut the
+	// ledger would refuse as a conflict — while the bundle must still pin
+	// the version being deployed. Without this the reused path would seal
+	// an UNRELEASED bundle (release ""), and the deploy would then be
+	// unable to find the bundle for (env, version) it just wrote.
+	//
+	// Empty means "the version this build cut" (release), which is the
+	// answer for every other caller.
+	bundleRelease string
 	// gateJSON is a FILE path: write this build's result as a gate
 	// document, for `forge gate record` / `forge env deploy --gate`. Not
 	// a stdout mode — the build log and the exit code are unchanged.
@@ -1426,16 +1454,81 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 
 // finishReleaseArtifacts is the build's last artifact step: it builds and
 // pushes an env's forge.OnHosted frontends (they ship as OCI release
-// artifacts), then cuts the release ledger when --release is set, so the cut
-// records those digests too.
+// artifacts), cuts the release ledger when --release is set so the cut records
+// those digests too, and then writes the env's BUNDLE.
+//
+// THE BUNDLE COMES LAST, AFTER THE CUT, and the order is the contract. A
+// bundle names the release it pins, so cutting first is what lets it carry a
+// version rather than "" — and the render it seals resolves the digests that
+// release just recorded. Writing the bundle first would pin a release that
+// did not exist yet.
 func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
 	if err := buildHostedStaticSites(ctx, projectDirForKCL(), entities, opts); err != nil {
 		return err
 	}
-	if opts.release == "" {
+	if opts.release != "" {
+		if err := writeReleaseLedger(ctx, opts, entities); err != nil {
+			return err
+		}
+	}
+	return writeBuildBundle(ctx, opts)
+}
+
+// writeBuildBundle is `forge env build`'s bundle step (doc §4.4, §7.2).
+//
+// A build with no env writes nothing: a bundle is ONE env's render, and there
+// is no env to render. Top-level `forge build` is compile-only and reaches
+// here with opts.env empty.
+//
+// --plan writes nothing either, for the reason the declaration step skips it:
+// it preflights a build and must not be the thing that changed the world.
+func writeBuildBundle(ctx context.Context, opts buildOptions) error {
+	if opts.env == "" || opts.plan {
 		return nil
 	}
-	return writeReleaseLedger(ctx, opts, entities)
+	projectDir := projectDirForKCL()
+	run, err := opts.run.resolveRun()
+	if err != nil {
+		return err
+	}
+	// The pins the bundle seals are the digests this build captured — the
+	// same build state the cut harvested and the same source
+	// resolveDeployImageDigests reads at deploy time, so the bundle pins
+	// what the release pins.
+	written, err := writeBundlesFn(ctx, projectDir, parseBundleEnvs(opts.bundleEnvs, opts.env), bundleBuildInputs{
+		Release:  opts.bundleReleaseVersion(),
+		Pins:     buildBundlePins(projectDir, opts.env),
+		Run:      run,
+		Pushed:   opts.push || opts.pushIfDeclared,
+		NoCharts: opts.noCharts,
+		Now:      time.Now().UTC().Truncate(time.Second),
+	})
+	printBundleWrites(os.Stdout, written)
+	return err
+}
+
+// bundleReleaseVersion is the version this build's bundle names.
+func (o buildOptions) bundleReleaseVersion() string {
+	if o.bundleRelease != "" {
+		return o.bundleRelease
+	}
+	return o.release
+}
+
+// buildBundlePins projects the build's captured artifacts into the pin set a
+// bundle records: images by artifact key, and the resolved source of every
+// source-built component.
+//
+// It reads the same harvest the cut reads rather than re-resolving, so a
+// bundle and the release it names cannot disagree about which bytes an
+// artifact key points at.
+func buildBundlePins(projectDir, env string) release.BundlePins {
+	harvested := release.Release{Artifacts: harvestReleaseArtifacts(projectDir, env)}
+	pins := release.BundlePins{Images: harvested.SharedDigests()}
+	if sources := harvested.Sources(); len(sources) > 0 {
+		pins.Sources = sources
+	}
+	return pins
 }
 
 // writeReleaseLedger harvests the artifacts of the just-completed build into a

@@ -67,6 +67,22 @@ type envShapeDoc struct {
 	Kind       string             `json:"kind"`
 	Shape      release.Shape      `json:"shape"`
 	Provenance release.Provenance `json:"provenance"`
+
+	// manifests and images are the render the shape was projected FROM:
+	// the annotated stream (`# cluster:` headers included) and the digests
+	// it pinned. Unexported, so they are not part of the `--json` contract
+	// — a reader of `forge env shape` wants the projection, not two
+	// megabytes of YAML.
+	//
+	// THEY ARE CARRIED because `forge env build` writes a BUNDLE from the
+	// same render, and bundle.Build re-projects the objects from the stream
+	// it packages rather than accepting a finished shape. Without them the
+	// build would have to render a second time, and a bundle whose shape
+	// came from render A while its manifest layer came from render B is
+	// precisely the "what was applied is not what was recorded" failure
+	// the bundle exists to close. One render, both halves.
+	manifests string
+	images    map[string]string
 }
 
 func newEnvShapeCmd() *cobra.Command {
@@ -270,13 +286,14 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	// runs on whatever machine the daemon is on — and a chart's objects are
 	// the platform dependency's, not this project's declaration. `forge env
 	// render --charts` is where they belong.
+	stream := renderShapeStream(objects)
 	shape, err := bundle.ProjectShape(bundle.ShapeInput{
 		Kind:              shapeEnvKindOf(entities),
 		Workloads:         shapeWorkloadsOf(entities),
 		Secrets:           shapeSecretsOf(entities),
 		Domains:           shapeDomainsOf(entities),
 		Clusters:          clusters,
-		Manifests:         renderShapeStream(objects),
+		Manifests:         stream,
 		Images:            digests,
 		StatefulWorkloads: shapeStatefulWorkloadsOf(entities),
 	})
@@ -289,6 +306,8 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Kind:       string(shape.Kind),
 		Shape:      shape,
 		Provenance: captureBuildProvenance(ctx, projectDir).ForHosted(),
+		manifests:  stream,
+		images:     digests,
 	}, nil
 }
 

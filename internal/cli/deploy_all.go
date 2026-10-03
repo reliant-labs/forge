@@ -218,6 +218,15 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		// but reads as a failure of the deploy rather than of the re-cut.
 		// The build still runs and still pushes; only the cut is skipped.
 		opts.release = ""
+		// The bundle still names the version being deployed. Only the
+		// CUT is skipped; a bundle sealed with release "" would be an
+		// unreleased bundle, and step 2 of the deploy could not then
+		// resolve the bundle for (env, version).
+		//
+		// pushIfDeclared above already covers the push, so nothing is
+		// re-stated here: main's shape pushes what the env declares and
+		// lets an env with nothing to push reach the cut.
+		opts.bundleRelease = version
 	}
 	if err := runDeployBuild(ctx, opts); err != nil {
 		return deployCutResult{}, fmt.Errorf("build env %s for deploy: %w", envName, err)

@@ -600,8 +600,8 @@ google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a h1:
 google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a/go.mod h1:CvYJHpbzPlT0fb/PsgtAamdwru/GVxUsomFdXTpOTI8=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a h1:3Dnd1cDaZlB68lziofO+bJXpjOy8UfRv8Unt+yH8tQ4=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a/go.mod h1:DjtHYE8FKJLivXcBEjGwndXfIC23G0VpXiXKqG179uA=
-google.golang.org/grpc v1.83.2 h1:EManeRomTObA0BU7I8vXgg/78uE5MJ9M8B39EX2WscU=
-google.golang.org/grpc v1.83.2/go.mod h1:YPI1hK3kDked6iHvgX3tR0y+nX/qpMFKhPgFsokw1S8=
+google.golang.org/grpc v1.84.0 h1:soMyaPJ8pAak5PIQ0DGBUir0XRo2fRoMqhNWMLlLxO0=
+google.golang.org/grpc v1.84.0/go.mod h1:ljCht0DrxQrXBDRTZp52Qxh3Ffk8CdYm2sj4O2QN2C0=
 google.golang.org/protobuf v1.36.12 h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=
 google.golang.org/protobuf v1.36.12/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
@@ -639,12 +639,12 @@ k8s.io/kube-openapi v0.0.0-20260821135717-be32def86098 h1:z5+pcu1jTyKK5mNTe2/+x+
 k8s.io/kube-openapi v0.0.0-20260821135717-be32def86098/go.mod h1:0/mqHCVhlumdJ3BhCfnjSZQE037nAhNodh1/hK0T8/I=
 k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3 h1:jVkFFVfXdXP74B/zbO3hM3hpSFD0xvhQ5U686DPurkE=
 k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3/go.mod h1:M2s5JB1lIYP3jzZdorPLHXIPJzt9vv2muW5a6L9DtNM=
-kcl-lang.io/kcl-go v0.12.5 h1:8kwySQ8G2GMwKxcUidyTZoBIDBvtWCZ3v1z0mB59EzI=
-kcl-lang.io/kcl-go v0.12.5/go.mod h1:CzQq9E1QLgJAthf9y1eRTp3oci1u9jn7LQCdBkDUCtk=
+kcl-lang.io/kcl-go v0.13.0 h1:af4sqcObg82XrQUMj5bmRNqv+823PUjeyKggdHkblzM=
+kcl-lang.io/kcl-go v0.13.0/go.mod h1:RzG/5GSOcWZHCUQqKanwHp8XTKj9RmwNppJVYuBq7Cw=
 kcl-lang.io/kpm v0.12.9 h1:Ka6hxhbCb7UWkBJlmmEqe1gcqio+K+qIGik8ErRhQcs=
 kcl-lang.io/kpm v0.12.9/go.mod h1:vaI1jzLuSK58hftHmt43xvFrWLV5s9qU2EwuvIW48vc=
-kcl-lang.io/lib v0.12.5 h1:gh+cLH5l17vUEucqkmS79Hzh1MFhx7L7Uz/Dj2+xx9k=
-kcl-lang.io/lib v0.12.5/go.mod h1:G2pPSIdu+cFb5OxiaxB0qBRIFFL598OZf1e5oiqWnns=
+kcl-lang.io/lib v0.13.0 h1:+dQb+ocQa8UbBNQxIJCq381rWldvSJ/oniPW1J8zR5Y=
+kcl-lang.io/lib v0.13.0/go.mod h1:6+DJNgcICKVtc+iDEjXtFA6TIKBfSjnkSgMO4REzmtM=
 oras.land/oras-go/v2 v2.6.2 h1:N04RXngAp1LJKTG6ifz3xHPipasEkWr+hFmInja5YKo=
 oras.land/oras-go/v2 v2.6.2/go.mod h1:PlTtg4JTDJkDe8yVHpM2wz7/YDc00GVas+i4jAW2TZ4=
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.36.0 h1:/YpDJ4vReG7ZmzSpBGxduXgywWkJU9zHubgJG03MT+Y=

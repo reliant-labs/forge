@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // deployConfirm carries the approval inputs into runPromote.
@@ -89,6 +90,16 @@ type deployConfirmOutcome struct {
 	// --json reports, so a consumer never has to infer consent from an
 	// exit code plus a message.
 	Confirmed bool
+	// NextStep is the command that approves THIS plan, when the gate
+	// computed one (--plan-only). Empty otherwise, and the caller then
+	// leaves the plan's own next_step alone.
+	//
+	// It is returned rather than written onto the plan so the string a
+	// consumer reads in --json is the SAME string printed in text mode —
+	// building it twice is how the two drift, and a pipeline that pasted a
+	// next_step which did not match the rendered line would have no way to
+	// tell which one was right.
+	NextStep string
 	// Err is non-nil when the command must stop. It carries the exit code:
 	// 5 for an unconfirmed non-interactive caller, 0 (nil) for --plan-only
 	// and for a declined prompt.
@@ -116,21 +127,29 @@ func (p promotePlan) renderForConfirmation(jsonMode bool) {
 //  3. A TTY prompts, defaulting to NO. A bare Enter must not deploy.
 //  4. Anything else refuses with exit 5, printing the plan and the exact
 //     flag to add.
-func confirmDeployPlan(env string, plan promotePlan, c deployConfirm) deployConfirmOutcome {
+// jsonMode is --json: it decides only WHERE the gate's human text goes.
+// Under --json stdout belongs to the document, so the plan line and the
+// prompt go to stderr — the same split renderForConfirmation uses. Without
+// it, --plan-only --json printed "Approve it with: …" above the document and
+// made stdout unparseable, which is the one thing --json promises it is not.
+func confirmDeployPlan(env string, plan promotePlan, c deployConfirm, jsonMode bool) deployConfirmOutcome {
 	out := c.out
 	if out == nil {
-		out = progressWriter(false)
+		out = progressWriter(jsonMode)
 	}
 
 	if c.PlanOnly {
 		if c.AutoVersion != "" {
 			fmt.Fprintf(out, "\n--plan-only: release %s was cut and pushed; NO promotion was written.\n", c.AutoVersion)
-			fmt.Fprintf(out, "  Approve it with: forge env deploy %s %s --yes\n", env, c.AutoVersion)
 		} else {
 			fmt.Fprintf(out, "\n--plan-only: NO promotion was written.\n")
-			fmt.Fprintf(out, "  Approve it with: forge env deploy %s %s --yes\n", env, plan.Target.Release)
 		}
-		return deployConfirmOutcome{Confirmed: false}
+		next, why := approveCommand(env, planOnlyVersion(plan, c), plan.DeployPlan)
+		fmt.Fprintf(out, "  Approve it with: %s\n", next)
+		if why != "" {
+			fmt.Fprintf(out, "  %s\n", why)
+		}
+		return deployConfirmOutcome{Confirmed: false, NextStep: next}
 	}
 
 	if c.Yes {
@@ -154,6 +173,58 @@ func confirmDeployPlan(env string, plan promotePlan, c deployConfirm) deployConf
 	}
 
 	return deployConfirmOutcome{Err: errPlanUnconfirmed(env, plan, c)}
+}
+
+// planOnlyVersion is the version --plan-only's approve command must name: the
+// one a versionless deploy already CUT, else the plan's target.
+//
+// The auto version wins because that release exists and its images are
+// pushed, so approving it must not send the caller back to the versionless
+// form and pay for the build twice.
+func planOnlyVersion(plan promotePlan, c deployConfirm) string {
+	if c.AutoVersion != "" {
+		return c.AutoVersion
+	}
+	return plan.Target.Release
+}
+
+// approveCommand is the EXACT command that approves the plan just printed. It
+// returns the command and, when the command is the weaker --yes form, one
+// sentence saying why it could not be the stronger one.
+//
+// WHY --approve AND NOT --yes. The two flags mean different things and the
+// difference is the whole point of the two-stage pipeline: --yes approves
+// whatever forge computes at the moment the second command runs, while
+// --approve <digest> approves the change set the operator actually read. If
+// Live moves in between — another deploy lands, a new bundle is applied, drift
+// appears — the digest no longer matches and the deploy is refused (exit 3)
+// instead of shipping a plan nobody saw. A --plan-only that handed back --yes
+// was therefore telling the reader to discard the only guarantee the stage
+// they just ran exists to provide.
+//
+// Stop-class findings are listed BY CODE in the same command, because
+// --acknowledge-destructive cannot be written in advance: the code is not
+// known until the plan is computed, which is exactly what this stage did.
+//
+// The --yes form survives for the one state where there is no digest to name:
+// no plan could be computed at all (a never-built env, or a control plane that
+// predates bundles — F-15). Nil is not "no changes", so the fallback says why
+// it is the fallback rather than looking like the normal answer.
+func approveCommand(env, version string, plan *release.Plan) (command, why string) {
+	var b strings.Builder
+	b.WriteString("forge env deploy " + env)
+	if version != "" {
+		b.WriteString(" " + version)
+	}
+	if plan == nil || plan.Digest == "" {
+		b.WriteString(" --yes")
+		return b.String(), "No plan digest to approve (none could be computed for this env), so this is the --yes form: it approves whatever forge computes when it runs."
+	}
+	b.WriteString(" --approve " + plan.Digest)
+	if stops := plan.StopCodes(); len(stops) > 0 {
+		b.WriteString(" --acknowledge-destructive " + strings.Join(stops, ","))
+	}
+	return b.String(), ""
 }
 
 // deployConfirmSubject names what is being deployed, for the prompt.

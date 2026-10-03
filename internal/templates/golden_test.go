@@ -254,6 +254,17 @@ func TestGoldenSnapshots(t *testing.T) {
 			},
 		},
 		{
+			// The hosted variant, snapshotted separately because the whole
+			// ADR-0003 F3 change is a DIFFERENCE between the two: the hosted
+			// job carries FORGE_CONTROL_PLANE_TOKEN and no registry login,
+			// where the cluster job carries a login and no control-plane
+			// token. One golden could only show one of them.
+			name: "build-images_hosted.yml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, Hosted: true})
+			},
+		},
+		{
 			name: "deploy.yml",
 			render: func(t *testing.T) []byte {
 				return renderCI(t, "github", "deploy.yml.tmpl", DeployWorkflowData{

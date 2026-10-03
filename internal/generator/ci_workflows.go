@@ -126,6 +126,13 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 	case len(deployEnvs) > 0:
 		buildEnv = deployEnvs[0].Name
 	}
+	// Whether THAT env pushes to the platform registry, which decides
+	// whether the job supplies a registry credential at all (ADR-0003 F3).
+	// Read off buildEnv and not off "the project has a hosted env": a
+	// project may build its per-commit image for a cluster env and promote
+	// releases through hosted ones, and only the env this job builds for
+	// says where its bytes go.
+	buildEnvHosted := buildEnv != "" && hosted[buildEnv]
 	e2eRuntime := cfg.CI.E2E.Runtime
 	if e2eRuntime == "" {
 		e2eRuntime = "docker-compose"
@@ -190,6 +197,7 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 				ProjectName: cfg.Name,
 				BuildEnv:    buildEnv,
 				VulnDocker:  ci.VulnDocker,
+				Hosted:      buildEnvHosted,
 			}})
 		}
 		// deploy.yml exists while it has an env to deploy. A project whose

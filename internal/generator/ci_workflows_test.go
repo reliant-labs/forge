@@ -325,3 +325,40 @@ func TestCIDeployEnvs_ConfigWins(t *testing.T) {
 		t.Fatalf("declared deploy.environments must be used verbatim, got %+v", envs)
 	}
 }
+
+// TestCIWorkflows_BuildImagesHostedFollowsItsOwnEnv is ADR-0003 F3's
+// generator half: whether the per-commit build job supplies a registry
+// credential is decided by the env IT builds for, not by whether the project
+// has a hosted env anywhere.
+//
+// The partly-hosted case is the one that matters. Such a project builds its
+// per-commit image for the CLUSTER env (deploy.yml's first), whose registry is
+// the author's own and still needs the flags — while its releases promote
+// through a hosted env that needs none. A flag read off "the project is
+// hosted" would drop the login from a job that requires it, and the push would
+// fail with a 401 the workflow gives no way to fix.
+func TestCIWorkflows_BuildImagesHostedFollowsItsOwnEnv(t *testing.T) {
+	root := hostedRoot(t)
+	for name, tc := range map[string]struct {
+		hosted []string
+		want   bool
+	}{
+		"every env hosted":                          {[]string{"staging", "prod"}, true},
+		"partly hosted, builds for the cluster env": {[]string{"prod"}, false},
+		"no hosted env":                             {nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := CIWorkflowsFor(root, serviceCfg(), CIInputs{HostedEnvs: tc.hosted})
+			images, ok := ciFile(files, ".github/workflows/build-images.yml").(templates.BuildImagesWorkflowData)
+			if !ok {
+				t.Fatal("no build-images workflow planned")
+			}
+			if images.Hosted != tc.want {
+				t.Errorf("build-images for env %q: Hosted = %v, want %v — "+
+					"a hosted env's push authenticates itself from the control-plane credential; "+
+					"a foreign registry still needs the login step",
+					images.BuildEnv, images.Hosted, tc.want)
+			}
+		})
+	}
+}

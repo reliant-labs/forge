@@ -62,9 +62,66 @@ func TestScaffoldedWorkflowsGoThroughForgeForTheRegistry(t *testing.T) {
 		{"build-images", `run: cosign sign --yes "$IMAGE_REF"`},
 		{"deploy", `forge registry login "${{ matrix.env }}" --username`},
 		{"deploy", `run: forge env build "${{ matrix.env }}" --push` + "\n"},
+		// The hosted job's login carries NO credential: forge resolves the
+		// control-plane one. The env it needs is the control-plane token,
+		// which the job already has for the ledger.
+		{"build-images hosted", `run: forge registry login "staging"` + "\n"},
+		{"build-images hosted", `FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}`},
 	} {
 		if !strings.Contains(string(w[tc.name]), tc.want) {
 			t.Errorf("%s.yml lacks %q", tc.name, tc.want)
+		}
+	}
+}
+
+// TestScaffoldedWorkflows_HostedRegistryTakesNoCredential is ADR-0003 F3's
+// scaffold half: ONE TOKEN means a hosted workflow carries no registry
+// credential at all.
+//
+// A `--username`/`--password-stdin` aimed at the platform registry is the
+// defect this pins, and it is not a cosmetic one. forge REFUSES those flags
+// for our host, so a scaffolded job that passed them would fail on its first
+// run; and before the refusal existed, a job that happened to work taught the
+// author that our registry has a password of its own — so the next pipeline
+// they wrote carried a second secret to rotate.
+func TestScaffoldedWorkflows_HostedRegistryTakesNoCredential(t *testing.T) {
+	w := renderedWorkflows(t)
+	for _, name := range []string{"build-images hosted", "release", "release mixed"} {
+		body := string(w[name])
+		if body == "" {
+			t.Fatalf("%s rendered nothing", name)
+		}
+		for _, line := range strings.Split(body, "\n") {
+			if !strings.Contains(line, "forge registry login") {
+				continue
+			}
+			// A comment may SHOW the foreign-registry form — release.yml
+			// explains it for an env that also pushes somewhere of its own —
+			// and that is documentation, not a step.
+			if idx := strings.Index(line, "#"); idx >= 0 && strings.TrimSpace(line[:idx]) == "" {
+				continue
+			}
+			for _, flag := range []string{"--username", "--password-stdin", "--password-env"} {
+				if strings.Contains(line, flag) {
+					t.Errorf("%s logs in to the platform registry with %s — forge refuses that flag for our host, "+
+						"which takes the control-plane credential:\n    %s", name, flag, strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+}
+
+// TestScaffoldedWorkflows_HostedBuildHasNoLoginStep: the build job does not
+// log in at ALL, because the push does it. A login step would be a second
+// place to be wrong about how the registry is reached.
+func TestScaffoldedWorkflows_HostedBuildHasNoLoginStep(t *testing.T) {
+	for _, name := range []string{"release", "release mixed"} {
+		body := string(renderedWorkflows(t)[name])
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "run:") && strings.Contains(line, "forge registry login") {
+				t.Errorf("%s has a registry login STEP; `forge env build --release` authenticates its own push "+
+					"(ADR-0003 F3):\n    %s", name, strings.TrimSpace(line))
+			}
 		}
 	}
 }

@@ -101,16 +101,25 @@ jobs:
           go-version-file: go.mod
       - name: Install forge
 {{installForgeRun 8}}
-      - name: Log in to the declared registry
-        env:
-          LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-        run: printf '%s' "$LOGIN_TOKEN" | forge registry login {{.BuildEnv}} --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
       - name: Build, push and record the release
         # ONE command: --release implies --push (a release pins registry
         # digests, and a local tag cannot be promoted anywhere) and records the
         # immutable release over what it just pushed. Re-running the same tag
         # over the same artifacts is a no-op, exit 0 — so a re-run of this job
         # is safe.
+        #
+        # NO REGISTRY LOGIN STEP, and that is the point of ADR-0003 F3. A
+        # hosted env's images go to the platform registry, which forge
+        # authenticates with FORGE_CONTROL_PLANE_TOKEN — already in this
+        # workflow's env, because the release ledger needs it — so the push
+        # logs itself in before its first byte. There is no second credential
+        # to mint, and a job that carried one would have two secrets to
+        # rotate and only one of them in anybody's memory.
+        #
+        # An env that ALSO pushes to a registry of your own needs that one's
+        # credential, and only that one's:
+        #   printf '%s' "$TOKEN" | forge registry login {{.BuildEnv}} \
+        #     --username <user> --password-stdin
         run: forge env build {{.BuildEnv}} --release "$VERSION" --gate-json build.json
       - name: Summary
         if: always()

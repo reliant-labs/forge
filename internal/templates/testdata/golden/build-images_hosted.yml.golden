@@ -14,7 +14,7 @@ on:
         type: string
 
 concurrency:
-  group: build-images-${{"{{"}} github.ref {{"}}"}}
+  group: build-images-${{ github.ref }}
   cancel-in-progress: true
 
 # Supply chain hardening (M-12):
@@ -36,25 +36,23 @@ jobs:
     runs-on: ubuntu-latest
     # Built for the first env in the promotion order — the one deploy.yml
     # auto-deploys — through forge, so the image lands in the registry THAT
-    # env's KCL declares (deploy/kcl/{{.BuildEnv}}/main.k). This workflow names
+    # env's KCL declares (deploy/kcl/staging/main.k). This workflow names
     # no registry: forge reads it from the declaration, and so does the deploy
     # that pulls it.
     env:
-      FORGE_ENV: {{.BuildEnv}}
-{{- if .Hosted}}
-      # ONE TOKEN. {{.BuildEnv}} pushes to the platform registry, which forge
+      FORGE_ENV: staging
+      # ONE TOKEN. staging pushes to the platform registry, which forge
       # authenticates with this same control-plane credential — so there is no
       # registry login step, no second secret, and nothing to rotate. The push
       # logs itself in before its first byte (ADR-0003 F3).
-      FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
-{{- end}}
+      FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
     # The pushed image's digest-pinned ref, from `forge registry ref` — what
     # the build recorded, never a literal here. The digest is IMMUTABLE, the
     # value every later step binds to — never the tag, which is a mutable
     # pointer anyone could re-push.
     outputs:
-      ref: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
-      digest: ${{"{{"}} steps.ref.outputs.digest {{"}}"}}
+      ref: ${{ steps.ref.outputs.ref }}
+      digest: ${{ steps.ref.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,34 +67,40 @@ jobs:
         # The version comes from the project at run time — go.mod's forge, the
         # one this code compiles against — so bumping forge in go.mod is the
         # whole upgrade.
-{{installForgeRun 8}}
-
-{{- if not .Hosted}}
-
-      - name: Log in to the declared registry
-        # forge logs docker in to the registry each image this env builds
-        # names; the workflow supplies only the credential. GITHUB_TOKEN
-        # (with `packages: write`) is the credential for GitHub's container
-        # registry. For another registry, pipe its credential instead — a GAR
-        # key with --username _json_key, an ECR token with --username AWS —
-        # from a repository SECRET.
-        env:
-          LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "$FORGE_ENV" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
-{{- end}}
+        run: |
+          set -euo pipefail
+          forge=github.com/reliant-labs/forge
+          command -v jq >/dev/null || { echo "::error::jq is required to read go.mod (preinstalled on GitHub-hosted runners)"; exit 1; }
+          mod=$(GOWORK=off go mod edit -json)
+          replaced=$(jq -r --arg m "$forge" '.Replace[]? | select(.Old.Path == $m) | "\(.New.Path) \(.New.Version // "")"' <<<"$mod")
+          if [ -n "$replaced" ]; then
+            echo "::error file=go.mod::go.mod replaces $forge with ${replaced% } — CI cannot install that forge. Bridge a local forge checkout with an uncommitted go.work instead."
+            exit 1
+          fi
+          if [ -n "$(jq -r --arg m "$forge" '.Require[]? | select(.Path == $m) | .Path' <<<"$mod")" ]; then
+            v=$(GOWORK=off go list -m -f '{{.Version}}' "$forge")
+          else
+            v=$(sed -n 's/^forge_version:[[:space:]]*//p' forge.yaml | tr -d "\"' ")
+          fi
+          case "$v" in
+            v*+*|""|dev|0.0.0)
+              echo "::error file=go.mod::no installable forge version (got '$v') — require $forge in go.mod, or set forge_version in forge.yaml to a published version."
+              exit 1 ;;
+          esac
+          CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
 
       - name: Build and push
         # `forge env build <env> --push` pushes to the env's declared registry
         # and records the tag and digest in .forge/state/. `--target
-        # {{.ProjectName}}` builds the project image alone: frontend images
+        # demo` builds the project image alone: frontend images
         # are per-env (each renders that env's config.js), so deploy.yml
         # builds them. The tag is the commit's sha-<short> (or the
         # dispatch's override).
         env:
-          IMAGE_TAG_OVERRIDE: ${{"{{"}} github.event.inputs.image_tag {{"}}"}}
+          IMAGE_TAG_OVERRIDE: ${{ github.event.inputs.image_tag }}
         run: |
           tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"
-          forge env build "$FORGE_ENV" --target {{.ProjectName}} --push --tag "$tag"
+          forge env build "$FORGE_ENV" --target demo --push --tag "$tag"
 
       - name: Pushed image ref
         id: ref
@@ -116,22 +120,22 @@ jobs:
           # `--yes` skips the interactive transparency-log confirmation;
           # required for non-interactive CI runs.
           COSIGN_EXPERIMENTAL: "1"
-          IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+          IMAGE_REF: ${{ steps.ref.outputs.ref }}
         run: cosign sign --yes "$IMAGE_REF"
 
       - name: Generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+          image: ${{ steps.ref.outputs.ref }}
           format: spdx-json
-          artifact-name: sbom-{{.ProjectName}}.spdx.json
-          output-file: sbom-{{.ProjectName}}.spdx.json
+          artifact-name: sbom-demo.spdx.json
+          output-file: sbom-demo.spdx.json
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-{{.ProjectName}}
-          path: sbom-{{.ProjectName}}.spdx.json
+          name: sbom-demo
+          path: sbom-demo.spdx.json
           if-no-files-found: error
 
       - name: Attest build provenance
@@ -141,13 +145,12 @@ jobs:
         # AFTER the image is pushed, turning every push to main red. The image
         # is still cosign-signed and ships an SBOM above; this condition only
         # skips the SLSA provenance upload. On Enterprise Cloud, drop it.
-        if: ${{"{{"}} !github.event.repository.private {{"}}"}}
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v1
         with:
-          subject-name: ${{"{{"}} steps.ref.outputs.image {{"}}"}}
-          subject-digest: ${{"{{"}} steps.ref.outputs.digest {{"}}"}}
+          subject-name: ${{ steps.ref.outputs.image }}
+          subject-digest: ${{ steps.ref.outputs.digest }}
           push-to-registry: true
-{{- if .VulnDocker}}
 
   trivy-scan:
     name: Vulnerability Scan
@@ -165,51 +168,53 @@ jobs:
           go-version-file: go.mod
 
       - name: Install forge
-{{installForgeRun 8}}
+        run: |
+          set -euo pipefail
+          forge=github.com/reliant-labs/forge
+          command -v jq >/dev/null || { echo "::error::jq is required to read go.mod (preinstalled on GitHub-hosted runners)"; exit 1; }
+          mod=$(GOWORK=off go mod edit -json)
+          replaced=$(jq -r --arg m "$forge" '.Replace[]? | select(.Old.Path == $m) | "\(.New.Path) \(.New.Version // "")"' <<<"$mod")
+          if [ -n "$replaced" ]; then
+            echo "::error file=go.mod::go.mod replaces $forge with ${replaced% } — CI cannot install that forge. Bridge a local forge checkout with an uncommitted go.work instead."
+            exit 1
+          fi
+          if [ -n "$(jq -r --arg m "$forge" '.Require[]? | select(.Path == $m) | .Path' <<<"$mod")" ]; then
+            v=$(GOWORK=off go list -m -f '{{.Version}}' "$forge")
+          else
+            v=$(sed -n 's/^forge_version:[[:space:]]*//p' forge.yaml | tr -d "\"' ")
+          fi
+          case "$v" in
+            v*+*|""|dev|0.0.0)
+              echo "::error file=go.mod::no installable forge version (got '$v') — require $forge in go.mod, or set forge_version in forge.yaml to a published version."
+              exit 1 ;;
+          esac
+          CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
 
       - name: Log in to the declared registry
         # The scanner pulls the image, so it needs the same read access.
-{{- if .Hosted}}
         # The platform registry takes the control-plane credential, so this
         # passes no --username and no password: forge resolves the same rlat_
         # it reaches the control plane with. Unlike the build job, the login
         # IS a step here — nothing in this job pushes, and trivy pulls on its
         # own rather than through forge.
         env:
-          FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
-        run: forge registry login "{{.BuildEnv}}"
-{{- else}}
-        env:
-          LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "{{.BuildEnv}}" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
-{{- end}}
+          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+        run: forge registry login "staging"
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           # The digest-pinned ref the build pushed — the exact bytes scanned.
-          image-ref: ${{"{{"}} needs.build-push.outputs.ref {{"}}"}}
+          image-ref: ${{ needs.build-push.outputs.ref }}
           format: table
           exit-code: "1"
           severity: CRITICAL,HIGH
-{{- end}}
-{{- /*
-  No frontend job here. A frontend image is ENVIRONMENT-SPECIFIC — each env
-  renders its own config.js (API origin, OIDC client, telemetry) into the
-  build — so it cannot be built once on main. `forge env build <env> --push` in
-  deploy.yml builds it, after re-rendering config.js from that env's KCL. The
-  raw `docker buildx build frontends/*` this replaced baked whatever
-  config.js happened to be on disk (the DEV document, or nothing on a clean
-  clone) into every image.
-*/}}
 
   summary:
     name: Build Summary
     needs:
       - build-push
-      {{- if .VulnDocker}}
       - trivy-scan
-      {{- end}}
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -220,10 +225,8 @@ jobs:
             echo ""
             echo "| Image | Status |"
             echo "|-------|--------|"
-            echo "| {{.ProjectName}} | ${{"{{"}} needs.build-push.result {{"}}"}} |"
-            {{- if .VulnDocker}}
-            echo "| trivy scan | ${{"{{"}} needs.trivy-scan.result {{"}}"}} |"
-            {{- end}}
+            echo "| demo | ${{ needs.build-push.result }} |"
+            echo "| trivy scan | ${{ needs.trivy-scan.result }} |"
             echo ""
             echo "**Commit:** \`$GITHUB_SHA\`"
             echo "**Tag:** \`sha-${GITHUB_SHA::7}\`"

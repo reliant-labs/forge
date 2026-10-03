@@ -406,6 +406,16 @@ type BuildImagesWorkflowData struct {
 	// `npm run build` — so this job needs no Node toolchain.
 	VulnDocker bool // trivy scanning
 
+	// Hosted says BuildEnv pushes to the PLATFORM registry, which changes
+	// what the job has to supply: nothing. forge authenticates that registry
+	// with the control-plane credential it already resolves (ADR-0003 F3), so
+	// a hosted job carries FORGE_CONTROL_PLANE_TOKEN — which it needs anyway
+	// — and no registry credential, no --username and no --password-stdin.
+	//
+	// It is a per-env fact and not a project-wide one: a project may build
+	// its per-commit image for a cluster env and promote releases through
+	// hosted ones, and only the env this job builds for decides.
+	Hosted bool
 }
 
 // ReleaseWorkflowData holds data for release.yml and the vendored

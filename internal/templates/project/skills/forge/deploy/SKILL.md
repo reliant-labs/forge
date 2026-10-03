@@ -55,11 +55,9 @@ output = forge.render(forge.Bundle {
 
 A workload with no runtime is a render error naming it.
 
-`output = forge.render(bundle)` is the ONE entrypoint. There is no
-separate manifest stream: the cluster objects are Workload records only
-forge can expand, so always render and deploy through forge
-(`forge env render <env>`, `forge env deploy <env>`), never `kcl run |
-kubectl apply`.
+`output = forge.render(bundle)` is the ONE entrypoint. There is no separate
+manifest stream: the cluster objects are Workload records only forge can
+expand, so always go through `forge env render` / `forge env deploy`.
 
 ### The scaffolded envs
 
@@ -94,6 +92,11 @@ forge env new cloud --from prod --bind item=hosted          # item on the contro
 forge env new cloud --check                                 # no placeholder left, renders, admissible
 ```
 
+`Bundle.lifecycle` declares WHO APPLIES an env — `"local"` / `"ephemeral"`
+means forge applies directly, unset means it is reconciled from a bundle. The
+scaffolded `dev` declares `local`, `staging` and `prod` declare nothing. See
+deploy/shape.
+
 ### What forge writes into every spec
 
 - **Probes.** A service forge builds gets `/readyz` readiness and
@@ -111,7 +114,7 @@ forge env new cloud --check                                 # no placeholder lef
   Kubernetes' `RollingUpdate`, which surges a new pod before the old one
   stops — so `replicas = 1` does NOT mean one process: two run for the
   length of every rollout. When the replica count is a correctness bound
-  rather than a capacity choice (a sweeper that is not idempotent under
+  rather than a capacity choice (a sweeper not idempotent under
   concurrency), declare `strategy = "Recreate"` and accept the gap with no
   pod. Storage already forces Recreate, and `RollingUpdate` beside
   `storageGiB` is refused — the ReadWriteOnce volume would deadlock the
@@ -123,11 +126,10 @@ forge env new cloud --check                                 # no placeholder lef
 
 ### The hosted runtime is a restricted profile
 
-A hosted workload shares nodes with other hosted users, so the control
-plane admits only what it can run safely there. forge runs the same check
-at render, so a refusal names the workload and field in your env file
-rather than after a publish. Bind a refused workload to a cluster you
-operate to keep it in a hosted env.
+A hosted workload shares nodes with other hosted users, so the control plane
+admits only what it can run safely there. forge runs the same check at render,
+so a refusal names the workload and field in your env file rather than after a
+publish. Bind a refused workload to a cluster you operate instead.
 
 - **Allowed:** kinds `service`, `worker`, `job`; `replicas`, `resources`,
   `command`/`args`, `ports` (the platform routes the `expose = True` one),
@@ -144,7 +146,7 @@ operate to keep it in a hosted env.
     `terminationGracePeriodSeconds`, `podAnnotations` — the platform
     composes the pod and owns its identity and grace period.
   - `nodeSelector`, `tolerations`, `priorityClassName` — the platform
-    decides placement, and ranks hosted pods on its own priority ladder.
+    decides placement and ranks hosted pods on its own ladder.
   - `ports.domains` — a hosted hostname is a control-plane resource, not
     spec; see Custom domains.
   - Raw `secretRef`, `configMapRef` and `fieldRef` env — they address
@@ -186,7 +188,7 @@ A hosted env's images go to the PLATFORM registry, authenticated with the same
 `forge registry login <env>` REFUSES `--username`/`--password-*` for that host.
 A bare `image = "api"` resolves under `<registry_host>/<organization>/<project>/`.
 
-Load `deploy/hosted-registry` for the credential sources, the CI shape, and
+Load `deploy/hosted-registry` for credential sources, the CI shape, and
 denied-push triage (a realm 401 is nearly always a mis-declared `organization`).
 
 A non-hosted env declares no registry: each workload — and each hosted
@@ -196,11 +198,11 @@ frontend, via `forge.Frontend.image` — names its own.
 
 A `forge.DockerBuild` sends the PROJECT ROOT as its build context unless it
 sets `context` (a project-root-relative directory) — set that when the
-Dockerfile expects to run from its own directory, or the un-prefixed `COPY
-package.json ./` fails as `failed to compute cache key: "/package.json": not
-found`. Separately, `docker.build_contexts` declares NAMED contexts for
-files outside the project tree, consumed via `COPY --from=<name>`. For both,
-and which one a Dockerfile needs: load `deploy/build-contexts`.
+Dockerfile expects to run from its own directory, or an un-prefixed `COPY
+package.json ./` fails with `failed to compute cache key`. Separately,
+`docker.build_contexts` declares NAMED contexts for files outside the project
+tree, consumed via `COPY --from=<name>`. For both, and which one a Dockerfile
+needs: load `deploy/build-contexts`.
 
 ## Deploy
 
@@ -241,12 +243,10 @@ of exit 5.
 
 **A scoped deploy needs a release.** `--frontends-only` and `--target` ship
 part of the env, so forge refuses them when no version is named: a no-version
-deploy builds and pushes every artifact and cuts a release over all of them,
-and cutting one that ships only some would record a release that does not
-describe what is running. Name the version
-(`forge env deploy prod v1.7.1 --frontends-only`) or deploy everything
-(`forge env deploy prod`). `--dry-run` / `--explain` cut nothing and are
-unaffected.
+deploy cuts a release over every artifact, and cutting one that ships only
+some would record a release that does not describe what is running. Name the
+version (`forge env deploy prod v1.7.1 --frontends-only`) or deploy
+everything. `--dry-run` / `--explain` cut nothing and are unaffected.
 
 `build` and `deploy` also record that shape on the control plane, so a console
 can read an env with no daemon online.
@@ -259,12 +259,12 @@ the env's control plane, admitted there under the Restricted profile.
 
 ### Migrations run BEFORE the rollout
 
-A standalone `kind = "job"` workload is **pre-rollout by default**: `forge
-env deploy` applies it and waits for it to COMPLETE before any Deployment in
-the same cluster group. If it fails, the deploy stops with no workload changed
-and prints the exact `kubectl logs` command. The scaffolded `migrate` goes
-further: `before = [fw.BEFORE_ALL]` runs it as an initContainer on every
-workload, so no new pod serves against an old schema. A job that needs this
+A standalone `kind = "job"` workload is **pre-rollout by default**: `forge env
+deploy` applies it and waits for it to COMPLETE before any Deployment in the
+same cluster group. If it fails the deploy stops with no workload changed,
+printing the exact `kubectl logs` command. The scaffolded `migrate` goes
+further — `before = [fw.BEFORE_ALL]` runs it as an initContainer on every
+workload, so no new pod serves against an old schema. A job needing this
 release's workloads running declares `deployPhase = "post-rollout"`.
 
 ### Frontends bind a runtime too
@@ -280,11 +280,11 @@ no default, and a frontend with no `runtime` is a render error naming it:
 | `forge.OnFirebase {project, site, ...}`       | `firebase deploy`                                                             |
 | `forge.BuildOnly {}`                          | builds it for a sibling frontend's `bundle`; ships nothing                    |
 
-The build facts are the frontend's, the same on every runtime:
-`public_dir` (default `out` for Next.js, `dist` otherwise), `base_path`,
-`bundle`, `cache_control` (OnBucket only). A Next.js frontend published
-statically needs `output: static` in forge.yaml; a server-rendered one is a
-workload with a `forge.DockerBuild`.
+The build facts are the frontend's, the same on every runtime: `public_dir`
+(default `out` for Next.js, `dist` otherwise), `base_path`, `bundle`,
+`cache_control` (OnBucket only). A Next.js frontend published statically needs
+`output: static` in forge.yaml; a server-rendered one is a workload with a
+`forge.DockerBuild`.
 
 ```kcl
 _web = forge.Frontend {name = "web", path = "frontends/web", public_dir = "out"}
@@ -295,8 +295,7 @@ frontends = [_web | {runtime = forge.OnBucket {bucket = "acme-prod-web"}}]
 `forge env new cloud --from prod --bind web=hosted` rebinds a scaffolded
 frontend's line (`_on_bucket(_web_frontend)` → `_hosted_frontend(...)`).
 `forge env deploy <env> <version> --frontends-only` ships only the bucket /
-Firebase frontends of a release that exists (a scope flag needs a version —
-see "A scoped deploy needs a release" above).
+Firebase frontends of a release that exists (a scope flag needs a version).
 
 ### Hosted static sites
 
@@ -328,19 +327,18 @@ the commands and how to read a bound domain's state: load `deploy/domains`.
 
 `priorityClassName` names a cluster-scoped PriorityClass that ranks a
 workload's pods against every other pod competing for a node. Declare it
-wherever your pods share nodes with pods that already carry one: an
-unranked pod is priority 0, so a higher-priority pod preempts it, and a
-rollout's surge pod can be evicted repeatedly, stalling in `FailedScheduling`.
+wherever your pods share nodes with pods that already carry one: an unranked
+pod is priority 0, so a higher-priority pod preempts it and a rollout's surge
+pod can be evicted repeatedly, stalling in `FailedScheduling`.
 
 ```kcl
 proxy = fw.Workload {name = "proxy", kind = "service", priorityClassName = "acme-platform"}
 ```
 
-Apply the PriorityClass to every cluster the workload lands on BEFORE the
-pods that name it — Kubernetes refuses a pod naming a class the cluster
-does not have. Unset means the cluster's default. `forge.OnCluster` only:
-the host and compose runtimes schedule nothing, and hosted ranks pods on
-its own ladder.
+Apply the PriorityClass to every cluster the workload lands on BEFORE the pods
+that name it — Kubernetes refuses a pod naming a class the cluster does not
+have. Unset means the cluster's default. `forge.OnCluster` only: host and
+compose schedule nothing, and hosted ranks pods on its own ladder.
 
 ## forge env up — the local loop
 
@@ -360,22 +358,21 @@ After every deploy confirm the env runs what it claims: `forge env status
 <env>` — bound release, running digests, rollout, health, gates, ledger.
 Exit 2 + `ledger BEHIND` = pull first.
 
-**There is no rollback command, and that is deliberate.** A rollback claims
-to undo a release, and it cannot: by the time you would run it the release
-has applied its migrations and written rows in the new shape. So forge has
-no `--rollback`, no `rollback_cmd`, and no `kubectl rollout undo` path.
-Recovery is always a **new release that rolls forward** — `forge env deploy
-prod` with the fix in the tree, or `--plan-only` first to read the plan.
+**There is no rollback command, and that is deliberate.** A rollback claims to
+undo a release and it cannot: by the time you would run it the release has
+applied its migrations and written rows in the new shape. So forge has no
+rollback flag, no `rollback_cmd`, no `kubectl rollout undo` path. Recovery is
+always a **new release that rolls forward** — `forge env deploy prod` with the
+fix in the tree, or `--plan-only` first to read the plan.
 
 A release deploy compare-and-sets against the plan's read: exit **3** = the env
 moved meanwhile, nothing written — never retry blind. CI recipe:
 `forge env deploy --help`.
 
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
-migration before any workload changes, and a workload that never becomes
-ready leaves the previous ReplicaSet serving. Binding an env to an OLDER
-release is an ordinary promote labelled `direction BEHIND`; see
-`db/deploy-migrations`.
+migration before any workload changes, and a workload that never becomes ready
+leaves the previous ReplicaSet serving. Binding an env to an OLDER release is
+an ordinary promote labelled `direction BEHIND`; see `db/deploy-migrations`.
 
 ## Rules
 
@@ -396,9 +393,9 @@ release is an ordinary promote labelled `direction BEHIND`; see
 
 Typed per-env config lives in `deploy/kcl/<env>/config.k` (an `AppConfig`
 instance); `config_gen.appConfigEnvMap(cfg, w.config_secrets)` projects it
-into a workload's `env` map. A `sensitive` field reaches only the workloads
-that list it in `config_secrets`, so one feature's missing Secret key cannot
-stall every pod. Anything else is a literal in the workload's `env`:
+into a workload's `env` map. A `sensitive` field reaches only workloads that
+list it in `config_secrets`, so one feature's missing Secret key cannot stall
+every pod. Anything else is a literal in the workload's `env`:
 
 ```kcl
 wl.item | {env = {LOG_LEVEL = "debug"}}
@@ -415,13 +412,12 @@ invisible at render and fatal at runtime — make it impossible.
 
 ## Routes and per-route traffic policy
 
-A route names its backend as a `service` OR as a `workload` — and a
-`workload` is resolved per env to that workload's Service, or to the host
-process when that env runs it on the host, so ONE declaration follows it
-everywhere. `traffic` carries the typed retry / timeout / health-check /
-outlier-detection policy (the dead `raw_policy` string is gone). For the
-resolution table, the port-inference rules and the registry-flavoured
-worked example: load `deploy/routes`.
+A route names its backend as a `service` OR as a `workload` — and a `workload`
+is resolved per env to that workload's Service, or to the host process when
+that env runs it on the host, so ONE declaration follows it everywhere.
+`traffic` carries the typed retry / timeout / health-check /
+outlier-detection policy. For the resolution table, the port-inference rules
+and a worked example: load `deploy/routes`.
 
 ## Extra Kubernetes objects
 
@@ -444,13 +440,13 @@ skill for the two credential models, the address modes, and rotation.
 ## `features:` block — disabling subsystems
 
 `forge.yaml`'s `features:` block gates `deploy`, `build`, `ci`, `codegen`,
-`orm`, `migrations`, `frontend`, `observability`, `hot_reload`,
-`contracts`, `docs`, `ingress`, `operators` — plus experimental
-`strict_wiring`, `reconcile` under `features.experimental:`. Each defaults
-from the derived shape; explicit `features.<name>` wins. `ingress` and
-`operators` derive false (opt-in).
+`orm`, `migrations`, `frontend`, `observability`, `hot_reload`, `contracts`,
+`docs`, `ingress`, `operators` — plus experimental `strict_wiring`,
+`reconcile` under `features.experimental:`. Each defaults from the derived
+shape; explicit `features.<name>` wins. `ingress` and `operators` derive
+false (opt-in).
 
 ## k3d local-registry mirror
 
-Load the `deploy/k3d-registry` skill for the `localhost:5050` ↔
+Load `deploy/k3d-registry` for the `localhost:5050` ↔
 `registry.localhost:5000` containerd mirror.

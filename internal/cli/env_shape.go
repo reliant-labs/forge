@@ -62,9 +62,20 @@ import (
 // nobody can record. Kind is duplicated out of the shape for the same
 // reason a header exists: it is the one field a reader branches on.
 type envShapeDoc struct {
-	Project    string             `json:"project"`
-	Env        string             `json:"env"`
-	Kind       string             `json:"kind"`
+	Project string `json:"project"`
+	Env     string `json:"env"`
+	Kind    string `json:"kind"`
+	// Lifecycle is WHO APPLIES this env, as the env itself declares it
+	// (Bundle.lifecycle): "local", "ephemeral", or absent for a real
+	// environment reconciled from a bundle.
+	//
+	// It is NOT Kind, and the two answer different questions: Kind is
+	// DERIVED from what the env hosts (persistent / preview /
+	// self_managed / local), while this is DECLARED and is about the
+	// apply path. An env can be Kind local and still be a real
+	// environment, which is exactly why the derived field could not be
+	// reused here. Omitted when unset, so the absence is the default.
+	Lifecycle  string             `json:"lifecycle,omitempty"`
 	Shape      release.Shape      `json:"shape"`
 	Provenance release.Provenance `json:"provenance"`
 
@@ -304,6 +315,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Project:    hostedProjectName(),
 		Env:        envName,
 		Kind:       string(shape.Kind),
+		Lifecycle:  entities.Lifecycle,
 		Shape:      shape,
 		Provenance: captureBuildProvenance(ctx, projectDir).ForHosted(),
 		manifests:  stream,

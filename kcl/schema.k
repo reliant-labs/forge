@@ -3500,6 +3500,35 @@ schema Bundle:
     # verify external DNS). Empty => no declared prereqs (today's behavior).
     required_secrets: [ExternalSecret] = []
     required_dns: [DNSRecord] = []
+    # WHO APPLIES this env: forge directly, or a reconciler reading a bundle.
+    #
+    # This is about the APPLY PATH, and it is the one fact nothing else in
+    # the Bundle states. It is NOT "does this env have a control plane"
+    # (that is `control_plane`) and NOT the derived pkg/release EnvKind
+    # (persistent / preview / self_managed / local, which answers what is
+    # HOSTED). An env can be hosted and still be a developer's throwaway
+    # cluster, or have no control plane at all and still be a real
+    # environment nobody should apply to by hand.
+    #
+    #   unset       — A REAL ENVIRONMENT. It is reconciled FROM A BUNDLE
+    #                 (`forge env build` → the Flux path) and is never
+    #                 direct-applied. This is the default because it is the
+    #                 safe one: an env that forgot to declare itself is
+    #                 treated as production, not as scratch.
+    #   "local"     — a developer's OWN cluster. Direct apply is the point:
+    #                 the inner loop is `forge env up` against a cluster
+    #                 only this machine can see.
+    #   "ephemeral" — a THROWAWAY per-run cluster (CI / e2e). It is created,
+    #                 applied to, asserted against and deleted inside one
+    #                 run, so routing it through a reconciler would add a
+    #                 control loop with nothing to converge to.
+    #
+    # TODAY THIS REFUSES NOTHING. forge parses it, reports it
+    # (`forge env shape --json`, `forge env status --json`) and prints a
+    # notice on a direct apply to an env that declares none. The refusal
+    # lands once the bundle→Flux path is proven end to end; declaring it
+    # now is what makes that change a flag flip rather than a migration.
+    lifecycle?: "local" | "ephemeral"
 
     check:
         # THE PROJECT IS DECLARED: it is every object's part-of, the handle a
@@ -3580,5 +3609,20 @@ schema Bundle:
         # nodes have a FIXED arch, must state it. Reading it off the image (not
         # the cluster name) keeps the signal reliable: a localhost registry can
         # only be served to the host's own cluster, period.
+        #
+        # A DECLARED LIFECYCLE MUST BE TRUE. "local" / "ephemeral" claims
+        # forge may apply to this env directly, which is only honest for a
+        # cluster forge creates and can delete. Checked against EVERY
+        # context the env's objects land on — a workload's, the primary
+        # target's, a pinned Gateway's or route's, a chart's, a raw
+        # forge.Manifests group's, a placed Secret's — because an env is
+        # only as local as its least local target. So a GKE/VKE env can
+        # never declare itself local to keep direct apply, which is the
+        # whole point: that would be a cloud environment opting out of
+        # reconciliation by editing one line.
+        not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
+                cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
+                manifests, rendered_secrets)) == 0, \
+            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, rendered_secrets))} is not one"
         all w in workloads { not _cloud_build_without_platform(w) }, \
             "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

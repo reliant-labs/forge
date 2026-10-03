@@ -459,6 +459,9 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 	if !in.headCommit.IsZero() {
 		rep.HeadCommitAt = in.headCommit.UTC().Format(time.RFC3339)
 	}
+	if in.entities != nil {
+		rep.Lifecycle = in.entities.Lifecycle
+	}
 	dest := resolveEnvDestination(ctx, in.env, in.entities, readHostedStatusFromDeclaration)
 	rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
 	rep.ControlPlaneKind = dest.ControlPlaneKind
@@ -1642,6 +1645,15 @@ type upServicesReport struct {
 	// be read (credentials, network), in which case the other hosted fields
 	// are empty rather than guessed.
 	Destination string `json:"destination,omitempty"`
+	// Lifecycle is WHO APPLIES this env, as the env itself declares it
+	// (Bundle.lifecycle): "local", "ephemeral", or absent for a real
+	// environment reconciled from a bundle.
+	//
+	// Distinct from ControlPlaneKind below, which happens to share the
+	// word "local": that one is DERIVED from what the env hosts, this
+	// one is DECLARED and is about the apply path. An env can be
+	// control_plane_kind local and still be a real environment.
+	Lifecycle string `json:"lifecycle,omitempty"`
 	// ControlPlaneKind: "local" | "persistent" when the env declares
 	// control_plane (see env_destination.go).
 	ControlPlaneKind string                              `json:"control_plane_kind,omitempty"`

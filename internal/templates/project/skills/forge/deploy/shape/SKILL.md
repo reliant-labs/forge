@@ -78,6 +78,52 @@ The kind is IMMUTABLE once recorded: an env whose kind changed is a different
 env, and an ensure that disagrees with the stored row is refused rather than
 silently changing it.
 
+## `lifecycle` is DECLARED, and it is a different question
+
+`kind` above is derived from what the env HOSTS. `lifecycle` is declared by
+the env itself, and it says WHO APPLIES it:
+
+| `Bundle.lifecycle` | Means |
+|---|---|
+| unset | **A REAL ENVIRONMENT.** Reconciled from a bundle (`forge env build` → Flux), never direct-applied. |
+| `"local"` | A developer's OWN cluster — the `forge env up` inner loop. |
+| `"ephemeral"` | A THROWAWAY per-run cluster (CI / e2e), deleted inside the run, so nothing could converge it. |
+
+```kcl
+_bundle = forge.Bundle {
+    project = "acme"
+    lifecycle = "local"      # dev: your own k3d cluster, applied to directly
+    cluster_target = _k3d
+}
+```
+
+Unset is the safe default deliberately: an env whose author declared nothing
+is treated as production, not as scratch. The scaffolded `dev` env declares
+`local`; `staging` and `prod` declare nothing, which is correct for them.
+
+The two fields are easy to conflate because both use the word "local", and
+they are not the same claim. `kind` local means nothing is hosted;
+`lifecycle` local means forge may apply directly. A hosted env can still be
+a throwaway cluster, and an env with no control plane at all can still be a
+real environment nobody should apply to by hand — which is exactly why the
+derived field could not be reused here.
+
+**It is checked, not trusted.** A declared lifecycle may only target a k3d
+cluster forge itself stands up — declared in `Bundle.clusters`, or named by
+k3d's `k3d-<name>` context convention (the `deploy/k3d.yaml` cluster). EVERY
+placement counts, not just the workloads': `cluster_target`, a pinned
+Gateway's or route's cluster, a `forge.HelmChart`'s, a raw `forge.Manifests`
+group's, a placed `forge.RenderedSecret`'s. An env is only as local as its
+least local target, so a cloud env cannot declare itself local to keep direct
+apply: the render fails, naming the offending context.
+
+`forge env shape --json` and `forge env status --json` both report
+`lifecycle`, and a direct cluster apply to an env that declares none prints
+one notice saying it will be reconciled from its bundle once direct apply is
+retired. That is the field's whole effect today — it refuses nothing, and no
+behaviour changes — and declaring it now is what makes retiring direct apply
+a flag flip rather than a migration.
+
 ## Recording it is what makes the console work offline
 
 `forge env build <env>` and `forge env deploy <env>` record this same

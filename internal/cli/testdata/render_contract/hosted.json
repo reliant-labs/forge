@@ -60,6 +60,7 @@
     "image_tag": "stable",
     "infra": [],
     "kubeconfig_secrets": [],
+    "lifecycle": null,
     "manifests": [],
     "network_policy": null,
     "project": "acme",

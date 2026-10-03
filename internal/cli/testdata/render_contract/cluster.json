@@ -2,6 +2,7 @@
   "output": {
     "cluster_target": {
       "cluster": "k3d-acme",
+      "connected_cluster": null,
       "domain": null,
       "image_pull_secrets": [],
       "namespace": "acme-dev",
@@ -323,6 +324,7 @@
         "name": "api",
         "runtime": {
           "cluster": "k3d-acme",
+          "connected_cluster": null,
           "domain": null,
           "image_pull_secrets": [],
           "namespace": "acme-dev",
@@ -397,6 +399,7 @@
         "name": "migrate",
         "runtime": {
           "cluster": "k3d-acme",
+          "connected_cluster": null,
           "domain": null,
           "image_pull_secrets": [],
           "namespace": "acme-dev",
@@ -439,6 +442,7 @@
         "name": "nightly",
         "runtime": {
           "cluster": "k3d-acme",
+          "connected_cluster": null,
           "domain": null,
           "image_pull_secrets": [],
           "namespace": "acme-dev",
@@ -481,6 +485,7 @@
         "name": "nats",
         "runtime": {
           "cluster": "k3d-acme",
+          "connected_cluster": null,
           "domain": null,
           "image_pull_secrets": [],
           "namespace": "acme-dev",
@@ -522,6 +527,7 @@
         "name": "workspace",
         "runtime": {
           "cluster": "k3d-acme",
+          "connected_cluster": null,
           "domain": null,
           "image_pull_secrets": [],
           "namespace": "acme-dev",

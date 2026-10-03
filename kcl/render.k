@@ -491,6 +491,7 @@ _render_runtime = lambda w: any, rt: any -> any {
         "type": "cluster"
         "cluster": rt.target.cluster
         "namespace": rt.target.namespace
+        "connected_cluster": rt.target.connected_cluster if rt.target.connected_cluster else None
         "domain": rt.target.domain if rt.target.domain else None
         "platform": rt.target.platform if rt.target.platform else None
         "image_pull_secrets": rt.target.image_pull_secrets if rt.target.image_pull_secrets else []
@@ -903,6 +904,7 @@ _render_cluster_target = lambda ct: ClusterTarget -> any {
     {
         "cluster": ct.cluster
         "namespace": ct.namespace
+        "connected_cluster": ct.connected_cluster if ct.connected_cluster else None
         "domain": ct.domain if ct.domain else None
         "platform": ct.platform if ct.platform else None
         "image_pull_secrets": ct.image_pull_secrets if ct.image_pull_secrets else []

@@ -54,7 +54,10 @@ Examples:
   forge cluster urls           # print the ingress URL table for the env
   forge cluster status         # cluster + pods + ingress URLs
   forge cluster logs --service api  # kubectl logs -f for a service
-  forge cluster instances      # list every forge dev namespace on the host`,
+  forge cluster instances      # list every forge dev namespace on the host
+
+  forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
+  forge cluster disconnect prod-us --env prod   # a cluster YOU operate, as a deploy target`,
 	}
 
 	// k3d lifecycle children, promoted flat from the old `dev cluster`
@@ -75,6 +78,12 @@ Examples:
 	// nested `dev cluster status`): it shows cluster up/down + current
 	// kubectl context + config path + pods + ingress URLs + siblings.
 	cmd.AddCommand(newDevStatusCmd())
+
+	// Connecting a cluster the author OPERATES to the control plane, so
+	// environments can target it. The opposite direction from the k3d
+	// lifecycle above: nothing is created, and the cluster outlives the
+	// registration.
+	cmd.AddCommand(clusterConnectCommands()...)
 
 	// Dev-state introspection, promoted unchanged.
 	cmd.AddCommand(newDevLogsCmd())

@@ -166,6 +166,16 @@ type HostedTarget struct {
 	DeclaredBy *release.Provenance
 }
 
+// ClusterBinding is one rendered cluster and the connected cluster it maps to.
+// Mirrors controlplane.v1.ClusterBinding.
+type ClusterBinding struct {
+	// Cluster is the rendered cluster / kube-context name, as it appears in
+	// the bundle's ClusterPaths. forge's key.
+	Cluster string
+	// ClusterID is the connected cluster's id, from ConnectCluster.
+	ClusterID string
+}
+
 // ─── Wire (controlplane.v1, proto3 JSON) ─────────────────────────────────────
 
 const (
@@ -340,6 +350,21 @@ type HostedEnvRef struct {
 	// commit, which checkout, which forge. It is a CLAIM, recorded as
 	// one — identity is the caller's token, never this (O-11).
 	DeclaredBy *release.Provenance
+
+	// ClusterBindings maps each cluster the bundle renders for to the
+	// CONNECTED cluster it deploys to — the control plane's record of where
+	// this environment lands.
+	//
+	// A REPEATED FIELD BECAUSE ONE ENV CAN HAVE SEVERAL TARGETS. A forge
+	// bundle renders a subtree per cluster (release.BundleClusterPath), so
+	// an env that spans two clusters has two bindings, which a single
+	// cluster id could not express.
+	//
+	// Nil means "no bindings to record", which leaves the stored ones
+	// untouched server-side — the same rule Shape follows, and for the same
+	// reason: an ensure that did not render (a secret set, a promote) must
+	// not erase what a build recorded.
+	ClusterBindings []ClusterBinding
 }
 
 // DeclaresShape reports whether this ref carries a declaration to record.
@@ -429,6 +454,13 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 		if ref.DeclaredBy != nil {
 			spec["declaredBy"] = ProvenanceWireFields(*ref.DeclaredBy)
 		}
+	}
+	if len(ref.ClusterBindings) > 0 {
+		bindings := make([]map[string]any, 0, len(ref.ClusterBindings))
+		for _, b := range ref.ClusterBindings {
+			bindings = append(bindings, map[string]any{"cluster": b.Cluster, "clusterId": b.ClusterID})
+		}
+		spec["clusterBindings"] = bindings
 	}
 	if err := c.Call(ctx, procEnsureEnvironment, map[string]any{"spec": spec}, &ensured); err != nil {
 		return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, err)

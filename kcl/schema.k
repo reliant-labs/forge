@@ -891,6 +891,24 @@ schema ClusterTarget:
     """
     cluster: str
     namespace: str
+    # The CONNECTED CLUSTER this target is, by the name `forge cluster
+    # connect` registered — what makes a control-plane-backed env able to
+    # deploy here.
+    #
+    # WHY THIS IS A SECOND FIELD AND NOT JUST `cluster`. They name the same
+    # physical cluster through two different authorities. `cluster` is a
+    # kubectl context: a local fact about the machine running forge, which
+    # differs between laptops and does not exist in CI. This is an org-level
+    # resource in the control plane, which holds the address, the CA and the
+    # credential the platform deploys with. An env that declares a control
+    # plane and targets a real cluster needs both — the context to render and
+    # apply locally, the connected name so the platform knows where to ship.
+    #
+    # UNSET IS CORRECT FOR A k3d CLUSTER, which forge applies to directly and
+    # the control plane never dials. Unset on a NON-k3d cluster in an env that
+    # declares a control plane is refused at render: the deploy would be
+    # recorded with nowhere to land.
+    connected_cluster?: str
     domain?: str
     # Env-wide build arch (GOARCH / --platform). Same node arch for every
     # workload the env renders. Unset => the build falls through to the

@@ -571,6 +571,14 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 	}
 	ref := hostedEnvRefFor(envName, entities)
 	ref.Shape, ref.DeclaredBy = &doc.Shape, &doc.Provenance
+	// The bindings ride the SAME ensure as the shape, for the same reason:
+	// this is the one write that happens after a render, so it is the only
+	// one that knows which clusters the bundle rendered for.
+	bindings, err := resolveClusterBindings(ctx, client, entities)
+	if err != nil {
+		return err
+	}
+	ref.ClusterBindings = bindings
 	if err := declareHostedEnv(ctx, client, ref); err != nil {
 		// F-15, stated loudly. A control plane that predates the shape
 		// IGNORES the field (connect's JSON codec discards unknown

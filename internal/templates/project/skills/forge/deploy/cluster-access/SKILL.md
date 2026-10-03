@@ -87,3 +87,13 @@ Three things worth knowing before you rely on it:
   existing object without it rather than rewrite someone else's permissions.
 - **Review before granting.** `forge env deploy --dry-run` prints every
   object the mint would create, on which cluster, without contacting one.
+
+## Not this: letting the CONTROL PLANE deploy into your cluster
+
+This skill is about a workload of yours reaching a cluster's API server. If
+what you want is for the hosted control plane to deploy INTO a cluster you
+operate, that is `forge cluster connect` — a different mechanism with a
+different credential model (GKE workload identity, or a scoped ServiceAccount
+token forge mints), and it needs no `KubeconfigSecret` at all.
+
+Load `deploy/cluster-connect`.

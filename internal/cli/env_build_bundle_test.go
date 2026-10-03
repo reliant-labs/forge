@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -554,4 +555,73 @@ func TestEnvBuildSkipsTheBundleWithNoEnvOrUnderPlan(t *testing.T) {
 			t.Errorf("%s must write no bundle, wrote %d", name, calls)
 		}
 	}
+}
+
+// TestEnvBuildBundle_AFailedPushFallsBackLocallyAndDoesNotFailTheBuild is the
+// rule a real test run caught me breaking.
+//
+// A bundle is a RECORD, and a missing one is recoverable — `forge env deploy`
+// renders one on demand. So a push that cannot reach the bundle subtree must
+// degrade, exactly as a failed RecordBundle does, rather than failing a build
+// whose images went to their own declared references and whose release is cut.
+//
+// Making it fatal meant a build newly depended on the bundle registry being
+// reachable AND writable, which is a different fact from the image registry
+// being reachable: a registry can admit images and reject an artifact type,
+// and a project can push images somewhere the control plane does not name as
+// its base. Two existing tests that push images to a stub and have no route to
+// the declared registry started failing the whole build.
+func TestEnvBuildBundle_AFailedPushFallsBackLocallyAndDoesNotFailTheBuild(t *testing.T) {
+	dir := newLedgerTestProject(t, "bundle-pushfail-project")
+	stubEnvShape(t, "bundle-pushfail-project")
+	writeHostedPushBaseFixture(t, dir, "prod", "registry.unreachable.invalid/acme")
+
+	prevTarget := bundlePushTarget
+	bundlePushTarget = func(string) (bundle.Pusher, error) {
+		return nil, errors.New("dial tcp: lookup registry.unreachable.invalid: no such host")
+	}
+	t.Cleanup(func() { bundlePushTarget = prevTarget })
+
+	prevLedger := bundleLedgerFor
+	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
+		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true}, nil
+	}
+	t.Cleanup(func() { bundleLedgerFor = prevLedger })
+	prevRecorder := bundleRecorderForEnv
+	bundleRecorderForEnv = func(_ context.Context, projectDir, _ string, _ envLedger) (bundleRecorder, error) {
+		return recordStoreFor(projectDir)
+	}
+	t.Cleanup(func() { bundleRecorderForEnv = prevRecorder })
+
+	var warnings strings.Builder
+	written, err := writeEnvBundles(context.Background(), dir, []string{"prod"}, bundleBuildInputs{
+		Release: "v1.4.0", Now: bundleTestNow, NoCharts: true, Pushed: true, errOut: &warnings,
+	})
+	if err != nil {
+		t.Fatalf("a bundle push that cannot reach the registry must not fail the build: %v", err)
+	}
+	if written[0].Pushed {
+		t.Error("the push failed, so the bundle must not claim to have been pushed")
+	}
+	if !strings.HasPrefix(written[0].Reference, "oci-layout:") {
+		t.Errorf("the fallback must record the LOCAL reference, not a registry one it does not hold; got %q",
+			written[0].Reference)
+	}
+	if !strings.Contains(warnings.String(), "could not be pushed") {
+		t.Errorf("the degradation must be reported, not silent; warnings were %q", warnings.String())
+	}
+	// And the bytes really are local, so a deploy can still fetch them.
+	if _, ferr := bundle.Fetch(context.Background(), mustLocalLayout(t, dir), written[0].Digest); ferr != nil {
+		t.Errorf("the locally-written bundle must be fetchable: %v", ferr)
+	}
+}
+
+// mustLocalLayout opens the machine ledger's OCI layout.
+func mustLocalLayout(t *testing.T, dir string) *bundle.LocalLayout {
+	t.Helper()
+	layout, err := bundle.NewLocalLayout(testStore(t, dir).OCIDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return layout
 }

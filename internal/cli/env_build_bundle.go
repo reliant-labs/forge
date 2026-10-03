@@ -322,6 +322,15 @@ var bundlePushTarget = func(reference string) (bundle.Pusher, error) {
 	return bundle.NewRepository(reference)
 }
 
+// pushBundleTo opens the repository and pushes, returning the digest.
+func pushBundleTo(ctx context.Context, repo string, built bundle.Bundle) (string, error) {
+	target, err := bundlePushTarget(repo)
+	if err != nil {
+		return "", err
+	}
+	return bundle.Push(ctx, target, built)
+}
+
 // placedBundle is where a bundle's bytes ended up.
 type placedBundle struct {
 	bundleWriteOutcome
@@ -353,13 +362,28 @@ func placeBundleBytes(ctx context.Context, projectDir, env string, built bundle.
 			return writeBundleLocally(ctx, projectDir, env, built)
 		}
 		repo := bundle.Repository(base, env)
-		target, err := bundlePushTarget(repo)
+		digest, err := pushBundleTo(ctx, repo, built)
 		if err != nil {
-			return placedBundle{}, err
-		}
-		digest, err := bundle.Push(ctx, target, built)
-		if err != nil {
-			return placedBundle{}, fmt.Errorf("push the bundle to %s: %w", repo, err)
+			// A FAILED PUSH DOES NOT FAIL THE BUILD, for the same reason a
+			// failed record does not: the images went to their own declared
+			// references and the release is cut, so the build's product
+			// stands. The bundle is a RECORD, and a missing one is
+			// recoverable — `forge env deploy` renders one on demand.
+			//
+			// Making it fatal would mean a build newly depended on the
+			// bundle subtree being reachable and writable, which is a
+			// different fact from the image registry being reachable: a
+			// registry can admit images and reject an artifact type, and a
+			// project can push images somewhere the control plane does not
+			// name as its base. Found exactly that way — two tests that
+			// push images to a stub and had no route to the declared
+			// registry started failing the whole build.
+			fmt.Fprintf(in.errWriter(),
+				"[bundle] Warning: env %s's bundle could not be pushed to %s (%v).\n"+
+					"[bundle]   It was written to this machine's ledger instead; the build continues, and the next\n"+
+					"[bundle]   build or deploy that can reach the registry pushes it (a bundle is content-addressed,\n"+
+					"[bundle]   so re-pushing identical bytes is free).\n", env, repo, err)
+			return writeBundleLocally(ctx, projectDir, env, built)
 		}
 		return placedBundle{
 			bundleWriteOutcome: bundleWriteOutcome{

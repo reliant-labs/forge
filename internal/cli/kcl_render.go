@@ -338,7 +338,6 @@ type GatewayEntity struct {
 	Host             string                  `json:"host,omitempty"`
 	TLS              *GatewayTLSEntity       `json:"tls,omitempty"`
 	Listeners        []GatewayListenerEntity `json:"listeners,omitempty"`
-	RawPolicy        string                  `json:"raw_policy,omitempty"`
 	Addresses        []GatewayAddressEntity  `json:"addresses,omitempty"`
 }
 
@@ -401,31 +400,89 @@ type GatewayTLSEntity struct {
 	Mode       string `json:"mode,omitempty"`
 }
 
-// HTTPRouteEntity mirrors the kcl/schema.k HTTPRoute. Service is a
-// backend Service name; Port is the backend port.
+// RouteRetriesEntity mirrors kcl/schema.k's RouteRetries — how a route
+// retries a failed attempt at its backend. On is Envoy Gateway's closed
+// trigger set (5xx, reset, connect-failure, …).
+type RouteRetriesEntity struct {
+	On            []string `json:"on"`
+	Attempts      int      `json:"attempts"`
+	PerTryTimeout string   `json:"per_try_timeout,omitempty"`
+}
+
+// RouteHealthCheckEntity mirrors kcl/schema.k's RouteHealthCheck — an
+// ACTIVE health check. ExpectedStatuses is the field that matters: a
+// token-authed registry answers /v2/ with 401 when healthy, so a default
+// 2xx check would mark every replica down.
+type RouteHealthCheckEntity struct {
+	Path               string `json:"path"`
+	ExpectedStatuses   []int  `json:"expected_statuses,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold   int    `json:"healthy_threshold,omitempty"`
+}
+
+// RouteOutlierDetectionEntity mirrors kcl/schema.k's
+// RouteOutlierDetection — PASSIVE health checking, which ejects an
+// endpoint that is failing real requests.
+type RouteOutlierDetectionEntity struct {
+	Consecutive5xx           int    `json:"consecutive_5xx,omitempty"`
+	ConsecutiveGatewayErrors int    `json:"consecutive_gateway_errors,omitempty"`
+	Interval                 string `json:"interval,omitempty"`
+	BaseEjectionTime         string `json:"base_ejection_time,omitempty"`
+	MaxEjectionPercent       int    `json:"max_ejection_percent,omitempty"`
+}
+
+// RouteTrafficEntity mirrors kcl/schema.k's RouteTraffic — the typed
+// per-route policy that renders ONE Envoy Gateway BackendTrafficPolicy.
+// Timeout is the whole-request timeout (a multi-GB blob upload runs far
+// past Envoy's 15s default).
+type RouteTrafficEntity struct {
+	Retries          *RouteRetriesEntity          `json:"retries,omitempty"`
+	Timeout          string                       `json:"timeout,omitempty"`
+	HealthCheck      *RouteHealthCheckEntity      `json:"health_check,omitempty"`
+	OutlierDetection *RouteOutlierDetectionEntity `json:"outlier_detection,omitempty"`
+}
+
+// HTTPRouteEntity mirrors the kcl/schema.k HTTPRoute.
+//
+// The backend is EITHER Service (a Service name, used verbatim) or
+// Workload (a forge.Workload name, resolved per env to that workload's
+// Service or — when it runs OnHost on a local k3d cluster — to the host
+// process via an Envoy Gateway Backend). Exactly one is set.
+//
+// Port is 0 when it was INFERRED from the workload's single port: this
+// projection carries what was DECLARED, and output.manifests carries the
+// resolved backend. A pre-resolved copy here would be a second source of
+// truth that can disagree with the manifest.
 type HTTPRouteEntity struct {
-	Name      string `json:"name"`
-	Gateway   string `json:"gateway"`
-	Listener  string `json:"listener"`
-	Service   string `json:"service"`
-	Port      int    `json:"port"`
-	Host      string `json:"host,omitempty"`
-	Path      string `json:"path,omitempty"`
-	RawPolicy string `json:"raw_policy,omitempty"`
+	Name     string `json:"name"`
+	Gateway  string `json:"gateway"`
+	Listener string `json:"listener"`
+	Service  string `json:"service,omitempty"`
+	Workload string `json:"workload,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Path     string `json:"path,omitempty"`
+	// Traffic is the typed per-route policy; nil when the route declares
+	// none. It replaced a `raw_policy` string that nothing in forge ever
+	// emitted (ADR-0003 F2).
+	Traffic *RouteTrafficEntity `json:"traffic,omitempty"`
 }
 
 // GRPCRouteEntity mirrors the kcl/schema.k GRPCRoute. Shape matches
 // HTTPRouteEntity — the distinction is the rendered Gateway API
 // resource kind (GRPCRoute vs HTTPRoute).
 type GRPCRouteEntity struct {
-	Name      string `json:"name"`
-	Gateway   string `json:"gateway"`
-	Listener  string `json:"listener"`
-	Service   string `json:"service"`
-	Port      int    `json:"port"`
-	Host      string `json:"host,omitempty"`
-	Path      string `json:"path,omitempty"`
-	RawPolicy string `json:"raw_policy,omitempty"`
+	Name     string              `json:"name"`
+	Gateway  string              `json:"gateway"`
+	Listener string              `json:"listener"`
+	Service  string              `json:"service,omitempty"`
+	Workload string              `json:"workload,omitempty"`
+	Port     int                 `json:"port,omitempty"`
+	Host     string              `json:"host,omitempty"`
+	Path     string              `json:"path,omitempty"`
+	Traffic  *RouteTrafficEntity `json:"traffic,omitempty"`
 }
 
 // HelmChartEntity is one declared platform dependency from rendered KCL

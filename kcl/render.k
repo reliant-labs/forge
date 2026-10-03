@@ -609,8 +609,8 @@ _stamp_owner = lambda manifest: any, name: str, part_of: str -> any {
 _ingress = lambda b: Bundle, ns: str -> [any] {
     [item for g in b.gateways for item in gw_lib.render_gateway(g, ns)] \
         + [item for g in b.gateways for item in gw_lib.render_certificate(g, ns)] \
-        + [item for r in b.http_routes for item in gw_lib.render_http_route(r, b.gateways, ns)] \
-        + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, ns)]
+        + [item for r in b.http_routes for item in gw_lib.render_http_route(r, b.gateways, ns, b)] \
+        + [item for r in b.grpc_routes for item in gw_lib.render_grpc_route(r, b.gateways, ns, b)]
 }
 
 # An object with no cluster of its own lands on the PRIMARY target — the same
@@ -1133,7 +1133,6 @@ _render_gateway = lambda g: Gateway -> any {
         "host": g.host if g.host else None
         "tls": _render_gateway_tls(g.tls) if g.tls else None
         "listeners": [_render_gateway_listener(l) for l in g.listeners]
-        "raw_policy": g.raw_policy if g.raw_policy else None
         "addresses": [_render_gateway_address(a) for a in g.addresses] if g.addresses else None
         # cluster is a forge.Cluster REFERENCE; the machine-facing JSON
         # carries the DENORMALIZED kubectl context (k3d-<name>) the scoper
@@ -1142,16 +1141,60 @@ _render_gateway = lambda g: Gateway -> any {
     }
 }
 
+# The route JSON projections carry what was DECLARED, not what the
+# manifest resolved to: `workload` stays a workload NAME and `port` stays
+# null when it was inferred. Consumers that need the resolved backend read
+# output.manifests, which is the authority; a pre-resolved copy here would
+# be a second one that can disagree.
+_render_route_retries = lambda r: RouteRetries -> any {
+    {
+        "on": r.on
+        "attempts": r.attempts
+        "per_try_timeout": r.per_try_timeout if r.per_try_timeout != Undefined else None
+    }
+}
+
+_render_route_health_check = lambda hc: RouteHealthCheck -> any {
+    {
+        "path": hc.path
+        "expected_statuses": hc.expected_statuses if hc.expected_statuses != Undefined else None
+        "interval": hc.interval
+        "timeout": hc.timeout
+        "unhealthy_threshold": hc.unhealthy_threshold
+        "healthy_threshold": hc.healthy_threshold
+    }
+}
+
+_render_route_outlier_detection = lambda od: RouteOutlierDetection -> any {
+    {
+        "consecutive_5xx": od.consecutive_5xx
+        "consecutive_gateway_errors": od.consecutive_gateway_errors
+        "interval": od.interval
+        "base_ejection_time": od.base_ejection_time
+        "max_ejection_percent": od.max_ejection_percent
+    }
+}
+
+_render_route_traffic = lambda t: RouteTraffic -> any {
+    {
+        "retries": _render_route_retries(t.retries) if t.retries != Undefined else None
+        "timeout": t.timeout if t.timeout != Undefined else None
+        "health_check": _render_route_health_check(t.health_check) if t.health_check != Undefined else None
+        "outlier_detection": _render_route_outlier_detection(t.outlier_detection) if t.outlier_detection != Undefined else None
+    }
+}
+
 _render_http_route = lambda r: HTTPRoute -> any {
     {
         "name": r.name
         "gateway": r.gateway
         "listener": r.listener
-        "service": r.service
-        "port": r.port
+        "service": r.service if r.service else None
+        "workload": r.workload if r.workload else None
+        "port": r.port if r.port != Undefined else None
         "host": r.host if r.host else None
         "path": r.path if r.path else None
-        "raw_policy": r.raw_policy if r.raw_policy else None
+        "traffic": _render_route_traffic(r.traffic) if r.traffic != Undefined else None
         # forge.Cluster reference -> denormalized kubectl context.
         "cluster": r.cluster.context if r.cluster else None
     }
@@ -1162,11 +1205,12 @@ _render_grpc_route = lambda r: GRPCRoute -> any {
         "name": r.name
         "gateway": r.gateway
         "listener": r.listener
-        "service": r.service
-        "port": r.port
+        "service": r.service if r.service else None
+        "workload": r.workload if r.workload else None
+        "port": r.port if r.port != Undefined else None
         "host": r.host if r.host else None
         "path": r.path if r.path else None
-        "raw_policy": r.raw_policy if r.raw_policy else None
+        "traffic": _render_route_traffic(r.traffic) if r.traffic != Undefined else None
         # forge.Cluster reference -> denormalized kubectl context.
         "cluster": r.cluster.context if r.cluster else None
     }
@@ -1383,6 +1427,13 @@ test_jwks_manifests = lambda j: TestJWKS, namespace: str, public_jwk: any -> [an
 # render_http_route / render_grpc_route take the route plus the list of
 # gateways (so the builder can resolve the parent listener + host) and
 # the namespace, matching the internal signatures.
+#
+# `bundle` is OPTIONAL and only needed by a route whose backend is a
+# `workload`: resolving one is a statement about where that workload runs
+# in THIS env, so it reads the env. A route with a `service` backend needs
+# no bundle, which is why this stayed a trailing default rather than a
+# required fourth argument — and a workload-backed route called without it
+# is refused with that explanation rather than rendering a wrong backend.
 render_gateway = lambda gw: Gateway, namespace: str -> [any] {
     gw_lib.render_gateway(gw, namespace)
 }
@@ -1391,12 +1442,12 @@ render_certificate = lambda gw: Gateway, namespace: str -> [any] {
     gw_lib.render_certificate(gw, namespace)
 }
 
-render_http_route = lambda route: HTTPRoute, gateways: [Gateway], namespace: str -> [any] {
-    gw_lib.render_http_route(route, gateways, namespace)
+render_http_route = lambda route: HTTPRoute, gateways: [Gateway], namespace: str, bundle: any = Undefined -> [any] {
+    gw_lib.render_http_route(route, gateways, namespace, bundle)
 }
 
-render_grpc_route = lambda route: GRPCRoute, gateways: [Gateway], namespace: str -> [any] {
-    gw_lib.render_grpc_route(route, gateways, namespace)
+render_grpc_route = lambda route: GRPCRoute, gateways: [Gateway], namespace: str, bundle: any = Undefined -> [any] {
+    gw_lib.render_grpc_route(route, gateways, namespace, bundle)
 }
 
 

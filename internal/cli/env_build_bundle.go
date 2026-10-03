@@ -327,16 +327,17 @@ type placedBundle struct {
 // bug.
 func placeBundleBytes(ctx context.Context, projectDir, env string, built bundle.Bundle, ledger envLedger, in bundleBuildInputs) (placedBundle, error) {
 	if ledger.Hosted && in.Pushed {
-		base := cachedHostedPushBase(projectDir, env)
+		base := bundlePushBaseFor(ctx, projectDir, env)
 		if base == "" {
 			// No base to push under. NOT an error: the images were
 			// pushed to their own declared references and the build
-			// stands. The bundle goes to the local layout, and the next
-			// build that learns the base (every ensure caches it)
-			// pushes one.
+			// stands. The bundle goes to the local layout, which is
+			// where it stays — nothing later will learn an address the
+			// declaration does not state.
 			fmt.Fprintf(in.errWriter(),
-				"[bundle] Note: env %s's image push base is not known yet, so its bundle was written locally.\n"+
-					"[bundle]   The next build or deploy that reaches the control plane learns the base and pushes one.\n", env)
+				"[bundle] Note: env %s declares no platform registry subtree, so its bundle was written locally.\n"+
+					"[bundle]   A hosted bundle's address is composed from the env's control-plane declaration\n"+
+					"[bundle]   (registry host + organization); declare an organization to push one.\n", env)
 			return writeBundleLocally(ctx, projectDir, env, built)
 		}
 		repo := bundle.Repository(base, env)
@@ -478,7 +479,38 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 var (
 	bundleLedgerFor      = ledgerFor
 	bundleRecorderForEnv = bundleRecorderFor
+	bundlePushBaseFor    = declaredBundlePushBase
 )
+
+// declaredBundlePushBase is the platform registry subtree this env's bundle is
+// pushed to, composed from the env's own control-plane DECLARATION
+// (F-REGISTRY-DEFAULT: `<registry host>/<organization>/<project>`).
+//
+// It reads the declaration rather than a cache a previous command populated,
+// which removes a state that used to exist: there is no longer a "base not
+// known yet". The address is a function of the declaration, so an env that
+// declares a control plane with an organization HAS one on its very first
+// build, and an env that does not will never acquire one by being built again.
+// The note placeBundleBytes prints says that, instead of promising a later
+// build will learn it.
+//
+// A render failure yields "" rather than an error, and the bundle goes to the
+// local layout. The caller has already rendered this env successfully to
+// project its shape, so a failure here is unrelated to the bundle — and a
+// build that refused over an address it only needs in order to PUSH would be
+// failing the build for a record.
+//
+// A var (above) so a test can state the base without standing up a KCL tree:
+// the thing under test in those cases is the PLACEMENT — pushed to the env's
+// bundle repository versus written locally — not how an address is composed,
+// which internal/hostedimage owns and tests.
+func declaredBundlePushBase(ctx context.Context, projectDir, env string) string {
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return ""
+	}
+	return declaredPushBase(entities)
+}
 
 func bundleRecorderFor(ctx context.Context, projectDir, env string, ledger envLedger) (bundleRecorder, error) {
 	if !ledger.Hosted {

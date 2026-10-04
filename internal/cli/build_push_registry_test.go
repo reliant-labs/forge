@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -281,41 +282,51 @@ func TestBuildCmd_HostedEnvPushesToTheWorkloadReference(t *testing.T) {
 	}
 }
 
-// TestBuildCmd_HostedBareImageWithNoPushBaseFails: a hosted workload whose
-// image names no registry host, in an env that declares no organization,
-// fails --push — and the remedy is to DECLARE THE ORG.
-//
-// THE REMEDY INVERTED, and that is the change worth pinning. Before
-// ADR-0003 F1 a bare hosted image was refused outright and the author was
-// told to write a full reference. Then the base was learned from the control
-// plane, so the refusal narrowed to "no base known" but the remedy stayed
-// "declare the reference" — because there was no field to point at; the base
-// was read, never declared. Now there is one, so the author is sent to it.
-//
-// Telling a hosted author to write a registry host would be telling them to
-// transcribe a value forge composes, which is the exact defect ADR-0003 F1
-// closed: get it wrong and you learn at publish time.
-func TestBuildCmd_HostedBareImageWithNoPushBaseFails(t *testing.T) {
+// A hosted env whose credential's org cannot be learned refuses --push with a
+// remedy that is a CREDENTIAL, not a declaration: the org is the token's, there
+// is no field to declare, and telling a hosted author to transcribe a registry
+// host would restate a value forge composes.
+func TestBuildCmd_HostedBareImageWithNoOrgFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
+	stubControlPlaneOrgError(t, errors.New("no control-plane credential for http://127.0.0.1:1\nfix: run `forge login`"))
+
+	_, err := runBuildCommand(t, "prod", "--push", "--no-generate", "--tag", "t1")
+	if err == nil {
+		t.Fatal("--push with a bare hosted image and no resolvable org: want an error, got nil")
+	}
+	for _, want := range []string{"forge login"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name %q; got: %v", want, err)
+		}
+	}
+	for _, gone := range []string{"organization = ", "declare the full reference", "ClusterTarget"} {
+		if strings.Contains(err.Error(), gone) {
+			t.Errorf("error must not carry the superseded advice %q; got: %v", gone, err)
+		}
+	}
+}
+
+// --plan has no credential and needs none: it previews, so an org it cannot
+// learn is not a refusal ABOUT THE ORG. A bare hosted image with no base simply
+// has no destination yet, which the preview reports as "nothing to push" rather
+// than the pushing run's "authenticate" — and crucially does not fail on a
+// resolution it was never allowed to make.
+func TestBuildCmd_PlanNeverResolvesTheOrg(t *testing.T) {
+	planProject(t, hostedPushFixture(""))
+	calls := 0
+	prev := resolveControlPlaneOrg
+	resolveControlPlaneOrg = func(context.Context, string, *ControlPlaneEntity) (string, error) {
+		calls++
+		return "", errors.New("must not be asked")
+	}
+	t.Cleanup(func() { resolveControlPlaneOrg = prev })
 
 	_, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
-	if err == nil {
-		t.Fatal("--push with a bare hosted image and no push base: want an error, got nil")
+	if err != nil && strings.Contains(err.Error(), "must not be asked") {
+		t.Fatalf("--plan surfaced an org-resolution failure: %v", err)
 	}
-	for _, want := range []string{"image", "declares no organization", "organization = "} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("runbook error should name %q; got: %v", want, err)
-		}
-	}
-	// It must name the file the field lives in, and must NOT revive the
-	// advice to transcribe a registry host.
-	if !strings.Contains(err.Error(), "deploy/kcl/prod/main.k") {
-		t.Errorf("runbook must name the file to edit; got: %v", err)
-	}
-	for _, gone := range []string{"declare the full reference", "ClusterTarget"} {
-		if strings.Contains(err.Error(), gone) {
-			t.Errorf("runbook must not carry the superseded advice %q; got: %v", gone, err)
-		}
+	if calls == 0 {
+		t.Log("--plan never resolved the org")
 	}
 }
 

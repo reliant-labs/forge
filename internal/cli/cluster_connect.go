@@ -189,29 +189,20 @@ var clusterConnectClient = func(ctx context.Context, envName, token string) (clo
 		return nil, "", fmt.Errorf("--env is required: it names which control plane to talk to, from that " +
 			"env's forge.ControlPlane declaration\nfix: re-run with `--env <env>` (the environments under deploy/kcl/)")
 	}
-	decl, err := controlPlaneDeclaration(ctx, envName)
-	if err != nil {
-		return nil, "", err
-	}
 	ep, cred, err := resolveCloudTarget(ctx, envName, token)
 	if err != nil {
 		return nil, "", err
 	}
-	org := ""
-	if decl != nil {
-		org = decl.Organization
+	// The org composes the hub namespace in the impersonated username, so the
+	// RBAC forge applies is wrong without it — and wrong in the quiet way,
+	// authorizing a user that never appears. It is the org the credential acts
+	// for, which only the control plane knows.
+	client := cloud.NewClient(ep, cred)
+	org, err := cloud.ResolveOrganization(ctx, client)
+	if err != nil {
+		return nil, "", err
 	}
-	if strings.TrimSpace(org) == "" {
-		// The org is LOAD-BEARING here, not a label: it composes the hub
-		// namespace in the impersonated username, so the RBAC forge applies
-		// is wrong without it — and wrong in the quiet way, authorizing a
-		// user that never appears.
-		return nil, "", fmt.Errorf("env %q declares a control plane with no `organization`, and connecting a "+
-			"cluster needs it: the org composes the hub namespace in the username the platform's "+
-			"apply presents, which is what the in-cluster RBAC binds\n"+
-			"fix: set `organization` on the forge.ControlPlane in deploy/kcl/%s/main.k", envName, envName)
-	}
-	return cloud.NewClient(ep, cred), org, nil
+	return client, org, nil
 }
 
 func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {

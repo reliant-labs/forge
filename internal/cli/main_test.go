@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,8 +10,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 )
+
+// defaultTestOrg is the organization every test credential acts for unless the
+// test states another (stubControlPlaneOrg).
+const defaultTestOrg = "4f3c2b1a-0000-4000-8000-000000000001"
 
 // TestMain lets the compiled test binary serve as the protoc-gen-forge plugin
 // when buf re-executes it.
@@ -30,6 +36,15 @@ import (
 // the real root command, so the plugin under test is the production one rather
 // than a stand-in that could drift from it.
 func TestMain(m *testing.M) {
+	// No test reaches a control plane for its organization: the credential's
+	// org is stated, by default here and per-test by stubControlPlaneOrg.
+	// hosted_org_test.go pins the real call separately.
+	resolveControlPlaneOrg = func(context.Context, string, *ControlPlaneEntity) (string, error) {
+		return defaultTestOrg, nil
+	}
+	orgResolver = func(context.Context, string, *cloud.Declaration) (string, error) {
+		return defaultTestOrg, nil
+	}
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)

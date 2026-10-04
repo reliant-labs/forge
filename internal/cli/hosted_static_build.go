@@ -94,7 +94,7 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		fmt.Printf("[build] %s: hosted static site → %s\n", f.Name, repository)
 		digest, err := hostedStaticPusher(ctx, projectDir, repository, fe)
 		if err != nil {
-			return fmt.Errorf("hosted static site %s: %w%s", f.Name, err, deniedPushHint(err, "", repository, declaredOrganization(entities)))
+			return fmt.Errorf("hosted static site %s: %w%s", f.Name, err, deniedPushHint(err, "", repository))
 		}
 		state := buildtarget.State{
 			Service: f.Name,

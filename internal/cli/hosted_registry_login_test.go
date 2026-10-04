@@ -38,8 +38,7 @@ func hostedPlatformFixture(registryHost, image string) string {
     "control_plane": {
       "type": "control_plane",
       "endpoint": "https://cp.example.com",
-      "token_env": "FORGE_CONTROL_PLANE_TOKEN",
-      "organization": "11111111-2222-3333-4444-555555555555"` + host + `
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN"` + host + `
     },
     "workloads": [
       {
@@ -356,8 +355,7 @@ func mixedRegistryFixture() string {
     "control_plane": {
       "type": "control_plane",
       "endpoint": "https://cp.example.com",
-      "token_env": "FORGE_CONTROL_PLANE_TOKEN",
-      "organization": "11111111-2222-3333-4444-555555555555"
+      "token_env": "FORGE_CONTROL_PLANE_TOKEN"
     },
     "workloads": [
       {

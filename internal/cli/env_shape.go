@@ -730,7 +730,7 @@ func hostedBundleObjects(ctx context.Context, projectDir, envName string, entiti
 	group.Hosted = &deploytarget.HostedTarget{
 		Release: pins.release, PromotionID: pins.promotionID,
 		Digests: pins.digests, Registries: pins.registries,
-		PushBase: declaredPushBase(entities),
+		PushBase: platformPushBase(entities),
 	}
 	records, rerr := deploytarget.HostedRecords(*group)
 	if rerr != nil {

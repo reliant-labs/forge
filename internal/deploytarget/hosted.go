@@ -121,7 +121,7 @@ type HostedTarget struct {
 	Registries map[string]string
 	// PushBase is the registry subtree this env's hosted artifacts live
 	// under, composed by forge from the env's declaration
-	// (`<registry_host>/<organization>/<project>`) and carried here so the
+	// (`<registry_host>/<org>/<project>`) and carried here so the
 	// pre-publish check judges a pinned image against the same base the
 	// build pushed to.
 	//
@@ -176,7 +176,7 @@ type wireEnvironment struct {
 	Kind      string `json:"kind,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	// NO ImagePushBase. The push base is forge's to COMPOSE from the env's
-	// declaration — `<registry_host>/<organization>/<project>`, see
+	// declaration and credential — `<registry_host>/<org>/<project>`, see
 	// internal/hostedimage.PushBase — not the server's to advertise. Reading
 	// it off the wire made the address unknowable offline and put a cached
 	// second copy on disk; the server's role is to ENFORCE the subtree at
@@ -488,9 +488,9 @@ func hostedPushBase(group ServiceGroup) string {
 // check runs with no dependence on what the server said. It is a PRE-FLIGHT
 // for the real boundary rather than the boundary itself: ociregistry.Admit
 // and the registry realm are what actually enforce the subtree, and they are
-// the things that detect a mis-declared organization.
+// the things that enforce the organization.
 //
-// An EMPTY base means the env declared no organization, so no base composes
+// An EMPTY base means the credential's org was not learned, so no base composes
 // and there is no address any image could be under; that is refused too,
 // unless the plan carries no workload.
 //
@@ -510,10 +510,11 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 			continue
 		}
 		if base == "" {
-			return fmt.Errorf("hosted env %q declares no organization, so forge can compose no image push base "+
-				"and the platform would refuse every workload image (first: %s for %s).\n"+
-				"  fix: set `organization = \"<your org id>\"` on control_plane in deploy/kcl/%s/main.k",
-				envName, spec.Image, item.Name, envName)
+			return fmt.Errorf("hosted env %q resolved no image push base, so the platform would refuse every workload image "+
+				"(first: %s for %s).\n"+
+				"  forge composes the base from the org your credential acts for; it could not learn it.\n"+
+				"  fix: authenticate (`forge login`, or the env's token_env) and re-run",
+				envName, spec.Image, item.Name)
 		}
 		repo := HostedImageRepository(spec.Image)
 		if !strings.HasPrefix(repo, base+"/") {

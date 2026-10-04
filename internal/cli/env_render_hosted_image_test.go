@@ -1,12 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
@@ -29,9 +29,9 @@ import (
 // state is reachable only for an env declaring a control plane and nothing
 // bound to it.
 
-// testRenderOrg is the organization these fixtures declare, and
-// testRenderPushBase is the base it composes with the project name and the
-// declared registry host.
+// testRenderOrg is the organization the fixtures' CREDENTIAL acts for (stubbed;
+// nothing in the KCL names it), and testRenderPushBase is the base it composes
+// with the project name and the declared registry host.
 const (
 	testRenderRegistryHost = "registry.reliant.dev"
 	testRenderOrg          = "org-7"
@@ -39,9 +39,9 @@ const (
 )
 
 // writeHostedRenderProject is a hosted env with one OnHosted workload whose
-// image is `image`. When org is non-empty the env declares it, which is what
-// gives the render a push base to compare against — no cache, no call.
-func writeHostedRenderProject(t *testing.T, image, org string) string {
+// image is `image`. The control plane declares its registry host and nothing
+// about an org: that comes from the credential, stubbed by the caller.
+func writeHostedRenderProject(t *testing.T, image string) string {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(rel, content string) {
@@ -56,10 +56,7 @@ func writeHostedRenderProject(t *testing.T, image, org string) string {
 	}
 	write("forge.yaml", "name: hostedrender\nmodule_path: github.com/example/hostedrender\nversion: \"0.1.0\"\n")
 	write("deploy/kcl/kcl.mod", "[package]\nname = \"hostedrender-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n")
-	orgDecl := ""
-	if org != "" {
-		orgDecl = "\n        registry_host = \"" + testRenderRegistryHost + "\"\n        organization = \"" + org + "\""
-	}
+	orgDecl := "\n        registry_host = \"" + testRenderRegistryHost + "\""
 	write("deploy/kcl/prod/main.k", `import forge
 import forge.workloads as fw
 
@@ -90,7 +87,8 @@ func TestEnvRender_RefusesAVerifiedOffBaseHostedImage(t *testing.T) {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, "ghcr.io/acme/api", testRenderOrg)
+	stubControlPlaneOrg(t, testRenderOrg)
+	dir := writeHostedRenderProject(t, "ghcr.io/acme/api")
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
 	stdout, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
@@ -104,22 +102,24 @@ func TestEnvRender_RefusesAVerifiedOffBaseHostedImage(t *testing.T) {
 	}
 }
 
-// The SCAFFOLDED PLACEHOLDER org is refused at render, with the same message
-// lint uses, rather than rendering and failing later at push.
-func TestEnvRender_PlaceholderOrgIsRefused(t *testing.T) {
+// WITH NO CREDENTIAL THE RENDER STILL WORKS. It runs on a fresh checkout, so it
+// cannot require the org: it composes no base, and reports the host-bearing
+// image as the weaker, unverified fact rather than refusing over something it
+// never checked.
+func TestEnvRender_NoCredentialRendersAndWarnsUnverified(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, "ghcr.io/acme/api", hostedimage.OrgPlaceholder)
-	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
+	stubControlPlaneOrgError(t, errors.New("no control-plane credential"))
+	dir := writeHostedRenderProject(t, "ghcr.io/acme/api")
 
-	_, _, err := runRenderCapturingProcessStdout(t, dir, "prod")
-	if err == nil {
-		t.Fatal("render must refuse the placeholder organization")
+	_, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
+	if err != nil {
+		t.Fatalf("a render with no credential must not fail: %v\nstderr:\n%s", err, stderr)
 	}
-	if !strings.Contains(err.Error(), "scaffolded placeholder") || !strings.Contains(err.Error(), hostedimage.OrgPlaceholder) {
-		t.Errorf("refusal should name the placeholder:\n%v", err)
+	if !strings.Contains(stderr, "host-bearing image") {
+		t.Errorf("the unverified warning is missing:\n%s", stderr)
 	}
 }
 
@@ -130,7 +130,8 @@ func TestEnvRender_BareHostedImageIsClean(t *testing.T) {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, "api", testRenderOrg)
+	stubControlPlaneOrg(t, testRenderOrg)
+	dir := writeHostedRenderProject(t, "api")
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
 	_, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
@@ -151,7 +152,8 @@ func TestEnvRender_ImageUnderThePushBaseIsClean(t *testing.T) {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	dir := writeHostedRenderProject(t, testRenderPushBase+"/api", testRenderOrg)
+	stubControlPlaneOrg(t, testRenderOrg)
+	dir := writeHostedRenderProject(t, testRenderPushBase+"/api")
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
 	_, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")

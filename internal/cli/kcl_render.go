@@ -190,10 +190,12 @@ type ControlPlaneEntity struct {
 	Type     string `json:"type"`
 	Endpoint string `json:"endpoint"`
 	TokenEnv string `json:"token_env,omitempty"`
-	// Organization is the org these hosted artifacts belong to, and it is
-	// LOAD-BEARING rather than a hint: it is the `<org>` segment of the push
-	// base forge composes. KCL refuses a hosted env that declares none.
-	Organization string `json:"organization,omitempty"`
+	// org is the organization the control-plane CREDENTIAL acts for, learned
+	// lazily from the control plane (hosted_org.go). It is never read from
+	// KCL: the org is a fact about the token, and a declared copy could only
+	// agree with it or be wrong. env names the declaring env in messages.
+	org *orgState
+	env string
 	// RegistryHost is the platform registry this org's artifacts live on,
 	// defaulted in KCL to forge.RELIANT_REGISTRY_HOST.
 	//
@@ -1192,6 +1194,7 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if err := refuseUnboundClusterTargets(env, entities); err != nil {
 		return nil, err
 	}
+	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
 

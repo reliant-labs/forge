@@ -12,7 +12,7 @@ import (
 // the cp PIN-1 run hit.
 func hostedShellEnv() *KCLEntities {
 	return &KCLEntities{
-		ControlPlane: &ControlPlaneEntity{RegistryHost: "registry.example.com", Organization: "acme"},
+		ControlPlane: testControlPlane("acme", "registry.example.com"),
 		Workloads: []WorkloadEntity{{
 			Name:    "echo",
 			Image:   "echo",

@@ -348,7 +348,7 @@ func placeBundleBytes(ctx context.Context, projectDir, env string, built bundle.
 			fmt.Fprintf(in.errWriter(),
 				"[bundle] Note: env %s declares no platform registry subtree, so its bundle was written locally.\n"+
 					"[bundle]   A hosted bundle's address is composed from the env's control-plane declaration\n"+
-					"[bundle]   (registry host + organization); declare an organization to push one.\n", env)
+					"[bundle]   (registry host + the org your credential acts for); authenticate to push one.\n", env)
 			return writeBundleLocally(ctx, projectDir, env, built)
 		}
 		repo := bundle.Repository(base, env)
@@ -520,7 +520,10 @@ func declaredBundlePushBase(ctx context.Context, projectDir, env string) string 
 	if err != nil {
 		return ""
 	}
-	return declaredPushBase(entities)
+	// An org that cannot be learned composes no base, and placeBundleBytes then
+	// says the bundle was written locally and why.
+	_ = requireOrg(ctx, entities)
+	return platformPushBase(entities)
 }
 
 func bundleRecorderFor(ctx context.Context, projectDir, env string, ledger envLedger) (bundleRecorder, error) {

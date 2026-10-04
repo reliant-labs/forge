@@ -141,7 +141,6 @@ _bundle = forge.Bundle {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
         registry_host = "` + testStaticRegistryHost + `"
-        organization = "` + testStaticOrg + `"
     }
     frontends = [forge.Frontend {
         name = "web"

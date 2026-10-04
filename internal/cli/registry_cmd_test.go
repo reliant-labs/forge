@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -119,14 +120,15 @@ func TestRegistryLogin_TakesNoRegistry(t *testing.T) {
 	}
 }
 
-// TestRegistryLogin_BareImageFails names the file and the field to set — the
-// workload's image, which is where a registry is declared.
+// TestRegistryLogin_BareImageFails names the credential to supply: a bare hosted image
+// has no host until the org is known.
 func TestRegistryLogin_BareImageFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
+	stubControlPlaneOrgError(t, errors.New("no control-plane credential\nfix: run `forge login`"))
 	calls := stubDockerLogin(t)
 	_, err := runRegistryCommand(t, "x", "login", "prod", "--username", "u", "--password-stdin")
-	if err == nil || !strings.Contains(err.Error(), "deploy/kcl/workloads.k") || !strings.Contains(err.Error(), "image") {
-		t.Fatalf("login with no pushable image: want the runbook naming the image field, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "forge login") {
+		t.Fatalf("login with no resolvable org: want the credential remedy, got %v", err)
 	}
 	if len(*calls) != 0 {
 		t.Errorf("nothing pushable: must not log in; calls = %+v", *calls)

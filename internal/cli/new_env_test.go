@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
 // writeProjectFixture lays down a minimal forge project (forge.yaml +
@@ -313,7 +311,7 @@ func TestNewEnv_BindRebindsOneWorkload(t *testing.T) {
 			t.Fatalf("--bind api=hosted: %v", err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "preview", "main.k"))
-		for _, want := range []string{"_hosted(wl.api)", "_on_cluster(wl.migrate)", "control_plane = forge.ControlPlane {", `organization = "` + hostedimage.OrgPlaceholder + `"`} {
+		for _, want := range []string{"_hosted(wl.api)", "_on_cluster(wl.migrate)", "control_plane = forge.ControlPlane {"} {
 			if !strings.Contains(string(got), want) {
 				t.Errorf("derived env lacks %q:\n%s", want, got)
 			}

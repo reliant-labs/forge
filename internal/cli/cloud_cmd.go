@@ -52,9 +52,8 @@ func declarationFromEntities(entities *KCLEntities) *cloud.Declaration {
 		return nil
 	}
 	return &cloud.Declaration{
-		Endpoint:     cp.Endpoint,
-		TokenEnv:     cp.TokenEnv,
-		Organization: cp.Organization,
+		Endpoint: cp.Endpoint,
+		TokenEnv: cp.TokenEnv,
 	}
 }
 
@@ -473,9 +472,6 @@ func newCloudStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "env %q\n", ep.Env)
 			fmt.Fprintf(out, "  endpoint:  %s   (declared in deploy/kcl/%s/main.k)\n", ep.URL, ep.Env)
 			fmt.Fprintf(out, "  token env: %s\n", ep.TokenEnv)
-			if ep.Organization != "" {
-				fmt.Fprintf(out, "  org:       %s\n", ep.Organization)
-			}
 
 			cred, err := cloud.ResolveCredential(token, ep)
 			if err != nil {

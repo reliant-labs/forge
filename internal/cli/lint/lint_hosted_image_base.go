@@ -4,8 +4,9 @@
 //
 // A hosted workload's registry is NOT the author's to choose (ADR-0003 F1):
 // the platform admits images from exactly one subtree,
-// `<registry_host>/<organization>/<project>`, and refuses every other. So
-// forge resolves a bare `image = "api"` against the base the env DECLARES,
+// `<registry_host>/<org>/<project>`, and refuses every other. So
+// forge resolves a bare `image = "api"` against the base composed from the org
+// the credential acts for,
 // and an author who writes a host is transcribing a value forge already
 // composes — which is fine when they get it right and a publish-time refusal
 // when they do not.
@@ -23,12 +24,6 @@
 // scan under-reports by construction (internal/hostedimage/scan.go says how),
 // so it is not a gate anything should depend on being complete.
 //
-// AN UNREPLACED `organization` PLACEHOLDER IS AN ERROR, and it DOES gate,
-// because it is not a judgement forge is making about the author's choice —
-// it is the scaffold's own "fill this in", and no hosted artifact has an
-// address until it is. Scanning for it cannot under-report the way the image
-// scan does: the scaffold wrote that exact literal, so finding it is reading
-// back a string forge put there.
 
 package lint
 
@@ -40,58 +35,21 @@ import (
 	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
-// hostedImageBaseFindings scans the project's deploy KCL and judges every
-// hosted image against the push base the same tree DECLARES.
+// hostedImageBaseFindings scans the project's deploy KCL for every host-bearing
+// image on a hosted item.
 //
-// BOTH HALVES COME OUT OF THE CHECKOUT, which is what makes this lint work
-// offline on a fresh clone. Before, the base was whatever the control plane
-// had last told forge, cached under .forge/state — so this rule was silent
-// until someone had run an authenticated deploy, and after a stale cache it
-// compared against the wrong subtree. Now the org and the registry host are
-// declared beside the images they judge, so there is one source and no
-// staleness.
-//
-// A scan still cannot attribute a declaration to an env (ScanPushBase says
-// why, and why the first org in file order is the right approximation). Using
-// SOME declared base only ever makes a finding stronger — it can then name
-// the subtree and the exact replacement — and the comparison reports nothing
-// but an image whose host is not the platform's either way.
+// THERE IS NO BASE TO JUDGE AGAINST HERE, and that is the point of the design
+// rather than a gap in it: the org half of the push base is the credential's,
+// and lint runs offline with no credential. So every finding is UNVERIFIED —
+// "this host-bearing image is on an OnHosted workload; the control plane admits
+// only its own registry". `forge env render <env>` does the verified version,
+// against the base composed from the org the credential acts for.
 func hostedImageBaseFindings(projectDir string, cfg *config.ProjectConfig) []hostedimage.Finding {
-	kclDir := filepath.Join(projectDir, deployKCLDirFor(cfg))
-	items := hostedimage.ScanTree(kclDir)
+	items := hostedimage.ScanTree(filepath.Join(projectDir, deployKCLDirFor(cfg)))
 	if len(items) == 0 {
 		return nil
 	}
-	return hostedimage.OffBase(items, hostedimage.ScanPushBase(kclDir, projectName(cfg)))
-}
-
-// projectName is the forge project name — the `<project>` segment of the push
-// base.
-func projectName(cfg *config.ProjectConfig) string {
-	if cfg == nil {
-		return ""
-	}
-	return cfg.Name
-}
-
-// unreplacedOrgPlaceholder reports whether the deploy KCL still carries the
-// scaffolded `organization` placeholder.
-//
-// THIS ONE GATES, unlike the off-base findings beside it, and the asymmetry
-// is the point. An off-base image is a judgement forge makes about a value
-// the author chose, over envs nobody may be deploying — a warning. An
-// unreplaced placeholder is not a judgement at all: it is the scaffold saying
-// "fill this in", and nothing hosted can be pushed anywhere until it is. A
-// warning there would be a warning nobody acts on until the first deploy
-// fails, which is the whole thing the scaffold-plus-lint pairing exists to
-// avoid.
-func unreplacedOrgPlaceholder(projectDir string, cfg *config.ProjectConfig) bool {
-	return hostedimage.ScanOrgPlaceholder(filepath.Join(projectDir, deployKCLDirFor(cfg)))
-}
-
-// orgPlaceholderFinding is the one sentence and the one fix for it.
-func orgPlaceholderFinding(cfg *config.ProjectConfig) (string, string) {
-	return hostedimage.OrgPlaceholderRefusal(projectName(cfg))
+	return hostedimage.OffBase(items, "")
 }
 
 // deployKCLDirFor is the project's deploy KCL tree.
@@ -102,47 +60,26 @@ func deployKCLDirFor(cfg *config.ProjectConfig) string {
 	return deployKCLDirDefault
 }
 
-// runHostedImageBaseLint is the text arm. The off-base findings are warnings;
-// an unreplaced organization placeholder is an error and gates.
+// runHostedImageBaseLint is the text arm. Every finding is a warning.
 func runHostedImageBaseLint(projectDir string, cfg *config.ProjectConfig) error {
 	for _, f := range hostedImageBaseFindings(projectDir, cfg) {
 		fmt.Printf("⚠️  [hosted-image-base] %s\n    → %s\n", f.Message(), f.FixHint())
 	}
-	if unreplacedOrgPlaceholder(projectDir, cfg) {
-		message, fix := orgPlaceholderFinding(cfg)
-		return fmt.Errorf("[hosted-image-base] %s\n    → %s", message, fix)
-	}
 	return nil
 }
 
-// collectHostedImageBaseJSON is the JSON arm, gating on exactly what the text
-// arm gates on.
+// collectHostedImageBaseJSON is the JSON arm. Nothing here gates.
 func collectHostedImageBaseJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	findings := hostedImageBaseFindings(rc.cwd, rc.cfg)
-	out := make([]lintJSONFinding, 0, len(findings)+1)
+	out := make([]lintJSONFinding, 0, len(findings))
 	for _, f := range findings {
-		rule := "hosted-image-base/host-bearing-image"
-		if f.Verified() {
-			rule = "hosted-image-base/outside-push-base"
-		}
 		out = append(out, lintJSONFinding{
 			File:     deployKCLDirFor(rc.cfg),
 			Severity: lintSevWarning,
-			Rule:     rule,
+			Rule:     "hosted-image-base/host-bearing-image",
 			Message:  f.Message(),
 			FixHint:  f.FixHint(),
 		})
 	}
-	gated := unreplacedOrgPlaceholder(rc.cwd, rc.cfg)
-	if gated {
-		message, fix := orgPlaceholderFinding(rc.cfg)
-		out = append(out, lintJSONFinding{
-			File:     deployKCLDirFor(rc.cfg),
-			Severity: lintSevError,
-			Rule:     "hosted-image-base/unreplaced-organization",
-			Message:  message,
-			FixHint:  fix,
-		})
-	}
-	return out, gated, nil
+	return out, false, nil
 }

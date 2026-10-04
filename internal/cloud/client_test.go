@@ -111,23 +111,3 @@ func TestClient_Call_UnimplementedIsReportedAsSuch(t *testing.T) {
 		t.Fatalf("want an unimplemented-shaped error; got %v", err)
 	}
 }
-
-// TestClient_Call_ForwardsDeclaredOrganization — the org hint is a
-// non-sensitive per-env declaration, so it rides as a header.
-func TestClient_Call_ForwardsDeclaredOrganization(t *testing.T) {
-	var gotOrg string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotOrg = r.Header.Get("X-Forge-Organization")
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer srv.Close()
-
-	ep, _ := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL, Organization: "acme"})
-	client := NewClient(ep, Credential{Token: "t"})
-	if err := client.Call(context.Background(), "controlplane.v1.DeployService/ListReleases", map[string]any{}, &struct{}{}); err != nil {
-		t.Fatal(err)
-	}
-	if gotOrg != "acme" {
-		t.Errorf("declared organization should be forwarded; got %q", gotOrg)
-	}
-}

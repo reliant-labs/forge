@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/deploytarget"
-	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -60,11 +59,6 @@ var (
 	controlPlaneField = regexp.MustCompile(`(?m)^\s+control_plane\s*=`)
 )
 
-// hostedOrgPlaceholder is the `organization` value a scaffolded hosted
-// binding carries until the author replaces it. One spelling, shared with the
-// lint rule that reports it (internal/hostedimage.OrgPlaceholder).
-const hostedOrgPlaceholder = hostedimage.OrgPlaceholder
-
 // validateEnvBinds checks every `--bind` before anything is written, so a
 // typo never leaves a half-made env directory behind.
 func validateEnvBinds(binds []string) error {
@@ -112,20 +106,14 @@ func applyEnvBinds(env string, binds []string) error {
 		if loc == nil {
 			return cliutil.UserErr("forge env new",
 				fmt.Sprintf("deploy/kcl/%s/main.k binds something hosted but has no Bundle `project = ` line to add control_plane after", env),
-				"", fmt.Sprintf("add `control_plane = forge.ControlPlane {organization = %q}` to the env's Bundle by hand", hostedOrgPlaceholder))
+				"", "add `control_plane = forge.ControlPlane {}` to the env's Bundle by hand")
 		}
 		indent := content[loc[2]:loc[3]]
 		decl := "\n" + indent + "# Where the hosted-bound workloads and frontends are published: Reliant cloud (set\n" +
-			indent + "# `endpoint` for another control plane).\n" +
-			indent + "control_plane = forge.ControlPlane {\n" +
-			indent + "    # YOUR ORGANIZATION'S ID. forge pushes this env's hosted images and its\n" +
-			indent + "    # config bundle to <registry_host>/<organization>/<project>, so there is\n" +
-			indent + "    # no address until this is set — `forge lint` fails while it reads\n" +
-			indent + "    # " + hostedOrgPlaceholder + ", and the registry refuses a push outside your own org's\n" +
-			indent + "    # subtree, so a wrong value fails at the first push rather than silently.\n" +
-			indent + "    organization = \"" + hostedOrgPlaceholder + "\"\n" +
-			indent + "    # registry_host defaults to Reliant's registry; set it to name another.\n" +
-			indent + "}"
+			indent + "# `endpoint` for another control plane). There is no organization to declare: forge\n" +
+			indent + "# reads it from the credential, and pushes images and the config bundle to\n" +
+			indent + "# <registry_host>/<your org>/<project>.\n" +
+			indent + "control_plane = forge.ControlPlane {}"
 		content = content[:loc[1]] + decl + content[loc[1]:]
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

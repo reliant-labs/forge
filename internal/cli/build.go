@@ -1597,7 +1597,11 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
 	// A hosted env's backends name images the build state may not hold (CI
 	// pushed them). Record each declared image so the release covers what
-	// the hosted deploy ships.
+	// the hosted deploy ships — keyed by the address under the platform's
+	// push base, which needs the org the credential acts for.
+	if err := requireOrg(ctx, entities); err != nil {
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
+	}
 	if err := harvestHostedBackendArtifacts(ctx, env, entities, artifacts); err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
@@ -2300,7 +2304,7 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	// Push every push-registry tag if requested.
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", cfg.Name, t)
-		if err := dockerPush(ctx, t, tags.organization); err != nil {
+		if err := dockerPush(ctx, t); err != nil {
 			return buildResult{
 				name:     cfg.Name + " (docker)",
 				kind:     "docker",
@@ -2347,12 +2351,6 @@ type dockerImageTags struct {
 	// tag is the version tag the set carries (the non-`latest` one): the tag
 	// the image's build state records.
 	tag string
-	// organization is the env's declared org, carried here so a REFUSED push
-	// can name it (dockerPush → deniedPushHint). It rides the tag set because
-	// that is what every docker build path already receives; the alternative
-	// was a fourth parameter on three signatures, which is how three of the
-	// four push loops would end up without the hint.
-	organization string
 }
 
 // imageTagSet computes the tags one forge-built image gets, for all three
@@ -2409,10 +2407,8 @@ func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) docke
 // declared, and release-scoped when --release is set. The one place a build's
 // options turn into an image's tags.
 func (opts buildOptions) imageTags(image, resolvedTag string) dockerImageTags {
-	tags := imageTagSet(opts.pushPlan.repositoryFor(image), resolvedTag,
+	return imageTagSet(opts.pushPlan.repositoryFor(image), resolvedTag,
 		opts.pushPlan.push, releaseImageTag(opts) != "")
-	tags.organization = opts.pushPlan.organization
-	return tags
 }
 
 // k3dMirrorRepositories is the additional LOCAL tag a `localhost:<port>`
@@ -2500,7 +2496,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", name, t)
-		if err := dockerPush(ctx, t, tags.organization); err != nil {
+		if err := dockerPush(ctx, t); err != nil {
 			return buildResult{
 				name:     name + " (docker)",
 				kind:     "docker",
@@ -3061,7 +3057,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", svcName, t)
-		if err := dockerPush(ctx, t, opts.pushPlan.organization); err != nil {
+		if err := dockerPush(ctx, t); err != nil {
 			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 		}
 	}

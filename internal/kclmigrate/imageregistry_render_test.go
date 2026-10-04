@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/kclmigrate"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
@@ -199,43 +198,29 @@ func TestMigratedHoundersShapeRenders(t *testing.T) {
 	}
 }
 
-// TestMigrationSeedsTheOrganization: the migrated tree carries an
-// `organization` placeholder, because a hosted env now requires one and the
-// trees this migration runs on predate the field entirely.
-//
-// MUTATION VERIFIED RED: dropping seedOrganization from the strip pass makes
-// TestMigratedHoundersShapeRenders fail with a schema check the author has no
-// way to connect to a migration that reported success — which is the exact
-// failure mode the migration exists to prevent, and why this is pinned
-// separately from the render assertion.
-func TestMigrationSeedsTheOrganization(t *testing.T) {
-	root := writeProject(t, houndersPreMigration)
+// TestMigrationDropsADeclaredOrganization: the org is the credential's, and
+// ControlPlane is a closed schema, so a tree still declaring one would fail to
+// load. The migration removes it — in either spelling — and seeds nothing.
+func TestMigrationDropsADeclaredOrganization(t *testing.T) {
+	files := map[string]string{}
+	for k, v := range houndersPreMigration {
+		files[k] = v
+	}
+	main := files["deploy/kcl/prod/main.k"]
+	if !strings.Contains(main, "forge.ControlPlane") {
+		t.Skip("the fixture's prod env declares no control plane")
+	}
+	files["deploy/kcl/prod/main.k"] = strings.Replace(main, "forge.ControlPlane {",
+		"forge.ControlPlane {\n        # REPLACE THIS with your organization's id.\n        organization = \"REPLACE_ME_ORG_ID\"", 1)
+	root := writeProject(t, files)
 	if _, err := kclmigrate.ImageRegistry(root, true); err != nil {
 		t.Fatal(err)
 	}
-	main, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", "prod", "main.k"))
+	got, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", "prod", "main.k"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(main), `organization = "`+hostedimage.OrgPlaceholder+`"`) {
-		t.Fatalf("the migrated prod/main.k declares no organization placeholder:\n%s", main)
-	}
-	// It is a REPLACE_ME_*, so the gates the author already runs report it.
-	// A migration note alone would be a note they may never read.
-	if !strings.HasPrefix(hostedimage.OrgPlaceholder, "REPLACE_ME") {
-		t.Errorf("the placeholder %q is outside the REPLACE_ME_* convention `forge env new --check` gates on",
-			hostedimage.OrgPlaceholder)
-	}
-	// Seeding is IDEMPOTENT: a second run must not stack a second
-	// declaration, which would be a KCL duplicate-key error.
-	if _, err := kclmigrate.ImageRegistry(root, true); err != nil {
-		t.Fatal(err)
-	}
-	again, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", "prod", "main.k"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := strings.Count(string(again), "organization = "); n != 1 {
-		t.Errorf("a second migration run left %d organization declarations, want 1", n)
+	if strings.Contains(string(got), "organization") || strings.Contains(string(got), "REPLACE") {
+		t.Fatalf("the migrated prod/main.k still carries an organization:\n%s", got)
 	}
 }

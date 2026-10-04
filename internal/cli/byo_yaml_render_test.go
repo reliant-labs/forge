@@ -182,7 +182,7 @@ func TestBYO_TargetSelectsASource(t *testing.T) {
 func TestBYO_HostedEnvRefusesBothSources(t *testing.T) {
 	hosted := strings.Replace(byoMainK, `runtime = forge.OnCluster {target = _target}`, `runtime = forge.OnHosted {}`, 1)
 	hosted = strings.Replace(hosted, `    lifecycle = "local"
-`, `    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+`, `    control_plane = forge.ControlPlane {}
 `, 1)
 	gen := filepath.Join(t.TempDir(), "gen.yaml")
 	_ = os.WriteFile(gen, []byte(byoGenYAML), 0o644)

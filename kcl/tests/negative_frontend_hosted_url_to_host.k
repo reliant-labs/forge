@@ -15,7 +15,7 @@ import forge.workloads as fw
 
 output = forge.render(forge.Bundle {
     project = "fixture"
-    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {}
     workloads = [fw.Workload {name = "api", build = forge.GoBuild {cmd = "./cmd/api"}, args = ["api"], runtime = forge.OnHost {listen_ports = [8085]}}]
     frontends = [forge.Frontend {
         name = "site"

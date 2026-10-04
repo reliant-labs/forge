@@ -356,7 +356,7 @@ _pinned = "ghcr.io/acme/billing@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
     cluster_target = _k3d
     workloads = [
         fw.Workload {name = "local", build = forge.GoBuild {cmd = "./cmd/demo"}, args = ["local"], runtime = forge.OnHost {}}

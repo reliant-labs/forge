@@ -29,7 +29,7 @@ _pinned = "ghcr.io/acme/web-api@sha256:ccccccccccccccccccccccccccccccccccccccccc
 output = forge.render(forge.Bundle {
     project = "acme"
     env = "dev"
-    control_plane = forge.ControlPlane {endpoint = "https://api.example.com", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     workloads = [
         # host, with a declared port
         fw.Workload {

@@ -49,8 +49,10 @@ config bundle, go-containerregistry for a static site release.
 image = "api"      # on a forge.OnHosted workload
 ```
 
-resolves to `<registry_host>/<organization>/<project>/api`, composed from the
-env's own `forge.ControlPlane` declaration. A cluster or compose workload still
+resolves to `<registry_host>/<org>/<project>/api`: the host from the env's
+`forge.ControlPlane` (defaulting to Reliant's registry), `<org>` from the
+credential — forge asks the control plane which organization your token acts
+for, so there is no `organization` to declare and none to get wrong. A cluster or compose workload still
 must name its host: no platform owns that registry, so there is nothing to
 compose from.
 
@@ -63,18 +65,23 @@ in one run: ours from the control-plane credential, yours from the flags.
 
 ## A denied push (realm 401 / `DENIED`)
 
-Almost never a credential problem, and forge appends a hint naming your declared
-org. In order:
+forge composes the push address from the org your credential acts for, so a
+denial is never a mis-declared org. In order:
 
-1. **`organization` on `forge.ControlPlane` is not the org your token belongs
-   to.** The realm scopes every token to its own org's subtree and refuses the
-   rest. Fix the declaration — forge cannot guess it, and a wrong one fails here
-   rather than silently pushing somewhere unexpected.
-2. **It is still the scaffolded `REPLACE_ME_ORG_ID`.** `forge lint` gates on
-   this.
-3. **The credential expired or was revoked.** `forge login` again, or refresh
+1. **The credential expired or was revoked.** `forge login` again, or refresh
    the CI secret.
+2. **The token holds `deploy:read` but not `deploy:write`.** A push needs both
+   the org's subtree and write access; check the token's scopes with
+   `forge cloud token list`.
 
-**Re-running a manual `docker login` fixes none of those.** If a push is being
-refused, the question is which subtree your token may write to, not whether a
-credential reached the keychain.
+**Re-running a manual `docker login` fixes neither.** If a push is being
+refused, the question is what your token may write, not whether a credential
+reached the keychain.
+
+## When forge cannot learn your org
+
+A build, deploy, release cut or `forge registry login` for a hosted env asks the
+control plane which organization the credential acts for (one call per
+command). With no credential it stops at the top and says so — authenticate and
+re-run. `forge env render` and `forge lint` need no credential: with none they
+compose no base, and report a host-bearing image as the weaker, unverified fact.

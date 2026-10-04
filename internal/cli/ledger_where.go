@@ -60,8 +60,7 @@ type ledgerWhereDoc struct {
 
 // ledgerDeclarationDoc is the KCL declaration that selected a control plane.
 type ledgerDeclarationDoc struct {
-	Endpoint     string `json:"endpoint"`
-	Organization string `json:"organization,omitempty"`
+	Endpoint string `json:"endpoint"`
 	// TokenEnv is the env var the credential is read from, when the
 	// declaration names one. The VALUE is never printed.
 	TokenEnv string `json:"token_env,omitempty"`
@@ -142,9 +141,8 @@ func ledgerWhereFor(ctx context.Context, projectDir, env string) (ledgerWhereDoc
 	if entities, rerr := RenderKCL(ctx, projectDir, env); rerr == nil {
 		if decl := declarationFromEntities(entities); decl != nil {
 			doc.Declaration = &ledgerDeclarationDoc{
-				Endpoint:     decl.Endpoint,
-				Organization: decl.Organization,
-				TokenEnv:     decl.TokenEnv,
+				Endpoint: decl.Endpoint,
+				TokenEnv: decl.TokenEnv,
 			}
 		}
 	}
@@ -161,9 +159,6 @@ func writeLedgerWhere(w io.Writer, doc ledgerWhereDoc) {
 	fmt.Fprintf(w, "  because: %s\n", doc.Because)
 	if d := doc.Declaration; d != nil {
 		fmt.Fprintf(w, "  declared endpoint: %s\n", d.Endpoint)
-		if d.Organization != "" {
-			fmt.Fprintf(w, "  organization:      %s\n", d.Organization)
-		}
 		if d.TokenEnv != "" {
 			// The NAME, never the value. A command that printed a
 			// credential would make its own output unsafe to paste

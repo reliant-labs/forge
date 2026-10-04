@@ -54,10 +54,6 @@ type pushPlan struct {
 	// consumer can say WHERE a resolved reference came from rather than
 	// leaving the author to guess which half of it they wrote.
 	pushBase string
-	// organization is the env's declared org, carried so a REFUSED push can
-	// name it (deniedPushHint). "" when the env declares none, or still
-	// carries the scaffolded placeholder.
-	organization string
 }
 
 // printHeader prints where this build's images are tagged and pushed. One
@@ -127,13 +123,13 @@ func hostedStaticDestination(pushBase, image string) string {
 // composed on, agreeing by accident stops working — which is what this
 // function exists to prevent.
 func hostedStaticDestinationForDecl(e *KCLEntities, image string) string {
-	return hostedStaticDestination(declaredPushBase(e), image)
+	return hostedStaticDestination(platformPushBase(e), image)
 }
 
 // hostedImageForDecl resolves any hosted item's image against the env's
 // declared push base. The workload twin of hostedStaticDestinationForDecl.
 func hostedImageForDecl(e *KCLEntities, image string) string {
-	return resolveHostedImageBase(declaredPushBase(e), image)
+	return resolveHostedImageBase(platformPushBase(e), image)
 }
 
 // repositoryName is a repository's last path segment — the artifact name
@@ -206,18 +202,30 @@ func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *bui
 // env whose workloads declare no pullable image builds locally instead of
 // failing: a host-only env has no cluster to pull from.
 func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error) {
-	// The platform's push base, composed from the env's own declaration. A
-	// bare hosted image resolves under it; an env with no hosted item never
-	// reads it. Declared rather than fetched because resolving a push
-	// destination must not depend on a credential being present — see
-	// hosted_push_base.go.
-	pushBase := declaredPushBase(declared)
-	if err := checkHostedImagesResolve(opts.env, declared, pushBase); err != nil {
-		return pushPlan{}, err
+	// The platform's push base: the declared registry host, the org the
+	// credential acts for, and the project. A bare hosted image resolves
+	// under it; an env with no hosted item never reads it.
+	//
+	// The org is resolved STRICTLY here, because resolving a push destination
+	// for a hosted env is the first thing a build does and a missing
+	// credential should be said before anything is compiled. A --plan
+	// preflight resolves nothing: it must run on a laptop with no login.
+	if !opts.plan {
+		if err := requireOrg(context.Background(), declared); err != nil {
+			return pushPlan{}, err
+		}
+	}
+	pushBase := platformPushBase(declared)
+	// A --plan with no credential has no org and so no base for a bare hosted
+	// image: that is not a refusal, it is a preflight that cannot resolve what
+	// it was never allowed to learn. The pushing run refuses (above).
+	if !(opts.plan && pushBase == "") {
+		if err := checkHostedImagesResolve(opts.env, declared, pushBase); err != nil {
+			return pushPlan{}, err
+		}
 	}
 	dests := declaredImageDestinationsWithBase(declared, pushBase)
-	plan := pushPlan{env: opts.env, destinations: dests, pushBase: pushBase,
-		organization: declaredOrganization(declared)}
+	plan := pushPlan{env: opts.env, destinations: dests, pushBase: pushBase}
 	if !opts.push {
 		plan.push = opts.pushIfDeclared && opts.env != "" && len(dests) > 0
 		return plan, nil
@@ -239,15 +247,15 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 // declared on the workload and nowhere else, which is right for every runtime
 // whose registry the AUTHOR chooses. forge.OnHosted is the one case where they
 // do not choose it: the control plane admits images from exactly one subtree,
-// `<registry_base>/<org>`, and refuses everything else (checkImagePushBase).
+// `<registry_base>/<org>` (the org the credential acts for), and refuses everything else (checkImagePushBase).
 // So a hosted author writing a host was transcribing a value the platform
 // already knew, and getting it wrong produced a publish-time refusal — the
 // defect this closes. A host-bearing reference is still used VERBATIM, because
 // an author who named one meant it, and the admit check is what judges it.
 //
-// base "" means the env declared no organization, so no base composes. That
+// base "" means the credential's org was not learned, so no base composes. That
 // is NOT a licence to invent one: a bare image with nowhere to go is refused,
-// naming the field to declare (errHostedImageNeedsPushBase).
+// naming the credential to supply (errHostedImageNeedsPushBase).
 //
 // Non-hosted runtimes are untouched. A bare image on a cluster workload is
 // still refused at render, by KCL, because no platform owns that registry.

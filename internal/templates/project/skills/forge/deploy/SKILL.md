@@ -186,10 +186,10 @@ A hosted env's images go to the PLATFORM registry, authenticated with the same
 `rlat_` forge reaches the control plane with — no registry password, and
 `--push` / `forge env deploy` log themselves in before their first push.
 `forge registry login <env>` REFUSES `--username`/`--password-*` for that host.
-A bare `image = "api"` resolves under `<registry_host>/<organization>/<project>/`.
+A bare `image = "api"` resolves under `<registry_host>/<org>/<project>/` (org = your credential's).
 
 Load `deploy/hosted-registry` for credential sources, the CI shape, and
-denied-push triage (a realm 401 is nearly always a mis-declared `organization`).
+denied-push triage.
 
 A non-hosted env declares no registry: each workload — and each hosted
 frontend, via `forge.Frontend.image` — names its own.

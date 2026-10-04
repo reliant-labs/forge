@@ -161,7 +161,7 @@ _cloud_build_without_platform = lambda w: any -> bool {
 # so a helper it calls must be given them.
 _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: any, \
                             gateways: [any], http_routes: [any], grpc_routes: [any], \
-                            helm_charts: [any], manifests: [any], rendered_secrets: [any] -> [str] {
+                            helm_charts: [any], manifests: [any], generated: [any], rendered_secrets: [any] -> [str] {
     _from_workloads = [w.runtime.target.cluster for w in workloads \
         if w.runtime and w.runtime.type == "cluster" and w.runtime.target]
     _from_databases = [db.runtime.target.cluster for db in databases \
@@ -174,9 +174,10 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_grpc = [r.cluster.context for r in grpc_routes if r.cluster]
     _from_charts = [h.cluster.context for h in helm_charts if h.cluster]
     _from_manifests = [m.cluster for m in manifests if m.cluster]
+    _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
     _all = _from_workloads + _from_databases + _from_primary + _from_gateways \
-        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_secrets
+        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_generated + _from_secrets
     sorted([c for c in {x: 0 for x in _all if x}])
 }
 
@@ -209,9 +210,9 @@ _is_forge_managed_context = lambda ctx: str, clusters: [any] -> bool {
 _unmanaged_contexts = lambda clusters: [any], workloads: [any], databases: [any], \
                              cluster_target: any, gateways: [any], http_routes: [any], \
                              grpc_routes: [any], helm_charts: [any], manifests: [any], \
-                             rendered_secrets: [any] -> [str] {
+                             generated: [any], rendered_secrets: [any] -> [str] {
     [c for c in _targeted_contexts(workloads, databases, cluster_target, gateways, \
-            http_routes, grpc_routes, helm_charts, manifests, rendered_secrets) \
+            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) \
         if not _is_forge_managed_context(c, clusters)]
 }
 
@@ -830,7 +831,20 @@ render = lambda bundle: Bundle -> any {
         # Platform deps (helm-as-a-RENDERER): the CLI expands each via `helm
         # template --skip-crds` and folds the result into the apply stream,
         # selected by `--target <name>`. Not in `manifests`.
-        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts]
+        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery != "bundle"]
+        # Bring-your-own YAML, rendered Go-side at extract time and shipped in
+        # the bundle (internal/cluster/byo_yaml.go). Keys appear only when
+        # declared, so an env with neither renders exactly as before.
+        if [h for h in bundle.helm_charts if h.delivery == "bundle"]:
+            "bundled_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery == "bundle"]
+        if bundle.generated:
+            "generated": [{
+                "name": g.name
+                "command": g.command
+                "dir": g.dir if g.dir else None
+                "cluster": g.cluster if g.cluster else None
+                "namespace": g.namespace if g.namespace else None
+            } for g in bundle.generated]
         # Declared external PREREQUISITES forge does NOT create: a render-time
         # checklist, and the preflight BLOCK on a required-but-absent Secret.
         "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]

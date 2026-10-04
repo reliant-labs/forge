@@ -249,7 +249,7 @@ func TestExtractManifests_ReadsOutputManifests(t *testing.T) {
     metadata:
       name: app-config
 `
-	got, err := extractManifests([]byte(in))
+	got, err := ExtractManifests([]byte(in))
 	if err != nil {
 		t.Fatalf("extractManifests: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestExtractManifests_UnexpectedSiblingStillWarns(t *testing.T) {
 stray_var:
   something: else
 `
-	got, err := extractManifests([]byte(in))
+	got, err := ExtractManifests([]byte(in))
 	if err != nil {
 		t.Fatalf("extractManifests: %v", err)
 	}

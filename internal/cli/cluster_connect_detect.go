@@ -7,6 +7,8 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -141,48 +143,83 @@ func readConnectTarget(kctx, authFlag string) (connectTarget, error) {
 	if err != nil {
 		return connectTarget{}, err
 	}
+	target := connectTarget{Context: kctx, Auth: auth}
+	if auth == authGCP {
+		gke, _ := parseGKEContext(kctx)
+		target.CloudCluster = gke.CloudCluster()
+		// The hub dials from its own pods, so the address and CA it registers
+		// come from GKE's describe, not the operator's kubeconfig (which may
+		// hold a DNS endpoint with a publicly trusted cert and no CA).
+		if d, ok := gkeDescribeOf(gke); ok {
+			switch {
+			case d.PrivateEndpoint != "":
+				address = "https://" + d.PrivateEndpoint
+				target.AddressNote = "the cluster has a private endpoint, which is what the hub can reach (the context's server is not what the hub dials)"
+			case d.Endpoint != "":
+				address = "https://" + d.Endpoint
+				target.AddressNote = "the address is the cluster's endpoint from GKE (the context's server is not what the hub dials)"
+			}
+			if d.CAPEM != "" {
+				caPEM = d.CAPEM
+			}
+		}
+	}
 	if err := refuseUnusableAddress(address); err != nil {
 		return connectTarget{}, err
 	}
 	if caPEM == "" {
 		// Never degrade to skipping verification. A target we cannot verify
 		// is one we decline to deploy to — the alternative is sending a
-		// standing credential to whatever answers that address. The control
-		// plane requires the CA for the same reason, so a refusal here is
-		// just the earlier, more actionable half of the same rule.
+		// standing credential to whatever answers that address.
+		if auth == authGCP {
+			return connectTarget{}, fmt.Errorf("GKE's describe of cluster %q returned no masterAuth.clusterCaCertificate, and forge "+
+				"will not connect a cluster whose API server it cannot verify", target.CloudCluster)
+		}
 		return connectTarget{}, fmt.Errorf("context %q carries no certificate authority for its cluster, and forge "+
 			"will not connect a cluster whose API server it cannot verify\n"+
 			"fix: the kubeconfig entry needs certificate-authority-data or certificate-authority "+
 			"(re-run your provider's get-credentials to refresh it)", kctx)
 	}
-	target := connectTarget{Context: kctx, Auth: auth, Address: address, CAPEM: caPEM}
-	if auth == authGCP {
-		gke, _ := parseGKEContext(kctx)
-		target.CloudCluster = gke.CloudCluster()
-		// The hub dials from its own pods, where only a private endpoint
-		// may be reachable and authorized; the context's server is the
-		// public one.
-		if private := gkePrivateEndpointOf(gke); private != "" {
-			target.Address = "https://" + private
-			target.AddressNote = "the cluster has a private endpoint, which is what the hub can reach (the context's server is the public one)"
-		}
-	}
+	target.Address, target.CAPEM = address, caPEM
 	return target, nil
 }
 
-// gkePrivateEndpointOf returns the cluster's private endpoint IP, or "" when
-// it has none or cannot be read. Read-only, with the operator's own gcloud
-// credentials. A var so tests supply a fake describe.
-var gkePrivateEndpointOf = func(g gkeContext) string {
+// gkeDescription is the part of `gcloud container clusters describe` the hub's
+// registration needs.
+type gkeDescription struct {
+	Endpoint        string
+	PrivateEndpoint string
+	CAPEM           string // decoded PEM
+}
+
+// gkeDescribeOf reads the cluster's endpoints and CA from GKE. Read-only, with
+// the operator's own gcloud credentials; ok is false when it cannot be read.
+// A var so tests supply a fake describe.
+var gkeDescribeOf = func(g gkeContext) (gkeDescription, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "gcloud", "container", "clusters", "describe", g.Cluster,
-		"--project", g.Project, "--location", g.Location,
-		"--format=value(privateClusterConfig.privateEndpoint)").Output()
+		"--project", g.Project, "--location", g.Location, "--format=json").Output()
 	if err != nil {
-		return ""
+		return gkeDescription{}, false
 	}
-	return strings.TrimSpace(string(out))
+	var raw struct {
+		Endpoint             string `json:"endpoint"`
+		PrivateClusterConfig struct {
+			PrivateEndpoint string `json:"privateEndpoint"`
+		} `json:"privateClusterConfig"`
+		MasterAuth struct {
+			ClusterCaCertificate string `json:"clusterCaCertificate"`
+		} `json:"masterAuth"`
+	}
+	if json.Unmarshal(out, &raw) != nil {
+		return gkeDescription{}, false
+	}
+	d := gkeDescription{Endpoint: raw.Endpoint, PrivateEndpoint: raw.PrivateClusterConfig.PrivateEndpoint}
+	if pem, err := base64.StdEncoding.DecodeString(raw.MasterAuth.ClusterCaCertificate); err == nil {
+		d.CAPEM = string(pem)
+	}
+	return d, true
 }
 
 // refuseUnusableAddress rejects the two addresses that fail AGAINST A HEALTHY

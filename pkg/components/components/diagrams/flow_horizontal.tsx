@@ -97,7 +97,11 @@ export default function FlowHorizontal({
                   <span
                     className={`inline-block w-2.5 h-2.5 rounded-full ${
                       s.dot
-                    } ${status === "active" ? "animate-pulse motion-reduce:animate-none" : ""}`}
+                    } ${
+                      status === "active"
+                        ? "animate-pulse motion-reduce:animate-none"
+                        : ""
+                    }`}
                   />
                   <span
                     className={`text-xs font-semibold uppercase tracking-wide ${s.text}`}

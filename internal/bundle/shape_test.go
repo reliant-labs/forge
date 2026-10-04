@@ -1,8 +1,6 @@
 package bundle
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -155,35 +153,6 @@ func TestProjectShapeOmitsSecrets(t *testing.T) {
 	if strings.Contains(string(raw), canaryValue) {
 		t.Fatal("the canary survived into the shape")
 	}
-}
-
-// secretDocumentHash is the fixture's Secret document with `data` replaced by
-// the given values, hashed the way the projection hashes an object. It is
-// deliberately built from a literal rather than from the projection's own
-// helpers, so the test states the expected document instead of restating the
-// implementation.
-func secretDocumentHash(t *testing.T, data map[string]any) string {
-	t.Helper()
-	hash, err := release.HashDocument(map[string]any{
-		"apiVersion": "v1",
-		"kind":       "Secret",
-		"metadata": map[string]any{
-			"name":      "orders-superuser",
-			"namespace": "shop-prod",
-			"labels":    map[string]any{"forge.dev/workload": "orders"},
-		},
-		"type": "kubernetes.io/basic-auth",
-		"data": data,
-	})
-	if err != nil {
-		t.Fatalf("HashDocument: %v", err)
-	}
-	return hash
-}
-
-func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
 }
 
 // TestProjectShapeHashIsStableAcrossDocumentOrder: the hash has to mean "this

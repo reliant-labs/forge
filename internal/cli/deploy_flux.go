@@ -142,6 +142,13 @@ func runFluxDeploy(ctx context.Context, env string, entities *KCLEntities, opts 
 		}
 	}
 
+	// CROSS-CLUSTER KUBECONFIG SECRETS are minted by forge the same way: they
+	// are Secrets (so not in the bundle) that only `env up` used to create.
+	kubeconfigMints := fluxKubeconfigSecrets(entities)
+	if opts.DryRun {
+		printFluxKubeconfigPlan(out, env, kubeconfigMints)
+	}
+
 	repository := ""
 	if !opts.DryRun {
 		if repository, err = publishBundleForFlux(ctx, projectDirForKCL(), env, entities, opts.Digest); err != nil {
@@ -189,6 +196,14 @@ func runFluxDeploy(ctx context.Context, env string, entities *KCLEntities, opts 
 		fmt.Fprintf(out, "\nSyncing %s's Secrets to its clusters (values never enter the bundle)\n", env)
 		if err := syncFluxSecrets(ctx, env, syncSet, out); err != nil {
 			return err
+		}
+	}
+
+	if len(kubeconfigMints) > 0 {
+		namespace := fluxDeployNamespace(ctx, env)
+		fmt.Fprintf(out, "\nMinting %s's cross-cluster kubeconfig Secrets (contents never printed)\n", env)
+		if err := mintKubeconfigSecretsAs(ctx, kubeconfigMints, ownerNetworkFromClusters(entities.Clusters), namespace, fluxSecretFieldManager, false); err != nil {
+			return fmt.Errorf("kubeconfig secrets: %w", err)
 		}
 	}
 

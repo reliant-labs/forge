@@ -376,3 +376,46 @@ func fluxTargetClustersFromEntities(entities *KCLEntities) []string {
 	sort.Strings(declared)
 	return declared
 }
+
+// fluxKubeconfigSecrets is the declared cross-cluster kubeconfig Secrets a
+// Flux-path deploy mints: every declaration whose consumer cluster is one the
+// env declares a kubectl context for. A declaration for a cluster forge holds
+// no context for cannot be written from here and is left to the hub.
+func fluxKubeconfigSecrets(entities *KCLEntities) []KubeconfigSecretEntity {
+	if entities == nil {
+		return nil
+	}
+	declared := map[string]bool{}
+	for _, c := range declaredFluxClusters(entities) {
+		declared[c] = true
+	}
+	var out []KubeconfigSecretEntity
+	for _, k := range entities.KubeconfigSecrets {
+		if declared[strings.TrimSpace(k.InCluster)] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func printFluxKubeconfigPlan(out io.Writer, env string, secrets []KubeconfigSecretEntity) {
+	if len(secrets) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "Would mint %d cross-cluster kubeconfig Secret(s) for %s (contents never printed):\n", len(secrets), env)
+	for _, k := range secrets {
+		fmt.Fprintf(out, "  %s in %s (target=%s)\n", k.Name, k.InCluster, k.TargetCluster)
+	}
+}
+
+// fluxDeployNamespace is the namespace Secrets default to for an env, resolved
+// the same way [collectFluxSecrets] does.
+func fluxDeployNamespace(ctx context.Context, env string) string {
+	if ns := k8sClusterNamespaceForEnv(ctx, env); ns != "" {
+		return ns
+	}
+	if store, err := loadProjectStore(); err == nil {
+		return store.Meta().Name + "-" + env
+	}
+	return env
+}

@@ -69,7 +69,7 @@ function {{.ComponentIdent}}Tile() {
       */}
       <p className="mt-3 text-3xl font-semibold tracking-tight text-ink tabular-nums">
         {count === undefined ? (
-          <span className="inline-block h-8 w-14 animate-pulse rounded-md bg-surface-muted align-middle" />
+          <span className="inline-block h-8 w-14 animate-pulse motion-reduce:animate-none rounded-md bg-surface-muted align-middle" />
         ) : (
           String(count)
         )}

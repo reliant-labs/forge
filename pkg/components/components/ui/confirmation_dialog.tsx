@@ -142,7 +142,7 @@ export default function ConfirmationDialog({
           >
             {loading && (
               <svg
-                className="h-4 w-4 animate-spin"
+                className="h-4 w-4 animate-spin motion-reduce:[animation-duration:3s]"
                 viewBox="0 0 24 24"
                 fill="none"
               >

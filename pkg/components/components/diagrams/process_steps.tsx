@@ -53,7 +53,7 @@ export default function ProcessSteps({
       case "active":
         return {
           className:
-            "flex items-center justify-center w-9 h-9 rounded-full shrink-0 ring-4 ring-offset-2 animate-pulse",
+            "flex items-center justify-center w-9 h-9 rounded-full shrink-0 ring-4 ring-offset-2 animate-pulse motion-reduce:animate-none",
           style: {
             backgroundColor: accentColor ?? "#3b82f6",
             "--tw-ring-color": `${accentColor ?? "#3b82f6"}33`,

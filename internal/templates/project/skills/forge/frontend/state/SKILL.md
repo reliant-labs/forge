@@ -58,6 +58,8 @@ if (!query.data?.length) return <EmptyState />;
 return <DataList items={query.data} />;
 ```
 
+`SkeletonLoader` and `StatusDot` pulses stop under `prefers-reduced-motion`; loading spinners slow instead of freezing. Add `motion-reduce:` to any `animate-*` you write.
+
 A generated hook's `error` is a `ConnectClientError`, so `userMessage(err)`
 renders it without the backend framing, and `err.reason` / `err.code` are
 there when a failure needs its own branch. Never render `err.message` and

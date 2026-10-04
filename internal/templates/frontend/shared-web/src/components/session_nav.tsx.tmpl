@@ -100,7 +100,7 @@ export function SessionNav() {
   // signed-out state; getting it wrong cost two of everything.
   if (hydrated && isLoading) {
     return (
-      <div className="h-8 w-24 animate-pulse rounded-md bg-surface-muted" />
+      <div className="h-8 w-24 animate-pulse motion-reduce:animate-none rounded-md bg-surface-muted" />
     );
   }
 

@@ -76,9 +76,11 @@ export default function Button({
       {...rest}
     >
       {isLoading ? (
+        // Reduced motion: spinners convey "busy", so they are slowed rather
+        // than frozen (WCAG 2.3.3); decorative pulses are disabled outright.
         <span
           aria-hidden
-          className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
+          className="inline-block h-3.5 w-3.5 animate-spin motion-reduce:[animation-duration:3s] rounded-full border-2 border-current border-t-transparent"
         />
       ) : null}
       {children}

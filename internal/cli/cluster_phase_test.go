@@ -829,3 +829,76 @@ func TestInheritRegistryMirrorRepairsNodeIPDriftAfterRestart(t *testing.T) {
 		t.Fatal("the post-restart wait bypassed the node-IP drift repair path")
 	}
 }
+
+// stubPortDrift fakes the live serverlb ports and the in-place edit. The edit
+// adds its ports to the live set when applies is true, so the post-edit
+// verification sees what a real `k3d cluster edit --port-add` would publish.
+func stubPortDrift(t *testing.T, live map[int]bool, editErr error, applies bool) *[][]int {
+	t.Helper()
+	origRun, origAdd := runningClusterHostPortsFn, addClusterHostPortsFn
+	t.Cleanup(func() { runningClusterHostPortsFn, addClusterHostPortsFn = origRun, origAdd })
+	var calls [][]int
+	runningClusterHostPortsFn = func(context.Context, string) (map[int]bool, error) { return live, nil }
+	addClusterHostPortsFn = func(_ context.Context, _ string, ports []int) error {
+		calls = append(calls, ports)
+		if editErr == nil && applies {
+			for _, p := range ports {
+				live[p] = true
+			}
+		}
+		return editErr
+	}
+	return &calls
+}
+
+// Drift is repaired in place: one edit carrying every missing port, no error,
+// so `forge env up` proceeds on the live cluster instead of demanding a recreate.
+func TestReconcileClusterPortDrift_AddsMissingPortsInPlace(t *testing.T) {
+	c := ClusterEntity{Name: "control-plane"}
+	calls := stubPortDrift(t, map[int]bool{28080: true}, nil, true)
+	err := reconcileClusterPortDrift(context.Background(), c, []ClusterEntity{c}, "dev",
+		map[int]bool{28080: true, 38086: true, 28090: true})
+	if err != nil {
+		t.Fatalf("drift should be repaired in place, got %v", err)
+	}
+	if len(*calls) != 1 || len((*calls)[0]) != 2 || (*calls)[0][0] != 28090 || (*calls)[0][1] != 38086 {
+		t.Fatalf("want one edit adding [28090 38086], got %v", *calls)
+	}
+}
+
+func TestReconcileClusterPortDrift_NoDriftDoesNotEdit(t *testing.T) {
+	c := ClusterEntity{Name: "control-plane"}
+	calls := stubPortDrift(t, map[int]bool{28080: true}, nil, true)
+	if err := reconcileClusterPortDrift(context.Background(), c, []ClusterEntity{c}, "dev", map[int]bool{28080: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("no drift must not touch the serverlb, got %v", *calls)
+	}
+}
+
+// A failed edit falls back to the recreate guidance, which must still name the
+// exact command and warn that it deletes workloads.
+func TestReconcileClusterPortDrift_EditFailureFallsBackToRecreate(t *testing.T) {
+	c := ClusterEntity{Name: "control-plane"}
+	stubPortDrift(t, map[int]bool{28080: true}, errors.New("boom"), false)
+	err := reconcileClusterPortDrift(context.Background(), c, []ClusterEntity{c}, "dev", map[int]bool{28080: true, 38086: true})
+	if err == nil {
+		t.Fatal("want an error when the in-place edit fails")
+	}
+	for _, want := range []string{"38086", "boom", "k3d cluster delete control-plane", "DELETES"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q:\n%v", want, err)
+		}
+	}
+}
+
+// An edit that exits 0 but doesn't publish the port is not a repair.
+func TestReconcileClusterPortDrift_UnverifiedEditIsAnError(t *testing.T) {
+	c := ClusterEntity{Name: "control-plane"}
+	stubPortDrift(t, map[int]bool{28080: true}, nil, false)
+	err := reconcileClusterPortDrift(context.Background(), c, []ClusterEntity{c}, "dev", map[int]bool{28080: true, 38086: true})
+	if err == nil || !strings.Contains(err.Error(), "still unmapped") {
+		t.Fatalf("want a still-unmapped error, got %v", err)
+	}
+}

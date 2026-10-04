@@ -356,14 +356,17 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 	return nil
 }
 
-// checkClusterPortDrift errors when the LIVE cluster is missing host ports
-// the env's RENDERED Gateway listeners now require. The required set is
+// checkClusterPortDrift reconciles the LIVE cluster's host ports with the
+// ones the env's RENDERED Gateway listeners now require. The required set is
 // DERIVED from the same render `forge env up` deploys (renderedGatewayHostPorts
 // → the env's Gateway listeners, transform-added ones included), so it is
-// the single source of truth — no static port list to keep in sync. k3d
-// can't add a port map to a running cluster, so the only fix is a recreate;
-// we say so explicitly rather than let the affected route fail later with an
-// opaque "connection refused". No drift (or an unreadable serverlb / render)
+// the single source of truth — no static port list to keep in sync.
+//
+// k3d can't add a port map at the CLUSTER level after create, but the
+// mappings live on the serverlb container and `k3d cluster edit --port-add`
+// replaces just that container — nodes, PVCs, Secrets and every workload
+// survive. So drift is repaired in place; a recreate is only the fallback
+// when the edit itself fails. No drift (or an unreadable serverlb / render)
 // is a silent no-op.
 func checkClusterPortDrift(ctx context.Context, c ClusterEntity, declared []ClusterEntity, projectDir, env string) error {
 	required, err := renderedGatewayHostPorts(ctx, projectDir, env)
@@ -371,6 +374,29 @@ func checkClusterPortDrift(ctx context.Context, c ClusterEntity, declared []Clus
 		fmt.Printf("  warning: could not render Gateway listeners to verify host-port mappings for %q: %v\n", c.Name, err)
 		return nil
 	}
+	return reconcileClusterPortDrift(ctx, c, declared, env, required)
+}
+
+// addClusterHostPortsFn adds host-port → serverlb mappings to a live cluster.
+// A var so tests don't shell out to k3d.
+var addClusterHostPortsFn = addClusterHostPorts
+
+// addClusterHostPorts maps each port host:port → the serverlb via one
+// `k3d cluster edit` (one serverlb replacement, not one per port). Ports are
+// published 1:1, matching how the cluster's create-time mappings are declared.
+func addClusterHostPorts(ctx context.Context, clusterName string, ports []int) error {
+	args := []string{"cluster", "edit", clusterName}
+	for _, p := range ports {
+		args = append(args, "--port-add", fmt.Sprintf("%d:%d@loadbalancer", p, p))
+	}
+	out, err := exec.CommandContext(ctx, "k3d", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("k3d %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func reconcileClusterPortDrift(ctx context.Context, c ClusterEntity, declared []ClusterEntity, env string, required map[int]bool) error {
 	missing, err := clusterPortDrift(ctx, c.Name, required)
 	if err != nil {
 		// Best-effort: a drift-read failure must not block the warm-run
@@ -385,13 +411,25 @@ func checkClusterPortDrift(ctx context.Context, c ClusterEntity, declared []Clus
 	for i, p := range missing {
 		ports[i] = strconv.Itoa(p)
 	}
+	fmt.Printf("  cluster %q is missing host-port mapping(s) %s required by env %q's Gateway listeners — adding them to its load balancer in place (nodes and workloads are untouched)\n",
+		c.Name, strings.Join(ports, ", "), env)
+	editErr := addClusterHostPortsFn(ctx, c.Name, missing)
+	if editErr == nil {
+		// Verify rather than trust the exit code: an edit that "succeeds"
+		// without publishing the port is the failure this check exists for.
+		still, verr := clusterPortDrift(ctx, c.Name, required)
+		if verr != nil || len(still) == 0 {
+			return nil
+		}
+		editErr = fmt.Errorf("ports %v still unmapped after the edit", still)
+	}
 	return fmt.Errorf(
-		"cluster %q is missing host-port mapping(s) %s that env %q's rendered Gateway listeners now require — "+
-			"k3d fixes port maps at cluster-create time, so a listener added after the cluster was "+
-			"created is unreachable on the live cluster. Recreate it to pick up the new mappings:\n"+
+		"cluster %q is missing host-port mapping(s) %s that env %q's rendered Gateway listeners now require, "+
+			"and adding them in place failed: %v\n"+
+			"Recreating the cluster picks up the mappings (this DELETES its workloads and Secrets):\n"+
 			"    %s\n"+
 			"(the required ports are DERIVED from the same render forge deploys — no manual port list to maintain)",
-		c.Name, strings.Join(ports, ", "), env, recreateClusterCommand(c, declared, env))
+		c.Name, strings.Join(ports, ", "), env, editErr, recreateClusterCommand(c, declared, env))
 }
 
 // dependentSecondaries names the declared clusters that are NESTED inside c —

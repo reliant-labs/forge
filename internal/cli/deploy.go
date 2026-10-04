@@ -736,6 +736,7 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 	if guard.Verdict == deployGuardVerdictRefuse {
 		return nil
 	}
+	printFluxSecretExplain(ctx, envName)
 	return printDeployExplainHostSkip(cfg, envName)
 }
 
@@ -4014,11 +4015,65 @@ func verifyDeclaredContextsExist(ctx context.Context, envName string, groups []d
 // external/none providers produce no manifests (RenderK8sSecrets returns
 // nil), so this is a no-op for them beyond the validation gate.
 func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, kubeContext, envName string, dryRun bool) error {
+	return applyK8sSecretsFromProviderTo(ctx, entities, groups, namespace, kubeContext, envName, dryRun, secretTarget{sink: applySecretsWithKubectl})
+}
+
+// secretPlacement is one (cluster, namespace) worth of rendered Secrets,
+// handed to a [secretSink] once everything about it has been validated.
+type secretPlacement struct {
+	cluster, namespace string
+	mans               []map[string]any
+	stream             string
+	// declared is true for Bundle.rendered_secrets / RenderedSecrets, false
+	// for a provider's secret_ref projection; it only selects the wording.
+	declared bool
+}
+
+// secretSink is what happens to a validated placement. The deploy's own sink
+// applies it; the Flux path's collects them, so it can sync every Secret —
+// including the ones in the render — once per cluster.
+type secretSink func(ctx context.Context, p secretPlacement) error
+
+// secretTarget is where validated placements go and whether a non-local
+// cluster may receive them. Direct deploys refuse plaintext Secrets for a
+// remote cluster; the Flux path's deploy-time sync is the sanctioned transport
+// for them, so it opts in.
+type secretTarget struct {
+	sink        secretSink
+	allowRemote bool
+}
+
+// applySecretsWithKubectl is the direct-deploy sink.
+func applySecretsWithKubectl(ctx context.Context, p secretPlacement) error {
+	// Never a write to whatever context happens to be current: a placement
+	// with no cluster has nowhere declared to land.
+	if strings.TrimSpace(p.cluster) == "" {
+		return fmt.Errorf("projected Secret(s) for namespace %q have no kubectl context to apply to: "+
+			"declare the consuming workload's cluster (a forge.ClusterTarget) in the env's KCL", p.namespace)
+	}
+	what, wrap := "secret manifest(s)", "apply k8s secrets to %s: %w"
+	if p.declared {
+		what, wrap = "rendered Secret(s)", "apply rendered secrets to %s: %w"
+	}
+	// The Namespace object itself lives in the MAIN manifest stream applied
+	// AFTER this, so on a fresh cluster it doesn't exist yet. Ensure it
+	// first (idempotent; the later full apply re-applies it with labels).
+	if err := cluster.EnsureNamespace(ctx, p.cluster, p.namespace); err != nil {
+		return fmt.Errorf("ensure namespace %q in %q before secrets: %w", p.namespace, p.cluster, err)
+	}
+	fmt.Printf("Applying %d %s into %s/%s...\n", len(p.mans), what, p.cluster, p.namespace)
+	if err := cluster.KubectlApply(ctx, p.cluster, p.stream); err != nil {
+		return fmt.Errorf(wrap, p.cluster, err)
+	}
+	return nil
+}
+
+func applyK8sSecretsFromProviderTo(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, kubeContext, envName string, dryRun bool, target secretTarget) error {
 	// Declared Secrets (Bundle.rendered_secrets, and a RenderedSecrets
 	// provider's list) go first and through ONE path, whatever the
 	// provider: a dev env whose services read FileSecrets can still
 	// declare the Secrets its plain-manifest workloads mount.
-	if err := applyDeclaredSecrets(ctx, entities, groups, namespace, envName, dryRun); err != nil {
+	if err := applyDeclaredSecretsTo(ctx, entities, groups, namespace, envName, dryRun, target); err != nil {
 		return err
 	}
 	// A RenderedSecrets provider has nothing further to project: its
@@ -4056,7 +4111,7 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 		if g.ProviderID != "k8s-cluster" {
 			continue
 		}
-		if !isLocalCluster(g.Cluster) {
+		if !target.allowRemote && !isLocalCluster(g.Cluster) {
 			return fmt.Errorf(
 				"secret_provider %q renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
 					"Use secret_provider = forge.ExternalSecrets {} (Secrets provisioned out-of-band) for remote clusters",
@@ -4081,27 +4136,12 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 		}
 		if dryRun {
 			fmt.Printf("\n--- Generated Secret Manifests for %s/%s (dry-run) ---\n", p.cluster, p.namespace)
-			fmt.Println(stream)
+			fmt.Println(cluster.RedactSecretValues(stream))
 			fmt.Println("--- End Secret Manifests ---")
 			continue
 		}
-		// Never a write to whatever context happens to be current: a
-		// placement with no cluster has nowhere declared to land.
-		if strings.TrimSpace(p.cluster) == "" {
-			return fmt.Errorf("projected Secret(s) for namespace %q have no kubectl context to apply to: "+
-				"declare the consuming workload's cluster (a forge.ClusterTarget) in the env's KCL", p.namespace)
-		}
-		// The secret manifests are namespace-scoped, but the Namespace object
-		// itself lives in the MAIN manifest stream applied AFTER this — so on a
-		// fresh cluster the namespace doesn't exist yet and the secret apply
-		// fails "namespaces \"…\" not found". Ensure it first (idempotent; the
-		// later full apply re-applies it with labels). See cluster.EnsureNamespace.
-		if err := cluster.EnsureNamespace(ctx, p.cluster, p.namespace); err != nil {
-			return fmt.Errorf("ensure namespace %q in %q before secrets: %w", p.namespace, p.cluster, err)
-		}
-		fmt.Printf("Applying %d secret manifest(s) into %s/%s...\n", len(mans), p.cluster, p.namespace)
-		if err := cluster.KubectlApply(ctx, p.cluster, stream); err != nil {
-			return fmt.Errorf("apply k8s secrets to %s: %w", p.cluster, err)
+		if err := target.sink(ctx, secretPlacement{cluster: p.cluster, namespace: p.namespace, mans: mans, stream: stream}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -4268,6 +4308,10 @@ func placeDeclaredSecrets(entities *KCLEntities, groups []deploytarget.ServiceGr
 // these are PLAINTEXT Secrets, so a non-local placement is refused before
 // anything is applied anywhere.
 func applyDeclaredSecrets(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, envName string, dryRun bool) error {
+	return applyDeclaredSecretsTo(ctx, entities, groups, namespace, envName, dryRun, secretTarget{sink: applySecretsWithKubectl})
+}
+
+func applyDeclaredSecretsTo(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, envName string, dryRun bool, target secretTarget) error {
 	placed := placeDeclaredSecrets(entities, groups, namespace)
 	if len(placed) == 0 {
 		return nil
@@ -4276,7 +4320,7 @@ func applyDeclaredSecrets(ctx context.Context, entities *KCLEntities, groups []d
 		// GUARD: PLAINTEXT Secrets — local clusters only. Checked for
 		// every placement up front, so a bad one refuses the whole set
 		// rather than leaving half of it applied.
-		if !isLocalCluster(p.cluster) {
+		if !target.allowRemote && !isLocalCluster(p.cluster) {
 			return fmt.Errorf(
 				"rendered Secret(s) %s would land in cluster %q, which is not local: forge renders these as plaintext "+
 					"and applies them to LOCAL clusters only. Declare the Secret as a forge.ExternalSecret in "+
@@ -4305,16 +4349,12 @@ func applyDeclaredSecrets(ctx context.Context, entities *KCLEntities, groups []d
 		}
 		if dryRun {
 			fmt.Printf("\n--- Rendered Secret Manifests for %s/%s (dry-run) ---\n", p.cluster, p.namespace)
-			fmt.Println(stream)
+			fmt.Println(cluster.RedactSecretValues(stream))
 			fmt.Println("--- End Rendered Secret Manifests ---")
 			continue
 		}
-		if err := cluster.EnsureNamespace(ctx, p.cluster, p.namespace); err != nil {
-			return fmt.Errorf("ensure namespace %q in %q before rendered secrets: %w", p.namespace, p.cluster, err)
-		}
-		fmt.Printf("Applying %d rendered Secret(s) into %s/%s...\n", len(mans), p.cluster, p.namespace)
-		if err := cluster.KubectlApply(ctx, p.cluster, stream); err != nil {
-			return fmt.Errorf("apply rendered secrets to %s: %w", p.cluster, err)
+		if err := target.sink(ctx, secretPlacement{cluster: p.cluster, namespace: p.namespace, mans: mans, stream: stream, declared: true}); err != nil {
+			return err
 		}
 	}
 	return nil

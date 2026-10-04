@@ -19,6 +19,7 @@ package bundle
 
 import (
 	"fmt"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 
@@ -157,6 +158,102 @@ func collapseIdentical(objects []release.ShapeObject) ([]release.ShapeObject, er
 		return nil, fmt.Errorf(
 			"%w: %s is declared twice with different content (%s vs %s) — a deploy applies both and the last one wins, so one declaration silently overwrites the other; make them identical or remove one",
 			release.ErrInvalid, key, prior.Hash, obj.Hash)
+	}
+	return out, nil
+}
+
+// splitSecrets separates every `kind: Secret` document from the rest.
+//
+// A SECRET NEVER RIDES THE BUNDLE, not even redacted. A redacted Secret in the
+// manifest layer is applied by the reconciler as-is, so the cluster receives
+// the redaction marker instead of the value — and a reconciler with prune on
+// owns the object, so dropping it from a later render deletes it. Both are
+// wrong for a credential. The bundle names the Secrets the env requires
+// instead, and `forge env deploy` syncs the values to the cluster itself.
+func splitSecrets(docs []parsedDoc) ([]parsedDoc, []release.BundleSecretRef) {
+	kept := make([]parsedDoc, 0, len(docs))
+	seen := map[release.BundleSecretRef]bool{}
+	var refs []release.BundleSecretRef
+	for _, doc := range docs {
+		if doc.meta.kind != "Secret" {
+			kept = append(kept, doc)
+			continue
+		}
+		clusters := doc.clusters
+		if len(clusters) == 0 {
+			clusters = []string{""}
+		}
+		for _, cluster := range clusters {
+			ref := release.BundleSecretRef{Cluster: cluster, Namespace: doc.meta.namespace, Name: doc.meta.name}
+			if !seen[ref] {
+				seen[ref] = true
+				refs = append(refs, ref)
+			}
+		}
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		a, b := refs[i], refs[j]
+		if a.Cluster != b.Cluster {
+			return a.Cluster < b.Cluster
+		}
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		return a.Name < b.Name
+	})
+	for i := range kept {
+		kept[i].index = i
+	}
+	return kept, refs
+}
+
+// mergeSecretRefs unions two name lists, sorted and de-duplicated.
+func mergeSecretRefs(a, b []release.BundleSecretRef) []release.BundleSecretRef {
+	seen := map[release.BundleSecretRef]bool{}
+	var out []release.BundleSecretRef
+	for _, ref := range append(append([]release.BundleSecretRef(nil), a...), b...) {
+		if !seen[ref] {
+			seen[ref] = true
+			out = append(out, ref)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		x, y := out[i], out[j]
+		if x.Cluster != y.Cluster {
+			return x.Cluster < y.Cluster
+		}
+		if x.Namespace != y.Namespace {
+			return x.Namespace < y.Namespace
+		}
+		return x.Name < y.Name
+	})
+	return out
+}
+
+// SecretDocument is one rendered `kind: Secret`, UNREDACTED, with the clusters
+// the deploy layer routes it to. It exists for the deploy-time Secret sync and
+// must never be written to a bundle.
+type SecretDocument struct {
+	Clusters  []string
+	Namespace string
+	Name      string
+	Body      map[string]any
+}
+
+// SecretDocuments extracts the Secret documents of a rendered stream with
+// their values intact, in stream order.
+func SecretDocuments(stream string) ([]SecretDocument, error) {
+	var out []SecretDocument
+	for i, doc := range splitStream(stream) {
+		var body map[string]any
+		if err := yaml.Unmarshal([]byte(doc.yaml), &body); err != nil {
+			return nil, fmt.Errorf("manifest document %d does not parse as YAML: %w", i+1, err)
+		}
+		if body == nil || body["kind"] != "Secret" {
+			continue
+		}
+		meta := readMeta(body)
+		out = append(out, SecretDocument{Clusters: doc.clusters, Namespace: meta.namespace, Name: meta.name, Body: body})
 	}
 	return out, nil
 }

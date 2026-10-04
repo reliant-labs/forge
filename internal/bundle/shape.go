@@ -34,6 +34,12 @@ type ShapeInput struct {
 	// guessed one.
 	Manifests string
 
+	// SyncedSecrets names Secrets the env needs that forge syncs from its
+	// secret store and that therefore never appear in Manifests (a
+	// secret_ref projection, a declared rendered Secret). Names only. They
+	// are recorded in the bundle beside the render's own Secret documents.
+	SyncedSecrets []release.BundleSecretRef
+
 	// Images maps each release artifact key to the digest this render
 	// pinned it to. It is what makes [release.ShapeObject.Images] and
 	// ConfigHash possible: an object's images are the pins that appear in
@@ -90,6 +96,7 @@ func projectObjects(in ShapeInput) ([]release.ShapeObject, error) {
 	if err != nil {
 		return nil, fmt.Errorf("shape: %w", err)
 	}
+	docs, _ = splitSecrets(docs)
 	objects, err := shapeObjects(docs, in.Images, in.StatefulWorkloads)
 	if err != nil {
 		return nil, fmt.Errorf("shape: %w", err)

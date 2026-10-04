@@ -37,7 +37,13 @@ import (
 	"testing"
 	"time"
 
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/flux"
+	"io"
 )
 
 // TestE2EFluxReconcilesAMachineLedgerEnv is the whole path, once.
@@ -543,4 +549,174 @@ func TestE2EClusterUpInstallsADeclaredFluxChart(t *testing.T) {
 
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
 	assertFluxInstalled(t, kctx)
+}
+
+// TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle is the F-13/Flux contract
+// against a real cluster and a real Flux:
+//
+//   - a Secret's REAL value ends up in the cluster (Flux used to apply the
+//     redaction marker over it, so it never did);
+//   - the bundle's layer holds no Secret object at all;
+//   - a second deploy is idempotent (the Secret is not rewritten);
+//   - dropping the Secrets from the KCL neither makes Flux prune them nor makes
+//     forge delete them — removal is the user's call.
+func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
+	requirePublishedForgePkg(t)
+	requireTool(t, "k3d", "kubectl", "helm", "docker")
+	t.Parallel()
+
+	forgeBin := buildforgeBinary(t)
+	clusterName := fmt.Sprintf("forge-flux-sec-%d-%d", os.Getpid(), time.Now().UnixNano()%100000)
+	kctx := "k3d-" + clusterName
+	registryName := clusterName + "-registry"
+	registryPort := freePortE2E(t)
+	ledgerHome := t.TempDir()
+
+	projectDir := scaffoldFluxE2EProject(t, forgeBin, clusterName, registryName, registryPort)
+	t.Cleanup(func() {
+		if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
+			t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
+		}
+		if out, err := exec.Command("k3d", "registry", "delete", "k3d-"+registryName).CombinedOutput(); err != nil {
+			t.Logf("teardown: k3d registry delete %s: %v\n%s", registryName, err, out)
+		}
+	})
+
+	const realValue = "real-secret-value-9f3a"
+	mainK := filepath.Join(projectDir, "deploy", "kcl", "dev-k8s", "main.k")
+	base, err := os.ReadFile(mainK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSecrets := strings.Replace(string(base), "    workloads = [_api",
+		`    rendered_secrets = [forge.RenderedSecret {
+        name = "store-creds"
+        keys = {"token" = forge.RenderedSecretKey {key = "STORE_TOKEN"}}
+    }]
+    manifests = [forge.Manifests {objects = [{
+        apiVersion = "v1"
+        kind = "Secret"
+        metadata = {name = "raw-creds", namespace = "app"}
+        type = "Opaque"
+        stringData = {token = "`+realValue+`"}
+    }]}]
+    workloads = [_api`, 1)
+	if withSecrets == string(base) {
+		t.Fatal("the fixture's Bundle shape changed; the Secrets were not injected")
+	}
+	writeFluxE2EFile(t, mainK, withSecrets)
+	writeFluxE2EFile(t, filepath.Join(projectDir, "secrets", "dev-k8s.yaml"), "STORE_TOKEN: "+realValue+"\n")
+
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
+
+	// ── --explain / plan: names only ─────────────────────────────────────
+	explain := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--explain")
+	for _, name := range []string{"store-creds", "raw-creds"} {
+		if !strings.Contains(explain, name) {
+			t.Errorf("--explain does not list Secret %s to be synced:\n%s", name, explain)
+		}
+	}
+	for _, out := range []string{explain, runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--dry-run")} {
+		if strings.Contains(out, realValue) {
+			t.Fatalf("a preview printed a Secret value:\n%s", out)
+		}
+	}
+
+	deployOut := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--yes")
+	if strings.Contains(deployOut, realValue) {
+		t.Fatalf("the deploy printed a Secret value:\n%s", deployOut)
+	}
+	if !strings.Contains(deployOut, "synced 2 secret(s)") {
+		t.Errorf("the deploy did not report syncing its two Secrets:\n%s", deployOut)
+	}
+
+	// ── The REAL value is in the cluster, written by forge-secrets ───────
+	for _, name := range []string{"store-creds", "raw-creds"} {
+		assertSecretValue(t, kctx, name, "token", realValue)
+		assertSecretManagedBy(t, kctx, name, "forge-secrets")
+	}
+
+	// ── The bundle holds no Secret object ────────────────────────────────
+	assertBundleHasNoSecret(t, ledgerHome, recordedBundleDigest(t, deployOut))
+
+	// ── Re-deploy is idempotent ──────────────────────────────────────────
+	before := kubectlFluxE2E(t, kctx, "get", "secret", "store-creds", "-n", "app", "-o", "jsonpath={.metadata.resourceVersion}")
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--yes")
+	after := kubectlFluxE2E(t, kctx, "get", "secret", "store-creds", "-n", "app", "-o", "jsonpath={.metadata.resourceVersion}")
+	if before != after {
+		t.Errorf("a re-deploy rewrote an unchanged Secret (resourceVersion %s -> %s)", before, after)
+	}
+
+	// ── Removing the Secrets from the KCL deletes nothing ────────────────
+	writeFluxE2EFile(t, mainK, string(base))
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--yes")
+	for _, name := range []string{"store-creds", "raw-creds"} {
+		assertSecretValue(t, kctx, name, "token", realValue)
+	}
+}
+
+func assertSecretValue(t *testing.T, kctx, name, key, want string) {
+	t.Helper()
+	got := kubectlFluxE2E(t, kctx, "get", "secret", name, "-n", "app", "-o", "go-template={{index .data \""+key+"\" | base64decode}}")
+	if strings.TrimSpace(got) != want {
+		t.Errorf("secret %s key %s = %q in the cluster, want the real value %q", name, key, got, want)
+	}
+}
+
+func assertSecretManagedBy(t *testing.T, kctx, name, manager string) {
+	t.Helper()
+	managers := kubectlFluxE2E(t, kctx, "get", "secret", name, "-n", "app", "--show-managed-fields",
+		"-o", "jsonpath={.metadata.managedFields[*].manager}")
+	if !strings.Contains(managers, manager) {
+		t.Errorf("secret %s is managed by %q, want %q among them", name, managers, manager)
+	}
+	if strings.Contains(managers, "kustomize-controller") {
+		t.Errorf("secret %s is managed by kustomize-controller: a Secret must not ride the bundle", name)
+	}
+}
+
+// assertBundleHasNoSecret reads the recorded bundle back out of the ledger's
+// OCI layout and scans its manifest layer, so the check is on the bytes Flux
+// would fetch rather than on forge's belief about them.
+func assertBundleHasNoSecret(t *testing.T, ledgerHome, digest string) {
+	t.Helper()
+	var ociDir string
+	_ = filepath.WalkDir(ledgerHome, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() && d.Name() == "oci" {
+			ociDir = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if ociDir == "" {
+		t.Fatalf("no OCI layout under %s", ledgerHome)
+	}
+	layout, err := bundle.NewLocalLayout(ociDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetched, err := bundle.Fetch(context.Background(), layout, digest)
+	if err != nil {
+		t.Fatalf("read bundle %s: %v", digest, err)
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(fetched.Manifests))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		data, _ := io.ReadAll(tr)
+		if strings.Contains(string(data), "kind: Secret") {
+			t.Errorf("the bundle layer carries a Secret object at %s:\n%s", hdr.Name, data)
+		}
+	}
+	if len(fetched.Doc.Secrets) != 2 {
+		t.Errorf("the bundle document names %d Secrets, want 2: %+v", len(fetched.Doc.Secrets), fetched.Doc.Secrets)
+	}
 }

@@ -137,51 +137,23 @@ func objectNamed(t *testing.T, shape release.Shape, kind, name string) release.S
 	return release.ShapeObject{}
 }
 
-// TestProjectShapeRedactsEverySecretValue is F-13, and it is the test this
-// package exists to pass. A shape is stored forever, shown to every member of
-// an org, and (with F2) sealed inside a shared bundle — so a value in one is
-// a permanent leak, not a bug that can be fixed by redeploying.
-//
-// THE LOAD-BEARING ASSERTION IS ABOUT THE HASH INPUT, not about the shape's
-// own bytes. A shape carries hashes rather than document bodies, so "the
-// canary does not appear in the shape JSON" is true whether or not redaction
-// ran — verified by deleting the redaction call, which that assertion alone
-// did not catch. What distinguishes the two worlds is WHICH document was
-// hashed, so this recomputes the Secret's hash from a hand-redacted document
-// and from the raw one, and pins that the projection produced the first.
-func TestProjectShapeRedactsEverySecretValue(t *testing.T) {
+// TestProjectShapeOmitsSecrets is F-13 at its strongest: a Secret is not in the
+// shape at all, so no hash of one exists to leak. A shape is stored forever
+// and shown to every member of an org; a Secret's own value is synced by
+// forge and never recorded.
+func TestProjectShapeOmitsSecrets(t *testing.T) {
 	shape := projectFixture(t, fixtureInput())
-	secret := objectNamed(t, shape, "Secret", "orders-superuser")
-
-	wantRedacted := secretDocumentHash(t, map[string]any{
-		"password": release.RedactedSecretPrefix + "sha256:" + sha256Hex(canaryValue),
-		"username": release.RedactedSecretPrefix + "sha256:" + sha256Hex("cG9zdGdyZXM="),
-	})
-	rawValues := secretDocumentHash(t, map[string]any{"password": canaryValue, "username": "cG9zdGdyZXM="})
-
-	if secret.Hash == rawValues {
-		t.Fatal("the Secret was hashed WITH its values: every hash input is a permanent copy of the secret")
+	for _, o := range shape.Objects {
+		if o.Kind == "Secret" {
+			t.Errorf("the shape names Secret %q", o.Name)
+		}
 	}
-	if secret.Hash != wantRedacted {
-		t.Errorf("Secret hash %s does not match the redacted document's hash %s", secret.Hash, wantRedacted)
-	}
-	// The outer guarantee, cheap to state: nothing anywhere in the shape —
-	// an identity map, a workload field, a hash — spells the value out.
-	encoded, err := shape.Encode()
+	raw, err := json.Marshal(shape)
 	if err != nil {
-		t.Fatalf("Encode: %v", err)
+		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), canaryValue) {
-		t.Fatalf("the Secret's value survived into the shape:\n%s", encoded)
-	}
-
-	// And the hash must still MOVE with the value, or "a secret changed"
-	// becomes invisible — which is the reason redaction hashes the value
-	// rather than erasing it.
-	moved := fixtureInput()
-	moved.Manifests = strings.Replace(moved.Manifests, canaryValue, "c29tZXRoaW5nLWVsc2U=", 1)
-	if other := objectNamed(t, projectFixture(t, moved), "Secret", "orders-superuser"); other.Hash == secret.Hash {
-		t.Error("the Secret's hash did not move when its value did: a changed secret would be invisible")
+	if strings.Contains(string(raw), canaryValue) {
+		t.Fatal("the canary survived into the shape")
 	}
 }
 

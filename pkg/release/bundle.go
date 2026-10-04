@@ -150,7 +150,24 @@ type BundleDoc struct {
 	// So it is written from the tar entries themselves, after they are
 	// written, and a reader can trust it the way it trusts the digest.
 	ClusterPaths []BundleClusterTree `json:"cluster_paths,omitempty"`
-	CreatedAt    time.Time           `json:"created_at"`
+	// Secrets names the Secret objects the env requires in each cluster.
+	// NAMES ONLY: a Secret never rides the manifest layer, not even
+	// redacted, so the reconciler neither writes nor prunes one. `forge env
+	// deploy` syncs them to the cluster itself, before pointing the
+	// reconciler at this bundle; a hub-reconciled env reads this list to
+	// know what its clusters must already hold.
+	Secrets   []BundleSecretRef `json:"secrets,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+// BundleSecretRef is one Secret the env requires: where it lives and what it
+// is called. It carries no value and no key names.
+type BundleSecretRef struct {
+	// Cluster is the kubectl context the Secret belongs in, or "" when the
+	// render attributed it to no cluster.
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
 }
 
 // BundleClusterTree is one cluster's documents inside the manifest layer.
@@ -200,6 +217,11 @@ func (d BundleDoc) Validate() error {
 	}
 	if err := validateClusterPaths(d.ClusterPaths); err != nil {
 		return fmt.Errorf("bundle: %w", err)
+	}
+	for _, sec := range d.Secrets {
+		if strings.TrimSpace(sec.Name) == "" {
+			return fmt.Errorf("%w: bundle names a Secret with no name", ErrInvalid)
+		}
 	}
 	return nil
 }

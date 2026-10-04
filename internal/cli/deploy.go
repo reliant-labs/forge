@@ -923,17 +923,6 @@ type deployOptions struct {
 	// runs the identical code path. That is what makes the JSON a record of
 	// what happened instead of a second opinion about it.
 	report *deployReport
-
-	// directApplyAllowed is the env's DECLARED apply path, resolved from
-	// Bundle.lifecycle once the render is in hand (DirectApplyAllowed).
-	// False means this env is a real one: it is meant to be reconciled
-	// from a bundle, and a direct apply to it prints the notice.
-	//
-	// It carries no behaviour today. It lives on the options so the
-	// decision is made ONCE, from the render, rather than re-derived at
-	// each apply site — which is what keeps the notice and the eventual
-	// refusal from ever disagreeing about the same env.
-	directApplyAllowed bool
 }
 
 // runDeployReported runs the deploy and, in --json mode, emits the report.
@@ -1086,7 +1075,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// what this run applies, not what the environment IS, and a lifecycle
 	// that changed with the target flag would describe a different env on
 	// every invocation.
-	opts.directApplyAllowed = DirectApplyAllowed(fullEntities)
+	// --frontends-only ships static frontends and applies nothing to a cluster.
+	if err := refuseDirectApply(envName, fullEntities, targets, dryRun || opts.frontendsOnly); err != nil {
+		return err
+	}
 
 	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
 	// a project-prefixed `*.svc.cluster.local` reference that disagrees
@@ -1269,7 +1261,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
 		targets: targets, helmSpecs: helmSpecs,
 		rollout: opts.rollout, report: report,
-		directApplyAllowed: opts.directApplyAllowed,
 	}); err != nil {
 		return err
 	}
@@ -1510,9 +1501,6 @@ type deployApplyInput struct {
 	// report, when non-nil, receives the applied manifest stream and the
 	// per-resource rollout outcomes. Nil-safe.
 	report *deployReport
-	// directApplyAllowed is deployOptions.directApplyAllowed, carried in
-	// so the one notice prints where the direct apply actually happens.
-	directApplyAllowed bool
 }
 
 // applyDeployGroups applies the rendered deploy groups. With no groups (and not
@@ -1525,14 +1513,6 @@ type deployApplyInput struct {
 // real work.
 func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 	frontendOnly := len(in.groups) == 0 && !in.hasK8sServices && hasShippableFrontend(in.entities)
-	// ONE notice, at the one place a direct cluster apply happens, for an
-	// env that declares no lifecycle. Printed here rather than at the top
-	// of runDeploy because a frontend-only or host-only run applies to no
-	// cluster, and a notice about retiring direct apply would be noise for
-	// a deploy that never touches one.
-	if !in.directApplyAllowed && !frontendOnly {
-		fmt.Println(lifecycleNoticeLine)
-	}
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{
 			MainK:        in.mainK,

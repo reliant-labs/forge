@@ -998,14 +998,12 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 	fmt.Printf("Reloading dev manifests for cluster %q (namespace=%s, tag=%s)...\n",
 		clusterName, namespace, imageTag)
 
-	// Reload is a DIRECT cluster apply, so it carries the same notice the
-	// deploy path does for an env that declares no lifecycle. A render
-	// failure is not fatal here: the notice is informational, and reload
-	// deliberately tolerates a partial read (see the skipped extras
-	// below). The scaffolded dev env declares `lifecycle = "local"`, so
-	// this is silent in the normal inner loop.
-	if entities, rerr := RenderKCL(ctx, projectDirForKCL(), "dev"); rerr == nil && !DirectApplyAllowed(entities) {
-		fmt.Println(lifecycleNoticeLine)
+	// Reload is a DIRECT cluster apply: refuse an env that is not local.
+	// A render failure is not fatal here (reload tolerates a partial read).
+	if entities, rerr := RenderKCL(ctx, projectDirForKCL(), "dev"); rerr == nil {
+		if err := refuseDirectApply("dev", entities, nil, false); err != nil {
+			return err
+		}
 	}
 
 	// Reload deliberately skips the deploy-time extras: no per-env

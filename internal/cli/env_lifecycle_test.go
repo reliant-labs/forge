@@ -106,19 +106,44 @@ func TestDirectApplyAllowed(t *testing.T) {
 	}
 }
 
-// TestLifecycleNoticeIsOneLine pins the notice's shape, because its whole
-// purpose is to be printed into an apply's stdout: an embedded newline would
-// interleave with the apply's own progress output, and the notice is supposed
-// to be one line a reader can skim past.
-func TestLifecycleNoticeIsOneLine(t *testing.T) {
+// TestRefuseDirectApply pins the refusal: a real env is refused with a message
+// naming both fixes, a local env is not, and bootstrap-chart-only or dry-run
+// deploys pass.
+func TestRefuseDirectApply(t *testing.T) {
 	t.Parallel()
-	if strings.ContainsAny(lifecycleNoticeLine, "\n\r") {
-		t.Errorf("lifecycleNoticeLine spans lines — it is printed with fmt.Println into an apply's output: %q", lifecycleNoticeLine)
-	}
-	for _, want := range []string{"not declared local/ephemeral", "reconciled from its bundle", "direct apply is retired"} {
-		if !strings.Contains(lifecycleNoticeLine, want) {
-			t.Errorf("lifecycleNoticeLine does not mention %q: %s", want, lifecycleNoticeLine)
+	onCluster := func(lifecycle string) *KCLEntities {
+		return &KCLEntities{
+			Lifecycle:     lifecycle,
+			ClusterTarget: &ClusterTargetEntity{Cluster: "gke-prod", Namespace: "app"},
+			HelmCharts:    []HelmChartEntity{{Name: "cert-manager"}},
 		}
+	}
+	err := refuseDirectApply("prod", onCluster(""), nil, false)
+	if err == nil {
+		t.Fatal("non-local env must refuse direct apply")
+	}
+	for _, want := range []string{"prod", `lifecycle = "local"`, "forge env deploy prod", "Flux"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q: %v", want, err)
+		}
+	}
+	if err := refuseDirectApply("dev", onCluster(lifecycleLocal), nil, false); err != nil {
+		t.Errorf("local env must still apply: %v", err)
+	}
+	if err := refuseDirectApply("e2e", onCluster(lifecycleEphemeral), nil, false); err != nil {
+		t.Errorf("ephemeral env must still apply: %v", err)
+	}
+	if err := refuseDirectApply("prod", onCluster(""), []string{"cert-manager"}, false); err != nil {
+		t.Errorf("platform-chart-only deploy is bootstrap and must pass: %v", err)
+	}
+	if err := refuseDirectApply("prod", onCluster(""), []string{"cert-manager", "api"}, false); err == nil {
+		t.Error("chart + app target is still an app apply and must refuse")
+	}
+	if err := refuseDirectApply("prod", onCluster(""), nil, true); err != nil {
+		t.Errorf("dry run applies nothing: %v", err)
+	}
+	if err := refuseDirectApply("prod", nil, nil, false); err != nil {
+		t.Errorf("no render, nothing known: %v", err)
 	}
 }
 

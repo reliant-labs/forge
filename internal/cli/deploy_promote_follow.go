@@ -172,16 +172,8 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		// `--target <platform-chart>` is cluster bootstrap, not a release
 		// pointer: install the chart(s) and write no pointer when nothing
 		// else was asked for. See platform_charts.go.
-		charts, rest := splitPlatformChartTargets(entities, o.clientDeploy.targets)
-		if len(charts) > 0 {
-			if !o.clientDeploy.dryRun {
-				if err := installPlatformCharts(ctx, entities, platformChartInstalls(entities, charts, nil)); err != nil {
-					return err
-				}
-			}
-			if len(rest) == 0 {
-				return nil
-			}
+		if done, err := installBootstrapCharts(ctx, entities, o); done || err != nil {
+			return err
 		}
 		return runFluxDeploy(ctx, env, entities, fluxDeployOptions{
 			Digest:  fluxDeployDigest(ctx, env, plan),
@@ -344,3 +336,18 @@ func applyHostedPublish(ctx context.Context, env string, o promoteFollowOptions)
 // file-ledger env, which is only observable here — the real apply needs a
 // cluster. Production is runDeploy, unchanged.
 var runPromoteClientDeploy = runDeploy
+
+// installBootstrapCharts installs the declared platform charts named by
+// `--target` and reports done when nothing else was asked for (no pointer).
+func installBootstrapCharts(ctx context.Context, entities *KCLEntities, o promoteFollowOptions) (done bool, err error) {
+	charts, rest := splitPlatformChartTargets(entities, o.clientDeploy.targets)
+	if len(charts) == 0 {
+		return false, nil
+	}
+	if !o.clientDeploy.dryRun {
+		if err := installPlatformCharts(ctx, entities, platformChartInstalls(entities, charts, nil)); err != nil {
+			return true, err
+		}
+	}
+	return len(rest) == 0, nil
+}

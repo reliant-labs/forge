@@ -53,6 +53,14 @@ lifecycle = "ephemeral"
 # Declares neither, targets a cluster => reconciled through in-cluster Flux.
 ```
 
+**There is no direct-apply fallback.** `forge env deploy <env>` (no version),
+and `forge env up <env>` on an env that fails this test exit
+with an error that says: run `forge env deploy <env> [<version>]` (which
+records the promotion and waits for Flux), or declare `lifecycle = "local"` if
+it is your own k3d cluster. Only bootstrap is exempt: platform charts
+(`forge env deploy <env> --target <chart>`, `forge cluster up`), secrets and
+minted kubeconfigs.
+
 ## What `forge cluster up` installs
 
 `forge cluster up <env>` installs Flux into every **forge-managed k3d cluster**

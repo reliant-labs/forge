@@ -94,8 +94,8 @@ forge env new cloud --check                                 # no placeholder lef
 
 `Bundle.lifecycle` declares WHO APPLIES an env — `"local"` / `"ephemeral"`
 means forge applies directly, unset means it is reconciled from a bundle (no
-control plane: in-cluster Flux, deploy/flux). Scaffolded `dev` is `local`. See
-deploy/shape.
+control plane: in-cluster Flux, deploy/flux; control plane: the hub). forge
+REFUSES direct apply to any other env. Scaffolded `dev` is `local`.
 
 ### What forge writes into every spec
 

@@ -235,6 +235,18 @@ jobs:
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
 
+      # Flux e2e tests (flux_reconcile_e2e_test.go) create real k3d clusters
+      # and need k3d, kubectl, helm and docker. docker, kubectl and helm ship
+      # on ubuntu-latest; k3d does not. Pinned, not "latest", so the install
+      # cannot change the verdict without a commit.
+      - name: Install k3d
+        env:
+          K3D_VERSION: v5.8.3
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh \
+            | TAG="$K3D_VERSION" bash
+          k3d version
+
       - name: Verify every required tool resolves
         # Fail here, in five seconds, with the tool named — rather than 20
         # minutes in when the test that needs it does. This list must stay
@@ -245,7 +257,7 @@ jobs:
           # docker: TestE2ENextjsDockerfileStaticImageBuilds builds a real
           # frontend image. ubuntu-latest ships the engine; the `docker info`
           # below proves the daemon answers, which `command -v` cannot.
-          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go git migrate docker; do
+          for tool in go node npm npx kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go git migrate docker k3d kubectl helm; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '  ok       %-24s %s\n' "$tool" "$(command -v "$tool")"
             else

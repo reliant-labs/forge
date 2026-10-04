@@ -608,6 +608,12 @@ func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
 	writeFluxE2EFile(t, mainK, withSecrets)
 	writeFluxE2EFile(t, filepath.Join(projectDir, "secrets", "dev-k8s.yaml"), "STORE_TOKEN: "+realValue+"\n")
 
+	// A real project is a git repo: --dry-run resolves its image tag from
+	// git, and has no build state of its own to fall back on.
+	gitE2E(t, projectDir, "init", "-q")
+	gitE2E(t, projectDir, "add", "-A")
+	gitE2E(t, projectDir, "commit", "-q", "-m", "fixture")
+
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
 

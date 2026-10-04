@@ -254,7 +254,7 @@ function SkeletonRows({ rows, cols }: { rows: number; cols: number }) {
               {Array.from({ length: cols }).map((__, c) => (
                 <div
                   key={c}
-                  className="h-4 flex-1 animate-pulse rounded bg-surface-muted"
+                  className="h-4 flex-1 animate-pulse motion-reduce:animate-none rounded bg-surface-muted"
                 />
               ))}
             </div>

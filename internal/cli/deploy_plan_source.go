@@ -209,9 +209,12 @@ func fileLedgerDeployPlan(ctx context.Context, projectDir, env, bundleDigest str
 		return nil, nil
 	}
 
-	live, basis, err := appliedBundleShape(ctx, store, env, bundles)
-	if err != nil {
-		return nil, err
+	live, basis, handled := fluxLiveShape(ctx, projectDir, env, bundleDigest, bundles)
+	if !handled {
+		var err error
+		if live, basis, err = appliedBundleShape(ctx, store, env, bundles); err != nil {
+			return nil, err
+		}
 	}
 	basis.AppliedConfigDigest = ""
 	if live != nil {

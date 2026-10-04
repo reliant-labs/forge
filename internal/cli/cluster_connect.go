@@ -221,6 +221,9 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 		return err
 	}
 	gke, _ := parseGKEContext(target.Context)
+	if target.AddressNote != "" {
+		fmt.Fprintf(opts.Out, "registering %s: %s\n", target.Address, target.AddressNote)
+	}
 
 	if opts.DryRun {
 		// Pure: no control plane, no cluster. The one thing it cannot show

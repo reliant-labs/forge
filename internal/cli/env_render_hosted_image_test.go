@@ -104,16 +104,9 @@ func TestEnvRender_RefusesAVerifiedOffBaseHostedImage(t *testing.T) {
 	}
 }
 
-// With the SCAFFOLDED PLACEHOLDER still in place, the same declaration
-// renders and WARNS rather than failing.
-//
-// This is the one reachable unverified state, and it is reachable precisely
-// because the placeholder is syntactically a value: KCL's "organization is
-// required" check passes on it, so the render proceeds — but it is not an
-// address, so forge has no base and refusing would assert a comparison it
-// never made. `forge lint` is what gates on the placeholder, with a message
-// about the placeholder rather than about this image.
-func TestEnvRender_PlaceholderOrgWarnsAndStillRenders(t *testing.T) {
+// The SCAFFOLDED PLACEHOLDER org is refused at render, with the same message
+// lint uses, rather than rendering and failing later at push.
+func TestEnvRender_PlaceholderOrgIsRefused(t *testing.T) {
 	if testing.Short() {
 		t.Skip("renders KCL; skipped in -short")
 	}
@@ -121,21 +114,12 @@ func TestEnvRender_PlaceholderOrgWarnsAndStillRenders(t *testing.T) {
 	dir := writeHostedRenderProject(t, "ghcr.io/acme/api", hostedimage.OrgPlaceholder)
 	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
 
-	stdout, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
-	if err != nil {
-		t.Fatalf("render must SUCCEED when no base composes: %v\nstderr:\n%s", err, stderr)
+	_, _, err := runRenderCapturingProcessStdout(t, dir, "prod")
+	if err == nil {
+		t.Fatal("render must refuse the placeholder organization")
 	}
-	if !strings.Contains(stderr, "drop the host and forge resolves it") {
-		t.Errorf("stderr should carry the weaker warning:\n%s", stderr)
-	}
-	// The warning must not claim the image is outside the base.
-	if strings.Contains(stderr, "outside this org's image push base") {
-		t.Errorf("warning asserts a comparison forge never made:\n%s", stderr)
-	}
-	// And it is a WARNING, so it stays off stdout, which carries manifests
-	// only (TestEnvRender_StdoutIsOnlyManifests pins that contract).
-	if strings.Contains(stdout, "drop the host") {
-		t.Errorf("the warning reached stdout, which must carry only manifests:\n%s", stdout)
+	if !strings.Contains(err.Error(), "scaffolded placeholder") || !strings.Contains(err.Error(), hostedimage.OrgPlaceholder) {
+		t.Errorf("refusal should name the placeholder:\n%v", err)
 	}
 }
 

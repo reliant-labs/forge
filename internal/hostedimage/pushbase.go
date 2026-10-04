@@ -34,7 +34,10 @@ package hostedimage
 // detect, because the registry's realm refuses a push outside the token's own
 // subtree and says so.
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // DefaultRegistryHost is Reliant's hosted container registry — what
 // `forge.ControlPlane {}` means when it names no registry_host.
@@ -68,6 +71,15 @@ const OrgPlaceholder = "REPLACE_ME_ORG_ID"
 // placeholder — i.e. declared but not yet chosen.
 func IsOrgPlaceholder(organization string) bool {
 	return strings.TrimSpace(organization) == OrgPlaceholder
+}
+
+// OrgPlaceholderRefusal is the one sentence and the one fix for an env that
+// still declares the scaffolded organization placeholder.
+func OrgPlaceholderRefusal(project string) (message, fix string) {
+	return fmt.Sprintf("control_plane declares organization = %q, which is the scaffolded placeholder, not an organization id. "+
+			"forge pushes this project's hosted images and config bundles to <registry_host>/<organization>/%s, "+
+			"so nothing hosted has an address until it is replaced", OrgPlaceholder, project),
+		fmt.Sprintf("replace %q with your organization's id in the env's control_plane declaration", OrgPlaceholder)
 }
 
 // PushBase composes `<registryHost>/<organization>/<project>`.

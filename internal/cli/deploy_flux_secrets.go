@@ -31,6 +31,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -342,4 +343,36 @@ func refuseUnsyncableHostedSecrets(env string, refs []release.BundleSecretRef) e
 			"      non-secret object; or\n"+
 			"    - run `forge env secrets sync %s` against each cluster yourself before deploying",
 		env, strings.Join(names, ", "), env)
+}
+
+// printFluxSecretExplain is `forge env deploy <env> --explain`'s answer to
+// "which Secrets will this sync?": names only, and only for an env that
+// reconciles through Flux. Silent for every other env, and on any render
+// failure — explain is a read-only question, not a gate.
+func printFluxSecretExplain(ctx context.Context, env string) {
+	ledger, err := ledgerFor(ctx, projectDirForKCL(), env)
+	if err != nil {
+		return
+	}
+	reconciled, entities := fluxReconciledEnv(ctx, env, ledger)
+	if !reconciled {
+		return
+	}
+	doc, err := projectEnvShapeFn(ctx, io.Discard, env)
+	if err != nil {
+		return
+	}
+	refs, err := envSyncedSecretRefs(entities, nil, k8sClusterNamespaceForEnv(ctx, env), doc.manifests)
+	if err != nil {
+		return
+	}
+	printFluxSecretPlan(os.Stdout, env, refs, fluxTargetClustersFromEntities(entities))
+}
+
+// fluxTargetClustersFromEntities is the clusters an env declares, for naming
+// where an unattributed Secret would be synced before a bundle exists.
+func fluxTargetClustersFromEntities(entities *KCLEntities) []string {
+	declared := declaredFluxClusters(entities)
+	sort.Strings(declared)
+	return declared
 }

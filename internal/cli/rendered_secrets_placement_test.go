@@ -138,15 +138,28 @@ func TestApplyDeclaredSecrets_DryRunResolvesFileKeysFromTheFileSecretsStore(t *t
 	e := openbaoDevEntities()
 	e.SecretProvider.Path = "config/dev-secrets.yaml"
 
-	out := captureStdout(t, func() {
+	var streams []string
+	collect := secretTarget{sink: func(_ context.Context, p secretPlacement) error {
+		streams = append(streams, p.stream)
+		return nil
+	}}
+	if err := applyDeclaredSecretsTo(context.Background(), e, nil, "fallback", "dev", false, collect); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	placed := strings.Join(streams, "\n")
+	for _, want := range []string{"control-plane-openbao-unseal", "from-the-store-0123456789abcdef", "namespace: control-plane-dev"} {
+		if !strings.Contains(placed, want) {
+			t.Errorf("placed Secrets missing %q:\n%s", want, placed)
+		}
+	}
+	// The dry run resolves the same keys but prints no value.
+	dry := captureStdout(t, func() {
 		if err := applyDeclaredSecrets(context.Background(), e, nil, "fallback", "dev", true); err != nil {
 			t.Fatalf("dry-run apply: %v", err)
 		}
 	})
-	for _, want := range []string{"control-plane-openbao-unseal", "from-the-store-0123456789abcdef", "namespace: control-plane-dev"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("dry-run output missing %q:\n%s", want, out)
-		}
+	if strings.Contains(dry, "from-the-store-0123456789abcdef") {
+		t.Errorf("a dry run printed a Secret value:\n%s", dry)
 	}
 
 	if err := applyDeclaredSecrets(context.Background(), e, nil, "fallback", "prod", true); err == nil ||

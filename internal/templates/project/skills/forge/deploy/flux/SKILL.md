@@ -152,6 +152,43 @@ managed cluster's CoreDNS. forge does that rewrite for you. (`registry.localhost
 is the *kubelet's* name, resolved through the node's `/etc/hosts`;
 `source-controller` is a pod and does not get it.)
 
+## Secrets: synced by forge, never carried by the bundle
+
+A bundle redacts every Secret value (F-13) and that stays. But a redacted
+`Secret` in the manifest layer is worse than none: Flux applies the marker over
+the cluster's real value, and with prune on it owns the object's lifetime. So a
+`kind: Secret` is **not in the layer at all**. The bundle document lists the
+ones the env requires (`secrets: [{cluster, namespace, name}]`, names only), and
+`forge env deploy` syncs them itself.
+
+On the Flux path the deploy, in order:
+
+1. collects every Secret the bundle names, from the render's own `Secret`
+   documents and from the env's secret store (declared `rendered_secrets`, and a
+   value-resolving provider's `secret_ref`s) — the same sources
+   `forge env secrets sync` reads;
+2. refuses, before writing anything, if a named Secret has no value here;
+3. server-side-applies them to each cluster under the field manager
+   `forge-secrets` (idempotent), printing one `<cluster>: synced N secret(s)`
+   line per cluster and never a value;
+4. only then publishes the bundle and writes/re-points the Flux source.
+
+`forge env deploy <env> --explain` and `--dry-run` list the Secrets that would be
+synced, names only; a dry run prints Secret manifests with every value replaced
+by `<redacted>`.
+
+**Removal is yours.** Dropping a Secret from the KCL stops naming it, so nothing
+syncs it again — but forge does not delete it and Flux cannot prune it (it was
+never in the layer). Delete it yourself with `kubectl delete secret` when you
+mean to.
+
+**Hub-reconciled (ControlPlane) envs are different.** Their Flux applies to
+clusters forge holds no kubectl context for, so forge cannot write there.
+Provider-backed secrets (`forge.ExternalSecret`, OpenBao references) are
+non-secret objects and ride the bundle as references — nothing to do. A plain
+store value has no transport on that path: the deploy refuses and names
+`forge env secrets sync <env>`, which you run against each cluster.
+
 ## Prune guards on stateful objects
 
 The Kustomization forge writes sets `prune: true`, which is what makes the

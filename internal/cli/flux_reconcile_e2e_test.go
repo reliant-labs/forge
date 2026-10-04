@@ -611,9 +611,16 @@ func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
 
 	// ── --explain / plan: names only ─────────────────────────────────────
-	plan := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--dry-run")
-	if strings.Contains(plan, realValue) {
-		t.Fatalf("the dry run printed a Secret value:\n%s", plan)
+	explain := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--explain")
+	for _, name := range []string{"store-creds", "raw-creds"} {
+		if !strings.Contains(explain, name) {
+			t.Errorf("--explain does not list Secret %s to be synced:\n%s", name, explain)
+		}
+	}
+	for _, out := range []string{explain, runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--dry-run")} {
+		if strings.Contains(out, realValue) {
+			t.Fatalf("a preview printed a Secret value:\n%s", out)
+		}
 	}
 
 	deployOut := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--yes")

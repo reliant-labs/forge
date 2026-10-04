@@ -546,6 +546,7 @@ func printDryRunManifests(manifests string, charts []renderedChart, framed bool)
 	for _, rc := range charts {
 		all = joinNonEmpty(all, rc.crds, rc.manifests, rc.extra)
 	}
+	all = RedactSecretValues(all)
 	if !framed {
 		fmt.Println(all)
 		return
@@ -2855,4 +2856,38 @@ func ApplySecrets(ctx context.Context, kctx, namespace, fieldManager, manifests 
 		return fmt.Errorf("kubectl apply (field manager %s): %w: %s", fieldManager, err, strings.TrimSpace(errBuf.String()))
 	}
 	return nil
+}
+
+// RedactSecretValues replaces every value in a `kind: Secret` document of a
+// manifest stream with a placeholder. A dry run is read by humans and pasted
+// into tickets and CI logs, so it shows a Secret's shape (its name and keys),
+// never its content.
+func RedactSecretValues(stream string) string {
+	docs := SplitManifestDocs(stream)
+	changed := false
+	for i, doc := range docs {
+		var body map[string]any
+		if err := yaml.Unmarshal([]byte(doc), &body); err != nil || body["kind"] != "Secret" {
+			continue
+		}
+		for _, field := range []string{"data", "stringData"} {
+			values, ok := body[field].(map[string]any)
+			if !ok {
+				continue
+			}
+			for key := range values {
+				values[key] = "<redacted>"
+			}
+		}
+		out, err := yaml.Marshal(body)
+		if err != nil {
+			continue
+		}
+		docs[i] = string(out)
+		changed = true
+	}
+	if !changed {
+		return stream
+	}
+	return strings.Join(docs, "\n---\n")
 }

@@ -736,6 +736,7 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 	if guard.Verdict == deployGuardVerdictRefuse {
 		return nil
 	}
+	printFluxSecretExplain(ctx, envName)
 	return printDeployExplainHostSkip(cfg, envName)
 }
 
@@ -4135,7 +4136,7 @@ func applyK8sSecretsFromProviderTo(ctx context.Context, entities *KCLEntities, g
 		}
 		if dryRun {
 			fmt.Printf("\n--- Generated Secret Manifests for %s/%s (dry-run) ---\n", p.cluster, p.namespace)
-			fmt.Println(stream)
+			fmt.Println(cluster.RedactSecretValues(stream))
 			fmt.Println("--- End Secret Manifests ---")
 			continue
 		}
@@ -4348,7 +4349,7 @@ func applyDeclaredSecretsTo(ctx context.Context, entities *KCLEntities, groups [
 		}
 		if dryRun {
 			fmt.Printf("\n--- Rendered Secret Manifests for %s/%s (dry-run) ---\n", p.cluster, p.namespace)
-			fmt.Println(stream)
+			fmt.Println(cluster.RedactSecretValues(stream))
 			fmt.Println("--- End Rendered Secret Manifests ---")
 			continue
 		}

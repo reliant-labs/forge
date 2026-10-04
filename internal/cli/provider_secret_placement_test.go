@@ -79,24 +79,56 @@ func TestApplyK8sSecretsFromProvider_ProjectsIntoEveryConsumingCluster(t *testin
 	writeDevSecretStore(t)
 	entities, groups := twoClusterFileSecretsEntities()
 
+	// A collecting sink: the dry-run no longer prints Secret values, so what
+	// each destination would receive is read where it is handed off.
+	var placed []secretPlacement
+	collect := secretTarget{sink: func(_ context.Context, p secretPlacement) error {
+		placed = append(placed, p)
+		return nil
+	}}
+	if err := applyK8sSecretsFromProviderTo(context.Background(), entities, groups, "app-dev-wt", "k3d-hub", "dev", false, collect); err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+
+	clusters := map[string]bool{}
+	var secrets, copies int
+	for _, p := range placed {
+		clusters[p.cluster] = true
+		secrets += strings.Count(p.stream, "kind: Secret")
+		copies += strings.Count(p.stream, "shared-hmac-0123")
+		if p.namespace != "app-dev-wt" {
+			t.Errorf("placed into namespace %q, want app-dev-wt", p.namespace)
+		}
+	}
+	for _, cluster := range []string{"k3d-hub", "k3d-edge"} {
+		if !clusters[cluster] {
+			t.Errorf("the projected Secret must be applied into %s (a workload there declares it); placed: %+v", cluster, placed)
+		}
+	}
+	if secrets != 2 {
+		t.Errorf("want one app-secrets manifest per consuming cluster (2), got %d", secrets)
+	}
+	// Both copies carry the SAME store values — the property the shell-script
+	// mirror broke.
+	if copies != 2 {
+		t.Errorf("internal_service_secret must be identical in both clusters (want 2 copies), got %d", copies)
+	}
+}
+
+// A dry run shows a Secret's shape and never its content.
+func TestApplyK8sSecretsFromProvider_DryRunPrintsNoValue(t *testing.T) {
+	writeDevSecretStore(t)
+	entities, groups := twoClusterFileSecretsEntities()
 	out := captureStdout(t, func() {
 		if err := applyK8sSecretsFromProvider(context.Background(), entities, groups, "app-dev-wt", "k3d-hub", "dev", true); err != nil {
 			t.Fatalf("dry-run projection: %v", err)
 		}
 	})
-
-	for _, cluster := range []string{"k3d-hub", "k3d-edge"} {
-		if !strings.Contains(out, cluster+"/app-dev-wt") {
-			t.Errorf("the projected Secret must be applied into %s (a workload there declares it); output:\n%s", cluster, out)
-		}
+	if strings.Contains(out, "shared-hmac-0123") || strings.Contains(out, "session-hmac-4567") {
+		t.Errorf("a dry run printed a Secret value:\n%s", out)
 	}
-	if got := strings.Count(out, "kind: Secret"); got != 2 {
-		t.Errorf("want one app-secrets manifest per consuming cluster (2), got %d:\n%s", got, out)
-	}
-	// Both copies carry the SAME store values — the property the shell-script
-	// mirror broke.
-	if got := strings.Count(out, "shared-hmac-0123"); got != 2 {
-		t.Errorf("internal_service_secret must be identical in both clusters (want 2 copies), got %d", got)
+	if !strings.Contains(out, "kind: Secret") {
+		t.Errorf("a dry run should still show the Secret's shape:\n%s", out)
 	}
 }
 

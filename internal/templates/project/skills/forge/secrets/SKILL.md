@@ -182,6 +182,21 @@ printf '%s' "$KEY" | forge secret set --env dev STRIPE_SECRET_KEY
 forge env up dev                                         # pulls, injects in memory, starts
 ```
 
+### Random key material: `generate` (FileSecrets only)
+
+An encryption key or session secret has no source to `set` it from. Declare
+it generatable on the provider and forge mints it when absent:
+
+```kcl
+secret_provider = forge.FileSecrets {
+    generate = {"VAULT_KEY" = forge.GeneratedSecret {prefix = "v1:"}}  # 32 bytes, base64
+}
+```
+
+`forge secret ensure` and `forge env up` write it (0600, key name printed,
+never the value) and never overwrite an existing value. Hosted/external
+providers never generate. The value is durable; rotate by hand with `set`.
+
 ## Secrets a plain manifest mounts: `Bundle.rendered_secrets`
 
 A provider serves the secrets your **services** declare. Some Secrets have

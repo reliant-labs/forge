@@ -45,6 +45,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/internal/secrets"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -177,6 +178,9 @@ type SecretProviderEntity struct {
 	// declarations (name + per-key source) forge renders + applies per
 	// cluster. Empty for dotenv/external.
 	Secrets []RenderedSecretEntity `json:"secrets,omitempty"`
+	// Generate is populated for Type=="file": store key -> how to mint it
+	// when absent (FileSecrets.generate). Never set for any other provider.
+	Generate map[string]secrets.GenerateSpec `json:"generate,omitempty"`
 }
 
 // ControlPlaneEntity is the parsed bundle-level hosted control-plane

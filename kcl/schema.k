@@ -1090,6 +1090,27 @@ schema HostInfra:
         engine != "zitadel" or len(idp_masterkey) == 32, \
             "HostInfra.idp_masterkey must be exactly 32 characters (Zitadel's requirement)"
 
+schema GeneratedSecret:
+    """How forge mints a secret that is pure random key material (an
+    encryption key, a session secret) when the store has no value for it.
+
+        secret_provider = forge.FileSecrets {
+            generate = {"VAULT_KEY" = forge.GeneratedSecret {prefix = "v1:"}}
+        }
+
+    The value is `prefix` + `bytes` of crypto-random data in `encoding`
+    ("base64" standard, or "hex"). It is written ONCE and never overwritten:
+    the generated value is durable, and rotating it is a deliberate,
+    operator-driven `forge secret set`. Only FileSecrets carries this field,
+    so a hosted or external store can never generate — a missing value there
+    is a real error an operator must provision."""
+    bytes: int = 32
+    encoding: str = "base64"
+    prefix: str = ""
+    check:
+        bytes >= 1 and bytes <= 1024, "GeneratedSecret.bytes must be 1..1024"
+        encoding in ["base64", "hex"], "GeneratedSecret.encoding must be 'base64' or 'hex'"
+
 schema FileSecrets:
     """Dev/local secret provider: a single gitignored YAML file — a flat
     map of env-var NAME to value. This is the scaffolded default.
@@ -1108,9 +1129,15 @@ schema FileSecrets:
 
     Populate with `forge secret set --env <env> <KEY>` (value on stdin, never
     argv), or hand-edit the YAML. `forge secret ensure --env <env>` creates the
-    file and lists every declared ref that has no value yet."""
+    file and lists every declared ref that has no value yet.
+
+    `generate` names store keys that are pure random key material: when
+    one is absent, `forge secret ensure` and `forge env up` mint it (see
+    GeneratedSecret) instead of asking every developer to run
+    `forge secret set` by hand. It never overwrites an existing value."""
     type: str = "file"
     path: str = "secrets/dev.yaml"
+    generate?: {str: GeneratedSecret}
     check:
         type == "file", "FileSecrets.type must be 'file'"
         path, "FileSecrets.path is required"

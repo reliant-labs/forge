@@ -4,12 +4,14 @@ package deploytarget
 //
 // A workload bound to the Hosted runtime (forge.OnHosted), a hosted
 // ManagedDatabase and an OnHosted frontend are not applied to any cluster
-// forge can see. They are PUBLISHED to the control plane as forge.dev/v1alpha1
-// objects — a Workload CR per hosted workload, jobs included — and the
-// platform validates (ProfileRestricted), renders and runs them. So this
-// provider never shells out to kubectl and never ensures a cluster: every step
-// is a Connect call. Hosting is PER WORKLOAD: the same env may apply other
-// workloads to a cluster in the same deploy.
+// forge can see. They ride the env's BUNDLE as forge.dev/v1alpha1 records — a
+// Workload, ManagedDatabase or StaticSite per hosted thing, under the hosted
+// cluster tree (release.BundleHostedCluster) — and the control plane's hub
+// Flux applies that bundle when the promotion lands. This provider never
+// shells out to kubectl, ensures no cluster, and writes NO per-deployment row
+// or config artifact: there is no EnsureDeployment and no
+// PublishDeploymentConfig. Hosting is PER WORKLOAD: the same env may apply
+// other workloads to a cluster in the same deploy.
 //
 // THE ORDER IS THE CONTRACT, and it is fixed so that nothing is written until
 // everything is known to be admissible:
@@ -18,9 +20,9 @@ package deploytarget
 //  2. Workload.Validate(ProfileRestricted) + CheckShapeBand EVERY workload,
 //     and render the hosted set as the platform will — a refusal here costs
 //     zero RPCs
-//  3. EnsureEnvironment (by name) → EnsureDeployment (by name, per workload)
-//  4. PublishDeploymentConfig per deployment
-//  5. a bounded readiness wait on GetStatus{environmentId}; timing out is
+//  3. EnsureEnvironment (by name)
+//  4. record the bundle (the RecordBundle hook: build, push, record)
+//  5. a bounded readiness wait on the environment's rollout; timing out is
 //     reported as timed out, never as success
 //
 // forge does not import control-plane. The request and response shapes below
@@ -61,25 +63,6 @@ const (
 	HostedTierDatabase HostedTier = "database"
 	HostedTierStatic   HostedTier = "static"
 )
-
-// wireTier is the controlplane.v1.DeployTier value name for a tier.
-//
-// A Workload rides DEPLOY_TIER_BACKEND. That is the control plane's decision
-// (control-plane internal/deployspec): the enum value is the deployment row's
-// discriminator and a public wire name, and what it SELECTS changed — the spec
-// is a WorkloadSpec and the CR kind is Workload — not what it means.
-func (t HostedTier) wireTier() string {
-	switch t {
-	case HostedTierWorkload:
-		return "DEPLOY_TIER_BACKEND"
-	case HostedTierDatabase:
-		return "DEPLOY_TIER_DATABASE"
-	case HostedTierStatic:
-		return "DEPLOY_TIER_STATIC"
-	default:
-		return ""
-	}
-}
 
 // HostedWorkload is one declaration bound for the control plane. Exactly one
 // of Workload / Database / Static is set, matching Tier.
@@ -180,8 +163,6 @@ type ClusterBinding struct {
 
 const (
 	procEnsureEnvironment = "controlplane.v1.DeployService/EnsureEnvironment"
-	procEnsureDeployment  = "controlplane.v1.DeployService/EnsureDeployment"
-	procPublishConfig     = "controlplane.v1.DeployService/PublishDeploymentConfig"
 	procGetStatus         = "controlplane.v1.DeployService/GetStatus"
 	procListEnvironments  = "controlplane.v1.DeployService/ListEnvironments"
 )
@@ -1055,6 +1036,10 @@ type HostedProvider struct {
 	// as soon as it is known, so a report can carry it even if a later step
 	// fails.
 	OnEnvironment func(id string)
+	// RecordBundle builds, pushes and records the env's bundle once the
+	// environment exists. The provider cannot do it itself: building needs
+	// the project render, which only the CLI can drive.
+	RecordBundle func(ctx context.Context, environmentID string) error
 }
 
 // Name is the provider's registry id.
@@ -1108,76 +1093,20 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err := checkCustomDomains(group.Env, plan); err != nil {
 		return err
 	}
-	return p.publish(ctx, c, group, envID, plan)
-}
-
-// publish ensures every deployment, then publishes each, then waits.
-func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group ServiceGroup, envID string, plan []hostedPlanItem) error {
-	ids := make(map[string]string, len(plan))
+	// THE BUNDLE, NOT A PER-DEPLOYMENT PUBLISH. The env's hosted tiers ride
+	// the same recorded bundle every other env ships; the control plane's hub
+	// Flux applies it when the promotion lands. forge writes no deployment row
+	// and no config artifact.
+	if p.RecordBundle != nil {
+		if err := p.RecordBundle(ctx, envID); err != nil {
+			return err
+		}
+	}
 	promotionID := ""
 	if group.Hosted != nil {
 		promotionID = group.Hosted.PromotionID
 	}
-	for _, item := range plan {
-		var resp struct {
-			Deployment wireDeployment `json:"deployment"`
-			Created    bool           `json:"created"`
-			Updated    bool           `json:"updated"`
-		}
-		req := map[string]any{
-			"environmentId": envID,
-			"name":          item.Name,
-			"tier":          item.Tier.wireTier(),
-			"spec":          item.Spec,
-		}
-		// THE RELEASE BINDING. The client sends the artifact key rather
-		// than the server inferring it, so the two cannot pair a
-		// workload with a digest differently — this is the same key the
-		// plan looked the digest up under, carried on the plan item.
-		//
-		// Both fields are OMITTED when empty rather than sent as "".
-		// For the artifact that is required, not tidiness: a database
-		// is never release-bound and the control plane refuses an
-		// artifact on one (InvalidArgument, plus the schema's
-		// ck_cp_deployments_artifact_release_bound_tier). For the
-		// promotion it is the difference between two meanings — absent
-		// means "keep whatever is stored", which is the right reading
-		// of a hand-run deploy against an unbound env, while an empty
-		// value would be a claim that this row is pinned from no
-		// promotion.
-		if item.Artifact != "" {
-			req["artifact"] = item.Artifact
-		}
-		if promotionID != "" {
-			req["promotionId"] = promotionID
-		}
-		if err := c.Call(ctx, procEnsureDeployment, req, &resp); err != nil {
-			return fmt.Errorf("ensure deployment %s: %w", item.Name, err)
-		}
-		if resp.Deployment.ID == "" {
-			return fmt.Errorf("ensure deployment %s: the control plane returned no deployment id", item.Name)
-		}
-		ids[item.Name] = resp.Deployment.ID
-		state := "unchanged"
-		switch {
-		case resp.Created:
-			state = "created"
-		case resp.Updated:
-			state = "updated"
-		}
-		fmt.Printf("  deployment %s %s (id %s)\n", item.Name, state, resp.Deployment.ID)
-	}
-	for _, item := range plan {
-		var resp struct {
-			Digest    string `json:"digest"`
-			Reference string `json:"reference"`
-		}
-		if err := c.Call(ctx, procPublishConfig, map[string]any{"deploymentId": ids[item.Name]}, &resp); err != nil {
-			return fmt.Errorf("publish deployment %s: %w", item.Name, err)
-		}
-		fmt.Printf("  published %s → %s\n", item.Name, resp.Reference)
-	}
-	return p.wait(ctx, c, group.Env, envID, promotionID, plan, ids)
+	return p.wait(ctx, c, group.Env, envID, promotionID, plan)
 }
 
 // wait polls until every published workload is confirmed running the bytes
@@ -1207,7 +1136,7 @@ func (p HostedProvider) publish(ctx context.Context, c HostedCaller, group Servi
 // rolloutPhaseServing). A deploy that waited for the window would be two
 // minutes slower every time, to answer a question `forge env status --wait` is the
 // verb for.
-func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID, promotionID string, plan []hostedPlanItem, ids map[string]string) error {
+func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID, promotionID string, plan []hostedPlanItem) error {
 	policy := p.Rollout.Normalize()
 	if policy.Mode == cluster.RolloutSkip {
 		for _, item := range plan {
@@ -1228,7 +1157,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	rollout := promotionID != ""
 	rolloutFailures := 0
 	for {
-		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan, ids)
+		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan)
 		if rollout {
 			rolloutPending, rolloutReasons, rerr := p.pollRolloutOnce(ctx, c, envID, promotionID, plan)
 			switch {
@@ -1353,21 +1282,21 @@ func (p HostedProvider) pollRolloutOnce(ctx context.Context, c HostedCaller, env
 
 // pollOnce reads status once and returns the names still not ready, with a
 // reason for each.
-func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID string, plan []hostedPlanItem, ids map[string]string) ([]string, map[string]string, map[string][]HostedCustomDomain, error) {
+func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID string, plan []hostedPlanItem) ([]string, map[string]string, map[string][]HostedCustomDomain, error) {
 	var resp wireStatusResponse
 	if err := c.Call(ctx, procGetStatus, map[string]any{"environmentId": envID}, &resp); err != nil {
 		return nil, nil, nil, err
 	}
 	envConverged := resp.EnvironmentVerdict == wireVerdictConverged
-	byID := map[string]wireDeploymentStatus{}
+	byName := map[string]wireDeploymentStatus{}
 	for _, d := range resp.Deployments {
-		byID[d.Deployment.ID] = d
+		byName[d.Deployment.Name] = d
 	}
 	var pending []string
 	reasons := map[string]string{}
 	domains := map[string][]HostedCustomDomain{}
 	for _, item := range plan {
-		st, ok := byID[ids[item.Name]]
+		st, ok := byName[item.Name]
 		if !ok {
 			pending = append(pending, item.Name)
 			reasons[item.Name] = "not in the environment's status yet"

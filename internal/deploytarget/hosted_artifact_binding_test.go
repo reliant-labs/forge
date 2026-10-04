@@ -4,38 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
-// F1 sends the release binding on EnsureDeployment: the `artifact` key whose
-// digest a deployment runs, and the `promotionId` whose pins its spec was
-// rendered from.
-//
-// THE CLIENT SENDS THE ARTIFACT RATHER THAN THE SERVER INFERRING IT, so the
-// two cannot pair a workload with a digest differently. That makes the exact
-// value per tier a wire contract, not an implementation detail — hence a test
-// per tier.
-
-// ensureBodyFor returns the EnsureDeployment request body for one workload.
-func ensureBodyFor(t *testing.T, cp *fakeCP, name string) map[string]any {
-	t.Helper()
-	for _, c := range cp.calls {
-		if !hasSuffix(c.Proc, "EnsureDeployment") {
-			continue
-		}
-		if c.Body["name"] == name {
-			return c.Body
-		}
-	}
-	t.Fatalf("no EnsureDeployment for %q", name)
-	return nil
-}
-
-func hasSuffix(proc, short string) bool {
-	return len(proc) >= len(short) && proc[len(proc)-len(short):] == short
-}
+// The release artifact key each hosted tier is bound under. The key is what
+// the plan looks a digest up by, so the exact value per tier is a contract.
 
 // TestHostedArtifactOf_PerTier is the unit half: the artifact key each tier
 // is bound under.
@@ -121,109 +95,5 @@ func TestHostedStaticPlanRefusesAnUnaddressableArtifact(t *testing.T) {
 	}
 	if n := len(cp.procs()); n != 0 {
 		t.Fatalf("%d RPCs before the refusal", n)
-	}
-}
-
-// TestHostedEnsureDeployment_SendsArtifactPerTier is the wire half, and the
-// one that would have caught the bug: a WORKLOAD carries its artifact, and a
-// DATABASE carries none at all.
-//
-// `artifact` must be ABSENT rather than present-and-empty on a database.
-// Empty is not a value the platform accepts — the schema stores NULL for
-// "not release-bound", one spelling, so no reader has to treat two as equal.
-func TestHostedEnsureDeployment_SendsArtifactPerTier(t *testing.T) {
-	cp := &fakeCP{status: readyStatus(digestA)}
-	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	group := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
-	if err := p.Deploy(context.Background(), group); err != nil {
-		t.Fatalf("deploy: %v", err)
-	}
-
-	// The workload: the artifact key the plan looked its digest up under.
-	api := ensureBodyFor(t, cp, "api")
-	if api["tier"] != "DEPLOY_TIER_BACKEND" {
-		t.Fatalf("api tier = %v", api["tier"])
-	}
-	if got := api["artifact"]; got != "api" {
-		t.Errorf("api artifact = %v, want %q (the key its digest was pinned under)", got, "api")
-	}
-
-	// The database: no artifact at all.
-	orders := ensureBodyFor(t, cp, "orders")
-	if orders["tier"] != "DEPLOY_TIER_DATABASE" {
-		t.Fatalf("orders tier = %v", orders["tier"])
-	}
-	if raw, present := orders["artifact"]; present {
-		t.Errorf("a database must carry NO artifact field; got %q.\n"+
-			"  The control plane refuses one (InvalidArgument, plus "+
-			"ck_cp_deployments_artifact_release_bound_tier), so sending it "+
-			"breaks every env with a hosted database.", raw)
-	}
-}
-
-// TestHostedEnsureDeployment_SendsStaticArtifact covers the third tier
-// against the static fixture, whose artifact is a repository rather than a
-// bare name.
-func TestHostedEnsureDeployment_SendsStaticArtifact(t *testing.T) {
-	cp := &fakeCP{status: staticReadyStatus(digestB)}
-	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	if err := p.Deploy(context.Background(), staticGroup("v2", map[string]string{staticSiteArtifact: digestB})); err != nil {
-		t.Fatalf("deploy: %v", err)
-	}
-	web := ensureBodyFor(t, cp, "web")
-	if web["tier"] != "DEPLOY_TIER_STATIC" {
-		t.Fatalf("web tier = %v", web["tier"])
-	}
-	// The digest was looked up under the site's release repository, and
-	// that same key is what forge SENDS — the invariant being that the
-	// artifact a deployment is bound to is the key its digest came from.
-	if got := web["artifact"]; got != staticSiteArtifact {
-		t.Errorf("static artifact = %v, want %q", got, staticSiteArtifact)
-	}
-}
-
-// TestHostedEnsureDeployment_SendsPromotionID: applied_promotion_id is the
-// discriminator between "a promotion is waiting to be applied" and "this row
-// has drifted" — two states that need opposite answers under the OBSERVE
-// policy and that a digest comparison cannot tell apart, since both read as
-// "the row does not match the pin".
-//
-// It goes on EVERY deployment including the database: the promotion is a
-// fact about which declaration this row carries, not about release binding,
-// so a database row pinned by a promotion is perfectly meaningful.
-func TestHostedEnsureDeployment_SendsPromotionID(t *testing.T) {
-	cp := &fakeCP{status: readyStatus(digestA)}
-	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	group := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
-	group.Hosted.PromotionID = "pr_42"
-	if err := p.Deploy(context.Background(), group); err != nil {
-		t.Fatalf("deploy: %v", err)
-	}
-	for _, name := range []string{"api", "orders"} {
-		if got := ensureBodyFor(t, cp, name)["promotionId"]; got != "pr_42" {
-			t.Errorf("%s promotionId = %v, want %q", name, got, "pr_42")
-		}
-	}
-}
-
-// TestHostedEnsureDeployment_OmitsAnAbsentPromotionID: absent and empty mean
-// DIFFERENT things server-side. An omitted promotion leaves the stored one
-// untouched — the correct reading of a hand-run deploy, which is drift and
-// not a promotion — while an empty value would be a claim that this row is
-// pinned from no promotion, clearing a real one.
-func TestHostedEnsureDeployment_OmitsAnAbsentPromotionID(t *testing.T) {
-	cp := &fakeCP{status: readyStatus(digestA)}
-	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	// No PromotionID set: a control plane that predates promotion ids, or
-	// a deploy forge could not attribute to one.
-	group := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
-	if err := p.Deploy(context.Background(), group); err != nil {
-		t.Fatalf("deploy: %v", err)
-	}
-	for _, name := range []string{"api", "orders"} {
-		if raw, present := ensureBodyFor(t, cp, name)["promotionId"]; present {
-			t.Errorf("%s sent promotionId=%q; an unattributable deploy must OMIT it, "+
-				"because an empty value would clear the stored promotion", name, raw)
-		}
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	godigest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content/memory"
@@ -63,15 +65,25 @@ func TestHostedStaticDeployCallOrderAndPinnedRelease(t *testing.T) {
 	if err := p.Deploy(context.Background(), staticGroup("v2", map[string]string{staticSiteArtifact: digestB})); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	want := "EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig,GetStatus"
+	want := "EnsureEnvironment,GetStatus"
 	if got := strings.Join(cp.procs(), ","); got != want {
-		t.Fatalf("call order = %s, want %s", got, want)
+		t.Fatalf("call order = %s, want %s (no per-deployment RPC)", got, want)
 	}
-	dep := cp.calls[1].Body
-	if dep["tier"] != "DEPLOY_TIER_STATIC" || dep["name"] != "web" {
-		t.Fatalf("EnsureDeployment = %v", dep)
+	recs, err := HostedRecords(staticGroup("v2", map[string]string{staticSiteArtifact: digestB}))
+	if err != nil {
+		t.Fatalf("records: %v", err)
 	}
-	spec := dep["spec"].(map[string]any)
+	var doc struct {
+		Kind string         `json:"kind"`
+		Spec map[string]any `json:"spec"`
+	}
+	if err := yaml.Unmarshal(recs[0].YAML, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Kind != "StaticSite" || recs[0].Name != "web" {
+		t.Fatalf("record = %s %s", doc.Kind, recs[0].Name)
+	}
+	spec := doc.Spec
 	if spec["liveDigest"] != digestB {
 		t.Errorf("spec.liveDigest = %v, want the bound release %s", spec["liveDigest"], digestB)
 	}

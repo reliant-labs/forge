@@ -50,6 +50,7 @@ func TestHostedStaticBareImageRecordsExactlyTheRefItPushed(t *testing.T) {
 	prevPoll := hostedPollInterval
 	hostedPollInterval = time.Millisecond
 	t.Cleanup(func() { hostedPollInterval = prevPoll })
+	stubHostedBundleRegistry(t, fake)
 
 	// The env declares a platform registry_host, so the build authenticates
 	// to it before pushing (ADR-0003 F3). Stubbed for the same reason the
@@ -89,9 +90,9 @@ func TestHostedStaticBareImageRecordsExactlyTheRefItPushed(t *testing.T) {
 		t.Fatalf("deploy: %v\n%s", err, out)
 	}
 
-	d := fake.deployments[envID]["web"]
+	d := fake.bundles[envID]["web"]
 	if d == nil {
-		t.Fatal("no web deployment was published")
+		t.Fatal("no web record in the recorded bundle")
 	}
 	// THE EQUALITY. The published spec's repository is byte-identical to the
 	// repository the build pushed to, and its digest is the one the push

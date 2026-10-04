@@ -175,34 +175,12 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	}
 	report.setHostedTarget(ep.URL, envID)
 
-	var (
-		release     string
-		promotionID string
-		digests     map[string]string
-		registries  map[string]string
-	)
 	ledger := hostedLedger(client, ep.URL, ref.Project, ref.Kind)
-	binding, bound, berr := ledger.Bindings.Current(ctx, envName)
-	if berr != nil {
-		return fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, ep.URL, berr)
+	pins, perr := hostedPinsFromLedger(ctx, ledger, envName)
+	if perr != nil {
+		return fmt.Errorf("%w (%s)", perr, ep.URL)
 	}
-	if bound {
-		release, digests = binding.Release, binding.Resolved
-		// The promotion these digests were frozen by. Sent on every
-		// EnsureDeployment as applied_promotion_id, so the server can
-		// tell a row pinned FROM this promotion from one that has
-		// drifted away from it — the discriminator the converger needs
-		// and that a digest comparison cannot provide.
-		promotionID = binding.ID
-		// The promotion froze digests; WHERE each was pushed lives on the
-		// (immutable) release. A workload this project builds is published
-		// by its artifact name and pinned under that recorded registry.
-		rel, rerr := ledger.Releases.Get(ctx, release)
-		if rerr != nil {
-			return fmt.Errorf("read release %s from %s: %w", release, ep.URL, rerr)
-		}
-		registries = releaseRegistries(rel)
-	}
+	release, promotionID, digests, registries := pins.release, pins.promotionID, pins.digests, pins.registries
 	if !envAppliesLocally(entities) {
 		report.setTags("", "release "+emptyAs(release, "(none)")+" (promoted; "+ep.URL+")", release, false)
 	}
@@ -228,6 +206,9 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 
 	registry := &deploytarget.Registry{}
 	registry.Register(deploytarget.HostedProvider{
+		RecordBundle: func(ctx context.Context, _ string) error {
+			return recordHostedBundle(ctx, envName, release, digests, opts)
+		},
 		Client:        client,
 		Rollout:       opts.rollout,
 		PollInterval:  hostedPollInterval,
@@ -265,4 +246,75 @@ func releaseRegistries(rel *release.Release) map[string]string {
 		}
 	}
 	return out
+}
+
+// recordHostedBundle builds, pushes and records the hosted env's bundle at the
+// bound release. It is the hosted twin of what `forge env build --bundle-envs`
+// does for every other env — the SAME writeEnvBundle — and it is the whole of
+// what a hosted deploy ships: the control plane's hub Flux applies the
+// promoted bundle, so no per-deployment config artifact is published.
+//
+// A bundle that was not written is an ERROR here, unlike at build time: a
+// deploy that recorded nothing would report success for a release the
+// platform has no bundle to apply.
+func recordHostedBundle(ctx context.Context, envName, bound string, digests map[string]string, opts deployOptions) error {
+	if opts.dryRun {
+		return nil
+	}
+	pins := release.BundlePins{Images: map[string]string{}}
+	for artifact, digest := range digests {
+		pins.Images[artifact] = digest
+	}
+	out, err := writeBundlesFn(ctx, projectDirForKCL(), []string{envName}, bundleBuildInputs{
+		Release: bound,
+		Pins:    pins,
+		Pushed:  true,
+		Now:     time.Now().UTC().Truncate(time.Second),
+	})
+	if err != nil {
+		return err
+	}
+	for _, o := range out {
+		if o.Skipped || !o.Recorded {
+			return fmt.Errorf("hosted env %q: its bundle was not recorded, so the control plane has nothing to apply.\n"+
+				"  fix: forge env build %s --release <version> --push && forge env deploy %s <version>", envName, envName, envName)
+		}
+		fmt.Printf("  bundle %s recorded (%s)\n", shortDigest(o.Digest), o.Reference)
+	}
+	return nil
+}
+
+// hostedPins is what a promotion froze for a hosted env, in the exact form the
+// hosted plan looks it up: the release, the promotion that froze it, each
+// artifact's digest, and each artifact's registry.
+type hostedPins struct {
+	release, promotionID string
+	digests, registries  map[string]string
+}
+
+// hostedPinsFromLedger reads an env's CURRENT promotion and its release. It is
+// the ONE place those are read for a hosted env: the deploy's plan and the
+// bundle the deploy ships take their pins from here, so the key the plan looks
+// a digest up by and the key the bundle pins under cannot differ. (They did:
+// resolveDeployDigests expands ledger keys to repository form for the KCL
+// render, and a bundle built from that map found no pin for any workload.)
+//
+// An unbound env yields zero pins and no error — "nothing promoted" is a
+// state, not a failure.
+func hostedPinsFromLedger(ctx context.Context, ledger envLedger, envName string) (hostedPins, error) {
+	binding, bound, err := ledger.Bindings.Current(ctx, envName)
+	if err != nil {
+		return hostedPins{}, fmt.Errorf("read the promotion ledger for %q: %w", envName, err)
+	}
+	if !bound {
+		return hostedPins{}, nil
+	}
+	rel, err := ledger.Releases.Get(ctx, binding.Release)
+	if err != nil {
+		return hostedPins{}, fmt.Errorf("read release %s: %w", binding.Release, err)
+	}
+	return hostedPins{
+		release: binding.Release, promotionID: binding.ID,
+		digests: binding.Resolved, registries: releaseRegistries(rel),
+	}, nil
 }

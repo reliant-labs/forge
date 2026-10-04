@@ -52,10 +52,6 @@ func (f *fakeCP) Call(_ context.Context, proc string, req, out any) error {
 		// forge composes it from the env's declaration and carries it on
 		// the group (HostedTarget.PushBase).
 		reply = `{"environment":{"id":"env-1","name":"prod","namespace":"env-env-1"},"created":true}`
-	case "EnsureDeployment":
-		reply = fmt.Sprintf(`{"deployment":{"id":"dep-%s","name":%q},"created":true}`, body["name"], body["name"])
-	case "PublishDeploymentConfig":
-		reply = `{"digest":"sha256:cfg","reference":"reg/cfg@sha256:cfg"}`
 	case "GetStatus":
 		f.mu.Lock()
 		f.nStat++
@@ -73,23 +69,6 @@ func (f *fakeCP) Call(_ context.Context, proc string, req, out any) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(reply), out)
-}
-
-// publishedBackendImage is the spec.image the EnsureDeployment call for
-// deployment name carried on the wire.
-func publishedBackendImage(t *testing.T, f *fakeCP, name string) string {
-	t.Helper()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, c := range f.calls {
-		if strings.HasSuffix(c.Proc, "/EnsureDeployment") && c.Body["name"] == name {
-			spec, _ := c.Body["spec"].(map[string]any)
-			img, _ := spec["image"].(string)
-			return img
-		}
-	}
-	t.Fatalf("no EnsureDeployment for %q", name)
-	return ""
 }
 
 func (f *fakeCP) procs() []string {
@@ -136,50 +115,66 @@ func hostedGroupWithPushBase(release string, digests map[string]string, resource
 	}
 }
 
-// TestHostedDeployCallOrderAndBoundDigest pins the fixed order — ensure env,
-// ensure every deployment, publish every deployment, then status — and that
-// the backend's spec carries the BOUND digest, not the declared tag.
-// Mutation: swapping the ensure and publish loops, or publishing spec.Image
-// unpinned, fails this test.
-func TestHostedDeployCallOrderAndBoundDigest(t *testing.T) {
+// TestHostedDeployRecordsTheBundleAndWritesNoDeployment pins the contract: a
+// hosted deploy ensures the environment, records the bundle through the
+// RecordBundle hook, then waits — and makes NO EnsureDeployment or
+// PublishDeploymentConfig call. Mutation: re-adding either RPC fails the call
+// list; dropping the hook fails the recorded flag.
+func TestHostedDeployRecordsTheBundleAndWritesNoDeployment(t *testing.T) {
 	cp := &fakeCP{status: readyStatus(digestA)}
 	var envSeen string
+	recordedFor := ""
 	var outcomes []cluster.RolloutObservation
 	p := HostedProvider{Client: cp, PollInterval: time.Millisecond,
 		OnEnvironment: func(id string) { envSeen = id },
+		RecordBundle:  func(_ context.Context, id string) error { recordedFor = id; return nil },
 		OnRollout:     func(o cluster.RolloutObservation) { outcomes = append(outcomes, o) }}
 	if err := p.Deploy(context.Background(), hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	want := []string{"EnsureEnvironment", "EnsureDeployment", "EnsureDeployment", "PublishDeploymentConfig", "PublishDeploymentConfig", "GetStatus"}
+	want := []string{"EnsureEnvironment", "GetStatus"}
 	if got := cp.procs(); strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("call order = %v, want %v", got, want)
+		t.Fatalf("call order = %v, want %v (no per-deployment RPC)", got, want)
 	}
-	env := cp.calls[0].Body["spec"].(map[string]any)
-	if env["name"] != "prod" || env["kind"] != "DEPLOY_ENVIRONMENT_KIND_PERSISTENT" {
-		t.Errorf("EnsureEnvironment spec = %v", env)
+	if recordedFor != "env-1" {
+		t.Errorf("the bundle was recorded for %q, want env-1", recordedFor)
 	}
-	api := cp.calls[1].Body
-	if api["environmentId"] != "env-1" || api["name"] != "api" || api["tier"] != "DEPLOY_TIER_BACKEND" {
-		t.Errorf("EnsureDeployment(api) = %v", api)
-	}
-	if img := api["spec"].(map[string]any)["image"]; img != "ghcr.io/acme/api@"+digestA {
-		t.Errorf("published image = %v, want the bound digest ghcr.io/acme/api@%s", img, digestA)
-	}
-	if cp.calls[2].Body["tier"] != "DEPLOY_TIER_DATABASE" {
-		t.Errorf("EnsureDeployment(orders) tier = %v", cp.calls[2].Body["tier"])
-	}
-	if cp.calls[3].Body["deploymentId"] != "dep-api" || cp.calls[4].Body["deploymentId"] != "dep-orders" {
-		t.Errorf("publish bodies = %v / %v", cp.calls[3].Body, cp.calls[4].Body)
-	}
-	if cp.calls[5].Body["environmentId"] != "env-1" {
-		t.Errorf("GetStatus must be env-scoped, got %v", cp.calls[5].Body)
+	if got := cp.calls[1].Body["environmentId"]; got != "env-1" {
+		t.Errorf("GetStatus must be env-scoped, got %v", cp.calls[1].Body)
 	}
 	if envSeen != "env-1" {
 		t.Errorf("OnEnvironment got %q", envSeen)
 	}
 	if len(outcomes) != 2 || outcomes[0].State != cluster.RolloutStateReady {
 		t.Errorf("rollout outcomes = %+v", outcomes)
+	}
+}
+
+// TestHostedRecordsPinTheBoundDigestAndCarryNoIdentity: what a bundle carries
+// is the plan's pinned spec, as a forge.dev record with NO namespace and NO
+// identity labels — those are the platform's to stamp.
+func TestHostedRecordsPinTheBoundDigestAndCarryNoIdentity(t *testing.T) {
+	recs, err := HostedRecords(hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, r := range recs {
+		kinds[r.Name] = r.Kind
+		doc := string(r.YAML)
+		for _, forbidden := range []string{"namespace:", "forge.dev/org-id", "forge.dev/deployment-id", "forge.dev/environment-id", "status:"} {
+			if strings.Contains(doc, forbidden) {
+				t.Errorf("%s record carries %q:\n%s", r.Name, forbidden, doc)
+			}
+		}
+	}
+	if kinds["api"] != "Workload" || kinds["orders"] != "ManagedDatabase" {
+		t.Errorf("kinds = %v, want api=Workload orders=ManagedDatabase", kinds)
+	}
+	for _, r := range recs {
+		if r.Name == "api" && !strings.Contains(string(r.YAML), "ghcr.io/acme/api@"+digestA) {
+			t.Errorf("api record is not pinned to the bound digest:\n%s", r.YAML)
+		}
 	}
 }
 
@@ -215,18 +210,21 @@ func TestHostedOffBandRefusedWithZeroRPCs(t *testing.T) {
 //     adjacent-prefix case ("ghcr.io/acme-evil") is admitted;
 //   - dropping the `base == ""` refusal → "no base" publishes.
 func TestHostedImagePushBase(t *testing.T) {
+	// A "write" is the one thing that reaches the platform's ledger: the
+	// bundle record. (EnsureEnvironment precedes the push-base check by
+	// design and is idempotent.)
+	recorded := map[*fakeCP]int{}
 	writes := func(cp *fakeCP) []string {
-		var out []string
-		for _, p := range cp.procs() {
-			if p == "EnsureDeployment" || p == "PublishDeploymentConfig" {
-				out = append(out, p)
-			}
+		out := make([]string, recorded[cp])
+		for i := range out {
+			out[i] = "RecordBundle"
 		}
 		return out
 	}
 	deploy := func(base string) (*fakeCP, error) {
 		cp := &fakeCP{status: readyStatus(digestA)}
-		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(),
+		err := HostedProvider{Client: cp, PollInterval: time.Millisecond,
+			RecordBundle: func(context.Context, string) error { recorded[cp]++; return nil }}.Deploy(context.Background(),
 			hostedGroupWithPushBase("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}, base))
 		return cp, err
 	}
@@ -283,8 +281,8 @@ func TestHostedImagePushBase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("an image under the push base was refused: %v", err)
 		}
-		if w := writes(cp); len(w) != 4 {
-			t.Fatalf("writes = %v, want 2 ensures + 2 publishes", w)
+		if w := writes(cp); len(w) != 1 {
+			t.Fatalf("writes = %v, want exactly one bundle record (the bundle carries the tiers)", w)
 		}
 	})
 }
@@ -306,14 +304,8 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 	}
 
 	t.Run("pinned under the release's registry", func(t *testing.T) {
-		cp := &fakeCP{status: readyStatus(digestA)}
-		err := HostedProvider{Client: cp, PollInterval: time.Millisecond}.Deploy(context.Background(),
-			group(map[string]string{"api": "localhost:5051/org-1"}))
-		if err != nil {
-			t.Fatalf("deploy: %v", err)
-		}
 		want := "localhost:5051/org-1/api@" + digestA
-		if got := publishedBackendImage(t, cp, "api"); got != want {
+		if got := recordedBackendImage(t, group(map[string]string{"api": "localhost:5051/org-1"}), "api"); got != want {
 			t.Fatalf("published image = %q, want %q", got, want)
 		}
 	})
@@ -339,11 +331,7 @@ func TestHostedForgeBuiltBackendPinsTheRecordedRegistry(t *testing.T) {
 		// An explicit host is used verbatim, so the declared base must be
 		// the one that host sits under or the pre-flight refuses it.
 		g.Hosted.PushBase = testDeclaredPushBase
-		cp := &fakeCP{status: readyStatus(digestA)}
-		if err := (HostedProvider{Client: cp, PollInterval: time.Millisecond}).Deploy(context.Background(), g); err != nil {
-			t.Fatalf("deploy: %v", err)
-		}
-		if got := publishedBackendImage(t, cp, "api"); got != "ghcr.io/acme/api@"+digestA {
+		if got := recordedBackendImage(t, g, "api"); got != "ghcr.io/acme/api@"+digestA {
 			t.Fatalf("published image = %q: a declared registry was overridden", got)
 		}
 	})
@@ -486,4 +474,25 @@ func TestHostedArtifactName(t *testing.T) {
 	if got := HostedImageRepository("localhost:5051/a/b:tag"); got != "localhost:5051/a/b" {
 		t.Errorf("repository = %q", got)
 	}
+}
+
+// recordedBackendImage is the spec.image the bundle's record for name carries.
+func recordedBackendImage(t *testing.T, g ServiceGroup, name string) string {
+	t.Helper()
+	recs, err := HostedRecords(g)
+	if err != nil {
+		t.Fatalf("HostedRecords: %v", err)
+	}
+	for _, r := range recs {
+		if r.Name != name {
+			continue
+		}
+		for _, line := range strings.Split(string(r.YAML), "\n") {
+			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "image: "); ok {
+				return rest
+			}
+		}
+	}
+	t.Fatalf("no record named %q", name)
+	return ""
 }

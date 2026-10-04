@@ -1,10 +1,10 @@
 package deploytarget
 
 import (
-	"context"
 	"strings"
 	"testing"
-	"time"
+
+	"sigs.k8s.io/yaml"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
@@ -43,23 +43,26 @@ func staticGroupWithRepository(digests map[string]string) ServiceGroup {
 // planHostedWith → releaseRepository absent from the published spec, which is
 // precisely the state in which the operator has to guess.
 func TestHostedStaticPublishesTheRecordedReleaseRepository(t *testing.T) {
-	cp := &fakeCP{status: staticReadyStatus(digestB)}
-	p := HostedProvider{Client: cp, PollInterval: time.Millisecond}
-	if err := p.Deploy(context.Background(), staticGroupWithRepository(map[string]string{staticSiteArtifact: digestB})); err != nil {
-		t.Fatalf("deploy: %v", err)
+	recs, err := HostedRecords(staticGroupWithRepository(map[string]string{staticSiteArtifact: digestB}))
+	if err != nil {
+		t.Fatalf("records: %v", err)
 	}
-	spec := cp.calls[1].Body["spec"].(map[string]any)
+	if len(recs) != 1 || recs[0].Kind != "StaticSite" {
+		t.Fatalf("records = %+v, want one StaticSite", recs)
+	}
+	var doc struct {
+		Spec map[string]any `json:"spec"`
+	}
+	if err := yaml.Unmarshal(recs[0].YAML, &doc); err != nil {
+		t.Fatal(err)
+	}
+	spec := doc.Spec
 	if spec["releaseRepository"] != staticSiteArtifact {
 		t.Errorf("spec.releaseRepository = %v, want the pushed repository %q — without it the puller must recompose a path",
 			spec["releaseRepository"], staticSiteArtifact)
 	}
 	if spec["liveDigest"] != digestB {
 		t.Errorf("spec.liveDigest = %v, want %s", spec["liveDigest"], digestB)
-	}
-	// The pair is the whole address. A digest with no repository is not
-	// pullable, so neither half may be published alone.
-	if spec["releaseRepository"] == nil || spec["liveDigest"] == nil {
-		t.Error("a release is a repository AND a digest; the spec must carry both")
 	}
 }
 

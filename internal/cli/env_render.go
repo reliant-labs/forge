@@ -68,6 +68,7 @@ import (
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // renderedObject is one document of the env's rendered manifest stream,
@@ -400,7 +401,10 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		return gerr
 	}
 
-	objects, clusters := attributeRenderedObjects(manifests, groups, entities)
+	objects, clusters, gerr := attributeWithHosted(ctx, projectDir, manifests, groups, entities, envName, opts)
+	if gerr != nil {
+		return gerr
+	}
 
 	charts, cerr := renderEnvCharts(ctx, entities, groups, opts)
 	if cerr != nil {
@@ -1093,4 +1097,23 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 		}
 		fmt.Fprintf(w, "  %s (%s): %s%s\n", h.Name, h.Kind, strings.Join(cmd.Args, " "), dir)
 	}
+}
+
+// attributeWithHosted attributes the stream and adds the hosted tier records to the rendered stream under
+// the hosted tree. It is the same function the bundle's shape projection
+// calls (hostedBundleObjects), so the render a human reads and the bundle a
+// deploy ships cannot disagree. A --target selection renders no hosted part.
+func attributeWithHosted(ctx context.Context, projectDir, manifests string, groups []deploytarget.ServiceGroup, entities *KCLEntities,
+	envName string, opts envRenderOptions,
+) ([]renderedObject, []string, error) {
+	objects, clusters := attributeRenderedObjects(manifests, groups, entities)
+	hosted, _, err := hostedBundleObjects(ctx, projectDir, envName, entities)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(opts.targets) == 0 && len(hosted) > 0 {
+		objects = append(objects, hosted...)
+		clusters = mergeClusters(clusters, []string{release.BundleHostedCluster})
+	}
+	return objects, clusters, nil
 }

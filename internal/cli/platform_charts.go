@@ -102,9 +102,7 @@ func platformChartInstalls(entities *KCLEntities, names []string, onlyContexts m
 
 // applyPlatformChartFn renders one chart and applies it, CRDs first. A seam so
 // the order and the targeting are testable without helm or a cluster.
-var applyPlatformChartFn = func(ctx context.Context, kctx string, spec cluster.HelmChartSpec) error {
-	return cluster.ApplyHelmChart(ctx, kctx, spec)
-}
+var applyPlatformChartFn = cluster.ApplyHelmChart
 
 // installPlatformCharts installs the given charts in order. Idempotent: the
 // install is a render-and-apply of a version-pinned chart.

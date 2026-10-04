@@ -76,6 +76,7 @@ import .lib.images as img_lib
 import .lib.capabilities as caps
 import .lib.crd as crd_lib
 import .lib.build as build_lib
+import .lib.flux as flux_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -161,7 +162,7 @@ _cloud_build_without_platform = lambda w: any -> bool {
 # so a helper it calls must be given them.
 _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: any, \
                             gateways: [any], http_routes: [any], grpc_routes: [any], \
-                            helm_charts: [any], manifests: [any], rendered_secrets: [any] -> [str] {
+                            helm_charts: [any], manifests: [any], generated: [any], rendered_secrets: [any] -> [str] {
     _from_workloads = [w.runtime.target.cluster for w in workloads \
         if w.runtime and w.runtime.type == "cluster" and w.runtime.target]
     _from_databases = [db.runtime.target.cluster for db in databases \
@@ -174,9 +175,10 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_grpc = [r.cluster.context for r in grpc_routes if r.cluster]
     _from_charts = [h.cluster.context for h in helm_charts if h.cluster]
     _from_manifests = [m.cluster for m in manifests if m.cluster]
+    _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
     _all = _from_workloads + _from_databases + _from_primary + _from_gateways \
-        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_secrets
+        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_generated + _from_secrets
     sorted([c for c in {x: 0 for x in _all if x}])
 }
 
@@ -209,9 +211,9 @@ _is_forge_managed_context = lambda ctx: str, clusters: [any] -> bool {
 _unmanaged_contexts = lambda clusters: [any], workloads: [any], databases: [any], \
                              cluster_target: any, gateways: [any], http_routes: [any], \
                              grpc_routes: [any], helm_charts: [any], manifests: [any], \
-                             rendered_secrets: [any] -> [str] {
+                             generated: [any], rendered_secrets: [any] -> [str] {
     [c for c in _targeted_contexts(workloads, databases, cluster_target, gateways, \
-            http_routes, grpc_routes, helm_charts, manifests, rendered_secrets) \
+            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) \
         if not _is_forge_managed_context(c, clusters)]
 }
 
@@ -830,7 +832,20 @@ render = lambda bundle: Bundle -> any {
         # Platform deps (helm-as-a-RENDERER): the CLI expands each via `helm
         # template --skip-crds` and folds the result into the apply stream,
         # selected by `--target <name>`. Not in `manifests`.
-        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts]
+        "helm_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery != "bundle"]
+        # Bring-your-own YAML, rendered Go-side at extract time and shipped in
+        # the bundle (internal/cluster/byo_yaml.go). Keys appear only when
+        # declared, so an env with neither renders exactly as before.
+        if [h for h in bundle.helm_charts if h.delivery == "bundle"]:
+            "bundled_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery == "bundle"]
+        if bundle.generated:
+            "generated": [{
+                "name": g.name
+                "command": g.command
+                "dir": g.dir if g.dir else None
+                "cluster": g.cluster if g.cluster else None
+                "namespace": g.namespace if g.namespace else None
+            } for g in bundle.generated]
         # Declared external PREREQUISITES forge does NOT create: a render-time
         # checklist, and the preflight BLOCK on a required-but-absent Secret.
         "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
@@ -1468,6 +1483,24 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
 # crd — a minimal apiextensions/v1 CRD object (lib/crd.k), for a
 # `forge.Manifests {objects = [...]}` entry.
 crd = crd_lib.crd
+
+# flux_chart(values, cluster) — Flux as a version-pinned forge.HelmChart
+# (lib/flux.k), for a `Bundle.helm_charts` entry.
+#
+# Declared by a consumer that needs Flux for its OWN reasons — hosted
+# tenants, a reconciler it drives itself — so that `forge cluster up` sees a
+# chart already providing Flux and installs no second one. Two Flux installs
+# in one cluster collide on the same CRDs and the same `flux-system`.
+flux_chart = flux_lib.flux_chart
+
+# FLUX_CHART_OCI / FLUX_CHART_VERSION / FLUX_NAMESPACE — the pinned chart
+# reference, its version and Flux's namespace (lib/flux.k). Re-exported
+# because FLUX_CHART_OCI is the SHARED-FLUX DETECTOR: a consumer declaring
+# this ref is recognised as providing Flux, by reference rather than by the
+# chart's freely-chosen name.
+FLUX_CHART_OCI = flux_lib.FLUX_CHART_OCI
+FLUX_CHART_VERSION = flux_lib.FLUX_CHART_VERSION
+FLUX_NAMESPACE = flux_lib.FLUX_NAMESPACE
 
 # target_arch — the GOARCH forge resolved for this build (lib/build.k).
 #

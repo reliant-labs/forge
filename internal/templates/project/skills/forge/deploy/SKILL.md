@@ -93,8 +93,8 @@ forge env new cloud --check                                 # no placeholder lef
 ```
 
 `Bundle.lifecycle` declares WHO APPLIES an env — `"local"` / `"ephemeral"`
-means forge applies directly, unset means it is reconciled from a bundle. The
-scaffolded `dev` declares `local`, `staging` and `prod` declare nothing. See
+means forge applies directly, unset means it is reconciled from a bundle (no
+control plane: in-cluster Flux, deploy/flux). Scaffolded `dev` is `local`. See
 deploy/shape.
 
 ### What forge writes into every spec
@@ -430,6 +430,8 @@ container's resources, a Namespace's PSA label — do not re-declare it here.
 Name it in `Bundle.overrides` and forge patches its own render:
 `overrides = {"Deployment/api" = {spec.replicas = 10}}`. Keys, patch semantics
 and every failure: load `deploy/overrides`.
+
+Own app chart, kustomize/jsonnet output: `deploy/byo-yaml`.
 
 ## Reaching another cluster's API server
 

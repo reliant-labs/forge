@@ -234,7 +234,7 @@ func TestGrantNamesTheHubIdentityAndTheImpersonatedUser(t *testing.T) {
 		"--member=serviceAccount:control-plane@acme.iam.gserviceaccount.com",
 		"--role=roles/container.clusterViewer",
 		// THE HALF PEOPLE MISS. Granting the hub's cloud identity read
-		// access is not sufficient: Flux presents the impersonated tenant
+		// access is not sufficient: Flux presents the impersonated deploy
 		// username, so a grant that omits it leaves every apply Forbidden on
 		// a user nobody bound.
 		"system:serviceaccount:flux-acme:reliant-deploy-tenant",
@@ -267,7 +267,7 @@ func TestBootstrapManifests_GCPBindsTheHubUserAndImpersonation(t *testing.T) {
 		KubeContext: "gke_acme_us-central1_prod",
 		Auth:        authGCP,
 		Org:         "acme",
-		Subject:     "control-plane@acme.iam.gserviceaccount.com",
+		HubGSA:      "control-plane@acme.iam.gserviceaccount.com",
 	}.bootstrapManifests()
 
 	for _, want := range []string{

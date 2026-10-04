@@ -3162,9 +3162,19 @@ schema HelmChart:
     # platform-only: a bare `forge env deploy <env>` renders none of them. Each
     # entry is a raw manifest dict. Empty => none.
     manifests: [any] = []
+    # WHERE this chart's rendered objects go. "bootstrap" (the default, and
+    # the documented role of a chart): a platform dependency installed by
+    # `forge env deploy <env> --target <name>`, kept OUT of the bundle so a
+    # reconciler pruning the bundle can never delete its CRDs. "bundle": an
+    # APP chart — `helm template --skip-crds` runs at build time and its
+    # objects ship IN the env's bundle like a forge.Manifests group (stamped
+    # `forge.dev/workload = <name>`, so `--target` and overrides see them).
+    # A bundled chart owns no CRDs, so `crds` must stay empty.
+    delivery: "bootstrap" | "bundle" = "bootstrap"
 
     check:
         name, "HelmChart.name is required (the --target selector)"
+        delivery != "bundle" or not crds, "HelmChart '${name}': a delivery 'bundle' chart ships no CRDs (they are platform state a bundle prune must not own) - drop `crds`, or keep the chart on delivery 'bootstrap'"
         version, "HelmChart.version is required (a platform dep is always version-pinned)"
         namespace, "HelmChart.namespace is required (helm template -n <namespace>)"
         repo or oci, "HelmChart must set `repo` (a chart-repo URL) or `oci` (an OCI chart ref)"
@@ -3328,6 +3338,41 @@ schema Manifests:
     check:
         not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
 
+schema Generated:
+    """A source of Kubernetes YAML forge RUNS at render time: kustomize,
+    jsonnet, cdk8s, or any tool that prints manifests. Its stdout is a
+    multi-document YAML stream, placed exactly like a forge.Manifests group
+    (cluster, namespace, `forge.dev/workload` stamp, `--target`, overrides)
+    and shipped in the env's bundle.
+
+        generated = [
+            forge.Generated {
+                name = "edge-config"                       # its own --target
+                command = ["kustomize", "build", "deploy/edge"]
+                dir = "."                                  # project-root relative
+                cluster = "k3d-dev"                        # default: primary
+                namespace = "edge"                         # default: primary's
+            }
+        ]
+
+    `command` is an ARGV list, never a shell string: nothing is interpolated.
+    It runs from the project root (or `dir`, a path inside it). It MUST BE
+    DETERMINISTIC — the bundle's digest is its identity, so a command that
+    emits a timestamp or random value cuts a new bundle per build. A non-zero
+    exit, unparsable YAML, or an object with no apiVersion/kind fails the
+    render naming this generator. Not allowed on an env with hosted workloads.
+    """
+    name: str
+    command: [str]
+    dir?: str
+    cluster?: str
+    namespace?: str
+
+    check:
+        regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Generated.name '${name}' must be an RFC-1123 label (it is a --target)"
+        len(command) > 0, "Generated '${name}': command must be a non-empty argv list, e.g. [\"kustomize\", \"build\", \"deploy/edge\"]"
+        not dir or not dir.startswith("/"), "Generated '${name}'.dir must be relative to the project root"
+
 schema NetworkPolicy:
     """The inputs of the env-wide NetworkPolicy bundle: default-deny, plus
     DNS, same-namespace, external-egress, telemetry and ingress-controller
@@ -3470,6 +3515,9 @@ schema Bundle:
     # ClusterIssuers, a vendored chart's output, a DaemonSet. The ONE home
     # for raw objects; see forge.Manifests.
     manifests: [Manifests] = []
+    # Kubernetes YAML emitted by a command at render time (kustomize,
+    # jsonnet, any tool); shipped in the bundle. See forge.Generated.
+    generated: [Generated] = []
     # The env-wide NetworkPolicy bundle (default-deny plus the DNS,
     # same-namespace, external-egress, telemetry and ingress-controller
     # allows) and the per-workload ingress policies, rendered by Go per
@@ -3708,7 +3756,7 @@ schema Bundle:
         # reconciliation by editing one line.
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
-                manifests, rendered_secrets)) == 0, \
-            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, rendered_secrets))} is not one"
+                manifests, generated, rendered_secrets)) == 0, \
+            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
         all w in workloads { not _cloud_build_without_platform(w) }, \
             "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

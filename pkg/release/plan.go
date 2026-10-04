@@ -195,6 +195,18 @@ type DriftObservation struct {
 	Drifted []ObjectKey
 }
 
+// StatefulKind reports whether a kind's removal destroys data or everything
+// under it — [statefulKinds] as a predicate.
+//
+// Exported because the PLAN and the BUNDLE WRITER need the same answer, for
+// two halves of one guarantee. The plan calls a removal of one of these a
+// stop-class finding that must be acknowledged; the bundle writer stamps
+// `kustomize.toolkit.fluxcd.io/prune: disabled` on it so a reconciler cannot
+// delete it at all. Two spellings of this list would mean an object the plan
+// treats as irreplaceable is one the reconciler happily prunes, and the
+// divergence would only ever be discovered by losing the data.
+func StatefulKind(kind string) bool { return statefulKinds[kind] }
+
 // statefulKinds are object kinds whose removal destroys data or everything
 // under them. Removing one is a stop-class finding. ShapeObject.Stateful marks
 // anything else that holds data (a declared database's objects).

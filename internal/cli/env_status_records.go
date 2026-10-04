@@ -260,7 +260,7 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 	// this env" default readMachineEnvRecords sets is replaced with the
 	// real answer. See env_status_flux.go, including why this can never
 	// fail the status.
-	if rerr == nil && reconcilesThroughFlux(entities, envLedger{}) {
+	if rerr == nil && reconcilesThroughFlux() {
 		records.Convergence, records.ConvergenceDetail = fluxConvergenceFor(ctx, env, projectDir, entities, now)
 	}
 	return records, rerr

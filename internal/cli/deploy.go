@@ -1531,7 +1531,11 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 	// cluster, and a notice about retiring direct apply would be noise for
 	// a deploy that never touches one.
 	if !in.directApplyAllowed && !frontendOnly {
-		fmt.Println(lifecycleNoticeLine)
+		if in.entities != nil && in.entities.ControlPlane == nil {
+			fmt.Println(realClusterNoticeLine)
+		} else {
+			fmt.Println(lifecycleNoticeLine)
+		}
 	}
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{

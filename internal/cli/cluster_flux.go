@@ -92,7 +92,7 @@ func fluxInstallTargets(entities *KCLEntities, clusters []ClusterEntity) []strin
 	// predicate, with a machine ledger asserted: an env declaring a
 	// control plane has a version store that drives a reconciler already,
 	// and its clusters are not forge's to install into.
-	if entities.ControlPlane != nil || DirectApplyAllowed(entities) {
+	if entities.ControlPlane != nil || !reconcilesThroughFlux() {
 		return nil
 	}
 	provided := fluxProvidedClusters(entities, clusters)

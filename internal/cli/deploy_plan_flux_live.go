@@ -60,7 +60,7 @@ func fluxAppliedRevision(ctx context.Context, env string, entities *KCLEntities,
 // not a Flux env at all (handled=false) so the caller uses the apply history.
 func fluxLiveShape(ctx context.Context, projectDir, env, candidateDigest string, bundles []release.BundleRecord) (live *release.Shape, basis release.PlanBasis, handled bool) {
 	entities, err := RenderKCL(ctx, projectDir, env)
-	if err != nil || !reconcilesThroughFlux(entities, envLedger{}) {
+	if err != nil || !reconcilesThroughFlux() {
 		return nil, release.PlanBasis{}, false
 	}
 	doc, err := fluxBundleDocFromLayout(ctx, projectDir, candidateDigest)

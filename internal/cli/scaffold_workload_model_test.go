@@ -11,7 +11,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
@@ -69,7 +68,7 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "_hosted_frontend(_web_frontend)", "control_plane = forge.ControlPlane {", `organization = "` + hostedimage.OrgPlaceholder + `"`} {
+	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "_hosted_frontend(_web_frontend)", "control_plane = forge.ControlPlane {"} {
 		if !strings.Contains(string(cloud), want) {
 			t.Fatalf("derived cloud/main.k lacks %q:\n%s", want, cloud)
 		}
@@ -79,11 +78,6 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 			"REPLACE_ME_CLUSTER_CONTEXT": "gke_acme_cloud", "REPLACE_ME_PLATFORM": "amd64",
 			"REPLACE_ME_NAMESPACE": "acme-cloud", "REPLACE_ME_REGISTRY": "ghcr.io/acme",
 			"REPLACE_ME_BUCKET": "acme-cloud-web",
-			// The scaffolded organization. It is a REPLACE_ME_* like every
-			// other knob, so `forge env new --check` already gates on it
-			// with no new rule — which is why the placeholder was spelled
-			// to match placeholderRe rather than invented separately.
-			hostedimage.OrgPlaceholder: "4f3c2b1a-0000-4000-8000-000000000001",
 		}[p]
 	})
 	writeEnv(t, dir, "cloud", filled, filepath.Join(dir, "deploy", "kcl", "prod"))

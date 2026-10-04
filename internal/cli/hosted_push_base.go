@@ -1,21 +1,17 @@
 package cli
 
-// Resolving an env's platform push base from its DECLARATION.
+// Resolving an env's platform push base.
 //
-// There is one rule — `<registry_host>/<organization>/<project>` — and it
-// lives in internal/hostedimage.PushBase, which also records why forge
-// composes it rather than asking the control plane for it. What lives here is
-// the KCLEntities-shaped adapter over it, plus the two errors a caller needs
-// when the declaration cannot produce an address.
+// There is one rule — `<registry_host>/<org>/<project>` — and it lives in
+// internal/hostedimage.PushBase. The registry host and the project come from
+// the declaration; the org comes from the CREDENTIAL (hosted_org.go). What
+// lives here is the KCLEntities-shaped adapter over it, plus the errors a
+// caller needs when a base cannot be composed.
 //
 // EVERY CONSUMER READS THIS, AND NOTHING ELSE. The build, the deploy, the
 // release-coverage gate, `forge env render` and `forge lint` all resolve a
-// hosted address through this one function, so the address a build pushes to
-// is the address a deploy pins and the address a render judges. Before this,
-// the base arrived from the server and was cached on disk, and "resolve it
-// again over here" was a defect waiting to happen — it shipped once already,
-// pushing a site to `web/static.v1` with no registry in it at all while the
-// release recorded the resolved address.
+// hosted address through this one function, so the address a build pushes to is
+// the address a deploy pins and the address a render judges.
 
 import (
 	"bytes"
@@ -28,31 +24,21 @@ import (
 	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
-// declaredPushBase is the platform registry subtree this env's hosted
-// artifacts go to, composed from its control-plane declaration.
+// platformPushBase is the platform registry subtree this env's hosted
+// artifacts go to: the declared registry host, the org the credential acts for,
+// and the project.
 //
-// "" when the env declares no control plane, or declares one with no
-// organization. Both are legitimate states for this function to be asked
-// about — an env with nothing hosted never needs a base — so neither is an
-// error here. KCL refuses the one combination that IS a mistake (something
-// hosted with no organization) at load, which is earlier and names the field.
-func declaredPushBase(e *KCLEntities) string {
+// "" when the env declares no control plane, or its org is not knowable right
+// now (no credential, or the control plane did not answer). Both are
+// legitimate states for this BEST-EFFORT read — render and lint run with no
+// credential — so neither is an error here. The authenticated entry points
+// resolve the org strictly first (requireOrg), which is where a missing
+// credential is reported.
+func platformPushBase(e *KCLEntities) string {
 	if e == nil || e.ControlPlane == nil {
 		return ""
 	}
-	return hostedimage.PushBase(e.ControlPlane.RegistryHost, e.ControlPlane.Organization, hostedProjectName())
-}
-
-// declaredOrganization is the env's declared organization, or "" when it
-// declares no control plane or no organization. The placeholder reads as ""
-// here for the same reason PushBase composes nothing from it: it is not an
-// organization, so a message that named it as one would be misleading at the
-// exact moment someone is reading for a cause.
-func declaredOrganization(e *KCLEntities) string {
-	if e == nil || e.ControlPlane == nil || hostedimage.IsOrgPlaceholder(e.ControlPlane.Organization) {
-		return ""
-	}
-	return e.ControlPlane.Organization
+	return hostedimage.PushBase(e.ControlPlane.RegistryHost, e.ControlPlane.knownOrganization(), hostedProjectName())
 }
 
 // deniedPushHint is the realm-mismatch explanation to append to a failed
@@ -63,11 +49,11 @@ func declaredOrganization(e *KCLEntities) string {
 // other reason reads exactly as it did before. output is the subprocess
 // output for a `docker push` and "" for an in-process oras push, which
 // carries its status in the error itself.
-func deniedPushHint(err error, output, reference, organization string) string {
+func deniedPushHint(err error, output, reference string) string {
 	if !hostedimage.IsDenied(err, output) {
 		return ""
 	}
-	return "\n\n" + hostedimage.DeniedHint(reference, organization)
+	return "\n\n" + hostedimage.DeniedHint(reference)
 }
 
 // dockerPush runs `docker push <reference>`, streaming the daemon's output
@@ -77,14 +63,13 @@ func deniedPushHint(err error, output, reference, organization string) string {
 // ONE helper for every `docker push` forge makes, which is the only way the
 // hint can be reliable: there were four copies of this loop, and a hint added
 // to three of them would be a hint that appears or not depending on which
-// artifact failed — the least debuggable possible behaviour. organization is
-// the env's declared org ("" when it declares none).
+// artifact failed — the least debuggable possible behaviour.
 //
 // The output is TEE'd rather than captured: the author must still see
 // docker's own progress and message in real time, and the copy exists only so
 // IsDenied can read the distribution error code off it. A subprocess's exit
 // status is just "failed", so that text is the only signal available.
-func dockerPush(ctx context.Context, reference, organization string) error {
+func dockerPush(ctx context.Context, reference string) error {
 	var captured bytes.Buffer
 	cmd := exec.CommandContext(ctx, "docker", "push", reference)
 	cmd.Stdout = io.MultiWriter(os.Stdout, &captured)
@@ -94,23 +79,21 @@ func dockerPush(ctx context.Context, reference, organization string) error {
 		return nil
 	}
 	return fmt.Errorf("docker push %s: %w%s", reference, err,
-		deniedPushHint(err, captured.String(), reference, organization))
+		deniedPushHint(err, captured.String(), reference))
 }
 
-// errHostedImageNeedsPushBase is a bare hosted image in an env that resolves
-// no push base: it declares a control plane with no `organization`, so there
-// is no subtree to compose the image under.
+// errHostedImageNeedsPushBase is a bare hosted image in an env that resolves no
+// push base: forge could not learn which organization the credential acts for,
+// so there is no registry subtree to compose the image under.
 //
-// The remedy is to declare the org, NOT to write a full reference. That
-// inverts the pre-ADR-0003 advice on purpose: a hosted author's registry is
-// the platform's, so telling them to transcribe a host would be telling them
-// to restate a value forge already knows the shape of — which is the defect
-// ADR-0003 F1 closed. It names the workload rather than the rule, since a
-// project may declare several and only one of them is bare.
+// The remedy is a credential, NOT a declaration and NOT a full reference: a
+// hosted author's registry is the platform's, so telling them to transcribe a
+// host would be telling them to restate a value forge already knows. It names
+// the workload rather than the rule, since a project may declare several and
+// only one of them is bare.
 func errHostedImageNeedsPushBase(env, owner, image string) error {
 	return fmt.Errorf("workload %q declares image %q, which names no registry host, and it is bound to forge.OnHosted.\n"+
-		"  Env %q declares no organization, so there is no registry subtree to resolve it under.\n"+
-		"  fix: set `organization = \"<your org id>\"` on control_plane in deploy/kcl/%s/main.k; "+
-		"forge then resolves the image to %s/<organization>/<project>/%s",
-		owner, image, env, env, hostedimage.DefaultRegistryHost, image)
+		"  forge resolves it to %s/<your org>/<project>/%s, but it could not learn your org: that comes from your control-plane credential.\n"+
+		"  fix: authenticate (`forge login`, or set the env's token_env) and retry — env %q reads its org from that credential",
+		owner, image, hostedimage.DefaultRegistryHost, image, env)
 }

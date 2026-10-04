@@ -311,7 +311,7 @@ prefixed form as well, so a later step can address a specific one.`,
 //
 // RESOLVED AGAINST THE ENV'S PUSH BASE, exactly as the build resolves it
 // (resolvePushPlan). A BARE hosted image is legitimate since ADR-0003 F1 — it
-// resolves to `<registry_host>/<organization>/<project>/<name>` — and
+// resolves to `<registry_host>/<org>/<project>/<name>` — and
 // enumerating destinations with no base leaves every such image hostless,
 // which this function then reads as "nothing to push". So `forge registry
 // login prod` on a fully correct hosted project reported that no workload
@@ -322,7 +322,12 @@ func declaredRegistryHostsOf(ctx context.Context, context, env string) ([]string
 	if err != nil {
 		return nil, err
 	}
-	plan := pushPlan{env: env, destinations: declaredImageDestinationsWithBase(ents, declaredPushBase(ents))}
+	// Strict: logging in to the platform registry already needs the credential,
+	// and a bare hosted image only has a host once the org is known.
+	if err := requireOrg(ctx, ents); err != nil {
+		return nil, err
+	}
+	plan := pushPlan{env: env, destinations: declaredImageDestinationsWithBase(ents, platformPushBase(ents))}
 	if hosts := plan.hosts(); len(hosts) > 0 {
 		return hosts, nil
 	}

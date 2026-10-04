@@ -54,7 +54,7 @@ func promoteFromFixture(t *testing.T, stagingPromoted, prodPromoted []string) (*
 
 // sharedControlPlane is the one declaration both environments in the fixture
 // carry. Identical by value, which is what the guard checks.
-var sharedControlPlane = &cloud.Declaration{Endpoint: "https://cp.example", Organization: "acme"}
+var sharedControlPlane = &cloud.Declaration{Endpoint: "https://cp.example"}
 
 // stubPromoteLedgers states each environment's ledger, so a --from test does
 // not need two KCL trees and a control plane on disk to imply them.
@@ -286,9 +286,16 @@ func TestFileLedger_RefusesAVersionItWasNotGiven(t *testing.T) {
 // does not name the same bytes across two ledgers, and the source_moved check
 // needs the source promotion to be a row in the TARGET's control plane.
 func TestPromoteFrom_CrossLedgerIsRefusedBeforeAnyRPC(t *testing.T) {
+	// The org is the CREDENTIAL's, so each env names its credential by token_env
+	// and the stubbed resolver maps that to an org.
+	prevResolver := orgResolver
+	orgResolver = func(_ context.Context, _ string, d *cloud.Declaration) (string, error) {
+		return d.TokenEnv, nil
+	}
+	t.Cleanup(func() { orgResolver = prevResolver })
 	hosted := func(store *hostedStore, endpoint, org string) promoteEnvLedger {
 		return promoteEnvLedger{
-			ControlPlane: &cloud.Declaration{Endpoint: endpoint, Organization: org},
+			ControlPlane: &cloud.Declaration{Endpoint: endpoint, TokenEnv: org},
 			Ledger:       envLedger{Bindings: store, Releases: store, Hosted: true},
 		}
 	}
@@ -406,10 +413,11 @@ func TestPromoteFrom_PlanResolvesTheSourceAndWritesNothing(t *testing.T) {
 }
 
 // sameControlPlane's own rules, stated directly: the guard is pure, so the
-// comparison is pinned without a ledger or an RPC behind it.
+// comparison is pinned without a ledger or an RPC behind it. (The org half is
+// sameOrganization, which asks each credential — see hosted_org_test.go.)
 func TestSameControlPlane(t *testing.T) {
-	decl := func(endpoint, org string) *cloud.Declaration {
-		return &cloud.Declaration{Endpoint: endpoint, Organization: org}
+	decl := func(endpoint, _ string) *cloud.Declaration {
+		return &cloud.Declaration{Endpoint: endpoint}
 	}
 	cases := []struct {
 		name           string
@@ -419,7 +427,6 @@ func TestSameControlPlane(t *testing.T) {
 		{"identical", decl("https://cp", "acme"), decl("https://cp", "acme"), false},
 		{"a trailing slash is not a difference", decl("https://cp/", "acme"), decl("https://cp", "acme"), false},
 		{"different endpoints", decl("https://a", "acme"), decl("https://b", "acme"), true},
-		{"different orgs", decl("https://cp", "a"), decl("https://cp", "b"), true},
 		{"file-ledger source", nil, decl("https://cp", "acme"), true},
 		{"file-ledger target", decl("https://cp", "acme"), nil, true},
 		{"both file ledgers", nil, nil, true},

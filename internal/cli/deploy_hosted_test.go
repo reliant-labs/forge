@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -40,7 +41,6 @@ _bundle = forge.Bundle {
         endpoint = "` + endpoint + `"
         token_env = "ACME_CP_TOKEN"
         registry_host = "` + testHostedRegistryHost + `"
-        organization = "` + testHostedOrg + `"
     }
     secret_provider = forge.HostedSecrets {}
     workloads = [_w | {runtime = forge.OnHosted {}} if not _w.runtime else _w for _w in [fw.Workload {
@@ -609,7 +609,12 @@ func TestHostedArtifactKey(t *testing.T) {
 		w.Image = "e2eh/abc/echo"
 		w.Spec.Image = "localhost:5051/e2eh/abc/echo:t1"
 	})
-	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://x"}, Workloads: []WorkloadEntity{w}}
+	// A control plane whose org is not known composes no platform base, so the
+	// key is the declared artifact name verbatim.
+	cp := &ControlPlaneEntity{Endpoint: "https://x"}
+	cp.bindOrgLookup("prod")
+	cp.org.done, cp.org.err = true, errors.New("no credential")
+	e := &KCLEntities{ControlPlane: cp, Workloads: []WorkloadEntity{w}}
 	if got := hostedArtifactKey(e, w); got != "e2eh/abc/echo" {
 		t.Fatalf("key = %q, want the workload's artifact name", got)
 	}

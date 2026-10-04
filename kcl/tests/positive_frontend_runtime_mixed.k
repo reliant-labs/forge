@@ -16,14 +16,14 @@ _k8s = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme"}
 
 hosted_env = forge.render(forge.Bundle {
     project = "acme"
-    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api:v1", ports = [fw.Port {name = "http", port = 8080}], runtime = forge.OnCluster {target = _k8s}}]
     frontends = [forge.Frontend {name = "web", image = "ghcr.io/acme/web", path = "web", type = "vite", runtime = forge.OnHosted {}}]
 })
 
 bucket_env = forge.render(forge.Bundle {
     project = "acme"
-    control_plane = forge.ControlPlane {organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api:v1", ports = [fw.Port {name = "http", port = 8080, expose = True}], runtime = forge.OnHosted {}}]
     frontends = [
         forge.Frontend {name = "web", path = "web", type = "vite", runtime = forge.OnBucket {bucket = "acme-web"}}

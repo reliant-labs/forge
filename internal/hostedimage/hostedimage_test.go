@@ -221,76 +221,12 @@ func TestPushBase(t *testing.T) {
 		// and cannot be pushed.
 		{"no organization composes nothing", "registry.example.com", "", "shop", ""},
 		{"no project composes nothing", "registry.example.com", org, "", ""},
-		// The scaffolded placeholder is syntactically a value, so KCL's
-		// "organization is required" check passes on it. It is still not an
-		// address.
-		{"the scaffolded placeholder composes nothing", "", OrgPlaceholder, "shop", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := PushBase(tc.host, tc.org, tc.project); got != tc.want {
 				t.Errorf("PushBase(%q, %q, %q) = %q, want %q", tc.host, tc.org, tc.project, got, tc.want)
 			}
 		})
-	}
-}
-
-// ScanPushBase is the lint's offline reader of the same declaration. It joins
-// two files, because `organization` lives in the env's main.k while the
-// images it judges are declared in workloads.k.
-func TestScanPushBase(t *testing.T) {
-	const org = "4f3c2b1a-0000-4000-8000-000000000001"
-	dir := t.TempDir()
-	if got := ScanPushBase(dir, "shop"); got != "" {
-		t.Fatalf("an empty tree declares no base, got %q", got)
-	}
-	write(t, dir, "prod/main.k", `
-_bundle = forge.Bundle {
-    project = "shop"
-    control_plane = forge.ControlPlane {organization = "`+org+`"}
-}
-`)
-	if got, want := ScanPushBase(dir, "shop"), DefaultRegistryHost+"/"+org+"/shop"; got != want {
-		t.Errorf("ScanPushBase = %q, want %q", got, want)
-	}
-	// A declared host is read too, from whichever file carries it.
-	write(t, dir, "staging/main.k", "_bundle = forge.Bundle {\n    control_plane = forge.ControlPlane {registry_host = \"registry.example.com\"}\n}\n")
-	if got, want := ScanPushBase(dir, "shop"), "registry.example.com/"+org+"/shop"; got != want {
-		t.Errorf("ScanPushBase with a declared host = %q, want %q", got, want)
-	}
-}
-
-// A commented-out example is not a declaration — the same rule the image scan
-// follows, and the scaffolded files carry several.
-func TestScanPushBaseIgnoresProse(t *testing.T) {
-	dir := t.TempDir()
-	write(t, dir, "prod/main.k", `
-# organization = "4f3c2b1a-0000-4000-8000-000000000001"
-_bundle = forge.Bundle {project = "shop"}
-`)
-	if got := ScanPushBase(dir, "shop"); got != "" {
-		t.Errorf("a commented organization composed %q", got)
-	}
-}
-
-// The placeholder is reported SEPARATELY from "no base", because the two are
-// different states with different fixes: an env with nothing hosted is
-// allowed to declare no organization, while a placeholder is an instruction
-// the author has not carried out, and only the second one gates the lint.
-func TestScanOrgPlaceholder(t *testing.T) {
-	dir := t.TempDir()
-	if ScanOrgPlaceholder(dir) {
-		t.Error("an empty tree carries no placeholder")
-	}
-	write(t, dir, "prod/main.k", `
-_bundle = forge.Bundle {
-    control_plane = forge.ControlPlane {organization = "`+OrgPlaceholder+`"}
-}
-`)
-	if !ScanOrgPlaceholder(dir) {
-		t.Error("the scaffolded placeholder was not found")
-	}
-	if got := ScanPushBase(dir, "shop"); got != "" {
-		t.Errorf("the placeholder composed a base %q", got)
 	}
 }
 

@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 )
@@ -180,10 +179,13 @@ func resolvePromoteFrom(ctx context.Context, version, toEnv, projectDir string, 
 	if err := sameControlPlane(o.Env, toEnv, source.ControlPlane, target.ControlPlane); err != nil {
 		return promoteSource{}, err
 	}
+	if err := sameOrganization(ctx, o.Env, toEnv, source.ControlPlane, target.ControlPlane); err != nil {
+		return promoteSource{}, err
+	}
 
 	// READ THE SOURCE THROUGH THE SHARED CONTROL PLANE. The guard above
 	// has just established that both environments' ledgers are the same
-	// control plane — same endpoint, same organization, and the project is
+	// control plane — same endpoint, same organization (by credential), and the project is
 	// this checkout's for both — so the source's own store IS the target's
 	// control plane, reached by the source env's name.
 	current, bound, err := source.Ledger.Bindings.Current(ctx, o.Env)
@@ -269,10 +271,29 @@ func sameControlPlane(sourceEnv, targetEnv string, source, target *cloud.Declara
 		return promoteFromGuardError(sourceEnv, targetEnv,
 			fmt.Sprintf("%s is on %s and %s is on %s", sourceEnv, sourceEP.URL, targetEnv, targetEP.URL))
 	}
-	if sourceEP.Organization != targetEP.Organization {
+	return nil
+}
+
+// sameOrganization is the other half of the shared-ledger guard: both envs'
+// credentials must act for ONE organization. Same endpoint is not enough — two
+// envs naming different token_envs can be different orgs on one control plane,
+// and a release label means nothing across two orgs' ledgers.
+//
+// The org is the credential's (resolveDeclarationOrg), so this is the one place
+// the comparison needs a call; it is cached per (endpoint, token env), so two
+// envs sharing a credential cost one.
+func sameOrganization(ctx context.Context, sourceEnv, targetEnv string, source, target *cloud.Declaration) error {
+	sourceOrg, err := orgResolver(ctx, sourceEnv, source)
+	if err != nil {
+		return err
+	}
+	targetOrg, err := orgResolver(ctx, targetEnv, target)
+	if err != nil {
+		return err
+	}
+	if sourceOrg != targetOrg {
 		return promoteFromGuardError(sourceEnv, targetEnv,
-			fmt.Sprintf("both are on %s but in different organizations (%s vs %s)",
-				targetEP.URL, orgLabel(sourceEP.Organization), orgLabel(targetEP.Organization)))
+			fmt.Sprintf("their credentials act for different organizations (%s vs %s)", sourceOrg, targetOrg))
 	}
 	return nil
 }
@@ -291,13 +312,4 @@ func promoteFromGuardError(sourceEnv, targetEnv, detail string) error {
 		"  a release label is assigned per ledger, so it does not name the same bytes in both, "+
 		"and the source_moved check needs the source promotion to be a row in the TARGET's control plane",
 		errPromoteFromCrossLedger, sourceEnv, targetEnv, detail, targetEnv)
-}
-
-// orgLabel renders an organization for a refusal, naming the absence rather
-// than printing an empty string into the middle of a sentence.
-func orgLabel(org string) string {
-	if strings.TrimSpace(org) == "" {
-		return "none declared"
-	}
-	return org
 }

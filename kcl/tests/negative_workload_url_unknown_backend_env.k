@@ -13,7 +13,7 @@ import forge.workloads as fw
 
 _bundle = forge.Bundle {
     project = "acme"
-    control_plane = forge.ControlPlane {endpoint = "https://api.example.com", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     workloads = [fw.Workload {
         name = "api"
         image = "ghcr.io/acme/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

@@ -98,7 +98,7 @@ func hostedGroup(release string, digests map[string]string, resources v1alpha1.R
 }
 
 // hostedGroupWithPushBase is hostedGroup with the DECLARED base stated, for
-// the tests that exercise checkImagePushBase. "" is an env that declared no
+// the tests that exercise checkImagePushBase. "" is an env whose org was not learned
 // organization.
 func hostedGroupWithPushBase(release string, digests map[string]string, resources v1alpha1.Resources, pushBase string) ServiceGroup {
 	return ServiceGroup{
@@ -260,16 +260,16 @@ func TestHostedImagePushBase(t *testing.T) {
 		}
 	})
 
-	// An env that declared no organization composes no base, so there is no
+	// An env whose credential's org was not learned composes no base, so there is no
 	// address any image could be under. Refused, and the refusal names the
-	// field to declare rather than a server setting the author cannot reach.
-	t.Run("no declared organization refused", func(t *testing.T) {
+	// credential to supply rather than a server setting the author cannot reach.
+	t.Run("no resolved push base refused", func(t *testing.T) {
 		cp, err := deploy("")
-		if err == nil || !strings.Contains(err.Error(), "declares no organization") {
-			t.Fatalf("err = %v, want the no-organization refusal", err)
+		if err == nil || !strings.Contains(err.Error(), "resolved no image push base") {
+			t.Fatalf("err = %v, want the no-push-base refusal", err)
 		}
-		if !strings.Contains(err.Error(), "deploy/kcl/prod/main.k") {
-			t.Errorf("the refusal must name the file to edit:\n%v", err)
+		if !strings.Contains(err.Error(), "forge login") {
+			t.Errorf("the refusal must name the credential remedy:\n%v", err)
 		}
 		if w := writes(cp); len(w) != 0 {
 			t.Fatalf("writes with no push base: %v", w)

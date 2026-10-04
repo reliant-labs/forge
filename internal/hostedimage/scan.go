@@ -22,26 +22,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 )
 
 var (
-	// organizationField and registryHostField are the control-plane
-	// declaration ScanPushBase reads.
-	//
-	// Anchored on a LINE START or an opening brace rather than on a whole
-	// line, unlike the two below, because a ControlPlane is routinely
-	// written inline — `control_plane = forge.ControlPlane {organization =
-	// "..."}` is the one-line form the docstring teaches and the form most
-	// existing envs use. Requiring its own line silently read every such
-	// declaration as absent, which is the worst failure available here: the
-	// lint would compare against no base and say so, on a project that
-	// declares one perfectly well.
-	//
-	// Prose is still excluded, by stripComments running first.
-	organizationField = regexp.MustCompile(`(?:^|[{,\s])organization\s*=\s*"([^"]+)"`)
-	registryHostField = regexp.MustCompile(`(?:^|[{,\s])registry_host\s*=\s*"([^"]+)"`)
 	// nameField and imageField are the two declarations this scan joins.
 	// Anchored on the field so a name inside a command path or a comment
 	// does not read as a declaration.
@@ -97,86 +81,6 @@ func ScanTree(dir string) []Item {
 	return out
 }
 
-// ScanPushBase is the push base declared in the deploy KCL tree at dir,
-// composed with project, or "" when no `organization` is declared anywhere in
-// it.
-//
-// WHY A SCAN RATHER THAN A RENDER, and why ANY organization will do. This
-// serves `forge lint`, which judges every env in the project — so rendering
-// each one would cost a KCL evaluation plus whatever that env's render needs
-// to exist, and a lint that could only run where a deploy can run would not
-// be a lint (the header says more). A scan cannot attribute a declaration to
-// an env either, so there is no single correct base; taking the first one in
-// file order only ever makes a finding STRONGER, because the comparison still
-// reports nothing but an image whose host is not the platform's.
-//
-// `forge env render <env>` does the authoritative version against the real
-// render, reading the real declaration. This is the cheap offline
-// approximation, and it under-reports by exactly the same construction the
-// image scan does.
-func ScanPushBase(dir, project string) string {
-	org, host := "", ""
-	var paths []string
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".k") {
-			paths = append(paths, path)
-		}
-		return nil
-	})
-	// Deterministic: a lint's output must not depend on directory order.
-	sort.Strings(paths)
-	for _, path := range paths {
-		src, rerr := os.ReadFile(path)
-		if rerr != nil {
-			continue
-		}
-		clean := stripComments(string(src))
-		if org == "" {
-			if m := organizationField.FindStringSubmatch(clean); m != nil {
-				org = m[1]
-			}
-		}
-		if host == "" {
-			if m := registryHostField.FindStringSubmatch(clean); m != nil {
-				host = m[1]
-			}
-		}
-	}
-	return PushBase(host, org, project)
-}
-
-// ScanOrgPlaceholder reports whether any `.k` file in the tree at dir still
-// declares the scaffolded organization placeholder.
-//
-// Separate from ScanPushBase because the two answer different questions and
-// one of them gates. ScanPushBase folds the placeholder into "" — there is no
-// address — which is indistinguishable from an env that declares no
-// organization at all. That distinction is exactly what a lint needs: nothing
-// declared is a state an env with nothing hosted is allowed to be in, while a
-// placeholder is an instruction the author has not carried out.
-func ScanOrgPlaceholder(dir string) bool {
-	found := false
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".k") || found {
-			return nil
-		}
-		src, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return nil
-		}
-		if m := organizationField.FindStringSubmatch(stripComments(string(src))); len(m) > 1 && IsOrgPlaceholder(m[1]) {
-			found = true
-		}
-		return nil
-	})
-	return found
-}
-
-// scanSource folds one file's declarations into the two maps: name→image, and
-// the set of names bound to forge.OnHosted.
-//
-// Comments are stripped first, so a commented-out example — of which the
-// scaffolded workloads.k has several — is not read as a declaration.
 func scanSource(src string, images map[string]string, hosted map[string]bool) {
 	src = stripComments(src)
 	// name → image, from any literal declaring both.

@@ -65,7 +65,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
-	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
@@ -309,7 +308,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		reportDeclinedWrites(errOut, kclplugin.SuppressedWrites())
 	}()
 
-	entities, kerr := renderKCLRefusingPlaceholder(ctx, projectDir, envName)
+	entities, kerr := RenderKCL(ctx, projectDir, envName)
 	if kerr != nil {
 		return fmt.Errorf("render deploy/kcl/%s/: %w", envName, kerr)
 	}
@@ -362,7 +361,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// The unverified half therefore survives only for an env that declares a
 	// control plane and nothing hosted, where forge has no base to compare
 	// against and failing a render would assert something it never checked.
-	offBase := hostedOffBaseImageFindings(entities, declaredPushBase(entities))
+	offBase := hostedOffBaseImageFindings(entities, platformPushBase(entities))
 	if verified := verifiedOffBaseImages(offBase); len(verified) > 0 {
 		return errHostedImagesOffBase(envName, verified)
 	}
@@ -1117,19 +1116,4 @@ func attributeWithHosted(ctx context.Context, projectDir, manifests string, grou
 		clusters = mergeClusters(clusters, []string{release.BundleHostedCluster})
 	}
 	return objects, clusters, nil
-}
-
-// renderKCLRefusingPlaceholder renders the env and fails when its control_plane
-// still declares the scaffolded organization placeholder, instead of letting it
-// fail at push.
-func renderKCLRefusingPlaceholder(ctx context.Context, projectDir, envName string) (*KCLEntities, error) {
-	entities, err := RenderKCL(ctx, projectDir, envName)
-	if err != nil {
-		return entities, err
-	}
-	if entities != nil && entities.ControlPlane != nil && hostedimage.IsOrgPlaceholder(entities.ControlPlane.Organization) {
-		message, fix := hostedimage.OrgPlaceholderRefusal(hostedProjectName())
-		return nil, fmt.Errorf("[hosted-image-base] %s\n    → %s", message, fix)
-	}
-	return entities, nil
 }

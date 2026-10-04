@@ -84,7 +84,7 @@ func ensureHostedEnv(ctx context.Context, client cloudCaller, ref deploytarget.H
 // image push base off the ensured environment and write it to .forge/state,
 // so the offline consumers could read it back. That whole mechanism is gone:
 // the push base is composed from the env's own declaration
-// (declaredPushBase), which needs no call, cannot go stale, and lets a fresh
+// (platformPushBase), which needs no call, cannot go stale, and lets a fresh
 // checkout render before it has ever authenticated.
 func declareHostedEnv(ctx context.Context, client cloudCaller, ref deploytarget.HostedEnvRef) error {
 	_, err := ensureHostedEnv(ctx, client, ref)

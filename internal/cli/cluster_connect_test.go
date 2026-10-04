@@ -405,7 +405,7 @@ func TestClusterBindingsOf(t *testing.T) {
 }
 
 func TestRefuseUnboundClusterTargets(t *testing.T) {
-	cp := &ControlPlaneEntity{Endpoint: "https://cp.example", Organization: "acme"}
+	cp := &ControlPlaneEntity{Endpoint: "https://cp.example"}
 
 	// A cloud cluster with no connected name: refused, because the control
 	// plane would record the deploy with nowhere to send it.
@@ -456,7 +456,7 @@ func TestRefuseUnboundClusterTargets(t *testing.T) {
 func TestRenderRefusesAnUnboundCloudTarget(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "entities.json")
 	if err := os.WriteFile(fixture, []byte(`{
-      "control_plane": {"type": "control_plane", "endpoint": "https://cp.example", "organization": "acme"},
+      "control_plane": {"type": "control_plane", "endpoint": "https://cp.example"},
       "cluster_target": {"cluster": "gke_acme_us-central1_prod", "namespace": "acme-prod"},
       "workloads": []
     }`), 0o600); err != nil {
@@ -477,7 +477,7 @@ func TestRenderRefusesAnUnboundCloudTarget(t *testing.T) {
 func TestRenderAcceptsABoundCloudTarget(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "entities.json")
 	if err := os.WriteFile(fixture, []byte(`{
-      "control_plane": {"type": "control_plane", "endpoint": "https://cp.example", "organization": "acme"},
+      "control_plane": {"type": "control_plane", "endpoint": "https://cp.example"},
       "cluster_target": {"cluster": "gke_acme_us-central1_prod", "namespace": "acme-prod",
                          "connected_cluster": "prod-us"},
       "workloads": []

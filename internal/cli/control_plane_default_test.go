@@ -65,7 +65,7 @@ func TestControlPlaneDefault_KCLMatchesGo(t *testing.T) {
 		name, block, wantURL string
 	}{
 		{"empty declaration is Reliant cloud", "forge.ControlPlane {}", cloud.DefaultEndpoint},
-		{"explicit endpoint wins", `forge.ControlPlane {endpoint = "http://127.0.0.1:8090", organization = "4f3c2b1a-0000-4000-8000-000000000001"}`, "http://127.0.0.1:8090"},
+		{"explicit endpoint wins", `forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}`, "http://127.0.0.1:8090"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decl := renderControlPlaneDecl(t, controlPlaneMainK(tc.block))
@@ -110,13 +110,13 @@ func TestNewEnv_DoesNotCopyTheTemplatesControlPlaneEndpoint(t *testing.T) {
 		},
 		{
 			name:         "one-line block",
-			block:        `forge.ControlPlane {endpoint = "http://127.0.0.1:8090", token_env = "ACME_DEPLOY_TOKEN", organization = "4f3c2b1a-0000-4000-8000-000000000001"}`,
+			block:        `forge.ControlPlane {endpoint = "http://127.0.0.1:8090", token_env = "ACME_DEPLOY_TOKEN"}`,
 			wantNote:     `names "http://127.0.0.1:8090"`,
 			wantTokenEnv: "ACME_DEPLOY_TOKEN",
 		},
 		{
 			name:         "template already spelled out Reliant cloud",
-			block:        `forge.ControlPlane {endpoint = "` + cloud.DefaultEndpoint + `", organization = "4f3c2b1a-0000-4000-8000-000000000001"}`,
+			block:        `forge.ControlPlane {endpoint = "` + cloud.DefaultEndpoint + `"}`,
 			wantNote:     "Reliant cloud is forge.ControlPlane's default",
 			wantTokenEnv: cloud.DefaultTokenEnv,
 		},
@@ -258,10 +258,10 @@ func TestRegistryDefault_KCLMatchesGo(t *testing.T) {
 		name, block, wantHost string
 	}{
 		{"an empty declaration is Reliant's registry",
-			`forge.ControlPlane {organization = "` + org + `"}`,
+			`forge.ControlPlane {}`,
 			hostedimage.DefaultRegistryHost},
 		{"an explicit host wins",
-			`forge.ControlPlane {organization = "` + org + `", registry_host = "registry.example.com"}`,
+			`forge.ControlPlane {registry_host = "registry.example.com"}`,
 			"registry.example.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,17 +272,15 @@ func TestRegistryDefault_KCLMatchesGo(t *testing.T) {
 			if cp.RegistryHost != tc.wantHost {
 				t.Errorf("registry_host = %q, want %q", cp.RegistryHost, tc.wantHost)
 			}
-			if cp.Organization != org {
-				t.Errorf("organization = %q, want %q", cp.Organization, org)
-			}
 			// And the base the whole design rests on, composed end to end
-			// from what KCL actually rendered.
+			// from what KCL actually rendered plus the credential's org.
 			hostedProjectNameRestore := hostedProjectName
 			hostedProjectName = func() string { return "acme" }
 			t.Cleanup(func() { hostedProjectName = hostedProjectNameRestore })
-			got := declaredPushBase(&KCLEntities{ControlPlane: cp})
+			cp.setResolvedOrg(org)
+			got := platformPushBase(&KCLEntities{ControlPlane: cp})
 			if want := tc.wantHost + "/" + org + "/acme"; got != want {
-				t.Errorf("declaredPushBase = %q, want %q", got, want)
+				t.Errorf("platformPushBase = %q, want %q", got, want)
 			}
 		})
 	}

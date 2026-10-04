@@ -73,9 +73,6 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 	// owns its format, and a forge-side assumption about it would break
 	// the day that format changed.
 	httpReq.Header.Set("Authorization", "Bearer "+c.Credential.Token)
-	if c.Endpoint.Organization != "" {
-		httpReq.Header.Set("X-Forge-Organization", c.Endpoint.Organization)
-	}
 
 	resp, err := c.httpClient().Do(httpReq)
 	if err != nil {

@@ -37,23 +37,19 @@ type Endpoint struct {
 	URL string
 	// TokenEnv is the env var NAME the credential is read from.
 	TokenEnv string
-	// Organization is an optional non-sensitive account hint the endpoint
-	// may use to scope a request. forge does not interpret it.
-	Organization string
 }
 
 // Declaration is the per-environment control-plane declaration, as read
 // from the environment's rendered KCL.
 //
 // Declared HERE, at the consumer, rather than importing the CLI's entity
-// type: this package needs four strings, and taking a dependency on the
+// type: this package needs two strings, and taking a dependency on the
 // renderer's struct would point the dependency the wrong way (cli
 // depends on cloud, not the reverse) and drag the whole entity graph in
 // behind it.
 type Declaration struct {
-	Endpoint     string
-	TokenEnv     string
-	Organization string
+	Endpoint string
+	TokenEnv string
 }
 
 // ResolveEndpoint turns one environment's declaration into an Endpoint.
@@ -82,9 +78,8 @@ func ResolveEndpoint(env string, decl *Declaration) (Endpoint, error) {
 		tokenEnv = DefaultTokenEnv
 	}
 	return Endpoint{
-		Env:          env,
-		URL:          strings.TrimRight(strings.TrimSpace(decl.Endpoint), "/"),
-		TokenEnv:     tokenEnv,
-		Organization: strings.TrimSpace(decl.Organization),
+		Env:      env,
+		URL:      strings.TrimRight(strings.TrimSpace(decl.Endpoint), "/"),
+		TokenEnv: tokenEnv,
 	}, nil
 }

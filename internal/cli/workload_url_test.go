@@ -36,7 +36,7 @@ func workloadURLProject(t *testing.T, env, bundleBody string) string {
 
 const hostedWorkloadURLBundle = `    project = "acme"
     env = "prod"
-    control_plane = forge.ControlPlane { endpoint = "https://cp.example" , organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane { endpoint = "https://cp.example"}
     workloads = [fw.Workload {
         name = "api"
         image = "ghcr.io/acme/api:v1"

@@ -158,6 +158,13 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		return fmt.Errorf("env %q deploys to the control plane at %s: %w", envName, ep.URL, err)
 	}
 	client := hostedDeployClient(ep, cred)
+	// The push base every hosted address below hangs off is composed from the
+	// org this credential acts for. Learned once, here, so a deploy that cannot
+	// know it fails before it publishes anything rather than composing a base
+	// with a hole in it.
+	if err := requireOrg(ctx, entities); err != nil {
+		return err
+	}
 	ref := hostedEnvRefFor(envName, entities)
 
 	// The guard, stated for a hosted destination: the declared "context" is
@@ -206,7 +213,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		groups[i].DryRun = opts.dryRun
 		groups[i].Hosted = &deploytarget.HostedTarget{Endpoint: ep.URL, Project: ref.Project, Release: release,
 			PromotionID: promotionID, Digests: digests, Registries: registries,
-			PushBase: declaredPushBase(entities),
+			PushBase: platformPushBase(entities),
 			Shape:    shape, DeclaredBy: declaredBy}
 	}
 

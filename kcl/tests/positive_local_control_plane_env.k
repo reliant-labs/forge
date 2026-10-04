@@ -14,7 +14,7 @@ import forge.workloads as fw
 _bundle = forge.Bundle {
     project = "hounders"
     env = "dev"
-    control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {endpoint = "http://127.0.0.1:8090"}
     secret_provider = forge.HostedSecrets {}
     workloads = [_w | {runtime = forge.OnHost {runner = "go-run"}} if not _w.runtime else _w for _w in [
         fw.Workload {

@@ -125,6 +125,21 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "the control plane's own organization-lookup RPC, DeployService/GetTenant",
+				Reason: "forge learns which organization a credential acts for by calling the control " +
+					"plane's DeployService.GetTenant, whose response nests the caller's org under a " +
+					"`tenant` key. Both names are the control plane's wire identifiers and cannot be " +
+					"renamed here; they are a lookup of the caller's ORGANIZATION, not a tenant column, " +
+					"header, context key or helper in forge. Scoped to those exact literals and to the one " +
+					"file that makes the call and its test, so any other `tenant` there (a TenantID, a " +
+					"tenant header) still fails.",
+				Token: regexp.MustCompile(`DeployService/GetTenant|json:"tenant"|\{"tenant":`),
+				Paths: []string{
+					"internal/cloud/organization.go",
+					"internal/cloud/organization_test.go",
+				},
+			},
+			{
 				Name: "prose teaching that forge has no tenancy",
 				Reason: "The db/write-policy skill's \"If rows belong to someone, that is a column\" section and " +
 					"seedplan's diamond-disambiguation comment both name tenancy in order to say " +

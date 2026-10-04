@@ -40,7 +40,6 @@ _bundle = forge.Bundle {
     project = "demo"
     control_plane = forge.ControlPlane {
         endpoint = "https://cp.example.test"
-        organization = "acme"
     }
     cluster_target = _prod
     workloads = [

@@ -29,7 +29,7 @@ _env = {
 
 output = forge.render(forge.Bundle {
     project = "demo"
-    control_plane = forge.ControlPlane {endpoint = "https://api.example.com", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     workloads = [
         fw.Workload {name = "cli", kind = "tool", build = forge.GoBuild {cmd = "./cmd/cli"}, image = "localhost:5050/demo", args = ["admin"], runtime = forge.OnCluster {target = _k3d}}
         fw.Workload {name = "api", image = "localhost:5050/demo", args = ["api"], env = _env, runtime = forge.OnCluster {target = _k3d}}

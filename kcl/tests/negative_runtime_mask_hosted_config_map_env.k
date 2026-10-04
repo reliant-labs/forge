@@ -19,7 +19,7 @@ import forge.workloads as fw
 
 output = forge.render(forge.Bundle {
     project = "acme"
-    control_plane = forge.ControlPlane {endpoint = "https://api.example.com", organization = "4f3c2b1a-0000-4000-8000-000000000001"}
+    control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
     workloads = [_w | {runtime = forge.OnHosted {}} if not _w.runtime else _w for _w in [fw.Workload {
         name = "api"
         kind = "service"

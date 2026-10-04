@@ -160,9 +160,10 @@ An env that pushes to the platform registry AND one of your own keeps the login
 step for yours alone; forge does its half in the same run.
 
 A job that gets a realm **401 / DENIED** on push is almost never missing a
-credential — check `organization` on `forge.ControlPlane` first (the realm
-scopes every token to its own org's subtree), then whether the token expired.
-forge prints the hint naming the declared org. Do not add a `docker login`.
+credential. forge composes the push address from the org the token acts for
+(there is no `organization` to declare), so check whether the token expired and
+whether it carries `deploy:write` — a push needs both the org's subtree and
+write access. forge prints a hint saying so. Do not add a `docker login`.
 
 ### Deploys go through forge
 

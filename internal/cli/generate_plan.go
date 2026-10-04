@@ -20,12 +20,15 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"reflect"
 	"runtime"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 // runGeneratePlan implements `forge generate --plan`. It mirrors the
@@ -218,6 +221,12 @@ func gateName(g func(*pipelineContext) bool) string {
 func (ctx *pipelineContext) warnOrFail(stepName string, err error) error {
 	if err == nil {
 		return nil
+	}
+	var fetchErr *pgtest.FetchError
+	if errors.As(err, &fetchErr) {
+		// A failed postgres download means every schema-derived output (ORM,
+		// factories, mocks) would be silently empty; never succeed with zero output.
+		return fmt.Errorf("%s failed: %w", stepName, err)
 	}
 	if ctx.Strict {
 		return fmt.Errorf("%s failed: %w (--strict)", stepName, err)

@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -96,11 +98,18 @@ type dbEntity struct {
 // buildEntityFactorySpecs introspects the applied schema, joins it with the ORM
 // structs' table↔Go-name mapping, and bakes a factory spec for every
 // single-string-PK entity whose FK closure the seed planner can satisfy.
-func buildEntityFactorySpecs(projectDir string) []entityFactorySpec {
+func buildEntityFactorySpecs(projectDir string) ([]entityFactorySpec, error) {
 	migDir := filepath.Join(projectDir, "db", "migrations")
 	tables, err := schemadef.ApplyAndIntrospectAt(migDir, shadowdb.Resolve(projectDir))
-	if err != nil || len(tables) == 0 {
-		return nil
+	if err != nil {
+		var fetchErr *pgtest.FetchError
+		if errors.As(err, &fetchErr) {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if len(tables) == 0 {
+		return nil, nil
 	}
 	byName := make(map[string]schemadef.Table, len(tables))
 	for _, t := range tables {
@@ -109,7 +118,7 @@ func buildEntityFactorySpecs(projectDir string) []entityFactorySpec {
 
 	dbEntities := parseDBEntities(filepath.Join(projectDir, "internal", "db"))
 	if len(dbEntities) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	pools := seedplan.PoolsFromTables(tables)
@@ -137,7 +146,7 @@ func buildEntityFactorySpecs(projectDir string) []entityFactorySpec {
 			specs = append(specs, spec)
 		}
 	}
-	return specs
+	return specs, nil
 }
 
 // bakeEntityFactory renders one entity's parent + root SQL from a Rows:1 plan
@@ -446,7 +455,10 @@ func backquoteOrQuote(s string) string {
 // it. Emitting one anyway would reintroduce exactly the importable-from-
 // anywhere non-test package this move removed.
 func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDef, cs *checksums.FileChecksums) error {
-	specs := buildEntityFactorySpecs(projectDir)
+	specs, err := buildEntityFactorySpecs(projectDir)
+	if err != nil {
+		return err
+	}
 	if len(specs) == 0 {
 		return nil
 	}

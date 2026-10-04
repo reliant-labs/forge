@@ -82,10 +82,10 @@ func TestHostPortFromMirrorConfig(t *testing.T) {
     endpoint:
       - http://k3d-control-plane-registry:5000
 `
-	if got := hostPortFromMirrorConfig(mirror); got != 5051 {
+	if got := hostPortFromMirrorConfig(mirror, "k3d-control-plane-registry"); got != 5051 {
 		t.Errorf("hostPortFromMirrorConfig = %d want 5051 (localhost key)", got)
 	}
-	if got := hostPortFromMirrorConfig(""); got != 0 {
+	if got := hostPortFromMirrorConfig("", ""); got != 0 {
 		t.Errorf("hostPortFromMirrorConfig(empty) = %d want 0", got)
 	}
 	// No localhost key, only a registry.localhost alias — fall back to the
@@ -95,7 +95,7 @@ func TestHostPortFromMirrorConfig(t *testing.T) {
     endpoint:
       - http://k3d-control-plane-registry:5000
 `
-	if got := hostPortFromMirrorConfig(aliasOnly); got != 5000 {
+	if got := hostPortFromMirrorConfig(aliasOnly, "k3d-control-plane-registry"); got != 5000 {
 		t.Errorf("hostPortFromMirrorConfig(alias-only) = %d want 5000 (fallback)", got)
 	}
 }
@@ -250,5 +250,41 @@ func TestEnsureConfigRegistries_FromFile(t *testing.T) {
 	}
 	if len(created) != 0 {
 		t.Fatalf("empty path ensured %d registr(ies); want 0", len(created))
+	}
+}
+
+// control-plane's k3d-v2.yaml carries a mirror for the declared registry
+// (localhost:5051) AND for the hosted registry's serverlb (localhost:38086).
+// The host port must be the declared registry's, every time — map iteration
+// order used to pick 38086 in ~12% of runs.
+func TestParseUseRegistries_TwoMirrorsDeterministic(t *testing.T) {
+	const cfg = `apiVersion: k3d.io/v1alpha5
+kind: Simple
+registries:
+  use:
+    - k3d-control-plane-registry:5000
+  config: |
+    mirrors:
+      "registry.localhost:5000":
+        endpoint:
+          - http://k3d-control-plane-registry:5000
+      "registry.localhost:5051":
+        endpoint:
+          - http://k3d-control-plane-registry:5000
+      "localhost:5051":
+        endpoint:
+          - http://k3d-control-plane-registry:5000
+      "localhost:38086":
+        endpoint:
+          - http://k3d-control-plane-v2-serverlb:38086
+`
+	for i := 0; i < 1000; i++ {
+		refs, err := parseUseRegistries([]byte(cfg))
+		if err != nil || len(refs) != 1 {
+			t.Fatalf("parse: refs=%v err=%v", refs, err)
+		}
+		if refs[0].HostPort != 5051 {
+			t.Fatalf("iteration %d: HostPort = %d want 5051", i, refs[0].HostPort)
+		}
 	}
 }

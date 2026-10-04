@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"github.com/jinzhu/inflection"
 
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -319,16 +321,23 @@ type SeedProjection struct {
 // the salt and row counts the dev dataset is built with — passed in rather
 // than re-derived here so the mocks and `forge db seed apply` cannot be
 // looking at different plans.
-func BuildSeedProjection(projectDir string, cfg seedplan.Config) *SeedProjection {
+func BuildSeedProjection(projectDir string, cfg seedplan.Config) (*SeedProjection, error) {
 	migDir := filepath.Join(projectDir, "db", "migrations")
 	tables, err := schemadef.ApplyAndIntrospectAt(migDir, shadowdb.Resolve(projectDir))
-	if err != nil || len(tables) == 0 {
-		return nil
+	if err != nil {
+		var fetchErr *pgtest.FetchError
+		if errors.As(err, &fetchErr) {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if len(tables) == 0 {
+		return nil, nil
 	}
 	// Vocab problems are reported by the seed CLI, which is where a project
 	// asks for its dataset; a bad overlay here just means built-ins.
 	vocab, _ := seedplan.LoadVocab(seedplan.VocabPath(migDir))
-	return newSeedProjection(tables, cfg, vocab)
+	return newSeedProjection(tables, cfg, vocab), nil
 }
 
 // newSeedProjection builds the projection from an already-introspected

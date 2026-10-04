@@ -1160,7 +1160,7 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 // manifest document, applying the given image tag, namespace, per-env
 // config overrides, and image digest pins. It runs from the project root
 // so deploy-as-data file reads resolve.
-func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
+func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
 	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
 	// Render from the project root so the env main.k's relative imports
 	// (`..components`, `..ingress`) and the kcl.mod vendor path resolve.
@@ -1178,7 +1178,8 @@ func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, 
 	if err != nil {
 		return "", err
 	}
-	return extractManifests(out)
+	stream, _, err := extractManifestsIn(ctx, workDir, out)
+	return stream, err
 }
 
 // RenderManifestsWithOverrides is RenderManifests, additionally reporting
@@ -1195,13 +1196,7 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 	if err != nil {
 		return "", nil, err
 	}
-	return ExtractManifestsWithOverrides(out)
-}
-
-// extractManifests is ExtractManifests; kept as the package-internal name
-// RenderManifests calls.
-func extractManifests(kclOutput []byte) (string, error) {
-	return ExtractManifests(kclOutput)
+	return extractManifestsIn(ctx, workDir, out)
 }
 
 // ExtractManifests is the manifest stream a render's KCL output becomes on
@@ -1226,6 +1221,12 @@ func ExtractManifests(kclOutput []byte) (string, error) {
 // overrides need the second return (`forge env render`'s summary and its
 // --json); every other caller wants the stream and uses ExtractManifests.
 func ExtractManifestsWithOverrides(kclOutput []byte) (string, []AppliedOverride, error) {
+	return extractManifestsIn(context.Background(), "", kclOutput)
+}
+
+// extractManifestsIn is the one extraction. projectDir is where a
+// forge.Generated command runs from ("" = the process cwd).
+func extractManifestsIn(ctx context.Context, projectDir string, kclOutput []byte) (string, []AppliedOverride, error) {
 	var doc map[string]any
 	if err := yaml.Unmarshal(kclOutput, &doc); err != nil {
 		return "", nil, fmt.Errorf("parse kcl output: %w", err)
@@ -1265,6 +1266,16 @@ func ExtractManifestsWithOverrides(kclOutput []byte) (string, []AppliedOverride,
 	if err != nil {
 		return "", nil, err
 	}
+
+	// Bring-your-own YAML (an app chart with delivery = "bundle", a
+	// forge.Generated command) joins the stream HERE, so every consumer of
+	// it — render, shape, direct apply, the bundle — sees the same objects
+	// and an override can address them. See byo_yaml.go.
+	byo, err := expandBYOSources(ctx, projectDir, out, decodeHostedNames(out["workloads"]))
+	if err != nil {
+		return "", nil, err
+	}
+	items = append(items, byo...)
 
 	// Bundle.overrides, applied HERE: after expansion, so a Deployment that
 	// only exists because forge expanded a Workload record is addressable,

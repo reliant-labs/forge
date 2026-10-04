@@ -431,6 +431,8 @@ Name it in `Bundle.overrides` and forge patches its own render:
 `overrides = {"Deployment/api" = {spec.replicas = 10}}`. Keys, patch semantics
 and every failure: load `deploy/overrides`.
 
+Own app chart, kustomize/jsonnet output: `deploy/byo-yaml`.
+
 ## Reaching another cluster's API server
 
 A workload needing a kubeconfig for ANOTHER cluster declares

@@ -169,27 +169,7 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	// be both unexplainable to a later reader and unrecoverable — nothing
 	// would know to re-point it.
 	if reconciled, entities := fluxReconciledEnv(ctx, env, ledger); reconciled {
-		// `--target <platform-chart>` is cluster bootstrap, not a release
-		// pointer: install the chart(s) and write no pointer when nothing
-		// else was asked for. See platform_charts.go.
-		charts, rest := splitPlatformChartTargets(entities, o.clientDeploy.targets)
-		if len(charts) > 0 {
-			if !o.clientDeploy.dryRun {
-				if err := installPlatformCharts(ctx, entities, platformChartInstalls(entities, charts, nil)); err != nil {
-					return err
-				}
-			}
-			if len(rest) == 0 {
-				return nil
-			}
-		}
-		return runFluxDeploy(ctx, env, entities, fluxDeployOptions{
-			Digest:  fluxDeployDigest(ctx, env, plan),
-			NoWait:  o.NoWait,
-			Timeout: o.Timeout,
-			DryRun:  o.clientDeploy.dryRun,
-			jsonOut: o.jsonOut,
-		})
+		return followFluxReconciled(ctx, env, entities, plan, o)
 	}
 	if ledger.appliesLocally() {
 		if err := applySelfManaged(ctx, env, ledger.Hosted, o); err != nil {
@@ -344,3 +324,28 @@ func applyHostedPublish(ctx context.Context, env string, o promoteFollowOptions)
 // file-ledger env, which is only observable here — the real apply needs a
 // cluster. Production is runDeploy, unchanged.
 var runPromoteClientDeploy = runDeploy
+
+// followFluxReconciled is the reconciled-env arm of followPromote.
+func followFluxReconciled(ctx context.Context, env string, entities *KCLEntities, plan promotePlan, o promoteFollowOptions) error {
+	// `--target <platform-chart>` is cluster bootstrap, not a release
+	// pointer: install the chart(s) and write no pointer when nothing
+	// else was asked for. See platform_charts.go.
+	charts, rest := splitPlatformChartTargets(entities, o.clientDeploy.targets)
+	if len(charts) > 0 {
+		if !o.clientDeploy.dryRun {
+			if err := installPlatformCharts(ctx, entities, platformChartInstalls(entities, charts, nil)); err != nil {
+				return err
+			}
+		}
+		if len(rest) == 0 {
+			return nil
+		}
+	}
+	return runFluxDeploy(ctx, env, entities, fluxDeployOptions{
+		Digest:  fluxDeployDigest(ctx, env, plan),
+		NoWait:  o.NoWait,
+		Timeout: o.Timeout,
+		DryRun:  o.clientDeploy.dryRun,
+		jsonOut: o.jsonOut,
+	})
+}

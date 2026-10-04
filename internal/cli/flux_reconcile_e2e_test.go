@@ -41,9 +41,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
+
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/flux"
-	"io"
 )
 
 // TestE2EFluxReconcilesAMachineLedgerEnv is the whole path, once.

@@ -171,6 +171,6 @@ forge cluster connect prod-us --context gke_acme_us-central1_prod --dry-run
 |---|---|
 | `whose host is a loopback or bind address` | The hub dials from a **pod**, where `127.0.0.1` is that pod. The deploy would fail as "connection refused" against a healthy cluster. Connect by an address reachable from outside the cluster. |
 | `https only` | Any other scheme carries the credential in clear text. |
-| `carries no certificate authority` | forge will not connect a cluster whose API server it cannot verify, and never falls back to skipping verification. Re-run your provider's `get-credentials`. |
+| `carries no certificate authority` | (token path; on gcp the CA comes from GKE's describe) forge will not connect a cluster whose API server it cannot verify, and never falls back to skipping verification. Re-run your provider's `get-credentials`. |
 | `--auth gcp needs a GKE context` | Workload identity is GKE-only here. Use `--auth token`. |
 | `resolve the credential's organization` | forge asks the control plane which org your credential acts for — it composes the hub namespace in the impersonated username, so the RBAC would be wrong without it (in the quiet way, authorizing a user that never appears). Authenticate (`forge login`, or the env's `token_env`) and re-run; the token needs `deploy:read`. |

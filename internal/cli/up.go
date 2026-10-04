@@ -904,6 +904,21 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		return fmt.Errorf("secret provider: %w", err)
 	}
 	noteSecretLayering(prov, os.Stderr)
+	if entities != nil && entities.SecretProvider != nil && entities.SecretProvider.Type == "file" && len(entities.SecretProvider.Generate) > 0 {
+		storePath, perr := fileSecretStorePath(opts.env, entities)
+		if perr != nil {
+			return perr
+		}
+		generated, gerr := generateMissingSecrets(entities, storePath, prov.All(), os.Stdout)
+		if gerr != nil {
+			return gerr
+		}
+		if len(generated) > 0 {
+			if prov, err = secretProviderFromEntities(entities, projectDir); err != nil {
+				return fmt.Errorf("secret provider: %w", err)
+			}
+		}
+	}
 	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForLaunch(entities), secretStoreLabel(entities)); err != nil {
 		return withEnvInSecretFix(err, opts.env) // already actionable; lists every missing key
 	}

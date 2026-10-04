@@ -184,6 +184,11 @@ func newSecretEnsureCmd() *cobra.Command {
 		Long: `Create the environment's FileSecrets store (0600) if absent and list every
 declared secret that has no value yet.
 
+Secrets the provider declares in FileSecrets.generate (pure random key
+material: an encryption key, a session secret) are minted when absent, never
+overwritten, and reported by name only. Rotating one is a manual
+'forge secret set'. Hosted and external providers never generate.
+
 Exits non-zero when a declared secret is missing a value, so it works as a
 setup gate in a task/Makefile before 'forge env up'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -824,6 +829,14 @@ func runSecretEnsure(ctx context.Context, envName string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "secret store ready: %s\n", path)
 
+	generated, err := generateMissingSecrets(entities, path, values, out)
+	if err != nil {
+		return err
+	}
+	for _, g := range generated {
+		values[g] = ""
+	}
+
 	var missing []string
 	for _, name := range declaredSecretNames(entities) {
 		if _, ok := values[name]; !ok {
@@ -840,6 +853,26 @@ func runSecretEnsure(ctx context.Context, envName string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "\nfix: forge secret set --env %s <KEY>\n", envName)
 	return fmt.Errorf("%d secret(s) missing a value", len(missing))
+}
+
+// generateMissingSecrets mints every declared secret the FileSecrets provider
+// marks `generate` and the store lacks. File-backed only: any other provider
+// (hosted, external, rendered) returns nothing, so a missing value there stays
+// the error an operator must resolve. `present` is the caller's view of what
+// already has a value; storePath is where new values are written. Prints key
+// names only.
+func generateMissingSecrets(e *KCLEntities, storePath string, present map[string]string, out io.Writer) ([]string, error) {
+	if e == nil || e.SecretProvider == nil || e.SecretProvider.Type != "file" || len(e.SecretProvider.Generate) == 0 {
+		return nil, nil
+	}
+	generated, err := secrets.EnsureGenerated(storePath, e.SecretProvider.Generate, declaredSecretNames(e), present)
+	if err != nil {
+		return nil, fmt.Errorf("generate secrets: %w", err)
+	}
+	for _, g := range generated {
+		fmt.Fprintf(out, "generated %s (random key material; stored in %s — rotation is a manual `forge secret set`)\n", g, storePath)
+	}
+	return generated, nil
 }
 
 func runSecretMigrate(ctx context.Context, envName string, dryRun bool, out io.Writer) error {

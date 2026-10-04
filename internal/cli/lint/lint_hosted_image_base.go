@@ -91,10 +91,7 @@ func unreplacedOrgPlaceholder(projectDir string, cfg *config.ProjectConfig) bool
 
 // orgPlaceholderFinding is the one sentence and the one fix for it.
 func orgPlaceholderFinding(cfg *config.ProjectConfig) (string, string) {
-	return fmt.Sprintf("control_plane declares organization = %q, which is the scaffolded placeholder, not an organization id. "+
-			"forge pushes this project's hosted images and config bundles to <registry_host>/<organization>/%s, "+
-			"so nothing hosted has an address until it is replaced", hostedimage.OrgPlaceholder, projectName(cfg)),
-		fmt.Sprintf("replace %q with your organization's id in the env's control_plane declaration", hostedimage.OrgPlaceholder)
+	return hostedimage.OrgPlaceholderRefusal(projectName(cfg))
 }
 
 // deployKCLDirFor is the project's deploy KCL tree.

@@ -6,11 +6,14 @@ package cli
 // without a cluster.
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -54,6 +57,8 @@ type connectTarget struct {
 	// workload-identity auth. The control plane REFUSES it on the token
 	// auth, which does not use it.
 	CloudCluster string
+	// AddressNote says why Address is not the context's server, or "".
+	AddressNote string
 }
 
 // gkeContext is a parsed GKE kubectl context: `gke_<project>_<location>_<cluster>`,
@@ -154,8 +159,30 @@ func readConnectTarget(kctx, authFlag string) (connectTarget, error) {
 	if auth == authGCP {
 		gke, _ := parseGKEContext(kctx)
 		target.CloudCluster = gke.CloudCluster()
+		// The hub dials from its own pods, where only a private endpoint
+		// may be reachable and authorized; the context's server is the
+		// public one.
+		if private := gkePrivateEndpointOf(gke); private != "" {
+			target.Address = "https://" + private
+			target.AddressNote = "the cluster has a private endpoint, which is what the hub can reach (the context's server is the public one)"
+		}
 	}
 	return target, nil
+}
+
+// gkePrivateEndpointOf returns the cluster's private endpoint IP, or "" when
+// it has none or cannot be read. Read-only, with the operator's own gcloud
+// credentials. A var so tests supply a fake describe.
+var gkePrivateEndpointOf = func(g gkeContext) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gcloud", "container", "clusters", "describe", g.Cluster,
+		"--project", g.Project, "--location", g.Location,
+		"--format=value(privateClusterConfig.privateEndpoint)").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // refuseUnusableAddress rejects the two addresses that fail AGAINST A HEALTHY

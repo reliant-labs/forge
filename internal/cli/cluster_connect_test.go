@@ -151,6 +151,35 @@ func TestReadConnectTarget_GKECarriesTheCloudResource(t *testing.T) {
 	}
 }
 
+func TestReadConnectTarget_GKEPrivateEndpoint(t *testing.T) {
+	restoreKC, restorePE := kubeconfigClusterOf, gkePrivateEndpointOf
+	defer func() { kubeconfigClusterOf, gkePrivateEndpointOf = restoreKC, restorePE }()
+	kubeconfigClusterOf = func(string) (string, string, error) { return "https://34.42.58.220", "ca", nil }
+
+	cases := []struct {
+		name, auth, private, want string
+	}{
+		{"private present", "auto", "172.16.0.34", "https://172.16.0.34"},
+		{"private absent", "auto", "", "https://34.42.58.220"},
+		{"token path ignores it", "token", "172.16.0.34", "https://34.42.58.220"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gkePrivateEndpointOf = func(gkeContext) string { return tc.private }
+			got, err := readConnectTarget("gke_acme_us-central1_prod", tc.auth)
+			if err != nil {
+				t.Fatalf("readConnectTarget: %v", err)
+			}
+			if got.Address != tc.want {
+				t.Errorf("Address = %q, want %q", got.Address, tc.want)
+			}
+			if (got.AddressNote != "") != (tc.want != "https://34.42.58.220") {
+				t.Errorf("AddressNote = %q", got.AddressNote)
+			}
+		})
+	}
+}
+
 // The token auth must NOT carry cloudCluster: the control plane REFUSES it
 // there, because a cloud resource name on a credential path means the caller
 // misunderstands which credential is in play.

@@ -53,7 +53,7 @@ require (
 	k8s.io/api v0.37.1
 	k8s.io/apiextensions-apiserver v0.37.0
 	k8s.io/apimachinery v0.37.1
-	k8s.io/client-go v0.37.0
+	k8s.io/client-go v0.37.1
 	kcl-lang.io/kcl-go v0.13.0
 	kcl-lang.io/kpm v0.13.0
 	oras.land/oras-go/v2 v2.6.2

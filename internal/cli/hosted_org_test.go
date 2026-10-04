@@ -60,9 +60,23 @@ func TestRequireOrg_ResolvesOnlyWhatIsHosted(t *testing.T) {
 		t.Fatalf("an env with no control plane resolved the org: err=%v calls=%d", err, calls)
 	}
 
+	// Hosted, but every image names its registry: nothing to compose, so no
+	// call. This is what keeps a build against a local registry offline.
+	named := &KCLEntities{
+		ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp"},
+		Workloads: []WorkloadEntity{hostedWL("api", func(w *WorkloadEntity) {
+			w.Spec.Image = "localhost:5051/org/api"
+		})},
+	}
+	if err := requireOrg(context.Background(), named); err != nil || calls != 0 {
+		t.Fatalf("an env whose images all name a registry resolved the org: err=%v calls=%d", err, calls)
+	}
+
 	hosted := &KCLEntities{
 		ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp"},
-		Workloads:    []WorkloadEntity{hostedWL("api")},
+		Workloads: []WorkloadEntity{hostedWL("api", func(w *WorkloadEntity) {
+			w.Image, w.Spec.Image = "api", "api"
+		})},
 	}
 	hosted.ControlPlane.bindOrgLookup("prod")
 	for i := 0; i < 3; i++ {

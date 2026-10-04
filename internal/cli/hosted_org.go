@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
 // The organization an env's hosted artifacts belong to is the organization the
@@ -93,16 +94,28 @@ func (cp *ControlPlaneEntity) knownOrganization() string {
 }
 
 // requireOrg resolves e's organization strictly, for an authenticated entry
-// point. A no-op when the env declares no control plane or nothing hosted: an
-// env with nothing hosted never needs a push base, so it never needs the call.
+// point. A no-op unless something in the env NEEDS a push base: an env with
+// nothing hosted never does, and neither does one whose hosted images all name
+// their registry (nothing to compose them under), so neither needs the call.
 func requireOrg(ctx context.Context, e *KCLEntities) error {
-	if e == nil || e.ControlPlane == nil || !e.HasHosted() {
+	if e == nil || e.ControlPlane == nil || !e.HasHosted() || !hostedNeedsPushBase(e) {
 		return nil
 	}
 	if _, err := e.ControlPlane.organization(ctx); err != nil {
 		return err
 	}
 	return nil
+}
+
+// hostedNeedsPushBase reports whether any hosted item declares a BARE image —
+// one with no registry host, which only resolves under the platform's push base.
+func hostedNeedsPushBase(e *KCLEntities) bool {
+	for _, it := range hostedImageItems(e) {
+		if !hostedimage.HasRegistryHost(hostedimage.Repository(it.Image)) {
+			return true
+		}
+	}
+	return false
 }
 
 // orgLookupTimeout bounds one organization lookup.

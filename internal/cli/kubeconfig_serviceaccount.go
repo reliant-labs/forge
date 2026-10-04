@@ -67,6 +67,10 @@ const (
 // the same cluster for the in-cluster case and different for every other
 // one, and conflating them writes permissions into the wrong cluster.
 func mintServiceAccountKubeconfig(ctx context.Context, k KubeconfigSecretEntity, consumerNamespace string) error {
+	return mintServiceAccountKubeconfigAs(ctx, k, consumerNamespace, "")
+}
+
+func mintServiceAccountKubeconfigAs(ctx context.Context, k KubeconfigSecretEntity, consumerNamespace, fieldManager string) error {
 	sa := k.ServiceAccount
 	targetContext, err := targetKubectlContext(k)
 	if err != nil {
@@ -132,7 +136,7 @@ func mintServiceAccountKubeconfig(ctx context.Context, k KubeconfigSecretEntity,
 	}
 	fmt.Printf("  applying kubeconfig Secret %s/%s into %s (server=%s, credential=ServiceAccount %s/%s)\n",
 		ns, k.Name, k.InCluster, server, sa.Namespace, sa.Name)
-	if err := cluster.KubectlApply(ctx, k.InCluster, kubeconfigSecretYAML(k.Name, ns, key, kubeconfig)); err != nil {
+	if err := applyKubeconfigSecret(ctx, k.InCluster, ns, fieldManager, kubeconfigSecretYAML(k.Name, ns, key, kubeconfig)); err != nil {
 		return fmt.Errorf("apply kubeconfig Secret: %w", err)
 	}
 	return nil

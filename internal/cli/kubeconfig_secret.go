@@ -50,6 +50,12 @@ func mintKubeconfigSecrets(ctx context.Context, secrets []KubeconfigSecretEntity
 // deploy path follows, so `--dry-run` is a safe way to review a credential
 // declaration before it is granted.
 func mintKubeconfigSecretsMode(ctx context.Context, secrets []KubeconfigSecretEntity, ownerNetwork, defaultNamespace string, dryRun bool) error {
+	return mintKubeconfigSecretsAs(ctx, secrets, ownerNetwork, defaultNamespace, "", dryRun)
+}
+
+// mintKubeconfigSecretsAs is the one mint loop; fieldManager is "" except on
+// the Flux deploy path.
+func mintKubeconfigSecretsAs(ctx context.Context, secrets []KubeconfigSecretEntity, ownerNetwork, defaultNamespace, fieldManager string, dryRun bool) error {
 	if len(secrets) == 0 {
 		return nil
 	}
@@ -68,7 +74,7 @@ func mintKubeconfigSecretsMode(ctx context.Context, secrets []KubeconfigSecretEn
 				secrets[i].Name, secrets[i].TargetCluster, secrets[i].Reachability)
 			continue
 		}
-		if err := mintOneKubeconfigSecret(ctx, secrets[i], ownerNetwork, defaultNamespace); err != nil {
+		if err := mintOneKubeconfigSecretAs(ctx, secrets[i], ownerNetwork, defaultNamespace, fieldManager); err != nil {
 			return fmt.Errorf("mint kubeconfig secret %q: %w", secrets[i].Name, err)
 		}
 	}
@@ -115,13 +121,30 @@ func deployMintedKubeconfigSecrets(entities *KCLEntities) []KubeconfigSecretEnti
 }
 
 func mintOneKubeconfigSecret(ctx context.Context, k KubeconfigSecretEntity, ownerNetwork, defaultNamespace string) error {
+	return mintOneKubeconfigSecretAs(ctx, k, ownerNetwork, defaultNamespace, "")
+}
+
+// applyKubeconfigSecret writes the minted Secret to the consumer cluster. An
+// empty fieldManager is the `env up` / cloud-deploy default apply; the Flux
+// deploy path passes [fluxSecretFieldManager] so the Secret is owned like
+// every other forge-synced Secret.
+func applyKubeconfigSecret(ctx context.Context, kctx, namespace, fieldManager, manifest string) error {
+	if fieldManager == "" {
+		return cluster.KubectlApply(ctx, kctx, manifest)
+	}
+	return fluxSecretApply(ctx, kctx, namespace, fieldManager, manifest)
+}
+
+// mintOneKubeconfigSecretAs is mintOneKubeconfigSecret with the apply's field
+// manager chosen by the caller.
+func mintOneKubeconfigSecretAs(ctx context.Context, k KubeconfigSecretEntity, ownerNetwork, defaultNamespace, fieldManager string) error {
 	// A declared ServiceAccount switches the whole credential model: forge
 	// MINTS a token on the target instead of copying the operator's
 	// credential out of their kubeconfig. That is the only path that works
 	// for a cluster whose kubeconfig authenticates with an exec plugin
 	// (GKE/EKS/AKS) — see kubeconfig_serviceaccount.go.
 	if k.ServiceAccount != nil {
-		return mintServiceAccountKubeconfig(ctx, k, defaultNamespace)
+		return mintServiceAccountKubeconfigAs(ctx, k, defaultNamespace, fieldManager)
 	}
 	// Without one, the mint below COPIES the credential from `k3d
 	// kubeconfig get`, so it can only address a k3d cluster. Naming a
@@ -223,7 +246,7 @@ func mintOneKubeconfigSecret(ctx context.Context, k KubeconfigSecretEntity, owne
 	secretYAML := kubeconfigSecretYAML(k.Name, ns, key, final)
 	fmt.Printf("  applying kubeconfig Secret %s/%s into %s (target=%s, reachability=%s)\n",
 		ns, k.Name, k.InCluster, k.TargetCluster, k.Reachability)
-	if err := cluster.KubectlApply(ctx, k.InCluster, secretYAML); err != nil {
+	if err := applyKubeconfigSecret(ctx, k.InCluster, ns, fieldManager, secretYAML); err != nil {
 		return fmt.Errorf("apply kubeconfig Secret: %w", err)
 	}
 	return nil

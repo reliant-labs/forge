@@ -119,7 +119,6 @@ func parseUseRegistries(configYAML []byte) ([]k3dRegistryRef, error) {
 	if len(doc.Registries.Use) == 0 {
 		return nil, nil
 	}
-	hostPort := hostPortFromMirrorConfig(doc.Registries.Config)
 	refs := make([]k3dRegistryRef, 0, len(doc.Registries.Use))
 	for _, entry := range doc.Registries.Use {
 		name := strings.TrimSpace(entry)
@@ -132,59 +131,68 @@ func parseUseRegistries(configYAML []byte) ([]k3dRegistryRef, error) {
 		if name == "" {
 			continue
 		}
-		refs = append(refs, k3dRegistryRef{Name: name, HostPort: hostPort})
+		refs = append(refs, k3dRegistryRef{Name: name, HostPort: hostPortFromMirrorConfig(doc.Registries.Config, name)})
 	}
 	return refs, nil
 }
 
 // hostPortFromMirrorConfig extracts the host push port from the inline
-// containerd mirror config — the numeric port on a `localhost:<port>` (or
-// any `<host>:<port>`) mirror key. The mirrors map the host-side push name
-// (`localhost:5051`) to the registry endpoint, so the port there is exactly
-// the host port the standalone registry must bind. Returns 0 when no
-// `<host>:<port>` mirror key is present (forge then lets k3d pick a port).
-func hostPortFromMirrorConfig(mirrorYAML string) int {
+// containerd mirror config: the port on a `<host>:<port>` mirror key. A
+// config may carry mirrors for several registries (e.g. the declared `use`
+// registry plus a hosted one), so the choice is made deterministically:
+//
+//  1. mirrors whose endpoint points at registryName (the declared registry)
+//     beat mirrors that do not;
+//  2. within a tier, a `localhost:<port>` key beats any other host;
+//  3. remaining ties break on the sorted key.
+//
+// Returns 0 when no `<host>:<port>` mirror key is present (forge then lets
+// k3d pick a port).
+func hostPortFromMirrorConfig(mirrorYAML, registryName string) int {
 	if strings.TrimSpace(mirrorYAML) == "" {
 		return 0
 	}
 	var cfg struct {
-		Mirrors map[string]any `yaml:"mirrors"`
+		Mirrors map[string]struct {
+			Endpoint []string `yaml:"endpoint"`
+		} `yaml:"mirrors"`
 	}
 	if err := yaml.Unmarshal([]byte(mirrorYAML), &cfg); err != nil {
 		return 0
 	}
-	// Prefer a `localhost:<port>` key (the canonical host push name); fall
-	// back to any `<host>:<port>` key whose port parses. Deterministic
-	// preference keeps the chosen port stable across map-iteration order.
-	if p, ok := portFromMirrorKey(cfg.Mirrors, "localhost"); ok {
-		return p
-	}
-	best := 0
+	keys := make([]string, 0, len(cfg.Mirrors))
 	for key := range cfg.Mirrors {
-		if i := strings.LastIndex(key, ":"); i > 0 {
-			if p, err := strconv.Atoi(key[i+1:]); err == nil && p > best {
-				best = p
-			}
-		}
+		keys = append(keys, key)
 	}
-	return best
-}
+	sort.Strings(keys)
 
-// portFromMirrorKey returns the port from a `<wantHost>:<port>` mirror key.
-func portFromMirrorKey(mirrors map[string]any, wantHost string) (int, bool) {
-	for key := range mirrors {
+	best, bestScore := 0, -1
+	for _, key := range keys {
 		i := strings.LastIndex(key, ":")
 		if i <= 0 {
 			continue
 		}
-		if key[:i] != wantHost {
+		port, err := strconv.Atoi(key[i+1:])
+		if err != nil {
 			continue
 		}
-		if p, err := strconv.Atoi(key[i+1:]); err == nil {
-			return p, true
+		score := 0
+		if key[:i] == "localhost" {
+			score++
+		}
+		if registryName != "" {
+			for _, ep := range cfg.Mirrors[key].Endpoint {
+				if strings.Contains(ep, "://"+registryName+":") || strings.HasSuffix(ep, "://"+registryName) {
+					score += 2
+					break
+				}
+			}
+		}
+		if score > bestScore {
+			best, bestScore = port, score
 		}
 	}
-	return 0, false
+	return best
 }
 
 // k3dRegistryExists reports whether a standalone k3d registry of the given

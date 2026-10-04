@@ -32,7 +32,10 @@ func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.Service
 	// no reachable shadow server) degrades every value to the synthetic
 	// placeholder, which is what the seeder would write too.
 	seedCfg := seedConfigFromStore(projectstore.New(cfg))
-	seed := codegen.BuildSeedProjection(projectDir, seedCfg)
+	seed, err := codegen.BuildSeedProjection(projectDir, seedCfg)
+	if err != nil {
+		return err
+	}
 
 	// WHICH schema those fixtures describe. Read from the migration files
 	// directly, not from the projection: the projection needs a reachable

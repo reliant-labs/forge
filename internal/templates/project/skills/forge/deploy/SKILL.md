@@ -320,6 +320,8 @@ platform allocates. To ALSO serve your own, use the `forge domain` commands —
 `domains` is refused at render. `forge.OnCluster` keeps `Port.domains`. For
 the commands and how to read a bound domain's state: load `deploy/domains`.
 
+PDB lint + stale-PDB prune: deploy/pdb.
+
 ## Pod priority on shared nodes
 
 `priorityClassName` names a cluster-scoped PriorityClass that ranks a

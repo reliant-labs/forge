@@ -546,3 +546,12 @@ func containsString(set []string, s string) bool {
 	}
 	return false
 }
+
+// BundleHostedCluster is the cluster key under which a bundle carries an env's
+// HOSTED tier records (forge.dev Workload / ManagedDatabase / StaticSite).
+//
+// Hosted workloads run on the platform's own clusters, which forge cannot name
+// as a kube context, so they live under ONE well-known tree,
+// BundleClusterPath(BundleHostedCluster). The control plane maps that tree to
+// the placement it resolved for the environment; forge never says where.
+const BundleHostedCluster = "hosted"

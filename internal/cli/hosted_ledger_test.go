@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +20,11 @@ import (
 	"testing"
 	"time"
 
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/content/memory"
+	"sigs.k8s.io/yaml"
+
+	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -41,12 +49,18 @@ type fakeDeployService struct {
 	calls      []string
 	auth       []string
 
-	// The hosted deploy half (EnsureEnvironment / EnsureDeployment /
-	// PublishDeploymentConfig / GetStatus). deployments is env id → name →
-	// the stored deployment; bodies records every request body in order so
-	// a test can assert the wire document.
-	deployments map[string]map[string]*fakeDeployment
-	bodies      []fakeBody
+	// The hosted deploy half (EnsureEnvironment / RecordBundle / GetStatus).
+	// bodies records every request body in order so a test can assert the
+	// wire document.
+	// bundles is env id → the manifests layer's hosted records, decoded from
+	// the bytes RecordBundle carried. The control plane's hub Flux applies
+	// exactly these, so a test asserts on THEM — what the platform would run.
+	bundles map[string]map[string]*fakeDeployment
+	// layerFetch reads a pushed bundle's manifests layer, as the control
+	// plane reads it from its registry. Set by a test that pushes bundles to
+	// an in-memory registry (see stubHostedBundleRegistry).
+	layerFetch func(repository, manifestDigest string) ([]byte, error)
+	bodies     []fakeBody
 	// onSecret, when set, sees every SecretStoreService/SetSecret body.
 	onSecret func(body map[string]any)
 	// Promote's refusals, in the SERVER's order (control-plane C3/C3b):
@@ -194,47 +208,39 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"created":     !ok,
 		})
 
-	case "/controlplane.v1.DeployService/EnsureDeployment":
-		envID, name := str("environmentId"), str("name")
+	case "/controlplane.v1.DeployService/RecordBundle":
+		envID := str("environmentId")
 		if envName(envID) == "" {
 			connectErr(w, http.StatusNotFound, "not_found", "no such environment")
 			return
 		}
-		if f.deployments == nil {
-			f.deployments = map[string]map[string]*fakeDeployment{}
+		manifest, _ := base64.StdEncoding.DecodeString(str("manifest"))
+		sum := sha256.Sum256(manifest)
+		digest := "sha256:" + hex.EncodeToString(sum[:])
+		if f.bundles == nil {
+			f.bundles = map[string]map[string]*fakeDeployment{}
 		}
-		if f.deployments[envID] == nil {
-			f.deployments[envID] = map[string]*fakeDeployment{}
+		recs, err := hostedRecordsFromBundleBlobs(digest, str("repository"), f.layerFetch)
+		if err != nil {
+			connectErr(w, http.StatusBadRequest, "invalid_argument", err.Error())
+			return
 		}
-		spec, _ := body["spec"].(map[string]any)
-		d, ok := f.deployments[envID][name]
-		if !ok {
-			d = &fakeDeployment{ID: "dep-" + name}
-			f.deployments[envID][name] = d
-		}
-		d.Tier, d.Spec = str("tier"), spec
+		f.bundles[envID] = recs
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"deployment": map[string]any{"id": d.ID, "name": name}, "created": !ok, "updated": ok,
+			"bundle": map[string]any{
+				"id": "bundle-" + digest[7:15], "environmentId": envID, "digest": digest,
+				"reference": str("repository") + "@" + digest,
+				"createdAt": "2026-09-23T00:00:00Z",
+			},
+			"created": true,
 		})
-
-	case "/controlplane.v1.DeployService/PublishDeploymentConfig":
-		for _, byName := range f.deployments {
-			for _, d := range byName {
-				if d.ID == str("deploymentId") {
-					d.Published = true
-					_ = json.NewEncoder(w).Encode(map[string]any{"digest": "sha256:cfg", "reference": "reg/cfg@sha256:cfg"})
-					return
-				}
-			}
-		}
-		connectErr(w, http.StatusNotFound, "not_found", "no such deployment")
 
 	case "/controlplane.v1.DeployService/GetStatus":
 		// A published backend is READY on the digest its spec pins — the
 		// control plane's observer confirmed what was published.
 		envID := str("environmentId")
 		var out []map[string]any
-		for name, d := range f.deployments[envID] {
+		for name, d := range f.bundles[envID] {
 			img, _ := d.Spec["image"].(string)
 			digest := ""
 			if i := strings.LastIndex(img, "@"); i >= 0 {
@@ -244,10 +250,8 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if live, ok := d.Spec["liveDigest"].(string); ok {
 				digest = live
 			}
-			state := "DEPLOY_OBSERVED_STATE_PENDING"
-			if d.Published {
-				state = "DEPLOY_OBSERVED_STATE_READY"
-			}
+			// The platform's Flux applied the recorded bundle: ready.
+			state := "DEPLOY_OBSERVED_STATE_READY"
 			out = append(out, map[string]any{
 				"deployment": map[string]any{"id": d.ID, "name": name, "tier": d.Tier, "observed": map[string]any{
 					"state": state, "imageDigest": digest, "url": "https://" + name + "-acme.reliantapps.dev"}},
@@ -785,4 +789,93 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	if err != nil || bound != "v1" || digests["api"] != sha("1") {
 		t.Fatalf("deploy must pin from the hosted ledger: rel=%q digests=%v err=%v", bound, digests, err)
 	}
+}
+
+// hostedRecordsFromBundleBlobs is the fake control plane reading a recorded
+// bundle the way the real one does: fetch the manifests layer from the
+// registry by the manifest digest, and read the forge.dev records under the
+// hosted tree. Keyed by metadata.name; Tier and Spec are what a test asserts.
+func hostedRecordsFromBundleBlobs(
+	digest, repository string, fetch func(repository, digest string) ([]byte, error),
+) (map[string]*fakeDeployment, error) {
+	if fetch == nil {
+		return nil, fmt.Errorf("the fake control plane has no registry to read the bundle from")
+	}
+	layer, err := fetch(repository, digest)
+	if err != nil {
+		return nil, err
+	}
+	dest := filepath.Join(os.TempDir(), "fake-cp-unpack-"+digest[7:19])
+	_ = os.RemoveAll(dest)
+	if _, err := bundle.Unpack(bytes.NewReader(layer), dest); err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dest) }()
+	tree := filepath.Join(dest, release.BundleClusterPath(release.BundleHostedCluster))
+	entries, err := os.ReadDir(tree)
+	if errors.Is(err, os.ErrNotExist) {
+		// A bundle with no hosted tree (an env with nothing hosted, or one
+		// recorded before its release pins the tiers) records fine; it just
+		// gives Flux nothing to apply for hosted.
+		return map[string]*fakeDeployment{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]*fakeDeployment{}
+	tiers := map[string]string{"Workload": "DEPLOY_TIER_BACKEND", "ManagedDatabase": "DEPLOY_TIER_DATABASE", "StaticSite": "DEPLOY_TIER_STATIC"}
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(tree, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var doc struct {
+			Kind     string                `json:"kind"`
+			Metadata struct{ Name string } `json:"metadata"`
+			Spec     map[string]any        `json:"spec"`
+		}
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			return nil, err
+		}
+		tier, ok := tiers[doc.Kind]
+		if !ok {
+			return nil, fmt.Errorf("the hosted tree carries a %s", doc.Kind)
+		}
+		out[doc.Metadata.Name] = &fakeDeployment{ID: "dep-" + doc.Metadata.Name, Tier: tier, Spec: doc.Spec, Published: true}
+	}
+	return out, nil
+}
+
+// stubHostedBundleRegistry points the bundle push at an in-memory registry and
+// hands the fake control plane the way to read back what was pushed — the one
+// place a hosted E2E test's registry exists, so the push and the platform's
+// read cannot disagree.
+func stubHostedBundleRegistry(t *testing.T, fake *fakeDeployService) {
+	t.Helper()
+	registry := memory.New()
+	prev := bundlePushTarget
+	bundlePushTarget = func(string) (bundle.Pusher, error) { return tagByDigest{registry}, nil }
+	t.Cleanup(func() { bundlePushTarget = prev })
+	fake.layerFetch = func(_, manifestDigest string) ([]byte, error) {
+		fetched, err := bundle.Fetch(context.Background(), registry, manifestDigest)
+		if err != nil {
+			return nil, err
+		}
+		return fetched.Manifests, nil
+	}
+}
+
+// tagByDigest tags every manifest pushed to it with its own digest string, so
+// the control plane's fetch-by-digest resolves in an in-memory store — which,
+// unlike a real registry, only resolves what it was told is tagged.
+type tagByDigest struct{ *memory.Store }
+
+func (t tagByDigest) Push(ctx context.Context, desc ocispec.Descriptor, r io.Reader) error {
+	if err := t.Store.Push(ctx, desc, r); err != nil {
+		return err
+	}
+	if desc.MediaType == ocispec.MediaTypeImageManifest {
+		return t.Store.Tag(ctx, desc, desc.Digest.String())
+	}
+	return nil
 }

@@ -42,6 +42,7 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 	prevPoll := hostedPollInterval
 	hostedPollInterval = time.Millisecond
 	t.Cleanup(func() { hostedPollInterval = prevPoll })
+	stubHostedBundleRegistry(t, fake)
 
 	var pushedTo string
 	prevPush := hostedStaticPusher
@@ -86,11 +87,11 @@ func TestHostedStaticSiteCLIEndToEnd(t *testing.T) {
 	for _, b := range fake.bodies {
 		paths = append(paths, b.Path[strings.LastIndex(b.Path, "/")+1:])
 	}
-	if joined := strings.Join(paths, ","); !strings.Contains(joined, "EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig") {
+	if joined := strings.Join(paths, ","); !strings.Contains(joined, "EnsureEnvironment,RecordBundle") {
 		t.Fatalf("deploy call sequence = %s", joined)
 	}
-	d := fake.deployments[envID]["web"]
-	if d == nil || !d.Published || d.Tier != "DEPLOY_TIER_STATIC" {
+	d := fake.bundles[envID]["web"]
+	if d == nil || d.Tier != "DEPLOY_TIER_STATIC" {
 		t.Fatalf("deployment = %+v", d)
 	}
 	if d.Spec["liveDigest"] != hostedStaticDigest || d.Spec["basePath"] != "/app" {

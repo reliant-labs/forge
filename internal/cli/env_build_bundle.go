@@ -177,6 +177,17 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{Env: env, Skipped: true}, nil
 	}
 
+	// A HOSTED BUNDLE IS NEVER SEALED OVER PLACEHOLDER DIGESTS. The hosted
+	// records are planned from the bound release's pins; with no release the
+	// plan falls back to obviously-fake placeholders (fine for a shape a human
+	// reads), and sealing those would ship a Workload nothing can pull.
+	if doc.hostedPlaceholder {
+		fmt.Fprintf(in.errWriter(),
+			"[bundle] Warning: env %s's bundle was not written: its hosted workloads are not pinned by a release.\n"+
+				"[bundle]   Cut and promote one (forge env build %s --release <version> --push), then deploy.\n", env, env)
+		return bundleWriteOutcome{Env: env, Skipped: true}, nil
+	}
+
 	built, err := bundle.Build(ctx, bundle.BuildInput{
 		Project:    doc.Project,
 		Env:        env,

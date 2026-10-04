@@ -49,6 +49,7 @@ import (
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -94,6 +95,10 @@ type envShapeDoc struct {
 	// the bundle exists to close. One render, both halves.
 	manifests string
 	images    map[string]string
+	// hostedPlaceholder is true when the hosted records were planned over
+	// PLACEHOLDER digests because no release pins them yet. Fine for a shape
+	// a human reads; a bundle must never seal it.
+	hostedPlaceholder bool
 }
 
 func newEnvShapeCmd() *cobra.Command {
@@ -292,6 +297,21 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	}
 	objects, clusters := attributeRenderedObjects(manifests, groups, entities)
 
+	// THE HOSTED TIERS RIDE THE BUNDLE. A hosted workload renders no object
+	// in the env's own manifests (the control plane renders it), so without
+	// this a hosted env's bundle would be an empty tree that Flux applies as
+	// "nothing" and reports Ready. They are added as the forge.dev records
+	// the platform admits, under one well-known cluster path.
+	hosted, placeholder, herr := hostedBundleObjects(ctx, projectDir, envName, entities)
+	if herr != nil {
+		return envShapeDoc{}, herr
+	}
+	if len(hosted) > 0 {
+		objects = append(objects, hosted...)
+		clusters = append(clusters, release.BundleHostedCluster)
+		sort.Strings(clusters)
+	}
+
 	// Helm charts are deliberately NOT templated. A declaration must be
 	// derivable with no network and no `helm` on PATH — Preview's Register
 	// runs on whatever machine the daemon is on — and a chart's objects are
@@ -312,14 +332,15 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, err)
 	}
 	return envShapeDoc{
-		Project:    hostedProjectName(),
-		Env:        envName,
-		Kind:       string(shape.Kind),
-		Lifecycle:  entities.Lifecycle,
-		Shape:      shape,
-		Provenance: captureBuildProvenance(ctx, projectDir).ForHosted(),
-		manifests:  stream,
-		images:     digests,
+		Project:           hostedProjectName(),
+		Env:               envName,
+		Kind:              string(shape.Kind),
+		Lifecycle:         entities.Lifecycle,
+		Shape:             shape,
+		Provenance:        captureBuildProvenance(ctx, projectDir).ForHosted(),
+		manifests:         stream,
+		images:            digests,
+		hostedPlaceholder: placeholder,
 	}, nil
 }
 
@@ -677,4 +698,44 @@ func shortCommit(commit string) string {
 		return commit
 	}
 	return commit[:12]
+}
+
+// hostedBundleObjects turns the env's hosted group into rendered objects under
+// the hosted cluster tree. It returns placeholder=true when the records had to
+// be planned over placeholder digests (no release pins the artifacts).
+func hostedBundleObjects(ctx context.Context, projectDir, envName string, entities *KCLEntities) (objs []renderedObject, placeholder bool, err error) {
+	if entities == nil || !entities.HasHosted() {
+		return nil, false, nil
+	}
+	group, err := buildHostedGroup(envName, entities)
+	if err != nil {
+		return nil, false, err
+	}
+	if group == nil {
+		return nil, false, nil
+	}
+	var pins hostedPins
+	if ledger, lerr := ledgerFor(ctx, projectDir, envName); lerr == nil {
+		pins, _ = hostedPinsFromLedger(ctx, ledger, envName)
+	}
+	group.Hosted = &deploytarget.HostedTarget{
+		Release: pins.release, PromotionID: pins.promotionID,
+		Digests: pins.digests, Registries: pins.registries,
+		PushBase: declaredPushBase(entities),
+	}
+	records, rerr := deploytarget.HostedRecords(*group)
+	if rerr != nil {
+		records, err = deploytarget.PreflightHostedRecords(*group)
+		if err != nil {
+			return nil, false, err
+		}
+		placeholder = true
+	}
+	for _, r := range records {
+		objs = append(objs, renderedObject{
+			Doc: strings.TrimSpace(string(r.YAML)), Kind: r.Kind, Name: r.Name,
+			Clusters: []string{release.BundleHostedCluster},
+		})
+	}
+	return objs, placeholder, nil
 }

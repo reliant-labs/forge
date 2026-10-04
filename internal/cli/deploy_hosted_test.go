@@ -150,6 +150,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 	hostedPollInterval = time.Millisecond
 	t.Cleanup(func() { hostedPollInterval = prevPoll })
 	stubHostedRegistry(t)
+	stubHostedBundleRegistry(t, fake)
 
 	if out, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 		t.Fatalf("release cut: %v\n%s", err, out)
@@ -237,19 +238,23 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 		t.Errorf("rollout = %+v", rep.Rollout)
 	}
 
-	// The wire: ensure (env) → ensure (deployment) → publish → status, with
-	// the BOUND digest in the published spec.
+	// The wire: ensure (env) → record the BUNDLE → status. There is no
+	// per-deployment ensure or publish: the bundle carries the tiers, with
+	// the BOUND digest in the Workload record.
 	var paths []string
 	for _, b := range fake.bodies {
 		paths = append(paths, b.Path[strings.LastIndex(b.Path, "/")+1:])
 	}
 	joined := strings.Join(paths, ",")
-	for _, seq := range []string{"EnsureEnvironment,EnsureDeployment,PublishDeploymentConfig,GetStatus"} {
-		if !strings.Contains(joined, seq) {
-			t.Fatalf("deploy call sequence = %s, want it to contain %s", joined, seq)
+	if !strings.Contains(joined, "EnsureEnvironment,RecordBundle,GetStatus") {
+		t.Fatalf("deploy call sequence = %s, want EnsureEnvironment,RecordBundle,GetStatus", joined)
+	}
+	for _, dead := range []string{"EnsureDeployment", "PublishDeploymentConfig"} {
+		if strings.Contains(joined, dead) {
+			t.Fatalf("a hosted deploy called the retired %s: %s", dead, joined)
 		}
 	}
-	d := fake.deployments[envID]["api"]
+	d := fake.bundles[envID]["api"]
 	if d == nil || !d.Published || d.Tier != "DEPLOY_TIER_BACKEND" {
 		t.Fatalf("deployment = %+v", d)
 	}
@@ -357,6 +362,7 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 	t.Setenv("ACME_CP_TOKEN", "rlat_e2e")
 	t.Setenv("FORGE_HOME", t.TempDir())
 	stubHostedRegistry(t)
+	stubHostedBundleRegistry(t, fake)
 	prevPoll := hostedPollInterval
 	hostedPollInterval = time.Millisecond
 	t.Cleanup(func() { hostedPollInterval = prevPoll })
@@ -391,8 +397,8 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 	if fake.envs["hosted"] != envID || len(fake.envs) != 1 {
 		t.Fatalf("envs = %v, want the one env the secret created", fake.envs)
 	}
-	if d := fake.deployments[envID]["api"]; d == nil || !d.Published {
-		t.Fatalf("api not published into %s: %+v", envID, fake.deployments)
+	if d := fake.bundles[envID]["api"]; d == nil {
+		t.Fatalf("api is not in the bundle recorded for %s: %+v", envID, fake.bundles)
 	}
 }
 
@@ -429,6 +435,7 @@ func TestHostedDeployRefusals(t *testing.T) {
 		t.Setenv("ACME_CP_TOKEN", "rlat_e2e")
 		t.Setenv("FORGE_HOME", t.TempDir())
 		stubHostedRegistry(t)
+		stubHostedBundleRegistry(t, fake)
 		return fake, dir
 	}
 

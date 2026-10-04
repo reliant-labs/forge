@@ -480,6 +480,10 @@ func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort
 	runE2E(t, ctx, "", nil, "k3d", "cluster", "create", name,
 		"--servers", "1", "--agents", "0",
 		"--port", fmt.Sprintf("%d:%d@loadbalancer", hostPort, listenerPort),
+		// k3s bundles Traefik, whose svclb claims the loadbalancer's port 80
+		// and answers its own "404 page not found" — Envoy never sees the
+		// request. The test's gateway is Envoy, so Traefik must not exist.
+		"--k3s-arg", "--disable=traefik@server:0",
 		"--wait", "--timeout", "300s",
 		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 	)

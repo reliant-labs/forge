@@ -57,6 +57,18 @@ const (
 	// one connector grant. Always bound to a connector resource.
 	ScopeMCPConnector Scope = "mcp:connector"
 
+	// ScopeDaemonResume resolves and wakes ONE suspended daemon on its acting
+	// user's behalf, so a run nobody is watching (a scheduled trigger) can
+	// reach the machine it was told to run on. Always bound to that daemon
+	// resource and always acting as a user: an unbound resume credential
+	// could wake every machine the person owns, and the point of a trigger
+	// naming its daemon is that it never needs to.
+	//
+	// Wake only. It cannot connect AS the daemon (daemon:connect), run
+	// anything on it, or read anything from it; the worst a leaked one does
+	// is start a machine its owner already pays for.
+	ScopeDaemonResume Scope = "daemon:resume"
+
 	// ScopeSecretRead lists the org's managed secrets' METADATA (names,
 	// versions) for every environment, and — for LOCAL environments ONLY —
 	// pulls their VALUES (LocalSecretService/PullSecrets), because a LOCAL
@@ -94,6 +106,7 @@ var AllScopes = []Scope{
 	ScopeLLMInvoke,
 	ScopeProxyPort,
 	ScopeMCPConnector,
+	ScopeDaemonResume,
 	ScopeSecretRead,
 	ScopeSecretWrite,
 	ScopeDomainRead,

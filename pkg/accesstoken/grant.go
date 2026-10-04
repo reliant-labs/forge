@@ -59,6 +59,10 @@ var scopeResourceRules = map[Scope]struct {
 	ScopeDaemonConnect: {kind: ResourceDaemon, required: false},
 	ScopeProxyPort:     {kind: ResourcePort, required: true},
 	ScopeMCPConnector:  {kind: ResourceConnector, required: true},
+	// Required, unlike daemon:connect: there is no legitimate unbound resume
+	// credential. A trigger names the daemon its runs use, so the token is
+	// minted for exactly that one and teardown of the daemon revokes it.
+	ScopeDaemonResume: {kind: ResourceDaemon, required: true},
 }
 
 // daemonBindableScopes are the USER-AUTHORITY scopes a token bound to a DAEMON
@@ -111,6 +115,9 @@ var actingUserScopes = []Scope{
 	ScopeDaemonConnect,
 	ScopeLLMInvoke,
 	ScopeMCPConnector,
+	// A wake is billed to, and authorized as, the person who owns the
+	// daemon; the consumer resolves ownership from the acting user.
+	ScopeDaemonResume,
 }
 
 // RequiresActingUser reports whether a scope acts as a person.

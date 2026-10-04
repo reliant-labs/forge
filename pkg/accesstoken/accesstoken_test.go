@@ -333,3 +333,70 @@ func TestPrincipal_MayActOn(t *testing.T) {
 		t.Fatal("nil principal authorized")
 	}
 }
+
+// TestDaemonResume_IsOneDaemonActingAsOnePerson pins the shape of the
+// unattended-wake credential (see ScopeDaemonResume). Every refusal below is a
+// way it could otherwise grow into more than "wake this one machine for its
+// owner".
+func TestDaemonResume_IsOneDaemonActingAsOnePerson(t *testing.T) {
+	now := time.Now()
+
+	got, ok := ParseScope("daemon:resume")
+	if !ok || got != ScopeDaemonResume {
+		t.Fatalf("ParseScope(daemon:resume) = %q, %v", got, ok)
+	}
+
+	bound := Grant{
+		OrgID: "o", Name: "reliant-automation:d1",
+		Scopes:       SetOf(ScopeDaemonResume),
+		ActingUserID: "u",
+		Resource:     &Resource{Kind: ResourceDaemon, ID: "d1"},
+	}
+	if err := bound.Validate(now); err != nil {
+		t.Fatalf("a daemon-bound resume credential acting as its owner was refused: %v", err)
+	}
+
+	refused := map[string]func(*Grant){
+		// Unbound would wake every machine the person owns.
+		"unbound": func(g *Grant) { g.Resource = nil },
+		// A wake is authorized and billed as a person.
+		"no acting user": func(g *Grant) { g.ActingUserID = "" },
+		"bound to a port": func(g *Grant) {
+			g.Resource = &Resource{Kind: ResourcePort, ID: PortResourceID("d1", 80)}
+		},
+		"bound to a connector": func(g *Grant) { g.Resource = &Resource{Kind: ResourceConnector, ID: "c1"} },
+	}
+	for name, mutate := range refused {
+		g := bound
+		mutate(&g)
+		if err := g.Validate(now); !errors.Is(err, ErrInvalidGrant) {
+			t.Errorf("%s: got %v, want ErrInvalidGrant", name, err)
+		}
+	}
+
+	// Wake is its own authority: it neither implies nor is implied by the
+	// daemon's own connection credential, nor by anything else.
+	resume := SetOf(ScopeDaemonResume)
+	for _, other := range AllScopes {
+		if other == ScopeDaemonResume {
+			continue
+		}
+		if resume.Permits(other) {
+			t.Errorf("daemon:resume permitted %s", other)
+		}
+		if SetOf(other).Permits(ScopeDaemonResume) {
+			t.Errorf("%s permitted daemon:resume", other)
+		}
+	}
+	// A daemon's own credential must not be able to mint a wake credential —
+	// that would let a compromised daemon keep itself (or a sibling) running.
+	if SetOf(ScopeTokenWrite, ScopeDaemonConnect).Covers(resume) {
+		t.Fatal("a daemon:connect holder could mint daemon:resume")
+	}
+
+	// The binding is a real confinement: a token for d1 cannot act on d2.
+	p := &Principal{Resource: bound.Resource, Scopes: bound.Scopes, ActingUserID: "u"}
+	if !p.MayActOn(ResourceDaemon, "d1") || p.MayActOn(ResourceDaemon, "d2") {
+		t.Fatal("a daemon:resume credential escaped its daemon binding")
+	}
+}

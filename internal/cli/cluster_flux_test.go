@@ -47,7 +47,7 @@ func TestFluxInstallTargets_OnlyEnvsThatActuallyReconcile(t *testing.T) {
 		{
 			name:     "no lifecycle, no control plane, targets a cluster — reconciled",
 			entities: reconciledEntities(clusters...),
-			want:     []string{"k3d-a"},
+			want:     nil, // forge never installs Flux into a deploy target
 		},
 		{
 			// A developer's own cluster. Direct apply IS the point
@@ -92,62 +92,15 @@ func TestFluxInstallTargets_OnlyEnvsThatActuallyReconcile(t *testing.T) {
 	}
 }
 
-// TestFluxInstallTargets_SkipsAClusterADeclaredChartAlreadyServes is THE
-// SHARED-FLUX RULE, and it is the assertion that keeps control-plane working.
-//
-// cp's `e2e` env installs its OWN Flux into its control-plane cluster, for
-// hosted tenants. A second install does not fail cleanly: both charts own the
-// same cluster-scoped CRDs and the same `flux-system` namespace, so whichever
-// applies last takes the CRDs and the other's Kustomizations reconcile against
-// a controller that was replaced underneath them.
-//
-// DETECTION IS BY CHART REFERENCE, NEVER BY NAME. The chart below is called
-// "gitops", not "flux" — a name heuristic would miss it and install the
-// colliding second copy.
-func TestFluxInstallTargets_SkipsAClusterADeclaredChartAlreadyServes(t *testing.T) {
+// TestFluxInstallTargets_NeverInstalls pins that no env shape makes forge
+// install Flux into a deploy target, whatever charts it declares.
+func TestFluxInstallTargets_NeverInstalls(t *testing.T) {
 	t.Parallel()
 	clusters := []ClusterEntity{fluxTestCluster("a"), fluxTestCluster("b")}
-
-	t.Run("a retargeted chart covers only its own cluster", func(t *testing.T) {
-		e := reconciledEntities(clusters...)
-		e.HelmCharts = []HelmChartEntity{{
-			// Deliberately NOT named "flux".
-			Name: "gitops", OCI: flux.ChartOCI, Version: flux.ChartVersion,
-			Namespace: flux.Namespace, Cluster: "k3d-a",
-		}}
-		got := fluxInstallTargets(e, clusters)
-		if !reflect.DeepEqual(got, []string{"k3d-b"}) {
-			t.Errorf("targets = %v, want only k3d-b — k3d-a's Flux is the consumer's, and a second "+
-				"install would collide on its CRDs and flux-system", got)
-		}
-	})
-
-	t.Run("an unretargeted chart covers every declared cluster", func(t *testing.T) {
-		// A chart with no `cluster` installs into the env's primary,
-		// and we cannot tell from here which that resolved to. Treating
-		// it as covering everything is the SAFE direction: forge
-		// installs none, and the consumer's own chart lands. The unsafe
-		// direction would be installing a second Flux beside it.
-		e := reconciledEntities(clusters...)
-		e.HelmCharts = []HelmChartEntity{{
-			Name: "flux", OCI: flux.ChartOCI, Version: flux.ChartVersion, Namespace: flux.Namespace,
-		}}
-		if got := fluxInstallTargets(e, clusters); len(got) != 0 {
-			t.Errorf("targets = %v, want none", got)
-		}
-	})
-
-	t.Run("a DIFFERENT chart does not provide Flux", func(t *testing.T) {
-		e := reconciledEntities(clusters...)
-		e.HelmCharts = []HelmChartEntity{
-			{Name: "envoy-gateway", OCI: "oci://docker.io/envoyproxy/gateway-helm", Version: "v1.7.2", Namespace: "envoy-gateway-system"},
-			{Name: "cert-manager", Chart: "cert-manager", Repo: "https://charts.jetstack.io", Version: "v1.20.1", Namespace: "cert-manager"},
-		}
-		got := fluxInstallTargets(e, clusters)
-		if !reflect.DeepEqual(got, []string{"k3d-a", "k3d-b"}) {
-			t.Errorf("targets = %v, want both clusters — neither chart is Flux", got)
-		}
-	})
+	e := reconciledEntities(clusters...)
+	if got := fluxInstallTargets(e, clusters); len(got) != 0 {
+		t.Errorf("targets = %v, want none", got)
+	}
 }
 
 // TestFluxInstallTargets_OnlyK3dClusters pins that forge does not install a
@@ -163,8 +116,8 @@ func TestFluxInstallTargets_OnlyK3dClusters(t *testing.T) {
 		{Name: "prod", Context: "gke_proj_us-central1_prod", Provider: "gke"},
 	}
 	got := fluxInstallTargets(reconciledEntities(clusters...), clusters)
-	if !reflect.DeepEqual(got, []string{"k3d-a"}) {
-		t.Errorf("targets = %v, want only the k3d cluster", got)
+	if len(got) != 0 {
+		t.Errorf("targets = %v, want none: a mixed env with a real cluster applies directly", got)
 	}
 }
 
@@ -187,8 +140,8 @@ func TestEnsureEnvFluxInstalled_InstallsOncePerTargetCluster(t *testing.T) {
 	if err := ensureEnvFluxInstalled(context.Background(), "dev-k8s", reconciledEntities(clusters...), clusters); err != nil {
 		t.Fatalf("ensureEnvFluxInstalled: %v", err)
 	}
-	if !reflect.DeepEqual(installed, []string{"k3d-a", "k3d-b"}) {
-		t.Errorf("installed = %v, want both clusters once each", installed)
+	if len(installed) != 0 {
+		t.Errorf("installed = %v, want none: forge never installs Flux into a deploy target", installed)
 	}
 
 	installed = nil
@@ -346,27 +299,29 @@ func TestClusterReachableRegistry_RewritesTheHOSTSNameToTHEPODS(t *testing.T) {
 	}
 }
 
-// TestReconcilesThroughFlux pins the routing predicate, which decides whether
-// a deploy applies from this machine or writes a pointer.
-func TestReconcilesThroughFlux(t *testing.T) {
+// TestNoEnvShapeReconcilesThroughForgeFlux pins that forge never installs
+// Flux into a deploy target and never routes a deploy through the in-cluster
+// pointer path: a gke_* env, a k3d env, a mixed env, and a lifecycle=local env
+// all apply directly. Flux on a cluster comes only from a control plane.
+func TestNoEnvShapeReconcilesThroughForgeFlux(t *testing.T) {
 	t.Parallel()
-	clusters := []ClusterEntity{fluxTestCluster("a")}
-	machine := envLedger{}
-	hosted := envLedger{Hosted: true}
-
-	if !reconcilesThroughFlux(reconciledEntities(clusters...), machine) {
-		t.Error("an env with no lifecycle, no control plane and a cluster must reconcile")
+	if reconcilesThroughFlux() {
+		t.Error("no env may route through forge's in-cluster Flux path")
 	}
-	if reconcilesThroughFlux(reconciledEntities(clusters...), hosted) {
-		t.Error("a hosted env's version store already drives a reconciler; this path must not claim it")
-	}
-	local := reconciledEntities(clusters...)
+	gke := ClusterEntity{Name: "prod", Context: "gke_proj_us-central1_prod"}
+	local := reconciledEntities(fluxTestCluster("a"))
 	local.Lifecycle = lifecycleLocal
-	if reconcilesThroughFlux(local, machine) {
-		t.Error("a lifecycle=local env applies directly; that is the point of the declaration")
-	}
-	if reconcilesThroughFlux(&KCLEntities{}, machine) {
-		t.Error("an env targeting no cluster has nothing for a reconciler to converge")
+	mixed := reconciledEntities(fluxTestCluster("a"), gke)
+	mixed.ClusterTarget = &ClusterTargetEntity{Cluster: gke.Context, Namespace: "app"}
+	for name, e := range map[string]*KCLEntities{
+		"gke":   reconciledEntities(gke),
+		"k3d":   reconciledEntities(fluxTestCluster("a")),
+		"mixed": mixed,
+		"local": local,
+	} {
+		if got := fluxInstallTargets(e, e.Clusters); len(got) != 0 {
+			t.Errorf("%s: forge must install Flux nowhere, got %v", name, got)
+		}
 	}
 }
 

@@ -47,7 +47,7 @@ func fluxReconciledEnv(ctx context.Context, env string, ledger envLedger) (bool,
 		// Soft, toward the existing path — see the file header.
 		return false, nil
 	}
-	if !reconcilesThroughFlux(entities, ledger) {
+	if !reconcilesThroughFlux() {
 		return false, nil
 	}
 	return true, entities

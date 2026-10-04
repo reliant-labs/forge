@@ -142,6 +142,14 @@ type Bundle struct {
 	// is over, so a consumer verifies against exactly what was hashed
 	// rather than against a re-marshalling of the struct.
 	Manifest []byte
+	// GuardedObjects is how many of the layer's objects were stamped
+	// prune-exempt (prune_guard.go): the ones a reconciler must never
+	// delete as a side effect of a render that came out short.
+	//
+	// Carried so the build can SAY so. A guard nobody sees is one nobody
+	// notices has stopped working, and the day it matters is the day a
+	// PersistentVolumeClaim is already gone.
+	GuardedObjects int
 	// blobs are the config and layer blobs, by descriptor.
 	blobs []blob
 }
@@ -199,6 +207,20 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	if !in.Shape.Kind.Valid() {
 		return Bundle{}, fmt.Errorf("%w: bundle %s/%s: environment kind %q", release.ErrInvalid, in.Project, in.Env, in.Shape.Kind)
 	}
+	// THE PRUNE GUARD, before anything hashes or serializes these bodies.
+	// A reconciler applying this layer with `prune: true` deletes whatever
+	// the path no longer carries, and the trigger for that is not a human
+	// decision — it is a render that merely came out one document short. So
+	// every object that holds data is stamped prune-exempt here, where the
+	// stamp lands inside the bundle and is covered by its digest.
+	//
+	// ORDER IS LOAD-BEARING: shapeObjects hashes `doc.body` and
+	// packManifests serializes it, so a stamp applied afterwards would
+	// make every guarded object's recorded hash describe bytes the layer
+	// does not carry — and drift detection compares the live object
+	// against that hash, so each one would read as permanently drifted.
+	// See prune_guard.go.
+	guarded := guardStatefulObjects(docs, in.Shape.StatefulWorkloads)
 	objects, err := shapeObjects(docs, in.Shape.Images, in.Shape.StatefulWorkloads)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
@@ -276,10 +298,11 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	}
 	manifestDesc := content.NewDescriptorFromBytes(ocispec.MediaTypeImageManifest, raw)
 	return Bundle{
-		Digest:   manifestDesc.Digest.String(),
-		Doc:      doc,
-		Manifest: raw,
-		blobs:    append(blobs, blob{manifestDesc, raw}),
+		Digest:         manifestDesc.Digest.String(),
+		Doc:            doc,
+		Manifest:       raw,
+		GuardedObjects: guarded,
+		blobs:          append(blobs, blob{manifestDesc, raw}),
 	}, nil
 }
 

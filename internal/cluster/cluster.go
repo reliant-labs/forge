@@ -604,6 +604,30 @@ func RenderChartStreams(ctx context.Context, specs []HelmChartSpec) ([]RenderedC
 	return out, nil
 }
 
+// ApplyHelmChart renders and applies ONE platform dep into one cluster, CRDs
+// first and Established-gated — the same pipeline a declared
+// `forge.HelmChart` flows through on a `--target` deploy.
+//
+// WHY A SINGLE-CHART ENTRY POINT EXISTS. Every other chart apply starts from
+// an env's rendered Bundle, which is right for a platform dep the env
+// declares. The RECONCILER is the exception: forge installs Flux during the
+// CLUSTER phase, before anything has rendered a Bundle, precisely so the
+// reconciler is in place by the time a deploy writes a pointer at it. Having
+// that install go through this function rather than its own helm shell-out is
+// what keeps the two identical — in particular the CRD-first ordering, which
+// the pointer write depends on: an OCIRepository applied before its CRD is
+// Established fails on a kind the apiserver has never registered.
+//
+// `quiet` is false: this is an install a human asked for, and the per-resource
+// kubectl lines are the evidence it happened.
+func ApplyHelmChart(ctx context.Context, kctx string, spec HelmChartSpec) error {
+	charts, err := renderSelectedCharts(ctx, []HelmChartSpec{spec})
+	if err != nil {
+		return err
+	}
+	return applyRenderedCharts(ctx, kctx, charts, false)
+}
+
 // renderSelectedCharts helm-templates each selected platform dep into the
 // manifests, CRDs and consumer-declared extras the apply pipeline needs.
 //

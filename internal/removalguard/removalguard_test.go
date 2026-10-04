@@ -89,6 +89,26 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "Flux's own multitenancy chart values and the tenants it isolates",
+				Reason: "forge installs Flux from the community flux2 chart, whose values key is " +
+					"literally `multitenancy` (`multitenancy.enabled`, `.privileged`, " +
+					"`.defaultServiceAccount`), and whose isolation model is described in terms of " +
+					"tenants. The key is Flux's identifier and cannot be renamed.\n" +
+					"This is Flux's tenancy, not a forge tenant concept: forge ships no tenant " +
+					"column, header, context key or helper on the strength of it. Scoped to the " +
+					"Flux component's own files, so a `TenantID` anywhere else still fails.",
+				Token: regexp.MustCompile(`(?i)multitenancy|hosted tenants?|tenants?`),
+				Paths: []string{
+					"kcl/lib/flux.k",
+					"kcl/render.k",
+					"kcl/tests/positive_flux_chart.k",
+					"internal/cli/cluster_flux.go",
+					"internal/cli/cluster_flux_test.go",
+					"internal/cli/flux_reconcile_e2e_test.go",
+					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
+				},
+			},
+			{
 				Name: "prose teaching that forge has no tenancy",
 				Reason: "The db/write-policy skill's \"If rows belong to someone, that is a column\" section and " +
 					"seedplan's diamond-disambiguation comment both name tenancy in order to say " +

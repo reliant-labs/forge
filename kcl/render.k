@@ -76,6 +76,7 @@ import .lib.images as img_lib
 import .lib.capabilities as caps
 import .lib.crd as crd_lib
 import .lib.build as build_lib
+import .lib.flux as flux_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -1468,6 +1469,24 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
 # crd — a minimal apiextensions/v1 CRD object (lib/crd.k), for a
 # `forge.Manifests {objects = [...]}` entry.
 crd = crd_lib.crd
+
+# flux_chart(values, cluster) — Flux as a version-pinned forge.HelmChart
+# (lib/flux.k), for a `Bundle.helm_charts` entry.
+#
+# Declared by a consumer that needs Flux for its OWN reasons — hosted
+# tenants, a reconciler it drives itself — so that `forge cluster up` sees a
+# chart already providing Flux and installs no second one. Two Flux installs
+# in one cluster collide on the same CRDs and the same `flux-system`.
+flux_chart = flux_lib.flux_chart
+
+# FLUX_CHART_OCI / FLUX_CHART_VERSION / FLUX_NAMESPACE — the pinned chart
+# reference, its version and Flux's namespace (lib/flux.k). Re-exported
+# because FLUX_CHART_OCI is the SHARED-FLUX DETECTOR: a consumer declaring
+# this ref is recognised as providing Flux, by reference rather than by the
+# chart's freely-chosen name.
+FLUX_CHART_OCI = flux_lib.FLUX_CHART_OCI
+FLUX_CHART_VERSION = flux_lib.FLUX_CHART_VERSION
+FLUX_NAMESPACE = flux_lib.FLUX_NAMESPACE
 
 # target_arch — the GOARCH forge resolved for this build (lib/build.k).
 #

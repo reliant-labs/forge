@@ -303,6 +303,7 @@ func newDeployCmd() *cobra.Command {
 // how they are applied — and a 229-line constructor made that invisible.
 func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags := cmd.Flags()
+	flags.StringArrayVarP(&f.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with `forge env options <env>`.")
 	flags.StringVar(&f.tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
@@ -442,6 +443,9 @@ type deployCmdFlags struct {
 	skipPreflight bool
 	noDigest      bool
 	jsonOut       bool
+	// renderOptions are raw `-D name=value` values pushed into the env's KCL
+	// before any render this command does.
+	renderOptions []string
 
 	rolloutMode     string
 	rolloutTimeout  time.Duration
@@ -465,6 +469,9 @@ type deployCmdFlags struct {
 // what a UI calls to preview a deploy, and a flag that only worked on the real
 // thing would make the preview the one case a consumer could not use.
 func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) error {
+	if err := bindBuildRenderOptions(buildOptions{env: envName, renderOptions: f.renderOptions}); err != nil {
+		return err
+	}
 	if f.promote.requestedRelease() {
 		return dispatchReleaseDeploy(ctx, envName, f)
 	}

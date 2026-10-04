@@ -169,6 +169,20 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	// be both unexplainable to a later reader and unrecoverable — nothing
 	// would know to re-point it.
 	if reconciled, entities := fluxReconciledEnv(ctx, env, ledger); reconciled {
+		// `--target <platform-chart>` is cluster bootstrap, not a release
+		// pointer: install the chart(s) and write no pointer when nothing
+		// else was asked for. See platform_charts.go.
+		charts, rest := splitPlatformChartTargets(entities, o.clientDeploy.targets)
+		if len(charts) > 0 {
+			if !o.clientDeploy.dryRun {
+				if err := installPlatformCharts(ctx, entities, platformChartInstalls(entities, charts, nil)); err != nil {
+					return err
+				}
+			}
+			if len(rest) == 0 {
+				return nil
+			}
+		}
 		return runFluxDeploy(ctx, env, entities, fluxDeployOptions{
 			Digest:  fluxDeployDigest(ctx, env, plan),
 			NoWait:  o.NoWait,

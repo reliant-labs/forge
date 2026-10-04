@@ -859,7 +859,13 @@ var ensureEnvFluxInstalledFn = func(ctx context.Context, env string, clusters []
 		// genuinely absent.
 		return nil
 	}
-	return ensureEnvFluxInstalled(ctx, env, entities, clusters)
+	if err := ensureEnvFluxInstalled(ctx, env, entities, clusters); err != nil {
+		return err
+	}
+	// The env's DECLARED bootstrap charts (a declared Flux among them) land
+	// after forge's own Flux decision, so a declared Flux is installed here
+	// rather than skipped and never replaced. See platform_charts.go.
+	return ensureEnvPlatformChartsInstalled(ctx, env, entities, clusters)
 }
 
 // envClusterDeleteOrder orders an env's declared clusters for deletion:

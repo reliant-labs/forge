@@ -501,3 +501,46 @@ func writeFluxE2EFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestE2EClusterUpInstallsADeclaredFluxChart: an env that DECLARES
+// `forge.flux_chart()` gets that Flux from `forge cluster up`. forge's own
+// install steps aside for a declared one, so before the platform phase nothing
+// installed it and the first pointer write failed on `no matches for kind
+// OCIRepository`.
+func TestE2EClusterUpInstallsADeclaredFluxChart(t *testing.T) {
+	requirePublishedForgePkg(t)
+	requireTool(t, "k3d", "kubectl", "helm", "docker")
+	t.Parallel()
+
+	forgeBin := buildforgeBinary(t)
+	clusterName := fmt.Sprintf("forge-flux-decl-%d-%d", os.Getpid(), time.Now().UnixNano()%100000)
+	kctx := "k3d-" + clusterName
+	registryName := clusterName + "-registry"
+	registryPort := freePortE2E(t)
+	ledgerHome := t.TempDir()
+
+	projectDir := scaffoldFluxE2EProject(t, forgeBin, clusterName, registryName, registryPort)
+	mainK := filepath.Join(projectDir, "deploy", "kcl", "dev-k8s", "main.k")
+	raw, err := os.ReadFile(mainK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := strings.Replace(string(raw), "    clusters = [_cluster]\n",
+		"    clusters = [_cluster]\n    helm_charts = [forge.flux_chart()]\n", 1)
+	if declared == string(raw) {
+		t.Fatal("could not declare flux_chart in the scaffolded env")
+	}
+	writeFluxE2EFile(t, mainK, declared)
+
+	t.Cleanup(func() {
+		if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
+			t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
+		}
+		if out, err := exec.Command("k3d", "registry", "delete", "k3d-"+registryName).CombinedOutput(); err != nil {
+			t.Logf("teardown: k3d registry delete %s: %v\n%s", registryName, err, out)
+		}
+	})
+
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
+	assertFluxInstalled(t, kctx)
+}

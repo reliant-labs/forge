@@ -503,6 +503,21 @@ func lintPipeline() []linterStep {
 			collect:   collectHostedImageBaseJSON,
 		},
 
+		// 13d-ter-bis. PDB-blocks-drain — a PodDisruptionBudget that can
+		// never allow a disruption (see lint_pdb.go). Warnings only.
+		{
+			name:  "pdb-blocks-drain lint",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runPDBLint(rc.ctx, rc.cwd, rc.cfg)
+			},
+			errFormat: "⚠️  pdb-blocks-drain lint: %v\n",
+			collect:   collectPDBJSON,
+		},
+
 		// 13d-bis. Column-markers — flags a COMMENT ON COLUMN/CONSTRAINT
 		// whose text contains forge: but matches no known column marker
 		// (see lint_column_markers.go). Warnings only.

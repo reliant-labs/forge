@@ -748,6 +748,7 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 func renderApplyManifests(ctx context.Context, opts ApplyOpts) (string, error) {
 	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV, opts.ImageDigests)
 	if err == nil {
+		WarnBlockingPDBs(manifests)
 		return manifests, nil
 	}
 	if opts.Quiet {
@@ -1000,6 +1001,12 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 		}
 	}
 
+	// A workload that dropped to one replica stops rendering its PDB and
+	// apply never deletes it; a stale one can block node drains. Not gated
+	// on --prune: PDBs hold no state.
+	if err := PrunePDBs(ctx, opts.Context, manifests, opts.Namespace); err != nil {
+		fmt.Printf("Warning: prune PodDisruptionBudgets: %v\n", err)
+	}
 	if opts.Prune {
 		if err := Prune(ctx, opts.Context, manifests, opts.Namespace); err != nil {
 			fmt.Printf("Warning: prune: %v\n", err)

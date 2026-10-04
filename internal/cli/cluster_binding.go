@@ -128,17 +128,38 @@ func refuseUnboundClusterTargets(envName string, e *KCLEntities) error {
 	if e == nil || e.ControlPlane == nil {
 		return nil
 	}
-	unbound := map[string]bool{}
-	consider := func(context, connected string) {
-		if context == "" || connected != "" || isForgeManagedContext(context) {
+	// bound is every context some target ties to a connected cluster; required
+	// is every context the env renders a tree for or places something on.
+	bound := map[string]bool{}
+	required := map[string]bool{}
+	note := func(context, connected string) {
+		if context == "" {
 			return
 		}
-		unbound[context] = true
+		required[context] = true
+		if connected != "" {
+			bound[context] = true
+		}
 	}
-	consider(e.ClusterTarget.field("cluster"), connectedClusterOf(e.ClusterTarget))
+	note(e.ClusterTarget.field("cluster"), connectedClusterOf(e.ClusterTarget))
 	for _, w := range e.Workloads {
 		if w.Runtime.Type == RuntimeCluster && w.Runtime.Cluster != nil {
-			consider(w.Runtime.Cluster.Cluster, w.Runtime.Cluster.ConnectedCluster)
+			note(w.Runtime.Cluster.Cluster, w.Runtime.Cluster.ConnectedCluster)
+		}
+	}
+	for _, m := range e.ManifestClusters {
+		note(m.Cluster, "")
+	}
+	for _, h := range e.HelmCharts {
+		note(h.Cluster, "")
+	}
+	for _, r := range e.RenderedSecrets {
+		note(r.Cluster, "")
+	}
+	unbound := map[string]bool{}
+	for context := range required {
+		if !bound[context] && !isForgeManagedContext(context) {
+			unbound[context] = true
 		}
 	}
 	if len(unbound) == 0 {

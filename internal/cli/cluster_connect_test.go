@@ -646,3 +646,25 @@ func recordConnectTo(t *testing.T, out *strings.Builder, kctx, auth string) map[
 	}
 	return caller.requests
 }
+
+// A cluster placed only by a forge.Manifests group (no ClusterTarget names it)
+// still gets a bundle tree, so it must be bound too.
+func TestRefuseUnboundClusterTargets_EveryRenderedCluster(t *testing.T) {
+	cp := &ControlPlaneEntity{Endpoint: "https://cp.example"}
+	e := &KCLEntities{
+		ControlPlane:     cp,
+		ClusterTarget:    &ClusterTargetEntity{Cluster: "gke_a_b_prod", ConnectedCluster: "prod-us"},
+		ManifestClusters: []ManifestClusterEntity{{Cluster: "gke_a_b_prod"}, {Cluster: "gke_a_b_daemon"}},
+	}
+	err := refuseUnboundClusterTargets("prod", e)
+	if err == nil {
+		t.Fatal("an unbound manifests-only cluster was accepted")
+	}
+	if !strings.Contains(err.Error(), `"gke_a_b_daemon"`) || strings.Contains(err.Error(), `"gke_a_b_prod"`) {
+		t.Errorf("refusal must name only the unbound cluster: %v", err)
+	}
+	e.HelmCharts = []HelmChartEntity{{Cluster: "gke_a_b_helm"}}
+	if err := refuseUnboundClusterTargets("prod", e); err == nil || !strings.Contains(err.Error(), `"gke_a_b_helm"`) {
+		t.Errorf("helm-placed cluster not named: %v", err)
+	}
+}

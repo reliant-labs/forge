@@ -30,9 +30,9 @@ package cli
 //   - reach: for gcp, `roles/container.clusterViewer` on the project, which is
 //     what lets the hub resolve the cluster and exchange a token for it;
 //   - the bootstrap writes: the control plane creates the destination
-//     Namespace, the tenant ServiceAccount and its Role/RoleBinding in the
+//     Namespace, the deploy ServiceAccount and its Role/RoleBinding in the
 //     target itself, through this credential;
-//   - impersonate, on the tenant username above. Without it the connection
+//   - impersonate, on the deploy username above. Without it the connection
 //     succeeds and every apply is Forbidden on a user nobody bound.
 //
 // The alternative — asking the owner to pre-create a namespace literally named
@@ -48,7 +48,7 @@ import (
 )
 
 // The impersonation identity, mirrored from the control plane's
-// fluxtenant.TenantServiceAccount / HubNamespacePrefix.
+// the flux deploy-identity constants / HubNamespacePrefix.
 //
 // DUPLICATED DELIBERATELY, because forge does not import the control plane —
 // the same reason the wire structs are declared locally. These two strings are
@@ -56,15 +56,15 @@ import (
 // granting access to this username, so it is as public as the RPC's field
 // names. The agreement is pinned by a test against the recorded wire fixture.
 const (
-	hubTenantServiceAccount = "reliant-deploy-tenant"
+	hubDeployServiceAccount = "reliant-deploy-tenant"
 	hubNamespacePrefix      = "flux-"
 )
 
-// hubTenantUsername is the RBAC username the target cluster authenticates when
+// hubDeployUsername is the RBAC username the target cluster authenticates when
 // the hub applies: a Kubernetes ServiceAccount username is exactly
 // `system:serviceaccount:<namespace>:<name>`.
-func hubTenantUsername(org string) string {
-	return "system:serviceaccount:" + hubNamespacePrefix + org + ":" + hubTenantServiceAccount
+func hubDeployUsername(org string) string {
+	return "system:serviceaccount:" + hubNamespacePrefix + org + ":" + hubDeployServiceAccount
 }
 
 // connectBootstrapName is the name of the ClusterRole / ClusterRoleBinding
@@ -88,11 +88,11 @@ type connectRBAC struct {
 	// plane and the KCL binding address, the context is how the owner's
 	// machine reaches the cluster, and they are routinely different.
 	KubeContext string
-	// Subject is the connect identity as RBAC sees it. For gcp that is the
-	// hub's GSA email, bound as a User; for token it is the minted
-	// ServiceAccount, bound as a ServiceAccount in TokenNamespace.
-	Subject string
-	// Auth selects which of the two the Subject is.
+	// HubGSA is the hub's GCP service account email, bound as a User on the
+	// gcp auth. Reported by the control plane at registration, so it is empty
+	// until then; the token auth binds the minted ServiceAccount instead.
+	HubGSA string
+	// Auth selects whether the binding subject is HubGSA or the minted SA.
 	Auth string
 	// Org is the control plane organization, for the impersonated username.
 	Org string
@@ -161,7 +161,7 @@ func (r connectRBAC) subjectYAML() string {
 		return "subjects:\n- kind: ServiceAccount\n  name: " + r.TokenServiceAccount +
 			"\n  namespace: " + r.TokenNamespace + "\n"
 	}
-	return "subjects:\n- kind: User\n  name: " + r.Subject +
+	return "subjects:\n- kind: User\n  name: " + r.HubGSA +
 		"\n  apiGroup: rbac.authorization.k8s.io\n"
 }
 
@@ -176,33 +176,33 @@ func connectBootstrapRules(org string) string {
 - apiGroups: [""]
   resources: ["namespaces"]
   verbs: ["get", "list", "watch", "create", "patch", "update"]
-# The tenant ServiceAccount the apply is impersonated as, created in the
+# The deploy ServiceAccount the apply is impersonated as, created in the
 # destination namespace alongside its Role and RoleBinding.
 - apiGroups: [""]
   resources: ["serviceaccounts"]
   verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
-# The tenant Role and RoleBinding. The bind and escalate verbs are REQUIRED
+# The deploy Role and RoleBinding. The bind and escalate verbs are REQUIRED
 # and are not a widening: Kubernetes refuses to let a principal create a Role carrying
 # rules it does not itself hold, so without them the control plane cannot
-# create the tenant Role at all — the apply fails with a privilege-escalation
+# create the deploy Role at all — the apply fails with a privilege-escalation
 # denial that reads like a bug somewhere else. These two verbs are the
 # documented way to delegate that, and they are scoped to this one API group.
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "watch", "create", "patch", "update", "delete", "bind", "escalate"]
 # IMPERSONATE, ON EXACTLY ONE USERNAME. This is the rule whose absence makes a
-# perfectly connected cluster refuse every apply: Flux presents the tenant
+# perfectly connected cluster refuse every apply: Flux presents the deploy
 # username, not this identity, so a connection with no impersonate grant is
 # authenticated and unauthorized. resourceNames pins it to the single username
 # the hub can ever present, so this grants nothing else.
 - apiGroups: [""]
   resources: ["serviceaccounts"]
   verbs: ["impersonate"]
-  resourceNames: ["` + hubTenantServiceAccount + `"]
+  resourceNames: ["` + hubDeployServiceAccount + `"]
 - apiGroups: [""]
   resources: ["users"]
   verbs: ["impersonate"]
-  resourceNames: ["` + hubTenantUsername(org) + `"]
+  resourceNames: ["` + hubDeployUsername(org) + `"]
 `
 }
 
@@ -250,5 +250,5 @@ That impersonation is the grant people miss: it is the username Flux presents
 when it applies, so without it the cluster connects and every apply is Forbidden.
 `,
 		gke.Project, gke.Project, hubGSA, r.KubeContext, connectBootstrapName(r.ClusterName), hubGSA,
-		hubTenantUsername(r.Org))
+		hubDeployUsername(r.Org))
 }

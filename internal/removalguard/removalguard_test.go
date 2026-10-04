@@ -109,6 +109,22 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "the control plane's per-org deploy ServiceAccount, reliant-deploy-tenant",
+				Reason: "Flux's kustomize-controller on the control plane impersonates the Kubernetes " +
+					"ServiceAccount literally named `reliant-deploy-tenant`, so `forge cluster connect` must " +
+					"grant `impersonate` on exactly that username in the owner's cluster. The name is the " +
+					"control plane's identifier and cannot be renamed here; it is a Kubernetes identity, not a " +
+					"tenant column, header, context key or helper in forge. Scoped to that exact literal and to " +
+					"the connect command's files, so any other `tenant` there (a TenantID, a tenant header) " +
+					"still fails.",
+				Token: regexp.MustCompile(`reliant-deploy-tenant`),
+				Paths: []string{
+					"internal/cli/cluster_connect_rbac.go",
+					"internal/cli/cluster_connect_test.go",
+					"internal/templates/project/skills/forge/deploy/cluster-connect/SKILL.md",
+				},
+			},
+			{
 				Name: "prose teaching that forge has no tenancy",
 				Reason: "The db/write-policy skill's \"If rows belong to someone, that is a column\" section and " +
 					"seedplan's diamond-disambiguation comment both name tenancy in order to say " +
@@ -262,6 +278,11 @@ var removals = []removal{
 					"pkg/serverkit/",
 					"internal/cli/deploy*.go",
 					"internal/cli/env_render*.go",
+					// `forge cluster connect` applies a ClusterRole/ClusterRoleBinding to the
+					// owner's cluster, and its skill documents it. Kubernetes manifests only;
+					// the files carry an `rbac` local naming that bootstrap-manifest struct.
+					"internal/cli/cluster_connect*.go",
+					"internal/templates/project/skills/forge/deploy/cluster-connect/SKILL.md",
 					"internal/doctor/clusterhealth*.go",
 					"internal/templates/deploy_build_test.go",
 				},

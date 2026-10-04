@@ -229,6 +229,7 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 			ClusterName:         name,
 			KubeContext:         target.Context,
 			Auth:                target.Auth,
+			HubGSA:              "<the control plane's GCP service account>",
 			Org:                 "<the env's organization>",
 			TokenNamespace:      connectTokenNamespace,
 			TokenServiceAccount: connectTokenServiceAccount,
@@ -248,20 +249,28 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 		TokenServiceAccount: connectTokenServiceAccount,
 	}
 
-	// THE IN-CLUSTER WRITE COMES FIRST, and the order is the contract.
+	// ORDER DEPENDS ON THE AUTH.
 	//
-	// On the token path the token does not exist until the SA and its Secret
-	// do, so there is nothing to send before this. On the gcp path the order
-	// is a choice: applying first means a cluster the control plane records
-	// is one whose RBAC is already in place, so there is no window where a
-	// deploy could be attempted against a cluster that would refuse it. A
-	// failed apply leaves nothing registered, which is the recoverable
-	// direction — re-run the same command.
-	fmt.Fprintf(opts.Out, "applying bootstrap RBAC to %s (server-side, field manager forge)\n", target.Context)
-	if err := connectApply(ctx, target.Context, rbac.bootstrapManifests()); err != nil {
-		return fmt.Errorf("apply bootstrap RBAC to context %q: %w\n"+
-			"This needs cluster-admin on the target. It is a one-time bootstrap: it grants the "+
-			"platform the permissions its deploys need, which no deploy can grant itself", target.Context, err)
+	// token: the in-cluster write comes first, because the token does not
+	// exist until the SA and its Secret do, so there is nothing to send before it.
+	//
+	// gcp: registration comes first, because the ClusterRoleBinding's subject
+	// is the hub's GSA email and the control plane's response is the only
+	// place it is reported. Applying earlier rendered `name: ` — a binding
+	// that authorizes nobody, with an apply that still "succeeded".
+	applyBootstrap := func() error {
+		fmt.Fprintf(opts.Out, "applying bootstrap RBAC to %s (server-side, field manager forge)\n", target.Context)
+		if err := connectApply(ctx, target.Context, rbac.bootstrapManifests()); err != nil {
+			return fmt.Errorf("apply bootstrap RBAC to context %q: %w\n"+
+				"This needs cluster-admin on the target. It is a one-time bootstrap: it grants the "+
+				"platform the permissions its deploys need, which no deploy can grant itself", target.Context, err)
+		}
+		return nil
+	}
+	if target.Auth == authToken {
+		if err := applyBootstrap(); err != nil {
+			return err
+		}
 	}
 
 	req := map[string]any{
@@ -294,6 +303,17 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	}
 	if resp.Cluster.ID == "" {
 		return fmt.Errorf("connect cluster %q: the control plane returned no cluster id", name)
+	}
+
+	if target.Auth == authGCP {
+		rbac.HubGSA = resp.HubIdentity.GCPServiceAccount
+		// No GSA means no principal to bind (dev control planes have none);
+		// writeGrantInstructions below says so rather than binding nobody.
+		if strings.TrimSpace(rbac.HubGSA) != "" {
+			if err := applyBootstrap(); err != nil {
+				return err
+			}
+		}
 	}
 
 	writeConnectSummary(opts.Out, resp.Cluster, target)

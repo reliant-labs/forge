@@ -251,13 +251,14 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 // objects are not.
 func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 	return bundle.ShapeInput{
-		Kind:      doc.Shape.Kind,
-		Workloads: doc.Shape.Workloads,
-		Secrets:   doc.Shape.Secrets,
-		Domains:   doc.Shape.Domains,
-		Clusters:  doc.Shape.Clusters,
-		Manifests: doc.manifests,
-		Images:    doc.images,
+		Kind:          doc.Shape.Kind,
+		Workloads:     doc.Shape.Workloads,
+		Secrets:       doc.Shape.Secrets,
+		Domains:       doc.Shape.Domains,
+		Clusters:      doc.Shape.Clusters,
+		Manifests:     doc.manifests,
+		SyncedSecrets: doc.syncedSecrets,
+		Images:        doc.images,
 	}
 }
 

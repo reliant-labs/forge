@@ -129,6 +129,19 @@ func runFluxDeploy(ctx context.Context, env string, entities *KCLEntities, opts 
 				"  env that was never applied", env, describeClusterPaths(doc.ClusterPaths))
 	}
 
+	// SECRETS ARE SYNCED BY FORGE, NOT CARRIED BY THE BUNDLE. Collected (and
+	// refused if a named one cannot be supplied) before anything is
+	// published or written, so a missing value never leaves a half-deployed
+	// env behind.
+	var syncSet fluxSecretSet
+	if len(doc.Secrets) > 0 {
+		if opts.DryRun {
+			printFluxSecretPlan(out, env, doc.Secrets, clusters)
+		} else if syncSet, err = collectFluxSecrets(ctx, env, entities, doc.Secrets, clusters); err != nil {
+			return err
+		}
+	}
+
 	repository := ""
 	if !opts.DryRun {
 		if repository, err = publishBundleForFlux(ctx, projectDirForKCL(), env, entities, opts.Digest); err != nil {
@@ -170,6 +183,13 @@ func runFluxDeploy(ctx context.Context, env string, entities *KCLEntities, opts 
 
 	if opts.DryRun {
 		return printFluxPointers(out, env, opts.Digest, pointers)
+	}
+
+	if len(syncSet) > 0 {
+		fmt.Fprintf(out, "\nSyncing %s's Secrets to its clusters (values never enter the bundle)\n", env)
+		if err := syncFluxSecrets(ctx, env, syncSet, out); err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(out, "\nRecording %s's desired state for its in-cluster reconciler (bundle %s)\n",

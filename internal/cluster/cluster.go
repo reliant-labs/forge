@@ -2830,3 +2830,29 @@ func Prune(ctx context.Context, kctx, manifests, namespace string) error {
 func SplitManifestDocs(manifests string) []string {
 	return splitDocs(manifests)
 }
+
+// ApplySecrets server-side-applies a Secret manifest stream under an explicit
+// field manager, and prints nothing from it: the apply's own per-object lines
+// would name Secrets, and a caller summarises by count instead.
+//
+// Conflicts are forced, as in [KubectlApply]: forge is the declared source of
+// these values, and the Secrets it takes over are exactly the ones a previous
+// writer (a hand-run `forge env secrets sync`, or an older reconciler applying
+// a redaction marker) already owns fields of.
+func ApplySecrets(ctx context.Context, kctx, namespace, fieldManager, manifests string) error {
+	if strings.TrimSpace(kctx) == "" {
+		return fmt.Errorf("refusing to apply Secrets without an explicit kubectl context")
+	}
+	if strings.TrimSpace(fieldManager) == "" {
+		return fmt.Errorf("refusing to apply Secrets without a field manager")
+	}
+	args := []string{"apply", "--server-side", "--field-manager", fieldManager, "--force-conflicts", "-n", namespace, "-f", "-"}
+	cmd := kubectlCmd(ctx, kctx, args...)
+	cmd.Stdin = strings.NewReader(manifests)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if _, err := cmd.Output(); err != nil {
+		return fmt.Errorf("kubectl apply (field manager %s): %w: %s", fieldManager, err, strings.TrimSpace(errBuf.String()))
+	}
+	return nil
+}

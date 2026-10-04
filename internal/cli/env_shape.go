@@ -94,7 +94,11 @@ type envShapeDoc struct {
 	// precisely the "what was applied is not what was recorded" failure
 	// the bundle exists to close. One render, both halves.
 	manifests string
-	images    map[string]string
+	// syncedSecrets names the Secrets forge supplies from the env's secret
+	// store rather than the render; names only, and they ride the bundle
+	// document so a deploy knows what to sync.
+	syncedSecrets []release.BundleSecretRef
+	images        map[string]string
 	// hostedPlaceholder is true when the hosted records were planned over
 	// PLACEHOLDER digests because no release pins them yet. Fine for a shape
 	// a human reads; a bundle must never seal it.
@@ -318,6 +322,10 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	// the platform dependency's, not this project's declaration. `forge env
 	// render --charts` is where they belong.
 	stream := renderShapeStream(objects)
+	syncedSecrets, serr := envSyncedSecretRefs(entities, groups, namespace, stream)
+	if serr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, serr)
+	}
 	shape, err := bundle.ProjectShape(bundle.ShapeInput{
 		Kind:              shapeEnvKindOf(entities),
 		Workloads:         shapeWorkloadsOf(entities),
@@ -339,6 +347,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Shape:             shape,
 		Provenance:        captureBuildProvenance(ctx, projectDir).ForHosted(),
 		manifests:         stream,
+		syncedSecrets:     syncedSecrets,
 		images:            digests,
 		hostedPlaceholder: placeholder,
 	}, nil

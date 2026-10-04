@@ -158,7 +158,11 @@ func checkSecretDocument(where string, body any) error {
 				ErrSecretValue, where, name, field, key)
 		}
 	}
-	return nil
+	// Redacted or not, a Secret does not belong in the layer: the reconciler
+	// would apply the marker over the cluster's real value and own the
+	// object's lifetime. See splitSecrets.
+	return fmt.Errorf("%w: %s: Secret %q is in the manifest layer; Secrets are synced by forge, never reconciled from a bundle",
+		ErrSecretValue, where, name)
 }
 
 // secretValueFields are the two places a Kubernetes Secret holds a value.

@@ -188,20 +188,22 @@ func TestBuildRedactsEverySecretValue(t *testing.T) {
 		t.Fatal("the canary survived into the OCI manifest")
 	}
 
-	// The Secret is still THERE — redacted, not dropped. An apply
-	// re-materializes it from the provider, and a bundle that omitted it
-	// would describe a deploy that forgot a workload's secret.
-	var found bool
-	for _, data := range unpackLayer(t, layer) {
+	// The Secret is NOT in the layer at all — a reconciler would apply a
+	// redaction marker over the cluster's real value and own the object's
+	// lifetime. It is named in the document instead, so the deploy syncs it.
+	for name, data := range unpackLayer(t, layer) {
 		if strings.Contains(data, "kind: Secret") {
-			found = true
-			if !strings.Contains(data, release.RedactedSecretPrefix) {
-				t.Errorf("the Secret carries no redaction marker:\n%s", data)
-			}
+			t.Errorf("%s: a Secret rode the manifest layer:\n%s", name, data)
 		}
 	}
-	if !found {
-		t.Error("the Secret was dropped rather than redacted")
+	var named bool
+	for _, ref := range built.Doc.Secrets {
+		if ref.Name == "orders-superuser" {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the Secret is not named in the bundle document: %+v", built.Doc.Secrets)
 	}
 }
 

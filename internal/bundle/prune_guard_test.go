@@ -105,7 +105,7 @@ func TestBuild_GuardsStatefulObjectsAgainstPrune(t *testing.T) {
 	byKind := unpackByKind(t, b)
 
 	// Every object whose removal destroys data or everything under it.
-	for _, kind := range []string{"PersistentVolumeClaim", "Secret", "Namespace"} {
+	for _, kind := range []string{"PersistentVolumeClaim", "Namespace"} {
 		doc, ok := byKind[kind]
 		if !ok {
 			t.Fatalf("the layer carries no %s; the fixture is wrong", kind)
@@ -132,8 +132,8 @@ func TestBuild_GuardsStatefulObjectsAgainstPrune(t *testing.T) {
 			"actually goes away", got)
 	}
 
-	if b.GuardedObjects != 4 {
-		t.Errorf("GuardedObjects = %d, want 4 (Namespace, PVC, Secret, the database CR)", b.GuardedObjects)
+	if b.GuardedObjects != 3 {
+		t.Errorf("GuardedObjects = %d, want 3 (Namespace, PVC, the database CR)", b.GuardedObjects)
 	}
 }
 
@@ -150,7 +150,7 @@ func TestBuild_GuardedObjectsHashMatchesTheLayer(t *testing.T) {
 	b := buildPruneGuardBundle(t)
 	byKind := unpackByKind(t, b)
 
-	for _, kind := range []string{"PersistentVolumeClaim", "Secret", "Deployment"} {
+	for _, kind := range []string{"PersistentVolumeClaim", "Deployment"} {
 		var body any
 		if err := yaml.Unmarshal(byKind[kind], &body); err != nil {
 			t.Fatalf("%s: parse packed document: %v", kind, err)
@@ -203,10 +203,10 @@ func TestBuild_GuardDoesNotLeakSecretValues(t *testing.T) {
 	if bytes.Contains(layer, []byte("s3cret")) {
 		t.Fatal("the manifest layer carries a plaintext secret value")
 	}
-	// And the Secret IS still guarded, so the redaction did not cost the
-	// stamp.
-	if got := annotationOf(unpackByKind(t, b)["Secret"], annotationPrune); got != pruneDisabled {
-		t.Errorf("Secret prune = %q, want %q", got, pruneDisabled)
+	// And the Secret is not in the layer at all, so Flux can neither write
+	// nor prune it.
+	if _, present := unpackByKind(t, b)["Secret"]; present {
+		t.Error("a Secret rode the manifest layer")
 	}
 }
 

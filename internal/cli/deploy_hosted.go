@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -136,6 +137,11 @@ func envAppliesLocally(e *KCLEntities) bool {
 // same control plane.
 func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities, groups []deploytarget.ServiceGroup, opts deployOptions) error {
 	report := opts.report
+	if !opts.dryRun {
+		if err := refuseUnsyncableHostedSecretsFor(ctx, envName, entities); err != nil {
+			return err
+		}
+	}
 	if len(opts.targets) > 0 {
 		// A partial publish would leave the platform running a mix of two
 		// releases under one binding — the state the release model exists
@@ -317,4 +323,19 @@ func hostedPinsFromLedger(ctx context.Context, ledger envLedger, envName string)
 		release: binding.Release, promotionID: binding.ID,
 		digests: binding.Resolved, registries: releaseRegistries(rel),
 	}, nil
+}
+
+// refuseUnsyncableHostedSecretsFor finds the Secret values a pure-hosted env's
+// render needs forge to supply and refuses when it has no way to. Best effort
+// on the render: a projection failure is reported by the deploy proper.
+func refuseUnsyncableHostedSecretsFor(ctx context.Context, envName string, entities *KCLEntities) error {
+	doc, err := projectEnvShapeFn(ctx, io.Discard, envName)
+	if err != nil {
+		return nil
+	}
+	refs, err := envSyncedSecretRefs(entities, nil, envName, doc.manifests)
+	if err != nil {
+		return nil
+	}
+	return refuseUnsyncableHostedSecrets(envName, refs)
 }

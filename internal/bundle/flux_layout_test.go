@@ -145,14 +145,13 @@ func TestFluxExtractRoutesEachClusterToItsOwnPath(t *testing.T) {
 		"000-deployment-api.yaml",
 		"001-service-api.yaml",
 		"002-persistentvolumeclaim-orders-data.yaml",
-		"003-secret-orders-superuser.yaml",
-		"004-cluster-orders.yaml",
-		"005-namespace-shop-prod.yaml",
+		"003-cluster-orders.yaml",
+		"004-namespace-shop-prod.yaml",
 	}
 	if !equalStrings(prodNames, wantProd) {
 		t.Errorf("%s holds\n  %v\nwant\n  %v", prodPath, prodNames, wantProd)
 	}
-	wantDaemon := []string{"005-namespace-shop-prod.yaml"}
+	wantDaemon := []string{"004-namespace-shop-prod.yaml"}
 	if !equalStrings(daemonNames, wantDaemon) {
 		t.Errorf("%s holds\n  %v\nwant\n  %v", daemonPath, daemonNames, wantDaemon)
 	}
@@ -160,7 +159,7 @@ func TestFluxExtractRoutesEachClusterToItsOwnPath(t *testing.T) {
 	// The shared document is the SAME bytes under both paths. Two
 	// renderings of one object that differed would make the object's
 	// content depend on which cluster's Kustomization reconciled last.
-	const shared = "005-namespace-shop-prod.yaml"
+	const shared = "004-namespace-shop-prod.yaml"
 	if prodBodies[shared] != daemonBodies[shared] {
 		t.Errorf("the Namespace differs between the two cluster paths:\n--- %s\n%s\n--- %s\n%s",
 			prodPath, prodBodies[shared], daemonPath, daemonBodies[shared])
@@ -242,7 +241,7 @@ func TestFluxExtractKeepsUnclusteredDocumentsInTheirOwnPath(t *testing.T) {
 
 	extracted := fluxExtract(t, built, release.BundleManifestsLayer)
 	names, _ := filesUnder(extracted, release.BundleClusterPath(""))
-	want := []string{"006-configmap-host-only.yaml"}
+	want := []string{"005-configmap-host-only.yaml"}
 	if !equalStrings(names, want) {
 		t.Errorf("the unclustered path %s holds %v, want %v", release.BundleClusterPath(""), names, want)
 	}

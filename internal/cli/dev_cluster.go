@@ -828,7 +828,38 @@ func runEnvClustersUp(ctx context.Context, env string, wait bool) error {
 			}
 		}
 	}
-	return nil
+	// THE RECONCILER, after the clusters exist and AFTER the node-Ready
+	// wait when one was asked for. An env whose deploy writes a
+	// desired-state pointer needs a Flux in the cluster for that pointer to
+	// mean anything — an OCIRepository with no source-controller is
+	// admitted and then sits there, which makes the deploy's wait time out
+	// with nothing to diagnose. A no-op, and silent, for every env that
+	// applies directly. See cluster_flux.go.
+	//
+	// Installing it needs the apiserver reachable, which `--wait` is what
+	// guarantees; without it, the chart apply's own kubectl is the thing
+	// that discovers a node still coming up, and it reports that in its own
+	// terms.
+	return ensureEnvFluxInstalledFn(ctx, env, clusters)
+}
+
+// ensureEnvFluxInstalledFn is the reconciler install, seamed so the cluster
+// lifecycle paths stay unit-testable without helm or a cluster. It re-renders
+// the env because runEnvClustersUp holds only the cluster list, and the
+// install decision needs the env's control-plane and lifecycle declarations
+// too — the render is cached, so this is not a second evaluation.
+var ensureEnvFluxInstalledFn = func(ctx context.Context, env string, clusters []ClusterEntity) error {
+	entities, err := RenderKCL(ctx, projectDirForKCL(), env)
+	if err != nil {
+		// Soft: the clusters are up, which is what the verb promised.
+		// A render that failed HERE cannot be a fact about the env —
+		// renderEnvClustersFn just succeeded on the same render — so
+		// refusing would fail a cluster-lifecycle command over a
+		// transient. The deploy refuses loudly if the reconciler is
+		// genuinely absent.
+		return nil
+	}
+	return ensureEnvFluxInstalled(ctx, env, entities, clusters)
 }
 
 // envClusterDeleteOrder orders an env's declared clusters for deletion:

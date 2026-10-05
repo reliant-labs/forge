@@ -42,6 +42,11 @@ type RefreshRequest struct {
 	// as sending an empty one, and this package omits it when nil.
 	Scopes []string
 
+	// ScopeSeparator joins Scopes, exactly as [AuthRequest.ScopeSeparator]:
+	// empty means a space (RFC 6749 §3.3), "," for a comma-delimited
+	// provider, and nothing else.
+	ScopeSeparator string
+
 	// Extra carries provider-specific body parameters. Keys that collide
 	// with a parameter this package sets are rejected.
 	Extra url.Values
@@ -175,7 +180,11 @@ func (e *Exchanger) Refresh(ctx context.Context, req RefreshRequest) (*Refreshed
 	// empty scope= is a request for no scopes at all rather than "keep what
 	// I had", which some providers honour literally.
 	if len(req.Scopes) > 0 {
-		form.Set("scope", strings.Join(req.Scopes, " "))
+		scope, err := joinScopes("RefreshRequest", req.Scopes, req.ScopeSeparator)
+		if err != nil {
+			return nil, err
+		}
+		form.Set("scope", scope)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, req.Endpoint, strings.NewReader(form.Encode()))

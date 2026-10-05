@@ -139,9 +139,21 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 	//
 	// The stub carries no access-control annotations: access control is
 	// app-owned handler logic.
+	//
+	// The proto PACKAGE follows the project (forge.yaml api.proto_package,
+	// else the convention its existing service protos share, else
+	// services.<svc>.v1 — see ResolveServiceProtoPackage). go_package does
+	// NOT follow it: every service keeps its own gen/services/<svc>/v1 Go
+	// package, which is where buf's paths=source_relative writes the stubs
+	// and where the handler template imports them from, whether or not the
+	// wire package is shared.
+	protoPkg := ResolveServiceProtoPackage(root, serviceName)
+	if protoPkg.Source != ProtoPackageDefault {
+		fmt.Fprintf(progressOrDiscard(progress), "  ✓ %s\n", protoPkg.Describe())
+	}
 	protoContent := fmt.Sprintf(`syntax = "proto3";
 
-package services.%s.v1;
+package %s;
 
 import "forge/v1/forge.proto";
 
@@ -157,7 +169,7 @@ service %sService {
 
   // TODO: Add your RPC methods here.
 }
-`, servicePackage, modulePath, servicePackage, servicePackage,
+`, protoPkg.Package, modulePath, servicePackage, servicePackage,
 		handlerName, serviceName, handlerName, handlerName, serviceName)
 	if err := writeBytesWithMode(protoPath, []byte(protoContent), mode, progress); err != nil {
 		return err
@@ -223,6 +235,14 @@ func writeBytesWithMode(path string, content []byte, mode ScaffoldMode, progress
 		}
 	}
 	return os.WriteFile(path, content, 0644)
+}
+
+// progressOrDiscard lets a nil progress writer be passed straight to Fprintf.
+func progressOrDiscard(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+	return w
 }
 
 // emitProgress writes a single human-readable status line to `w` if non-nil.

@@ -839,7 +839,32 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateORMDriver(cfg, root)...)
 	out = append(out, validateConfigGuard(cfg, root)...)
 	out = append(out, validateDevStack(cfg, root)...)
+	out = append(out, validateAPIProtoPackage(cfg, root)...)
 	return out
+}
+
+// protoPackageSettingRE accepts a dotted proto package whose segments may be
+// the {service} placeholder — the shape api.proto_package must have.
+var protoPackageSettingRE = regexp.MustCompile(`^(?:[A-Za-z_]\w*|\{service\})(?:\.(?:[A-Za-z_]\w*|\{service\}))*$`)
+
+// validateAPIProtoPackage rejects an api.proto_package that cannot be a proto
+// package. Caught here rather than at scaffold time because the failure
+// otherwise surfaces as a buf parse error in a file forge just wrote, far
+// from the line that caused it.
+func validateAPIProtoPackage(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	setting := strings.TrimSpace(cfg.API.ProtoPackage)
+	if setting == "" || protoPackageSettingRE.MatchString(setting) {
+		return nil
+	}
+	line, col := findNodePos(root, []string{"api", "proto_package"})
+	return []validationIssue{{
+		line:   line,
+		column: col,
+		msg:    fmt.Sprintf("api.proto_package value %q is not a proto package", cfg.API.ProtoPackage),
+		fix: "use dot-separated identifiers, optionally with the {service} placeholder: " +
+			"\"controlplane.v1\" (every service shares it) or \"acme.{service}.v1\" (one per service). " +
+			"Delete the key to infer it from the existing service protos.",
+	}}
 }
 
 // validateDevStack checks the `dev_stack:` bounds. Absent (or zero) is valid

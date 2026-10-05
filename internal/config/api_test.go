@@ -45,6 +45,34 @@ api:
 	}
 }
 
+// api.proto_package is the override for the scaffolded service's proto
+// package. Both forms — a fixed package and a {service} pattern — must load,
+// and a value that is not a proto package must fail at load time, naming the
+// key, rather than surface later as a buf parse error in a file forge wrote.
+func TestAPIConfigProtoPackage(t *testing.T) {
+	for _, ok := range []string{"controlplane.v1", "acme.{service}.v1", "{service}.v1"} {
+		data := []byte("name: test\nmodule_path: github.com/foo/bar\napi:\n  proto_package: \"" + ok + "\"\n")
+		cfg, err := LoadProject(data, "t.yaml")
+		if err != nil {
+			t.Fatalf("api.proto_package %q should load: %v", ok, err)
+		}
+		if cfg.API.ProtoPackage != ok {
+			t.Errorf("api.proto_package = %q, want %q", cfg.API.ProtoPackage, ok)
+		}
+	}
+	for _, bad := range []string{"control-plane.v1", "acme..v1", "acme.{svc}.v1", ".v1"} {
+		data := []byte("name: test\nmodule_path: github.com/foo/bar\napi:\n  proto_package: \"" + bad + "\"\n")
+		_, err := LoadProject(data, "t.yaml")
+		if err == nil {
+			t.Errorf("api.proto_package %q should be rejected", bad)
+			continue
+		}
+		if !contains(err.Error(), "api.proto_package") {
+			t.Errorf("error for %q should name the key: %v", bad, err)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

@@ -62,27 +62,38 @@ async function waitForSettled(result: { current: { status: string } }) {
 }
 {{- end}}
 
+{{/*
+  Whitespace in this block is deliberate. Every action trims its own line
+  ({{- ... }}), so the output carries exactly the blank lines prettier keeps:
+  ONE between sibling it() blocks and one after the setTransport call, and
+  none just inside a `{` or just before a `}`. A plain {{range}} / {{if}} on
+  its own line leaves a blank line behind it, prettier deletes every one, and
+  a fresh service's starter test then fails the project's own prettier check
+  (TestHookStarterTest_BlankLinesArePrettierShaped).
+*/ -}}
 describe("{{.ServiceName}} hooks", () => {
-{{range .Methods}}
-  it("{{.HookName}} resolves a happy-path response", async () => {
+{{- range $i, $m := .Methods}}
+{{- if $i}}
+{{end}}
+  it("{{$m.HookName}} resolves a happy-path response", async () => {
     setTransport(
       mockTransport({
-        "{{$.ServiceName}}.{{.Name}}": { response: {} },
+        "{{$.ServiceName}}.{{$m.Name}}": { response: {} },
       }),
     );
-{{if .IsQuery}}
-    const { result } = renderHook(() => {{.HookName}}({} as never), { wrapper });
+{{if $m.IsQuery}}
+    const { result } = renderHook(() => {{$m.HookName}}({} as never), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toBeDefined();
-{{else}}
-    const { result } = renderHook(() => {{.HookName}}(), { wrapper });
+{{- else}}
+    const { result } = renderHook(() => {{$m.HookName}}(), { wrapper });
     await result.current.mutateAsync({} as never).catch(() => {
       // Mutations may reject if the empty request fails validation upstream.
       // The point of the starter is that the wiring resolves; tighten the
       // assertions as you flesh out the page.
     });
     await waitForSettled(result);
-{{end}}
+{{- end}}
   });
-{{end}}
+{{- end}}
 });

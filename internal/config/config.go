@@ -2192,7 +2192,27 @@ func (s StackConfig) EffectiveFrontendFramework() string {
 type APIConfig struct {
 	REST    bool `yaml:"rest,omitempty"`
 	OpenAPI bool `yaml:"openapi,omitempty"`
+
+	// ProtoPackage is the proto `package` a SCAFFOLDED service declares
+	// (`forge scaffold service`, `forge project new --service`). Either a
+	// fixed package every service shares ("controlplane.v1") or a pattern
+	// carrying the {service} placeholder, which expands to the snake_case
+	// service name ("acme.{service}.v1" → "acme.billing.v1").
+	//
+	// Absent is the normal case: forge then infers the package from the
+	// project's existing service protos (a strict-majority convention) and
+	// falls back to "services.{service}.v1" — see
+	// generator.ResolveServiceProtoPackage. Set it only to override that
+	// inference, e.g. on a project with no services yet. Scaffold-time only:
+	// it never rewrites a proto that already exists. go_package is not
+	// affected — every service keeps its own gen/services/<svc>/v1 Go
+	// package whatever its wire package.
+	ProtoPackage string `yaml:"proto_package,omitempty"`
 }
+
+// ProtoPackageServicePlaceholder is the token in api.proto_package that
+// expands to the scaffolded service's snake_case name.
+const ProtoPackageServicePlaceholder = "{service}"
 
 // K8sConfig holds Kubernetes configuration.
 type K8sConfig struct {

@@ -24,9 +24,15 @@ type AuthRequest struct {
 	// is how a callback ends up somewhere the caller did not intend.
 	RedirectURI string
 
-	// Scopes are sent space-delimited. For OIDC include "openid"; add
-	// "offline_access" to be issued a refresh token.
+	// Scopes are joined with ScopeSeparator. For OIDC include "openid";
+	// add "offline_access" to be issued a refresh token.
 	Scopes []string
+
+	// ScopeSeparator joins Scopes into the one scope parameter. Empty means
+	// a space, which is RFC 6749 §3.3. Set "," only for a provider that
+	// reads scope comma-delimited (Slack's OAuth v2 does); no other value
+	// is accepted.
+	ScopeSeparator string
 
 	// State is the CSRF token from [NewState]. Required — a flow with no
 	// state has no defence against a forged callback.
@@ -135,8 +141,34 @@ func (r AuthRequest) URL() (string, error) {
 	q.Set("code_challenge", r.Challenge.Value)
 	q.Set("code_challenge_method", string(r.Challenge.Method))
 	if len(r.Scopes) > 0 {
-		q.Set("scope", strings.Join(r.Scopes, " "))
+		scope, err := joinScopes("AuthRequest", r.Scopes, r.ScopeSeparator)
+		if err != nil {
+			return "", err
+		}
+		q.Set("scope", scope)
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// joinScopes renders scopes as the one scope parameter value.
+//
+// Only a space (RFC 6749 §3.3, the default) or a comma is a separator: those
+// are the two providers actually read. Anything else is refused rather than
+// encoded, because a caller that reached for it is misconfigured. A scope that
+// contains the separator is refused too, since the provider would read it as
+// two scopes and grant something other than what was listed.
+func joinScopes(owner string, scopes []string, sep string) (string, error) {
+	if sep == "" {
+		sep = " "
+	}
+	if sep != " " && sep != "," {
+		return "", fmt.Errorf("oauth2: %s.ScopeSeparator %q is not supported; use \"\" (space, RFC 6749) or \",\"", owner, sep)
+	}
+	for _, scope := range scopes {
+		if strings.Contains(scope, sep) {
+			return "", fmt.Errorf("oauth2: %s scope %q contains the scope separator %q and would be read as more than one scope", owner, scope, sep)
+		}
+	}
+	return strings.Join(scopes, sep), nil
 }

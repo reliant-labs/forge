@@ -584,6 +584,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if err != nil {
 		return err
 	}
+	ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut))
 	return runPromote(ctx, p.version, envName, promoteOptions{
 		Ledger:        ledger,
 		DryRun:        p.plan,

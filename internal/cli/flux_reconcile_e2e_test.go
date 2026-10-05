@@ -2,24 +2,34 @@
 
 package cli
 
-// END TO END, AGAINST A REAL CLUSTER AND A REAL FLUX: an env with no control
-// plane and no declared lifecycle is converged by the reconciler in its own
-// cluster, and forge's client-side apply is not what put the workload there.
+// END TO END, AGAINST A REAL CLUSTER: an env with no control plane and no
+// declared lifecycle is applied DIRECTLY by forge, and forge puts no Flux into
+// the cluster.
 //
-// WHY THIS CANNOT BE A UNIT TEST. The claim the whole path rests on is that
-// `Kustomization.status.lastAppliedRevision` equals the bundle's OCI MANIFEST
-// digest, even though what was applied came out of ONE LAYER selected by
-// `layerSelector`. That is a property of source-controller and
-// kustomize-controller, reasoned from their behaviour, and a unit test over
-// forge's own structs cannot observe it — it would assert forge's belief about
-// Flux rather than Flux. If a future Flux re-keyed the revision off the layer
-// digest, every wait on this path would hang on a comparison that can never be
-// true, and only a test that reads a REAL Kustomization would notice.
+// THE CONTRACT (#461). Flux on a cluster comes only from a control plane's own
+// declaration; forge never installs it into a deploy target and never routes
+// a deploy through an in-cluster pointer. Every env without a
+// forge.ControlPlane applies directly and prints a transitional note pointing
+// at forge.ControlPlane + connected_cluster.
 //
-// It also proves the negative, which is the other half of the design: the
-// workload is Running and `forge` never applied it. A path that wrote a
-// pointer AND applied directly would pass every assertion about the workload
-// while leaving two authorities over the same objects.
+// These tests used to pin the OPPOSITE — `forge cluster up` installing
+// source- and kustomize-controller, and `forge env deploy` writing an
+// OCIRepository + Kustomization pointer that Flux converged. #461 made
+// reconcilesThroughFlux unconditionally false, so that path is unreachable
+// from every env and both tests went hard-red on every branch. They are
+// rewritten to the new contract rather than deleted because the cluster-level
+// half is not observable anywhere else: a unit test can assert that
+// fluxInstallTargets returns nil, but only a real cluster shows that nothing
+// in flux-system was created, that the workload is owned by forge's own
+// field manager rather than kustomize-controller, and that a declared Secret's
+// real value lands without ever riding the bundle.
+//
+// The ControlPlane half of the contract (a ControlPlane env still reconciles
+// through its hub's Flux) is NOT covered here: it needs a running hub, which
+// is a separate test, not a rewrite of this one.
+//
+// TestE2EClusterUpInstallsADeclaredFluxChart is unchanged: a Flux the env
+// DECLARES (forge.flux_chart()) is the user's chart, installed like any other.
 //
 // CLUSTER HYGIENE. This creates a cluster under a UNIQUE name, tears it down
 // by that exact name, and touches nothing else. A shared dev box runs several
@@ -44,11 +54,12 @@ import (
 	"io"
 
 	"github.com/reliant-labs/forge/internal/bundle"
-	"github.com/reliant-labs/forge/internal/flux"
 )
 
-// TestE2EFluxReconcilesAMachineLedgerEnv is the whole path, once.
-func TestE2EFluxReconcilesAMachineLedgerEnv(t *testing.T) {
+// TestE2EDirectApplyEnvInstallsNoFlux is the whole path, once: an env with no
+// control plane gets a cluster with no Flux in it, and a deploy that forge
+// applies itself.
+func TestE2EDirectApplyEnvInstallsNoFlux(t *testing.T) {
 	requirePublishedForgePkg(t)
 	requireTool(t, "k3d", "kubectl", "helm", "docker")
 	t.Parallel() // its own uniquely-named cluster, its own t.TempDir
@@ -70,64 +81,36 @@ func TestE2EFluxReconcilesAMachineLedgerEnv(t *testing.T) {
 	projectDir := scaffoldFluxE2EProject(t, forgeBin, clusterName, registryName, registryPort)
 
 	// ── The cluster, created by us and deleted by exact name ─────────────
-	t.Cleanup(func() {
-		// By the exact name, unconditionally, even on failure: a leaked
-		// k3d cluster holds a docker network and several containers.
-		// Errors are logged rather than failed — the test's verdict is
-		// about forge, not about teardown.
-		if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
-			t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
-		}
-		if out, err := exec.Command("k3d", "registry", "delete", "k3d-"+registryName).CombinedOutput(); err != nil {
-			t.Logf("teardown: k3d registry delete %s: %v\n%s", registryName, err, out)
-		}
-	})
+	t.Cleanup(func() { teardownFluxE2ECluster(t, clusterName, registryName) })
 
-	// `forge cluster up` creates the cluster AND installs the reconciler.
-	// Both halves are under test: a cluster with no Flux would let the
-	// pointer write succeed and the wait time out with nothing to
-	// diagnose.
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
 
-	// ── Flux is actually installed, and only the two controllers ─────────
-	assertFluxInstalled(t, kctx)
+	// ── `forge cluster up` put no Flux into the deploy target ────────────
+	assertNoFluxInstalled(t, kctx)
 
-	// ── Build the bundle, then deploy ────────────────────────────────────
-	// The bundle is the artifact the reconciler fetches; the deploy writes
-	// a pointer at it rather than applying.
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
-
 	deployOut := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--yes")
 
-	// ── forge's DIRECT APPLY WAS NOT USED ────────────────────────────────
-	// The negative half of the design. Two independent signals, because
-	// either alone could be coincidence:
+	// ── The deploy applied directly, and said so ─────────────────────────
+	// Two independent signals, because either alone could be coincidence:
 	//
-	//  1. the deploy said it was recording desired state, not applying;
-	//  2. no object in the cluster is owned by forge's apply field
-	//     manager — only by Flux's.
-	if !strings.Contains(deployOut, "desired state") {
-		t.Errorf("deploy output does not say it recorded desired state; did it apply directly?\n%s", deployOut)
+	//  1. the deploy printed the transitional direct-apply note, and did
+	//     NOT claim to record desired state for an in-cluster reconciler;
+	//  2. the workload is owned by forge's own field manager, not by
+	//     kustomize-controller, and no Flux object names this env.
+	if !strings.Contains(deployOut, realClusterNoticeLine) {
+		t.Errorf("deploy did not print the direct-apply note for an env with no control plane:\n%s", deployOut)
 	}
-	assertWorkloadOwnedByFluxNotForge(t, kctx)
+	if strings.Contains(deployOut, "desired state for its in-cluster reconciler") {
+		t.Errorf("deploy claims it recorded desired state for an in-cluster reconciler; "+
+			"no env without a control plane may route through forge's Flux path:\n%s", deployOut)
+	}
+	assertWorkloadAppliedByForgeNotFlux(t, kctx)
+	assertNoFluxObjectsForEnv(t, kctx, "dev-k8s")
 
 	// ── The workload is Running ──────────────────────────────────────────
-	// Flux applied it under `wait: true`, so by the time the deploy
-	// returned 0 the rollout had already been health-checked — this
-	// re-reads it from the cluster rather than taking forge's word.
+	// Re-read from the cluster rather than taking the deploy's exit code.
 	assertDeploymentAvailable(t, kctx, "app", "api")
-
-	// ── lastAppliedRevision == THE BUNDLE MANIFEST DIGEST ────────────────
-	// The assertion that cannot be made anywhere else.
-	digest := recordedBundleDigestFromDeployOutput(t, deployOut)
-	ksName := flux.KustomizationName("dev-k8s", kctx)
-	assertKustomizationConverged(t, kctx, ksName, digest)
-	assertLayerSelectorIsSet(t, kctx, flux.SourceName("dev-k8s"), digest)
-
-	// ── A hand-edited Flux-owned field is REVERTED ───────────────────────
-	// The self-healing property, which is the reason to have a reconciler
-	// at all rather than a one-shot apply.
-	assertHandEditIsReverted(t, kctx, ksName, "app", "api")
 }
 
 // scaffoldFluxE2EProject creates a project with ONE env, `dev-k8s`, shaped
@@ -161,8 +144,8 @@ registries:
 `, clusterName, registryName, registryPort, registryName, registryPort, registryName)
 	writeFluxE2EFile(t, filepath.Join(projectDir, "deploy", "k3d-"+clusterName+".yaml"), k3dConfig)
 
-	// The env. NO `lifecycle`, no `forge.ControlPlane` — which is exactly
-	// what routes it through the reconciler.
+	// The env. NO `lifecycle`, no `forge.ControlPlane`: before #461 this
+	// shape routed through an in-cluster reconciler; now it applies directly.
 	mainK := fmt.Sprintf(`import forge
 import forge.workloads as fw
 
@@ -186,8 +169,8 @@ _api = fw.Workload {
     build = forge.DockerBuild {dockerfile = "Dockerfile.pause"}
 }
 
-# DELIBERATELY NO lifecycle declaration: an env that declares none and targets
-# a cluster is a REAL environment, and forge reconciles it from its bundle.
+# DELIBERATELY NO lifecycle declaration and no control plane: a real
+# environment with no hub, which forge applies directly (transitionally).
 output = forge.render(forge.Bundle {
     project = "fluxapp"
     env = "dev-k8s"
@@ -200,7 +183,26 @@ output = forge.render(forge.Bundle {
 
 	writeFluxE2EFile(t, filepath.Join(projectDir, "Dockerfile.pause"), "FROM busybox:1.36\nRUN mkdir /www && echo ok > /www/readyz && echo ok > /www/healthz\nCMD [\"httpd\", \"-f\", \"-p\", \"8080\", \"-h\", \"/www\"]\n")
 
+	commitFluxE2EFixture(t, projectDir)
 	return projectDir
+}
+
+// commitFluxE2EFixture makes the fixture a git repo with a commit. A real
+// project is one, and the deploy needs it: the image tag resolves from git
+// (`git describe`), and a release cut with no commit carries none to pin. On a
+// CI runner `forge project new` leaves no commit, and the deploy fails with
+// "git tag resolution: exit status 128" — a fixture defect, not forge's.
+//
+// Idempotent, so a test that edits the fixture can call it again: init is a
+// no-op on an existing repo, and the commit is skipped when nothing is staged.
+func commitFluxE2EFixture(t *testing.T, projectDir string) {
+	t.Helper()
+	gitE2E(t, projectDir, "init", "-q")
+	gitE2E(t, projectDir, "add", "-A")
+	if strings.TrimSpace(gitE2E(t, projectDir, "status", "--porcelain")) == "" {
+		return
+	}
+	gitE2E(t, projectDir, "commit", "-q", "-m", "fixture")
 }
 
 // runForgeFluxE2E runs forge with the ledger pointed at a temp dir.
@@ -262,16 +264,53 @@ func assertFluxInstalled(t *testing.T, kctx string) {
 	}
 }
 
-// assertWorkloadOwnedByFluxNotForge is the NEGATIVE: forge's client-side apply
-// did not put this object here.
-//
-// Server-side apply records a field manager per object, so ownership is the
-// evidence. forge's own apply uses the manager `forge`
-// (internal/flux.FieldManager, and cluster.KubectlApply's SSA); Flux's
-// kustomize-controller uses `kustomize-controller`. The workload being owned by
-// the latter and not the former is what proves the deploy wrote a pointer
-// instead of applying.
-func assertWorkloadOwnedByFluxNotForge(t *testing.T, kctx string) {
+// assertNoFluxInstalled is the cluster-level half of #461: `forge cluster up`
+// on an env that declares no Flux chart leaves no Flux behind — no
+// flux-system controllers and no Flux CRDs. A unit test can show that
+// fluxInstallTargets returns nil; only the cluster shows nothing else
+// installed it either.
+func assertNoFluxInstalled(t *testing.T, kctx string) {
+	t.Helper()
+	// -o name, not JSON: with flux-system absent (the expected case) kubectl
+	// prints nothing at all, which is the answer rather than a parse error.
+	if names := strings.TrimSpace(kubectlFluxE2E(t, kctx, "get", "deployments", "-n", "flux-system",
+		"-o", "name", "--ignore-not-found")); names != "" {
+		t.Errorf("flux-system runs %s; forge must never install Flux into a deploy target "+
+			"(Flux on a cluster comes only from a control plane's declaration)", names)
+	}
+	crds := kubectlFluxE2E(t, kctx, "get", "crd", "-o", "name")
+	for _, crd := range []string{"ocirepositories.source.toolkit.fluxcd.io", "kustomizations.kustomize.toolkit.fluxcd.io"} {
+		if strings.Contains(crds, crd) {
+			t.Errorf("CRD %s is installed; forge installed Flux into a deploy target", crd)
+		}
+	}
+}
+
+// assertNoFluxObjectsForEnv: the deploy wrote no OCIRepository or
+// Kustomization pointer for this env. With no Flux CRDs registered, kubectl
+// cannot even name the kinds; that failure is the expected answer, so the
+// probe runs raw rather than through the fatal helper.
+func assertNoFluxObjectsForEnv(t *testing.T, kctx, env string) {
+	t.Helper()
+	for _, kind := range []string{"ocirepositories.source.toolkit.fluxcd.io", "kustomizations.kustomize.toolkit.fluxcd.io"} {
+		out, err := exec.Command("kubectl", "--context", kctx, "get", kind, "-A", "-o", "name").CombinedOutput()
+		if err != nil {
+			continue // the kind does not exist on this cluster: nothing was written
+		}
+		if names := strings.TrimSpace(string(out)); names != "" {
+			t.Errorf("the cluster holds Flux %s objects (%s); env %s has no control plane and must apply directly",
+				kind, names, env)
+		}
+	}
+}
+
+// assertWorkloadAppliedByForgeNotFlux is the ownership evidence for a direct
+// apply. Server-side apply records a field manager per object: forge's own
+// apply (cluster.KubectlApply) runs under kubectl's SSA, Flux's under
+// `kustomize-controller`. A direct apply must leave the former and never the
+// latter — kustomize-controller here would mean something in the cluster is
+// reconciling objects forge also applies, two authorities over one object.
+func assertWorkloadAppliedByForgeNotFlux(t *testing.T, kctx string) {
 	t.Helper()
 	obj := kubectlJSONFluxE2E(t, kctx, "get", "deployment", "api", "-n", "app", "-o", "json", "--show-managed-fields")
 	meta := obj["metadata"].(map[string]any)
@@ -280,19 +319,23 @@ func assertWorkloadOwnedByFluxNotForge(t *testing.T, kctx string) {
 	for _, f := range raw {
 		managers = append(managers, f.(map[string]any)["manager"].(string))
 	}
-	joined := strings.Join(managers, ",")
-	if !strings.Contains(joined, "kustomize-controller") {
-		t.Errorf("deployment/api is not owned by kustomize-controller (managers: %v) — Flux is supposed to "+
-			"be what applied it", managers)
+	if len(managers) == 0 {
+		t.Fatalf("deployment/api carries no managed fields; cannot tell who applied it")
 	}
-	// The manager forge's own apply would have used. Its presence would
-	// mean forge applied the env as well as pointing at it, which leaves
-	// two authorities over one object.
+	for _, m := range managers {
+		if m == "kustomize-controller" {
+			t.Errorf("deployment/api is managed by kustomize-controller (managers: %v); an env without a "+
+				"control plane must be applied by forge directly, not reconciled by Flux", managers)
+		}
+	}
+	applied := false
 	for _, m := range managers {
 		if m == "forge" || strings.HasPrefix(m, "kubectl") {
-			t.Errorf("deployment/api carries field manager %q — forge (or a kubectl) applied this object "+
-				"directly, and the reconciled path must write only the pointer", m)
+			applied = true
 		}
+	}
+	if !applied {
+		t.Errorf("deployment/api has no forge/kubectl apply manager (managers: %v); the direct apply did not put it there", managers)
 	}
 }
 
@@ -365,110 +408,32 @@ func firstSHA256InFluxE2E(s string) string {
 	return ""
 }
 
-// assertKustomizationConverged IS THE CONTRACT: `lastAppliedRevision` equals
-// the bundle's OCI MANIFEST digest.
+// teardownFluxE2ECluster removes everything one test created, by exact name,
+// unconditionally — and never anything else on the machine. Errors are logged
+// rather than failed: the test's verdict is about forge, not about teardown.
 //
-// It is reasoned (the `layerSelector` selects a layer; it does not re-key the
-// revision) and measured HERE. If a future Flux changed it, this is the only
-// test that would notice, and everything else on the path would merely hang.
-func assertKustomizationConverged(t *testing.T, kctx, name, digest string) {
+// The NETWORK is the step that used to be missing. forge attaches its
+// standalone registry to the cluster's docker network, so `k3d cluster
+// delete` cannot remove that network while the registry is still connected,
+// and deleting the registry afterwards does not go back for it. Every run
+// leaked one `k3d-<cluster>` network; Docker's predefined address pools hold
+// a few dozen, and once they were exhausted every later k3d cluster on the
+// machine — this suite's and everyone else's — failed with "all predefined
+// address pools have been fully subnetted".
+func teardownFluxE2ECluster(t *testing.T, clusterName, registryName string) {
 	t.Helper()
-	obj := kubectlJSONFluxE2E(t, kctx, "get", "kustomization", name, "-n", "flux-system", "-o", "json")
-	status, _ := obj["status"].(map[string]any)
-	if status == nil {
-		t.Fatalf("kustomization %s has no status; it has never reconciled", name)
+	if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
+		t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
 	}
-	revision, _ := status["lastAppliedRevision"].(string)
-	if revision != digest {
-		t.Fatalf("lastAppliedRevision = %q, want the bundle's OCI MANIFEST digest %q.\n"+
-			"  This is the comparison forge's wait is built on: if Flux now keys the revision off "+
-			"something else (the layer digest, a tag), every wait on this path hangs on a test that "+
-			"can never be true.", revision, digest)
+	if out, err := exec.Command("k3d", "registry", "delete", "k3d-"+registryName).CombinedOutput(); err != nil {
+		t.Logf("teardown: k3d registry delete %s: %v\n%s", registryName, err, out)
 	}
-	// Ready=True as well: the revision alone is an apply that was admitted
-	// and may then have failed its health check.
-	ready := ""
-	for _, c := range status["conditions"].([]any) {
-		cond := c.(map[string]any)
-		if cond["type"] == "Ready" {
-			ready = cond["status"].(string)
-		}
+	network := "k3d-" + clusterName
+	if err := exec.Command("docker", "network", "inspect", network).Run(); err != nil {
+		return // already gone (k3d removed it, or it was never created)
 	}
-	if ready != "True" {
-		t.Errorf("kustomization %s Ready = %q, want True", name, ready)
-	}
-}
-
-// assertLayerSelectorIsSet pins that the revision above was produced WITH the
-// layerSelector in place.
-//
-// Without this, the previous assertion would still pass for a bundle whose
-// layer happened to be handed over unselected — and the brief's requirement is
-// specifically that the equality holds WHILE `layerSelector` is set, because
-// that combination is the one that was reasoned rather than measured.
-func assertLayerSelectorIsSet(t *testing.T, kctx, name, digest string) {
-	t.Helper()
-	obj := kubectlJSONFluxE2E(t, kctx, "get", "ocirepository", name, "-n", "flux-system", "-o", "json")
-	spec := obj["spec"].(map[string]any)
-	sel, ok := spec["layerSelector"].(map[string]any)
-	if !ok {
-		t.Fatalf("ocirepository %s has no layerSelector; the manifest layer would not be extracted and the "+
-			"Kustomization's path would not exist inside the artifact", name)
-	}
-	if sel["operation"] != "extract" {
-		t.Errorf("layerSelector.operation = %v, want extract", sel["operation"])
-	}
-	if got, _ := sel["mediaType"].(string); !strings.Contains(got, "forge.bundle.manifests") {
-		t.Errorf("layerSelector.mediaType = %q, want forge's manifest layer type", got)
-	}
-	// And the source pins the same digest the Kustomization reported.
-	ref, _ := spec["ref"].(map[string]any)
-	if ref == nil || ref["digest"] != digest {
-		t.Errorf("ocirepository ref = %v, want digest %q", ref, digest)
-	}
-}
-
-// assertHandEditIsReverted is the self-healing property: the cluster matches
-// what was RECORDED, not what somebody last typed.
-//
-// This is the reason to run a reconciler rather than a one-shot apply, and it
-// is also the clearest demonstration that Flux — not forge — owns these
-// objects: nothing is running forge while this happens.
-func assertHandEditIsReverted(t *testing.T, kctx, ksName, namespace, name string) {
-	t.Helper()
-	const edited = "7"
-	original := strings.TrimSpace(kubectlFluxE2E(t, kctx, "get", "deployment", name, "-n", namespace,
-		"-o", "jsonpath={.spec.replicas}"))
-	if original == edited {
-		t.Fatalf("the fixture already runs %s replicas; the test needs a value Flux will revert TO", edited)
-	}
-
-	// A Flux-owned field, changed out from under it.
-	kubectlFluxE2E(t, kctx, "scale", "deployment", name, "-n", namespace, "--replicas="+edited)
-	if got := strings.TrimSpace(kubectlFluxE2E(t, kctx, "get", "deployment", name, "-n", namespace,
-		"-o", "jsonpath={.spec.replicas}")); got != edited {
-		t.Fatalf("the hand edit did not take (replicas=%q); there is nothing to revert", got)
-	}
-
-	// Ask Flux to reconcile now rather than waiting out its interval — the
-	// same annotation forge's pointer carries, for the same reason.
-	kubectlFluxE2E(t, kctx, "annotate", "--overwrite", "kustomization", ksName, "-n", "flux-system",
-		"reconcile.fluxcd.io/requestedAt="+time.Now().Format(time.RFC3339Nano))
-
-	deadline := time.Now().Add(3 * time.Minute)
-	for {
-		got := strings.TrimSpace(kubectlFluxE2E(t, kctx, "get", "deployment", name, "-n", namespace,
-			"-o", "jsonpath={.spec.replicas}"))
-		if got == original {
-			return
-		}
-		if !time.Now().Before(deadline) {
-			describe, _ := exec.Command("kubectl", "--context", kctx, "describe",
-				"kustomization", ksName, "-n", "flux-system").CombinedOutput()
-			t.Fatalf("a hand-edited Flux-owned field was NOT reverted: replicas is %q, the bundle says %q.\n"+
-				"  Self-healing is the reason to run a reconciler at all.\n%s", got, original, describe)
-		}
-		time.Sleep(5 * time.Second)
+	if out, err := exec.Command("docker", "network", "rm", network).CombinedOutput(); err != nil {
+		t.Logf("teardown: docker network rm %s: %v\n%s", network, err, out)
 	}
 }
 
@@ -540,29 +505,31 @@ func TestE2EClusterUpInstallsADeclaredFluxChart(t *testing.T) {
 	}
 	writeFluxE2EFile(t, mainK, declared)
 
-	t.Cleanup(func() {
-		if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
-			t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
-		}
-		if out, err := exec.Command("k3d", "registry", "delete", "k3d-"+registryName).CombinedOutput(); err != nil {
-			t.Logf("teardown: k3d registry delete %s: %v\n%s", registryName, err, out)
-		}
-	})
+	t.Cleanup(func() { teardownFluxE2ECluster(t, clusterName, registryName) })
 
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
 	assertFluxInstalled(t, kctx)
 }
 
-// TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle is the F-13/Flux contract
-// against a real cluster and a real Flux:
+// TestE2EDirectApplySecretsLandAndStayOutOfTheBundle is the F-13 contract on
+// the direct-apply path every env without a control plane takes (#461),
+// against a real cluster:
 //
-//   - a Secret's REAL value ends up in the cluster (Flux used to apply the
-//     redaction marker over it, so it never did);
-//   - the bundle's layer holds no Secret object at all;
+//   - a Secret's REAL value ends up in the cluster — both a declared
+//     rendered_secret and a raw Secret manifest;
+//   - no preview (--explain, --dry-run) and no deploy ever prints the value;
+//   - the recorded bundle's layer holds no Secret object at all — the bundle
+//     is the artifact a control plane's Flux would fetch, so a Secret riding
+//     it would leak through the hub the day this env gets one;
 //   - a second deploy is idempotent (the Secret is not rewritten);
-//   - dropping the Secrets from the KCL neither makes Flux prune them nor makes
-//     forge delete them — removal is the user's call.
-func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
+//   - dropping the Secrets from the KCL does not make forge delete them —
+//     removal is the user's call.
+//
+// It used to assert the in-cluster Flux path's own artifacts (a
+// "synced N secret(s)" line, the forge-secrets field manager, an --explain
+// that listed Secrets to sync). That path is unreachable since #461; those
+// assertions are gone and every property above is kept.
+func TestE2EDirectApplySecretsLandAndStayOutOfTheBundle(t *testing.T) {
 	requirePublishedForgePkg(t)
 	requireTool(t, "k3d", "kubectl", "helm", "docker")
 	t.Parallel()
@@ -575,14 +542,7 @@ func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
 	ledgerHome := t.TempDir()
 
 	projectDir := scaffoldFluxE2EProject(t, forgeBin, clusterName, registryName, registryPort)
-	t.Cleanup(func() {
-		if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
-			t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
-		}
-		if out, err := exec.Command("k3d", "registry", "delete", "k3d-"+registryName).CombinedOutput(); err != nil {
-			t.Logf("teardown: k3d registry delete %s: %v\n%s", registryName, err, out)
-		}
-	})
+	t.Cleanup(func() { teardownFluxE2ECluster(t, clusterName, registryName) })
 
 	const realValue = "real-secret-value-9f3a"
 	mainK := filepath.Join(projectDir, "deploy", "kcl", "dev-k8s", "main.k")
@@ -609,25 +569,22 @@ func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
 	writeFluxE2EFile(t, mainK, withSecrets)
 	writeFluxE2EFile(t, filepath.Join(projectDir, "secrets", "dev-k8s.yaml"), "STORE_TOKEN: "+realValue+"\n")
 
-	// A real project is a git repo: --dry-run resolves its image tag from
-	// git, and has no build state of its own to fall back on.
-	gitE2E(t, projectDir, "init", "-q")
-	gitE2E(t, projectDir, "add", "-A")
-	gitE2E(t, projectDir, "commit", "-q", "-m", "fixture")
+	// --dry-run resolves its image tag from git, and has no build state of
+	// its own to fall back on: commit the Secrets edit too.
+	commitFluxE2EFixture(t, projectDir)
 
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
 
-	// ── --explain / plan: names only ─────────────────────────────────────
-	explain := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--explain")
-	for _, name := range []string{"store-creds", "raw-creds"} {
-		if !strings.Contains(explain, name) {
-			t.Errorf("--explain does not list Secret %s to be synced:\n%s", name, explain)
-		}
-	}
-	for _, out := range []string{explain, runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "deploy", "dev-k8s", "--dry-run")} {
-		if strings.Contains(out, realValue) {
-			t.Fatalf("a preview printed a Secret value:\n%s", out)
+	// ── Previews never print a value ─────────────────────────────────────
+	// --dry-run renders the Secret manifests (redacted); --explain prints
+	// the cluster-guard decision. Neither may carry the value.
+	for _, args := range [][]string{
+		{"env", "deploy", "dev-k8s", "--explain"},
+		{"env", "deploy", "dev-k8s", "--dry-run"},
+	} {
+		if out := runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, args...); strings.Contains(out, realValue) {
+			t.Fatalf("forge %s printed a Secret value:\n%s", strings.Join(args, " "), out)
 		}
 	}
 
@@ -635,15 +592,16 @@ func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
 	if strings.Contains(deployOut, realValue) {
 		t.Fatalf("the deploy printed a Secret value:\n%s", deployOut)
 	}
-	if !strings.Contains(deployOut, "synced 2 secret(s)") {
-		t.Errorf("the deploy did not report syncing its two Secrets:\n%s", deployOut)
+	if !strings.Contains(deployOut, realClusterNoticeLine) {
+		t.Errorf("deploy did not print the direct-apply note for an env with no control plane:\n%s", deployOut)
 	}
 
-	// ── The REAL value is in the cluster, written by forge-secrets ───────
+	// ── The REAL value is in the cluster, applied by forge, not Flux ─────
 	for _, name := range []string{"store-creds", "raw-creds"} {
 		assertSecretValue(t, kctx, name, "token", realValue)
-		assertSecretManagedBy(t, kctx, name, "forge-secrets")
+		assertSecretNotManagedByFlux(t, kctx, name)
 	}
+	assertNoFluxInstalled(t, kctx)
 
 	// ── The bundle holds no Secret object ────────────────────────────────
 	assertBundleHasNoSecret(t, ledgerHome, recordedBundleDigestFromDeployOutput(t, deployOut))
@@ -673,15 +631,18 @@ func assertSecretValue(t *testing.T, kctx, name, key, want string) {
 	}
 }
 
-func assertSecretManagedBy(t *testing.T, kctx, name, manager string) {
+// assertSecretNotManagedByFlux: the Secret was applied by forge's direct
+// apply, and nothing reconciled it out of a bundle — kustomize-controller as a
+// manager would mean the Secret rode an artifact a reconciler fetched.
+func assertSecretNotManagedByFlux(t *testing.T, kctx, name string) {
 	t.Helper()
 	managers := kubectlFluxE2E(t, kctx, "get", "secret", name, "-n", "app", "--show-managed-fields",
 		"-o", "jsonpath={.metadata.managedFields[*].manager}")
-	if !strings.Contains(managers, manager) {
-		t.Errorf("secret %s is managed by %q, want %q among them", name, managers, manager)
+	if strings.TrimSpace(managers) == "" {
+		t.Errorf("secret %s carries no managed fields; cannot tell who applied it", name)
 	}
 	if strings.Contains(managers, "kustomize-controller") {
-		t.Errorf("secret %s is managed by kustomize-controller: a Secret must not ride the bundle", name)
+		t.Errorf("secret %s is managed by kustomize-controller (%s): a Secret must not ride the bundle", name, managers)
 	}
 }
 

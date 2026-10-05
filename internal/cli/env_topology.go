@@ -210,6 +210,9 @@ type promotionLag struct {
 type topologyEnv struct {
 	// Env is the environment name.
 	Env string `json:"env"`
+	// Lifecycle is the env's declared Bundle.lifecycle ("local",
+	// "ephemeral", or "" when unset or not declared in this checkout).
+	Lifecycle string `json:"lifecycle"`
 	// Declared is true when deploy/kcl/<env>/main.k exists in THIS
 	// checkout. An env can be bound without being declared here — a
 	// release promoted on a branch that has the env, read from one that
@@ -580,6 +583,9 @@ func buildTopologyEnvRow(
 		Env:      envName,
 		Declared: declared,
 		Images:   []topologyImage{},
+	}
+	if declared {
+		row.Lifecycle = declaredLifecycle(ctx, opts.Resolver, projectDir, envName)
 	}
 	if !declared {
 		row.Note = fmt.Sprintf("not declared in this checkout (%s does not exist) — it may be declared on another branch",

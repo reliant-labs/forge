@@ -725,7 +725,14 @@ func hostedBundleObjects(ctx context.Context, projectDir, envName string, entiti
 	}
 	var pins hostedPins
 	if ledger, lerr := ledgerFor(ctx, projectDir, envName); lerr == nil {
-		pins, _ = hostedPinsFromLedger(ctx, ledger, envName)
+		if version := hostedPinReleaseFrom(ctx); version != "" {
+			if rel, rerr := ledger.Releases.Get(ctx, version); rerr == nil && rel != nil {
+				pins = hostedPins{release: version, digests: rel.SharedDigests(), registries: releaseRegistries(rel)}
+			}
+		}
+		if pins.release == "" {
+			pins, _ = hostedPinsFromLedger(ctx, ledger, envName)
+		}
 	}
 	group.Hosted = &deploytarget.HostedTarget{
 		Release: pins.release, PromotionID: pins.promotionID,

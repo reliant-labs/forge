@@ -264,6 +264,7 @@ func TestRulesFireOnPlantedDefects(t *testing.T) {
 		"noop-func|deadcodeguardfixture/internal/noop.AppendServiceToConfig",
 		"noop-func|deadcodeguardfixture/internal/noop.BranchingNoop",
 		"noop-func|deadcodeguardfixture/internal/noop.LoadConfigKV",
+		"noop-func|deadcodeguardfixture/internal/perplatform.probe",
 		"phantom-field|deadcodeguardfixture/internal/phantom.Component.Ports",
 		"phantom-field|deadcodeguardfixture/internal/phantom.Component.Schedule",
 	}
@@ -325,6 +326,9 @@ func TestExemptionsAreLoadBearing(t *testing.T) {
 		{"deadcodeguardfixture/internal/noop.Register", "no parameters: nothing for the body to ignore"},
 		{"deadcodeguardfixture/internal/noop.Render", "does real work before returning nil"},
 		{"deadcodeguardfixture/internal/noop.Resolve", "a METHOD satisfying an interface — the Null Object pattern is deliberate"},
+		{"deadcodeguardfixture/internal/perplatform.Snapshot.PID", "written only in a _windows.go file — a host-only load cannot see it"},
+		{"deadcodeguardfixture/internal/perplatform.Snapshot.Created", "same Windows-only writer"},
+		{"deadcodeguardfixture/internal/perplatform.lock", "a per-OS seam: a stub on Windows, real work on Unix under the same name"},
 		{"deadcodeguardfixture/internal/noop.New", "returns a real value"},
 	}
 	for _, m := range mustNotFire {

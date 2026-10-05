@@ -37,11 +37,9 @@ func TestAuditVersion_BinaryOlderThanPinIsAnError(t *testing.T) {
 			t.Errorf("summary missing %q: %s", want, cat.Summary)
 		}
 	}
-	// The install command is the actionable part, and it must carry CGO —
-	// a CGO-free forge cannot render at all, so an install line without it
-	// trades one broken binary for another.
+	// The install command is the actionable part.
 	hint, _ := cat.Details["hint"].(string)
-	const install = "CGO_ENABLED=1 go install github.com/reliant-labs/forge/cmd/forge@v0.1.43"
+	const install = "go install github.com/reliant-labs/forge/cmd/forge@v0.1.43"
 	if !strings.Contains(hint, install) {
 		t.Errorf("hint does not name the pinned install %q:\n%s", install, hint)
 	}

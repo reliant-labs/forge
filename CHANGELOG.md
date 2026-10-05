@@ -7,8 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **forge no longer requires cgo.** `kcl_plugin.forge` is bridged through a
+  purego callback, so `go install` works with any `CGO_ENABLED` setting,
+  including Windows without a C toolchain. `env diff`'s `unsupported` status is
+  gone, as are the `CGO_ENABLED=1` prefixes and "CGO is required" notes in the
+  Taskfile, Makefile, scaffolded CI install step, version-skew install hints
+  and skills.
+
+### Changed
+
+- **`forge doctor`'s `forge: kcl-plugin` check is now a real probe.** It
+  evaluates a one-line KCL program through `kcl_plugin.forge` instead of
+  reading a build flag, so it fails for what can actually break now: KCL's
+  native library failing to extract or load (antivirus, read-only temp dir,
+  bad `KCL_LIB_HOME`). Same name and pass/fail/skip meaning as before.
+- **A KCL runtime that cannot load is an error, not a crash.** kcl-lang.io/lib
+  panics when it cannot extract libkcl; forge used to crash with a stack trace
+  (`forge doctor` exited 2). It now reports `load the KCL runtime: …` from
+  every render.
+- **Scaffolded `.air.toml` sets no env inline.** `ENVIRONMENT=development` is
+  set by `forge env up` on the air process (and by `task dev`), so the config
+  uses `entrypoint` and works under air's PowerShell on Windows.
+- **`task db:restore` shows pg_restore's warnings.** The `grep -v` filter that
+  hid them is gone, because `grep` does not exist on Windows.
+
 ### Added
 
+- **Windows support.** Native windows/amd64 and windows/arm64, no C toolchain:
+  - process lifecycle (tree kill, liveness, parent/port/start-time lookup,
+    reading another process's argv and environment for stale-stack reclaim);
+  - an in-process POSIX shell for ShellBuild and migration detection;
+  - a delve JSON-RPC client that builds on windows/arm64;
+  - `[build.windows]` sections in the scaffolded air configs, `.exe` host
+    binaries from `forge build` and the `binary`/`delve` runners;
+  - zitadel's Windows binary for the host IdP;
+  - in-use file detection via the Restart Manager, so reclaimers work;
+  - a directory-junction fallback when symlinks need privileges;
+  - portable scaffolded Taskfiles (guarded by a test), and a `.gitattributes`
+    keeping generated files LF;
+  - `forge doctor` floors for Windows: air >= 1.65.3, Task >= 3.45.5;
+  - `forge storage schedule` registers a daily Task Scheduler task;
+  - a `windows-latest` CI job that builds, tests and renders a scaffold.
+- **`forge doctor` checks air** (any OS, >= 1.63.2) for projects with an
+  `.air.toml`: the scaffolded config names its binary with `entrypoint`, which
+  older air does not read, so it would have nothing to run.
+
+### Fixed
+
+- **forge only kills processes it can prove are its own.** On every OS, a pid
+  read from a pidfile (embedded postgres, the host zitadel, a recorded dlv)
+  is killed only if its executable matches and it started no later than the
+  pidfile was written — a recycled pid is left alone. On Windows, where pids
+  recycle fast and a parent pid is never updated, process-tree ownership and
+  teardown also require the parent to be alive and older than the child, and
+  a graceful stop (CTRL_BREAK) is sent only to a verified process-group
+  leader, never broadcast to the whole console.
+- **Background `forge env up` stacks on Windows survive closing the
+  terminal** (DETACHED_PROCESS), as they do on Unix.
 - **`deploy/static-site` skill: forge is for static sites too.** Agents
   reaching for forge only when there is a backend routed every landing page,
   marketing site and docs site around it, even though forge already ships one

@@ -36,13 +36,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
@@ -280,6 +279,16 @@ func runtimeDir(port uint32) string {
 	return filepath.Join(os.TempDir(), "forge-pgtest", strconv.FormatUint(uint64(port), 10))
 }
 
+// postgresBinary is the postgres executable embedded-postgres extracts under
+// runtimeDir/bin, which is what a postmaster started from that dir runs.
+func postgresBinary(runtimeDir string) string {
+	name := "postgres"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(runtimeDir, "bin", name)
+}
+
 // staleInstanceAge is how old an embedded-postgres instance must be
 // before reapStaleInstances treats it as abandoned. Real gate runs
 // finish in a couple of minutes (the test -timeout is a far-off
@@ -326,8 +335,16 @@ func reapStaleInstances() {
 			if info, statErr := os.Stat(pidFile); statErr != nil || time.Since(info.ModTime()) < staleInstanceAge {
 				continue
 			}
-			if proc, ferr := os.FindProcess(pid); ferr == nil {
-				_ = proc.Signal(syscall.SIGKILL)
+			// pid came from a pidfile that may be hours old: only signal it if
+			// it is provably the postgres this runtime dir launched. Foreign
+			// (recycled pid) means the postmaster is already gone, so the dir
+			// is still reaped; unreadable means leave everything alone.
+			switch verifyRecordedPid(pid, pidFile, postgresBinary(dir)) {
+			case verdictUnknown:
+				continue
+			case verdictOurs:
+				forceKill(pid)
+			case verdictForeign:
 			}
 		} else {
 			// No live postmaster is NOT enough to reap: a sibling process
@@ -379,7 +396,7 @@ func shmIDFromPidfile(content string) (int, bool) {
 // or died with its test-binary parent never releases it, and these orphans
 // exhaust the kernel SHMMNI table (macOS default 32) until every initdb fails
 // with "could not create shared memory segment: No space left on device".
-// `ipcrm` exists on macOS and Linux; anywhere else this is a harmless no-op.
+// Windows postgres uses no SysV shm, so removeShmSegment is a no-op there.
 func reclaimShmSegment(pidFile string) {
 	b, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -389,10 +406,8 @@ func reclaimShmSegment(pidFile string) {
 	if !ok {
 		return
 	}
-	// ipcrm -m marks the segment for removal (freed once the last attached
-	// process detaches). Best-effort: a missing ipcrm / already-gone id is
-	// ignored.
-	_ = exec.Command("ipcrm", "-m", strconv.Itoa(id)).Run()
+	// Best-effort: a missing ipcrm / already-gone id is ignored.
+	removeShmSegment(id)
 }
 
 // postmaster reads a postmaster.pid file and reports the server PID and
@@ -412,11 +427,7 @@ func postmaster(pidFile string) (pid int, alive bool) {
 	if err != nil || pid <= 0 {
 		return 0, false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return pid, false
-	}
-	return pid, proc.Signal(syscall.Signal(0)) == nil
+	return pid, processAlive(pid)
 }
 
 // cacheDir returns a stable directory for the downloaded postgres binary

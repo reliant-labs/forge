@@ -3,7 +3,10 @@
 package hostinfra
 
 import (
+	"errors"
+	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 )
 
@@ -27,4 +30,31 @@ func terminateProcess(pid int) error {
 // graceful stop has already timed out.
 func killProcess(pid int) error {
 	return syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// processAlive reports whether pid is a live process (signal-0 probe; EPERM
+// means it exists but belongs to someone else).
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// isExecutableFile reports whether the file has any exec bit set.
+func isExecutableFile(info os.FileInfo) bool {
+	return info.Mode()&0o111 != 0
+}
+
+// removeShmSegment marks the SysV segment id for removal (ipcrm -m); it is
+// freed once the last attached process detaches. Needs ipcrm (macOS, Linux).
+func removeShmSegment(id int) {
+	_ = exec.Command("ipcrm", "-m", strconv.Itoa(id)).Run()
+}
+
+// isProcessGone reports whether err from terminateProcess means the process
+// had already exited.
+func isProcessGone(err error) bool {
+	return errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone)
 }

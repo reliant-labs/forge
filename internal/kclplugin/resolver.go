@@ -34,11 +34,8 @@
 // just reads whatever was last published, the same way it reads any other
 // declared fact. See the `auth/dev-loop` skill.
 //
-// The plugin bridge that lets KCL call back into Go is CGO-only (see
-// register_cgo.go / register_nocgo.go). forge's distributed binaries are
-// built with CGO so the namespace is always available; a CGO-free build
-// still compiles (the render path is CGO-free via purego) but Register is
-// a no-op, so KCL importing kcl_plugin.forge would fail to render there.
+// The plugin bridge that lets KCL call back into Go is forge's own purego
+// callback (bridge.go) — no cgo, so every forge binary on every OS has it.
 package kclplugin
 
 import (

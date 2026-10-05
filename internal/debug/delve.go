@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/rpc2"
 )
 
 var defaultLoadConfig = api.LoadConfig{
@@ -26,7 +25,7 @@ var defaultLoadConfig = api.LoadConfig{
 // inspection, lifecycle); one implementation today, so callers hold the
 // concrete *DelveDebugger rather than a single-impl interface.
 type DelveDebugger struct {
-	client *rpc2.RPCClient
+	client *rpcClient
 	addr   string
 	cmd    *exec.Cmd // the dlv process we started (nil if we just connected)
 	pid    int       // the debugged TARGET process PID
@@ -102,7 +101,7 @@ func (d *DelveDebugger) StartWithEnv(ctx context.Context, binary string, args []
 	// The target is the dlv-launched debuggee; query its PID so callers can
 	// kill the right process on stop (the dlv server PID is tracked
 	// separately in d.dlvPID for reaping).
-	if c := rpc2.NewClient(addr); c != nil {
+	if c, err := newRPCClient(addr); err == nil {
 		d.pid = c.ProcessPid()
 		_ = c.Disconnect(false)
 	}
@@ -167,18 +166,25 @@ func (d *DelveDebugger) StartAttach(ctx context.Context, pid int) error {
 // Delve's RPC handler is stuck (e.g. due to stale CLOSE_WAIT connections).
 func (d *DelveDebugger) Connect(addr string) error {
 	type result struct {
-		client *rpc2.RPCClient
+		client *rpcClient
 		pid    int
+		err    error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		c := rpc2.NewClient(addr)
-		pid := c.ProcessPid()
-		ch <- result{client: c, pid: pid}
+		c, err := newRPCClient(addr)
+		if err != nil {
+			ch <- result{err: err}
+			return
+		}
+		ch <- result{client: c, pid: c.ProcessPid()}
 	}()
 
 	select {
 	case r := <-ch:
+		if r.err != nil {
+			return r.err
+		}
 		d.client = r.client
 		d.addr = addr
 		d.pid = r.pid

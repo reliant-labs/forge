@@ -49,13 +49,11 @@ package pgtest
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
@@ -250,7 +248,7 @@ func stopSharedByPort(port uint32) {
 	dir := runtimeDir(port)
 	dataPath := filepath.Join(dir, "data")
 	pidFile := filepath.Join(dataPath, "postmaster.pid")
-	pgCtl := filepath.Join(dir, "bin", "pg_ctl")
+	pgCtl := filepath.Join(dir, "bin", pgCtlBinary)
 
 	stopped := false
 	if _, statErr := os.Stat(pgCtl); statErr == nil {
@@ -265,18 +263,17 @@ func stopSharedByPort(port uint32) {
 		// Fallback when pg_ctl is missing or failed: SIGINT (fast shutdown),
 		// grace, then SIGKILL. SIGINT still lets the postmaster release its
 		// IPC on the way out; SIGKILL is the last resort that does not.
-		if pid, alive := postmaster(pidFile); alive {
-			if proc, ferr := os.FindProcess(pid); ferr == nil {
-				_ = proc.Signal(syscall.SIGINT)
+		if pid, alive := postmaster(pidFile); alive && verifyRecordedPid(pid, pidFile, postgresBinary(dir)) == verdictOurs {
+			if gracefulStop(pid) {
 				for i := 0; i < 30; i++ {
 					if _, a := postmaster(pidFile); !a {
 						break
 					}
 					time.Sleep(100 * time.Millisecond)
 				}
-				if _, a := postmaster(pidFile); a {
-					_ = proc.Signal(syscall.SIGKILL)
-				}
+			}
+			if _, a := postmaster(pidFile); a {
+				forceKill(pid)
 			}
 		}
 	}
@@ -353,12 +350,7 @@ func prunePIDs(pids []int) []int {
 		if p <= 0 {
 			continue
 		}
-		proc, err := os.FindProcess(p)
-		if err != nil {
-			continue
-		}
-		serr := proc.Signal(syscall.Signal(0))
-		if serr == nil || errors.Is(serr, syscall.EPERM) {
+		if processAlive(p) {
 			live = append(live, p)
 		}
 	}

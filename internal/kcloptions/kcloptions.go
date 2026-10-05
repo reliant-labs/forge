@@ -110,6 +110,11 @@ func Discover(projectDir, envName string) ([]Option, bool, error) {
 		return nil, false, fmt.Errorf("materialize the forge KCL module: %w", err)
 	}
 
+	// The kpm client inside externalPkgs can initialize the native KCL
+	// client; the plugin bridge must already be installed. See kclplugin.Register.
+	if err := kclplugin.Ready(); err != nil {
+		return nil, false, err
+	}
 	extPkgs, err := externalPkgs(kclDir)
 	if err != nil {
 		return nil, false, err

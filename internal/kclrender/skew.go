@@ -7,8 +7,7 @@ import (
 )
 
 // Version skew between the running binary and the project's forge pin, at
-// the one seam every render passes through — the same placement, and for the
-// same reason, as pluginPreflight's CGO refusal.
+// the one seam every render passes through.
 //
 // forge's KCL schema module is embedded in the binary (internal/kclvendor),
 // so the schema a render evaluates against comes from the BINARY, not from

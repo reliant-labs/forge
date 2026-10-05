@@ -152,7 +152,7 @@ func newStorageCmd() *cobra.Command {
 	}}
 	daemon.Flags().DurationVar(&interval, "interval", 24*time.Hour, "time between maintenance passes")
 	group.AddCommand(daemon)
-	group.AddCommand(&cobra.Command{Use: "install", Args: cobra.NoArgs, Short: "Install daily maintenance using a stable copy of this executable", RunE: func(cmd *cobra.Command, _ []string) error {
+	group.AddCommand(&cobra.Command{Use: "install", Args: cobra.NoArgs, Short: "Install daily maintenance (launchd, systemd timer, or Windows Task Scheduler) using a stable copy of this executable", RunE: func(cmd *cobra.Command, _ []string) error {
 		p, path, err := load()
 		if err != nil {
 			return err

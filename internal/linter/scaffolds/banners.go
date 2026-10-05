@@ -234,6 +234,7 @@ func isSkippedTemplate(noTmpl string) bool {
 		"buf.yaml",
 		"traefik.yaml",
 		".gitignore",
+		".gitattributes",
 		".dockerignore",
 		"Dockerfile",
 		"Taskfile.yml",

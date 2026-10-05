@@ -31,7 +31,7 @@ jobs:
         # @main, which audits with whichever release is newest.
         run: |
           v=$(GOWORK=off go list -m -f '{{.Version}}' github.com/reliant-labs/forge)
-          CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
+          go install "github.com/reliant-labs/forge/cmd/forge@${v}"
 
       - name: Forge audit
         id: audit

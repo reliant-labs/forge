@@ -138,11 +138,10 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	// are user-facing CLI guidance.
 	appendIngressChecksToReport(&report, runToolDoctorChecks(ctx, cfg, projectDir, signal))
 
-	// Self-capability checks ask about the forge BINARY rather than the
-	// world around it. The tool checks above can all pass on a binary
-	// built without CGO, which cannot render any environment because
-	// kcl_plugin.forge was never registered. See doctor_selfcapabilities.go.
-	appendIngressChecksToReport(&report, runSelfCapabilityDoctorChecks(ctx, cfg, projectDir, signal))
+	// The tool checks can all pass on a machine that cannot render: KCL's
+	// native library is extracted and loaded at runtime, independently of
+	// anything on PATH. See doctor_kclplugin.go.
+	appendIngressChecksToReport(&report, runKCLPluginDoctorCheck(ctx, cfg, projectDir, signal))
 
 	// Docker daemon proxy check: warns when the Docker daemon is
 	// configured with an HTTP(S) proxy. A TLS-intercepting proxy

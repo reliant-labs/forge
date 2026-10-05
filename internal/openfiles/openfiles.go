@@ -54,6 +54,12 @@ type Snapshot struct {
 	// in both the spelling lsof used and the canonical one. Holds is then a
 	// lookup: a path is in use exactly when something at or under it is.
 	covered map[string]bool
+
+	// probe, when set, answers Holds on demand instead of from covered. A
+	// platform with no machine-wide listing (Windows) can only ask about a
+	// path at a time; probe must fail closed, answering true when it cannot
+	// tell.
+	probe func(path string) bool
 }
 
 // Take records one machine-wide snapshot with lsof.
@@ -63,7 +69,7 @@ type Snapshot struct {
 // probe and its removal.
 func Take(ctx context.Context) (Snapshot, error) {
 	if runtime.GOOS == "windows" {
-		return Snapshot{}, errors.New("no open-file snapshot is available on windows")
+		return takeLazy(ctx)
 	}
 	if _, err := exec.LookPath("lsof"); err != nil {
 		return Snapshot{}, fmt.Errorf("lsof not found: %w", err)
@@ -154,6 +160,9 @@ func (s Snapshot) cover(path string) {
 // path is compared in both its given and its canonical spelling, so it matches
 // however the snapshot's paths and the caller's path were reached.
 func (s Snapshot) Holds(path string) bool {
+	if s.probe != nil {
+		return s.probe(path)
+	}
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}

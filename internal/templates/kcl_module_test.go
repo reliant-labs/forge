@@ -103,14 +103,11 @@ func kclModuleRoot(t *testing.T) string {
 	return ""
 }
 
-// requireKCLRender skips when this test binary cannot render: kclrender
-// refuses a CGO-free build (kcl_plugin.forge is registered by a cgo file).
+// requireKCLRender registers the kcl_plugin.forge namespace for this test
+// binary before a render.
 func requireKCLRender(t *testing.T) {
 	t.Helper()
 	kclplugin.Register()
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0 build); forge cannot render KCL")
-	}
 	kclTestModuleCache(t)
 }
 

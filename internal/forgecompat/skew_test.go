@@ -60,8 +60,8 @@ func TestSkewDiagnosisNamesBothVersionsAndTheInstall(t *testing.T) {
 		"embedded",
 		// Steers the reader away from the line number KCL blamed.
 		"not a mistake in your KCL",
-		// The literal command, consistent with the CGO preflight's.
-		"CGO_ENABLED=1 go install github.com/reliant-labs/forge/cmd/forge@v0.1.43",
+		// The literal, runnable command.
+		"go install github.com/reliant-labs/forge/cmd/forge@v0.1.43",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("SkewDiagnosis missing %q\n--- message ---\n%s", want, msg)

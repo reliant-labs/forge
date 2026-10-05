@@ -13,7 +13,7 @@ import (
 // FrontendEntity.EnvVars parsing it — AND that a value composed
 // declaratively from forge.resolve_port(...) flows through intact. It
 // renders a minimal bundle against the in-tree forge KCL module via the
-// real render seam (kpm + plugin). Needs CGO for the plugin.
+// real render seam (kpm + plugin).
 func TestFrontendEnvVarsRoundTrip(t *testing.T) {
 	forgeKcl, err := filepath.Abs("../../kcl")
 	if err != nil {

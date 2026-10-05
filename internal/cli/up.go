@@ -2734,7 +2734,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 		return nil, "", err
 	}
 	if spec.IgnoresArgs() {
-		fmt.Printf("[up] host %s: runner air takes its argv from %s (full_bin / args_bin); the workload's args %v are not passed\n",
+		fmt.Printf("[up] host %s: runner air takes its argv from %s (entrypoint / args_bin); the workload's args %v are not passed\n",
 			w.Name, emptyAs(spec.AirConfig, hostlaunch.DefaultAirConfig), spec.Args)
 	}
 
@@ -2762,6 +2762,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	// and the shell (see withDevRunDefaults).
 	dev, _ := seedTargetIsDev(env)
 	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
+	projectConfigEnv = withAirRunDefaults(projectConfigEnv, spec.Runner)
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), projectConfigEnv, secretVals, envVars)
 	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostEnv
@@ -2880,6 +2881,30 @@ func withDevRunDefaults(projectConfigEnv map[string]string, isDev bool) map[stri
 			}
 		}
 		out[k] = v
+	}
+	return out
+}
+
+// withAirRunDefaults defaults ENVIRONMENT=development for a workload run under
+// air, at the same lowest-precedence layer as withDevRunDefaults (project
+// config, secrets, KCL env and the shell all override it). The scaffolded
+// air configs used to carry it as a POSIX `ENVIRONMENT=development ./bin`
+// prefix, which PowerShell (air's Windows shell) cannot parse; air passes its
+// own environment to the child, so setting it here reaches the server on
+// every OS. An empty projectConfig value is an absence, as in
+// withDevRunDefaults.
+func withAirRunDefaults(projectConfigEnv map[string]string, runner string) map[string]string {
+	if strings.TrimSpace(runner) != "air" {
+		return projectConfigEnv
+	}
+	out := make(map[string]string, len(projectConfigEnv)+1)
+	for k, v := range projectConfigEnv {
+		out[k] = v
+	}
+	for k, v := range hostlaunch.AirEnvDefaults {
+		if out[k] == "" {
+			out[k] = v
+		}
 	}
 	return out
 }
@@ -3329,7 +3354,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		}
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
-		startInOwnProcessGroup(cmd)
+		startBackgroundProcess(cmd)
 		if err := cmd.Start(); err != nil {
 			_ = logFile.Close()
 			return err
@@ -3671,7 +3696,7 @@ func (p *procRegistry) shutdown() {
 	case <-time.After(10 * time.Second):
 		for _, mp := range procs {
 			pid := procPID(mp)
-			if pid <= 0 {
+			if pid <= 0 || managedProcessExited(mp) {
 				continue
 			}
 			fmt.Printf("[up] %s: did not exit, killing.\n", mp.name)

@@ -130,7 +130,7 @@ tasks:
           ran=0
           for pkg in frontends/*/package.json; do
             [ -f "$pkg" ] || continue
-            dir="$(dirname "$pkg")"
+            dir="${pkg%/package.json}"
             echo "==> npm test ($dir)"
             (cd "$dir" && npm test -- --passWithNoTests) || exit 1
             ran=$((ran + 1))
@@ -201,6 +201,12 @@ tasks:
     desc: Run the app with hot-reload (Air + Next dev)
     deps:
       - dev-up
+    # ENVIRONMENT=development turns the server's CORS layer on for the
+    # frontend's dev origin (see .air.toml). `forge env up` sets it on the
+    # air process; this is the same default for a bare `task dev`. Set here,
+    # not as a `VAR=val cmd` prefix, so it works on Windows too.
+    env:
+      ENVIRONMENT: development
     cmds:
       - cmd: air
         ignore_error: true
@@ -376,12 +382,10 @@ tasks:
           createdb -h "$PGHOST" -U "$PGUSER" "$DB"
           if [[ "$DUMP" == *.gz ]]; then
             gunzip -c "$DUMP" | pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
-              --no-owner --no-privileges --clean --if-exists 2>&1 \
-              | grep -v "^pg_restore: warning:" || true
+              --no-owner --no-privileges --clean --if-exists || true
           else
             pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
-              --no-owner --no-privileges --clean --if-exists "$DUMP" 2>&1 \
-              | grep -v "^pg_restore: warning:" || true
+              --no-owner --no-privileges --clean --if-exists "$DUMP" || true
           fi
           echo "==> Restore complete. Connect with: psql -h $PGHOST -U $PGUSER -d $DB"
 

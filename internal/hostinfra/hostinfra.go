@@ -70,7 +70,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
@@ -604,11 +603,7 @@ func postmaster(pidFile string) (pid int, alive bool) {
 	if err != nil || pid <= 0 {
 		return 0, false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return pid, false
-	}
-	return pid, proc.Signal(syscall.Signal(0)) == nil
+	return pid, processAlive(pid)
 }
 
 // reclaimShmSegment removes the SysV shared-memory segment named in a stale
@@ -632,10 +627,8 @@ func reclaimShmSegment(pidFile string) {
 	if err != nil || id <= 0 {
 		return
 	}
-	// ipcrm -m marks the segment for removal; it is freed once the last
-	// attached process detaches. Present on macOS and Linux, a no-op error
-	// anywhere else.
-	_ = exec.Command("ipcrm", "-m", strconv.Itoa(id)).Run()
+	// removeShmSegment is a no-op on Windows, which has no SysV shm.
+	removeShmSegment(id)
 }
 
 // cacheDir is where the downloaded postgres archive is kept, shared across

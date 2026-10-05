@@ -1,5 +1,3 @@
-//go:build cgo
-
 package cli
 
 // kcl_eval_test.go covers the CLI surface of `forge kcl eval`: the flags, the

@@ -20,6 +20,8 @@ type fakeRunner struct {
 	err   error // optional canned error returned by RunWithEnv
 }
 
+const shellCallName = "<shell>"
+
 type fakeCall struct {
 	dir  string
 	env  map[string]string
@@ -40,6 +42,10 @@ func (f *fakeRunner) RunInDir(_ context.Context, dir string, env map[string]stri
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, fakeCall{dir: dir, env: env, name: name, args: append([]string(nil), args...)})
 	return f.err
+}
+
+func (f *fakeRunner) RunShell(_ context.Context, dir string, env map[string]string, script string) error {
+	return f.RunInDir(context.TODO(), dir, env, shellCallName, script)
 }
 
 func (f *fakeRunner) last() (fakeCall, bool) {
@@ -84,11 +90,11 @@ func TestBuild_RunsCmdVerbatim(t *testing.T) {
 	if !ok {
 		t.Fatal("runner was not invoked")
 	}
-	if len(call.args) != 2 || call.args[0] != "-c" {
-		t.Fatalf("runner args: got %v, want [-c <cmd>]", call.args)
+	if len(call.args) != 1 {
+		t.Fatalf("runner args: got %v, want [<cmd>]", call.args)
 	}
-	if call.args[1] != cmd {
-		t.Errorf("cmd was not passed verbatim:\n got %q\nwant %q", call.args[1], cmd)
+	if call.args[0] != cmd {
+		t.Errorf("cmd was not passed verbatim:\n got %q\nwant %q", call.args[0], cmd)
 	}
 }
 
@@ -115,8 +121,8 @@ func TestBuild_DeclaredEnvReachesTheCommand(t *testing.T) {
 	}
 	call, _ := fake.last()
 	// The command still carries the tokens — forge did not touch them...
-	if !strings.Contains(call.args[1], "${REGION}") || !strings.Contains(call.args[1], "${TARGETARCH}") {
-		t.Errorf("cmd should be verbatim, got %q", call.args[1])
+	if !strings.Contains(call.args[0], "${REGION}") || !strings.Contains(call.args[0], "${TARGETARCH}") {
+		t.Errorf("cmd should be verbatim, got %q", call.args[0])
 	}
 	// ...and the values ride in the env, where the shell will find them.
 	if call.env["REGION"] != "us-east-1" {
@@ -172,23 +178,23 @@ func TestBuild_ExecsInDeclaredCwd(t *testing.T) {
 	if !ok {
 		t.Fatal("runner was not invoked")
 	}
-	if call.name != "sh" {
-		t.Errorf("runner name: got %q, want sh", call.name)
+	if call.name != shellCallName {
+		t.Errorf("runner name: got %q, want shell", call.name)
 	}
-	if len(call.args) != 2 || call.args[0] != "-c" {
-		t.Fatalf("runner args: got %v, want [-c <cmd>]", call.args)
+	if len(call.args) != 1 {
+		t.Fatalf("runner args: got %v, want [<cmd>]", call.args)
 	}
 	// The working directory is carried as cmd.Dir (call.dir), NOT a
 	// shell `cd <cwd> && …` prefix — so a path with spaces or shell
 	// metacharacters can never break the script.
-	if call.args[1] != spec.BuildCmd {
-		t.Errorf("cmd: got %q, want %q (verbatim)", call.args[1], spec.BuildCmd)
+	if call.args[0] != spec.BuildCmd {
+		t.Errorf("cmd: got %q, want %q (verbatim)", call.args[0], spec.BuildCmd)
 	}
 	if call.dir != cwd {
 		t.Errorf("runner dir: got %q, want %q", call.dir, cwd)
 	}
-	if strings.Contains(call.args[1], "cd ") {
-		t.Errorf("expanded cmd should not carry a `cd …` shell prefix; got %q", call.args[1])
+	if strings.Contains(call.args[0], "cd ") {
+		t.Errorf("expanded cmd should not carry a `cd …` shell prefix; got %q", call.args[0])
 	}
 	if call.env["REGION"] != "us-east-1" {
 		t.Errorf("env REGION: got %q, want us-east-1", call.env["REGION"])
@@ -264,11 +270,11 @@ func TestBuild_NoCwd(t *testing.T) {
 	if call.dir != "/proj" {
 		t.Errorf("no BuildCwd should resolve to ProjectDir; got %q, want /proj", call.dir)
 	}
-	if strings.HasPrefix(call.args[1], "cd ") {
-		t.Errorf("no BuildCwd should not produce a `cd …` prefix; got %q", call.args[1])
+	if strings.HasPrefix(call.args[0], "cd ") {
+		t.Errorf("no BuildCwd should not produce a `cd …` prefix; got %q", call.args[0])
 	}
-	if call.args[1] != spec.BuildCmd {
-		t.Errorf("cmd: got %q, want %q (verbatim)", call.args[1], spec.BuildCmd)
+	if call.args[0] != spec.BuildCmd {
+		t.Errorf("cmd: got %q, want %q (verbatim)", call.args[0], spec.BuildCmd)
 	}
 }
 

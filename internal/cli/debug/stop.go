@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -139,7 +137,10 @@ func reapDlv(ctx context.Context, session *dbgsvc.SessionInfo) {
 		return
 	}
 	// 1. The dlv PID forge recorded at start.
-	if session.DlvPID > 0 {
+	// Only killed if it is still a dlv on this session's addr: the pid may
+	// have been recycled. If it does not verify, the sweep below still finds
+	// the real dlv.
+	if session.DlvPID > 0 && isDlvForAddr(ctx, session.DlvPID, session.Addr) {
 		if p, err := os.FindProcess(session.DlvPID); err == nil {
 			_ = p.Kill()
 		}
@@ -161,33 +162,4 @@ func reapDlv(ctx context.Context, session *dbgsvc.SessionInfo) {
 			_ = p.Kill()
 		}
 	}
-}
-
-// dlvPIDsForAddr returns PIDs of dlv processes whose command line contains
-// --listen=<addr>. Best-effort via `ps`; returns nil when ps is unavailable.
-func dlvPIDsForAddr(ctx context.Context, addr string) []int {
-	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
-	if err != nil {
-		return nil
-	}
-	listen := "--listen=" + addr
-	var pids []int
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, listen) {
-			continue
-		}
-		// Only treat it as a dlv server if the command is actually dlv.
-		if !strings.Contains(line, "dlv") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if pid, perr := strconv.Atoi(fields[0]); perr == nil {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
 }

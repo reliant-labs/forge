@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/envutil"
@@ -111,7 +112,7 @@ type RunnerSpec struct {
 }
 
 // IgnoresArgs reports whether declared Args cannot reach the process: under
-// air the air config's full_bin / args_bin owns the argv. Callers warn on
+// air the air config's entrypoint / args_bin owns the argv. Callers warn on
 // it, because an arg that is silently not passed looks exactly like an arg
 // the program ignored.
 func (s RunnerSpec) IgnoresArgs() bool {
@@ -134,6 +135,28 @@ func (s RunnerSpec) IgnoresArgs() bool {
 // and every "falls through to go-run" hid a typo behind a process that
 // started and did the wrong thing.
 func BuildCmd(ctx context.Context, name string, spec RunnerSpec) (*exec.Cmd, error) {
+	return buildCmdFor(ctx, runtime.GOOS, name, spec)
+}
+
+// AirEnvDefaults are the environment defaults forge applies to a workload run
+// under air, at the lowest precedence (see LayerHostEnvConflicts). The
+// scaffolded .air.toml cannot carry them: air runs its commands through
+// PowerShell on Windows, where a POSIX `VAR=val cmd` prefix does not parse,
+// and air hands its own environment to the server it launches.
+var AirEnvDefaults = map[string]string{"ENVIRONMENT": "development"}
+
+// ExeName is the on-disk name of a Go binary built for goos: Windows
+// executables must end in .exe (CreateProcess, dlv and air all key off it),
+// every other OS uses the bare name. It is the single spelling `forge build`
+// writes and BuildCmd runs, so the two cannot drift.
+func ExeName(goos, name string) string {
+	if goos == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		return name + ".exe"
+	}
+	return name
+}
+
+func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec.Cmd, error) {
 	runner := strings.TrimSpace(spec.Runner)
 	if !IsKnownRunner(runner) {
 		return nil, fmt.Errorf("host workload %s: unknown host runner %q (want go-run, air, binary or delve)", name, spec.Runner)
@@ -152,9 +175,9 @@ func BuildCmd(ctx context.Context, name string, spec RunnerSpec) (*exec.Cmd, err
 		return nil, fmt.Errorf("host workload %s: runner %q derives its command from a Go build, and the workload declares no Go build and no command.\n"+
 			"  fix: give it `build = forge.GoBuild {cmd = \"./cmd/<binary>\"}`, or a `command` to run verbatim", name, runnerOrDefault(runner))
 	default:
-		bin := "./bin/" + name
+		bin := "./bin/" + ExeName(goos, name)
 		if spec.OutputName != "" {
-			bin = "./bin/" + spec.OutputName
+			bin = "./bin/" + ExeName(goos, spec.OutputName)
 		}
 		switch runner {
 		case "binary":

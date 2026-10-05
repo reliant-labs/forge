@@ -1198,3 +1198,39 @@ func writeParityConfigK(t *testing.T, root, body string) {
 		t.Fatal(err)
 	}
 }
+
+// ENVIRONMENT=development is defaulted for air workloads at the LOWEST layer:
+// project config, KCL env and the shell all beat it, and non-air runners are
+// untouched.
+func TestWithAirRunDefaultsPrecedence(t *testing.T) {
+	layer := func(shell []string, projectCfg, kclEnv map[string]string, runner string) string {
+		cfg := withAirRunDefaults(projectCfg, runner)
+		env := hostlaunch.LayerHostEnv(shell, cfg, nil, kclEnv)
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, "ENVIRONMENT="); ok {
+				return v
+			}
+		}
+		return "<unset>"
+	}
+	if got := layer(nil, nil, nil, "air"); got != "development" {
+		t.Errorf("air default = %q, want development", got)
+	}
+	if got := layer(nil, map[string]string{"ENVIRONMENT": ""}, nil, "air"); got != "development" {
+		t.Errorf("empty projected value must not shadow the default; got %q", got)
+	}
+	if got := layer(nil, map[string]string{"ENVIRONMENT": "staging"}, nil, "air"); got != "staging" {
+		t.Errorf("project config must win; got %q", got)
+	}
+	if got := layer(nil, nil, map[string]string{"ENVIRONMENT": "test"}, "air"); got != "test" {
+		t.Errorf("KCL env must win; got %q", got)
+	}
+	// Same policy as every other host env var: the shell wins only when it
+	// opts in via FORGE_ENV_OVERRIDE (hostlaunch.ShellWinsEnvVar).
+	if got := layer([]string{"ENVIRONMENT=ci", hostlaunch.ShellWinsEnvVar + "=ENVIRONMENT"}, nil, nil, "air"); got != "ci" {
+		t.Errorf("opted-in shell must win; got %q", got)
+	}
+	if got := layer(nil, nil, nil, "binary"); got != "<unset>" {
+		t.Errorf("non-air runner must not get the default; got %q", got)
+	}
+}

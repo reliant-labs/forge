@@ -130,9 +130,6 @@ output = forge.render(forge.Bundle {
 `
 	dir := writeKCLProject(t, bundle)
 	kclplugin.Register()
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0): forge cannot render KCL")
-	}
 	_, err := kclrender.Run(dir, dir, nil)
 	if err == nil {
 		t.Fatal("a forge-built workload pinned to a digest rendered; want a refusal")

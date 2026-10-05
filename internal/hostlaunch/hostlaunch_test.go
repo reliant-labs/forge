@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -427,5 +428,47 @@ func TestPIDPath(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "/.cache/forge/run/admin-server.pid") {
 		t.Errorf("want path ending in /.cache/forge/run/admin-server.pid, got %q", got)
+	}
+}
+
+func TestExeName(t *testing.T) {
+	for _, c := range []struct{ goos, in, want string }{
+		{"windows", "api", "api.exe"},
+		{"windows", "api.exe", "api.exe"},
+		{"windows", "API.EXE", "API.EXE"},
+		{"linux", "api", "api"},
+		{"darwin", "api", "api"},
+	} {
+		if got := ExeName(c.goos, c.in); got != c.want {
+			t.Errorf("ExeName(%q, %q) = %q, want %q", c.goos, c.in, got, c.want)
+		}
+	}
+}
+
+func TestBuildCmdForWindowsBinaryAndDelve(t *testing.T) {
+	base := RunnerSpec{GoPkg: "./cmd/app", OutputName: "app-bin", Args: []string{"server"}}
+	for _, c := range []struct {
+		goos, runner string
+		want         []string
+	}{
+		{"windows", "binary", []string{"./bin/app-bin.exe", "server"}},
+		{"linux", "binary", []string{"./bin/app-bin", "server"}},
+		{"windows", "delve", []string{"dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./bin/app-bin.exe", "--", "server"}},
+		{"darwin", "delve", []string{"dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./bin/app-bin", "--", "server"}},
+	} {
+		spec := base
+		spec.Runner = c.runner
+		cmd, err := buildCmdFor(context.Background(), c.goos, "svc", spec)
+		if err != nil {
+			t.Fatalf("%s/%s: %v", c.goos, c.runner, err)
+		}
+		if !reflect.DeepEqual(cmd.Args, c.want) {
+			t.Errorf("%s/%s argv = %v, want %v", c.goos, c.runner, cmd.Args, c.want)
+		}
+	}
+	// No OutputName: falls back to the workload name, still suffixed.
+	cmd, _ := buildCmdFor(context.Background(), "windows", "svc", RunnerSpec{Runner: "binary", GoPkg: "./cmd/app"})
+	if cmd.Args[0] != "./bin/svc.exe" {
+		t.Errorf("fallback name argv0 = %q, want ./bin/svc.exe", cmd.Args[0])
 	}
 }

@@ -37,9 +37,6 @@ import (
 //   - host: the argv is derived from build + args, never re-stated.
 func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	kclplugin.Register()
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0 build); forge cannot render KCL")
-	}
 	dir := scaffoldWorkloadModelProject(t)
 
 	// prod's cluster knobs are placeholders a user fills; fill them so the

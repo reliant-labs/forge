@@ -21,6 +21,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -1936,8 +1937,6 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 // ldflags for delve gcflags.
 func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug bool, crossArch string, versionInfo versionInfo, memCaps buildMemoryCaps) buildResult {
 	start := time.Now()
-	binaryPath := filepath.Join(outputDir, t.outputName)
-
 	// An explicit GoBuild.goarch wins over the build-context arch.
 	arch := crossArch
 	if t.goarch != "" {
@@ -1949,6 +1948,13 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	if arch != "" && targetOS == "" {
 		targetOS = "linux"
 	}
+	// Name the output for the OS it is built for: a Windows target is a
+	// .exe, which hostlaunch's binary/delve runners expect under bin/.
+	binaryOS := targetOS
+	if binaryOS == "" {
+		binaryOS = runtime.GOOS
+	}
+	binaryPath := filepath.Join(outputDir, hostlaunch.ExeName(binaryOS, t.outputName))
 
 	if debug {
 		fmt.Printf("[build] %s: go build (debug) %s -> %s\n", t.outputName, t.cmd, binaryPath)
@@ -2770,7 +2776,11 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 	if outName == "" {
 		outName = svcName + "-" + v.Name
 	}
-	binPath := filepath.Join(outputDir, outName)
+	variantOS := v.GOOS
+	if variantOS == "" {
+		variantOS = runtime.GOOS
+	}
+	binPath := filepath.Join(outputDir, hostlaunch.ExeName(variantOS, outName))
 	fmt.Printf("[build] %s (variant %s): go build %s -> %s\n", svcName, v.Name, buildCmd, binPath)
 
 	args := []string{"build", "-o", binPath}

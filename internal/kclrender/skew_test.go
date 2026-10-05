@@ -35,9 +35,8 @@ func TestSkewPreflightRefusesABinaryBehindThePin(t *testing.T) {
 		"embedded",
 		// The runbook shape forge errors follow.
 		"Fix:",
-		// The literal, runnable command — with CGO, consistent with
-		// pluginPreflight's.
-		"CGO_ENABLED=1 go install github.com/reliant-labs/forge/cmd/forge@v0.1.43",
+		// The literal, runnable command.
+		"go install github.com/reliant-labs/forge/cmd/forge@v0.1.43",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("skew refusal missing %q\n--- message ---\n%s", want, msg)

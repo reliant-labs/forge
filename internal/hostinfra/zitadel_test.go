@@ -69,6 +69,7 @@ func TestZitadelAsset_CoversEveryPublishedPlatform(t *testing.T) {
 	supported := []struct{ goos, goarch string }{
 		{"darwin", "amd64"}, {"darwin", "arm64"},
 		{"linux", "amd64"}, {"linux", "arm64"},
+		{"windows", "amd64"}, {"windows", "arm64"},
 	}
 	for _, p := range supported {
 		asset, ok := zitadelAsset(p.goos, p.goarch)
@@ -365,5 +366,51 @@ func writeExecutable(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // a test stand-in for an executable
 		t.Fatal(err)
+	}
+}
+
+func TestZitadelWindows_AssetsAndHashes(t *testing.T) {
+	want := map[string]string{
+		"amd64": "34663a17b480a213a853e1e2500629f73beb808659651237187c95cda79ba3cc",
+		"arm64": "829fb2d755c639295826f887408d73fd9dafa1cc50de525d905a934d133410e3",
+	}
+	for arch, sum := range want {
+		asset, ok := zitadelAsset("windows", arch)
+		if !ok || asset != "zitadel-windows-"+arch+".tar.gz" || zitadelChecksums[asset] != sum {
+			t.Errorf("windows/%s: asset=%q ok=%v sum=%q", arch, asset, ok, zitadelChecksums[asset])
+		}
+	}
+}
+
+func TestZitadelBinaryName_AndPathPerPlatform(t *testing.T) {
+	if zitadelBinaryName("windows") != "zitadel.exe" || zitadelBinaryName("darwin") != "zitadel" || zitadelBinaryName("linux") != "zitadel" {
+		t.Error("binary name wrong")
+	}
+	if p := zitadelBinaryPathFor("windows", "amd64"); p != "" {
+		if filepath.Base(p) != "zitadel.exe" || filepath.Base(filepath.Dir(p)) != "windows-amd64" {
+			t.Errorf("windows path = %s", p)
+		}
+	}
+	if p := zitadelBinaryPathFor("linux", "arm64"); p != "" && filepath.Base(p) != "zitadel" {
+		t.Errorf("linux path = %s", p)
+	}
+}
+
+func TestExtractZitadel_WindowsMemberIsExe(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "z.tar.gz")
+	writeTarGz(t, archive, map[string]string{
+		"zitadel-windows-amd64/LICENSE":     "l",
+		"zitadel-windows-amd64/zitadel.exe": "MZ-fake",
+	})
+	dest := filepath.Join(dir, "zitadel.exe")
+	if err := extractZitadelFor(archive, dest, "windows"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dest); string(b) != "MZ-fake" {
+		t.Errorf("wrong member extracted: %q", b)
+	}
+	if err := extractZitadelFor(archive, filepath.Join(dir, "x"), "linux"); err == nil {
+		t.Error("linux extraction must not match zitadel.exe")
 	}
 }

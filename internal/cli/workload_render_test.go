@@ -39,9 +39,6 @@ func writeKCLProject(t *testing.T, main string) string {
 func renderKCLProject(t *testing.T, dir string, dArgs ...string) []byte {
 	t.Helper()
 	kclplugin.Register()
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0): forge cannot render KCL")
-	}
 	out, err := kclrender.Run(dir, dir, dArgs)
 	if err != nil {
 		t.Fatalf("render %s: %v", dir, err)

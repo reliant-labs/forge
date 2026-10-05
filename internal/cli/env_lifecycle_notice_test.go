@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
-	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
 // TestApplyDeployGroupsLifecycleNotice proves the notice reaches the APPLY,
@@ -24,9 +23,6 @@ import (
 // noise on every inner-loop deploy and people learn to ignore it before it
 // ever means anything.
 func TestApplyDeployGroupsLifecycleNotice(t *testing.T) {
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0): forge cannot render KCL")
-	}
 	ctx := context.Background()
 	dir := workloadURLProject(t, "dev", crossClusterBundle)
 	entities, err := RenderKCL(ctx, dir, "dev")

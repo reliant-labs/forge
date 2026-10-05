@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package controllertest provides a small envtest harness that
 // generated `<crd>_controller_test.go` files use in their TestMain
 // setup. The harness exists for two reasons:
@@ -25,14 +27,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
+// Environment is the envtest environment returned by New. On Windows it is a
+// stand-in (see envtest_windows.go) because controller-runtime envtest does
+// not compile there.
+type Environment = envtest.Environment
+
 // Option configures the envtest environment built by New.
-type Option func(*envtest.Environment)
+type Option func(*Environment)
 
 // WithCRDs adds CRD YAML directories to the environment's
 // CRDDirectoryPaths. Paths may be relative to the test's working
 // directory.
 func WithCRDs(paths ...string) Option {
-	return func(env *envtest.Environment) {
+	return func(env *Environment) {
 		env.CRDDirectoryPaths = append(env.CRDDirectoryPaths, paths...)
 	}
 }
@@ -43,7 +50,7 @@ func WithCRDs(paths ...string) Option {
 // preserves the scheme alongside the env for callers that want to
 // stash it.
 func WithScheme(s *runtime.Scheme) Option {
-	return func(env *envtest.Environment) {
+	return func(env *Environment) {
 		env.Scheme = s
 	}
 }
@@ -58,13 +65,13 @@ func WithScheme(s *runtime.Scheme) Option {
 //
 // When neither is available, New calls t.Skip and returns nil. The
 // generated test scaffolds check for nil and bail early.
-func New(t *testing.T, opts ...Option) *envtest.Environment {
+func New(t *testing.T, opts ...Option) *Environment {
 	t.Helper()
 	if !available() {
 		t.Skip("envtest binaries not available (set KUBEBUILDER_ASSETS or run `setup-envtest use latest`)")
 		return nil
 	}
-	env := &envtest.Environment{}
+	env := &Environment{}
 	for _, opt := range opts {
 		opt(env)
 	}

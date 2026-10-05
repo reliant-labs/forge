@@ -370,6 +370,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// Static config files
 		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2},
 		{templateName: ".gitignore", destPath: ".gitignore", templated: false, tier: Tier2},
+		{templateName: ".gitattributes", destPath: ".gitattributes", templated: false, tier: Tier2},
 
 		// Middleware — the thin auth-policy file + its policy-wiring
 		// test. Scaffolded once, then owned by the user; committed to

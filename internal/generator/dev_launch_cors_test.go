@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	yaml "gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
 
@@ -112,38 +114,33 @@ func collectDevLaunchSites(t *testing.T, root, name string) []devLaunchSite {
 	return sites
 }
 
-// airLaunchSites parses the `full_bin` air runs. Air executes it through a
-// shell, so leading KEY=VALUE tokens are the process environment.
+// airLaunchSites inspects the air config's launch command. The config carries
+// no ENVIRONMENT (an inline prefix is POSIX-only; air runs PowerShell on
+// Windows) — `forge env up` sets it in air's process environment from
+// hostlaunch.AirEnvDefaults, and air passes that environment to the server.
+// So the site's env is that default, provided the entrypoint really runs the
+// project binary and does not smuggle in a shell-style assignment.
 func airLaunchSites(t *testing.T, root, file, name string) []devLaunchSite {
 	t.Helper()
-	content := readFile(t, filepath.Join(root, file))
-
-	var fullBin string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "full_bin"); ok {
-			fullBin = strings.Trim(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), `"`)
-			break
-		}
+	var cfg struct {
+		Build struct {
+			FullBin    string   `toml:"full_bin"`
+			Entrypoint []string `toml:"entrypoint"`
+		} `toml:"build"`
 	}
-	if fullBin == "" {
-		t.Fatalf("%s declares no full_bin — air has no launch site to inspect", file)
+	if _, err := toml.Decode(readFile(t, filepath.Join(root, file)), &cfg); err != nil {
+		t.Fatalf("%s: %v", file, err)
 	}
-	if !strings.Contains(fullBin, name) {
-		t.Fatalf("%s full_bin %q does not run the project binary %q", file, fullBin, name)
+	if cfg.Build.FullBin != "" {
+		t.Fatalf("%s sets full_bin %q: a shell string cannot be parsed identically by sh and PowerShell — use entrypoint", file, cfg.Build.FullBin)
 	}
-
-	env := ""
-	for _, tok := range strings.Fields(fullBin) {
-		key, value, ok := strings.Cut(tok, "=")
-		if !ok || strings.HasPrefix(key, "-") {
-			break // first non-assignment token: the command starts here
-		}
-		if key == "ENVIRONMENT" {
-			env = value
-		}
+	if len(cfg.Build.Entrypoint) == 0 || !strings.Contains(strings.Join(cfg.Build.Entrypoint, " "), name) {
+		t.Fatalf("%s entrypoint %q does not run the project binary %q", file, cfg.Build.Entrypoint, name)
 	}
-	return []devLaunchSite{{artifact: file, site: "full_bin", env: env}}
+	if strings.Contains(cfg.Build.Entrypoint[0], "=") {
+		t.Fatalf("%s entrypoint starts with an assignment %q", file, cfg.Build.Entrypoint[0])
+	}
+	return []devLaunchSite{{artifact: file, site: "entrypoint (env from forge env up)", env: hostlaunch.AirEnvDefaults["ENVIRONMENT"]}}
 }
 
 // composeLaunchSites reads every compose service that BUILDS this project (as
@@ -245,4 +242,58 @@ func quotedOptionValue(t *testing.T, block, key string) string {
 		t.Fatalf("option %q has an unterminated value:\n%s", key, block)
 	}
 	return rest[:end]
+}
+
+// Both air configs must be runnable by air on Windows, where air executes
+// commands through PowerShell: a [build.windows] override with .exe paths, and
+// no POSIX-only constructs (&&, mv, inline VAR=val) in it or in the entrypoint.
+func TestScaffold_AirConfigsAreWindowsRunnable(t *testing.T) {
+	root := scaffoldForDevLaunch(t, "winair")
+	for _, file := range []string{".air.toml", ".air-debug.toml"} {
+		var cfg struct {
+			Build struct {
+				Entrypoint []string `toml:"entrypoint"`
+				Windows    *struct {
+					Cmd        string   `toml:"cmd"`
+					Bin        string   `toml:"bin"`
+					FullBin    string   `toml:"full_bin"`
+					Entrypoint []string `toml:"entrypoint"`
+				} `toml:"windows"`
+			} `toml:"build"`
+		}
+		if _, err := toml.Decode(readFile(t, filepath.Join(root, file)), &cfg); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		w := cfg.Build.Windows
+		if w == nil || w.Cmd == "" || len(w.Entrypoint) == 0 {
+			t.Fatalf("%s: [build.windows] must set cmd and entrypoint, got %+v", file, w)
+		}
+		if w.FullBin != "" {
+			t.Errorf("%s: windows full_bin %q is a shell string", file, w.FullBin)
+		}
+		for _, s := range append([]string{w.Cmd, w.Bin, w.FullBin}, w.Entrypoint...) {
+			for _, bad := range []string{"&&", "mv ", "ENVIRONMENT="} {
+				if strings.Contains(s, bad) {
+					t.Errorf("%s: windows config contains POSIX-only %q: %q", file, bad, s)
+				}
+			}
+		}
+		for _, bad := range []string{"&&", "ENVIRONMENT="} {
+			if strings.Contains(strings.Join(cfg.Build.Entrypoint, " "), bad) {
+				t.Errorf("%s: entrypoint contains %q", file, bad)
+			}
+		}
+		if !strings.Contains(w.Cmd, "-o ./tmp/winair.exe") {
+			t.Errorf("%s: windows build must write ./tmp/winair.exe: %q", file, w.Cmd)
+		}
+		var bin string
+		for _, a := range w.Entrypoint {
+			if strings.Contains(a, "winair") {
+				bin = a
+			}
+		}
+		if !strings.HasSuffix(bin, ".exe") {
+			t.Errorf("%s: windows entrypoint binary %q must end in .exe", file, bin)
+		}
+	}
 }

@@ -1,0 +1,17 @@
+# Keep every file LF in the working tree, including Windows checkouts, so
+# generated files and forge's hashed files produce clean diffs (forge's
+# hashing already normalises CRLF; this is about diff noise, not correctness).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.pdf binary
+*.gz binary
+*.zip binary

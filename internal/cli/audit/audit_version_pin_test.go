@@ -120,7 +120,7 @@ func TestAuditVersion_RunTimeInstallIsNotAPin(t *testing.T) {
 	}
 	ci := "jobs:\n  verify:\n    steps:\n      - run: |\n" +
 		"          v=$(GOWORK=off go list -m -f '{{.Version}}' github.com/reliant-labs/forge)\n" +
-		"          CGO_ENABLED=1 go install \"github.com/reliant-labs/forge/cmd/forge@${v}\"\n"
+		"          go install \"github.com/reliant-labs/forge/cmd/forge@${v}\"\n"
 	if err := os.WriteFile(filepath.Join(wfDir, "ci.yml"), []byte(ci), 0o644); err != nil {
 		t.Fatal(err)
 	}

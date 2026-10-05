@@ -87,7 +87,7 @@ jobs:
               echo "::error file=go.mod::no installable forge version (got '$v') — require $forge in go.mod, or set forge_version in forge.yaml to a published version."
               exit 1 ;;
           esac
-          CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
+          go install "$forge/cmd/forge@${v}"
 
       - name: Build and push
         # `forge env build <env> --push` pushes to the env's declared registry
@@ -188,7 +188,7 @@ jobs:
               echo "::error file=go.mod::no installable forge version (got '$v') — require $forge in go.mod, or set forge_version in forge.yaml to a published version."
               exit 1 ;;
           esac
-          CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
+          go install "$forge/cmd/forge@${v}"
 
       - name: Log in to the declared registry
         # The scanner pulls the image, so it needs the same read access.

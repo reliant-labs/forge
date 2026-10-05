@@ -596,9 +596,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// A hosted env's capacity pre-flight, before any build: a no-plan org must
 	// not burn a build to learn it. --plan writes nothing and stays offline.
 	if opts.env != "" && (opts.push || opts.release != "") && !opts.plan && !opts.capacityChecked {
-		if err := hostedCapacityPreflight(ctx, opts.env, entities, hostedBuildCount(entitiesOrEmpty(entities)), os.Stdout); err != nil {
+		capacity, err := hostedCapacityPreflight(ctx, opts.env, entities, hostedBuildCount(entitiesOrEmpty(entities)), os.Stdout)
+		if err != nil {
 			return err
 		}
+		renderCapacitySection(os.Stdout, capacity)
 	}
 
 	// Resolve the docker image tag once, up front. Both the docker

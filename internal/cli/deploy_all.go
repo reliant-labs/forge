@@ -60,7 +60,8 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 
 	// The capacity pre-flight, before the build: a no-plan org must learn it
 	// in seconds, not after the images are built and pushed. Read-only, and first of all.
-	if err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, true, progressWriter(f.jsonOut)); err != nil {
+	capacity, err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, true, progressWriter(f.jsonOut))
+	if err != nil {
 		return err
 	}
 
@@ -113,6 +114,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 	ensureHostedReleaseBundle(ctx, projectDir, envName, cut.Version, ledger, progressWriter(f.jsonOut))
 	return runPromote(ctx, cut.Version, envName, promoteOptions{
 		Ledger:        ledger,
+		Capacity:      capacity,
 		JSON:          f.jsonOut,
 		ProjectDir:    projectDir,
 		Note:          p.note,

@@ -515,7 +515,7 @@ func dispatchSpecChangeDeploy(ctx context.Context, envName string, f deployCmdFl
 	if f.explain {
 		return runDeployExplain(ctx, envName, report)
 	}
-	if err := hostedCapacityPreflightForEnv(ctx, projectDirForKCL(), envName, false, progressWriter(f.jsonOut)); err != nil {
+	if _, err := hostedCapacityPreflightForEnv(ctx, projectDirForKCL(), envName, false, progressWriter(f.jsonOut)); err != nil {
 		return err
 	}
 	// --frontends-only is the inverse of --skip-frontend: ship ONLY the env's
@@ -583,18 +583,20 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	// and resolving it up front is what keeps those two answers from being
 	// read at different moments from different places.
 	projectDir := projectDirForKCL()
-	ledger, err := resolveReleaseLedger(ctx, projectDir, envName)
+	// First of all: a release whose hosted part does not fit the plan is
+	// refused before the ledger is even opened, with nothing written.
+	capacity, err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, false, progressWriter(f.jsonOut))
 	if err != nil {
 		return err
 	}
-	// Before the bundle is ensured or anything is recorded: a release whose
-	// hosted part does not fit the plan is refused with nothing written.
-	if err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, false, progressWriter(f.jsonOut)); err != nil {
+	ledger, err := resolveReleaseLedger(ctx, projectDir, envName)
+	if err != nil {
 		return err
 	}
 	ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut))
 	return runPromote(ctx, p.version, envName, promoteOptions{
 		Ledger:        ledger,
+		Capacity:      capacity,
 		DryRun:        p.plan,
 		JSON:          f.jsonOut,
 		ProjectDir:    projectDir,

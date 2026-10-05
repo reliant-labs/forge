@@ -527,6 +527,9 @@ type promotePlan struct {
 	// "unavailable", never as "no changes" — the two are the distinction
 	// F-20 exists to preserve.
 	DeployPlan *release.Plan `json:"deploy_plan,omitempty"`
+	// Capacity is the hosted capacity pre-flight's answer, nil for an env with
+	// nothing hosted.
+	Capacity *promotePlanCapacity `json:"capacity,omitempty"`
 
 	// targetSources is the source-built frontend snapshot the binding will be
 	// written with, the non-container half of targetResolved. Carried on the
@@ -1184,6 +1187,8 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		// refused, which a reader skimming "note" lines would skip.
 		fmt.Fprintf(out, "  WARNING   %s\n", plan.SourceNote)
 	}
+
+	renderCapacitySection(out, plan.Capacity)
 
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Images (%d unchanged, %d changed, %d added, %d removed)\n",

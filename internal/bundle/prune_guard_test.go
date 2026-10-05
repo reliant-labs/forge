@@ -301,3 +301,13 @@ func annotationOf(doc []byte, key string) string {
 	}
 	return parsed.Metadata.Annotations[key]
 }
+
+// A PDB holds no data, even inside a stateful workload: guarding it would keep
+// a stale one (the workload dropped to one replica) alive under Flux forever.
+func TestHoldsData_PDBStaysPrunableInStatefulWorkload(t *testing.T) {
+	t.Parallel()
+	doc := parsedDoc{meta: docMeta{kind: "PodDisruptionBudget", workload: "maindb"}}
+	if holdsData(doc, map[string]bool{"maindb": true}) {
+		t.Fatal("a PodDisruptionBudget must stay prunable even when its workload is stateful")
+	}
+}

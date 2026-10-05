@@ -93,7 +93,7 @@ export default function SidebarLayout({
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto p-3">
+        <nav className="flex-1 relative overflow-y-auto p-3">
           {Array.from(sections.entries()).map(([section, items], si) => (
             <div key={si} className={si > 0 ? "mt-6" : ""}>
               {section && !collapsed && (
@@ -167,7 +167,7 @@ export default function SidebarLayout({
         </header>
 
         {/* Content */}
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+        <main className="flex-1 relative overflow-y-auto p-6">{children}</main>
       </div>
     </div>
   );

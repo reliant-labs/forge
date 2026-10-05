@@ -63,15 +63,15 @@ func TestApplyDeployGroupsLifecycleNotice(t *testing.T) {
 					t.Fatalf("applyDeployGroups: %v", err)
 				}
 			})
-			got := strings.Contains(out, lifecycleNoticeLine)
+			got := strings.Contains(out, realClusterNoticeLine)
 			if got != tc.wantLine {
 				t.Errorf("notice printed = %v, want %v\nstdout:\n%s", got, tc.wantLine, out)
 			}
 			// The notice is ONE line, once — an apply that printed it per
 			// cluster group would bury the applies it annotates.
-			if tc.wantLine && strings.Count(out, lifecycleNoticeLine) != 1 {
+			if tc.wantLine && strings.Count(out, realClusterNoticeLine) != 1 {
 				t.Errorf("notice printed %d times, want exactly 1\nstdout:\n%s",
-					strings.Count(out, lifecycleNoticeLine), out)
+					strings.Count(out, realClusterNoticeLine), out)
 			}
 		})
 	}

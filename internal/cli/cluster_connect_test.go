@@ -152,8 +152,8 @@ func TestReadConnectTarget_GKECarriesTheCloudResource(t *testing.T) {
 }
 
 func TestReadConnectTarget_GKEPrivateEndpoint(t *testing.T) {
-	restoreKC, restorePE := kubeconfigClusterOf, gkePrivateEndpointOf
-	defer func() { kubeconfigClusterOf, gkePrivateEndpointOf = restoreKC, restorePE }()
+	restoreKC, restoreD := kubeconfigClusterOf, gkeDescribeOf
+	defer func() { kubeconfigClusterOf, gkeDescribeOf = restoreKC, restoreD }()
 	kubeconfigClusterOf = func(string) (string, string, error) { return "https://34.42.58.220", "ca", nil }
 
 	cases := []struct {
@@ -165,7 +165,9 @@ func TestReadConnectTarget_GKEPrivateEndpoint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gkePrivateEndpointOf = func(gkeContext) string { return tc.private }
+			gkeDescribeOf = func(gkeContext) (gkeDescription, bool) {
+				return gkeDescription{Endpoint: "34.42.58.220", PrivateEndpoint: tc.private, CAPEM: "gke-ca"}, true
+			}
 			got, err := readConnectTarget("gke_acme_us-central1_prod", tc.auth)
 			if err != nil {
 				t.Fatalf("readConnectTarget: %v", err)
@@ -173,10 +175,31 @@ func TestReadConnectTarget_GKEPrivateEndpoint(t *testing.T) {
 			if got.Address != tc.want {
 				t.Errorf("Address = %q, want %q", got.Address, tc.want)
 			}
-			if (got.AddressNote != "") != (tc.want != "https://34.42.58.220") {
-				t.Errorf("AddressNote = %q", got.AddressNote)
-			}
 		})
+	}
+}
+
+func TestReadConnectTarget_GKEDescribeSuppliesAddressAndCA(t *testing.T) {
+	restoreKC, restoreD := kubeconfigClusterOf, gkeDescribeOf
+	defer func() { kubeconfigClusterOf, gkeDescribeOf = restoreKC, restoreD }()
+	// DNS-endpoint context: public cert, so no certificate-authority-data.
+	kubeconfigClusterOf = func(string) (string, string, error) { return "https://gke-abc.us-central1.gke.goog", "", nil }
+	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) {
+		return gkeDescription{Endpoint: "34.1.2.3", PrivateEndpoint: "172.16.0.2", CAPEM: "gke-ca"}, true
+	}
+	got, err := readConnectTarget("gke_acme_us-central1_prod", "gcp")
+	if err != nil {
+		t.Fatalf("readConnectTarget: %v", err)
+	}
+	if got.Address != "https://172.16.0.2" || got.CAPEM != "gke-ca" {
+		t.Errorf("Address, CAPEM = %q, %q; want the private endpoint and GKE's CA", got.Address, got.CAPEM)
+	}
+
+	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) {
+		return gkeDescription{Endpoint: "34.1.2.3"}, true
+	}
+	if _, err := readConnectTarget("gke_acme_us-central1_prod", "gcp"); err == nil {
+		t.Fatal("want a refusal when GKE's describe has no CA")
 	}
 }
 

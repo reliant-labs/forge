@@ -104,6 +104,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 	// stranding the publish on a spelling this change removes.
 	p := f.promote
 	p.version = cut.Version
+	ensureHostedReleaseBundle(ctx, projectDir, envName, cut.Version, ledger, progressWriter(f.jsonOut))
 	return runPromote(ctx, cut.Version, envName, promoteOptions{
 		Ledger:        ledger,
 		JSON:          f.jsonOut,

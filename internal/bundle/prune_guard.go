@@ -104,6 +104,11 @@ func guardStatefulObjects(docs []parsedDoc, statefulWorkloads []string) int {
 // holdsData is the union rule: a well-known stateful kind, or an object
 // belonging to a workload the env declared stateful.
 func holdsData(doc parsedDoc, statefulWorkloads map[string]bool) bool {
+	// A PDB holds no data, even inside a stateful workload: guarding it would
+	// keep a stale one (a workload that dropped to one replica) alive forever.
+	if doc.meta.kind == "PodDisruptionBudget" {
+		return false
+	}
 	return release.StatefulKind(doc.meta.kind) || statefulWorkloads[doc.meta.workload]
 }
 

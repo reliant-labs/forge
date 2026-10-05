@@ -45,7 +45,7 @@ export default function DashboardOps({
           <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">
             Alerts
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">{alerts}</div>
+          <div className="min-h-0 flex-1 relative overflow-y-auto">{alerts}</div>
         </section>
 
         <section
@@ -55,7 +55,7 @@ export default function DashboardOps({
           <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">
             Status
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">{statusGrid}</div>
+          <div className="min-h-0 flex-1 relative overflow-y-auto p-4">{statusGrid}</div>
         </section>
 
         <section
@@ -65,7 +65,7 @@ export default function DashboardOps({
           <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">
             Logs
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto font-mono text-xs">
+          <div className="min-h-0 flex-1 relative overflow-y-auto font-mono text-xs">
             {logStream}
           </div>
         </section>

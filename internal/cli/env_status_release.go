@@ -73,6 +73,9 @@ type envStatusDocument struct {
 	jsonEnvelope
 	// Env is the environment name as given on the command line.
 	Env string `json:"env"`
+	// Lifecycle is the env's declared Bundle.lifecycle ("local",
+	// "ephemeral", or "" when unset), as `env shape --json` reports it.
+	Lifecycle string `json:"lifecycle"`
 	// Bound is false for an env that has never been promoted. That is NOT a
 	// failure — it has declared nothing, so there is nothing to be wrong
 	// about — and it exits 0 with OK true. It is a separate field rather
@@ -175,6 +178,28 @@ func (kclTargetResolver) Resolve(ctx context.Context, projectDir, envName string
 	}
 }
 
+// envLifecycleResolver is the optional seam that reads an env's DECLARED
+// Bundle.lifecycle. Separate from envTargetResolver so existing resolvers
+// need not implement it; one that does not reports "" (unset).
+type envLifecycleResolver interface {
+	Lifecycle(ctx context.Context, projectDir, envName string) string
+}
+
+func (kclTargetResolver) Lifecycle(ctx context.Context, projectDir, envName string) string {
+	entities, err := RenderKCL(ctx, projectDir, envName)
+	if err != nil || entities == nil {
+		return ""
+	}
+	return entities.Lifecycle
+}
+
+func declaredLifecycle(ctx context.Context, r envTargetResolver, projectDir, envName string) string {
+	if lr, ok := r.(envLifecycleResolver); ok {
+		return lr.Lifecycle(ctx, projectDir, envName)
+	}
+	return ""
+}
+
 // envStatusOptions carries the flags and the injected seams into the run
 // function.
 type envStatusOptions struct {
@@ -263,7 +288,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	records := collectEnvRecords(ctx, opts.Records, projectDir, envName, time.Now().UTC())
 
 	if !bound {
-		return reportUnboundEnv(envName, opts.JSON, opts.Runtime, ledger, staleErr, records)
+		return reportUnboundEnv(declaredLifecycle(ctx, opts.Resolver, projectDir, envName), envName, opts.JSON, opts.Runtime, ledger, staleErr, records)
 	}
 	if len(binding.Resolved) == 0 {
 		// A binding with no resolved digests is a defective binding: it
@@ -315,6 +340,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	if opts.JSON {
 		report := envStatusDocument{
 			Env:         envName,
+			Lifecycle:   declaredLifecycle(ctx, opts.Resolver, projectDir, envName),
 			Bound:       true,
 			Release:     binding.Release,
 			PromotedAt:  formatLedgerTime(binding.PromotedAt),
@@ -475,7 +501,7 @@ func verifyCluster(ctx context.Context, projectDir, envName string, resolved map
 // not use releases, and a permanently-red gate is a deleted gate. Say plainly
 // what the state is and exit 0 — unless this checkout's copy of the ledger is
 // stale (staleErr), in which case "never promoted" is not known either.
-func reportUnboundEnv(envName string, jsonOut bool, runtime *upServicesReport, ledger *ledgerFreshnessReport, staleErr error, records envStatusRecords) error {
+func reportUnboundEnv(lifecycle, envName string, jsonOut bool, runtime *upServicesReport, ledger *ledgerFreshnessReport, staleErr error, records envStatusRecords) error {
 	const unboundDetail = "no release binding — the environment has never been promoted, so nothing is declared and there is nothing to verify"
 	if jsonOut {
 		// Still a complete, valid report. `bound: false` is the
@@ -483,13 +509,14 @@ func reportUnboundEnv(envName string, jsonOut bool, runtime *upServicesReport, l
 		// healthy state, not a failure. Images is non-nil so a consumer
 		// ranging over it sees `[]`, not `null`.
 		report := envStatusDocument{
-			Env:     envName,
-			Bound:   false,
-			Images:  []imageVerification{},
-			Detail:  unboundDetail,
-			Runtime: runtime,
-			Ledger:  ledger,
-			Records: &records,
+			Env:       envName,
+			Lifecycle: lifecycle,
+			Bound:     false,
+			Images:    []imageVerification{},
+			Detail:    unboundDetail,
+			Runtime:   runtime,
+			Ledger:    ledger,
+			Records:   &records,
 		}
 		if staleErr != nil {
 			report.Detail = staleErr.Error()

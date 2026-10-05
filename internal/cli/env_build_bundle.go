@@ -168,7 +168,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	// a render later rather than losing the deploy. What is NOT tolerated is
 	// a bundle that was written and then mis-recorded — see
 	// recordWrittenBundle.
-	doc, err := projectEnvShapeFn(ctx, in.errWriter(), env)
+	doc, err := projectEnvShapeFn(withHostedPinRelease(ctx, in.Release), in.errWriter(), env)
 	if err != nil {
 		fmt.Fprintf(in.errWriter(),
 			"[bundle] Warning: env %s's bundle was not written: %v\n"+
@@ -595,4 +595,51 @@ func (in bundleBuildInputs) errWriter() io.Writer {
 		return in.errOut
 	}
 	return progressWriter(true)
+}
+
+type hostedPinReleaseKey struct{}
+
+// withHostedPinRelease says which release a bundle's hosted records are pinned
+// to. Without it they follow the env's CURRENT promotion, which on a first
+// deploy does not exist yet — the release the bundle names is the only pin.
+func withHostedPinRelease(ctx context.Context, version string) context.Context {
+	if version == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, hostedPinReleaseKey{}, version)
+}
+
+func hostedPinReleaseFrom(ctx context.Context) string {
+	v, _ := ctx.Value(hostedPinReleaseKey{}).(string)
+	return v
+}
+
+// ensureHostedReleaseBundle writes and records the env's bundle for a named
+// release when none is recorded, so a deploy of that release has a bundle (and
+// so a plan digest) to promote against.
+func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version string, ledger envLedger, errOut io.Writer) {
+	if !ledger.Hosted || version == "" {
+		return
+	}
+	if digest, err := bundleDigestForRelease(ctx, projectDir, env, version, ledger); err != nil || digest != "" {
+		return
+	}
+	rel, err := ledger.Releases.Get(ctx, version)
+	if err != nil || rel == nil {
+		return
+	}
+	pins := release.BundlePins{Images: rel.SharedDigests()}
+	if sources := rel.Sources(); len(sources) > 0 {
+		pins.Sources = sources
+	}
+	out, err := writeBundlesFn(ctx, projectDir, []string{env}, bundleBuildInputs{
+		Release: version, Pins: pins, Pushed: true,
+		Now: time.Now().UTC().Truncate(time.Second), errOut: errOut,
+	})
+	if err != nil {
+		fmt.Fprintf(errOut, "[bundle] Warning: env %s's bundle for %s could not be written: %v\n", env, version, err)
+		return
+	}
+	printBundleWrites(errOut, out)
+	noteRecordedBundles(version, out)
 }

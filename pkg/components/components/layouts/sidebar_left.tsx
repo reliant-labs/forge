@@ -28,7 +28,7 @@ export default function SidebarLeft({
           </div>
         )}
 
-        <nav className="flex-1 overflow-y-auto px-3 py-4">
+        <nav className="flex-1 relative overflow-y-auto px-3 py-4">
           <ul className="space-y-1">
             {navItems.map((item, i) => (
               <li key={i}>
@@ -52,7 +52,7 @@ export default function SidebarLeft({
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto bg-surface-muted p-6">
+      <main className="flex-1 relative overflow-y-auto bg-surface-muted p-6">
         {children}
       </main>
     </div>

@@ -64,12 +64,20 @@ import (
 // decision is made once, in resolveReleaseLedger, and a second resolution
 // here could select a different backend for the same env than the promotion
 // was recorded in.
-func reconcilesThroughFlux(entities *KCLEntities, ledger envLedger) bool {
-	if ledger.Hosted {
-		return false
-	}
-	return !DirectApplyAllowed(entities)
+func reconcilesThroughFlux() bool {
+	// Forge never installs Flux into, or writes a pointer at, a deploy
+	// target: Flux on a cluster comes only from a control plane's own
+	// declaration, and real clusters are reconciled by its hub. Every env
+	// without a ControlPlane applies directly. The in-cluster pointer path
+	// below is retained only until the follow-up that moves dev-k8s/e2e onto
+	// their own control plane deletes it.
+	return false
 }
+
+// realClusterNoticeLine is printed when a direct apply targets a cluster of
+// an env with no control plane.
+const realClusterNoticeLine = "Note: real clusters are reconciled by a control plane's hub Flux, not by forge; " +
+	"applying directly (transitional). Declare forge.ControlPlane + connected_cluster (forge cluster connect)"
 
 // fluxRegistryBase is the registry subtree this env's bundles are published
 // to, addressed as the HOST reaches it.

@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -88,7 +89,15 @@ func planForDeploy(ctx context.Context, projectDir, env, version string, ledger 
 // not in the doc's §6.3 list at all. Raised with the orchestrator rather than
 // papered over, because the honest degradation (no plan, gate still stands) is
 // safe and inventing a client-side substitute would not be.
-func bundleDigestForRelease(_ context.Context, projectDir, env, version string, _ envLedger) (string, error) {
+func bundleDigestForRelease(_ context.Context, projectDir, env, version string, ledger envLedger) (string, error) {
+	// A hosted env's bundle is recorded on the control plane, not in the
+	// machine ledger, so the digest this process just recorded is the one
+	// to plan against.
+	if ledger.Hosted {
+		if digest := recordedBundleDigest(env, version); digest != "" {
+			return digest, nil
+		}
+	}
 	store, err := recordStoreFor(projectDir)
 	if err != nil {
 		return "", err
@@ -317,4 +326,32 @@ var hostedRecordStoreForDeploy = func(ctx context.Context, projectDir, env strin
 		return hostedRecordStore{}, err
 	}
 	return hostedRecordStoreFor(client, hostedEnvRefFor(env, entities).Project), nil
+}
+
+var (
+	recordedBundleMu      sync.Mutex
+	recordedBundleDigests = map[string]string{}
+)
+
+// noteRecordedBundles remembers the digests of bundles this process recorded,
+// keyed by (env, release), so the plan step can find a hosted env's bundle
+// without a control-plane lookup by release (no such RPC exists).
+func noteRecordedBundles(version string, outcomes []bundleWriteOutcome) {
+	if version == "" {
+		return
+	}
+	recordedBundleMu.Lock()
+	defer recordedBundleMu.Unlock()
+	for _, o := range outcomes {
+		if o.Skipped || !o.Recorded || o.Digest == "" {
+			continue
+		}
+		recordedBundleDigests[o.Env+"\x00"+version] = o.Digest
+	}
+}
+
+func recordedBundleDigest(env, version string) string {
+	recordedBundleMu.Lock()
+	defer recordedBundleMu.Unlock()
+	return recordedBundleDigests[env+"\x00"+version]
 }

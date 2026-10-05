@@ -287,6 +287,7 @@ func recordHostedBundle(ctx context.Context, envName, bound string, digests map[
 	if err != nil {
 		return err
 	}
+	noteRecordedBundles(bound, out)
 	for _, o := range out {
 		if o.Skipped || !o.Recorded {
 			return fmt.Errorf("hosted env %q: its bundle was not recorded, so the control plane has nothing to apply.\n"+

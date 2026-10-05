@@ -1500,6 +1500,7 @@ func writeBuildBundle(ctx context.Context, opts buildOptions) error {
 		Now:     time.Now().UTC().Truncate(time.Second),
 	})
 	printBundleWrites(os.Stdout, written)
+	noteRecordedBundles(opts.bundleReleaseVersion(), written)
 	return err
 }
 

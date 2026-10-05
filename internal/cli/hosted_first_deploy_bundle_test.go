@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -79,4 +80,50 @@ func TestEnsureHostedReleaseBundleWritesWhenMissing(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("an uncut release must not write a bundle; calls = %d", len(got))
 	}
+}
+
+// A hosted deploy plans against the bundle forge recorded in this same
+// command: the machine ledger never holds a hosted env's bundle.
+func TestHostedDeployPlansAgainstTheBundleJustRecorded(t *testing.T) {
+	e, _ := loadContract(t, "hosted")
+	dir := t.TempDir()
+	cutHostedFixtureRelease(t, dir, e, "v1.4.0")
+	ledger := testLedger(t, dir)
+	ledger.Hosted = true
+
+	plan := buildTestPlan(t)
+	var bundle map[string]any
+	if err := json.Unmarshal([]byte(cpBundleFixture), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := bundle["digest"].(string)
+	fake := &fakeDSOTCaller{replies: map[string]any{
+		procGetBundle:  map[string]any{"bundle": bundle},
+		procPlanDeploy: map[string]any{"plan": planToWireFixture(plan)},
+	}, reply: func(proc string, _ map[string]any) (any, bool) {
+		if strings.HasSuffix(proc, "/ListEnvironments") {
+			return map[string]any{"environments": []map[string]string{{"id": "env_prod", "name": "prod"}}}, true
+		}
+		return nil, false
+	}}
+	prevStore := hostedRecordStoreForDeploy
+	hostedRecordStoreForDeploy = func(context.Context, string, string) (hostedRecordStore, error) {
+		return hostedRecordStoreFor(fake, "proj"), nil
+	}
+	prevWrite := writeBundlesFn
+	writeBundlesFn = func(_ context.Context, _ string, _ []string, in bundleBuildInputs) ([]bundleWriteOutcome, error) {
+		return []bundleWriteOutcome{{Env: "prod", Digest: digest, Pushed: true, Recorded: true}}, nil
+	}
+	t.Cleanup(func() { hostedRecordStoreForDeploy, writeBundlesFn = prevStore, prevWrite })
+
+	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v1.4.0", ledger, io.Discard)
+	got := planForDeploy(context.Background(), dir, "prod", "v1.4.0", ledger, io.Discard)
+	if got == nil {
+		t.Fatal("no plan computed for a hosted deploy whose bundle was just recorded")
+	}
+	if got.Digest != plan.Digest {
+		t.Errorf("plan digest = %q, want %q", got.Digest, plan.Digest)
+	}
+	wantFields(t, fake.body(t, procGetBundle), map[string]any{"digest": digest})
+	wantFields(t, fake.body(t, procPlanDeploy), map[string]any{"bundleId": "bnd_1"})
 }

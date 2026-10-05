@@ -641,4 +641,5 @@ func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version str
 		return
 	}
 	printBundleWrites(errOut, out)
+	noteRecordedBundles(version, out)
 }

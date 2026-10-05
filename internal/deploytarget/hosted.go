@@ -573,6 +573,17 @@ func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (strin
 	if hostedImageNamesRegistry(repo) {
 		return repo, nil
 	}
+	// AN ARTIFACT KEY THAT NAMES A REGISTRY IS THE REPOSITORY. A bare hosted
+	// image is keyed by the address it was pushed to (hostedArtifactKey:
+	// `<push base>/<name>`), and releaseRegistries maps that key to itself,
+	// so composing `registry + "/" + artifact` would write the repository
+	// twice — `<base>/hounders/<base>/hounders@…`, which the control plane
+	// refuses as ImageRejected. The static-site branch already reads its key
+	// this way; this is the same rule. Only a legacy registry-less key still
+	// composes below.
+	if hostedImageNamesRegistry(artifact) {
+		return artifact, nil
+	}
 	var registry string
 	if group.Hosted != nil {
 		registry = strings.TrimSuffix(group.Hosted.Registries[artifact], "/")

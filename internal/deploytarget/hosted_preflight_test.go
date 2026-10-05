@@ -151,6 +151,37 @@ func TestPreflightHostedAdmitsAHostedJob(t *testing.T) {
 	}
 }
 
+// A bare hosted image resolves against the platform's push base, and the
+// release ledger keys its artifact by that ADDRESS — host included — with
+// releaseRegistries mapping the key to itself. Composing `registry + "/" +
+// artifact` from that pair doubled the repository
+// (`<base>/hounders/<base>/hounders@…`), which the control plane refused as
+// ImageRejected for every hosted workload in prod. The key IS the repository.
+func TestHostedPinsAnAddressKeyedArtifactOnce(t *testing.T) {
+	const repo = "registry.example.com/55949942-3ee9-4cfc-bb7c-817bdba75186/hounders/hounders"
+	api := publicBackend()
+	g := preflightGroup(api)
+	g.Services[0].Hosted.Artifact = repo
+	g.Hosted = &HostedTarget{Release: "v1", PushBase: "registry.example.com/55949942-3ee9-4cfc-bb7c-817bdba75186/hounders",
+		Digests:    map[string]string{repo: digestA, staticSiteArtifact: digestB},
+		Registries: map[string]string{repo: repo}}
+	plan, err := planHosted(g)
+	if err != nil {
+		t.Fatalf("planHosted: %v", err)
+	}
+	for _, item := range plan {
+		spec, ok := item.Spec.(v1alpha1.WorkloadSpec)
+		if !ok {
+			continue
+		}
+		if want := repo + "@" + digestA; spec.Image != want {
+			t.Fatalf("workload image = %q, want %q", spec.Image, want)
+		}
+		return
+	}
+	t.Fatal("plan carried no workload")
+}
+
 // The reference checks run at DEPLOY time too — the preflight is the plan,
 // so a release-bound deploy of a dangling reference is refused before any
 // RPC, not published to wait forever.

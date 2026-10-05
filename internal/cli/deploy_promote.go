@@ -120,6 +120,8 @@ type promoteOptions struct {
 	// it must never do is let a stop-class finding through silently, which is
 	// why --approve against a nil plan is refused rather than ignored.
 	DeployPlan *release.Plan
+	// Capacity is the pre-flight's verdict, shown in the plan and the summary.
+	Capacity *promotePlanCapacity
 }
 
 // runPromote computes the change set and — unless --plan was passed — applies
@@ -203,6 +205,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// two-stage pipeline passes to --approve and the codes it passes to
 	// --acknowledge-destructive.
 	plan.DeployPlan = opts.DeployPlan
+	plan.Capacity = opts.Capacity
 	guard := guardFor(plan, opts.ExpectCurrent, opts.Supersede)
 	if guard.ExpectUnbound {
 		plan.Expected = expectUnboundLiteral

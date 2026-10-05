@@ -120,6 +120,9 @@ type buildOptions struct {
 	// pull from. Unlike push, having none is not a failure. Resolved by
 	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
+	// capacityChecked records that the caller (`forge env deploy`) already ran
+	// the hosted capacity pre-flight, so the build does not repeat it.
+	capacityChecked bool
 	// bundleEnvs is --bundle-envs: write a bundle for each env named,
 	// comma-separated, from this one build and this one cut. Empty means
 	// the env being built.
@@ -588,6 +591,16 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	entities, push, err := renderBuildInputs(ctx, cfg, &opts)
 	if err != nil {
 		return err
+	}
+
+	// A hosted env's capacity pre-flight, before any build: a no-plan org must
+	// not burn a build to learn it. --plan writes nothing and stays offline.
+	if opts.env != "" && (opts.push || opts.release != "") && !opts.plan && !opts.capacityChecked {
+		capacity, err := hostedCapacityPreflight(ctx, opts.env, entities, hostedBuildCount(entitiesOrEmpty(entities)), os.Stdout)
+		if err != nil {
+			return err
+		}
+		renderCapacitySection(os.Stdout, capacity)
 	}
 
 	// Resolve the docker image tag once, up front. Both the docker

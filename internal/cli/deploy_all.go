@@ -58,6 +58,13 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		return err
 	}
 
+	// The capacity pre-flight, before the build: a no-plan org must learn it
+	// in seconds, not after the images are built and pushed. Read-only, and first of all.
+	capacity, err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, true, progressWriter(f.jsonOut))
+	if err != nil {
+		return err
+	}
+
 	// The ledger FIRST, before anything is built: it decides where the
 	// release is cut and who applies the promotion, and an env whose
 	// declaration cannot be resolved must fail before it burns a build.
@@ -107,6 +114,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 	ensureHostedReleaseBundle(ctx, projectDir, envName, cut.Version, ledger, progressWriter(f.jsonOut))
 	return runPromote(ctx, cut.Version, envName, promoteOptions{
 		Ledger:        ledger,
+		Capacity:      capacity,
 		JSON:          f.jsonOut,
 		ProjectDir:    projectDir,
 		Note:          p.note,
@@ -216,10 +224,12 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		// proceed to the cut. This is the mode `forge env up` already uses,
 		// for the same reason.
 		pushIfDeclared: true,
-		release:        version,
-		targetArch:     f.targetArch,
-		targets:        f.targets,
-		run:            f.promote.run,
+		// The deploy ran the capacity pre-flight before it got here.
+		capacityChecked: true,
+		release:         version,
+		targetArch:      f.targetArch,
+		targets:         f.targets,
+		run:             f.promote.run,
 	}
 	if reused {
 		// A reused version must not be RE-CUT with a different artifact

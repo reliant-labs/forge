@@ -159,10 +159,12 @@ publish. Bind a refused workload to a cluster you operate instead.
 ```
 forge lint              # Go + proto + frontend linters (same checks CI runs)
 forge lint --no-fix     # gate only, mutate nothing (CI / read-only)
-task test               # full test suite must pass
+task test               # full suite
 forge ci validate-kcl   # every env renders to something applyable
 forge doctor --signal deploy   # probes, resources, Secrets, migrations
 ```
+
+Capacity: `deploy/hosted-capacity`.
 
 ## Build
 

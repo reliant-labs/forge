@@ -515,6 +515,9 @@ func dispatchSpecChangeDeploy(ctx context.Context, envName string, f deployCmdFl
 	if f.explain {
 		return runDeployExplain(ctx, envName, report)
 	}
+	if err := hostedCapacityPreflightForEnv(ctx, projectDirForKCL(), envName, false, progressWriter(f.jsonOut)); err != nil {
+		return err
+	}
 	// --frontends-only is the inverse of --skip-frontend: ship ONLY the env's
 	// shippable frontend(s) and nothing else. The two are mutually exclusive —
 	// one says "everything but the frontend", the other "the frontend and
@@ -582,6 +585,11 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	projectDir := projectDirForKCL()
 	ledger, err := resolveReleaseLedger(ctx, projectDir, envName)
 	if err != nil {
+		return err
+	}
+	// Before the bundle is ensured or anything is recorded: a release whose
+	// hosted part does not fit the plan is refused with nothing written.
+	if err := hostedCapacityPreflightForEnv(ctx, projectDir, envName, false, progressWriter(f.jsonOut)); err != nil {
 		return err
 	}
 	ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut))

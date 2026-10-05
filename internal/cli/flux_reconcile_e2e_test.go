@@ -183,7 +183,26 @@ output = forge.render(forge.Bundle {
 
 	writeFluxE2EFile(t, filepath.Join(projectDir, "Dockerfile.pause"), "FROM busybox:1.36\nRUN mkdir /www && echo ok > /www/readyz && echo ok > /www/healthz\nCMD [\"httpd\", \"-f\", \"-p\", \"8080\", \"-h\", \"/www\"]\n")
 
+	commitFluxE2EFixture(t, projectDir)
 	return projectDir
+}
+
+// commitFluxE2EFixture makes the fixture a git repo with a commit. A real
+// project is one, and the deploy needs it: the image tag resolves from git
+// (`git describe`), and a release cut with no commit carries none to pin. On a
+// CI runner `forge project new` leaves no commit, and the deploy fails with
+// "git tag resolution: exit status 128" — a fixture defect, not forge's.
+//
+// Idempotent, so a test that edits the fixture can call it again: init is a
+// no-op on an existing repo, and the commit is skipped when nothing is staged.
+func commitFluxE2EFixture(t *testing.T, projectDir string) {
+	t.Helper()
+	gitE2E(t, projectDir, "init", "-q")
+	gitE2E(t, projectDir, "add", "-A")
+	if strings.TrimSpace(gitE2E(t, projectDir, "status", "--porcelain")) == "" {
+		return
+	}
+	gitE2E(t, projectDir, "commit", "-q", "-m", "fixture")
 }
 
 // runForgeFluxE2E runs forge with the ledger pointed at a temp dir.
@@ -550,11 +569,9 @@ func TestE2EDirectApplySecretsLandAndStayOutOfTheBundle(t *testing.T) {
 	writeFluxE2EFile(t, mainK, withSecrets)
 	writeFluxE2EFile(t, filepath.Join(projectDir, "secrets", "dev-k8s.yaml"), "STORE_TOKEN: "+realValue+"\n")
 
-	// A real project is a git repo: --dry-run resolves its image tag from
-	// git, and has no build state of its own to fall back on.
-	gitE2E(t, projectDir, "init", "-q")
-	gitE2E(t, projectDir, "add", "-A")
-	gitE2E(t, projectDir, "commit", "-q", "-m", "fixture")
+	// --dry-run resolves its image tag from git, and has no build state of
+	// its own to fall back on: commit the Secrets edit too.
+	commitFluxE2EFixture(t, projectDir)
 
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")

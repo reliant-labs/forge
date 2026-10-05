@@ -332,6 +332,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	}{
 		{taskfileTmpl, "Taskfile.yml"},
 		{".gitignore", ".gitignore"},
+		{".gitattributes", ".gitattributes"},
 		{readmeTmpl, "README.md"},
 		{"CONTRIBUTING.md.tmpl", "CONTRIBUTING.md"},
 		{"CHANGELOG.md.tmpl", "CHANGELOG.md"},

@@ -22,13 +22,12 @@
 // # Why it drives the binary rather than linking the evaluator
 //
 // Linking forge's evaluator into a consumer's test binary would put the KCL
-// runtime there too, which means CGO (the kcl_plugin.forge namespace is a CGO
-// bridge) and a hard dependency from the test binary onto a specific forge
-// VERSION through go.mod. Both are wrong for the job. A project pins its forge
+// runtime there too, and a hard dependency from the test binary onto a specific forge
+// VERSION through go.mod. That is wrong for the job. A project pins its forge
 // in CI with `go install .../cmd/forge@vX.Y.Z`; the value a test reads should
 // come from THAT forge, not from whatever version the test binary happened to
 // compile against. Driving the binary keeps the pin in one place and keeps the
-// test binary CGO-free.
+// test binary light.
 //
 // # Typical use
 //

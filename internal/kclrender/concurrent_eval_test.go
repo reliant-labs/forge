@@ -1,4 +1,4 @@
-//go:build cgo && unix
+//go:build unix
 
 package kclrender_test
 
@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/kclvendor"
@@ -117,7 +118,7 @@ func TestConcurrentRendersEachKeepTheirOwnRefusal(t *testing.T) {
 // os.Stderr: the KCL runtime is native code and writes to fd 2 directly.
 func captureFD2(t *testing.T, fn func()) string {
 	t.Helper()
-	saved, err := syscall.Dup(2)
+	saved, err := unix.Dup(2)
 	if err != nil {
 		t.Fatalf("dup stderr: %v", err)
 	}
@@ -125,7 +126,7 @@ func captureFD2(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
-	if err := syscall.Dup2(int(w.Fd()), 2); err != nil {
+	if err := unix.Dup2(int(w.Fd()), 2); err != nil {
 		t.Fatalf("redirect stderr: %v", err)
 	}
 	var buf bytes.Buffer
@@ -138,8 +139,8 @@ func captureFD2(t *testing.T, fn func()) string {
 	func() {
 		defer func() {
 			// Restore fd 2 before anything else can report a failure.
-			_ = syscall.Dup2(saved, 2)
-			_ = syscall.Close(saved)
+			_ = unix.Dup2(saved, 2)
+			_ = unix.Close(saved)
 			_ = w.Close()
 		}()
 		fn()

@@ -365,9 +365,10 @@ func ensureRelativeSymlink(linkPath, targetDir string) (bool, error) {
 		rel = targetDir // absolute fallback: still gitignored, still correct
 	}
 	rel = filepath.ToSlash(rel)
+	abs := resolvePath(targetDir)
 
 	switch existing, err := os.Readlink(linkPath); {
-	case err == nil && existing == rel:
+	case err == nil && linkMatches(existing, rel, abs):
 		return false, nil // already correct
 	case err == nil:
 		// Points somewhere else (the checkout moved): replace it.
@@ -381,7 +382,7 @@ func ensureRelativeSymlink(linkPath, targetDir string) (bool, error) {
 		// Leave it alone rather than deleting a developer's files.
 		return false, fmt.Errorf("%s exists and is not a symlink", linkPath)
 	}
-	return true, os.Symlink(rel, linkPath)
+	return true, createDirLink(rel, abs, linkPath)
 }
 
 // ensureGitignoreEntries appends any of want that the file does not already

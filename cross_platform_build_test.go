@@ -43,33 +43,13 @@ func TestCrossPlatformBuild(t *testing.T) {
 		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {
 			t.Parallel()
 
-			// `exp.winarm64` is a DELVE build tag, and on windows/arm64 it is
-			// what makes the build work at all.
-			//
-			// forge/cli registers the debug commands, which pull
-			// internal/cli/debug -> delve/service/debugger, so anything
-			// linking forge links Delve on every target. Delve supports
-			// windows/amd64 natively; for windows/arm64 it compiles a
-			// sentinel package whose whole job is to break the build. In
-			// v1.26.3 that sentinel was `windows && !amd64 && !arm64`, so
-			// arm64 slipped through; v1.27.1 retightened it to
-			// `windows && !amd64 && !(arm64 && exp.winarm64)`, which is what
-			// produces "found packages native and
-			// your_windows_architecture_is_not_supported_by_delve".
-			//
-			// The tag selects delve's own experimental winarm64 backend
-			// instead of the sentinel. It is compile-only: nothing in a
-			// released binary ever starts a debugger.
-			//
-			// This mirrors what reliant's release build already passes (see
-			// .github/workflows/release.yml in that repo). Building WITHOUT
-			// it here meant this guard tested a configuration nobody ships,
-			// and failed on one nobody builds. It is a no-op on every other
-			// target, so it stays on one shared command line.
-			//
-			// The durable fix is for forge/cli not to link a debugger into
-			// consumers at all; that is a larger change than this guard.
-			args := append([]string{"build", "-tags", "exp.winarm64"}, crossPlatformTargets(t)...)
+			// No build tags. forge talks to dlv through its own JSON-RPC
+			// client (internal/debug/rpcclient.go) and links none of delve's
+			// debugger backend, so windows/arm64 builds as plainly as every
+			// other target. Passing delve's `exp.winarm64` tag here would
+			// MASK a regression that re-links service/debugger: the build
+			// would stay green on a configuration no plain `go install` gets.
+			args := append([]string{"build"}, crossPlatformTargets(t)...)
 			cmd := exec.Command("go", args...)
 			cmd.Env = append(cmd.Environ(),
 				"GOOS="+target.goos,
@@ -92,19 +72,9 @@ func TestCrossPlatformBuild(t *testing.T) {
 // with the reason. An exemption is a claim that NOTHING shippable imports the
 // package, so keep it to test harnesses and keep the list short.
 var crossPlatformExempt = map[string]string{
-	// Imports sigs.k8s.io/controller-runtime's envtest, which drags in
-	// controller-runtime's own internal/testing/process — and that package
-	// does not compile for windows in v0.25.0 OR v0.25.1:
-	//
-	//	signal_windows.go:26: signalProcess redeclared in this block
-	//	process.go:132: undefined: signalProcessImpl
-	//
-	// It is an upstream defect in controller-runtime's internal test
-	// scaffolding, not something a build tag here can guard. The package is a
-	// harness for running controller tests against a local API server, which
-	// is linux/darwin-only in practice, so nothing windows-shippable imports
-	// it. Revisit when controller-runtime fixes its windows build.
-	"github.com/reliant-labs/forge/pkg/controller/controllertest": "controller-runtime envtest does not build for windows upstream",
+	// Empty. pkg/controller/controllertest used to be exempt (controller-
+	// runtime's envtest does not compile for windows through v0.25.2); it now
+	// ships envtest_windows.go, which keeps its exported API and skips.
 }
 
 // crossPlatformTargets expands ./... minus the exemptions, so the guard keeps

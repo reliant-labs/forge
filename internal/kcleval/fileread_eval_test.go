@@ -1,5 +1,3 @@
-//go:build cgo
-
 package kcleval_test
 
 // fileread_eval_test.go pins WHICH directory a file's `file.read` resolves

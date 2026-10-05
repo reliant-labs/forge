@@ -23,7 +23,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -31,6 +33,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
 // toolCheck declares a host binary forge depends on plus the metadata
@@ -48,12 +51,17 @@ import (
 // a generic "see <upstream-url>" line so we don't lie about
 // platforms we haven't pinned.
 type toolCheck struct {
-	Name         string
-	Description  string
-	Required     func(cfg *config.ProjectConfig, projectDir string) bool
-	VersionArgs  []string
-	MinVersion   string
-	InstallHints map[string]string
+	Name        string
+	Description string
+	Required    func(cfg *config.ProjectConfig, projectDir string) bool
+	VersionArgs []string
+	MinVersion  string
+	// MinVersionByOS raises the floor on one GOOS, for a tool forge relies
+	// on a platform-specific fix or feature of (air's [build.windows]
+	// overrides; Task's Windows core utils). The effective floor is the
+	// higher of MinVersion and this entry — see forOS.
+	MinVersionByOS map[string]string
+	InstallHints   map[string]string
 	// UpstreamURL backs the fallback hint for unknown OSes; also
 	// included in the evidence detail when the OS-specific hint is
 	// unavailable.
@@ -99,6 +107,17 @@ func requiredWhen(getter func(config.FeaturesConfig) bool) func(*config.ProjectC
 	}
 }
 
+// requiredForAirConfig: air is needed by a project that scaffolds an
+// .air.toml (the host hot-reload runner config). A project without one
+// never launches air, whatever its features say.
+func requiredForAirConfig(_ *config.ProjectConfig, projectDir string) bool {
+	if projectDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(projectDir, hostlaunch.DefaultAirConfig))
+	return err == nil
+}
+
 // requiredForMkcert reads every env's KCL to see whether any Gateway
 // declares tls.mode = "mkcert". mkcert is host-side-only — it
 // generates a cert against the host's mkcert CA and the cert flows
@@ -140,7 +159,61 @@ func requiredForMkcert(cfg *config.ProjectConfig, projectDir string) bool {
 // deploy is feature-disabled, and kubectl is the cluster lingua
 // franca. So they're scoped to "deploy enabled" (the dominant
 // usage) and skipped cleanly otherwise.
-func defaultToolChecks() []toolCheck {
+func defaultToolChecks(goos string) []toolCheck {
+	checks := allToolChecks()
+	for i := range checks {
+		checks[i] = checks[i].forOS(goos)
+	}
+	return checks
+}
+
+// forOS folds MinVersionByOS[goos] into MinVersion, so the comparison path
+// stays one field and a platform floor can only ever RAISE the bar.
+func (tc toolCheck) forOS(goos string) toolCheck {
+	floor, ok := tc.MinVersionByOS[goos]
+	if !ok || floor == "" {
+		return tc
+	}
+	if tc.MinVersion == "" {
+		tc.MinVersion = floor
+		return tc
+	}
+	if cmp, ok := compareVersions(floor, tc.MinVersion); ok && cmp > 0 {
+		tc.MinVersion = floor
+	}
+	return tc
+}
+
+// airToolCheck is air, split out of allToolChecks because it is the one tool
+// whose floor depends on the scaffolded config's shape and on the OS.
+func airToolCheck() toolCheck {
+	return toolCheck{
+		// air is the default host runner for `forge env up` and
+		// `task dev`, launched with the scaffolded .air.toml. Floors
+		// (verified against air's git history):
+		//   - every OS: the config names its binary with `entrypoint`
+		//     (no `bin`), which air gained in v1.63.2 — older air has
+		//     nothing to run;
+		//   - windows: `[build.windows]` arrived in v1.64.1, and the
+		//     in-place .exe build needs v1.65.3, which restored stopping
+		//     the app before building on Windows (v1.65.2 builds while
+		//     it runs, and Windows locks a running .exe).
+		Name:           "air",
+		Description:    "air — hot-reload host runner for `forge env up` / `task dev` (.air.toml)",
+		Required:       requiredForAirConfig,
+		VersionArgs:    []string{"-v"},
+		MinVersion:     "1.63.2",
+		MinVersionByOS: map[string]string{"windows": "1.65.3"},
+		InstallHints: map[string]string{
+			"darwin":  "go install github.com/air-verse/air@latest",
+			"linux":   "go install github.com/air-verse/air@latest",
+			"windows": "go install github.com/air-verse/air@latest",
+		},
+		UpstreamURL: "https://github.com/air-verse/air#installation",
+	}
+}
+
+func allToolChecks() []toolCheck {
 	return []toolCheck{
 		{
 			Name:        "go",
@@ -183,6 +256,10 @@ func defaultToolChecks() []toolCheck {
 			Description: "Task — runs the project's Taskfile.yml (`task test` is the test suite)",
 			Required:    requiredAlways,
 			VersionArgs: []string{"--version"},
+			// Windows has no rm/mkdir/cp/mv; scaffolded Taskfiles rely on
+			// Task's built-in core utils (v3.45.3, default-on for Windows),
+			// and `rm -f` there was fixed in v3.45.5 (go-task #2506).
+			MinVersionByOS: map[string]string{"windows": "3.45.5"},
 			InstallHints: map[string]string{
 				"darwin":  "brew install go-task/tap/go-task",
 				"linux":   "go install github.com/go-task/task/v3/cmd/task@latest   (or see https://taskfile.dev/installation/)",
@@ -263,6 +340,7 @@ func defaultToolChecks() []toolCheck {
 			},
 			UpstreamURL: "https://helm.sh/docs/intro/install/",
 		},
+		airToolCheck(),
 		{
 			Name:        "npm",
 			Description: "npm — frontend package manager (frontends/<name>/, proto-es codegen)",
@@ -549,5 +627,5 @@ func runToolDoctorChecks(ctx context.Context, cfg *config.ProjectConfig, project
 	if signal != "" {
 		return nil
 	}
-	return runToolChecks(ctx, defaultToolChecks(), cfg, projectDir, realBinaryLookup, realVersionRunner)
+	return runToolChecks(ctx, defaultToolChecks(runtime.GOOS), cfg, projectDir, realBinaryLookup, realVersionRunner)
 }

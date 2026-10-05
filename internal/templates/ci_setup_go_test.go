@@ -29,7 +29,7 @@ import (
 // stamped into a scaffold-once workflow freezes while go.mod moves on.
 
 // goInvocation matches a `go` command in a shell script — `go install`,
-// `go build`, `go test`, `GOWORK=off go mod edit`, `CGO_ENABLED=1 go install`.
+// `go build`, `go test`, `GOWORK=off go mod edit`.
 //
 // Anchored to a command POSITION (start of line, or after a pipe, `&&`, `;`,
 // or an inline env assignment) so it does not fire on the word "go" in prose,

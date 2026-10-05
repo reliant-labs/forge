@@ -117,9 +117,6 @@ func TestApplyDeployGroups_CrossClusterReadinessDoesNotDeadlock(t *testing.T) {
 		t.Skip("renders KCL; skipped in -short")
 	}
 	kclplugin.Register()
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0): forge cannot render KCL")
-	}
 	ctx := context.Background()
 	dir := workloadURLProject(t, "dev", crossClusterBundle)
 	entities, err := RenderKCL(ctx, dir, "dev")

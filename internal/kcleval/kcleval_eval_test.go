@@ -1,5 +1,3 @@
-//go:build cgo
-
 package kcleval_test
 
 // kcleval_eval_test.go exercises the WHOLE path: a real project on disk, a

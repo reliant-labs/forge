@@ -28,9 +28,6 @@ import (
 func renderFrontendEnv(t *testing.T, frontends, bundleExtra string) *KCLEntities {
 	t.Helper()
 	kclplugin.Register()
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0 build); forge cannot render KCL")
-	}
 	root := t.TempDir()
 	envDir := filepath.Join(root, "deploy", "kcl", "staging")
 	if err := os.MkdirAll(envDir, 0o755); err != nil {

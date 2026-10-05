@@ -52,6 +52,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/envutil"
+	"github.com/reliant-labs/forge/internal/shellrun"
 	"github.com/reliant-labs/forge/internal/statefile"
 )
 
@@ -114,6 +115,10 @@ type commandRunner interface {
 	// prefix this never quotes the path through a shell, so a dir with
 	// spaces or shell metacharacters is handled correctly.
 	RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error
+	// RunShell runs a POSIX shell script in dir with an env overlay. The
+	// production implementation interprets it in-process (internal/shellrun),
+	// so no `sh` binary is needed on PATH — Windows included.
+	RunShell(ctx context.Context, dir string, env map[string]string, script string) error
 }
 
 // execRunner is the production commandRunner. Run pipes through to
@@ -144,7 +149,15 @@ func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]strin
 	return nil
 }
 
-// Runner executes a Spec's BuildCmd via `sh -c` VERBATIM — the string
+func (execRunner) RunShell(ctx context.Context, dir string, env map[string]string, script string) error {
+	err := shellrun.Run(ctx, script, shellrun.Options{Dir: dir, Env: env, Stdout: os.Stdout, Stderr: os.Stderr})
+	if err != nil {
+		return fmt.Errorf("shell build %q: %w", script, err)
+	}
+	return nil
+}
+
+// Runner executes a Spec's BuildCmd as POSIX shell (in-process) VERBATIM — the string
 // the KCL render produced is the string the shell sees. Mirrors
 // deploytarget.ExternalProvider's shape: same `sh -c` invocation, same
 // env-overlay precedence, same "user owns the command" contract.
@@ -245,7 +258,7 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 	// spaces or shell metacharacters. RunInDir with an empty dir leaves
 	// cmd.Dir unset, inheriting the host cwd (== ProjectDir for forge
 	// build) — matching the prior no-cwd behavior.
-	err := runner.RunInDir(ctx, cwd, spec.BuildEnv, "sh", "-c", spec.BuildCmd)
+	err := runner.RunShell(ctx, cwd, spec.BuildEnv, spec.BuildCmd)
 	result.Err = err
 	result.Duration = time.Since(start)
 	return result

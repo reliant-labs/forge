@@ -5,7 +5,7 @@ package kcleval_test
 // kcleval_e2e_test.go drives the REAL forge binary against a real project, in
 // the shape a consumer's test would.
 //
-// It is tagged e2e because it builds forge (tens of seconds, and CGO) and then
+// It is tagged e2e because it builds forge (tens of seconds) and then
 // evaluates KCL in a subprocess. That is too slow for the inner loop and it is
 // exactly what must be checked: the value of this package is that it works
 // through an installed forge, so a test that stubbed the subprocess would
@@ -63,9 +63,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// forgeBinary builds the forge CLI from this checkout once per test binary,
-// with CGO enabled because the kcl_plugin.forge namespace is a CGO bridge and
-// a CGO-free forge refuses to render at all.
+// forgeBinary builds the forge CLI from this checkout once per test binary.
 func forgeBinary(t *testing.T) string {
 	t.Helper()
 	buildOnce.Do(func() {
@@ -78,14 +76,6 @@ func forgeBinary(t *testing.T) string {
 		out := filepath.Join(dir, "forge")
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/forge")
 		cmd.Dir = repoRoot(t)
-		// CGO_ENABLED=1 because the kcl_plugin.forge namespace is a CGO
-		// bridge and a CGO-free forge refuses to render at all. Set via
-		// t.Setenv rather than cmd.Env: a nil cmd.Env inherits the parent's
-		// environment, so this adds one variable instead of replacing the
-		// whole environment — and forge/pkg must not read os.Environ (see
-		// internal/pkgguard), which a library that compiles into every
-		// generated binary has no business doing.
-		t.Setenv("CGO_ENABLED", "1")
 		if b, err := cmd.CombinedOutput(); err != nil {
 			buildErr = err
 			t.Logf("build forge: %s", b)

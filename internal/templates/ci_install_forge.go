@@ -27,9 +27,6 @@ import "strings"
 //   - go.mod does not require forge (a CLI or library that never links it)
 //     → forge.yaml's forge_version, the generator it was scaffolded with.
 //   - An uninstallable pin (a +dirty build, dev, 0.0.0) fails by name.
-//
-// CGO is required: kcl_plugin.forge, imported by every env render, is
-// registered by a cgo-only file.
 const installForgeScript = `set -euo pipefail
 forge=github.com/reliant-labs/forge
 command -v jq >/dev/null || { echo "::error::jq is required to read go.mod (preinstalled on GitHub-hosted runners)"; exit 1; }
@@ -49,7 +46,7 @@ case "$v" in
     echo "::error file=go.mod::no installable forge version (got '$v') — require $forge in go.mod, or set forge_version in forge.yaml to a published version."
     exit 1 ;;
 esac
-CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
+go install "$forge/cmd/forge@${v}"
 `
 
 // installForgeRun renders installForgeScript as a YAML `run: |` block whose

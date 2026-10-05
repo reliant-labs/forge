@@ -66,11 +66,6 @@ var fatalKCLErrorMarkers = []string{
 // simply not finished. These keep degrading to a warning, because failing
 // generate on them would block work forge has no standing to block.
 var optionalKCLErrorMarkers = []string{
-	// This binary cannot render anything at all (a CGO-free build). That is
-	// a fact about the binary, and it is reported by its own preflight with
-	// a far better message than this step could give.
-	"kcl_plugin.forge",
-	"built without CGO",
 	// The module graph is not fetched / not vendored yet.
 	"CannotFindModule",
 	"failed to load package",

@@ -196,7 +196,7 @@ detection: grep -q '^dev_target:' forge.yaml
 | `description` | yes | One line; this is what the worklist prints. |
 | `relevance` | no | `migration` — defaulted from the directory, declare it anyway. |
 | `version` | yes | The release that introduced the break. **Must equal the directory name** (a test pins this). |
-| `detection` | yes | Shell snippet, run in the project root. Exit 0 means the project still has the old shape. |
+| `detection` | yes | POSIX shell snippet, run in the project root by forge's in-process interpreter (identical on every OS, no `sh` needed). Exit 0 means the project still has the old shape. |
 
 A migration applies when **both** hold: the project's pinned
 `forge_version` is BELOW `version`, and `detection` exits 0.
@@ -217,7 +217,11 @@ field, and duplicating it there breaks the two cases that matter most:
   still have my old shape?" — including after the previous three have
   already rewritten parts of it.
 
-Good detection is a grep or a file test — three examples of the
+Good detection is a grep or a file test. Detection runs in-process, so
+stick to shell builtins (`test`, `[`, `&&`, `||`, `!`) plus `grep` / `rg`,
+which forge provides as portable built-ins supporting only `-q -i -F -E -r
+-e` (`rg` is recursive by default). Any other external tool will not exist
+on stock Windows. Three examples of the
 `detection:` frontmatter value:
 
 ```text

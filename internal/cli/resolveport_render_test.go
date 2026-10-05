@@ -12,8 +12,7 @@ import (
 // TestResolvePortThroughRender proves the kcl_plugin.forge.resolve_port
 // plugin dispatches through kclrender.Run (the shared render seam, which
 // calls kclplugin.Register()) AND that KCL composes the resolved port into
-// a string declaratively — the whole point of the plugin approach. Needs
-// CGO (the plugin bridge); the render itself is CGO-free.
+// a string declaratively — the whole point of the plugin approach.
 func TestResolvePortThroughRender(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(

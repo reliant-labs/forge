@@ -1,3 +1,9 @@
+//go:build cgo
+
+// These tests drive DBAuditStore through mattn/go-sqlite3, which is cgo-only
+// (a CGO_ENABLED=0 build gets a stub that fails every call). Tagged so they
+// run wherever cgo is on rather than failing the cgo-free Windows job.
+
 package audit
 
 import (

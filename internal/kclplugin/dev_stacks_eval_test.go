@@ -1,5 +1,3 @@
-//go:build cgo
-
 package kclplugin_test
 
 import (

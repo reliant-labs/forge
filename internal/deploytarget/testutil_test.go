@@ -51,6 +51,10 @@ type fakeRunner struct {
 	// slices apart the moment a provider added an Output call.
 	envCalls []map[string]string
 
+	// dirCalls records the dir of each RunInDir call (not index-aligned
+	// with calls; only RunInDir appends).
+	dirCalls []string
+
 	// runErrs returns canned errors keyed by the joined argv prefix.
 	// Empty map = always succeed.
 	runErrs map[string]error
@@ -93,6 +97,15 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) error {
 func (f *fakeRunner) RunWithEnv(_ context.Context, env map[string]string, name string, args ...string) error {
 	full := f.record(name, args)
 	f.envCalls = append(f.envCalls, copyEnvMap(env))
+	return f.lookupErr(full)
+}
+
+// RunInDir records the call as `name args` (the dir is kept in dirCalls) so
+// assertions on the command stay shell-free.
+func (f *fakeRunner) RunInDir(_ context.Context, dir string, env map[string]string, name string, args ...string) error {
+	full := f.record(name, args)
+	f.envCalls = append(f.envCalls, copyEnvMap(env))
+	f.dirCalls = append(f.dirCalls, dir)
 	return f.lookupErr(full)
 }
 

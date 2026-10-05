@@ -54,6 +54,10 @@ func (r *emittingRunner) RunWithEnv(_ context.Context, env map[string]string, na
 	return r.record(name, args, env)
 }
 
+func (r *emittingRunner) RunInDir(_ context.Context, _ string, env map[string]string, name string, args ...string) error {
+	return r.record(name, args, env)
+}
+
 func (r *emittingRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	return nil, r.record(name, args, nil)
 }

@@ -1,5 +1,3 @@
-//go:build !windows
-
 package cli
 
 import (
@@ -25,16 +23,6 @@ import (
 // the developer's machine. For the same reason no test calls runUpStopAll (it
 // would tear down the developer's own stacks); the loop it runs is exercised
 // through stopDiscoveredStacks with a filtered input.
-
-// requireProcInspection skips on platforms where reading another process's
-// environment is unimplemented — the marker mechanism, and therefore every
-// ownership decision, is darwin/linux only.
-func requireProcInspection(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("process-env inspection is implemented for darwin/linux only")
-	}
-}
 
 // blockedProc is a live helper process standing in for one child of a running
 // stack, with the exit signal a test can wait on. Reaping matters: an unreaped

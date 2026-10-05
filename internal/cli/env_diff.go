@@ -30,9 +30,6 @@ package cli
 //     moved, the user was editing while we rendered, the result describes
 //     neither state, and the env is `stale` — retried once, because the
 //     common case is a single save landing mid-render.
-//  3. CAPABILITY. A forge that cannot render (the CGO-free build has no KCL
-//     plugin) says so in forge's own words, per env, and the picker stays
-//     usable for Live.
 //
 // THE LIVE SIDE IS THE APPLIED BUNDLE, NOT declared_shape, and the order
 // matters: `current_bundle.shape`, else `declared_shape`, else nothing
@@ -76,8 +73,6 @@ const (
 	diffStale envDiffStatus = "stale"
 	// diffError: the render failed. forge's own message is in the report.
 	diffError envDiffStatus = "error"
-	// diffUnsupported: this forge cannot render at all.
-	diffUnsupported envDiffStatus = "unsupported"
 )
 
 // envDiffDoc is the §8.2 contract: one document, one entry per env.
@@ -176,7 +171,6 @@ reads as "no changes":
                discarded
   stale        the tree changed while rendering (you were editing); retried once
   error        the render failed; forge's message is included
-  unsupported  this forge cannot render (no KCL plugin in this build)
 
 Charts are NOT templated by default: that needs ` + "`helm`" + ` and the network, and a
 chart's objects belong to the platform dependency rather than this project.
@@ -300,14 +294,6 @@ func envDiffTargets(projectDir string, opts envDiffOptions) ([]string, error) {
 // diffEnvironments renders and diffs each env, at most envDiffConcurrency at
 // a time, and returns the entries in the order the envs were given.
 func diffEnvironments(ctx context.Context, projectDir string, envs []string, opts envDiffOptions, errOut io.Writer) []envDiffEntry {
-	// The capability check is ONE check for the whole run rather than per
-	// env: a forge with no KCL plugin cannot render any of them, and
-	// reporting it per env is what keeps the document's shape uniform
-	// (every env has a status) without rendering anything.
-	if !kclplugin.Available() {
-		return unsupportedDiffEntries(envs)
-	}
-
 	// The Live side is fetched ONCE for the whole project, not per env.
 	// GetLiveView is one round trip returning every env's bundle shape
 	// (which is why §8.0 made it one call), so a per-env fetch would be N
@@ -327,29 +313,6 @@ func diffEnvironments(ctx context.Context, projectDir string, envs []string, opt
 		}(i, env)
 	}
 	wg.Wait()
-	return entries
-}
-
-// unsupportedDiffEntries is the capability refusal, one entry per env.
-//
-// Split out from the check because kclplugin.Available() is a build-tag
-// constant: a test cannot flip it, so the branch's CONTENT is testable here
-// while the condition is the build's.
-//
-// It says "Live is unaffected" deliberately. A user who sees Preview refuse
-// has no way to know whether their deployed environments are also
-// unreadable, and the answer is that they are fine — only a render needs the
-// plugin.
-func unsupportedDiffEntries(envs []string) []envDiffEntry {
-	entries := make([]envDiffEntry, 0, len(envs))
-	for _, env := range envs {
-		entries = append(entries, envDiffEntry{
-			Env:    env,
-			Status: diffUnsupported,
-			Detail: "this build of forge cannot render: it has no KCL plugin (a CGO-free build). " +
-				"Live is unaffected; only Preview needs a render.",
-		})
-	}
 	return entries
 }
 

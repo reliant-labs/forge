@@ -211,6 +211,83 @@ jobs:
       - name: Go tests (guards)
         run: go test -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
 
+  # ── Windows: first runtime coverage for the cgo-free, Windows-ported CLI ──
+  #
+  # forge is cgo-free (KCL is loaded through purego) and builds for
+  # windows/{amd64,arm64}. This job is what keeps that true at RUNTIME: it
+  # builds, vets, runs the -short tier, and drives a real scaffold + render
+  # (scripts/ci-windows-smoke.sh), which is the proof the KCL native-library
+  # extraction + load works on Windows.
+  #
+  # TESTS. Every package except the repo-wide guards, from the same
+  # scripts/ci-test-packages.sh the Linux jobs use, so the set cannot drift
+  # from `go list ./...`. The guards (tierguard, removalguard) are excluded:
+  # they render whole projects and scan the whole tree, are the slowest
+  # packages by far, and exercise platform-independent logic already gated on
+  # Linux. -short keeps the tier the repo defines for fast loops; no -race
+  # (Linux's `test` job owns it). Tools the Linux job installs (buf, migrate)
+  # are not installed here: tests needing them must skip under -short.
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Git Bash ships on windows-latest. It is only the CI driver; forge
+        # itself must not depend on bash.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          # See the `lint` job: forge is 2 modules.
+          cache-dependency-path: |
+            go.sum
+            pkg/go.sum
+      # GOCACHE is %LocalAppData%\go-build on Windows, not ~/.cache/go-build,
+      # so ask Go rather than hardcode it. Ladder rationale: top of file.
+      - name: Locate Go build cache
+        id: gocache
+        run: echo "dir=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      - name: Restore Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.gocache.outputs.dir }}
+          key: go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-windows-${{ runner.os }}-
+      # CGO_ENABLED=0 is asserted, not assumed: the point is that no C
+      # toolchain is needed, and windows-latest has one that would hide a
+      # regression.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+      - name: Vet (includes tests)
+        env:
+          CGO_ENABLED: "0"
+        run: go vet ./...
+      - name: Cross-compile windows/arm64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: arm64
+        run: |
+          go build -o "$RUNNER_TEMP/forge-arm64.exe" ./cmd/forge
+          go vet ./...
+      - name: Go tests (-short)
+        env:
+          CGO_ENABLED: "0"
+        run: go test -short -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
+      - name: Install forge
+        env:
+          CGO_ENABLED: "0"
+        run: go install ./cmd/forge
+      - name: Scaffold + render smoke
+        run: scripts/ci-windows-smoke.sh
+
   build:
     name: Build
     needs: [lint, test, test-guards]

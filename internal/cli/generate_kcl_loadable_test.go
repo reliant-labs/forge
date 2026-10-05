@@ -23,11 +23,10 @@ func TestClassifyKCLLoadError_ClosedSchemaIsFatal(t *testing.T) {
 
 // TestClassifyKCLLoadError_ToolchainAndIncompleteTreesStayOptional pins the
 // other half. Failing generate on these would block work forge has no standing
-// to block: the binary cannot render at all, the module graph is not fetched,
+// to block: the module graph is not fetched,
 // or the project is simply mid-edit.
 func TestClassifyKCLLoadError_ToolchainAndIncompleteTreesStayOptional(t *testing.T) {
 	for _, tc := range []struct{ name, msg string }{
-		{"CGO-free binary", "this forge binary was built without CGO, so the kcl_plugin.forge namespace is unavailable"},
 		{"module not fetched", "CannotFindModule: failed to load package: lib.stack"},
 		{"env not authored yet", "kcl dir deploy/kcl/staging: no such file or directory"},
 		{"registry unreachable", "dial tcp 140.82.121.4:443: i/o timeout"},

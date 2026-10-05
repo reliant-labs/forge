@@ -447,42 +447,12 @@ func stagingDigest(stagingDir string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil))[:12], nil
 }
 
-// runInDir runs a command in dir with an optional env overlay. The
-// commandRunner abstraction doesn't carry a working dir, so we shell via
-// `sh -c 'cd <dir> && <cmd>'` to keep the seam (and the test double)
-// unchanged. dir is quoted to tolerate spaces.
+// runInDir runs argv directly (no shell) in dir with an optional env overlay.
 func runInDir(ctx context.Context, runner commandRunner, dir string, env map[string]string, argv []string) error {
 	if len(argv) == 0 {
 		return nil
 	}
-	script := fmt.Sprintf("cd %s && %s", shellQuote(dir), strings.Join(quoteArgv(argv), " "))
-	if len(env) > 0 {
-		return runner.RunWithEnv(ctx, env, "sh", "-c", script)
-	}
-	return runner.Run(ctx, "sh", "-c", script)
-}
-
-// quoteArgv shell-quotes each token so an argv slice round-trips through
-// `sh -c`. Cheap single-quote escaping; sufficient for npm / firebase /
-// gcloud / flag tokens.
-func quoteArgv(argv []string) []string {
-	out := make([]string, len(argv))
-	for i, a := range argv {
-		out[i] = shellQuote(a)
-	}
-	return out
-}
-
-// shellQuote wraps s in single quotes, escaping any embedded single
-// quotes. Empty string becomes ”.
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if !strings.ContainsAny(s, " \t\n'\"\\$`&|;<>(){}*?[]#~") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return runner.RunInDir(ctx, dir, env, argv[0], argv[1:]...)
 }
 
 // copyDir recursively copies src into dst, creating dst (and parents).

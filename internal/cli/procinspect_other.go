@@ -1,9 +1,9 @@
-//go:build !darwin && !linux
+//go:build !darwin && !linux && !windows
 
 package cli
 
 // readProcEnviron has no portable implementation outside darwin/linux
-// (Windows, etc.). It always reports "unreadable", so ownership resolution
+// (BSDs, etc.; Windows has procinspect_windows.go). It always reports "unreadable", so ownership resolution
 // degrades to "unidentifiable → treated as foreign" — the forge dev loop
 // (`forge env up`) is Unix-first, and this keeps the build green elsewhere
 // without ever misclassifying a process as reclaimable.

@@ -28,7 +28,7 @@ tasks:
       # -trimpath strips local filesystem paths so builds are reproducible
       # across machines; -buildvcs=true embeds the commit/dirty flag for
       # runtime correlation.
-      - go build -trimpath -buildvcs=true -o bin/{{.Name}} ./cmd/{{.Name}}
+      - go build -trimpath -buildvcs=true -o bin/{{.Name}}{{`{{exeExt}}`}} ./cmd/{{.Name}}
 
   install:
     desc: Install the CLI binary to $GOBIN (or $GOPATH/bin)

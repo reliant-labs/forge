@@ -439,7 +439,6 @@ func TestEnvDiff_JSONCarriesNoDiffForANonOKStatus(t *testing.T) {
 		{Env: "a", Status: diffImpure, Wrote: []string{"x"}},
 		{Env: "b", Status: diffStale},
 		{Env: "c", Status: diffError, Detail: "boom"},
-		{Env: "d", Status: diffUnsupported},
 	} {
 		encoded, err := json.Marshal(entry)
 		if err != nil {
@@ -450,26 +449,6 @@ func TestEnvDiff_JSONCarriesNoDiffForANonOKStatus(t *testing.T) {
 		}
 		if !strings.Contains(string(encoded), `"status":"`+string(entry.Status)+`"`) {
 			t.Errorf("%s must carry its status: %s", entry.Env, encoded)
-		}
-	}
-}
-
-// A forge that cannot render says so PER ENV, so the document's shape is
-// uniform — every env has a status — and Live is explicitly unaffected.
-func TestEnvDiff_UnsupportedBuildReportsPerEnv(t *testing.T) {
-	// The real check is kclplugin.Available(), which is a build-tag
-	// constant, so the branch is exercised through its own helper rather
-	// than by faking the build.
-	entries := unsupportedDiffEntries([]string{"prod", "dev"})
-	if len(entries) != 2 {
-		t.Fatalf("got %d entries, want one per env", len(entries))
-	}
-	for _, entry := range entries {
-		if entry.Status != diffUnsupported {
-			t.Errorf("%s status = %q, want unsupported", entry.Env, entry.Status)
-		}
-		if !strings.Contains(entry.Detail, "Live is unaffected") {
-			t.Errorf("%s must say Live still works, got %q", entry.Env, entry.Detail)
 		}
 	}
 }

@@ -25,9 +25,6 @@ import (
 func renderKCLFluxChartValues(t *testing.T) map[string]any {
 	t.Helper()
 	kclplugin.Register()
-	if !kclplugin.Available() {
-		t.Skip("kcl_plugin.forge unavailable (CGO_ENABLED=0): forge cannot render KCL")
-	}
 	dir := t.TempDir()
 	write := func(name, content string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {

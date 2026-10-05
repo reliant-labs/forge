@@ -46,7 +46,7 @@
 //
 //	//  forge:hash=…   .go .ts .tsx .js .jsx .mjs .cjs .proto .alloy .kt .rs
 //	#   forge:hash=…   .yaml .yml .k .kcl .sh .bash .toml .tf .py .env
-//	                   .example .gitignore .dockerignore Dockerfile
+//	                   .example .gitignore .gitattributes .dockerignore Dockerfile
 //	                   Makefile CODEOWNERS
 //	--  forge:hash=…   .sql
 //	<!-- forge:hash=… -->   .md .markdown .html .htm
@@ -160,12 +160,13 @@ var styleByExt = map[string]commentStyle{
 
 // styleByBase maps extension-less well-known basenames.
 var styleByBase = map[string]commentStyle{
-	"Dockerfile":    {prefix: "# "},
-	"Makefile":      {prefix: "# "},
-	"CODEOWNERS":    {prefix: "# "},
-	".gitignore":    {prefix: "# "},
-	".dockerignore": {prefix: "# "},
-	".env":          {prefix: "# "},
+	"Dockerfile":     {prefix: "# "},
+	"Makefile":       {prefix: "# "},
+	"CODEOWNERS":     {prefix: "# "},
+	".gitignore":     {prefix: "# "},
+	".gitattributes": {prefix: "# "},
+	".dockerignore":  {prefix: "# "},
+	".env":           {prefix: "# "},
 }
 
 // styleFor resolves the comment style for relPath. ok=false means the

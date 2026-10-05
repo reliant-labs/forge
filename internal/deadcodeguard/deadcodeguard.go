@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -66,7 +67,86 @@ func ScanStandalone(root, judgePrefix string) ([]Finding, error) {
 	return scanWith(root, judgePrefix, []string{"GOWORK=off"})
 }
 
+// scanGOOS lists the target OSes every scan loads in ADDITION to the host.
+//
+// One load sees only the files the host's build constraints admit, so a field
+// whose only production writer is in a `//go:build windows` file (or a
+// _windows.go file) looks written by nothing on a macOS or Linux host — and a
+// guard run there reports a live field as phantom. Loading each OS forge
+// ships for and merging the facts judges a field against EVERY platform's
+// writers. Merging is exact rather than additive: uses are deduplicated by
+// file+offset (scan.counted), so a file every OS compiles is counted once.
+var scanGOOS = []string{"linux", "darwin", "windows"}
+
 func scanWith(root, judgePrefix string, extraEnv []string) ([]Finding, error) {
+	var loads [][]*packages.Package
+	for _, goos := range scanTargets() {
+		env := append([]string{}, extraEnv...)
+		if goos != "" {
+			// CGO_ENABLED=0: a cross-OS load cannot use the host's C
+			// toolchain, and forge builds cgo-free on every target anyway.
+			env = append(env, "GOOS="+goos, "CGO_ENABLED=0")
+		}
+		pkgs, err := loadForScan(root, env)
+		if err != nil {
+			return nil, err
+		}
+		loads = append(loads, pkgs)
+	}
+
+	s := &scan{root: root, judge: judgePrefix, fields: map[fieldKey]*fieldFacts{}, counted: map[string]bool{}, generated: map[string]bool{}}
+	// Declarations from every load before any uses: record drops a use of a
+	// field it has not seen declared, and a field may be declared in a file
+	// only one OS compiles.
+	for _, pkgs := range loads {
+		s.collectGenerated(pkgs)
+	}
+	for _, pkgs := range loads {
+		s.collectFieldDecls(pkgs)
+	}
+	for _, pkgs := range loads {
+		s.collectFieldUses(pkgs)
+	}
+	out := s.phantomFields()
+	var stubs []Finding
+	implemented := map[string]bool{}
+	for _, pkgs := range loads {
+		found, impl := s.noopFuncs(pkgs)
+		stubs = append(stubs, found...)
+		for k := range impl {
+			implemented[k] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, f := range stubs {
+		if implemented[f.Key] || seen[f.Key] {
+			continue
+		}
+		seen[f.Key] = true
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Rule != out[j].Rule {
+			return out[i].Rule < out[j].Rule
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out, nil
+}
+
+// scanTargets is the host ("" — no GOOS override) plus every scanGOOS entry
+// that is not the host itself.
+func scanTargets() []string {
+	targets := []string{""}
+	for _, goos := range scanGOOS {
+		if goos != runtime.GOOS {
+			targets = append(targets, goos)
+		}
+	}
+	return targets
+}
+
+func loadForScan(root string, extraEnv []string) ([]*packages.Package, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
 			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps |
@@ -95,23 +175,10 @@ func scanWith(root, judgePrefix string, extraEnv []string) ([]Finding, error) {
 		}
 	})
 	if len(loadErrs) > 0 {
-		return nil, fmt.Errorf("package load reported %d error(s); the analysis would be unsound:\n  %s",
-			len(loadErrs), strings.Join(loadErrs[:min(len(loadErrs), 10)], "\n  "))
+		return nil, fmt.Errorf("package load (%s) reported %d error(s); the analysis would be unsound:\n  %s",
+			strings.Join(extraEnv, " "), len(loadErrs), strings.Join(loadErrs[:min(len(loadErrs), 10)], "\n  "))
 	}
-
-	s := &scan{root: root, judge: judgePrefix, fields: map[fieldKey]*fieldFacts{}, counted: map[string]bool{}}
-	s.collectGenerated(pkgs)
-	s.collectFieldDecls(pkgs)
-	s.collectFieldUses(pkgs)
-	out := s.phantomFields()
-	out = append(out, s.noopFuncs(pkgs)...)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Rule != out[j].Rule {
-			return out[i].Rule < out[j].Rule
-		}
-		return out[i].Key < out[j].Key
-	})
-	return out, nil
+	return pkgs, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -140,7 +207,6 @@ type scan struct {
 }
 
 func (s *scan) collectGenerated(pkgs []*packages.Package) {
-	s.generated = map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		for _, f := range p.Syntax {
 			if ast.IsGenerated(f) {
@@ -321,8 +387,14 @@ func (s *scan) phantomFields() []Finding {
 // forge uses (secrets.noopProvider, audit.servedAllRegistry). A plain function
 // has no such external constraint: its author chose the parameters, so
 // parameters the body cannot read are a claim nothing backs.
-func (s *scan) noopFuncs(pkgs []*packages.Package) []Finding {
-	var out []Finding
+// noopFuncs returns the zero-return-only function bodies in pkgs, and the
+// keys of functions that have a REAL body somewhere in pkgs. A function is a
+// per-OS seam when the same key has a real body on one platform and a stub on
+// another (`lockFD` is flock(2) on Unix): the stub is that platform's honest
+// answer, not dead code. scanWith reports a key only if no load anywhere gave
+// it a real body.
+func (s *scan) noopFuncs(pkgs []*packages.Package) (out []Finding, implemented map[string]bool) {
+	implemented = map[string]bool{}
 	seen := map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		if p.TypesInfo == nil || !strings.HasPrefix(p.PkgPath, s.judge) {
@@ -341,11 +413,12 @@ func (s *scan) noopFuncs(pkgs []*packages.Package) []Finding {
 				if countParams(fd.Type.Params) == 0 {
 					continue
 				}
+				key := short(p.PkgPath) + "." + fd.Name.Name
 				if !bodyIsZeroReturnsOnly(fd.Body, p.TypesInfo) {
+					implemented[key] = true
 					continue
 				}
 				pos := p.Fset.Position(fd.Pos())
-				key := short(p.PkgPath) + "." + fd.Name.Name
 				if seen[key] {
 					continue
 				}
@@ -362,7 +435,7 @@ func (s *scan) noopFuncs(pkgs []*packages.Package) []Finding {
 			}
 		}
 	})
-	return out
+	return out, implemented
 }
 
 // bodyIsZeroReturnsOnly reports whether every path through b returns zero

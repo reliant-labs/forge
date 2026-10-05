@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/storage"
 )
 
@@ -37,6 +38,14 @@ func storageScheduleInstalled() bool {
 		_, err = os.Stat(filepath.Join(home, "Library", "LaunchAgents", "com.reliant.forge-storage.plist"))
 	case "linux":
 		_, err = os.Stat(filepath.Join(home, ".config", "systemd", "user", "forge-storage.timer"))
+	case "windows":
+		// Task Scheduler has no unit file, so installWindowsTask leaves a copy
+		// of the task XML under the user config dir for this check to find.
+		marker, mErr := windowsTaskMarkerPath()
+		if mErr != nil {
+			return true
+		}
+		_, err = os.Stat(marker)
 	default:
 		return true
 	}
@@ -44,7 +53,7 @@ func storageScheduleInstalled() bool {
 }
 
 func installStorageSchedule(ctx context.Context, out io.Writer, path string, p storage.Policy) error {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" && runtime.GOOS != "windows" {
 		return fmt.Errorf("on %s schedule 'forge storage daemon --policy %s' with your service manager", runtime.GOOS, path)
 	}
 	r := storage.Runner{Policy: p}
@@ -94,15 +103,22 @@ func installStorageSchedule(ctx context.Context, out io.Writer, path string, p s
 	if err := dst.Close(); err != nil {
 		return err
 	}
-	executable := filepath.Join(dir, "forge-storage")
+	executable := filepath.Join(dir, hostlaunch.ExeName(runtime.GOOS, "forge-storage"))
 	if err := os.Rename(dst.Name(), executable); err != nil {
+		if runtime.GOOS == "windows" {
+			// Windows cannot replace an .exe that is currently executing.
+			return fmt.Errorf("could not replace %s: the storage maintenance task is probably running right now; retry in a few minutes: %w", executable, err)
+		}
 		return err
 	}
 	args := append([]string{executable}, tokens[1:]...)
 	args = append(args, "storage", "gc", "--policy", path, "--apply")
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		err = installLaunchAgent(ctx, args, home)
-	} else {
+	case "windows":
+		err = installWindowsTask(ctx, executable, args[1:])
+	default:
 		err = installSystemdTimer(ctx, args, home)
 	}
 	if err != nil {

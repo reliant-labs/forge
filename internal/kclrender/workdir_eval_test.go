@@ -1,5 +1,3 @@
-//go:build cgo
-
 package kclrender_test
 
 // workdir_eval_test.go pins RunInWorkDir: the opt-in form under which a

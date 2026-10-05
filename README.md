@@ -467,6 +467,14 @@ forge version
 go run ./cmd/forge version
 ```
 
+Forge is a single cgo-free binary, so `go install github.com/reliant-labs/forge/cmd/forge@<version>`
+works on macOS, Linux and Windows (amd64 and arm64) with no C toolchain.
+
+On first render forge extracts KCL's native library (`libkcl.so`/`.dylib`, or
+`kcl.dll` on Windows) into your user cache dir — `%TEMP%\kcl` on Windows — and
+loads it from there. Set `KCL_LIB_HOME` to use another directory, which is the
+fix when antivirus quarantines the DLL or `%TEMP%` is locked down.
+
 ## Quick start
 
 ```bash

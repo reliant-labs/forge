@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/shellrun"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -482,7 +482,8 @@ func semverKey(v string) string {
 }
 
 // runDetection runs the migration's detection script in the project root
-// with `sh -c`. Returns true if the project exhibits the old shape (the
+// in-process (internal/shellrun) so it needs no `sh` on PATH; grep and rg
+// resolve to portable built-ins, since stock Windows has neither. Returns true if the project exhibits the old shape (the
 // script exits 0).
 //
 // An empty script reports false, not true: "this migration named no way
@@ -495,11 +496,10 @@ func runDetection(projectRoot, script string) bool {
 	if strings.TrimSpace(script) == "" {
 		return false
 	}
-	cmd := exec.CommandContext(context.Background(), "sh", "-c", script)
-	cmd.Dir = projectRoot
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	return cmd.Run() == nil
+	return shellrun.Run(context.Background(), script, shellrun.Options{
+		Dir:      projectRoot,
+		Commands: shellrun.PortableCommands(),
+	}) == nil
 }
 
 // readMigrationsState reads .forge/migrations.json. Absent file is not

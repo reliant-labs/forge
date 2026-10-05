@@ -71,11 +71,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -118,6 +118,9 @@ var zitadelChecksums = map[string]string{
 	"zitadel-darwin-arm64.tar.gz": "defd3dab7686803b5eb575704fd8c04e0ed5d97f298986ae99975936a3881fd9",
 	"zitadel-linux-amd64.tar.gz":  "06e34fe8707a67f89afe029f99ee2b9c43d5c153e214d79dd13ec9ff70785f4c",
 	"zitadel-linux-arm64.tar.gz":  "3c8053e70fd92abebdccba604a00b1796780471969a1ffd3073cd9384b28984c",
+
+	"zitadel-windows-amd64.tar.gz": "34663a17b480a213a853e1e2500629f73beb808659651237187c95cda79ba3cc",
+	"zitadel-windows-arm64.tar.gz": "829fb2d755c639295826f887408d73fd9dafa1cc50de525d905a934d133410e3",
 }
 
 // zitadelAsset names the release archive for a GOOS/GOARCH pair, and
@@ -159,12 +162,26 @@ func zitadelDownloadURL(asset string) string {
 // Returns "" when the user cache dir cannot be determined, which the caller
 // reports rather than guessing at a fallback location.
 func ZitadelBinaryPath() string {
+	return zitadelBinaryPathFor(runtime.GOOS, runtime.GOARCH)
+}
+
+// zitadelBinaryName is the file name of the zitadel executable on goos —
+// Windows only runs files named *.exe, and the release archive ships it so.
+func zitadelBinaryName(goos string) string {
+	if goos == "windows" {
+		return "zitadel.exe"
+	}
+	return "zitadel"
+}
+
+// zitadelBinaryPathFor is ZitadelBinaryPath with the platform injectable.
+func zitadelBinaryPathFor(goos, goarch string) string {
 	c, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
 	return filepath.Join(c, "forge", "zitadel", ZitadelVersion,
-		runtime.GOOS+"-"+runtime.GOARCH, "zitadel")
+		goos+"-"+goarch, zitadelBinaryName(goos))
 }
 
 // startZitadel brings the IdP up, or confirms it is already up, and returns
@@ -361,8 +378,19 @@ func stopZitadel(projectDir string, spec Spec) (bool, error) {
 		removeZitadelPID(dataDir)
 		return false, nil
 	}
+	// The pid may have been recycled since the pidfile was written. Only kill
+	// a process that is provably our zitadel; a recycled pid means ours is
+	// already gone (clear the stale pidfile), unreadable means touch nothing.
+	switch verifyRecordedPid(pid, filepath.Join(dataDir, zitadelPIDFile), ZitadelBinaryPath()) {
+	case verdictForeign:
+		removeZitadelPID(dataDir)
+		return false, nil
+	case verdictUnknown:
+		return false, fmt.Errorf("host-infra %s: zitadel.pid names pid %d but its identity could not be verified; not killing it", spec.Name, pid)
+	case verdictOurs:
+	}
 	if err := terminateProcess(pid); err != nil {
-		if errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone) {
+		if isProcessGone(err) {
 			removeZitadelPID(dataDir)
 			return false, nil
 		}
@@ -379,7 +407,9 @@ func stopZitadel(projectDir string, spec Spec) (bool, error) {
 	// Would not go quietly. The state that matters is in postgres and is
 	// already durable, so this is safe — and leaving it running would hold
 	// the port against the next `forge env up`.
-	_ = killProcess(pid)
+	if verifyRecordedPid(pid, filepath.Join(dataDir, zitadelPIDFile), ZitadelBinaryPath()) == verdictOurs {
+		_ = killProcess(pid)
+	}
 	removeZitadelPID(dataDir)
 	return true, nil
 }
@@ -454,17 +484,8 @@ func reapDeadZitadel(dataDir string) {
 	}
 }
 
-// processIsAlive reports whether pid names a live process (signal-0 probe).
-func processIsAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
+// processIsAlive reports whether pid names a live process (per-OS probe).
+func processIsAlive(pid int) bool { return processAlive(pid) }
 
 // ensureZitadelBinary returns the path to a verified zitadel binary,
 // downloading and extracting it on first use and reusing the cache after.
@@ -514,7 +535,7 @@ func verifyZitadelBinary(path string) error {
 	if err != nil {
 		return err
 	}
-	if info.Mode()&0o111 == 0 {
+	if !isExecutableFile(info) {
 		return fmt.Errorf("%s is not executable", path)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -595,6 +616,13 @@ func downloadZitadel(ctx context.Context, asset, dest string) error {
 // which means nothing downstream has to know the archive's internal layout,
 // and a future layout change breaks here, once, with a clear message.
 func extractZitadel(archive, dest string) error {
+	return extractZitadelFor(archive, dest, runtime.GOOS)
+}
+
+// extractZitadelFor is extractZitadel with the target platform injectable,
+// because the archive member is named zitadel.exe on windows.
+func extractZitadelFor(archive, dest, goos string) error {
+	memberName := zitadelBinaryName(goos)
 	f, err := os.Open(archive) // #nosec G304 -- forge's own staged download
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
@@ -615,7 +643,7 @@ func extractZitadel(archive, dest string) error {
 		if err != nil {
 			return fmt.Errorf("read archive: %w", err)
 		}
-		if hdr.Typeflag != tar.TypeReg || filepath.Base(hdr.Name) != "zitadel" {
+		if hdr.Typeflag != tar.TypeReg || path.Base(hdr.Name) != memberName {
 			continue
 		}
 		tmp, err := os.CreateTemp(filepath.Dir(dest), "zitadel-extract-*")
@@ -649,7 +677,7 @@ func extractZitadel(archive, dest string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("archive %s contained no `zitadel` executable", archive)
+	return fmt.Errorf("archive %s contained no `%s` executable", archive, memberName)
 }
 
 // zitadelEnv is the process environment for the IdP — the SAME variables

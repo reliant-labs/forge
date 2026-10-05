@@ -29,6 +29,10 @@ import (
 type commandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 	RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error
+	// RunInDir runs name with cmd.Dir set to dir (empty inherits the cwd) and
+	// an optional env overlay. No shell is involved, so dir needs no quoting
+	// and no `sh` binary is required (Windows).
+	RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error
 	Output(ctx context.Context, name string, args ...string) ([]byte, error)
 	OutputWithEnv(ctx context.Context, env map[string]string, name string, args ...string) ([]byte, error)
 }
@@ -53,7 +57,12 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) error {
 }
 
 func (execRunner) RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {
+	return execRunner{}.RunInDir(ctx, "", env, name, args...)
+}
+
+func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if len(env) > 0 {

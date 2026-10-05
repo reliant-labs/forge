@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -360,7 +361,7 @@ func TestRequiredForMkcert_IngressDisabled(t *testing.T) {
 // non-empty install hint map. Keeps the list well-formed as new
 // tools are added.
 func TestDefaultToolChecks_PredicatesCoverDocumentedFeatures(t *testing.T) {
-	for _, tc := range defaultToolChecks() {
+	for _, tc := range defaultToolChecks(runtime.GOOS) {
 		if tc.Required == nil {
 			t.Errorf("tool %q: Required predicate is nil", tc.Name)
 		}

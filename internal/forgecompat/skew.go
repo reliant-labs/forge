@@ -125,12 +125,9 @@ func isDigits(s string) bool {
 }
 
 // InstallCommand is the single spelling of "install this forge version",
-// shared by every diagnostic that offers one. CGO is not optional: a
-// CGO-free forge cannot register kcl_plugin.forge and so cannot render at
-// all (see kclrender.pluginPreflight), and an install line without it
-// trades one broken binary for another.
+// shared by every diagnostic that offers one.
 func InstallCommand(version string) string {
-	return "CGO_ENABLED=1 go install " + ModulePath + "/cmd/forge@" + version
+	return "go install " + ModulePath + "/cmd/forge@" + version
 }
 
 // BinaryBehindPin reports whether the running binary is older than the

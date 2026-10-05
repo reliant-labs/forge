@@ -40,6 +40,13 @@ var evalMu sync.Mutex
 // allocate_port, write_file, …) run INSIDE an evaluation. A callback must
 // therefore never start another KCL evaluation — none does, and none may.
 func Serialized[T any](fn func() (T, error)) (T, error) {
+	// Install the plugin bridge before the native client can be initialized
+	// by the evaluation fn is about to run, and refuse rather than call into
+	// a runtime that failed to load (see install). See Register.
+	if err := Ready(); err != nil {
+		var zero T
+		return zero, err
+	}
 	evalMu.Lock()
 	defer evalMu.Unlock()
 	return fn()

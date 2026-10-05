@@ -66,7 +66,7 @@ jobs:
               echo "::error file=go.mod::no installable forge version (got '$v') — require $forge in go.mod, or set forge_version in forge.yaml to a published version."
               exit 1 ;;
           esac
-          CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
+          go install "$forge/cmd/forge@${v}"
       - name: Migration safety lint
         run: forge ci migration-safety
 
@@ -147,7 +147,7 @@ jobs:
               echo "::error file=go.mod::no installable forge version (got '$v') — require $forge in go.mod, or set forge_version in forge.yaml to a published version."
               exit 1 ;;
           esac
-          CGO_ENABLED=1 go install "$forge/cmd/forge@${v}"
+          go install "$forge/cmd/forge@${v}"
       # verify-generated REGENERATES the tree and demands a byte-identical
       # result, so it needs every tool that produced the committed output,
       # at the versions that produced it. `forge tools install` installs the

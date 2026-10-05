@@ -67,7 +67,7 @@ if <go.mod requires github.com/reliant-labs/forge>; then
 else
   v=<forge_version from forge.yaml>
 fi
-CGO_ENABLED=1 go install "github.com/reliant-labs/forge/cmd/forge@${v}"
+go install "github.com/reliant-labs/forge/cmd/forge@${v}"
 ```
 
 go.mod's forge requirement is the forge the code compiles against and the
@@ -89,9 +89,8 @@ verifying its generated code with an older forge than the one that wrote it
 - A `replace` of forge in go.mod fails the step with `::error` naming it — CI
   cannot install a local checkout. Bridge one with an uncommitted `go.work`.
 - A pin no module proxy can serve (`+dirty`, `dev`, `0.0.0`) fails the same way.
-- It needs `jq` (preinstalled on GitHub-hosted runners) and `CGO_ENABLED=1`:
-  `kcl_plugin.forge`, imported by every env render, is registered by a
-  cgo-only file.
+- It needs `jq` (preinstalled on GitHub-hosted runners). No C toolchain is
+  needed.
 
 The verify-generated job also installs the codegen toolchain at go.mod's
 versions — `forge tools install --force` (protoc-gen-go, protoc-gen-connect-go,

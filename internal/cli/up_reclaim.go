@@ -183,8 +183,11 @@ const maxAncestryDepth = 8
 // Walking ancestry is the grandchild-reparented-to-launchd safeguard: even
 // if the port-holder's own env were unreadable, a marked ancestor still
 // identifies it as ours. It cannot produce a false positive — a process not
-// descended from THIS project's forge has no matching marked ancestor — so a
-// genuinely foreign holder (including another project's stack on the same env
+// descended from THIS project's forge has no matching marked ancestor. On Unix
+// orphans re-parent to 1; on Windows ppids are never re-parented, so the
+// guarantee comes from ppidMap, which drops any parent link whose parent is
+// dead, unreadable, or created after the child. A genuinely
+// foreign holder (including another project's stack on the same env
 // name) is never misclassified as reclaimable. The walk stops at pid 1
 // (launchd/init, everyone's ancestor) which is never inspected.
 func forgeOwnerOfPID(pid int, projectID, envName string, f procFacts) (service string, owned bool) {

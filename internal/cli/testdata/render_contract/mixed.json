@@ -393,6 +393,7 @@
         "kind": "worker",
         "name": "billing",
         "runtime": {
+          "platform": "amd64",
           "type": "hosted"
         },
         "spec": {

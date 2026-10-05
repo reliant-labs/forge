@@ -735,6 +735,11 @@ func TestHostedLedger_CutPromoteListEndToEnd(t *testing.T) {
 	prevApply := runPromoteClientDeploy
 	runPromoteClientDeploy = func(context.Context, string, deployOptions) error { return nil }
 	t.Cleanup(func() { runPromoteClientDeploy = prevApply })
+	// No registry stands behind this fixture's digests; the platform guard has
+	// its own tests (hosted_image_arch_test.go).
+	prevPlatforms := hostedPlatformResolver
+	hostedPlatformResolver = func(context.Context, string) ([]string, error) { return []string{"linux/amd64"}, nil }
+	t.Cleanup(func() { hostedPlatformResolver = prevPlatforms })
 
 	run := func(args ...string) (string, error) {
 		root := NewRootCmd()

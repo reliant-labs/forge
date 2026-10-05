@@ -52,19 +52,19 @@ const tagPrecedenceFixture = `{
       {
         "name": "echo", "kind": "service", "image": "registry.example/prod/echo", "build_image": "registry.example/prod/echo",
         "build": {"type": "shell", "cmd": "echo ran > ran-echo.txt"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "platform": "amd64"},
         "spec": {"kind": "service"}
       },
       {
         "name": "gw", "kind": "service", "image": "registry.example/prod/gw", "build_image": "registry.example/prod/gw",
         "build": {"type": "docker", "dockerfile": "Dockerfile"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "platform": "amd64"},
         "spec": {"kind": "service"}
       },
       {
         "name": "api", "kind": "service", "image": "registry.example/prod/reliant", "build_image": "registry.example/prod/reliant:e2e",
         "build": {"type": "shell", "cmd": "echo ran > ran-api.txt"},
-        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n"},
+        "runtime": {"type": "cluster", "cluster": "c", "namespace": "n", "platform": "amd64"},
         "spec": {"kind": "service"}
       }
     ]

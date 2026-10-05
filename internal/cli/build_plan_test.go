@@ -68,7 +68,8 @@ const imagelessInfraFixture = `{
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"
@@ -131,7 +132,8 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"
@@ -149,7 +151,8 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"
@@ -207,7 +210,8 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"
@@ -225,7 +229,8 @@ func TestBuildPlan_ExternalBuildMissingCwdFails(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"
@@ -262,7 +267,8 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"
@@ -280,7 +286,8 @@ func TestBuildPlan_ReleaseCoverageGate(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"
@@ -442,7 +449,8 @@ func TestRunBuild_ReleaseTagIsTheVersionNotTheEnvTag(t *testing.T) {
         "runtime": {
           "type": "cluster",
           "cluster": "c",
-          "namespace": "n"
+          "namespace": "n",
+          "platform": "amd64"
         },
         "spec": {
           "kind": "service"

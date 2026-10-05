@@ -451,8 +451,12 @@ func resolveBuildArchForImage(cfgArch, flagArch string) string {
 	if cfgArch != "" {
 		return cfgArch
 	}
-	return runtime.GOARCH
+	return hostArch
 }
+
+// hostArch is the build machine's GOARCH; a variable so tests can state which
+// host they model instead of depending on the machine they run on.
+var hostArch = runtime.GOARCH
 
 type buildResult struct {
 	name     string
@@ -994,7 +998,7 @@ func rerenderWithBuildFacts(ctx context.Context, cfg *config.ProjectConfig, opts
 	// lib/build.k's own default would produce — so bind it only when forge's
 	// answer is the more specific one.
 	cfgArch := cfg.Deploy.TargetArch
-	if p := kclFirstClusterPlatform(first); p != "" {
+	if p := kclEnvImagePlatform(first); p != "" {
 		cfgArch = p
 	}
 	if arch := resolveBuildArchForImage(cfgArch, opts.targetArch); arch != "" && arch != "amd64" {
@@ -1318,12 +1322,17 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 
 	// Per-env platform override from KCL: the env's declared
 	// cluster_target.platform, else the first Cluster-bound workload's
-	// runtime platform (kclFirstClusterPlatform). Falls back to
+	// runtime platform (kclEnvImagePlatform), else the control plane's hosted
+	// platform. Falls back to
 	// forge.yaml's deploy.target_arch otherwise.
 	cfgArchForDocker := cfg.Deploy.TargetArch
 	if entities != nil {
-		if p := kclFirstClusterPlatform(entities); p != "" {
+		if p := kclEnvImagePlatform(entities); p != "" {
 			cfgArchForDocker = p
+		}
+		if err := requireDeclaredImageArch(entities, cfgArchForDocker, opts.targetArch,
+			opts.pushPlan.push || opts.push || opts.release != "", opts.env); err != nil {
+			return buildTargetSet{}, err
 		}
 	}
 
@@ -1618,6 +1627,9 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 	if err := harvestHostedBackendArtifacts(ctx, env, entities, artifacts); err != nil {
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
+	}
+	if err := checkHostedArtifactPlatforms(ctx, os.Stdout, entities, artifacts, env, version); err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 	images := countOCIArtifacts(release.Release{Artifacts: artifacts})
@@ -2751,6 +2763,50 @@ func kclFirstClusterPlatform(e *KCLEntities) string {
 		}
 	}
 	return ""
+}
+
+// kclEnvImagePlatform is the GOARCH the env's built images must run on, as the
+// env DECLARES it: the cluster platform (kclFirstClusterPlatform), else the
+// platform of the control plane a built workload is bound to. The hosted arch
+// is a property of the platform's nodes, never of the machine running
+// the build — an arm64 Mac building a hosted image must still produce amd64.
+// "" when the env declares neither.
+func kclEnvImagePlatform(e *KCLEntities) string {
+	if e == nil {
+		return ""
+	}
+	if p := kclFirstClusterPlatform(e); p != "" {
+		return p
+	}
+	for _, w := range e.WorkloadsOn(RuntimeHosted) {
+		if w.Build.Type != "" {
+			return w.Runtime.HostedPlatform()
+		}
+	}
+	return ""
+}
+
+// requireDeclaredImageArch refuses to let a pushed image's arch fall through to
+// the BUILD HOST's arch when the image will run on a remote runtime. declared
+// is the arch the env/forge.yaml/--target-arch resolved ("" = none). A purely
+// local runtime (host, compose, local k3d) is exempt: there the host IS the
+// target, and resolveBuildArchForImage's GOARCH fallback is correct.
+func requireDeclaredImageArch(e *KCLEntities, declared, flagArch string, pushes bool, env string) error {
+	if declared != "" || flagArch != "" || !pushes || e == nil {
+		return nil
+	}
+	for _, w := range e.Workloads {
+		if w.Build.Type == "" || w.Runtime.Type != RuntimeCluster {
+			continue
+		}
+		if ctx := clusterContextOf(w.Runtime.Cluster); ctx != "" && !isLocalCluster(ctx) {
+			return fmt.Errorf("env %q pushes image(s) for workload %q on remote cluster %q, but no target architecture is declared.\n"+
+				"  expected: a node arch (amd64/arm64) for the image; found: none — forge will not guess the build host's arch (%s) for an image another machine runs\n"+
+				"  fix: set `platform` on the env's forge.ClusterTarget, or `deploy.target_arch` in forge.yaml, or pass --target-arch",
+				env, w.Name, ctx, runtime.GOARCH)
+		}
+	}
+	return nil
 }
 
 // buildKCLBuildOnlyVariants compiles each declared build-only variant

@@ -207,8 +207,17 @@ schema OnHosted:
     """The forge control plane (Reliant cloud or another): the workload's
     spec is published as a Workload CR and the platform renders it under
     the Restricted profile. Requires `Bundle.control_plane`. The platform
-    owns every placement fact, so there is nothing to configure here."""
+    owns every placement fact except one: the CPU architecture its
+    nodes run, which forge needs at BUILD time. `platform` declares it (the
+    reliant platform's node pools are amd64), so a hosted image's arch is
+    a property of the platform, never of the machine running `forge build`
+    (an arm64 Mac would otherwise push an arm64 image the nodes cannot exec).
+    Override only for a control plane whose pools are arm64."""
     type: "hosted" = "hosted"
+    platform: str = "amd64"
+
+    check:
+        platform in ["amd64", "arm64"], "OnHosted.platform must be 'amd64' or 'arm64' (the GOARCH of the control plane's platform's nodes)"
 
 schema BuildOnly:
     """Built and shipped, never run: a CLI in a release artifact, an image

@@ -327,10 +327,11 @@ func hostedPinsFromLedger(ctx context.Context, ledger envLedger, envName string)
 	if err != nil {
 		return hostedPins{}, fmt.Errorf("read release %s: %w", binding.Release, err)
 	}
-	return hostedPins{
+	pins := hostedPins{
 		release: binding.Release, promotionID: binding.ID,
 		digests: binding.Resolved, registries: releaseRegistries(rel),
-	}, nil
+	}
+	return pins, nil
 }
 
 // refuseUnsyncableHostedSecretsFor finds the Secret values a pure-hosted env's

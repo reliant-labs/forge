@@ -373,6 +373,25 @@ bundle provider is the single-source model now — prefer it.
 
   `required: true` and `optional: true` together are refused at generate
   time rather than resolved by precedence.
+
+  The same exemption exists on the escape hatch. A hand-written
+  `forge.EnvVar` takes `secret_optional = True` — the canonical case is an
+  integration that is OFF until an operator registers it (a Slack app's
+  signing secret, an OAuth client secret): the service reports the
+  integration unavailable when the var is empty, so the secret must not
+  block every deploy of every env that has not set it up.
+
+  ```kcl
+  forge.EnvVar {name = "RELIANT_SLACK_SIGNING_SECRET", secret_ref = "reliant-slack",
+                secret_key = "signing_secret", secret_optional = True}
+  ```
+
+  It does both halves, which is what makes it safe: the deploy and
+  `forge env up` pre-flights skip it, AND it renders as
+  `secretKeyRef.optional: true`, so kubelet starts the pod with the var
+  unset instead of failing `CreateContainerConfigError` on a Secret that
+  does not exist. Exempting only the pre-flight would trade a clear
+  deploy-time refusal for a crash-looping pod.
 - **The store is keyed by env-var NAME.** The YAML KEY must match
   `EnvVar.name` (not `secret_ref` / `secret_key`), and must be a valid
   env-var name — forge refuses to load a store containing a key that

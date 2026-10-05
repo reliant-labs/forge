@@ -44,11 +44,11 @@ export default function InboxLayout({
       >
         <aside
           aria-label="Item list"
-          className="min-h-0 overflow-y-auto border-b border-border md:border-b-0 md:border-r"
+          className="min-h-0 relative overflow-y-auto border-b border-border md:border-b-0 md:border-r"
         >
           {list}
         </aside>
-        <main aria-label="Item preview" className="min-h-0 overflow-y-auto">
+        <main aria-label="Item preview" className="min-h-0 relative overflow-y-auto">
           {preview}
         </main>
       </div>

@@ -48,7 +48,7 @@ export default function EditorLayout({
         {leftPanel && (
           <aside
             aria-label="Tools"
-            className="shrink-0 overflow-y-auto border-r border-border bg-surface"
+            className="shrink-0 relative overflow-y-auto border-r border-border bg-surface"
             style={{ width: leftWidth }}
           >
             {leftPanel}
@@ -56,14 +56,14 @@ export default function EditorLayout({
         )}
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <main aria-label="Canvas" className="min-h-0 flex-1 overflow-auto">
+          <main aria-label="Canvas" className="min-h-0 flex-1 relative overflow-auto">
             {canvas}
           </main>
 
           {bottomPanel && (
             <aside
               aria-label="Bottom panel"
-              className="shrink-0 overflow-y-auto border-t border-border bg-surface"
+              className="shrink-0 relative overflow-y-auto border-t border-border bg-surface"
               style={{ height: bottomHeight }}
             >
               {bottomPanel}
@@ -74,7 +74,7 @@ export default function EditorLayout({
         {rightPanel && (
           <aside
             aria-label="Properties"
-            className="shrink-0 overflow-y-auto border-l border-border bg-surface"
+            className="shrink-0 relative overflow-y-auto border-l border-border bg-surface"
             style={{ width: rightWidth }}
           >
             {rightPanel}

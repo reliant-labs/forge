@@ -119,7 +119,7 @@ func TestE2EFluxReconcilesAMachineLedgerEnv(t *testing.T) {
 
 	// ── lastAppliedRevision == THE BUNDLE MANIFEST DIGEST ────────────────
 	// The assertion that cannot be made anywhere else.
-	digest := recordedBundleDigest(t, deployOut)
+	digest := recordedBundleDigestFromDeployOutput(t, deployOut)
 	ksName := flux.KustomizationName("dev-k8s", kctx)
 	assertKustomizationConverged(t, kctx, ksName, digest)
 	assertLayerSelectorIsSet(t, kctx, flux.SourceName("dev-k8s"), digest)
@@ -320,14 +320,15 @@ func assertDeploymentAvailable(t *testing.T, kctx, namespace, name string) {
 	}
 }
 
-// recordedBundleDigest is the digest the LEDGER recorded for the bundle this
+// recordedBundleDigestFromDeployOutput is the digest the LEDGER recorded for
+// the bundle this
 // deploy pinned: the LAST `oci@sha256:<digest>` the deploy reported.
 //
 // The deploy builds (and so records) its own bundle after our explicit build,
 // so the newest line is the one the pointer names. It comes from forge's own
 // report of what it wrote to the ledger, never from the Kustomization, because
 // taking it from the cluster would compare the cluster to itself.
-func recordedBundleDigest(t *testing.T, deployOut string) string {
+func recordedBundleDigestFromDeployOutput(t *testing.T, deployOut string) string {
 	t.Helper()
 	const marker = "oci@"
 	i := strings.LastIndex(deployOut, marker)
@@ -645,7 +646,7 @@ func TestE2EFluxSyncsSecretsAndKeepsThemOutOfTheBundle(t *testing.T) {
 	}
 
 	// ── The bundle holds no Secret object ────────────────────────────────
-	assertBundleHasNoSecret(t, ledgerHome, recordedBundleDigest(t, deployOut))
+	assertBundleHasNoSecret(t, ledgerHome, recordedBundleDigestFromDeployOutput(t, deployOut))
 
 	// ── Re-deploy is idempotent ──────────────────────────────────────────
 	before := kubectlFluxE2E(t, kctx, "get", "secret", "store-creds", "-n", "app", "-o", "jsonpath={.metadata.resourceVersion}")

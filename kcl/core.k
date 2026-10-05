@@ -77,9 +77,10 @@ schema EnvSource:
     from_field?: str
     # Marks a `from_secret` whose value may be ABSENT from the environment's
     # secret store. Default False — a declared secret with no value is an
-    # error, which is the point of the pre-flight. Set only by config codegen
-    # from `optional: true` on a `sensitive` proto field; see
-    # EnvVar.secret_optional for the full reasoning.
+    # error, which is the point of the pre-flight. Set by config codegen from
+    # `optional: true` on a `sensitive` proto field, or by hand for a secret
+    # that is absent by design; see EnvVar.secret_optional for the full
+    # reasoning.
     secret_optional?: bool
 
     check:

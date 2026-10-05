@@ -105,8 +105,12 @@ schema EnvVar:
     # against the store BEFORE anything starts, because the alternative is
     # discovering a missing production credential from a runtime stack trace.
     #
-    # Set only by config codegen, from `optional: true` on a `sensitive`
-    # proto field — an unset credential and a deliberately-absent one are
+    # Config codegen sets it from `optional: true` on a `sensitive` proto
+    # field; a hand-written EnvVar may set it directly (an integration that
+    # is off until an operator registers it). It exempts the pre-flight AND
+    # renders `secretKeyRef.optional: true`, so the pod starts with the var
+    # unset rather than failing on the missing Secret. Either way it must be
+    # explicit — an unset credential and a deliberately-absent one are
     # indistinguishable in the store, so the annotation is the only thing
     # that can tell them apart. The canonical case is a tier's OFF-SWITCH:
     # a config block documented as "with either unset the reconciler is not

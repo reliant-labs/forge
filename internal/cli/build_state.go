@@ -161,31 +161,55 @@ var imagetoolsInspect = func(ctx context.Context, ref, format string) ([]byte, e
 }
 
 // imageToolsPlatforms returns the OS/arch platforms a registry manifest
-// advertises (one entry per platform in a multi-arch index, a single entry
-// for a single-platform image). Best-effort: returns nil on any failure so a
-// digest is still recorded without it.
+// advertises. Best-effort: nil on any failure so a digest is still recorded
+// without it. Callers that must not proceed on "unknown" use
+// imageRegistryPlatforms.
 func imageToolsPlatforms(ctx context.Context, ref string) []string {
-	out, err := imagetoolsInspect(ctx, ref,
+	p, _ := imageRegistryPlatforms(ctx, ref)
+	return p
+}
+
+// imageRegistryPlatforms reads the platforms a registry manifest advertises:
+// one per runnable entry of an image index, or the single platform from a
+// single-image manifest's config. The single-image case is the one a
+// `{{range .Manifest.Manifests}}` read misses — that list is empty for a
+// non-index manifest (what a plain `docker build` on macOS pushes), which is
+// how a release recorded no platforms at all. An error means the registry or
+// manifest could not be read, or advertised no runnable platform.
+func imageRegistryPlatforms(ctx context.Context, ref string) ([]string, error) {
+	// The index template ERRORS (exit 1) on a non-index manifest rather than
+	// yielding nothing, so an error here is not yet a failed read: fall through
+	// to the single-image read, which fails for real when the registry is
+	// unreachable.
+	out, _ := imagetoolsInspect(ctx, ref,
 		"{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}\n{{end}}")
-	if err != nil {
-		return nil
-	}
 	var platforms []string
 	seen := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		p := strings.TrimSpace(line)
-		// A single-platform image has no .Manifest.Manifests list, so the
-		// range yields nothing; "unknown/unknown" attestation entries (buildx
-		// provenance) are dropped — they aren't runnable platforms.
-		if p == "" || p == "/" || strings.Contains(p, "unknown") {
-			continue
+	add := func(p string) {
+		// "unknown/unknown" entries (buildx provenance/attestations) are not
+		// runnable platforms.
+		if p == "" || p == "/" || strings.Contains(p, "unknown") || seen[p] {
+			return
 		}
-		if !seen[p] {
-			seen[p] = true
-			platforms = append(platforms, p)
-		}
+		seen[p] = true
+		platforms = append(platforms, p)
 	}
-	return platforms
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		add(strings.TrimSpace(line))
+	}
+	if len(platforms) > 0 {
+		return platforms, nil
+	}
+	// Not an index: the single image's own config names its platform.
+	single, serr := imagetoolsInspect(ctx, ref, "{{.Image.OS}}/{{.Image.Architecture}}")
+	if serr != nil {
+		return nil, fmt.Errorf("read image config %s: %w", ref, serr)
+	}
+	add(strings.TrimSpace(string(single)))
+	if len(platforms) == 0 {
+		return nil, fmt.Errorf("manifest %s advertises no runnable platform", ref)
+	}
+	return platforms, nil
 }
 
 // captureBuildProvenance records where projectDir's content came from, through

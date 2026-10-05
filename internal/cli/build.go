@@ -1629,7 +1629,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if err := harvestHostedBackendArtifacts(ctx, env, entities, artifacts); err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
-	if err := checkHostedArtifactPlatforms(entities, artifacts, env, version); err != nil {
+	if err := checkHostedArtifactPlatforms(ctx, os.Stdout, entities, artifacts, env, version); err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
 	}
 	images := countOCIArtifacts(release.Release{Artifacts: artifacts})

@@ -593,6 +593,13 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if err != nil {
 		return err
 	}
+	if p.version != "" {
+		// Before the bundle is recorded: a release that cannot run on the
+		// platform's nodes must not cause any registry write, --plan-only included.
+		if err := checkReleaseHostedPlatforms(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger.Releases); err != nil {
+			return err
+		}
+	}
 	ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut))
 	return runPromote(ctx, p.version, envName, promoteOptions{
 		Ledger:        ledger,

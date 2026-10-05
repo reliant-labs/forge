@@ -188,6 +188,13 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			"(the caller must pass promoteOptions.Ledger — see resolveReleaseLedger)", env)
 	}
 
+	// A read, so it runs for --plan / --plan-only too: a release whose hosted
+	// images cannot run on the platform's nodes is refused before any plan
+	// is shown as approvable.
+	if err := checkReleaseHostedPlatforms(ctx, progressWriter(opts.JSON), projectDir, env, version, ledger.Releases); err != nil {
+		return err
+	}
+
 	plan, err := computePromotePlan(ctx, promotePlanOptions{
 		Env:        env,
 		Version:    version,

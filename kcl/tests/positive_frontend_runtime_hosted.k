@@ -34,7 +34,7 @@ output = forge.render(forge.Bundle {
 })
 
 _f = output.frontends[0]
-assert_runtime_hosted = _f.runtime == {"type": "hosted"}
+assert_runtime_hosted = _f.runtime.type == "hosted"
 assert_public_dir = _f.public_dir == "dist"
 assert_ref_kept = _f.runtime_config_spec.API_URL == {"workloadURL": {"name": "api"}}
 assert_nothing_resolved = len(_f.runtime_config) == 0

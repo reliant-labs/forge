@@ -47,7 +47,7 @@ _w = output.workloads[0]
 # base later, where it is known; a host invented here would be a guess baked
 # into a document the author diffs against the cluster.
 assert_bare_image_kept = _w.spec.image == "api"
-assert_runtime_hosted = _w.runtime == {"type": "hosted"}
+assert_runtime_hosted = _w.runtime.type == "hosted"
 # A hosted FRONTEND takes the same bare name, for the same reason. forge
 # appends `static.v1` to the resolved reference, not to this one.
 assert_bare_frontend_image_kept = output.frontends[0].image == "site"

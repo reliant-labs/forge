@@ -20,7 +20,8 @@ const declaredRegistryFixture = `{
   "output": {
     "cluster_target": {
       "cluster": "c",
-      "namespace": "n"
+      "namespace": "n",
+      "platform": "amd64"
     },
     "workloads": [
       {

@@ -194,6 +194,11 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		return fmt.Errorf("%w (%s)", perr, ep.URL)
 	}
 	release, promotionID, digests, registries := pins.release, pins.promotionID, pins.digests, pins.registries
+	if !opts.dryRun {
+		if err := checkHostedArtifactPlatforms(entities, pins.artifacts, envName, release); err != nil {
+			return err
+		}
+	}
 	if !envAppliesLocally(entities) {
 		report.setTags("", "release "+emptyAs(release, "(none)")+" (promoted; "+ep.URL+")", release, false)
 	}
@@ -304,6 +309,7 @@ func recordHostedBundle(ctx context.Context, envName, bound string, digests map[
 type hostedPins struct {
 	release, promotionID string
 	digests, registries  map[string]string
+	artifacts            map[string]release.Artifact
 }
 
 // hostedPinsFromLedger reads an env's CURRENT promotion and its release. It is
@@ -327,10 +333,14 @@ func hostedPinsFromLedger(ctx context.Context, ledger envLedger, envName string)
 	if err != nil {
 		return hostedPins{}, fmt.Errorf("read release %s: %w", binding.Release, err)
 	}
-	return hostedPins{
+	pins := hostedPins{
 		release: binding.Release, promotionID: binding.ID,
 		digests: binding.Resolved, registries: releaseRegistries(rel),
-	}, nil
+	}
+	if rel != nil {
+		pins.artifacts = rel.Artifacts
+	}
+	return pins, nil
 }
 
 // refuseUnsyncableHostedSecretsFor finds the Secret values a pure-hosted env's

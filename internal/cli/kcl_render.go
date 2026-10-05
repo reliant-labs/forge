@@ -640,7 +640,27 @@ type RuntimeEntity struct {
 	Host      *HostRuntime
 	Compose   *ComposeRuntime
 	Cluster   *ClusterRuntime
+	Hosted    *HostedRuntime
 	BuildOnly *BuildOnlyDeploy
+}
+
+// DefaultHostedPlatform is the GOARCH of the reliant platform's nodes,
+// the value forge.OnHosted.platform defaults to in KCL. It is repeated here
+// only for entities built without a render (the KCL always supplies it).
+const DefaultHostedPlatform = "amd64"
+
+// HostedRuntime is forge.OnHosted. The control plane owns every placement
+// fact except the node architecture, which forge needs to build the image.
+type HostedRuntime struct {
+	Platform string `json:"platform,omitempty"` // GOARCH of the platform's nodes
+}
+
+// HostedPlatform is the GOARCH a hosted workload's image must be built for.
+func (r RuntimeEntity) HostedPlatform() string {
+	if r.Hosted != nil && r.Hosted.Platform != "" {
+		return r.Hosted.Platform
+	}
+	return DefaultHostedPlatform
 }
 
 // HostRuntime is forge.Host: run the workload as a local process. The argv
@@ -1421,7 +1441,8 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 		var c ClusterRuntime
 		return RuntimeEntity{Type: RuntimeCluster, Cluster: &c}, decode(&c)
 	case RuntimeHosted:
-		return RuntimeEntity{Type: RuntimeHosted}, nil
+		var h HostedRuntime
+		return RuntimeEntity{Type: RuntimeHosted, Hosted: &h}, decode(&h)
 	case RuntimeBuildOnly:
 		var b BuildOnlyDeploy
 		return RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &b}, decode(&b)

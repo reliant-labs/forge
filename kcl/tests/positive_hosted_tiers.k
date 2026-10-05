@@ -42,7 +42,7 @@ _w = {w.name: w for w in output.workloads}
 
 assert_runtime_hosted = _w["api"].runtime.type == "hosted"
 # OnHosted carries no coordinates: the platform owns them.
-assert_hosted_block_is_bare = len([k for k in _w["api"].runtime if k != "type"]) == 0
+assert_hosted_block_is_bare = len([k for k in _w["api"].runtime if k not in ["type", "platform"]]) == 0
 assert_spec_image_verbatim = _w["api"].spec.image == _img
 assert_spec_ports = [p.port for p in _w["api"].spec.ports] == [8080]
 assert_spec_storage = _w["api"].spec.storageGiB == 5

@@ -499,6 +499,7 @@ _render_runtime = lambda w: any, rt: any -> any {
         "image_pull_secrets": rt.target.image_pull_secrets if rt.target.image_pull_secrets else []
     } if rt.type == "cluster" else ({
         "type": "hosted"
+        "platform": rt.platform
     } if rt.type == "hosted" else {
         "type": "build-only"
         "build_variants": [_render_build_variant(bv) for bv in rt.build_variants]

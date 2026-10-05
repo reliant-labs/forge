@@ -43,6 +43,22 @@ One `docker login` is enough for everything, because all three of forge's push
 paths read the docker credential store — `docker push` for images, oras for the
 config bundle, go-containerregistry for a static site release.
 
+## Hosted images are built for the PLATFORM's arch, not yours
+
+A hosted image runs on the platform's nodes (amd64 on Reliant), never on
+the machine running `forge build`. So forge takes the image arch from
+`forge.OnHosted.platform` (default `"amd64"`), not from your laptop: an
+Apple-silicon Mac still pushes `linux/amd64`. Declare
+`runtime = forge.OnHosted {platform = "arm64"}` only for a control plane whose
+pools are arm64. `--target-arch` overrides per invocation.
+
+forge refuses, rather than guesses, in two places: a pushed image for a remote
+cluster with no declared arch (`platform` on the env's `ClusterTarget`,
+`deploy.target_arch`, or `--target-arch`), and a release whose pushed manifest
+lacks the hosted target's platform (`expected linux/amd64, found linux/arm64` —
+rebuild and cut a new release; the pods would otherwise die with
+`exec format error`, a CrashLoopBackOff with no output).
+
 ## A bare image is the normal hosted shape
 
 ```

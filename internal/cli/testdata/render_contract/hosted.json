@@ -4,7 +4,6 @@
     "config_maps": [],
     "control_plane": {
       "endpoint": "https://admin.reliantapi.com",
-      
       "registry_host": "registry.reliantapi.com",
       "token_env": "FORGE_CONTROL_PLANE_TOKEN",
       "type": "control_plane"
@@ -90,6 +89,7 @@
         "kind": "service",
         "name": "api",
         "runtime": {
+          "platform": "amd64",
           "type": "hosted"
         },
         "spec": {
@@ -164,6 +164,7 @@
         "kind": "job",
         "name": "migrate",
         "runtime": {
+          "platform": "amd64",
           "type": "hosted"
         },
         "spec": {

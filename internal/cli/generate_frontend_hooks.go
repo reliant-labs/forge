@@ -629,6 +629,13 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 	if err := os.WriteFile(testPath, templates.CanonicalTSImportOrder(buf.Bytes()), 0o644); err != nil {
 		return fmt.Errorf("write hook test %s: %w", testPath, err)
 	}
+	// The template is prettier-clean at the scaffold's own printWidth for
+	// ordinary names, but no fixed text can be: where prettier wraps
+	// `renderHook(() => useX(...), { wrapper })` depends on the hook name's
+	// length and on the project's prettier config, both of which forge only
+	// learns here. So the file forge just created is handed to the project's
+	// own formatter, which is the one its CI checks against.
+	formatScaffoldedFrontendFile(testPath)
 	if haveLedger {
 		checksums.RecordScaffold(scaffoldRoot, scaffoldRel)
 	}

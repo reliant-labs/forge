@@ -54,7 +54,9 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 
 	// Header
 	b.WriteString("syntax = \"proto3\";\n\n")
-	fmt.Fprintf(&b, "package services.%s.v1;\n\n", serviceName)
+	// Same package rule as the service scaffold, so the two writers of
+	// proto/services/<svc>/v1/<svc>.proto cannot disagree.
+	fmt.Fprintf(&b, "package %s;\n\n", ResolveServiceProtoPackage(root, serviceName).Package)
 	fmt.Fprintf(&b, "option go_package = \"%s/gen/services/%s/v1;%sv1\";\n", modulePath, serviceName, serviceName)
 
 	// Imports

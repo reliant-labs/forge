@@ -68,6 +68,13 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[LintConfig](),
 			want: []string{"frontend", "handler_file_max_loc", "rules"},
 		},
+		{
+			// proto_package: read by generator.ResolveServiceProtoPackage,
+			// the package a scaffolded service declares.
+			name: "APIConfig",
+			typ:  reflect.TypeFor[APIConfig](),
+			want: []string{"openapi", "proto_package", "rest"},
+		},
 	}
 
 	for _, tc := range cases {

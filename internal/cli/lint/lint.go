@@ -86,9 +86,11 @@ This command will:
 By default 'forge lint' AUTO-FIXES deterministic-safe issues first, then
 gates on the residue: it canonicalizes Go formatting (goimports/gofmt import
 grouping + whitespace) across generated AND owned/hand-edited files, applies
-golangci-lint's safe autofixes, and runs eslint --fix on frontends — so
-mechanical formatting never surfaces as a gating error. Pass --no-fix to gate
-only and mutate nothing (CI / read-only checks); --json is always detect-only.
+golangci-lint's safe autofixes, runs each frontend's own prettier over the
+src/ files you own (never generated or forge-refreshed ones), and runs
+eslint --fix on frontends — so mechanical formatting never surfaces as a
+gating error. Pass --no-fix to gate only and mutate nothing (CI / read-only
+checks); --json is always detect-only.
 
 Examples:
   forge lint                     # Auto-fix deterministic-safe issues, then gate
@@ -236,7 +238,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck) for a backend-only gate that needs no Node toolchain")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
-	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, eslint --fix); gate only and mutate nothing (CI / read-only)")
+	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, frontend prettier, eslint --fix); gate only and mutate nothing (CI / read-only)")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
 
@@ -1091,6 +1093,15 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	// --fix (frontend step) cover the rest. Skipped under --no-fix (fix=false).
 	if fix && cwd != "" {
 		reportFormatPrePass(cwd)
+		// The frontend half: prettier over user-owned frontend sources.
+		// eslint --fix (below) does not format — the scaffolded eslint
+		// config deliberately carries no formatting rules — so without this
+		// pass `forge lint` fixed no TS formatting at all, and a scaffolded
+		// file the project's CI prettier check rejected stayed rejected.
+		// --skip-frontends means "no Node toolchain"; honor it here too.
+		if !opts.skipFrontends {
+			reportFrontendFormatPrePass(ctx, cwd, opts.cfg)
+		}
 	}
 
 	rc := &lintRunCtx{

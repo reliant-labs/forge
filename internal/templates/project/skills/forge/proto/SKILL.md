@@ -20,10 +20,20 @@ proto/shared/v1/types.proto                    # Cross-service shared messages (
 ```
 
 One service per `.proto` file (`forge lint --conventions` →
-`forgeconv-one-service-per-file`). The proto package mirrors the file's path
-under `proto/`, with no project prefix: `services.<service>.v1` — `buf lint`'s
-`PACKAGE_DIRECTORY_MATCH` rejects any other form. Cross-service references go
-through `proto/shared/v1/types.proto`; never import another service's proto.
+`forgeconv-one-service-per-file`). Cross-service references go through
+`proto/shared/v1/types.proto`; never import another service's proto.
+
+**The proto package `forge scaffold service` writes follows the project.**
+In order: forge.yaml `api.proto_package` (a fixed package like
+`controlplane.v1`, or a pattern like `acme.{service}.v1`); else the
+convention a strict majority of the existing service protos share (an
+outlier is named in the scaffold output, never silently overruled); else
+`services.<service>.v1`, which mirrors the path and satisfies buf
+`STANDARD` as-is. `go_package` stays `gen/services/<service>/v1` either way.
+A package shared across `services/*/v1/` directories needs buf.yaml
+`lint.except: [PACKAGE_DIRECTORY_MATCH, PACKAGE_SAME_DIRECTORY,
+PACKAGE_SAME_GO_PACKAGE]`, and message names must be unique across the
+package.
 
 ## After Editing Protos
 

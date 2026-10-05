@@ -72,7 +72,7 @@ export default function VariationGrid({
               )}
             </figcaption>
             <div
-              className="min-w-0 flex-1 overflow-auto bg-surface-muted p-4"
+              className="min-w-0 flex-1 relative overflow-auto bg-surface-muted p-4"
               style={heightStyle}
             >
               {v.content}

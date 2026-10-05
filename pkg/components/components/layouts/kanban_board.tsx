@@ -9,7 +9,7 @@ interface KanbanBoardProps {
 
 export default function KanbanBoard({ columns }: KanbanBoardProps) {
   return (
-    <div className="flex h-screen gap-4 overflow-x-auto bg-surface-muted p-6">
+    <div className="flex h-screen gap-4 relative overflow-x-auto bg-surface-muted p-6">
       {columns.map((column, i) => (
         <div
           key={i}
@@ -22,7 +22,7 @@ export default function KanbanBoard({ columns }: KanbanBoardProps) {
             </span>
           </div>
 
-          <div className="flex-1 space-y-2 overflow-y-auto px-3 pb-3">
+          <div className="flex-1 space-y-2 relative overflow-y-auto px-3 pb-3">
             {column.cards.map((card, j) => (
               <div key={j} className="rounded-lg bg-surface p-3 shadow-sm">
                 <p className="text-sm font-medium text-ink">{card.title}</p>

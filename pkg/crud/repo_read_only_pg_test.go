@@ -125,6 +125,31 @@ func TestPreserve_FullReplaceLeavesColumnsAndReadsThemBack(t *testing.T) {
 	}
 }
 
+// A `// forge:generated` field is read-only on the wire, so its GENERATED
+// column rides in the generated op's ReadOnly and therefore in its Preserve
+// list. Preserve must accept it as the no-op it is — postgres computes the
+// column and no full replace writes it — and the recomputed value must still
+// be read back. Refusing it as "not updatable" would fail every client
+// Update of every entity that uses the marker.
+func TestPreserve_GeneratedColumnIsANoOp(t *testing.T) {
+	ctx := context.Background()
+	db := newRepoTestDB(t)
+	shipmentSchema(ctx, t, db)
+	repo := NewRepo[shipment]()
+	seedShipped(ctx, t, db, repo)
+
+	repl := &shipment{ID: "s1", Title: "crate", Qty: 7, Total: 1}
+	if err := repo.Update(ctx, db, repl, Preserve(append([]string{"total"}, shipmentReadOnly...)...)); err != nil {
+		t.Fatalf("Preserve naming a GENERATED column must be accepted: %v", err)
+	}
+	if repl.Total != 70 {
+		t.Errorf("total = %d, want 70 — the GENERATED column recomputed from qty, read back", repl.Total)
+	}
+	if stored := readShipment(ctx, t, db); stored.Total != 70 || stored.Qty != 7 {
+		t.Errorf("stored row = %+v, want qty 7 and total 70", stored)
+	}
+}
+
 // Without Preserve, a full replace still writes the read-only columns: the
 // policy is the CALLER's, and app code doing a full replace keeps the
 // semantics it always had.

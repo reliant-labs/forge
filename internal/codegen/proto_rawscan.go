@@ -75,7 +75,8 @@ var (
 )
 
 // readOnlyFieldMarkerRE matches the FIELD-level read-only markers
-// (ReadOnlyProtoMarkers: `// forge:read-only` and `// forge:computed`), in
+// (ReadOnlyProtoMarkers: `// forge:read-only`, `// forge:computed` and
+// `// forge:generated`, whose expression GeneratedMarkerExpr reads), in
 // two spellings the scanner accepts: a full-line comment PRECEDING the
 // field (the documented site, mirroring the entity markers) or a TRAILING
 // inline comment (`string status = 4; // forge:read-only`). It is anchored

@@ -430,7 +430,8 @@ func fieldHasSecretMarker(f *protogen.Field) bool {
 }
 
 // readOnlyFieldMarkerRE matches the read-only field markers
-// (codegen.ReadOnlyProtoMarkers — `forge:read-only` and `forge:computed`)
+// (codegen.ReadOnlyProtoMarkers — `forge:read-only`, `forge:computed` and
+// `forge:generated`)
 // inside a proto leading/trailing comment. Like secretFieldMarkerRE, buf
 // strips the `//` before protogen sees the text, so the token is matched
 // WITHOUT the leading slashes; spacing/prose variants tolerated

@@ -144,9 +144,10 @@ marker list and what each emits. In practice: `forge:entity` tablizes a message;
 `forge:soft-delete` and `forge:append-only` tablize *and* shape the lifecycle
 (opt-in soft delete; an immutable ledger with no Update/Delete);
 `forge:read-only` and `forge:secret` trim a field off the born write and read
-sides respectively.
+sides respectively; `forge:generated <expr>` births a column postgres computes
+from the same row (and is read-only too).
 
-`forge:read-only` (and `forge:computed`, which implies it) is also read on every
+`forge:read-only` (and `forge:computed` / `forge:generated`, which imply it) is also read on every
 `forge generate`, because the AIP-134 Update request wraps the whole entity and
 so still carries the field. The generated Update refuses an `update_mask` naming
 it (`InvalidArgument`, reason `unknown_field`) and keeps it out of a full replace,
@@ -163,9 +164,19 @@ message Product {
   double price = 2 [(buf.validate.field).double.gte = 0];  // forge:read-only
   string api_token = 3;      // forge:secret
   bool requires_prescription = 4;
+  int64 stock = 5;
+  int64 reserved = 6;
+  int64 available = 7;       // forge:generated stock - reserved
   // birth appends: id, created_at, updated_at, deleted_at
 }
 ```
+
+`forge:generated` takes the **rest of the line** as SQL, verbatim — it becomes
+`available BIGINT NOT NULL GENERATED ALWAYS AS (stock - reserved) STORED`, NOT
+NULL unless the field is `optional`. Birth tries the migration against postgres
+before writing anything, so a typo'd column or a non-`IMMUTABLE` function
+refuses the birth at the marker's line rather than surfacing at the next
+`forge generate`. Prose explaining the derivation goes on its own comment line.
 
 Storage-side semantics (what each marker adds to the owned migration, the
 proto→column type mapping, and the entity-shaping flags `--soft-delete` /
@@ -339,8 +350,13 @@ optional string patient_id = 4;  // FK / owner scope — exact-match on patient_
 ```
 
 Never fetch a page and filter client-side — that truncates past the page cap.
-`forge scaffold entity` writes the `page_size`/`page_token`/`search`/`bool`
-facets/`order_by`/`descending` set; enum/FK/owner facets you add by hand.
+Birth writes `page_size`/`page_token`/`order_by`/`descending`, `search` when
+the entity has text, and one exact-match facet per bool, enum and `<stem>_id`
+reference — including `optional` ones, so a nullable `crew_id` is filterable
+like a required `customer_id`. A facet is `col = $1`, so rows where the column
+is NULL never match it; "jobs with no crew" is not a facet — add a request
+field for it and filter in the op. Owner scopes and anything else you add by
+hand.
 
 ## Enum Conventions
 

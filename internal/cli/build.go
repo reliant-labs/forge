@@ -642,22 +642,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// project's -X wins on the same key.
 	resolvedVersion := resolveBuildVersion(ctx, opts.tag)
 
-	fmt.Printf("[build] Building project: %s\n", cfg.Name)
-	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
-	fmt.Printf("[build]   Target:   %s\n", opts.buildTarget)
-	fmt.Printf("[build]   Docker:   %v\n", opts.buildDocker)
-	if opts.env != "" {
-		fmt.Printf("[build]   Env:      %s\n", opts.env)
-	}
-	if opts.buildDocker && resolvedTag != "" {
-		fmt.Printf("[build]   Tag:      %s (%s)\n", resolvedTag, tagSource)
-	}
-	push.printHeader()
-
-	if entities != nil {
-		summarizeKCLBuildPlan(entities)
-	}
-	fmt.Println()
+	printBuildHeader(cfg.Name, opts, resolvedTag, tagSource, push, entities)
 
 	// Filter targets. The Go-build set is KCL-driven: every service the
 	// rendered env declares contributes its EffectiveBuild() GoBuild
@@ -795,16 +780,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	}
 	results = append(results, externalResults...)
 
-	// Check for errors
-	var failed []buildResult
-	var succeeded []buildResult
-	for _, r := range results {
-		if r.err != nil {
-			failed = append(failed, r)
-		} else {
-			succeeded = append(succeeded, r)
-		}
-	}
+	succeeded, failed := partitionBuildResults(results)
 
 	// Persist build state on ANY successful project docker build — not
 	// just --push. The state file is the build→deploy tag handoff, which
@@ -858,6 +834,44 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
 	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
 	return nil
+}
+
+// printBuildHeader prints the block runBuild opens with: what is being built,
+// where it lands, the resolved tag and where that tag came from, where images
+// are pushed, and the env's KCL build plan.
+//
+// Extracted for the same reason as printBuildSummary: it is pure rendering,
+// and inline it held runBuild over its statement budget.
+func printBuildHeader(projectName string, opts buildOptions, resolvedTag, tagSource string, push pushPlan, entities *KCLEntities) {
+	fmt.Printf("[build] Building project: %s\n", projectName)
+	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
+	fmt.Printf("[build]   Target:   %s\n", opts.buildTarget)
+	fmt.Printf("[build]   Docker:   %v\n", opts.buildDocker)
+	if opts.env != "" {
+		fmt.Printf("[build]   Env:      %s\n", opts.env)
+	}
+	// The tag is only meaningful when an image is built: a binary-only build
+	// resolves no tag, and printing an empty one would read as a bug.
+	if opts.buildDocker && resolvedTag != "" {
+		fmt.Printf("[build]   Tag:      %s (%s)\n", resolvedTag, tagSource)
+	}
+	push.printHeader()
+	summarizeKCLBuildPlan(entities)
+	fmt.Println()
+}
+
+// partitionBuildResults splits results into the builds that succeeded and the
+// ones that failed, each in its original order — the order the summary prints
+// and the build-state writers consume.
+func partitionBuildResults(results []buildResult) (succeeded, failed []buildResult) {
+	for _, r := range results {
+		if r.err != nil {
+			failed = append(failed, r)
+		} else {
+			succeeded = append(succeeded, r)
+		}
+	}
+	return succeeded, failed
 }
 
 // printBuildSummary prints the per-target table runBuild ends with.

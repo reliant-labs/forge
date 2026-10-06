@@ -702,6 +702,12 @@ _ingress = lambda b: Bundle, ns: str -> [any] {
 # reserved static IP), its Certificate is one ACME order, and a route's
 # backend is a Service on one cluster. Unstamped, a Manifests-only secondary
 # cluster received a second Gateway on prod's IP and duplicate certificates.
+#
+# Bundle.config_maps goes through here too. A ConfigMap defaults to the
+# primary NAMESPACE, which a secondary cluster need not have, so replicating
+# it was an apply failure there, not merely a stray copy (control-plane's
+# registry-config, replicated to its daemon cluster). A label the author set
+# is kept, which is how one is placed on another cluster.
 _place_on_primary = lambda manifest: any, primary: any -> any {
     _meta = manifest.metadata if manifest.metadata else {}
     _labels = _meta.labels if _meta.labels else {}
@@ -786,7 +792,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
     labels_lib.stamp_env_all(
         [_render_runtime_class_manifest(rc, _ns, _project) for rc in b.runtime_classes] \
         + _namespaces(b, entities) \
-        + [_render_config_map_manifest(cm, _ns, _project) for cm in b.config_maps] \
+        + [_place_on_primary(_render_config_map_manifest(cm, _ns, _project), _pt) for cm in b.config_maps] \
         + [_workload_record(e, _project) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + [_render_managed_database_record(db, _project) for db in _dbs if db.runtime == "cluster"] \
         + [_place_on_primary(item, _pt) for item in _ingress(b, _ns)] \
@@ -1613,7 +1619,8 @@ _render_runtime_class_manifest = lambda rc: RuntimeClass, namespace: str, part_o
 
 # Render a ConfigMap as a k8s manifest. The metadata.namespace
 # defaults to the env-wide namespace when the caller hasn't pinned one
-# explicitly on the schema.
+# explicitly on the schema. Placement is _manifests' job: it lands on the
+# primary target unless `labels` already names a forge.dev/cluster.
 _render_config_map_manifest = lambda cm: ConfigMap, namespace: str, part_of: str = "" -> any {
     {
         apiVersion = "v1"

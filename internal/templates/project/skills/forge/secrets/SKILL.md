@@ -178,7 +178,7 @@ _bundle = forge.Bundle {
 ```
 
 ```bash
-forge login                                              # standalone forge only, once; signed in to Reliant? skip it
+forge login                                              # once, without Reliant; signed in to Reliant? skip it
 printf '%s' "$KEY" | forge secret set --env dev STRIPE_SECRET_KEY
 forge env up dev                                         # pulls, injects in memory, starts
 ```

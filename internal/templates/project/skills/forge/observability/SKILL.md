@@ -98,7 +98,14 @@ Forge instruments three boundaries, so a request is observable end to end:
 1. **The RPC edge** — every Connect handler runs the interceptor chain built by
    `observe.Chain(observe.Deps{…})` in `cmd/<bin>/cmd/serve.go` (recovery →
    request-id → logging → tracing → metrics, then auth → audit → rate-limit,
-   with otelconnect). One span / metric / log per RPC.
+   with otelconnect). One span and one metric sample per RPC. The log is
+   every failure (`rpc failed`) plus a per-procedure SAMPLE of successes
+   (`rpc completed`): the first, then at most one a minute carrying
+   `suppressed=<n>` (the successes since the last record), and every success
+   over 1s with `slow=true`. Tune it through `observe.Deps.LogOptions` —
+   `observe.WithSuccessLevel(<svc>connect.<Svc><Method>Procedure, slog.LevelDebug)`
+   silences one poll, `observe.WithSuccessSampling(0)` restores one record per
+   success, `observe.WithSlowThreshold(d)` moves the slow line.
 2. **The in-process component boundary** — every internal component→component
    method call (a `contract.go` `Service`) gets one span / metric / log plus
    panic-recovery. This is the layer detailed below — the in-process twin of the

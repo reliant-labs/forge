@@ -24,6 +24,11 @@ type DefaultMiddlewareDeps struct {
 	// Meter feeds MetricsInterceptor. nil disables metrics.
 	Meter metric.Meter
 
+	// LogOptions tune how LoggingInterceptor logs successful RPCs
+	// (sampling window, slow threshold, per-procedure level). nil keeps
+	// the defaults. Failures are always logged in full.
+	LogOptions []LogOption
+
 	// Extras are appended to the canonical chain in the order supplied
 	// — useful for project-specific interceptors (auth, rate-limit,
 	// idempotency, audit) that the canonical chain doesn't
@@ -49,7 +54,8 @@ type DefaultMiddlewareDeps struct {
 //     request ID. Trusts an inbound RequestIDHeader when present,
 //     mints a fresh ID otherwise.
 //
-//  3. LoggingInterceptor   — emits one record per RPC. Sits before
+//  3. LoggingInterceptor   — logs every failed RPC and a per-procedure
+//     sample of successful ones (see LoggingInterceptor). Sits before
 //     tracing/metrics so its timing reflects ALL inner cost (including
 //     the OTel work itself). Logging is cheap; the placement is about
 //     "this is what the user paid".
@@ -96,7 +102,7 @@ func DefaultMiddlewares(deps DefaultMiddlewareDeps) []connect.Interceptor {
 	chain := []connect.Interceptor{
 		RecoveryInterceptor(deps.Logger),
 		RequestIDInterceptor(),
-		LoggingInterceptor(deps.Logger),
+		LoggingInterceptor(deps.Logger, deps.LogOptions...),
 		TracingInterceptor(deps.Tracer),
 		MetricsInterceptor(deps.Meter),
 	}
@@ -137,6 +143,11 @@ type Deps struct {
 
 	// Meter feeds MetricsInterceptor. nil disables metrics.
 	Meter metric.Meter
+
+	// LogOptions tune how LoggingInterceptor logs successful RPCs
+	// (sampling window, slow threshold, per-procedure level). nil keeps
+	// the defaults. Failures are always logged in full.
+	LogOptions []LogOption
 
 	// Auth is the project's authentication interceptor — the value
 	// returned by authn.NewInterceptor(policy), with the token validator
@@ -180,7 +191,7 @@ type Deps struct {
 //
 //  1. RecoveryInterceptor   — outermost; observes panics from everything.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
-//  3. LoggingInterceptor   — one record per RPC.
+//  3. LoggingInterceptor   — every failure, sampled successes.
 //  4. TracingInterceptor   — one OTel span per RPC.
 //  5. MetricsInterceptor   — calls/errors/duration.
 //  6. Auth                 — authenticate (when non-nil). Inner to
@@ -199,7 +210,7 @@ func Chain(deps Deps) []connect.Interceptor {
 	chain := []connect.Interceptor{
 		RecoveryInterceptor(deps.Logger),
 		RequestIDInterceptor(),
-		LoggingInterceptor(deps.Logger),
+		LoggingInterceptor(deps.Logger, deps.LogOptions...),
 		TracingInterceptor(deps.Tracer),
 		MetricsInterceptor(deps.Meter),
 	}

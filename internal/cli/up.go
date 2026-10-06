@@ -1467,6 +1467,10 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	if required.deploy && !opts.noDeploy {
 		if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
 			fmt.Println("\n[up] deploy phase")
+			// Nothing selected runs in a cluster: deploy what the host
+			// processes dial (host infra, compose) and leave every cluster
+			// alone — no context guard, no image push, no apply.
+			printClusterSkip(opts.env, entities, required, opts.targets)
 			// Cluster reconcile through the SAME named entry point
 			// `forge env deploy` uses. `up`'s cluster step carries a
 			// scope-derived deployOptions — instead of a blank
@@ -1487,7 +1491,10 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 			// materialize a static frontend for a shipping frontend
 			// (FirebaseHosting or StaticSite) to reference at DEPLOY time;
 			// it has no place in the dev loop.
-			if err := reconcileCluster(ctx, opts.env, deployOptions{skipFrontend: true, targets: opts.targets, purpose: renderToLaunch}); err != nil {
+			if err := reconcileCluster(ctx, opts.env, deployOptions{
+				skipFrontend: true, skipClusterApply: !required.cluster,
+				targets: opts.targets, purpose: renderToLaunch,
+			}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
 		}
@@ -1506,14 +1513,15 @@ type upPhaseRequirements struct {
 }
 
 // targetPhaseRequirements derives phase requirements from the rendered
-// placement graph. With no explicit targets, preserve the full declarative
-// reconcile. With targets, only selected entities contribute requirements.
+// placement graph. With no explicit targets the whole env contributes (see
+// envPhaseRequirements: a cluster is required only when the env places work
+// in one). With targets, only selected entities contribute requirements.
 //
 // Frontends are dev-served by `env up`, so they do not invoke their production
 // deploy provider here.
 func targetPhaseRequirements(e *KCLEntities, targets []string) upPhaseRequirements {
 	if len(targets) == 0 {
-		return upPhaseRequirements{deploy: true, cluster: true}
+		return envPhaseRequirements(e)
 	}
 
 	var out upPhaseRequirements

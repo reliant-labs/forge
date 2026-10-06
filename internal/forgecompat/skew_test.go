@@ -122,3 +122,16 @@ func TestPinnedForgeVersionWalksUpToTheProjectRoot(t *testing.T) {
 		t.Errorf("PinnedForgeVersion(non-project) = %q, want \"\"", got)
 	}
 }
+
+// RunPinnedCommand must paste as-is: the refused command, unchanged, run with
+// the pinned forge — and quote only what a shell would otherwise reinterpret.
+func TestRunPinnedCommand(t *testing.T) {
+	got := RunPinnedCommand("v0.1.43", []string{"env", "build", "prod", "--target", "api", "-D", "region=us east"})
+	want := "go run github.com/reliant-labs/forge/cmd/forge@v0.1.43 env build prod --target api -D 'region=us east'"
+	if got != want {
+		t.Errorf("RunPinnedCommand:\n got: %s\nwant: %s", got, want)
+	}
+	if got := RunPinnedCommand("v0.1.43", []string{"it's", ""}); got != `go run github.com/reliant-labs/forge/cmd/forge@v0.1.43 'it'\''s' ''` {
+		t.Errorf("quoting: %s", got)
+	}
+}

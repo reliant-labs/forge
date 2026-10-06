@@ -73,7 +73,7 @@ var briefNewFlags = []struct {
 	name  string
 	gloss string
 }{
-	{"mod", "**required.** Go module path (`github.com/acme/my-app`)."},
+	{"mod", "Go module path (`github.com/acme/my-app`). Defaults to the project name; set it to the path you will publish under."},
 	{"service", "Repeatable. One empty proto stub per service — **and the only way to get `cmd/<bin>/main.go` wired for you.** Name after domain entities (`customers`, `jobs`), never after the binary."},
 	{"frontend", "Repeatable. One Next.js frontend each."},
 	{"in-place", "Scaffold into the current directory instead of creating a subdirectory. Takes no positional name."},

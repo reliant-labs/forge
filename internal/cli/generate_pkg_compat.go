@@ -10,6 +10,7 @@ import (
 	"golang.org/x/mod/module"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 )
@@ -99,8 +100,11 @@ func binaryBehindPinErr(projectDir, projectVersion, binaryVersion string) error 
 	base := cliutil.UserErr("forge generate (forge version compatibility)",
 		forgecompat.SkewDiagnosis(projectVersion, binaryVersion),
 		"",
-		fmt.Sprintf("install the pinned forge (the command above), or if the PIN is what is "+
+		fmt.Sprintf("run this command with the pinned forge, installing nothing over the one on your PATH:\n"+
+			"    %s\n"+
+			"  or install the pinned forge (the command above), or if the PIN is what is "+
 			"wrong, move it deliberately with `%s project upgrade`. To proceed anyway: %s=1",
+			forgecompat.RunPinnedCommand(projectVersion, forgeInvocationArgs()),
 			Name(), forgecompat.SkewOverrideEnv))
 
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
@@ -159,10 +163,10 @@ func unreleasableBuildErr(projectDir, projectVersion string) error {
 			"cannot fetch, so generating would rewrite the tree and then fail its own validate",
 			buildinfo.Version(), forgeModuleRequirePath, projectVersion),
 		"",
-		"bridge the project to this forge's source, which is the supported way to generate with an "+
-			"unreleased forge:\n    "+bridge+
-			"\n  (go.work is machine-local — keep it out of version control.) "+
-			"Or install a released forge and use that instead")
+		"run this command with the forge the project pins — nothing is installed over the forge on your PATH:\n"+
+			"    "+forgecompat.RunPinnedCommand(projectVersion, forgeInvocationArgs())+
+			"\n  Or, to generate with THIS unreleased forge, bridge the project to its source:\n    "+bridge+
+			"\n  go.work is machine-local; keep it out of version control")
 
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
 }
@@ -199,6 +203,30 @@ func staleForgePinErr(projectDir, projectVersion, binaryVersion string) error {
 		"", fix)
 
 	return fmt.Errorf("%w\n\n%s", base, toolchainDiagnosis(projectDir))
+}
+
+// forgeInvocationArgs is the forge arguments of THIS invocation — what the
+// user typed after `forge` (or after `reliant forge` when forge is mounted
+// inside another binary) — so a refusal can hand back the same command, run
+// with a different forge.
+func forgeInvocationArgs() []string {
+	if len(os.Args) < 2 {
+		return nil
+	}
+	args := os.Args[1:]
+	if route, ok := cmdutil.CmdRouteTokens(); ok && len(route) <= len(args) {
+		matches := true
+		for i, tok := range route {
+			if args[i] != tok {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			args = args[len(route):]
+		}
+	}
+	return args
 }
 
 // shortPseudoCommit pulls the commit out of a pseudo-version for the message,

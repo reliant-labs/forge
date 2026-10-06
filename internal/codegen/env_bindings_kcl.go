@@ -155,6 +155,9 @@ func AppendEnvBinding(projectDir, env, kind, workloadName string) (binder string
 	}
 	binder = envBinderIn(body, env, kind)
 	updated := content[:locs[0][3]] + bindingLine(binder, workloadName) + "\n" + content[locs[0][3]:]
+	if kind == WorkloadKindService {
+		updated = claimAPIPortKey(updated, body, workloadName)
+	}
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		return "", false, err
 	}
@@ -173,6 +176,38 @@ func EnvDeclaresNoCluster(projectDir, env string) bool {
 }
 
 var noClusterDecl = regexp.MustCompile(`(?m)^_cluster\s*=\s*None\s*$`)
+
+// apiPortOwner matches the scaffolded dev env's `_port_of` lambda, capturing
+// the workload that owns the `<project>-<env>-api` port key:
+//
+//	plugin.resolve_port("acme-dev-api" if name == "acme" else "acme-dev-" + name, 8085)
+//
+// That key is the one the frontend's dev config (config.k) resolves for its
+// API origin, so whichever workload binds it is the API the frontend dials.
+var apiPortOwner = regexp.MustCompile(`(resolve_port\("[^"]*-api" if name == )"([^"]+)"`)
+
+// claimAPIPortKey hands the API port key to a newly bound service when the
+// workload holding it is not bound in the env at all.
+//
+// A project created with no service names ITSELF as the key's owner — there
+// is no workload of that name — so the frontend's config.k claimed the key
+// alone (8085) and the first `forge scaffold service` bound the new service
+// under its own key, which stepped to the next free port (8086). The
+// frontend then dialled a port nothing listened on. Transferring the key to
+// the first service that actually exists keeps the two on one number. An
+// owner that IS bound (a project born with a service) is never displaced.
+func claimAPIPortKey(content, priorBody, workloadName string) string {
+	m := apiPortOwner.FindStringSubmatchIndex(content)
+	if m == nil {
+		return content
+	}
+	owner := content[m[4]:m[5]]
+	ownerRef := regexp.MustCompile(`\bwl\.` + regexp.QuoteMeta(naming.KCLIdentifier(owner)) + `\b`)
+	if ownerRef.MatchString(StripKCLProse(priorBody)) {
+		return content
+	}
+	return content[:m[4]] + workloadName + content[m[5]:]
+}
 
 // EnvBindingHint is the message shown when a binding could not be appended.
 func EnvBindingHint(env, kind, workloadName string) string {

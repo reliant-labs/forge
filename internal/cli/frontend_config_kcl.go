@@ -37,6 +37,14 @@ func loadFrontendRuntimeConfig(projectDir, env string, configs []codegen.Fronten
 	if env == "" || len(configs) == 0 {
 		return nil, nil
 	}
+	// The probe path is handed to a renderer that resolves it against
+	// projectDir, so a RELATIVE projectDir is joined twice — `forge project
+	// new demo-app` run from the parent dir asked KCL for
+	// demo-app/demo-app/deploy/kcl/dev/… and fell back to proto defaults.
+	// Anchor it once, here.
+	if abs, err := filepath.Abs(projectDir); err == nil {
+		projectDir = abs
+	}
 	envDir := filepath.Join(projectDir, "deploy", "kcl", env)
 	if _, err := os.Stat(filepath.Join(envDir, "config.k")); err != nil {
 		return nil, nil

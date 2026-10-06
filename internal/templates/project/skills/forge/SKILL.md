@@ -52,7 +52,7 @@ a `<project>Service` from the binary name.
 
 | Flag | Purpose |
 |---|---|
-| `--mod` | **required.** Go module path (`github.com/acme/my-app`) |
+| `--mod` | Go module path (`github.com/acme/my-app`). Defaults to the project name; set it to the path you will publish under |
 | `--service <name>` | repeatable or comma-separated. Name after a domain entity, never after the binary |
 | `--frontend <name>` | repeatable or comma-separated Next.js frontends |
 | `--in-place` | scaffold into the current directory; takes no positional name |

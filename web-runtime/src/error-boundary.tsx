@@ -14,6 +14,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { userMessage } from "./errors.js";
+
 interface FallbackProps {
   error: Error;
   reset: () => void;
@@ -130,7 +132,9 @@ export function DefaultErrorFallback({
         This section ran into an unexpected error. You can try again — the rest
         of the app is still working.
       </p>
-      <p className="max-w-md font-mono text-xs text-danger">{error.message}</p>
+      {/* userMessage, never error.message — the same display rule as
+          <Resource>'s error rung. */}
+      <p className="max-w-md text-sm text-danger-ink">{userMessage(error)}</p>
       <button
         type="button"
         onClick={reset}

@@ -148,6 +148,25 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderNextjsDockerfile(t, FrontendTemplateData{FrontendName: "web", Output: "server"})
 			},
 		},
+		// The Next.js tsconfig is committed, and `next dev` / `next build`
+		// rewrite it whenever it lacks a value they want (see
+		// TestNextjsTsconfigNeedsNoRewriteFromNext). One fixed pin keeps the
+		// snapshot about the template rather than about the runtime's
+		// current peer list.
+		{
+			name: "nextjs_tsconfig.json",
+			render: func(t *testing.T) []byte {
+				out, err := FrontendTemplates().Render("nextjs/tsconfig.json.tmpl", FrontendTemplateData{
+					FrontendName:       "web",
+					ProjectName:        "demo",
+					WebRuntimeTypePins: []string{"@connectrpc/connect"},
+				})
+				if err != nil {
+					t.Fatalf("render nextjs/tsconfig.json.tmpl: %v", err)
+				}
+				return out
+			},
+		},
 
 		{
 			name: "handlers_methods.go",

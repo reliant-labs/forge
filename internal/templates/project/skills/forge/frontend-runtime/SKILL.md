@@ -245,6 +245,8 @@ bar.
 a debounced server-side filter, and cursor pagination in one owned-once
 component. Pair it with `useQueryResource` and a generated list hook. Do not
 hand-roll the tristate ladder, and do not client-side-filter a single page cap.
+Pass the query's error straight through: the error rung renders
+`userMessage(error)`, so there is nothing to pre-format.
 
 ```tsx
 import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";

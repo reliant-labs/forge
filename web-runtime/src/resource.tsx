@@ -13,6 +13,8 @@
 // owns the cursor stack and passes onNextPage/onPrevPage.
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 
+import { userMessage } from "./errors.js";
+
 export interface ResourceColumn<T> {
   header: string;
   cell: (row: T) => ReactNode;
@@ -265,6 +267,10 @@ function SkeletonRows({ rows, cols }: { rows: number; cols: number }) {
   );
 }
 
+// ErrorState shows userMessage(error), never error.message: a ConnectError's
+// message carries the "[code] " transport framing, which is not copy a user
+// should read. It is body text in the empty rung's style, not a monospace
+// debug readout.
 function ErrorState({
   error,
   onRetry,
@@ -277,10 +283,8 @@ function ErrorState({
       <p className="text-sm font-medium text-danger-ink">
         Couldn&apos;t load data
       </p>
-      {error?.message ? (
-        <p className="max-w-md font-mono text-xs text-danger">
-          {error.message}
-        </p>
+      {error ? (
+        <p className="max-w-md text-sm text-ink-muted">{userMessage(error)}</p>
       ) : null}
       {onRetry ? (
         <button

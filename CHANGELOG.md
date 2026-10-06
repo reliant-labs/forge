@@ -150,6 +150,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`next dev` no longer rewrites the scaffolded `tsconfig.json`.** Next 16
+  checks the file on every `next dev` and `next build`. When it finds a value
+  missing it rewrites the whole committed file, reformatted. The Next.js
+  scaffold shipped `"jsx": "preserve"`, which Next 16 forces to `react-jsx`, and
+  lacked the route-type globs Next appends to `include`. So every dev run left
+  a diff. The template now ships `"jsx": "react-jsx"` and includes
+  `.next/types/**/*.ts`, `.next/dev/types/**/*.ts` and their `.next-prod`
+  twins, which `next build` asks for under forge's production `distDir`. A
+  dev or build run now leaves the file byte-identical. `tsc` reads the same
+  files as before, because `exclude` still drops `.next` and `.next-prod`. The
+  Vite SPA template already used `react-jsx`, and Vite never writes its
+  tsconfig. Expo only adds `extends`, which the React Native template already
+  has. Existing projects can commit the tsconfig Next already rewrote; after
+  their next `npm run build`, they also commit the two `.next-prod` globs.
+- **`<Resource>` and `DefaultErrorFallback` show `userMessage(error)`.** Both
+  printed the raw `error.message` in monospace. A `ConnectError` reached the
+  user with its transport framing intact (`[not_found] no such job`). This
+  broke the runtime's own rule that errors are displayed through
+  `userMessage`. Both now render the framing-free message as body text.
+  `<Resource>` falls back to generic copy when the error has no message.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

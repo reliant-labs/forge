@@ -88,15 +88,12 @@ func TestLintHelpSurface(t *testing.T) {
 		// a postgres foreign-key violation naming a constraint, never the
 		// proto line that caused it.
 		"create-nullability",
-		"crud-fixtures",
 		"fix",
-		// The crud-fixtures sibling, visible for the same reason and then
-		// some: a scaffold-once seed block that names a now-GENERATED
-		// column is rejected by postgres outright, in test setup, with an
-		// error naming neither the fixture nor the migration. Forge knows
-		// the right answer — the regenerated factory omits the column — but
-		// cannot deliver it to a file it never rewrites, so this lane is
-		// the only place the drift is legible.
+		// Visible because it is the only place a scaffold-once seed block's
+		// drift is legible: a fixture a later migration rejects fails in
+		// test setup, with an error naming neither the fixture nor the
+		// migration, in a file forge never rewrites. (--crud-fixtures is
+		// its deprecated, hidden alias.)
 		"fixture-drift",
 		"frontend-stores",
 		// Visible: a CI author has to be able to DISCOVER that lint's
@@ -171,6 +168,9 @@ func TestLintHelpSurface(t *testing.T) {
 	assertStringSlicesEqual(t, "lint hidden flags", hiddenFlagNames(cmd), []string{
 		"banners",
 		"check-workarounds",
+		// Deprecated alias of --fixture-drift, which now executes the
+		// fixtures and so reports the foreign-key class this flag checked.
+		"crud-fixtures",
 		"exported-vars",
 		"scaffolds",
 		"suggest-buf-excepts",

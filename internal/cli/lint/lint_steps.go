@@ -733,63 +733,26 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 13d-quinquies-bis. Crud-fixtures — the FOREIGN KEY half of
-		// scaffold-once fixture drift, and the shape that breaks suites
-		// most often. A parent/owner column is born without a constraint,
-		// the scaffolded seed block fills it with a synthetic placeholder
-		// that is legal at the time, and a later migration adds the
-		// foreign key the column always semantically had. Every seeded
-		// row now violates it, and the only signal is a raw pq error in
-		// test SETUP naming a constraint the fixture author never saw.
+		// 13d-sexies-bis. Fixture-drift — scaffold-once lifecycle tests
+		// born with LITERAL fixture SQL, aging out of a schema the author
+		// keeps hardening. A later migration that makes a column GENERATED,
+		// adds a UNIQUE, a foreign key or a one-way status CHECK turns a
+		// seeded row into a pq error in test SETUP, naming neither the
+		// fixture nor the migration.
 		//
-		// The analyzer has always detected this. It was reachable only
-		// through the explicit `forge lint --crud-fixtures` flag and was
-		// never registered here, so an unflagged `forge lint` reported
-		// clean over fixtures the schema rejects — a green verdict is
-		// worse than no lane, because it converts "not checked" into
-		// "checked, fine". A dogfood run lost six test packages to
-		// exactly that.
+		// The lane EXECUTES each fixture statement against the shadow
+		// schema in a rolled-back transaction and reports postgres's own
+		// verdict per statement — every failure class, not the few a text
+		// matcher anticipated. It used to be three matchers in two lanes
+		// (this one and crud-fixtures); a CHECK added after birth matched
+		// none of them, so the lanes reported clean over fixtures postgres
+		// rejects. Newly scaffolded lifecycle tests carry no literal SQL
+		// (they call the regenerated create-request factories), so for them
+		// this lane costs nothing and opens no database.
 		//
-		// Warnings only, matching its fixture-drift sibling: the remedy
-		// is an edit to a file forge does not own and may legitimately be
-		// mid-edit, so gating would hold a user's file hostage.
-		{
-			name:  "crud-fixtures lint",
-			gates: false,
-			scope: scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				return rc.cwd != "", ""
-			},
-			runText: func(rc *lintRunCtx) error {
-				return runCrudFixturesLint(rc.cwd, rc.cfg)
-			},
-			errFormat: "⚠️  crud-fixtures lint: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				fs, err := collectCrudFixturesJSON(rc.cwd, rc.cfg)
-				return fs, false, err
-			},
-		},
-
-		// 13d-sexies-bis. Fixture-drift — the sibling of crud-fixtures, for
-		// the two ways a scaffold-once seed block ages out of its schema
-		// that a foreign-key check cannot see. A column the schema later
-		// made GENERATED ALWAYS is rejected outright by postgres (428C9),
-		// and a column it later made UNIQUE rejects a statement that writes
-		// one value twice. Both surface only as a pq error in test SETUP,
-		// naming postgres's complaint and neither the fixture nor the
-		// migration that caused it — and they QUEUE, so each becomes
-		// visible only after the previous is fixed.
-		//
-		// Forge demonstrably knows the answer: the regenerated sibling
-		// factories_gen_test.go omits the generated column correctly. The
-		// knowledge simply never reaches a file forge deliberately never
-		// rewrites, which is scaffold-once working as designed rather than
-		// a bug in it.
-		//
-		// Warnings only, matching crud-fixtures and guarded-fields: the fix
-		// is an edit to a file forge does not own and may legitimately be
-		// mid-edit, so gating would be a generator holding a user's file
-		// hostage.
+		// Warnings only, matching guarded-fields: the fix is an edit to a
+		// file forge does not own and may legitimately be mid-edit, so
+		// gating would be a generator holding a user's file hostage.
 		{
 			name:  "fixture-drift lint",
 			gates: false,

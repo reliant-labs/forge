@@ -2,117 +2,80 @@
 //
 // fixture-drift — `forge lint --fixture-drift`.
 //
-// The sibling of crud-fixtures, for the two ways a scaffold-once fixture
-// ages out of its schema that a foreign-key check cannot see.
+// Scaffold-once CRUD lifecycle tests used to carry their fixtures INLINE:
+// internal/handlers/<svc>/handlers_crud_test.go embedded a literal INSERT
+// block for each entity's foreign-key parents, derived from the schema as it
+// stood at birth. Forge never rewrites that file — it is the user's from line
+// one — while the schema keeps moving, and the db skill itself tells authors
+// to harden the birth migration right afterwards. Each such edit could turn a
+// literal into a rejected statement:
 //
-// internal/handlers/<svc>/handlers_crud_test.go is scaffold-once: forge
-// writes it exactly once, from the schema as it stands at that moment, and
-// never touches it again. The embedded seed block therefore carries a
-// LITERAL column list and literal rows:
+//	seed parent rows: pq: cannot insert a non-DEFAULT value into column "total_cents" (428C9)
+//	seed parent rows: pq: duplicate key value violates unique constraint "jobs_estimate_id_key"
+//	seed parent rows: pq: insert or update on table "crews" violates foreign key constraint "crews_foreman_id_fkey"
+//	seed parent rows: pq: new row for relation "estimates" violates check constraint "estimates_sent_has_stamp"
 //
-//	INSERT INTO "estimates" ("id", "subtotal_cents", "tax_cents", "total_cents") VALUES ...
+// Lifecycle tests forge scaffolds NOW carry no fixtures: they call the
+// regenerated New<CreateRequest> factories in factories_gen_test.go, which
+// track the schema on every generate. This lane exists for the files
+// scaffolded before that — they are the user's, so forge reports rather than
+// rewrites.
 //
-// The schema keeps moving. Two later changes break that fixture outright,
-// and both were measured in a dogfood run:
+// ── Execution, not pattern-matching ──────────────────────────────────────
 //
-//  1. A column becomes `GENERATED ALWAYS AS (...) STORED`. Postgres then
-//     REFUSES any INSERT that names it at all:
+// This lane used to read migration text and pattern-match two failure
+// classes (a GENERATED column named in a column list, a value repeated in a
+// UNIQUE column), with a sibling lane (crud-fixtures) for a third (a foreign
+// key value naming no seeded row). Each new constraint shape needed a new
+// matcher, and a CHECK added by a later migration — the commonest hardening
+// of all — matched none of them, so the lanes reported clean over a fixture
+// postgres rejects.
 //
-//     pq: cannot insert a non-DEFAULT value into column "total_cents" (428C9)
+// So the authority is asked instead. The project's migrations are applied to
+// a shadow postgres (the same one `forge generate` introspects), and every
+// literal fixture statement is EXECUTED against it, inside a transaction that
+// is always rolled back. Whatever postgres says is the finding, verbatim, per
+// statement: GENERATED columns, UNIQUE collisions, dangling foreign keys,
+// CHECK violations, NOT NULL columns a later migration added — and the shapes
+// no matcher anticipated.
 //
-//  2. A UNIQUE constraint is added to a column the fixture seeds with the
-//     same literal on more than one row — the ordinary shape for a
-//     one-to-one edge the generator scaffolded as one-to-many:
-//
-//     pq: duplicate key value violates unique constraint "jobs_estimate_id_key"
-//
-// Both surface as a pq error inside test SETUP, which names postgres's
-// complaint and nothing else. Nothing connects either to the migration that
-// caused it, and nothing points at the fixture — so the failure reads like a
-// broken harness. Worse, they queue: each one only becomes visible after the
-// previous is fixed, so one schema change cost six sequential debugging
-// rounds to unwind.
-//
-// ── Why a lint and not a generator change ────────────────────────────────
-//
-// Forge demonstrably KNOWS the answer. The regenerated sibling
-// factories_gen_test.go derives its columns from the live schema and
-// correctly omits the generated column. The knowledge simply never reaches
-// the scaffold-once file, because forge does not write that file again.
-//
-// That is not a bug in scaffold-once; it is the model working as designed.
-// The file is the user's from line one, and a generator that reached back in
-// and rewrote a user's test would be a far worse defect than the one it
-// repaired. So this check does not fix anything. It detects the drift and
-// names the four facts the pq error withheld: the file, the line, the
-// column, and the migration that changed it.
-//
-// It is also why internal/codegen/crud_fixture_guard.go cannot cover this.
-// That guard verifies fixtures against a shadow database at BIRTH; the
-// scaffold-once ledger check returns before it runs on every later generate,
-// including the one right after the offending migration. Birth checks cannot
-// see aging problems.
+// The statements run grouped the way the test runs them: every fixture
+// literal in one test function shares one transaction, in source order (each
+// lifecycle test starts from a freshly migrated database, so a parent seeded
+// by one function is NOT visible to another). Each statement runs under a
+// SAVEPOINT, so a rejected statement is reported and the rest of the block
+// still runs — fixing one finding never just reveals the next.
 //
 // ── What it reads ────────────────────────────────────────────────────────
 //
-// Purely textual, no database — the same grade as crud-fixtures and
-// read-only-fields, and for the same reason: this defect lives in a
-// half-migrated project, which is exactly where a lint that needs a live
-// postgres cannot run. The final schema is replayed out of db/migrations in
-// lexical order so a later ALTER wins, and the fixtures are read out of each
-// handlers_crud_test.go.
+// Raw-string literals in handlers_crud_test.go that contain an INSERT. A
+// statement carrying a bind placeholder ($1) is skipped: its values come from
+// Go at runtime, and executing it without them would report the missing
+// parameter rather than anything about the fixture. A file that does not
+// parse is skipped too — the compiler is already reporting it.
 //
-// ── Check 1: an INSERT naming a GENERATED ALWAYS column ──────────────────
-//
-// A finding is a column name inside an INSERT's parenthesized COLUMN LIST
-// whose live definition is `GENERATED ALWAYS AS (...) STORED`. Postgres
-// rejects this unconditionally, so the check needs no reasoning about
-// values — the presence of the name is the defect.
-//
-// Only the column list is examined, never the file at large. That is what
-// makes a mention of the column in a Go comment, in a t.Fatalf string, or in
-// a WHERE clause structurally incapable of producing a finding.
-//
-// ── Check 2: repeated values in a now-UNIQUE column ──────────────────────
-//
-// A finding is a literal value written into a single-column-UNIQUE column on
-// two or more rows OF ONE INSERT STATEMENT. The restrictions are what make
-// it sound rather than merely plausible, and each is pinned by a test:
-//
-//   - WITHIN one statement only. Reasoning across statements would need to
-//     model what else the block deleted, truncated or upserted first; a
-//     single statement that writes one value twice into a unique column
-//     fails on its own, with no context required.
-//   - SINGLE-column uniques only. A composite `UNIQUE (a, b)` forbids
-//     repeated PAIRS, not repeated values in either column, so reporting per
-//     column would flag correct fixtures.
-//   - PRIMARY KEY is deliberately NOT treated as a unique for this purpose.
-//     It is one, but the generator emits distinct ids by construction, so
-//     including it buys nothing and widens the surface.
-//   - Partial unique indexes (`CREATE UNIQUE INDEX ... WHERE ...`) are
-//     skipped: the predicate decides whether the duplicate is legal, and
-//     this parser does not evaluate predicates.
-//   - `ON CONFLICT` suppresses. A conflict target naming the column means
-//     postgres swallows exactly this collision; a bare `ON CONFLICT DO
-//     NOTHING`, or one naming a constraint rather than columns, suppresses
-//     the whole statement because the target cannot be resolved from text.
-//   - NULL never collides — postgres permits many NULLs in a unique column —
-//     and a value this parser cannot fully decode (a function call, an
-//     expression) is not evidence of anything.
+// No literal fixtures, no database: a project whose lifecycle tests use the
+// factories pays nothing for this lane. When the shadow cannot be reached the
+// lane says it did not run, rather than reporting clean.
 //
 // ── Severity: warning, never gating ──────────────────────────────────────
 //
-// Matching crud-fixtures and guarded-fields. The fixture is genuinely broken
-// and its test genuinely fails, but the remedy is an edit to a file forge
-// does not own and may legitimately be mid-edit. Failing the whole lint run
-// over it would be a generator holding a user's file hostage — and a noisy
-// gating rule is how a check earns a blanket disable, which costs every
-// future finding it would have reported.
+// The fixture is genuinely broken and its test genuinely fails, but the
+// remedy is an edit to a file forge does not own and may legitimately be
+// mid-edit. Failing the whole lint run over it would be a generator holding a
+// user's file hostage — and a noisy gating rule is how a check earns a blanket
+// disable, which costs every future finding it would have reported.
 
 package lint
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -120,688 +83,456 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lib/pq"
+
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
-// fixtureDriftKind distinguishes the two checks. They share a lane, a file
-// and a report because they are one question — "has this scaffold-once
-// fixture aged out of the schema?" — and a reader who hits one is about to
-// hit the other.
-type fixtureDriftKind int
+// fixtureDriftRule is the stable rule id for a fixture statement postgres
+// rejects, reported in text mode and in `forge lint --json`.
+const fixtureDriftRule = "forge-fixture-rejected"
 
-const (
-	// driftGeneratedColumn is an INSERT column list naming a column that is
-	// now GENERATED ALWAYS. Postgres rejects it outright (SQLSTATE 428C9).
-	driftGeneratedColumn fixtureDriftKind = iota
-	// driftDuplicateUnique is one INSERT writing the same literal twice into
-	// a column that is now UNIQUE.
-	driftDuplicateUnique
-)
+// fixtureDriftUnverifiedRule reports that the lane found literal fixtures but
+// could not execute them — so a consumer of the JSON report can tell "checked,
+// clean" apart from "not checked".
+const fixtureDriftUnverifiedRule = "forge-fixture-unverified"
 
-// fixtureDriftRuleGeneratedColumn and fixtureDriftRuleDuplicateUnique are the
-// stable rule ids, reported in text mode and in `forge lint --json`.
-const (
-	fixtureDriftRuleGeneratedColumn = "forge-fixture-generated-column"
-	fixtureDriftRuleDuplicateUnique = "forge-fixture-duplicate-unique"
-)
-
-// fixtureDriftFinding is one stale fixture. File is root-relative and Line
-// is 1-indexed, pointing at the offending column name (check 1) or at the
-// repeated value (check 2) rather than at the statement — the statement is
-// what the pq error already effectively named.
+// fixtureDriftFinding is one fixture statement the current schema rejects.
+// File is root-relative and Line is 1-indexed, pointing at the statement.
 type fixtureDriftFinding struct {
-	Kind   fixtureDriftKind
-	File   string
-	Line   int
-	Table  string
-	Column string
-
-	// DeclaredIn is the root-relative migration that made the change, "" when
-	// it could not be attributed. It is the fact that turns "this fixture is
-	// wrong" into "this fixture predates this migration".
-	DeclaredIn string
-
-	// Expression is the generated column's `GENERATED ALWAYS AS (...)` body,
-	// carried so the message can show what postgres computes instead.
-	// Check 1 only.
-	Expression string
-
-	// Value is the repeated literal, and Constraint the unique constraint it
-	// violates. Check 2 only.
-	Value      string
+	File string
+	Line int
+	// Table is the INSERT's target, "" for a statement that is not an INSERT.
+	Table string
+	// Code, Message and Constraint are postgres's own: the SQLSTATE, the
+	// error text, and the constraint it names (when it names one).
+	Code       string
+	Message    string
 	Constraint string
-}
-
-// ruleID returns the rule id for this finding's check.
-func (f fixtureDriftFinding) ruleID() string {
-	if f.Kind == driftDuplicateUnique {
-		return fixtureDriftRuleDuplicateUnique
-	}
-	return fixtureDriftRuleGeneratedColumn
+	// DeclaredIn is the root-relative migration that last mentions what
+	// postgres complained about, "" when it could not be attributed. It turns
+	// "this fixture is wrong" into "this fixture predates this migration".
+	DeclaredIn string
 }
 
 // message is the one-line summary, shared by text mode and JSON.
 func (f fixtureDriftFinding) message() string {
-	if f.Kind == driftDuplicateUnique {
-		return fmt.Sprintf("this INSERT writes %s into %s.%s on more than one row, and that column is UNIQUE",
-			f.Value, f.Table, f.Column)
+	target := "this statement"
+	if f.Table != "" {
+		target = "this INSERT INTO " + f.Table
 	}
-	return fmt.Sprintf("this INSERT names %s.%s, which is GENERATED ALWAYS — postgres rejects the statement",
-		f.Table, f.Column)
+	code := ""
+	if f.Code != "" {
+		code = fmt.Sprintf(" (SQLSTATE %s)", f.Code)
+	}
+	return fmt.Sprintf("postgres rejects %s against the current schema: %s%s", target, f.Message, code)
 }
 
 // fixtureDriftFixHint renders the remediation.
 //
-// Both arms state the ownership fact explicitly. The author was told forge
-// would never touch this file again, so a finding about it has to say
-// plainly that editing it is theirs to do and will not be reverted —
-// otherwise the obvious next move is to re-run `forge generate` and conclude
-// the lint is wrong when nothing changes.
+// It states the ownership fact explicitly. The author was told forge would
+// never touch this file again, so a finding about it has to say plainly that
+// editing it is theirs to do and will not be reverted — otherwise the obvious
+// next move is to re-run `forge generate` and conclude the lint is wrong when
+// nothing changes.
 func fixtureDriftFixHint(f fixtureDriftFinding) string {
 	origin := ""
-	if f.DeclaredIn != "" {
-		origin = fmt.Sprintf(" (declared in %s)", f.DeclaredIn)
+	switch {
+	case f.Constraint != "" && f.DeclaredIn != "":
+		origin = fmt.Sprintf(" Constraint %s is declared in %s.", f.Constraint, f.DeclaredIn)
+	case f.Constraint != "":
+		origin = fmt.Sprintf(" Constraint: %s.", f.Constraint)
+	case f.DeclaredIn != "":
+		origin = fmt.Sprintf(" The column changed in %s.", f.DeclaredIn)
 	}
-	if f.Kind == driftDuplicateUnique {
-		return fmt.Sprintf(
-			"%s.%s is UNIQUE — constraint %s%s — but this INSERT writes %s in that column on more "+
-				"than one row, so postgres rejects the whole statement with `duplicate key value "+
-				"violates unique constraint %q`, in test setup, naming no fixture. These rows were "+
-				"scaffolded when the column still allowed duplicates, and handlers_crud_test.go is "+
-				"yours — written once, never regenerated — so `forge generate` cannot repair it. "+
-				"Give each row a distinct %s, or drop the extra row if the edge is genuinely "+
-				"one-to-one. If the collision is deliberate, add `ON CONFLICT (%s) DO NOTHING` to "+
-				"the statement.",
-			f.Table, f.Column, f.Constraint, origin, f.Value, f.Constraint, f.Column, f.Column)
-	}
-	expr := ""
-	if e := strings.TrimSpace(f.Expression); e != "" {
-		expr = fmt.Sprintf(" AS (%s)", e)
-	}
-	return fmt.Sprintf(
-		"%s.%s is GENERATED ALWAYS%s STORED%s, so postgres computes it on every write and REFUSES "+
-			"any INSERT that names it: `cannot insert a non-DEFAULT value into column %q` "+
-			"(SQLSTATE 428C9). This column list was written from the schema as it stood when the "+
-			"test was scaffolded, and handlers_crud_test.go is yours — written once, never "+
-			"regenerated — so `forge generate` cannot repair it. Remove %q from the column list "+
-			"and its value from every VALUES row in this statement. The regenerated sibling "+
-			"factories_gen_test.go already derives this correctly and omits the column; it is the "+
-			"reference for what this block should look like.",
-		f.Table, f.Column, expr, origin, f.Column, f.Column)
+	return "This fixture was scaffolded from the schema as it stood then, and handlers_crud_test.go is yours — " +
+		"written once, never regenerated — so `forge generate` cannot repair it." + origin + " " +
+		"Lifecycle tests forge scaffolds now carry no literal fixtures: they call New<CreateRequest>(t, db, variant) " +
+		"from the regenerated factories_gen_test.go beside this file, which seeds the parents and fills the request " +
+		"from the current schema on every generate. Replace this seed block and the literal create requests with " +
+		"those calls (see `forge skill load testing`), or edit the statement until postgres accepts it."
+}
+
+// fixtureDriftReport is everything one run found. Unverified is non-empty
+// when literal fixtures exist but could not be executed.
+type fixtureDriftReport struct {
+	Findings   []fixtureDriftFinding
+	Statements int // fixture statements executed
+	Unverified string
+	// UnverifiedFile is a root-relative test file the unverified statements
+	// live in, so the JSON finding has somewhere to point.
+	UnverifiedFile string
 }
 
 // runFixtureDriftLint is the text-mode entry point.
 func runFixtureDriftLint(cwd string, cfg *config.ProjectConfig) error {
 	fmt.Println("Running fixture-drift lint...")
-	findings, err := collectFixtureDriftFindings(cwd, migrationsDirFor(cfg))
+	rep, err := collectFixtureDriftFindings(cwd, migrationsDirFor(cfg))
 	if err != nil {
 		return err
 	}
-	formatFixtureDrift(os.Stdout, findings)
+	formatFixtureDrift(os.Stdout, rep)
 	return nil
 }
 
 // formatFixtureDrift writes the human report, matching the sibling advisory
 // lanes: one success line when clean, one ⚠ block per finding otherwise.
-func formatFixtureDrift(w io.Writer, findings []fixtureDriftFinding) {
-	if len(findings) == 0 {
-		// Naming the two shapes is load-bearing, not pedantry. The
-		// previous wording — "no scaffolded seed block contradicts the
-		// current schema" — was a verdict on the WHOLE question while
-		// this lane answers two specific shapes of it. A reader took it
-		// for a foreign-key clearance and shipped five fixtures the
-		// schema rejects. A clean line that overstates its scope is worse
-		// than no line, because it converts "I did not check that" into
-		// "I checked, it is fine". Foreign keys are crud-fixtures' lane.
-		_, _ = fmt.Fprintln(w, "  fixture-drift clean — no scaffolded seed block names a GENERATED column "+
-			"or repeats a value in a UNIQUE one (foreign keys: see crud-fixtures)")
+//
+// The clean line states exactly what was checked. A clean line that
+// overstates its scope is worse than no line, because it converts "I did not
+// check that" into "I checked, it is fine" — the previous wording of this lane
+// was read as a foreign-key clearance it never gave.
+func formatFixtureDrift(w io.Writer, rep fixtureDriftReport) {
+	if rep.Unverified != "" {
+		_, _ = fmt.Fprintf(w, "  ⚠ [%s] fixture-drift did NOT run: %s\n", fixtureDriftUnverifiedRule, rep.Unverified)
+		_, _ = fmt.Fprintln(w, "      → literal fixtures exist but were not executed; this is not a clean verdict")
 		return
 	}
-	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [%s] %s:%d\n", f.ruleID(), f.File, f.Line)
+	if len(rep.Findings) == 0 {
+		if rep.Statements == 0 {
+			_, _ = fmt.Fprintln(w, "  fixture-drift clean — no scaffolded handlers_crud_test.go carries literal fixture SQL "+
+				"(lifecycle tests build their rows from the regenerated factories_gen_test.go)")
+			return
+		}
+		_, _ = fmt.Fprintf(w, "  fixture-drift clean — all %d literal fixture statement(s) in scaffolded "+
+			"handlers_crud_test.go files execute against the current schema (run in a rolled-back transaction)\n",
+			rep.Statements)
+		return
+	}
+	for _, f := range rep.Findings {
+		_, _ = fmt.Fprintf(w, "  ⚠ [%s] %s:%d\n", fixtureDriftRule, f.File, f.Line)
+		_, _ = fmt.Fprintf(w, "      %s\n", f.message())
 		_, _ = fmt.Fprintf(w, "      → %s\n", fixtureDriftFixHint(f))
 	}
-	_, _ = fmt.Fprintf(w, "\n%d scaffolded fixture(s) that the current schema rejects.\n", len(findings))
+	_, _ = fmt.Fprintf(w, "\n%d scaffolded fixture statement(s) that the current schema rejects.\n", len(rep.Findings))
 	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }
 
 // collectFixtureDriftFindings is the shared engine behind text mode and
 // `forge lint --json`.
 //
-// A project with no migrations, or none of forge's scaffolded lifecycle
-// tests, yields no findings rather than an error: both are ordinary states
-// for a project this lane does not apply to, and a lane that does not apply
-// is not a gap.
-func collectFixtureDriftFindings(root, migrationsDir string) ([]fixtureDriftFinding, error) {
+// A project with no migrations, or no literal fixtures, yields an empty
+// report rather than an error: both are ordinary states for a project this
+// lane does not apply to.
+func collectFixtureDriftFindings(root, migrationsDir string) (fixtureDriftReport, error) {
+	var rep fixtureDriftReport
 	if !filepath.IsAbs(migrationsDir) {
 		migrationsDir = filepath.Join(root, migrationsDir)
 	}
 	testFiles, err := crudTestFiles(root)
 	if err != nil {
-		return nil, err
+		return rep, err
 	}
-	if len(testFiles) == 0 {
-		return nil, nil
-	}
-
-	// The live column set answers check 1 (is this column GENERATED now?),
-	// re-using the same replay the read-only rule depends on. The origins
-	// pass is separate and additive because that replay carries no
-	// attribution — see generatedColumnOrigins.
-	columns, err := readOnlyColumnsFromMigrations(migrationsDir)
-	if err != nil {
-		return nil, err
-	}
-	origins, err := generatedColumnOrigins(root, migrationsDir)
-	if err != nil {
-		return nil, err
-	}
-	uniques, err := uniqueColumnsFromMigrations(root, migrationsDir)
-	if err != nil {
-		return nil, err
-	}
-	if len(columns) == 0 && len(uniques) == 0 {
-		return nil, nil
-	}
-
-	var findings []fixtureDriftFinding
+	var blocks []fixtureBlock
 	for _, path := range testFiles {
 		data, rerr := os.ReadFile(path)
 		if rerr != nil {
-			return nil, fmt.Errorf("read %s: %w", path, rerr)
+			return rep, fmt.Errorf("read %s: %w", path, rerr)
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			rel = path
 		}
-		findings = append(findings,
-			driftedFixtures(filepath.ToSlash(rel), string(data), columns, origins, uniques)...)
+		blocks = append(blocks, fixtureBlocks(filepath.ToSlash(rel), string(data))...)
 	}
-	sort.SliceStable(findings, func(i, j int) bool {
-		if findings[i].File != findings[j].File {
-			return findings[i].File < findings[j].File
-		}
-		return findings[i].Line < findings[j].Line
-	})
-	return findings, nil
-}
-
-// driftedFixtures runs both checks over one lifecycle test.
-func driftedFixtures(
-	relPath, content string,
-	columns map[string]map[string]sqlColumn,
-	origins map[string]map[string]generatedOrigin,
-	uniques map[string]map[string]uniqueDecl,
-) []fixtureDriftFinding {
-	// Comments are blanked for the same reason crud-fixtures blanks them: a
-	// commented-out INSERT is not a statement, and reading one would report a
-	// fixture that does not run. Offsets are preserved in place so line
-	// numbers still address the original text.
-	inserts := parseFixtureInserts(blankSQLComments(content))
-
-	var findings []fixtureDriftFinding
-	for _, ins := range inserts {
-		findings = append(findings, generatedColumnWrites(relPath, content, ins, columns, origins)...)
-		findings = append(findings, duplicateUniqueWrites(relPath, content, ins, uniques)...)
+	if len(blocks) == 0 {
+		return rep, nil
 	}
-	return findings
-}
-
-// generatedColumnWrites reports every column in one INSERT's column list
-// that is GENERATED ALWAYS in the live schema.
-//
-// Only the parenthesized column list is consulted. A column named anywhere
-// else in the file — a Go comment, a t.Fatalf string, a WHERE clause — is
-// structurally unreachable from here, which is what makes that whole class
-// of false positive impossible rather than merely filtered.
-func generatedColumnWrites(
-	relPath, content string,
-	ins fixtureInsert,
-	columns map[string]map[string]sqlColumn,
-	origins map[string]map[string]generatedOrigin,
-) []fixtureDriftFinding {
-	byName := columns[ins.table]
-	if len(byName) == 0 {
-		// A table this replay did not resolve is a gap in the parser, not
-		// evidence about the fixture. Silence is the only sound answer.
-		return nil
+	if _, statErr := os.Stat(migrationsDir); statErr != nil {
+		return rep, nil // no schema to execute against: nothing this lane can say
 	}
-	var findings []fixtureDriftFinding
-	for _, col := range ins.cols {
-		if !byName[col.name].Generated {
-			continue
-		}
-		origin := origins[ins.table][col.name]
-		findings = append(findings, fixtureDriftFinding{
-			Kind:       driftGeneratedColumn,
-			File:       relPath,
-			Line:       lineOf(content, col.offset),
-			Table:      ins.table,
-			Column:     col.name,
-			DeclaredIn: origin.declaredIn,
-			Expression: origin.expression,
-		})
-	}
-	return findings
-}
 
-// duplicateUniqueWrites reports every literal one INSERT writes more than
-// once into a single-column-UNIQUE column.
-//
-// Only the SECOND and later occurrences are reported, one per extra row: the
-// first write is legal, and flagging it too would make a two-row collision
-// read as two independent defects.
-func duplicateUniqueWrites(
-	relPath, content string,
-	ins fixtureInsert,
-	uniques map[string]map[string]uniqueDecl,
-) []fixtureDriftFinding {
-	byName := uniques[ins.table]
-	if len(byName) == 0 || ins.suppressesAllConflicts {
-		return nil
-	}
-	var findings []fixtureDriftFinding
-	for i, col := range ins.cols {
-		decl, isUnique := byName[col.name]
-		if !isUnique || ins.conflictTargets[col.name] {
-			// An ON CONFLICT naming this column means postgres swallows
-			// exactly this collision.
-			continue
-		}
-		seen := map[string]bool{}
-		for _, row := range ins.rows {
-			if i >= len(row) {
-				break
-			}
-			text, kind := decodeSQLLiteral(row[i].raw)
-			// NULL never collides — postgres permits many NULLs in a unique
-			// column — and an opaque value's identity is unknown here.
-			if kind != literalPlain {
-				continue
-			}
-			if !seen[text] {
-				seen[text] = true
-				continue
-			}
-			findings = append(findings, fixtureDriftFinding{
-				Kind:       driftDuplicateUnique,
-				File:       relPath,
-				Line:       lineOf(content, row[i].offset),
-				Table:      ins.table,
-				Column:     col.name,
-				Value:      strings.TrimSpace(row[i].raw),
-				Constraint: decl.constraint,
-				DeclaredIn: decl.declaredIn,
-			})
-		}
-	}
-	return findings
-}
-
-// ── Fixture INSERT parsing ────────────────────────────────────────────────
-
-// fixtureColumn is one name in an INSERT's column list, with its absolute
-// offset so a finding can point at the name rather than the statement.
-type fixtureColumn struct {
-	name   string
-	offset int
-}
-
-// fixtureInsert is one INSERT ... VALUES statement in a lifecycle test.
-//
-// It carries what parseSeedInserts deliberately drops — per-column offsets
-// and the ON CONFLICT clause — because this rule reports on the column list
-// itself and must not speak about a collision postgres is told to swallow.
-type fixtureInsert struct {
-	table string
-	cols  []fixtureColumn
-	rows  [][]seedValue
-
-	// conflictTargets is the column set named by `ON CONFLICT (a, b)`.
-	conflictTargets map[string]bool
-	// suppressesAllConflicts is true for a bare `ON CONFLICT DO NOTHING`, and
-	// for `ON CONFLICT ON CONSTRAINT <name>` — a constraint this text parse
-	// cannot resolve to columns. Both mean the statement's collisions cannot
-	// be reasoned about from here, so the whole statement is left alone.
-	suppressesAllConflicts bool
-}
-
-// onConflictRe captures the clause that follows the value tuples. Group 1 is
-// the parenthesized conflict target when there is one.
-var onConflictRe = regexp.MustCompile(`(?is)^\s*ON\s+CONFLICT\b\s*(?:\(([^)]*)\))?`)
-
-// onConflictConstraintRe matches the constraint-named form, whose columns
-// this parser cannot resolve.
-var onConflictConstraintRe = regexp.MustCompile(`(?is)^\s*ON\s+CONFLICT\s+ON\s+CONSTRAINT\b`)
-
-// parseFixtureInserts extracts every INSERT ... VALUES statement, its column
-// list with offsets, its value tuples, and its conflict handling.
-//
-// content must already have its comments blanked IN PLACE, so offsets still
-// address the original file.
-func parseFixtureInserts(content string) []fixtureInsert {
-	var out []fixtureInsert
-	for _, m := range insertHeadRe.FindAllStringSubmatchIndex(content, -1) {
-		ins := fixtureInsert{
-			table:           normIdent(content[m[2]:m[3]]),
-			cols:            splitColumnList(content[m[4]:m[5]], m[4]),
-			conflictTargets: map[string]bool{},
-		}
-		rows, end := parseValueTuples(content, m[1])
-		if len(rows) == 0 {
-			continue
-		}
-		ins.rows = rows
-		applyConflictClause(&ins, content[end:])
-		out = append(out, ins)
-	}
-	return out
-}
-
-// splitColumnList splits an INSERT column list on commas, carrying each
-// name's absolute offset. base is the offset of the list's first character.
-func splitColumnList(list string, base int) []fixtureColumn {
-	var out []fixtureColumn
-	start := 0
-	emit := func(end int) {
-		part := list[start:end]
-		name := normIdent(part)
-		if name == "" {
-			return
-		}
-		// Point at the identifier itself, not at the leading whitespace or
-		// the opening quote the scaffold writes.
-		off := base + start + len(part) - len(strings.TrimLeft(part, " \t\n\r\"`"))
-		out = append(out, fixtureColumn{name: name, offset: off})
-	}
-	for i := 0; i < len(list); i++ {
-		if list[i] == ',' {
-			emit(i)
-			start = i + 1
-		}
-	}
-	emit(len(list))
-	return out
-}
-
-// applyConflictClause reads the text immediately after the value tuples and
-// records what ON CONFLICT suppresses. tail is everything from the end of the
-// last tuple onward; only the statement's own clause (up to the terminating
-// semicolon) is considered.
-func applyConflictClause(ins *fixtureInsert, tail string) {
-	if i := strings.IndexByte(tail, ';'); i >= 0 {
-		tail = tail[:i]
-	}
-	if onConflictConstraintRe.MatchString(tail) {
-		ins.suppressesAllConflicts = true
-		return
-	}
-	m := onConflictRe.FindStringSubmatch(tail)
-	if m == nil {
-		return
-	}
-	targets := strings.TrimSpace(m[1])
-	if targets == "" {
-		// A bare `ON CONFLICT DO NOTHING` swallows every collision.
-		ins.suppressesAllConflicts = true
-		return
-	}
-	for _, c := range strings.Split(targets, ",") {
-		if name := normIdent(c); name != "" {
-			ins.conflictTargets[name] = true
-		}
-	}
-}
-
-// ── Schema facts out of migration text ────────────────────────────────────
-
-// generatedOrigin attributes a GENERATED ALWAYS column to the migration that
-// declared it, and carries the expression postgres computes.
-type generatedOrigin struct {
-	declaredIn string
-	expression string
-}
-
-// generatedExprRe captures the body of `GENERATED ALWAYS AS (...) STORED`.
-var generatedExprRe = regexp.MustCompile(`(?is)\bGENERATED\s+ALWAYS\s+AS\s*\((.*)\)\s*STORED\b`)
-
-// generatedColumnOrigins records which migration last declared each column
-// GENERATED, and with what expression.
-//
-// This is a separate, additive pass rather than a field on sqlColumn: the
-// shared column replay answers "what is the schema now", which is the
-// question check 1 actually asks, and it carries no per-column provenance.
-// Attribution is a message-quality concern — a finding whose DeclaredIn is
-// empty is still a correct finding — so it is kept out of the shared type
-// where a wrong answer would reach two other rules.
-func generatedColumnOrigins(root, migrationsDir string) (map[string]map[string]generatedOrigin, error) {
-	out := map[string]map[string]generatedOrigin{}
-	err := eachMigration(root, migrationsDir, func(relPath, content string) {
-		record := func(table string, def string) {
-			m := generatedExprRe.FindStringSubmatch(def)
-			if m == nil {
-				return
-			}
-			col, ok := parseColumnDef(def)
-			if !ok {
-				return
-			}
-			if out[table] == nil {
-				out[table] = map[string]generatedOrigin{}
-			}
-			out[table][col.Name] = generatedOrigin{
-				declaredIn: relPath,
-				expression: strings.TrimSpace(m[1]),
-			}
-		}
-		for _, m := range createTableRe.FindAllStringSubmatchIndex(content, -1) {
-			table := normIdent(content[m[2]:m[3]])
-			open := m[1] - 1 // the '(' the pattern ends on
-			end, ok := matchParen(content, open)
-			if !ok {
-				continue
-			}
-			for _, part := range splitTopLevel(content[open+1 : end]) {
-				record(table, part)
-			}
-		}
-		for _, m := range alterAddColumnRe.FindAllStringSubmatch(content, -1) {
-			record(normIdent(m[1]), m[2])
-		}
-	})
+	_, shadow, err := schemadef.ApplyAndIntrospectShadowAt(migrationsDir, shadowdb.Resolve(root))
 	if err != nil {
-		return nil, err
+		shadow.Close()
+		rep.Unverified = fmt.Sprintf("could not apply %s to a shadow postgres to execute the fixtures against: %v",
+			relOrSelf(root, migrationsDir), err)
+		rep.UnverifiedFile = blocks[0].file
+		return rep, nil
 	}
-	return out, nil
-}
+	defer shadow.Close()
 
-// uniqueDecl is one single-column UNIQUE constraint, with the migration that
-// declared it.
-type uniqueDecl struct {
-	table      string
-	column     string
-	constraint string
-	declaredIn string
-}
-
-var (
-	// alterAddUniqueRe matches `ALTER TABLE t ADD CONSTRAINT n UNIQUE (col)`.
-	// The column group deliberately forbids a comma, so a composite UNIQUE
-	// simply does not match — see the file header for why per-column
-	// reporting of a composite constraint would be a false positive.
-	alterAddUniqueRe = regexp.MustCompile(
-		`(?is)\bALTER\s+TABLE\s+(?:ONLY\s+)?("?[\w.]+"?)\s+ADD\s+CONSTRAINT\s+("?\w+"?)\s+UNIQUE\s*\(\s*("?\w+"?)\s*\)`)
-	// createUniqueIndexRe matches a single-column unique index. The trailing
-	// group captures whatever follows, so a partial index (`... WHERE ...`)
-	// can be excluded.
-	createUniqueIndexRe = regexp.MustCompile(
-		`(?is)\bCREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?("?\w+"?)?\s*ON\s+(?:ONLY\s+)?("?[\w.]+"?)\s*(?:USING\s+\w+\s*)?\(\s*("?\w+"?)\s*\)([^;]*)`)
-	// dropIndexRe retracts a unique index.
-	dropIndexRe = regexp.MustCompile(`(?is)\bDROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?("?[\w.]+"?)`)
-	// tableUniqueRe matches a table-level `[CONSTRAINT n] UNIQUE (col)` inside
-	// a CREATE TABLE body. Single column only, for the same reason.
-	tableUniqueRe = regexp.MustCompile(
-		`(?is)^\s*(?:CONSTRAINT\s+("?\w+"?)\s+)?UNIQUE\s*\(\s*("?\w+"?)\s*\)\s*$`)
-	// inlineUniqueRe matches a UNIQUE keyword inside a column definition.
-	inlineUniqueRe = regexp.MustCompile(`(?is)\bUNIQUE\b`)
-	// partialIndexRe detects the predicate that makes a unique index partial.
-	partialIndexRe = regexp.MustCompile(`(?is)\bWHERE\b`)
-)
-
-// uniqueColumnsFromMigrations reads the live single-column UNIQUE
-// constraints out of the project's migrations, indexed as uniques[table][column].
-//
-// Migrations are replayed in lexical order and DROP CONSTRAINT / DROP INDEX /
-// DROP TABLE retract what earlier files added, so the result describes the
-// schema as it stands after the last migration. Keyed by constraint name
-// internally so a DROP retracts exactly what its ADD introduced — the same
-// shape foreignKeysFromMigrations uses.
-//
-// PRIMARY KEY is deliberately absent: it is a unique constraint, but the
-// generator emits distinct ids by construction, so including it widens the
-// surface for no measured benefit.
-func uniqueColumnsFromMigrations(root, migrationsDir string) (map[string]map[string]uniqueDecl, error) {
-	live := map[string]uniqueDecl{}
-	err := eachMigration(root, migrationsDir, func(relPath, content string) {
-		for _, m := range createTableRe.FindAllStringSubmatchIndex(content, -1) {
-			table := normIdent(content[m[2]:m[3]])
-			open := m[1] - 1
-			end, ok := matchParen(content, open)
-			if !ok {
-				continue
-			}
-			for _, part := range splitTopLevel(content[open+1 : end]) {
-				if decl, found := createTableUnique(table, part); found {
-					decl.declaredIn = relPath
-					live[decl.constraint] = decl
-				}
-			}
+	ctx := context.Background()
+	for _, b := range blocks {
+		found, ran, xerr := executeFixtureBlock(ctx, shadow.DB(), b)
+		if xerr != nil {
+			rep.Unverified = fmt.Sprintf("could not execute the fixtures in %s against the shadow postgres: %v", b.file, xerr)
+			rep.UnverifiedFile = b.file
+			rep.Findings = nil
+			return rep, nil
 		}
-		for _, m := range alterAddUniqueRe.FindAllStringSubmatch(content, -1) {
-			decl := uniqueDecl{
-				table:      normIdent(m[1]),
-				constraint: normIdent(m[2]),
-				column:     normIdent(m[3]),
-				declaredIn: relPath,
-			}
-			live[decl.constraint] = decl
+		rep.Statements += ran
+		rep.Findings = append(rep.Findings, found...)
+	}
+	attributeFixtureFindings(root, migrationsDir, rep.Findings)
+	sort.SliceStable(rep.Findings, func(i, j int) bool {
+		if rep.Findings[i].File != rep.Findings[j].File {
+			return rep.Findings[i].File < rep.Findings[j].File
 		}
-		for _, m := range createUniqueIndexRe.FindAllStringSubmatch(content, -1) {
-			if partialIndexRe.MatchString(m[4]) {
-				// A partial unique index forbids duplicates only where its
-				// predicate holds, and this parser does not evaluate
-				// predicates. Silence is the only sound answer.
-				continue
-			}
-			decl := uniqueDecl{
-				table:      normIdent(m[2]),
-				constraint: normIdent(m[1]),
-				column:     normIdent(m[3]),
-				declaredIn: relPath,
-			}
-			if decl.constraint == "" {
-				decl.constraint = fmt.Sprintf("%s_%s_key", decl.table, decl.column)
-			}
-			live[decl.constraint] = decl
-		}
-		for _, m := range alterDropConstraintRe.FindAllStringSubmatch(content, -1) {
-			delete(live, normIdent(m[2]))
-		}
-		for _, m := range dropIndexRe.FindAllStringSubmatch(content, -1) {
-			delete(live, normIdent(m[1]))
-		}
-		for _, m := range alterDropColumnRe.FindAllStringSubmatch(content, -1) {
-			table, column := normIdent(m[1]), normIdent(m[2])
-			for name, decl := range live {
-				if decl.table == table && decl.column == column {
-					delete(live, name)
-				}
-			}
-		}
-		for _, m := range dropTableRe.FindAllStringSubmatch(content, -1) {
-			dropped := normIdent(m[1])
-			for name, decl := range live {
-				if decl.table == dropped {
-					delete(live, name)
-				}
-			}
-		}
+		return rep.Findings[i].Line < rep.Findings[j].Line
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	out := map[string]map[string]uniqueDecl{}
-	for _, decl := range live {
-		if out[decl.table] == nil {
-			out[decl.table] = map[string]uniqueDecl{}
-		}
-		out[decl.table][decl.column] = decl
-	}
-	return out, nil
+	return rep, nil
 }
 
-// createTableUnique reads one CREATE TABLE body part as a single-column
-// UNIQUE declaration, either as a table constraint or inline on the column.
-//
-// An unnamed constraint is given the name postgres derives for it,
-// `<table>_<column>_key`, so a later DROP CONSTRAINT naming it retracts the
-// right entry.
-func createTableUnique(table, part string) (uniqueDecl, bool) {
-	if m := tableUniqueRe.FindStringSubmatch(part); m != nil {
-		decl := uniqueDecl{table: table, constraint: normIdent(m[1]), column: normIdent(m[2])}
-		if decl.constraint == "" {
-			decl.constraint = fmt.Sprintf("%s_%s_key", decl.table, decl.column)
-		}
-		return decl, true
+// relOrSelf renders path relative to root when it can.
+func relOrSelf(root, path string) string {
+	if rel, err := filepath.Rel(root, path); err == nil {
+		return filepath.ToSlash(rel)
 	}
-	col, ok := parseColumnDef(part)
-	if !ok || !inlineUniqueRe.MatchString(part) {
-		return uniqueDecl{}, false
-	}
-	return uniqueDecl{
-		table:      table,
-		column:     col.Name,
-		constraint: fmt.Sprintf("%s_%s_key", table, col.Name),
-	}, true
+	return path
 }
 
-// eachMigration walks the project's .up.sql files in lexical order — the
-// order the migrator applies them — and hands each one's root-relative path
-// and comment-blanked content to fn.
-//
-// Comments are blanked because forge's own birth migration writes the
-// constraints it CANNOT yet apply as commented-out suggestions. Reading
-// those would build a schema that does not exist and report fixtures against
-// constraints nobody has applied.
-func eachMigration(root, migrationsDir string, fn func(relPath, content string)) error {
-	if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
-		return nil
+// crudTestFiles returns every scaffolded lifecycle test under
+// internal/handlers, sorted.
+func crudTestFiles(root string) ([]string, error) {
+	handlersDir := filepath.Join(root, "internal", "handlers")
+	if _, err := os.Stat(handlersDir); os.IsNotExist(err) {
+		return nil, nil
 	}
 	var files []string
-	if err := filepath.WalkDir(migrationsDir, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(handlersDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".up.sql") {
+		if !d.IsDir() && d.Name() == "handlers_crud_test.go" {
 			files = append(files, path)
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("walk %s: %w", migrationsDir, err)
+		return nil, fmt.Errorf("walk %s: %w", handlersDir, err)
 	}
 	sort.Strings(files)
+	return files, nil
+}
 
-	for _, path := range files {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			rel = path
-		}
-		fn(filepath.ToSlash(rel), blankSQLComments(string(data)))
+// fixtureStatement is one SQL statement out of a fixture literal.
+type fixtureStatement struct {
+	sql   string
+	line  int
+	table string // the INSERT target, "" for any other statement
+}
+
+// fixtureBlock is the fixture SQL one test function executes, in order —
+// the unit that shares a database in the test, and so a transaction here.
+type fixtureBlock struct {
+	file  string
+	stmts []fixtureStatement
+}
+
+var (
+	// fixtureInsertRe recognizes a literal that carries fixture SQL, and
+	// captures an INSERT statement's target table.
+	fixtureInsertRe = regexp.MustCompile(`(?is)^\s*INSERT\s+INTO\s+("?[\w.]+"?)`)
+	// bindParamRe matches a positional bind placeholder.
+	bindParamRe = regexp.MustCompile(`\$\d+`)
+)
+
+// fixtureBlocks reads the fixture blocks out of one lifecycle test: every
+// raw-string literal carrying an INSERT, grouped by the function declaring
+// it, in source order. A literal outside any function is its own block.
+func fixtureBlocks(relPath, content string) []fixtureBlock {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, relPath, content, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
 	}
-	return nil
+	var blocks []fixtureBlock
+	collect := func(n ast.Node) []fixtureStatement {
+		var stmts []fixtureStatement
+		ast.Inspect(n, func(node ast.Node) bool {
+			lit, ok := node.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING || !strings.HasPrefix(lit.Value, "`") {
+				return true
+			}
+			stmts = append(stmts, literalStatements(fset, lit)...)
+			return true
+		})
+		return stmts
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			if stmts := collect(fn); len(stmts) > 0 {
+				blocks = append(blocks, fixtureBlock{file: relPath, stmts: stmts})
+			}
+			continue
+		}
+		ast.Inspect(decl, func(node ast.Node) bool {
+			lit, ok := node.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING || !strings.HasPrefix(lit.Value, "`") {
+				return true
+			}
+			if stmts := literalStatements(fset, lit); len(stmts) > 0 {
+				blocks = append(blocks, fixtureBlock{file: relPath, stmts: stmts})
+			}
+			return true
+		})
+	}
+	return blocks
+}
+
+// literalStatements splits one raw-string literal into its executable
+// statements, or returns nil when the literal carries no INSERT (it is then
+// not fixture SQL — a SELECT under assertion, a message).
+func literalStatements(fset *token.FileSet, lit *ast.BasicLit) []fixtureStatement {
+	body := lit.Value[1 : len(lit.Value)-1]
+	parts := splitSQLStatements(body)
+	hasInsert := false
+	for _, p := range parts {
+		if fixtureInsertRe.MatchString(p.text) {
+			hasInsert = true
+			break
+		}
+	}
+	if !hasInsert {
+		return nil
+	}
+	startLine := fset.Position(lit.Pos()).Line
+	var out []fixtureStatement
+	for _, p := range parts {
+		text := strings.TrimSpace(p.text)
+		if text == "" || bindParamRe.MatchString(text) {
+			continue
+		}
+		lead := len(p.text) - len(strings.TrimLeft(p.text, " \t\r\n"))
+		st := fixtureStatement{
+			sql:  text,
+			line: startLine + strings.Count(body[:p.offset+lead], "\n"),
+		}
+		if m := fixtureInsertRe.FindStringSubmatch(text); m != nil {
+			st.table = m[1]
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// sqlPart is one statement's text and its offset in the literal.
+type sqlPart struct {
+	text   string
+	offset int
+}
+
+// splitSQLStatements splits SQL on the semicolons that end statements —
+// never one inside a string literal, a quoted identifier, or a comment. A
+// comment-only part is kept as text and dropped by the caller as empty.
+func splitSQLStatements(body string) []sqlPart {
+	var (
+		out   []sqlPart
+		start int
+	)
+	blanked := blankSQLComments(body)
+	inSingle, inDouble := false, false
+	for i := 0; i < len(blanked); i++ {
+		c := blanked[i]
+		switch {
+		case inSingle:
+			if c == '\'' {
+				if i+1 < len(blanked) && blanked[i+1] == '\'' {
+					i++ // '' escape
+					continue
+				}
+				inSingle = false
+			}
+		case inDouble:
+			if c == '"' {
+				inDouble = false
+			}
+		case c == '\'':
+			inSingle = true
+		case c == '"':
+			inDouble = true
+		case c == ';':
+			out = append(out, sqlPart{text: blanked[start:i], offset: start})
+			start = i + 1
+		}
+	}
+	if strings.TrimSpace(blanked[start:]) != "" {
+		out = append(out, sqlPart{text: blanked[start:], offset: start})
+	}
+	return out
+}
+
+// executeFixtureBlock runs one block's statements in order inside a
+// transaction that is always rolled back, each under its own SAVEPOINT so a
+// rejected statement is recorded and the rest still run. It returns the
+// rejections and the number of statements executed; err is reserved for the
+// harness itself failing (the shadow could not open a transaction), which is
+// not a verdict about any fixture.
+func executeFixtureBlock(ctx context.Context, db *sql.DB, b fixtureBlock) (findings []fixtureDriftFinding, ran int, err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for i, st := range b.stmts {
+		sp := fmt.Sprintf("forge_fixture_%d", i)
+		if _, err := tx.ExecContext(ctx, "SAVEPOINT "+sp); err != nil {
+			return nil, ran, err
+		}
+		ran++
+		if _, xerr := tx.ExecContext(ctx, st.sql); xerr != nil {
+			findings = append(findings, rejectedFixture(b.file, st, xerr))
+			if _, err := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+sp); err != nil {
+				return nil, ran, err
+			}
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+sp); err != nil {
+			return nil, ran, err
+		}
+	}
+	return findings, ran, nil
+}
+
+// rejectedFixture turns postgres's error into a finding, keeping its SQLSTATE,
+// message and constraint name verbatim.
+func rejectedFixture(file string, st fixtureStatement, err error) fixtureDriftFinding {
+	f := fixtureDriftFinding{File: file, Line: st.line, Table: st.table, Message: err.Error()}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		f.Code = string(pqErr.Code)
+		f.Message = pqErr.Message
+		f.Constraint = pqErr.Constraint
+	}
+	return f
+}
+
+// generatedColumnMsgRe pulls the column out of postgres's 428C9 message.
+var generatedColumnMsgRe = regexp.MustCompile(`column "([^"]+)"`)
+
+// attributeFixtureFindings fills DeclaredIn: the LAST migration (in apply
+// order) that mentions what postgres complained about — the named constraint,
+// or for a write into a generated column, that column's GENERATED clause.
+// Best-effort; an unattributed finding is still a correct one.
+func attributeFixtureFindings(root, migrationsDir string, findings []fixtureDriftFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	type migration struct{ rel, content string }
+	var migrations []migration
+	_ = eachMigration(root, migrationsDir, func(relPath, content string) {
+		migrations = append(migrations, migration{relPath, content})
+	})
+	lastMatching := func(re *regexp.Regexp) string {
+		for i := len(migrations) - 1; i >= 0; i-- {
+			if re.MatchString(migrations[i].content) {
+				return migrations[i].rel
+			}
+		}
+		return ""
+	}
+	for i := range findings {
+		f := &findings[i]
+		switch {
+		case f.Constraint != "":
+			f.DeclaredIn = lastMatching(regexp.MustCompile(`\b` + regexp.QuoteMeta(f.Constraint) + `\b`))
+		case f.Code == "428C9":
+			if m := generatedColumnMsgRe.FindStringSubmatch(f.Message); m != nil {
+				f.DeclaredIn = lastMatching(regexp.MustCompile(
+					`(?is)\b` + regexp.QuoteMeta(m[1]) + `\b[^,;]*\bGENERATED\s+ALWAYS\b`))
+			}
+		}
+	}
 }

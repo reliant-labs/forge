@@ -343,9 +343,7 @@ func collectSingleLinterJSON(
 		return reportUngated(collectConfigDepsJSON(cwd))
 	case flags.columnMarkers:
 		return reportUngated(collectColumnMarkersJSON(cfg))
-	case flags.crudFixtures:
-		return reportUngated(collectCrudFixturesJSON(cwd, cfg))
-	case flags.fixtureDrift:
+	case flags.fixtureDrift || flags.crudFixtures:
 		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
 	case flags.timeBucketing:
 		return reportUngated(collectTimeBucketingJSON(cwd, cfg))
@@ -594,38 +592,14 @@ func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, err
 	return out, nil
 }
 
-// collectCrudFixturesJSON maps crud-fixtures findings onto the JSON
-// contract. Severity warning across the board: the fixture is genuinely
-// stale and its test genuinely fails, but the file is the user's — forge
-// scaffolded it once and does not own it — so the finding reports and
-// locates the problem rather than gating the build on an edit only the
-// author can make.
-func collectCrudFixturesJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
-	findings, err := collectCrudFixtureFindings(cwd, migrationsDirFor(cfg))
-	if err != nil {
-		return nil, fmt.Errorf("crud-fixtures lint failed: %w", err)
-	}
-	out := make([]lintJSONFinding, 0, len(findings))
-	for _, f := range findings {
-		out = append(out, lintJSONFinding{
-			File:     f.File,
-			Line:     f.Line,
-			Severity: lintSevWarning,
-			Rule:     "forge-crud-fixtures",
-			Message: fmt.Sprintf("seeded value %s in %s.%s references no seeded %s.%s row",
-				f.Value, f.Table, f.Column, f.RefTable, f.RefColumn),
-			FixHint: crudFixtureFixHint(f),
-		})
-	}
-	return out, nil
-}
-
 // collectFixtureDriftJSON maps fixture-drift findings onto the JSON
-// contract. Severity warning across the board, matching its crud-fixtures
-// sibling: the fixture is genuinely broken and its test genuinely fails,
-// but handlers_crud_test.go is the user's — forge scaffolded it once and
-// does not own it — so the finding locates the problem rather than gating
-// the build on an edit only the author can make.
+// contract. Severity warning across the board: the fixture is genuinely
+// broken and its test genuinely fails, but handlers_crud_test.go is the
+// user's — forge scaffolded it once and does not own it — so the finding
+// locates the problem rather than gating the build on an edit only the
+// author can make. A run that found literal fixtures but could not execute
+// them reports that too, as its own rule, so "not checked" never reads as
+// "clean".
 func collectFixtureDriftJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
 	return collectFixtureDriftJSONAt(cwd, migrationsDirFor(cfg))
 }
@@ -633,17 +607,25 @@ func collectFixtureDriftJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONF
 // collectFixtureDriftJSONAt is the config-free half, so a test can drive the
 // JSON shape against a temp project without building a ProjectConfig.
 func collectFixtureDriftJSONAt(cwd, migrationsDir string) ([]lintJSONFinding, error) {
-	findings, err := collectFixtureDriftFindings(cwd, migrationsDir)
+	rep, err := collectFixtureDriftFindings(cwd, migrationsDir)
 	if err != nil {
 		return nil, fmt.Errorf("fixture-drift lint failed: %w", err)
 	}
-	out := make([]lintJSONFinding, 0, len(findings))
-	for _, f := range findings {
+	out := make([]lintJSONFinding, 0, len(rep.Findings)+1)
+	if rep.Unverified != "" {
+		out = append(out, lintJSONFinding{
+			File:     rep.UnverifiedFile,
+			Severity: lintSevWarning,
+			Rule:     fixtureDriftUnverifiedRule,
+			Message:  "literal fixtures were not executed: " + rep.Unverified,
+		})
+	}
+	for _, f := range rep.Findings {
 		out = append(out, lintJSONFinding{
 			File:     f.File,
 			Line:     f.Line,
 			Severity: lintSevWarning,
-			Rule:     f.ruleID(),
+			Rule:     fixtureDriftRule,
 			Message:  f.message(),
 			FixHint:  fixtureDriftFixHint(f),
 		})

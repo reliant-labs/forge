@@ -31,7 +31,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/credentials"
 )
 
@@ -124,7 +123,6 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 		source CredentialSource
 	}{
 		{ClientID, SourceLogin},
-		{cloudcred.HostClientID, SourceHost},
 	} {
 		stored, lookupErr := credentials.Lookup(path, ep.URL, attempt.client)
 		switch {

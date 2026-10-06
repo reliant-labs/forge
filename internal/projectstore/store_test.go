@@ -6,8 +6,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-func boolp(b bool) *bool { return &b }
-
 func sampleConfig() *config.ProjectConfig {
 	return &config.ProjectConfig{
 		Name:         "demo",

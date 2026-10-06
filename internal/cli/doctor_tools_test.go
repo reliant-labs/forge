@@ -35,9 +35,6 @@ func (s stubVersion) Run(_ context.Context, name string, _ []string) (string, er
 	return s.out[name], s.err[name]
 }
 
-// boolPtr is a local helper because config doesn't export one.
-func boolPtr(b bool) *bool { return &b }
-
 // minimalServiceCfg returns a service-kind project with all features
 // at their defaults (enabled) — the baseline state for tool-check
 // predicates.

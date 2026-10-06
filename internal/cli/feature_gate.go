@@ -29,8 +29,6 @@ package cli
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
-
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
@@ -41,13 +39,6 @@ import (
 // already said whatever there was to say. `protoc-gen-forge` is spawned by buf
 // once per proto file, and each spawn is a fresh process.
 const machineInvokedAnnotation = "forge.machine-invoked"
-
-// machineInvoked reports whether cmd is a forge-spawned subprocess rather than
-// a user-typed command.
-func machineInvoked(cmd *cobra.Command) bool {
-	_, ok := cmd.Annotations[machineInvokedAnnotation]
-	return ok
-}
 
 // featureCheck is the per-feature predicate signature. Each Feature*
 // constant in package config has a paired FeaturesConfig.<Name>Enabled

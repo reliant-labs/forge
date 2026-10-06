@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"unicode"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -1079,58 +1078,6 @@ func findNodePos(node *yaml.Node, segments []string) (int, int) {
 		return 0, 0
 	}
 	return cur.Line, cur.Column
-}
-
-// goReservedWords is the set of Go keywords plus predeclared identifiers
-// that cannot be used as package names without breaking the build.
-// We use this to flag service / binary / frontend names whose canonical
-// Go-package form (naming.ServicePackage) lands on one of them — e.g.
-// a service named "select" or "type" would compile-fail downstream.
-var goReservedWords = map[string]bool{
-	// Keywords.
-	"break": true, "case": true, "chan": true, "const": true, "continue": true,
-	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
-	"func": true, "go": true, "goto": true, "if": true, "import": true,
-	"interface": true, "map": true, "package": true, "range": true, "return": true,
-	"select": true, "struct": true, "switch": true, "type": true, "var": true,
-	// Predeclared identifiers that would shadow basic types and break
-	// `package <name>` in the generated tree.
-	"bool": true, "byte": true, "complex64": true, "complex128": true,
-	"error": true, "float32": true, "float64": true, "int": true, "int8": true,
-	"int16": true, "int32": true, "int64": true, "rune": true, "string": true,
-	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
-	"uintptr": true, "any": true, "true": true, "false": true, "nil": true,
-	"iota": true, "init": true,
-}
-
-// isValidGoPackageIdent reports whether s is a syntactically-legal Go
-// package identifier: starts with an ASCII letter or underscore, and
-// the rest are ASCII letters, digits, or underscores. We restrict to
-// ASCII even though Go technically allows broader Unicode-letter
-// package names — every forge-generated import path, directory name,
-// and KCL/k8s identifier downstream assumes ASCII, so a Unicode-letter
-// service name would surface as a downstream error far from the cause.
-func isValidGoPackageIdent(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, r := range s {
-		if r > unicode.MaxASCII {
-			return false
-		}
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
-		isDigit := r >= '0' && r <= '9'
-		if i == 0 {
-			if !isLetter {
-				return false
-			}
-			continue
-		}
-		if !isLetter && !isDigit {
-			return false
-		}
-	}
-	return true
 }
 
 // looksLikeGoModulePath does a cheap shape check so we catch obvious

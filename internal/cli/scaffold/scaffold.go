@@ -1419,9 +1419,8 @@ frontends[].routes and honored by every subsequent forge generate run.
 frontend whose screens are all hand-written).
 
 --base-path mounts the frontend under a URL prefix (e.g. /admin behind a
-reverse proxy that blends several apps on one host). It is persisted as
-frontends[].base_path in forge.yaml and rendered into next.config.ts
-(basePath + assetPrefix) and the generated src/lib/basepath_gen.ts
+reverse proxy that blends several apps on one host). It is rendered into
+next.config.ts (basePath + assetPrefix; forge reads it back from there) and the generated src/lib/basepath_gen.ts
 helper. The single runtime override is NEXT_PUBLIC_BASE_PATH.
 
 --auth-mode names the sign-in flow this frontend uses. "native" is the

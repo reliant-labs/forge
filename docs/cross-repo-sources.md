@@ -7,11 +7,11 @@ primary customer-facing SPA, but the code is in the `reliant` repository's
 
 Until this existed, the only way to say that was a filesystem path:
 
-```yaml
-frontends:
-  - name: reliant-web
-    type: vite-spa
-    path: ../reliant/web # works on a laptop, absent in CI
+```python
+forge.Frontend {
+    name = "reliant-web"
+    path = "../reliant/web"  # works on a laptop, absent in CI
+}
 ```
 
 This document describes what replaced it, and why the replacement is a
@@ -20,7 +20,7 @@ pinned source rather than a checkout step in CI.
 The implementation lives in:
 
 - `internal/gitsource/` — the resolver, the cache, the overrides file
-- `internal/config/config.go` — the `forge.yaml` schema (`GitSource`)
+- `internal/config/config.go` — the shared `GitSource` type
 - `kcl/schema.k` — the KCL schema (`forge.GitSource`)
 - `internal/cli/frontend_source.go` — the build/deploy resolution seam
 
@@ -30,7 +30,7 @@ The obvious failure is that `../reliant/web` does not exist in CI, where
 `actions/checkout` clones one repository, so the build dies:
 
 ```
-frontends[name=reliant-web] (type=vite-spa) declared in forge.yaml but path
+frontends[name=reliant-web] (type=vite-spa) declared in deploy/kcl but path
 "../reliant/web" does not exist (expected at /tmp/.../reliant/web)
 ```
 
@@ -82,18 +82,6 @@ forge.Frontend {
     public_dir = "dist"
     runtime = forge.OnFirebase { project = "reliant-labs-475814", site = "reliant-prod" }
 }
-```
-
-and the `forge.yaml` equivalent:
-
-```yaml
-frontends:
-  - name: reliant-web
-    type: vite-spa
-    source:
-      repo: github.com/reliant-labs/reliant
-      ref: v1.6.3
-      subdir: web
 ```
 
 `repo` accepts the canonical `host/owner/name` shorthand, which forge
@@ -182,7 +170,7 @@ building.
 
 ## What is covered today
 
-**Frontends**, end to end: schema (`forge.yaml` + KCL), resolver, cache,
+**Frontends**, end to end: schema (KCL), resolver, cache,
 overrides, and the build and deploy paths.
 
 **Not yet covered** — both are noted as follow-ups on the tracking issue:

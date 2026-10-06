@@ -21,11 +21,12 @@ import (
 // `forge project new` writes deploy/kcl/workloads.k once, and every env binds
 // each workload to where it runs, one line per workload. This scaffolds a
 // project, then renders that SAME declaration bound three ways: dev (host
-// processes), prod (its cluster), and a MIXED env derived from prod with
-// `forge env new cloud --from prod --bind item=hosted --bind web=hosted` —
-// item on the forge control plane beside migrate on the cluster, and the web
-// frontend on the platform's static hosting (ADR 0002 §6). Each render goes through the
-// production decoder and the consumer the deploy path runs for that runtime:
+// processes), prod (hosted on the forge control plane, as scaffolded), and a
+// MIXED env derived from prod with `forge env new cloud --from prod --bind
+// item=cluster --bind web=bucket` — item on a cluster the author operates
+// beside migrate on the control plane, and the web frontend in the author's
+// own bucket (ADR 0002 §6). Each render goes through the production decoder
+// and the consumer the deploy path runs for that runtime:
 //
 //   - hosted: the spec is admitted under ProfileRestricted (Workload.Validate
 //     plus a restricted render of the set), exactly as the control plane
@@ -38,51 +39,6 @@ import (
 func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	kclplugin.Register()
 	dir := scaffoldWorkloadModelProject(t)
-
-	// prod's cluster knobs are placeholders a user fills; fill them so the
-	// derived env starts from a deployable file.
-	prodMain := filepath.Join(dir, "deploy", "kcl", "prod", "main.k")
-	b, err := os.ReadFile(prodMain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(prodMain, []byte(strings.Replace(string(b), `registry = "ghcr.io/OWNER"`, `registry = "ghcr.io/acme"`, 1)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// The MIXED env, through the real command: derived from prod, item
-	// rebound to the control plane. Then its --check gate: no placeholder
-	// once the knobs are filled, compiles, and admitted by the hosted plan.
-	withCwd(t, dir, func() {
-		cmd := newEnvNewCmd()
-		cmd.SetArgs([]string{"cloud", "--from", "prod", "--bind", "item=hosted", "--bind", "web=hosted"})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("forge env new cloud --from prod --bind item=hosted --bind web=hosted: %v", err)
-		}
-	})
-	cloudDir := filepath.Join(dir, "deploy", "kcl", "cloud")
-	cloud, err := os.ReadFile(filepath.Join(cloudDir, "main.k"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"_hosted(wl.item)", "_on_cluster(wl.migrate)", "_hosted_frontend(_web_frontend)", "control_plane = forge.ControlPlane {"} {
-		if !strings.Contains(string(cloud), want) {
-			t.Fatalf("derived cloud/main.k lacks %q:\n%s", want, cloud)
-		}
-	}
-	filled := placeholderRe.ReplaceAllStringFunc(string(cloud), func(p string) string {
-		return map[string]string{
-			"REPLACE_ME_CLUSTER_CONTEXT": "gke_acme_cloud", "REPLACE_ME_PLATFORM": "amd64",
-			"REPLACE_ME_NAMESPACE": "acme-cloud", "REPLACE_ME_REGISTRY": "ghcr.io/acme",
-			"REPLACE_ME_BUCKET": "acme-cloud-web",
-		}[p]
-	})
-	writeEnv(t, dir, "cloud", filled, filepath.Join(dir, "deploy", "kcl", "prod"))
-	withCwd(t, dir, func() {
-		if err := runNewEnv(context.Background(), "cloud", "", true, false); err != nil {
-			t.Fatalf("forge env new cloud --check: %v", err)
-		}
-	})
 
 	render := func(env string) (*KCLEntities, []byte) {
 		t.Helper()
@@ -104,14 +60,24 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		}
 		return out
 	}
-
-	// ── mixed: item hosted, admitted under Restricted, probes present ────
-	mixed, mixedRaw := render("cloud")
-	mw := byName(mixed)
-	if mw["item"].Runtime.Type != RuntimeHosted || mw["migrate"].Runtime.Type != RuntimeCluster {
-		t.Fatalf("cloud runtimes: item=%q migrate=%q, want hosted/cluster", mw["item"].Runtime.Type, mw["migrate"].Runtime.Type)
+	check := func(env string) error {
+		t.Helper()
+		var err error
+		withCwd(t, dir, func() { err = runNewEnv(context.Background(), env, "", true, false) })
+		return err
 	}
-	group, err := buildHostedGroup("cloud", mixed)
+
+	// ── hosted (prod, exactly as scaffolded): nothing to fill in, admitted
+	// under Restricted, probes present, the site and the database published.
+	if err := check("prod"); err != nil {
+		t.Fatalf("forge env new prod --check on a fresh scaffold: %v", err)
+	}
+	prod, _ := render("prod")
+	pw := byName(prod)
+	if pw["item"].Runtime.Type != RuntimeHosted || pw["migrate"].Runtime.Type != RuntimeHosted {
+		t.Fatalf("prod runtimes: item=%q migrate=%q, want hosted/hosted", pw["item"].Runtime.Type, pw["migrate"].Runtime.Type)
+	}
+	group, err := buildHostedGroup("prod", prod)
 	if err != nil || group == nil {
 		t.Fatalf("buildHostedGroup: %v", err)
 	}
@@ -135,23 +101,71 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if !admittedService {
 		t.Fatalf("the hosted env admitted no `item` Workload (items: %+v)", items)
 	}
-	// The web frontend, rebound to hosted, is published as a StaticSite.
-	var hostedSite bool
+	var hostedSite, hostedDB bool
 	for _, s := range group.Services {
 		if s.Name == "web" && s.Hosted != nil && s.Hosted.Tier == deploytarget.HostedTierStatic {
 			hostedSite = true
 		}
+		if s.Hosted != nil && s.Hosted.Tier == deploytarget.HostedTierDatabase {
+			hostedDB = true
+		}
 	}
-	if !hostedSite {
-		t.Errorf("the rebound web frontend is not published as a hosted StaticSite: %+v", group.Services)
+	if !hostedSite || !hostedDB {
+		t.Errorf("prod publishes site=%v database=%v, want both on the control plane: %+v", hostedSite, hostedDB, group.Services)
 	}
 
-	// ── cluster (prod): RenderWorkloads, probes present ──────────────────
-	prod, prodRaw := render("prod")
-	if fe := prod.Frontends; len(fe) != 1 || fe[0].Runtime.Type != FrontendRuntimeBucket {
-		t.Errorf("prod frontends = %+v, want web on forge.OnBucket", fe)
+	// ── mixed (derived): item on a cluster you operate, web in your bucket.
+	withCwd(t, dir, func() {
+		cmd := newEnvNewCmd()
+		cmd.SetArgs([]string{"cloud", "--from", "prod", "--bind", "item=cluster", "--bind", "web=bucket"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("forge env new cloud --from prod --bind item=cluster --bind web=bucket: %v", err)
+		}
+	})
+	cloudMain := filepath.Join(dir, "deploy", "kcl", "cloud", "main.k")
+	cloud, err := os.ReadFile(cloudMain)
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertClusterDeploymentProbed(t, "prod", prodRaw)
+	for _, want := range []string{"_on_cluster(wl.item)", "_hosted(wl.migrate)", "_on_bucket(_web_frontend)", "control_plane = forge.ControlPlane {"} {
+		if !strings.Contains(string(cloud), want) {
+			t.Fatalf("derived cloud/main.k lacks %q:\n%s", want, cloud)
+		}
+	}
+	// The env's config.k is what `forge generate` scaffolds next; copy prod's.
+	writeEnv(t, dir, "cloud", string(cloud), filepath.Join(dir, "deploy", "kcl", "prod"))
+	// Rebound to targets the env has not declared: refused, by name — never
+	// an env that renders and deploys nowhere.
+	if err := check("cloud"); err == nil || !strings.Contains(err.Error(), "declares no `_cluster`") {
+		t.Fatalf("--check on a cluster binding with no `_cluster` = %v, want the render refusal naming it", err)
+	}
+	// The author's two edits: declare the cluster and the bucket.
+	filled := strings.NewReplacer(
+		"\n_cluster = None\n", "\n_cluster = forge.ClusterTarget {cluster = \"gke_acme_cloud\", connected_cluster = \"acme-cloud\", namespace = \"acme-cloud\", platform = \"amd64\"}\n",
+		"\n_bucket = None\n", "\n_bucket = forge.OnBucket {bucket = \"acme-cloud-web\"}\n",
+	).Replace(string(cloud))
+	if err := os.WriteFile(cloudMain, []byte(filled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := check("cloud"); err != nil {
+		t.Fatalf("forge env new cloud --check after declaring the cluster and bucket: %v", err)
+	}
+	mixed, mixedRaw := render("cloud")
+	mw := byName(mixed)
+	if mw["item"].Runtime.Type != RuntimeCluster || mw["migrate"].Runtime.Type != RuntimeHosted {
+		t.Fatalf("cloud runtimes: item=%q migrate=%q, want cluster/hosted", mw["item"].Runtime.Type, mw["migrate"].Runtime.Type)
+	}
+	if fe := mixed.Frontends; len(fe) != 1 || fe[0].Runtime.Type != FrontendRuntimeBucket {
+		t.Errorf("cloud frontends = %+v, want web on forge.OnBucket", fe)
+	}
+	// ── cluster: RenderWorkloads, probes present ──────────────────────────
+	assertClusterDeploymentProbed(t, "cloud", mixedRaw)
+	// The hosted half never reaches the cluster stream.
+	if stream, err := cluster.ExtractManifests(mixedRaw); err != nil {
+		t.Fatalf("cloud: expand output.manifests: %v", err)
+	} else if strings.Contains(stream, "kind: Job") {
+		t.Errorf("cloud: the hosted migrate job leaked into the cluster stream:\n%s", stream)
+	}
 
 	// ── host (dev): argv from build + args ───────────────────────────────
 	dev, _ := render("dev")
@@ -171,16 +185,10 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	}
 
 	// The binding changed nothing about WHAT item is.
-	if strings.Join(mw["item"].Spec.Args, " ") != strings.Join(devW["item"].Spec.Args, " ") {
-		t.Errorf("rebinding item to hosted changed its args")
-	}
-	// The cluster half of the mixed env still renders through RenderWorkloads:
-	// migrate is a job there, so no Deployment, but no Workload record of
-	// the hosted item may reach the cluster.
-	if stream, err := cluster.ExtractManifests(mixedRaw); err != nil {
-		t.Fatalf("cloud: expand output.manifests: %v", err)
-	} else if strings.Contains(stream, "name: item\n") {
-		t.Errorf("cloud: the hosted item leaked into the cluster stream:\n%s", stream)
+	for env, w := range map[string]WorkloadEntity{"prod": pw["item"], "cloud": mw["item"]} {
+		if strings.Join(w.Spec.Args, " ") != strings.Join(devW["item"].Spec.Args, " ") {
+			t.Errorf("binding item in %s changed its args", env)
+		}
 	}
 }
 

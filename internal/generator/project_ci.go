@@ -61,7 +61,14 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	// go.mod resolves at run time.)
 	cs.ForgeVersion = buildinfo.Version()
 
-	for _, f := range CIWorkflows(g.Path, cfg, frontends) {
+	// The deployed envs this scaffold wrote are hosted (generateKCLDeploy
+	// records them), so their CI is the hosted pipeline: release.yml builds
+	// once and promotes one release through them, with no registry login.
+	// `forge generate` discovers the same fact from the render (ciInputs); a
+	// project being born has no generated config to render with yet, so the
+	// scaffold states what it just wrote.
+	in := CIInputs{Frontends: frontends, HostedEnvs: g.hostedEnvs}
+	for _, f := range CIWorkflowsFor(g.Path, cfg, in) {
 		content, err := templates.CITemplates(provider).Render(f.Template, f.Data)
 		if err != nil {
 			return fmt.Errorf("render CI template %s: %w", f.Template, err)

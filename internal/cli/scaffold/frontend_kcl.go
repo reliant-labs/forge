@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -54,20 +55,24 @@ func declareFrontendInKCL(root, projectName, frontendName string, pinnedPort int
 		if err != nil {
 			continue // not an env directory
 		}
-		dev := env.Name() == "dev"
-		updated, status := spliceFrontendIntoEnvKCL(string(raw), projectName, env.Name(), frontendName, dev, pinnedPort)
+		binding := frontendBindingFor(string(raw), env.Name() == codegen.DevEnvName)
+		updated, status := spliceFrontendIntoEnvKCL(string(raw), projectName, env.Name(), frontendName, binding, pinnedPort)
 		switch status {
 		case frontendKCLApplied:
 			if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 				fmt.Printf("\n⚠️  could not update %s: %v\n\n%s\n", rel, err,
-					frontendKCLStanzaHint(projectName, env.Name(), frontendName, dev, pinnedPort))
+					frontendKCLStanzaHint(projectName, env.Name(), frontendName, binding, pinnedPort))
 				continue
 			}
 			fmt.Printf("   - %s (frontend '%s' declared)\n", rel, frontendName)
+			if binding == frontendHosted && !hostedCORSOrigin.MatchString(codegen.StripKCLProse(string(raw))) {
+				fmt.Printf("     ↳ hosted: a service answers this site's browser calls only once its CORS_ORIGINS names it — add\n"+
+					"       `CORS_ORIGINS = forge.WorkloadURL {workload = %q}` to the `_hosted` binder's env in %s\n", frontendName, rel)
+			}
 		case frontendKCLAlreadyDeclared:
 			// Quiet: an earlier run, or the user, already declared it.
 		case frontendKCLNoAnchor:
-			fmt.Printf("\n📝 %s\n", frontendKCLStanzaHint(projectName, env.Name(), frontendName, dev, pinnedPort))
+			fmt.Printf("\n📝 %s\n", frontendKCLStanzaHint(projectName, env.Name(), frontendName, binding, pinnedPort))
 		}
 	}
 }
@@ -106,30 +111,71 @@ func frontendPortIdent(frontendName string) string {
 	return "_" + naming.KCLIdentifier(frontendName) + "_frontend_port"
 }
 
-func frontendKCLEntry(frontendName string, dev bool, pinnedPort int) string {
+// frontendBinding is how an env binds a frontend it declares.
+type frontendBinding int
+
+const (
+	// frontendOnHost: the dev server (the dev env).
+	frontendOnHost frontendBinding = iota
+	// frontendHosted: the env's own `_hosted_frontend` binder — platform
+	// static hosting, the way a hosted env (the scaffold default) binds the
+	// frontend it was born with.
+	frontendHosted
+	// frontendOnBucket: the author's own bucket, for an env with no hosted
+	// binder (scaffolded before hosting was the default).
+	frontendOnBucket
+)
+
+// hostedFrontendBinder is the declaration of a hosted env's frontend binder.
+var hostedFrontendBinder = regexp.MustCompile(`(?m)^_hosted_frontend\s*=\s*lambda\b`)
+
+// frontendBindingFor picks how env binds a new frontend, from what the env
+// file already declares.
+func frontendBindingFor(content string, dev bool) frontendBinding {
+	switch {
+	case dev:
+		return frontendOnHost
+	case hostedFrontendBinder.MatchString(codegen.StripKCLProse(content)):
+		return frontendHosted
+	}
+	return frontendOnBucket
+}
+
+func frontendKCLEntry(frontendName string, binding frontendBinding, pinnedPort int) string {
 	var b strings.Builder
 	b.WriteString("    # Added by `forge scaffold frontend " + frontendName + "`. `+=` composes with\n")
 	b.WriteString("    # any frontends declared above; edit freely (its runtime, dev_runner, ...).\n")
-	b.WriteString("    frontends += [forge.Frontend {\n")
+	// Every frontend binds a runtime (ADR 0002 §6): the dev server in dev;
+	// in a hosted env the env's own `_hosted_frontend` binder (platform
+	// static hosting, bare image, API_URL resolved by the control plane);
+	// otherwise the author's own bucket, whose name forge does not guess —
+	// bucket names are global. `forge env new --check` refuses that
+	// placeholder until it is filled.
+	if binding == frontendHosted {
+		b.WriteString("    frontends += [_hosted_frontend(forge.Frontend {\n")
+	} else {
+		b.WriteString("    frontends += [forge.Frontend {\n")
+	}
 	fmt.Fprintf(&b, "        name = %q\n", frontendName)
 	fmt.Fprintf(&b, "        path = %q\n", "frontends/"+frontendName)
 	switch {
-	case dev && pinnedPort > 0:
+	case binding == frontendOnHost && pinnedPort > 0:
 		fmt.Fprintf(&b, "        port = %d\n", pinnedPort)
-	case dev:
+	case binding == frontendOnHost:
 		fmt.Fprintf(&b, "        port = %s\n", frontendPortIdent(frontendName))
 	}
-	// Every frontend binds a runtime (ADR 0002 §6): the dev server in dev;
-	// elsewhere the author's own bucket, whose name forge does not guess —
-	// bucket names are global. `forge env new --check` refuses the
-	// placeholder until it is filled.
-	if dev {
+	switch binding {
+	case frontendOnHost:
 		b.WriteString("        runtime = forge.OnHost {}\n")
-	} else {
+		b.WriteString("    }]\n")
+	case frontendHosted:
+		b.WriteString("        public_dir = \"out\"\n")
+		b.WriteString("    })]\n")
+	default:
 		b.WriteString("        public_dir = \"out\"\n")
 		b.WriteString("        runtime = forge.OnBucket {bucket = \"REPLACE_ME_BUCKET\"}\n")
+		b.WriteString("    }]\n")
 	}
-	b.WriteString("    }]\n")
 	return b.String()
 }
 
@@ -142,7 +188,7 @@ func frontendKCLPortDecl(projectName, env, frontendName string) string {
 }
 
 // spliceFrontendIntoEnvKCL is the pure core of declareFrontendInKCL.
-func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, dev bool, pinnedPort int) (string, frontendKCLStatus) {
+func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, binding frontendBinding, pinnedPort int) (string, frontendKCLStatus) {
 	if frontendDeclaredIn(content, frontendName) {
 		return content, frontendKCLAlreadyDeclared
 	}
@@ -151,7 +197,7 @@ func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, de
 		return content, frontendKCLNoAnchor
 	}
 	var portAt []int
-	if dev && pinnedPort <= 0 {
+	if binding == frontendOnHost && pinnedPort <= 0 {
 		dbs := databaseURLLine.FindAllStringIndex(content, -1)
 		if len(dbs) != 1 || dbs[0][0] > jobs[0][0] {
 			return content, frontendKCLNoAnchor
@@ -159,20 +205,24 @@ func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, de
 		portAt = dbs[0]
 	}
 	// Insert from the end backwards so the earlier offset stays valid.
-	out := content[:jobs[0][0]] + frontendKCLEntry(frontendName, dev, pinnedPort) + content[jobs[0][0]:]
+	out := content[:jobs[0][0]] + frontendKCLEntry(frontendName, binding, pinnedPort) + content[jobs[0][0]:]
 	if portAt != nil {
 		out = out[:portAt[0]] + frontendKCLPortDecl(projectName, env, frontendName) + out[portAt[0]:]
 	}
 	return out, frontendKCLApplied
 }
 
-func frontendKCLStanzaHint(projectName, env, frontendName string, dev bool, pinnedPort int) string {
+// hostedCORSOrigin is a hosted env already naming a site its services
+// accept browser calls from.
+var hostedCORSOrigin = regexp.MustCompile(`CORS_ORIGINS\s*=\s*forge\.WorkloadURL`)
+
+func frontendKCLStanzaHint(projectName, env, frontendName string, binding frontendBinding, pinnedPort int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Declare frontend '%s' in deploy/kcl/%s/main.k by hand (forge could not place it unambiguously):\n\n", frontendName, env)
-	if dev && pinnedPort <= 0 {
+	if binding == frontendOnHost && pinnedPort <= 0 {
 		b.WriteString(frontendKCLPortDecl(projectName, env, frontendName))
 	}
 	b.WriteString("    # inside the bundle, alongside workloads:\n")
-	b.WriteString(frontendKCLEntry(frontendName, dev, pinnedPort))
+	b.WriteString(frontendKCLEntry(frontendName, binding, pinnedPort))
 	return b.String()
 }

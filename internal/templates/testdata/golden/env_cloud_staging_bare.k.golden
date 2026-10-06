@@ -1,5 +1,5 @@
 """
-The `{{.EnvName}}` environment of {{.ProjectName}}, hosted on Reliant.
+The `staging` environment of shop, hosted on Reliant.
 
 YOURS. forge scaffolds this file once and never rewrites it.
 
@@ -17,10 +17,7 @@ CDN:
   database   `_db`, a dedicated managed Postgres; workloads read its URL
              through `forge.DatabaseRef`, so nobody handles the password
   secrets    the control plane's write-only store:
-             `forge secret set --env {{.EnvName}} <KEY>` (value on stdin)
-{{- if .HasFrontend}}
-  frontend   the static export, on the platform's static hosting
-{{- end}}
+             `forge secret set --env staging <KEY>` (value on stdin)
 
 Hosted workloads and the managed database need billing on your Reliant
 organization (Reliant → Settings → Billing). A static site alone is free.
@@ -29,8 +26,8 @@ HOSTING ELSEWHERE is a binding edit, not a rewrite: the binders for a
 cluster you operate (`_on_cluster`) and your own bucket (`_on_bucket`) are
 declared below, unused, each saying what to fill in.
 
-Render and deploy through forge: `forge env render {{.EnvName}}`,
-`forge env deploy {{.EnvName}}`.
+Render and deploy through forge: `forge env render staging`,
+`forge env deploy staging`.
 """
 
 import forge
@@ -46,9 +43,9 @@ import .config as appcfg
 # The database. RETAIN (the default deletionPolicy): removing this
 # declaration never drops the data. Your own Postgres instead? Delete `_db`,
 # `databases` and the DATABASE_URL line in `_hosted`, then
-# `forge secret set --env {{.EnvName}} DATABASE_URL`.
+# `forge secret set --env staging DATABASE_URL`.
 _db = forge.ManagedDatabase {
-    name = "{{.ProjectName}}"
+    name = "shop"
     runtime = forge.OnHosted {}
 }
 
@@ -66,17 +63,14 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 
 # HOSTED: a Workload on the forge control plane. Its image is the declared
 # one minus the registry host: the platform pulls only from its own
-# registry, and forge composes that address (<registry>/<org>/{{.ProjectName}}/<name>)
-# from your credential. DATABASE_URL is the managed database's{{if .HasFrontend}}; a
-# service's CORS_ORIGINS is the hosted frontend's URL, which the platform
-# allocates{{end}}.
+# registry, and forge composes that address (<registry>/<org>/shop/<name>)
+# from your credential. DATABASE_URL is the managed database's.
 _hosted = lambda w: fw.Workload -> fw.Workload {
     _c = _configured(w)
     _c | {
         image = w.image[w.image.rfind("/") + 1:] if w.image else w.image
         env = _c.env \
-            | ({DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}){{if .HasFrontend}} \
-            | ({CORS_ORIGINS = forge.WorkloadURL {workload = "{{.FrontendName}}"}} if w.kind == "service" else {}){{end}}
+            | ({DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {})
         runtime = forge.OnHosted {}
     }
 }
@@ -85,37 +79,37 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
 # Kubernetes API on shared nodes), a `kind = "cron"` CronJob (not metered
 # yet) — or what you would rather run yourself. Declare the cluster, then
 # rebind the workload's line:
-# `_hosted(wl.{{.PrimaryIdent}})` → `_on_cluster(wl.{{.PrimaryIdent}})`.
+# `_hosted(wl.shop)` → `_on_cluster(wl.shop)`.
 #
 #     _cluster = forge.ClusterTarget {
-#         cluster = "gke_acme_us-central1_{{.EnvName}}"   # its kubectl context
-#         connected_cluster = "{{.ProjectName}}-{{.EnvName}}"     # see below
-#         namespace = "{{.ProjectName}}-{{.EnvName}}"
+#         cluster = "gke_acme_us-central1_staging"   # its kubectl context
+#         connected_cluster = "shop-staging"     # see below
+#         namespace = "shop-staging"
 #         platform = "amd64"                       # the nodes' arch
 #     }
 #
 # This env's deploys go through the control plane, so it must reach the
-# cluster too: register it once with `forge cluster connect {{.ProjectName}}-{{.EnvName}}
-# --context <kubectl context> --env {{.EnvName}}`. Until `_cluster` is declared, a
+# cluster too: register it once with `forge cluster connect shop-staging
+# --context <kubectl context> --env staging`. Until `_cluster` is declared, a
 # workload bound here fails the render, naming itself. A cluster workload
-# pulls the image workloads.k declares (`forge env build {{.EnvName}} --push`), gets
+# pulls the image workloads.k declares (`forge env build staging --push`), gets
 # the capacity floor below, and reads DATABASE_URL from the
-# `{{.ProjectName}}-secrets` Secret you provision in its namespace.
+# `shop-secrets` Secret you provision in its namespace.
 _cluster = None
 _on_cluster = lambda w: fw.Workload -> fw.Workload {
-    assert _cluster, "workload '${w.name}' is bound to _on_cluster, but deploy/kcl/{{.EnvName}}/main.k declares no `_cluster`: declare the cluster you operate there" \
+    assert _cluster, "workload '${w.name}' is bound to _on_cluster, but deploy/kcl/staging/main.k declares no `_cluster`: declare the cluster you operate there" \
         + (" — the hosted platform refuses a ${w.kind}, so it cannot be rebound `_hosted`; drop the line to not run it here" if w.kind in ["cron", "operator"] else ", or rebind the line `_hosted`")
     _configured(w) | {
         resources = fw.Resources {
-            cpuRequestMillicores = forge.cpu({{.CPURequest}})
-            memoryRequestBytes = forge.mib({{.MemoryRequestMiB}})
-            cpuLimitMillicores = forge.cpu({{.CPULimit}})
-            memoryLimitBytes = forge.mib({{.MemoryLimitMiB}})
+            cpuRequestMillicores = forge.cpu(0.25)
+            memoryRequestBytes = forge.mib(256)
+            cpuLimitMillicores = forge.cpu(1.0)
+            memoryLimitBytes = forge.mib(512)
         }
         # A replica FLOOR for the long-running kinds; above one, forge adds a
         # PodDisruptionBudget and spreads the pods across nodes.
         if w.kind in ["service", "worker", "operator"]:
-            replicas = w.replicas if w.replicas > {{.Replicas}} else {{.Replicas}}
+            replicas = w.replicas if w.replicas > 2 else 2
         runtime = forge.OnCluster {target = _cluster}
     }
 }
@@ -132,7 +126,7 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
 # (The dev-IdP convergence job is not here: this env's issuer is a real
 # one, with its applications registered out of band.)
 _workloads = [
-{{.Bindings}}
+    _hosted(wl.migrate)
 ]
 
 # ---------------------------------------------------------------------------
@@ -161,42 +155,26 @@ _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
 # so forge does not guess one: declare it, then rebind the frontend's line
 # to `_on_bucket(...)`.
 #
-#     _bucket = forge.OnBucket {bucket = "{{.ProjectName}}-{{.EnvName}}-site"}   # cdn = forge.StaticSiteCDN {...}
+#     _bucket = forge.OnBucket {bucket = "shop-staging-site"}   # cdn = forge.StaticSiteCDN {...}
 _bucket = None
 _on_bucket = lambda f: forge.Frontend -> forge.Frontend {
-    assert _bucket, "frontend '${f.name}' is bound to _on_bucket, but deploy/kcl/{{.EnvName}}/main.k declares no `_bucket`: declare it there, or rebind the line `_hosted_frontend`"
+    assert _bucket, "frontend '${f.name}' is bound to _on_bucket, but deploy/kcl/staging/main.k declares no `_bucket`: declare it there, or rebind the line `_hosted_frontend`"
     f | {runtime = _bucket}
 }
-{{- if .HasFrontend}}
-
-_{{.FrontendIdent}}_frontend = forge.Frontend {
-    name = "{{.FrontendName}}"
-    path = "frontends/{{.FrontendName}}"
-    public_dir = "out"
-}
-{{- end}}
 
 _bundle = forge.Bundle {
-    project = "{{.ProjectName}}"
-    # Where hosted workloads, the database{{if .HasFrontend}} and the site{{end}} are published:
+    project = "shop"
+    # Where hosted workloads, the database are published:
     # Reliant cloud (set `endpoint` for another control plane).
     control_plane = forge.ControlPlane {}
     workloads = _workloads
     databases = [_db]
-{{- if .HasFrontend}}
-    # Where each frontend runs here, one binding each — rebind by editing its
-    # line, or as an env is created: `forge env new <name> --bind
-    # {{.FrontendName}}=bucket`.
-    frontends = [
-        _hosted_frontend(_{{.FrontendIdent}}_frontend)
-    ]
-{{- end}}
     # SECRET VALUES live in the control plane's store; forge never sees one.
     # A `sensitive` config field a hosted workload reads is a managedSecret
-    # of the same key: `forge secret set --env {{.EnvName}} <KEY>`.
+    # of the same key: `forge secret set --env staging <KEY>`.
     secret_provider = forge.HostedSecrets {}
     # Once workloads run on `_cluster`, it carries this env's support objects
-    # too. Add, with `import .ingress as ing` above (deploy/kcl/{{.EnvName}}/ingress.k):
+    # too. Add, with `import .ingress as ing` above (deploy/kcl/staging/ingress.k):
     #
     #     cluster_target = _cluster
     #     network_policy = forge.NetworkPolicy {ingress_namespace = "envoy-gateway-system"}

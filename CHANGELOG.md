@@ -28,6 +28,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **New projects deploy to Reliant hosting by default.** `forge project new`
+  scaffolds `staging` and `prod` hosted on the forge control plane: every
+  service, worker and job bound `_hosted` (its image's registry host dropped,
+  since the platform pulls only from its own registry), a
+  `forge.ManagedDatabase` each workload reads through `forge.DatabaseRef`,
+  `forge.HostedSecrets`, the frontend on platform static hosting with
+  `API_URL` and `CORS_ORIGINS` wired by reference, and `control_plane =
+  forge.ControlPlane {}`. A fresh scaffold renders every env with no
+  placeholder. Before, staging and prod bound everything to a cluster the
+  author had to name (`forge env deploy prod --explain`: `REFUSE (declared
+  context not in kubeconfig)`) and the frontend to `REPLACE_ME_BUCKET`. The
+  scaffolded CI is the hosted pipeline (`release.yml`, no registry login)
+  instead of `deploy.yml`. `dev` is unchanged. Hosted workloads and the
+  managed database need billing; a static site alone is free.
+  - **Hosting elsewhere stays a one-line rebind.** Each env declares
+    `_on_cluster` and `_on_bucket` beside the hosted binders, unused, with
+    the `forge.ClusterTarget` / `forge.OnBucket` to fill shown in a comment
+    (`_cluster = None`, `_bucket = None`). A binding to either before it is
+    declared fails the render, naming the workload and the fix.
+  - **Kinds hosting refuses.** `forge scaffold operator` binds the operator
+    `_on_cluster` in every deployed env — the one binding that can run it —
+    and warns that those envs refuse to render until `_cluster` is declared
+    (or the line is dropped); a hand-declared `kind = "cron"` binds the same
+    way. forge's cron component (`forge scaffold worker --kind cron`) is a
+    worker with its own scheduler and is hosted like any worker. Every other
+    new workload binds where the env's `migrate` job runs, so an env
+    scaffolded on a cluster keeps binding there.
+    `forge scaffold frontend` binds a new frontend through a hosted env's
+    `_hosted_frontend`, and still to a bucket in an env without one.
+  - **Existing projects are not rewritten** (env files are scaffolded once).
+    To adopt hosting, add `control_plane`, `secret_provider =
+    forge.HostedSecrets {}` and a hosted `forge.ManagedDatabase` to the env's
+    Bundle, give `_hosted` the bare image and `DATABASE_URL =
+    forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
+    beside prod with `forge env new cloud --from prod --bind <name>=hosted`
+    first. The `deploy` skill has the exact edits.
 - **Concurrent `forge generate` / `forge scaffold` runs in one project now
   queue instead of failing.** Every run takes the project's lock
   (`.forge/forge.lock`). A second run prints one line,

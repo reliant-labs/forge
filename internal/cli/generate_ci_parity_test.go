@@ -56,6 +56,22 @@ func TestCIWorkflows_NewAndGenerateRenderIdentically(t *testing.T) {
 			}
 
 			cfg := loadAdvisoryConfig(t, dir)
+			// `forge generate` discovers which envs are hosted by RENDERING
+			// them, and a project's envs import the config projection the
+			// generate run inside `forge project new` already wrote. Give
+			// this bare scaffold that projection, or its hosted staging and
+			// prod cannot render and read as cluster envs.
+			if _, err := os.Stat(filepath.Join(dir, "deploy", "kcl")); err == nil {
+				cs, err := generator.LoadChecksums(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				captureStdout(t, func() {
+					if err := generatePerEnvDeployConfig(dir, cfg, cs); err != nil {
+						t.Fatalf("generatePerEnvDeployConfig: %v", err)
+					}
+				})
+			}
 			captureStdout(t, func() {
 				if err := generateCIWorkflows(dir, cfg, nil, false); err != nil {
 					t.Fatalf("generateCIWorkflows: %v", err)

@@ -71,6 +71,13 @@ func unpublishedHostedRefusal(env string, rollout wireRollout) error {
 	if len(rollout.Workloads) > 0 || len(rollout.Unpinned) > 0 {
 		return nil
 	}
+	// A QUEUED promotion has published nothing BECAUSE it is queued: the
+	// control plane holds it on a human action and applies it when that
+	// clears. Its empty rollout is the hold's doing, not a missing publish,
+	// and the wait that follows reports (or waits through) the hold.
+	if rollout.Phase == wireRolloutPhaseHeld {
+		return nil
+	}
 	return &exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
 		"%s has no published workloads, so its control plane has nothing to converge and this "+
 			"release would never roll out.\n"+

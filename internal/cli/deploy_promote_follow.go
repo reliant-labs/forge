@@ -70,6 +70,13 @@ type promoteFollowOptions struct {
 	// FailFast exits 1 on the first DEGRADED observation instead of
 	// waiting out Timeout.
 	FailFast bool
+	// Wait blocks THROUGH a queued deploy. When the control plane accepts
+	// the promotion but holds it on a human action (billing), the default
+	// is to report the queue — what it waits on and where to act — and exit
+	// 7 at once, because no amount of waiting by this command moves it.
+	// --wait keeps waiting instead, up to Timeout, for the person to act
+	// and the release to go live; still queued at the deadline is 7.
+	Wait bool
 
 	// clientDeploy is the deployOptions a SELF-MANAGED env's client-side
 	// apply runs with — the flags `forge env deploy` already had
@@ -120,6 +127,10 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 	if o.NoWait && o.Timeout != 0 {
 		return errors.New("--timeout bounds the health gate and --no-wait removes it: pass one. " +
 			"A deploy that does not wait has nothing to time out")
+	}
+	if o.NoWait && o.Wait {
+		return errors.New("--wait blocks until the deploy is live (through a queue on billing) and --no-wait " +
+			"does not wait at all: pass one")
 	}
 	if o.Timeout < 0 {
 		return fmt.Errorf("--timeout must be positive, got %s", o.Timeout)
@@ -174,12 +185,24 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if reconciled, entities := fluxReconciledEnv(ctx, env, ledger); reconciled {
 		return followFluxReconciled(ctx, env, entities, plan, o)
 	}
+	// QUEUED ON A PERSON? The control plane says so on the write itself
+	// (the Promote response's holds) — so this is known with no extra call,
+	// before anything waits. See deploy_queued.go.
+	held := recordedHolds(ledger, plan)
 	if ledger.appliesLocally() {
 		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
 		err := applySelfManaged(ctx, env, ledger.Hosted, o)
 		finish(err)
 		if err != nil {
-			return err
+			// A MIXED env's hosted half is published inside this apply, and
+			// its provider reports a queued promotion the same way.
+			q := queuedOf(err)
+			if q == nil {
+				return err
+			}
+			if len(held) == 0 {
+				held = q.Holds
+			}
 		}
 	}
 	if !ledger.Hosted {
@@ -201,9 +224,36 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	// It is the same apply (runPromoteClientDeploy) in both branches, so a
 	// pure and a mixed env publish identically.
 	if !ledger.appliesLocally() {
-		if err := applyHostedPublish(ctx, env, o); err != nil {
-			return err
+		publish := o
+		if len(held) > 0 {
+			// Still PUBLISHED — the bundle is what the platform applies the
+			// moment the hold clears — but with nothing to wait on: nothing
+			// moves until a person acts.
+			publish.NoWait = true
 		}
+		if err := applyHostedPublish(ctx, env, publish); err != nil {
+			q := queuedOf(err)
+			if q == nil {
+				return err
+			}
+			if len(held) == 0 {
+				held = q.Holds
+			}
+		}
+	}
+	if len(held) > 0 {
+		queued := &deployQueuedError{Env: env, Holds: held}
+		if plan.Recorded != nil {
+			queued.Release, queued.PromotionID = plan.Recorded.Release, plan.Recorded.ID
+		}
+		// THE DEFAULT IS TO SAY SO AND STOP, even under --no-wait: the
+		// deploy is accepted, a person has to act, and exit 7 is how a
+		// pipeline or an agent knows to hand them the link rather than
+		// retry. --wait opts into blocking until they have.
+		if !o.Wait {
+			return queued
+		}
+		o.notice("\n%s\n  --wait: waiting until it is live (up to %s)…\n", queued.Error(), waitBudget(o.Timeout))
 	}
 	if o.NoWait {
 		// The control plane converges the binding on its own. Saying so
@@ -228,6 +278,10 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		PromotionID: promotionID,
 		Timeout:     o.Timeout,
 		FailFast:    o.FailFast,
+		// A promotion that turns out to be queued after all (a control
+		// plane that held it without saying so on the write) is reported
+		// the same way — unless --wait asked to wait through it.
+		StopOnHold: !o.Wait,
 		// The deploy's --json owns stdout, so the wait must not write a
 		// second document to it. Its outcome rides out on the error,
 		// which plan.stamp folds into the deploy's envelope, so the exit
@@ -277,6 +331,14 @@ func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFoll
 		o.notice("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
 	}
 	return runPromoteClientDeploy(ctx, env, opts)
+}
+
+// waitBudget is the wait's whole budget as a person reads it.
+func waitBudget(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return envWaitDefaultTimeout
 }
 
 // runPromoteWait is the hosted health gate. A var for ONE reason: a test must

@@ -125,14 +125,19 @@ EXIT CODES — a pipeline branches on these directly:
   2  we could not DETERMINE — a cluster or control plane was unreachable, a
      credential was refused, the thing is unobservable, or this checkout's
      promotion ledger is stale
-  5  --wait only: TIMED OUT while still pending / progressing / stabilizing.
-     The rollout was progressing, so retry the wait; do not re-promote
   6  --wait only: SUPERSEDED — a newer promotion replaced the one waited on
+  7  QUEUED — the bound release is accepted and recorded, and the control plane
+     holds it on a person (billing). The output names what it waits on and the
+     action URL; it goes live by itself once they act. --wait waits through it
+     (still queued at the deadline is 7 again)
+  8  --wait only: TIMED OUT while still pending / progressing / stabilizing.
+     The rollout was progressing, so retry the wait; do not re-promote
 
 1 and 2 are separate because CI must tell a bad release from a broken control
 plane; a gate that reports both with one code gets switched off the first week
-it is wrong about one of them. 5 and 6 are deliberately not 1: "we never saw
-this finish" and "the release was overtaken" are not "the release is bad".
+it is wrong about one of them. 6, 7 and 8 are deliberately not 1: "the release
+was overtaken", "a person has to act" and "we never saw this finish" are not
+"the release is bad".
 
 A STALE FILE LEDGER IS EXIT 2. .forge/promotions/<env>.jsonl is committed to
 git, so a checkout that has not pulled compares the cluster against an OLDER

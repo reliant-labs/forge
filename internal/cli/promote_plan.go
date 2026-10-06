@@ -535,6 +535,11 @@ type promotePlan struct {
 	// Capacity is the hosted capacity pre-flight's answer, nil for an env with
 	// nothing hosted.
 	Capacity *promotePlanCapacity `json:"capacity,omitempty"`
+	// Queued is set when the control plane ACCEPTED and RECORDED the
+	// promotion but holds it on a human action (billing): what it waits on,
+	// why, and the action URL. The envelope's exit_code is then 7. Nil for
+	// every deploy that is not queued.
+	Queued *deployQueuedJSON `json:"queued,omitempty"`
 
 	// targetSources is the source-built frontend snapshot the binding will be
 	// written with, the non-container half of targetResolved. Carried on the

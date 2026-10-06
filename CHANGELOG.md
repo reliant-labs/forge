@@ -324,6 +324,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not followed. Honours `--quiet`, `--scope` (by file) and `--json`, and the
   shared `// forge:lint-disable-next-line <rule>: <reason>` directive.
 
+- **Queued hosted deploys: exit 7, the block, and `--wait`.** A control plane
+  that ACCEPTS a deploy but holds it on a person — today, billing for the
+  hosted workloads or managed database it runs, or for static sites past the
+  free tier — no longer makes `forge env deploy` fail or sit out a
+  fifteen-minute wait on a promotion nothing is moving. The release, bundle
+  and promotion are recorded as usual; forge reads the hold off the Promote
+  response (rollout phase `HELD` as the fallback) and prints ONE block — what
+  it waits on, why, what to do, and the action URL — then exits **7
+  (queued)**, a code nothing else uses.
+  The deploy goes live by itself once billing is set up; nothing is re-run, and
+  a newer deploy replaces a queued one. `--json` carries the same facts as
+  `.queued` (`waiting_on`, `holds[].action_url`). `forge env deploy --wait`
+  blocks through the queue until the release is live (or `--timeout`; still
+  queued then is 7), and is mutually exclusive with `--no-wait`.
+  `forge env status <env>` on a queued env exits 7 with the block instead of
+  reporting drift, and `forge env status <env> --wait` waits through it. The
+  capacity pre-flight now continues past a "would be queued" answer
+  (`CheckDeployCapacity` holds) instead of refusing before the build; an older
+  control plane that sends no holds is refused exactly as before. See the
+  `deploy/hosted-capacity` skill.
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,
   `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,

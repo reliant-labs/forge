@@ -1175,6 +1175,20 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	// time would spend a call per poll re-learning the same answer.
 	rollout := promotionID != ""
 	rolloutFailures := 0
+	// heldChecked: whether this wait has asked if the promotion is QUEUED.
+	// A queued promotion is never applied, so the question is asked once,
+	// the first time the platform reports the bundle NOT applied — never on
+	// the ordinary path, where the bundle lands and the loop's own rollout
+	// read (which also recognises HELD) takes over.
+	heldChecked := !rollout
+	queued := func(r wireRollout) error {
+		held := &HeldError{Env: envName, PromotionID: promotionID,
+			Release: r.Promotion.ReleaseVersion, Holds: r.Holds}
+		for _, item := range plan {
+			p.observe(item.Name, cluster.RolloutStateNotWaited, held)
+		}
+		return held
+	}
 	// applied gates every readiness read: until the platform reports the
 	// recorded bundle applied, workload status describes the PREVIOUS
 	// revision and must not be judged (or reported) as this deploy's.
@@ -1199,6 +1213,21 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				deadline = time.Now().Add(policy.Timeout)
 				deadline = time.Now().Add(policy.Timeout)
 			default:
+				// NOT APPLIED: is that because the control plane is HOLDING
+				// it? A queued promotion (accepted, recorded, waiting on
+				// billing) is never applied until a person acts, so waiting
+				// would spend the whole budget and report a timeout for a
+				// release nothing is wrong with. Asked once; the caller
+				// renders the hold. (`forge env deploy` usually knows
+				// already — the Promote response says so — and publishes
+				// with skip; this is the check for every path that does
+				// not.)
+				if !heldChecked {
+					heldChecked = true
+					if r, rerr := readHostedRollout(ctx, c, envID, promotionID); rerr == nil && r.Phase == WireRolloutPhaseHeld {
+						return queued(r)
+					}
+				}
 				if state.failure != "" && announcedFailure != state.failure {
 					announcedFailure = state.failure
 					fmt.Printf("  platform reports the apply of %s failed: %s (still waiting; the reconciler retries)\n", shortDigest(bundleDigest), state.failure)
@@ -1236,7 +1265,17 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan)
 		if rollout {
 			rolloutPending, rolloutReasons, rerr := p.pollRolloutOnce(ctx, c, envID, promotionID, plan)
+			var held *HeldError
 			switch {
+			case errors.As(rerr, &held):
+				// QUEUED (phase HELD): accepted and recorded, waiting on a
+				// person. Terminal for this wait — no amount of polling
+				// moves it — and not a timeout.
+				held.Env = envName
+				for _, item := range plan {
+					p.observe(item.Name, cluster.RolloutStateNotWaited, held)
+				}
+				return held
 			case errors.Is(rerr, errRolloutUnavailable):
 				// Said once, because the fallback is a WEAKER
 				// completion check and an operator reading a
@@ -1351,6 +1390,9 @@ func (p HostedProvider) pollRolloutOnce(ctx context.Context, c HostedCaller, env
 	}
 	if rollout.Phase == wireRolloutPhaseSuperseded {
 		return nil, nil, fmt.Errorf("%w: %s", errRolloutSuperseded, emptyOr(rollout.Reason, "promotion "+promotionID+" was superseded"))
+	}
+	if rollout.Phase == WireRolloutPhaseHeld {
+		return nil, nil, &HeldError{PromotionID: promotionID, Release: rollout.Promotion.ReleaseVersion, Holds: rollout.Holds}
 	}
 	pending, reasons := rolloutPendingOf(plan, rollout)
 	return pending, reasons, nil

@@ -329,6 +329,12 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		return writeErr
 	}
 
+	// A QUEUED deploy is applied:true with exit_code 7, and `queued` says
+	// what it waits on and where to act — the structured twin of the block
+	// the error renders, so a pipeline reads action_url instead of text.
+	if q := queuedOf(writeErr); q != nil {
+		plan.Queued = q.document()
+	}
 	plan.stamp(writeErr)
 	if opts.JSON {
 		if err := emitJSONDocument(plan); err != nil {

@@ -54,7 +54,8 @@ const schema = z.object({
          value writes NULL instead of leaving it, or writing the zero. */}}
   {{.Name}}: {{.ZodExpr}},
   {{- end}}
-});
+{{- if not .UpdateFields}}}){{else}}
+}){{end}};
 
 type FormValues = z.infer<typeof schema>;
 

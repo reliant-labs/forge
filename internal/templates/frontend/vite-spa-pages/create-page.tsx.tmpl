@@ -48,7 +48,8 @@ const schema = z.object({
          request omits it instead of sending the zero. */}}
   {{.Name}}: {{.ZodExpr}},
   {{- end}}
-});
+{{- if not .CreateFields}}}){{else}}
+}){{end}};
 
 type FormValues = z.infer<typeof schema>;
 

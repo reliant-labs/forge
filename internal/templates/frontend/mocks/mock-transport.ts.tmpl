@@ -46,7 +46,7 @@ import { createMockTransport as createEngineTransport, resolveActiveScenario } f
 {{ range .SchemaImportGroups }}
 import { {{range $i, $sym := .Symbols}}{{if $i}}, {{end}}{{$sym}}{{end}} } from "@/gen/{{ .ImportPath }}";
 {{- end }}
-{{- range .Entities }}
+{{- range .FixtureEntities }}
 import * as {{ .EntityNamePlural | camelCase }}Mocks from "@/mocks/{{ .EntitySlug }}_gen";
 {{- end }}
 {{- end }}
@@ -90,24 +90,24 @@ const entities: readonly MockEntityDescriptor[] = [
     pkField: "{{ .PkFieldCamel }}",
     fixtures: {{ .EntityNamePlural | camelCase }}Mocks.{{ .EntityNamePlural | camelCase }},
 {{- if or .HasCreate .HasUpdate }}
-    entitySchema: {{ .SchemaImport }},
+    entitySchema: {{ .EntitySchema }},
 {{- end }}
 {{- if .HasList }}
     // itemsField is the ACTUAL repeated proto field (e.g. `keys`), not the
     // camelCased entity plural.
-    list: { rpc: "{{ .ListRPC }}", responseSchema: {{ .ListResponseType }}Schema, itemsField: "{{ .ItemsField }}" },
+    list: { rpc: "{{ .ListRPC }}", responseSchema: {{ .ListResponseSchema }}, itemsField: "{{ .ItemsField }}" },
 {{- end }}
 {{- if .HasGet }}
-    get: { rpc: "{{ .GetRPC }}", responseSchema: {{ .GetResponseType }}Schema, entityField: "{{ .GetEntityFieldCamel }}" },
+    get: { rpc: "{{ .GetRPC }}", responseSchema: {{ .GetResponseSchema }}, entityField: "{{ .GetEntityFieldCamel }}" },
 {{- end }}
 {{- if .HasCreate }}
-    create: { rpc: "{{ .CreateRPC }}", responseSchema: {{ .CreateResponseType }}Schema, entityField: "{{ .CreateEntityFieldCamel }}", requestField: "{{ .EntityName | camelCase }}" },
+    create: { rpc: "{{ .CreateRPC }}", responseSchema: {{ .CreateResponseSchema }}, entityField: "{{ .CreateEntityFieldCamel }}", requestField: "{{ .EntityName | camelCase }}" },
 {{- end }}
 {{- if .HasUpdate }}
     // Update reuses Create's response shape. AIP-134 requests nest the
     // entity ({ {{ .EntityName | camelCase }}: {...}, updateMask }); the generated forms
     // submit it flattened. The engine accepts both.
-    update: { rpc: "{{ .UpdateRPC }}", responseSchema: {{ .UpdateResponse }}Schema, entityField: "{{ .UpdateEntityField }}", requestField: "{{ .EntityName | camelCase }}" },
+    update: { rpc: "{{ .UpdateRPC }}", responseSchema: {{ .UpdateResponseSchema }}, entityField: "{{ .UpdateEntityField }}", requestField: "{{ .EntityName | camelCase }}" },
 {{- end }}
 {{- if .HasDelete }}
     delete: { rpc: "{{ .DeleteRPC }}" },

@@ -54,6 +54,23 @@ type MockTransportTemplateData struct {
 	SchemaImportGroups []MockTransportSchemaImportGroup
 }
 
+// FixtureEntities is one entity per fixture module (`@/mocks/<slug>_gen`),
+// in first-seen order — what mock-transport.ts imports `* as <plural>Mocks`.
+// An entity served by several services has a dispatch row per service but
+// one fixture module, and importing it once per row declared the namespace
+// twice (TS2300 Duplicate identifier 'thingsMocks').
+func (d MockTransportTemplateData) FixtureEntities() []MockTransportEntity {
+	seen := map[string]bool{}
+	var out []MockTransportEntity
+	for _, e := range d.Entities {
+		if !seen[e.EntitySlug] {
+			seen[e.EntitySlug] = true
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // HasWritableEntities reports whether any entity has a Create or Update
 // RPC — gates the MessageInitShape type import in the transport template
 // (used only by the mutable-store write paths; an unconditional import
@@ -97,28 +114,29 @@ type MockTransportSchemaImportGroup struct {
 	Symbols    []string // schema symbols imported from this module, dedup'd + sorted
 }
 
-// BuildMockTransportSchemaImportGroups groups response-schema imports by
-// the entity's proto module path. Each entity contributes the same
-// per-RPC schema set the per-entity template loop used to emit
-// (`{ListResponseType,GetResponseType,CreateResponseType}Schema` gated
-// on `HasList`/`HasGet`/`HasCreate||HasUpdate`). Duplicate symbols
-// within a group are collapsed; the order is sorted for deterministic
-// output across runs.
-func BuildMockTransportSchemaImportGroups(entities []MockTransportEntity) []MockTransportSchemaImportGroup {
-	// Preserve first-seen ImportPath order for deterministic ordering of
-	// groups across runs (matches the order entities arrive in, which is
-	// itself stable per ExtractMockTransportEntities).
-	pathOrder := make([]string, 0)
-	bySym := make(map[string]map[string]struct{}, 0)
+// NewMockTransportTemplateData is the mock-transport.ts data for entities:
+// one merged import statement per proto module, and the name the file
+// refers to each imported schema by. Each entity contributes the
+// per-RPC schema set its dispatch row names
+// (`{ListResponseType,GetResponseType,CreateResponseType}Schema` gated on
+// `HasList`/`HasGet`/`HasCreate||HasUpdate`, plus the entity schema for the
+// mutable store). Duplicate symbols within a module are collapsed, and both
+// levels are sorted for deterministic output (import/order's alphabetize).
+//
+// The entities belong to different services, whose protos are free to name
+// a response message alike (`GetResponse`); such a schema is imported
+// `as <module>_<Name>` from each module (tsImportPlan) and the entity's row
+// names that — read through the entity's *Schema methods.
+func NewMockTransportTemplateData(entities []MockTransportEntity) MockTransportTemplateData {
+	buckets := map[string]map[string]struct{}{}
 	add := func(path, sym string) {
 		if path == "" || sym == "" {
 			return
 		}
-		if _, seen := bySym[path]; !seen {
-			pathOrder = append(pathOrder, path)
-			bySym[path] = make(map[string]struct{})
+		if buckets[path] == nil {
+			buckets[path] = map[string]struct{}{}
 		}
-		bySym[path][sym] = struct{}{}
+		buckets[path][sym] = struct{}{}
 	}
 	for _, e := range entities {
 		if e.HasList {
@@ -137,42 +155,52 @@ func BuildMockTransportSchemaImportGroups(entities []MockTransportEntity) []Mock
 			// The mutable store builds new entity records on Create/Update,
 			// so it needs the entity's own schema — from the file that
 			// declares the entity, which may differ from the service file.
-			entityPath := e.EntityImportPath
-			if entityPath == "" {
-				entityPath = e.ImportPath
-			}
-			add(entityPath, e.SchemaImport)
+			add(e.entityImportPath(), e.SchemaImport)
 		}
 	}
-	// Alphabetical group order: the emitted import statements must satisfy
-	// import/order's alphabetize check, so sort by module path rather than
-	// first-seen order.
-	sortStrings(pathOrder)
-	groups := make([]MockTransportSchemaImportGroup, 0, len(pathOrder))
-	for _, path := range pathOrder {
-		syms := make([]string, 0, len(bySym[path]))
-		for s := range bySym[path] {
-			syms = append(syms, s)
-		}
-		sortStrings(syms)
-		groups = append(groups, MockTransportSchemaImportGroup{
-			ImportPath: path,
-			Symbols:    syms,
-		})
+	plan := newTSImportPlan(buckets)
+	data := MockTransportTemplateData{Entities: make([]MockTransportEntity, len(entities))}
+	for i, e := range entities {
+		e.imports = plan
+		data.Entities[i] = e
 	}
-	return groups
+	for _, g := range plan.Groups(buckets) {
+		data.SchemaImportGroups = append(data.SchemaImportGroups, MockTransportSchemaImportGroup(g))
+	}
+	return data
 }
 
-// sortStrings is a tiny stdlib-free sort helper for the schema-symbol
-// list. Kept inline so the codegen package doesn't grow a sort import
-// just for this single call site (other code paths here already avoid
-// sort to keep the dependency surface lean).
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
+// ListResponseSchema, GetResponseSchema, CreateResponseSchema,
+// UpdateResponseSchema and EntitySchema are the names mock-transport.ts
+// refers to the entity's imported schemas by: their own, unless another
+// module the file imports declares the same name (NewMockTransportTemplateData).
+func (e MockTransportEntity) ListResponseSchema() string {
+	return e.imports.Local(e.ImportPath, e.ListResponseType+"Schema")
+}
+
+func (e MockTransportEntity) GetResponseSchema() string {
+	return e.imports.Local(e.ImportPath, e.GetResponseType+"Schema")
+}
+
+func (e MockTransportEntity) CreateResponseSchema() string {
+	return e.imports.Local(e.ImportPath, e.CreateResponseType+"Schema")
+}
+
+func (e MockTransportEntity) UpdateResponseSchema() string {
+	return e.imports.Local(e.ImportPath, e.UpdateResponse()+"Schema")
+}
+
+func (e MockTransportEntity) EntitySchema() string {
+	return e.imports.Local(e.entityImportPath(), e.SchemaImport)
+}
+
+// entityImportPath is the module declaring the entity message: its own
+// proto file when it has one, else the service's.
+func (e MockTransportEntity) entityImportPath() string {
+	if e.EntityImportPath != "" {
+		return e.EntityImportPath
 	}
+	return e.ImportPath
 }
 
 // MockTransportEntity represents one entity in the mock transport routing.
@@ -241,6 +269,10 @@ type MockTransportEntity struct {
 	// name, which would render as the undefined import `Schema`.
 	UpdateResponseType     string
 	UpdateEntityFieldCamel string
+
+	// imports is the file's import plan, set by NewMockTransportTemplateData;
+	// nil means every schema is imported under its own name.
+	imports tsImportPlan
 }
 
 // ScenarioRPCEntry is one unary RPC row in the generated typed scenario
@@ -277,6 +309,8 @@ func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 		set[sym] = struct{}{}
 	}
 
+	type ref struct{ inPath, outPath string }
+	var refs []ref
 	for _, svc := range services {
 		for _, m := range svc.Methods {
 			if m.ClientStreaming || m.ServerStreaming {
@@ -292,6 +326,7 @@ func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 			}
 			add(ProtoFileToTSImportPath(inPath), m.InputType)
 			add(ProtoFileToTSImportPath(outPath), m.OutputType+"Schema")
+			refs = append(refs, ref{ProtoFileToTSImportPath(inPath), ProtoFileToTSImportPath(outPath)})
 			data.Entries = append(data.Entries, ScenarioRPCEntry{
 				Key:            svc.Package + "." + svc.Name + "/" + m.Name,
 				RequestType:    m.InputType,
@@ -300,7 +335,15 @@ func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 		}
 	}
 
-	data.TypeImports = flattenImportGroups(buckets)
+	// Every service's messages land in this one file, and two services
+	// declaring the same message name (`PingRequest`) is ordinary proto: such
+	// a name is imported `as <module>_<Name>` from each (tsImportPlan).
+	plan := newTSImportPlan(buckets)
+	for i, r := range refs {
+		data.Entries[i].RequestType = plan.Local(r.inPath, data.Entries[i].RequestType)
+		data.Entries[i].ResponseSchema = plan.Local(r.outPath, data.Entries[i].ResponseSchema)
+	}
+	data.TypeImports = plan.Groups(buckets)
 	return data
 }
 

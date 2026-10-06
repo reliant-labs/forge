@@ -148,10 +148,7 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 		return 0, fmt.Errorf("create lib directory: %w", err)
 	}
 
-	transportData := codegen.MockTransportTemplateData{
-		Entities:           transportEntities,
-		SchemaImportGroups: codegen.BuildMockTransportSchemaImportGroups(transportEntities),
-	}
+	transportData := codegen.NewMockTransportTemplateData(transportEntities)
 
 	var buf bytes.Buffer
 	if err := mockTransportTmpl.Execute(&buf, transportData); err != nil {

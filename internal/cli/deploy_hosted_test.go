@@ -246,8 +246,8 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 		paths = append(paths, b.Path[strings.LastIndex(b.Path, "/")+1:])
 	}
 	joined := strings.Join(paths, ",")
-	if !strings.Contains(joined, "EnsureEnvironment,RecordBundle,GetStatus") {
-		t.Fatalf("deploy call sequence = %s, want EnsureEnvironment,RecordBundle,GetStatus", joined)
+	if !strings.Contains(joined, "EnsureEnvironment,RecordBundle,ListConvergences,GetStatus") {
+		t.Fatalf("deploy call sequence = %s, want EnsureEnvironment,RecordBundle,ListConvergences,GetStatus", joined)
 	}
 	for _, dead := range []string{"EnsureDeployment", "PublishDeploymentConfig"} {
 		if strings.Contains(joined, dead) {

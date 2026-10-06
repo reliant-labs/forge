@@ -127,7 +127,7 @@ func TestHostedDeployRecordsTheBundleAndWritesNoDeployment(t *testing.T) {
 	var outcomes []cluster.RolloutObservation
 	p := HostedProvider{Client: cp, PollInterval: time.Millisecond,
 		OnEnvironment: func(id string) { envSeen = id },
-		RecordBundle:  func(_ context.Context, id string) error { recordedFor = id; return nil },
+		RecordBundle:  func(_ context.Context, id string) (string, error) { recordedFor = id; return "", nil },
 		OnRollout:     func(o cluster.RolloutObservation) { outcomes = append(outcomes, o) }}
 	if err := p.Deploy(context.Background(), hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})); err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -224,7 +224,7 @@ func TestHostedImagePushBase(t *testing.T) {
 	deploy := func(base string) (*fakeCP, error) {
 		cp := &fakeCP{status: readyStatus(digestA)}
 		err := HostedProvider{Client: cp, PollInterval: time.Millisecond,
-			RecordBundle: func(context.Context, string) error { recorded[cp]++; return nil }}.Deploy(context.Background(),
+			RecordBundle: func(context.Context, string) (string, error) { recorded[cp]++; return "", nil }}.Deploy(context.Background(),
 			hostedGroupWithPushBase("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}, base))
 		return cp, err
 	}

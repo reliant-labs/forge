@@ -219,7 +219,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 
 	registry := &deploytarget.Registry{}
 	registry.Register(deploytarget.HostedProvider{
-		RecordBundle: func(ctx context.Context, _ string) error {
+		RecordBundle: func(ctx context.Context, _ string) (string, error) {
 			return recordHostedBundle(ctx, envName, release, digests, opts)
 		},
 		Client:        client,
@@ -270,9 +270,9 @@ func releaseRegistries(rel *release.Release) map[string]string {
 // A bundle that was not written is an ERROR here, unlike at build time: a
 // deploy that recorded nothing would report success for a release the
 // platform has no bundle to apply.
-func recordHostedBundle(ctx context.Context, envName, bound string, digests map[string]string, opts deployOptions) error {
+func recordHostedBundle(ctx context.Context, envName, bound string, digests map[string]string, opts deployOptions) (string, error) {
 	if opts.dryRun {
-		return nil
+		return "", nil
 	}
 	pins := release.BundlePins{Images: map[string]string{}}
 	for artifact, digest := range digests {
@@ -285,17 +285,19 @@ func recordHostedBundle(ctx context.Context, envName, bound string, digests map[
 		Now:     time.Now().UTC().Truncate(time.Second),
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	noteRecordedBundles(bound, out)
+	digest := ""
 	for _, o := range out {
 		if o.Skipped || !o.Recorded {
-			return fmt.Errorf("hosted env %q: its bundle was not recorded, so the control plane has nothing to apply.\n"+
+			return "", fmt.Errorf("hosted env %q: its bundle was not recorded, so the control plane has nothing to apply.\n"+
 				"  fix: forge env build %s --release <version> --push && forge env deploy %s <version>", envName, envName, envName)
 		}
 		fmt.Printf("  bundle %s recorded (%s)\n", shortDigest(o.Digest), o.Reference)
+		digest = o.Digest
 	}
-	return nil
+	return digest, nil
 }
 
 // hostedPins is what a promotion froze for a hosted env, in the exact form the

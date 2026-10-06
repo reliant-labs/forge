@@ -260,3 +260,91 @@ func rolloutPendingOf(plan []hostedPlanItem, rollout wireRollout) (pending []str
 	}
 	return pending, reasons
 }
+
+// procListConvergences is controlplane.v1.DeployService/ListConvergences.
+const procListConvergences = "controlplane.v1.DeployService/ListConvergences"
+
+var errBundleNotApplied = errors.New("the platform has not applied this release yet")
+
+// bundleApplyState is what the control plane says it has applied.
+type bundleApplyState struct {
+	// known is false when the platform gave no answer at all.
+	known   bool
+	applied bool
+	// current is the sha256 digest the newest observation reports applied.
+	current string
+	// failure is the reconciler's own words when the newest observation is a
+	// FAILED apply of THIS promotion ("reason: message"); empty otherwise.
+	// Its revision is the last one applied, i.e. the old one, so applied
+	// stays false.
+	failure string
+}
+
+// pollBundleApplied asks the control plane whether the reconciler has applied
+// the bundle this deploy recorded. Readiness is meaningless before that: until
+// the hub applies the promoted bundle, workload status describes the previous
+// revision. An unimplemented procedure is reported as unknown, so a control
+// plane that cannot answer degrades to judging workloads directly rather than
+// failing every deploy.
+func pollBundleApplied(ctx context.Context, c HostedCaller, envID, promotionID, bundleDigest string) (bundleApplyState, error) {
+	var resp struct {
+		Convergences []struct {
+			PromotionID string `json:"promotionId"`
+			Revision    string `json:"revision"`
+			State       string `json:"state"`
+			Reason      string `json:"reason"`
+			Message     string `json:"message"`
+		} `json:"convergences"`
+	}
+	if err := c.Call(ctx, procListConvergences, map[string]any{"environmentId": envID, "limit": 1}, &resp); err != nil {
+		var coded codedWireError
+		if errors.As(err, &coded) && (coded.HasCode(wireCodeUnimplemented) || coded.HasCode(wireCodeNotFound)) {
+			return bundleApplyState{}, err
+		}
+		// A transient failure keeps waiting rather than judging stale workloads.
+		return bundleApplyState{known: true}, err
+	}
+	if len(resp.Convergences) == 0 {
+		return bundleApplyState{known: true}, nil
+	}
+	row := resp.Convergences[0]
+	st := bundleApplyState{known: true, current: revisionDigest(row.Revision)}
+	st.applied = bundleDigest != "" && strings.Contains(row.Revision, strings.TrimPrefix(bundleDigest, "sha256:"))
+	// "failed" is the control plane's convergence state for a reconciler
+	// failure; the row is only about this deploy when it was judged against
+	// this promotion.
+	if !st.applied && row.State == "failed" && (promotionID == "" || row.PromotionID == promotionID) {
+		st.failure = strings.TrimSpace(strings.Join(nonEmpty(row.Reason, row.Message), ": "))
+		if st.failure == "" {
+			st.failure = "the reconciler reported a failed apply"
+		}
+	}
+	return st, nil
+}
+
+func nonEmpty(vals ...string) []string {
+	var out []string
+	for _, v := range vals {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// revisionDigest extracts the sha256 digest from a reconciler revision such as
+// "latest@sha256:abc…"; a revision without one is returned verbatim.
+func revisionDigest(rev string) string {
+	if i := strings.Index(rev, "sha256:"); i >= 0 {
+		return rev[i:]
+	}
+	return rev
+}
+
+func shortDigest(d string) string {
+	const shown = len("sha256:") + 12
+	if len(d) <= shown {
+		return d
+	}
+	return d[:shown]
+}

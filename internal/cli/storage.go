@@ -292,6 +292,9 @@ func addClusterStorageArgs(args []string) ([]string, error) {
 		return nil, err
 	}
 	file, err := storage.NodeConfigPath(path, p)
+	if errors.Is(err, storage.ErrMachinePolicyUnderTest) {
+		return args, nil
+	}
 	if err != nil {
 		return nil, err
 	}

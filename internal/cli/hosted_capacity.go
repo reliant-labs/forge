@@ -74,6 +74,27 @@ func hostedCapacityPreflight(ctx context.Context, envName string, entities *KCLE
 	return report, nil
 }
 
+// buildCapacityPreflight is hostedCapacityPreflight for `forge env build`.
+//
+// A BUILD NEVER NEEDS A REACHABLE CONTROL PLANE (the rule recordEnvBuildDeclaration
+// states): the pre-flight only saves a no-plan org a wasted build. When it cannot
+// be DELIVERED — no credential, a transport error, Unavailable — the build warns
+// and carries on. An answered refusal (CapacityRefusedError) is a fact about the
+// org and still stops it. The deploy path keeps the strict form.
+func buildCapacityPreflight(ctx context.Context, envName string, entities *KCLEntities, builds int, out io.Writer) (*promotePlanCapacity, error) {
+	capacity, err := hostedCapacityPreflight(ctx, envName, entities, builds, out)
+	if err == nil {
+		return capacity, nil
+	}
+	var refused *deploytarget.CapacityRefusedError
+	if errors.As(err, &refused) || !declarationUndeliverable(err) {
+		return capacity, err
+	}
+	fmt.Fprintf(out, "[capacity] Warning: capacity pre-flight skipped for env %s: %v\n"+
+		"[capacity]   The build continues; the deploy re-checks capacity when it reaches the control plane.\n", envName, err)
+	return nil, nil
+}
+
 // hostedBuildCount is how many images a deploy of this env would build: the
 // hosted workloads that declare an image this project builds.
 func hostedBuildCount(e *KCLEntities) int {

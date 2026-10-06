@@ -106,6 +106,7 @@ var FieldProfiles = map[string]Profile{
 	"probes.port":                ProfileRestricted,
 	"probes.readinessPath":       ProfileRestricted,
 	"probes.livenessPath":        ProfileRestricted,
+	"probes.startupPath":         ProfileRestricted,
 	"probes.tcp":                 ProfileRestricted,
 	"probes.initialDelaySeconds": ProfileRestricted,
 	"probes.periodSeconds":       ProfileRestricted,

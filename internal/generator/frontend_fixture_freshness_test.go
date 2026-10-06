@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -190,6 +191,45 @@ func TestFreshnessGuardFilenameIsCollectedByVitest(t *testing.T) {
 	if !strings.Contains(guard, "_gen") {
 		t.Errorf("the freshness guard %q carries no `_gen` marker; forge's ownership tooling "+
 			"keys on it", guard)
+	}
+}
+
+// The staleness message has to be right about WHY. The fingerprint covers two
+// inputs, and editing only db/seeds/vocab.yaml — the routine edit a seed agent
+// makes — moves it exactly like a migration does. A message that blamed "a
+// schema this project no longer has" sent that agent looking for a migration
+// change that never happened. It must name both causes and the one command
+// that refreshes the fixtures.
+func TestFreshnessGuardNamesBothCausesAndTheFix(t *testing.T) {
+	_, guard := emitFreshness(t, freshnessProject(t, map[string]string{
+		"00001_create_orders.up.sql": "CREATE TABLE orders (id UUID PRIMARY KEY);",
+	}), filepath.Join("frontends", "web"))
+
+	start := strings.Index(guard, `"STALE MOCK FIXTURES`)
+	if start < 0 {
+		t.Fatal("guard no longer carries the STALE MOCK FIXTURES message")
+	}
+	msg := guard[start:]
+	if end := strings.Index(msg, ").toBe(SEED_FINGERPRINT)"); end > 0 {
+		msg = msg[:end]
+	}
+	// Join the TypeScript string concatenation back into the text a reader
+	// sees, so a phrase split across two literals still matches.
+	msg = regexp.MustCompile(`"\s*\+\s*"`).ReplaceAllString(msg, "")
+	for _, want := range []string{
+		"db/migrations",          // cause 1: the schema
+		"db/seeds/vocab.yaml",    // cause 2: the seed vocabulary
+		"seed vocabulary",        // ...named as a cause in its own right
+		"`forge generate`",       // the fix, spelled as a command
+		"reliant forge generate", // and as the embedded CLI spells it
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("staleness message must mention %q; got:\n%s", want, msg)
+		}
+	}
+	// It must not assert a schema change it cannot know happened.
+	if strings.Contains(msg, "no longer has") {
+		t.Errorf("staleness message still claims the schema changed, which is false after a vocab-only edit:\n%s", msg)
 	}
 }
 

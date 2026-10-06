@@ -83,7 +83,10 @@ func BuildLivePlan(ctx context.Context, db *sql.DB, migDir, shadowBaseURL string
 	if err != nil {
 		return nil, err
 	}
-	if len(tables) == 0 {
+	// Nothing in scope (no tables, or database.seed.tables: []) means there is
+	// no column for the overlay to describe — applying it would only warn
+	// "not a seedable column" once per entry of a perfectly good vocab.yaml.
+	if len(plan.tables) == 0 {
 		return plan, nil
 	}
 	// Vocab applies AFTER bounds so numeric validation sees the real range
@@ -170,7 +173,15 @@ func AllSeedableTablesEmpty(ctx context.Context, db *sql.DB, plan *Plan) (bool, 
 // raises), whereas TRUNCATE bypasses that row-level trigger, resolves FK order
 // via CASCADE, and RESTART IDENTITY resets sequences for a deterministic
 // reseed. A dev convenience; destructive (removes ALL rows, as the DELETE did).
+//
+// The plan is validated BEFORE the TRUNCATE. Apply validates too, but by then
+// the rows are gone: a refusal (a vocab null on a NOT NULL column, an
+// undeclared diamond) that fires after the wipe leaves the database empty and
+// reports an error, which is the worst of both outcomes.
 func Reset(ctx context.Context, db *sql.DB, plan *Plan) (*Result, error) {
+	if err := plan.Validate(); err != nil {
+		return nil, err
+	}
 	if len(plan.tables) == 0 {
 		return Apply(ctx, db, plan)
 	}

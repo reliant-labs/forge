@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
@@ -35,7 +36,8 @@ import (
 // a failed seed.
 type Vocab struct {
 	// Columns maps "table.column" to its resolved value pool (named-pool
-	// references are flattened by LoadVocab).
+	// references are flattened by LoadVocab). A YAML null in a list is kept
+	// as an entry that renders NULL.
 	Columns map[string][]string
 	// Warnings names the entries LoadVocab could resolve but not exactly as
 	// written — today, a numeric range whose declared step is too fine to
@@ -44,6 +46,10 @@ type Vocab struct {
 	// ApplyVocab folds them into the plan's warnings so one surface reports
 	// both.
 	Warnings []string
+	// times holds the `{from, to}` entries: instants relative to now, which
+	// cannot be resolved to values until ApplyVocab knows the plan's anchor
+	// (Config.Now) and the column (a DATE steps by whole days).
+	times map[string]relTimeRange
 }
 
 // vocabFile is the on-disk YAML shape:
@@ -54,18 +60,20 @@ type Vocab struct {
 //	  products.name: {pool: peptide_names}
 //	  brands.name: [VitalPep, PepCore Labs]
 type vocabFile struct {
-	Pools   map[string][]string   `yaml:"pools"`
+	Pools   map[string]vocabList  `yaml:"pools"`
 	Columns map[string]vocabEntry `yaml:"columns"`
 }
 
 // vocabEntry is one columns: value — an inline list of values, a
 // {pool: name} reference to a shared named pool, a {type: name} semantic
-// type whose values gofakeit generates (see vocabtype.go), or a
-// {min, max, step} numeric range.
+// type whose values gofakeit generates (see vocabtype.go), a
+// {min, max, step} numeric range, or a {from, to, step} time range relative
+// to now (see vocabscalar.go).
 type vocabEntry struct {
-	values []string
-	pool   string
-	typ    string
+	values    vocabList
+	pool      string
+	typ       string
+	timeRange *relTimeRange
 	// widened records a numeric range whose AUTHOR-DECLARED step was too fine
 	// to cover it within numericRangeMaxValues, along with the step used
 	// instead. The entry cannot phrase the warning itself — it does not know
@@ -203,22 +211,33 @@ func (e *vocabEntry) UnmarshalYAML(node *yaml.Node) error {
 		return node.Decode(&e.values)
 	case yaml.MappingNode:
 		var ref struct {
-			Pool     string   `yaml:"pool"`
-			Type     string   `yaml:"type"`
-			Min      *float64 `yaml:"min"`
-			Max      *float64 `yaml:"max"`
-			Step     *float64 `yaml:"step"`
-			Decimals *int     `yaml:"decimals"`
+			Pool     string    `yaml:"pool"`
+			Type     string    `yaml:"type"`
+			Min      *float64  `yaml:"min"`
+			Max      *float64  `yaml:"max"`
+			Step     yaml.Node `yaml:"step"` // a number for min/max, an offset for from/to
+			Decimals *int      `yaml:"decimals"`
+			From     *string   `yaml:"from"`
+			To       *string   `yaml:"to"`
 		}
 		if err := node.Decode(&ref); err != nil {
 			return err
 		}
 		hasRange := ref.Min != nil || ref.Max != nil
+		hasTime := ref.From != nil || ref.To != nil
 		switch {
 		case ref.Pool != "" && ref.Type != "":
 			return fmt.Errorf("line %d: a mapping entry sets pool or type, not both", node.Line)
+		case hasTime && (hasRange || ref.Pool != "" || ref.Type != ""):
+			return fmt.Errorf("line %d: a mapping entry sets pool, type, min/max, or from/to — not several", node.Line)
 		case hasRange && (ref.Pool != "" || ref.Type != ""):
 			return fmt.Errorf("line %d: a mapping entry sets pool, type, or min/max — not several", node.Line)
+		case hasTime:
+			r, err := decodeTimeRange(node.Line, ref.From, ref.To, optionalNode(&ref.Step))
+			if err != nil {
+				return err
+			}
+			e.timeRange = r
 		case hasRange:
 			if ref.Min == nil || ref.Max == nil {
 				return fmt.Errorf("line %d: a numeric range needs both min and max", node.Line)
@@ -242,11 +261,15 @@ func (e *vocabEntry) UnmarshalYAML(node *yaml.Node) error {
 				decimals: decimals,
 			}
 			declared := false
-			if ref.Step != nil {
-				if *ref.Step <= 0 {
+			if ref.Step.Kind != 0 {
+				step, err := strconv.ParseFloat(ref.Step.Value, 64)
+				if err != nil {
+					return fmt.Errorf("line %d: step %q is not a number", node.Line, ref.Step.Value)
+				}
+				if step <= 0 {
 					return fmt.Errorf("line %d: step must be positive", node.Line)
 				}
-				r.step, declared = int64(*ref.Step*scale), true
+				r.step, declared = int64(step*scale), true
 			}
 			var widened int64
 			e.values, widened = r.expand()
@@ -267,11 +290,11 @@ func (e *vocabEntry) UnmarshalYAML(node *yaml.Node) error {
 			}
 			e.typ = ref.Type
 		default:
-			return fmt.Errorf("line %d: a mapping entry must be {pool: <name>}, {type: <name>} or {min: <n>, max: <n>}", node.Line)
+			return fmt.Errorf("line %d: a mapping entry must be {pool: <name>}, {type: <name>}, {min: <n>, max: <n>} or {from: <offset>, to: <offset>}", node.Line)
 		}
 		return nil
 	default:
-		return fmt.Errorf("line %d: a column entry must be a value list, {pool: <name>}, {type: <name>} or {min: <n>, max: <n>}", node.Line)
+		return fmt.Errorf("line %d: a column entry must be a value list, {pool: <name>}, {type: <name>}, {min: <n>, max: <n>} or {from: <offset>, to: <offset>}", node.Line)
 	}
 }
 
@@ -309,14 +332,22 @@ func LoadVocab(path string) (*Vocab, error) {
 		if !strings.Contains(key, ".") {
 			return nil, fmt.Errorf("seed vocab %s: column key %q must be table.column", path, key)
 		}
-		vals := e.values
+		if e.timeRange != nil {
+			// Resolved against the plan's anchor in ApplyVocab.
+			if v.times == nil {
+				v.times = map[string]relTimeRange{}
+			}
+			v.times[key] = *e.timeRange
+			continue
+		}
+		vals := []string(e.values)
 		switch {
 		case e.pool != "":
 			pool, ok := f.Pools[e.pool]
 			if !ok {
 				return nil, fmt.Errorf("seed vocab %s: %s references undefined pool %q", path, key, e.pool)
 			}
-			vals = pool
+			vals = []string(pool)
 		case e.typ != "":
 			// A semantic type is expanded into a value pool HERE, at load, so
 			// everything downstream sees one shape: a list of values, already
@@ -351,7 +382,7 @@ func LoadVocab(path string) (*Vocab, error) {
 		v.Columns[key] = vals
 	}
 	sort.Strings(v.Warnings) // deterministic order, like every other warning list
-	if len(v.Columns) == 0 {
+	if len(v.Columns) == 0 && len(v.times) == 0 {
 		return nil, nil
 	}
 	return v, nil
@@ -363,20 +394,33 @@ func LoadVocab(path string) (*Vocab, error) {
 // against the column's introspected constraints — call it AFTER bounds are
 // attached (BuildLivePlan does) so numeric range CHECKs are visible.
 //
-// Vocab problems never fail the seed: an invalid value is skipped, a column
-// whose vocab is entirely invalid falls back to built-ins, and PK/FK
+// A value it can skip never fails the seed: an invalid value is skipped, a
+// column whose vocab is entirely invalid falls back to built-ins, and PK/FK
 // columns are never overridable — each with a warning naming table.column and
 // the constraint. Warnings are returned AND kept on the plan (VocabWarnings)
-// so every consumer of a built plan can surface them. nil vocab is a no-op.
+// so every consumer of a built plan can surface them. The exception is a null
+// on a NOT NULL column: it is skipped here too, but recorded so Validate
+// refuses to write the plan. nil vocab is a no-op.
+//
+// Boolean and time columns take values too: `true`/`false`, and instants
+// written absolutely or relative to the plan's Config.Now (`now`, `-3d`,
+// `{from: -90d, to: +30d}`).
 func (p *Plan) ApplyVocab(v *Vocab) []string {
-	if v == nil || len(v.Columns) == 0 {
+	if v == nil || (len(v.Columns) == 0 && len(v.times) == 0) {
 		return nil
 	}
-	keys := make([]string, 0, len(v.Columns))
+	keys := make([]string, 0, len(v.Columns)+len(v.times))
 	for k := range v.Columns {
 		keys = append(keys, k)
 	}
+	for k := range v.times {
+		if _, listed := v.Columns[k]; !listed {
+			keys = append(keys, k)
+		}
+	}
 	sort.Strings(keys) // deterministic warning order
+	p.vocabErrs = nil
+	now := p.cfg.EffectiveNow()
 
 	// A load-time note (a widened step) is about the same file and belongs on
 	// the same surface as the per-value validation below, so it leads.
@@ -403,22 +447,54 @@ func (p *Plan) ApplyVocab(v *Vocab) []string {
 			warnf("%s: managed soft-delete column (always seeded NULL) — ignored", key)
 			continue
 		}
-		if col.IsArray || (col.Type != schemadef.TypeString && col.Type != schemadef.TypeInt &&
-			col.Type != schemadef.TypeFloat && col.Type != schemadef.TypeJSON) {
+		if col.IsArray || !takesVocabulary(col.Type) {
 			warnf("%s: column type %s does not take a vocabulary — ignored", key, col.DeclType)
 			continue
+		}
+
+		candidates := v.Columns[key]
+		if r, isRange := v.times[key]; isRange {
+			if col.Type != schemadef.TypeTime {
+				warnf("%s: a {from, to} time range describes a timestamp or date column, not column type %s — ignored", key, col.DeclType)
+				continue
+			}
+			expanded, widened := r.expand(now, col)
+			if widened > 0 {
+				warnf("%s declares step %s across [%s, %s], which would need more than the %d values a pool may hold. "+
+					"Seeding with step %s instead, so the values span the range you declared rather than clustering at its start. "+
+					"Write that step to silence this, or narrow the range",
+					key, formatOffset(r.step, false), formatOffset(r.from, true), formatOffset(r.to, true),
+					numericRangeMaxValues, formatOffset(widened, false))
+			}
+			candidates = append(append([]string(nil), candidates...), expanded...)
 		}
 
 		pool, hasPool := p.pools.get(tp.table.Name, col.Name)
 		bound, _ := p.bounds.get(tp.table.Name, col.Name)
 		minLen, maxLen := LengthBounds(p.byName[table], col)
 		var kept []string
-		for _, val := range v.Columns[key] {
-			if reason := vocabValueProblem(col, val, pool, hasPool, bound, minLen, maxLen); reason != "" {
+		for _, val := range candidates {
+			if val == vocabNull {
+				// NULL satisfies every CHECK and every UNIQUE index; the one
+				// thing that rejects it is NOT NULL. That is an authoring
+				// mistake rather than a value to drop quietly, so it refuses
+				// the seed (Validate) — but the plan still skips it, so the
+				// generate-time consumers that never call Validate keep
+				// drawing valid values.
+				if col.NotNull {
+					p.vocabErrs = append(p.vocabErrs, fmt.Sprintf(
+						"%s: null on a NOT NULL column — remove the null from the list, or make the column nullable", key))
+					continue
+				}
+				kept = append(kept, val)
+				continue
+			}
+			norm, reason := normalizeVocabValue(col, val, now, pool, hasPool, bound, minLen, maxLen)
+			if reason != "" {
 				warnf("%s: value %q %s — skipped", key, val, reason)
 				continue
 			}
-			kept = append(kept, val)
+			kept = append(kept, norm)
 		}
 		if len(kept) == 0 {
 			warnf("%s: no valid values remain — using built-in synthesis", key)
@@ -440,8 +516,43 @@ func (p *Plan) ApplyVocab(v *Vocab) []string {
 }
 
 // VocabWarnings returns the warnings the last ApplyVocab produced. The seed
-// itself never fails on vocab problems; the CLI surfaces these instead.
+// never fails on a value it can skip; the CLI surfaces these instead. The one
+// vocab problem that DOES refuse the seed — a null on a NOT NULL column — is
+// reported by Validate.
 func (p *Plan) VocabWarnings() []string { return p.vocabWarns }
+
+// takesVocabulary reports whether a (non-array) column of this canonical type
+// draws from a value list. Binary columns are the one scalar kind that does
+// not: nothing a YAML scalar spells is a meaningful bytea.
+func takesVocabulary(t schemadef.CanonicalType) bool {
+	switch t {
+	case schemadef.TypeString, schemadef.TypeInt, schemadef.TypeFloat, schemadef.TypeJSON,
+		schemadef.TypeBool, schemadef.TypeTime:
+		return true
+	}
+	return false
+}
+
+// normalizeVocabValue validates one non-null list value against its column and
+// returns the spelling the plan stores. Booleans and instants are normalized
+// (`True` → true; `-3d`, `2026-10-01` → an RFC 3339 instant anchored at now);
+// every other kind is stored as written and validated by vocabValueProblem.
+// A non-empty reason means the value is skipped with a warning.
+func normalizeVocabValue(col schemadef.Column, val string, now time.Time, pool []string, hasPool bool, b NumBound, minLen, maxLen int) (string, string) {
+	switch col.Type {
+	case schemadef.TypeBool:
+		if norm, ok := normalizeBoolValue(val); ok {
+			return norm, ""
+		}
+		return "", fmt.Sprintf("is not a boolean (column type %s) — write true or false", col.DeclType)
+	case schemadef.TypeTime:
+		if norm, ok := normalizeTimeValue(val, now); ok {
+			return norm, ""
+		}
+		return "", fmt.Sprintf("is not a date or time (column type %s) — write an ISO date/time, %s", col.DeclType, relOffsetGrammar)
+	}
+	return val, vocabValueProblem(col, val, pool, hasPool, b, minLen, maxLen)
+}
 
 // uuidLiteralRE matches the canonical 8-4-4-4-12 hex UUID spelling — the only
 // value shape a UUID-typed column accepts on INSERT.

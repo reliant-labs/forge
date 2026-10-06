@@ -17,21 +17,6 @@ import (
 	"github.com/reliant-labs/forge/internal/database"
 )
 
-const defaultMigrationsDir = "db/migrations"
-
-// migrationsDefault returns the configured migrations directory from
-// forge.yaml, falling back to defaultMigrationsDir.
-func migrationsDefault() string {
-	store, err := loadProjectStore()
-	if err != nil {
-		return defaultMigrationsDir
-	}
-	if store.Database().MigrationsDir != "" {
-		return store.Database().MigrationsDir
-	}
-	return defaultMigrationsDir
-}
-
 // resolveDSN returns the explicit --dsn flag value, falling back to the
 // DATABASE_URL environment variable. The flag wins so users can override the
 // env var ad-hoc. Returns an error if neither is set so the caller can surface
@@ -90,6 +75,14 @@ When something is wedged:
 	cmd.AddCommand(newDBSeedCommand())
 	cmd.AddCommand(newDBResetCommand())
 
+	// Every db subcommand reads its project's files from the -C project
+	// root, never the CWD — see db_paths.go.
+	cmd.Long += `
+
+Project files (db/migrations, db/seeds/vocab.yaml, db/seeds/custom/) are read
+from the project root: the one -C names, or the one the current directory is
+in. A relative --dir resolves against that root too.`
+
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -132,7 +125,8 @@ No .down.sql is written: forge rolls forward only.
 
 This is the canonical "N migrations → one baseline" workflow used when
 pulling a long-lived schema into a new project, or when collapsing
-historical migrations into a checkpoint. Run from the project root.
+historical migrations into a checkpoint. Paths resolve against the project
+root (-C, or the project the current directory is in).
 
 Requires:
   - docker (for the ephemeral postgres)
@@ -144,8 +138,11 @@ Examples:
   forge db squash --from-dir db/migrations --to 00001_baseline
   forge db squash --to 20260506_baseline --out-dir db/baselines/`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outDir != "" {
+				outDir = dbProjectPath(outDir)
+			}
 			return runDBSquash(cmd.Context(), squashOptions{
-				FromDir:  fromDir,
+				FromDir:  resolveMigrationsDir(fromDir),
 				Baseline: baseline,
 				OutDir:   outDir,
 				Image:    image,
@@ -156,9 +153,9 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&fromDir, "from-dir", migrationsDefault(), "Source directory holding the migrations to squash")
+	cmd.Flags().StringVar(&fromDir, "from-dir", "", "Source directory holding the migrations to squash (default: the project's migrations directory; a relative path resolves against the project root)")
 	cmd.Flags().StringVar(&baseline, "to", "00001_baseline", "Baseline filename stem (writes <stem>.up.sql)")
-	cmd.Flags().StringVar(&outDir, "out-dir", "", "Output directory for the baseline files (default: same as --from-dir)")
+	cmd.Flags().StringVar(&outDir, "out-dir", "", "Output directory for the baseline files (default: same as --from-dir; a relative path resolves against the project root)")
 	cmd.Flags().StringVar(&image, "image", "postgres:16-alpine", "Postgres docker image used for the ephemeral container")
 	cmd.Flags().StringVar(&dbName, "db-name", "forge_squash", "Database name created inside the ephemeral container")
 	cmd.Flags().StringVar(&dbUser, "db-user", "postgres", "Database user (default container superuser)")
@@ -463,10 +460,10 @@ Examples:
 			opts := &database.MigrationOptions{
 				DSN: dsn,
 			}
-			return database.CreateMigration(cmd.Context(), args[0], migDir, opts)
+			return database.CreateMigration(cmd.Context(), args[0], resolveMigrationsDir(migDir), opts)
 		},
 	}
-	newCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	newCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection")
 	migrationCmd.AddCommand(newCmd)
 	migrationCmd.AddCommand(newDBMigrationRebaseCommand())
@@ -524,9 +521,13 @@ Examples:
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths := args
+			dir := resolveMigrationsDir(migDir)
+			paths := make([]string, len(args))
+			for i, arg := range args {
+				paths[i] = resolveMigrationFileArg(dir, arg)
+			}
 			if allPending {
-				pending, err := database.PendingMigrations(migDir)
+				pending, err := database.PendingMigrations(dir)
 				if err != nil {
 					return err
 				}
@@ -537,7 +538,7 @@ Examples:
 				paths = pending
 			}
 
-			results, err := database.RebaseMigrations(migDir, paths)
+			results, err := database.RebaseMigrations(dir, paths)
 			if err != nil {
 				return err
 			}
@@ -552,10 +553,24 @@ Examples:
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	cmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 	cmd.Flags().BoolVar(&allPending, "all-pending", false, "Re-version every migration added on this branch (above the default branch's merge-base)")
 
 	return cmd
+}
+
+// resolveMigrationFileArg anchors a migration file named on the command line.
+// A bare filename names a file IN the migrations directory — the natural way
+// to name one — and any other relative path is project-relative, like every
+// other path a db command reads.
+func resolveMigrationFileArg(migDir, arg string) string {
+	if filepath.IsAbs(arg) {
+		return filepath.Clean(arg)
+	}
+	if filepath.Base(arg) == arg {
+		return filepath.Join(migDir, arg)
+	}
+	return dbProjectPath(arg)
 }
 
 // newDBMigrateCommand creates the migrate subcommand.
@@ -604,12 +619,16 @@ func newDBMigrateUpCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateCommand(cmd.Context(), "up", resolved, migDir)
+			dir, err := requireMigrationsDir(migDir)
+			if err != nil {
+				return err
+			}
+			return runMigrateCommand(cmd.Context(), "up", resolved, dir)
 		},
 	}
 
 	upCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
-	upCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	upCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 
 	return upCmd
 }
@@ -628,12 +647,16 @@ func newDBMigrateStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateStatus(cmd.Context(), resolved, migDir)
+			dir, err := requireMigrationsDir(migDir)
+			if err != nil {
+				return err
+			}
+			return runMigrateStatus(cmd.Context(), resolved, dir)
 		},
 	}
 
 	statusCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
-	statusCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	statusCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 
 	return statusCmd
 }
@@ -652,12 +675,16 @@ func newDBMigrateVersionCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateVersion(cmd.Context(), resolved, migDir)
+			dir, err := requireMigrationsDir(migDir)
+			if err != nil {
+				return err
+			}
+			return runMigrateVersion(cmd.Context(), resolved, dir)
 		},
 	}
 
 	versionCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
-	versionCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	versionCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 
 	return versionCmd
 }
@@ -695,12 +722,16 @@ Examples:
 			if err != nil {
 				return err
 			}
-			return runMigrateCommand(cmd.Context(), "force", resolved, migDir, args[0])
+			dir, err := requireMigrationsDir(migDir)
+			if err != nil {
+				return err
+			}
+			return runMigrateCommand(cmd.Context(), "force", resolved, dir, args[0])
 		},
 	}
 
 	forceCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
-	forceCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	forceCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 
 	return forceCmd
 }

@@ -29,11 +29,14 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // databaseIdentity reduces a DSN to the pair that decides WHICH DATABASE it
@@ -239,4 +242,93 @@ func resolveEnvDSN(ctx context.Context, flagDSN, projectDir, env string) (string
 		return "", fmt.Errorf("%w\n\n(the connection string came from %s)", err, source)
 	}
 	return claimed, nil
+}
+
+// resolveSeedWriteDSN is the DSN policy for the commands that WRITE seed rows
+// (`seed apply`, `seed reset`). It is looser than resolveEnvDSN in exactly one
+// place, and deliberately so.
+//
+// resolveEnvDSN admits only the env's own database. That is right for
+// `forge db reset`, which DROPs the database — on a machine running several
+// postgres instances that hold real data, "some loopback database" is not a
+// target a DROP may guess at. But applied to seeding it left no supported way
+// to seed a throwaway database: port 5432 is usually taken, a scratch postgres
+// on 55432 was refused for not being the env's, and the dogfood run that hit
+// it fell back to hand-written SQL.
+//
+// So for an explicit --dsn:
+//
+//   - a LOOPBACK server (localhost, 127.0.0.0/8, ::1, a unix socket) is
+//     accepted on any port and any database name — it is this machine, the
+//     operator named it on the command line, and the seed itself is
+//     row-scoped (INSERT ... ON CONFLICT DO NOTHING, or TRUNCATE of the
+//     seeded tables) and still refuses a database whose recorded migration
+//     version is behind this project's;
+//   - any other server must be the env's declared database, or the operator
+//     must say --allow-remote-dsn. That is the guard against a production
+//     DSN pasted from a runbook.
+//
+// The relaxation is for the FLAG only. An ambient $DATABASE_URL is evidence
+// nobody chose for this command — a stale export from another project's
+// shell — so with no --dsn the strict reconciliation applies as before. The
+// dev gate (requireDevSeedTarget) is untouched by all of this.
+func resolveSeedWriteDSN(ctx context.Context, flagDSN, projectDir, env string, allowRemote bool) (string, error) {
+	if flagDSN == "" {
+		return resolveEnvDSN(ctx, "", projectDir, env)
+	}
+	if isLoopbackDSN(flagDSN) || allowRemote {
+		return flagDSN, nil
+	}
+	declared := declaredEnvDSN(ctx, projectDir, env)
+	if id := databaseIdentity(flagDSN); id != "" && id == databaseIdentity(declared) {
+		return flagDSN, nil
+	}
+	declaredNote := "declares no database of its own"
+	if declared != "" {
+		declaredNote = "declares " + databaseIdentity(declared)
+	}
+	//nolint:revive,staticcheck // terminal operator-facing prose; see reconcileClaimedDSN
+	return "", fmt.Errorf(`refusing to seed %s: it is not a loopback server, and it is not environment %q's database (%q %s).
+
+--dsn may name ANY loopback database — localhost, 127.0.0.1, ::1 or a unix socket, on any port — so a throwaway postgres needs no flag. A remote server is refused unless it is the env's own, because the one remote DSN most likely to be pasted into a seed command is production's.
+
+If you do mean to seed that server, pass --allow-remote-dsn (the environment must still be dev).`,
+		redactDSNForMessage(flagDSN), env, env, declaredNote)
+}
+
+// isLoopbackDSN reports whether every server a DSN can connect to is on this
+// machine: localhost, a loopback IP, or a unix socket.
+//
+// It asks pgx's own parser — the same one ConnectDB dials with — rather than
+// parsing the URL by hand, so it reads the DSN exactly the way the connection
+// will: key=value DSNs, a `host=` query parameter, PGHOST and the other libpq
+// environment defaults, the unix-socket default for a DSN with no host at
+// all, and every multi-host fallback. A DSN pgx cannot parse is not loopback.
+func isLoopbackDSN(dsn string) bool {
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return false
+	}
+	if !isLocalPGHost(cfg.Host) {
+		return false
+	}
+	for _, fb := range cfg.Fallbacks {
+		if !isLocalPGHost(fb.Host) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLocalPGHost classifies one resolved pgx host: a unix socket, localhost, or
+// any loopback IP (127.0.0.0/8, ::1).
+func isLocalPGHost(host string) bool {
+	if strings.HasPrefix(host, "/") {
+		return true // a unix-domain socket directory
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

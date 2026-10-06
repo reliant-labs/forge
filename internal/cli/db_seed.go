@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -64,6 +65,9 @@ run never leaves a half-populated database and is always safe to retry.
 
 Values you supply in db/seeds/vocab.yaml are validated instead, and an invalid
 one is skipped with a warning (that column falls back to built-in synthesis).
+Timestamps there are written relative to now ({from: -90d, to: +30d}, -3d,
+now), and undescribed timestamp columns land in the four weeks before the day
+the seed runs.
 
 An entity that reaches one parent by TWO paths (orders.patient_id, and
 orders.prescription_id -> prescriptions.patient_id) carries an invariant the
@@ -72,9 +76,22 @@ contradict the rule, so apply REFUSES and prints the declaration to paste:
 COMMENT ON CONSTRAINT ... IS 'forge:ref derived-from=<column>' (or
 'authoritative', or 'independent'). Load the db/seeding skill for the table.
 
+Which database: with no --dsn, the one the env declares (or $DATABASE_URL when
+it is that same database). --dsn may name ANY loopback database — localhost,
+127.0.0.1, ::1 or a unix socket — so a throwaway postgres on a spare port can
+be seeded. A non-loopback --dsn must be the env's own database, or carry
+--allow-remote-dsn. The environment must be dev either way.
+
+Seeding nothing is an error whenever there is something to seed: a database
+whose tables the migrations forge read do not define (the wrong -C or --dir)
+fails instead of printing "Seeded 0 row(s)". database.seed.tables: [] in
+forge.yaml is the deliberate way to synthesize nothing and apply only
+db/seeds/custom/.
+
 Examples:
   forge db seed apply                    # seed the dev database
-  forge db seed apply --dsn "$DATABASE_URL"
+  forge db seed apply -C ~/src/app       # from anywhere
+  forge db seed apply --dsn postgres://postgres:postgres@localhost:55432/scratch?sslmode=disable
   forge db seed status                   # per-table seeded-row counts
   forge db seed reset                    # wipe seeded tables and re-seed`,
 	}
@@ -84,22 +101,34 @@ Examples:
 	return cmdutil.StrictGroup(cmd)
 }
 
+// seedOptions is what the seed write commands' flags bind.
+type seedOptions struct {
+	dsn    string
+	env    string
+	migDir string
+	// allowRemoteDSN lets --dsn name a non-loopback server that is not the
+	// env's own database. It opens the DSN gate only — never the dev gate.
+	allowRemoteDSN bool
+}
+
+// bindSeedWriteFlags registers the flags apply and reset share.
+func bindSeedWriteFlags(cmd *cobra.Command, o *seedOptions) {
+	cmd.Flags().StringVar(&o.dsn, "dsn", "", "Database to seed: any loopback database (localhost, 127.0.0.1, ::1, unix socket), or the env's own (default: what the env declares, or $DATABASE_URL when it is that database)")
+	cmd.Flags().StringVar(&o.env, "env", "dev", "Target environment (must be dev; there is no override)")
+	cmd.Flags().StringVar(&o.migDir, "dir", "", migrationsDirFlagUsage)
+	cmd.Flags().BoolVar(&o.allowRemoteDSN, "allow-remote-dsn", false, "Let --dsn name a NON-loopback server that is not the env's declared database (the env must still be dev)")
+}
+
 func newDBSeedApplyCommand() *cobra.Command {
-	var (
-		dsn    string
-		env    string
-		migDir string
-	)
+	var o seedOptions
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Materialize seed data into the dev database (dev-only)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBSeedApply(cmd.Context(), dsn, env, migDir)
+			return runDBSeedApply(cmd.Context(), o)
 		},
 	}
-	cmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
-	cmd.Flags().StringVar(&env, "env", "dev", "Target environment (must be dev; there is no override)")
-	cmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	bindSeedWriteFlags(cmd, &o)
 	return cmd
 }
 
@@ -116,16 +145,12 @@ func newDBSeedStatusCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
-	cmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	cmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
 	return cmd
 }
 
 func newDBSeedResetCommand() *cobra.Command {
-	var (
-		dsn    string
-		env    string
-		migDir string
-	)
+	var o seedOptions
 	cmd := &cobra.Command{
 		Use:   "reset",
 		Short: "Delete seeded rows (child-first) and re-seed (dev-only)",
@@ -145,18 +170,15 @@ refuses exactly as 'seed apply' does — clear that first with
 Only rows matching forge's deterministic seed data are deleted; rows you or
 your application created are left in place.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBSeedReset(cmd.Context(), dsn, env, migDir)
+			return runDBSeedReset(cmd.Context(), o)
 		},
 	}
-	cmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL)")
-	cmd.Flags().StringVar(&env, "env", "dev", "Target environment (must be dev; there is no override)")
-	cmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	bindSeedWriteFlags(cmd, &o)
 	return cmd
 }
 
-// seedShadowFor resolves the postgres SERVER that the migrations under migDir
-// get applied to so their schema can be introspected. migDir is
-// <project>/db/migrations, so the project directory is its grandparent.
+// seedShadowServer resolves the postgres SERVER the project's migrations get
+// applied to so their schema can be introspected.
 //
 // This lives in the CLI, not in seedplan, because resolving it means knowing
 // how a forge project stores its database coordinates (forge.yaml, .env, the
@@ -165,18 +187,33 @@ your application created are left in place.`,
 // and has no opinion about where projects keep their config. An empty result
 // means "no reachable configured server", and pgtest's embedded postgres is
 // used instead.
-func seedShadowFor(migDir string) string {
-	return shadowdb.Resolve(filepath.Dir(filepath.Dir(migDir)))
+//
+// projectDir is passed rather than derived from the migrations directory: a
+// project may configure database.migrations_dir anywhere, and the
+// grandparent of an arbitrary directory is not its project.
+func seedShadowServer(projectDir string) string {
+	return shadowdb.Resolve(projectDir)
 }
 
 // seedConfigFromProject maps the project's forge.yaml database.seed block onto
-// the seedplan.Config the applier consumes.
+// the seedplan.Config the applier consumes, anchored at today (seedNow) so
+// relative and synthesized timestamps read as current.
 func seedConfigFromProject() seedplan.Config {
-	store, err := loadProjectStore()
-	if err != nil {
-		return seedplan.DefaultConfig()
+	c := seedplan.DefaultConfig()
+	if store, err := loadProjectStore(); err == nil {
+		c = seedConfigFromStore(store)
 	}
-	return seedConfigFromStore(store)
+	c.Now = seedNow()
+	return c
+}
+
+// seedNow is the instant a runtime seed anchors relative time to: the start of
+// the current UTC day. A day, not the instant, so every seed run on one day
+// writes the same dataset — a `seed reset` reproduces what `seed apply` wrote
+// an hour earlier, which is what makes a seeded row a stable thing to debug
+// against.
+func seedNow() time.Time {
+	return time.Now().UTC().Truncate(24 * time.Hour)
 }
 
 // seedConfigFromStore is the pure, testable core of seedConfigFromProject:
@@ -280,14 +317,14 @@ func envModeFromKCLConfig(projectDir, env string) (string, bool) {
 // apply/reset) refuses when migrations are pending — seeds apply only against
 // a fully-migrated schema.
 //
-// env is the environment the caller claimed. When it is non-empty the DSN is
-// resolved THROUGH it (resolveEnvDSN) rather than beside it: the dev gate used
-// to classify the environment while resolveDSN independently took --dsn or
-// $DATABASE_URL, so `--env dev --dsn postgres://prod-host/app` passed the dev
-// check and then wrote to production. `seed status` passes "" — it is
+// o.env is the environment the caller claimed. When it is non-empty the DSN is
+// resolved THROUGH it (resolveSeedWriteDSN) rather than beside it: the dev
+// gate used to classify the environment while resolveDSN independently took
+// --dsn or $DATABASE_URL, so `--env dev --dsn postgres://prod-host/app` passed
+// the dev check and then wrote to production. `seed status` passes "" — it is
 // read-only and has no env flag to reconcile against.
-func openSeedDB(ctx context.Context, dsn, env, migDir string, checkPending bool) (*sql.DB, error) {
-	resolved, err := resolveSeedTargetDSN(ctx, dsn, env)
+func openSeedDB(ctx context.Context, o seedOptions, migDir string, checkPending bool) (*sql.DB, error) {
+	resolved, err := resolveSeedTargetDSN(ctx, o)
 	if err != nil {
 		return nil, err
 	}
@@ -311,15 +348,15 @@ func openSeedDB(ctx context.Context, dsn, env, migDir string, checkPending bool)
 
 // resolveSeedTargetDSN resolves the DSN a seed command will write through.
 //
-// With an env, the DSN is reconciled against what that env declares — see
-// db_target.go for why the two were separate and what that allowed. Without
-// one (read-only `seed status`), it falls back to the historic resolution:
-// there is no env claim to check the DSN against, and nothing is written.
-func resolveSeedTargetDSN(ctx context.Context, dsn, env string) (string, error) {
-	if env == "" {
-		return resolveDSN(dsn)
+// With an env, the DSN goes through the seed DSN policy — see
+// resolveSeedWriteDSN in db_target.go for which DSNs pass and why. Without one
+// (read-only `seed status`), it falls back to the historic resolution: there
+// is no env claim to check the DSN against, and nothing is written.
+func resolveSeedTargetDSN(ctx context.Context, o seedOptions) (string, error) {
+	if o.env == "" {
+		return resolveDSN(o.dsn)
 	}
-	return resolveEnvDSN(ctx, dsn, projectDirForKCL(), env)
+	return resolveSeedWriteDSN(ctx, o.dsn, projectDirForKCL(), o.env, o.allowRemoteDSN)
 }
 
 // seedBlockedMessage turns a MigrationBlock into a refusal that names the next
@@ -369,17 +406,22 @@ If `+"`forge db migrate up`"+` itself fails because existing rows violate the mi
 	)
 }
 
-func runDBSeedApply(ctx context.Context, dsn, env, migDir string) error {
-	if err := requireDevSeedTarget(env); err != nil {
+func runDBSeedApply(ctx context.Context, o seedOptions) error {
+	if err := requireDevSeedTarget(o.env); err != nil {
 		return err
 	}
-	db, err := openSeedDB(ctx, dsn, env, migDir, true)
+	migDir, err := requireMigrationsDir(o.migDir)
+	if err != nil {
+		return err
+	}
+	db, err := openSeedDB(ctx, o, migDir, true)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowFor(migDir), seedConfigFromProject())
+	cfg := seedConfigFromProject()
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err
 	}
@@ -388,11 +430,105 @@ func runDBSeedApply(ctx context.Context, dsn, env, migDir string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "Seeded %d row(s) across %d table(s):\n", res.Total(), len(res.Tables))
+	if err := seedOutcomeError(ctx, db, plan, cfg, res, migDir); err != nil {
+		return err
+	}
+	printSeedResult("Seeded", plan, cfg, res)
+	return applyCustomSeedOverlay(ctx, db, migDir)
+}
+
+// seedOutcomeError turns "the seeder wrote nothing" into an error whenever
+// nothing is not a legitimate answer.
+//
+// It used to be one: `seed apply -C <proj>` run from another directory read
+// migrations from the CWD, found none, planned zero tables, and printed
+// "Seeded 0 row(s) across 0 table(s)" with exit 0 — on a database that was
+// either fully migrated or entirely empty. A success line over a no-op is the
+// worst outcome a seeder has, because the next step (a UI, a test, an agent)
+// trusts it.
+//
+// Nothing is legitimate in exactly three cases, and each is checked:
+//
+//   - forge.yaml says `database.seed.tables: []` — synthesize nothing, on
+//     purpose; db/seeds/custom/ is the dataset.
+//   - the database was already seeded — apply is idempotent, so a re-run
+//     inserts nothing and the tables still hold rows.
+//   - there is nothing to seed: the migrations define no tables AND the
+//     database holds none.
+//
+// Everything else — a database with tables whose schema the migrations forge
+// read does not define, a `tables:` scope naming no real table, or a plan that
+// inserted nothing into tables that are still empty — is an error naming the
+// directory that was read.
+func seedOutcomeError(ctx context.Context, db *sql.DB, plan *seedplan.Plan, cfg seedplan.Config, res *seedplan.Result, migDir string) error {
+	if cfg.Tables != nil && len(cfg.Tables) == 0 {
+		return nil
+	}
+	if len(plan.Tables()) == 0 {
+		if len(cfg.Tables) > 0 {
+			return fmt.Errorf("seeded nothing: database.seed.tables in forge.yaml names %s, but none of them is a table the migrations in %s define",
+				strings.Join(cfg.Tables, ", "), migDir)
+		}
+		live, err := liveTableCount(ctx, db)
+		if err != nil {
+			return err
+		}
+		if live > 0 {
+			return fmt.Errorf("seeded nothing: the database has %d table(s), but the migrations in %s define none, so forge planned no rows. "+
+				"That is the wrong migrations directory — check -C (the project) and --dir", live, migDir)
+		}
+		return nil
+	}
+	if res.Total() > 0 {
+		return nil
+	}
+	rows, err := seedplan.Status(ctx, db, plan)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if r.Count > 0 {
+			return nil // already seeded: idempotent re-run
+		}
+	}
+	return fmt.Errorf("seeded nothing: the plan targets %d table(s) (%s) from %s, but inserted 0 rows and every one of them is still empty",
+		len(rows), strings.Join(plan.Tables(), ", "), migDir)
+}
+
+// liveTableCount counts the user tables in the target database — everything
+// but the catalogs and golang-migrate/migratekit bookkeeping.
+func liveTableCount(ctx context.Context, db *sql.DB) (int, error) {
+	var n int
+	err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.tables
+		WHERE table_type = 'BASE TABLE'
+		  AND table_schema NOT IN ('pg_catalog', 'information_schema')
+		  AND table_name NOT LIKE 'schema\_migrations%'`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count tables in the target database: %w", err)
+	}
+	return n, nil
+}
+
+// printSeedResult reports what a seed run inserted, saying plainly when
+// nothing was synthesized on purpose or because the rows already exist.
+func printSeedResult(verb string, plan *seedplan.Plan, cfg seedplan.Config, res *seedplan.Result) {
+	switch {
+	case cfg.Tables != nil && len(cfg.Tables) == 0:
+		fmt.Fprintln(os.Stdout, "database.seed.tables is [] in forge.yaml — no rows synthesized; applying db/seeds/custom/ only.")
+		return
+	case len(plan.Tables()) == 0:
+		fmt.Fprintln(os.Stdout, "No seedable tables: the migrations define none.")
+		return
+	case res.Total() == 0:
+		fmt.Fprintf(os.Stdout, "%s 0 new row(s): all %d table(s) already hold seed data (apply is idempotent; `%s db seed reset` re-seeds).\n",
+			verb, len(plan.Tables()), Name())
+		return
+	}
+	fmt.Fprintf(os.Stdout, "%s %d row(s) across %d table(s):\n", verb, res.Total(), len(res.Tables))
 	for _, tr := range res.Tables {
 		fmt.Fprintf(os.Stdout, "  %-32s %d\n", tr.Table, tr.Inserted)
 	}
-	return applyCustomSeedOverlay(ctx, db, migDir)
 }
 
 // printSeedWarnings surfaces the plan's warnings: db/seeds/vocab.yaml
@@ -457,14 +593,18 @@ func stripSQLComments(s string) string {
 	return b.String()
 }
 
-func runDBSeedStatus(ctx context.Context, dsn, migDir string) error {
-	db, err := openSeedDB(ctx, dsn, "", migDir, false)
+func runDBSeedStatus(ctx context.Context, dsn, flagDir string) error {
+	migDir, err := requireMigrationsDir(flagDir)
+	if err != nil {
+		return err
+	}
+	db, err := openSeedDB(ctx, seedOptions{dsn: dsn}, migDir, false)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowFor(migDir), seedConfigFromProject())
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), seedConfigFromProject())
 	if err != nil {
 		return err
 	}
@@ -484,17 +624,22 @@ func runDBSeedStatus(ctx context.Context, dsn, migDir string) error {
 	return nil
 }
 
-func runDBSeedReset(ctx context.Context, dsn, env, migDir string) error {
-	if err := requireDevSeedTarget(env); err != nil {
+func runDBSeedReset(ctx context.Context, o seedOptions) error {
+	if err := requireDevSeedTarget(o.env); err != nil {
 		return err
 	}
-	db, err := openSeedDB(ctx, dsn, env, migDir, true)
+	migDir, err := requireMigrationsDir(o.migDir)
+	if err != nil {
+		return err
+	}
+	db, err := openSeedDB(ctx, o, migDir, true)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowFor(migDir), seedConfigFromProject())
+	cfg := seedConfigFromProject()
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err
 	}
@@ -503,6 +648,9 @@ func runDBSeedReset(ctx context.Context, dsn, env, migDir string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "Reset and seeded %d row(s) across %d table(s).\n", res.Total(), len(res.Tables))
+	if err := seedOutcomeError(ctx, db, plan, cfg, res, migDir); err != nil {
+		return err
+	}
+	printSeedResult("Reset and seeded", plan, cfg, res)
 	return applyCustomSeedOverlay(ctx, db, migDir)
 }

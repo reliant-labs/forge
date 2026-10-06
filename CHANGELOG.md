@@ -225,6 +225,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forge retired, with the truth that replaced it, the skill that carries that
   truth (checked to exist), and a bad and a good sample the pattern must catch
   and spare. Against the previous main it reports 16 stale lines.
+- **`db/seeds/vocab.yaml` describes timestamps, booleans and NULL.** A time
+  column takes instants relative to the day the seed runs:
+  `{from: -90d, to: +30d}` (optional `step: 1d`), or a list of `now` / `-3d` /
+  `+2w` offsets and absolute ISO dates. A boolean column takes
+  `[true, true, false]`, and `null` is a list value for a nullable column
+  (`[null, "x"]`). Repeating an entry weights the draw for every kind. A `null`
+  on a NOT NULL column refuses the seed and names the column. Before this,
+  YAML dropped a null from the list (`[null]` failed with "has no values"), and
+  boolean and time columns were ignored with a warning. `seedplan.Config.Now`
+  is the anchor: the seed CLI passes the start of the current UTC day. The zero
+  value is a fixed instant, so generated mocks, factories and fixtures stay
+  byte-stable.
+- **`forge db seed apply|reset --dsn` accepts any loopback database**
+  (localhost, 127.0.0.0/8, ::1, a unix socket; any port, any name), so a
+  throwaway postgres can be seeded. A non-loopback `--dsn` must still be the
+  env's declared database unless `--allow-remote-dsn` is passed. The env must
+  be dev either way. An ambient `$DATABASE_URL` gets no relaxation, and
+  `forge db reset` (DROP DATABASE) keeps the strict check.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
   `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
   context.Context) error)` runs fn in a transaction carried by the ctx it
@@ -481,6 +499,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/app/compose.go` ownership was already consistent on main (yours,
   reconciled). A harness with an older embedded forge can still show "forge-owned
   and regenerated", and the retired-claims registry keeps that phrasing out.
+- **`forge db` commands read the `-C` project, not the CWD.** `--dir` defaulted
+  to a relative `db/migrations` computed before `-C` was parsed, so
+  `forge db migrate up -C <proj>` from `/tmp` failed with
+  `open /tmp/db/migrations/.`. `forge db seed apply -C <proj>` read migrations,
+  `vocab.yaml` and `db/seeds/custom/` from the CWD, then printed
+  `Seeded 0 row(s) across 0 table(s)` and exited 0. Every db subcommand
+  (migrate, migration new/rebase, seed, reset, squash) now resolves the
+  migrations directory, a relative `--dir` and the seed overlays against the
+  project root. A missing migrations directory is an error naming the path.
+- **Seeding nothing is an error when there was something to seed.** `seed
+  apply`/`seed reset`/`db reset` fail when the database has tables the
+  migrations read do not define (the wrong `-C`/`--dir`), when
+  `database.seed.tables` names no real table, or when the plan inserted nothing
+  into tables that are still empty. `database.seed.tables: []`, an
+  already-seeded database and a schema with no tables still succeed.
+- **Undescribed seeded timestamps sit in the four weeks before today**, not
+  January 2024.
+- **The mock-fixture freshness test names both causes.** Editing only
+  `db/seeds/vocab.yaml` fails `fixture-freshness_gen.test.ts`, which is
+  correct, but the message said the schema had changed. It now lists the schema
+  (`db/migrations`) and the seed vocabulary (`db/seeds/vocab.yaml`), and says to
+  run `forge generate` (`reliant forge generate` inside reliant) from the
+  project root.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

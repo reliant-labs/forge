@@ -257,7 +257,9 @@ func TestNewNextSteps_FrontendFirstProjectStartsWithItsFrontend(t *testing.T) {
 	lines := newNextSteps("demo", false, config.ProjectKindService, nil, true)
 	block := strings.Join(lines, "\n")
 
-	for _, want := range []string{"frontends/", "deploy/static-site"} {
+	// `env up dev` is the dev loop, and it works on a fresh frontend-only
+	// scaffold now that an env with nothing bound to its cluster needs none.
+	for _, want := range []string{"frontends/", "env up dev", "deploy/static-site"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("frontend-first next steps must mention %q:\n%s", want, block)
 		}
@@ -293,5 +295,30 @@ func TestNewNextSteps_MentionsSignInOnlyWithAFrontend(t *testing.T) {
 	noFE := strings.Join(newNextSteps("demo", false, config.ProjectKindService, []string{"item"}, false), "\n")
 	if strings.Contains(noFE, "sign-in") {
 		t.Errorf("a project with NO frontend has nothing to sign in to:\n%s", noFE)
+	}
+}
+
+// The README's first command is `forge project new my-app`, with no --mod.
+// --mod was REQUIRED, so that command failed before writing anything. It
+// must default to a path forge.yaml's module_path check accepts, and an
+// explicit --mod must still win.
+func TestProjectNew_ModulePathDefaultsToProjectName(t *testing.T) {
+	cmd := newNewCmd()
+	if ann := cmd.Flags().Lookup("mod").Annotations[cobra.BashCompOneRequiredFlag]; len(ann) > 0 {
+		t.Fatal("--mod is still a required flag: `forge project new my-app` (the README's first command) fails")
+	}
+	got, defaulted := defaultModulePath("", "my-app")
+	if got != "example.com/my-app" || !defaulted {
+		t.Errorf("no --mod: got %q (defaulted=%v), want example.com/my-app", got, defaulted)
+	}
+	// The scaffold validates forge.yaml as it writes CI; a default the
+	// validator rejects fails `project new` just as surely as a required
+	// flag. (A bare `my-app` did exactly that.)
+	yaml := "name: my-app\nmodule_path: " + got + "\n"
+	if _, err := config.LoadProject([]byte(yaml), "forge.yaml"); err != nil && strings.Contains(err.Error(), "module_path") {
+		t.Errorf("default %q is refused by forge.yaml's module_path check: %v", got, err)
+	}
+	if got, defaulted := defaultModulePath(" github.com/acme/my-app ", "my-app"); got != "github.com/acme/my-app" || defaulted {
+		t.Errorf("explicit --mod: got %q (defaulted=%v), want it verbatim", got, defaulted)
 	}
 }

@@ -396,8 +396,12 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s %s: HTTP %d: %s",
-			req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &apiError{
+			method: req.Method,
+			path:   req.URL.Path,
+			status: resp.StatusCode,
+			body:   strings.TrimSpace(string(body)),
+		}
 	}
 	if readErr != nil {
 		return nil, readErr
@@ -406,6 +410,45 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 		return nil, fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, err)
 	}
 	return body, nil
+}
+
+// apiError is a non-2xx answer from the issuer.
+//
+// Error() renders the provider's own body verbatim, because the API reports
+// precisely what it rejected. The structured fields exist for the few
+// callers that must BRANCH on the rejection rather than just report it —
+// a password-reset form has to tell "wrong code" from "weak password", and
+// the only reliable discriminator is Zitadel's stable error id (see
+// errorID), not the localized message.
+type apiError struct {
+	method string
+	path   string
+	status int
+	body   string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("%s %s: HTTP %d: %s", e.method, e.path, e.status, e.body)
+}
+
+// errorID returns the stable id and the human message from Zitadel's error
+// envelope — `{"code":3,"message":"… (DOMAIN-HuJf6)","details":[{"id":
+// "DOMAIN-HuJf6","message":"Password is too short"}]}` — or empty strings
+// when the body is not that shape.
+//
+// The id is what to branch on: it is stable across versions and locales,
+// where the message is translated.
+func (e *apiError) errorID() (id, message string) {
+	var envelope struct {
+		Details []struct {
+			ID      string `json:"id"`
+			Message string `json:"message"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal([]byte(e.body), &envelope); err != nil || len(envelope.Details) == 0 {
+		return "", ""
+	}
+	return envelope.Details[0].ID, envelope.Details[0].Message
 }
 
 // noChangesID is the error Zitadel returns when an update would leave the

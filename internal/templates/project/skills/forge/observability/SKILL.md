@@ -98,10 +98,17 @@ Forge instruments three boundaries, so a request is observable end to end:
 1. **The RPC edge** — every Connect handler runs the interceptor chain built by
    `observe.Chain(observe.Deps{…})` in `cmd/<bin>/cmd/serve.go` (recovery →
    request-id → logging → tracing → metrics, then auth → audit → rate-limit,
-   with otelconnect). One span / metric / log per RPC.
+   with otelconnect). One span and one metric sample per RPC. The log is
+   every failure (`rpc failed`) plus a per-procedure SAMPLE of successes
+   (`rpc completed`): the first, then at most one a minute carrying
+   `suppressed=<n>` (the successes since the last record), and every success
+   over 1s with `slow=true`. Tune it through `observe.Deps.LogOptions` —
+   `observe.WithSuccessLevel(<svc>connect.<Svc><Method>Procedure, slog.LevelDebug)`
+   silences one poll, `observe.WithSuccessSampling(0)` restores one record per
+   success, `observe.WithSlowThreshold(d)` moves the slow line.
 2. **The in-process component boundary** — every internal component→component
-   method call (a `contract.go` `Service`) gets one span / metric / log plus
-   panic-recovery. This is the layer detailed below — the in-process twin of the
+   method call (a `contract.go` `Service`) gets one span and metric, a log of
+   every failure and a sample of successes, plus panic-recovery. This is the layer detailed below — the in-process twin of the
    edge chain.
 3. **The ORM** — `pkg/orm` registers the bun `bunotel` query hook, so every DB
    query becomes a child span.
@@ -135,7 +142,7 @@ func newObserveChain() *observe.ComponentChain {
         observe.RecoverMiddleware(logger),                      // panic -> error, logged with stack
         observe.TraceMiddleware(otel.Tracer(scope)),            // one span "<pkg>.<Method>" per call
         observe.MetricsMiddleware(otel.Meter(scope), "<pkg>"),  // <pkg>.calls / .errors / .duration
-        observe.LogMiddleware(logger, slog.LevelDebug),         // one structured record per call
+        observe.LogMiddleware(logger, slog.LevelDebug),         // every failure; successes sampled
     )
 }
 ```
@@ -153,6 +160,13 @@ always safe. This file is THE extension point:
   default is seeded from `observability.log_level` in forge.yaml (`debug` |
   `info` | `warn` | `error`; default `debug`, so success stays quiet under a
   production Info handler).
+- **Tune success sampling** — successes are sampled per method, exactly like
+  `rpc completed` at the edge: the first, then at most one a minute carrying
+  `suppressed=<n>`, plus every call over 1s with `slow=true`. Trailing options
+  on `observe.LogMiddleware` change that:
+  `observe.WithSuccessLevel("<pkg>.<Method>", slog.LevelInfo)` for one method,
+  `observe.WithSuccessSampling(0)` to log every success,
+  `observe.WithSlowThreshold(d)` to move the slow line.
 
 The chain captures only method identity, duration, and error status — never
 arguments or results. It records `<pkg>.calls` / `<pkg>.errors` /

@@ -60,6 +60,11 @@ type ProjectGenerator struct {
 	// existing project (ScaffoldProjectInto): the files land in the staging
 	// dir, but what they say must describe the real project.
 	factsDir string
+
+	// hostedEnvs are the deployed envs generateKCLDeploy wrote hosted on the
+	// forge control plane, so the CI scaffolded beside them is the hosted
+	// pipeline (generateCIFiles) without rendering a half-born project.
+	hostedEnvs []string
 }
 
 // treeDir is the directory the scaffold reads project facts from — see

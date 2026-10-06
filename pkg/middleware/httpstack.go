@@ -158,13 +158,12 @@ func httpAudit(logger *slog.Logger, claimsFrom ClaimsLookup) func(http.Handler) 
 				attrs = append(attrs, slog.String("request_id", rid))
 			}
 
+			// user_id only: this line is emitted per request, and an email
+			// in it would be personal data in every log line.
 			var identified bool
 			if claimsFrom != nil {
 				if claims, ok := claimsFrom(r.Context()); ok && claims != nil {
-					attrs = append(attrs,
-						slog.String("user_id", claims.UserID),
-						slog.String("email", claims.Email),
-					)
+					attrs = append(attrs, slog.String("user_id", claims.UserID))
 					identified = true
 				}
 			}

@@ -308,6 +308,15 @@ schema Workload:
     # App-flow health checks `forge env smoke` runs against this workload.
     # See FlowCheck.
     flow_checks: [FlowCheck] = []
+    # The components this workload's process runs besides the one it is
+    # named for, by component name. A subcommand that mounts several
+    # components (control-plane's `admin-api` serves six admin services) is
+    # ONE workload, and which components it mounts is decided in the
+    # project's Go, where forge cannot see it; this states it. `forge lint`
+    # then does not report those components as undeployed, and `forge
+    # scaffold` does not declare a second workload for one. Nothing renders
+    # from it: it never changes what deploys.
+    serves?: [str]
 
     # --- v1alpha1.WorkloadSpec ---
     kind: str = "service"

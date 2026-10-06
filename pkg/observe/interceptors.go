@@ -46,40 +46,40 @@ func RequestIDFromContext(ctx context.Context) string {
 	return v
 }
 
-// LoggingInterceptor returns a Connect interceptor that emits one
-// slog.Info record per RPC: procedure, duration, request_id, and (on
-// failure) error. Matches the shape long-emitted by the scaffolded
-// pkg/middleware.LoggingInterceptor — projects that adopt the chain via
-// DefaultMiddlewares get the same log records without keeping a copy of
-// the interceptor in their tree.
-func LoggingInterceptor(logger *slog.Logger) connect.Interceptor {
+// LoggingInterceptor returns a Connect interceptor that logs RPCs:
+// procedure, duration, request_id, and (on failure) error.
+//
+//   - Every FAILED call is written — "rpc failed" / "stream failed" — at the
+//     level LevelForError chooses, with the error and its cause.
+//   - SUCCESSFUL calls — "rpc completed" / "stream completed", at INFO — are
+//     sampled per procedure: the first is written, then at most one per
+//     DefaultSuccessSampleWindow, carrying `suppressed`, the number of
+//     successes of that procedure since the previous record that were not
+//     written. A unary success at or above DefaultSlowThreshold is always
+//     written, with slow=true. See log_policy.go for why this is sampling
+//     and not a lower level.
+//
+// opts tune the success half: WithSuccessSampling (0 restores one record
+// per success), WithSlowThreshold, and WithSuccessLevel for one procedure.
+// Through Chain / DefaultMiddlewares they are passed as Deps.LogOptions.
+func LoggingInterceptor(logger *slog.Logger, opts ...LogOption) connect.Interceptor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &loggingInterceptor{logger: logger}
+	return &loggingInterceptor{logger: logger, policy: newLogPolicy(slog.LevelInfo, opts)}
 }
 
 type loggingInterceptor struct {
 	logger *slog.Logger
+	policy *logPolicy
 }
 
 func (i *loggingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		start := time.Now()
+		start := i.policy.now()
 		resp, err := next(ctx, req)
-		attrs := []slog.Attr{
-			slog.String("procedure", req.Spec().Procedure),
-			slog.Duration("duration", time.Since(start)),
-		}
-		if rid := requestIDFromCtxOrHeader(ctx, req.Header()); rid != "" {
-			attrs = append(attrs, slog.String("request_id", rid))
-		}
-		if err != nil {
-			attrs = append(attrs, errorAttrs(err)...)
-			i.logger.LogAttrs(ctx, LevelForError(err), "rpc failed", attrs...)
-		} else {
-			i.logger.LogAttrs(ctx, slog.LevelInfo, "rpc completed", attrs...)
-		}
+		i.log(ctx, req.Spec().Procedure, req.Header(), i.policy.now().Sub(start), err,
+			"rpc completed", "rpc failed", true)
 		return resp, err
 	})
 }
@@ -90,23 +90,42 @@ func (i *loggingInterceptor) WrapStreamingClient(next connect.StreamingClientFun
 
 func (i *loggingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		start := time.Now()
+		start := i.policy.now()
 		err := next(ctx, conn)
-		attrs := []slog.Attr{
-			slog.String("procedure", conn.Spec().Procedure),
-			slog.Duration("duration", time.Since(start)),
-		}
-		if rid := requestIDFromCtxOrHeader(ctx, conn.RequestHeader()); rid != "" {
-			attrs = append(attrs, slog.String("request_id", rid))
-		}
-		if err != nil {
-			attrs = append(attrs, errorAttrs(err)...)
-			i.logger.LogAttrs(ctx, LevelForError(err), "stream failed", attrs...)
-		} else {
-			i.logger.LogAttrs(ctx, slog.LevelInfo, "stream completed", attrs...)
-		}
+		i.log(ctx, conn.Spec().Procedure, conn.RequestHeader(), i.policy.now().Sub(start), err,
+			"stream completed", "stream failed", false)
 		return err
 	})
+}
+
+// log writes the record for one finished call, if it gets one. A failure
+// always does; a success only when the policy admits it, which is decided
+// before any attribute is assembled.
+func (i *loggingInterceptor) log(ctx context.Context, procedure string, header interface{ Get(string) string },
+	elapsed time.Duration, err error, completedMsg, failedMsg string, slowApplies bool,
+) {
+	level, msg := LevelForError(err), failedMsg
+	var why slog.Attr
+	if err == nil {
+		var ok bool
+		if level, why, ok = i.policy.success(ctx, i.logger, procedure, elapsed, slowApplies); !ok {
+			return
+		}
+		msg = completedMsg
+	}
+	attrs := []slog.Attr{
+		slog.String("procedure", procedure),
+		slog.Duration("duration", elapsed),
+	}
+	if rid := requestIDFromCtxOrHeader(ctx, header); rid != "" {
+		attrs = append(attrs, slog.String("request_id", rid))
+	}
+	if err != nil {
+		attrs = append(attrs, errorAttrs(err)...)
+	} else if why.Key != "" {
+		attrs = append(attrs, why)
+	}
+	i.logger.LogAttrs(ctx, level, msg, attrs...)
 }
 
 // requestIDFromCtxOrHeader resolves the correlation ID by preferring the

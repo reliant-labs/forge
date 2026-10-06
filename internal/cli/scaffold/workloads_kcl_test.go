@@ -1,0 +1,222 @@
+package scaffold
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/templates"
+)
+
+// writeScaffoldedEnvs writes dev, staging and prod exactly as `forge project
+// new` renders them, binding only migrate.
+func writeScaffoldedEnvs(t *testing.T, root string) {
+	t.Helper()
+	for _, env := range []string{"dev", "staging", "prod"} {
+		bindings := "    _hosted(wl.migrate)"
+		if env == "dev" {
+			bindings = "    _on_host_job(wl.migrate)"
+		}
+		out, err := templates.DeployTemplates().Render(scaffoldedEnvTemplate(env), templates.EnvTemplateData{
+			ProjectName: "acme", EnvName: env, IngressEnabled: true, PrimaryWorkload: "acme", Bindings: bindings,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Join(root, "deploy", "kcl", env)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.k"), out, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func readEnvMain(t *testing.T, root, env string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", env, "main.k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A kind the hosted platform refuses must never be bound where it cannot run,
+// and must never yield an env that renders green and deploys nothing.
+// `forge scaffold operator` binds it to a cluster you operate in every
+// deployed env, and — because a scaffolded env declares no cluster yet — says
+// which envs now refuse to render and why, at the moment it happens.
+func TestBindWorkloadInEnvs_OperatorBindsToClusterAndWarns(t *testing.T) {
+	root := t.TempDir()
+	writeScaffoldedEnvs(t, root)
+
+	out, _ := captureStdout(t, func() error {
+		bindWorkloadInEnvs(root, config.ComponentConfig{Name: "reaper", Kind: config.ComponentKindOperator})
+		return nil
+	})
+
+	if got := readEnvMain(t, root, "dev"); !strings.Contains(got, "    _on_k3d(wl.reaper)\n]") {
+		t.Errorf("dev must run the operator in the local cluster:\n%s", got)
+	}
+	for _, env := range []string{"staging", "prod"} {
+		if got := readEnvMain(t, root, env); !strings.Contains(got, "    _on_cluster(wl.reaper)\n]") {
+			t.Errorf("%s must bind the operator to a cluster you operate:\n%s", env, got)
+		}
+	}
+	for _, want := range []string{
+		"operator 'reaper' cannot run on Reliant hosting",
+		"Kubernetes API",
+		"deploy/kcl/prod/main.k",
+		"deploy/kcl/staging/main.k",
+		"declare `_cluster`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("scaffold output does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "deploy/kcl/dev/main.k —") {
+		t.Errorf("dev runs the operator on k3d and needs no cluster; it must not be named:\n%s", out)
+	}
+}
+
+// forge's cron component is a worker running its own scheduler, so it is
+// hosted like any worker: no cluster, no warning.
+func TestBindWorkloadInEnvs_CronComponentIsHosted(t *testing.T) {
+	root := t.TempDir()
+	writeScaffoldedEnvs(t, root)
+
+	out, _ := captureStdout(t, func() error {
+		bindWorkloadInEnvs(root, config.ComponentConfig{Name: "cleanup", Kind: config.ComponentKindCron})
+		return nil
+	})
+	for _, env := range []string{"staging", "prod"} {
+		if got := readEnvMain(t, root, env); !strings.Contains(got, "    _hosted(wl.cleanup)\n]") {
+			t.Errorf("%s must host the cron component (a worker):\n%s", env, got)
+		}
+	}
+	if strings.Contains(out, "cannot run on Reliant hosting") {
+		t.Errorf("a hosted-admissible workload drew the refusal warning:\n%s", out)
+	}
+}
+
+// devMainK is a dev env's main.k in the scaffolded `_workloads` shape, which
+// is what bindWorkloadInEnvs appends a binding to.
+const devMainK = "import workloads as wl\n\n_workloads = [\n    _on_host_job(wl.migrate)\n]\n"
+
+// declareProject writes a project with one worker, `reaper`, the given
+// workloads.k, and a dev env, then runs the scaffold's declaration step for
+// reaper and returns workloads.k and dev/main.k as they are left.
+func declareProject(t *testing.T, workloadsK string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	for rel, content := range map[string]string{
+		"internal/workers/reaper/worker.go": "package reaper\n",
+		codegen.WorkloadsKCLRelPath:         workloadsK,
+		"deploy/kcl/dev/main.k":             devMainK,
+	} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	declareWorkloadInKCL(root, &config.ProjectConfig{Name: "demo", ModulePath: "github.com/acme/demo"},
+		componentSpec{name: "reaper", ctxLabel: "forge scaffold worker reaper"})
+	read := func(rel string) string {
+		raw, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	return read(codegen.WorkloadsKCLRelPath), read("deploy/kcl/dev/main.k")
+}
+
+const migrateDecl = `import forge
+import forge.workloads as fw
+
+migrate = fw.Workload {
+    name = "migrate"
+    kind = "job"
+    build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+    args = ["db", "migrate", "up"]
+}
+`
+
+// TestDeclareWorkload_PlainProjectDeclaresAndBinds is the default path: no
+// grouping, so the worker gets its own declaration, its ALL entry, and a
+// binding in every env.
+func TestDeclareWorkload_PlainProjectDeclaresAndBinds(t *testing.T) {
+	workloads, dev := declareProject(t, migrateDecl+"\nALL: [fw.Workload] = [\n    migrate,\n]\n")
+	if !strings.Contains(workloads, "reaper = fw.Workload {") || !strings.Contains(workloads, "    migrate,\n    reaper,\n]") {
+		t.Errorf("workloads.k not declared + listed:\n%s", workloads)
+	}
+	if !strings.Contains(dev, "wl.reaper") {
+		t.Errorf("dev/main.k not bound:\n%s", dev)
+	}
+}
+
+// TestDeclareWorkload_ServedComponentIsNotDeclared: a worker another
+// workload already runs (`serves`) gets no workload of its own — one would
+// deploy it twice — and no env binding to a workload that does not exist.
+func TestDeclareWorkload_ServedComponentIsNotDeclared(t *testing.T) {
+	in := migrateDecl + `
+background = fw.Workload {
+    name = "background"
+    kind = "worker"
+    build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+    args = ["workers"]
+    serves = ["reaper"]
+}
+
+ALL: [fw.Workload] = [migrate, background]
+`
+	workloads, dev := declareProject(t, in)
+	if workloads != in {
+		t.Errorf("workloads.k changed for a served component:\n%s", workloads)
+	}
+	if dev != devMainK {
+		t.Errorf("dev/main.k changed for a served component:\n%s", dev)
+	}
+}
+
+// TestDeclareWorkload_GroupingProjectShowsTheChoice: in a project that groups
+// components with `serves`, a component in no group may still belong to one
+// — the mount set lives in Go — so nothing is written; the choice is printed.
+func TestDeclareWorkload_GroupingProjectShowsTheChoice(t *testing.T) {
+	in := migrateDecl + `
+admin_api = fw.Workload {
+    name = "admin-api"
+    build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+    args = ["admin-api"]
+    serves = ["billing-admin"]
+}
+
+ALL: [fw.Workload] = [migrate, admin_api]
+`
+	workloads, dev := declareProject(t, in)
+	if workloads != in || dev != devMainK {
+		t.Errorf("files changed in a grouping project:\n%s\n---\n%s", workloads, dev)
+	}
+}
+
+// TestDeclareWorkload_UneditableListBindsNothing: when ALL cannot be edited
+// the stanza is printed, not written — so no env may be bound to it. Binding
+// `wl.reaper` there would leave every env's main.k naming a workload that
+// does not exist.
+func TestDeclareWorkload_UneditableListBindsNothing(t *testing.T) {
+	in := migrateDecl + "\nALL: [fw.Workload] = [migrate]\nALL: [fw.Workload] = [migrate]\n"
+	workloads, dev := declareProject(t, in)
+	if workloads != in {
+		t.Errorf("workloads.k changed despite an ambiguous ALL:\n%s", workloads)
+	}
+	if dev != devMainK {
+		t.Errorf("dev/main.k bound a workload that was never declared:\n%s", dev)
+	}
+}

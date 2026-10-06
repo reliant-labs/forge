@@ -26,7 +26,7 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge env config <env> [--json] [--workload <name>]` | Print the resolved configuration `deploy/kcl/<env>/` hands each workload — the values `forge env up` passes to each process (see below). |
 | `forge env down <env> [--all]` | Stop this project's stack for that env, tracked or orphaned. `--all`: all of them, machine-wide. Never stops the process running it or any ancestor — safe to run from a shell a forge-started server spawned (see below). |
 | `forge env ps` | Every stack running here: project dir, env, process count. |
-| `forge env up <env> [--no-build] [--no-deploy] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-bound workloads need no image) → cluster apply → host launch → frontend dev-serve. Reads each workload's runtime from `deploy/kcl/<env>/`. `--target` narrows WHICH entities each phase acts on; it never turns phases off. |
+| `forge env up <env> [--no-build] [--no-deploy] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-bound workloads need no image) → cluster apply → host launch → frontend dev-serve. Reads each workload's runtime from `deploy/kcl/<env>/`. The cluster steps run only when something the env runs is bound to a cluster (a workload, route, chart, placed Secret or raw manifest); a `cluster_target` that only places the env's Namespace and Gateway needs no cluster, so the scaffolded dev env comes up with none and the run says which cluster it left alone. `--target` narrows WHICH entities each phase acts on; it never turns phases off. |
 | `forge env deploy dev [--prune]` | Apply `deploy/kcl/dev/`'s cluster-bound workloads. `--prune` deletes orphan forge-managed Deployments. |
 | `forge env deploy dev <version> --target <app>` | The same, scoped: applies ONLY that app's Deployment (repeatable, by workload/frontend name), keeping shared resources (Namespace, ConfigMap/Secret, RBAC). A scope flag needs a version — with none, the deploy would build and push everything to ship one app, so forge refuses and says this. `forge env up dev --target <app>` is the dev-loop spelling that needs no release. |
 
@@ -108,6 +108,8 @@ For fine-grained control:
 
 ```bash
 # Terminal 1: long-running infra + cluster-bound workloads
+# (only once something in dev is bound to the cluster — `_on_k3d(...)`;
+# the scaffolded dev env runs everything on the host and needs neither)
 forge cluster up --wait
 forge env deploy dev
 

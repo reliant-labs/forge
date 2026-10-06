@@ -7,58 +7,82 @@ import (
 	"testing"
 )
 
-// TestGenerateFrontendFiles_DefaultsToStandalone verifies the
-// new-scaffold default: a Next.js frontend scaffolded WITHOUT
-// FrontendGenOptions.Output set emits a next.config.ts with
-// `output: "standalone"` — the shape the shipped Dockerfile copies
-// (.next-prod/standalone/server.js) and the only default that builds with
-// the dynamic `[id]` CRUD routes forge generates. The previous static
-// default broke `npm run build` on every project the moment it had
-// one entity ('Page "/<slug>/[id]" is missing "generateStaticParams()"
-// so it cannot be used with "output: export"').
-func TestGenerateFrontendFiles_DefaultsToStandalone(t *testing.T) {
+// TestGenerateFrontendFiles_DefaultsToStatic verifies the new-scaffold
+// default: a Next.js frontend scaffolded WITHOUT FrontendGenOptions.Output
+// set is a static export — next.config.ts gates `output: "export"` on
+// production, and the Dockerfile serves out/ from nginx.
+//
+// Static is the default because it ships everywhere: the hosted runtime
+// serves a frontend ONLY as a static site, and a bucket or CDN takes the
+// same out/. It became possible once the generated CRUD pages stopped
+// using `[id]` segments (cli.TestGenerateFrontendPages_NextjsRoutesAreStatic);
+// before that a static default failed `npm run build` on the first entity.
+func TestGenerateFrontendFiles_DefaultsToStatic(t *testing.T) {
 	dir := t.TempDir()
 	if err := GenerateFrontendFiles(dir, "example.com/myapp", "myapp", "web", 8080, ""); err != nil {
 		t.Fatalf("GenerateFrontendFiles: %v", err)
 	}
+	assertStaticExportFrontend(t, filepath.Join(dir, "frontends", "web"))
+}
 
-	body, err := os.ReadFile(filepath.Join(dir, "frontends", "web", "next.config.ts"))
+// TestGenerateFrontendFiles_Static verifies that passing Output="static"
+// explicitly yields the same static-export shape as the default.
+func TestGenerateFrontendFiles_Static(t *testing.T) {
+	dir := t.TempDir()
+	if err := GenerateFrontendFilesWithOptions(
+		dir, "example.com/myapp", "myapp", "web", 8080, "",
+		FrontendGenOptions{Output: "static"},
+	); err != nil {
+		t.Fatalf("GenerateFrontendFilesWithOptions: %v", err)
+	}
+	assertStaticExportFrontend(t, filepath.Join(dir, "frontends", "web"))
+}
+
+// assertStaticExportFrontend checks the two files a frontend's output shape
+// renders into: next.config.ts exports in production, and the Dockerfile
+// serves the export instead of running a Node server that is not there.
+func assertStaticExportFrontend(t *testing.T, feDir string) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(feDir, "next.config.ts"))
 	if err != nil {
 		t.Fatalf("read next.config.ts: %v", err)
 	}
 	s := string(body)
 
-	if !strings.Contains(s, `output: "standalone"`) {
-		t.Errorf("next.config.ts must default to `output: \"standalone\"` (Dockerfile + dynamic CRUD routes); got:\n%s", s)
+	want := `...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),`
+	if !strings.Contains(s, want) {
+		t.Errorf("next.config.ts must contain the NODE_ENV-gated static-export shape %q; got:\n%s", want, s)
 	}
-	if !strings.Contains(s, `outputFileTracingRoot`) {
-		t.Errorf("next.config.ts default must contain outputFileTracingRoot; got:\n%s", s)
+	// No active standalone wiring in static mode (the literal may
+	// appear in explanatory comments).
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		if strings.Contains(trimmed, `output: "standalone"`) {
+			t.Errorf("next.config.ts emitted active `output: \"standalone\"` line outside comments; got:\n%s\nfull file:\n%s", trimmed, s)
+		}
 	}
-	// It must resolve an ANCESTOR of the frontend, never the frontend
-	// itself: traced files land at <distDir>/standalone/<path relative to
-	// the root>, so a frontend-pinned root turns the hoisted workspace
-	// install of `next` into `../../node_modules/next/...` and writes a
-	// pruned copy back into frontends/<name>/node_modules, which shadows
-	// the real one on the next build.
-	if strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
-		t.Errorf("next.config.ts default pins outputFileTracingRoot to the frontend dir — that makes each build poison the next; got:\n%s", s)
+
+	dockerfile, err := os.ReadFile(filepath.Join(feDir, "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
 	}
-	// The static-export conditional must NOT appear in the default —
-	// it fails `next build` on the generated dynamic [id] routes.
-	if strings.Contains(s, `{ output: "export" }`) {
-		t.Errorf("next.config.ts default emitted the static-export conditional — that breaks `npm run build` on generated dynamic CRUD routes; got:\n%s", s)
+	if d := string(dockerfile); !strings.Contains(d, "/out ") || strings.Contains(d, ".next-prod/standalone") {
+		t.Errorf("Dockerfile must serve the static export (out/), not copy a standalone server; got:\n%s", d)
 	}
 }
 
-// TestGenerateFrontendFiles_StaticOptIn verifies that passing
-// Output="static" through FrontendGenOptions yields the CDN/static
-// export shape — for projects with no dynamic routes that want to drop
-// the build artifacts on a CDN or object store.
-func TestGenerateFrontendFiles_StaticOptIn(t *testing.T) {
+// TestGenerateFrontendFiles_StandaloneOptIn verifies the explicit opt-in to
+// a Node server: `output: "standalone"` with a workspace-rooted
+// outputFileTracingRoot, the shape the standalone Dockerfile copies
+// (.next-prod/standalone/server.js).
+func TestGenerateFrontendFiles_StandaloneOptIn(t *testing.T) {
 	dir := t.TempDir()
 	if err := GenerateFrontendFilesWithOptions(
 		dir, "example.com/myapp", "myapp", "web", 8080, "",
-		FrontendGenOptions{Output: "static"},
+		FrontendGenOptions{Output: "standalone"},
 	); err != nil {
 		t.Fatalf("GenerateFrontendFilesWithOptions: %v", err)
 	}
@@ -69,20 +93,23 @@ func TestGenerateFrontendFiles_StaticOptIn(t *testing.T) {
 	}
 	s := string(body)
 
-	want := `...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),`
-	if !strings.Contains(s, want) {
-		t.Errorf("next.config.ts (Output=static) must contain the NODE_ENV-gated static-export shape %q; got:\n%s", want, s)
+	if !strings.Contains(s, `output: "standalone"`) {
+		t.Errorf("next.config.ts (Output=standalone) must contain `output: \"standalone\"`; got:\n%s", s)
 	}
-	// No active standalone wiring in static mode (the literal may
-	// appear in explanatory comments).
-	for _, line := range strings.Split(s, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
-			continue
-		}
-		if strings.Contains(trimmed, `output: "standalone"`) {
-			t.Errorf("next.config.ts (Output=static) emitted active `output: \"standalone\"` line outside comments; got:\n%s\nfull file:\n%s", trimmed, s)
-		}
+	if !strings.Contains(s, `outputFileTracingRoot`) {
+		t.Errorf("next.config.ts (Output=standalone) must contain outputFileTracingRoot; got:\n%s", s)
+	}
+	// It must resolve an ANCESTOR of the frontend, never the frontend
+	// itself: traced files land at <distDir>/standalone/<path relative to
+	// the root>, so a frontend-pinned root turns the hoisted workspace
+	// install of `next` into `../../node_modules/next/...` and writes a
+	// pruned copy back into frontends/<name>/node_modules, which shadows
+	// the real one on the next build.
+	if strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
+		t.Errorf("next.config.ts pins outputFileTracingRoot to the frontend dir — that makes each build poison the next; got:\n%s", s)
+	}
+	if strings.Contains(s, `{ output: "export" }`) {
+		t.Errorf("next.config.ts (Output=standalone) emitted the static-export conditional; got:\n%s", s)
 	}
 }
 

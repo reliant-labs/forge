@@ -34,6 +34,9 @@ import { {{joinStrings .Types ", "}} } from "{{.Path}}";
 {{- range .CreateHookImports}}
 import { {{joinStrings .Symbols ", "}} } from "{{.Module}}";
 {{- end}}
+{{- if and .EmitsDetailPage .CreateEntityFieldCamel}}
+import { entityViewHref } from "@/lib/entity-routes";
+{{- end}}
 
 const schema = z.object({
   {{- range .CreateFields}}
@@ -60,10 +63,10 @@ export default function Create{{.EntityName}}Page() {
   const router = useRouter();
 
   const mutation = use{{.CreateRPC}}({
-{{- if and .HasGet .CreateEntityFieldCamel}}
+{{- if and .EmitsDetailPage .CreateEntityFieldCamel}}
     // Land on the record just created — its detail page is where the next
     // step (editing it, adding a related row) starts.
-    onSuccess: ({ {{.CreateEntityFieldCamel}}: created }) => router.push(created ? `/{{.EntitySlug}}/${created.{{.PkFieldCamel}}}` : "/{{.EntitySlug}}"),
+    onSuccess: ({ {{.CreateEntityFieldCamel}}: created }) => router.push(created ? entityViewHref("{{.EntitySlug}}", created.{{.PkFieldCamel}}) : "/{{.EntitySlug}}"),
 {{- else}}
     onSuccess: () => router.push("/{{.EntitySlug}}"),
 {{- end}}

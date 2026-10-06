@@ -144,6 +144,31 @@ func TestGuardedFields_ColumnOnAnotherTableDoesNotFire(t *testing.T) {
 	}
 }
 
+// TestGuardTableForPage_EveryEditRouteShape pins the page paths the rule
+// reads a table from: the static Next.js edit route forge scaffolds now
+// (`<slug>/edit/page.tsx`), the dynamic one older projects still carry
+// (`<slug>/[id]/edit/page.tsx`), and Vite's `<slug>/Edit.tsx`. A shape this
+// misses is a page the rule silently stops checking.
+func TestGuardTableForPage_EveryEditRouteShape(t *testing.T) {
+	for _, tc := range []struct {
+		path  string
+		table string
+		ok    bool
+	}{
+		{"frontends/web/src/app/invoices/edit/page.tsx", "invoices", true},
+		{"frontends/web/src/app/line-items/edit/page.tsx", "line_items", true},
+		{"frontends/web/src/app/invoices/[id]/edit/page.tsx", "invoices", true},
+		{"frontends/web/src/pages/invoices/Edit.tsx", "invoices", true},
+		{"frontends/web/src/app/invoices/view/page.tsx", "", false},
+		{"frontends/web/src/app/invoices/page.tsx", "", false},
+	} {
+		table, ok := guardTableForPage(tc.path)
+		if ok != tc.ok || table != tc.table {
+			t.Errorf("guardTableForPage(%q) = (%q, %v), want (%q, %v)", tc.path, table, ok, tc.table, tc.ok)
+		}
+	}
+}
+
 // TestGuardedFields_NoProtoTreeIsClean keeps the check quiet for the project
 // shapes that have no proto at all (CLI and library projects), matching
 // every sibling advisory lint.
@@ -169,7 +194,7 @@ func TestGuardedFields_FormatsCleanAndDirty(t *testing.T) {
 
 	var dirty strings.Builder
 	formatGuardedFields(&dirty, []guardedFieldFinding{{
-		File: "frontends/web/src/app/invoices/[id]/edit/page.tsx", Line: 5,
+		File: "frontends/web/src/app/invoices/edit/page.tsx", Line: 5,
 		Table: "invoices", Column: "amount_paid_cents", GuardedBy: "RecordPayment",
 	}})
 	out := dirty.String()

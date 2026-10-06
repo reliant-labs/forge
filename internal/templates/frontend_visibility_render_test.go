@@ -23,7 +23,7 @@ func TestEveryEnvDeclaresTheFrontendCapability(t *testing.T) {
 
 	for tmpl, runtime := range map[string]string{
 		"kcl/dev/main.k.tmpl":   "runtime = forge.OnHost {}",
-		"kcl/cloud/main.k.tmpl": "_on_bucket(_web_frontend)",
+		"kcl/cloud/main.k.tmpl": "_hosted_frontend(_web_frontend)",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
 			t.Parallel()
@@ -60,22 +60,30 @@ func TestFrontendBlockIsAbsentWithoutAFrontend(t *testing.T) {
 		if err != nil {
 			t.Fatalf("rendering %s: %v", tmpl, err)
 		}
-		if strings.Contains(string(out), "forge.Frontend") {
-			t.Fatalf("%s emitted a frontend for a project with no frontend", tmpl)
+		// The cloud env declares its frontend BINDERS either way (a frontend
+		// added later binds through them); what must be absent is a
+		// declared frontend and a frontends list.
+		for _, declared := range []string{"= forge.Frontend {", "frontends = ["} {
+			if strings.Contains(string(out), declared) {
+				t.Fatalf("%s emitted a frontend (%q) for a project with no frontend", tmpl, declared)
+			}
 		}
 	}
 }
 
-// TestCloudFrontendBucketIsAPlaceholder pins a decision that is easy to
+// TestCloudFrontendBucketIsNeverGuessed pins a decision that is easy to
 // "improve" into a bug.
 //
-// forge does not guess where a frontend is published. The cloud env binds
-// forge.OnBucket, and bucket names are GLOBAL: a derived name
-// ("acme-prod-web") would publish into whichever bucket of that name exists,
-// possibly someone else's, and a real one costs money the day it is created.
-// So the scaffold states the runtime and leaves the bucket a visible
-// REPLACE_ME_BUCKET, which `forge env new --check` refuses until filled.
-func TestCloudFrontendBucketIsAPlaceholder(t *testing.T) {
+// forge does not guess where a frontend is published to a bucket. Bucket
+// names are GLOBAL: a derived name ("acme-prod-web") would publish into
+// whichever bucket of that name exists, possibly someone else's, and a real
+// one costs money the day it is created. The cloud env publishes the site to
+// the platform's static hosting, which owns its own bucket; the own-bucket
+// binder is declared beside it with NO bucket (`_bucket = None`) and an
+// example in a comment, and binding a frontend to it fails the render until
+// the author declares one. Nothing is a REPLACE_ME, because nothing is bound
+// to it as scaffolded.
+func TestCloudFrontendBucketIsNeverGuessed(t *testing.T) {
 	t.Parallel()
 
 	data := EnvTemplateData{ProjectName: "acme", EnvName: "prod", IngressEnabled: true, HasFrontend: true, PrimaryWorkload: "acme", FrontendName: "web"}
@@ -84,10 +92,15 @@ func TestCloudFrontendBucketIsAPlaceholder(t *testing.T) {
 		t.Fatal(err)
 	}
 	rendered := string(out)
-	if !strings.Contains(rendered, `bucket = "REPLACE_ME_BUCKET"`) {
-		t.Fatalf("the cloud env does not leave the frontend bucket a placeholder:\n%s", rendered)
+	if !strings.Contains(rendered, "\n_bucket = None\n") {
+		t.Fatalf("the cloud env does not leave the own-bucket binder without a bucket:\n%s", rendered)
 	}
-	if strings.Contains(rendered, `bucket = "acme`) {
-		t.Fatalf("the cloud env guessed a bucket name")
+	for _, line := range strings.Split(rendered, "\n") {
+		if code, _, _ := strings.Cut(line, "#"); strings.Contains(code, "bucket = \"") {
+			t.Fatalf("the cloud env names a bucket outside a comment: %q", line)
+		}
+	}
+	if strings.Contains(rendered, "REPLACE_ME") {
+		t.Fatalf("the cloud env is born with a placeholder:\n%s", rendered)
 	}
 }

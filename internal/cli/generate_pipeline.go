@@ -369,7 +369,6 @@ func generateSteps() []GenStep {
 		{Name: "db/embed.go (embedded migrations)", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
 		{Name: "sqlc generate", Gate: always, Run: stepSqlcGenerate, Tag: "tools"},
 		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools"},
-		{Name: "CI workflows", Gate: and(feature(config.FeaturesConfig.CIEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
 		// NOT gated on features.deploy. The Tier-1 files this sweep writes
 		// each carry their own enabledFor predicate and none is a deploy
 		// artifact (deploy/alloy-config.alloy gates on observability, not
@@ -423,6 +422,14 @@ func generateSteps() []GenStep {
 		// project had nothing to read and silently fell back to proto
 		// defaults, which is the bug this ordering fixes.
 		{Name: "frontend typed config", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendConfig, Tag: "frontend"},
+		// AFTER the env config modules, deliberately. Which workflows exist
+		// is read off a RENDER of every env (generate_ci_hosted.go: a hosted
+		// env gets release.yml, not deploy.yml), and an env cannot render
+		// before the config_gen.k / frontend_config_gen.k it imports are on
+		// disk. Running earlier, the first generate of a fresh project saw
+		// its hosted staging and prod fail to render, took them for cluster
+		// envs, and wrote a deploy.yml beside the scaffold's release.yml.
+		{Name: "CI workflows", Gate: and(feature(config.FeaturesConfig.CIEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
 		// Ingress (Gateway API codegen — the k3d-ports fragment and, in
 		// later phases, other ingress-derived artifacts) is off when
 		// features.ingress is explicitly false OR features.deploy is off

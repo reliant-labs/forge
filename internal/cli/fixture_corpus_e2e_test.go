@@ -719,13 +719,10 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	// `forge generate` exercise the local protoc-gen-es TS-stub pass —
 	// the same path a real user hits.
 	//
-	// `--output static` is the EXPLICIT opt-in this fixture needs: the
-	// scaffold default is standalone (the static export fails `next
-	// build` on generated dynamic [id] CRUD routes), but this project
-	// is the legitimate static case — the unannotated scaffold emits NO
-	// entity pages, and the fixture's build-level pins (fail-loud
-	// base-path guard, /admin-prefixed out/ export) are static-branch
-	// behavior.
+	// `--output static` is the scaffold default; it is spelled out because
+	// the fixture's build-level pins (fail-loud base-path guard,
+	// /admin-prefixed out/ export) are static-branch behavior, and a
+	// future default change must not silently move this fixture off them.
 	runCmd(t, projectDir, forgeBin, "scaffold", "frontend", "console", "--base-path", "/admin", "--output", "static")
 	feDir := filepath.Join(projectDir, "frontends", "console")
 	assertPathExistsE2E(t, filepath.Join(feDir, "package.json"))

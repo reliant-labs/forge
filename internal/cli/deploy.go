@@ -885,6 +885,16 @@ type deployOptions struct {
 	// covers the deploy-everything-but-the-frontend case in one flag.
 	skipFrontend bool
 
+	// skipClusterApply, when true, deploys only the groups that run off
+	// any cluster (host infra, compose) and touches no cluster: no kubectl
+	// context guard, no local image build+push, no Secret projection, no
+	// apply. `forge env up` sets it when nothing it is bringing up runs in a
+	// cluster (envClusterDemand) — the scaffolded dev env, whose every
+	// workload is a host process beside a cluster_target that only places
+	// its Namespace and Gateway. `forge env deploy` never sets it: an
+	// explicit deploy applies everything the env declares.
+	skipClusterApply bool
+
 	// purpose is why this deploy renders the env. `forge env deploy` leaves
 	// the zero value (renderDeclaration): its render claims a local port
 	// block only when the env runs on this machine. `forge env up`'s deploy
@@ -1098,6 +1108,11 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if len(targets) > 0 && !opts.frontendsOnly {
 		hasK8sServices = kclEntitiesHaveK8sCluster(fullEntities)
 	}
+	// The caller established that nothing this run brings up needs a
+	// cluster, so every cluster-shaped step below is out of scope.
+	if opts.skipClusterApply {
+		hasK8sServices = false
+	}
 
 	// WHO APPLIES this env, read from its own declaration. Resolved from
 	// the FULL env for the same reason hasK8sServices is: --target scopes
@@ -1194,6 +1209,13 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		}
 		groups = targetedK8sGroups(cluster.SelectManifestsByGroup(full, targets), topology, groups, fullEntities)
 	}
+	if opts.skipClusterApply {
+		groups, topology = withoutClusterGroups(groups), withoutClusterGroups(topology)
+		if len(groups) == 0 && len(hostedGroups) == 0 {
+			fmt.Println("Nothing to deploy outside a cluster.")
+			return nil
+		}
+	}
 
 	// Env-wide kubectl context for the consumers that don't iterate groups
 	// (secrets pre-apply, empty-groups direct apply). Fails fast on
@@ -1252,8 +1274,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// declared cluster secret refs into plaintext Secret manifests and
 	// apply them BEFORE the Deployments roll out (so each Deployment's
 	// secretKeyRef resolves on first schedule).
-	if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
-		return err
+	if !opts.skipClusterApply {
+		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
+			return err
+		}
 	}
 
 	// Minted kubeconfig Secrets, BEFORE the workloads that mount them roll
@@ -1265,8 +1289,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// Only the MINTING declarations run here: a k3d in-network mint
 	// resolves a docker container address, which is meaningless on the
 	// deploy path and stays owned by `env up`.
-	if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
-		return fmt.Errorf("kubeconfig secrets: %w", err)
+	if !opts.skipClusterApply {
+		if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
+			return fmt.Errorf("kubeconfig secrets: %w", err)
+		}
 	}
 
 	// When no K8sCluster groups are present, the rendered set carries
@@ -1745,13 +1771,44 @@ func prepareDeployCluster(ctx context.Context, in deployClusterInput) error {
 		}
 	}
 	// Local image build+push: dev only (the local registry path). Remote
-	// envs build/push out-of-band (CI).
-	if in.envName == "dev" {
-		if err := buildAndPushLocal(ctx, in.cfg, in.imageTag, in.targetArchFlag); err != nil {
+	// envs build/push out-of-band (CI). Only when a pod will actually run
+	// the project image: a cluster that holds just the env's support
+	// objects, a route to a host process or a vendored image pulls nothing
+	// forge builds, and pushing anyway is how the dev env used to fail with
+	// "declares no workloads, so there is no image to push".
+	if in.envName == "dev" && envRunsProjectImageOnCluster(in.entities) {
+		if err := buildAndPushLocal(ctx, in.cfg, in.imageTag, in.targetArchFlag, in.entities); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// envRunsProjectImageOnCluster reports whether some cluster-bound workload
+// runs an image forge builds from this project. Nil entities (the render
+// failed) answers true, keeping the build+push rather than guessing it away.
+func envRunsProjectImageOnCluster(e *KCLEntities) bool {
+	if e == nil {
+		return true
+	}
+	for _, w := range e.WorkloadsOn(RuntimeCluster) {
+		if w.GoBuild() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutClusterGroups drops every k8s-cluster group, keeping the groups a
+// deploy can run with no cluster at all (host infra, compose).
+func withoutClusterGroups(groups []deploytarget.ServiceGroup) []deploytarget.ServiceGroup {
+	out := make([]deploytarget.ServiceGroup, 0, len(groups))
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // resolveDeployKubectlContext resolves the env-wide kubectl context for the
@@ -3291,13 +3348,15 @@ func writeFallbackRegistriesYAML() (string, error) {
 	return f.Name(), nil
 }
 
-func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targetArchFlag string) error {
+func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targetArchFlag string, entities *KCLEntities) error {
 	// Where the project image goes is the reference the workload declaring it
 	// wrote — the same one the dev cluster pulls. Nothing here composes a
 	// destination out of an env field, because there is no env field.
 	repository := declaredProjectRepositoryForEnv(ctx, "dev", cfg.Name)
 	if repository == "" {
-		return noPushableImagesError("forge env deploy dev", "dev", &KCLEntities{})
+		// The env's real declaration, so the runbook names the actual gap
+		// rather than claiming the env declares no workloads at all.
+		return noPushableImagesError("forge env deploy dev", "dev", entities)
 	}
 
 	// Build and push the single project image from root Dockerfile.
@@ -3962,14 +4021,22 @@ func declaredContextExistsVerdict(envName, declared string, available []string) 
 			return nil
 		}
 	}
+	// A `k3d-` context is a LOCAL cluster forge creates, so the first fix is
+	// to create it — not to fetch credentials for a cloud cluster that does
+	// not exist.
+	createIt := ""
+	if strings.HasPrefix(declared, "k3d-") {
+		createIt = fmt.Sprintf("  - create the local cluster: `forge cluster up` (it creates %q from deploy/k3d.yaml)\n", declared)
+	}
 	return fmt.Errorf(
 		"env %q declares cluster %q but no such kubectl context exists.\n"+
 			"  available contexts: %s\n"+
 			"\n"+
 			"refusing to deploy (the declared cluster is the kubectl context — this is what makes wrong-cluster deploys impossible). Fix with one of:\n"+
+			"%s"+
 			"  - add the context to your kubeconfig (e.g. `gcloud container clusters get-credentials ...`)\n"+
 			"  - correct the cluster the env's KCL declares (a ClusterTarget, OnCluster runtime or forge.Manifests group) to match an existing context",
-		envName, declared, emptyAs(strings.Join(available, ", "), "(none)"))
+		envName, declared, emptyAs(strings.Join(available, ", "), "(none)"), createIt)
 }
 
 // verifyDeclaredContextsExist is the post-build, MULTI-CLUSTER completion

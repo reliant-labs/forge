@@ -57,6 +57,11 @@
 // deployed app, and must answer 404 there. installDevLogging() also no-ops in
 // production, so nothing posts to it in the first place.
 //
+// It is also why this route does not break a static export (`output:
+// static`): it answers POST only, and `output: "export"` leaves a POST-only
+// handler out of `out/` rather than failing the build. Adding a GET export
+// here would change that — an exported GET handler must be static.
+//
 // To turn it off: delete this file and the installDevLogging() call in
 // src/app/providers.tsx. Nothing else depends on it.
 

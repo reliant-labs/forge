@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // defaultTestOrg is the organization every test credential acts for unless the
@@ -48,6 +49,20 @@ func TestMain(m *testing.M) {
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)
+	}
+	// A shell a host application spawned (a Reliant agent's) exports a
+	// credential helper. No test may reach the developer's real session
+	// through it: a test that expects "no credential" would mint a real
+	// token instead. Tests that want a helper set one with t.Setenv.
+	_ = os.Unsetenv(cloudcred.HelperEnv)
+	if token, ok := fakeCredentialHelperInvocation(os.Args[1:]); ok {
+		// The test binary re-executed as a credential helper (see
+		// useFakeCredentialHelper): answer the real protocol and exit.
+		_ = cloudcred.Serve(context.Background(), os.Stdin, os.Stdout,
+			func(context.Context, cloudcred.Request) (cloudcred.Token, error) {
+				return cloudcred.Token{Token: token, Source: "fake host session"}, nil
+			})
+		os.Exit(0)
 	}
 	if args, ok := pluginInvocation(os.Args[1:]); ok {
 		// Re-point os.Args at the plugin subcommand: cobra reads os.Args[1:],
@@ -153,6 +168,25 @@ func requireProtoToolchain(t *testing.T) {
 // produce are accepted: the bare subcommand (binary already named "forge") and
 // the mounted form ("forge protoc-gen-forge"), which is what a test binary
 // gets since its basename is never "forge".
+// fakeCredentialHelperArg marks the test binary re-executed as a credential
+// helper; the argument after it is the token it hands out.
+const fakeCredentialHelperArg = "forge-cli-test-fake-credential-helper"
+
+func fakeCredentialHelperInvocation(args []string) (string, bool) {
+	if len(args) == 2 && args[0] == fakeCredentialHelperArg {
+		return args[1], true
+	}
+	return "", false
+}
+
+// useFakeCredentialHelper points $FORGE_CREDENTIAL_HELPER at this test binary,
+// which answers every request with token — the shape a host application (a
+// Reliant session) presents to forge.
+func useFakeCredentialHelper(t *testing.T, token string) {
+	t.Helper()
+	t.Setenv(cloudcred.HelperEnv, cloudcred.FormatCommand([]string{os.Args[0], fakeCredentialHelperArg, token}))
+}
+
 func pluginInvocation(args []string) ([]string, bool) {
 	switch {
 	case len(args) >= 1 && args[0] == "protoc-gen-forge":

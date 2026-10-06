@@ -370,3 +370,69 @@ func TestPlan_JSON(t *testing.T) {
 		t.Fatalf("unknown class must be refused, got %v", err)
 	}
 }
+
+// The prod StorageClass case: with nothing recorded to diff against, the plan
+// cannot say whether workspace-ssd already exists with different immutable
+// fields, so it must say the apply MAY recreate it — and only for the kinds the
+// apply is allowed to recreate.
+func TestBuildPlan_NamesRecreatableKindsItCannotDiff(t *testing.T) {
+	sc := ShapeObject{Cluster: "daemon", Kind: "StorageClass", Name: "workspace-ssd", Hash: digest("a")}
+	pvc := ShapeObject{Cluster: "daemon", Kind: "PersistentVolumeClaim", Namespace: "ns", Name: "data", Hash: digest("b")}
+	p, err := BuildPlan(PlanInput{EnvironmentID: "prod", BundleID: "b", Candidate: shapeOf(sc, pvc), Drift: noDrift()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := map[string]string{}
+	for _, f := range p.Findings {
+		if f.Code == FindingObjectAdded {
+			detail[f.Subject] = f.Detail
+		}
+	}
+	if !strings.Contains(detail[sc.Key().String()], "DELETED AND RECREATED") {
+		t.Errorf("a StorageClass the plan cannot diff must be flagged as possibly recreated, got %q", detail[sc.Key().String()])
+	}
+	if detail[pvc.Key().String()] != "" {
+		t.Errorf("a PersistentVolumeClaim is never recreated and must carry no such note, got %q", detail[pvc.Key().String()])
+	}
+}
+
+// The note is prose: it must not change the digest an approval names, or two
+// forge versions would compute different digests for the same plan.
+func TestBuildPlan_RecreateNoteIsNotDigested(t *testing.T) {
+	sc := ShapeObject{Cluster: "daemon", Kind: "StorageClass", Name: "workspace-ssd", Hash: digest("a")}
+	p, err := BuildPlan(PlanInput{EnvironmentID: "prod", BundleID: "b", Candidate: shapeOf(sc), Drift: noDrift()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := p
+	stripped.Findings = append([]PlanFinding(nil), p.Findings...)
+	for i := range stripped.Findings {
+		stripped.Findings[i].Detail = ""
+	}
+	a, _ := p.computeDigest()
+	b, _ := stripped.computeDigest()
+	if a != b {
+		t.Errorf("Detail must not be digested: %s vs %s", a, b)
+	}
+}
+
+// With a recorded live config the same object that DIFFERS is also named, since
+// a changed StorageClass is exactly the case an immutable field bites.
+func TestBuildPlan_NamesRecreatableKindsThatChange(t *testing.T) {
+	live := ShapeObject{Cluster: "daemon", Kind: "StorageClass", Name: "workspace-ssd", Hash: digest("c")}
+	cand := ShapeObject{Cluster: "daemon", Kind: "StorageClass", Name: "workspace-ssd", Hash: digest("d")}
+	lv := shapeOf(live)
+	p, err := BuildPlan(PlanInput{EnvironmentID: "prod", BundleID: "b", Candidate: shapeOf(cand), Live: &lv, Drift: noDrift()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range p.Findings {
+		if f.Code == FindingObjectChanged && strings.Contains(f.Detail, "DELETED AND RECREATED") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a changed StorageClass must be flagged as possibly recreated: %+v", p.Findings)
+	}
+}

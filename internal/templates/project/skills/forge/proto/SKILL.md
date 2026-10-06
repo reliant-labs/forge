@@ -243,7 +243,7 @@ keeps writing the column forever — it typechecks, nothing logs, and the only
 symptom is that 500. `forge lint --guarded-fields` finds exactly that case:
 
 ```
-⚠ [forgeconv-guarded-field-written] frontends/web/src/app/invoices/[id]/edit/page.tsx:42
+⚠ [forgeconv-guarded-field-written] frontends/web/src/app/invoices/edit/page.tsx:42
     → This page's update_mask names invoices.amount_paid_cents, but that column
       is declared `forge:guards invoices.amount_paid_cents` … RecordPayment owns
       its writes.
@@ -355,7 +355,15 @@ message ListTasksResponse {
 ```
 
 Filter fields **must** be `optional` — otherwise generated code can't
-distinguish "not set" from zero values.
+distinguish "not set" from zero values (a non-optional `bool`/enum filter is
+always applied, so omitting it returns only the `false`/UNSPECIFIED rows).
+`forge lint --conventions` enforces this as `forgeconv-list-filter-optional`
+on any `List<X>Request` (or request of a `List<X>` rpc). Pagination and
+ordering controls (`page_size`, `page_token`, `order_by`, `descending`,
+`cursor`, `limit`, `offset`, …) are exempt, as are message-typed fields
+(they already have presence). A field that is a required parameter rather
+than a filter — an org or account scope the handler insists on — says so with
+`[(buf.validate.field).required = true]` instead of `optional`.
 
 `search` / `query` / `q` are the fuzzy-search filters: they span the
 table's non-PK text columns via `orm.WhereILikeAny`. Any other filter
@@ -411,7 +419,7 @@ hand-copy it into `proto/services/` and scaffold a server: every method
 1. **Missing forge import** — Every proto using `(forge.v1.method)` / `(forge.v1.service)` needs `import "forge/v1/forge.proto";`.
 2. **Enum without UNSPECIFIED=0** — Proto3 requires the zero value. Name it `<ENUM>_UNSPECIFIED`.
 3. **Enum values without prefix** — Use `TASK_STATUS_ACTIVE`, not `ACTIVE`. Proto enums share a namespace.
-4. **Non-optional filter fields** — List request filter fields must be `optional`.
+4. **Non-optional filter fields** — List request filter fields must be `optional` (lint-rejected: `forgeconv-list-filter-optional`).
 5. **Reusing field numbers** — Mark removed fields as `reserved`, never reuse.
 6. **Multiple services per file** — Lint-rejected (`forgeconv-one-service-per-file`). Use `proto-split`.
 7. **Cross-service proto imports** — Hoist shared messages into `proto/shared/v1/types.proto`.

@@ -107,30 +107,114 @@ all_in_one = fw.Workload {
 	}
 }
 
-// TestDeclaredWorkloads_ReadsBuildAndArgs pins the parser the exemption
-// rests on: names, GoBuild cmd and args per literal, prose ignored.
-func TestDeclaredWorkloads_ReadsBuildAndArgs(t *testing.T) {
-	src := `# example = fw.Workload {name = "nats"}
-migrate = fw.Workload {
-    name = "migrate"
+// withWorkers adds one discoverable worker package per name — discovery
+// counts any internal/workers/<name> holding a non-test Go file.
+func withWorkers(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		pkg := filepath.Join(dir, "internal", "workers", n)
+		if err := os.MkdirAll(pkg, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pkg, "worker.go"), []byte("package "+n+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func appendWorkloads(t *testing.T, dir, extra string) {
+	t.Helper()
+	path := filepath.Join(dir, codegen.WorkloadsKCLRelPath)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(raw, []byte(extra)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func undeclaredNames(findings []componentDriftFinding) []string {
+	var out []string
+	for _, f := range findings {
+		if f.Undeclared {
+			out = append(out, f.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestComponentDrift_ServedComponentsAreDeclared: a component run by a
+// workload that names it in `serves` — control-plane's in-binary admin
+// services, served by `admin-api` — is deployed, so it is not reported
+// undeclared, and the grouping workload is not an orphan just because its
+// name is the process's rather than a component's. A component nothing
+// serves still warns. Before `serves`, every one of these warned, with no way
+// to say why that was fine.
+func TestComponentDrift_ServedComponentsAreDeclared(t *testing.T) {
+	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withWorkers(t, dir, "reaper", "billing_sweep", "forgotten")
+	appendWorkloads(t, dir, `
+_demo_build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
+
+background = fw.Workload {
+    name = "background"
+    kind = "worker"
+    build = _demo_build
+    args = ["workers"]
+    serves = [
+        "reaper",
+        "billing-sweep",  # kebab spelling of billing_sweep
+    ]
+}
+`)
+	findings, err := collectComponentDrift(dir, &config.ProjectConfig{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(undeclaredNames(findings), ","); got != "forgotten" {
+		t.Errorf("undeclared = %q, want only %q", got, "forgotten")
+	}
+	if got := orphanNames(findings); len(got) != 0 {
+		t.Errorf("orphans = %v, want none (background serves live components)", got)
+	}
+}
+
+// TestComponentDrift_AllInOneServerDeclaresEverything: a project deploying
+// its binary's `server` command runs every service, worker and operator in
+// that one process, so no component of it is undeclared.
+func TestComponentDrift_AllInOneServerDeclaresEverything(t *testing.T) {
+	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withWorkers(t, dir, "reaper", "billing_sweep")
+	appendWorkloads(t, dir, `
+app = fw.Workload {
+    name = "app"
     build = forge.GoBuild {cmd = "./cmd/demo", output_name = "demo"}
-    args = ["db", "migrate", "up"]
-    env = {A = "{not a brace}"}
+    args = ["server"]
 }
-nats = fw.Workload {
-    name = "nats"
-    image = "docker.io/library/nats:2.10"
+`)
+	findings, err := collectComponentDrift(dir, &config.ProjectConfig{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("findings = %+v, want none", findings)
+	}
 }
-`
-	got := declaredWorkloads(src)
-	if len(got) != 2 {
-		t.Fatalf("parsed %d workloads, want 2: %+v", len(got), got)
+
+// TestComponentDrift_UndeclaredSaysHowToMarkServed: the warning names the
+// `serves` alternative, because "add a workload" is the wrong fix for a
+// component another process already runs.
+func TestComponentDrift_UndeclaredSaysHowToMarkServed(t *testing.T) {
+	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withWorkers(t, dir, "reaper")
+	rc := &lintRunCtx{cwd: dir, cfg: &config.ProjectConfig{Name: "demo"}}
+	out, _, err := collectComponentDriftJSON(rc)
+	if err != nil {
+		t.Fatal(err)
 	}
-	m := got["migrate"]
-	if m.buildCmd != "./cmd/demo" || strings.Join(m.args, " ") != "db migrate up" {
-		t.Errorf("migrate = %+v", m)
-	}
-	if n := got["nats"]; n.buildCmd != "" || len(n.args) != 0 {
-		t.Errorf("nats = %+v, want no build and no args", n)
+	if len(out) != 1 || !strings.Contains(out[0].Message, "`serves`") || !strings.Contains(out[0].Message, `"reaper"`) {
+		t.Errorf("findings = %+v, want one naming the serves list for reaper", out)
 	}
 }

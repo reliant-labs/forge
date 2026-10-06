@@ -1,22 +1,20 @@
 {{- /*
   next.config.ts scaffold — branches on the frontend's `output:` field in
-  forge.yaml. Defaults to "standalone": a self-contained Node server that
-  pairs with the shipped Dockerfile AND supports the dynamic `[id]`
-  detail/edit routes forge generates for every CRUD entity. Static export
-  and server modes are opt-in.
+  forge.yaml. New frontends are scaffolded "static": a production build is
+  a static export into out/, which ships to the hosted runtime's static
+  hosting, a bucket or a CDN. The generated CRUD pages are static routes
+  (`/<slug>/view?id=…`, `/<slug>/edit?id=…`), so the export builds on a
+  project with entities. Standalone and server are explicit opt-ins.
 
   Branches:
-    standalone — (default) self-contained Node server
-                 (`.next-prod/standalone/server.js` in production). Pair with the generated
-                 Dockerfile.
-    static     — production export (`output: "export"` gated on
-                 NODE_ENV=production); dev stays as `next dev`. No Node
-                 runtime in prod → drop the build artifacts on a CDN or
-                 object store. INCOMPATIBLE with the generated dynamic
-                 CRUD routes (`/<slug>/[id]`) unless every dynamic
-                 segment gains `generateStaticParams()` — Next.js fails
-                 the build otherwise. Opt in only for projects with no
-                 dynamic routes (or hand-written static params).
+    static     — (scaffold default) production export (`output: "export"`
+                 gated on NODE_ENV=production); dev stays as `next dev`.
+                 No Node runtime in prod → out/ is plain files.
+    standalone — self-contained Node server
+                 (`.next-prod/standalone/server.js` in production). Pair
+                 with the generated Dockerfile. Also what an EMPTY
+                 Output renders: frontends scaffolded before the static
+                 default left the field empty.
     server     — neither; full Next.js dev AND prod (`next start`).
 
   All three branches emit the same base-path block: `basePath` and
@@ -84,22 +82,33 @@ const nextConfig: NextConfig = {
   // the out/ contract and fence nothing. Avoid running a production
   // build while `next dev` is live in this mode.
   //
-  // Production: static export (opt-in via `output: static` in forge.yaml).
-  // The build emits `out/` (static HTML + JS + CSS) which can be served
-  // straight from a CDN or object store — no Node runtime in prod.
+  // Production: static export (`output: static` in forge.yaml, the scaffold
+  // default). The build emits `out/` (static HTML + JS + CSS) which the
+  // hosted runtime's static hosting, a bucket or a CDN serves as plain
+  // files — no Node runtime in prod.
   //
-  // CAVEAT: `output: "export"` requires `generateStaticParams()` on every
-  // dynamic route segment, and forge's generated CRUD detail/edit pages
-  // (`/<slug>/[id]`) are dynamic CLIENT routes whose ids only exist at
-  // runtime — they cannot be statically enumerated. With this mode active,
-  // `npm run build` FAILS on any project that has a CRUD entity unless you
-  // remove those pages or hand-write static params. That is why standalone
-  // is the scaffold default; switch back via `output: standalone` in
-  // forge.yaml + `forge generate --force`.
+  // An export can only contain pages it can enumerate at build time, so a
+  // dynamic segment (`[id]`) fails the build unless it has
+  // generateStaticParams(). forge's generated CRUD pages therefore have
+  // none: detail and edit are static routes that read the id from the query
+  // string in the browser (`/<slug>/view?id=…`, src/lib/entity-routes.ts).
+  // Keep hand-written routes the same shape. Anything that needs a server
+  // at request time — server actions, middleware, a route handler that
+  // answers GET dynamically, `cookies()`/`headers()` — needs
+  // `output: standalone` instead.
+  //
+  // trailingSlash is left at Next's default (false): the export writes
+  // `<route>.html`, which the hosted static origin and this frontend's nginx
+  // image both resolve for `/<route>`. Turn it on only for a host that maps
+  // directories to index.html and nothing else.
   //
   // Development: full Next.js dev server (HMR, rewrites). The conditional
   // below keeps `next dev` unchanged when NODE_ENV !== "production".
   ...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),
+  // next/image's default loader is an optimizing SERVER route, which an
+  // export does not have — `next build` refuses an <Image> without this.
+  // Size images for the web before they go in public/.
+  images: { unoptimized: true },
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.
@@ -433,17 +442,16 @@ const nextConfig: NextConfig = {
   // `forge env up dev`. `next start` also runs with NODE_ENV=production, so it
   // serves the same directory the production build wrote.
   distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
-  // "standalone" (the scaffold default) emits a self-contained Node
-  // server at <distDir>/standalone/server.js (.next-prod in production)
-  // plus a pruned node_modules
-  // tree. This is the shape the Dockerfile copies into the runner
-  // image, and it supports the dynamic `[id]` CRUD detail/edit routes
-  // forge generates (a static export does not — `output: "export"`
-  // fails the build on dynamic segments without generateStaticParams).
-  // To opt into a CDN-hosted static export instead, set
-  // `output: static` on this frontend in forge.yaml and re-scaffold
-  // (`forge generate --force`) — see that mode's caveats in the
-  // forge.yaml schema docs.
+  // "standalone" emits a self-contained Node server at
+  // <distDir>/standalone/server.js (.next-prod in production) plus a
+  // pruned node_modules tree. This is the shape the Dockerfile copies into
+  // the runner image: a frontend that needs a server at request time.
+  // A static site cannot run it — the hosted runtime serves frontends as
+  // static exports. To switch to one, set `output: static` on this
+  // frontend in forge.yaml, then `forge project upgrade --force
+  // <this file>` (and the Dockerfile beside it); the generated CRUD pages
+  // must be the static `/<slug>/view?id=…` shape (`forge skill load
+  // frontend/pages`).
   output: "standalone",
   // outputFileTracingRoot is the BASE that traced file paths are made
   // relative to, and Next.js writes each traced file to

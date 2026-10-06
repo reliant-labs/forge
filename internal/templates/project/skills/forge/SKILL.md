@@ -52,7 +52,7 @@ a `<project>Service` from the binary name.
 
 | Flag | Purpose |
 |---|---|
-| `--mod` | **required.** Go module path (`github.com/acme/my-app`) |
+| `--mod` | Go module path (`github.com/acme/my-app`). Defaults to the project name; set it to the path you will publish under |
 | `--service <name>` | repeatable or comma-separated. Name after a domain entity, never after the binary |
 | `--frontend <name>` | repeatable or comma-separated Next.js frontends |
 | `--in-place` | scaffold into the current directory; takes no positional name |
@@ -175,6 +175,13 @@ rewrite, and rewriting them is expected. Forge withholds a visual identity
 deliberately: an invented one is harder to replace than an obviously neutral
 one. Before showing any of it to a user, load `frontend/design` — it asks for a
 brief first and will not invent an aesthetic without one.
+
+A Next.js frontend builds as a **static export** (`output: static`, into
+`out/`), the only shape hosted static hosting serves. So every route is
+static: detail and edit are `/<entity>/view?id=…` and `/<entity>/edit?id=…`
+(`src/lib/entity-routes.ts`). A hand-written `[id]` segment fails
+`npm run build`. Depth: `frontend/serving`. If the project's pages predate
+v0.1.44 and still use `[id]`, load `migrations/v0.1.44`.
 
 ## Evolving the schema
 

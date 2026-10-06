@@ -130,6 +130,43 @@ func InstallCommand(version string) string {
 	return "go install " + ModulePath + "/cmd/forge@" + version
 }
 
+// RunPinnedCommand spells "run THIS command with forge `version`", without
+// installing anything: `go run <module>/cmd/forge@<version> <args>`.
+//
+// It is the fix to offer when the forge on PATH is not the one a project
+// pins. InstallCommand REPLACES the forge on PATH, which is the wrong advice
+// for a machine whose installed forge is deliberate — a developer's own dev
+// build, or another project's pin — and following it is how one project's
+// fix silently breaks the next. `go run` builds the pinned forge into the Go
+// build cache (fetched once, reused after) and runs exactly the command that
+// was refused. It works because forge's go.mod carries no `replace`.
+//
+// args are the forge arguments of the refused invocation (no binary name);
+// each is shell-quoted only when it needs to be, so the line pastes as-is.
+func RunPinnedCommand(version string, args []string) string {
+	var b strings.Builder
+	b.WriteString("go run " + ModulePath + "/cmd/forge@" + version)
+	for _, a := range args {
+		b.WriteString(" ")
+		b.WriteString(shellWord(a))
+	}
+	return b.String()
+}
+
+// shellWord returns a single shell word for s: bare when it holds only
+// characters no POSIX shell interprets, single-quoted otherwise.
+func shellWord(s string) string {
+	if s == "" {
+		return "''"
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./=:@,+%", r)) {
+			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+		}
+	}
+	return s
+}
+
 // BinaryBehindPin reports whether the running binary is older than the
 // project's declared forge pin — the pairing whose KCL render fails while
 // blaming the project.

@@ -133,7 +133,8 @@ _bundle = forge.Bundle {
   `control_plane = forge.ControlPlane {...}` on the same Bundle (load-time
   check). `forge secret set/list/unset --env <env>` write/list through that
   control plane (endpoint + credential from `control_plane`, i.e. `--token` /
-  `$FORGE_CONTROL_PLANE_TOKEN` / `forge login`), scoped to the control-plane
+  `$FORGE_CONTROL_PLANE_TOKEN` / `forge login` / Reliant's session via
+  `$FORGE_CREDENTIAL_HELPER`), scoped to the control-plane
   environment addressed by (this project's forge.yaml `name`, the env's NAME).
 
   **That one credential also authenticates the platform CONTAINER REGISTRY**,
@@ -177,7 +178,7 @@ _bundle = forge.Bundle {
 ```
 
 ```bash
-forge login                                              # once: every control plane the project declares
+forge login                                              # once, without Reliant; signed in to Reliant? skip it
 printf '%s' "$KEY" | forge secret set --env dev STRIPE_SECRET_KEY
 forge env up dev                                         # pulls, injects in memory, starts
 ```

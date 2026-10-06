@@ -21,8 +21,9 @@ import (
 // the message "audit". Projects replacing their local interceptor with
 // this library MUST update any SIEM rules / log queries that matched on
 // msg=="audit" to msg=="audit.event". The field set (procedure, peer,
-// user_id, email, status, code, error, trace_id, timestamp, duration)
-// is otherwise identical, so only the message string changes.
+// user_id, status, code, error, trace_id, timestamp, duration) is
+// otherwise identical, except that email is no longer logged — it reaches
+// the durable AuditSink only.
 const auditMessage = "audit.event"
 
 // auditSinkTimeout bounds each durable sink dispatch so a slow or
@@ -119,9 +120,9 @@ type AuditSink interface {
 
 // AuditInterceptor creates a Connect interceptor that produces audit log
 // entries for every RPC call. Audit logs capture: who made the call
-// (user ID, email), what procedure was called, when, the result
-// (success/error code), the duration, and the OTel trace id when the
-// request carries a span.
+// (user ID — the email goes to the durable sink only, never to slog), what
+// procedure was called, when, the result (success/error code), the
+// duration, and the OTel trace id when the request carries a span.
 //
 // Audit records are emitted with log_type=audit on a child logger, so
 // they can be routed to a dedicated audit sink (separate file, SIEM,
@@ -226,15 +227,17 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 	}
 
 	// Extract user identity from auth claims if available.
+	//
+	// The slog record carries user_id only. It is emitted for EVERY RPC into
+	// the general log stream, so an email there would put personal data in
+	// every log line; user_id joins to it wherever it is actually needed. The
+	// durable sink — the access-controlled audit store — still receives Email.
 	var identified bool
 	if a.claimsFrom != nil {
 		if claims, ok := a.claimsFrom(ctx); ok && claims != nil {
 			event.UserID = claims.UserID
 			event.Email = claims.Email
-			attrs = append(attrs,
-				slog.String("user_id", claims.UserID),
-				slog.String("email", claims.Email),
-			)
+			attrs = append(attrs, slog.String("user_id", claims.UserID))
 			identified = true
 		}
 	}

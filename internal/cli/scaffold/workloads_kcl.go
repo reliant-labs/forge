@@ -43,7 +43,30 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 		return
 	}
 
+	// A component another workload's process already runs gets no workload
+	// of its own: one would deploy it a second time, as its own Deployment.
+	// And in a project that groups components (`serves`), forge cannot see
+	// which group a new one belongs to — that lives in the project's Go — so
+	// it shows the choice rather than declaring the workload the project
+	// most likely does not want. Lint reads the file the same way
+	// (codegen.ServingWorkload), so what scaffold leaves out, lint does not
+	// then report missing.
+	if content, ok := readWorkloadsKCL(root); ok && !codegen.WorkloadDeclared(content, comp.Name) {
+		declared := codegen.DeclaredWorkloads(content)
+		if by, served := codegen.ServingWorkload(declared, cfg.Name, comp); served {
+			fmt.Printf("   - %s (%s '%s' runs in workload '%s'; nothing to declare)\n",
+				codegen.WorkloadsKCLRelPath, comp.EffectiveKind(), comp.Name, by)
+			return
+		}
+		if codegen.DeclaresServes(declared) {
+			fmt.Printf("\n📝 %s\n", codegen.ServesChoiceHint(cfg.ModulePath, cfg.Name, comp))
+			return
+		}
+	}
+
 	applied, err := codegen.AppendWorkloadStanza(root, cfg.ModulePath, cfg.Name, comp)
+	content, _ := readWorkloadsKCL(root)
+	declared := codegen.WorkloadDeclared(content, comp.Name)
 	switch {
 	case err != nil:
 		fmt.Printf("\n⚠️  could not update %s: %v\n\n%s\n",
@@ -54,26 +77,52 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 			// kind it was derived from: the user is being told what is now in
 			// the file, and `forge scaffold binary` writes kind="tool".
 			codegen.WorkloadsKCLRelPath, codegen.WorkloadKindFor(comp.EffectiveKind()), comp.Name)
+	case declared:
+		// A re-run (--resume, --force): the declaration is already there.
+		fmt.Printf("   - %s ('%s' already declared)\n", codegen.WorkloadsKCLRelPath, comp.Name)
 	default:
-		// Already declared, or the file has been restructured past the point
-		// where an append is unambiguous. Either way: show, do not guess.
+		// The file has been restructured past the point where an append is
+		// unambiguous. Show, do not guess.
 		fmt.Printf("\n📝 %s\n", codegen.WorkloadStanzaHint(cfg.ModulePath, cfg.Name, comp))
 	}
-	bindWorkloadInEnvs(root, comp)
+	// Bind only what is declared. An env binding names `wl.<ident>`, so
+	// binding a workload whose declaration was printed rather than written
+	// would leave every env's main.k referencing a name that does not exist.
+	if declared {
+		bindWorkloadInEnvs(root, comp)
+	}
+}
+
+// readWorkloadsKCL returns the project's deploy/kcl/workloads.k, and false
+// when there is none to read.
+func readWorkloadsKCL(root string) (string, bool) {
+	raw, err := os.ReadFile(filepath.Join(root, codegen.WorkloadsKCLRelPath))
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
 }
 
 // bindWorkloadInEnvs adds the new workload's binding to every env's
 // `_workloads` list. There is no env-level runtime (ADR 0002 §2), so a
 // workload declared in workloads.k runs nowhere until an env binds it; the
-// scaffold binds it the way that env binds its siblings of the same kind.
+// scaffold binds it the way that env binds its other workloads.
 // Advisory like the declaration: an env that cannot be edited
 // unambiguously gets the line printed instead.
+//
+// A kind the hosted platform refuses (a cron, an operator) is bound to a
+// cluster you operate in every deployed env — the one binding that can run
+// it. In an env that declares no cluster yet (the scaffold's `_cluster =
+// None`) that binding fails the render, naming the workload, until the
+// author declares one or drops the line; the scaffold says so here, so the
+// first anyone hears of it is not a red CI run.
 func bindWorkloadInEnvs(root string, comp config.ComponentConfig) {
 	envs, err := os.ReadDir(filepath.Join(root, "deploy", "kcl"))
 	if err != nil {
 		return
 	}
 	kind := codegen.WorkloadKindFor(comp.EffectiveKind())
+	var needCluster []string
 	for _, e := range envs {
 		if !e.IsDir() {
 			continue
@@ -81,18 +130,36 @@ func bindWorkloadInEnvs(root string, comp config.ComponentConfig) {
 		if _, err := os.Stat(filepath.Join(root, "deploy", "kcl", e.Name(), "main.k")); err != nil {
 			continue
 		}
-		applied, err := codegen.AppendEnvBinding(root, e.Name(), kind, comp.Name)
+		binder, applied, err := codegen.AppendEnvBinding(root, e.Name(), kind, comp.Name)
 		switch {
 		case err != nil:
 			fmt.Printf("\n⚠️  could not update deploy/kcl/%s/main.k: %v\n\n%s\n", e.Name(), err, codegen.EnvBindingHint(e.Name(), kind, comp.Name))
 		case applied:
-			fmt.Printf("   - deploy/kcl/%s/main.k (%s bound)\n", e.Name(), comp.Name)
+			fmt.Printf("   - deploy/kcl/%s/main.k (%s bound: %s)\n", e.Name(), comp.Name, binder)
+			if codegen.HostedRefusal(kind) != "" && binder == "_on_cluster" && codegen.EnvDeclaresNoCluster(root, e.Name()) {
+				needCluster = append(needCluster, "deploy/kcl/"+e.Name()+"/main.k")
+			}
 		default:
 			if !envBindsWorkload(root, e.Name(), comp.Name) {
 				fmt.Printf("\n📝 %s\n", codegen.EnvBindingHint(e.Name(), kind, comp.Name))
 			}
 		}
 	}
+	if len(needCluster) > 0 {
+		fmt.Print(clusterNeededNotice(comp.Name, kind, needCluster))
+	}
+}
+
+// clusterNeededNotice tells the author that a workload is bound to a cluster
+// the env has not declared, why, and the ways out.
+func clusterNeededNotice(name, kind string, envFiles []string) string {
+	return fmt.Sprintf("\n⚠️  %s '%s' cannot run on Reliant hosting: %s.\n"+
+		"   It is bound to a cluster you operate, `_on_cluster(wl.%s)`, in %s —\n"+
+		"   and `forge env render` refuses those envs until you declare `_cluster` there\n"+
+		"   (its kubectl context, namespace and platform, registered once with\n"+
+		"   `forge cluster connect`; the file shows the shape).\n"+
+		"   Not running one? Drop the line from that env.\n",
+		kind, name, codegen.HostedRefusal(kind), naming.KCLIdentifier(name), strings.Join(envFiles, ", "))
 }
 
 // envBindsWorkload reports whether an env's main.k already names the

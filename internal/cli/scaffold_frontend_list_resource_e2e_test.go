@@ -139,7 +139,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		}
 	}
 
-	editPath := filepath.Join(appDir, "orders", "[id]", "edit", "page.tsx")
+	editPath := filepath.Join(appDir, "orders", "edit", "page.tsx")
 	assertPathExistsE2E(t, editPath)
 	edit := readFileE2E(t, editPath)
 	for _, want := range []string{
@@ -152,7 +152,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		}
 	}
 
-	detailPath := filepath.Join(appDir, "orders", "[id]", "page.tsx")
+	detailPath := filepath.Join(appDir, "orders", "view", "page.tsx")
 	assertPathExistsE2E(t, detailPath)
 	detail := readFileE2E(t, detailPath)
 	if strings.Contains(detail, "formatValue(item.customerId)") {

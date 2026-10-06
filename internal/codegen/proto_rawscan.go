@@ -212,6 +212,10 @@ type RawProtoRPC struct {
 	Name string
 	// File is the absolute path of the declaring .proto file.
 	File string
+	// Request is the request message type as written in the signature,
+	// minus any `stream` keyword and leading dot ("ListOrdersRequest",
+	// "shared.v1.PageQuery"). Not resolved against the declared types.
+	Request string
 	// Streaming reports a `stream` keyword on either side.
 	Streaming bool
 }
@@ -271,9 +275,7 @@ func (s *RawProtoScan) DeclaresRPC(name string) bool {
 // ScanRawProtoDir scans every .proto file under dir (recursively) and
 // returns the raw-truth view. A missing directory returns an empty scan,
 // not an error — callers treat "nothing there" as "nothing to do".
-func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funlen // a hand-rolled proto lexer (252): one branch per declaration form and per marker comment. Decomposing it means writing a real tokenizer — a design change, not a lint fix.
-	scan := &RawProtoScan{Enums: map[string][]string{}}
-
+func ScanRawProtoDir(dir string) (*RawProtoScan, error) {
 	var files []string
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
@@ -286,10 +288,21 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 	})
 	if err != nil {
 		if os.IsNotExist(err) {
-			return scan, nil
+			return &RawProtoScan{Enums: map[string][]string{}}, nil
 		}
 		return nil, err
 	}
+	return ScanRawProtoFiles(files)
+}
+
+// ScanRawProtoFiles scans exactly the given .proto files and returns the
+// raw-truth view. The files are taken to share one proto package (the scan
+// qualifies every type name with the first `package` it reads), so a caller
+// covering a whole tree hands it one package directory's files at a time
+// rather than the recursive set ScanRawProtoDir collects.
+func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocognit,funlen // a hand-rolled proto lexer (252): one branch per declaration form and per marker comment. Decomposing it means writing a real tokenizer — a design change, not a lint fix.
+	scan := &RawProtoScan{Enums: map[string][]string{}}
+	files = append([]string(nil), files...)
 	sort.Strings(files)
 	scan.Files = files
 
@@ -670,6 +683,7 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 			scan.RPCs = append(scan.RPCs, RawProtoRPC{
 				Name:      m[1],
 				File:      path,
+				Request:   rawRPCMessageType(m[2]),
 				Streaming: strings.Contains(m[2], "stream ") || strings.Contains(m[3], "stream "),
 			})
 		}
@@ -772,6 +786,14 @@ var (
 	rawRPCRE         = regexp.MustCompile(`\brpc\s+(\w+)\s*\(([^)]*)\)\s*returns\s*\(([^)]*)\)`)
 	rawIntRE         = regexp.MustCompile(`\d+`)
 )
+
+// rawRPCMessageType normalizes one side of an rpc signature — the text
+// between the parens — to the bare type token: `stream .pkg.Foo ` → "pkg.Foo".
+func rawRPCMessageType(sig string) string {
+	t := strings.TrimSpace(sig)
+	t = strings.TrimSpace(strings.TrimPrefix(t, "stream "))
+	return strings.TrimPrefix(t, ".")
+}
 
 func maxInt(a, b int) int {
 	if a > b {

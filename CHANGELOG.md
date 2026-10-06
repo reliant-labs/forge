@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
+  `Delete`, `HostClientID`, `Location`, `Credential`).** A host used to copy its
+  own session token into `credentials.json` under client `host-app`, and forge
+  presented it to the control plane's deploy API. That token was a permanent,
+  multi-purpose session credential (Reliant's daemon or CLI login) which mostly
+  did NOT hold deploy authority, so deploys 403'd and users ran `forge login`
+  anyway — and where it did work, the deploy API, the registry login and every
+  subprocess saw a credential that could also connect as the user's daemon.
+  forge no longer reads `host-app` entries at all; `cloudcred.RemoveLegacyHostDeposits`
+  lets a host purge what it wrote. Replaced by the credential helper below.
 - **forge no longer requires cgo.** `kcl_plugin.forge` is bridged through a
   purego callback, so `go install` works with any `CGO_ENABLED` setting,
   including Windows without a C toolchain. `env diff`'s `unsupported` status is
@@ -18,6 +28,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **New projects deploy to Reliant hosting by default.** `forge project new`
+  scaffolds `staging` and `prod` hosted on the forge control plane: every
+  service, worker and job bound `_hosted` (its image's registry host dropped,
+  since the platform pulls only from its own registry), a
+  `forge.ManagedDatabase` each workload reads through `forge.DatabaseRef`,
+  `forge.HostedSecrets`, the frontend on platform static hosting with
+  `API_URL` and `CORS_ORIGINS` wired by reference, and `control_plane =
+  forge.ControlPlane {}`. A fresh scaffold renders every env with no
+  placeholder. Before, staging and prod bound everything to a cluster the
+  author had to name (`forge env deploy prod --explain`: `REFUSE (declared
+  context not in kubeconfig)`) and the frontend to `REPLACE_ME_BUCKET`. The
+  scaffolded CI is the hosted pipeline (`release.yml`, no registry login)
+  instead of `deploy.yml`. `dev` is unchanged. Hosted workloads and the
+  managed database need billing; a static site alone is free.
+  - **Hosting elsewhere stays a one-line rebind.** Each env declares
+    `_on_cluster` and `_on_bucket` beside the hosted binders, unused, with
+    the `forge.ClusterTarget` / `forge.OnBucket` to fill shown in a comment
+    (`_cluster = None`, `_bucket = None`). A binding to either before it is
+    declared fails the render, naming the workload and the fix.
+  - **Kinds hosting refuses.** `forge scaffold operator` binds the operator
+    `_on_cluster` in every deployed env — the one binding that can run it —
+    and warns that those envs refuse to render until `_cluster` is declared
+    (or the line is dropped); a hand-declared `kind = "cron"` binds the same
+    way. forge's cron component (`forge scaffold worker --kind cron`) is a
+    worker with its own scheduler and is hosted like any worker. Every other
+    new workload binds where the env's `migrate` job runs, so an env
+    scaffolded on a cluster keeps binding there.
+    `forge scaffold frontend` binds a new frontend through a hosted env's
+    `_hosted_frontend`, and still to a bucket in an env without one.
+  - **Existing projects are not rewritten** (env files are scaffolded once).
+    To adopt hosting, add `control_plane`, `secret_provider =
+    forge.HostedSecrets {}` and a hosted `forge.ManagedDatabase` to the env's
+    Bundle, give `_hosted` the bare image and `DATABASE_URL =
+    forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
+    beside prod with `forge env new cloud --from prod --bind <name>=hosted`
+    first. The `deploy` skill has the exact edits.
+- **Next.js frontends are scaffolded as static exports, and the generated CRUD
+  pages are static routes.** Before, the default was `output: standalone`, a
+  Node server that hosted static hosting (`forge.OnHosted {}`) cannot run. The
+  generated detail and edit pages were dynamic `src/app/<slug>/[id]/` routes,
+  so switching to `output: static` failed `npm run build` on the first entity
+  with `Page "/<slug>/[id]" is missing "generateStaticParams()"`. Now:
+  - `forge project new --frontend` and `forge scaffold frontend` write
+    `output: static` into `forge.yaml`. `npm run build` exports into `out/`,
+    and the Dockerfile serves `out/` from nginx. `--output standalone` is the
+    explicit opt-in for a Node server. `next dev` is unchanged. A `forge.yaml`
+    entry with no `output:` still means standalone, because every frontend
+    scaffolded before this change has a standalone `next.config.ts`.
+  - Detail and edit are `src/app/<slug>/view/page.tsx` and
+    `src/app/<slug>/edit/page.tsx`, served at `/<slug>/view?id=…` and
+    `/<slug>/edit?id=…`. Each reads the id with `useSearchParams` under a
+    Suspense boundary, and renders a "which row?" state when `?id=` is
+    missing. List row clicks, create-then-redirect, the Edit action, edit's
+    Cancel, breadcrumb and save redirect all build the new URLs through
+    `src/lib/entity-routes.ts` (`entityViewHref`, `entityEditHref`,
+    `useEntityIdParam`). That file is a new scaffold-once helper with its
+    own vitest suite. `forge generate` backfills it into an older frontend
+    the first time it writes a page that imports it.
+  - The id is in the query string, not the path, because an export can only
+    hold pages it enumerates at build time. `trailingSlash` stays off, so
+    the export writes `out/<slug>/view.html`. Hosted static hosting and the
+    scaffolded nginx image both resolve `/<slug>/view` to that file by
+    trying `.html`. No CDN rewrite is involved.
+  - The static `next.config.ts` sets `images: { unoptimized: true }`, since
+    next/image's optimizer is a server route. The dev-only browser-log
+    route (`app/%5F_forge/log`) answers POST only, so the export leaves it
+    out.
+  - The sign-in guard keeps the query string in `returnTo`, so a visitor
+    bounced off `/<slug>/view?id=…` comes back to the same row.
+  - **Existing projects are not rewritten.** Their pages are scaffold-once.
+    While `src/app/<slug>/[id]/` exists, `forge generate` keeps it as that
+    entity's detail/edit route and writes no view/edit pair beside it. If
+    the frontend is `output: static`, generate warns that `next build` will
+    refuse those routes. `forge project upgrade list` offers the new
+    `migrations/v0.1.44` playbook to any project with a `[id]` route. The
+    playbook covers rescaffolding untouched pages, moving edited ones, and
+    switching `output:` with `forge project upgrade --force next.config.ts
+    Dockerfile`.
+  - `forge lint --guarded-fields` reads the new `<slug>/edit/page.tsx` as
+    well as the old `[id]/edit` path. The stale-route report recognizes both
+    page shapes.
 - **Concurrent `forge generate` / `forge scaffold` runs in one project now
   queue instead of failing.** Every run takes the project's lock
   (`.forge/forge.lock`). A second run prints one line,
@@ -152,6 +243,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later get the short form.
 
 ### Added
+
+- **`forgeconv-list-filter-optional`: `forge lint --conventions` now rejects a
+  List-request filter field without `optional`.** The rule ("List request
+  filter fields must be optional") was documented in every project's
+  CLAUDE.md and the proto skill and checked by nothing. A scalar or enum field
+  on a `List<X>Request` (or the request of a `List<X>` rpc) with no presence
+  is an error: unset and the zero value are the same on the wire, so the
+  generated List op either can never filter on the zero value or — for a
+  bool/enum — always applies it and returns only the `false`/UNSPECIFIED rows.
+  Pagination/ordering controls and message-typed fields are exempt, enums
+  resolve across the proto tree, and a required parameter can say so with
+  `[(buf.validate.field).required = true]` instead.
+
+- **Signed in to Reliant means signed in to the control plane — no `forge
+  login`.** forge has a credential-helper protocol (`pkg/cloudcred`, the model
+  of kubectl exec plugins and git credential helpers): when
+  `$FORGE_CREDENTIAL_HELPER` names a command, forge writes
+  `{"version":1,"endpoint":…,"scopes":[…]}` to its stdin and reads a token (or a
+  structured refusal: `no_session`, `denied`, `unavailable`) from its stdout.
+  The value is a JSON argv array, or a single executable path. Reliant sets it
+  for `reliant forge …` and for every shell its agents run, and answers with a
+  short-lived token minted from the user's Reliant session for exactly the
+  endpoint the env declares. Hosted commands (`env deploy`, `secret`,
+  `domain`, `cloud`, `release`, `env promote|verify|start|stop`, `registry
+  login`, …) resolve a credential in this order: `--token`, the env's declared
+  token variable (CI), the stored `forge login`, then the helper — and an
+  EXPIRED `forge login` falls through to the helper instead of failing. A
+  helper's token is reused within one process until a minute before it
+  expires; caching across processes is the helper's job. When the helper
+  refuses, forge prints the host's own advice (Reliant: "sign in to Reliant
+  (`reliant auth login` / the app)") and the CI variable — never `forge login`
+  — and a 401/403 on a helper-minted token says to sign in again there. Helper
+  stdout never reaches an error message or a log. `forge cloud status <env>`
+  shows the source and expiry; `forge login` notes when a helper is already
+  set. `forge login` and the token variable are unchanged for standalone forge
+  and CI.
 
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,
@@ -332,6 +459,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renders.
 
 ### Fixed
+
+- **A born list page no longer links its rows to a detail page that does not
+  exist.** Every list row called `router.push('/<slug>/<id>')`, but the detail
+  page is only generated when the service has a Get RPC — so a List-only
+  entity's rows were all 404s. Rows link only when the detail page is
+  generated (`PageTemplateData.EmitsDetailPage`, which also gates the detail
+  route itself and the create page's landing); otherwise they are inert and
+  the list keeps the id/created/updated columns it would have left to the
+  detail page.
 
 - **`next dev` no longer rewrites the scaffolded `tsconfig.json`.** Next 16
   checks the file on every `next dev` and `next build`. When it finds a value

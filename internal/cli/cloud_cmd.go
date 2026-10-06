@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/credentials"
 )
 
@@ -268,11 +270,19 @@ more than one control plane), or set the environment variable the environment
 declares (FORGE_CONTROL_PLANE_TOKEN by default) and skip login entirely. A
 pipeline has no browser, which is what org tokens are for.
 
+SIGNED IN TO RELIANT? You do not need this command. ` + "`reliant forge …`" + ` and every
+shell a Reliant agent runs set $` + cloudcred.HelperEnv + `, and forge asks that
+helper for a short-lived token minted from your Reliant session for exactly the
+control plane an env declares. forge login is for standalone forge (no Reliant)
+and for overriding the session with a different identity.
+
 CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
 
     1. --token           explicit, beats everything
     2. $<token_env>      the env var the environment declares — CI
-    3. the credentials file entry for that env's endpoint — a human's default`,
+    3. the credentials file entry for that env's endpoint — what this command stores
+    4. $` + cloudcred.HelperEnv + ` — a host application's session (Reliant's);
+       also used when the stored login (3) has expired`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -294,6 +304,13 @@ CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
 			path, err := cloud.CredentialsPath()
 			if err != nil {
 				return err
+			}
+			if helper := strings.TrimSpace(os.Getenv(cloudcred.HelperEnv)); helper != "" {
+				// Under a host the user is already signed in; say so before
+				// they finish a browser flow they did not need. Not an error:
+				// a login stored here deliberately overrides the session.
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: $%s is set, so forge already uses your host application's session (Reliant's) "+
+					"when nothing is stored. A login stored here takes precedence over that session.\n", cloudcred.HelperEnv)
 			}
 			for i, p := range planes {
 				if i > 0 {
@@ -481,6 +498,9 @@ func newCloudStatusCmd() *cobra.Command {
 			// The SOURCE, never the token. Printing a bearer credential
 			// to a terminal puts it in scrollback and in CI logs.
 			fmt.Fprintf(out, "  credential: present, from %s (%s)\n", cred.From, cred.Source)
+			if cred.ExpiresAt != nil {
+				fmt.Fprintf(out, "  expires:    %s\n", cred.ExpiresAt.Format(time.RFC3339))
+			}
 			return nil
 		},
 	}

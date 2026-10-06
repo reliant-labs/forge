@@ -22,7 +22,8 @@ import (
 const advisoryQueryClient = "src/lib/query-client.ts"
 
 // advisoryTestProject scaffolds one Next.js frontend and returns the
-// project dir plus a config that describes it.
+// project dir plus a config that describes it — including the `output:`
+// the scaffolders write into forge.yaml for it.
 func advisoryTestProject(t *testing.T) (string, *config.ProjectConfig) {
 	t.Helper()
 	dir := t.TempDir()
@@ -33,10 +34,43 @@ func advisoryTestProject(t *testing.T) (string, *config.ProjectConfig) {
 		Name:       "demo",
 		ModulePath: "github.com/example/demo",
 		Frontends: []config.FrontendConfig{
-			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir(filepath.Join("frontends", "web")),
+			config.FrontendConfig{Name: "web", Type: "nextjs", Output: config.FrontendOutputScaffoldDefault}.WithDir(filepath.Join("frontends", "web")),
 		},
 	}
 	return dir, cfg
+}
+
+// TestAdvisories_LegacyStandaloneEntrySaysNothing pins what an EMPTY
+// `output:` means to the advisory lane: the standalone shape. Every
+// frontend scaffolded before the static default has exactly that — no
+// `output:` key, a standalone next.config.ts and Dockerfile. Reading empty as
+// the current default would report both files as diverged on every such
+// project, and `upgrade --force` would convert its build to a static export
+// nobody asked for.
+func TestAdvisories_LegacyStandaloneEntrySaysNothing(t *testing.T) {
+	dir := t.TempDir()
+	if err := GenerateFrontendFilesWithOptions(dir, "github.com/example/demo", "demo", "web", 8080, "",
+		FrontendGenOptions{Output: config.FrontendOutputStandalone}); err != nil {
+		t.Fatalf("GenerateFrontendFilesWithOptions: %v", err)
+	}
+	cfg := &config.ProjectConfig{
+		Name:       "demo",
+		ModulePath: "github.com/example/demo",
+		Frontends: []config.FrontendConfig{
+			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir(filepath.Join("frontends", "web")),
+		},
+	}
+	results := inspect(t, dir, cfg, ForceNone(), true)
+	for _, rel := range []string{"next.config.ts", "Dockerfile"} {
+		r, ok := results[advisoryPath(cfg, rel)]
+		if !ok {
+			t.Errorf("%s has no advisory row", rel)
+			continue
+		}
+		if r.Behind() {
+			t.Errorf("legacy (no output:) frontend reported %s as %s (+%d/-%d)\n%s", rel, r.Status, r.Missing, r.Local, r.Diff)
+		}
+	}
 }
 
 // advisoryRows renders the advisory set for a project, failing the test on

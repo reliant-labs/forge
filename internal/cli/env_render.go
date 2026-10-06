@@ -876,13 +876,21 @@ type renderWriteScan struct {
 //   - .forge/logs — the per-process log files forge's own dev loop appends
 //     to continuously; on a machine with a stack up they change during ANY
 //     command, and listing them would bury the one line that matters.
+//   - .forge/hostinfra — the runtime and data of forge's own host-run
+//     infrastructure (forge.HostInfra: postgres, the dev IdP). `forge env up`
+//     extracts those binaries and starts those servers CONCURRENTLY with
+//     the build's render, so a live postgres rewriting its WAL — or a first
+//     run unpacking its runtime — landed in the report as files "the render
+//     wrote", and refused the bundle on every fresh project's first
+//     `env up`. No render writes here; forge's own supervisor does.
 //
 // Everything else is scanned, including generated code, vendored trees and
 // node_modules: a `file.write` can name any path, and deciding in advance
 // that some are uninteresting is how a write goes unreported.
 var renderScanSkipDirs = map[string]bool{
-	".git":        true,
-	".forge/logs": true,
+	".git":             true,
+	".forge/logs":      true,
+	".forge/hostinfra": true,
 }
 
 func newRenderWriteScan(root string, disabled bool) *renderWriteScan {
@@ -943,7 +951,7 @@ func (s *renderWriteScan) report(w io.Writer, envName string) {
 	}
 	fmt.Fprintln(w, "[render] KCL evaluates file.write during rendering and forge cannot suppress a project's own writes.")
 	fmt.Fprintln(w, "[render] Caveats: size and mtime are compared, not content, so a rewrite may be byte-identical;")
-	fmt.Fprintln(w, "[render] .git/ and .forge/logs/ are not scanned; a concurrent process writing here also appears above.")
+	fmt.Fprintln(w, "[render] .git/, .forge/logs/ and .forge/hostinfra/ are not scanned; a concurrent process writing here also appears above.")
 }
 
 // scanRenderTree stats every regular file under root, keyed by root-relative

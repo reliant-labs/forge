@@ -459,6 +459,36 @@ func (f FrontendConfig) RoutesNone() bool {
 	return false
 }
 
+// Output values for FrontendConfig.Output — the Next.js production shape.
+const (
+	// FrontendOutputStatic is a static export into out/ (`output: "export"`).
+	FrontendOutputStatic = "static"
+	// FrontendOutputStandalone is a self-contained Node server
+	// (`output: "standalone"`).
+	FrontendOutputStandalone = "standalone"
+	// FrontendOutputServer is full Next.js (`next start`, no `output:`).
+	FrontendOutputServer = "server"
+
+	// FrontendOutputScaffoldDefault is what a NEW Next.js frontend is
+	// scaffolded with, and written into forge.yaml. Static because the
+	// hosted runtime serves frontends as static sites, and because the
+	// generated CRUD routes export cleanly — so the default ships
+	// anywhere. It is deliberately not what an empty field means; see
+	// EffectiveOutput.
+	FrontendOutputScaffoldDefault = FrontendOutputStatic
+)
+
+// EffectiveOutput returns the frontend's Next.js production shape,
+// lowercased. An unset field is "standalone": the shape every frontend
+// scaffolded before the field was always written was given, and still has
+// in its scaffold-once next.config.ts. See the Output field.
+func (f FrontendConfig) EffectiveOutput() string {
+	if o := strings.ToLower(strings.TrimSpace(f.Output)); o != "" {
+		return o
+	}
+	return FrontendOutputStandalone
+}
+
 // Dev-runner values for FrontendConfig.DevRunner, mirroring the KCL
 // Frontend schema's `dev_runner`.
 const (
@@ -1620,10 +1650,10 @@ type K8sConfig struct {
 // scaffolded packages start with.
 type ObservabilityConfig struct {
 	// LogLevel is the slog level at which the LogMiddleware records
-	// SUCCESSFUL component calls ("debug" | "info" | "warn" | "error").
-	// Failures always log at Error regardless. Default "debug" keeps
-	// success logging quiet under a production Info handler. An unknown
-	// value falls back to the default.
+	// SUCCESSFUL component calls ("debug" | "info" | "warn" | "error"),
+	// which it samples per method. Failures always log at Error
+	// regardless. Default "debug" keeps success logging quiet under a
+	// production Info handler. An unknown value falls back to the default.
 	LogLevel string `yaml:"log_level,omitempty"`
 }
 

@@ -346,3 +346,29 @@ func TestCheckPkgCompat_RefusalsMakeNoTreeClaim(t *testing.T) {
 		}
 	}
 }
+
+// A fresh worktree of a project pinned to a published forge, built with a
+// developer's unreleased forge on PATH, used to be told to bridge to the
+// dev checkout or "install a released forge" — the second meaning: replace
+// the forge on PATH, which is exactly what someone running a deliberate dev
+// build must not do. Both refusals that hinge on WHICH forge is running now
+// hand back the refused command itself, run with the pinned forge via
+// `go run`, which installs nothing.
+func TestVersionRefusals_NameTheCommandWithThePinnedForge(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.24\n")
+	saved := os.Args
+	t.Cleanup(func() { os.Args = saved })
+	os.Args = []string{"forge", "env", "build", "prod", "--target", "workspace-base"}
+
+	const pin = "v0.1.44-0.20261005032427-4dbbe433eb1a"
+	want := "go run github.com/reliant-labs/forge/cmd/forge@" + pin + " env build prod --target workspace-base"
+	for name, err := range map[string]error{
+		"unreleasable": unreleasableBuildErr(dir, pin),
+		"behind pin":   binaryBehindPinErr(dir, pin, "v0.1.43"),
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s refusal must name the refused command run with the pinned forge:\nwant: %s\ngot:\n%v", name, want, err)
+		}
+	}
+}

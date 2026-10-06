@@ -164,38 +164,54 @@ func (c *Client) BeginFlow(ctx context.Context, cfg FlowConfig) (Flow, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	location := resp.Header.Get("Location")
-	id := authRequestIDFrom(location)
+	id, v1 := authRequestIDFrom(location)
 	if id == "" {
 		return Flow{}, fmt.Errorf(
 			"the issuer did not return an auth request id (HTTP %d, Location %q). "+
 				"This usually means the login UI is not pointed at this app — see SetLoginUI",
 			resp.StatusCode, location)
 	}
+	if v1 {
+		// Refused HERE, before any credential is checked. Carried on, the
+		// flow would verify the password (counting a failed attempt against
+		// the account if it was wrong) and then fail at finalize with "Auth
+		// Request does not exist (COMMAND-jae5P)" — an error that names the
+		// request rather than the instance setting that caused it. Observed
+		// on a dev instance whose bring-up switched LoginV2 back off.
+		return Flow{}, fmt.Errorf(
+			"the issuer minted a v1 auth request (Location %q): the LoginV2 feature is off for this "+
+				"instance, so it is redirecting to its own login pages and FinalizeAuthRequest cannot "+
+				"complete the request. Point the login UI at this app with SetLoginUI "+
+				"(PUT /v2/features/instance {\"loginV2\":{\"required\":true,\"baseUri\":<sign-in route>}})",
+			location)
+	}
 	return Flow{AuthRequestID: id, PKCE: pkce}, nil
 }
 
-// authRequestIDFrom pulls the request id out of the issuer's redirect.
+// authRequestIDFrom pulls the request id out of the issuer's redirect, and
+// reports whether it is a v1 request.
 //
-// Both spellings are accepted because they mark different issuer
-// generations: `authRequest` is the v2 login flow (what this package
-// drives), `authRequestID` the v1 one. Reading both means a project whose
-// instance has not yet been switched over still gets a clear error later
-// rather than an empty id here.
-func authRequestIDFrom(location string) string {
+// The two spellings mark different issuer generations: `authRequest` is
+// the v2 login flow (what this package drives), `authRequestID` the v1 one,
+// which the issuer mints when the LoginV2 feature is off and it redirects
+// to its own bundled /ui/login pages instead of the app. Both are read so
+// BeginFlow can refuse a v1 request by NAME rather than return an empty id.
+func authRequestIDFrom(location string) (id string, v1 bool) {
 	if location == "" {
-		return ""
+		return "", false
 	}
 	u, err := url.Parse(location)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	q := u.Query()
-	for _, key := range []string{"authRequest", "authRequestID"} {
-		if v := strings.TrimSpace(q.Get(key)); v != "" {
-			return v
-		}
+	if v := strings.TrimSpace(q.Get("authRequest")); v != "" {
+		return v, false
 	}
-	return ""
+	if v := strings.TrimSpace(q.Get("authRequestID")); v != "" {
+		return v, true
+	}
+	return "", false
 }
 
 // Tokens is what a completed flow yields.
@@ -264,11 +280,17 @@ func (c *Client) RedeemCode(ctx context.Context, cfg FlowConfig, code string, pk
 // This is the function an app's POST /auth/login handler wraps. Everything
 // it needs from the browser is a login name and a password; everything the
 // browser gets back is whatever session representation the app chooses.
+//
+// The login name may be an EMAIL, which is what a sign-in form asks for. It
+// is resolved to the account's real login name first (see loginNameFor):
+// the issuer creates sessions by login name, and the two differ for any
+// account created with a bare username.
 func (c *Client) SignIn(ctx context.Context, cfg FlowConfig, creds Credentials) (Tokens, error) {
 	flow, err := c.BeginFlow(ctx, cfg)
 	if err != nil {
 		return Tokens{}, err
 	}
+	creds.LoginName = c.loginNameFor(ctx, creds.LoginName)
 	session, err := c.CreateSession(ctx, creds)
 	if err != nil {
 		return Tokens{}, err

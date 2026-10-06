@@ -80,7 +80,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"db/embed.go (embedded migrations)",
 		"sqlc generate",
 		"go mod tidy (gen/)",
-		"CI workflows",
 		"regenerate infra files",
 		"cmd command groups (services/workers/operators)",
 		"discover components",
@@ -91,6 +90,10 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		// frontend_config_gen.k module and the env's config.k instance —
 		// both emitted by the step above — must exist first.
 		"frontend typed config",
+		// AFTER the env config modules: which workflows exist is read off a
+		// render of every env (a hosted env gets release.yml), and an env
+		// cannot render before the config modules it imports exist.
+		"CI workflows",
 		"ingress k3d ports fragment",
 		// Gated on features.deploy — absent from a project that declares no
 		// CRDs, present here because the guard drives the full plan.

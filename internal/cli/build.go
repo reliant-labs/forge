@@ -721,6 +721,19 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// Best-effort, matching the env-up path: a render failure warns and the
 	// build proceeds on the existing document rather than failing a build that
 	// would otherwise succeed.
+	//
+	// With no env, the build ships the DEV document — whatever is on disk.
+	// On a fresh checkout there is none (it is machine-local and
+	// gitignored), so render just that file rather than the whole generate
+	// pipeline a missing config.js used to trigger (see
+	// generatedCodeNeedsRefresh).
+	if opts.env == "" && len(frontends) > 0 {
+		if n, ferr := ensureDevRuntimeConfigs(cfg, projectDirForKCL()); ferr != nil {
+			fmt.Printf("[build]   Warning: frontend runtime config: %v\n", ferr)
+		} else if n > 0 {
+			fmt.Printf("[build]   Rendered %d missing dev frontend runtime config(s)\n", n)
+		}
+	}
 	if opts.env != "" && len(frontends) > 0 {
 		if changed, ferr := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), opts.env, frontendRuntimeOverlays(entities)); ferr != nil {
 			fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", ferr)

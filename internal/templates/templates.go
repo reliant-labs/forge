@@ -657,18 +657,19 @@ type FrontendTemplateData struct {
 	// (`next.config.ts.tmpl`); other template trees ignore it.
 	//
 	// Valid values rendered by templates:
-	//   - "standalone" (default): emit `output: "standalone"`
-	//     unconditionally — pairs with the shipped Dockerfile and
-	//     supports the generated dynamic `[id]` CRUD routes.
 	//   - "static":     emit `output: "export"` gated on
-	//     NODE_ENV=production. Dev server stays unchanged. Opt-in
-	//     only: static export fails `next build` on dynamic route
-	//     segments without generateStaticParams, which the generated
-	//     CRUD detail/edit pages cannot provide.
+	//     NODE_ENV=production (the scaffold default; callers resolve it
+	//     before rendering). Dev server stays unchanged. The generated
+	//     CRUD pages are static routes, so the export builds.
+	//   - "standalone": emit `output: "standalone"` unconditionally —
+	//     the Node server the standalone Dockerfile runs.
 	//   - "server":     omit `output` entirely (full Next.js dev+prod).
 	//
-	// Empty string is treated as "standalone" by the template — callers
-	// that don't thread this field get the scaffold default.
+	// Empty string renders the standalone arm, which is what an empty
+	// forge.yaml `output:` has always meant
+	// (config.FrontendConfig.EffectiveOutput). A NEW frontend never
+	// reaches the template empty: GenerateFrontendFilesWithOptions
+	// resolves "" to config.FrontendOutputScaffoldDefault first.
 	Output string
 	// BasePath mirrors config.FrontendConfig.BasePath — the URL prefix
 	// the frontend is mounted under (e.g. "/admin"), or "" for root.

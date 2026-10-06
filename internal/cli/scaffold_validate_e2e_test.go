@@ -143,7 +143,7 @@ message Widget {
 		t.Errorf("unconstrained `count` field must carry no numeric refinement:\n%s", create)
 	}
 	// The edit form (fields sourced from the entity itself) carries them too.
-	editPath := filepath.Join(appDir, "widgets", "[id]", "edit", "page.tsx")
+	editPath := filepath.Join(appDir, "widgets", "edit", "page.tsx")
 	assertPathExistsE2E(t, editPath)
 	edit := readFileE2E(t, editPath)
 	for _, want := range []string{"name: z.string().min(2).max(64),", "quantity: z.coerce.number().gte(0),"} {

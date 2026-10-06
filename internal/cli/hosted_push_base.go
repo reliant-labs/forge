@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
@@ -94,6 +95,6 @@ func dockerPush(ctx context.Context, reference string) error {
 func errHostedImageNeedsPushBase(env, owner, image string) error {
 	return fmt.Errorf("workload %q declares image %q, which names no registry host, and it is bound to forge.OnHosted.\n"+
 		"  forge resolves it to %s/<your org>/<project>/%s, but it could not learn your org: that comes from your control-plane credential.\n"+
-		"  fix: authenticate (`forge login`, or set the env's token_env) and retry — env %q reads its org from that credential",
-		owner, image, hostedimage.DefaultRegistryHost, image, env)
+		"  fix: authenticate (%s, or set the env's token_env) and retry — env %q reads its org from that credential",
+		owner, image, hostedimage.DefaultRegistryHost, image, cloud.SignInHint(), env)
 }

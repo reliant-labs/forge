@@ -45,7 +45,7 @@ _all = [
         priorityClassName = "demo-platform"
         strategy = "Recreate"
     }
-    fw.Workload {name = "store", image = "localhost:5050/demo", args = ["store"], ports = [fw.Port {name = "http", port = 8080}], storageGiB = 10}
+    fw.Workload {name = "store", image = "localhost:5050/demo", args = ["store"], ports = [fw.Port {name = "http", port = 8080}], storageGiB = 10, serves = ["blobs", "index"]}
     fw.Workload {name = "nightly", kind = "cron", image = "localhost:5050/demo", args = ["sweep"], schedule = "@daily"}
     fw.Workload {name = "migrate", kind = "job", image = "localhost:5050/demo", args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL]}
     fw.Workload {name = "report", kind = "job", image = "localhost:5050/demo", args = ["report"], deployPhase = "post-rollout"}
@@ -89,5 +89,5 @@ assert_deploy_phase = _record["report"].deployPhase == "post-rollout"
 assert_operator = _record["mgr"].crds == ["Widget"] and _record["mgr"].group == "example.com" and _record["mgr"].leaderElection == False
 # Authoring-only fields never reach the wire spec.
 assert_no_authoring_fields = all n in _record {
-    all k in ["name", "build", "runtime", "manifests"] { k not in _record[n] }
+    all k in ["name", "build", "runtime", "manifests", "config_secrets", "serves"] { k not in _record[n] }
 }

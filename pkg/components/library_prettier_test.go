@@ -5,11 +5,13 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// scaffoldPrettierVersion matches the prettier the scaffolded frontends pin
-// (^3.5.0 in internal/templates/frontend/*/package.json.tmpl).
-const scaffoldPrettierVersion = "3.5.3"
+// scaffoldPrettierVersion is the prettier the scaffolded frontends pin, and
+// forge's own pre-commit hook runs over these files (templates.PrettierVersion).
+const scaffoldPrettierVersion = templates.PrettierVersion
 
 // Library sources are copied verbatim into projects, which run prettier with
 // the scaffolded config. A source that prettier would rewrite becomes churn in

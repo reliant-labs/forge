@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/templates"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -62,10 +63,11 @@ func TestPreCommitFiles_PrettierClean(t *testing.T) {
 		t.Skip("-short: skipping the prettier run (downloads prettier on first use); the single-quote guard above still ran")
 	}
 	npx := requirePrettierRunner(t)
-	// The version the scaffolded hook pins (mirrors-prettier rev).
-	args := append([]string{"-y", "prettier@3.1.0", "--no-config", "--check"}, paths...)
+	// The version the scaffolded hook pins.
+	v := templates.PrettierVersion
+	args := append([]string{"-y", "prettier@" + v, "--no-config", "--check"}, paths...)
 	if out, err := exec.Command(npx, args...).CombinedOutput(); err != nil {
-		t.Fatalf("prettier 3.1.0 would rewrite the scaffolded pre-commit files, so a fresh project fails its own hook (%v):\n%s", err, out)
+		t.Fatalf("prettier %s would rewrite the scaffolded pre-commit files, so a fresh project fails its own hook (%v):\n%s", v, err, out)
 	}
 }
 

@@ -12,11 +12,11 @@ import (
 )
 
 // scaffoldPrettierVersion is the prettier release the scaffolded
-// .pre-commit-config.yaml pins (mirrors-prettier rev v3.1.0, see
-// internal/generator/dx_files.go). Every YAML forge scaffolds must already be
-// in the shape that version writes, or a FRESH project fails its own
-// pre-commit hook on the first commit.
-const scaffoldPrettierVersion = "3.1.0"
+// .pre-commit-config.yaml hook runs (see internal/generator/dx_files.go).
+// Every YAML forge scaffolds must already be in the shape that version
+// writes, or a FRESH project fails its own pre-commit hook on the first
+// commit.
+const scaffoldPrettierVersion = PrettierVersion
 
 // renderedWorkflows renders every GitHub Actions template across the data
 // shapes the generator feeds them, so each conditional branch that emits a

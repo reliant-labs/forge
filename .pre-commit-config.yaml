@@ -59,10 +59,22 @@ repos:
       - id: go-imports
         exclude: (^|/)testdata/|\.pb\.go$|(^|/)zz_generated\.deepcopy\.go$
 
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.1.0
+  # prettier as a LOCAL hook pinned to an exact release, because the version
+  # is not this file's to choose: it must be templates.PrettierVersion, the
+  # prettier scaffolded frontends run. pkg/components is copied verbatim into
+  # those projects and formatted for THEIR prettier (#502); a hook on any
+  # other release rewrites it, and that skew — pre-commit/mirrors-prettier,
+  # archived at v3.1.0, against library files formatted with 3.5.3 — is
+  # what kept this hook red on main. TestPrettierVersionIsPinnedEverywhere
+  # holds the pin below equal to the constant.
+  - repo: local
     hooks:
       - id: prettier
+        name: prettier
+        entry: prettier --write --ignore-unknown
+        language: node
+        additional_dependencies: ["prettier@3.5.3"]
+        types: [text]
         # Restrict to frontend + docs so prettier does not fight gofmt or
         # golangci-lint on Go files.
         #

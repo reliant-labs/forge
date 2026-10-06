@@ -248,9 +248,8 @@ func requireNpxForPrettier(t *testing.T) string {
 }
 
 // scaffoldedFrontendPrettierVersion is the prettier the scaffolded
-// frontends' package.json resolves ("^3.5.0"). Pinned to a concrete release
-// so the check is reproducible; bump it when the template's range moves.
-const scaffoldedFrontendPrettierVersion = "3.5.3"
+// frontends' package.json pins (templates.PrettierVersion).
+const scaffoldedFrontendPrettierVersion = templates.PrettierVersion
 
 // firstLineDiffs lists up to eight line pairs prettier rewrites. It compares
 // line-by-line, so it is only a pointer into the file once line counts

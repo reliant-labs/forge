@@ -675,9 +675,11 @@ func ApplyAndIntrospectShadowAt(migDir, baseURL string) ([]Table, *Shadow, error
 // FIRST migration is exactly the one a caller wants to try against postgres
 // before writing it.
 //
-// A non-nil *Shadow is returned whenever one was opened, INCLUDING on a
-// replay error, so the caller's deferred Close always reclaims the scratch
-// database.
+// On error there is nothing to close: a shadow opened before the replay
+// failed is dropped here, so the caller checks err and only then defers
+// Close — the ordinary Go contract. (It used to return the live shadow
+// beside a replay error, which made `defer shadow.Close()` BEFORE the err
+// check the only correct spelling at the call site.)
 func OpenShadowAt(migDir, baseURL string) (*Shadow, error) {
 	ups, err := upMigrations(migDir)
 	if err != nil {
@@ -688,7 +690,11 @@ func OpenShadowAt(migDir, baseURL string) (*Shadow, error) {
 		return nil, fmt.Errorf("open postgres shadow db: %w", err)
 	}
 	shadow := &Shadow{db: db, cleanup: cleanup}
-	return shadow, applyMigrationFiles(db, migDir, ups)
+	if err := applyMigrationFiles(db, migDir, ups); err != nil {
+		shadow.Close()
+		return nil, err
+	}
+	return shadow, nil
 }
 
 // TryApply runs sqlText against the shadow inside a transaction that is

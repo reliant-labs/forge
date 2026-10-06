@@ -170,26 +170,31 @@ func NewMockTransportTemplateData(entities []MockTransportEntity) MockTransportT
 	return data
 }
 
-// ListResponseSchema, GetResponseSchema, CreateResponseSchema,
-// UpdateResponseSchema and EntitySchema are the names mock-transport.ts
-// refers to the entity's imported schemas by: their own, unless another
-// module the file imports declares the same name (NewMockTransportTemplateData).
+// The five *Schema methods below are the names mock-transport.ts refers to
+// the entity's imported schemas by: their own, unless another module the
+// file imports declares the same name (NewMockTransportTemplateData).
+
+// ListResponseSchema is the local name of the List response's schema.
 func (e MockTransportEntity) ListResponseSchema() string {
 	return e.imports.Local(e.ImportPath, e.ListResponseType+"Schema")
 }
 
+// GetResponseSchema is the local name of the Get response's schema.
 func (e MockTransportEntity) GetResponseSchema() string {
 	return e.imports.Local(e.ImportPath, e.GetResponseType+"Schema")
 }
 
+// CreateResponseSchema is the local name of the Create response's schema.
 func (e MockTransportEntity) CreateResponseSchema() string {
 	return e.imports.Local(e.ImportPath, e.CreateResponseType+"Schema")
 }
 
+// UpdateResponseSchema is the local name of the Update response's schema.
 func (e MockTransportEntity) UpdateResponseSchema() string {
 	return e.imports.Local(e.ImportPath, e.UpdateResponse()+"Schema")
 }
 
+// EntitySchema is the local name of the entity message's own schema.
 func (e MockTransportEntity) EntitySchema() string {
 	return e.imports.Local(e.entityImportPath(), e.SchemaImport)
 }

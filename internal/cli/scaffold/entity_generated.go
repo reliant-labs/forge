@@ -56,7 +56,6 @@ func generatedPreflight(migDir string, spec entityscaffold.EntityFromProtoSpec, 
 	}
 	projectDir := filepath.Dir(filepath.Dir(migDir))
 	shadow, err := schemadef.OpenShadowAt(migDir, shadowdb.Resolve(projectDir))
-	defer shadow.Close()
 	if err != nil {
 		// Not a verdict on the expression: postgres was never asked. The
 		// birth proceeds, and `forge generate` — which needs the same
@@ -65,6 +64,7 @@ func generatedPreflight(migDir string, spec entityscaffold.EntityFromProtoSpec, 
 			messageLabel(spec), err)
 		return nil
 	}
+	defer shadow.Close()
 	return verifyGeneratedColumns(context.Background(), shadow, spec, m)
 }
 

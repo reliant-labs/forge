@@ -1,9 +1,13 @@
 package schemadef
 
 import (
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 func writeMig(t *testing.T, dir, name, sql string) {
@@ -184,6 +188,57 @@ CREATE TABLE broken (
 `)
 	if _, err := ApplyAndIntrospect(dir); err == nil {
 		t.Fatal("a CREATE TABLE postgres rejects must be a hard error, not a silent skip")
+	}
+}
+
+// OpenShadowAt's error contract is the ordinary one: on error there is
+// nothing to close. A replay failure therefore returns NO shadow and has
+// already dropped the scratch database it created — the caller checks err
+// and only then defers Close. Returning the live shadow beside the error (the
+// old contract) leaked the scratch database into any caller that wrote the
+// idiomatic err-check-first form.
+func TestOpenShadowAt_ReplayErrorLeavesNothingOpen(t *testing.T) {
+	requireRealPG(t)
+	baseURL, cleanup, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("pgtest.NewURL: %v", err)
+	}
+	t.Cleanup(cleanup)
+	base, err := sql.Open("postgres", baseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	scratch := func() int {
+		t.Helper()
+		var n int
+		pattern := fmt.Sprintf("forge_shadow_%d_%%", os.Getpid())
+		if err := base.QueryRow(`SELECT count(*) FROM pg_database WHERE datname LIKE $1`, pattern).Scan(&n); err != nil {
+			t.Fatalf("count scratch databases: %v", err)
+		}
+		return n
+	}
+
+	dir := t.TempDir()
+	writeMig(t, dir, "00001_bad.up.sql", `
+CREATE TABLE broken (
+    id TEXT PRIMARY KEY,
+    span TEXT,
+    CONSTRAINT no_overlap EXCLUDE USING gist (span WITH &&)
+);
+`)
+	before := scratch()
+	shadow, err := OpenShadowAt(dir, baseURL)
+	if err == nil {
+		shadow.Close()
+		t.Fatal("a migration postgres rejects must fail OpenShadowAt")
+	}
+	if shadow != nil {
+		shadow.Close()
+		t.Error("OpenShadowAt returned a live shadow beside its error; on error there must be nothing to close")
+	}
+	if after := scratch(); after != before {
+		t.Errorf("scratch databases: %d before, %d after a failed OpenShadowAt — the shadow it opened was not dropped", before, after)
 	}
 }
 

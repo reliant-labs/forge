@@ -696,8 +696,9 @@ func TestGenerateCRUDHandlers_KeepsUserOwnedLegacyGen(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Keyed as .forge/disowned.json records it: slash-separated on every OS.
 	cs := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
-		legacyRel: {Reason: "user took ownership"},
+		filepath.ToSlash(legacyRel): {Reason: "user took ownership"},
 	}}
 
 	svc := ServiceDef{

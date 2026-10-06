@@ -535,7 +535,7 @@ func Load(root string) (*FileChecksums, error) {
 			return nil, fmt.Errorf("parse %s: %w", DisownedFile, jerr)
 		}
 		if d.Files != nil {
-			cs.Disowned = d.Files
+			cs.Disowned = slashKeys(d.Files)
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
@@ -546,7 +546,7 @@ func Load(root string) (*FileChecksums, error) {
 			return nil, fmt.Errorf("parse %s: %w", HashesFile, jerr)
 		}
 		if h.Files != nil {
-			cs.Unstampable = h.Files
+			cs.Unstampable = slashKeys(h.Files)
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err

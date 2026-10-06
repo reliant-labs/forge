@@ -57,7 +57,8 @@ func TestCrossTierLintRoot_Violation(t *testing.T) {
 			if f.Severity != SeverityError {
 				t.Errorf("cross-tier-derived-symbol must be an error, got %q", f.Severity)
 			}
-			if f.Path != filepath.Join("internal", "templates", "project", "cmd-widget-group.go.tmpl") {
+			// Slash-separated on every OS: relPath normalizes it (scaffolds.go).
+			if f.Path != "internal/templates/project/cmd-widget-group.go.tmpl" {
 				t.Errorf("finding should be pinned to the referencing template, got %q", f.Path)
 			}
 			msg = f.Message

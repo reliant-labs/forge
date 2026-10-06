@@ -227,11 +227,7 @@ func cmdTreePath(binName string, segs ...string) string {
 	}
 	parts = append(parts, "cmd")
 	parts = append(parts, segs...)
-	// path, not filepath: a destPath is a slash-separated project identity —
-	// it is compared against ScanMarkers keys and the run sets, which are
-	// slash-separated on every OS. File operations join it onto the project
-	// root with filepath.Join, which accepts it on Windows too.
-	return path.Join(parts...)
+	return filepath.Join(parts...)
 }
 
 // managedFilesForCfg is like managedFiles but consults the project
@@ -431,6 +427,11 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 // `forked: true` in checksums.json, which silenced the warnings but
 // also disconnected the files from the upgrade pipeline. The right
 // fix is for the stale-sweep to know about the upgrade-managed set.
+//
+// Keys are slash-separated, the form of every ownership key the sweep
+// compares them to (checksums.ScanMarkers). destPath is a native path —
+// cmdTreePath joins with filepath — so on Windows the unnormalized set
+// never matched and the sweep flagged these files as stale again.
 func UpgradeManagedPaths() map[string]bool {
 	out := map[string]bool{}
 	for _, kind := range []string{
@@ -443,7 +444,7 @@ func UpgradeManagedPaths() map[string]bool {
 			config.ProjectBinaryShared,
 		} {
 			for _, f := range managedFilesForKindBinary(kind, binary, "") {
-				out[f.destPath] = true
+				out[filepath.ToSlash(f.destPath)] = true
 			}
 		}
 	}
@@ -571,7 +572,7 @@ func Tier2ManagedPaths() map[string]bool {
 		} {
 			for _, f := range managedFilesForKindBinary(kind, binary, "") {
 				if f.tier == Tier2 {
-					out[f.destPath] = true
+					out[filepath.ToSlash(f.destPath)] = true
 				}
 			}
 		}
@@ -1024,7 +1025,7 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 		missing, local := managedLineDelta(existing, expected)
 		matchesKnownRender := checksums.Verify(existing) == checksums.Pristine
 		if !checksums.Stampable(f.destPath) && cs != nil {
-			recorded, tracked := cs.Unstampable[f.destPath]
+			recorded, tracked := cs.Unstampable[filepath.ToSlash(f.destPath)]
 			matchesKnownRender = tracked && checksums.BodyHash(existing) == recorded
 		}
 
@@ -1094,7 +1095,7 @@ func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) e
 		if cs.Unstampable == nil {
 			cs.Unstampable = map[string]string{}
 		}
-		cs.Unstampable[relPath] = checksums.BodyHash(content)
+		cs.Unstampable[filepath.ToSlash(relPath)] = checksums.BodyHash(content)
 	}
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {

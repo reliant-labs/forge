@@ -1,6 +1,9 @@
 package checksums
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // slashKey is relPath in the one form every path-keyed set in this package
 // stores: forward slashes.
@@ -26,4 +29,20 @@ import "path/filepath"
 // a native path on Windows, which accepts forward slashes throughout.
 func slashKey(relPath string) string {
 	return filepath.ToSlash(relPath)
+}
+
+// slashKeys re-keys a state file's map by slashKey's form, for Load.
+//
+// The state files are committed and read on every OS, and a Windows forge
+// that predates slashKey wrote backslashed keys into them. So a backslash
+// is rewritten here on EVERY host — filepath.ToSlash would leave it alone on
+// POSIX, where the file is just as likely to be read — rather than trusting
+// the writer. A repo-relative path forge records never contains a literal
+// backslash on purpose.
+func slashKeys[V any](m map[string]V) map[string]V {
+	out := make(map[string]V, len(m))
+	for k, v := range m {
+		out[strings.ReplaceAll(k, `\`, "/")] = v
+	}
+	return out
 }

@@ -149,19 +149,15 @@ Examples:
                                  # form bypasses the rpc's own rules, and
                                  # scaffold-once means regenerating cannot
                                  # fix it
-  forge lint --static-export     # For every Next.js frontend that must be a
-                                 # static export (forge.yaml output: static,
-                                 # or bound to OnHosted/OnBucket/OnFirebase
-                                 # in any env): FAIL on what the export
-                                 # refuses — a [id] route without
-                                 # generateStaticParams, server actions,
-                                 # cookies()/headers(), next/image's server
-                                 # loader, a build that is not an export —
-                                 # and WARN on what it silently drops
-                                 # (middleware, rewrites, POST handlers,
-                                 # a bucket export without trailingSlash).
-                                 # CI's real next build is authoritative;
-                                 # this says it first, with file:line
+  forge lint --static-export     # For a Next.js frontend that must be a static
+                                 # export (output: static, or bound to a static
+                                 # runtime): FAIL on what the export refuses
+                                 # ([id] without generateStaticParams, server
+                                 # actions, cookies(), next/image, no export)
+                                 # and WARN on what it drops (middleware,
+                                 # rewrites, POST handlers, no trailingSlash
+                                 # on a bucket). CI's next build is the
+                                 # authority; this says it first, file:line
   forge lint --proto-options     # Flag a (forge.v1.*) annotation naming an
                                  # option field forge's descriptors do not
                                  # define — it compiles, and forge reads it

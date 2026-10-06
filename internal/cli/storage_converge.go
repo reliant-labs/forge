@@ -115,12 +115,15 @@ func localClusterContexts(declared []ClusterEntity) []string {
 // schedule's period.
 const opportunisticGCInterval = 24 * time.Hour
 
-// opportunisticGCBudget is the WHOLE pass's wall time: its context bounds the
+// opportunisticGCBudget is the WHOLE pass's wall time (15m: the pass is a
+// detached process nothing waits on, and a first Go-cache trim of hundreds of
+// GB of small files needs the room; a cut-off layer stops cleanly and resumes
+// next pass): its context bounds the
 // docker calls, each layer's lsof snapshot and each layer's walk over entries,
 // and a layer cut off by it removes nothing more (Runner.Ctx). Generous enough
 // for a builder prune and a log expiry; what does not fit is reclaimed by the
 // next pass or the scheduled job.
-const opportunisticGCBudget = 2 * time.Minute
+const opportunisticGCBudget = 15 * time.Minute
 
 // storageAutoOptOut is the environment variable that turns the opportunistic
 // pass off: FORGE_STORAGE_AUTO=0. The pass runs behind the user's back, so it

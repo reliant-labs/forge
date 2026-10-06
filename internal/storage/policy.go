@@ -27,6 +27,14 @@ type Policy struct {
 	BuildCacheGiB    uint64   `json:"build_cache_gib"`
 	BuildCacheUnused string   `json:"build_cache_unused"`
 	ImageUnused      string   `json:"image_unused"`
+	// GoCacheUnused is how long a shared Go build cache entry (and the
+	// golangci-lint cache) may sit unused before it is trimmed. Minimum 2h:
+	// Go refreshes an entry's mtime on use once it is an hour stale, so that
+	// floor is what keeps the trim safe under running builds.
+	GoCacheUnused string `json:"go_cache_unused"`
+	// GoCacheGiB is the size the shared Go caches are trimmed down to,
+	// oldest first, when age alone leaves them larger.
+	GoCacheGiB uint64 `json:"go_cache_gib"`
 	// SourceCacheUnused is how long a cross-repo source clone may go
 	// unresolved before it becomes an eviction candidate. Longer than the
 	// image and build-cache windows because the cost of being wrong is a
@@ -68,7 +76,7 @@ type Registry struct {
 
 // DefaultPolicy returns conservative local development budgets.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"}}
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"}}
 }
 
 // DefaultPath resolves the machine policy location.
@@ -103,13 +111,13 @@ func Load(path string) (Policy, error) {
 
 // Validate rejects unbounded budgets and unscoped registry targets.
 func (p Policy) Validate() error {
-	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
+	if p.LogBudgetGiB == 0 || p.HostReserveGiB == 0 || p.BuildCacheGiB == 0 || p.GoCacheGiB == 0 || p.RegistryDays < 1 || p.RegistryKeep < 2 {
 		return fmt.Errorf("storage: positive budgets and retention, and at least two registry versions are required")
 	}
 	if p.SourceCacheKeep < 1 {
 		return fmt.Errorf("storage: source_cache_keep must retain at least one clone per repository, got %d", p.SourceCacheKeep)
 	}
-	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused} {
+	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.GoCacheUnused} {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < time.Hour {
 			return fmt.Errorf("storage: invalid unused duration %q (minimum 1h)", v)

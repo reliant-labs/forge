@@ -271,6 +271,14 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if err := ctx.Err(); err != nil {
 		return errors.Join(append(failures, err)...)
 	}
+	// Go caches: age-trimmed, never younger than a 2h floor, orphaned private
+	// caches only when no process or open file references them.
+	if err := r.GoCaches(apply); err != nil {
+		failures = append(failures, layerErr("go caches", err))
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(append(failures, err)...)
+	}
 	// Source eviction belongs here for the same reason the temp sweep does,
 	// and it is the layer with the most to reclaim: 9.2 GB of one repository
 	// on the machine this was written for. It cannot interrupt a running

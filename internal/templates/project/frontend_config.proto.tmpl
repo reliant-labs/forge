@@ -72,7 +72,7 @@ message {{.MessageName}} {
 
   string mock_api = 2 [(forge.v1.config) = {
     env_var: "MOCK_API"
-    description: "Mock-transport mode: `true` answers every RPC locally from fixtures (and selects the mock auth provider, so no IdP is needed), `hybrid` overlays ?scenario= fixtures over a real backend. Empty means the real backend, which is the deployed value."
+    description: "Mock-transport mode: `true` answers every RPC locally from fixtures and signs the UI in as a fixture user, so no IdP and no /auth/session are needed. `hybrid` overlays ?scenario= fixtures over a real backend; the UI shows the same fixture user, but forwarded RPCs carry only the browser's real session cookie. Empty means the real backend, which is the deployed value."
   }];
 
   string app_version = 3 [(forge.v1.config) = {

@@ -21,6 +21,12 @@
 //   4. Anything else rejects with Code.Unimplemented so callers see a
 //      clear error instead of a silent empty response.
 //
+// A fixture List answers the way the backend's generated CRUD List does
+// (pkg/crud HandleList), so a filtered table, a paged table and a "how many"
+// tile read the same against fixtures as against a server — see
+// `serveList` for the exact contract. Custom (non-CRUD) RPCs are not
+// interpreted at all; they stay hand-written scenario handlers.
+//
 // Imported through the "@reliantlabs/forge-web-runtime/mock-transport" subpath,
 // never the barrel: a production bundle must be able to shake the fixtures
 // and this engine out entirely, which is why the generated `connect.ts`
@@ -28,6 +34,8 @@
 // env var.
 import {
   create,
+  ScalarType,
+  type DescField,
   type DescMessage,
   type MessageInitShape,
 } from "@bufbuild/protobuf";
@@ -60,7 +68,14 @@ export interface MockScenarioRegistry {
   defaultScenario: MockScenario;
 }
 
-/** One CRUD arm of an entity's dispatch table. */
+/**
+ * One CRUD arm of an entity's dispatch table.
+ *
+ * The List arm needs nothing beyond these three fields to honour filters,
+ * paging and total_count: the REQUEST schema arrives on every call as the
+ * Connect method's `input`, and the entity schema is the element type of
+ * `itemsField` on `responseSchema`.
+ */
 export interface MockListRpc {
   rpc: string;
   responseSchema: DescMessage;
@@ -239,8 +254,233 @@ function makeUnaryResponse<T>(
   };
 }
 
-/** A fixture-backed handler for one RPC key. */
-type FixtureHandler = (input: unknown) => unknown;
+/**
+ * A fixture-backed handler for one RPC key. `requestSchema` is the Connect
+ * method's input descriptor — absent only when a caller hand-builds a method
+ * object without one, in which case List serves paging alone.
+ */
+type FixtureHandler = (
+  input: unknown,
+  requestSchema: DescMessage | undefined,
+) => unknown;
+
+// ── List semantics ─────────────────────────────────────────────────────
+//
+// What the backend's generated List does, and therefore what the fixture
+// List does (pkg/crud HandleList + the generated Filters closure):
+//
+//   - Every `optional` request field that is SET filters by equality on the
+//     entity field of the same name. Enums compare by value. A field with
+//     IMPLICIT presence (no `optional`) is never a filter — the backend
+//     generates none for it, so the mock must not invent one.
+//   - `search` matches case-insensitively against the entity's string
+//     fields and enum value names (enum columns are stored as names).
+//   - `order_by` (snake_case column, comma-separated, optional ASC/DESC per
+//     column) plus `descending` sorts; an unknown column is InvalidArgument.
+//   - `page_size` defaults to 50 and is clamped to 100. `total_count` is the
+//     filtered count BEFORE paging. `next_page_token` is minted only for the
+//     default (primary-key) order — an ordered list is single-page on the
+//     backend, and a mock that paged it would hide that.
+//
+// Paging, ordering and search arrive through these request fields, by the
+// names forge's CRUD List requests declare. They are never equality filters.
+const LIST_CONTROL_FIELDS = new Set([
+  "pageSize",
+  "pageToken",
+  "orderBy",
+  "descending",
+  "search",
+]);
+
+/** pkg/crud ListOp's defaults: 0 means 50, and no page exceeds 100. */
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+
+/** FeatureSet_FieldPresence.EXPLICIT — proto3 `optional`, oneofs, messages. */
+const EXPLICIT_PRESENCE = 1;
+
+type Row = Record<string, unknown>;
+
+/** The entity message a List response repeats, read off its descriptor. */
+function listItemSchema(list: MockListRpc): DescMessage | undefined {
+  const items = list.responseSchema.field[list.itemsField];
+  return items?.fieldKind === "list" && items.listKind === "message"
+    ? items.message
+    : undefined;
+}
+
+/** Scalars and enums compare by value; messages, bytes, lists and maps do not. */
+function isComparable(field: DescField): boolean {
+  if (field.fieldKind === "enum") return true;
+  return field.fieldKind === "scalar" && field.scalar !== ScalarType.BYTES;
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  // A 64-bit field is a bigint — or a string under jstype=JS_STRING — and
+  // the two sides are not guaranteed to agree on which.
+  if (a == null || b == null) return false;
+  return (
+    (typeof a === "bigint" || typeof b === "bigint") && String(a) === String(b)
+  );
+}
+
+function enumName(field: DescField, value: unknown): string | undefined {
+  return field.fieldKind === "enum"
+    ? field.enum.values.find((v) => v.number === value)?.name
+    : undefined;
+}
+
+/** The value a column sorts by, as Postgres would order the stored column. */
+function sortKey(field: DescField, value: unknown): unknown {
+  if (value == null) return undefined;
+  // Enum columns hold the value NAME, so they sort alphabetically by name.
+  if (field.fieldKind === "enum") return enumName(field, value) ?? "";
+  if (field.fieldKind === "scalar") return value;
+  if (
+    field.fieldKind === "message" &&
+    field.message.typeName === "google.protobuf.Timestamp"
+  ) {
+    const ts = value as { seconds: bigint; nanos: number };
+    return BigInt(ts.seconds) * 1_000_000_000n + BigInt(ts.nanos);
+  }
+  return undefined;
+}
+
+/** Postgres's default: NULL sorts after every value ascending. */
+function compareKeys(a: unknown, b: unknown): number {
+  if (a === undefined || b === undefined) {
+    return a === b ? 0 : a === undefined ? 1 : -1;
+  }
+  const x = a as string | number | bigint | boolean;
+  const y = b as string | number | bigint | boolean;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+function invalidArgument(message: string): ConnectError {
+  return new ConnectError(`mock-transport: ${message}`, Code.InvalidArgument);
+}
+
+/** Parse `order_by` the way orm.ValidateOrderBy reads it. */
+function parseOrderBy(
+  clause: string,
+  descending: boolean,
+  itemSchema: DescMessage,
+): { field: DescField; desc: boolean }[] {
+  return clause.split(",").map((part) => {
+    const [column = "", direction] = part.trim().split(/\s+/);
+    const field = itemSchema.fields.find(
+      (f) => f.name === column || f.localName === column,
+    );
+    if (!field) {
+      throw invalidArgument(`unknown order-by column "${column}"`);
+    }
+    const dir = direction?.toUpperCase();
+    if (dir !== undefined && dir !== "ASC" && dir !== "DESC") {
+      throw invalidArgument(`invalid order-by direction "${direction}"`);
+    }
+    return { field, desc: dir === undefined ? descending : dir === "DESC" };
+  });
+}
+
+/** A count in whatever JS type the response's total_count field takes. */
+function countValue(field: DescField, n: number): unknown {
+  if (field.fieldKind !== "scalar") return n;
+  switch (field.scalar) {
+    case ScalarType.INT64:
+    case ScalarType.UINT64:
+    case ScalarType.SINT64:
+    case ScalarType.FIXED64:
+    case ScalarType.SFIXED64:
+      return field.longAsString ? String(n) : BigInt(n);
+    default:
+      return n;
+  }
+}
+
+/**
+ * Answer one List call from the entity's rows. See the List semantics note
+ * above for the contract; the engine's tests pin each clause.
+ */
+function serveList(
+  rows: readonly unknown[],
+  list: MockListRpc,
+  input: unknown,
+  requestSchema: DescMessage | undefined,
+): unknown {
+  const req = (input ?? {}) as Row;
+  const itemSchema = listItemSchema(list);
+  let matched = rows as readonly Row[];
+
+  if (itemSchema && requestSchema) {
+    for (const filter of requestSchema.fields) {
+      if (LIST_CONTROL_FIELDS.has(filter.localName)) continue;
+      if (filter.presence !== EXPLICIT_PRESENCE || !isComparable(filter)) {
+        continue;
+      }
+      const want = req[filter.localName];
+      if (want == null) continue; // unset: no filter
+      const target = itemSchema.field[filter.localName];
+      if (!target || !isComparable(target)) continue;
+      matched = matched.filter((row) => sameValue(row[filter.localName], want));
+    }
+  }
+
+  const search =
+    typeof req.search === "string" ? req.search.trim().toLowerCase() : "";
+  if (itemSchema && search) {
+    const searchable = itemSchema.fields.filter(
+      (f) =>
+        f.fieldKind === "enum" ||
+        (f.fieldKind === "scalar" && f.scalar === ScalarType.STRING),
+    );
+    matched = matched.filter((row) =>
+      searchable.some((f) => {
+        const value = row[f.localName];
+        const text = f.fieldKind === "enum" ? enumName(f, value) : value;
+        return typeof text === "string" && text.toLowerCase().includes(search);
+      }),
+    );
+  }
+
+  const orderBy = typeof req.orderBy === "string" ? req.orderBy.trim() : "";
+  if (itemSchema && orderBy) {
+    const keys = parseOrderBy(orderBy, req.descending === true, itemSchema);
+    matched = [...matched].sort((a, b) => {
+      for (const { field, desc } of keys) {
+        const c = compareKeys(
+          sortKey(field, a[field.localName]),
+          sortKey(field, b[field.localName]),
+        );
+        if (c !== 0) return desc ? -c : c;
+      }
+      return 0;
+    });
+  }
+
+  const total = matched.length;
+
+  let offset = 0;
+  const token = typeof req.pageToken === "string" ? req.pageToken : "";
+  if (token) {
+    // The mock's own cursor: an offset into the filtered rows. Opaque to the
+    // client, exactly like the backend's keyset cursor.
+    if (!/^\d+$/.test(token)) throw invalidArgument("invalid page token");
+    offset = Number(token);
+  }
+  const requested = Number(req.pageSize ?? 0);
+  const pageSize =
+    requested > 0 ? Math.min(requested, MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
+  const end = offset + pageSize;
+
+  const init: Row = { [list.itemsField]: matched.slice(offset, end) };
+  const totalField = list.responseSchema.field.totalCount;
+  if (totalField) init.totalCount = countValue(totalField, total);
+  if (list.responseSchema.field.nextPageToken && !orderBy && end < total) {
+    init.nextPageToken = String(end);
+  }
+  return create(list.responseSchema, init as MessageInitShape<DescMessage>);
+}
 
 /**
  * Compile the entity descriptors into a flat `${service}/${rpc}` → handler
@@ -257,11 +497,14 @@ function buildFixtureTable(
     const key = (rpc: string) => `${entity.service}/${rpc}`;
 
     if (entity.list) {
-      const { rpc, responseSchema, itemsField } = entity.list;
-      table.set(key(rpc), () =>
-        create(responseSchema, {
-          [itemsField]: Array.from(storeFor(entity).values()),
-        } as MessageInitShape<DescMessage>),
+      const list = entity.list;
+      table.set(key(list.rpc), (input, requestSchema) =>
+        serveList(
+          Array.from(storeFor(entity).values()),
+          list,
+          input,
+          requestSchema,
+        ),
       );
     }
 
@@ -419,7 +662,10 @@ export function createMockTransport(
       //    (Code.NotFound), never a silent wrong-record fallback.
       const fixture = fixtures.get(key);
       if (fixture) {
-        return makeUnaryResponse(method, fixture(input));
+        // `method.input` is typed as always present, but a hand-built method
+        // object (a test, a custom harness) may omit it.
+        const requestSchema = (method as { input?: DescMessage }).input;
+        return makeUnaryResponse(method, fixture(input, requestSchema));
       }
 
       // 4) Nothing matched. Surface a clear error instead of hanging.

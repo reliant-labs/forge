@@ -26,7 +26,7 @@ Four endpoints, and that is the entire contract the browser knows about:
 - **`src/lib/auth/native-login.ts`** — the only file that talks to those four endpoints. It knows nothing about OIDC: no issuer, no client id, no PKCE, no redirect, no token parsing.
 - **`src/app/auth/sign-in/page.tsx`** (Next.js) / the `/auth/sign-in` route in `src/routes.tsx` (Vite) — an ordinary form. Deliberately plain starter code; most products restyle sign-in heavily.
 - **`src/lib/auth/route-guard.tsx`** — what an anonymous visitor sees. Without it a signed-out visitor gets the full app shell and then a wall of 401s, which looks like a broken app rather than one asking you to sign in.
-- **`src/lib/auth/context.tsx`** — `useAuth()`, exposing `{ identity, isAuthenticated, isLoading, refresh, logout }`.
+- **`src/lib/auth/context.tsx`** — `useAuth()`, exposing `{ identity, isAuthenticated, isLoading, refresh, logout }`. In mock mode (`MOCK_API` set to `"true"` or `"hybrid"`) it never calls `GET /auth/session`. The identity is instead the fixture user from `createSessionAuthProvider()` in `src/lib/auth/session-provider.ts`, gated on that file's `isMockMode()`. In hybrid the fixture is for the UI only, and forwarded RPCs carry only the browser's real cookie. See the `frontend` skill's mock-mode table.
 - **`src/components/session_nav.tsx`** — the signed-in-user dropdown with a sign-out.
 
 There is **exactly one auth route**. `/auth/callback` belonged to the browser redirect flow — the issuer sent the browser back there with a code — and with the exchange moved server-side there is nothing for it to do.

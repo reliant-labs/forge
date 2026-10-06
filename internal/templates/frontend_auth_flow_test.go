@@ -575,9 +575,77 @@ func TestAuthContextReadsIdentityFromTheServer(t *testing.T) {
 			t.Errorf("%s %s must read its identity from fetchIdentity() (GET /auth/session). The cookie is HttpOnly, so the server is the ONLY thing that can answer the question at all.",
 				kind, rel)
 		}
-		if strings.Contains(code, "createSessionAuthProvider") {
-			t.Errorf("%s %s falls back to the mock provider. On the web the real answer is one cheap same-origin request away, and a fixture identity here renders a signed-in UI over a server that will 401 every RPC.",
-				kind, rel)
+		// The fixture provider is reachable ONLY behind the mock-mode gate.
+		// Ungated, a fixture identity renders a signed-in UI over a real
+		// server that will 401 every RPC.
+		if n := strings.Count(code, "createSessionAuthProvider()"); n != 1 || !mockGatedFixture.MatchString(code) {
+			t.Errorf("%s %s must construct the fixture provider exactly once, gated on isMockMode() (`isMockMode() ? createSessionAuthProvider() : null`); found %d construction(s). Against a real backend the identity is the server's answer, never a fixture.",
+				kind, rel, n)
+		}
+	}
+}
+
+// mockGatedFixture is the one sanctioned way the web auth context reaches
+// the fixture session: constructed only when the bundle runs in mock mode.
+var mockGatedFixture = regexp.MustCompile(`isMockMode\(\)\s*\?\s*createSessionAuthProvider\(\)\s*:\s*null`)
+
+// TestMockModeSignsInTheFixtureUser pins the mock-mode half of the web auth
+// context: with MOCK_API set ("true" or "hybrid") the identity is the
+// fixture user and GET /auth/session is never sent.
+//
+// The regression it guards: the context used to ask the server in every
+// mode. Pure mock has no server, so the request failed, the context read
+// signed-out, and the route guard bounced every page to a sign-in form that
+// posts to a server that is not there. Two agents worked around it by
+// injecting window.__FORGE_CONFIG__ and stubbing /auth/session from devtools.
+//
+// Behavior is proven by the scaffolded Vitest suite this also requires
+// (src/lib/auth/context.test.tsx), which runs in every browser frontend's
+// `task test`. This test pins its PRESENCE plus the static shape it covers,
+// so neither the guard nor the code can quietly drop out of the scaffold.
+func TestMockModeSignsInTheFixtureUser(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range browserKinds {
+		tree := authTreeFor(t, kind)
+
+		ctxSrc := stripCommentsKeepingStrings(renderFrontend(t, tree["src/lib/auth/context.tsx"], kind))
+		// The mock branch must come BEFORE the server round trip in refresh,
+		// or GET /auth/session is still sent first.
+		mockAt := strings.Index(ctxSrc, "if (mockSession)")
+		fetchAt := strings.Index(ctxSrc, "fetchIdentity()")
+		if mockAt < 0 || fetchAt < 0 || mockAt > fetchAt {
+			t.Errorf("%s context.tsx must answer from the fixture session (`if (mockSession)`) before it calls fetchIdentity() — otherwise mock mode still sends GET /auth/session", kind)
+		}
+
+		spSrc := stripCommentsKeepingStrings(renderFrontend(t, tree["src/lib/auth/session-provider.ts"], kind))
+		if !strings.Contains(spSrc, "export function isMockMode()") {
+			t.Errorf("%s session-provider.ts must export isMockMode() — the context's only way to know it runs in mock mode", kind)
+		}
+		// Hybrid renders the fixture user but must never hand its token to a
+		// server: only pure mock ("true") gives the token out.
+		if !strings.Contains(spSrc, `isPureMock() ? MOCK_TOKEN : null`) {
+			t.Errorf("%s session-provider.ts must hand out the fixture token in PURE mock only — in hybrid a forwarded request would carry a credential no server accepts", kind)
+		}
+
+		testTmpl, ok := tree["src/lib/auth/context.test.tsx"]
+		if !ok {
+			t.Fatalf("%s composed no src/lib/auth/context.test.tsx — the behavioral guard for mock-mode sign-in is missing", kind)
+		}
+		for _, hasTypedConfig := range []bool{true, false} {
+			content, err := FrontendTemplates().Render(testTmpl, FrontendTemplateData{Platform: kind, HasTypedConfig: hasTypedConfig})
+			if err != nil {
+				t.Fatalf("render %s context.test.tsx (typed config %v): %v", kind, hasTypedConfig, err)
+			}
+			src := string(content)
+			for _, mode := range []string{`"true"`, `"hybrid"`} {
+				if !strings.Contains(src, mode) {
+					t.Errorf("%s context.test.tsx does not exercise MOCK_API=%s", kind, mode)
+				}
+			}
+			if hasTypedConfig && !strings.Contains(src, `vi.mock("@/lib/config_gen"`) {
+				t.Errorf("%s context.test.tsx must set the mode through the typed config module the app reads", kind)
+			}
 		}
 	}
 }

@@ -26,12 +26,16 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/modfile"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/storage"
 )
 
@@ -62,7 +66,7 @@ func convergeStorage(facts storage.Facts) {
 // change without the cluster being recreated (a new env adds a context, a
 // mirror key is added). Converge is a no-op when they have not.
 func convergeClusterStorage(c ClusterEntity, declared []ClusterEntity, projectDir string) {
-	facts := storage.Facts{Project: projectDir, Contexts: localClusterContexts(declared)}
+	facts := storage.Facts{Project: projectDir, Contexts: localClusterContexts(declared), Repos: projectRepos(projectDir)}
 	if len(facts.Contexts) == 0 {
 		facts.Contexts = localClusterContexts([]ClusterEntity{c})
 	}
@@ -280,4 +284,53 @@ func startAutoGC(policyPath string) (string, error) {
 	// Not waited for: the child outlives this command by design.
 	_ = cmd.Process.Release()
 	return logPath, nil
+}
+
+// projectRepos is every git repository the project builds from: its own, the
+// local directories named by forge.yaml docker.build_contexts, and go.mod
+// replace targets. The worktree layer asks git for each repository's
+// worktrees, so only the repositories need recording, not their checkouts.
+// Anything unreadable is skipped: this feeds a warn-never-fail converge.
+func projectRepos(projectDir string) []string {
+	if projectDir == "" {
+		return nil
+	}
+	dirs := []string{projectDir}
+	resolve := func(p string) string {
+		if filepath.IsAbs(p) {
+			return filepath.Clean(p)
+		}
+		return filepath.Join(projectDir, p)
+	}
+	if cfg, err := config.LoadProjectDir(projectDir); err == nil && cfg != nil {
+		for _, value := range cfg.Docker.BuildContexts {
+			if !strings.Contains(value, "://") {
+				dirs = append(dirs, resolve(value))
+			}
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(projectDir, "go.mod")); err == nil {
+		mod, err := modfile.Parse("go.mod", data, nil)
+		if err == nil {
+			for _, rep := range mod.Replace {
+				if modfile.IsDirectoryPath(rep.New.Path) {
+					dirs = append(dirs, resolve(rep.New.Path))
+				}
+			}
+		}
+	}
+	var repos []string
+	for _, dir := range dirs {
+		// The common dir's parent is the main checkout even when dir is a
+		// linked worktree that may itself be removed later.
+		out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+		if err != nil {
+			continue
+		}
+		top := filepath.Dir(strings.TrimSpace(string(out)))
+		if top != "." && !slices.Contains(repos, top) {
+			repos = append(repos, top)
+		}
+	}
+	return repos
 }

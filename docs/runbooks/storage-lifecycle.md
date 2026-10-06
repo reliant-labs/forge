@@ -18,7 +18,7 @@ an indication that a volume is safe to remove.
 | Rotated Forge logs                                       | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment                                                                                                                |
 | Cross-repo source cache (`<UserCacheDir>/forge/sources`) | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`)                                                                                      |
 | Temp scratch (`$TMPDIR`)                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
-| Worktrees                                                | Explicit command only; clean, merged, directory and commit older than 30 days                                                                                                                        |
+| Worktrees                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removal needs `worktree_reap` (see Worktrees)                                                                  |
 | Database/PVC/workspace volumes                           | Never removed by storage GC                                                                                                                                                                          |
 
 The cache and log budgets are targets: recent/in-use cache and the diagnostic
@@ -165,20 +165,48 @@ space monitoring.
 
 ## Worktrees
 
-```sh
-git fetch origin
-forge storage worktrees --repo /path/to/repo --base origin/main
-forge storage worktrees --repo /path/to/repo --base origin/main --apply
-```
+Agents create worktrees anywhere (`~/src/rl-agent-worktrees`, `/tmp`,
+`~/.reliant/worktrees`, `.claude`), so the reaper does not scan the disk. git
+knows every worktree of a repository wherever it lives: the layer runs
+`git worktree list --porcelain` for each repository in the policy's `repos`
+plus the git toplevel of each registered project. `repos` is filled by the
+same converge touch points as `projects` (`forge build`, the cluster phase): the
+project's own repository, its local `docker.build_contexts` and its `go.mod`
+`replace` directories, so a control-plane build also covers `../reliant` and
+`../forge`.
 
-This preserves the primary/current worktree, locked trees, unmerged commits,
-dirty trees, and any tree holding an untracked or **ignored** file. Git's own
-removal deletes ignored files, and that is where a worktree keeps application
-data (`./data/` databases, `.env`, `.forge/hostinfra/` Postgres). A tree that any
-running process uses, through an open file or a working directory inside it, is
-also preserved. If `lsof` cannot produce a complete snapshot, the command refuses
-to remove anything. Git performs removal without `--force`; branches remain.
-Worktree removal is intentionally excluded from the daily cache job.
+A non-main worktree is **removable** only if all hold:
+
+- not `locked` (the ownership contract: an owner that wants its worktrees left
+  alone runs `git worktree lock`) and not prunable;
+- idle at least 24h: the newest of the directory mtime and the admin
+  directory's `index`, `HEAD` and `logs/HEAD` (activity, not commit age);
+- not in use: one `lsof` snapshot covers all candidates and the layer **fails
+  closed** if it cannot be taken; forge's own working directory is also kept;
+- `git status --porcelain --untracked-files=normal` is empty;
+- every **ignored** path is on the rebuildable allowlist (`worktree_rebuildable`;
+  default `node_modules`, `dist`, `bin`, `.next`, `.turbo`, `coverage`,
+  `.gocache`, `*.tsbuildinfo`, `kcl.mod.lock`, `go.work`, `.forge/logs`, …).
+  `data/`, `.env*`, `.forge/hostinfra/`, `*.db`, `*.sqlite` and `secrets/` are
+  never rebuildable, even if a policy lists them;
+- pushed: HEAD is reachable from a remote-tracking ref, or is an ancestor of
+  `origin/HEAD` (else `origin/main`). A squash-merged branch whose remote branch
+  was deleted is therefore held, deliberately.
+
+Removal is `git worktree remove` without `--force`; if git refuses the tree is
+kept and reported. Branches are never deleted, and `git worktree prune` drops
+only registrations whose directory is gone.
+
+The layer is part of `forge storage gc` and the background auto-gc, but it only
+**previews** until the policy sets `"worktree_reap": true`. `forge storage
+status` lists held worktrees by reason (locked, recently active, in use, dirty,
+unrecognized ignored data, unpushed) so a person can act on what the reaper
+will not touch. The explicit command runs the same classifier over one repo:
+
+```sh
+forge storage worktrees --repo /path/to/repo            # preview
+forge storage worktrees --repo /path/to/repo --apply
+```
 
 ## Recovery and rollout
 

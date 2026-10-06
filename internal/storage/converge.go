@@ -43,6 +43,9 @@ type Facts struct {
 	Repositories []string
 	// Pins are image digests that must survive retention regardless of age.
 	Pins []string
+	// Repos are git repositories (any path inside one) whose worktrees the
+	// worktree layer may reclaim: the project's own and its build siblings.
+	Repos []string
 }
 
 // Converge upserts Facts into the machine storage policy, under the same lock
@@ -103,6 +106,11 @@ func upsertFacts(p Policy, f Facts) (Policy, bool) {
 	for _, pin := range f.Pins {
 		if pin != "" && !contains(p.Pins, pin) {
 			p.Pins = append(p.Pins, pin)
+		}
+	}
+	for _, repo := range f.Repos {
+		if absolute, err := filepath.Abs(repo); err == nil && repo != "" && !underTempDir(absolute) && !contains(p.Repos, absolute) {
+			p.Repos = append(p.Repos, absolute)
 		}
 	}
 	p.Registries = upsertRegistry(p.Registries, p.Clusters, f)
@@ -188,9 +196,9 @@ func (p Policy) fingerprint() string {
 		Repositories, Aliases, Ctxs []string
 	}
 	snapshot := struct {
-		Projects, Clusters, Pins []string
-		Registries               []registryPrint
-	}{Projects: sorted(p.Projects), Clusters: sorted(p.Clusters), Pins: sorted(p.Pins)}
+		Projects, Clusters, Pins, Repos []string
+		Registries                      []registryPrint
+	}{Projects: sorted(p.Projects), Clusters: sorted(p.Clusters), Pins: sorted(p.Pins), Repos: sorted(p.Repos)}
 	for _, r := range p.Registries {
 		snapshot.Registries = append(snapshot.Registries, registryPrint{
 			Container: r.Container, Repositories: sorted(r.Repositories),
@@ -271,6 +279,9 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	// — not the offline registry or the restarted kubelet this pass excludes.
 	if err := r.Sources(apply); err != nil {
 		failures = append(failures, layerErr("source cache", err))
+	}
+	if err := r.worktreeLayer(apply); err != nil {
+		failures = append(failures, layerErr("worktrees", err))
 	}
 	return errors.Join(failures...)
 }

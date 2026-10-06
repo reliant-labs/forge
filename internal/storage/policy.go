@@ -45,6 +45,17 @@ type Policy struct {
 	Registries      []Registry `json:"registries,omitempty"`
 	Clusters        []string   `json:"clusters,omitempty"`
 	Pins            []string   `json:"pins,omitempty"`
+
+	// Repos are git repositories whose linked worktrees the worktree layer
+	// reclaims, beyond the repository of each registered project: sibling
+	// repos a project builds from (docker.build_contexts, go.mod replaces).
+	// Filled by Converge; git itself enumerates the worktrees, wherever they live.
+	Repos []string `json:"repos,omitempty"`
+	// WorktreeRebuildable replaces the built-in allowlist of ignored paths a
+	// removable worktree may contain. Nil means the defaults.
+	WorktreeRebuildable []string `json:"worktree_rebuildable,omitempty"`
+	// WorktreeReap lets GC --apply remove worktrees. Off, the layer only reports.
+	WorktreeReap bool `json:"worktree_reap,omitempty"`
 }
 
 // Registry explicitly identifies a local registry and all of its consumers.

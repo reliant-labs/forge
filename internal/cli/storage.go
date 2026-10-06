@@ -97,7 +97,11 @@ func newStorageCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return (storage.Runner{Policy: p, Out: cmd.OutOrStdout()}).Status(cmd.Context())
+		runner := storage.Runner{Policy: p, Out: cmd.OutOrStdout()}
+		statusErr := runner.Status(cmd.Context())
+		// Held worktrees are reported even when Docker is unreachable.
+		_ = runner.PrintHeldWorktrees(cmd.Context())
+		return statusErr
 	}})
 	group.AddCommand(&cobra.Command{Use: "policy", Args: cobra.NoArgs, Short: "Print the effective storage policy", RunE: func(cmd *cobra.Command, _ []string) error {
 		p, _, err := load()
@@ -213,13 +217,13 @@ func newStorageWorktreesCmd() *cobra.Command {
 	var repo, base string
 	var worktreeAge time.Duration
 	var remove bool
-	trees := &cobra.Command{Use: "worktrees", Args: cobra.NoArgs, Short: "Preview old, clean worktrees whose commits are merged; --apply removes them", RunE: func(cmd *cobra.Command, _ []string) error {
+	trees := &cobra.Command{Use: "worktrees", Args: cobra.NoArgs, Short: "Preview idle, clean, pushed worktrees of a repo; --apply removes them", RunE: func(cmd *cobra.Command, _ []string) error {
 		return (storage.Runner{Out: cmd.OutOrStdout()}).Worktrees(cmd.Context(), repo, base, worktreeAge, remove)
 	}}
 	trees.Flags().StringVar(&repo, "repo", ".", "repository whose worktrees to inspect")
-	trees.Flags().StringVar(&base, "base", "origin/main", "existing integration branch (fetch it before cleanup)")
-	trees.Flags().DurationVar(&worktreeAge, "older-than", 30*24*time.Hour, "minimum age of directory and HEAD commit")
-	trees.Flags().BoolVar(&remove, "apply", false, "remove clean merged worktrees without forcing or deleting branches")
+	trees.Flags().StringVar(&base, "base", "", "integration branch for the pushed test (default: origin/HEAD, else origin/main)")
+	trees.Flags().DurationVar(&worktreeAge, "idle", 24*time.Hour, "minimum time since any activity in the worktree (at least 24h)")
+	trees.Flags().BoolVar(&remove, "apply", false, "remove removable worktrees without forcing or deleting branches")
 	return trees
 }
 
@@ -308,7 +312,7 @@ func addClusterStorageArgs(args []string) ([]string, error) {
 // other storage touch points and so a future fact source that needs a context
 // is not a signature change at every caller.
 func registerBuildStorage(_ context.Context, project string, entities *KCLEntities, plan pushPlan) {
-	facts := storage.Facts{Project: project}
+	facts := storage.Facts{Project: project, Repos: projectRepos(project)}
 	if pins, err := storage.LedgerPins(filepath.Join(project, ".forge", "releases")); err == nil {
 		facts.Pins = pins
 	}

@@ -49,8 +49,9 @@ const schema = z.object({
          9007199254740992. `bytes` validates as base64, the encoding the
          field already has on the wire.
 
-         Unlike Create, the enum has no zero-value refusal: an existing
-         row is allowed to still hold the sentinel. */}}
+         An empty input for a proto3 `optional` field validates as unset,
+         and the mask below still names the field — so clearing a stored
+         value writes NULL instead of leaving it, or writing the zero. */}}
   {{.Name}}: {{.ZodExpr}},
   {{- end}}
 });
@@ -213,13 +214,19 @@ export default function Edit{{.EntityName}}Page() {
         {{- else if eq .Type "select"}}
         <div>
           <label htmlFor="{{.Name}}" className="mb-1 block text-sm font-medium text-ink">
-            {{.Label}}
+            {{.Label}}{{if .Required}} *{{end}}
           </label>
+          {{- /* The real members only — the proto zero (UNSPECIFIED) is not a
+                 state a row can be in. An `optional` enum adds None, which
+                 clears the stored value. */}}
           <select
             id="{{.Name}}"
             {...register("{{.Name}}")}
             className={`block w-full rounded-lg border px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent ${errors.{{.Name}} ? "border-danger-border" : "border-border"}`}
           >
+            {{- if .EmptyIsUnset}}
+            <option value="">None</option>
+            {{- end}}
             {{- range .EnumValues}}
             <option value={ {{.Ref}} }>{{.Label}}</option>
             {{- end}}

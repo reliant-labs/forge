@@ -64,6 +64,13 @@ type PageTemplateData struct {
 	// can't clobber columns the form never edits. Empty when the request
 	// has no mask.
 	UpdateMaskFieldCamel string
+	// CreateEntityFieldCamel is the camelCase field the Create RESPONSE
+	// wraps the new entity in ("thing" for `CreateThingResponse { Thing
+	// thing = 1; }`), read off the descriptor. The create page uses it to
+	// land on the record it just made. Empty when the response does not
+	// carry the entity — the page then returns to the list, since there is
+	// no id to navigate to.
+	CreateEntityFieldCamel string
 	// Response type names for imports
 	ListResponseType   string // "ListTasksResponse"
 	GetResponseType    string // "GetTaskResponse"
@@ -199,7 +206,8 @@ type ListFilterField struct {
 	IsBigInt bool
 	// EnumType / EnumImport / EnumValues are populated only for Kind "enum":
 	// the protobuf-es TS enum identifier, the _pb module to import it from,
-	// and the <option> refs/labels.
+	// and the <option> refs/labels — the real members only, never the zero
+	// value (see formEnumMeta.Values).
 	EnumType   string
 	EnumImport string
 	EnumValues []PageEnumValue
@@ -265,7 +273,20 @@ type PageField struct {
 	// ProtoName is the original snake_case proto field name ("created_at")
 	// — the AIP-134 update_mask path for this field.
 	ProtoName string
-	Required  bool
+	// Required is true only when an explicit declaration says the field
+	// cannot be empty: a protovalidate `required = true` or
+	// `string.min_len >= 1` on the entity field (see requiredByRule), or a
+	// non-optional foreign key, whose born column is `NOT NULL REFERENCES`
+	// with no DEFAULT (see AttachForeignKeys). A NOT NULL column alone is
+	// NOT a rule about input: `string notes` is born `NOT NULL DEFAULT ''`,
+	// and the empty string is a value the API, the wire validator and the
+	// database all accept.
+	Required bool
+	// Optional is the proto3 `optional` label: the field has presence, so
+	// "absent" is a value the wire can carry and the born column is
+	// nullable. An empty input for such a field submits as unset — see
+	// EmptyIsUnset.
+	Optional  bool
 	ProtoType string // original proto type for reference
 	// IsRepeated marks repeated scalar fields (descriptor ProtoType
 	// "[]string" etc.). The form renders a comma-separated text input and
@@ -281,10 +302,10 @@ type PageField struct {
 	// emitters have never seen cannot quietly be treated as a string.
 	TSType string
 	// ZodExpr is the whole zod schema expression for this field —
-	// `z.coerce.number().gte(0)`, `z.string().min(1, "Required")`,
-	// `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`. The
-	// create form appends the enum `.refine` that rejects the UNSPECIFIED
-	// zero; nothing else is added at render time.
+	// `z.coerce.number().gte(0)`, `z.string().min(1)`,
+	// `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`, or one
+	// of those wrapped in the empty-as-unset preprocess (EmptyIsUnset).
+	// Nothing is added at render time.
 	//
 	// It is one string rather than a branch chain in each template because
 	// there are FOUR page templates (Next.js and Vite × create and edit)
@@ -320,8 +341,13 @@ type PageField struct {
 	// EnumType is the TS enum identifier ("BrandStatus", or
 	// "Brand_Status" for an enum nested in a message).
 	EnumType string
-	// EnumValues are the select options in proto declaration order.
+	// EnumValues are the select options in proto declaration order: the
+	// REAL members, never the zero value (see formEnumMeta.Values).
 	EnumValues []PageEnumValue
+	// EnumZeroRef is the enum's zero member ("BrandStatus.UNSPECIFIED"),
+	// which the zod schema refuses — the zod mirror of the born CHECK that
+	// does not admit it. Empty when the enum declares no zero value.
+	EnumZeroRef string
 	// EnumImportPath is the _pb module declaring the enum; page-level
 	// import lines are aggregated from it (Create/UpdateEnumImports).
 	EnumImportPath string
@@ -340,6 +366,49 @@ type PageField struct {
 	// by AttachForeignKeys; see frontend_pages_fk.go for the (deliberately
 	// conservative) resolution rule.
 	FK *PageFieldFK
+
+	// chainRequiresValue records that the projected ZodChain already
+	// carries the length floor a required field needs (a string `.min(N)`
+	// from the same rule that made it Required), so attachZodExpr does not
+	// stack a second `.min(1, "Required")` in front of it.
+	chainRequiresValue bool
+}
+
+// EnumDefaultRef is the option a CREATE form's NOT NULL enum select starts
+// on: the first real member. It is the born column's DEFAULT
+// (scaffold.bornEnumDefault — the first value the CHECK admits) and the
+// value the generated write path stores when the field is omitted, so the
+// form shows the value Create would store anyway instead of inventing a
+// "pick one" rule the API does not have.
+func (f PageField) EnumDefaultRef() string {
+	if len(f.EnumValues) == 0 {
+		return ""
+	}
+	return f.EnumValues[0].Ref
+}
+
+// EmptyIsUnset reports whether an EMPTY input for this field means "unset":
+// the field is a proto3 `optional` that no rule makes required. Its zod
+// schema then turns "" into undefined before validating, so the request
+// omits the field — an empty `optional int32 year` is stored as NULL, not
+// as year 0, and an empty optional email is not run through `.email()`.
+//
+// Checkboxes, timestamps and repeated fields are excluded: a checkbox is
+// never empty, and the other two already submit an empty input as absent.
+func (f PageField) EmptyIsUnset() bool {
+	return f.Optional && !f.Required && f.TSType != "boolean" && f.Type != "date" && !f.IsRepeated
+}
+
+// requiredByRule reports whether a field's declared protovalidate rules
+// forbid an empty value: `required = true`, or a `min_len` of at least 1.
+// These are the only rules that say "this input must be filled in"; every
+// other projected rule (max_len, email, pattern, numeric bounds) constrains
+// a value without demanding one, and stays exactly as ZodChain projects it.
+func requiredByRule(c *FieldConstraints) bool {
+	if c == nil {
+		return false
+	}
+	return c.Required || (c.MinLen != nil && *c.MinLen >= 1)
 }
 
 // isRepeatedScalarProtoType reports whether a descriptor message-field
@@ -351,23 +420,6 @@ func isRepeatedScalarProtoType(protoType string) bool {
 		return false
 	}
 	return base != "message" && base != "enum"
-}
-
-// isFormFieldRequired determines whether a form field should be marked as required.
-// Fields with the proto optional keyword, booleans, timestamps, enums, message
-// types, and repeated fields are never required in forms.
-func isFormFieldRequired(f MessageFieldDef) bool {
-	if f.IsOptional {
-		return false
-	}
-	if strings.HasPrefix(f.ProtoType, "[]") {
-		return false
-	}
-	switch f.ProtoType {
-	case "bool", "google.protobuf.Timestamp", "Timestamp", "enum", "message":
-		return false
-	}
-	return true
 }
 
 // protoTypeToFormField maps proto field types to the form control the
@@ -558,7 +610,16 @@ func protobufESEnumSharedPrefix(enumShortName string, valueNames []string) strin
 type formEnumMeta struct {
 	TSType     string
 	ImportPath string
-	Values     []PageEnumValue
+	// Values are the CHOICES a form select or list filter offers: every
+	// declared member except the zero value. proto3's zero is how an
+	// implicit-presence enum says "unset" — the generated write path maps
+	// it to the column DEFAULT, and the born CHECK does not admit it — so
+	// offering it offers a value no row can hold. An `optional` enum says
+	// "unset" with an explicit None choice instead (see EmptyIsUnset).
+	Values []PageEnumValue
+	// ZeroRef is the zero member's TS reference ("ThingKind.UNSPECIFIED"),
+	// which the zod schema refuses. Empty when no value is numbered 0.
+	ZeroRef string
 }
 
 // resolveFormEnum resolves an enum-typed form field to its protobuf-es
@@ -617,14 +678,29 @@ func resolveFormEnum(svc ServiceDef, entityName, enumFQ string) (formEnumMeta, b
 		TSType:     tsType,
 		ImportPath: "@/gen/" + ProtoFileToTSImportPath(declFile),
 	}
+	// The zero is identified by its declared wire NUMBER — the fact proto3
+	// gives it meaning by — never by its name. A descriptor that predates
+	// EnumNumbers carries names only; proto3 requires the first declared
+	// value to be the zero, so position 0 is then exact.
+	numbers := svc.EnumNumbers[enumFQ]
+	if len(numbers) != len(valueNames) {
+		numbers = nil
+	}
 	prefix := protobufESEnumSharedPrefix(shortName, valueNames)
-	for _, v := range valueNames {
+	for i, v := range valueNames {
 		member := v
 		if prefix != "" {
 			member = v[len(prefix):]
 		}
+		ref := tsType + "." + member
+		if (numbers == nil && i == 0) || (numbers != nil && numbers[i] == 0) {
+			if meta.ZeroRef == "" {
+				meta.ZeroRef = ref
+			}
+			continue
+		}
 		meta.Values = append(meta.Values, PageEnumValue{
-			Ref:   tsType + "." + member,
+			Ref:   ref,
 			Label: fieldNameToLabel(strings.ToLower(member)),
 		})
 	}
@@ -652,7 +728,8 @@ func formPageField(svc ServiceDef, entityName string, f formFieldDef) (PageField
 			return PageField{}, false
 		}
 		meta, ok := resolveFormEnum(svc, entityName, f.EnumTypeFQ)
-		if !ok {
+		if !ok || len(meta.Values) == 0 {
+			// No real member to choose: a select over nothing.
 			return PageField{}, false
 		}
 		pf := pageFieldFromMessageField(f.MessageFieldDef)
@@ -660,6 +737,7 @@ func formPageField(svc ServiceDef, entityName string, f formFieldDef) (PageField
 		pf.IsEnum = true
 		pf.EnumType = meta.TSType
 		pf.EnumValues = meta.Values
+		pf.EnumZeroRef = meta.ZeroRef
 		pf.EnumImportPath = meta.ImportPath
 		return pf, true
 	}
@@ -769,9 +847,10 @@ func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq,
 				switch {
 				case base == "enum":
 					meta, ok := resolveFormEnum(svc, entityName, f.EnumTypeFQ)
-					if !ok {
-						// Can't type the <select> against the enum — drop the
-						// filter rather than emit an untyped, uncompilable control.
+					if !ok || len(meta.Values) == 0 {
+						// Can't type the <select> against the enum (or it has
+						// no real member to filter on) — drop the filter rather
+						// than emit an untyped or empty control.
 						continue
 					}
 					lf.Kind = "enum"
@@ -952,6 +1031,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 			UpdateRequestType:  em.updateReq,
 			DeleteRequestType:  em.deleteReq,
 		}
+		data.CreateEntityFieldCamel = wrappedEntityField(svc, em.createResp, entityName)
 
 		// protovalidate rules are declared ONCE on the entity message; the
 		// create request flattens the entity's fields (losing the options)
@@ -1090,6 +1170,29 @@ func listItemsField(svc ServiceDef, listResp, plural string) string {
 	return ToCamelCaseFromPascalExport(plural)
 }
 
+// wrappedEntityField returns the camelCase field of response message
+// respMsg that carries ONE entityName ("thing" on `CreateThingResponse {
+// Thing thing = 1; }`), or "" when the response carries none. Read from the
+// shallow Messages map, which holds every direct RPC output.
+//
+// Unlike the mock transport's responseEntityField it has no fallback: the
+// create page destructures this field off the typed response, so a guessed
+// name is a type error on a file forge just wrote.
+func wrappedEntityField(svc ServiceDef, respMsg, entityName string) string {
+	if respMsg == "" {
+		return ""
+	}
+	for _, f := range svc.Messages[respMsg] {
+		if strings.HasPrefix(f.ProtoType, "[]") {
+			continue
+		}
+		if fieldMatchesEntity(f, entityName) {
+			return fieldNameToCamel(f.Name)
+		}
+	}
+	return ""
+}
+
 // entityConstraintMap indexes an entity message's protovalidate rules by
 // proto field name, so the create form (which flattens the entity's
 // fields) and the edit form (which wraps it) both project the same zod
@@ -1140,6 +1243,9 @@ func applyZodChain(pf *PageField, constraints map[string]*FieldConstraints) {
 		pf.ZodChain = c.ZodChain("number")
 	case "text", "date":
 		pf.ZodChain = c.ZodChain(pf.Type)
+		// The string chain opens with `.min(N)` exactly when the rule that
+		// makes the field Required is present.
+		pf.chainRequiresValue = requiredByRule(c)
 	}
 }
 
@@ -1158,7 +1264,7 @@ func pageFieldFromMessageField(f MessageFieldDef) PageField {
 		Label:      fieldNameToLabel(f.Name),
 		Type:       protoTypeToFormField(effectiveType),
 		ProtoName:  f.Name,
-		Required:   isFormFieldRequired(f),
+		Optional:   f.IsOptional,
 		ProtoType:  f.ProtoType,
 		TSType:     elemTS,
 		IsRepeated: isRepeatedScalarProtoType(f.ProtoType),
@@ -1167,12 +1273,15 @@ func pageFieldFromMessageField(f MessageFieldDef) PageField {
 }
 
 // finalizePageField completes a form field once its enum projection is
-// resolved: the projected protovalidate chain, the zod schema line, and
-// the two TypeScript expressions that move the value between the form and
-// the wire. The three have to agree — the zod line declares the type the
-// submit expression consumes and the prefill expression must produce —
-// so one function owns all three.
+// resolved: whether its rules make it required, the projected
+// protovalidate chain, the zod schema line, and the two TypeScript
+// expressions that move the value between the form and the wire. The
+// three have to agree — the zod line declares the type the submit
+// expression consumes and the prefill expression must produce — so one
+// function owns all three.
 func finalizePageField(pf *PageField, constraints map[string]*FieldConstraints) {
+	// A checkbox has no empty state for a rule to forbid.
+	pf.Required = pf.TSType != "boolean" && requiredByRule(constraints[pf.ProtoName])
 	applyZodChain(pf, constraints)
 	attachTSConversions(pf)
 	attachZodExpr(pf)
@@ -1195,10 +1304,12 @@ func attachTSConversions(pf *PageField) {
 		pf.PrefillExpr = fmt.Sprintf("toDatetimeLocal(item.%s)", n)
 	case pf.IsEnum:
 		// The zod value IS the protobuf-es TS enum (a nativeEnum pipe),
-		// so the spread carries it unconverted.
-		if len(pf.EnumValues) > 0 {
-			pf.PrefillExpr = fmt.Sprintf("item.%s ?? %s", n, pf.EnumValues[0].Ref)
-		}
+		// so the spread carries it unconverted — and the prefill is the
+		// stored value as-is. Defaulting it (the old `?? <first value>`)
+		// named the zero, which is not a state a row can be in.
+		pf.PrefillExpr = fmt.Sprintf("item.%s", n)
+	case pf.EmptyIsUnset():
+		attachUnsetTSConversions(pf)
 	case pf.IsRepeated:
 		mapCall := ""
 		if conv, _ := tsFromFormString(pf.TSType); conv != "" {
@@ -1234,6 +1345,39 @@ func attachTSConversions(pf *PageField) {
 	}
 }
 
+// attachUnsetTSConversions is attachTSConversions for an EmptyIsUnset
+// field. Its zod value is `T | undefined` — the preprocess in attachZodExpr
+// has already turned an empty input into undefined — so the submit
+// expression must carry undefined through its conversion (BigInt(undefined)
+// throws), and the prefill must leave a stored "absent" absent instead of
+// seeding the zero (`Number(item.year ?? 0)` is how an untouched Save wrote
+// year 0 over NULL).
+func attachUnsetTSConversions(pf *PageField) {
+	n := pf.Name
+	switch pf.TSType {
+	case "bigint":
+		pf.SubmitExpr = fmt.Sprintf("values.%s === undefined ? undefined : BigInt(values.%s)", n, n)
+		pf.PrefillExpr = fmt.Sprintf(`String(item.%s ?? "")`, n)
+	case "Uint8Array":
+		pf.SubmitExpr = fmt.Sprintf("values.%s === undefined ? undefined : base64Decode(values.%s)", n, n)
+		pf.PrefillExpr = fmt.Sprintf(`item.%s ? base64Encode(item.%s) : ""`, n, n)
+	case "number":
+		pf.PrefillExpr = fmt.Sprintf("item.%s", n)
+	default:
+		pf.PrefillExpr = fmt.Sprintf(`item.%s ?? ""`, n)
+	}
+}
+
+// emptyAsUnsetZod wraps a field's zod expression so an empty input
+// validates as ABSENT: "" becomes undefined before the inner schema runs,
+// and `.optional()` accepts it. The inner rules still apply to a value that
+// is present, so an optional email is checked when typed and skipped when
+// left blank — the same thing protovalidate does on the wire for an unset
+// optional field.
+func emptyAsUnsetZod(expr string) string {
+	return fmt.Sprintf(`z.preprocess((v) => (v === "" ? undefined : v), %s.optional())`, expr)
+}
+
 // attachZodExpr builds the field's whole zod schema expression.
 //
 // `.min(1, "Required")` is a LENGTH check, so it is appended only where
@@ -1241,42 +1385,53 @@ func attachTSConversions(pf *PageField) {
 // on z.coerce.number() the same call would mean "at least 1", which is a
 // different claim about the domain.
 func attachZodExpr(pf *PageField) {
-	required := ""
-	if pf.Required {
-		required = `.min(1, "Required")`
-	}
-	// A projected protovalidate rule says more than "not empty" does, so
-	// it replaces the required check where both would apply.
-	textSuffix := required
-	if pf.ZodChain != "" {
-		textSuffix = pf.ZodChain
+	// The emptiness check a Required field needs, unless the projected
+	// chain already opens with the rule's own `.min(N)`.
+	nonEmpty := ""
+	if pf.Required && !pf.chainRequiresValue {
+		nonEmpty = `.min(1, "Required")`
 	}
 
+	var expr string
 	switch {
 	case pf.IsEnum:
 		// The select's value coerces to a number that must be a declared
 		// member, so the submitted value IS the protobuf-es TS enum and
-		// mutate({...values}) type-checks without a cast.
-		pf.ZodExpr = fmt.Sprintf("z.coerce.number().pipe(z.nativeEnum(%s))", pf.EnumType)
+		// mutate({...values}) type-checks without a cast. The zero is never
+		// an option; refusing it here is the zod mirror of the born CHECK,
+		// for a row a schema forge did not birth still holds it.
+		//
+		// The `: boolean` is load-bearing. Without it TypeScript (5.5+)
+		// infers the arrow as a type PREDICATE, zod's refine overload
+		// narrows the field to the non-zero members, and the edit form's
+		// prefill — the entity's plain enum type — no longer type-checks.
+		expr = fmt.Sprintf("z.coerce.number().pipe(z.nativeEnum(%s))", pf.EnumType)
+		if pf.EnumZeroRef != "" {
+			expr += fmt.Sprintf(`.refine((v): boolean => v !== %s, "Choose a value")`, pf.EnumZeroRef)
+		}
 	case pf.Type == "date", pf.IsRepeated:
 		// A datetime-local value and a comma-separated list are both plain
 		// text; the conversion happens in the submit handler.
-		pf.ZodExpr = "z.string()" + textSuffix
+		expr = "z.string()" + nonEmpty + pf.ZodChain
 	default:
 		base, allowChain := tsZodBase(pf.TSType)
 		switch {
 		case pf.TSType == "boolean":
-			pf.ZodExpr = base // a checkbox is never "required"; unchecked is false
+			expr = base // a checkbox is never "required"; unchecked is false
 		case pf.TSType == "number":
-			pf.ZodExpr = base + pf.ZodChain
+			expr = base + pf.ZodChain
 		case !allowChain:
 			// bigint and bytes: the zod value is a TEXT ENCODING of the
 			// field, so only the emptiness check transfers.
-			pf.ZodExpr = base + required
+			expr = base + nonEmpty
 		default:
-			pf.ZodExpr = base + textSuffix
+			expr = base + nonEmpty + pf.ZodChain
 		}
 	}
+	if pf.EmptyIsUnset() {
+		expr = emptyAsUnsetZod(expr)
+	}
+	pf.ZodExpr = expr
 }
 
 // HasCreateBytesFields / HasUpdateBytesFields report whether a form

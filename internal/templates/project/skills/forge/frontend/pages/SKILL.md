@@ -223,6 +223,15 @@ Passing the type NAME (`enumType="OrderStatus"`) instead of the object cannot re
 
 It is a custom control, so `<Controller>` — `register()` has nothing to attach to. The picker owns the debounce, popover, keyboard nav and loading/error/empty ladder; it queries only while open, and fetches ONE page (search narrows; `hasMoreOf` renders the "keep typing" hint). Do NOT write a `<PatientPicker>` in `_components/` — extend or restyle these instead, and report a genuinely missing shared component rather than forking one per entity.
 
+## Step 3c — the field rules the scaffolded forms already follow
+
+The born create/edit pages derive each field's zod line from the proto. Keep these rules when you rewrite a form. Breaking them reproduces bugs that have already shipped once:
+
+- **Required means a rule says so.** A field is required (`*`, a length floor in zod) only when it has protovalidate `required = true` or `string.min_len >= 1`, or when it is a non-optional foreign key, whose column is `NOT NULL REFERENCES` with no DEFAULT. A plain `string notes` is born `NOT NULL DEFAULT ''`, so `""` is a valid value. To make a field mandatory, add the rule to the proto. It then applies on the wire and in the DB CHECK as well as in the form.
+- **An empty `optional` field is unset, not zero.** For a proto3 `optional` scalar, zod maps `""` to `undefined` (`z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().optional())`), so the request omits it and the column stays NULL. Without this, `z.coerce.number()` turns an empty `optional int32 year` into year 0. On edit, keep the field in `update_mask`: a masked path whose value is unset is written as NULL, which is how a user clears a stored value.
+- **The enum zero is never a choice.** `*_UNSPECIFIED` (wire number 0) is how the wire says "unset". The born CHECK rejects it, so form selects and list filters list only real members. A `NOT NULL` enum's create select starts on the first real member, which is the column DEFAULT. An `optional` enum adds a None option that submits as unset.
+- **Create lands on the new record:** ``onSuccess: ({ order: created }) => router.push(created ? `/orders/${created.id}` : "/orders")``.
+
 ## Step 4 — Zustand for client state, if needed
 
 For state that lives only on the client (sidebar collapse, modal open, toast queue), extend an existing store or create a domain store in `src/stores/`:

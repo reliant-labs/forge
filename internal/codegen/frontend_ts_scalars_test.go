@@ -221,6 +221,22 @@ var wantSingularForm = map[string]formProjection{
 	"Uint8Array": {control: "base64", zod: `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "expected base64")`, submit: `base64Decode(values.<F>)`, prefill: `base64Encode(item.<F> ?? new Uint8Array())`},
 }
 
+// emptyAsUnset is the preprocess a proto3 `optional` field's zod schema is
+// wrapped in, so an empty input validates as absent rather than as the zero.
+const emptyAsUnset = `z.preprocess((v) => (v === "" ? undefined : v), %s.optional())`
+
+// wantOptionalForm is the same contract for a proto3 `optional` field: the
+// zod value is `T | undefined`, the submit carries undefined through any
+// conversion, and the prefill leaves a stored "absent" absent. A checkbox has
+// no empty state, so `optional bool` keeps the singular contract.
+var wantOptionalForm = map[string]formProjection{
+	"string":     {control: "text", zod: fmt.Sprintf(emptyAsUnset, `z.string()`), prefill: `item.<F> ?? ""`},
+	"boolean":    wantSingularForm["boolean"],
+	"number":     {control: "number", zod: fmt.Sprintf(emptyAsUnset, `z.coerce.number()`), prefill: `item.<F>`},
+	"bigint":     {control: "text", zod: fmt.Sprintf(emptyAsUnset, `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`), submit: `values.<F> === undefined ? undefined : BigInt(values.<F>)`, prefill: `String(item.<F> ?? "")`},
+	"Uint8Array": {control: "base64", zod: fmt.Sprintf(emptyAsUnset, `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "expected base64")`), submit: `values.<F> === undefined ? undefined : base64Decode(values.<F>)`, prefill: `item.<F> ? base64Encode(item.<F>) : ""`},
+}
+
 // wantRepeatedElemConv is the per-element conversion the comma-split
 // submit expression must apply. A type absent from this map has NO form
 // control at all: `boolean` is the refusal, because text → bool has no
@@ -244,11 +260,10 @@ func TestFormProjection_CoversEveryScalarKind(t *testing.T) {
 	for _, s := range shapes {
 		ts, _ := protobufESTSType(s.kind)
 
-		// The fields are declared `optional` so the required-ness
-		// suffix (`.min(1, "Required")`, a LENGTH check) stays out of a
-		// comparison that is about TYPES.
+		// No constraints are passed, so no field is required — required-ness
+		// comes only from a rule — and the comparison stays about TYPES.
 		name := "f_" + s.kind
-		pf, ok := formPageField(ServiceDef{}, "Thing", formFieldDef{MessageFieldDef: MessageFieldDef{Name: name, ProtoType: s.kind, IsOptional: true}})
+		pf, ok := formPageField(ServiceDef{}, "Thing", formFieldDef{MessageFieldDef: MessageFieldDef{Name: name, ProtoType: s.kind}})
 		if !ok {
 			t.Errorf("%s: no form field — a scalar column the born form cannot set is a column the app cannot create", s.kind)
 			continue
@@ -263,9 +278,23 @@ func TestFormProjection_CoversEveryScalarKind(t *testing.T) {
 		assertExpr(t, s.kind+" submit", pf.SubmitExpr, want.submit, camel)
 		assertExpr(t, s.kind+" prefill", pf.PrefillExpr, want.prefill, camel)
 
+		// proto3 `optional`: an empty input is unset, never the zero.
+		oname := "o_" + s.kind
+		opf, ok := formPageField(ServiceDef{}, "Thing", formFieldDef{MessageFieldDef: MessageFieldDef{Name: oname, ProtoType: s.kind, IsOptional: true}})
+		if !ok {
+			t.Errorf("optional %s: no form field", s.kind)
+			continue
+		}
+		finalizePageField(&opf, nil)
+		owant := wantOptionalForm[ts]
+		ocamel := fieldNameToCamel(oname)
+		assertExpr(t, "optional "+s.kind+" zod", opf.ZodExpr, owant.zod, ocamel)
+		assertExpr(t, "optional "+s.kind+" submit", opf.SubmitExpr, owant.submit, ocamel)
+		assertExpr(t, "optional "+s.kind+" prefill", opf.PrefillExpr, owant.prefill, ocamel)
+
 		// Repeated.
 		rname := "r_" + s.kind
-		rpf, ok := formPageField(ServiceDef{}, "Thing", formFieldDef{MessageFieldDef: MessageFieldDef{Name: rname, ProtoType: "[]" + s.kind, IsOptional: true}})
+		rpf, ok := formPageField(ServiceDef{}, "Thing", formFieldDef{MessageFieldDef: MessageFieldDef{Name: rname, ProtoType: "[]" + s.kind}})
 		conv, hasForm := wantRepeatedElemConv[ts]
 		if !hasForm {
 			if ok {

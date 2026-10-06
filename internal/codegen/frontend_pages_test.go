@@ -63,13 +63,14 @@ func TestExtractCRUDEntities_FullCRUD(t *testing.T) {
 		t.Fatalf("expected 4 create fields, got %d", len(e.CreateFields))
 	}
 
-	// title
-	if e.CreateFields[0].Name != "title" || e.CreateFields[0].Type != "text" || !e.CreateFields[0].Required {
-		t.Errorf("field[0] = %+v, want title/text/required", e.CreateFields[0])
+	// title — a plain `string` with no protovalidate rule is NOT required:
+	// its born column is NOT NULL DEFAULT '', and "" is a value it holds.
+	if e.CreateFields[0].Name != "title" || e.CreateFields[0].Type != "text" || e.CreateFields[0].Required {
+		t.Errorf("field[0] = %+v, want title/text/not required (no rule declared)", e.CreateFields[0])
 	}
-	// description (optional)
-	if e.CreateFields[1].Name != "description" || e.CreateFields[1].Required {
-		t.Errorf("field[1] = %+v, want description/optional", e.CreateFields[1])
+	// description (optional) — an empty input submits as unset.
+	if e.CreateFields[1].Name != "description" || e.CreateFields[1].Required || !e.CreateFields[1].EmptyIsUnset() {
+		t.Errorf("field[1] = %+v, want description/optional/empty-is-unset", e.CreateFields[1])
 	}
 	// priority (int)
 	if e.CreateFields[2].Name != "priority" || e.CreateFields[2].Type != "number" {

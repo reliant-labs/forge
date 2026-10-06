@@ -45,10 +45,11 @@ const schema = z.object({
          cannot hold every int64. `bytes` validates as base64, the
          encoding the field already has on the wire.
 
-         Create additionally REFUSES the enum zero value: UNSPECIFIED is
-         not a state the domain has, so the form makes the author pick one
-         rather than accept the empty "Select…" placeholder. */}}
-  {{.Name}}: {{.ZodExpr}}{{if .IsEnum}}.refine((v) => v !== 0, "Required"){{end}},
+         A field is required only where a rule says so (protovalidate
+         `required`, `min_len >= 1`, or a non-optional reference); an empty
+         input for a proto3 `optional` field validates as unset, so the
+         request omits it instead of sending the zero. */}}
+  {{.Name}}: {{.ZodExpr}},
   {{- end}}
 });
 
@@ -58,7 +59,13 @@ export default function Create{{.EntityName}}Page() {
   const router = useRouter();
 
   const mutation = use{{.CreateRPC}}({
+{{- if and .HasGet .CreateEntityFieldCamel}}
+    // Land on the record just created — its detail page is where the next
+    // step (editing it, adding a related row) starts.
+    onSuccess: ({ {{.CreateEntityFieldCamel}}: created }) => router.push(created ? `/{{.EntitySlug}}/${created.{{.PkFieldCamel}}}` : "/{{.EntitySlug}}"),
+{{- else}}
     onSuccess: () => router.push("/{{.EntitySlug}}"),
+{{- end}}
     // The error renders inline below — opt out of the app-wide error
     // toast so the failure isn't announced twice.
     meta: { silenceErrorToast: true },
@@ -156,22 +163,25 @@ export default function Create{{.EntityName}}Page() {
         {{- else if eq .Type "select"}}
         <div>
           <label htmlFor="{{.Name}}" className="mb-1 block text-sm font-medium text-ink">
-            {{.Label}} *
+            {{.Label}}{{if .Required}} *{{end}}
           </label>
+          {{- /* The options are the enum's REAL members: the proto zero
+                 (UNSPECIFIED) is how the wire says "unset", the born CHECK
+                 does not admit it, so it is never a choice. A NOT NULL enum
+                 starts on its column DEFAULT — the first real member, and
+                 what Create stores when the field is omitted. An `optional`
+                 enum starts on None, which submits as unset (NULL). */}}
           <select
             id="{{.Name}}"
-            defaultValue=""
+            defaultValue={{if .EmptyIsUnset}}""{{else}}{ {{.EnumDefaultRef}} }{{end}}
             {...register("{{.Name}}")}
             className={`block w-full rounded-lg border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent ${errors.{{.Name}} ? "border-danger-border" : "border-border"}`}
           >
-            {{- /* Placeholder defaults the select to "unset"; the zero-value
-                   (UNSPECIFIED) option is dropped so it can't be picked. proto3
-                   guarantees the first enum value is the 0 value, so skip index 0. */}}
-            <option value="" disabled>Select {{.Label | humanLower}}…</option>
-            {{- range $i, $v := .EnumValues}}
-            {{- if $i}}
-            <option value={ {{$v.Ref}} }>{{$v.Label}}</option>
+            {{- if .EmptyIsUnset}}
+            <option value="">None</option>
             {{- end}}
+            {{- range .EnumValues}}
+            <option value={ {{.Ref}} }>{{.Label}}</option>
             {{- end}}
           </select>
           {errors.{{.Name}} && <p className="mt-1 text-sm text-danger">{errors.{{.Name}}.message}</p>}

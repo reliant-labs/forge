@@ -134,8 +134,9 @@ func TestAttachListMeta_ServerSideFilterProjection(t *testing.T) {
 	if status.EnumType != "OrderStatus" || status.EnumImport != "@/gen/services/orders/v1/orders_pb" {
 		t.Errorf("filter[0] enum = %q from %q, want OrderStatus / @/gen/services/orders/v1/orders_pb", status.EnumType, status.EnumImport)
 	}
+	// The real members only: filtering on the zero matches no row, because
+	// the born CHECK never admits it.
 	wantVals := []PageEnumValue{
-		{Ref: "OrderStatus.UNSPECIFIED", Label: "Unspecified"},
 		{Ref: "OrderStatus.PENDING", Label: "Pending"},
 		{Ref: "OrderStatus.SHIPPED", Label: "Shipped"},
 	}

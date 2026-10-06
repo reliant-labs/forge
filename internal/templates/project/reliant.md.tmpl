@@ -158,6 +158,7 @@ Forge deliberately does not guess your product's visual identity. A scaffold tha
    {{.CLI}} generate && {{.CLI}} lint && go build ./... && task test
    ```
    `{{.CLI}} lint` catches contract-gaps (packages with exported methods but no `contract.go`), multi-service proto files, missing-annotation rules, and exported-vars violations. Running it at every phase is cheap; backfilling six phases later is not.
+   Never pipe it through `head` — the verdict is the LAST line. `{{.CLI}} lint --quiet` prints only what failed plus that verdict (a clean run is one line). `--scope <path>` (repeatable) lints just your slice of a shared checkout; whole-project lanes are skipped and named, so run it unscoped before merging. One lane alone: `--read-only-fields`, `--computed-fields`, `--migration-safety`, … (`{{.CLI}} lint --help`).
 5. **`{{.CLI}} generate` is safe** — it never overwrites hand-written business logic (handler files, `internal/app/providers.go`, `internal/app/auth.go`, etc.).
 6. **`task test` is the test suite** — Go plus every frontend's tests, with the database, build tags and flags already set up. There is no `{{.CLI}} test`: a second spelling could disagree with the Taskfile, so it was removed. `task test -- ./internal/foo/...` scopes to Go packages, `task test:integration` and `task test:e2e` are the tagged lanes.
 

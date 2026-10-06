@@ -292,27 +292,51 @@ func TestComputedFields_NoProtoTreeIsClean(t *testing.T) {
 	}
 }
 
-// TestComputedFields_ReportFormatting pins the two report shapes.
+// TestComputedFields_ReportFormatting pins the report shapes: clean, a
+// gating finding, and a finding held at warning by pending-stub mode.
 func TestComputedFields_ReportFormatting(t *testing.T) {
 	var clean strings.Builder
-	formatComputedFields(&clean, nil)
+	if gating := formatComputedFields(&clean, nil); gating != 0 {
+		t.Errorf("a clean report gates %d finding(s)", gating)
+	}
 	if !strings.Contains(clean.String(), "computed-fields clean") {
 		t.Errorf("clean report missing: %q", clean.String())
 	}
 
-	var dirty strings.Builder
-	formatComputedFields(&dirty, []computedFieldFinding{{
+	finding := computedFieldFinding{
 		File: "proto/services/estimates/v1/estimates.proto", Line: 12,
 		Entity: "EstimateLineItem", Field: "amount_cents", GoField: "AmountCents",
-	}})
+	}
+	var dirty strings.Builder
+	if gating := formatComputedFields(&dirty, []computedFieldFinding{finding}); gating != 1 {
+		t.Errorf("an unwritten computed field with no pending stubs must gate; gating = %d", gating)
+	}
 	out := dirty.String()
 	for _, want := range []string{
-		"forgeconv-computed-field-unwritten",
+		"❌ [forgeconv-computed-field-unwritten]",
 		"proto/services/estimates/v1/estimates.proto:12",
-		"warnings only",
+		"FAILS the build",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "warnings only") {
+		t.Errorf("a gating report still claims to be warnings-only:\n%s", out)
+	}
+
+	finding.Pending = pendingStubs{Dir: "internal/handlers/estimates", Methods: []string{"RecalculateEstimate"}}
+	var pending strings.Builder
+	if gating := formatComputedFields(&pending, []computedFieldFinding{finding}); gating != 0 {
+		t.Errorf("a finding held by pending-stub mode must not gate; gating = %d", gating)
+	}
+	for _, want := range []string{
+		"⚠ [forgeconv-computed-field-unwritten]",
+		"pending: implement RecalculateEstimate",
+		"internal/handlers/estimates",
+	} {
+		if !strings.Contains(pending.String(), want) {
+			t.Errorf("pending report missing %q:\n%s", want, pending.String())
 		}
 	}
 }

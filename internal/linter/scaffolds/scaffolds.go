@@ -214,37 +214,62 @@ func lintFile(path, relRoot string) ([]Finding, error) {
 		})
 	}
 
-	// Rule 2: every "_gen.go" file that claims to be generated must
-	// carry the canonical header AND a "Source:" pointer. The "claims
-	// to be generated" gate is important because forge's own internal
-	// codebase has hand-written generators (e.g. internal/codegen/crud_gen.go
-	// and its test) that legitimately use the _gen naming idiom for
-	// "this file generates code with _gen.go suffix" — they don't claim
-	// to be machine-generated themselves.
-	if isGenFilename(rel) && claimsGenerated(data) {
-		head := firstLines(data, 16)
-		headBytes := []byte(head)
-		hasCanonical := bytesContains(headBytes, []byte(generatedHeader)) ||
-			generatedHeaderRE.Match(headBytes)
-		if !hasCanonical {
-			findings = append(findings, Finding{
-				Rule:     "gen-missing-header",
-				Severity: SeverityError,
-				Path:     rel,
-				Message:  `_gen file claims to be generated but lacks a canonical "// Code generated ... DO NOT EDIT." header`,
-			})
-		}
-		if !bytesContains([]byte(head), []byte(sourceHeader)) {
-			findings = append(findings, Finding{
-				Rule:     "gen-missing-source",
-				Severity: SeverityWarning,
-				Path:     rel,
-				Message:  `_gen file is missing a "// Source: <input>" line; add one so users know what drives the regeneration`,
-			})
-		}
-	}
+	findings = append(findings, LintGeneratedHeader(rel, data)...)
 
 	return findings, nil
+}
+
+// LintGeneratedHeader applies rule 2 to one file's content: a "_gen.go"
+// file that claims to be generated must carry the canonical header AND a
+// "Source:" pointer. rel is the project-relative path, used both to
+// recognize the _gen suffix and as the finding's Path.
+//
+// The "claims to be generated" gate is important because forge's own
+// internal codebase has hand-written generators (e.g.
+// internal/codegen/crud_gen.go and its test) that legitimately use the
+// _gen naming idiom for "this file generates code with _gen.go suffix" —
+// they don't claim to be machine-generated themselves.
+//
+// Exported so forge's own render guard (internal/tierguard) holds every
+// Tier-1 file forge emits to the exact rule `forge lint` holds the user's
+// tree to. A forge emitter that omits the Source line otherwise surfaces as
+// a warning in every freshly scaffolded project — on a file the user is
+// told not to edit, so the "add one" remedy is one they cannot apply.
+func LintGeneratedHeader(rel string, data []byte) []Finding {
+	if !isGenFilename(rel) || !claimsGenerated(data) {
+		return nil
+	}
+	var findings []Finding
+	head := firstLines(data, 16)
+	headBytes := []byte(head)
+	hasCanonical := bytesContains(headBytes, []byte(generatedHeader)) ||
+		generatedHeaderRE.Match(headBytes)
+	if !hasCanonical {
+		findings = append(findings, Finding{
+			Rule:     "gen-missing-header",
+			Severity: SeverityError,
+			Path:     rel,
+			Message:  `_gen file claims to be generated but lacks a canonical "// Code generated ... DO NOT EDIT." header`,
+		})
+	}
+	if !bytesContains(headBytes, []byte(sourceHeader)) {
+		msg := `_gen file is missing a "// Source: <input>" line; add one so users know what drives the regeneration`
+		if hasCanonical {
+			// forge wrote this file and the user may not edit it, so "add
+			// one" is not a remedy they can apply. Every forge emitter
+			// stamps the line now (pinned by internal/tierguard), so a
+			// regenerate with a current forge is the fix.
+			msg = `forge-generated _gen file is missing its "// Source: <input>" line — an older forge omitted it; ` +
+				"re-run `forge generate` with a current forge to restamp it (do not hand-edit the file)"
+		}
+		findings = append(findings, Finding{
+			Rule:     "gen-missing-source",
+			Severity: SeverityWarning,
+			Path:     rel,
+			Message:  msg,
+		})
+	}
+	return findings
 }
 
 // isGenFilename returns true for paths whose final basename ends in

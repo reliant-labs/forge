@@ -248,7 +248,21 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		cfg = store.Config()
 	}
 
-	if report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg); handled {
+	scope, err := parseLintScope(cwd, flags.scope)
+	if err != nil {
+		return nil, err
+	}
+	if scope != nil {
+		// A scoped targeted lane goes through the outcome engine, which
+		// knows how each lane honours the scope.
+		if o, targeted, err := collectTargetedOutcome(ctx, flags, paths, cwd, store, cfg, scope); targeted {
+			if err != nil {
+				return nil, err
+			}
+			findings, gated := flattenLintOutcomes([]lintStepOutcome{o})
+			return buildLintJSONReport(findings, gated), nil
+		}
+	} else if report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg); handled {
 		return report, err
 	}
 
@@ -257,6 +271,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		skipFrontends: flags.skipFrontends,
 		paths:         paths,
 		cfg:           cfg,
+		scope:         scope,
 	}, cwd)
 }
 
@@ -290,6 +305,11 @@ func collectSingleLinterJSON(
 	// they cannot gate the build, so gated is always false.
 	reportUngated := func(fs []lintJSONFinding, err error) (*lintJSONReport, bool, error) {
 		return report(fs, false, err)
+	}
+	// reportBySeverity is report for the linters whose findings carry their
+	// own verdict — an error-severity finding gates, a warning does not.
+	reportBySeverity := func(fs []lintJSONFinding, err error) (*lintJSONReport, bool, error) {
+		return report(fs, anyErrorFinding(fs), err)
 	}
 
 	switch {
@@ -334,7 +354,14 @@ func collectSingleLinterJSON(
 	case flags.createNullability:
 		return report(collectCreateNullabilityJSON(protoDirDefault, cwd))
 	case flags.computedFields:
-		return reportUngated(collectComputedFieldsJSON(cwd))
+		return reportBySeverity(collectComputedFieldsJSON(cwd))
+	case flags.readOnlyFields:
+		// Missing from this table until now, so `--read-only-fields --json`
+		// fell through to the WHOLE suite — a targeted gate that silently
+		// ran everything else and reported it under one flag.
+		return reportBySeverity(collectReadOnlyFieldsJSON(cwd, migrationsDirFor(cfg)))
+	case flags.guardedFields:
+		return reportUngated(collectGuardedFieldsJSON(cwd, frontendDirsForLint()))
 	case flags.protoOptions:
 		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
 	case flags.vendoredProtos:
@@ -353,8 +380,13 @@ func collectSingleLinterJSON(
 // — matching text mode, which prints the failure and keeps walking
 // only for the advisory linters but hard-fails the run for the gating
 // ones via hasFailed.
+//
+// The walk itself is collectLintOutcomes (lint_structured.go), shared with
+// --quiet and --scope; this flattens it. A skip message surfaces as an info
+// finding so JSON consumers can tell "clean" from "didn't run"; a silent skip
+// (directory absent) contributes nothing.
 func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string) (*lintJSONReport, error) {
-	rc := &lintRunCtx{
+	findings, gated := flattenLintOutcomes(collectLintOutcomes(&lintRunCtx{
 		ctx:           ctx,
 		fix:           false,
 		strict:        opts.strict,
@@ -362,44 +394,8 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 		paths:         opts.paths,
 		cfg:           opts.cfg,
 		cwd:           cwd,
-	}
-
-	var findings []lintJSONFinding
-	gated := false
-
-	for _, step := range lintPipeline() {
-		run, skipMsg := step.shouldRun(rc)
-		if !run {
-			// A skip message surfaces as an info finding so JSON consumers
-			// can tell "clean" from "didn't run"; a silent skip (directory
-			// absent) contributes nothing — both mirror the text driver and
-			// the pre-refactor JSON output exactly.
-			if skipMsg != "" {
-				findings = append(findings, skippedFinding(skipMsg))
-			}
-			continue
-		}
-		fs, g, err := step.collect(rc)
-		if err != nil {
-			// A hard collection failure degrades to a finding rather than
-			// aborting the sweep — severity/gating governed by step.gates,
-			// exactly as the old per-step collectErr did.
-			sev := lintSevWarning
-			if step.gates {
-				sev = lintSevError
-			}
-			findings = append(findings, lintJSONFinding{
-				Severity: sev,
-				Rule:     "external",
-				Message:  fmt.Sprintf("%s failed: %v", step.name, err),
-			})
-			gated = gated || step.gates
-			continue
-		}
-		findings = append(findings, fs...)
-		gated = gated || g
-	}
-
+		scope:         opts.scope,
+	}))
 	return buildLintJSONReport(findings, gated), nil
 }
 
@@ -728,9 +724,11 @@ func collectCreateNullabilityJSON(protoDir, projectRoot string) ([]lintJSONFindi
 }
 
 // collectComputedFieldsJSON maps computed-fields findings onto the JSON
-// contract. Severity warning: the finding is high-confidence, but the fix
-// is app logic only the author can write, and a project mid-migration
-// (marker added before the hook) should still be able to lint.
+// contract. Severity ERROR — forge:computed is the stronger promise, so it
+// gates at least as hard as its read-only twin — except while pending-stub
+// mode holds a finding at warning (lint_pending_stubs.go), in which case the
+// message names the forge-scaffolded stubs it is waiting on. The gating
+// verdict is anyErrorFinding over the result.
 func collectComputedFieldsJSON(cwd string) ([]lintJSONFinding, error) {
 	findings, err := collectComputedFieldFindings(cwd)
 	if err != nil {
@@ -741,10 +739,10 @@ func collectComputedFieldsJSON(cwd string) ([]lintJSONFinding, error) {
 		out = append(out, lintJSONFinding{
 			File:     f.File,
 			Line:     f.Line,
-			Severity: lintSevWarning,
-			Rule:     "forgeconv-computed-field-unwritten",
-			Message: fmt.Sprintf("%s.%s is marked %s but no non-generated Go file assigns %s",
-				f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField),
+			Severity: f.Pending.severity(),
+			Rule:     computedFieldRuleID,
+			Message: withPending(fmt.Sprintf("%s.%s is marked %s but no non-generated Go file assigns %s",
+				f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField), f.Pending),
 			FixHint: computedFieldFixHint(f),
 		})
 	}
@@ -754,14 +752,15 @@ func collectComputedFieldsJSON(cwd string) ([]lintJSONFinding, error) {
 // collectReadOnlyFieldsJSON maps read-only-fields findings onto the JSON
 // contract.
 //
-// Severity ERROR, unlike its computed-field twin. The fix is indeed a
-// migration or app logic only the author can write — but that argues for a
-// clear message, not a soft verdict: this defect has no symptom other than
-// a human noticing $0.00 on a screen, so a warning inside a long lint run
-// is very close to the silence the rule exists to break. See the step's
-// comment in lint_steps.go for the full asymmetry, and
-// lint_read_only_fields_gating_test.go for the false-positive cases that
-// had to be closed before it could gate.
+// Severity ERROR. The fix is indeed a migration or app logic only the author
+// can write — but that argues for a clear message, not a soft verdict: this
+// defect has no symptom other than a human noticing $0.00 on a screen, so a
+// warning inside a long lint run is very close to the silence the rule
+// exists to break. The one exception is pending-stub mode
+// (lint_pending_stubs.go): while the declaring service still carries forge's
+// own unwired stubs, the finding is a warning naming them. See
+// lint_read_only_fields_gating_test.go for the false-positive cases that had
+// to be closed before it could gate.
 func collectReadOnlyFieldsJSON(cwd, migrationsDir string) ([]lintJSONFinding, error) {
 	findings, err := collectReadOnlyFieldFindings(cwd, migrationsDir)
 	if err != nil {
@@ -772,10 +771,10 @@ func collectReadOnlyFieldsJSON(cwd, migrationsDir string) ([]lintJSONFinding, er
 		out = append(out, lintJSONFinding{
 			File:     f.File,
 			Line:     f.Line,
-			Severity: lintSevError,
-			Rule:     "forgeconv-read-only-field-unwritten",
-			Message: fmt.Sprintf("%s.%s is marked %s but no non-generated Go file assigns %s, and %s.%s has no DEFAULT that populates it",
-				f.Entity, f.Field, codegen.ProtoMarkerReadOnly, f.GoField, f.Table, f.Field),
+			Severity: f.Pending.severity(),
+			Rule:     readOnlyFieldRuleID,
+			Message: withPending(fmt.Sprintf("%s.%s is marked %s but no non-generated Go file assigns %s, and %s.%s has no DEFAULT that populates it",
+				f.Entity, f.Field, codegen.ProtoMarkerReadOnly, f.GoField, f.Table, f.Field), f.Pending),
 			FixHint: readOnlyFieldFixHint(f),
 		})
 	}
@@ -961,8 +960,15 @@ func parseDigitsLint(s string) int {
 // collectGolangciLintJSON runs golangci-lint with captured output.
 // Non-zero exit gates (same as text mode); the captured diagnostics
 // become findings at error severity. A clean exit contributes nothing.
-func collectGolangciLintJSON(ctx context.Context, paths []string) ([]lintJSONFinding, bool) {
-	args := golangciRunArgs(nil, paths)
+// fix applies golangci's safe autofixes first, exactly as text mode does;
+// --json always passes false (it is detect-only), --quiet passes the
+// default run's value so the two reach the same verdict.
+func collectGolangciLintJSON(ctx context.Context, paths []string, fix bool) ([]lintJSONFinding, bool) {
+	var extra []string
+	if fix {
+		extra = append(extra, "--fix")
+	}
+	args := golangciRunArgs(extra, paths)
 	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
 	var buf strings.Builder
 	cmd.Stdout = &buf
@@ -1185,7 +1191,13 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 		}
 
 		runScript := func(script string) {
-			cmd := exec.CommandContext(ctx, "npm", "run", script)
+			args := []string{"run", script}
+			// eslint --fix for the lint script when the run auto-fixes, as
+			// the text lane does (lintFrontendDir); never for --json.
+			if rc.fix && script == "lint" {
+				args = append(args, "--", "--fix")
+			}
+			cmd := exec.CommandContext(ctx, "npm", args...)
 			cmd.Dir = f.dir
 			var buf strings.Builder
 			cmd.Stdout = &buf

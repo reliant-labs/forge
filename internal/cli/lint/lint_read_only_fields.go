@@ -91,11 +91,14 @@
 // close to no log line anywhere. The audited project caught its two only
 // because someone was deliberately looking for them.
 //
-// The asymmetry with forge:computed is deliberate, not an oversight.
-// forge:computed declares an obligation the author has not met YET, so a
-// project mid-migration (marker added before the hook) is a legitimate
-// intermediate state and warning is right. An unwritten read-only column is
-// not an intermediate state; it is a shipped defect.
+// Its computed-field twin gates too, and at least as hard: forge:computed is
+// the stronger promise ("my app derives this"), so the old asymmetry — read-
+// only failing while computed only warned — was backwards. Both rules share
+// one exception, and it is deterministic rather than a judgement call:
+// while the declaring service's handler package still carries forge's own
+// `forge:gen unwired-stub` placeholders, the finding is a warning naming
+// them ("pending: implement ChangeJobStatus"), because the rpc that will
+// write the column is still forge's fresh output. See lint_pending_stubs.go.
 //
 // A gating rule that fires wrongly is far worse than a warning that does,
 // so every exclusion above is pinned by a test, and the two write paths
@@ -157,6 +160,9 @@ type readOnlyFieldFinding struct {
 	// ships as. A fixed money illustration spliced into a timestamp
 	// finding reads as a type mis-detection — see lint_unwritten_outcome.go.
 	SQLType string
+	// Pending holds the finding at warning while the declaring service
+	// still carries forge-scaffolded unwired stubs (lint_pending_stubs.go).
+	Pending pendingStubs
 }
 
 // readOnlyFieldFixHint renders the remediation. GENERATED ALWAYS AS is
@@ -196,37 +202,49 @@ func readOnlyFieldFixHint(f readOnlyFieldFinding) string {
 
 // runReadOnlyFieldsLint is the text-mode entry point.
 //
-// It returns a gating error when it finds anything. See the step's comment
-// in lint_steps.go for why this rule fails the build while its
-// computed-field twin only warns.
+// It returns a gating error for every finding not held by pending-stub mode
+// (lint_pending_stubs.go). See the step's comment in lint_steps.go.
 func runReadOnlyFieldsLint(projectDir, migrationsDir string) error {
 	fmt.Println("Running read-only-fields lint...")
 	findings, err := collectReadOnlyFieldFindings(projectDir, migrationsDir)
 	if err != nil {
 		return err
 	}
-	formatReadOnlyFields(os.Stdout, findings)
-	if len(findings) > 0 {
-		return fmt.Errorf("%d read-only column(s) that nothing populates", len(findings))
+	if gating := formatReadOnlyFields(os.Stdout, findings); gating > 0 {
+		return fmt.Errorf("%d read-only column(s) that nothing populates", gating)
 	}
 	return nil
 }
 
-// formatReadOnlyFields writes the human report.
-func formatReadOnlyFields(w io.Writer, findings []readOnlyFieldFinding) {
+// readOnlyFieldRuleID is the rule id both report formats use.
+const readOnlyFieldRuleID = "forgeconv-read-only-field-unwritten"
+
+// formatReadOnlyFields writes the human report and returns how many
+// findings gate.
+func formatReadOnlyFields(w io.Writer, findings []readOnlyFieldFinding) int {
 	if len(findings) == 0 {
 		_, _ = fmt.Fprintln(w, "  read-only-fields clean — every forge:read-only column is populated by something")
-		return
+		return 0
 	}
+	rows := make([]unwrittenFindingText, 0, len(findings))
 	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ❌ [forgeconv-read-only-field-unwritten] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", readOnlyFieldFixHint(f))
+		rows = append(rows, unwrittenFindingText{
+			Rule: readOnlyFieldRuleID, File: f.File, Line: f.Line,
+			Hint: readOnlyFieldFixHint(f), Pending: f.Pending,
+		})
 	}
+	gating := formatUnwrittenFindings(w, rows)
 	_, _ = fmt.Fprintf(w, "\n%d read-only column(s) that nothing populates.\n", len(findings))
-	_, _ = fmt.Fprintln(w, "Each one ships as the column's zero with no error, no failing test and "+
-		"no log line — so this FAILS the build rather than warning. Fix the schema or the write "+
-		"path, or declare who populates the column with `COMMENT ON COLUMN <table>.<col> IS "+
-		"'forge:fill=handler'`.")
+	if gating > 0 {
+		_, _ = fmt.Fprintln(w, "Each one ships as the column's zero with no error, no failing test and "+
+			"no log line — so this FAILS the build rather than warning. Fix the schema or the write "+
+			"path, or declare who populates the column with `COMMENT ON COLUMN <table>.<col> IS "+
+			"'forge:fill=handler'`.")
+	} else {
+		_, _ = fmt.Fprintln(w, "(warning only while forge-scaffolded stubs remain in the service — "+
+			"implement them and an unpopulated column fails the build)")
+	}
+	return gating
 }
 
 // collectReadOnlyFieldFindings is the shared engine behind text mode and
@@ -260,6 +278,7 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 	type candidate struct {
 		entity, field, goField, file, table, def, sqlType string
 		line                                              int
+		pending                                           pendingStubs
 	}
 	var candidates []candidate
 	for _, dir := range dirs {
@@ -267,6 +286,8 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 		if scanErr != nil {
 			continue // buf lint / generate report a malformed proto far better
 		}
+		var pending pendingStubs
+		resolved := false
 		for _, msg := range scan.Messages {
 			table, cols, ok := tableForEntity(columns, msg.Name)
 			if !ok {
@@ -281,6 +302,11 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 				if !known || !columnIsUnpopulated(col) {
 					continue
 				}
+				// Once per directory, and only when a candidate needs it.
+				if !resolved {
+					pending = pendingStubsForScan(projectDir, scan)
+					resolved = true
+				}
 				candidates = append(candidates, candidate{
 					entity:  msg.Name,
 					field:   name,
@@ -290,6 +316,7 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 					table:   table,
 					def:     col.Default,
 					sqlType: col.Type,
+					pending: pending,
 				})
 			}
 		}
@@ -326,6 +353,7 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 			File: relToProject(projectDir, c.file), Line: c.line,
 			Entity: c.entity, Field: c.field, GoField: c.goField,
 			Table: c.table, Default: c.def, SQLType: c.sqlType,
+			Pending: c.pending,
 		})
 	}
 	sort.Slice(findings, func(i, j int) bool {

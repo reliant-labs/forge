@@ -58,6 +58,12 @@ type lintFlags struct {
 	strict            bool
 	skipFrontends     bool
 	jsonOut           bool
+	// quiet prints only failing lanes, their error findings and the
+	// verdict (lint_structured.go).
+	quiet bool
+	// scope restricts findings to files under these project-relative
+	// paths (lint_structured.go).
+	scope []string
 	// gateJSON is a FILE path: write this run's result as a gate document
 	// for `forge gate record` / `forge env deploy --gate`. Not a stdout
 	// mode — the human findings and the exit code are unchanged.
@@ -130,13 +136,16 @@ Examples:
                                  # disagrees between an entity message and
                                  # its Create<Entity>Request (the flattened
                                  # request silently drops write presence)
-  forge lint --computed-fields   # Flag a forge:computed field that no
+  forge lint --computed-fields   # FAIL on a forge:computed field that no
                                  # non-generated Go file assigns — nothing
                                  # populates it, so the column default ships
   forge lint --read-only-fields  # FAIL on a forge:read-only column that
                                  # nothing populates — no write path, no
                                  # meaningful DEFAULT, so every row ships as
-                                 # the zero with no other symptom at all
+                                 # the zero with no other symptom at all.
+                                 # Both WARN instead ("pending: implement X")
+                                 # while the service still holds forge's own
+                                 # unwired rpc stubs
   forge lint --guarded-fields    # Flag a scaffolded edit page whose
                                  # update_mask still writes a column a
                                  # custom rpc guards (forge:guards) — the
@@ -161,6 +170,17 @@ Examples:
                                  # (schema in lint_json.go; exit code matches
                                  # text mode; combines with the targeted flags
                                  # above, but not with --fix / --suggest-*)
+  forge lint --quiet             # Only what FAILED, then the verdict as the
+                                 # last line — safe to pipe through head/tail.
+                                 # Combines with any targeted flag above:
+                                 #   forge lint --read-only-fields --quiet
+  forge lint --scope internal/handlers/jobs --scope proto/services/jobs
+                                 # Only findings in files under those paths.
+                                 # golangci-lint/contract run on the scope's
+                                 # packages; whole-project linters (frontend
+                                 # lint, component-drift, config-reach) are
+                                 # skipped and named in the verdict, so run an
+                                 # unscoped 'forge lint' before merging
 
 The three advisory rules above are warnings only — they never fail the build.
 
@@ -173,9 +193,15 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 			} else {
 				paths = []string{"./..."}
 			}
+			if err := validateLintModeFlags(flags, len(args) > 0); err != nil {
+				return err
+			}
 
 			if flags.jsonOut {
 				return runLintJSON(cmd.Context(), flags, paths)
+			}
+			if flags.quiet || len(flags.scope) > 0 {
+				return runLintStructured(cmd.Context(), flags, paths)
 			}
 			if flags.gateJSON != "" {
 				return runLintWithGate(cmd.Context(), flags, paths, flags.gateJSON)
@@ -229,8 +255,8 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.timeBucketing, "time-bucketing", false, "Flag a two-argument date_trunc over a TIMESTAMPTZ column — postgres truncates it in the SESSION timezone, which the driver sets from the client host, so every bucketed total is attributed to the wrong day by an amount that changes with the deploy host. Pin the zone: date_trunc('day', col, 'UTC') (warnings only)")
 	cmd.Flags().BoolVar(&flags.protoMarkers, "proto-markers", false, "Flag .proto comments containing forge: that match no known proto marker — a misspelled marker is inert and warns nowhere (warnings only)")
 	cmd.Flags().BoolVar(&flags.createNullability, "create-nullability", false, "Fail when a field's optional label disagrees between an entity message and its Create<Entity>Request — the flattened request drops write presence silently")
-	cmd.Flags().BoolVar(&flags.computedFields, "computed-fields", false, "Flag a forge:computed field that no non-generated Go file assigns — nothing populates it, so the insert takes the column default (warnings only)")
-	cmd.Flags().BoolVar(&flags.readOnlyFields, "read-only-fields", false, "Flag a forge:read-only field whose column nothing populates — no non-generated Go file assigns it, no meaningful DEFAULT, not GENERATED — so every row ships as the type's zero with no error anywhere. FAILS the build — unlike its computed-field twin, this defect has no symptom other than a human noticing $0.00 on a screen")
+	cmd.Flags().BoolVar(&flags.computedFields, "computed-fields", false, "Flag a forge:computed field that no non-generated Go file assigns — nothing populates it, so the insert takes the column default. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
+	cmd.Flags().BoolVar(&flags.readOnlyFields, "read-only-fields", false, "Flag a forge:read-only field whose column nothing populates — no non-generated Go file assigns it, no meaningful DEFAULT, not GENERATED — so every row ships as the type's zero with no error anywhere. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
 	cmd.Flags().BoolVar(&flags.guardedFields, "guarded-fields", false, "Flag a scaffolded edit page whose update_mask still names a column declared `forge:guards` — saving the form writes it raw and bypasses the rpc that owns it, and pages are scaffold-once so `forge generate` cannot repair them (warnings only)")
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
 	cmd.Flags().BoolVar(&flags.vendoredProtos, "vendored-protos", false, "Fail when a vendored proto (proto/forge/v1/forge.proto) differs from the copy embedded in this forge binary — forge's upgrade path does not track these copies, so drift is otherwise invisible")
@@ -240,6 +266,8 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, frontend prettier, eslint --fix); gate only and mutate nothing (CI / read-only)")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
+	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). Auto-fix still applies; combines with the targeted flags and --scope")
+	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix touches only files under PATH")
 	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
 
 	// User-vs-maintainer surface split: the flags below are fully
@@ -435,6 +463,9 @@ type lintRunOptions struct {
 	skipFrontends bool
 	paths         []string
 	cfg           *config.ProjectConfig
+	// scope restricts findings to files under the --scope paths; nil is
+	// the whole project (lint_structured.go).
+	scope *lintScope
 }
 
 // loadLintConfig loads the project store and its config for the lint
@@ -578,6 +609,16 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		res, err := forgeconv.LintProtoTreeOpts("proto", opts)
 		if err != nil {
 			return combined, notes, false, fmt.Errorf("forge convention lint (proto) failed: %w", err)
+		}
+		// forgeconv reports proto paths relative to proto/ (its suppression
+		// engine works in that frame), while every other finding here is
+		// project-relative. Re-anchor them so the whole report is one frame:
+		// a "services/x/v1/x.proto" path is not openable from the project
+		// root, and `forge lint --scope proto/services/x` could not match it.
+		for i := range res.Findings {
+			if f := res.Findings[i].File; f != "" && !filepath.IsAbs(f) {
+				res.Findings[i].File = filepath.ToSlash(filepath.Join("proto", f))
+			}
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
 	} else {
@@ -1125,7 +1166,7 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	// unavailable is the third bucket: lanes that were supposed to execute
 	// and could not. See laneUnavailableError for why they are neither
 	// "ran" nor "skipped".
-	var ranGating, skippedGating, unavailable []string
+	var ranGating, skippedGating, unavailable, failedLanes []string
 
 	for _, step := range lintPipeline() {
 		run, skipMsg := step.shouldRun(rc)
@@ -1158,6 +1199,7 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 			if rc.strict {
 				marker = "❌"
 				hasFailed = true
+				failedLanes = append(failedLanes, step.name)
 			}
 			fmt.Fprintf(os.Stderr, "  %s %s did NOT run: %s\n     ↳ %s\n",
 				marker, step.name, unavail.reason, unavail.fixHint)
@@ -1167,6 +1209,7 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 			if step.gates {
 				ranGating = append(ranGating, step.name)
 				hasFailed = true
+				failedLanes = append(failedLanes, step.name)
 			}
 			fmt.Fprintf(os.Stderr, step.errFormat, err)
 		}
@@ -1176,39 +1219,88 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 		ran: ranGating, skipped: skippedGating, unavailable: unavailable, failed: hasFailed,
 	}
 
-	if hasFailed {
-		return tally, cliutil.UserErr("forge lint",
-			"one or more linters reported errors, or could not run under --strict",
-			"",
-			"address the per-linter errors above (each preceded by ❌); re-run 'forge lint' to confirm")
+	if !hasFailed {
+		fmt.Println()
 	}
-
-	fmt.Println()
-	return tally, reportLintVerdict(os.Stdout, ranGating, skippedGating, unavailable)
+	// On failure the verdict is the returned error, which names the failed
+	// lanes — so the last line of the run says what to fix even when the
+	// ❌ lines above it have scrolled away.
+	return tally, lintVerdict{
+		ran: ranGating, skipped: skippedGating, unavailable: unavailable, failed: failedLanes,
+	}.render(os.Stdout)
 }
 
-// reportLintVerdict renders the final line of `forge lint` — the one a human
-// scrolls to and an agent greps for — from what actually ran.
-//
-// The rule: a verdict may only claim what the run proved. Zero gating linters
-// executed means the run proved nothing and must fail; a partial run must name
-// the lanes it skipped rather than round up to "All linters passed!"; and a
-// lane that was supposed to execute and could NOT must be named too, because
-// its absence is the one thing a green last line would hide.
+// reportLintVerdict renders the final line of a passing (or proved-nothing)
+// `forge lint` from what actually ran. See lintVerdict.render.
 func reportLintVerdict(w io.Writer, ranGating, skippedGating, unavailable []string) error {
-	if len(ranGating) == 0 {
+	return lintVerdict{ran: ranGating, skipped: skippedGating, unavailable: unavailable}.render(w)
+}
+
+// lintVerdict is what a run proved, in lanes — the input to the final line
+// of every `forge lint` mode (text, --quiet, --scope), so the modes cannot
+// disagree about how a verdict is worded.
+type lintVerdict struct {
+	// ran are the gating lanes that executed, failed ones included.
+	ran []string
+	// skipped are gating lanes that did not apply (tool absent, feature off).
+	skipped []string
+	// unavailable are lanes that were supposed to execute and could not.
+	unavailable []string
+	// failed are the lanes that fail the build.
+	failed []string
+	// unscoped are whole-project lanes a --scope run did not run.
+	unscoped []string
+	// scope is the --scope value, "" for a whole-project run.
+	scope string
+	// hiddenWarnings counts findings --quiet did not print.
+	hiddenWarnings int
+}
+
+// render prints the success line, or returns the failure — which main
+// prints as `Error: …`, the last line of the run either way.
+//
+// The rule: a verdict may only claim what the run proved. A failure names
+// the lanes that failed, so the last line alone says what to fix. Zero
+// gating linters executed means the run proved nothing and must fail; a
+// partial run must name the lanes it skipped rather than round up to "All
+// linters passed!"; a lane that was supposed to execute and could NOT must
+// be named too, because its absence is the one thing a green last line
+// would hide; and a scoped run says it proved only its slice.
+func (v lintVerdict) render(w io.Writer) error {
+	if len(v.failed) > 0 {
+		what := fmt.Sprintf("%d gating linter(s) failed: %s", len(v.failed), strings.Join(v.failed, ", "))
+		// A lane that failed BECAUSE it could not run (--strict) is already
+		// named; list only the ones that could not run and did not fail.
+		failed := make(map[string]bool, len(v.failed))
+		for _, f := range v.failed {
+			failed[f] = true
+		}
+		var alsoUnavailable []string
+		for _, u := range v.unavailable {
+			if !failed[u] {
+				alsoUnavailable = append(alsoUnavailable, u)
+			}
+		}
+		if len(alsoUnavailable) > 0 {
+			what += "; could NOT run: " + strings.Join(alsoUnavailable, ", ")
+		}
+		return cliutil.UserErr("forge lint", what+v.suffix(), "",
+			"address the findings above under each ❌ lane; re-run 'forge lint' to confirm")
+	}
+
+	if len(v.ran) == 0 {
 		detail := "no gating linter was applicable here"
 		switch {
-		case len(unavailable) > 0 && len(skippedGating) > 0:
-			detail = "could not run: " + strings.Join(unavailable, ", ") +
-				"; skipped: " + strings.Join(skippedGating, ", ")
-		case len(unavailable) > 0:
-			detail = "could not run: " + strings.Join(unavailable, ", ")
-		case len(skippedGating) > 0:
-			detail = "skipped: " + strings.Join(skippedGating, ", ")
+		case len(v.unavailable) > 0 && len(v.skipped) > 0:
+			detail = "could not run: " + strings.Join(v.unavailable, ", ") +
+				"; skipped: " + strings.Join(v.skipped, ", ")
+		case len(v.unavailable) > 0:
+			detail = "could not run: " + strings.Join(v.unavailable, ", ")
+		case len(v.skipped) > 0:
+			detail = "skipped: " + strings.Join(v.skipped, ", ")
 		}
 		return cliutil.UserErr("forge lint",
-			"no gating linter ran — this run proved nothing",
+			"no gating linter ran — this run proved nothing"+v.suffix(),
 			detail,
 			"install the missing tools ('forge tools install', or golangci-lint + buf) and re-run from the project root")
 	}
@@ -1217,24 +1309,45 @@ func reportLintVerdict(w io.Writer, ranGating, skippedGating, unavailable []stri
 	// saying "this does not apply here" and is compatible with a ✅; a lane
 	// that was supposed to execute and did not is a hole in the coverage the
 	// verdict would otherwise be claiming.
-	if len(unavailable) > 0 {
+	if len(v.unavailable) > 0 {
 		line := fmt.Sprintf("⚠️  %d gating linter(s) passed; %d could NOT run (%s)",
-			len(ranGating), len(unavailable), strings.Join(unavailable, ", "))
-		if len(skippedGating) > 0 {
-			line += fmt.Sprintf("; %d skipped (%s)", len(skippedGating), strings.Join(skippedGating, ", "))
+			len(v.ran), len(v.unavailable), strings.Join(v.unavailable, ", "))
+		if len(v.skipped) > 0 {
+			line += fmt.Sprintf("; %d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", "))
 		}
-		fmt.Fprintln(w, line)
+		// The hint goes ABOVE the verdict so the verdict stays the last line.
 		fmt.Fprintln(w, "   ↳ a lane that could not run is not a lane that passed — re-run, or pass --strict to fail on it")
+		fmt.Fprintln(w, line+v.suffix())
 		return nil
 	}
 
-	if len(skippedGating) > 0 {
-		fmt.Fprintf(w, "✅ %d gating linter(s) passed; %d skipped (%s)\n",
-			len(ranGating), len(skippedGating), strings.Join(skippedGating, ", "))
+	if len(v.skipped) > 0 {
+		fmt.Fprintf(w, "✅ %d gating linter(s) passed; %d skipped (%s)%s\n",
+			len(v.ran), len(v.skipped), strings.Join(v.skipped, ", "), v.suffix())
 		return nil
 	}
-	fmt.Fprintf(w, "✅ All %d gating linters passed.\n", len(ranGating))
+	if v.scope != "" {
+		fmt.Fprintf(w, "✅ %d gating linter(s) passed%s\n", len(v.ran), v.suffix())
+		return nil
+	}
+	fmt.Fprintf(w, "✅ All %d gating linters passed%s.\n", len(v.ran), v.suffix())
 	return nil
+}
+
+// suffix renders the scope and --quiet qualifiers every verdict line carries.
+func (v lintVerdict) suffix() string {
+	var b strings.Builder
+	if v.scope != "" {
+		fmt.Fprintf(&b, " — scope %s only", v.scope)
+		if len(v.unscoped) > 0 {
+			fmt.Fprintf(&b, "; not scoped, so not run: %s (whole-project — run an unscoped `forge lint` before merging)",
+				strings.Join(v.unscoped, ", "))
+		}
+	}
+	if v.hiddenWarnings > 0 {
+		fmt.Fprintf(&b, "; %s not shown (--quiet)", plural(v.hiddenWarnings, "advisory finding"))
+	}
+	return b.String()
 }
 
 // ── "could not run" is not "passed" ─────────────────────────────────────────

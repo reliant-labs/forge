@@ -300,7 +300,12 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			AcknowledgedFindings: opts.Approval.AcknowledgedFindings,
 		})
 		if writeErr == nil && opts.Follow != nil {
-			writeErr = followPromote(ctx, env, plan, ledger, *opts.Follow)
+			follow := *opts.Follow
+			follow.projectDir = projectDir
+			writeErr = followPromote(ctx, env, plan, ledger, follow)
+			if writeErr != nil {
+				plan.FollowError = writeErr.Error()
+			}
 		}
 	}
 	// A refused write still renders: the plan is what the write WOULD have

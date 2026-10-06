@@ -219,6 +219,30 @@ var statefulKinds = map[string]bool{
 	"CustomResourceDefinition": true,
 }
 
+// recreatableKinds is the allowlist of kinds an apply's immutable-field
+// recovery may delete and re-apply: deleting one loses no state, because it owns
+// no data and nothing is garbage-collected through it. A kind that holds data
+// (PersistentVolumeClaim, PersistentVolume, StatefulSet) or cascades to
+// everything inside it (Namespace, CustomResourceDefinition) is deliberately
+// absent — an immutable conflict there fails the deploy loudly.
+//
+// ONE list, read by both the recovery (internal/cluster) and the plan, so the
+// plan can never promise less than the apply is allowed to do.
+var recreatableKinds = map[string]bool{
+	"Job": true, "Deployment": true, "DaemonSet": true, "Service": true,
+	"StorageClass": true, "RuntimeClass": true, "PriorityClass": true,
+	"ClusterRoleBinding": true, "RoleBinding": true,
+}
+
+// RecreatableKind reports whether kind may be deleted and re-applied by the
+// immutable-field recovery.
+func RecreatableKind(kind string) bool { return recreatableKinds[kind] }
+
+// recreateNote is appended to a finding for a recreatable object whose live
+// state the plan cannot rule out as different. Detail is not digested, so this
+// changes what a reader is told, never what an approval names.
+const recreateNote = "may be DELETED AND RECREATED if an immutable field differs (stateless kind; bound data is not touched)"
+
 // BuildPlan computes the plan. Pure and deterministic: the same input yields
 // the same findings in the same order and the same digest. ComputedAt is the
 // only clock-dependent field and is left for the caller to set.
@@ -252,7 +276,14 @@ func BuildPlan(in PlanInput) (Plan, error) {
 			"no recorded config to compare against: every object appears added, and deletions cannot be detected")
 	}
 	for _, o := range diff.Added {
-		add(FindingObjectAdded, ClassInfo, SectionObjects, o.Key().String(), "")
+		// With no recorded live config an "added" object may already exist
+		// with different immutable fields: say so for the kinds the apply is
+		// allowed to recreate, because the plan cannot show that diff.
+		detail := ""
+		if diff.LiveUnknown && RecreatableKind(o.Kind) {
+			detail = recreateNote
+		}
+		add(FindingObjectAdded, ClassInfo, SectionObjects, o.Key().String(), detail)
 	}
 	for _, o := range diff.Removed {
 		switch {
@@ -275,13 +306,17 @@ func BuildPlan(in PlanInput) (Plan, error) {
 			add(FindingImageChanged, ClassInfo, SectionImages, subject+"#"+img.Artifact,
 				fmt.Sprintf("%s: %s → %s", img.Artifact, shortDigest(img.From), shortDigest(img.To)))
 		}
+		changeNote := ""
+		if RecreatableKind(c.Candidate.Kind) {
+			changeNote = recreateNote
+		}
 		switch {
 		case c.Live.ConfigHash == "" || c.Candidate.ConfigHash == "":
 			if len(c.Images) == 0 {
-				add(FindingObjectChanged, ClassInfo, SectionObjects, subject, "")
+				add(FindingObjectChanged, ClassInfo, SectionObjects, subject, changeNote)
 			}
 		case c.ConfigChanged:
-			add(FindingConfigChanged, ClassInfo, SectionConfig, subject, "")
+			add(FindingConfigChanged, ClassInfo, SectionConfig, subject, changeNote)
 		}
 	}
 

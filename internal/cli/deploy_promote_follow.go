@@ -89,6 +89,9 @@ type promoteFollowOptions struct {
 	// "Recorded. …" and then a perfectly good document that no caller
 	// could parse.
 	jsonOut bool
+	// projectDir is where the machine ledger's apply record is written.
+	// Set by runPromote; empty means "the project the working directory is in".
+	projectDir string
 }
 
 // notice writes a human progress line for the follow stage. It goes to stderr
@@ -172,7 +175,10 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		return followFluxReconciled(ctx, env, entities, plan, o)
 	}
 	if ledger.appliesLocally() {
-		if err := applySelfManaged(ctx, env, ledger.Hosted, o); err != nil {
+		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
+		err := applySelfManaged(ctx, env, ledger.Hosted, o)
+		finish(err)
+		if err != nil {
 			return err
 		}
 	}

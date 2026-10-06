@@ -441,6 +441,11 @@ type promotePlan struct {
 	// is identical and this is how a consumer tells them apart. Under
 	// --plan it is always false, and nothing was written.
 	Applied bool `json:"applied"`
+	// FollowError is set when the promotion WAS recorded but applying it
+	// failed. applied then stays true (the ledger did move) and this field is
+	// what keeps that from reading as "shipped": the release is recorded, NOT
+	// running.
+	FollowError string `json:"follow_error,omitempty"`
 	// Current is what the env runs now.
 	Current promotePlanBinding `json:"current"`
 	// Target is the release being promoted to.
@@ -1133,6 +1138,11 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		// this whole path exists to prevent.
 		fmt.Fprintf(out, "REFUSED (%s — nothing was written): promote env %q → release %s\n",
 			plan.Refusal.Reason, plan.Env, plan.Target.Release)
+	case plan.Applied && plan.FollowError != "":
+		fmt.Fprintf(out, "RECORDED BUT NOT APPLIED: env %q is now bound to release %s in the ledger, but applying it FAILED — nothing shipped, and %s is not running.\n",
+			plan.Env, plan.Target.Release, plan.Target.Release)
+		fmt.Fprintf(out, "  apply error: %s\n", oneLine(plan.FollowError, 400))
+		fmt.Fprintf(out, "  Re-run `forge env deploy %s %s` to apply it again (the same release is not refused).\n", plan.Env, plan.Target.Release)
 	case plan.Applied:
 		if plan.Current.Bound && plan.Current.Release != plan.Target.Release {
 			fmt.Fprintf(out, "Promoted env %q: %s → %s\n", plan.Env, plan.Current.Release, plan.Target.Release)

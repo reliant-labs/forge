@@ -4,8 +4,8 @@
 // (Chain / DefaultMiddlewares in middleware.go). Those interceptors wrap
 // every RPC at the transport boundary; a ComponentChain wraps every method
 // of an internal component (a contract.go Service) at the in-process call
-// boundary — one span / metric / log per method call, without the method's
-// body knowing anything about it.
+// boundary — one span and metric per method call, every failure logged and
+// successes sampled — without the method's body knowing anything about it.
 //
 // A forge-generated decorator (middleware_gen.go) routes each interface
 // method through the chain with a single line:
@@ -198,37 +198,56 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 	return err
 }
 
-// LogMiddleware emits one structured log record per call: the method name as
-// the message, the duration as an attribute, and — on failure — the error at
-// slog.LevelError. Successful calls log at level, which the owned seam wires
-// from forge.yaml's observability.log_level (default Debug: quiet on success
-// under a production Info handler, loud on error). nil logger falls back to
-// slog.Default.
-func LogMiddleware(logger *slog.Logger, level slog.Level) ComponentMiddleware {
-	return logMiddleware{logger: logger, level: level}
+// LogMiddleware logs component calls with the method name as the message and
+// the duration as an attribute.
+//
+//   - Every FAILED call is written at slog.LevelError, with the error.
+//   - SUCCESSFUL calls are written at level — which the owned seam wires
+//     from forge.yaml's observability.log_level (default Debug: quiet under a
+//     production Info handler) — and SAMPLED per method: the first, then at
+//     most one per DefaultSuccessSampleWindow, carrying `suppressed`, the
+//     successes of that method since the previous record that were not
+//     written. A success at or above DefaultSlowThreshold is always written,
+//     with slow=true.
+//
+// Sampling is what keeps this layer readable at DEBUG: one method on a 10s
+// work loop used to be two thirds of a dev stack's log. See log_policy.go.
+//
+// opts are the RPC edge's: WithSuccessSampling (0 restores one record per
+// success), WithSlowThreshold, and WithSuccessLevel keyed by the
+// "<pkg>.<Method>" operation name. nil logger falls back to slog.Default.
+func LogMiddleware(logger *slog.Logger, level slog.Level, opts ...LogOption) ComponentMiddleware {
+	return &logMiddleware{logger: logger, policy: newLogPolicy(level, opts)}
 }
 
 type logMiddleware struct {
 	logger *slog.Logger
-	level  slog.Level
+	policy *logPolicy
 }
 
-func (m logMiddleware) WrapComponent(ctx context.Context, method string, next ComponentOp) error {
-	start := time.Now()
+func (m *logMiddleware) WrapComponent(ctx context.Context, method string, next ComponentOp) error {
+	start := m.policy.now()
 	err := next(ctx)
+	elapsed := m.policy.now().Sub(start)
 	logger := m.logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if err != nil {
 		logger.LogAttrs(ctx, slog.LevelError, method,
-			slog.Duration("duration", time.Since(start)),
+			slog.Duration("duration", elapsed),
 			slog.Any("error", err),
 		)
 		return err
 	}
-	logger.LogAttrs(ctx, m.level, method,
-		slog.Duration("duration", time.Since(start)),
-	)
-	return err
+	level, why, ok := m.policy.success(ctx, logger, method, elapsed, true)
+	if !ok {
+		return nil
+	}
+	attrs := []slog.Attr{slog.Duration("duration", elapsed)}
+	if why.Key != "" {
+		attrs = append(attrs, why)
+	}
+	logger.LogAttrs(ctx, level, method, attrs...)
+	return nil
 }

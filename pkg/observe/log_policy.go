@@ -52,9 +52,9 @@ const (
 	DefaultSlowThreshold = time.Second
 )
 
-// LogOption tunes how a logging layer — LoggingInterceptor at the RPC edge —
-// logs SUCCESSFUL calls. Failures are never affected: each one is written,
-// with full fields.
+// LogOption tunes how a logging layer — LoggingInterceptor at the RPC edge,
+// LogMiddleware at the in-process component boundary — logs SUCCESSFUL
+// calls. Failures are never affected: each one is written, with full fields.
 type LogOption func(*logPolicy)
 
 // WithSuccessSampling sets the sampling window: at most one success record
@@ -74,9 +74,11 @@ func WithSlowThreshold(threshold time.Duration) LogOption {
 }
 
 // WithSuccessLevel sets the level of ONE call name's success records,
-// overriding the default (INFO at the RPC edge). For LoggingInterceptor the
-// name is the full procedure, "/pkg.v1.Service/Method" — the generated
-// <pkg>connect.<Service><Method>Procedure constant. Sampling still applies.
+// overriding the layer's default (INFO at the RPC edge; the seam's level for
+// LogMiddleware). For LoggingInterceptor the name is the full procedure,
+// "/pkg.v1.Service/Method" — the generated
+// <pkg>connect.<Service><Method>Procedure constant; for LogMiddleware it is
+// the "<pkg>.<Method>" operation name. Sampling still applies.
 //
 // slog.LevelDebug is how to silence a known-noisy procedure (a poll, a health
 // check) under an INFO handler; a higher level makes an important one stand

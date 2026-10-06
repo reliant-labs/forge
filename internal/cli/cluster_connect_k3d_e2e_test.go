@@ -1,3 +1,5 @@
+//go:build e2e
+
 package cli
 
 import (
@@ -23,18 +25,25 @@ import (
 // test exists to prove — the apply, the asynchronous token population, the
 // write-only send, the by-name cleanup — runs for real.
 //
-// Gated by testing.Short(): it creates a cluster. The cluster is named
-// uniquely and deleted by that exact name; no other cluster is read or
-// touched, and the developer's kubeconfig is never modified.
+// THE e2e TIER, because it needs what only that tier provisions: a live
+// docker daemon with the capacity to boot a k3d cluster (and pull its image).
+// In the plain package run it failed outright on any machine whose daemon
+// was down — the binaries being on PATH said nothing about that — which is
+// how it became a standing red "environment" failure. Here, like the other
+// cluster-creating tests (flux_reconcile_e2e_test.go,
+// internal/cluster/pdb_k3d_test.go), a missing tool or daemon is a named skip
+// on a laptop and a hard failure in CI, where e2e-suite.yml installs k3d and
+// checks the daemon.
+//
+// The cluster is named uniquely and deleted by that exact name; no other
+// cluster is read or touched, and the developer's kubeconfig is never
+// modified.
 func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 	if testing.Short() {
 		t.Skip("creates a real k3d cluster")
 	}
-	for _, bin := range []string{"k3d", "kubectl", "docker"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s is not installed", bin)
-		}
-	}
+	requireTool(t, "k3d", "kubectl")
+	requireDockerDaemon(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()

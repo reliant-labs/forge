@@ -2423,6 +2423,10 @@ func WaitJobCompleteTimeout(ctx context.Context, kctx, name, namespace string, t
 				"-n", namespace,
 				"--timeout="+timeout.String(),
 			)
+			// Once the losing watcher is killed, stop waiting on its stderr
+			// pipe after this long even if something it spawned still holds
+			// it — the drain below must not turn into a hang.
+			cmd.WaitDelay = 5 * time.Second
 			// kubectl's own words are the only thing that tells an expired
 			// budget ("timed out waiting for the condition") from any other
 			// wait error, and it writes them to stderr. Discarded, a Job
@@ -2440,20 +2444,30 @@ func WaitJobCompleteTimeout(ctx context.Context, kctx, name, namespace string, t
 		}(cond)
 	}
 
-	// The first watcher to return WITHOUT error is the verdict. The other
-	// is cancelled by the deferred cancel().
-	var last error
+	// The first watcher to return WITHOUT error is the verdict. The other is
+	// then cancelled AND reaped before returning: cancel() only signals it,
+	// and a kubectl still alive after this function returns is a child that
+	// outlives its caller — racing the deploy's next step for the terminal,
+	// and, under test, writing into a TempDir its cleanup is already removing.
+	var verdict error
+	decided := false
 	for i := 0; i < 2; i++ {
 		r := <-done
-		if r.err == nil {
-			if r.cond == "failed" {
-				return fmt.Errorf("job %s failed", name)
-			}
-			return nil
+		if decided {
+			continue // the loser, drained
 		}
-		last = r.err
+		switch {
+		case r.err == nil && r.cond == "failed":
+			verdict, decided = fmt.Errorf("job %s failed", name), true
+		case r.err == nil:
+			verdict, decided = nil, true
+		default:
+			verdict = r.err
+			continue
+		}
+		cancel()
 	}
-	return last
+	return verdict
 }
 
 // ListManagedDeployments returns the names of every forge-owned

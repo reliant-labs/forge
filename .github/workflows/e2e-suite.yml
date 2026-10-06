@@ -269,10 +269,15 @@ jobs:
             echo "::error::e2e suite requires ${missing[*]} — a step above did not do its job"
             exit 1
           fi
-          if ! docker info --format '  ok       docker daemon            {{.ServerVersion}}'; then
-            echo "::error::the docker CLI is present but no daemon answers — the image build test cannot run"
+          # `docker version`, not `docker info --format`: with no daemon the
+          # latter prints the error, an empty version and EXITS 0, so it
+          # could never fail this step.
+          server=$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)
+          if [ -z "$server" ]; then
+            echo "::error::the docker CLI is present but no daemon answers — the image build and k3d tests cannot run"
             exit 1
           fi
+          printf '  ok       %-24s %s\n' "docker daemon" "$server"
 
       # ── The partition. Derived, printed, and checked. ────────────────
       - name: Assign this shard its tests

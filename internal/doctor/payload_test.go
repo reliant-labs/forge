@@ -355,7 +355,8 @@ func TestCheckPayloadLimitsMountingVerdict(t *testing.T) {
 			if got.Status != tt.want {
 				t.Fatalf("status = %q, want %q (msg=%s ev=%s)", got.Status, tt.want, got.Message, got.Evidence)
 			}
-			if tt.evidence != "" && !strings.Contains(got.Evidence, tt.evidence) {
+			// Native paths in the evidence; slash-separated expectations.
+			if tt.evidence != "" && !strings.Contains(filepath.ToSlash(got.Evidence), tt.evidence) {
 				t.Errorf("evidence %q does not mention %q", got.Evidence, tt.evidence)
 			}
 		})

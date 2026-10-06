@@ -209,8 +209,9 @@ func NormalizeFrontendDefaults(cfg *ProjectConfig) {
 // KCL is authoritative for every field it declares — path, type, port,
 // dev_runner, base_path, routes — because it is the file the project
 // maintains as the statement of what its frontends ARE. The disk supplies the
-// rest: the Next.js output shape, and any of dev_runner/base_path the
-// declaration left out. A KCL frontend with no directory on disk was already
+// rest: the Next.js output shape, and any of type/dev_runner/base_path the
+// declaration left out (the scaffolded stanza omits `type`, so a Vite app
+// would otherwise default to nextjs). A KCL frontend with no directory on disk was already
 // excluded by DeriveFrontendsFromKCL (it is not this repo's to generate
 // into), and a directory with no KCL declaration stays as discovered.
 //
@@ -229,6 +230,9 @@ func MergeFrontendInventory(disk, kcl []FrontendConfig) []FrontendConfig {
 		}
 		merged := k
 		merged.Output = base.Output
+		if merged.Type == "" {
+			merged.Type = base.Type
+		}
 		if merged.DevRunner == "" {
 			merged.DevRunner = base.DevRunner
 		}

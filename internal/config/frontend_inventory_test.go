@@ -260,3 +260,19 @@ func writeFile(t *testing.T, root, rel, body string) {
 		t.Fatal(err)
 	}
 }
+
+// A scaffolded KCL stanza omits `type`; the framework marker on disk is the
+// only thing that knows a Vite app is not a Next.js one. Losing it made
+// `forge generate` write Next.js nav/dashboard files into a Vite frontend.
+func TestMergeFrontendInventory_KCLWithoutTypeKeepsTheDiscoveredType(t *testing.T) {
+	disk := []FrontendConfig{
+		FrontendConfig{Name: "spa", Type: "vite-spa"}.WithDir("frontends/spa"),
+	}
+	kcl := []FrontendConfig{
+		FrontendConfig{Name: "spa", Port: 4100}.WithDir("frontends/spa"),
+	}
+	got := MergeFrontendInventory(disk, kcl)
+	if len(got) != 1 || got[0].Type != "vite-spa" || got[0].Port != 4100 {
+		t.Errorf("want the on-disk type with the KCL port, got %+v", got)
+	}
+}

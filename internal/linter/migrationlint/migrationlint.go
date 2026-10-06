@@ -105,22 +105,20 @@ func plural(n int, noun string) string {
 // LintMigrationsDir. Mirrors config.MigrationSafetyConfig but is
 // pre-resolved (no nil enabled, severities as strings).
 type RuleConfig struct {
-	Enabled            bool
-	UnsafeAddColumn    string
-	DestructiveChange  string
-	VolatileDefault    string
-	AllowedDestructive []string
+	Enabled           bool
+	UnsafeAddColumn   string
+	DestructiveChange string
+	VolatileDefault   string
 }
 
 // ConfigFromProject lifts a config.MigrationSafetyConfig into a
 // migrationlint.RuleConfig by resolving defaults.
 func ConfigFromProject(cfg config.MigrationSafetyConfig) RuleConfig {
 	return RuleConfig{
-		Enabled:            cfg.IsEnabled(),
-		UnsafeAddColumn:    cfg.EffectiveUnsafeAddColumn(),
-		DestructiveChange:  cfg.EffectiveDestructiveChange(),
-		VolatileDefault:    cfg.EffectiveVolatileDefault(),
-		AllowedDestructive: cfg.AllowedDestructive,
+		Enabled:           cfg.IsEnabled(),
+		UnsafeAddColumn:   cfg.EffectiveUnsafeAddColumn(),
+		DestructiveChange: cfg.EffectiveDestructiveChange(),
+		VolatileDefault:   cfg.EffectiveVolatileDefault(),
 	}
 }
 
@@ -222,15 +220,9 @@ var (
 
 func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 	// Honor in-file pragmas before stripping comments. The destructive-
-	// change rule accepts two opt-out forms anywhere in the file:
-	//   -- forge:allow-destructive
-	//   -- forge-safety: allow-destructive
-	// Both mean "I, the author of this migration, accept the destructive
-	// op; please don't make me round-trip through forge.yaml's
-	// AllowedDestructive globs." Useful for one-off destructive moves
-	// (replace-this-table migrations etc.) where editing the project
-	// config is out-of-scope for the lane. See
-	// migrationlint-no-per-file-destructive-pragma in FORGE_BACKLOG.
+	// change rule is opted out per migration, in the file, with
+	// `-- forge:allow-destructive`: the intent lives next to the SQL it
+	// excuses, so it cannot outlive or drift from that file.
 	allowDestructive := hasAllowDestructivePragma(content)
 	// The NOT NULL rules have their own opt-out, deliberately separate from
 	// the destructive one: the two suppress different hazards, and a single
@@ -256,7 +248,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			continue
 		}
 
-		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive && !isAllowedDestructive(file, cfg.AllowedDestructive) {
+		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive {
 			findings = append(findings, Finding{
 				File:     file,
 				Line:     stmt.Line,
@@ -430,31 +422,46 @@ func severityFor(value string) Severity {
 }
 
 // DestructiveChangeRemediation is the actionable fix text for a
-// destructive-change finding. It names the two suppression mechanisms
-// the linter actually honors, in the order we recommend:
-//
-//  1. The in-file pragma `-- forge:allow-destructive` (see
-//     allowDestructivePragmaRe below) — per-migration intent, no
-//     forge.yaml round-trip, consistent with forge's other markers.
-//  2. The config allowlist of file globs — which lives under the
-//     `database.migration_safety.allowed_destructive` key, NOT a
-//     top-level `migration_safety` key (the strict loader rejects that).
+// destructive-change finding. The one suppression mechanism is the in-file
+// pragma `-- forge:allow-destructive` (allowDestructivePragmaRe below).
 //
 // This const is colocated with the pragma regex so the syntax we tell
 // users can't drift from the syntax the linter matches.
-const DestructiveChangeRemediation = `either rewrite the destructive migration as a non-destructive sequence, or — if the change is intentional — mark the migration file with a "-- forge:allow-destructive" comment (or glob-allowlist it under database.migration_safety.allowed_destructive in forge.yaml)`
+const DestructiveChangeRemediation = `either rewrite the destructive migration as a non-destructive sequence, or — if the change is intentional — mark the migration file with a "-- forge:allow-destructive" comment`
 
-// allowDestructivePragmaRe matches either of the supported in-file opt-out
-// forms. Whitespace between tokens is permissive; the leading `--` must be
-// a SQL line comment. Examples that match:
+// allowDestructivePragmaRe matches the in-file opt-out. Whitespace between
+// tokens is permissive; the leading `--` must be a SQL line comment.
+// Examples that match:
 //
 //	-- forge:allow-destructive
-//	-- forge-safety: allow-destructive
 //	--   FORGE:ALLOW-DESTRUCTIVE
-var allowDestructivePragmaRe = regexp.MustCompile(`(?im)^\s*--\s*(?:forge:allow-destructive\b|forge-safety:\s*allow-destructive\b)`)
+var allowDestructivePragmaRe = regexp.MustCompile(`(?im)^\s*--\s*forge:allow-destructive\b`)
 
 func hasAllowDestructivePragma(content string) bool {
 	return allowDestructivePragmaRe.MatchString(content)
+}
+
+// AllowDestructiveFiles lists the migration files in dir that carry the
+// `-- forge:allow-destructive` directive, by base name, sorted. It is what
+// `forge project audit` reports, so the exemptions stay reviewable without a
+// forge.yaml list to keep in sync.
+func AllowDestructiveFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err == nil && hasAllowDestructivePragma(string(body)) {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // UnsafeNotNullRemediation is the fix text for the two NOT NULL rules. It
@@ -483,12 +490,9 @@ func hasAllowUnsafeNotNullPragma(content string) bool {
 //
 // Every migration-safety failure used to be printed with the DESTRUCTIVE
 // remediation regardless of which rule fired, so an author whose NOT NULL add
-// was rejected was told to add `-- forge:allow-destructive` (which does not
-// silence it) or to glob-allowlist the file under
-// `database.migration_safety.allowed_destructive` (which does not silence it
-// either — and, before the loader fix, disabled the whole migrations feature
-// instead). Advice that does not apply to the finding it is attached to is
-// how an author ends up two layers deep in a config trap.
+// was rejected was told to add `-- forge:allow-destructive`, which does not
+// silence it. Advice that does not apply to the finding it is attached to is
+// how an author ends up chasing a hatch that does nothing.
 //
 // An unknown rule falls back to the destructive text, which is the historical
 // behaviour and the right default for the rule that has no other hatch.
@@ -543,54 +547,6 @@ func PrimaryRemediation(findings []Finding) string {
 // depends on which finding you are looking at, so say that rather than print
 // one rule's hatch over all of them.
 const MixedRemediation = `each finding above names the rule it violated; run with --json for the per-finding fix, or see the rule's remediation: destructive-change accepts "-- forge:allow-destructive", the NOT NULL rules accept "-- forge:allow-unsafe-not-null"`
-
-// isAllowedDestructive reports whether file is covered by an
-// allowed_destructive glob from forge.yaml.
-//
-// The linter walks an absolute migrations directory, but an allowlist entry
-// is written the way the author sees the file: usually project-relative
-// (`db/migrations/0007_drop_x.up.sql`), sometimes just the basename, and
-// occasionally a glob over either. filepath.Match has no `**` and anchors at
-// the whole string, so matching the pattern against the absolute path alone
-// silently fails every project-relative entry — the file stays flagged and
-// the error tells the author to add the entry they already wrote.
-//
-// So the pattern is matched against every PATH SUFFIX of the file, taken at
-// separator boundaries: for /repo/db/migrations/x.up.sql that is
-// "db/migrations/x.up.sql", "migrations/x.up.sql" and "x.up.sql", as well as
-// the full absolute path. Suffixes are whole segments, never arbitrary
-// substrings, so an entry still names a real path tail and cannot widen into
-// a partial-name match on a neighbouring migration.
-func isAllowedDestructive(file string, patterns []string) bool {
-	candidates := pathSuffixes(file)
-	for _, pattern := range patterns {
-		// Normalize the pattern's separators so an entry written with the
-		// forge.yaml convention (forward slashes) matches on Windows too.
-		pattern = filepath.FromSlash(pattern)
-		for _, candidate := range candidates {
-			if ok, _ := filepath.Match(pattern, candidate); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// pathSuffixes returns file plus every trailing run of its path segments,
-// longest first: /a/b/c.sql → [/a/b/c.sql, a/b/c.sql, b/c.sql, c.sql].
-func pathSuffixes(file string) []string {
-	clean := filepath.Clean(file)
-	sep := string(filepath.Separator)
-	segments := strings.Split(strings.TrimPrefix(clean, sep), sep)
-
-	suffixes := []string{clean}
-	for i := range segments {
-		if suffix := strings.Join(segments[i:], sep); suffix != clean {
-			suffixes = append(suffixes, suffix)
-		}
-	}
-	return suffixes
-}
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {

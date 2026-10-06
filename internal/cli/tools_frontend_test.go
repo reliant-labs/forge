@@ -67,8 +67,8 @@ func newToolsInstallFixture(t *testing.T, pkgJSON string) toolsInstallFixture {
 			t.Fatal(err)
 		}
 	}
-	write(filepath.Join(root, "forge.yaml"), "name: demo\nmodule_path: github.com/demo/demo\n"+
-		"frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n", 0o644)
+	write(filepath.Join(root, "forge.yaml"), "name: demo\nmodule_path: github.com/demo/demo\n", 0o644)
+	write(filepath.Join(feDir, "next.config.ts"), "export default {}\n", 0o644) // how forge finds the frontend
 	write(filepath.Join(feDir, "buf.gen.yaml"),
 		"version: v2\nplugins:\n  - local: ./frontends/web/node_modules/.bin/protoc-gen-es\n    out: frontends/web/src/gen\n", 0o644)
 	write(filepath.Join(feDir, "package.json"), pkgJSON, 0o644)

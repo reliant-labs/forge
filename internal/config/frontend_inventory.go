@@ -7,10 +7,11 @@ import (
 	"sort"
 )
 
-// frontend_inventory.go — what forge.yaml's `frontends:` key actually
-// means, and how to answer the question when the key is absent.
+// frontend_inventory.go — the frontend inventory, derived.
 //
-// The key is a CODEGEN INVENTORY: the set of frontends forge projects
+// There is no `frontends:` key in forge.yaml. The inventory is the frontends
+// found under frontends/ on disk, overlaid by the KCL `forge.Frontend`
+// declarations (MergeFrontendInventory). It is a CODEGEN INVENTORY: the set of frontends forge projects
 // generated TypeScript into (Connect hooks, config_gen.ts, mocks, CRUD
 // pages). It is not a deployment topology — a deploy declares its
 // frontends in deploy/kcl/<env>/main.k, and a project may legitimately
@@ -45,6 +46,14 @@ type KCLFrontend struct {
 	// repository. Such a frontend has no directory in this tree by
 	// design, so it is never a codegen target here.
 	HasSource bool
+	// Port, DevRunner and BasePath are the declaration's dev-server port,
+	// package manager and mount prefix; zero/empty means it declared none.
+	Port      int
+	DevRunner string
+	BasePath  string
+	// Routes is the CRUD-page allowlist (forge.Frontend.routes); empty means
+	// every CRUD entity, ["none"] means no generated pages.
+	Routes []string
 }
 
 // OwnsFrontendCode reports whether THIS project's tree contains the
@@ -159,7 +168,7 @@ func ResolveInventoryAtLoad(cfg *ProjectConfig, projectDir string) {
 	if cfg == nil {
 		return
 	}
-	if len(cfg.Frontends) == 0 && projectDir != "" {
+	if projectDir != "" {
 		cfg.Frontends = DiscoverInRepoFrontends(projectDir)
 	}
 	NormalizeFrontendDefaults(cfg)
@@ -194,31 +203,50 @@ func NormalizeFrontendDefaults(cfg *ProjectConfig) {
 	}
 }
 
-// EffectiveFrontends returns the codegen inventory for a project: the
-// `frontends:` block when it declares one, and otherwise the frontends
-// the deploy graph declares whose code lives in this repository.
+// MergeFrontendInventory overlays the KCL-declared frontends onto the ones
+// discovered on disk, by name.
 //
-// The explicit block WINS whenever it is non-empty, and is returned
-// untouched. That ordering is what keeps this change invisible to every
-// project that already declares its frontends: the KCL is not consulted,
-// not rendered, and cannot introduce a frontend the author left out
-// deliberately. Deriving is strictly a fallback for the case that
-// previously produced no inventory at all.
+// KCL is authoritative for every field it declares — path, type, port,
+// dev_runner, base_path, routes — because it is the file the project
+// maintains as the statement of what its frontends ARE. The disk supplies the
+// rest: the Next.js output shape, and any of dev_runner/base_path the
+// declaration left out. A KCL frontend with no directory on disk was already
+// excluded by DeriveFrontendsFromKCL (it is not this repo's to generate
+// into), and a directory with no KCL declaration stays as discovered.
 //
-// Deriving from KCL rather than from the filesystem is deliberate too. A
-// directory scan of frontends/ would find node_modules fixtures, example
-// apps, and half-deleted trees, and it could not supply the `type` that
-// decides which platform's config module to emit. The KCL declaration
-// carries both, and it is the file the project already maintains as the
-// statement of what its frontends ARE.
-func EffectiveFrontends(cfg *ProjectConfig, projectDir string, kcl []KCLFrontend) []FrontendConfig {
-	if cfg != nil && len(cfg.Frontends) > 0 {
-		return cfg.Frontends
+// The result is sorted by name so two runs of the same project produce the
+// same inventory.
+func MergeFrontendInventory(disk, kcl []FrontendConfig) []FrontendConfig {
+	byName := make(map[string]FrontendConfig, len(disk)+len(kcl))
+	for _, fe := range disk {
+		byName[fe.Name] = fe
 	}
-	if derived := DeriveFrontendsFromKCL(projectDir, kcl); len(derived) > 0 {
-		return derived
+	for _, k := range kcl {
+		base, found := byName[k.Name]
+		if !found {
+			byName[k.Name] = k
+			continue
+		}
+		merged := k
+		merged.Output = base.Output
+		if merged.DevRunner == "" {
+			merged.DevRunner = base.DevRunner
+		}
+		if merged.BasePath == "" {
+			merged.BasePath = base.BasePath
+		}
+		byName[k.Name] = merged
 	}
-	return DiscoverInRepoFrontends(projectDir)
+	names := make([]string, 0, len(byName))
+	for n := range byName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]FrontendConfig, 0, len(names))
+	for _, n := range names {
+		out = append(out, byName[n])
+	}
+	return out
 }
 
 // DiscoverInRepoFrontends finds the frontends sitting in this project's
@@ -262,10 +290,13 @@ func DiscoverInRepoFrontends(projectDir string) []FrontendConfig {
 		if feType == "" {
 			continue
 		}
+		feDir := filepath.Join(projectDir, rel)
 		out = append(out, FrontendConfig{
-			Name:     e.Name(),
-			Type:     feType,
-			BasePath: basePathFromNextConfig(filepath.Join(projectDir, rel)),
+			Name:      e.Name(),
+			Type:      feType,
+			BasePath:  basePathFromNextConfig(feDir),
+			Output:    outputFromNextConfig(feDir),
+			DevRunner: devRunnerFromLockfile(projectDir, feDir),
 		}.WithDir(filepath.ToSlash(rel)))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -402,10 +433,18 @@ func DeriveFrontendsFromKCL(projectDir string, kcl []KCLFrontend) []FrontendConf
 		// so without this a KCL-declared frontend generates a
 		// basepath_gen.ts that contradicts the next.config.ts sitting
 		// beside it. See basePathFromNextConfig for what that breaks.
+		basePath := fe.BasePath
+		if basePath == "" {
+			basePath = basePathFromNextConfig(filepath.Join(projectDir, dir))
+		}
 		byName[fe.Name] = FrontendConfig{
-			Name:     fe.Name,
-			Type:     fe.Type,
-			BasePath: basePathFromNextConfig(filepath.Join(projectDir, dir)),
+			Name:      fe.Name,
+			Type:      fe.Type,
+			Port:      fe.Port,
+			DevRunner: fe.DevRunner,
+			BasePath:  basePath,
+			Output:    outputFromNextConfig(filepath.Join(projectDir, dir)),
+			Routes:    fe.Routes,
 		}.WithDir(dir)
 	}
 	if len(byName) == 0 {
@@ -423,4 +462,50 @@ func DeriveFrontendsFromKCL(projectDir string, kcl []KCLFrontend) []FrontendConf
 		out = append(out, byName[name])
 	}
 	return out
+}
+
+// outputFromNextConfig reads a Next.js frontend's build shape back from its
+// own next.config.ts. The scaffold writes exactly one of three spellings:
+// `output: "export"` (static), `output: "standalone"`, or no `output:` at all
+// (server). "" means the file is absent or unreadable, which every caller
+// treats as the standalone default.
+func outputFromNextConfig(feDir string) string {
+	for _, name := range []string{"next.config.ts", "next.config.js", "next.config.mjs"} {
+		body, err := os.ReadFile(filepath.Join(feDir, name))
+		if err != nil {
+			continue
+		}
+		m := nextConfigOutputRE.FindSubmatch(body)
+		switch {
+		case m == nil:
+			return "server"
+		case string(m[1]) == "export":
+			return "static"
+		default:
+			return "standalone"
+		}
+	}
+	return ""
+}
+
+// nextConfigOutputRE matches a live `output: "<mode>"` property. Lines that
+// are comments (`// output: "export"` in the scaffold's own prose) are
+// excluded by anchoring on indentation + the property start.
+var nextConfigOutputRE = regexp.MustCompile(`(?m)^[^/\n]*\boutput:\s*["'](export|standalone)["']`)
+
+// devRunnerFromLockfile picks the package manager from the lockfile beside
+// the frontend, or at the project root for a pnpm/yarn workspace. "" means
+// no lockfile says, which resolves to npm.
+func devRunnerFromLockfile(projectDir, feDir string) string {
+	for _, dir := range []string{feDir, projectDir} {
+		switch {
+		case fileExists(filepath.Join(dir, "pnpm-lock.yaml")):
+			return DevRunnerPNPM
+		case fileExists(filepath.Join(dir, "yarn.lock")):
+			return DevRunnerYarn
+		case fileExists(filepath.Join(dir, "package-lock.json")):
+			return DevRunnerNPM
+		}
+	}
+	return ""
 }

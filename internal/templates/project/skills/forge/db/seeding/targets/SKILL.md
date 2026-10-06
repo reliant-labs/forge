@@ -27,12 +27,11 @@ they read, when there was something to seed and nothing was written:
 
 - the database has tables, but the migrations forge read define none — the
   wrong `-C` or `--dir`;
-- `database.seed.tables` names no table the migrations define;
+- the dev seed is scoped to tables the migrations do not define;
 - the plan inserted 0 rows and every planned table is still empty.
 
-Three outcomes are legitimately empty and succeed:
-`database.seed.tables: []` (synthesize nothing; `db/seeds/custom/` is the
-dataset), an already-seeded database (apply is idempotent: `Seeded 0 new
+Two outcomes are legitimately empty and succeed:
+an already-seeded database (apply is idempotent: `Seeded 0 new
 row(s)`), and a schema with no tables at all.
 
 ## Seeding a throwaway database

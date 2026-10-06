@@ -1017,14 +1017,27 @@ func runScaffoldsLint() error {
 // An UNFLAGGED `forge lint` still skips the lane — the user asked for whatever
 // applies. Naming the flag is what makes silence wrong: they asked for this
 // lane specifically, and it did not run.
+// featureTurnOn says what in the repo switches a lint lane's feature on. Features
+// are derived from what exists, so the remedy is a change to the repo, never a
+// forge.yaml key.
+func featureTurnOn(feature string) string {
+	switch feature {
+	case "migrations":
+		return "migrations turn on when db/migrations/ exists in a service project"
+	case "contracts":
+		return "contracts are on for every project kind; this config forced them off"
+	}
+	return feature + " derives from what exists in the repo"
+}
+
 func errFeatureDisabled(flag, feature string) error {
 	return cliutil.UserErr("forge lint "+flag,
-		fmt.Sprintf("the %s feature is disabled in forge.yaml, so this lint cannot run", feature),
+		fmt.Sprintf("the %s feature is off for this project, so this lint cannot run", feature),
 		"",
-		fmt.Sprintf("set `features.%s: true` in forge.yaml to run it, or drop %s from this command — "+
+		fmt.Sprintf("%s — or drop %s from this command: "+
 			"an unflagged `forge lint` skips the lane instead of failing. "+
-			"Note that %s also derives OFF when `database.driver` is empty or \"none\"",
-			feature, flag, feature))
+			"`forge project features` shows why it is off.",
+			featureTurnOn(feature), flag))
 }
 
 func runMigrationSafetyLint(cfg *config.ProjectConfig) error {

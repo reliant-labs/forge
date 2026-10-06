@@ -1248,18 +1248,6 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// fallback. It is the SAME set `forge lint`'s frontend lane walks —
 	// both commands shell into these directories, so neither re-derives it.
 	//
-	// `stack.frontend.framework: none` empties that set BEFORE anything
-	// runs `npm run build`. Without it, a project that set framework:none
-	// (often because deps aren't installed / the frontend builds
-	// out-of-band) still had forge run `npm run build`, and a failure there
-	// (e.g. `next: command not found`) failed the WHOLE build, blocking an
-	// unrelated deployable Go service that compiled fine (fr-cc10bfab0c).
-	// Logged, not silent, so the user can see why their frontend wasn't
-	// built. The frontends stay in cfg.Frontends for non-build commands
-	// (generate, up's dev serve).
-	if frontendsSkippedByFramework(cfg) {
-		fmt.Printf("[build]   Skipping %d frontend(s): stack.frontend.framework is \"none\"\n", len(cfg.Frontends))
-	}
 	frontends := cfg.ToolchainFrontends()
 	buildBinary := true
 
@@ -2567,24 +2555,6 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 		digest:    digest,
 		platforms: platforms,
 	}
-}
-
-// frontendsSkippedByFramework reports whether `forge build` should drop
-// ALL declared frontends from the build set because the project declares
-// `stack.frontend.framework: none`. That setting means "forge does not own
-// a frontend build toolchain here" — so forge must not run `npm run build`,
-// even when the `frontends:` list is populated (a frontend that builds
-// out-of-band, or one whose deps aren't installed). Honoring it keeps an
-// unrelated frontend build failure from sinking a deployable Go service
-// (fr-cc10bfab0c). Returns false when there are no frontends (nothing to
-// skip — the log line would be noise).
-//
-// The opt-out predicate itself lives on the config type
-// (config.ProjectConfig.FrontendToolchainDisabled) so `forge lint`'s
-// frontend lane honors the SAME switch: both commands shell into
-// frontends, so both must agree on which ones forge may touch.
-func frontendsSkippedByFramework(cfg *config.ProjectConfig) bool {
-	return cfg.FrontendToolchainDisabled() && len(cfg.Frontends) > 0
 }
 
 func filterFrontends(frontends []config.FrontendConfig, target string) []config.FrontendConfig {

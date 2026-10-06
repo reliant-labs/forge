@@ -99,9 +99,7 @@ func TestFilterTier1DriftInScope_GateOnKeepsDriftInScope(t *testing.T) {
 		Cfg: &config.ProjectConfig{
 			Name:     "with-driver",
 			Database: config.DatabaseConfig{Driver: "postgres"},
-			Features: config.FeaturesConfig{
-				Migrations: configBoolPtr(true),
-			},
+			Features: config.FeaturesConfig{}.With(config.FeatureMigrations, true),
 		},
 	}
 	if !gateMigrateHasDriver(ctx) {
@@ -205,7 +203,3 @@ func mustWriteScopeFile(t *testing.T, path, content string) {
 // checksums.Tier1DriftEntry so this file doesn't import the canonical
 // checksums type just for path-extraction tests.
 type driftStub struct{ path string }
-
-// configBoolPtr returns a *bool — config feature flags are pointer-
-// typed in ProjectConfig so unset distinguishes from "explicit false".
-func configBoolPtr(b bool) *bool { return &b }

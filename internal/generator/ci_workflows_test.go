@@ -89,15 +89,13 @@ func TestCIWorkflows_CLIGetsTheBuildableSubset(t *testing.T) {
 	}
 }
 
-// A CLI never gets the reconcile workflow or a deploy workflow, even with
-// the flag set: there is no image and nothing deployed to reconcile.
+// A CLI never gets a deploy workflow: there is no image and nothing deployed.
 func TestCIWorkflows_CLIIgnoresReconcileFlag(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "tool", Kind: config.ProjectKindCLI}
-	cfg.Features.Experimental.Reconcile = true
 	config.ApplyDerivedDefaults(cfg)
 	for _, f := range CIWorkflows(t.TempDir(), cfg, nil) {
 		switch f.Dest {
-		case ".github/workflows/reconcile.yml", ".github/workflows/build-images.yml", ".github/workflows/deploy.yml":
+		case ".github/workflows/build-images.yml", ".github/workflows/deploy.yml":
 			t.Errorf("%s planned for a CLI project", f.Dest)
 		}
 	}

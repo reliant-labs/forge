@@ -50,7 +50,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 				t.Fatalf("precondition: a no-frontend %s should declare no frontend", tc.tmpl)
 			}
 			dev := tc.env == "dev"
-			out, status := spliceFrontendIntoEnvKCL(in, "acme", tc.env, "web", dev, 0)
+			out, status := spliceFrontendIntoEnvKCL(in, "acme", tc.env, "web", dev, 0, nil)
 			if status != frontendKCLApplied {
 				t.Fatalf("splice did not apply (status %d) — an anchor moved in %s", status, tc.tmpl)
 			}
@@ -78,7 +78,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 			}
 
 			// Idempotent: a second scaffold of the same name is a no-op.
-			if again, st := spliceFrontendIntoEnvKCL(out, "acme", tc.env, "web", dev, 0); st != frontendKCLAlreadyDeclared || again != out {
+			if again, st := spliceFrontendIntoEnvKCL(out, "acme", tc.env, "web", dev, 0, nil); st != frontendKCLAlreadyDeclared || again != out {
 				t.Errorf("second splice must be a no-op, status %d", st)
 			}
 		})
@@ -89,8 +89,8 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 // second frontend is added beside the first rather than replacing it.
 func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
-	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0)
-	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", true, 0)
+	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0, nil)
+	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", true, 0, nil)
 	if status != frontendKCLApplied {
 		t.Fatalf("second frontend not applied: %d", status)
 	}
@@ -105,7 +105,7 @@ func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 // the literal, with no resolve_port that could step it elsewhere.
 func TestSpliceFrontendIntoEnvKCL_PinnedPort(t *testing.T) {
 	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
-	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 4123)
+	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 4123, nil)
 	if status != frontendKCLApplied {
 		t.Fatalf("status %d", status)
 	}
@@ -116,7 +116,7 @@ func TestSpliceFrontendIntoEnvKCL_PinnedPort(t *testing.T) {
 
 func TestSpliceFrontendIntoEnvKCL_NoAnchorLeavesFileAlone(t *testing.T) {
 	in := "output = {}\n"
-	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0)
+	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0, nil)
 	if status != frontendKCLNoAnchor || out != in {
 		t.Fatalf("an unrecognised file must be left untouched, status %d", status)
 	}

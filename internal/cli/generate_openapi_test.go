@@ -60,11 +60,10 @@ func TestGateOpenAPIEnabled(t *testing.T) {
 		{
 			name: "flag true but codegen disabled",
 			ctx: func() *pipelineContext {
-				f := false
 				return &pipelineContext{
 					Cfg: &config.ProjectConfig{
 						API:      config.APIConfig{OpenAPI: true},
-						Features: config.FeaturesConfig{Codegen: &f},
+						Features: config.FeaturesConfig{}.With(config.FeatureCodegen, false),
 					},
 				}
 			}(),

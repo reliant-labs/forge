@@ -11,7 +11,7 @@ import (
 )
 
 // Every project-relative db input resolves against the -C project root —
-// the configured migrations_dir, a relative --dir, a bare migration filename
+// the default db/migrations, a relative --dir, a bare migration filename
 // — no matter where the CWD is. Flag DEFAULTS used to be computed when the
 // command tree was built, before -C was parsed, and then opened against the
 // CWD.
@@ -37,18 +37,19 @@ func TestResolveMigrationsDir_AnchorsAtTheProjectRoot(t *testing.T) {
 		t.Errorf("bare migration filename = %q, want it inside the migrations dir %q", got, want)
 	}
 
-	// forge.yaml's database.migrations_dir is honoured, from the -C project.
-	body := "name: anchored\nmodule_path: github.com/example/anchored\ndatabase:\n  migrations_dir: schema/up\n"
+	// The migrations directory is db/migrations, resolved from the -C project.
+	// There is no database.migrations_dir to point elsewhere.
+	body := "name: anchored\nmodule_path: github.com/example/anchored\n"
 	if err := os.WriteFile(filepath.Join(proj, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := resolveMigrationsDir(""), filepath.Join(proj, "schema", "up"); got != want {
-		t.Errorf("configured migrations_dir = %q, want %q", got, want)
+	if got, want := resolveMigrationsDir(""), filepath.Join(proj, "db", "migrations"); got != want {
+		t.Errorf("migrations dir = %q, want %q", got, want)
 	}
 
 	// A directory that does not exist is an error naming it — never "no
 	// migrations".
-	if _, err := requireMigrationsDir(""); err == nil || !strings.Contains(err.Error(), filepath.Join(proj, "schema", "up")) {
+	if _, err := requireMigrationsDir(""); err == nil || !strings.Contains(err.Error(), filepath.Join(proj, "db", "migrations")) {
 		t.Errorf("requireMigrationsDir on a missing dir = %v; want an error naming it", err)
 	}
 }

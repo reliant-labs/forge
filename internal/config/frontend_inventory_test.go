@@ -70,27 +70,14 @@ func TestOwnsFrontendCode(t *testing.T) {
 	}
 }
 
-// TestEffectiveFrontendsPrefersDeclared pins the ordering that keeps this
-// change invisible to every project that already declares frontends: an
-// explicit block wins outright, and the KCL is not consulted. Without it,
-// a derived entry could add a frontend an author left out deliberately.
-func TestEffectiveFrontendsPrefersDeclared(t *testing.T) {
-	root := mkFrontendDir(t, filepath.Join("frontends", "console"))
-	cfg := &ProjectConfig{Frontends: []FrontendConfig{FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web")}}
-
-	got := EffectiveFrontends(cfg, root, []KCLFrontend{{Name: "console", Path: "frontends/console"}})
-	if len(got) != 1 || got[0].Name != "web" {
-		t.Fatalf("declared block should win untouched, got %+v", got)
-	}
-}
-
-// TestEffectiveFrontendsDerivesInRepoOnly is the defect: control-plane's
-// shape, where forge.yaml declares nothing and the deploy graph declares
-// one in-repo frontend beside one sibling-repo frontend.
-func TestEffectiveFrontendsDerivesInRepoOnly(t *testing.T) {
+// TestDeriveFrontendsFromKCLKeepsInRepoOnly is the defect this inventory was
+// built for: control-plane's shape, where the deploy graph declares one in-repo
+// frontend beside one sibling-repo frontend. Only the in-repo one is this
+// project's to generate into.
+func TestDeriveFrontendsFromKCLKeepsInRepoOnly(t *testing.T) {
 	root := mkFrontendDir(t, filepath.Join("frontends", "internal-console"))
 
-	got := EffectiveFrontends(&ProjectConfig{}, root, []KCLFrontend{
+	got := DeriveFrontendsFromKCL(root, []KCLFrontend{
 		{Name: "reliant-web", Type: "vite", Path: "../reliant/web"},
 		{Name: "internal-console", Type: "nextjs", Path: "frontends/internal-console"},
 	})
@@ -103,6 +90,46 @@ func TestEffectiveFrontendsDerivesInRepoOnly(t *testing.T) {
 	}
 	if got[0].DeclaredDir() != "frontends/internal-console" {
 		t.Errorf("derived path = %q, want a project-relative path", got[0].DeclaredDir())
+	}
+}
+
+// TestMergeFrontendInventory pins the overlay that replaced the forge.yaml
+// `frontends:` block: KCL is authoritative for every field it declares, and the
+// disk supplies what the declaration cannot (the Next.js output shape, and any
+// dev_runner / base_path the declaration left out).
+func TestMergeFrontendInventory(t *testing.T) {
+	disk := []FrontendConfig{
+		FrontendConfig{Name: "web", Type: "nextjs", Output: "static", DevRunner: "pnpm", BasePath: "/from-disk"}.WithDir("frontends/web"),
+		FrontendConfig{Name: "scratch-only", Type: "vite-spa"}.WithDir("frontends/scratch-only"),
+	}
+	kcl := []FrontendConfig{
+		FrontendConfig{Name: "web", Type: "nextjs", Port: 4100, Routes: []string{"users"}, BasePath: "/admin"}.WithDir("frontends/web"),
+		FrontendConfig{Name: "kcl-only", Type: "nextjs", Port: 4200}.WithDir("frontends/kcl-only"),
+	}
+
+	got := MergeFrontendInventory(disk, kcl)
+	byName := map[string]FrontendConfig{}
+	for _, fe := range got {
+		byName[fe.Name] = fe
+	}
+	if len(got) != 3 {
+		t.Fatalf("want web + kcl-only + scratch-only, got %+v", got)
+	}
+	web := byName["web"]
+	if web.Port != 4100 || len(web.Routes) != 1 || web.Routes[0] != "users" {
+		t.Errorf("KCL port/routes must win, got %+v", web)
+	}
+	if web.BasePath != "/admin" {
+		t.Errorf("KCL base_path must beat the next.config.ts fallback, got %q", web.BasePath)
+	}
+	if web.Output != "static" {
+		t.Errorf("output comes from next.config.ts (KCL has no such field), got %q", web.Output)
+	}
+	if web.DevRunner != "pnpm" {
+		t.Errorf("dev_runner the KCL left out must come from the lockfile, got %q", web.DevRunner)
+	}
+	if got[0].Name != "kcl-only" || got[1].Name != "scratch-only" || got[2].Name != "web" {
+		t.Errorf("want name-sorted order, got %s, %s, %s", got[0].Name, got[1].Name, got[2].Name)
 	}
 }
 
@@ -130,21 +157,57 @@ func TestDeriveFrontendsFromKCLDedupesAndSorts(t *testing.T) {
 	}
 }
 
-// A KCL module that does not compile renders nothing, and "no frontends"
-// then has effects indistinguishable from the original bug — emitters
-// walk an empty list and already-generated files read as stale. Codegen
-// must not depend on the deploy graph COMPILING, so an in-repo frontend
-// is still found from the tree itself.
-func TestEffectiveFrontendsFallsBackToDiskWhenKCLYieldsNothing(t *testing.T) {
+// A KCL module that does not compile renders nothing, and "no frontends" then
+// has effects indistinguishable from the original bug — emitters walk an empty
+// list and already-generated files read as stale. The load seam therefore never
+// depends on the deploy graph COMPILING: an in-repo frontend is found from the
+// tree itself.
+func TestResolveInventoryAtLoadFindsFrontendsOnDisk(t *testing.T) {
 	root := mkFrontendDir(t, filepath.Join("frontends", "internal-console"))
 	writeMarker(t, root, "frontends/internal-console/next.config.ts")
 
-	got := EffectiveFrontends(&ProjectConfig{}, root, nil)
-	if len(got) != 1 || got[0].Name != "internal-console" {
-		t.Fatalf("want the on-disk frontend, got %+v", got)
+	cfg := &ProjectConfig{}
+	ResolveInventoryAtLoad(cfg, root)
+	if len(cfg.Frontends) != 1 || cfg.Frontends[0].Name != "internal-console" {
+		t.Fatalf("want the on-disk frontend, got %+v", cfg.Frontends)
 	}
-	if got[0].Type != "nextjs" {
-		t.Errorf("Type = %q, want nextjs from next.config.ts", got[0].Type)
+	if cfg.Frontends[0].Type != "nextjs" {
+		t.Errorf("Type = %q, want nextjs from next.config.ts", cfg.Frontends[0].Type)
+	}
+}
+
+// Each per-frontend field that is not in KCL is read off the frontend's own
+// files. Pinned here so the audit table in the PR stays true.
+func TestDiscoverInRepoFrontendsDetectsOutputBasePathAndRunner(t *testing.T) {
+	root := t.TempDir()
+	writeMarker(t, root, "frontends/site/next.config.ts")
+	writeFile(t, root, "frontends/site/next.config.ts", `const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "/docs";
+  // output: "standalone" is only mentioned in this comment
+  ...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),
+`)
+	writeFile(t, root, "frontends/site/pnpm-lock.yaml", "lockfileVersion: 9\n")
+	writeMarker(t, root, "frontends/plain/next.config.ts")
+	writeFile(t, root, "frontends/plain/next.config.ts", "export default { output: \"standalone\" };\n")
+
+	got := map[string]FrontendConfig{}
+	for _, fe := range DiscoverInRepoFrontends(root) {
+		got[fe.Name] = fe
+	}
+	site := got["site"]
+	if site.Output != "static" {
+		t.Errorf("output: export => static, got %q (a commented-out standalone must not win)", site.Output)
+	}
+	if site.BasePath != "/docs" {
+		t.Errorf("BasePath = %q, want /docs from next.config.ts", site.BasePath)
+	}
+	if site.DevRunner != DevRunnerPNPM {
+		t.Errorf("DevRunner = %q, want pnpm from pnpm-lock.yaml", site.DevRunner)
+	}
+	if got["plain"].Output != "standalone" {
+		t.Errorf("Output = %q, want standalone", got["plain"].Output)
+	}
+	if got["plain"].DevRunner != "" {
+		t.Errorf("no lockfile => unset (npm default), got %q", got["plain"].DevRunner)
 	}
 }
 
@@ -184,5 +247,16 @@ func writeMarker(t *testing.T, root, rel string) {
 	}
 	if err := os.WriteFile(full, []byte("export default {}\n"), 0o600); err != nil {
 		t.Fatalf("write %s: %v", rel, err)
+	}
+}
+
+func writeFile(t *testing.T, root, rel, body string) {
+	t.Helper()
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -41,10 +41,13 @@ func TestMetaMirrorsConfig(t *testing.T) {
 
 func TestFeaturesMirror(t *testing.T) {
 	cfg := sampleConfig()
-	cfg.Features.Deploy = boolp(false)
+	cfg.Features = cfg.Features.With(config.FeatureDeploy, false)
 	s := New(cfg)
 	if s.Features().DeployEnabled() {
-		t.Fatalf("explicit deploy:false should resolve disabled")
+		t.Fatalf("a feature forced off should resolve disabled")
+	}
+	if !s.Features().CodegenEnabled() {
+		t.Fatalf("forcing one feature off must leave the others at their defaults")
 	}
 }
 

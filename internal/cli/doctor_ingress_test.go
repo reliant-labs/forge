@@ -245,7 +245,7 @@ func TestRunIngressDoctorChecks_FeatureOffReturnsNil(t *testing.T) {
 func TestRunIngressDoctorChecks_SignalFilter(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name:     "t",
-		Features: config.FeaturesConfig{Ingress: boolPtr(true)},
+		Features: config.FeaturesConfig{}.With(config.FeatureIngress, true),
 	}
 	results := runIngressDoctorChecks(context.Background(), cfg, t.TempDir(), "metrics")
 	if results != nil {
@@ -259,7 +259,7 @@ func TestRunIngressDoctorChecks_SignalFilter(t *testing.T) {
 func TestRunIngressDoctorChecks_KCLFailureSurfacedAsSkip(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name:     "t",
-		Features: config.FeaturesConfig{Ingress: boolPtr(true)},
+		Features: config.FeaturesConfig{}.With(config.FeatureIngress, true),
 	}
 	results := runIngressDoctorChecks(context.Background(), cfg, t.TempDir(), "")
 	if len(results) != 1 {

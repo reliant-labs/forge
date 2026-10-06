@@ -169,9 +169,10 @@ func TestRunDevClusterUp_EnsuresStandaloneRegistry(t *testing.T) {
 	// stand in for a downstream one.
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/forge.yaml", []byte(
-		"name: testproj\nmodule_path: example.com/testproj\nfeatures:\n  deploy: true\n"), 0o644); err != nil {
+		"name: testproj\nmodule_path: example.com/testproj\n"), 0o644); err != nil {
 		t.Fatalf("write temp forge.yaml: %v", err)
 	}
+	markServiceProject(t, dir) // deploy derives on for a service
 	t.Chdir(dir)
 
 	configPath := dir + "/k3d.yaml"

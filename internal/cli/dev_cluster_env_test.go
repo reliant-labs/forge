@@ -22,9 +22,10 @@ func deployEnabledProject(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(
-		"name: "+testProjectName+"\nmodule_path: example.com/cp\nfeatures:\n  deploy: true\n"), 0o644); err != nil {
+		"name: "+testProjectName+"\nmodule_path: example.com/cp\n"), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	markServiceProject(t, dir) // deploy derives on for a service
 	t.Chdir(dir)
 	return dir
 }

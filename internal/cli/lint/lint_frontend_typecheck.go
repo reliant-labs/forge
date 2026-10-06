@@ -139,12 +139,6 @@ type typecheckResult struct {
 // declared frontend nor a frontends/ directory resolves to nil — a clean
 // no-op, not an error.
 func frontendTypecheckTargets(cfg *config.ProjectConfig) []frontendTarget {
-	// The opt-out wins over BOTH sources, including the directory scan: a
-	// project that said "forge does not drive a Node toolchain here" must
-	// not be typechecked because it happens to have a frontends/ folder.
-	if cfg.FrontendToolchainDisabled() {
-		return nil
-	}
 	if cfg != nil && len(cfg.Frontends) > 0 {
 		declared := cfg.ToolchainFrontends()
 		out := make([]frontendTarget, 0, len(declared))

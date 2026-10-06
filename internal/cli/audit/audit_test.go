@@ -419,20 +419,15 @@ func TestAuditFeatures_ZeroConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("details.resolved missing or wrong type: %T", cat.Details["resolved"])
 	}
-	// Stable features default ON. Experimental features default OFF
-	// and are asserted separately below.
+	// A zero-value config falls back to "everything on" except ingress and
+	// operators, which only exist once the repo declares them.
 	for _, name := range []string{
 		config.FeatureBuild, config.FeatureFrontend,
 		config.FeatureCI,
 		config.FeatureObservability,
 	} {
 		if !resolved[name] {
-			t.Errorf("resolved[%q] = false, want true (no features block → stable enabled)", name)
-		}
-	}
-	for _, name := range config.ExperimentalFeatureNames {
-		if resolved[name] {
-			t.Errorf("resolved[%q] = true, want false (no features block → experimental disabled)", name)
+			t.Errorf("resolved[%q] = false, want true (zero config → enabled)", name)
 		}
 	}
 	disabled, ok := cat.Details["disabled"].([]string)
@@ -458,14 +453,11 @@ func TestAuditFeatures_ZeroConfig(t *testing.T) {
 
 // TestAuditFeatures_PartialDisable asserts the enabled/disabled
 // splits in the details payload are derived from the resolved map:
-// disabling a couple of stable features must surface them in
-// `disabled` (alphabetised) and remove them from `enabled`.
-// Experimental features land in their own buckets so they don't
-// pollute the stable-disabled signal.
+// disabling a couple of features must surface them in `disabled`
+// (alphabetised) and remove them from `enabled`.
 func TestAuditFeatures_PartialDisable(t *testing.T) {
-	off := false
 	cfg := &config.ProjectConfig{
-		Features: config.FeaturesConfig{Build: &off, Deploy: &off},
+		Features: config.FeaturesConfig{}.With(config.FeatureBuild, false).With(config.FeatureDeploy, false),
 	}
 	cat := auditFeatures(cfg)
 	disabled, ok := cat.Details["disabled"].([]string)
@@ -484,49 +476,6 @@ func TestAuditFeatures_PartialDisable(t *testing.T) {
 	}
 	if len(disabled) != len(wantDisabled) {
 		t.Errorf("disabled count = %d, want %d (%v)", len(disabled), len(wantDisabled), disabled)
-	}
-}
-
-// TestAuditFeatures_ExperimentalBuckets asserts experimental
-// features are surfaced in their own buckets and don't pollute
-// the stable enabled/disabled lists. A project with no opt-ins
-// must show every experimental name in `experimental_available`
-// and an empty `experimental_enabled`.
-func TestAuditFeatures_ExperimentalBuckets(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Features: config.FeaturesConfig{
-			Experimental: config.ExperimentalConfig{
-				Reconcile: true,
-			},
-		},
-	}
-	cat := auditFeatures(cfg)
-	expEnabled, ok := cat.Details["experimental_enabled"].([]string)
-	if !ok {
-		t.Fatalf("details.experimental_enabled wrong type: %T", cat.Details["experimental_enabled"])
-	}
-	wantEnabled := map[string]bool{config.FeatureReconcile: true}
-	if len(expEnabled) != len(wantEnabled) {
-		t.Errorf("experimental_enabled = %v, want %v", expEnabled, wantEnabled)
-	}
-	for _, name := range expEnabled {
-		if !wantEnabled[name] {
-			t.Errorf("unexpected experimental_enabled feature %q", name)
-		}
-	}
-	expAvail, ok := cat.Details["experimental_available"].([]string)
-	if !ok {
-		t.Fatalf("details.experimental_available wrong type: %T", cat.Details["experimental_available"])
-	}
-	if len(expAvail) != len(config.ExperimentalFeatureNames) {
-		t.Errorf("experimental_available count = %d, want %d", len(expAvail), len(config.ExperimentalFeatureNames))
-	}
-	// Experimental opt-ins must NOT appear in the stable enabled bucket.
-	stableEnabled, _ := cat.Details["enabled"].([]string)
-	for _, name := range stableEnabled {
-		if config.IsExperimentalFeature(name) {
-			t.Errorf("experimental feature %q leaked into stable `enabled` bucket", name)
-		}
 	}
 }
 

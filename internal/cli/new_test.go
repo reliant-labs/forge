@@ -128,22 +128,32 @@ func TestApplyDisableFlags_AllFeatures(t *testing.T) {
 	}
 }
 
-// TestApplyDisableFlags_ExperimentalRejected verifies that asking to
-// --disable an experimental feature produces a friendly error rather
-// than silently succeeding. Experimental features are default-off; an
-// "off" --disable would be a no-op that hides the new shape from users.
-func TestApplyDisableFlags_ExperimentalRejected(t *testing.T) {
-	for _, name := range []string{"ingress", "external_builds", "operators", "strict_wiring"} {
+// TestApplyDisableFlags_DerivedFeaturesRejected: ingress and operators cannot be
+// --disable'd. They are on only when the repo declares a gateway or an operator,
+// and a new project has neither, so there is nothing to turn off — and the
+// message says what turns them on instead of leaving a dead flag.
+func TestApplyDisableFlags_DerivedFeaturesRejected(t *testing.T) {
+	for _, name := range []string{"ingress", "operators"} {
 		t.Run(name, func(t *testing.T) {
 			gen := newTestGen()
 			err := applyDisableFlags(gen, []string{name})
 			if err == nil {
-				t.Fatalf("--disable %s should error: experimental features are opt-in only", name)
+				t.Fatalf("--disable %s should error: it derives from what exists in the repo", name)
 			}
-			if !strings.Contains(err.Error(), "experimental") {
-				t.Errorf("error should explain experimental opt-in; got: %v", err)
+			if !strings.Contains(err.Error(), "derives from what exists") {
+				t.Errorf("error should explain the feature is derived; got: %v", err)
 			}
 		})
+	}
+}
+
+// The retired experimental spellings are unknown features now, not silently
+// accepted.
+func TestApplyDisableFlags_RetiredExperimentalNamesAreUnknown(t *testing.T) {
+	for _, name := range []string{"external_builds", "strict_wiring", "reconcile"} {
+		if err := applyDisableFlags(newTestGen(), []string{name}); err == nil || !strings.Contains(err.Error(), "unknown feature") {
+			t.Errorf("--disable %s: want an unknown-feature error, got %v", name, err)
+		}
 	}
 }
 

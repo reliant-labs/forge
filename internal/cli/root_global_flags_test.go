@@ -32,7 +32,7 @@ func TestRootPersistentFlagsArePinned(t *testing.T) {
 	// command honors it — which is exactly the bar this test sets. It exists
 	// because the process CWD was previously the only way to choose that
 	// directory, which an in-process embedder cannot safely mutate.
-	want := []string{"project-dir", "silence-experimental"}
+	want := []string{"project-dir"}
 	if len(got) != len(want) {
 		t.Fatalf("root persistent flags = %v, want %v\n"+
 			"A global flag must be honored by EVERY command. If the new flag only "+

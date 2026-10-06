@@ -37,7 +37,7 @@ import (
 //
 // Mirrors the friction repro exactly:
 //   - cfg.Kind = "service"
-//   - cfg.Features.Frontend = &false (explicit, from `forge project new`)
+//   - the frontend feature is off (no frontend exists in the repo)
 //   - cfg.Frontends is empty
 //   - proto/services/ is empty (no --service was passed)
 //   - workers/ has the just-scaffolded bar/ dir (HasWorkers=true)
@@ -46,7 +46,6 @@ import (
 // proceed to render a Next.js dashboard — the exact failure mode the
 // friction report describes.
 func TestScaffoldWorkerPipelineSkipsFrontendSteps(t *testing.T) {
-	frontendOff := false
 	ctx := &pipelineContext{
 		ProjectDir: ".",
 		AbsPath:    "/abs/.",
@@ -54,9 +53,7 @@ func TestScaffoldWorkerPipelineSkipsFrontendSteps(t *testing.T) {
 			Name:       "x",
 			ModulePath: "github.com/x/x",
 			Kind:       "service",
-			Features: config.FeaturesConfig{
-				Frontend: &frontendOff,
-			},
+			Features:   config.FeaturesConfig{}.With(config.FeatureFrontend, false),
 			// No Frontends entries.
 		},
 		HasServices:  false,
@@ -81,32 +78,24 @@ func TestScaffoldWorkerPipelineSkipsFrontendSteps(t *testing.T) {
 	}
 }
 
-// TestAddWorkerNoNewFeaturesFrontendWriteSite is a structural pairing:
-// the only legal write sites for `cfg.Features.Frontend` in the cli
-// package are `runFrontend` (add.go) and the `--disable` handler
-// in `runNew` (new.go). The friction report claimed
-// `forge scaffold worker` flipped `features.frontend: false → true`; on
-// inspection no such write exists today. This test fails if a future
-// refactor introduces a third write site, which would risk
-// reintroducing the same regression.
-func TestScaffoldWorkerNoNewFeaturesFrontendWriteSite(t *testing.T) {
-	// The `scaffold` command group lives in internal/cli/scaffold; new.go stays in
-	// internal/cli. Scan both trees so the structural guard keeps covering
-	// every cli-package write site for cfg.Features.Frontend.
+// TestScaffoldWorkerNeverForcesTheFrontendFeature is a structural pairing. The
+// friction report claimed `forge scaffold worker` flipped the frontend feature
+// on; on inspection no such write existed. Features are derived now, so the
+// only way to force one is FeaturesConfig.With, and the only file that may
+// force the FRONTEND feature is new.go's `--disable frontend` handler. This
+// fails if a refactor adds a second site, which would reintroduce the
+// regression.
+func TestScaffoldWorkerNeverForcesTheFrontendFeature(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("glob cli sources: %v", err)
 	}
-	addFiles, err := filepath.Glob(filepath.Join("add", "*.go"))
+	subFiles, err := filepath.Glob(filepath.Join("*", "*.go"))
 	if err != nil {
-		t.Fatalf("glob add sources: %v", err)
+		t.Fatalf("glob cli subpackages: %v", err)
 	}
-	files = append(files, addFiles...)
-	allowed := map[string][]string{
-		"add.go":     {"cfg.Features.Frontend = &frontendOn"},
-		"add/add.go": {"cfg.Features.Frontend = &frontendOn"},
-		"new.go":     {"gen.Features.Frontend = f"},
-	}
+	files = append(files, subFiles...)
+
 	var offenders []string
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
@@ -118,32 +107,19 @@ func TestScaffoldWorkerNoNewFeaturesFrontendWriteSite(t *testing.T) {
 		}
 		for _, raw := range strings.Split(string(data), "\n") {
 			line := strings.TrimSpace(raw)
-			// Match only true assignments with " = " (single =, space-
-			// padded). Read-only references like
-			// `cfg.Features.FrontendEnabled()` or
-			// `cfg.Features.Frontend != nil` don't match.
-			if !strings.Contains(line, "Features.Frontend = ") {
+			if !strings.Contains(line, "config.FeatureFrontend") || !strings.Contains(line, ".With(") {
 				continue
 			}
-			matched := false
-			for _, ok := range allowed[f] {
-				if strings.Contains(line, ok) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				offenders = append(offenders, f+": "+line)
-			}
+			// new.go forces features generically from the --disable list
+			// (it names no feature on this line), so it never matches.
+			offenders = append(offenders, f+": "+line)
 		}
 	}
 	if len(offenders) > 0 {
-		t.Errorf("unexpected new write site(s) to cfg.Features.Frontend:\n  %s\n\n"+
-			"Only runFrontend (add.go) and runNew's --disable handler (new.go) may "+
-			"write this field. Any other write risks reintroducing the kalshi-trader "+
-			"friction forge-add-worker-runs-full-pipeline where `forge scaffold worker` was "+
-			"reported to flip features.frontend on.",
-			strings.Join(offenders, "\n  "))
+		t.Errorf("unexpected site(s) forcing the frontend feature:\n  %s\n\n"+
+			"The frontend feature derives from a frontend existing. Forcing it from a "+
+			"scaffold command risks reintroducing the kalshi-trader friction "+
+			"forge-add-worker-runs-full-pipeline.", strings.Join(offenders, "\n  "))
 	}
 }
 

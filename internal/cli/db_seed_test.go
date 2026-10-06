@@ -52,29 +52,16 @@ func TestSeedEnvClassification(t *testing.T) {
 	}
 }
 
-// The database.seed block flows onto seedplan.Config.
-func TestSeedConfigFlows(t *testing.T) {
-	load := func(t *testing.T, forgeYAML string) seedplan.Config {
-		t.Helper()
-		dir := t.TempDir()
-		path := filepath.Join(dir, "forge.yaml")
-		if err := os.WriteFile(path, []byte(forgeYAML), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		store, err := loadProjectStoreFrom(path)
-		if err != nil {
-			t.Fatalf("loadProjectStoreFrom: %v", err)
-		}
-		return seedConfigFromStore(store)
+// The seed config is the library default: forge.yaml has no database.seed
+// block, so nothing project-specific can reach the planner.
+func TestSeedConfigIsTheLibraryDefault(t *testing.T) {
+	got := seedConfigFromProject()
+	want := seedplan.DefaultConfig()
+	if got.Rows != want.Rows || got.Salt != want.Salt || got.Tables != nil {
+		t.Errorf("seed config = %+v, want the library default %+v", got, want)
 	}
-
-	const base = "name: app\nmodule_path: example.com/app\n"
-	got := load(t, base+"database:\n  seed:\n    rows: 42\n    salt: 7\n")
-	if got.Rows != 42 {
-		t.Errorf("database.seed.rows: Rows = %d, want 42", got.Rows)
-	}
-	if got.Salt != 7 {
-		t.Errorf("database.seed.salt: Salt = %d, want 7", got.Salt)
+	if got.Rows != 20 {
+		t.Errorf("default rows = %d, want 20 (fills a page and exercises pagination)", got.Rows)
 	}
 }
 

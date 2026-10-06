@@ -132,7 +132,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
-	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload")
+	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload. Not persisted: features derive from the tree that gets written.")
 	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; only claude also receives on-disk skills. reliant (default): reliant.md — skills are read from the forge binary (`forge skill load <name>`) and discovered via forge.yaml, so NO skill files are written. claude: CLAUDE.md + .claude/skills/ (regenerated every `forge generate`). cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as `harness:` in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
@@ -668,9 +668,6 @@ func generateAdditionalFrontends(targetPath, modulePath, projectName string, fro
 			Workspaces: frontendWorkspaces,
 		}); err != nil {
 			return fmt.Errorf("failed to generate frontend %s: %w", feName, err)
-		}
-		if err := generator.AppendFrontendToConfig(targetPath, feName, fePort); err != nil {
-			return fmt.Errorf("failed to update config for frontend %s: %w", feName, err)
 		}
 	}
 	return nil
@@ -1367,38 +1364,32 @@ func readModuleName(path string) (string, error) {
 	return "", fmt.Errorf("module directive not found in go.mod")
 }
 
+// applyDisableFlags turns scaffold emission off for the named features. It
+// steers what THIS scaffold writes and nothing else: no feature is persisted
+// (forge.yaml has no features block), so the next load derives each feature
+// from the tree that was written. `--disable orm` therefore scaffolds no
+// db/migrations, and a project without it derives orm off; it is not a switch
+// that survives the files it omitted.
 func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error {
-	f := func(b bool) *bool { return &b }(false)
 	for _, name := range disable {
-		switch strings.TrimSpace(strings.ToLower(name)) {
-		case "orm":
-			gen.Features.ORM = f
-		case "codegen":
-			gen.Features.Codegen = f
-		case "migrations":
-			gen.Features.Migrations = f
-		case "ci":
-			gen.Features.CI = f
-		case "build":
-			gen.Features.Build = f
-		case "contracts":
-			gen.Features.Contracts = f
-		case "frontend":
-			gen.Features.Frontend = f
-		case "observability":
-			gen.Features.Observability = f
-		case "hot_reload", "hot-reload", "hotreload":
-			gen.Features.HotReload = f
-		case "deploy":
-			gen.Features.Deploy = f
-		case "ingress", "external_builds", "operators", "strict_wiring", "reconcile":
+		key := strings.TrimSpace(strings.ToLower(name))
+		switch key {
+		case "hot-reload", "hotreload":
+			key = config.FeatureHotReload
+		case "ingress", "operators":
 			return cliutil.UserErr("forge project new --disable",
-				fmt.Sprintf("feature %q is experimental (opt-in only); cannot be --disable'd because it's already off by default", name),
+				fmt.Sprintf("feature %q cannot be --disable'd: it derives from what exists (a forge.Gateway in deploy/kcl, internal/operators/), and a new project has neither", name),
 				"",
-				"experimental features default off; opt in per project via `features.experimental.<name>: true` in forge.yaml")
+				"nothing to disable — add the gateway or operator later and the feature turns on")
+		}
+		switch key {
+		case config.FeatureORM, config.FeatureCodegen, config.FeatureMigrations, config.FeatureCI,
+			config.FeatureBuild, config.FeatureContracts, config.FeatureFrontend,
+			config.FeatureObservability, config.FeatureHotReload, config.FeatureDeploy:
+			gen.Features = gen.Features.With(key, false)
 		default:
 			return cliutil.UserErr("forge project new --disable",
-				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload", name),
+				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload", name),
 				"",
 				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}

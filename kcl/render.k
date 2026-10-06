@@ -520,7 +520,7 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "build": _render_build(w.build)
         "runtime": _render_runtime(w, _rt)
         "spec": _spec_json(w, _rt, bundle)
-    }
+    } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {})
 }
 
 # `before` names a workload the env declares, on the same runtime set that
@@ -1048,7 +1048,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # as the StaticSite spec's runtimeConfig.
         "runtime_config": _rc
         "runtime_config_spec": _rc_spec
-    }
+    } | ({"routes": f.routes} if f.routes else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string

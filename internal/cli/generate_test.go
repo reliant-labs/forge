@@ -305,16 +305,18 @@ func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
 	}
 }
 
-func TestLoadProjectConfigFromNormalizesFrontendTypeCasing(t *testing.T) {
+// The frontend inventory is derived from frontends/<name> on disk, typed by
+// the framework's own config file — there is no yaml `type:` to mis-case.
+func TestLoadProjectConfigFromDerivesFrontendsFromDisk(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "forge.yaml")
-	config := `name: sample
-module_path: example.com/sample
-frontends:
-  - name: web
-    type: NEXTJS
-`
-	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("name: sample\nmodule_path: example.com/sample\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "frontends", "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "frontends", "web", "next.config.ts"), []byte("export default {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -322,14 +324,11 @@ frontends:
 	if err != nil {
 		t.Fatalf("loadProjectConfigFrom() error = %v", err)
 	}
-	if cfg == nil {
-		t.Fatal("expected config, got nil")
-	}
 	if len(cfg.Frontends) != 1 {
 		t.Fatalf("expected one frontend, got %d", len(cfg.Frontends))
 	}
 	if cfg.Frontends[0].Type != "nextjs" {
-		t.Fatalf("expected frontend type to be normalized to nextjs, got %q", cfg.Frontends[0].Type)
+		t.Fatalf("expected frontend type nextjs (from next.config.ts), got %q", cfg.Frontends[0].Type)
 	}
 	if cfg.Frontends[0].DeclaredDir() != filepath.ToSlash(filepath.Join("frontends", "web")) {
 		t.Fatalf("expected frontend path frontends/web, got %q", cfg.Frontends[0].DeclaredDir())

@@ -444,13 +444,13 @@ A workload needing a kubeconfig for ANOTHER cluster declares
 `forge.KubeconfigSecret`, minted on every deploy: `deploy/cluster-access`.
 To have the control plane deploy INTO your cluster: `deploy/cluster-connect`.
 
-## `features:` block — disabling subsystems
+## Features are derived, not configured
 
-`forge.yaml`'s `features:` block gates `deploy`, `build`, `ci`, `codegen`,
-`orm`, `migrations`, `frontend`, `observability`, `hot_reload`, `contracts`,
-`docs`, `ingress`, `operators` — plus `strict_wiring` and `reconcile` under
-`features.experimental:`. Each defaults from the derived shape; an explicit
-`features.<name>` wins. `ingress` and `operators` are opt-in.
+No `features:` block; subsystems turn on from the repo: service →
+`codegen`/`observability`/`hot_reload`/`deploy`; non-library → `ci`/`build`;
+`db/migrations/` → `migrations`/`orm` (off under `//forge:no-orm`); a frontend →
+`frontend`; a `forge.Gateway` in `deploy/kcl` → `ingress`; `internal/operators/<name>/`
+→ `operators`. `forge project features` explains.
 
 ## k3d local-registry mirror
 

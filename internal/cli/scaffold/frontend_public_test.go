@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -54,12 +53,24 @@ func TestRunAddFrontend_NoIdPScaffoldsPublicFrontend(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "frontends", "web", "src", "app", "auth")); !os.IsNotExist(err) {
 		t.Errorf("a public frontend must not ship /auth sign-in screens (stat err = %v)", err)
 	}
+	// The choice is visible in the files (no route guard, no /auth screens),
+	// not in forge.yaml: nothing is written there, and the frontend is derived
+	// from frontends/web on disk.
+	raw, err := os.ReadFile(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, removed := range []string{"auth_mode", "frontends:", "features:", "stack:"} {
+		if strings.Contains(string(raw), removed) {
+			t.Errorf("scaffolding a frontend must not write %q into forge.yaml:\n%s", removed, raw)
+		}
+	}
 	cfg, err := generator.ReadProjectConfig(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Frontends[0].AuthMode; got != config.AuthModeNone {
-		t.Errorf("forge.yaml auth_mode = %q, want %q so the choice is visible", got, config.AuthModeNone)
+	if len(cfg.Frontends) != 1 || cfg.Frontends[0].Name != "web" {
+		t.Errorf("the scaffolded frontend must be derived from frontends/web, got %+v", cfg.Frontends)
 	}
 }
 
@@ -90,14 +101,14 @@ func TestRunAddFrontend_WithIdPKeepsTheSignInGate(t *testing.T) {
 func TestResolveFrontendAuthMode_ExplicitWins(t *testing.T) {
 	root := t.TempDir()
 	writeDevMainK(t, root, false)
-	if got := resolveFrontendAuthMode(root, config.AuthModeNative); got != config.AuthModeNative {
+	if got := resolveFrontendAuthMode(root, authModeNative); got != authModeNative {
 		t.Errorf("explicit native = %q", got)
 	}
 	writeDevMainK(t, root, true)
-	if got := resolveFrontendAuthMode(root, config.AuthModeNone); got != config.AuthModeNone {
+	if got := resolveFrontendAuthMode(root, authModeNone); got != authModeNone {
 		t.Errorf("explicit none = %q", got)
 	}
-	if got := resolveFrontendAuthMode(root, ""); got != config.AuthModeNative {
+	if got := resolveFrontendAuthMode(root, ""); got != authModeNative {
 		t.Errorf("default with IdP = %q, want native", got)
 	}
 }

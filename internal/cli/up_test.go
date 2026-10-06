@@ -786,9 +786,6 @@ func TestRunUpServices_EndToEnd(t *testing.T) {
 module_path: github.com/example/demo
 version: "0.1.0"
 binary: shared
-features:
-  codegen: true
-  frontend: true
 `)
 	fixture := fmt.Sprintf(`{
   "output": {

@@ -22,18 +22,14 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	}
 
 	// The scaffolded forge.yaml is MINIMAL and PROJECT-GLOBAL only: identity
-	// (name/module), the forge version pin, frontends, and explicit feature
-	// overrides. What the project CONTAINS is not written here at all — the
-	// scaffold writes the code (protos, handlers, cmd/) and every later read
-	// discovers the components from it. `kind:` is not written either; it
-	// derives from that same tree on load. Everything else — the features:
-	// block and the database/ci/lint/contracts/auth/deploy/docker/k8s
-	// sections — is derived from the project shape at load time
-	// (config.ApplyDerivedDefaults). Any of those keys remain valid in
-	// forge.yaml as overrides; they're just not required boilerplate.
-	// Explicit user choices (e.g. `forge project new --disable ci`) are
-	// recorded in Features below and survive the write-time normalization
-	// because they differ from the derived default.
+	// (name/module), the forge version pin, and the harness. What the project
+	// CONTAINS is not written here at all — the scaffold writes the code
+	// (protos, handlers, cmd/, db/migrations, frontends/, deploy/kcl) and
+	// every later read derives the components, features, frontends, database
+	// and kind from that tree. The ci/lint/contracts/deploy/docker/k8s
+	// sections are derived from the project shape at load time
+	// (config.ApplyDerivedDefaults); they remain valid in forge.yaml as
+	// overrides, just not required boilerplate.
 	cfg := config.ProjectConfig{
 		Name:         g.Name,
 		ModulePath:   g.ModulePath,
@@ -45,8 +41,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		// the default — an explicit `harness: reliant` is what lets the
 		// skills emitter tell "chose the default" apart from "predates the
 		// field" (see ProjectConfig.Harness).
-		Harness:  string(g.Harness.Normalized()),
-		Features: g.Features,
+		Harness: string(g.Harness.Normalized()),
 		// Greenfield projects have no legacy env-reading debt, so scaffold
 		// the typed-access guardrail in its strict, gating form. NOTE: this
 		// is DIFFERENT from the schema default for an ABSENT key, which is
@@ -58,56 +53,30 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		},
 	}
 
-	// Kind sync: cfg.Kind is set from the requested kind so
-	// NormalizeForWrite's feature derivation (which reads kind) drops the
-	// right kind-default falses. It is not serialized — the reader derives
-	// kind from the tree this scaffold is writing.
+	// Kind sync: cfg.Kind is set from the requested kind so NormalizeForWrite's
+	// section defaults (which read kind) drop the right values. It is not
+	// serialized — the reader derives kind from the tree this scaffold is
+	// writing.
 	cfg.Kind = g.effectiveKind()
 
-	if g.FrontendName != "" {
-		cfg.Frontends = []config.FrontendConfig{
-			config.FrontendConfig{
-				Name: g.FrontendName,
-				Type: "nextjs",
-				// g.FrontendPort is 0 for a fresh scaffold (ephemeral): with
-				// FrontendConfig.Port omitempty this writes NO `port:` line, so
-				// `forge env up`/`up` allocate a free port at launch and report it
-				// — two dev stacks never fight for the frontend port. An
-				// explicit override (>0) is serialized verbatim.
-				Port: g.FrontendPort,
-			}.WithDir(fmt.Sprintf("frontends/%s", g.FrontendName)),
-		}
-	}
-
-	// Persist the project-level frontend.workspaces flag when opted-in
-	// so subsequent `forge generate` runs know to maintain the pnpm-
-	// workspace layout. When false the field is omitted thanks to
-	// `omitempty` on FrontendProjectConfig.Workspaces — keeps forge.yaml
-	// byte-identical to projects scaffolded before the flag existed.
-	if g.FrontendWorkspaces {
-		cfg.Frontend = config.FrontendProjectConfig{Workspaces: true}
-	}
-
-	// Normalize before marshalling: feature flags and section values that
-	// match the shape-derived defaults are dropped, so what hits disk is
-	// only identity + components + explicit user choices. Kind-default
-	// feature falses set by ApplyKindFeatureDefaults (cli/library) match
-	// derivation and disappear; `--disable` choices differ and survive.
+	// Normalize before marshalling: section values that match the
+	// shape-derived defaults are dropped, so what hits disk is only identity
+	// + explicit user choices.
 	data, err := yaml.Marshal(config.NormalizeForWrite(&cfg))
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
 
-	// Prepend a short header. The file is intentionally minimal — the
-	// database/ci/lint/contracts sections and the features: block are
-	// derived from the project shape at load time and only need to appear
+	// Prepend a short header. The file is intentionally minimal: everything
+	// else is derived from the repo at load time and only needs to appear
 	// here when overriding a default. Authentication is OWNED CODE, not
 	// config: it is internal/app/auth.go's SetupAuth.
 	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
-		"# This file is minimal on purpose: database, ci, lint, contracts and\n" +
-		"# the features: block are derived from the project shape. Authentication\n" +
-		"# is owned code, not config — it is internal/app/auth.go's SetupAuth.\n" +
-		"# Add a derived key only to override a default\n" +
+		"# This file is minimal on purpose. Features, the database, the frontends and\n" +
+		"# the project kind are derived from what exists in the repo (db/migrations,\n" +
+		"# frontends/, deploy/kcl, internal/operators, ...), not configured here.\n" +
+		"# Authentication is owned code — internal/app/auth.go's SetupAuth.\n" +
+		"# Add a section (ci, lint, contracts, ...) only to override a default\n" +
 		"# (`forge skill load architecture` documents the schema;\n" +
 		"# `forge skill list` indexes the per-topic skills, e.g. `auth`).\n\n")
 	data = append(header, data...)
@@ -177,8 +146,6 @@ func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 //
 //	SetProjectConfigScalar      one top-level scalar
 //	SetProjectConfigScalarPath  one nested scalar, creating blocks as needed
-//	AppendFrontendEntryToConfig one entry onto the frontends sequence
-//	appendToProjectConfigSequence  the general list-append
 //
 // The one lane that may legitimately write a whole document is the scaffold,
 // where the file does not exist yet and there is no user content to lose.
@@ -192,8 +159,7 @@ func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 // and any key the Go struct does not model all survive byte-for-byte.
 //
 // This is the write path for "change one field on a file the user owns". It
-// is the scalar sibling of appendToProjectConfigSequence, and exists for the
-// same reason: forge.yaml is a hand-editable manifest, not a serialization
+// exists because forge.yaml is a hand-editable manifest, not a serialization
 // of a Go value. See WriteProjectConfigFile for what the whole-struct
 // alternative destroys.
 //
@@ -210,8 +176,7 @@ func SetProjectConfigScalar(path, key string, value any) error {
 }
 
 // SetProjectConfigScalarPath is SetProjectConfigScalar for a nested key: it
-// sets the scalar at keys (e.g. {"features","frontend"} or
-// {"stack","frontend","framework"}) in the forge.yaml at path, rewriting only
+// sets the scalar at keys (e.g. {"ci","provider"}) in the forge.yaml at path, rewriting only
 // that value's own bytes.
 //
 // Blocks along the path that do not exist are created — appended at the end
@@ -398,113 +363,4 @@ func blockEndLine(mapping *yaml.Node) int {
 	}
 	walk(mapping)
 	return last // 1-based last line == 0-based index of the line after it
-}
-
-// AppendFrontendToConfig reads the project config at the given project root,
-// appends a new frontend entry, and writes it back. It uses yaml.Node
-// round-tripping so that unknown keys, comments, and field ordering added
-// by the user are preserved.
-func AppendFrontendToConfig(projectRoot, frontendName string, port int) error {
-	return AppendFrontendToConfigWithKind(projectRoot, frontendName, port, "")
-}
-
-// AppendFrontendToConfigWithKind is like AppendFrontendToConfig but accepts a
-// kind parameter ("web" or "mobile") to select the frontend type.
-func AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, kind string) error {
-	configPath := filepath.Join(projectRoot, "forge.yaml")
-	feType := "nextjs"
-	if kind == "mobile" {
-		feType = "react-native"
-	}
-	entry := config.FrontendConfig{
-		Name: frontendName,
-		Type: feType,
-		Kind: kind,
-		Port: port,
-	}.WithDir(fmt.Sprintf("frontends/%s", frontendName))
-	return appendToProjectConfigSequence(configPath, "frontends", entry)
-}
-
-// AppendFrontendEntryToConfig appends a fully-built frontend entry to the
-// forge.yaml at configPath, in place.
-//
-// The two helpers above construct the entry from a name and port; this one
-// takes the entry the caller already assembled, which `forge scaffold
-// frontend` needs because its entry carries output/base_path/routes as well.
-// Same in-place, comment-preserving write.
-func AppendFrontendEntryToConfig(configPath string, entry config.FrontendConfig) error {
-	return appendToProjectConfigSequence(configPath, "frontends", entry)
-}
-
-// appendToProjectConfigSequence appends entry to the YAML sequence at the
-// top-level key on the project config at configPath, preserving any keys,
-// comments, and ordering the user added that are not part of the Go struct.
-// If the key does not exist, it is created.
-func appendToProjectConfigSequence(configPath, key string, entry any) error {
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
-	}
-
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("parse project config: %w", err)
-	}
-
-	// The document node wraps a single mapping node.
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return fmt.Errorf("project config %s: expected a YAML document", configPath)
-	}
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return fmt.Errorf("project config %s: expected top-level mapping", configPath)
-	}
-
-	// Build the node for the new entry via round-tripping through yaml.Node.
-	entryBytes, err := yaml.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("marshal new %s entry: %w", key, err)
-	}
-	var entryDoc yaml.Node
-	if err := yaml.Unmarshal(entryBytes, &entryDoc); err != nil {
-		return fmt.Errorf("parse new %s entry: %w", key, err)
-	}
-	if entryDoc.Kind != yaml.DocumentNode || len(entryDoc.Content) == 0 {
-		return fmt.Errorf("unexpected YAML shape for new %s entry", key)
-	}
-	entryNode := entryDoc.Content[0]
-
-	// Find the sequence node for `key` in the top-level mapping. Mapping
-	// nodes store keys and values as alternating children.
-	var seq *yaml.Node
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		k := root.Content[i]
-		v := root.Content[i+1]
-		if k.Kind == yaml.ScalarNode && k.Value == key {
-			seq = v
-			break
-		}
-	}
-
-	if seq == nil {
-		// Key does not exist — create an empty sequence and append it.
-		seq = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-		root.Content = append(root.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-			seq,
-		)
-	} else if seq.Kind != yaml.SequenceNode {
-		// The key is present but set to null/empty — replace with a sequence.
-		seq.Kind = yaml.SequenceNode
-		seq.Tag = "!!seq"
-		seq.Value = ""
-	}
-
-	seq.Content = append(seq.Content, entryNode)
-
-	out, err := yaml.Marshal(&doc)
-	if err != nil {
-		return fmt.Errorf("marshal project config: %w", err)
-	}
-	return os.WriteFile(configPath, out, 0644)
 }

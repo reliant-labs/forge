@@ -498,19 +498,6 @@ func TestFrontendTypecheck_SkipFlagAndFrameworkNone(t *testing.T) {
 			t.Errorf("%q skip message must name the flag, got %q", name, msg)
 		}
 	}
-
-	// stack.frontend.framework: none — forge does not drive a Node
-	// toolchain here, so the typecheck must not shell into the frontend.
-	cfg := cfgWithFrontends("web")
-	cfg.Stack.Frontend.Framework = "none"
-	step := findStep(t, "frontend typecheck")
-	run, msg := step.shouldRun(&lintRunCtx{cfg: cfg, cwd: cwd})
-	if run {
-		t.Error("stack.frontend.framework: none must skip the typecheck lane, as it already skips the build")
-	}
-	if !strings.Contains(msg, "framework") {
-		t.Errorf("skip message must name the setting, got %q", msg)
-	}
 }
 
 // TestFrontendTypecheckTargets_ResolvesFromProject: the set comes from
@@ -552,15 +539,6 @@ func TestFrontendTypecheckTargets_ResolvesFromProject(t *testing.T) {
 	fallback := frontendTypecheckTargets(nil)
 	if len(fallback) != 1 || fallback[0].name != "stale" {
 		t.Errorf("no-config fallback must scan frontends/, got %+v", fallback)
-	}
-
-	// The toolchain opt-out beats BOTH sources — including the directory
-	// scan, so an undeclared frontends/ folder cannot smuggle the lane back
-	// into a project that opted out.
-	optedOut := &config.ProjectConfig{Name: "demo"}
-	optedOut.Stack.Frontend.Framework = "none"
-	if got := frontendTypecheckTargets(optedOut); got != nil {
-		t.Errorf("stack.frontend.framework: none must resolve to no targets even with a frontends/ dir, got %+v", got)
 	}
 }
 

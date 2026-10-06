@@ -225,9 +225,10 @@ func TestEnvDeploy_NoVersion_RefusedBeforeBuild(t *testing.T) {
 
 func TestEnvDeploy_Promote_RefusedBeforeBundleAndPromotion(t *testing.T) {
 	dir := planProject(t, hostedStaticPlanFixture)
-	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: pt\nmodule_path: example.com/pt\nfeatures:\n  deploy: true\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: pt\nmodule_path: example.com/pt\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	markServiceProject(t, dir) // deploy derives on for a service
 	if err := os.MkdirAll(filepath.Join(dir, "deploy", "kcl", "prod"), 0o755); err != nil {
 		t.Fatal(err)
 	}

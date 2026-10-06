@@ -233,6 +233,49 @@ _invalid_annotation_keys = lambda a: any -> [str] {
 }
 
 # ---------------------------------------------------------------------------
+# An app-flow health check.
+# ---------------------------------------------------------------------------
+
+schema FlowCheck:
+    """An end-to-end invariant only the app can assert, exposed by the
+    workload that holds the state as an HTTP endpoint: 2xx is healthy,
+    anything else (typically 503) is not.
+
+    `forge env smoke <env>` curls it. A route probe proves listeners are up;
+    a flow check proves the APP works — smoke can be green while the
+    managed-daemon flow is broken, because no built-in probe can express
+    "every Ready daemon is attached to the gateway". The owning workload
+    asserts that internally and answers 200/503, so smoke needs only a URL —
+    no database credentials, no privileged command.
+
+    DECLARED ON THE WORKLOAD that serves the endpoint, so it exists exactly
+    where the workload does: an env that does not run the workload does not
+    run its check, and there is no env filter to keep in step.
+
+    WHERE THE URL COMES FROM — never written down, so there is no port to go
+    stale. forge resolves it in the env being smoked, in this order:
+
+      1. an HTTPRoute/GRPCRoute to the workload whose `path` covers this
+         check's `path` (the route forwards it): the listener's origin
+         plus `path`;
+      2. a host workload's first listen port: http://localhost:<port><path>;
+      3. a hosted workload's platform URL, from the control plane's status.
+
+    A workload none of these reaches (a cluster workload with no route
+    covering `path`) is reported by smoke as misdeclared, naming the fix —
+    never silently skipped.
+    """
+    # The endpoint path on the workload, e.g. "/flow-health". Starts with "/".
+    path: str
+    # What the check asserts, in a sentence. Shown beside the verdict.
+    description?: str
+    # Label in the smoke table and --json. Default: "<workload>:<path>".
+    name?: str
+
+    check:
+        path.startswith("/"), "FlowCheck.path must start with '/' (e.g. '/flow-health') — got '${path}'"
+
+# ---------------------------------------------------------------------------
 # The workload.
 # ---------------------------------------------------------------------------
 
@@ -262,6 +305,9 @@ schema Workload:
     # (CreateContainerConfigError, no application log). Non-sensitive
     # config needs no entry: it projects to every workload as a value.
     config_secrets: [str] = []
+    # App-flow health checks `forge env smoke` runs against this workload.
+    # See FlowCheck.
+    flow_checks: [FlowCheck] = []
 
     # --- v1alpha1.WorkloadSpec ---
     kind: str = "service"

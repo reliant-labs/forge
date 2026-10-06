@@ -6,6 +6,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -66,8 +67,7 @@ func TestLoadResolvesInventoryWithMarkerGate(t *testing.T) {
 // TestLoadDerivedInventoryEnablesFrontendFeature is §3 item 4 and the
 // gate question: features.frontend is derived from the inventory being
 // non-empty. Resolving the inventory BEFORE feature derivation is what
-// keeps the frontend pipeline steps (and gateFrontendHasFrontends)
-// ungated for a project that declares no `frontends:` block.
+// keeps the frontend pipeline steps (and gateFrontendHasFrontends) ungated.
 func TestLoadDerivedInventoryEnablesFrontendFeature(t *testing.T) {
 	root := writeSeamProject(t, "name: demo\nmodule_path: github.com/example/demo\n")
 	mkSeamFrontendDir(t, root, "console", "next.config.ts")
@@ -88,40 +88,20 @@ func TestLoadDerivedInventoryEnablesFrontendFeature(t *testing.T) {
 	}
 }
 
-// TestLoadDeclaredBlockWinsOverDiscovery pins the ordering that keeps
-// this invisible to projects that already declare their frontends: an
-// explicit block is returned untouched and the scan never runs, so
-// discovery cannot add a frontend an author deliberately left out.
-func TestLoadDeclaredBlockWinsOverDiscovery(t *testing.T) {
+// TestLoadRejectsFrontendsBlock: `frontends:` is gone, and the loader says so
+// with the migration hint rather than honoring a key nothing documents.
+func TestLoadRejectsFrontendsBlock(t *testing.T) {
 	root := writeSeamProject(t, "name: demo\nmodule_path: github.com/example/demo\n"+
 		"frontends:\n  - name: admin\n    type: nextjs\n    path: apps/admin\n")
-	mkSeamFrontendDir(t, root, "console", "next.config.ts") // present, but undeclared
+	mkSeamFrontendDir(t, root, "console", "next.config.ts")
 
-	cfg, err := LoadProjectDir(root)
-	if err != nil {
-		t.Fatalf("load: %v", err)
+	_, err := LoadProjectDir(root)
+	if err == nil {
+		t.Fatal("a forge.yaml carrying `frontends:` must fail to load")
 	}
-	if len(cfg.Frontends) != 1 || cfg.Frontends[0].Name != "admin" {
-		t.Fatalf("declared block must win untouched, got %+v", cfg.Frontends)
-	}
-	if cfg.Frontends[0].DeclaredDir() != "apps/admin" {
-		t.Errorf("declared path = %q, want apps/admin preserved verbatim", cfg.Frontends[0].DeclaredDir())
-	}
-}
-
-// TestLoadKeepsSourcedFrontendPathEmpty is the second mutation's rule at
-// the load seam: a cross-repo frontend gets NO invented directory.
-func TestLoadKeepsSourcedFrontendPathEmpty(t *testing.T) {
-	root := writeSeamProject(t, "name: demo\nmodule_path: github.com/example/demo\n"+
-		"frontends:\n  - name: sibling-web\n    type: vite-spa\n"+
-		"    source:\n      repo: github.com/example/sibling\n      ref: v1.0.0\n")
-
-	cfg, err := LoadProjectDir(root)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if got := cfg.Frontends[0].DeclaredDir(); got != "" {
-		t.Errorf("path = %q, want empty — a frontend whose code is in another repository has no "+
-			"directory in this tree until its source is materialized", got)
+	for _, want := range []string{`"frontends" is no longer a forge.yaml key`, "forge.Frontend", "frontends/"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q:\n%s", want, err.Error())
+		}
 	}
 }

@@ -112,35 +112,6 @@ func TestMigrationSafetyConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestMigrationSafetyConfigYAMLRoundTrip(t *testing.T) {
-	yamlStr := `enabled: false
-unsafe_add_column: warn
-destructive_change: off
-volatile_default: error
-allowed_destructive:
-  - "*_drop_legacy.up.sql"
-`
-	var cfg MigrationSafetyConfig
-	if err := yaml.Unmarshal([]byte(yamlStr), &cfg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if cfg.IsEnabled() {
-		t.Fatal("expected enabled=false to disable migration safety")
-	}
-	if got := cfg.EffectiveUnsafeAddColumn(); got != "warn" {
-		t.Errorf("EffectiveUnsafeAddColumn() = %q, want warn", got)
-	}
-	if got := cfg.EffectiveDestructiveChange(); got != "off" {
-		t.Errorf("EffectiveDestructiveChange() = %q, want off", got)
-	}
-	if got := cfg.EffectiveVolatileDefault(); got != "error" {
-		t.Errorf("EffectiveVolatileDefault() = %q, want error", got)
-	}
-	if len(cfg.AllowedDestructive) != 1 || cfg.AllowedDestructive[0] != "*_drop_legacy.up.sql" {
-		t.Fatalf("AllowedDestructive = %#v", cfg.AllowedDestructive)
-	}
-}
-
 // TestComponentConfig_EffectiveKind pins the kind discriminator's
 // normalisation. There is no YAML round-trip to test: a ComponentConfig is
 // never serialized — it is the in-memory shape discovery hands back.
@@ -160,50 +131,6 @@ func TestComponentConfig_EffectiveKind(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.comp.EffectiveKind(); got != tt.wantKind {
 				t.Errorf("EffectiveKind = %q, want %q", got, tt.wantKind)
-			}
-		})
-	}
-}
-
-func TestFrontendConfig_KindYAMLRoundTrip(t *testing.T) {
-	tests := []struct {
-		name     string
-		yamlStr  string
-		wantKind string
-	}{
-		{
-			"mobile kind",
-			"name: mobile-app\ntype: react-native\nkind: mobile\npath: frontends/mobile-app\nport: 8081\n",
-			"mobile",
-		},
-		{
-			"web kind (default)",
-			"name: web\ntype: nextjs\npath: frontends/web\nport: 8080\n",
-			"",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var cfg FrontendConfig
-			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if cfg.Kind != tt.wantKind {
-				t.Errorf("Kind = %q, want %q", cfg.Kind, tt.wantKind)
-			}
-
-			// Round-trip
-			out, err := yaml.Marshal(&cfg)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			var cfg2 FrontendConfig
-			if err := yaml.Unmarshal(out, &cfg2); err != nil {
-				t.Fatalf("unmarshal round-trip: %v", err)
-			}
-			if cfg2.Kind != tt.wantKind {
-				t.Errorf("round-trip Kind = %q, want %q", cfg2.Kind, tt.wantKind)
 			}
 		})
 	}

@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // newSmokeCmd builds `forge env smoke <env>` — a post-deploy ingress
@@ -103,13 +101,11 @@ type smokeOptions struct {
 	contextOverride   string
 	namespaceOverride string
 
-	// flowChecks + flowProbe inject the app-flow check phase. Production
-	// leaves them nil and runSmoke resolves the declared checks
-	// (projectFlowChecks) + the real probe (probeFlowHealth); tests set them
-	// to drive the phase deterministically without a forge.yaml or a live HTTP
-	// server. See smoke_flow.go.
-	flowChecks []config.SmokeFlowCheck
-	flowProbe  flowProbe
+	// flowProbe injects the app-flow check probe. Production leaves it nil and
+	// runSmoke uses the real one (probeFlowHealth); tests set it to drive the
+	// phase deterministically without a live HTTP server. The checks themselves
+	// come from the rendered workloads (resolveFlowChecks). See smoke_flow.go.
+	flowProbe flowProbe
 }
 
 // gatewayIPResolver resolves a gateway's live external IP. Swapped out in
@@ -126,11 +122,8 @@ func runSmoke(ctx context.Context, env string, opts smokeOptions) error {
 	if opts.timeout <= 0 {
 		opts.timeout = 10 * time.Second
 	}
-	// Resolve the declared app-flow checks + real probe once for the
-	// production path. Tests inject their own (see smokeOptions).
-	if opts.flowChecks == nil {
-		opts.flowChecks = projectFlowChecks()
-	}
+	// Default the real probe for the production path. Tests inject their own
+	// (see smokeOptions).
 	if opts.flowProbe == nil {
 		opts.flowProbe = probeFlowHealth
 	}
@@ -152,9 +145,11 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 	// App-flow checks run regardless of the route topology: they assert an
 	// end-to-end invariant the route/port probes can't see, so they must
 	// still run (and can still RED the smoke) even when the env has no
-	// host-bearing routes. Resolve them once here and fold them into every
-	// path below.
-	flowResults := runSmokeFlowChecks(ctx, env, opts.flowChecks, opts.flowProbe, flowCheckTimeout(opts.timeout))
+	// host-bearing routes. They are declared on the workloads in the KCL just
+	// rendered; resolve and run them once and fold them into every path below.
+	runFlow := func(hostedURL map[string]string) []smokeRouteResult {
+		return runSmokeFlowChecks(ctx, resolveFlowChecks(entities, hostedURL), opts.flowProbe, flowCheckTimeout(opts.timeout))
+	}
 
 	// A HOSTED env's ingress is not in its render — the platform allocates
 	// the URL, so nothing in the KCL names it. Its targets come from the
@@ -166,8 +161,15 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 		if err != nil {
 			return fmt.Errorf("smoke %s: read the hosted environment's status: %w", env, err)
 		}
+		hostedURL := make(map[string]string, len(status.Workloads))
+		for _, w := range status.Workloads {
+			hostedURL[w.Name] = strings.TrimSpace(w.URL)
+		}
+		flowResults := runFlow(hostedURL)
 		return runHostedSmoke(ctx, env, opts, status, probeHostedURL, flowResults, out)
 	}
+
+	flowResults := runFlow(nil)
 
 	targets := extractSmokeTargets(entities)
 	if len(targets) == 0 {

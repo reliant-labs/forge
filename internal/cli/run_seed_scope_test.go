@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
@@ -39,26 +37,13 @@ func TestAutoSeedConfig_UnknownEntitiesKeepsEveryTable(t *testing.T) {
 	}
 }
 
-// An explicit forge.yaml scope wins over the entity-derived default.
+// An explicit scope on the base config wins over the entity-derived default.
 func TestAutoSeedConfig_ExplicitTablesWin(t *testing.T) {
 	base := seedplan.DefaultConfig()
 	base.Tables = []string{"plans"}
 	got := autoSeedConfig(base, func() []string { t.Fatal("entity lookup must not run"); return nil })
 	if !reflect.DeepEqual(got.Tables, []string{"plans"}) {
 		t.Errorf("explicit scope lost: %v", got.Tables)
-	}
-}
-
-// forge.yaml `database.seed.tables: []` must reach the planner as an EMPTY,
-// non-nil scope — nil would mean "every table".
-func TestSeedConfigFromStore_EmptyTablesMeansNothing(t *testing.T) {
-	empty := []string{}
-	cfg := &config.ProjectConfig{Name: "demo"}
-	cfg.Database.Seed.Tables = &empty
-	store := projectstore.New(cfg)
-	got := seedConfigFromStore(store)
-	if got.Tables == nil || len(got.Tables) != 0 {
-		t.Errorf("tables: [] must map to an empty non-nil scope, got %#v", got.Tables)
 	}
 }
 

@@ -28,7 +28,6 @@ func resetCmdRoute(t *testing.T) {
 // "unknown command", and generate silently degraded.
 func TestForgeExecCommand_StandaloneRouteRecorded(t *testing.T) {
 	resetCmdRoute(t)
-	t.Setenv("FORGE_SILENCE_EXPERIMENTAL", "1")
 
 	root := NewRootCmd()
 	root.SetArgs([]string{"version"})
@@ -71,7 +70,6 @@ func TestForgeExecCommand_StandaloneRouteRecorded(t *testing.T) {
 // re-enters through the parent binary's forge subcommand.
 func TestForgeExecCommand_EmbeddedRouteRecorded(t *testing.T) {
 	resetCmdRoute(t)
-	t.Setenv("FORGE_SILENCE_EXPERIMENTAL", "1")
 
 	parent := &cobra.Command{Use: "reliant"}
 	parent.AddCommand(NewRootCmd())

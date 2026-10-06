@@ -150,7 +150,7 @@ OpenAPI diff is mostly a sanity check that the spec actually rebuilt.
   want a different yaml filename, or post-process under your own
   build step.
 - **`api.openapi: true` but no spec emitted** — check that
-  `features.codegen` is enabled (the default). The OpenAPI step is
+  the project is a service (codegen derives from that). The OpenAPI step is
   codegen-gated since it shares proto inputs with the Go-stub buf
   step.
 - **Need REST/JSON transcoding, not just docs** — that's a separate

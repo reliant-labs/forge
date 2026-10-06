@@ -10,8 +10,8 @@ description: The `@<scope>/ui-native` workspace package — what ships, the web/
 `@<scope>/ui-native` is a deliberately small React Native primitive set
 that forge scaffolds into `packages/ui-native/` when:
 
-1. `frontend.workspaces: true` in `forge.yaml`, AND
-2. At least one frontend has `type: react-native`.
+1. The project uses the pnpm-workspaces layout (`pnpm-workspace.yaml` at the root), AND
+2. At least one frontend is a React Native app.
 
 It is **not a design system**. It is a thin layer of consistent
 primitives so the scaffolded RN app can use named components

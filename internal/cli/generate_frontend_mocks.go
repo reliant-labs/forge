@@ -7,7 +7,6 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // generateFrontendMocks re-emits the mock/scenario surface of every Next.js /
@@ -26,12 +25,12 @@ import (
 // project disown` and the drift lint both read.
 func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.ServiceDef, entities []codegen.EntityDef, projectDir string, cs *checksums.FileChecksums) error {
 	// The dev dataset every fixture value is read from, resolved once for
-	// all frontends. It is built from the project's OWN seed configuration —
-	// the same seedplan.Config `forge db seed apply` uses — so the mocks and
-	// the database cannot be looking at different plans. nil (no migrations,
+	// all frontends. It is built from the same seedplan.Config `forge db seed
+	// apply` uses — so the mocks and the database cannot be looking at
+	// different plans. nil (no migrations,
 	// no reachable shadow server) degrades every value to the synthetic
 	// placeholder, which is what the seeder would write too.
-	seedCfg := seedConfigFromStore(projectstore.New(cfg))
+	seedCfg := seedConfigFromProject()
 	seed, err := codegen.BuildSeedProjection(projectDir, seedCfg)
 	if err != nil {
 		return err

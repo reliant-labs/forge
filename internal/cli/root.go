@@ -93,7 +93,6 @@ func SetVersion(v, date, commit string) {
 
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
-	var silenceExperimental bool
 	var projectDir string
 
 	var rootCmd *cobra.Command
@@ -121,13 +120,7 @@ authored protos, in one call.`,
 		// usage dump while genuine usage mistakes keep the help block.
 		SilenceErrors: true,
 		// PersistentPreRun fires once per invocation regardless of
-		// which subcommand the user typed. We use it to emit a single
-		// "experimental features on" warning so users running with
-		// `features.experimental.<x>: true` are reminded the schema
-		// may break between versions. Suppress with
-		// --silence-experimental (or FORGE_SILENCE_EXPERIMENTAL=1 in
-		// CI). Errors loading config are swallowed — a missing
-		// forge.yaml is the normal "outside-a-project" path.
+		// which subcommand the user typed.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Install (or clear) the project resolution root before
 			// anything below can resolve a project. Clearing on the
@@ -155,9 +148,7 @@ authored protos, in one call.`,
 			cmdutil.RecordCmdRoute(rootCmd)
 
 			// Self-heal git-hook activation (idempotent, best-effort).
-			// Placed before the experimental-warning early-returns so
-			// --silence-experimental doesn't also silence it. No-op unless
-			// we're in a forge project that ships .githooks/ (see
+			// No-op unless we're in a forge project that ships .githooks/ (see
 			// ensureGitHooksActivated), and skipped for commands that
 			// opt out (see skipHookActivationAnnotation).
 			if !hookActivationSkipped(cmd) {
@@ -177,21 +168,6 @@ authored protos, in one call.`,
 				}
 			}
 
-			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
-				return nil
-			}
-			// The warning is a nudge aimed at a person. A command forge
-			// runs as a subprocess of its own pipeline has no person to
-			// nudge, and buf spawns the plugin once per proto file — see
-			// machineInvokedAnnotation.
-			if machineInvoked(cmd) {
-				return nil
-			}
-			store, err := loadProjectStore()
-			if err != nil || store == nil {
-				return nil
-			}
-			emitExperimentalWarning(cmd.ErrOrStderr(), store.Features().EnabledExperimentalFeatures())
 			return nil
 		},
 	}
@@ -204,7 +180,6 @@ authored protos, in one call.`,
 	// EVERY command and do nothing with it — and, worse, shadowed
 	// `forge generate -v`, so the one place a user would most expect it
 	// silently produced ordinary output. Commands that want it register it.
-	rootCmd.PersistentFlags().BoolVar(&silenceExperimental, "silence-experimental", false, "suppress the experimental-features warning (also: FORGE_SILENCE_EXPERIMENTAL=1)")
 
 	// --project-dir / -C is global because project resolution is global:
 	// every command locates forge.yaml from one directory, and before this

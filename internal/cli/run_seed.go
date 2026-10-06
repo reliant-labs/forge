@@ -296,11 +296,6 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 		// quiet: the user passed --no-seed; echoing their own flag back is noise.
 		return
 	}
-	if store != nil && !store.Database().Seed.AutoEnabled() {
-		// quiet: database.seed.auto is false in forge.yaml — a standing
-		// project-level decision, not an outcome of this run.
-		return
-	}
 	dev, err := seedTargetIsDev(opts.env)
 	if err != nil || !dev {
 		// quiet: auto-seed is a dev-only affordance. On staging/prod the

@@ -57,6 +57,7 @@ import (
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
+	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 )
 
 func init() { factory.Register(newCmd) }
@@ -615,25 +616,12 @@ func auditFeatures(cfg *config.ProjectConfig) audittype.Category {
 		}
 	}
 	effective := cfg.Features.EffectiveFeatures()
-	// Pre-allocate to non-nil empty slices so the JSON encoder
-	// emits `[]` rather than `null` when nothing falls into a
-	// bucket — sub-agents that `jq '.disabled | length'` need a
-	// numeric length regardless of state.
-	//
-	// Stable vs experimental are surfaced as separate buckets so
-	// consumers don't have to know the menu to interpret
-	// "disabled": a default-off experimental feature is structurally
-	// different from a user-opted-out stable feature.
+	// Pre-allocate to non-nil empty slices so the JSON encoder emits `[]`
+	// rather than `null` when nothing falls into a bucket — sub-agents that
+	// `jq '.disabled | length'` need a numeric length regardless of state.
 	enabled := []string{}
 	disabled := []string{}
-	experimentalEnabled := []string{}
 	for name, on := range effective {
-		if config.IsExperimentalFeature(name) {
-			if on {
-				experimentalEnabled = append(experimentalEnabled, name)
-			}
-			continue
-		}
 		if on {
 			enabled = append(enabled, name)
 		} else {
@@ -642,17 +630,13 @@ func auditFeatures(cfg *config.ProjectConfig) audittype.Category {
 	}
 	sort.Strings(enabled)
 	sort.Strings(disabled)
-	sort.Strings(experimentalEnabled)
 
 	details := map[string]any{
-		"resolved":               effective,
-		"enabled":                enabled,
-		"disabled":               disabled,
-		"experimental_enabled":   experimentalEnabled,
-		"experimental_available": append([]string{}, config.ExperimentalFeatureNames...),
+		"resolved": effective,
+		"enabled":  enabled,
+		"disabled": disabled,
 	}
-	summary := fmt.Sprintf("%d stable feature(s) enabled, %d disabled; %d experimental on",
-		len(enabled), len(disabled), len(experimentalEnabled))
+	summary := fmt.Sprintf("%d feature(s) enabled, %d disabled", len(enabled), len(disabled))
 	return audittype.Category{Status: audittype.StatusOK, Summary: summary, Details: details}
 }
 
@@ -1160,13 +1144,12 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 	}
 }
 
-// auditMigrationSafety summarises the project's migration_safety
-// configuration: number of allowlisted destructive globs, the
-// destructive_change severity setting, and the timestamp of the most
-// recent migration. Surfaces as warn when allowed_destructive is
-// non-empty (informational — user has consciously opted out of the
-// destructive-change guard for some files), error when the directory
-// has migrations but none are parseable.
+// auditMigrationSafety summarises the project's migration safety posture:
+// the migration count, the destructive_change severity, which migrations
+// carry a `-- forge:allow-destructive` directive, and the timestamp of the
+// most recent migration. Surfaces as warn when any migration carries the
+// directive (informational — someone consciously opted that file out of the
+// destructive-change guard, and it is worth re-reviewing).
 func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	migDir := filepath.Join(projectDir, "db", "migrations")
 	if cfg != nil && cfg.Database.MigrationsDir != "" {
@@ -1206,25 +1189,24 @@ func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittyp
 		details["latest_migration_mtime"] = latestMtime.UTC().Format(time.RFC3339)
 	}
 
-	allowedCount := 0
+	allowed := migrationlint.AllowDestructiveFiles(migDir)
 	severity := "error"
 	if cfg != nil {
-		allowedCount = len(cfg.Database.MigrationSafety.AllowedDestructive)
 		severity = cfg.Database.MigrationSafety.EffectiveDestructiveChange()
-		if allowedCount > 0 {
-			details["allowed_destructive"] = cfg.Database.MigrationSafety.AllowedDestructive
-		}
-		details["destructive_change_severity"] = severity
+	}
+	details["destructive_change_severity"] = severity
+	if len(allowed) > 0 {
+		details["allow_destructive_files"] = allowed
 	}
 
 	status := audittype.StatusOK
-	summary := fmt.Sprintf("%d migration(s); %d allowed_destructive; destructive_change=%s",
-		migCount, allowedCount, severity)
-	if allowedCount > 0 {
+	summary := fmt.Sprintf("%d migration(s); %d marked -- forge:allow-destructive; destructive_change=%s",
+		migCount, len(allowed), severity)
+	if len(allowed) > 0 {
 		// Informational warn — surface that the project has explicit
 		// destructive carve-outs the user should re-review periodically.
 		status = audittype.StatusWarn
-		details["hint"] = "review allowed_destructive entries periodically; once a destructive migration ships, remove its allowlist entry to re-enable the guard"
+		details["hint"] = "review the migrations marked -- forge:allow-destructive periodically; the directive is the one exemption from the destructive-change guard"
 	}
 	return audittype.Category{Status: status, Summary: summary, Details: details}
 }

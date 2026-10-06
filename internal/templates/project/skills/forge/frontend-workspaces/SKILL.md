@@ -16,7 +16,7 @@ plus a React Native Expo app), each frontend ends up with:
 - Its own copy of the React Query hook wrappers.
 - No clean way to share custom hooks, design tokens, or domain types.
 
-`frontend.workspaces: true` reshapes the project into a pnpm workspace
+The pnpm-workspaces layout reshapes the project into a pnpm workspace
 so all frontends can share these pieces from one source of truth.
 
 Reach for it when:
@@ -29,23 +29,19 @@ Reach for it when:
   — it's the only manager that handles `workspace:*` resolution
   cleanly).
 
-If you only have one frontend, leave the flag off. The default layout
+If you only have one frontend, leave the layout off. The default layout
 is simpler.
 
 ## Turning it on
 
-In `forge.yaml`:
-
-```yaml
-frontend:
-  workspaces: true
-```
-
-Or pass `--frontend-workspaces` to `forge project new`. The flag is also
-accepted at `forge scaffold frontend` time — if it was off when you
-scaffolded but you flip it on later, the next `forge generate` will
-emit the workspace scaffolding without disturbing your existing
-frontend's code.
+Pass `--frontend-workspaces` to `forge project new`. That writes
+`pnpm-workspace.yaml` at the project root, and **that file is the switch**:
+forge detects the layout from it, so there is no `frontend:` block in
+`forge.yaml` to set. To adopt the layout in an existing project, add the root
+`pnpm-workspace.yaml` (`packages: ["packages/*", "frontends/*"]`); the next
+`forge generate` emits `packages/api` and `packages/hooks` without disturbing
+your existing frontend's code. Delete the file to go back to the per-frontend
+layout.
 
 ## Resulting layout
 

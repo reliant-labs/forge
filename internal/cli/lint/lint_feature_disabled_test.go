@@ -65,13 +65,13 @@ func lintProject(t *testing.T, forgeYAML string) string {
 	return root
 }
 
+// migrationsOffYAML is a service project with NO db/migrations: lintProject
+// does not create one, so the migrations feature derives off. The feature is
+// off because the repo says so, not because a key was set.
 const migrationsOffYAML = `
 name: demo
 module_path: example.com/demo
 forge_version: v0.0.0-test
-features:
-    migrations: false
-    orm: false
 `
 
 // TestMigrationSafetyFlagRefusesWhenFeatureDisabled is the core assertion.
@@ -85,7 +85,7 @@ func TestMigrationSafetyFlagRefusesWhenFeatureDisabled(t *testing.T) {
 			"a CI job running this flag would go green having checked nothing")
 	}
 	msg := err.Error()
-	for _, want := range []string{"migrations", "features.migrations"} {
+	for _, want := range []string{"migrations", "db/migrations"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error must name the flag that turned the lane off and how to turn it back on;\nwant %q in: %s", want, msg)
 		}
@@ -96,13 +96,22 @@ func TestMigrationSafetyFlagRefusesWhenFeatureDisabled(t *testing.T) {
 // had the identical `println + return nil` shape. Fixing only the one that was
 // reported would leave the same trap one flag over.
 func TestContractFlagRefusesWhenFeatureDisabled(t *testing.T) {
-	lintProject(t, `
+	// Contracts derive ON for every kind, so the only way a project reaches
+	// "off" is a config assembled with it forced off (a scaffold that left it
+	// out). Install a loader that returns exactly that.
+	root := lintProject(t, `
 name: demo
 module_path: example.com/demo
 forge_version: v0.0.0-test
-features:
-    contracts: false
 `)
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		cfg, err := config.LoadProject([]byte("name: demo\nmodule_path: example.com/demo\n"), filepath.Join(root, "forge.yaml"))
+		if err != nil {
+			return nil, err
+		}
+		cfg.Features = cfg.Features.With(config.FeatureContracts, false)
+		return projectstore.New(cfg), nil
+	})
 
 	err := runLint(t.Context(), lintFlags{contract: true}, []string{"./..."})
 	if err == nil {
@@ -110,6 +119,9 @@ features:
 	}
 	if !strings.Contains(err.Error(), "contracts") {
 		t.Errorf("error should name the contracts feature, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "features.contracts") {
+		t.Errorf("the remedy must not name a forge.yaml key that no longer exists: %v", err)
 	}
 }
 

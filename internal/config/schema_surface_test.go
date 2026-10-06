@@ -34,10 +34,9 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[ProjectConfig](),
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
-				"deploy", "dev_stack", "docker", "features",
-				"forge_version", "frontend", "frontends", "harness", "k8s",
-				"lint", "module_path", "name", "observability", "smoke",
-				"stack",
+				"deploy", "dev_stack", "docker",
+				"forge_version", "harness", "k8s",
+				"lint", "module_path", "name", "observability",
 			},
 		},
 		{
@@ -57,8 +56,23 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			},
 		},
 		{
+			// Only migration_safety is authored. The driver and migrations
+			// directory derive from db/migrations existing, and the dev seed
+			// has no configuration at all.
+			name: "DatabaseConfig",
+			typ:  reflect.TypeFor[DatabaseConfig](),
+			want: []string{"migration_safety"},
+		},
+		{
+			// The per-migration exemption is the `-- forge:allow-destructive`
+			// directive in the SQL file, not a glob list here.
+			name: "MigrationSafetyConfig",
+			typ:  reflect.TypeFor[MigrationSafetyConfig](),
+			want: []string{"destructive_change", "enabled", "unsafe_add_column", "volatile_default"},
+		},
+		{
 			// Only the two escape hatches. The contract rules are
-			// unconditional; whether the lint runs is features.contracts.
+			// unconditional; the lint is always on.
 			name: "ContractsConfig",
 			typ:  reflect.TypeFor[ContractsConfig](),
 			want: []string{"exclude", "interface_types"},

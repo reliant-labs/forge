@@ -96,20 +96,13 @@ func TestWriteProjectConfig_ScaffoldsTypedAccessError(t *testing.T) {
 
 // TestApplyKindFeatureDefaults_Service is a no-op assertion: the
 // default scaffold (`forge project new --kind service` or no flag) must leave
-// every STABLE feature enabled. Experimental features are default-off
-// for every kind (including service) — the user opts in per project
-// via `features.experimental.<name>: true` after scaffolding.
+// every feature enabled except ingress and operators, which only exist once the
+// repo declares a gateway or an operator.
 func TestApplyKindFeatureDefaults_Service(t *testing.T) {
 	g := NewProjectGenerator("svc", "/tmp/svc", "example.com/svc")
 	g.ApplyKindFeatureDefaults(config.ProjectKindService)
 	effective := g.Features.EffectiveFeatures()
 	for name, on := range effective {
-		if config.IsExperimentalFeature(name) {
-			if on {
-				t.Errorf("kind=service: experimental feature %q expected disabled, got enabled", name)
-			}
-			continue
-		}
 		// ingress and operators are stable but DERIVE to off: neither
 		// follows from a project's shape, so a scaffolded service does
 		// not get Gateway API wiring or CRD codegen until asked.
@@ -190,23 +183,6 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 		if effective[name] != expect {
 			t.Errorf("kind=library: feature %q = %v, want %v", name, effective[name], expect)
 		}
-	}
-}
-
-// TestApplyKindFeatureDefaults_PreservesExplicit ensures the per-kind
-// defaults are commutative with --disable: a caller that already set
-// `gen.Features.Frontend = boolPtr(true)` before invoking
-// ApplyKindFeatureDefaults("cli") keeps the explicit true (the helper
-// only sets fields that were still nil). Matches the doc on
-// ApplyKindFeatureDefaults.
-func TestApplyKindFeatureDefaults_PreservesExplicit(t *testing.T) {
-	g := NewProjectGenerator("c", "/tmp/c", "example.com/c")
-	keepTrue := true
-	g.Features.Frontend = &keepTrue // user explicitly wants frontend ON even in CLI mode
-
-	g.ApplyKindFeatureDefaults(config.ProjectKindCLI)
-	if !g.Features.FrontendEnabled() {
-		t.Error("explicit Frontend=true overwritten by ApplyKindFeatureDefaults(cli)")
 	}
 }
 

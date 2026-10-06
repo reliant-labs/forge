@@ -17,7 +17,8 @@ emit: both
 
 - **Migrations are append-only.** Never edit a merged migration — write a new one. Everyone else's local state assumes it is immutable.
 - **Roll forward only — never write a down migration.** Recover with a new forward (hotfix) migration; write changes expand-then-contract. `forge lint` (`no-down-migration`) fails on a new down file — see `db/deploy-migrations`.
-- **Keep seed data out of migrations.** Migrations define schema; seeds populate it.
+- **Keep seed data out of migrations.**
+- **A destructive change is allowed per file, in the file** — `-- forge:allow-destructive` on a line of that migration; there is no forge.yaml allowlist. See `db/orm-and-safety`.
 
 <!-- @forge-only:start -->
 ## SQL is the schema language
@@ -29,6 +30,8 @@ There is no schema DSL and no proto annotation: `db/migrations/*.up.sql` is the 
 - **Frontend pages, nav, and mocks** for each entity.
 
 `db/migrations/` and `db/queries/` are yours and forge never modifies them; `internal/db/<entity>_orm.go` is regenerated.
+
+There is **no `database:` driver or directory setting**: a service project with `db/migrations/` has a postgres database. A hand-written data layer opts out of the generated ORM with `//forge:no-orm: <why>` in the `internal/db` package doc — see `db/orm-and-safety`.
 
 ## What makes an entity
 

@@ -1,7 +1,8 @@
 # Forge project manifest — see https://github.com/reliant-labs/forge.
-# `database:` is declared here even if you haven't added any
-# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it
-# once you do. Leave the defaults in place if you're unsure.
+# Features, the database and the frontends are DERIVED from the repo, not
+# configured here: forge is a CLI project (cmd/forge/main.go, no service
+# sources, no db/migrations), so codegen/orm/migrations/deploy/observability
+# derive off and ci/build derive on.
 
 name: forge
 module_path: github.com/reliant-labs/forge
@@ -26,9 +27,6 @@ module_path: github.com/reliant-labs/forge
 # serve one, so it names a forge nobody but its builder can obtain. Keep
 # this at the last RELEASED tag, and bump it when you cut the next one.
 forge_version: v0.1.27
-database:
-  driver: ""
-  migrations_dir: ""
 ci:
   provider: github
   lint:
@@ -101,21 +99,3 @@ contracts:
     - "internal/checksums" # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
     - "cmd/forge" # Linker-set version metadata; -X flags require exported package vars.
     - "cmd/contractlint" # Tool entry point; main package, no test seam.
-features:
-  orm: false
-  codegen: false
-  migrations: false
-  ci: true
-  contracts: true
-  frontend: false
-  observability: false
-  hot_reload: false
-  # Experimental features default off. forge itself is a CLI project
-  # that doesn't ship an ingress/operator surface, so we leave this
-  # block empty. (deploy is a stable flag now — it derives from kind,
-  # on for service projects.) Service-shape projects opt in per feature:
-  #   experimental:
-  #     ingress: true         # Gateway API + cert-manager wiring
-  #     external_builds: true # KCL Service.build_cmd shell escape hatch
-  #     operators: true       # controller-runtime operators + CRDs
-  #     strict_wiring: true   # diagnostics fail-fast at Bootstrap

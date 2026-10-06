@@ -4,7 +4,7 @@ import "strings"
 
 // installForgeScript is the ONE shell script every scaffolded workflow runs
 // to install forge — ci.yml (every job that runs forge), deploy.yml,
-// e2e.yml's k3d runtime and reconcile.yml all render it through the
+// and e2e.yml's k3d runtime all render it through the
 // `installForgeRun` template func, so there is exactly one copy to get right.
 //
 // The version comes from the PROJECT when the job runs, never from the

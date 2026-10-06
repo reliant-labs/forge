@@ -121,21 +121,22 @@ func TestBasePathFromNextConfig_NoConfigIsEmpty(t *testing.T) {
 	}
 }
 
-// TestResolveInventoryAtLoad_ForgeYAMLBasePathWins is the precedence guard.
-// An explicit forge.yaml declaration is authoritative; recovery is strictly a
-// fallback for when forge.yaml says nothing, and must never overwrite a
-// stated value with one parsed out of a file.
-func TestResolveInventoryAtLoad_ForgeYAMLBasePathWins(t *testing.T) {
+// TestMergeFrontendInventory_KCLBasePathWins is the precedence guard. A
+// base_path the KCL forge.Frontend declares is authoritative; the next.config.ts
+// recovery is strictly a fallback for when the declaration says nothing, and must
+// never overwrite a stated value with one parsed out of a file.
+func TestMergeFrontendInventory_KCLBasePathWins(t *testing.T) {
 	projectDir := t.TempDir()
 	nextConfigWithBasePath(t, filepath.Join(projectDir, "frontends", "console"), "/from-next-config")
 
-	declared := FrontendConfig{Name: "console", Type: "nextjs", BasePath: "/declared"}.
-		WithDir("frontends/console")
-	cfg := &ProjectConfig{Name: "acme", Frontends: []FrontendConfig{declared}}
-	ResolveInventoryAtLoad(cfg, projectDir)
+	disk := DiscoverInRepoFrontends(projectDir)
+	if len(disk) != 1 || disk[0].BasePath != "/from-next-config" {
+		t.Fatalf("disk discovery should recover the prefix, got %+v", disk)
+	}
+	declared := FrontendConfig{Name: "console", Type: "nextjs", BasePath: "/declared"}.WithDir("frontends/console")
 
-	if cfg.Frontends[0].BasePath != "/declared" {
-		t.Errorf("BasePath = %q, want %q — forge.yaml must win over next.config.ts",
-			cfg.Frontends[0].BasePath, "/declared")
+	got := MergeFrontendInventory(disk, []FrontendConfig{declared})
+	if got[0].BasePath != "/declared" {
+		t.Errorf("BasePath = %q, want %q — the KCL declaration must win over next.config.ts", got[0].BasePath, "/declared")
 	}
 }

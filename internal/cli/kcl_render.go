@@ -618,6 +618,9 @@ type WorkloadEntity struct {
 	// Runtime is where the workload runs, resolved (w.runtime or the
 	// bundle's default). Exactly one of its variant pointers is set.
 	Runtime RuntimeEntity
+	// FlowChecks are the app-flow health endpoints this workload serves
+	// (kcl/workload.k FlowCheck), probed by `forge env smoke`.
+	FlowChecks []FlowCheckEntity
 	// Spec is the runtime-independent declaration, decoded STRICTLY into
 	// forge's wire type — the same bytes a hosted Workload CR carries.
 	Spec deployv1alpha1.WorkloadSpec
@@ -631,6 +634,15 @@ const (
 	RuntimeHosted    = "hosted"
 	RuntimeBuildOnly = "build-only"
 )
+
+// FlowCheckEntity mirrors the kcl/workload.k FlowCheck: one app-flow health
+// endpoint a workload serves. Path is the only required field; the URL is
+// resolved at smoke time (see resolveFlowChecks), never declared.
+type FlowCheckEntity struct {
+	Path        string `json:"path"`
+	Description string `json:"description,omitempty"`
+	Name        string `json:"name,omitempty"`
+}
 
 // RuntimeEntity is a workload's resolved runtime. Type carries the tag;
 // exactly one variant pointer is non-nil, except for "hosted", whose
@@ -947,6 +959,9 @@ type FrontendEntity struct {
 	// with explicit EnvVars winning on a variable collision. See
 	// EffectiveEnvVars.
 	Config *FrontendConfigEntity `json:"config,omitempty"`
+	// Routes is the CRUD-page allowlist (kcl/schema.k Frontend.routes): route
+	// slugs, or the single value "none". Empty means every CRUD entity.
+	Routes []string `json:"routes,omitempty"`
 	// Runtime is where the frontend runs. Always present in a render: the
 	// Bundle refuses a frontend with none. Zero only for a frontend bridged
 	// in from forge.yaml (mergeConfigFrontends), which is dev-served.
@@ -1091,10 +1106,11 @@ type kclWorkloadRaw struct {
 	Image string `json:"image"`
 	// BuildImage is the build identity: Image plus the tag the workload
 	// pins, if any. Emitted for every built workload on every runtime.
-	BuildImage string          `json:"build_image"`
-	Build      json.RawMessage `json:"build"`
-	Runtime    json.RawMessage `json:"runtime"`
-	Spec       json.RawMessage `json:"spec"`
+	BuildImage string            `json:"build_image"`
+	Build      json.RawMessage   `json:"build"`
+	FlowChecks []FlowCheckEntity `json:"flow_checks"`
+	Runtime    json.RawMessage   `json:"runtime"`
+	Spec       json.RawMessage   `json:"spec"`
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
@@ -1369,7 +1385,7 @@ func decodeWorkload(w kclWorkloadRaw) (WorkloadEntity, error) {
 	if w.Kind != "" && w.Kind != kind {
 		return WorkloadEntity{}, fmt.Errorf("workload %q: kind %q disagrees with spec.kind %q", w.Name, w.Kind, kind)
 	}
-	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, Spec: spec}, nil
+	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec}, nil
 }
 
 // manifestNamespace returns the namespace that dominates the rendered

@@ -407,8 +407,8 @@ func TestLineDelta_MeasuresBothDirections(t *testing.T) {
 }
 
 // TestFrontendTemplateTreeFor covers both vocabularies a forge.yaml entry
-// can arrive in: `type` (nextjs / react-native / vite-spa) and the
-// scaffold flow's `kind` (web / mobile / vite-spa).
+// can arrive in: the type detected from disk (nextjs / react-native /
+// vite-spa) and the one a KCL declaration writes (nextjs / vite / rn).
 func TestFrontendTemplateTreeFor(t *testing.T) {
 	cases := []struct {
 		fe   config.FrontendConfig
@@ -418,9 +418,8 @@ func TestFrontendTemplateTreeFor(t *testing.T) {
 		{config.FrontendConfig{Type: "react-native"}, "react-native"},
 		{config.FrontendConfig{Type: "react_native"}, "react-native"},
 		{config.FrontendConfig{Type: "vite-spa"}, "vite-spa"},
-		{config.FrontendConfig{Kind: "mobile"}, "react-native"},
-		{config.FrontendConfig{Kind: "vite-spa"}, "vite-spa"},
-		{config.FrontendConfig{Kind: "web"}, "nextjs"},
+		{config.FrontendConfig{Type: "rn"}, "react-native"},
+		{config.FrontendConfig{Type: "vite"}, "vite-spa"},
 		{config.FrontendConfig{}, "nextjs"},
 	}
 	for _, tc := range cases {

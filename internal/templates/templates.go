@@ -478,23 +478,6 @@ func ReleaseStages(envs []DeployEnv, mixed map[string]bool) []ReleaseStage {
 	return out
 }
 
-// ReconcileWorkflowData holds data for the scheduled reconcile workflow.
-//
-// The workflow is emitted ONLY when features.experimental.reconcile is on —
-// the generator gates it, not this struct. Everything in forge is opt-in and à
-// la carte, and a scheduled drift report (`forge env status` per env) against
-// envs that were never wired to report anything would fail hourly, forever,
-// for a feature the user never asked for.
-type ReconcileWorkflowData struct {
-	ProjectName string
-	// Environments the matrix sweeps. Reconcile is per-environment because
-	// the POLICY is per-environment: one may be converging while another is
-	// pinned during an incident.
-	Environments []DeployEnv
-	// No forge-version field: like ci.yml, the workflow installs the forge
-	// go.mod resolves at run time rather than one stamped at scaffold time.
-}
-
 // E2EWorkflowData holds data for the standalone E2E test workflow template.
 type E2EWorkflowData struct {
 	ProjectName  string

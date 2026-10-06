@@ -58,9 +58,6 @@ type ConfigService interface {
 	ReadProjectConfig(path string) (*config.ProjectConfig, error)
 	SetProjectConfigScalar(path, key string, value any) error
 	SetProjectConfigScalarPath(path string, keys []string, value any) error
-	AppendFrontendToConfig(projectRoot, frontendName string, port int) error
-	AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, kind string) error
-	AppendFrontendEntryToConfig(configPath string, entry config.FrontendConfig) error
 }
 
 // Deps wires generator's cross-package collaborators. Empty today; the

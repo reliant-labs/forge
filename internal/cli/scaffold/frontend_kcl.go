@@ -39,7 +39,7 @@ import (
 // already written. An env file that is missing, already names the frontend,
 // or has been restructured past the point where the anchors are unambiguous
 // is left untouched and the stanza is printed for the user to place.
-func declareFrontendInKCL(root, projectName, frontendName string, pinnedPort int) {
+func declareFrontendInKCL(root, projectName, frontendName string, pinnedPort int, routes []string) {
 	envs, err := os.ReadDir(filepath.Join(root, "deploy", "kcl"))
 	if err != nil {
 		return // no deploy/ tree (e.g. --disable deploy): nothing to declare into
@@ -55,19 +55,19 @@ func declareFrontendInKCL(root, projectName, frontendName string, pinnedPort int
 			continue // not an env directory
 		}
 		dev := env.Name() == "dev"
-		updated, status := spliceFrontendIntoEnvKCL(string(raw), projectName, env.Name(), frontendName, dev, pinnedPort)
+		updated, status := spliceFrontendIntoEnvKCL(string(raw), projectName, env.Name(), frontendName, dev, pinnedPort, routes)
 		switch status {
 		case frontendKCLApplied:
 			if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 				fmt.Printf("\n⚠️  could not update %s: %v\n\n%s\n", rel, err,
-					frontendKCLStanzaHint(projectName, env.Name(), frontendName, dev, pinnedPort))
+					frontendKCLStanzaHint(projectName, env.Name(), frontendName, dev, pinnedPort, routes))
 				continue
 			}
 			fmt.Printf("   - %s (frontend '%s' declared)\n", rel, frontendName)
 		case frontendKCLAlreadyDeclared:
 			// Quiet: an earlier run, or the user, already declared it.
 		case frontendKCLNoAnchor:
-			fmt.Printf("\n📝 %s\n", frontendKCLStanzaHint(projectName, env.Name(), frontendName, dev, pinnedPort))
+			fmt.Printf("\n📝 %s\n", frontendKCLStanzaHint(projectName, env.Name(), frontendName, dev, pinnedPort, routes))
 		}
 	}
 }
@@ -106,7 +106,7 @@ func frontendPortIdent(frontendName string) string {
 	return "_" + naming.KCLIdentifier(frontendName) + "_frontend_port"
 }
 
-func frontendKCLEntry(frontendName string, dev bool, pinnedPort int) string {
+func frontendKCLEntry(frontendName string, dev bool, pinnedPort int, routes []string) string {
 	var b strings.Builder
 	b.WriteString("    # Added by `forge scaffold frontend " + frontendName + "`. `+=` composes with\n")
 	b.WriteString("    # any frontends declared above; edit freely (its runtime, dev_runner, ...).\n")
@@ -118,6 +118,16 @@ func frontendKCLEntry(frontendName string, dev bool, pinnedPort int) string {
 		fmt.Fprintf(&b, "        port = %d\n", pinnedPort)
 	case dev:
 		fmt.Fprintf(&b, "        port = %s\n", frontendPortIdent(frontendName))
+	}
+	// The route allowlist is a property of the frontend, not of an env, so
+	// every env's declaration carries it: an env that omitted it would
+	// regenerate the full CRUD set the allowlist exists to prevent.
+	if len(routes) > 0 {
+		quoted := make([]string, len(routes))
+		for i, r := range routes {
+			quoted[i] = fmt.Sprintf("%q", r)
+		}
+		fmt.Fprintf(&b, "        routes = [%s]\n", strings.Join(quoted, ", "))
 	}
 	// Every frontend binds a runtime (ADR 0002 §6): the dev server in dev;
 	// elsewhere the author's own bucket, whose name forge does not guess —
@@ -142,7 +152,7 @@ func frontendKCLPortDecl(projectName, env, frontendName string) string {
 }
 
 // spliceFrontendIntoEnvKCL is the pure core of declareFrontendInKCL.
-func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, dev bool, pinnedPort int) (string, frontendKCLStatus) {
+func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, dev bool, pinnedPort int, routes []string) (string, frontendKCLStatus) {
 	if frontendDeclaredIn(content, frontendName) {
 		return content, frontendKCLAlreadyDeclared
 	}
@@ -159,20 +169,20 @@ func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName string, de
 		portAt = dbs[0]
 	}
 	// Insert from the end backwards so the earlier offset stays valid.
-	out := content[:jobs[0][0]] + frontendKCLEntry(frontendName, dev, pinnedPort) + content[jobs[0][0]:]
+	out := content[:jobs[0][0]] + frontendKCLEntry(frontendName, dev, pinnedPort, routes) + content[jobs[0][0]:]
 	if portAt != nil {
 		out = out[:portAt[0]] + frontendKCLPortDecl(projectName, env, frontendName) + out[portAt[0]:]
 	}
 	return out, frontendKCLApplied
 }
 
-func frontendKCLStanzaHint(projectName, env, frontendName string, dev bool, pinnedPort int) string {
+func frontendKCLStanzaHint(projectName, env, frontendName string, dev bool, pinnedPort int, routes []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Declare frontend '%s' in deploy/kcl/%s/main.k by hand (forge could not place it unambiguously):\n\n", frontendName, env)
 	if dev && pinnedPort <= 0 {
 		b.WriteString(frontendKCLPortDecl(projectName, env, frontendName))
 	}
 	b.WriteString("    # inside the bundle, alongside workloads:\n")
-	b.WriteString(frontendKCLEntry(frontendName, dev, pinnedPort))
+	b.WriteString(frontendKCLEntry(frontendName, dev, pinnedPort, routes))
 	return b.String()
 }

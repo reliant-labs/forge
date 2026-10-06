@@ -11,20 +11,15 @@ import (
 
 // TestIsFeatureEnabled_NilConfig locks in the permissive default
 // when no forge.yaml is loaded — required so commands run outside a
-// project don't error on a missing config. Applies to stable features
-// only; experimental features are default-OFF and the nil-config path
-// still returns true (commands invoked outside a project can't be
-// gated meaningfully).
+// project don't error on a missing config.
 func TestIsFeatureEnabled_NilConfig(t *testing.T) {
 	if !isFeatureEnabled(nil, config.FeatureBuild) {
 		t.Error("isFeatureEnabled(nil, build) = false, want true")
 	}
 }
 
-// TestIsFeatureEnabled_DefaultsTrue covers the absent-features-block
-// case for a real config — every stable-feature accessor reports
-// enabled. Experimental features are excluded: they're default-OFF
-// even with no features block.
+// TestIsFeatureEnabled_DefaultsTrue covers a config the loader did not derive
+// (the zero value): every feature accessor but ingress/operators reports enabled.
 func TestIsFeatureEnabled_DefaultsTrue(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "t", ModulePath: "x/t"}
 	for _, name := range []string{
@@ -38,63 +33,30 @@ func TestIsFeatureEnabled_DefaultsTrue(t *testing.T) {
 	}
 }
 
-// TestIsFeatureEnabled_ExperimentalDefaultsFalse covers the
-// opt-in-only path for experimental features: with no features block
-// (or with the block but the experimental sub-block absent), every
-// experimental feature must report disabled.
-func TestIsFeatureEnabled_ExperimentalDefaultsFalse(t *testing.T) {
-	cfg := &config.ProjectConfig{Name: "t", ModulePath: "x/t"}
-	for _, name := range config.ExperimentalFeatureNames {
-		if isFeatureEnabled(projectstore.New(cfg), name) {
-			t.Errorf("isFeatureEnabled(<no-features>, %q) = true, want false (experimental defaults OFF)", name)
-		}
-	}
-}
-
-// TestIsFeatureEnabled_ExperimentalExplicitTrue covers the opt-in
-// path: setting `features.experimental.<name>: true` flips the gate.
-func TestIsFeatureEnabled_ExperimentalExplicitTrue(t *testing.T) {
+// TestIsFeatureEnabled_ForcedOff covers a feature the scaffold turned off: it
+// reads disabled, and the features it did not touch keep their defaults.
+func TestIsFeatureEnabled_ForcedOff(t *testing.T) {
 	cfg := &config.ProjectConfig{
-		Features: config.FeaturesConfig{
-			// Every field must be listed: the loop below asserts over
-			// ExperimentalFeatureNames, so a field omitted here fails as
-			// "want true" rather than silently narrowing the test. That
-			// is deliberate — the failure is what tells you a new
-			// experimental feature was added without a gate entry.
-			Experimental: config.ExperimentalConfig{
-				StrictWiring: true,
-				Reconcile:    true,
-			},
-		},
+		Features: config.FeaturesConfig{}.With(config.FeatureBuild, false).With(config.FeatureDeploy, false),
 	}
-	for _, name := range config.ExperimentalFeatureNames {
-		if !isFeatureEnabled(projectstore.New(cfg), name) {
-			t.Errorf("isFeatureEnabled(<all experimental on>, %q) = false, want true", name)
-		}
-	}
-}
-
-// TestIsFeatureEnabled_ExplicitFalse covers the opt-out path for each
-// stable feature added by the features-block work.
-func TestIsFeatureEnabled_ExplicitFalse(t *testing.T) {
-	off := false
-	cfg := &config.ProjectConfig{
-		Features: config.FeaturesConfig{
-			Build:  &off,
-			Deploy: &off,
-		},
-	}
-	for _, name := range []string{
-		config.FeatureBuild,
-		config.FeatureDeploy,
-	} {
+	for _, name := range []string{config.FeatureBuild, config.FeatureDeploy} {
 		if isFeatureEnabled(projectstore.New(cfg), name) {
-			t.Errorf("isFeatureEnabled(<%s=false>, %q) = true, want false", name, name)
+			t.Errorf("isFeatureEnabled(<%s off>, %q) = true, want false", name, name)
 		}
 	}
-	// Features the test didn't touch must remain enabled (nil-default).
 	if !isFeatureEnabled(projectstore.New(cfg), config.FeatureCI) {
-		t.Error("isFeatureEnabled(<build=false>, ci) flipped — only Build was set")
+		t.Error("isFeatureEnabled(<build off>, ci) flipped — only build and deploy were turned off")
+	}
+}
+
+// TestIsFeatureEnabled_IngressAndOperatorsDefaultOff: with nothing in the repo
+// to turn them on, a zero-value config reports ingress and operators disabled.
+func TestIsFeatureEnabled_IngressAndOperatorsDefaultOff(t *testing.T) {
+	cfg := &config.ProjectConfig{Name: "t", ModulePath: "x/t"}
+	for _, name := range []string{config.FeatureIngress, config.FeatureOperators} {
+		if isFeatureEnabled(projectstore.New(cfg), name) {
+			t.Errorf("isFeatureEnabled(<zero>, %q) = true, want false", name)
+		}
 	}
 }
 
@@ -110,12 +72,10 @@ func TestIsFeatureEnabled_UnknownNamePermissive(t *testing.T) {
 	}
 }
 
-// TestDisabledFeatureError_Wording locks in the user-visible string
-// the CLI emits when a direct cobra command is invoked against a
-// project that disabled the feature. The exact spelling is the
-// public contract — both for humans grepping logs and for
-// sub-agents matching against the canonical "feature 'X' is
-// disabled in forge.yaml" idiom.
+// TestDisabledFeatureError_Wording locks in the user-visible string the CLI
+// emits when a direct cobra command is invoked against a project whose feature
+// is off. It must point at the repo, not at a forge.yaml key that no longer
+// exists.
 func TestDisabledFeatureError_Wording(t *testing.T) {
 	for _, name := range []string{
 		config.FeatureBuild,
@@ -128,32 +88,14 @@ func TestDisabledFeatureError_Wording(t *testing.T) {
 			continue
 		}
 		got := err.Error()
-		if !strings.Contains(got, "feature '"+name+"' is disabled in forge.yaml") {
+		if !strings.Contains(got, "feature '"+name+"' is off for this project") {
 			t.Errorf("DisabledFeatureError(%q) = %q, missing canonical prefix", name, got)
 		}
-		if !strings.Contains(got, "features."+name+": true") {
-			t.Errorf("DisabledFeatureError(%q) = %q, missing fix-up hint", name, got)
+		if !strings.Contains(got, "forge project features") {
+			t.Errorf("DisabledFeatureError(%q) = %q, missing the pointer to `forge project features`", name, got)
 		}
-	}
-}
-
-// TestDisabledFeatureError_ExperimentalWording verifies the
-// experimental-flavoured error string points at the nested YAML path
-// (`features.experimental.<name>`) instead of the top-level one, so
-// users follow the correct opt-in shape.
-func TestDisabledFeatureError_ExperimentalWording(t *testing.T) {
-	for _, name := range config.ExperimentalFeatureNames {
-		err := config.DisabledFeatureError(name)
-		if err == nil {
-			t.Errorf("DisabledFeatureError(%q) = nil", name)
-			continue
-		}
-		got := err.Error()
-		if !strings.Contains(got, "feature '"+name+"' is experimental") {
-			t.Errorf("DisabledFeatureError(%q) = %q, missing 'experimental' marker", name, got)
-		}
-		if !strings.Contains(got, "features.experimental."+name+": true") {
-			t.Errorf("DisabledFeatureError(%q) = %q, missing experimental opt-in hint", name, got)
+		if strings.Contains(got, "features."+name+": true") {
+			t.Errorf("DisabledFeatureError(%q) = %q, still tells the user to set a removed forge.yaml key", name, got)
 		}
 	}
 }

@@ -1,23 +1,15 @@
 // File: internal/cli/scaffold/frontend_test.go
 //
-// Tests for `forge scaffold frontend <name>`. The most important guarantee
-// here is that adding a frontend to a project scaffolded without one
-// (`forge project new x` or `forge project new x --kind service`) brings *every* piece
-// of forge.yaml that downstream tooling reads into a consistent state:
+// Tests for `forge scaffold frontend <name>`. The guarantee that matters: adding
+// a frontend leaves forge.yaml exactly as it was and the project still sees the
+// frontend, because the inventory and the frontend feature are DERIVED from what
+// is on disk (frontends/<name>) and declared in KCL — never recorded in yaml.
 //
-//   - features.frontend flips to true (already covered by the existing
-//     code path; we re-assert it here so a future refactor can't break
-//     it silently);
-//   - frontends:[...] gains the new entry;
-//   - stack.frontend.framework moves off "none" — without this, lint
-//     config, CI gating, and codegen branching (`forge generate`) all
-//     misread the project as having no frontend stack and skip the
-//     frontend codegen pass entirely.
-//
-// The "left at none" regression was reported from kalshi-trader port
-// dogfooding: features.frontend=true but stack.frontend.framework=none
-// is an impossible state in practice and confuses every downstream
-// reader. See FORGE_BACKLOG.md / forge-add-frontend-leaves-stack-framework-none.
+// History: the command used to write `frontends:`, `features.frontend` and
+// `stack.frontend.framework` into forge.yaml, and a missed write left those
+// three disagreeing (features.frontend=true with framework=none was an
+// impossible state that confused every reader). Deriving all three from one
+// source removed the class of bug.
 
 package scaffold
 
@@ -53,38 +45,18 @@ func skipNpmInstall(t *testing.T) {
 }
 
 // freshServiceForgeYAML mirrors what `forge project new <name>` emits for a
-// service-kind project that was scaffolded *without* --frontend. Notable
-// state: features.frontend=false and stack.frontend.framework=none.
-// runFrontend must reconcile both fields when a frontend is added
-// after the fact.
+// service-kind project that was scaffolded *without* --frontend: identity and
+// the typed-config guardrail, nothing derivable.
 const freshServiceForgeYAML = `name: demo
 module_path: github.com/example/demo
-version: 0.1.0
-hot_reload: true
-features:
-  frontend: false
-stack:
-  frontend:
-    framework: none
-database:
-  driver: postgres
-  migrations_dir: db/migrations
-ci:
-  provider: github
-k8s:
-  kcl_dir: deploy/kcl
-lint:
-  contract: true
-contracts:
-  strict: true
+forge_version: v0.0.0-test
 `
 
-// TestRunAddFrontend_ReconcilesStackFramework is the regression guard
-// for forge-add-frontend-leaves-stack-framework-none. Adding a default
-// web frontend must leave stack.frontend.framework=nextjs (the framework
-// that actually got scaffolded) so downstream tooling agrees with
-// features.frontend=true and frontends:[...].
-func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
+// TestRunAddFrontend_DerivesTheFrontendAndLeavesForgeYAMLAlone is the
+// regression guard for the whole class: after adding a frontend the project
+// loads with that frontend and the frontend feature on, and forge.yaml is
+// byte-identical.
+func TestRunAddFrontend_DerivesTheFrontendAndLeavesForgeYAMLAlone(t *testing.T) {
 	skipNpmInstall(t)
 	dir := withTempProject(t, freshServiceForgeYAML)
 	markServiceProject(t, dir)
@@ -93,44 +65,32 @@ func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 		t.Fatalf("runFrontend: %v", err)
 	}
 
+	after, err := os.ReadFile(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != freshServiceForgeYAML {
+		t.Errorf("scaffolding a frontend must not touch forge.yaml, now:\n%s", after)
+	}
+
 	cfg, err := generator.ReadProjectConfig(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
 		t.Fatalf("read forge.yaml after add: %v", err)
 	}
-
-	// stack.frontend.framework must reflect what was scaffolded.
-	if got, want := cfg.Stack.Frontend.Framework, "nextjs"; got != want {
-		t.Errorf("stack.frontend.framework = %q, want %q "+
-			"(would-be-mismatched with features.frontend=true and "+
-			"frontends entry — downstream tooling reads the framework "+
-			"field directly)", got, want)
-	}
-
-	// Belt-and-braces: also re-assert the existing invariants so a
-	// future refactor of runFrontend can't silently regress them.
-	// The flag is no longer materialized on disk (it derives from the
-	// non-empty frontends list); the loaded config must resolve it on.
 	if !cfg.Features.FrontendEnabled() {
-		t.Errorf("FrontendEnabled() = false after scaffold frontend, want true (derived from frontends list)")
+		t.Errorf("FrontendEnabled() = false after scaffold frontend, want true (derived from the frontend on disk)")
 	}
-	if len(cfg.Frontends) != 1 || cfg.Frontends[0].Name != "dashboard" {
-		t.Errorf("frontends = %+v, want one entry named 'dashboard'", cfg.Frontends)
+	if len(cfg.Frontends) != 1 || cfg.Frontends[0].Name != "dashboard" || cfg.Frontends[0].Type != "nextjs" {
+		t.Errorf("frontends = %+v, want one nextjs entry named 'dashboard'", cfg.Frontends)
 	}
-
-	// Sanity-check the actual scaffold landed on disk; if
-	// GenerateFrontendFiles started no-op'ing the test config would
-	// silently keep passing.
-	feDir := filepath.Join(dir, "frontends", "dashboard")
-	if _, err := os.Stat(feDir); err != nil {
-		t.Errorf("frontend dir %s missing after add: %v", feDir, err)
+	if _, err := os.Stat(filepath.Join(dir, "frontends", "dashboard")); err != nil {
+		t.Errorf("frontend dir missing after add: %v", err)
 	}
 }
 
-// TestRunAddFrontend_StackFrameworkByKind verifies the stack.frontend.framework
-// value tracks the --kind flag rather than always being hard-coded to
-// "nextjs". Without this, a mobile or vite-spa frontend would still
-// register itself as "nextjs" in the stack — equally wrong.
-func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
+// TestRunAddFrontend_TypeFollowsKind: the derived type tracks --kind, read back
+// from the framework's own config file rather than recorded anywhere.
+func TestRunAddFrontend_TypeFollowsKind(t *testing.T) {
 	skipNpmInstall(t)
 	cases := []struct {
 		name string
@@ -150,41 +110,51 @@ func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
 			if err := runFrontend(context.Background(), "app", 0, tc.kind, "", "", "", nil); err != nil {
 				t.Fatalf("runFrontend(kind=%q): %v", tc.kind, err)
 			}
-
 			cfg, err := generator.ReadProjectConfig(filepath.Join(dir, "forge.yaml"))
 			if err != nil {
 				t.Fatalf("read forge.yaml: %v", err)
 			}
-			if got := cfg.Stack.Frontend.Framework; got != tc.want {
-				t.Errorf("kind=%q: stack.frontend.framework = %q, want %q",
-					tc.kind, got, tc.want)
+			if len(cfg.Frontends) != 1 || cfg.Frontends[0].Type != tc.want {
+				t.Errorf("kind=%q: frontends = %+v, want type %q", tc.kind, cfg.Frontends, tc.want)
 			}
 		})
 	}
 }
 
-// TestRunAddFrontend_PreservesCustomStackFramework verifies the fix
-// is a one-way reconciliation: if a user has *deliberately* set
-// stack.frontend.framework to something other than "none" (e.g.
-// "svelte" while they wire up their own scaffolding), we must not
-// stomp it. Only "" and "none" are treated as "needs to be filled in".
-func TestRunAddFrontend_PreservesCustomStackFramework(t *testing.T) {
+// TestRunAddFrontend_RoutesLandInKCL: --routes used to be persisted as
+// frontends[].routes in forge.yaml. It is declared on the KCL forge.Frontend
+// now, in every env, because the allowlist is a property of the frontend and an
+// env that omitted it would regenerate the full CRUD set.
+func TestRunAddFrontend_RoutesLandInKCL(t *testing.T) {
 	skipNpmInstall(t)
-	customYAML := strings.Replace(freshServiceForgeYAML,
-		"framework: none", "framework: svelte", 1)
-	dir := withTempProject(t, customYAML)
-	markServiceProject(t, dir)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte(freshServiceForgeYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/example/demo\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, env := range []string{"dev", "prod"} {
+		dir := filepath.Join(root, "deploy", "kcl", env)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(renderNoFrontendEnv(t, scaffoldedEnvTemplate(env), env)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(root)
 
-	if err := runFrontend(context.Background(), "app", 0, "", "", "", "", nil); err != nil {
+	if err := runFrontend(t.Context(), "ops", 0, "", "", "", "", []string{"users", "usage-events"}); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
-
-	cfg, err := generator.ReadProjectConfig(filepath.Join(dir, "forge.yaml"))
-	if err != nil {
-		t.Fatalf("read forge.yaml: %v", err)
-	}
-	if got, want := cfg.Stack.Frontend.Framework, "svelte"; got != want {
-		t.Errorf("stack.frontend.framework = %q, want %q "+
-			"(user-set framework must not be overwritten)", got, want)
+	for _, env := range []string{"dev", "prod"} {
+		body, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", env, "main.k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), `routes = ["users", "usage-events"]`) {
+			t.Errorf("%s/main.k must carry the routes allowlist on the forge.Frontend:\n%s", env, body)
+		}
 	}
 }

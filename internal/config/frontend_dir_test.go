@@ -2,10 +2,7 @@ package config
 
 import (
 	"path/filepath"
-	"reflect"
 	"testing"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // TestFrontendDirParity is FrontendDirWithin's own test
@@ -73,64 +70,5 @@ func TestFrontendDirUnnamed(t *testing.T) {
 	root := t.TempDir()
 	if dir, ok := (FrontendConfig{}).Dir(root); ok {
 		t.Errorf("unnamed frontend = (%q, true), want ok=false", dir)
-	}
-}
-
-// TestFrontendPathYAMLRoundTrip is the test that guards the unexport
-// itself, and it is not incidental: yaml.v3 CANNOT decode into an
-// unexported field and reports NO error when it skips one. Verified
-// directly — a `path:` line against an unexported field decodes to ""
-// with err == nil.
-//
-// So without the custom UnmarshalYAML/MarshalYAML pair, every project
-// with a custom `path:` would silently fall back to frontends/<name>,
-// which is a total failure that no existing test would catch and no user
-// would see until a generate wrote into the wrong directory. This test
-// fails loudly if either codec is ever removed.
-func TestFrontendPathYAMLRoundTrip(t *testing.T) {
-	const src = `
-name: console
-type: vite-spa
-path: apps/console
-port: 3001
-`
-	var fe FrontendConfig
-	if err := yaml.Unmarshal([]byte(src), &fe); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := fe.DeclaredDir(); got != "apps/console" {
-		t.Fatalf("decoded path = %q, want apps/console — yaml.v3 silently drops "+
-			"unexported fields, so this means UnmarshalYAML is missing or broken", got)
-	}
-
-	out, err := yaml.Marshal(fe)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var back FrontendConfig
-	if err := yaml.Unmarshal(out, &back); err != nil {
-		t.Fatalf("re-unmarshal: %v", err)
-	}
-	if !reflect.DeepEqual(back, fe) {
-		t.Errorf("round trip changed the entry:\n got %+v\nwant %+v\nserialized as:\n%s", back, fe, out)
-	}
-	if back.DeclaredDir() != "apps/console" {
-		t.Errorf("round-tripped path = %q, want apps/console — MarshalYAML must "+
-			"re-emit the key, or `forge scaffold frontend` writes an entry with no path",
-			back.DeclaredDir())
-	}
-}
-
-// TestFrontendPathAcceptedByUnknownKeyWalker pins the second reason the
-// `yaml:"path"` tag stays on the unexported field. LoadProject's phase-1
-// validator walks struct tags REFLECTIVELY (yamlKeysOf) to decide which
-// keys forge.yaml may contain, and reflection still sees a tag on an
-// unexported field. Drop the tag and every forge.yaml with a `path:`
-// line becomes a validation error naming a key forge itself wrote.
-func TestFrontendPathAcceptedByUnknownKeyWalker(t *testing.T) {
-	keys := yamlKeysOf(reflect.TypeFor[FrontendConfig]())
-	if _, ok := keys["path"]; !ok {
-		t.Error("yamlKeysOf(FrontendConfig) has no \"path\" — the yaml tag must stay " +
-			"on the unexported field or LoadProject rejects a valid forge.yaml")
 	}
 }

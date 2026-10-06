@@ -25,7 +25,7 @@ import (
 )
 
 // featureDisplayOrder is the stable print order for `forge project features` —
-// roughly the codegen → build → deploy → frontend → experimental flow a
+// roughly the codegen → build → deploy → frontend flow a
 // reader thinks in, rather than alphabetical. Any feature not listed
 // here (defensive: a future Feature* constant the menu forgot) is
 // appended alphabetically so it can never silently vanish from the
@@ -43,9 +43,6 @@ var featureDisplayOrder = []config.FeatureName{
 	config.FeatureDeploy,
 	config.FeatureIngress,
 	config.FeatureOperators,
-	// Experimental — printed in the same list with an (experimental) tag.
-	config.FeatureStrictWiring,
-	config.FeatureReconcile,
 }
 
 func newFeaturesCmd() *cobra.Command {
@@ -53,8 +50,9 @@ func newFeaturesCmd() *cobra.Command {
 		Use:   "features",
 		Short: "Print the resolved feature graph (on/off, why, dependencies)",
 		Long: `Print every forge feature for this project: whether it is enabled,
-WHY (derived from project shape vs explicitly set in forge.yaml), and
-the features / shape preconditions it depends on.
+WHY (what in the repo made it on or off), and the features / shape
+preconditions it depends on. Nothing here is configured: every feature is
+derived from what exists in the repository.
 
 The dependency graph is validated at config-load time — a feature
 enabled with a dependency off is a load error. This command shows the
@@ -104,11 +102,7 @@ func printFeatureGraph(cmd *cobra.Command, cfg *config.ProjectConfig) error {
 		if on {
 			marker = "[x]"
 		}
-		origin := featureOrigin(cfg, name)
-		line := fmt.Sprintf("  %s %-16s %s", marker, name, origin)
-		if config.IsExperimentalFeature(name) {
-			line += " (experimental)"
-		}
+		line := fmt.Sprintf("  %s %-16s %s", marker, name, featureReason(cfg, name, on))
 		if deps := config.FeatureDependencies(name); len(deps) > 0 {
 			line += fmt.Sprintf("  →  requires: %s", strings.Join(deps, ", "))
 		}
@@ -117,49 +111,47 @@ func printFeatureGraph(cmd *cobra.Command, cfg *config.ProjectConfig) error {
 	return nil
 }
 
-// featureOrigin reports whether the feature's resolved state came from an
-// explicit forge.yaml value or from shape-derivation. Experimental flags
-// are plain bools (no nil "absent" state) so they are always reported as
-// the default-off opt-in unless turned on.
-func featureOrigin(cfg *config.ProjectConfig, name config.FeatureName) string {
-	if config.IsExperimentalFeature(name) {
-		if cfg.Features.EffectiveFeatures()[name] {
-			return "(explicit)"
-		}
-		return "(default off)"
-	}
-	if featureExplicitlySet(cfg.Features, name) {
-		return "(explicit)"
-	}
-	return "(derived)"
-}
-
-// featureExplicitlySet reports whether a stable feature carries an
-// explicit forge.yaml value (the *bool is non-nil) vs resolving from
-// shape-derivation. Mirrors the FeaturesConfig field set 1:1.
-func featureExplicitlySet(f config.FeaturesConfig, name config.FeatureName) bool {
+// featureReason says what in the repo made the feature resolve the way it did,
+// so a reader can change the repo rather than hunt for a setting that does not
+// exist. The wording mirrors DeriveFeatureDefaults, which is the rule.
+func featureReason(cfg *config.ProjectConfig, name config.FeatureName, on bool) string {
+	kind := cfg.EffectiveKind()
+	service := kind == config.ProjectKindService
 	switch name {
-	case config.FeatureORM:
-		return f.ORM != nil
-	case config.FeatureCodegen:
-		return f.Codegen != nil
-	case config.FeatureMigrations:
-		return f.Migrations != nil
-	case config.FeatureCI:
-		return f.CI != nil
-	case config.FeatureBuild:
-		return f.Build != nil
+	case config.FeatureCodegen, config.FeatureObservability, config.FeatureHotReload, config.FeatureDeploy:
+		return fmt.Sprintf("(kind: %s)", kind)
+	case config.FeatureCI, config.FeatureBuild:
+		return fmt.Sprintf("(kind: %s)", kind)
 	case config.FeatureContracts:
-		return f.Contracts != nil
+		return "(always on)"
+	case config.FeatureMigrations:
+		if on {
+			return "(db/migrations exists)"
+		}
+		return "(no db/migrations)"
+	case config.FeatureORM:
+		if on {
+			return "(db/migrations exists)"
+		}
+		if service && cfg.Database.Driver != "" && cfg.Database.Driver != "none" {
+			return "(//forge:no-orm in internal/db)"
+		}
+		return "(no db/migrations)"
 	case config.FeatureFrontend:
-		return f.Frontend != nil
-	case config.FeatureObservability:
-		return f.Observability != nil
-	case config.FeatureHotReload:
-		return f.HotReload != nil
-	case config.FeatureDeploy:
-		return f.Deploy != nil
-	default:
-		return false
+		if on {
+			return "(a frontend exists)"
+		}
+		return "(no frontend found)"
+	case config.FeatureIngress:
+		if on {
+			return "(deploy/kcl declares a forge.Gateway)"
+		}
+		return "(no forge.Gateway in deploy/kcl)"
+	case config.FeatureOperators:
+		if on {
+			return "(internal/operators exists)"
+		}
+		return "(no internal/operators)"
 	}
+	return ""
 }

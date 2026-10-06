@@ -44,6 +44,12 @@ import (
 type deployConfirm struct {
 	// Yes is --yes: "I read the plan, proceed."
 	Yes bool
+	// Approve is --approve <digest>: "I read THIS plan, proceed." It is
+	// consent as well as binding — the documented two-stage pipeline runs
+	// stage two with --approve and no --yes, from CI, with no terminal. The
+	// binding half (refuse a plan that is not this digest, exit 3) runs
+	// earlier, in gateDeployOnPlan; this half is only "may it proceed".
+	Approve string
 	// PlanOnly is --plan-only: print the plan (and the version a no-version
 	// deploy cut) and stop, exit 0, writing no promotion.
 	PlanOnly bool
@@ -78,6 +84,7 @@ type deployConfirm struct {
 func newDeployConfirm(p promoteCmdFlags, autoVersion string) *deployConfirm {
 	return &deployConfirm{
 		Yes:         p.yes,
+		Approve:     p.approve,
 		PlanOnly:    p.planOnly,
 		AutoVersion: autoVersion,
 		Interactive: cliutil.StdinIsTTY(),
@@ -124,8 +131,9 @@ func (p promotePlan) renderForConfirmation(jsonMode bool) {
 //  1. --plan-only stops here, exit 0. It is the first stage of a two-stage
 //     pipeline, and it must write nothing even when --yes is also present.
 //  2. --yes proceeds. "I read the plan."
-//  3. A TTY prompts, defaulting to NO. A bare Enter must not deploy.
-//  4. Anything else refuses with exit 5, printing the plan and the exact
+//  3. --approve <digest> proceeds when it names this plan. "I read THIS plan."
+//  4. A TTY prompts, defaulting to NO. A bare Enter must not deploy.
+//  5. Anything else refuses with exit 5, printing the plan and the exact
 //     flag to add.
 //
 // jsonMode is --json: it decides only WHERE the gate's human text goes.
@@ -154,6 +162,17 @@ func confirmDeployPlan(env string, plan promotePlan, c deployConfirm, jsonMode b
 	}
 
 	if c.Yes {
+		return deployConfirmOutcome{Confirmed: true}
+	}
+
+	// --approve <digest> is consent for EXACTLY that plan. gateDeployOnPlan
+	// has already refused a mismatch (plan_stale) and a digest with no plan
+	// to judge it against; the equality is re-checked here so this branch can
+	// never admit a plan nobody named, whatever order a future caller runs
+	// the two gates in. Without this branch the next_step --plan-only prints
+	// (`forge env deploy prod vX --approve <digest>`) refused with exit 5
+	// "plan_unconfirmed" — the documented pipeline could not complete.
+	if c.Approve != "" && plan.DeployPlan != nil && plan.DeployPlan.Digest == c.Approve {
 		return deployConfirmOutcome{Confirmed: true}
 	}
 

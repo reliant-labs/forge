@@ -38,6 +38,34 @@ func planOnlyOutput(t *testing.T, env string, plan promotePlan, c deployConfirm)
 	return buf.String(), outcome
 }
 
+// Stage two of the documented pipeline is `--approve <digest>` with no --yes
+// and no terminal. It must PROCEED: before this, the gate only knew --yes and a
+// TTY, so the exact command --plan-only printed refused with exit 5
+// plan_unconfirmed (observed deploying control-plane v1.7.33 to prod).
+func TestConfirm_ApproveMatchingDigestConfirmsWithoutTTY(t *testing.T) {
+	plan := promotePlan{Env: "prod", DeployPlan: &release.Plan{Digest: "sha256:abc123"}}
+	var buf bytes.Buffer
+	outcome := confirmDeployPlan("prod", plan, deployConfirm{Approve: "sha256:abc123", Interactive: false, out: &buf}, false)
+	if outcome.Err != nil || !outcome.Confirmed {
+		t.Fatalf("--approve naming this plan must confirm, got confirmed=%v err=%v", outcome.Confirmed, outcome.Err)
+	}
+}
+
+// --approve is consent for ONE plan. A different digest, or no plan at all,
+// is never consent — whichever gate a future caller happens to run first.
+func TestConfirm_ApproveIsNotConsentForAnotherPlan(t *testing.T) {
+	for name, plan := range map[string]promotePlan{
+		"other digest": {Env: "prod", DeployPlan: &release.Plan{Digest: "sha256:def456"}},
+		"no plan":      {Env: "prod"},
+	} {
+		var buf bytes.Buffer
+		outcome := confirmDeployPlan("prod", plan, deployConfirm{Approve: "sha256:abc123", out: &buf}, false)
+		if outcome.Confirmed {
+			t.Fatalf("%s: --approve sha256:abc123 confirmed a plan it did not name", name)
+		}
+	}
+}
+
 // With a plan digest, the approve command is --approve <digest> — the flag
 // that binds the approval to the change set that was read.
 func TestPlanOnly_NamesApproveWithTheDigest(t *testing.T) {

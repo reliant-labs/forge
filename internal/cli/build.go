@@ -20,6 +20,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 
@@ -2149,6 +2150,11 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildM
 	// forge.yaml's dev_runner picks the package manager; `<runner> run build`
 	// is the same invocation for npm, pnpm and yarn.
 	runner := fe.EffectiveDevRunner()
+	// A fresh checkout (every release worktree) has no node_modules; without
+	// this `next build` dies with "command not found". Same step as `env up`.
+	if err := frontenddeps.Ensure(ctx, "[build]", fe.Name, feDir, runner, true); err != nil {
+		return buildResult{name: fe.Name, kind: "frontend", duration: time.Since(start), err: err}
+	}
 	fmt.Printf("[build] %s: NODE_ENV=production %s run build in %s\n", fe.Name, runner, feDir)
 
 	cmd := exec.CommandContext(ctx, runner, "run", "build")

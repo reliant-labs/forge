@@ -23,7 +23,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,6 +48,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/internal/envutil"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/projectstore"
@@ -3086,7 +3086,7 @@ func preflightFrontendDeps(ctx context.Context, e *KCLEntities, targets []string
 		if _, err := os.Stat(filepath.Join(fe.Path, "package.json")); err != nil {
 			continue
 		}
-		if frontendDepsStale(fe.Path) {
+		if frontenddeps.Stale(fe.Path) {
 			selected = append(selected, fe)
 		}
 	}
@@ -3114,165 +3114,10 @@ func preflightFrontendDeps(ctx context.Context, e *KCLEntities, targets []string
 // missing or partial tree and tolerates a slightly-drifted lockfile
 // rather than hard-failing the dev loop the way `npm ci` would.
 func ensureFrontendDeps(ctx context.Context, fe FrontendEntity, noInstall bool) error {
-	if noInstall || fe.Path == "" {
+	if noInstall {
 		return nil
 	}
-	if _, err := os.Stat(filepath.Join(fe.Path, "package.json")); err != nil {
-		return nil // not a node project (or no manifest) — nothing to install
-	}
-	if !frontendDepsStale(fe.Path) {
-		return nil
-	}
-	runner := fe.DevRunner
-	if runner == "" {
-		runner = "npm"
-	}
-	fmt.Printf("[up] %s: node_modules missing/stale — running `%s install`\n", fe.Name, runner)
-	err := runFrontendInstall(ctx, runner, fe.Path)
-	if err != nil && transientInstallFailure(err.Error()) {
-		// The package manager reported ITS OWN internal failure, not a problem
-		// with the tree — retrying converges where failing the whole `up` does
-		// not. Without this a known npm bug ends a run that had already spent
-		// minutes building images, and re-running hits the same coin flip.
-		fmt.Printf("[up] %s: `%s install` hit a package-manager internal error — retrying once\n", fe.Name, runner)
-		err = runFrontendInstall(ctx, runner, fe.Path)
-	}
-	if err != nil {
-		return fmt.Errorf("install deps in %s: %w", fe.Path, err)
-	}
-	markFrontendInstallOK(fe.Path)
-	return nil
-}
-
-// proxiedInstallSockets caps a package manager's parallel connections when the
-// install runs through an HTTP proxy.
-//
-// Package managers open many sockets at once — npm's default is 15 — which a
-// local debugging/inspection proxy (Proxyman, Charles, mitmproxy) does not
-// survive: measured on a 579-package tree, 15 sockets through such a proxy did
-// not finish in FOUR MINUTES, while 8 finished in 7.6s against 6.6s direct.
-// The failure is also silent, because npm's fetch-timeout is 300s with 2
-// retries: the install simply sits there for up to fifteen minutes looking
-// hung, and the eventual error names nothing useful.
-//
-// 8 is chosen with margin: 10 also measured clean, 15 did not, so the cliff
-// sits between them. The cost when proxied is ~1s on that tree; the cost when
-// NOT proxied is zero, because the cap is only applied when a proxy is set.
-const proxiedInstallSockets = 8
-
-// installConcurrencyFlags caps network concurrency for this runner, but only
-// when the environment actually routes through a proxy. Returning nil in the
-// common case keeps a normal install at full speed.
-func installConcurrencyFlags(runner string, env []string) []string {
-	proxied := false
-	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
-		if envutil.Lookup(env, key) != "" {
-			proxied = true
-			break
-		}
-	}
-	if !proxied {
-		return nil
-	}
-	switch runner {
-	case "npm":
-		return []string{fmt.Sprintf("--maxsockets=%d", proxiedInstallSockets)}
-	case "pnpm", "yarn":
-		return []string{fmt.Sprintf("--network-concurrency=%d", proxiedInstallSockets)}
-	default:
-		return nil
-	}
-}
-
-// runFrontendInstall runs one install attempt, teeing output to the terminal
-// while retaining it so the caller can classify the failure.
-func runFrontendInstall(ctx context.Context, runner, dir string) error {
-	var buf bytes.Buffer
-	args := []string{"install"}
-	if flags := installConcurrencyFlags(runner, os.Environ()); len(flags) > 0 {
-		args = append(args, flags...)
-		fmt.Printf("[up] proxy detected — capping %s network concurrency at %d (an inspection proxy stalls at the default)\n",
-			runner, proxiedInstallSockets)
-	}
-	cmd := exec.CommandContext(ctx, runner, args...)
-	cmd.Dir = dir
-	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(buf.String()))
-	}
-	return nil
-}
-
-// transientInstallFailureSignatures are messages by which a package manager
-// reports a fault in ITSELF rather than in the project. They are worth exactly
-// one retry: the tree is fine, the tool tripped.
-var transientInstallFailureSignatures = []string{
-	// npm's own internal-error marker; it prints "This is an error with npm
-	// itself" and asks the user to file a bug. Frequently succeeds on retry.
-	"Exit handler never called!",
-	// Registry/network flakes that are equally not the project's fault.
-	"ECONNRESET",
-	"ETIMEDOUT",
-	"ERR_SOCKET_TIMEOUT",
-	"registry error",
-}
-
-func transientInstallFailure(output string) bool {
-	for _, sig := range transientInstallFailureSignatures {
-		if strings.Contains(output, sig) {
-			return true
-		}
-	}
-	return false
-}
-
-// frontendDepsStale reports whether a frontend's node_modules is missing
-// or older than its lockfile/manifest — the cheap staleness gate that
-// keeps ensureFrontendDeps a no-op in the steady state. node_modules'
-// directory mtime is bumped by every install, so a lockfile/manifest
-// edit (or a never-installed tree) is what trips this.
-func frontendDepsStale(dir string) bool {
-	nm, err := os.Stat(filepath.Join(dir, "node_modules"))
-	if err != nil {
-		return true // missing → must install
-	}
-	// A SUCCESSFUL install is the reference point, not node_modules' mtime.
-	// An install that fails part-way still writes packages, which bumps that
-	// mtime — so the directory looks current, the next run skips the install,
-	// and a half-populated tree is treated as done. That is the whole gate
-	// inverting itself precisely when it matters. The stamp is written only
-	// after the package manager exits 0.
-	var ref time.Time
-	if stamp, err := os.Stat(frontendInstallStamp(dir)); err == nil {
-		ref = stamp.ModTime()
-	} else {
-		// No stamp: either a tree installed before forge wrote stamps, or one
-		// left behind by a failed install. Fall back to the mtime heuristic so
-		// an existing healthy checkout is not force-reinstalled.
-		ref = nm.ModTime()
-	}
-	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "package.json"} {
-		if info, err := os.Stat(filepath.Join(dir, manifest)); err == nil {
-			if info.ModTime().After(ref) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// frontendInstallStamp is the marker written after a package manager exits
-// successfully, so "are these deps current?" asks about the last install that
-// COMPLETED rather than the last one that merely ran.
-func frontendInstallStamp(dir string) string {
-	return filepath.Join(dir, "node_modules", ".forge-install-ok")
-}
-
-// markFrontendInstallOK records a completed install. Best-effort: a tree that
-// cannot be stamped just falls back to the mtime heuristic next time.
-func markFrontendInstallOK(dir string) {
-	_ = os.WriteFile(frontendInstallStamp(dir), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	return frontenddeps.Ensure(ctx, "[up]", fe.Name, fe.Path, fe.DevRunner, false)
 }
 
 // buildFrontendCmd composes the *exec.Cmd for a single frontend in the

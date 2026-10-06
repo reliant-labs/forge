@@ -466,31 +466,6 @@ func TestPersistUsesCapturedPid(t *testing.T) {
 	}
 }
 
-func TestFrontendDepsStale(t *testing.T) {
-	dir := t.TempDir()
-	// No node_modules yet → stale.
-	writeFileAt(t, dir, "package.json", `{"name":"x"}`)
-	writeFileAt(t, dir, "package-lock.json", `{}`)
-	if !frontendDepsStale(dir) {
-		t.Fatal("missing node_modules should be stale")
-	}
-	// Install: node_modules newer than manifests → fresh.
-	writeFileAt(t, dir, "node_modules/.keep", "")
-	past := time.Now().Add(-time.Hour)
-	future := time.Now().Add(time.Hour)
-	_ = os.Chtimes(filepath.Join(dir, "package.json"), past, past)
-	_ = os.Chtimes(filepath.Join(dir, "package-lock.json"), past, past)
-	_ = os.Chtimes(filepath.Join(dir, "node_modules"), future, future)
-	if frontendDepsStale(dir) {
-		t.Fatal("node_modules newer than manifests should be fresh")
-	}
-	// Touch the lockfile newer than node_modules → stale again.
-	_ = os.Chtimes(filepath.Join(dir, "package-lock.json"), future.Add(time.Minute), future.Add(time.Minute))
-	if !frontendDepsStale(dir) {
-		t.Fatal("lockfile newer than node_modules should be stale")
-	}
-}
-
 func TestProcPID_PrefersCaptured(t *testing.T) {
 	// Captured pid wins (survives Release on the detach path).
 	if got := procPID(&managedProcess{pid: 4242, cmd: &exec.Cmd{}}); got != 4242 {

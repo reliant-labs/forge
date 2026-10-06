@@ -28,6 +28,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The dev loop runs the API as ONE process — `_api`, the binary's
+  `server`, under air (hot reload) — so the frontend reaches every service.**
+  Dev ran each service as its own `go run ./cmd/<p> <service>` host process on
+  its own port, and the frontend's dev config (`api_url`, the
+  `<project>-dev-api` port key) named the first: a 3-service project's
+  frontend could call one service in dev — the defect #527 fixed for hosted
+  envs, and it strands the sign-in cookie the same way. `deploy/kcl/dev/main.k`
+  now declares the same `_api` the hosted envs do, `_port_of` gives it the
+  `-api` key, and it binds `_on_host(_api)` instead of the services and
+  workers (`server` mounts every service and supervises every worker). This
+  is what the docs already said — "one binary serves every service on one
+  mux", "Go services (hot reload)" — and what `.air.toml` (`entrypoint =
+  ["./tmp/<p>", "server"]`) and `task dev` already ran; `forge env up dev`
+  did neither. `_on_host` now runs `server` under air (anything else still
+  `go run`), so a .go edit rebuilds and restarts the API; air must be
+  installed (`go install github.com/air-verse/air@latest`, which `forge
+  doctor` already required), and `forge env up` refuses to start without it,
+  naming the workload and the `runner = "go-run"` way out, instead of failing
+  in the host phase on `exec: "air": executable file not found`. It no longer
+  prints "the workload's args [server] are not passed" when the air config's
+  entrypoint passes exactly those args. `forge scaffold service|worker` adds
+  no dev line (`_on_host(_api)` is bound with the first service);
+  `forge env up dev --target api` restarts the API. **Existing projects:**
+  copy `_api` and the `_on_host` binder from a fresh `forge project new`'s
+  `deploy/kcl/dev/main.k`, change `_port_of`'s `-api` owner to `"api"`, and
+  replace the service/worker lines with `_on_host(_api)`.
 - **New projects deploy to Reliant hosting by default.** `forge project new`
   scaffolds `staging` and `prod` hosted on the forge control plane: the API
   (every service and worker, as one workload — below) and the migrate job
@@ -59,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     once there is something for it to run (a project born with no service
     pays for no idle workload; `forge scaffold service` binds it with the
     first). `forge scaffold service|worker` then adds no hosted line — `server`
-    already runs it — while dev still runs each as its own process; a job,
+    already runs it (dev too, below); a job,
     an operator (which `server` skips without a Kubernetes API) and a tool
     bind as before. `forge env new X --from prod --bind api=cluster` rebinds
     the API; `--bind <service>=…` is refused, naming `_api`. Splitting a

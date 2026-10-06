@@ -160,6 +160,41 @@ func TestAirIgnoresArgs(t *testing.T) {
 // paths relative to that repo's root. With ProjectDir set to the caller's
 // forge project root, the launched subprocess must chdir to the sibling so
 // Air's `build_cmd` paths resolve correctly.
+// The dev env's API runs `server` under air, and the scaffolded .air.toml's
+// entrypoint is `[./tmp/<bin>, server]` — the declared args, honoured by the
+// config. forge must not tell the user, on every `forge env up`, that they
+// are "not passed". Anything that does not prove it (different args, no
+// entrypoint, no file) keeps the note.
+func TestAirRunsArgs(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".air.toml", "root = \".\"\n\n[build]\n  cmd = \"go build -o ./tmp/acme ./cmd/acme\"\n  entrypoint = [\"./tmp/acme\", \"server\"]\n\n[build.windows]\n  entrypoint = [\"./tmp/acme.exe\", \"server\"]\n")
+	write("noentry.toml", "[build]\n  cmd = \"go build\"\n")
+	write("broken.toml", "[build\n")
+
+	for _, tc := range []struct {
+		name string
+		spec RunnerSpec
+		want bool
+	}{
+		{"the scaffolded config runs server", RunnerSpec{Runner: "air", ProjectDir: dir, Args: []string{"server"}}, true},
+		{"one service's subcommand is not what it runs", RunnerSpec{Runner: "air", ProjectDir: dir, Args: []string{"orders"}}, false},
+		{"no entrypoint", RunnerSpec{Runner: "air", ProjectDir: dir, AirConfig: "noentry.toml", Args: []string{"server"}}, false},
+		{"unparseable", RunnerSpec{Runner: "air", ProjectDir: dir, AirConfig: "broken.toml", Args: []string{"server"}}, false},
+		{"missing", RunnerSpec{Runner: "air", ProjectDir: dir, AirConfig: "nope.toml", Args: []string{"server"}}, false},
+		{"relative to the working dir", RunnerSpec{Runner: "air", ProjectDir: filepath.Dir(dir), WorkingDir: filepath.Base(dir), Args: []string{"server"}}, true},
+	} {
+		if got := tc.spec.AirRunsArgs(); got != tc.want {
+			t.Errorf("%s: AirRunsArgs() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestBuildCmd_WorkingDir(t *testing.T) {
 	ctx := context.Background()
 	// Host-absolute roots: "/forge/project" is only ROOTED on Windows (no

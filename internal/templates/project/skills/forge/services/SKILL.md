@@ -42,13 +42,13 @@ provision_idp = fw.Workload {
     kind = "job"
     build = forge.GoBuild {cmd = "./cmd/myproj", output_name = "myproj"}
     args = ["provision-idp"]  # a subcommand of the project binary
-    before = ["api"]          # `api` does not start until this exits 0
+    before = ["api"]          # the API does not start until this exits 0
 }
 
 # deploy/kcl/dev/main.k — one binding line
 _workloads = [
     _on_host_job(wl.provision_idp)
-    _on_host(wl.api)
+    _on_host(_api)            # the binary's `server`: every service
 ]
 ```
 
@@ -89,12 +89,13 @@ Follow this sequence every time you scaffold a new component:
 
 `forge scaffold service|worker|operator|binary` appends the workload to
 `deploy/kcl/workloads.k` — build, the component's subcommand in `args`, the
-`http` port for a service — and binds it in every env: `_on_host(wl.<name>)`
-in dev, its own process. Staging and prod (hosted on Reliant as scaffolded)
-run every service and worker in ONE workload, `_api` — the binary's
-`server` — so the browser reaches them all at one origin; a new one needs no
-line there (`_api` is bound if it was not). An operator binds `_on_cluster`,
-since hosting refuses it; see `deploy/hosting`. Probes need nothing: a service
+`http` port for a service. Every env — dev (a host process under air, hot
+reload) and staging/prod (hosted on Reliant as scaffolded) — runs every
+service and worker in ONE workload, `_api`: the binary's `server`, every
+service on one Connect mux, so the browser reaches them all at one origin. A
+new one needs no binding line (`_api` is bound if it was not). An operator
+binds `_on_k3d` in dev and `_on_cluster` in deployed envs, since hosting
+refuses it; see `deploy/hosting`. Probes need nothing: a service
 forge builds gets `/readyz` + `/healthz` on its `http` port on every runtime.
 See the `deploy` skill for the runtimes and how to rebind one workload (to a
 cluster you operate, say).

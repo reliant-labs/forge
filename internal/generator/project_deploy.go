@@ -72,23 +72,18 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// IngressEnabled() at call time.
 	born := g.bornComponents()
 	hasFrontend := g.forScaffold().HasFrontend
-	primaryWorkload := g.Name
-	for _, c := range born {
-		if codegen.WorkloadKindFor(c.EffectiveKind()) == codegen.WorkloadKindService {
-			primaryWorkload = c.Name
-			break
-		}
-	}
 	envs := []struct{ env, template string }{{codegen.DevEnvName, "kcl/dev/main.k.tmpl"}}
 	for _, env := range hostedEnvNames() {
 		envs = append(envs, struct{ env, template string }{env, "kcl/cloud/main.k.tmpl"})
 	}
 	for _, e := range envs {
 		data := templates.EnvTemplateData{
-			ProjectName:     g.Name,
-			EnvName:         e.env,
-			PrimaryWorkload: primaryWorkload,
-			PrimaryIdent:    naming.KCLIdentifier(primaryWorkload),
+			ProjectName: g.Name,
+			EnvName:     e.env,
+			// The API holds the dev env's `-api` port key in every
+			// project, born with a service or not: the frontend's dev
+			// config reads that key, and `_api` is what serves it.
+			PrimaryWorkload: codegen.APIWorkloadName,
 			IngressEnabled:  true,
 			HasFrontend:     hasFrontend,
 			FrontendName:    g.FrontendName,
@@ -182,16 +177,16 @@ func scaffoldEnvBindings(env string, components codegen.Inventory, hasFrontend b
 	if hasFrontend && env == codegen.DevEnvName {
 		lines = append(lines, codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.IDPProvisionWorkloadName))
 	}
-	// A hosted env runs its services and workers as ONE workload, `_api` (the
+	// Every env runs its services and workers as ONE workload, `_api` (the
 	// binary's `server`), so the browser reaches every service at one origin
 	// — see codegen.APIWorkloadName. It is bound once there is something for
-	// it to run: a project born with no service pays for no idle workload,
-	// and `forge scaffold service` binds it with the first one.
+	// it to run: a project born with no service runs (and, hosted, pays for)
+	// no idle process, and `forge scaffold service` binds it with the first.
 	var others []string
 	served := false
 	for _, c := range components {
 		kind := codegen.WorkloadKindFor(c.EffectiveKind())
-		if env != codegen.DevEnvName && codegen.RunsInServer(kind) {
+		if codegen.RunsInServer(kind) {
 			served = true
 			continue
 		}

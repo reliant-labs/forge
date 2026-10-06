@@ -138,8 +138,8 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
 # service would leave the frontend reaching one of them, signed in to none
 # of the others.
 #
-# workloads.k still declares each service and worker, and dev still runs
-# each as its own process. Here `server` runs them, so `forge scaffold
+# workloads.k still declares each service and worker; here `server` runs
+# them (dev runs the same `_api`, under air). So `forge scaffold
 # service|worker` adds no line below for one. Splitting one out — a service
 # no browser calls, a worker that needs its own capacity — is its own line,
 # `_hosted(wl.<name>)`, and taking it out of `server`'s mount or worker list:

@@ -191,25 +191,28 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		t.Errorf("dev frontends = %+v, want web on forge.OnHost", fe)
 	}
 	devW := byName(dev)
-	if rt := devW["item"].Runtime; rt.Type != RuntimeHost {
-		t.Fatalf("dev item runtime = %q, want host", rt.Type)
+	// Dev runs the same API, as one host process under air (hot reload):
+	// item runs inside it, not as a process of its own.
+	if rt := devW["api"].Runtime; rt.Type != RuntimeHost || rt.Host == nil || rt.Host.Runner != "air" {
+		t.Fatalf("dev api runtime = %+v, want a host process under air", rt)
 	}
-	assertServeProbes(t, "dev item", devW["item"].Spec.Probes)
-	if got := strings.Join(devW["item"].Spec.Args, " "); got != "item" {
-		t.Errorf("dev item args = %q, want the component subcommand", got)
+	if _, ok := devW["item"]; ok {
+		t.Errorf("dev runs item as its own process beside the API that already serves it")
 	}
+	assertServeProbes(t, "dev api", devW["api"].Spec.Probes)
 	if got := strings.Join(devW["migrate"].Spec.Args, " "); got != "db migrate up" {
 		t.Errorf("dev migrate args = %q", got)
 	}
 
-	// Rebinding the API changed nothing about WHAT it runs: the binary's
-	// `server`, which mounts item, from the same build dev runs item from.
-	for env, w := range map[string]WorkloadEntity{"prod": pw["api"], "cloud": mw["api"]} {
+	// Every env runs the SAME API: the binary's `server`, which mounts item,
+	// from the one project build — rebinding it changed nothing about what it
+	// runs.
+	for env, w := range map[string]WorkloadEntity{"prod": pw["api"], "cloud": mw["api"], "dev": devW["api"]} {
 		if got := strings.Join(w.Spec.Args, " "); got != "server" {
 			t.Errorf("the API in %s runs %q, want the binary's `server`", env, got)
 		}
-		if !reflect.DeepEqual(w.Build, devW["item"].Build) {
-			t.Errorf("the API in %s builds %+v, item in dev builds %+v — want the one project binary", env, w.Build.Go, devW["item"].Build.Go)
+		if !reflect.DeepEqual(w.Build, devW["migrate"].Build) {
+			t.Errorf("the API in %s builds %+v, migrate builds %+v — want the one project binary", env, w.Build.Go, devW["migrate"].Build.Go)
 		}
 	}
 }

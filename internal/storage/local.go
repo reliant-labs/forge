@@ -245,7 +245,7 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 			failures = append(failures, layerErr("registry "+registry.Container, err))
 		}
 	}
-	r.print("persistent volumes, worktrees, running containers and application data are retained\n")
+	r.print("persistent volumes, running containers and application data are retained; worktrees are reclaimed only under the worktree_reap policy\n")
 	return errors.Join(failures...)
 }
 
@@ -262,6 +262,9 @@ func (r Runner) hostLayers(apply bool) []error {
 	}
 	if err := r.Sources(apply); err != nil {
 		failures = append(failures, layerErr("source cache", err))
+	}
+	if err := r.worktreeLayer(apply); err != nil {
+		failures = append(failures, layerErr("worktrees", err))
 	}
 	return failures
 }

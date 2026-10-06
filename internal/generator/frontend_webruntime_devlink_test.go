@@ -16,6 +16,7 @@ func TestEnsureDevWebRuntimeLink_WritesAGitignoredBridge(t *testing.T) {
 	pinDevBuild(t, true, forgeRoot)
 
 	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", "")
 
 	EnsureDevWebRuntimeLink(projectDir)
@@ -51,12 +52,15 @@ func TestEnsureDevWebRuntimeLink_WritesAGitignoredBridge(t *testing.T) {
 	}
 }
 
-// TestEnsureDevWebRuntimeLink_ReleaseBuildWritesNothing keeps a released binary
-// from scattering a dev-only workspace root into a user's project.
-func TestEnsureDevWebRuntimeLink_ReleaseBuildWritesNothing(t *testing.T) {
+// TestEnsureDevWebRuntimeLink_UnbridgedProjectGetsNothing is the opt-in,
+// pinned: a dev build that knows its own checkout — the build that used to
+// lay .forge-link/ into every project it generated — writes nothing into a
+// project whose Go build is not bridged. The twin follows the go.work record;
+// it never decides on its own.
+func TestEnsureDevWebRuntimeLink_UnbridgedProjectGetsNothing(t *testing.T) {
 	base := t.TempDir()
 	forgeRoot := fakeForgeCheckout(t, filepath.Join(base, "forge"))
-	pinDevBuild(t, false, forgeRoot)
+	pinDevBuild(t, true, forgeRoot)
 
 	projectDir := filepath.Join(base, "app")
 	writeFrontendManifest(t, projectDir, "web", "")
@@ -65,8 +69,33 @@ func TestEnsureDevWebRuntimeLink_ReleaseBuildWritesNothing(t *testing.T) {
 
 	for _, p := range []string{"package.json", devLinkDir} {
 		if _, err := os.Stat(filepath.Join(projectDir, p)); !os.IsNotExist(err) {
-			t.Errorf("release build created %s at the project root", p)
+			t.Errorf("an unbridged project got %s at its root", p)
 		}
+	}
+}
+
+// TestEnsureDevWebRuntimeLink_FollowsTheBridgedCheckout: the twin links the
+// checkout the project's go.work names, not the one this binary was built
+// from, so the Go library and the web runtime always come from one tree.
+func TestEnsureDevWebRuntimeLink_FollowsTheBridgedCheckout(t *testing.T) {
+	base := t.TempDir()
+	binaryCheckout := fakeForgeCheckout(t, filepath.Join(base, "forge-binary"))
+	bridged := fakeForgeCheckout(t, filepath.Join(base, "forge-bridged"))
+	pinDevBuild(t, false, binaryCheckout) // a release binary, even
+
+	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, bridged)
+	writeFrontendManifest(t, projectDir, "web", "")
+
+	EnsureDevWebRuntimeLink(projectDir)
+
+	got, err := filepath.EvalSymlinks(filepath.Join(projectDir, devLinkDir, "web-runtime"))
+	if err != nil {
+		t.Fatalf("no twin for a bridged project: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(filepath.Join(bridged, "web-runtime"))
+	if got != want {
+		t.Errorf("twin resolves to %s, want the bridged checkout's %s", got, want)
 	}
 }
 
@@ -78,6 +107,7 @@ func TestEnsureDevWebRuntimeLink_Idempotent(t *testing.T) {
 	pinDevBuild(t, true, forgeRoot)
 
 	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", "")
 
 	EnsureDevWebRuntimeLink(projectDir)
@@ -121,6 +151,7 @@ func TestEnsureDevWebRuntimeLink_LeavesNativeAppsStandalone(t *testing.T) {
 	pinDevBuild(t, true, forgeRoot)
 
 	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", `"react": "^19.1.0"`)
 	writeFrontendManifest(t, projectDir, "spa", `"react": "^19.1.0"`)
 	writeFrontendManifest(t, projectDir, "mobile", `"expo": "~52.0.0", "react": "^18.3.0"`)
@@ -152,6 +183,7 @@ func TestEnsureDevWebRuntimeLink_ReconcilesItsOwnRoot(t *testing.T) {
 	pinDevBuild(t, true, forgeRoot)
 
 	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", "")
 	writeFrontendManifest(t, projectDir, "mobile", `"expo": "~52.0.0"`)
 	legacy := `{"name":"` + devWorkspaceRootName + `","private":true,"workspaces":["frontends/*",".forge-link/*"]}`

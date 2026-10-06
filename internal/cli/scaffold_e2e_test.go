@@ -452,6 +452,14 @@ func buildforgeBinary(t *testing.T) string {
 	// instead of booting its own. (No-DB fixtures pay one process-wide pg
 	// boot; that is cheaper than the parallel corpus booting dozens.)
 	sharedTestPostgres(t)
+	// The binary under test is an unreleased build of THIS checkout, so every
+	// scaffold must compile forge from it — and since that bridge is opt-in
+	// (`project new --link-forge`), the corpus opts in once, here, for every
+	// fixture present and future. Process-global for the same reason as the
+	// postgres URL above: it must reach the exec'd forge subprocesses.
+	if err := os.Setenv(linkForgeEnv, "1"); err != nil {
+		t.Fatalf("opt the e2e corpus into --link-forge: %v", err)
+	}
 	return forgeBinaryPath
 }
 

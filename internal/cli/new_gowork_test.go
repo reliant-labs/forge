@@ -42,30 +42,40 @@ func containsUse(ss []string, want string) bool {
 	return false
 }
 
-// TestWriteDevForgeGoWork_DevBuildAddsForgeUse: a dev build with a stamped
-// source root augments the starter go.work with `use <forge root>`,
-// preserving the existing `.` and `gen` uses.
+// starterProject writes the starter go.work into a fresh project dir and
+// returns the dir and the go.work path.
+func starterProject(t *testing.T) (dir, workPath string) {
+	t.Helper()
+	dir = t.TempDir()
+	workPath = filepath.Join(dir, "go.work")
+	if err := os.WriteFile(workPath, []byte(starterGoWork), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir, workPath
+}
+
+// stampRoot pins DevForgeRoot for the test.
+func stampRoot(t *testing.T, root string) {
+	t.Helper()
+	prev := buildinfo.DevForgeRoot
+	buildinfo.DevForgeRoot = root
+	t.Cleanup(func() { buildinfo.DevForgeRoot = prev })
+}
+
+// TestWriteDevForgeGoWork_LinkAddsForgeUse: with --link-forge, the starter
+// go.work gains `use <forge root>`, preserving the existing `.` and `gen` uses.
 //
 // The path is the repo ROOT, not <root>/pkg. It used to be pkg/, when that
 // was its own module and the only forge module a scaffold imported; forge is
 // one module now, so the root is the only thing there is to `use` — and a
 // `use <root>/pkg` would name a directory with no go.mod, which the go
 // command rejects outright.
-func TestWriteDevForgeGoWork_DevBuildAddsForgeUse(t *testing.T) {
-	dir := t.TempDir()
-	workPath := filepath.Join(dir, "go.work")
-	if err := os.WriteFile(workPath, []byte(starterGoWork), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
+func TestWriteDevForgeGoWork_LinkAddsForgeUse(t *testing.T) {
+	dir, workPath := starterProject(t)
 	forgeRoot := t.TempDir()
-	buildinfo.SetDevBuild(true)
-	t.Cleanup(buildinfo.ClearDevBuild)
-	prev := buildinfo.DevForgeRoot
-	buildinfo.DevForgeRoot = forgeRoot
-	t.Cleanup(func() { buildinfo.DevForgeRoot = prev })
+	stampRoot(t, forgeRoot)
 
-	writeDevForgeGoWork(dir)
+	writeDevForgeGoWork(dir, true)
 
 	got := usePaths(t, workPath)
 	if !containsUse(got, forgeRoot) {
@@ -79,24 +89,38 @@ func TestWriteDevForgeGoWork_DevBuildAddsForgeUse(t *testing.T) {
 	}
 }
 
+// TestWriteDevForgeGoWork_NotRequestedWritesNothing is the opt-in, pinned.
+// A dev build that knows its checkout — exactly the build that used to bridge
+// every scaffold on its own, including a host binary embedding forge through
+// a workspace — writes nothing unless --link-forge asked for it.
+func TestWriteDevForgeGoWork_NotRequestedWritesNothing(t *testing.T) {
+	dir, workPath := starterProject(t)
+	buildinfo.SetDevBuild(true)
+	t.Cleanup(buildinfo.ClearDevBuild)
+	stampRoot(t, t.TempDir())
+	buildinfo.SetDiscoveredForgeRoot(t.TempDir())
+	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
+
+	writeDevForgeGoWork(dir, false)
+
+	after, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != starterGoWork {
+		t.Errorf("a dev build bridged the project without --link-forge:\n%s", string(after))
+	}
+}
+
 // TestWriteDevForgeGoWork_Idempotent: running the bridge twice yields exactly
 // one forge use (a re-scaffold or repeated call must not duplicate lines).
 func TestWriteDevForgeGoWork_Idempotent(t *testing.T) {
-	dir := t.TempDir()
-	workPath := filepath.Join(dir, "go.work")
-	if err := os.WriteFile(workPath, []byte(starterGoWork), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
+	dir, workPath := starterProject(t)
 	forgeRoot := t.TempDir()
-	buildinfo.SetDevBuild(true)
-	t.Cleanup(buildinfo.ClearDevBuild)
-	prev := buildinfo.DevForgeRoot
-	buildinfo.DevForgeRoot = forgeRoot
-	t.Cleanup(func() { buildinfo.DevForgeRoot = prev })
+	stampRoot(t, forgeRoot)
 
-	writeDevForgeGoWork(dir)
-	writeDevForgeGoWork(dir)
+	writeDevForgeGoWork(dir, true)
+	writeDevForgeGoWork(dir, true)
 
 	count := 0
 	for _, p := range usePaths(t, workPath) {
@@ -109,84 +133,41 @@ func TestWriteDevForgeGoWork_Idempotent(t *testing.T) {
 	}
 }
 
-// TestWriteDevForgeGoWork_ReleaseBuildNoOp: a released binary never writes a
-// bridge, even if a DevForgeRoot value somehow leaked in.
-func TestWriteDevForgeGoWork_ReleaseBuildNoOp(t *testing.T) {
-	dir := t.TempDir()
-	workPath := filepath.Join(dir, "go.work")
-	if err := os.WriteFile(workPath, []byte(starterGoWork), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	buildinfo.SetDevBuild(false)
-	t.Cleanup(buildinfo.ClearDevBuild)
-	prev := buildinfo.DevForgeRoot
-	buildinfo.DevForgeRoot = t.TempDir() // leaked value must be ignored
-	t.Cleanup(func() { buildinfo.DevForgeRoot = prev })
-
-	writeDevForgeGoWork(dir)
-
-	after, err := os.ReadFile(workPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != starterGoWork {
-		t.Errorf("release build modified go.work:\n%s", string(after))
-	}
-}
-
-// TestWriteDevForgeGoWork_DevBuildNoRootNoWrite: a dev build with neither a
-// stamped source root NOR a discoverable one on disk (e.g. a trimpath'd or
-// shipped dev binary) leaves go.work untouched — it emits a hint instead of
-// guessing a path. Discovery is pinned to "" here because under `go test`
-// runtime.Caller would otherwise resolve to the live forge checkout.
-func TestWriteDevForgeGoWork_DevBuildNoRootNoWrite(t *testing.T) {
-	dir := t.TempDir()
-	workPath := filepath.Join(dir, "go.work")
-	if err := os.WriteFile(workPath, []byte(starterGoWork), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	buildinfo.SetDevBuild(true)
-	t.Cleanup(buildinfo.ClearDevBuild)
-	prev := buildinfo.DevForgeRoot
-	buildinfo.DevForgeRoot = ""
-	t.Cleanup(func() { buildinfo.DevForgeRoot = prev })
-	buildinfo.SetDiscoveredForgeRoot("") // nothing discoverable on disk
+// TestWriteDevForgeGoWork_NoRootNoWrite: a binary with neither a stamped
+// source root NOR a discoverable one (a trimpath'd or shipped binary) never
+// guesses a path. checkScaffoldCanResolveForge refuses such a request before
+// anything is written; the writer stays safe for any direct caller. Discovery
+// is pinned to "" because under `go test` runtime.Caller would resolve the
+// live checkout.
+func TestWriteDevForgeGoWork_NoRootNoWrite(t *testing.T) {
+	dir, workPath := starterProject(t)
+	stampRoot(t, "")
+	buildinfo.SetDiscoveredForgeRoot("")
 	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
 
-	writeDevForgeGoWork(dir)
+	writeDevForgeGoWork(dir, true)
 
 	after, err := os.ReadFile(workPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(after) != starterGoWork {
-		t.Errorf("dev build with empty DevForgeRoot modified go.work:\n%s", string(after))
+		t.Errorf("a binary without a checkout modified go.work:\n%s", string(after))
 	}
 }
 
-// TestWriteDevForgeGoWork_DevBuildDiscoversRoot: a dev build with NO stamped
-// DevForgeRoot still bridges when the forge source is discoverable at runtime
-// (the embedded-in-reliant case, where the host binary never stamped forge's
-// ldflag). The discovered root is used exactly like a stamped one.
-func TestWriteDevForgeGoWork_DevBuildDiscoversRoot(t *testing.T) {
-	dir := t.TempDir()
-	workPath := filepath.Join(dir, "go.work")
-	if err := os.WriteFile(workPath, []byte(starterGoWork), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
+// TestWriteDevForgeGoWork_DiscoversRoot: with NO stamped DevForgeRoot the
+// bridge still finds the checkout at runtime (the embedded-in-reliant case,
+// where the host binary never stamped forge's ldflag) and uses it exactly
+// like a stamped one.
+func TestWriteDevForgeGoWork_DiscoversRoot(t *testing.T) {
+	dir, workPath := starterProject(t)
 	forgeRoot := t.TempDir()
-	buildinfo.SetDevBuild(true)
-	t.Cleanup(buildinfo.ClearDevBuild)
-	prev := buildinfo.DevForgeRoot
-	buildinfo.DevForgeRoot = "" // no ldflag stamp — force the discovery fallback
-	t.Cleanup(func() { buildinfo.DevForgeRoot = prev })
+	stampRoot(t, "") // no ldflag stamp — force the discovery fallback
 	buildinfo.SetDiscoveredForgeRoot(forgeRoot)
 	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
 
-	writeDevForgeGoWork(dir)
+	writeDevForgeGoWork(dir, true)
 
 	if got := usePaths(t, workPath); !containsUse(got, forgeRoot) {
 		t.Errorf("discovered-root bridge missing %q; go.work uses = %v", forgeRoot, got)
@@ -197,14 +178,9 @@ func TestWriteDevForgeGoWork_DevBuildDiscoversRoot(t *testing.T) {
 // library scaffold), the bridge is a no-op and creates no file.
 func TestWriteDevForgeGoWork_NoGoWorkNoCreate(t *testing.T) {
 	dir := t.TempDir()
+	stampRoot(t, t.TempDir())
 
-	buildinfo.SetDevBuild(true)
-	t.Cleanup(buildinfo.ClearDevBuild)
-	prev := buildinfo.DevForgeRoot
-	buildinfo.DevForgeRoot = t.TempDir()
-	t.Cleanup(func() { buildinfo.DevForgeRoot = prev })
-
-	writeDevForgeGoWork(dir)
+	writeDevForgeGoWork(dir, true)
 
 	if _, err := os.Stat(filepath.Join(dir, "go.work")); !os.IsNotExist(err) {
 		t.Errorf("expected no go.work to be created, stat err = %v", err)

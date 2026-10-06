@@ -55,6 +55,12 @@ forge project libraries --json
 
 With no arguments it prints one line per subpackage, plus the absolute directory holding the `forge/pkg` source **this project resolves** — a local checkout when a `go.work` points at one, the module cache otherwise. That directory is there so you can confirm *which copy* you compile against; it is not a place to go reading. Every field is derived: the directory from `go list -m`, the package set from that directory, each purpose from the package's own doc comment. It therefore describes the pkg version you actually compile against, and it cannot drift the way a table in a document does.
 
+### Compiling against a local forge checkout
+
+A project compiles forge from a local checkout only when someone asked for it: `forge project new --link-forge` (bridges to the checkout the running forge was built from), or `go work use <forge-checkout>` by hand. Both leave a gitignored `go.work` line, and that line is the whole record — `forge project libraries` then reports `resolved: <checkout> (go.work override)`, and the web-runtime twin (`.forge-link/`) follows the same checkout. Undo with `go work edit -dropuse=<checkout>`.
+
+A bridge has two halves that must be the same source: the **binary** writes the generated code, the **checkout** supplies the library it calls. When they drift — the checkout pulled or edited after the binary was built, or a host binary that embeds forge from a workspace and records no forge commit at all — `forge generate` and `forge lint` print a one-line skew warning (it starts with ⚠️) naming both sides and the fix, and `forge doctor` reports it as the `Forge Bridge` check. Treat it as real: rebuild the binary from that checkout (or drop the bridge) before chasing a compile error in generated code.
+
 **Name a package and it prints the answer** — every func with its parameters, every struct with its fields, every interface and type with its methods, parsed from that same resolved source with the doc prose stripped. Several packages in one call; `all` for everything (large).
 
 **Never search the disk for library source, and don't reach for `go doc <pkg>` here.** The package view of `go doc` collapses every struct and interface to `struct{ ... }` and lists no methods at all — it cannot answer "what are `Repo.UpdateMasked`'s parameters", which is the question people actually have. `go doc -all <pkg>` *is* complete, if you want the prose too, at roughly ten times the size.

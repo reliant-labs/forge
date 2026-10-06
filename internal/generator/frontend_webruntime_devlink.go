@@ -64,10 +64,15 @@
 // manifest names no path at all, so — as with `go.work` — even these ignored
 // files carry no username and no home directory.
 //
-// Everything here is gated on a dev build with a discoverable forge source
-// root. A released binary writes none of it: the workspace root is a
-// maintainer's dev-loop artifact, and scattering one into a user's project
-// would change how their install resolves for no benefit.
+// Everything here FOLLOWS the Go bridge rather than deciding on its own: the
+// twin exists only while the project's go.work bridges a forge checkout (the
+// opt-in record `forge project new --link-forge` or `go work use` writes), and
+// it links that same checkout's web-runtime. It used to be laid down by every
+// dev build of forge, for whatever checkout that build came from — so a
+// project nobody had asked to bridge got .forge-link/ on its first generate.
+// The workspace root is a maintainer's dev-loop artifact; scattering one into
+// a project that did not opt in changes how its install resolves for no
+// benefit.
 package generator
 
 import (
@@ -80,6 +85,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/forgecompat"
 )
 
 // devLinkDir is the project-relative directory holding the workspace-member
@@ -141,12 +147,12 @@ var devBridgeIgnoreEntries = []string{
 
 // EnsureDevWebRuntimeLink reconciles the gitignored dev bridge for projectDir.
 //
-// No-op unless this is a dev build that can locate its own forge checkout and
-// that checkout actually carries web-runtime. Every failure is a warning: a
-// bridge is a convenience for forge maintainers, and no dev-loop nicety
-// justifies failing somebody's generate.
+// No-op unless the project's Go build is bridged to a forge checkout and that
+// checkout actually carries web-runtime. Every failure is a warning: a bridge
+// is a convenience for forge maintainers, and no dev-loop nicety justifies
+// failing somebody's generate.
 func EnsureDevWebRuntimeLink(projectDir string) {
-	target, ok := devWebRuntimeCheckout()
+	target, ok := devWebRuntimeCheckout(projectDir)
 	if !ok {
 		removeModuleCacheBridge(projectDir)
 		return
@@ -224,29 +230,25 @@ func removeModuleCacheBridge(projectDir string) {
 		"Run `npm install` in each frontend to use the registry copy.\n", WebRuntimePackage, devLinkDir)
 }
 
-// devWebRuntimeCheckout returns the absolute web-runtime directory this dev
-// build should bridge to, and whether a bridge is warranted at all.
-func devWebRuntimeCheckout() (string, bool) {
-	if !buildinfo.IsDevBuild() {
-		return "", false
-	}
+// devWebRuntimeCheckout returns the absolute web-runtime directory projectDir
+// should bridge to, and whether a bridge is warranted at all: the project's
+// Go build must already be bridged to a forge checkout, and the twin points
+// at THAT checkout, so the Go library and the web runtime always come from
+// the same tree.
+func devWebRuntimeCheckout(projectDir string) (string, bool) {
 	// CI is a dev BUILD (forge's workflows install the binary under test from
 	// the working tree) but never a dev LOOP: nobody is editing web-runtime
 	// alongside the scaffold, and the bridge's extra resolution root made the
 	// scaffold fail to typecheck with duplicate copies of @connectrpc/connect.
-	// See internal/buildinfo/ci.go for why this is not folded into
-	// IsDevBuild, and why pinning more peers is the wrong fix.
+	// See internal/buildinfo/ci.go for why pinning more peers is the wrong fix.
 	if buildinfo.IsCI() && !buildinfo.DevWebRuntimeLinkForced() {
 		return "", false
 	}
-	root := buildinfo.DevForgeRoot
-	if root == "" {
-		root = buildinfo.DiscoverDevForgeRootFromSource()
-	}
-	if root == "" {
+	bridge, ok := forgecompat.LocalBridge(projectDir)
+	if !ok {
 		return "", false
 	}
-	target := filepath.Join(root, "web-runtime")
+	target := filepath.Join(bridge.Dir, "web-runtime")
 	if _, err := os.Stat(filepath.Join(target, "package.json")); err != nil {
 		return "", false
 	}

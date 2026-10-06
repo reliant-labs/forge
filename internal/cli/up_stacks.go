@@ -37,6 +37,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/procguard"
 )
 
 // upCacheDir is the machine-local root every stack record lives under.
@@ -256,17 +258,120 @@ func discoverRunningStacksWithFacts(facts *osProcFacts) []runningStack {
 	return out
 }
 
-// stopStack tears down the (projectID, env) stack and returns the number of
-// process trees it signalled. A failed process scan is not an empty stack:
-// preserve its records and report that teardown could not establish its scope.
-func stopStack(projectID, env string) (int, error) {
+// stackStop is what one teardown did: how many process trees it signalled,
+// and which trees it left running because they host this very command.
+type stackStop struct {
+	stopped int
+	skipped []ancestorSkip
+}
+
+// ancestorSkip is a teardown root left running because it is in this
+// command's own lineage (see procguard). Signalling it would end the process
+// running `forge env down` — and with it whatever session that process hosts,
+// which on an agent server is every session, not just this one.
+type ancestorSkip struct {
+	pid     int
+	command string
+}
+
+func (s ancestorSkip) String() string {
+	return fmt.Sprintf("skipped pid %d (%s): it is an ancestor of this command — stopping it would end the session running you", s.pid, s.command)
+}
+
+// stackStopPlan is the decision a teardown acts on, made before anything is
+// signalled: the trees to signal, and the trees left alone because they host
+// this command.
+type stackStopPlan struct {
+	roots   []int
+	skipped []ancestorSkip
+}
+
+// planStackStop is the pure decision core of every stack teardown: select the
+// (project, env) trees by ownership (stackTeardownRoots), narrow them to the
+// scope, then set aside every root in this command's lineage.
+//
+// Setting aside a ROOT sets aside its whole tree. That is the only coherent
+// unit: the tree under an ancestor contains this command, and its siblings —
+// other sessions the same server hosts — are the ancestor's to manage, not
+// processes forge started. A root that is NOT an ancestor cannot have one in
+// its tree (anything below it would make it an ancestor), so every other tree
+// is stopped exactly as before. The decision reads only the process table:
+// no name, env var or flag can turn it off.
+func planStackStop(projectID, env string, scope []string, tracked []trackedProc, pids []int, alive func(int) bool, f procFacts, lineage procguard.Lineage) stackStopPlan {
+	roots := stackTeardownRoots(projectID, env, tracked, pids, alive, f)
+	if len(scope) > 0 {
+		roots = filterRootsByService(roots, scope, f)
+	}
+	var plan stackStopPlan
+	hosting := map[int]bool{}
+	for _, pid := range roots {
+		if lineage.Contains(pid) {
+			hosting[pid] = true
+			plan.skipped = append(plan.skipped, ancestorSkip{pid: pid, command: commandLabel(f.argv(pid))})
+		}
+	}
+	for _, pid := range roots {
+		// A root BELOW a skipped one belongs to that tree. It only becomes a
+		// root of its own when the marked process above it could not be read
+		// — and then it is a sibling session of this command, which the
+		// skipped tree's owner manages, not forge.
+		if hosting[pid] || insideTree(pid, hosting, f) {
+			continue
+		}
+		plan.roots = append(plan.roots, pid)
+	}
+	return plan
+}
+
+// insideTree reports whether any ancestor of pid is one of tops. Bounded and
+// cycle-safe; an unknown parent ends the walk.
+func insideTree(pid int, tops map[int]bool, f procFacts) bool {
+	if len(tops) == 0 {
+		return false
+	}
+	seen := map[int]bool{pid: true}
+	for {
+		ppid, ok := f.parent(pid)
+		if !ok || ppid <= 1 || seen[ppid] {
+			return false
+		}
+		if tops[ppid] {
+			return true
+		}
+		seen[ppid] = true
+		pid = ppid
+	}
+}
+
+// commandLabelMax bounds a command line in a one-line report.
+const commandLabelMax = 60
+
+// commandLabel renders a process's argv for a one-line report: the program's
+// base name, then its arguments, cut to commandLabelMax runes.
+func commandLabel(argv []string, ok bool) string {
+	if !ok || len(argv) == 0 {
+		return "command unreadable"
+	}
+	parts := append([]string{filepath.Base(argv[0])}, argv[1:]...)
+	label := []rune(strings.Join(parts, " "))
+	if len(label) > commandLabelMax {
+		return string(label[:commandLabelMax-1]) + "…"
+	}
+	return string(label)
+}
+
+// stopStack tears down the (projectID, env) stack and reports what it
+// signalled and what it left running. A failed process scan is not an empty
+// stack: preserve its records and report that teardown could not establish its
+// scope.
+func stopStack(projectID, env string) (stackStop, error) {
 	facts := newOSProcFacts()
 	return stopStackWithFacts(projectID, env, facts)
 }
 
-func stopStackWithFacts(projectID, env string, facts *osProcFacts) (int, error) {
+func stopStackWithFacts(projectID, env string, facts *osProcFacts) (stackStop, error) {
 	if err := requireTeardownSnapshot(facts); err != nil {
-		return 0, err
+		return stackStop{}, err
 	}
 	return stopStackScopedWithFacts(projectID, env, nil, facts)
 }
@@ -278,9 +383,9 @@ func requireTeardownSnapshot(facts *osProcFacts) error {
 	return nil
 }
 
-// stopStackScoped is stopStack narrowed to the services a run is about to
-// REPLACE. With an empty scope it is stopStack: the whole (project, env)
-// stack goes, and the records with it.
+// stopStackScopedWithFacts is stopStack narrowed to the services a run is
+// about to REPLACE. With an empty scope it is stopStack: the whole (project,
+// env) stack goes, and the records with it.
 //
 // A non-empty scope is the `forge env up --target` case, and the distinction
 // is the whole point of the flag. "One stack per (project, env)" exists so a
@@ -304,32 +409,75 @@ func requireTeardownSnapshot(facts *osProcFacts) error {
 // would strand them: `forge env down` and `forge env ps` read it. The
 // registry rewrites the ledger for the services it starts (see
 // procRegistry.persist), which merges rather than replaces for this reason.
-func stopStackScoped(projectID, env string, scope []string) (int, error) {
-	return stopStackScopedWithFacts(projectID, env, scope, newOSProcFacts())
-}
-
-func stopStackScopedWithFacts(projectID, env string, scope []string, facts *osProcFacts) (int, error) {
+// The same holds when a tree was left running because it hosts this command.
+func stopStackScopedWithFacts(projectID, env string, scope []string, facts *osProcFacts) (stackStop, error) {
 	if err := requireTeardownSnapshot(facts); err != nil {
-		return 0, err
+		return stackStop{}, err
 	}
-	roots := stackTeardownRoots(projectID, env, trackedStack(projectID, env), facts.pidList(), processAlive, facts)
-	if len(scope) > 0 {
-		roots = filterRootsByService(roots, scope, facts)
-	}
-	for _, pid := range roots {
-		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", serviceOfPID(pid, facts), pid)
-	}
-	return completeStackStop(projectID, env, scope, roots, killTreesAndWait)
+	return executeStackStop(projectID, env, scope, planTeardown(projectID, env, scope, facts), facts, killTreesAndWait)
 }
 
-func completeStackStop(projectID, env string, scope []string, roots []int, stop func([]int) error) (int, error) {
-	if err := stop(roots); err != nil {
-		return 0, fmt.Errorf("environment shutdown incomplete; stack records preserved: %w", err)
+// replaceStack is the `forge env up` pre-flight's stop: the scoped stop
+// above, except that a stack hosting this command is a REFUSAL rather than a
+// skip.
+// "One stack per (project, env)" cannot hold while the predecessor keeps
+// running — on kernel-assigned ports nothing would even collide — and the
+// predecessor cannot be stopped without ending this command. The decision is
+// made before anything is signalled: half-stopping a stack and then refusing
+// would be the worst of both.
+func replaceStack(projectID, env string, scope []string) (stackStop, error) {
+	facts := newOSProcFacts()
+	if err := requireTeardownSnapshot(facts); err != nil {
+		return stackStop{}, err
 	}
-	if len(scope) == 0 {
+	plan := planTeardown(projectID, env, scope, facts)
+	if len(plan.skipped) > 0 {
+		return stackStop{}, errStackHostsThisCommand(env, plan.skipped)
+	}
+	return executeStackStop(projectID, env, scope, plan, facts, killTreesAndWait)
+}
+
+// errStackHostsThisCommand is replaceStack's refusal.
+func errStackHostsThisCommand(env string, skipped []ancestorSkip) error {
+	lines := make([]string, 0, len(skipped))
+	for _, s := range skipped {
+		lines = append(lines, fmt.Sprintf("pid %d (%s)", s.pid, s.command))
+	}
+	return fmt.Errorf("the env=%s stack this project is already running hosts this command — replacing it would end the session running you; nothing was stopped:\n"+
+		"    %s\n"+
+		"  run `forge env up %s` from a shell outside that stack, or stop it there first with `forge env down %s`",
+		env, strings.Join(lines, "\n    "), env, env)
+}
+
+// planTeardown is planStackStop over the live machine: the ledger, the
+// process-table snapshot in facts, and this process's real lineage.
+func planTeardown(projectID, env string, scope []string, facts *osProcFacts) stackStopPlan {
+	return planStackStop(projectID, env, scope, trackedStack(projectID, env), facts.pidList(), processAlive, facts, procguard.Self())
+}
+
+// executeStackStop reports the plan, signals its roots, and settles the
+// records.
+func executeStackStop(projectID, env string, scope []string, plan stackStopPlan, f procFacts, stop func([]int) error) (stackStop, error) {
+	for _, s := range plan.skipped {
+		fmt.Printf("[up] %s\n", s)
+	}
+	for _, pid := range plan.roots {
+		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", serviceOfPID(pid, f), pid)
+	}
+	return completeStackStop(projectID, env, scope, plan, stop)
+}
+
+func completeStackStop(projectID, env string, scope []string, plan stackStopPlan, stop func([]int) error) (stackStop, error) {
+	if err := stop(plan.roots); err != nil {
+		return stackStop{}, fmt.Errorf("environment shutdown incomplete; stack records preserved: %w", err)
+	}
+	// A skipped tree is still running, so the records still describe it:
+	// `forge env ps` must keep listing it and a later `forge env down` run
+	// from OUTSIDE it must still reach it.
+	if len(scope) == 0 && len(plan.skipped) == 0 {
 		removeStackRecords(projectID, env)
 	}
-	return len(roots), nil
+	return stackStop{stopped: len(plan.roots), skipped: plan.skipped}, nil
 }
 
 // filterRootsByService keeps only the teardown roots whose stamped service
@@ -338,7 +486,7 @@ func completeStackStop(projectID, env string, scope []string, roots []int, stop 
 // a caller passes app names and need not know how the registry spells a
 // frontend's ledger entry.
 //
-// Unattributable roots are dropped, not kept — see stopStackScoped.
+// Unattributable roots are dropped, not kept — see stopStackScopedWithFacts.
 func filterRootsByService(roots []int, scope []string, f procFacts) []int {
 	wanted := make(map[string]bool, len(scope))
 	for _, name := range scope {
@@ -486,23 +634,27 @@ func runUpStopAll() error {
 		fmt.Println("[down] no owned Forge host processes were found on this machine; Docker containers and Kubernetes clusters were not stopped.")
 		return nil
 	}
-	total, err := stopDiscoveredStacks(stacks)
-	fmt.Printf("[down] signalled %d host process tree(s) across %d stack(s); Docker containers and Kubernetes clusters were not stopped.\n", total, len(stacks))
+	res, err := stopDiscoveredStacks(stacks)
+	hosting := ""
+	if len(res.skipped) > 0 {
+		hosting = fmt.Sprintf(", and left %d running because it hosts this command", len(res.skipped))
+	}
+	fmt.Printf("[down] signalled %d host process tree(s) across %d stack(s)%s; Docker containers and Kubernetes clusters were not stopped.\n", res.stopped, len(stacks), hosting)
 	return err
 }
 
 // stopDiscoveredStacks tears down each enumerated stack, naming it first, and
-// returns the total number of process trees signalled. Split from
-// runUpStopAll's discovery so the teardown loop is testable against a chosen
-// set of stacks — a test that discovered for itself would tear down every stack
-// on the developer's machine.
-func stopDiscoveredStacks(stacks []runningStack) (int, error) {
-	total := 0
+// returns the totals. Split from runUpStopAll's discovery so the teardown loop
+// is testable against a chosen set of stacks — a test that discovered for
+// itself would tear down every stack on the developer's machine.
+func stopDiscoveredStacks(stacks []runningStack) (stackStop, error) {
+	var total stackStop
 	var failures []error
 	for _, s := range stacks {
 		fmt.Printf("[down] %s · env=%s\n", s.label(), s.env)
-		stopped, err := stopStack(s.projectID, s.env)
-		total += stopped
+		res, err := stopStack(s.projectID, s.env)
+		total.stopped += res.stopped
+		total.skipped = append(total.skipped, res.skipped...)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s env=%s: %w", s.label(), s.env, err))
 		}

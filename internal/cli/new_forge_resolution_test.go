@@ -26,33 +26,56 @@ func TestScaffoldForgeResolution(t *testing.T) {
 		kind       string
 		pinned     string
 		bridgeRoot string
+		linkable   string
 		wantErr    bool
+		wantFix    string
 	}{
-		{"service, neither pin nor bridge", config.ProjectKindService, "", "", true},
-		{"service, published pin", config.ProjectKindService, "v0.1.17", "", false},
-		{"service, dev bridge", config.ProjectKindService, "", "/src/forge", false},
-		{"service, both", config.ProjectKindService, "v0.1.17", "/src/forge", false},
+		{"service, neither pin nor bridge, no checkout", config.ProjectKindService, "", "", "", true, "task install:dev"},
+		// A checkout exists but the user did not opt in: refuse, and say how.
+		{"service, linkable but not linked", config.ProjectKindService, "", "", "/src/forge", true, "--link-forge"},
+		{"service, published pin", config.ProjectKindService, "v0.1.17", "", "/src/forge", false, ""},
+		{"service, linked", config.ProjectKindService, "", "/src/forge", "/src/forge", false, ""},
+		{"service, both", config.ProjectKindService, "v0.1.17", "/src/forge", "/src/forge", false, ""},
 		// CLI and library scaffolds import no forge package, so they have
 		// nothing to resolve and must not be refused.
-		{"cli, neither", config.ProjectKindCLI, "", "", false},
-		{"library, neither", config.ProjectKindLibrary, "", "", false},
+		{"cli, neither", config.ProjectKindCLI, "", "", "", false, ""},
+		{"library, neither", config.ProjectKindLibrary, "", "", "", false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := scaffoldForgeResolution(tc.kind, tc.pinned, tc.bridgeRoot)
+			err := scaffoldForgeResolution(tc.kind, tc.pinned, tc.bridgeRoot, tc.linkable)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("scaffoldForgeResolution(%q, %q, %q) error = %v, wantErr %v",
-					tc.kind, tc.pinned, tc.bridgeRoot, err, tc.wantErr)
+				t.Fatalf("scaffoldForgeResolution(%q, %q, %q, %q) error = %v, wantErr %v",
+					tc.kind, tc.pinned, tc.bridgeRoot, tc.linkable, err, tc.wantErr)
 			}
 			if err == nil {
 				return
 			}
 			msg := err.Error()
-			for _, want := range []string{"github.com/reliant-labs/forge/pkg", "Nothing was written", "task install:dev"} {
+			for _, want := range []string{"github.com/reliant-labs/forge/pkg", "Nothing was written", tc.wantFix} {
 				if !strings.Contains(msg, want) {
 					t.Errorf("error does not mention %q — it must name the failure and a fix:\n%s", want, msg)
 				}
 			}
 		})
+	}
+}
+
+// TestCheckScaffoldCanResolveForge_LinkWithoutCheckout: --link-forge on a
+// binary that cannot locate its checkout is refused before anything is
+// written, whatever the kind — there is nothing to bridge to.
+func TestCheckScaffoldCanResolveForge_LinkWithoutCheckout(t *testing.T) {
+	prevRoot := buildinfo.DevForgeRoot
+	buildinfo.DevForgeRoot = ""
+	t.Cleanup(func() { buildinfo.DevForgeRoot = prevRoot })
+	buildinfo.SetDiscoveredForgeRoot("")
+	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
+
+	err := checkScaffoldCanResolveForge(config.ProjectKindCLI, true)
+	if err == nil || !strings.Contains(err.Error(), "cannot locate the checkout") {
+		t.Fatalf("--link-forge without a checkout must be refused, got %v", err)
+	}
+	if err := checkScaffoldCanResolveForge(config.ProjectKindCLI, false); err != nil {
+		t.Errorf("a cli scaffold without --link-forge needs nothing: %v", err)
 	}
 }
 
@@ -72,7 +95,7 @@ func TestRunNew_RefusesUnresolvableForgeBeforeWriting(t *testing.T) {
 
 	parent := t.TempDir()
 	err := runNew(t.Context(), "demo", parent, "github.com/example/demo", config.ProjectKindService,
-		nil, nil, "", false, false, nil, "", true, "local", "", false)
+		nil, nil, "", false, false, nil, "", true, "local", "", false, false)
 	if err == nil {
 		t.Fatal("runNew succeeded for a build that can neither pin nor bridge forge; " +
 			"its go.mod would have required the retired forge/pkg module")

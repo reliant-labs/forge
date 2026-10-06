@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	dbgsvc "github.com/reliant-labs/forge/internal/debug"
+	"github.com/reliant-labs/forge/internal/procguard"
 )
 
 func newStopCmd(_ *factory.Factory) *cobra.Command {
@@ -69,6 +70,14 @@ func stopActionFor(s *dbgsvc.SessionInfo) stopAction {
 // bug.
 func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 	action := stopActionFor(session)
+	// A debugged process can be the one running this command (a server under
+	// `forge debug start` that hosts the shell typing `forge debug stop`).
+	// Killing it would end that session, so it is detached instead — the
+	// same lineage rule every forge stop path follows (see procguard).
+	if action == actionKillTarget && procguard.Self().Contains(session.PID) {
+		fmt.Fprintf(os.Stderr, "skipped killing pid %d: it is an ancestor of this command — stopping it would end the session running you; detaching instead\n", session.PID)
+		action = actionDetach
+	}
 	dbg, connErr := connectToSession()
 
 	if connErr == nil {
@@ -136,11 +145,14 @@ func reapDlv(ctx context.Context, session *dbgsvc.SessionInfo) {
 	if session == nil {
 		return
 	}
+	// dlv is the debuggee's parent, so it is in this command's lineage
+	// whenever the debuggee is: never reap a process hosting this command.
+	self := procguard.Self()
 	// 1. The dlv PID forge recorded at start.
 	// Only killed if it is still a dlv on this session's addr: the pid may
 	// have been recycled. If it does not verify, the sweep below still finds
 	// the real dlv.
-	if session.DlvPID > 0 && isDlvForAddr(ctx, session.DlvPID, session.Addr) {
+	if session.DlvPID > 0 && !self.Contains(session.DlvPID) && isDlvForAddr(ctx, session.DlvPID, session.Addr) {
 		if p, err := os.FindProcess(session.DlvPID); err == nil {
 			_ = p.Kill()
 		}
@@ -155,7 +167,7 @@ func reapDlv(ctx context.Context, session *dbgsvc.SessionInfo) {
 	}
 	for _, pid := range dlvPIDsForAddr(ctx, session.Addr) {
 		// Never reap the target PID even if it somehow matched.
-		if pid == session.PID {
+		if pid == session.PID || self.Contains(pid) {
 			continue
 		}
 		if p, err := os.FindProcess(pid); err == nil {

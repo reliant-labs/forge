@@ -85,7 +85,9 @@ func runInPlace(t *testing.T, dir, kind string, force bool) {
 	args := []string{"-C", dir, "project", "new", "--in-place", "--name", "hounders",
 		"--mod", "github.com/example/hounders", "--path", dir, "--kind", kind, "--skip-tools"}
 	if kind == config.ProjectKindService {
-		args = append(args, "--service", "membership")
+		// The test binary is an unreleased build: a service scaffold from it
+		// must be bridged to this checkout, and that is opt-in.
+		args = append(args, "--service", "membership", "--link-forge")
 	}
 	if force {
 		args = append(args, "--force")

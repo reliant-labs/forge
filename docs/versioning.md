@@ -74,13 +74,41 @@ into forge's own source files.
 
 With that path, a dev forge:
 
-- **scaffolding a new project** writes a gitignored `go.work` into it that
-  `use`s the forge checkout, so the project compiles against your source;
+- **scaffolding a new project with `--link-forge`** writes a gitignored
+  `go.work` into it that `use`s the forge checkout, so the project compiles
+  against your source. Without the flag nothing is written — and a service
+  scaffold from an unreleased build is refused, naming the flag;
 - **generating into an existing project** that resolves forge from a proxy
   refuses _before_ codegen touches the tree, and prints the `go work use`
   command to run.
 
-A released binary never carries the stamp and never writes a `go.work`.
+The bridge is **opt-in** because it used to be implicit, and that went wrong
+quietly: a host binary embedding forge through a workspace is a dev build too,
+so every project it scaffolded was bridged to whatever checkout that host
+compiled from — on a shared machine, the main checkout everyone pulls into.
+The library under those projects moved with each merge; the binary generating
+their code did not. The `go.work` line is the record of the decision, and the
+npm twin (`.forge-link/` for `@reliantlabs/forge-web-runtime`) follows it
+rather than deciding again.
+
+## Skew between the binary and a bridged checkout
+
+A bridged project compiles generated code against the checkout, so the binary
+must have been built from that same source. `forge generate` and `forge lint`
+print one line, and `forge doctor` reports a `Forge Bridge` warning, whenever
+it cannot show that:
+
+- a binary that records its forge commit (`vcs.revision`, or a version naming
+  one) is compared with the checkout's `HEAD` exactly; a dirty checkout
+  matches only a dirty binary built from that tree after its newest edit;
+- a binary that records none — forge embedded in a host through a workspace,
+  where build info says `(devel)` and `vcs.*` describes the host — matches
+  only if it was compiled from that checkout and neither `HEAD` nor any file
+  has changed since the executable was written.
+
+```
+⚠️  forge skew: reliant (built 2026-10-01 01:31) records no forge commit, and go.work bridges /src/forge, which changed after it was built (now 750833054b78) — generated code and library differ. Fix: rebuild reliant from that checkout, or unbridge: go work edit -dropuse=/src/forge
+```
 
 ## The compatibility gate
 

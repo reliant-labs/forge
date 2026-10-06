@@ -14,9 +14,14 @@ and nothing gets reported back.
 Never run any of these:
 
 - `pkill forge`, `killall forge`, `pkill -f forge`, or any pattern-matched kill
-- `forge env down …`, `forge env down --all` — these stop host services, and one
-  of those processes is the session you are running in
 - `kill` against a PID you did not personally start
+
+`forge env down <env>` / `--all` will not stop the process running it or any
+of its ancestors — it walks its own parent chain first and reports what it
+skipped — so it cannot end your session directly. It still stops every OTHER
+stack it reaches, including ones other agents depend on: run `--all` only when
+you mean every stack on the machine, and prefer `forge env down <env>` from
+inside the project you started.
 
 **To clean up, be surgical.** Remove only containers you created, by explicit
 name (`docker rm -f <name>`). Stop only a PID you started yourself and recorded.

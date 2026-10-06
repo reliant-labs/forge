@@ -5,12 +5,15 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/reliant-labs/forge/internal/procguard"
 )
 
 // Windows process semantics, and how they map onto the Unix reference
@@ -74,7 +77,15 @@ func signalProcessGroup(pid int, sig syscall.Signal) error {
 // sendCtrlBreak delivers CTRL_BREAK only when pid is provably a process-group
 // leader attached to our console (see ctrlBreakAllowed); otherwise it does
 // nothing and the caller's SIGTERM -> poll -> SIGKILL escalation takes over.
+// It never targets this command's own lineage, nor the console group this
+// command belongs to — that event would land on forge itself (see procguard).
 func sendCtrlBreak(pid int) {
+	if procguard.Self().Contains(pid) {
+		return
+	}
+	if group, ok := readProcGroupID(os.Getpid()); ok && int(group) == pid {
+		return
+	}
 	sendCtrlBreakWith(pid, ctrlBreakFacts, func(p uint32) error {
 		return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, p)
 	})
@@ -144,10 +155,16 @@ func processAlive(pid int) bool {
 // a supervisor cannot respawn). Handles are opened while walking the snapshot
 // and verified against the snapshot's creation time, then terminated through
 // those handles, so a pid recycled after the walk is never hit. Other signals
-// send CTRL_BREAK (when safe) and return nil.
+// send CTRL_BREAK (when safe) and return nil. A member of this command's own
+// lineage is refused outright and never terminated as a descendant (see
+// procguard).
 func killProcessTree(pid int, sig syscall.Signal) error {
 	if pid <= 0 {
 		return nil
+	}
+	self := procguard.Self()
+	if self.Contains(pid) {
+		return &procguard.LineageError{PID: pid, Command: commandLabel(readProcArgv(pid))}
 	}
 	if sig != syscall.SIGKILL {
 		sendCtrlBreak(pid)
@@ -160,7 +177,12 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 			created[e.PID] = e.Created
 		}
 	}
-	targets := append([]int{pid}, descendantsOf(pid, resolveParentLinks(entries))...)
+	targets := []int{pid}
+	for _, d := range descendantsOf(pid, resolveParentLinks(entries)) {
+		if !self.Contains(d) {
+			targets = append(targets, d)
+		}
+	}
 	var failures []error
 	var handles []windows.Handle
 	defer func() {

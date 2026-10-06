@@ -106,10 +106,11 @@ func Assess(projectDir string) (a Assessment, ok bool) {
 // can serve. rawBuildVersion is buildinfo.Version(). projectVersion/local
 // describe how forge resolves IN the project.
 //
-// A local resolution always passes: the project compiles against source, so
-// there is no version to be behind, and whoever wired the bridge owns keeping
-// that checkout coherent. An unknown projectVersion also passes — guessing
-// is worse than letting validate speak.
+// A local resolution always passes HERE: the project compiles against source,
+// so there is no version to be behind. Whether this binary was built from that
+// source is a different question, answered by InspectBridge (bridge.go) and
+// reported by generate, lint and doctor. An unknown projectVersion also passes
+// — guessing is worse than letting validate speak.
 func Decide(binaryVersion, rawBuildVersion, projectVersion string, local bool) Verdict {
 	if local {
 		return OK

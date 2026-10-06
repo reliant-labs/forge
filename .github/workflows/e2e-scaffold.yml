@@ -85,11 +85,15 @@ jobs:
       - name: forge project new e2e-test
         working-directory: ${{ env.E2E_DIR }}
         run: |
+          # --link-forge: the forge under test is built from this checkout,
+          # so the scaffold must compile forge from it (opt-in since the
+          # bridge stopped being implicit).
           if forge project new e2e-test \
               --kind service \
               --mod github.com/e2e/e2e-test \
               --service api \
-              --frontend admin; then
+              --frontend admin \
+              --link-forge; then
             echo "✅ forge project new"
           else
             echo "❌ forge project new"

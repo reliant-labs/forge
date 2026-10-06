@@ -294,8 +294,8 @@ func TestStackOutlivingItsProjectDirIsStillReachable(t *testing.T) {
 	}
 
 	// And the teardown `forge env down --all` runs reaches it.
-	if n, err := stopDiscoveredStacks([]runningStack{*found}); n != 1 || err != nil {
-		t.Errorf("stopped %d stacks, want 1", n)
+	if res, err := stopDiscoveredStacks([]runningStack{*found}); res.stopped != 1 || len(res.skipped) != 0 || err != nil {
+		t.Errorf("stopped %d trees (skipped %v, err %v), want 1", res.stopped, res.skipped, err)
 	}
 	if !orphan.waitExit(15 * time.Second) {
 		t.Fatalf("the orphan (pid %d) survived; it is unreachable forever", orphan.pid())

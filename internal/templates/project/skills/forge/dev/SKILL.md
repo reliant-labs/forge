@@ -24,7 +24,7 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge env up <env> --target <workload> [--background]` | Single-workload runner: scopes the WHOLE run — build, deploy, host and frontend phases — to the named workload. A workload bound to `forge.OnHost` launches as a host process, dispatching on its `runner` (`go-run` / `air` / `binary` / `delve`). |
 | `forge env options <env> [--json]` | List the `-D` render options that env's KCL declares (see below). |
 | `forge env config <env> [--json] [--workload <name>]` | Print the resolved configuration `deploy/kcl/<env>/` hands each workload — the values `forge env up` passes to each process (see below). |
-| `forge env down <env> [--all]` | Stop this project's stack for that env, tracked or orphaned. `--all`: all of them, machine-wide. |
+| `forge env down <env> [--all]` | Stop this project's stack for that env, tracked or orphaned. `--all`: all of them, machine-wide. Never stops the process running it or any ancestor — safe to run from a shell a forge-started server spawned (see below). |
 | `forge env ps` | Every stack running here: project dir, env, process count. |
 | `forge env up <env> [--no-build] [--no-deploy] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-bound workloads need no image) → cluster apply → host launch → frontend dev-serve. Reads each workload's runtime from `deploy/kcl/<env>/`. `--target` narrows WHICH entities each phase acts on; it never turns phases off. |
 | `forge env deploy dev [--prune]` | Apply `deploy/kcl/dev/`'s cluster-bound workloads. `--prune` deletes orphan forge-managed Deployments. |
@@ -275,6 +275,26 @@ matching kubectl context. Fix your kubeconfig (e.g. `gcloud container clusters
 get-credentials ...`) or correct the ClusterTarget's `cluster` — there is no
 `--context` escape hatch. `forge env deploy <env> --explain` prints the declared
 context and whether it exists.
+
+## Safety: stopping a stack never stops the process running the command
+
+`forge env down` (both forms) and the `forge env up` pre-flight select their
+targets by forge's ownership markers — environment variables every child of a
+forge-started process inherits, including the shells an agent server spawns.
+So the command walks its OWN parent chain first and never signals an ancestor
+or the tree under it:
+
+```
+[up] skipped pid 1234 (reliant serve --port 3090): it is an ancestor of this command — stopping it would end the session running you
+[up] frontend:web: stopping (pid 2345 + tree)
+[down] left 1 process tree(s) and the host infrastructure for env=dev running: they host this command. Stop them from a shell outside that stack.
+```
+
+Everything else stops as usual and the command exits 0. `forge env up` refuses
+outright (stopping nothing) when the stack it would replace hosts it. The
+decision reads only the kernel's parent links — there is no flag or env var to
+turn it off. Still never `pkill`/`killall` forge: a pattern kill has no such
+guard.
 
 ## Multi-worktree / multi-namespace
 

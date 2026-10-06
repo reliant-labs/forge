@@ -143,6 +143,11 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	// anything on PATH. See doctor_kclplugin.go.
 	appendIngressChecksToReport(&report, runKCLPluginDoctorCheck(ctx, cfg, projectDir, signal))
 
+	// A go.work bridge to a local forge checkout compiles generated code
+	// against that checkout; this binary must have been built from it. See
+	// forge_bridge.go.
+	appendIngressChecksToReport(&report, runBridgeDoctorCheck(projectDir, signal))
+
 	// Docker daemon proxy check: warns when the Docker daemon is
 	// configured with an HTTP(S) proxy. A TLS-intercepting proxy
 	// (Proxyman, Charles, corporate MITM) silently breaks image pulls —

@@ -49,13 +49,15 @@ tasks:
       - go install -trimpath -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   install:dev:
-    desc: "Contributor install: stamp the local forge source root so `forge project new` auto-bridges scaffolds to this checkout (gitignored go.work)"
+    desc: "Contributor install: stamp the local forge source root so `forge project new --link-forge` bridges scaffolds to this checkout (gitignored go.work)"
     cmds:
       # Injects buildinfo.DevForgeRoot from the builder's OWN checkout
       # (git rev-parse --show-toplevel) — nothing machine-specific is
-      # committed. On a binary built this way, `forge project new` writes a
-      # gitignored go.work `use`ing <root> so fresh projects build against
-      # your in-development forge with no manual replace. NOTE:
+      # committed. On a binary built this way, `forge project new
+      # --link-forge` writes a gitignored go.work `use`ing <root> so the
+      # project builds against your in-development forge with no manual
+      # replace; generate/lint/doctor warn when this binary and that checkout
+      # stop being the same source (re-run this task). NOTE:
       # no -trimpath here — the dev-vs-release discriminator (IsDevBuild)
       # relies on the embedded "(devel)" version / vcs info a plain install
       # records. Released binaries use `task install` (no stamp), so they

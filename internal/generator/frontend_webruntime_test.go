@@ -48,6 +48,23 @@ func pinDevBuild(t *testing.T, dev bool, root string) {
 	})
 }
 
+// bridgeProject records the opt-in the npm twin follows: projectDir's go.work
+// `use`s forgeRoot, which is made a module declaring forge's path — exactly
+// what `forge project new --link-forge` or `go work use` leaves behind.
+func bridgeProject(t *testing.T, projectDir, forgeRoot string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(forgeRoot, "go.mod"), []byte("module github.com/reliant-labs/forge\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatalf("write forge go.mod: %v", err)
+	}
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	work := "go 1.26\n\nuse (\n\t.\n\t" + forgeRoot + "\n)\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "go.work"), []byte(work), 0o644); err != nil {
+		t.Fatalf("write go.work: %v", err)
+	}
+}
+
 // writeFrontendManifest lays down frontends/<name>/package.json with the given
 // dependencies body and returns the project dir.
 func writeFrontendManifest(t *testing.T, projectDir, feName, deps string) string {

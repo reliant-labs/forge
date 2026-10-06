@@ -325,7 +325,10 @@ func render(parent string, fx fixture) (*renderResult, error) {
 		return nil, err
 	}
 
-	args := []string{"project", "new", fx.Name, "--mod", fx.Module}
+	// --link-forge: the renderer is an unreleased build of this checkout, so
+	// a service scaffold must compile forge from it, and that bridge is
+	// opt-in.
+	args := []string{"project", "new", fx.Name, "--mod", fx.Module, "--link-forge"}
 	if len(fx.Services) > 0 {
 		args = append(args, "--service", fx.Services[0])
 	}

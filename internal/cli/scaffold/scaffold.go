@@ -1167,9 +1167,6 @@ func runOperator(f *factory.Factory, name, group, version, apiPackage, crdType s
 			return nil
 		},
 		preflight: func(cfg *config.ProjectConfig, _ codegen.Inventory, root string) error {
-			if !cfg.Features.OperatorsEnabled() {
-				return config.DisabledFeatureError(config.FeatureOperators)
-			}
 			// Default group from project name. Runs before announce/scaffold
 			// so both see the resolved value.
 			if group == "" {

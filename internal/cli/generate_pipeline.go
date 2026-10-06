@@ -1230,18 +1230,8 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	// steps (hasAnyEntrypoint) exactly like HasDB/HasConfig gate on proto dir
 	// existence.
 	ctx.HasWorkers = hasComponentDir(ctx.ProjectDir, "internal/workers")
-	// Operators are experimental — when the feature isn't opted in we
-	// suppress the codegen path entirely. We still detect on-disk
-	// operator dirs so stepDetectProtoDirs can print a one-line skip
-	// message; the pipeline gate functions branch on ctx.HasOperators
-	// so flipping it to false elides every operator step at the same
-	// point.
 	rawHasOperators = hasComponentDir(ctx.ProjectDir, "internal/operators")
-	if rawHasOperators && ctx.Cfg != nil && !ctx.Cfg.Features.OperatorsEnabled() {
-		ctx.HasOperators = false
-	} else {
-		ctx.HasOperators = rawHasOperators
-	}
+	ctx.HasOperators = rawHasOperators
 	return rawHasOperators
 }
 

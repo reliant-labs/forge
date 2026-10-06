@@ -1491,7 +1491,10 @@ var removals = []removal{
 					"isBirthDateColumn still fail anywhere, and a name-sniffing isDateColumn " +
 					"landing in any other file still fails too.",
 				Token: regexp.MustCompile(`\bisDateColumn\b`),
-				Paths: []string{"pkg/seedplan/synth.go"},
+				// vocabscalar.go calls it to pick a relative-time range's default step
+				// (a day for a column DECLARED DATE, a minute otherwise) — the same
+				// declared-type read, in the one other file that needs it.
+				Paths: []string{"pkg/seedplan/synth.go", "pkg/seedplan/vocabscalar.go"},
 			},
 		},
 	},

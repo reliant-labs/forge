@@ -53,6 +53,22 @@ type ServiceDef struct {
 	// Absent on descriptors written before this field existed; readers then
 	// fall back to declaration order.
 	EnumNumbers map[string][]int32 `json:",omitempty"`
+
+	// EnumGoRefs maps the same fully-qualified enum names to where
+	// protoc-gen-go put the enum: the Go import path of its declaring
+	// file's go_package and its Go identifier. The proto package says
+	// nothing about this — an enum in a sibling file with another
+	// go_package shares the proto package but not the Go package, and its
+	// value constants are not reachable through the service's `pb` import.
+	// Absent on older descriptors; readers then fall back to the proto
+	// package rule (enumWireGoName).
+	EnumGoRefs map[string]EnumGoRef `json:",omitempty"`
+}
+
+// EnumGoRef locates a generated Go enum type.
+type EnumGoRef struct {
+	ImportPath string // e.g. "github.com/acme/app/gen/controlplane/v1"
+	GoName     string // protoc-gen-go identifier, e.g. "DaemonType" or "Order_Status"
 }
 
 // Method represents a single RPC method.

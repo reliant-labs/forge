@@ -120,3 +120,11 @@ linters:
       - path: ^release/capture(_test)?\.go$
         linters:
           - forbidigo
+
+      # The prettier guard over the component library reads CI to decide
+      # whether a missing npx is a skip (laptop) or a failure (CI). It is a
+      # test-harness switch: it never runs in a shipped binary and changes
+      # nothing about how the library behaves.
+      - path: ^components/library_prettier_test\.go$
+        linters:
+          - forbidigo

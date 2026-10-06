@@ -66,6 +66,9 @@ type createRequestSpec struct {
 	entity    string // "Ticket"
 	parentSQL string // FK-parent INSERTs, two rows per parent, each ON CONFLICT DO NOTHING
 	fields    []CRUDTestFieldData
+	// imports are the foreign Go packages (alias -> path) the request's
+	// enum literals reference beyond `pb`.
+	imports map[string]string
 	// failure, when set, is why no request could be derived; the emitted
 	// body fails the test with it instead of returning a request.
 	failure string
@@ -175,6 +178,7 @@ func buildCreateRequestSpecs(ctx context.Context, svc ServiceDef, methods []CRUD
 		if esp := fix.plans[cm.Entity.TableName]; esp != nil {
 			spec.parentSQL = esp.seedSQL
 		}
+		spec.imports = fix.importsUsedBy(spec.fields)
 		spec.failure = verifyCreateRequest(ctx, fix, cm.Entity.TableName, spec.parentSQL)
 		specs = append(specs, spec)
 	}
@@ -311,4 +315,21 @@ func createSpecsNeed(specs []createRequestSpec) (timestamppb, timePkg bool) {
 		}
 	}
 	return timestamppb, timePkg
+}
+
+// importsUsedBy returns the foreign enum packages (alias -> path) that the
+// given fields' literals reference.
+func (fx *crudTestFixtures) importsUsedBy(fields []CRUDTestFieldData) map[string]string {
+	var used map[string]string
+	for alias, path := range fx.enumImports {
+		for _, f := range fields {
+			if strings.Contains(f.TestValue, alias+".") || strings.Contains(f.TestValue2, alias+".") {
+				if used == nil {
+					used = map[string]string{}
+				}
+				used[alias] = path
+			}
+		}
+	}
+	return used
 }

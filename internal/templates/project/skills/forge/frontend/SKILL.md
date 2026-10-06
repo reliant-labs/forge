@@ -35,7 +35,7 @@ forge component list             # the whole catalog, grouped by category
 forge component install card_grid
 ```
 
-**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. The rest arrive only via `forge component install`. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
+**What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Reading the directory and concluding the library is exhausted is the failure mode; search instead.
 
 **Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class like `bg-blue-600` in a component is a forge bug to report — not a reason to hand-write your own.
 
@@ -90,7 +90,7 @@ Scaffolded into every frontend. **Import these — never re-derive them per feat
 
 | Need | Export |
 |---|---|
-| Money (`int64` cents) — exact | `formatMoneyCents(cents)` → `$272,000.00` |
+| Money (`int64` cents) | `formatMoneyCents(cents)` → `$272,000.00` |
 | Money — headline, no cents | `formatMoneyWhole(cents)` → `$272,000` |
 | Recurring price | `formatMoneyInterval(cents, "month")` → `$29.00/mo` |
 | Proto `Timestamp` → `Date` | `timestampToDate(ts)` — null when unset/out of range |
@@ -101,6 +101,8 @@ Scaffolded into every frontend. **Import these — never re-derive them per feat
 | Any column value | `formatValue(v)` |
 
 Unset renders `—` throughout. Pass the enum **object**, never its type name — protobuf-es enums are runtime numbers and only the object reverse-maps.
+
+**Money form fields, exact amounts in any currency:** `formatMinorUnits` / `parseMinorUnits` / `minorUnitsToInput` from `@reliantlabs/forge-web-runtime` (`bigint` minor units; `null`, never rounding), and `formatBasisPoints` / `parseBasisPoints` / `basisPointsToInput` for rates.
 
 **Status colors:** `<StatusBadge value={x.status} enumType={X}>` resolves a variant from a built-in generic-lifecycle map (`active`, `paid`, `failed`, …). Declare your product's own words once at module scope — never edit the built-in map or write a per-feature color record:
 
@@ -199,7 +201,7 @@ Use `@theme`/scoped CSS variables for reusable tokens rather than one-off colors
 
 ## Component patterns
 
-Functional components with hooks only. Prefer **server components**; add `"use client"` only for interactivity, browser APIs, or hooks. Handle Connect errors by code (`err instanceof ConnectError`, switch on `err.code`). Every data-fetching component must handle **loading**, **success**, and **error**. Composition and effects discipline are in `frontend/patterns`.
+Functional components with hooks only. Prefer **server components**; add `"use client"` only for interactivity, browser APIs, or hooks. Handle Connect errors by code (`err instanceof ConnectError`, switch on `err.code`). Every data-fetching component must handle **loading**, **success**, and **error**.
 
 ## Files NOT to edit
 
@@ -220,7 +222,7 @@ Created by `forge scaffold frontend`, yours to modify:
 - **Auth** (`src/lib/auth/`) — native sign-in: the browser POSTs credentials to this app's own API and gets an HttpOnly session cookie; the server runs the OIDC flow. `useAuth()` gives `{ identity, isAuthenticated, isLoading, refresh, logout }` — an identity for rendering, and deliberately no token. See `auth/frontend`.
 - **Event bus** (`src/lib/events.ts` + `src/lib/event-context.tsx`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
 - **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/`. **Subscribe to slices, not the whole store.** Server data stays in the React Query hooks, never copied into Zustand.
-- **`src/lib/format-utils.ts`** — presentation formatting. Import from `@/lib/format-utils`; do not re-derive these per feature (see below).
+- **`src/lib/format-utils.ts`** — see **Formatting**.
 - Also scaffolded: `src/lib/admin-url.ts` (`adminUrl`/`absoluteAdminUrl` over `basepath_gen.ts` — use these or `joinBasePath` for any string handed to an external system that round-trips back).
 
 ## Dev workflow
@@ -246,7 +248,7 @@ Load **state** (decision table, state vs events, ownership), **patterns** (compo
 - Never hand-edit generated files; run `forge generate` after every `.proto` change.
 - Always `create(Schema, {...})` for protobuf messages, never `new Message()`.
 - `"use client"` only when needed; verify visually with BOTH `take_snapshot` and `take_screenshot`.
-- `forge component search <noun>` before hand-writing any UI — `src/components/ui/` holds only the auto-installed core, not the catalog. Recharts for dashboard charts.
-- Money, dates, enum labels and status colors come from `@/lib/format-utils`. Re-deriving one per feature is how three modules end up disagreeing.
+- `forge component search <noun>` before hand-writing any UI. Recharts for dashboard charts.
+- Money, dates, enum labels, status colors: `@/lib/format-utils`; money/rate inputs: `parseMinorUnits` / `parseBasisPoints`.
 - React Query hooks for server data, Zustand for client state only (subscribe to slices), event bus for imperative actions — never as a source of truth.
 - Keep forms in react-hook-form + Zod. Never remove the mock-mode banner.

@@ -13,6 +13,7 @@ import {
   RouteGuard, // signed-in render gate
   Resource, // the list tristate + cursor pagination
   initClientTelemetry, // opt-in client RUM
+  formatMinorUnits, // exact money display; parseMinorUnits for input
 } from "@reliantlabs/forge-web-runtime";
 ```
 
@@ -21,8 +22,8 @@ import {
 **In:** mechanism. The interceptor stack (auth, brand headers, W3C
 traceparent, error normalization, idempotency-gated retry), the session
 derived from JWT claims, the error boundary, the toast queue, the
-`<Resource>` tristate/pagination container, trace-context propagation, and
-client RUM.
+`<Resource>` tristate/pagination container, trace-context propagation,
+client RUM, and integer money / basis-point formatting and parsing.
 
 **Out:** presentation a project is meant to own. The component library under
 `src/components/ui`, `globals.css`, the nav and the app layout all stay in the
@@ -124,6 +125,28 @@ Metro with `unstable_enablePackageExports` off, and `expo/tsconfig.base` sets
 `interceptors/package.json` directory shim is what they resolve instead — same
 build output, reached the old way. Delete it and mobile breaks while web keeps
 working.
+
+## Money and basis points
+
+The web counterpart of `forge/pkg/money`. An amount is an integer count of
+its currency's minor unit (protobuf-es hands an `int64` over as a `bigint`)
+plus an ISO 4217 code, and no float sits anywhere between the wire and the
+screen.
+
+```ts
+formatMinorUnits(123456n); // "$1,234.56"
+formatMinorUnits(1234n, { currency: "JPY" }); // "¥1,234"
+formatMinorUnits(123456n, { currency: "EUR", locale: "de-DE" }); // "1.234,56 €"
+parseMinorUnits("$1,234.5"); // 123450n
+parseMinorUnits("1.234"); // null: USD has two minor digits, so no rounding
+minorUnitsToInput(123450n); // "1234.50", parses back exactly
+formatBasisPoints(825); // "8.25%"
+parseBasisPoints("8.25%"); // 825
+```
+
+Minor digits come from Intl (JPY 0, KWD 3). Formatting stays exact past 2^53.
+The parsers return `null` rather than guessing, so a form validates on that.
+`src/money.ts`'s header lists the full rules.
 
 ## The `--color-*` contract
 

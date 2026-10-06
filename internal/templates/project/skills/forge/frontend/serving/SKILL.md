@@ -23,6 +23,12 @@ An entry with **no** `output:` is a frontend scaffolded before static became
 the default (forge ≤ v0.1.43). It reads as `standalone`, because that is
 what its `next.config.ts` says.
 
+Reliant hosting serves only `static`: a frontend bound to `forge.OnHosted {}`
+(or `OnBucket`) with another `output:` fails render. Static-only sites are on
+the free tier (billing is for hosted workloads and the database; a deploy that
+needs it is queued, `deploy/hosting`). A `standalone` frontend ships as a
+workload, not a site.
+
 `next dev` is the same in every mode.
 
 ## Static export: what a route may be

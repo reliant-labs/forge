@@ -119,11 +119,11 @@ func constraintConstNames(msgName string, constraints []config.PlanEntityConstra
 
 // constraintIdent builds `<Entity>Constraint<PascalCase(name)>` using the
 // SAME casing function the column constants and the entity struct's fields
-// use — protoc's Go naming, which does not apply initialisms. So an
+// use — naming.ColumnGoName, which does not apply initialisms. So an
 // estimate_id constraint reads `JobConstraintEstimateIdKey`, beside
 // `JobFieldEstimateId` and the struct's `EstimateId`. Reaching for
 // naming.ToPascalCase here would spell the same column `EstimateID` in the
 // constraint constant and `EstimateId` three lines above it.
 func constraintIdent(msgName, constraintName string) string {
-	return msgName + "Constraint" + naming.ToProtoPascalCase(constraintName)
+	return msgName + "Constraint" + naming.ColumnGoName(constraintName)
 }

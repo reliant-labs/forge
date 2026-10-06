@@ -35,12 +35,18 @@ func FuncMap() template.FuncMap {
 			}
 			return strings.Join(words, " ")
 		},
-		"humanLower":    naming.HumanizeLower,
-		"upper":         strings.ToUpper,
-		"title":         caser.String,
-		"snakeCase":     hyphenToUnderscore,
-		"camelCase":     toCamelCase,
-		"pascalCase":    toPascalCase,
+		"humanLower": naming.HumanizeLower,
+		"upper":      strings.ToUpper,
+		"title":      caser.String,
+		"snakeCase":  hyphenToUnderscore,
+		"camelCase":  toCamelCase,
+		"pascalCase": toPascalCase,
+		// goName spells a PROTO name (message, rpc, field, service) as the
+		// Go identifier protoc-gen-go / protoc-gen-connect-go generate for
+		// it — rpc GetOauth2token is the handler method GetOauth2Token.
+		// Never pascalCase for these: that is forge's rule for forge's own
+		// identifiers, and it disagrees with the generators at digits.
+		"goName":        naming.GoCamelCase,
 		"kebabCase":     toKebabCase,
 		"plural":        pluralize,
 		"singular":      singularize,

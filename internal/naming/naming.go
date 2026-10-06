@@ -162,15 +162,22 @@ func EntityListFieldName(entityName string) string {
 	return Pluralize(EntityFieldName(entityName))
 }
 
-// ToProtoPascalCase converts a snake_case proto field name to PascalCase using
-// protobuf's Go naming rules: simple title-case each word segment WITHOUT
-// applying Go initialisms. For example:
-//   - "id" → "Id" (not "ID")
-//   - "org_id" → "OrgId" (not "OrgID")
-//   - "http_status" → "HttpStatus" (not "HTTPStatus")
+// ColumnGoName is the Go field name forge's generated ORM gives a column
+// on a db.<Entity> struct: title-case each '_'/'-'-separated segment, no
+// initialisms ("id" → "Id", "org_id" → "OrgId", "address_line_2" →
+// "AddressLine2", "base64item" → "Base64item").
 //
-// This matches the field names that protoc-gen-go actually generates.
-func ToProtoPascalCase(s string) string {
+// This is FORGE's rule for FORGE's types, and it is deliberately not
+// protoc-gen-go's: the generated pb field over the same name can differ
+// ("base64item" → Base64Item, "address_line_2" → AddressLine_2). A
+// conversion between the two structs must spell each side with its own
+// rule — GoFieldName for the pb message, this for the db struct. It once
+// claimed to match protoc-gen-go, and every pb field reference built from
+// it broke on the first name with a digit in it.
+//
+// Changing it renames ORM struct fields in every existing project, so it
+// stays as it is.
+func ColumnGoName(s string) string {
 	var b strings.Builder
 	upNext := true
 	for _, r := range s {

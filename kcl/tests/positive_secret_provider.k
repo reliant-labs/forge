@@ -18,7 +18,7 @@ Exercises:
 
 # kcl-args: env=dev | env=e2e
 # reject-args: env=prod
-# reject-expect: FileSecrets is dev/e2e only
+# reject-expect: FileSecrets renders PLAINTEXT secrets
 
 import forge
 import forge.workloads as fw

@@ -53,7 +53,7 @@ import { connectClient } from "@/lib/connect";
 import type { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "@/gen/{{.ImportPath}}";
 {{end -}}
 {{- end}}
-const client = connectClient({{.ServiceName}});
+const client = connectClient({{.ServiceRef}});
 const keys = serviceKeys("{{.ServiceNameCamel}}");
 
 /**
@@ -76,20 +76,20 @@ export const {{.ServiceNameCamel}}Keys = {
 {{- end}}
 {{- range .Methods}}
 {{- if .IsQuery}}
-  {{.NameCamel}}: keys.query("{{.NameCamel}}", {{.InputType}}Schema{{if .EntityScope}}, "{{.EntityScope}}"{{end}}),
+  {{.NameCamel}}: keys.query("{{.NameCamel}}", {{.InputSchemaRef}}{{if .EntityScope}}, "{{.EntityScope}}"{{end}}),
 {{- end}}
 {{- end}}
 };
 {{range .Methods}}
 {{- if .IsQuery}}
-export const use{{.Name}} = createQueryHook<typeof {{.InputType}}Schema, {{.OutputType}}>(
+export const use{{.Name}} = createQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
-  (req) => client.{{.NameCamel}}(req),
+  (req) => client.{{.ClientMethod}}(req),
 );
 {{- else}}
-export const use{{.Name}} = createMutationHook<typeof {{.InputType}}Schema, {{.OutputType}}>(
+export const use{{.Name}} = createMutationHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{if .EntityScope}}{{.EntityScope}}{{else}}all{{end}},
-  (req) => client.{{.NameCamel}}(req),
+  (req) => client.{{.ClientMethod}}(req),
 );
 {{- end}}
 {{end -}}

@@ -9,9 +9,11 @@ where each one runs HERE, and states the values only this environment
 knows: ports on this machine, the dev database, the dev identity provider.
 
 Each workload is bound HERE, one line each, to where it runs in dev. The
-services and jobs run as HOST PROCESSES (`forge.OnHost`): `forge env up`
-derives `go run ./cmd/{{.ProjectName}} <args>` from the declaration, so
-there is no docker build in the loop and no container runtime required.
+API and jobs run as HOST PROCESSES (`forge.OnHost`), so there is no docker
+build in the loop and no container runtime required. The API is ONE
+process — `_api`, the binary's `server`, every service on one Connect mux —
+because the frontend reaches it at one origin; air rebuilds and restarts it
+when a .go file changes. A job runs `go run ./cmd/{{.ProjectName}} <args>`.
 An operator or cron runs in the local k3d cluster, which a host process
 cannot be. The Dockerfile is still there and still correct; the cluster
 envs ship the image built from it.
@@ -63,12 +65,12 @@ import .ingress as ing
 # steps to 5433 and stays there, and the DSN below follows it.
 _postgres_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-postgres", 5432)
 
-# The port each long-running host process BINDS (a service's mux, a
-# worker's or operator's health endpoint). Host processes share this
-# machine, so each one gets its own availability-checked port instead of the
-# container convention (every pod owns :8080). The first service keeps the
+# The port each long-running host process BINDS (the API's mux, a split-out
+# worker's health endpoint). Host processes share this machine, so each one
+# gets its own availability-checked port instead of the container convention
+# (every pod owns :8080). The API (`_api`) holds the
 # `{{.ProjectName}}-{{.EnvName}}-api` key, which the frontend's dev config
-# (config.k) reads to find the API.
+# (config.k) reads to find it.
 _port_of = lambda name: str -> int {
     plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-api" if name == "{{.PrimaryWorkload}}" else "{{.ProjectName}}-{{.EnvName}}-" + name, 8085)
 }
@@ -155,7 +157,7 @@ _k3d = forge.ClusterTarget {
 # workload this env puts on the cluster runs the same project image. A
 # workload that needs its own says so on its binding line:
 #
-#     _on_k3d(wl.{{.PrimaryIdent}}) | {image = "localhost:5050/something-else"}
+#     _on_k3d(_api) | {image = "localhost:5050/something-else"}
 _LOCAL_IMAGE = "localhost:5050/{{.ProjectName}}"
 
 # ---------------------------------------------------------------------------
@@ -165,16 +167,23 @@ _LOCAL_IMAGE = "localhost:5050/{{.ProjectName}}"
 # one of these binders (each also applies this env's env vars). Rebinding a
 # workload is editing its one line:
 #
-#     _on_k3d(wl.{{.PrimaryIdent}})       # run it as a pod in the local cluster instead
+#     _on_k3d(_api)       # run it as a pod in the local cluster instead
 #
 # A pod reaches the host processes through the target's `host_gateway`
 # (host.k3d.internal) when a workload names them with forge.WorkloadURL.
 
-# A long-running host process: `go run ./cmd/{{.ProjectName}} <args>`, on its
-# own port (`listen_ports`, so the pre-flight names a collision before
-# anything starts).
+# A long-running host process, on its own port (`listen_ports`, so the
+# pre-flight names a collision before anything starts).
+#
+# The binary's `server` — the API — runs under air: it rebuilds and restarts
+# the server when a .go file changes (HOT RELOAD). .air.toml's `entrypoint`
+# is that same `server` command, so air and this declaration cannot run
+# different things; `forge doctor` checks air is installed (`go install
+# github.com/air-verse/air@latest`). Anything else bound here — a worker or
+# service split out of `server` — runs `go run ./cmd/{{.ProjectName}} <args>`,
+# since air would run `server` for it, not its args.
 _on_host = lambda w: fw.Workload -> fw.Workload {
-    w | {env = _env(w), runtime = forge.OnHost {runner = "go-run", listen_ports = [_port_of(w.name)]}}
+    w | {env = _env(w), runtime = forge.OnHost {runner = "air" if w.args == ["server"] else "go-run", listen_ports = [_port_of(w.name)]}}
 }
 # A host job: run to completion, before whatever it gates.
 _on_host_job = lambda w: fw.Workload -> fw.Workload {
@@ -193,6 +202,24 @@ _on_k3d = lambda w: fw.Workload -> fw.Workload {
 _build_only = lambda w: fw.Workload -> fw.Workload {
     w | {runtime = forge.BuildOnly {}}
 }
+
+# THE API, as ONE process: the binary's `server` command, which mounts every
+# service on one Connect mux and supervises every worker beside it — the same
+# workload staging and prod host.
+#
+# The frontend reaches the API at one origin: its Connect transport has one
+# base URL (a call is `/<package>.<Service>/<Method>`, so one origin serves
+# every service), and config.k resolves it at the
+# `{{.ProjectName}}-{{.EnvName}}-api` port, which `_port_of` gives `_api`.
+# A process per service would leave the frontend reaching one of them.
+#
+# workloads.k still declares each service and worker; here `server` runs
+# them, so `forge scaffold service|worker` adds no line below for one, and
+# `forge env up {{.EnvName}} --target api` restarts the whole API. Running one
+# on its own — to debug it alone, say — is its own line, `_on_host(wl.<name>)`,
+# and taking it out of `server`'s mount or worker list
+# (cmd/{{.ProjectName}}/cmd/server.go), or it runs twice.
+{{.APIWorkload}}
 
 # Every workload this env runs, one binding each. `forge scaffold` appends
 # a line here when it adds a workload; drop a line to not run it here.

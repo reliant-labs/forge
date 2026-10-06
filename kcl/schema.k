@@ -1127,9 +1127,13 @@ schema FileSecrets:
     and multi-line values (a PEM key, a JSON blob) that a dotenv cannot
     express without escaping games.
 
-    LOCAL ONLY: forge renders PLAINTEXT k8s Secrets from it, so it is
-    gated to dev/e2e (a check below + a Go guard). staging/prod must use
-    ExternalSecrets.
+    LOCAL ONLY: forge renders PLAINTEXT k8s Secrets from it, so a Bundle
+    may use it only when it declares `lifecycle = "local"` or
+    `"ephemeral"` — a claim forge checks against every cluster the env
+    targets (Bundle's check), so it can only be made by an env whose
+    clusters forge itself creates on this machine. The env's NAME decides
+    nothing; envs named dev/e2e that predate `lifecycle` are still accepted.
+    A real environment (no lifecycle) must use ExternalSecrets.
 
     Populate with `forge secret set --env <env> <KEY>` (value on stdin, never
     argv), or hand-edit the YAML. `forge secret ensure --env <env>` creates the
@@ -1147,8 +1151,8 @@ schema FileSecrets:
         path, "FileSecrets.path is required"
         not path.startswith(".env"), \
             "FileSecrets.path must not be a .env* path — use e.g. 'secrets/<env>.yaml'"
-        option("env") == None or option("env") in ["dev", "e2e"], \
-            "FileSecrets is dev/e2e only (it renders plaintext Secrets); use ExternalSecrets for other envs"
+        # Whether THIS env may hold plaintext secrets is a Bundle fact (its
+        # lifecycle), so that check lives on Bundle, not here.
 
 schema ExternalSecrets:
     """Prod/staging secret provider. forge does NOT see values: k8s
@@ -3724,6 +3728,18 @@ schema Bundle:
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.
+        # PLAINTEXT SECRETS ONLY WHERE THEY CANNOT ESCAPE THIS MACHINE.
+        # FileSecrets renders plaintext k8s Secrets, so it is allowed in an
+        # env that declares itself local/ephemeral — a claim the lifecycle
+        # check below verifies against every cluster the env targets. It
+        # used to be gated on the env's NAME (dev/e2e), which refused a
+        # perfectly local env merely for being called something else (a
+        # host-only `demo` env) while saying nothing about where the secrets
+        # land. The two names are still accepted for envs that predate
+        # `lifecycle`, so declaring it is what an older dev env needs to do
+        # nothing about.
+        not (secret_provider and secret_provider.type == "file") or lifecycle or option("env") == None or option("env") in ["dev", "e2e"], \
+            "secret_provider = forge.FileSecrets renders PLAINTEXT secrets, so it needs a local env: declare `lifecycle = \"local\"` (or \"ephemeral\") on this Bundle — forge verifies that every cluster it targets is one it creates. A real environment uses forge.ExternalSecrets."
         not (secret_provider and secret_provider.type == "hosted") or control_plane, \
             "secret_provider = forge.HostedSecrets {} requires control_plane = forge.ControlPlane {} (Reliant cloud, or set endpoint) on the same Bundle: hosted secret values live in that control plane"
         # A Bundle-level rendered Secret is placed by declaration, never by

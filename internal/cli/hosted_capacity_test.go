@@ -281,3 +281,44 @@ func TestPlanOnly_RendersCapacitySection(t *testing.T) {
 		}
 	}
 }
+
+// A BUILD NEVER NEEDS A REACHABLE CONTROL PLANE (#404). The capacity pre-flight
+// is an optimisation for `forge env build`, so when it cannot be DELIVERED — no
+// credential, an unavailable control plane — the build warns and continues.
+// An ANSWERED refusal still stops it: that is a fact about the org.
+func TestBuildCapacityPreflight_UndeliverableWarnsAndContinues(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fake *capacityFake
+		cred bool
+	}{
+		{name: "no credential", fake: &capacityFake{}, cred: false},
+		{name: "unavailable", fake: &capacityFake{capErr: wireCoded{"unavailable"}}, cred: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withCapacityFake(t, tc.fake)
+			if !tc.cred {
+				t.Setenv(cloud.DefaultTokenEnv, "")
+				t.Setenv("FORGE_HOME", t.TempDir())
+			}
+			var out strings.Builder
+			if _, err := buildCapacityPreflight(context.Background(), "prod", houndersEntities(), 1, &out); err != nil {
+				t.Fatalf("an undeliverable pre-flight must not fail a build, got %v", err)
+			}
+			if !strings.Contains(out.String(), "capacity pre-flight skipped") {
+				t.Errorf("want a skip warning, got %q", out.String())
+			}
+		})
+	}
+}
+
+func TestBuildCapacityPreflight_RefusalStillFailsTheBuild(t *testing.T) {
+	withCapacityFake(t, &capacityFake{capacity: map[string]any{
+		"allowed": false, "code": "DEPLOY_CAPACITY_CODE_NO_COMPUTE_PLAN", "reason": "no plan", "fix": "subscribe",
+	}})
+	_, err := buildCapacityPreflight(context.Background(), "prod", houndersEntities(), 1, &strings.Builder{})
+	var refused *deploytarget.CapacityRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("err = %v, want *CapacityRefusedError", err)
+	}
+}

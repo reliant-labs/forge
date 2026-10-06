@@ -130,6 +130,16 @@ func init() {
 				return p, nil
 			},
 		},
+		// lower_container(fw.Container) -> k8s container dict. Lowers a
+		// forge container for a hand-written pod (a raw Deployment) with
+		// the SAME Go lowering forge's own sidecars get, so probe timings
+		// and native-sidecar restartPolicy are defined once. See
+		// deploy.LowerContainer for what it leaves to the pod.
+		"lower_container": {
+			Body: func(args *methodArgs) (any, error) {
+				return lowerContainer(args.args[0])
+			},
+		},
 		// probe(token) -> token. Side-effect-free echo, used ONLY by
 		// Probe (probe.go) to prove a KCL program can call back into
 		// this process. Not part of the namespace a project should use.

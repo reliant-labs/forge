@@ -56,6 +56,9 @@ type InventoryServiceData struct {
 	Package string
 	// ConnectPkg / ProtoServiceName drive the ConnectPath descriptor and,
 	// when REST is on, the connect import. Mirrors the bootstrap fields.
+	// ProtoServiceName is the RAW proto service name: protoc-gen-connect-go
+	// spells the `<Service>Name` constant from it rather than from the
+	// GoName (naming.ConnectServiceNameConst).
 	ConnectPkg       string
 	ProtoServiceName string
 	// BaseService and Version carry the proto identity SPLIT into its
@@ -146,15 +149,19 @@ func GenerateInventory(in InventoryGenInput) error {
 		}
 
 		var connectPkg, connectImport string
+		// A descriptor-backed service names its proto service exactly; a
+		// synthesized one (no descriptor yet) is spelled the way the proto
+		// template will declare it.
+		protoServiceName := fallbackField + "Service"
 		if svc.GoPackage != "" && svc.PkgName != "" {
-			connectPkg = svc.PkgName + "connect"
+			connectPkg = naming.ConnectPackage(svc.PkgName)
 			connectImport = svc.GoPackage + "/" + connectPkg
+			protoServiceName = svc.Name
 		} else {
 			synth := naming.ServicePackage(svc.Name)
 			connectPkg = synth + "v1connect"
 			connectImport = in.ModulePath + "/gen/services/" + synth + "/v1/" + connectPkg
 		}
-		protoServiceName := fallbackField + "Service"
 		connectImports[connectImport] = true
 
 		// Version-aware seam: split the proto identity into its
@@ -169,13 +176,7 @@ func GenerateInventory(in InventoryGenInput) error {
 		// a sign-up endpoint — which collides with the scaffolded mount
 		// helper. The handler renames its helper to Mount in that case, so
 		// this call site has to follow.
-		mountMethod := "Register"
-		for _, m := range svc.Methods {
-			if m.Name == "Register" {
-				mountMethod = "Mount"
-				break
-			}
-		}
+		mountMethod := mountMethodFor(svc)
 
 		rows = append(rows, InventoryServiceData{
 			Name:             runtimeName,

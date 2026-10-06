@@ -25,10 +25,7 @@ func renderMockTransport(t *testing.T, entities []codegen.MockTransportEntity) s
 		t.Fatalf("parse mock-transport template: %v", err)
 	}
 	var buf bytes.Buffer
-	data := codegen.MockTransportTemplateData{
-		Entities:           entities,
-		SchemaImportGroups: codegen.BuildMockTransportSchemaImportGroups(entities),
-	}
+	data := codegen.NewMockTransportTemplateData(entities)
 	if err := tmpl.Execute(&buf, data); err != nil {
 		t.Fatalf("execute mock-transport template: %v", err)
 	}
@@ -269,7 +266,7 @@ func TestMockTransport_StreamMethodHasNoExplicitReturnTypeAnnotation(t *testing.
 // error (tsc dedups), but it tripped `import/order` and
 // `import/no-duplicates` lint rules and bloated the diff. Fix: pre-
 // aggregate the schema imports by ImportPath in
-// BuildMockTransportSchemaImportGroups so the template emits one
+// NewMockTransportTemplateData so the template emits one
 // merged `import { A, B, C } from "@/gen/<path>"` per source module.
 func TestMockTransport_GroupsImportsByModule(t *testing.T) {
 	entities := []codegen.MockTransportEntity{
@@ -313,7 +310,7 @@ func TestMockTransport_GroupsImportsByModule(t *testing.T) {
 	}
 
 	// And that single line must list all three schemas, regardless
-	// of order (BuildMockTransportSchemaImportGroups sorts symbols
+	// of order (NewMockTransportTemplateData sorts symbols
 	// alphabetically for deterministic output).
 	for _, sym := range []string{"ListTradesResponseSchema", "ListHypothesesResponseSchema", "ListSettlementsResponseSchema"} {
 		if !strings.Contains(got, sym) {
@@ -330,7 +327,7 @@ func TestMockTransport_GroupsImportsByModule(t *testing.T) {
 }
 
 // TestMockTransport_DistinctModules_KeepsImportsSeparate guards against
-// an overzealous fix to BuildMockTransportSchemaImportGroups: when two
+// an overzealous fix to NewMockTransportTemplateData: when two
 // entities live in different proto modules, they must produce two
 // separate import lines, not one merged super-import.
 func TestMockTransport_DistinctModules_KeepsImportsSeparate(t *testing.T) {

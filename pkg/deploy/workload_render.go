@@ -596,13 +596,22 @@ func (set *workloadSet) podSpec(w *workload, ctx Context, extraEnv []corev1.EnvV
 	s := w.spec
 	main := mainContainer(w, extraEnv)
 	containers := []corev1.Container{main}
+	// Native sidecars lead the initContainers: they are started in order
+	// and each must be "started" before the next begins, so a gating job
+	// that dials the proxy finds it up.
+	var inits []corev1.Container
 	for _, sc := range s.Sidecars {
-		containers = append(containers, sidecarContainer(sc, s.SecurityContext))
+		c := sidecarContainer(sc, s.SecurityContext)
+		if sc.Native {
+			c.RestartPolicy = new(corev1.ContainerRestartPolicyAlways)
+			inits = append(inits, c)
+			continue
+		}
+		containers = append(containers, c)
 	}
 
 	// cron never receives gating (expand.k:791-793): jobGates excludes it
 	// through gatedKinds, and validateBefore refuses naming one.
-	var inits []corev1.Container
 	for _, j := range set.gatingJobs(w) {
 		// The init runs in THIS pod, so it takes this pod's identity.
 		inits = append(inits, initContainer(j, s.SecurityContext))
@@ -686,6 +695,7 @@ func mainContainer(w *workload, extraEnv []corev1.EnvVar) corev1.Container {
 		c.Ports = []corev1.ContainerPort{{Name: v1alpha1.DefaultHTTPPortName, ContainerPort: probes.Port, Protocol: corev1.ProtocolTCP}}
 	}
 	c.ReadinessProbe, c.LivenessProbe = probePair(probes)
+	c.StartupProbe = startupProbe(probes)
 	if s.StorageGiB > 0 {
 		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: v1alpha1.DataVolumeName, MountPath: v1alpha1.DataMountPath})
 	}
@@ -695,11 +705,21 @@ func mainContainer(w *workload, extraEnv []corev1.EnvVar) corev1.Container {
 	return c
 }
 
-// sidecarContainer renders a sidecar with the SAME hardening as the main
-// container. The type has no securityContext field, on purpose: a sidecar
-// that could loosen it would make the main container's hardening a
-// suggestion. It shares /tmp and nothing else (v1alpha1.Container's doc).
-func sidecarContainer(sc v1alpha1.Container, podSec *v1alpha1.PodSecurity) corev1.Container {
+// LowerContainer lowers a Container to its Kubernetes form for a pod forge
+// does not render itself (a raw Deployment in Bundle.manifests): image
+// pull policy, command/args/env, ports, defaulted resources, the probes with
+// forge's timings, and restartPolicy Always for a Native sidecar. It carries
+// no securityContext and no /tmp mount, because the raw pod owns both. It is
+// the SAME lowering sidecarContainer starts from, so the two cannot drift.
+func LowerContainer(c v1alpha1.Container) corev1.Container {
+	k := lowerContainer(c)
+	if c.Native {
+		k.RestartPolicy = new(corev1.ContainerRestartPolicyAlways)
+	}
+	return k
+}
+
+func lowerContainer(sc v1alpha1.Container) corev1.Container {
 	c := corev1.Container{
 		Name:            sc.Name,
 		Image:           sc.Image,
@@ -709,10 +729,21 @@ func sidecarContainer(sc v1alpha1.Container, podSec *v1alpha1.PodSecurity) corev
 		Env:             renderEnv(sc.Env),
 		Ports:           containerPorts(sc.Ports),
 		Resources:       resourceRequirements(sc.Resources),
-		SecurityContext: containerSecurityContext(podSec),
-		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
 	}
-	c.ReadinessProbe, c.LivenessProbe = probePair(sc.EffectiveProbes())
+	probes := sc.EffectiveProbes()
+	c.ReadinessProbe, c.LivenessProbe = probePair(probes)
+	c.StartupProbe = startupProbe(probes)
+	return c
+}
+
+// sidecarContainer renders a sidecar with the SAME hardening as the main
+// container. The type has no securityContext field, on purpose: a sidecar
+// that could loosen it would make the main container's hardening a
+// suggestion. It shares /tmp and nothing else (v1alpha1.Container's doc).
+func sidecarContainer(sc v1alpha1.Container, podSec *v1alpha1.PodSecurity) corev1.Container {
+	c := lowerContainer(sc)
+	c.SecurityContext = containerSecurityContext(podSec)
+	c.VolumeMounts = []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}}
 	return c
 }
 
@@ -789,6 +820,19 @@ func probePair(p *v1alpha1.Probes) (readiness, liveness *corev1.Probe) {
 		}
 	}
 	return probe(handler(p.ReadinessPath), p.Readiness()), probe(handler(p.LivenessPath), p.Liveness())
+}
+
+// startupProbe renders Probes.StartupPath, or nil when none is declared.
+func startupProbe(p *v1alpha1.Probes) *corev1.Probe {
+	if p == nil || p.StartupPath == "" {
+		return nil
+	}
+	return &corev1.Probe{
+		ProbeHandler:     corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: p.StartupPath, Port: intstr.FromInt32(p.Port)}},
+		PeriodSeconds:    v1alpha1.DefaultStartupPeriodSeconds,
+		TimeoutSeconds:   p.TimeoutSeconds,
+		FailureThreshold: v1alpha1.DefaultStartupFailureThreshold,
+	}
 }
 
 // renderEnv projects every channel (expand.k:104-116). Exactly one source is

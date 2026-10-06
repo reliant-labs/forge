@@ -6,6 +6,7 @@ package cli
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 	"text/template"
@@ -867,5 +868,195 @@ func TestHooksTemplate_MutationComposeThenSpread(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// tsImportLocals returns every name a rendered TS file binds through its
+// `import [type] { A, B as C } from "…"` statements, with a count each — a
+// count above one is TS2300 "Duplicate identifier".
+func tsImportLocals(src string) map[string]int {
+	out := map[string]int{}
+	for _, m := range tsNamedImport.FindAllStringSubmatch(src, -1) {
+		for _, spec := range strings.Split(m[1], ",") {
+			spec = strings.TrimSpace(spec)
+			if spec == "" {
+				continue
+			}
+			if _, alias, ok := strings.Cut(spec, " as "); ok {
+				spec = alias
+			}
+			out[strings.TrimSpace(strings.TrimPrefix(spec, "type "))]++
+		}
+	}
+	for _, m := range tsNamespaceImport.FindAllStringSubmatch(src, -1) {
+		out[m[1]]++
+	}
+	return out
+}
+
+// tsNamedImport matches one `import [type] { … } from` statement, over lines;
+// tsNamespaceImport one `import * as X from`.
+var (
+	tsNamedImport     = regexp.MustCompile(`(?s)import\s+(?:type\s+)?\{([^}]*)\}\s*from`)
+	tsNamespaceImport = regexp.MustCompile(`import\s+(?:type\s+)?\*\s+as\s+(\w+)\s+from`)
+)
+
+func renderFrontendTemplate(t *testing.T, name string, data any) string {
+	t.Helper()
+	content, err := templates.FrontendTemplates().Get(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	tmpl, err := template.New(name).Funcs(templates.FuncMap()).Parse(string(content))
+	if err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		t.Fatalf("render %s: %v", name, err)
+	}
+	return buf.String()
+}
+
+// Two services each declaring `PingRequest` is ordinary proto (a message
+// name is per package), but the project-wide scenario handler map imported
+// every service's messages into one TS scope — `import type { PingRequest }`
+// once per service — and the frontend failed `tsc`:
+//
+//	src/mocks/scenario-rpcs_gen.ts(15,60): error TS2300: Duplicate identifier 'PingRequest'.
+//
+// A clashing name is now imported `as <module>_<Name>` from each module and
+// the handler map names that; a name only one module supplies is unchanged.
+func TestScenarioRpcsTemplate_SameMessageNameInTwoServices(t *testing.T) {
+	svc := func(name, pkg, file string) codegen.ServiceDef {
+		return codegen.ServiceDef{Name: name, Package: pkg, ProtoFile: file, Methods: []codegen.Method{
+			{Name: "Ping", InputType: "PingRequest", OutputType: "PingResponse"},
+			{Name: "Get" + strings.TrimSuffix(name, "Service"), InputType: "Get" + strings.TrimSuffix(name, "Service") + "Request", OutputType: "Get" + strings.TrimSuffix(name, "Service") + "Response"},
+		}}
+	}
+	out := renderFrontendTemplate(t, "mocks/scenarios/scenario-rpcs.ts.tmpl", codegen.BuildScenarioRPCData([]codegen.ServiceDef{
+		svc("AlphaService", "services.alpha.v1", "proto/services/alpha/v1/alpha.proto"),
+		svc("BetaService", "services.beta.v1", "proto/services/beta/v1/beta.proto"),
+	}))
+	for name, n := range tsImportLocals(out) {
+		if n > 1 {
+			t.Errorf("scenario-rpcs imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, out)
+		}
+	}
+	for _, want := range []string{
+		`import type { GetAlphaRequest, GetAlphaResponseSchema, PingRequest as services_alpha_v1_alpha_pb_PingRequest, PingResponseSchema as services_alpha_v1_alpha_pb_PingResponseSchema } from "@/gen/services/alpha/v1/alpha_pb";`,
+		`"services.alpha.v1.AlphaService/Ping"?: (req: services_alpha_v1_alpha_pb_PingRequest) => UnaryReturn<MessageInitShape<typeof services_alpha_v1_alpha_pb_PingResponseSchema>>;`,
+		`"services.beta.v1.BetaService/Ping"?: (req: services_beta_v1_beta_pb_PingRequest) => UnaryReturn<MessageInitShape<typeof services_beta_v1_beta_pb_PingResponseSchema>>;`,
+		// Unique names keep their own.
+		`"services.beta.v1.BetaService/GetBeta"?: (req: GetBetaRequest) => UnaryReturn<MessageInitShape<typeof GetBetaResponseSchema>>;`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("scenario-rpcs missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// The same scope rule inside ONE service's hooks file: a request type from
+// another proto file that shares a name with one of the service's own is
+// imported under its module's name, and every hook refers to that.
+func TestHooksTemplate_SameMessageNameFromTwoModules(t *testing.T) {
+	data := codegen.ServiceDefToHookData(codegen.ServiceDef{
+		Name:      "AlphaService",
+		Package:   "services.alpha.v1",
+		ProtoFile: "proto/services/alpha/v1/alpha.proto",
+		Methods: []codegen.Method{
+			{Name: "GetThing", InputType: "GetThingRequest", OutputType: "Thing"},
+			{Name: "GetSharedThing", InputType: "GetThingRequest", InputProtoFile: "proto/shared/v1/types.proto", OutputType: "Thing", OutputProtoFile: "proto/shared/v1/types.proto"},
+		},
+	})
+	out := renderFrontendTemplate(t, "hooks.ts.tmpl", data)
+	for name, n := range tsImportLocals(out) {
+		if n > 1 {
+			t.Errorf("hooks imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, out)
+		}
+	}
+	for _, want := range []string{
+		"createQueryHook<typeof services_alpha_v1_alpha_pb_GetThingRequestSchema, services_alpha_v1_alpha_pb_Thing>(",
+		"createQueryHook<typeof shared_v1_types_pb_GetThingRequestSchema, shared_v1_types_pb_Thing>(",
+		"const client = connectClient(AlphaService);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hooks missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// mock-transport.ts imports every entity's response schemas into one scope
+// too, and the entities belong to different services whose protos may name
+// a response alike — a generic `GetResponse` in two services. Each row must
+// name its own service's schema.
+func TestMockTransportTemplate_SameResponseNameInTwoServices(t *testing.T) {
+	entity := func(name, svc string) codegen.MockTransportEntity {
+		lower := strings.ToLower(name)
+		return codegen.MockTransportEntity{
+			EntityName: name, EntityNamePlural: name + "s", EntitySlug: lower + "s",
+			ServiceName: svc, ServiceTypeName: "services." + lower + ".v1." + svc,
+			ListRPC: "List" + name + "s", GetRPC: "Get" + name, CreateRPC: "Create" + name,
+			HasList: true, HasGet: true, HasCreate: true,
+			ItemsField: "items", PkFieldCamel: "id", GetEntityFieldCamel: "item", CreateEntityFieldCamel: "item",
+			ImportPath:   "services/" + lower + "/v1/" + lower + "_pb",
+			SchemaImport: name + "Schema",
+			// Generic names, declared by each service's own proto.
+			ListResponseType: "ListResponse", GetResponseType: "GetResponse", CreateResponseType: "CreateResponse",
+		}
+	}
+	out := renderMockTransport(t, []codegen.MockTransportEntity{entity("Thing", "ThingService"), entity("Widget", "WidgetService")})
+	for name, n := range tsImportLocals(out) {
+		if n > 1 {
+			t.Errorf("mock-transport imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, out)
+		}
+	}
+	for _, want := range []string{
+		`import { CreateResponseSchema as services_thing_v1_thing_pb_CreateResponseSchema, GetResponseSchema as services_thing_v1_thing_pb_GetResponseSchema, ListResponseSchema as services_thing_v1_thing_pb_ListResponseSchema, ThingSchema } from "@/gen/services/thing/v1/thing_pb";`,
+		`list: { rpc: "ListWidgets", responseSchema: services_widget_v1_widget_pb_ListResponseSchema, itemsField: "items" }`,
+		`get: { rpc: "GetThing", responseSchema: services_thing_v1_thing_pb_GetResponseSchema, entityField: "item" }`,
+		`create: { rpc: "CreateWidget", responseSchema: services_widget_v1_widget_pb_CreateResponseSchema,`,
+		// The entity schemas are distinct names and keep their own.
+		"entitySchema: WidgetSchema,",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("mock-transport missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// One entity listed by two services — each declaring its own
+// `ListThingsResponse` — is two dispatch rows over ONE fixture module. The
+// rows name their own service's schema, and the fixture module is imported
+// once: an import per row declared `thingsMocks` twice.
+func TestMockTransportTemplate_EntityServedByTwoServices(t *testing.T) {
+	row := func(svc string) codegen.MockTransportEntity {
+		lower := strings.ToLower(strings.TrimSuffix(svc, "Service"))
+		return codegen.MockTransportEntity{
+			EntityName: "Thing", EntityNamePlural: "Things", EntitySlug: "things",
+			ServiceName: svc, ServiceTypeName: "services." + lower + ".v1." + svc,
+			ListRPC: "ListThings", HasList: true, ItemsField: "things", PkFieldCamel: "id",
+			ImportPath: "services/" + lower + "/v1/" + lower + "_pb", SchemaImport: "ThingSchema",
+			ListResponseType: "ListThingsResponse",
+		}
+	}
+	out := renderMockTransport(t, []codegen.MockTransportEntity{row("AlphaService"), row("BetaService")})
+	for name, n := range tsImportLocals(out) {
+		if n > 1 {
+			t.Errorf("mock-transport imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, out)
+		}
+	}
+	for _, want := range []string{
+		`import * as thingsMocks from "@/mocks/things_gen";`,
+		`service: "services.alpha.v1.AlphaService",`,
+		`list: { rpc: "ListThings", responseSchema: services_alpha_v1_alpha_pb_ListThingsResponseSchema, itemsField: "things" }`,
+		`list: { rpc: "ListThings", responseSchema: services_beta_v1_beta_pb_ListThingsResponseSchema, itemsField: "things" }`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("mock-transport missing %q:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "fixtures: thingsMocks.things,"); n != 2 {
+		t.Errorf("want both rows seeded from the one fixture module, got %d:\n%s", n, out)
 	}
 }

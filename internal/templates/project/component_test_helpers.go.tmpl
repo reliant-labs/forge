@@ -272,7 +272,7 @@ func ({{$stub}}) {{.Name}}({{.Params}}){{if .Results}} {{.Results}}{{end}} { {{i
 // holds, and a context does not cross HTTP, so passing it to a client call
 // authenticates nothing. Adjust the principal with WithPrincipal, or drop it
 // with WithoutPrincipal to assert an RPC refuses anonymous callers.
-func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Server, {{.ProtoConnectPkg}}.{{.ProtoServiceName}}Client) {
+func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Server, {{.ProtoConnectPkg}}.{{.ConnectServiceGoName}}Client) {
 	t.Helper()
 	cfg := testkit.ApplyOptions(defaultTestConfig(t), opts...)
 	svc, err := {{.ConstructorName}}(newTest{{.FieldName}}Deps(cfg))
@@ -283,7 +283,7 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Se
 	if !cfg.anonymous {
 		handlerOpts = append(handlerOpts, testkit.ServerPrincipal(middleware.ContextWithClaims, cfg.principal...))
 	}
-	return testkit.NewConnectClient(t, svc.{{if .MountMethod}}{{.MountMethod}}{{else}}Register{{end}}, {{.ProtoConnectPkg}}.New{{.ProtoServiceName}}Client, handlerOpts...)
+	return testkit.NewConnectClient(t, svc.{{if .MountMethod}}{{.MountMethod}}{{else}}Register{{end}}, {{.ProtoConnectPkg}}.New{{.ConnectServiceGoName}}Client, handlerOpts...)
 }
 {{- else}}
 // NewTest{{.FieldName}} creates a test instance of the {{.FieldName}} package with

@@ -93,7 +93,7 @@ Example:
 func runLibrary(name, pathFlag string, force, noExclude bool) error {
 	ctxLabel := fmt.Sprintf("forge scaffold library %s", name)
 
-	if err := validateIdentifier(name); err != nil {
+	if err := validatePackageName(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid library name", "",
 			"use a name starting with a letter, containing letters/digits/_/-; not a Go keyword", err)
 	}

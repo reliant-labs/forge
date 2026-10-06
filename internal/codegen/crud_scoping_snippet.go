@@ -86,17 +86,20 @@ func RenderScopedCRUDShim(method, inputType, outputType, entity, ownerColumn str
 		return "", fmt.Errorf("render scoping wrapper for %s: not a CRUD RPC, so forge generated no op seam to wrap", method)
 	}
 
+	// The arguments are proto spellings; the shim spells Go identifiers,
+	// each by the rule of the generator that declares it.
 	data := CRUDMethodTemplateData{
-		MethodName:   method,
-		InputType:    inputType,
-		OutputType:   outputType,
+		MethodName:   naming.GoCamelCase(method),
+		InputType:    naming.GoCamelCase(inputType),
+		OutputType:   naming.GoCamelCase(outputType),
 		EntityName:   entity,
+		EntityPbType: naming.GoCamelCase(entity),
 		EntityLower:  strings.ToLower(entity),
 		Operation:    op,
 		AuthRequired: true,
 		AuthSeam:     crudAuthSeam,
 		OwnerColumn:  ownerColumn,
-		OwnerField:   naming.ToProtoPascalCase(ownerColumn),
+		OwnerField:   naming.ColumnGoName(ownerColumn),
 		Scoped:       true,
 	}
 

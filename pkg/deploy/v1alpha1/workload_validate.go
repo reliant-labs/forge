@@ -491,7 +491,10 @@ func (p Probes) validate() []error {
 	if p.TCP && (p.ReadinessPath != "" || p.LivenessPath != "") {
 		errs = append(errs, errors.New("probes.tcp probes with a TCP connect, so readinessPath and livenessPath would be ignored; set one or the other"))
 	}
-	for field, path := range map[string]string{"readinessPath": p.ReadinessPath, "livenessPath": p.LivenessPath} {
+	if p.TCP && p.StartupPath != "" {
+		errs = append(errs, errors.New("probes.tcp probes with a TCP connect, so startupPath would be ignored; set one or the other"))
+	}
+	for field, path := range map[string]string{"readinessPath": p.ReadinessPath, "livenessPath": p.LivenessPath, "startupPath": p.StartupPath} {
 		if path != "" && !strings.HasPrefix(path, "/") {
 			errs = append(errs, fmt.Errorf("probes.%s %q must start with '/'", field, path))
 		}

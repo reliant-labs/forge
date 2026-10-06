@@ -54,7 +54,7 @@ func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 		NeedsTime       bool
 		NeedsULID       bool
 
-		ProtoServiceName       string
+		ConnectServiceGoName   string
 		ProtoConnectImportPath string
 		ProtoConnectPkg        string
 		MountMethod            string
@@ -77,7 +77,7 @@ func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 		FieldName:              "Order",
 		IsService:              true,
 		ConstructorName:        "New",
-		ProtoServiceName:       "OrderService",
+		ConnectServiceGoName:   "OrderService",
 		ProtoConnectImportPath: "example.com/myproject/gen/services/order/v1/orderv1connect",
 		ProtoConnectPkg:        "orderv1connect",
 		MountMethod:            "Register",
@@ -521,7 +521,7 @@ func TestComponentTestHelpersTemplate_PackageContractName(t *testing.T) {
 		NeedsTime       bool
 		NeedsULID       bool
 
-		ProtoServiceName       string
+		ConnectServiceGoName   string
 		ProtoConnectImportPath string
 		ProtoConnectPkg        string
 		MountMethod            string

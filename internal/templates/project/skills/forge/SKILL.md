@@ -36,17 +36,14 @@ forge env up dev             # host services + frontends, on a fresh seeded DB
 `cmd.Execute(...)` arg list.
 
 A later `forge scaffold service <name>` appends its constructor to that same
-call. `main.go` stays owned code, so the append is surgical and forge declines
-rather than guesses when it cannot find the `cmd.Execute(...)` call — then it
-prints the exact import and argument to add by hand.
+call; if it cannot find `cmd.Execute(...)` it declines and prints the
+import and argument to add by hand.
 
-Batch the ones you discover later: `forge scaffold service sales jobs billing`
-runs the generate pipeline once for all three instead of once each.
+Batch later ones: `forge scaffold service sales jobs billing` generates once.
 
 A bare `forge project new` scaffolds **zero services**: binary shell, `internal/app`
 composition root, buf/proto scaffolding, Taskfile/CI/deploy. The binary is a
-deployment unit that mounts services, not a domain entity, so forge never invents
-a `<project>Service` from the binary name.
+deployment unit, not a domain entity, so forge never invents a service from its name.
 
 ### The `project new` flags that matter
 
@@ -289,7 +286,7 @@ interface to `struct{ ... }` and lists no methods — it cannot tell you
 | Command | What it does |
 |---|---|
 | `forge env up` | Host services + frontends; auto-seeds a fresh dev DB on first boot |
-| `forge env up dev` | Full stack: Docker infra + Go services (hot reload) + frontends |
+| `forge env up dev` | Full stack: host infra (postgres, dev IdP) + the API (air, hot reload) + frontends |
 | `forge env up <env>` | Build + deploy + host launch + frontend dev — reads `deploy/kcl/<env>/` |
 | `forge env deploy dev` | Deploy to local k3d (or whatever dev's KCL targets) |
 | `forge generate` | Re-project from protos + applied migrations. Safe anytime; never touches business logic |
@@ -298,9 +295,27 @@ interface to `struct{ ... }` and lists no methods — it cannot tell you
 | `task test` / `task test:e2e` | Unit + frontends / E2E (needs a stack up); `task test:all` adds integration |
 
 Auth is enforced in every mode — present a real bearer token (`auth`). There is
-no per-service port: one binary serves every service on one mux (`PORT`, default
-`8080`), and the dev loop gives the backend and each frontend a free port the
-kernel picks at launch, printed in the launch banner. Depth: `dev`, `deploy`.
+no per-service port: one process, the binary's `server` (`_api` in every env),
+serves every service on one mux (`PORT`; 8080 in a container), so the frontend
+reaches all of them at one origin. Dev runs it under air (hot reload) on the
+env's `<project>-dev-api` port, printed in the launch banner. Depth: `dev`,
+`deploy`.
+
+## Ship it
+
+Asked to publish or deploy? **Reliant hosting is the default**: a new project's
+`staging` and `prod` already bind its services, workers, jobs, managed Postgres
+and static frontend to it:
+
+```bash
+forge env deploy prod      # build → push → release → plan → apply
+forge env status prod      # then verify
+```
+
+One static site is free; workloads and the database need billing.
+Without it the deploy is **queued, not refused** and goes live once billing is set up: `env deploy` exits **7** and prints the billing link. Give
+the user that link; don't retry; then verify. Under Reliant you are signed in:
+never ask for `forge login`. Depth: `deploy`, `deploy/hosting`, `deploy/static-site`.
 
 ## Pre-flight: what forge already does for you
 

@@ -91,6 +91,18 @@ type Container struct {
 	// service, a sidecar gets no implicit TCP probe.
 	// +optional
 	Probes *Probes `json:"probes,omitempty"`
+
+	// Native renders the sidecar as a Kubernetes native sidecar: an
+	// initContainer with restartPolicy Always (GA in Kubernetes 1.29). The
+	// kubelet starts it BEFORE the main container and waits for its startup
+	// probe to pass, and stops it AFTER the main container exits. A plain
+	// sidecar starts concurrently with the main container, so a main
+	// process that dials the sidecar at boot (a database proxy on
+	// 127.0.0.1) races it and fails until the sidecar is listening. Set
+	// Probes.StartupPath so "started" means "ready to serve"; without a
+	// startup probe the kubelet only waits for the process to launch.
+	// +optional
+	Native bool `json:"native,omitempty"`
 }
 
 // ProbePort is the port a sidecar's probes connect to: Probes.Port, else the

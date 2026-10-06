@@ -205,8 +205,17 @@ func Lookup(env []string, key string) string {
 // absolute and would strip the toolchain the process needs to exec at all.
 // These are also read by the OS and by forge itself, not just by the app, which
 // is the same reason bind ports are forced the other way.
+//
+// HOME IS NOT ON THIS LIST, deliberately. Unlike PATH, a declared HOME is a
+// complete value — an absolute directory KCL can state exactly — and declaring
+// it is never an accident: it is how a workload is given a sandboxed home, so
+// the files its tools write under ~ (a CLI's credentials, git config, caches)
+// land somewhere the environment owns instead of in the developer's own
+// home. With HOME here, that declaration was silently replaced by the shell's
+// and the process wrote into the real ~ — the opposite of what was declared.
+// An env that does not declare HOME still inherits the shell's, as before.
 var osIdentityEnv = map[string]struct{}{
-	"PATH": {}, "HOME": {}, "USER": {}, "LOGNAME": {}, "SHELL": {},
+	"PATH": {}, "USER": {}, "LOGNAME": {}, "SHELL": {},
 	"TMPDIR": {}, "PWD": {}, "OLDPWD": {}, "TERM": {}, "SSH_AUTH_SOCK": {},
 }
 

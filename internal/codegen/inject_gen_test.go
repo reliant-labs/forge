@@ -4,11 +4,15 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // writeComponentDeps writes a minimal component package (contract.go with a
@@ -1471,5 +1475,129 @@ func TestGenerateInject_UnknownStoreTypeIsStillMissing(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("db.WidgetStore has no Widget entity behind it — resolving it would emit code that does not compile")
+	}
+}
+
+// A service named like an identifier compose.go itself uses — its locals (`c`,
+// `infra`, `err`), its imports (`fmt`, `slog`) — used to be imported under
+// that same name, so `forge project new x --service c` failed its first
+// generate: `c.New undefined (type *Components has no field or method New)`.
+// Such a component is imported as `svc<Name>`; every other keeps its package
+// name, so no compose.go that compiled before changes. Compiled for real: the
+// fixture is its own module, and `go build` is the only judge of "collides".
+func TestGenerateCompose_ServiceNamedLikeAGeneratedIdentifier(t *testing.T) {
+	dir := newInjectProject(t)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/proj\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	colliding := []string{"c", "infra", "err", "fmt", "slog"}
+	var services []ServiceDef
+	for _, name := range append([]string{"orders"}, colliding...) {
+		writeFallibleComponentDeps(t, dir, "internal/handlers", name, name, "")
+		services = append(services, ServiceDef{Name: name, ModulePath: "example.com/proj"})
+	}
+	writeInfra(t, dir, "")
+	if err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   services,
+	}); err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	out := readInject(t, dir)
+	for _, name := range colliding {
+		alias := "svc" + strings.ToUpper(name[:1]) + name[1:]
+		if !strings.Contains(out, alias+` "example.com/proj/internal/handlers/`+name+`"`) ||
+			!strings.Contains(out, alias+".New("+alias+".Deps{") {
+			t.Errorf("service %q must be imported and constructed as %s:\n%s", name, alias, out)
+		}
+	}
+	if !strings.Contains(out, `orders "example.com/proj/internal/handlers/orders"`) {
+		t.Errorf("a service whose name collides with nothing keeps its package name:\n%s", out)
+	}
+	if testing.Short() {
+		return
+	}
+	cmd := exec.Command("go", "build", "./internal/...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("compose.go does not compile with services named %v: %v\n%s\n--- compose.go ---\n%s", colliding, err, b, out)
+	}
+}
+
+// Every name compose.go's own template uses for something else — read off the
+// template by appTemplateIdentifiers, so a local or import added later is
+// swept here the day it is written — is given to a service, and in a second
+// project to a worker. compose.go must compile for each. Names forge refuses
+// for a component (keywords, predeclared identifiers, main) are skipped, as
+// are names that are not their own package name ("Components" is package
+// components, which nothing in the file names).
+func TestGenerateCompose_EveryTemplateIdentifierAsAComponentName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles two generated projects")
+	}
+	var names []string
+	for name := range appTemplateIdentifiers() {
+		if token.IsKeyword(name) || types.Universe.Lookup(name) != nil || name == "main" ||
+			naming.ServicePackage(name) != name {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) < 10 {
+		t.Fatalf("appTemplateIdentifiers yielded only %v — the sweep would prove nothing", names)
+	}
+	for _, role := range []string{"internal/handlers", "internal/workers"} {
+		t.Run(role, func(t *testing.T) {
+			dir := newInjectProject(t)
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/proj\n\ngo 1.22\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			writeInfra(t, dir, "")
+			in := InjectGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"}}
+			for _, name := range names {
+				writeFallibleComponentDeps(t, dir, role, name, name, "")
+				if role == "internal/handlers" {
+					in.Services = append(in.Services, ServiceDef{Name: name, ModulePath: "example.com/proj"})
+				} else {
+					in.Workers = append(in.Workers, BootstrapWorkerData{
+						Name: name, Package: name, ImportPath: name, FieldName: naming.ToPascalCase(name), VarName: name, Fallible: true,
+					})
+				}
+			}
+			if err := GenerateCompose(in); err != nil {
+				t.Fatalf("GenerateCompose: %v", err)
+			}
+			cmd := exec.Command("go", "build", "./internal/...")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+			if b, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("compose.go does not compile with components named %v: %v\n%s\n--- compose.go ---\n%s",
+					names, err, b, readInject(t, dir))
+			}
+		})
+	}
+}
+
+// The identifiers forge's internal/app templates use are read off the
+// templates, so they include what compose.go and lifecycle.go actually write —
+// and nothing a component's own package supplies.
+func TestAppTemplateIdentifiers(t *testing.T) {
+	got := appTemplateIdentifiers()
+	for _, want := range []string{"c", "infra", "err", "fmt", "slog", "time", "ulid", "db", "context", "ctrl", "runtime", "serverkit", "lifecyclekit", "nil", "error"} {
+		if !got[want] {
+			t.Errorf("appTemplateIdentifiers lacks %q", want)
+		}
+	}
+	for name := range got {
+		if strings.HasPrefix(name, "zzforgeplaceholder") {
+			t.Errorf("a placeholder component alias leaked into the template identifiers: %q", name)
+		}
+	}
+	for _, field := range []string{"New", "Deps", "Log", "AddToScheme"} {
+		if got[field] {
+			t.Errorf("%q is a selector or field name, not a file-scope identifier", field)
+		}
 	}
 }

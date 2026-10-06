@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Skills and project memory now lead with shipping.** The start-here `forge`
+  skill gains a "Ship it" section (hosting is the default, `forge env deploy`,
+  the free static tier, queued-on-billing exit 7, no `forge login` under
+  Reliant); `deploy/hosting` holds the gates table and the provides/refuses
+  table; `frontend/serving`, `deploy/static-site`, `db/deploy-migrations` and
+  `secrets` state what hosting accepts and gates on. The project memory template
+  gets a one-line Shipping note.
+
 ### Removed
 
 - **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
@@ -28,6 +38,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The dev loop runs the API as ONE process — `_api`, the binary's
+  `server`, under air (hot reload) — so the frontend reaches every service.**
+  Dev ran each service as its own `go run ./cmd/<p> <service>` host process on
+  its own port, and the frontend's dev config (`api_url`, the
+  `<project>-dev-api` port key) named the first: a 3-service project's
+  frontend could call one service in dev — the defect #527 fixed for hosted
+  envs, and it strands the sign-in cookie the same way. `deploy/kcl/dev/main.k`
+  now declares the same `_api` the hosted envs do, `_port_of` gives it the
+  `-api` key, and it binds `_on_host(_api)` instead of the services and
+  workers (`server` mounts every service and supervises every worker). This
+  is what the docs already said — "one binary serves every service on one
+  mux", "Go services (hot reload)" — and what `.air.toml` (`entrypoint =
+  ["./tmp/<p>", "server"]`) and `task dev` already ran; `forge env up dev`
+  did neither. `_on_host` now runs `server` under air (anything else still
+  `go run`), so a .go edit rebuilds and restarts the API; air must be
+  installed (`go install github.com/air-verse/air@latest`, which `forge
+  doctor` already required), and `forge env up` refuses to start without it,
+  naming the workload and the `runner = "go-run"` way out, instead of failing
+  in the host phase on `exec: "air": executable file not found`. It no longer
+  prints "the workload's args [server] are not passed" when the air config's
+  entrypoint passes exactly those args. `forge scaffold service|worker` adds
+  no dev line (`_on_host(_api)` is bound with the first service);
+  `forge env up dev --target api` restarts the API. **Existing projects:**
+  copy `_api` and the `_on_host` binder from a fresh `forge project new`'s
+  `deploy/kcl/dev/main.k`, change `_port_of`'s `-api` owner to `"api"`, and
+  replace the service/worker lines with `_on_host(_api)`.
 - **New projects deploy to Reliant hosting by default.** `forge project new`
   scaffolds `staging` and `prod` hosted on the forge control plane: the API
   (every service and worker, as one workload — below) and the migrate job
@@ -59,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     once there is something for it to run (a project born with no service
     pays for no idle workload; `forge scaffold service` binds it with the
     first). `forge scaffold service|worker` then adds no hosted line — `server`
-    already runs it — while dev still runs each as its own process; a job,
+    already runs it (dev too, below); a job,
     an operator (which `server` skips without a Kubernetes API) and a tool
     bind as before. `forge env new X --from prod --bind api=cluster` rebinds
     the API; `--bind <service>=…` is refused, naming `_api`. Splitting a
@@ -554,6 +590,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renders.
 
 ### Fixed
+
+- **A service, entity, field or RPC whose name has a digit in it now builds —
+  forge spells every identifier it shares with buf's generators by THEIR
+  casing rules.** protoc-gen-go camel-cases a proto name word by word and
+  treats a digit as a word, so the letter after it is capitalised; forge
+  title-cased only after `_`. A service named `alphav1connect` made forge emit
+  `UnimplementedAlphav1connectServiceHandler` where connect-go declares
+  `UnimplementedAlphav1ConnectServiceHandler`; an entity `Base64Item`
+  (field `base64item`) made the Update op read `req.Base64item` where the
+  field is `Base64Item`; and an entity scaffolded as `Oauth2token` broke every
+  pb type, RPC method and response field (`pb.CreateOauth2tokenRequest` vs
+  `CreateOauth2TokenRequest`). `internal/naming` now carries ports of the
+  generators' own rules — `GoCamelCase` (protoc-gen-go's `strs.GoCamelCase`),
+  `GoFieldNames` (its per-message rename of a field that collides with a
+  generated method or getter: `descriptor` → `Descriptor_`), the connect-go
+  names (whose `<Service>Name` constant, alone, is spelled from the RAW proto
+  name), and protobuf-es's `protoCamelCase`, method `localName` and `$`
+  escapes — and every emitter that names a generated symbol goes through them:
+  the CRUD ops, shims and born tests, handler stubs and the stub/shim
+  dedupe scans, the mocks, `service.go`, the test clients, the public
+  procedure list, `forge scaffold rpc`, the read-only/computed-field lints,
+  the `unscoped_auth` audit (which looked a handler up by the proto rpc name,
+  so a digit-named authenticated RPC was never inspected), and on the TS side the hooks' `client.<method>` (an RPC `LLMChat` is
+  `client.lLMChat`, not `llmChat`) and the pages' and mock transport's entity
+  fields (`data?.base64item`, not `base64Item`). The pb message and forge's
+  `db.<Entity>` row name a column differently (`sha256sum`: pb `Sha256Sum`,
+  db `Sha256sum`; `address_line_2`: pb `AddressLine_2`, db `AddressLine2`), so
+  the conversions now spell each side with its own rule; the ORM's rule is
+  unchanged (`naming.ColumnGoName`, formerly `ToProtoPascalCase`, which claimed
+  to be protoc-gen-go's and was not), so no existing struct field is renamed.
+  The same derivation fixes entities with a leading acronym, whose response
+  field forge spelled from the entity name (`LLMKey` → field `llm_key` →
+  `LlmKey`, not `LLMKey`). `TestGeneratedNames_MatchRealPlugins` builds
+  protoc-gen-go and protoc-gen-connect-go at the go.mod versions, runs them on
+  a fixture of such names and checks every derived identifier is declared;
+  `TestE2EDigitNamedServicesAndEntitiesBuild` scaffolds them end to end
+  (build, vet, idempotent regenerate, the born CRUD tests on postgres, `tsc`).
+  Not covered: a message named after a TS-reserved identifier (`Object`,
+  `Partial`), which protoc-gen-es exports as `Object$`.
+
+- **Two services may declare the same message name without breaking the
+  frontend's `tsc`.** Proto keeps message names per package, so alpha and beta
+  each declaring `PingRequest` is ordinary — but the generated TS files that
+  import from several proto modules into one scope imported each name bare, and
+  a name from two modules is TS2300 `Duplicate identifier 'PingRequest'`. The
+  project-wide scenario handler map (`src/mocks/scenario-rpcs_gen.ts`) hit this
+  as soon as two services shared an RPC shape; `mock-transport_gen.ts` did for
+  two entities whose services name a response alike (`GetResponse`); and a
+  service's hooks file did when an RPC took a request type from another proto
+  file that shared a name with one of its own. A name imported from more than
+  one module is now imported `as <module>_<Name>`
+  (`services_alpha_v1_alpha_pb_PingRequest`) from each, and the file refers to
+  that; a name only one module supplies keeps its own, so files without a
+  clash are byte-identical. `mock-transport_gen.ts` also imported an entity's
+  fixture module once per service that lists the entity (`import * as
+  thingsMocks` three times for a `ListThings` in three services); it is now
+  imported once and every service's dispatch row is seeded from it.
+
+- **A component named like an identifier `compose.go` itself uses no longer
+  breaks the first build.** A service, worker or operator was imported into
+  `internal/app` under its package name, beside the names the generated files
+  already use — `NewComponents`' locals (`c`, `infra`, `err`), its imports
+  (`fmt`, `slog`, `time`, `db`, `ctrl`, …) and package `app`'s own
+  declarations — so `forge project new x --service c` failed its first
+  generate with `c.New undefined (type *Components has no field or method
+  New)`, and `fmt`, `slog`, `err`, `infra` failed the same way (`fmt
+  redeclared in this block`). Such a component is now imported as
+  `<role><Name>` (`svcC`, `wkrFmt`), the form two components that share a
+  package name already get; every other keeps its package name, so no
+  `compose.go` that compiled before changes. The set of names in use is not a
+  list forge maintains: it is read off the `compose.go`/`lifecycle.go`
+  templates themselves and the project's own `internal/app` files, so a local
+  added to a template later is covered the day it is written. A
+  `TestGenerateCompose_EveryTemplateIdentifierAsAComponentName` sweep builds a
+  project with one service — and one worker — per such name. `main` is
+  refused up front by `forge project new --service`, `forge scaffold
+  service|worker|operator|library`: Go cannot import package main, so the
+  project could never build.
 
 - **`forge project rescaffold` re-creates the hosted CI pipeline again.**
   Since new projects are born hosted, the scaffold writes `release.yml` and

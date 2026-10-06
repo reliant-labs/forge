@@ -55,7 +55,7 @@ func (s *Service) {{.MethodName}}(
 		return nil, svcerr.Wrap(err)
 	}
 
-	items := make([]*pb.{{.EntityName}}, 0, len(rows))
+	items := make([]*pb.{{.EntityPbType}}, 0, len(rows))
 	for _, row := range rows {
 		m, err := {{.EntityLower}}ToProto(row)
 		if err != nil {

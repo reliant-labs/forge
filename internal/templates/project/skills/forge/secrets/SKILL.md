@@ -144,7 +144,9 @@ _bundle = forge.Bundle {
   in on their own before the first push. So the only image-related secret a
   hosted CI job needs is the one it already has. See the `deploy` and `ci`
   skills.
-  What happens to the values depends on the env's KIND, which forge derives
+  Set a hosted workload's secrets with `forge secret set --env <env> <KEY>`
+  before `forge env deploy`: deploys that need an unset one fail until it is
+  set (not yet a queued gate). What happens to the values depends on the env's KIND, which forge derives
   from the env's own workloads:
   - **persistent** — the env declares ≥1 hosted tier (SimpleBackend /
     StaticSite / ManagedDatabase). The platform runs it and materializes the
@@ -153,8 +155,8 @@ _bundle = forge.Bundle {
     ever reads a value back. A changed value rolls the pods that read it.
   - **local** — the env declares control_plane but NO hosted tier (host /
     compose / frontend workloads run by `forge env up`). The control plane is
-    only its secret store. `forge env up` PULLS the values (after
-    `forge login`) and injects them — in memory only, never written to disk —
+    only its secret store. `forge env up` PULLS the values (signed
+    in to Reliant, or after `forge login` standalone) and injects them — in memory only, never written to disk —
     into each host service, job, compose/external service and frontend that
     declares them. A failed pull fails `env up` before anything starts.
     `forge env deploy` refuses a local env: there is nothing to publish.

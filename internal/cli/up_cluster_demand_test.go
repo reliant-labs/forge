@@ -69,16 +69,16 @@ func TestScaffoldedDevEnvNeedsNoCluster(t *testing.T) {
 		t.Errorf("the skipped cluster must be named, got %v", got)
 	}
 
-	// Counterfactual: bind the service to the local cluster.
+	// Counterfactual: bind the API (the binary's `server`, running item) to the local cluster.
 	mainK := filepath.Join(dir, "deploy", "kcl", "dev", "main.k")
 	src, err := os.ReadFile(mainK)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "_on_host(wl.item)") {
-		t.Fatalf("fixture is wrong: dev/main.k does not bind item with _on_host:\n%s", src)
+	if !strings.Contains(string(src), "_on_host(_api)") {
+		t.Fatalf("fixture is wrong: dev/main.k does not bind _api with _on_host:\n%s", src)
 	}
-	if err := os.WriteFile(mainK, []byte(strings.Replace(string(src), "_on_host(wl.item)", "_on_k3d(wl.item)", 1)), 0o644); err != nil {
+	if err := os.WriteFile(mainK, []byte(strings.Replace(string(src), "_on_host(_api)", "_on_k3d(_api)", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	onCluster := renderDev()

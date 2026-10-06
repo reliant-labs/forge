@@ -75,6 +75,14 @@ type PageTemplateData struct {
 	// carry the entity — the page then returns to the list, since there is
 	// no id to navigate to.
 	CreateEntityFieldCamel string
+	// GetEntityFieldCamel is the TS property of the Get RESPONSE field that
+	// carries the entity — what the detail and edit pages read the record
+	// off (`data?.base64item`, via GetEntityAccessor). Read off the
+	// descriptor, falling back to the scaffolded field name
+	// (entityFieldCamel); never the entity name with its first letter
+	// lowered, which protoc-gen-es does not generate for "Base64Item"
+	// (base64item) or "LLMKey" (llmKey).
+	GetEntityFieldCamel string
 	// Response type names for imports
 	ListResponseType   string // "ListTasksResponse"
 	GetResponseType    string // "GetTaskResponse"
@@ -476,19 +484,21 @@ func fieldNameToLabel(name string) string {
 	return result.String()
 }
 
-// fieldNameToCamel converts a snake_case field name to camelCase.
-// "first_name" → "firstName", "email" → "email"
+// fieldNameToCamel is the property protoc-gen-es generates for a proto
+// field — naming.EsFieldName: "first_name" → "firstName", "email" →
+// "email", "address_line_2" → "addressLine2", "to_string" → "toString$".
+// Every generated TS reference to a message field goes through it.
 func fieldNameToCamel(name string) string {
-	if !strings.Contains(name, "_") {
-		return name
-	}
-	parts := strings.Split(name, "_")
-	for i := 1; i < len(parts); i++ {
-		if len(parts[i]) > 0 {
-			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-		}
-	}
-	return strings.Join(parts, "")
+	return naming.EsFieldName(name)
+}
+
+// entityFieldCamel is the TS property of the field that carries ONE
+// entityName on a message, when the descriptor cannot say: the field the
+// entity scaffolder writes (naming.EntityFieldName), as protoc-gen-es
+// spells it. "Base64Item" is carried in base64item, "LLMKey" in llmKey —
+// never the entity name with its first letter lowered.
+func entityFieldCamel(entityName string) string {
+	return naming.EsFieldName(naming.EntityFieldName(entityName))
 }
 
 // createFieldSkipList contains field names that should not appear in create forms.
@@ -1006,7 +1016,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 		plural := inflection.Plural(entityName)
 		slug := PascalToKebab(plural)
 
-		itemsField := listItemsField(svc, em.listResp, plural)
+		itemsField := listItemsField(svc, em.listResp, entityName)
 
 		data := PageTemplateData{
 			EntityName:         entityName,
@@ -1037,6 +1047,10 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 			DeleteRequestType:  em.deleteReq,
 		}
 		data.CreateEntityFieldCamel = wrappedEntityField(svc, em.createResp, entityName)
+		data.GetEntityFieldCamel = wrappedEntityField(svc, em.getResp, entityName)
+		if data.GetEntityFieldCamel == "" {
+			data.GetEntityFieldCamel = entityFieldCamel(entityName)
+		}
 
 		// protovalidate rules are declared ONCE on the entity message; the
 		// create request flattens the entity's fields (losing the options)
@@ -1167,8 +1181,9 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 // `ListLLMKeysResponse { repeated LLMKey keys = 1; }` → `keys`, not
 // `llmKeys`). When the descriptor carries no repeated field (older
 // descriptors, or a non-standard list response) it falls back to the
-// camelCased plural, preserving prior behavior.
-func listItemsField(svc ServiceDef, listResp, plural string) string {
+// field the entity scaffolder writes (naming.EntityListFieldName), as
+// protoc-gen-es spells it.
+func listItemsField(svc ServiceDef, listResp, entityName string) string {
 	if listResp != "" && svc.Messages != nil {
 		if fields, ok := svc.Messages[listResp]; ok {
 			for _, f := range fields {
@@ -1178,7 +1193,7 @@ func listItemsField(svc ServiceDef, listResp, plural string) string {
 			}
 		}
 	}
-	return ToCamelCaseFromPascalExport(plural)
+	return naming.EsFieldName(naming.EntityListFieldName(entityName))
 }
 
 // wrappedEntityField returns the camelCase field of response message

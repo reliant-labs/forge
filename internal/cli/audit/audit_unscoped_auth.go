@@ -322,7 +322,10 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		}
 
 		for name, method := range authMethods {
-			h, ok := handlers[name]
+			// handlers is keyed by the Go method a handler declares, which
+			// connect-go derives from the rpc name by its own casing
+			// (GetOauth2token → GetOauth2Token) — never by the proto name.
+			h, ok := handlers[method.GoName()]
 			if !ok {
 				// No handler method for this RPC in the user-owned tree —
 				// an unwired stub, or a method forge has not scaffolded.

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // FrontendHookTemplateData holds data for rendering a single service's
@@ -50,6 +52,10 @@ type FrontendHookTemplateData struct {
 	// queries for the entity they touched (entity-scoped invalidation)
 	// instead of nuking every query on the service.
 	EntityScopes []string
+	// ServiceRef is the name the file refers to the service descriptor by
+	// (tsImportPlan): ServiceName unless another module the file imports
+	// declares the same name.
+	ServiceRef string
 }
 
 // HookImportGroup is one TS import statement: a list of symbols (sorted,
@@ -63,11 +69,16 @@ type HookImportGroup struct {
 
 // FrontendHookMethod represents a single unary RPC method for hook generation.
 type FrontendHookMethod struct {
-	Name       string // PascalCase: "GetUser"
-	NameCamel  string // camelCase: "getUser"
-	InputType  string // "GetUserRequest"
-	OutputType string // "GetUserResponse"
-	IsQuery    bool   // true for Get/List/Search, false for mutations
+	Name      string // PascalCase: "GetUser"
+	NameCamel string // camelCase: "getUser" — forge's own query-key / hook spelling
+	// ClientMethod is the method the connect-es client has for this RPC —
+	// protobuf-es's localName (naming.EsMethodName), which lowers the
+	// FIRST CHARACTER ONLY: "LLMChat" → client.lLMChat. NameCamel lowers
+	// the whole leading acronym, so it names a method the client lacks.
+	ClientMethod string
+	InputType    string // "GetUserRequest"
+	OutputType   string // "GetUserResponse"
+	IsQuery      bool   // true for Get/List/Search, false for mutations
 	// EntityScope is the camelCase singular CRUD entity this method
 	// operates on ("task" for ListTasks/GetTask/CreateTask), derived
 	// from the RPC-name CRUD pattern. Empty for non-CRUD methods.
@@ -77,6 +88,14 @@ type FrontendHookMethod struct {
 	// mutation may touch anything, so over-invalidating is the safe
 	// default there).
 	EntityScope string
+	// InputSchemaRef / OutputTypeRef are the names the hooks file refers to
+	// the request schema and response type by: their own, or
+	// `<module>_<Name>` when the file imports that name from two modules
+	// (tsImportPlan).
+	InputSchemaRef string
+	OutputTypeRef  string
+	// inputPath / outputPath are the TS modules declaring them.
+	inputPath, outputPath string
 }
 
 // queryPrefixes are the read-only verbs an RPC name may start with.
@@ -233,12 +252,17 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 		addSym(typesByPath, ProtoFileToTSImportPath(outPath), m.OutputType)
 
 		data.Methods = append(data.Methods, FrontendHookMethod{
-			Name:        m.Name,
-			NameCamel:   toCamelCaseFromPascal(m.Name),
-			InputType:   m.InputType,
-			OutputType:  m.OutputType,
-			IsQuery:     isQuery,
-			EntityScope: methodEntityScope(svc, m.Name),
+			Name:           m.Name,
+			NameCamel:      toCamelCaseFromPascal(m.Name),
+			ClientMethod:   naming.EsMethodName(m.Name),
+			InputType:      m.InputType,
+			OutputType:     m.OutputType,
+			IsQuery:        isQuery,
+			EntityScope:    methodEntityScope(svc, m.Name),
+			inputPath:      ProtoFileToTSImportPath(inPath),
+			outputPath:     ProtoFileToTSImportPath(outPath),
+			InputSchemaRef: m.InputType + "Schema",
+			OutputTypeRef:  m.OutputType,
 		})
 	}
 
@@ -252,8 +276,16 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 		addSym(schemasByPath, data.ImportPath, svc.Name)
 	}
 
-	data.SchemaImports = flattenImportGroups(schemasByPath)
-	data.TypeImports = flattenImportGroups(typesByPath)
+	// A request type from another proto file can share a name with one of
+	// the service's own: the file then imports it as `<module>_<Name>`.
+	plan := newTSImportPlan(schemasByPath, typesByPath)
+	data.SchemaImports = plan.Groups(schemasByPath)
+	data.TypeImports = plan.Groups(typesByPath)
+	data.ServiceRef = plan.Local(data.ImportPath, svc.Name)
+	for i, m := range data.Methods {
+		data.Methods[i].InputSchemaRef = plan.Local(m.inputPath, m.InputType+"Schema")
+		data.Methods[i].OutputTypeRef = plan.Local(m.outputPath, m.OutputType)
+	}
 
 	scopeSet := map[string]struct{}{}
 	for _, m := range data.Methods {
@@ -280,6 +312,84 @@ func methodEntityScope(svc ServiceDef, methodName string) string {
 		return ""
 	}
 	return toCamelCaseFromPascal(entity)
+}
+
+// tsImportPlan is the local name a generated TS file refers to each symbol
+// it imports by.
+//
+// A TS module's imports share one scope, so a symbol imported from two
+// modules is a duplicate declaration (TS2300). Proto keeps message names per
+// package, and two services each declaring `PingRequest` is ordinary — so a
+// file that imports from several modules (the project-wide scenario handler
+// map; a service's hooks, when a cross-file request type shares a name with a
+// local one) failed `tsc` the moment that happened. Every symbol imported
+// from exactly ONE module keeps its own name, so a file without a clash is
+// byte-identical to before; a symbol imported from two or more modules is
+// imported `as <module>_<Symbol>` from each (tsModuleIdent), and the file
+// names that.
+type tsImportPlan map[[2]string]string // {path, symbol} -> local name
+
+// newTSImportPlan plans one file's imports, given every path -> symbol-set
+// bucket it imports from (value and type-only alike: they share the scope).
+func newTSImportPlan(bucketSets ...map[string]map[string]struct{}) tsImportPlan {
+	paths := map[string]map[string]bool{} // symbol -> importing paths
+	for _, buckets := range bucketSets {
+		for path, syms := range buckets {
+			for sym := range syms {
+				if paths[sym] == nil {
+					paths[sym] = map[string]bool{}
+				}
+				paths[sym][path] = true
+			}
+		}
+	}
+	plan := tsImportPlan{}
+	for sym, from := range paths {
+		for path := range from {
+			local := sym
+			if len(from) > 1 {
+				local = tsModuleIdent(path) + "_" + sym
+			}
+			plan[[2]string{path, sym}] = local
+		}
+	}
+	return plan
+}
+
+// Local is the name the file refers to symbol sym from module path by.
+func (p tsImportPlan) Local(path, sym string) string {
+	if local, ok := p[[2]string{path, sym}]; ok {
+		return local
+	}
+	return sym
+}
+
+// Groups renders buckets as import statements, writing an aliased symbol as
+// `Sym as module_Sym`. Sorted at both levels, like flattenImportGroups.
+func (p tsImportPlan) Groups(buckets map[string]map[string]struct{}) []HookImportGroup {
+	groups := flattenImportGroups(buckets)
+	for i, g := range groups {
+		for j, sym := range g.Symbols {
+			if local := p.Local(g.ImportPath, sym); local != sym {
+				groups[i].Symbols[j] = sym + " as " + local
+			}
+		}
+	}
+	return groups
+}
+
+// tsModuleIdent is a TS identifier naming a generated module path, unique
+// per path: "services/alpha/v1/alpha_pb" → "services_alpha_v1_alpha_pb".
+func tsModuleIdent(path string) string {
+	var b strings.Builder
+	for _, r := range path {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // flattenImportGroups converts a path -> symbol-set map into a sorted

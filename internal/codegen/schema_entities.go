@@ -384,7 +384,7 @@ func WireEntityFields(svc ServiceDef, entityName string) []EntityField {
 		for _, d := range defs {
 			fields = append(fields, schemaFieldToEntityField(d))
 		}
-		return fields
+		return withMessageGoNames(fields)
 	}
 	defs, ok := svc.Messages[entityName]
 	if !ok {
@@ -394,13 +394,42 @@ func WireEntityFields(svc ServiceDef, entityName string) []EntityField {
 	for _, d := range defs {
 		fields = append(fields, messageFieldToEntityField(d))
 	}
+	return withMessageGoNames(fields)
+}
+
+// withMessageGoNames sets each field's GoName to the struct field
+// protoc-gen-go generates for it, given that fields is the WHOLE message
+// in declaration order. The per-field converters can only camel-case one
+// name; protoc-gen-go also renames a field that collides with a generated
+// method or an earlier field's getter, which needs the siblings.
+func withMessageGoNames(fields []EntityField) []EntityField {
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.Name
+	}
+	for i, goName := range naming.GoFieldNames(names) {
+		fields[i].GoName = goName
+	}
 	return fields
+}
+
+// messageFieldGoName is the Go struct field protoc-gen-go generates for the
+// field called name on a message whose fields are fields (declaration
+// order) — e.g. the entity-carrying field of an update request.
+func messageFieldGoName(fields []MessageFieldDef, name string) string {
+	siblings := make([]string, len(fields))
+	for i, f := range fields {
+		siblings[i] = f.Name
+	}
+	return naming.GoFieldName(name, siblings)
 }
 
 func schemaFieldToEntityField(d SchemaFieldDef) EntityField {
 	f := EntityField{
-		Name:     d.Name,
-		GoName:   naming.ToProtoPascalCase(d.Name),
+		Name: d.Name,
+		// Exact unless the field collides with a sibling or a generated
+		// method; list builders correct that with withMessageGoNames.
+		GoName:   naming.GoCamelCase(d.Name),
 		Optional: d.Optional,
 		Secret:   d.Secret,
 		ReadOnly: d.ReadOnly,
@@ -449,7 +478,7 @@ func schemaFieldToEntityField(d SchemaFieldDef) EntityField {
 func messageFieldToEntityField(d MessageFieldDef) EntityField {
 	f := EntityField{
 		Name:      d.Name,
-		GoName:    naming.ToProtoPascalCase(d.Name),
+		GoName:    naming.GoCamelCase(d.Name), // see schemaFieldToEntityField
 		ProtoType: d.ProtoType,
 		Optional:  d.IsOptional,
 	}

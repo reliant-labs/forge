@@ -41,6 +41,15 @@ tool.
 The init container runs the **same image** and the **same env** as the app, so
 it reads the same `DATABASE_URL` from the same Secret.
 
+## On Reliant hosting: the managed database
+
+A hosted env's `migrate` job (`before = [fw.BEFORE_ALL]`) runs against the
+managed Postgres: `DATABASE_URL = forge.DatabaseRef {name = _db.name}` reaches
+it from the platform only, so migrations run there, inside the deploy, never
+from your laptop (`forge db migrate up --dsn` cannot reach it). The deploy is
+gated on billing like any hosted workload; queued, nothing migrates until it
+goes live (`deploy/hosting`).
+
 ## Why an initContainer and not a Job
 
 The ordering guarantee is **Kubernetes' own**. It holds under `kubectl apply

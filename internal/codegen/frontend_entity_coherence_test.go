@@ -99,7 +99,7 @@ func TestMockTransport_UpdateWithoutCreateUsesUpdateResponseSchema(t *testing.T)
 	if row.UpdateResponse() != "UpdateOrgMemberGrantsResponse" {
 		t.Errorf("UpdateResponse() = %q, want the Update RPC's own response", row.UpdateResponse())
 	}
-	for _, g := range BuildMockTransportSchemaImportGroups(rows) {
+	for _, g := range NewMockTransportTemplateData(rows).SchemaImportGroups {
 		for _, sym := range g.Symbols {
 			if sym == "Schema" {
 				t.Errorf("import group %s carries the undefined symbol %q", g.ImportPath, sym)

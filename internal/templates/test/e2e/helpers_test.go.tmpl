@@ -35,9 +35,9 @@ func freePort() int {
 // Connect error assertions in tests should use tdd.AssertConnectError
 // from github.com/reliant-labs/forge/pkg/tdd; the in-package helper was
 // removed in favor of the shared library.
-func newClient(t *testing.T, baseURL string) {{.ServicePackage}}v1connect.{{.ProtoServiceName}}ServiceClient {
+func newClient(t *testing.T, baseURL string) {{.ServicePackage}}v1connect.{{.ConnectServiceGoName}}Client {
 	t.Helper()
-	return {{.ServicePackage}}v1connect.New{{.ProtoServiceName}}ServiceClient(
+	return {{.ServicePackage}}v1connect.New{{.ConnectServiceGoName}}Client(
 		http.DefaultClient,
 		baseURL,
 	)

@@ -53,6 +53,34 @@ func TestMergeDeclaredWins(t *testing.T) {
 	}
 }
 
+// TestMergeDeclaredWinsHomeIsDeclarable pins that a declared HOME is honored.
+// A workload declares HOME to sandbox what its tools write under ~ (the demo
+// environment's daemon keeps its credentials and worktrees out of the
+// developer's ~/.reliant that way). When the shell's HOME won, the process
+// wrote into the real home directory instead — the declaration did the
+// opposite of what it said. An undeclared HOME still comes from the shell.
+func TestMergeDeclaredWinsHomeIsDeclarable(t *testing.T) {
+	base := []string{"HOME=/Users/dev", "PATH=/usr/bin"}
+
+	got, conflicts := MergeDeclaredWins(base, map[string]string{"HOME": "/srv/demo/home"}, nil)
+	if v := valueOf(got, "HOME"); v != "/srv/demo/home" {
+		t.Errorf("HOME = %q; want the DECLARED home", v)
+	}
+	if len(conflicts) != 1 || conflicts[0].Key != "HOME" || conflicts[0].ShellWon {
+		t.Errorf("conflicts = %+v; want one HOME conflict that the declaration won", conflicts)
+	}
+
+	got, _ = MergeDeclaredWins(base, map[string]string{"OTHER": "x"}, nil)
+	if v := valueOf(got, "HOME"); v != "/Users/dev" {
+		t.Errorf("HOME = %q; an env that declares no HOME inherits the shell's", v)
+	}
+
+	got, _ = MergeDeclaredWins(base, map[string]string{"HOME": "/srv/demo/home"}, ParseShellWins("HOME"))
+	if v := valueOf(got, "HOME"); v != "/Users/dev" {
+		t.Errorf("HOME = %q; FORGE_ENV_OVERRIDE=HOME must still restore the shell's", v)
+	}
+}
+
 // TestMergeDeclaredWinsExplicitOptOut keeps the ad-hoc override one command
 // away — the affordance the old base-wins default provided by accident.
 func TestMergeDeclaredWinsExplicitOptOut(t *testing.T) {

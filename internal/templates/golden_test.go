@@ -332,7 +332,7 @@ func TestGoldenSnapshots(t *testing.T) {
 			name: "env_cloud_prod.k",
 			render: func(t *testing.T) []byte {
 				return renderDeployTemplate(t, "kcl/cloud/main.k.tmpl", EnvTemplateData{
-					ProjectName: "shop", EnvName: "prod", PrimaryWorkload: "orders", PrimaryIdent: "orders",
+					ProjectName: "shop", EnvName: "prod",
 					HasFrontend: true, FrontendName: "web",
 					// orders and billing run in `_api`, the binary's `server`.
 					Bindings:    "    _hosted(wl.migrate)\n    _hosted(_api)",

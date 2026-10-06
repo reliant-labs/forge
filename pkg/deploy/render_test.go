@@ -620,6 +620,35 @@ func TestErrorsReportedOnce(t *testing.T) {
 	}
 }
 
+// TestNativeSidecar: a Native sidecar renders as an initContainer with
+// restartPolicy Always and its startup probe, so the kubelet starts it before
+// the main container and waits for it; a plain sidecar stays in containers.
+func TestNativeSidecar(t *testing.T) {
+	w := svc("api", httpPort(true))
+	w.Spec.Sidecars = []v1alpha1.Container{
+		{
+			Name: "proxy", Image: "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1", Native: true,
+			Ports:  []v1alpha1.Port{{Name: "proxy-health", Port: 9801}},
+			Probes: &v1alpha1.Probes{StartupPath: "/startup", ReadinessPath: "/readiness", LivenessPath: "/liveness"},
+		},
+		{Name: "plain", Image: "gcr.io/p/plain:1"},
+	}
+	pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/api"])
+	init := get(pod, "initContainers", 0)
+	if get(init, "name") != "proxy" || get(init, "restartPolicy") != "Always" {
+		t.Fatalf("native sidecar must be an Always initContainer, got %v", init)
+	}
+	if get(init, "startupProbe", "httpGet", "path") != "/startup" || get(init, "startupProbe", "failureThreshold") != float64(60) {
+		t.Errorf("startupProbe = %v", get(init, "startupProbe"))
+	}
+	if get(pod, "containers", 1, "name") != "plain" || get(pod, "containers", 1, "restartPolicy") != nil {
+		t.Errorf("plain sidecar must stay a regular container: %v", get(pod, "containers"))
+	}
+	if n := len(asSlice(get(pod, "containers"))); n != 2 {
+		t.Errorf("containers = %d, want main + plain", n)
+	}
+}
+
 func asSlice(v any) []any { s, _ := v.([]any); return s }
 
 // TestPodEscapeHatches: sidecars get the same hardening, volumes mount on

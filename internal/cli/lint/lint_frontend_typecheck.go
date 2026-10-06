@@ -61,6 +61,7 @@ import (
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // Rule ids contributed by this lane. New rules on the existing finding
@@ -269,6 +270,14 @@ func typecheckFrontend(ctx context.Context, t frontendTarget, projectRoot string
 	// to "1 gating linter could NOT run" — a lane that silently stopped
 	// checking, which is the outcome this file's own comments call worse than
 	// a failure.
+	if !anyAncestorHasNodeModules(t.dir, projectRoot) {
+		if err := frontenddeps.Ensure(ctx, "[lint]", t.name, t.dir, "", true); err != nil {
+			res.status = typecheckFailed
+			res.command = "install frontend dependencies"
+			res.output = fmt.Sprintf("dependencies are not installed and installing them failed — typecheck did NOT run: %v", err)
+			return res
+		}
+	}
 	if !anyAncestorHasNodeModules(t.dir, projectRoot) {
 		res.status = typecheckUnavailable
 		res.reason = "node_modules not installed — typecheck did NOT run"

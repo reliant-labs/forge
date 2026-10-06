@@ -17,6 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/linter/contract"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
@@ -1704,6 +1705,13 @@ func lintFrontendDir(ctx context.Context, name, feDir, feType string, cssHealth,
 	// member's dependencies to the workspace root, so this directory is
 	// legitimately absent in a fully installed tree — which is the layout
 	// forge's own dev bridge creates. See anyAncestorHasNodeModules.
+	// A fresh checkout has none; install rather than report a lane that never
+	// ran. An install that fails is a failure of this lane, not "unavailable".
+	if !anyAncestorHasNodeModules(feDir, ".") {
+		if err := frontenddeps.Ensure(ctx, "[lint]", name, feDir, "", true); err != nil {
+			return fmt.Errorf("%s: dependencies are not installed and installing them failed — eslint did NOT run: %w", name, err)
+		}
+	}
 	if !anyAncestorHasNodeModules(feDir, ".") {
 		return laneUnavailable(fmt.Sprintf("run `npm install` in %s (or at the workspace root), then re-run `forge lint`", feDir),
 			"%s: node_modules not found in %s or any ancestor — eslint did NOT run", name, feDir)

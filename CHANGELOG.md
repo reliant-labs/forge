@@ -515,9 +515,10 @@ scaffold`. `forge project annotations` lists the marker and the mapping row.
   be dev either way. An ambient `$DATABASE_URL` gets no relaxation, and
   `forge db reset` (DROP DATABASE) keeps the strict check.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
-  `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
-context.Context) error)` runs fn in a transaction carried by the ctx it
-  receives. Every query made with that ctx against the same database joins it:
+  `RunTxWithOptions` and `AfterCommit`.**
+  `s.deps.DB.RunTx(ctx, func(ctx context.Context) error)` runs fn in a
+  transaction carried by the ctx it receives. Every query made with that ctx
+  against the same database joins it:
   generated delegates (`db.GetJobByID(ctx, s.deps.DB, id)`), stores,
   `pkg/crud.Repo`, `db.Bun()` builders and raw `Exec`/`Query`/`QueryRow`, with
   no handle threaded through signatures. It is SERIALIZABLE by default and

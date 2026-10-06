@@ -1185,7 +1185,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	// recorded bundle applied, workload status describes the PREVIOUS
 	// revision and must not be judged (or reported) as this deploy's.
 	applied := bundleDigest == ""
-	var announced, announcedFailure string
+	var progress applyProgress
 	// The apply wait has its OWN budget, and readiness gets a fresh one once
 	// the bundle lands. The platform re-observes an env every
 	// EnvironmentInterval (2m, control-plane reconcile/worker.go); a promote
@@ -1215,32 +1215,9 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				applied = true
 				deadline = time.Now().Add(policy.Timeout)
 			default:
-				if state.failure != "" && announcedFailure != state.failure {
-					announcedFailure = state.failure
-					fmt.Printf("  platform reports the apply of %s failed: %s (still waiting; the reconciler retries)\n", shortDigest(bundleDigest), state.failure)
-				}
-				if cur := shortDigest(state.current); announced != cur {
-					announced = cur
-					fmt.Printf("  waiting for the platform to apply %s (currently %s)\n", shortDigest(bundleDigest), emptyOr(cur, "none"))
-				}
+				progress.announce(state, bundleDigest)
 				if time.Now().After(applyDeadline) || ctx.Err() != nil {
-					cause := errBundleNotApplied
-					msg := fmt.Sprintf("the platform has not applied this release yet (waiting for %s, currently %s); workloads were not judged",
-						shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"))
-					if state.failure != "" {
-						cause = fmt.Errorf("the platform failed to apply this release: %s", state.failure)
-						msg = fmt.Sprintf("the platform failed to apply this release (%s, currently %s): %s",
-							shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"), state.failure)
-					}
-					for _, item := range plan {
-						p.observe(item.Name, cluster.RolloutStateTimedOut, cause)
-					}
-					werr := fmt.Errorf("hosted env %q: TIMED OUT waiting for the platform to apply: %s", envName, msg)
-					if policy.Mode == cluster.RolloutWarn {
-						fmt.Printf("  Warning: %v\n", werr)
-						return nil
-					}
-					return werr
+					return p.applyNotLanded(envName, bundleDigest, state, plan, policy.Mode)
 				}
 				select {
 				case <-ctx.Done():
@@ -1330,32 +1307,83 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 			printHostedDomains(plan, domains)
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			var lines []string
-			for _, item := range plan {
-				if r, notReady := last[item.Name]; notReady || last == nil {
-					p.observe(item.Name, cluster.RolloutStateTimedOut, errors.New(r))
-					lines = append(lines, fmt.Sprintf("%s: %s", item.Name, emptyOr(r, "no status reported")))
-				} else {
-					p.observe(item.Name, cluster.RolloutStateReady, nil)
-				}
-			}
-			sort.Strings(lines)
-			werr := fmt.Errorf("hosted env %q: TIMED OUT after %s waiting for readiness (published, not confirmed running):\n  %s",
-				envName, policy.Timeout, strings.Join(lines, "\n  "))
-			if err != nil {
-				werr = fmt.Errorf("%w\n  last status read failed: %v", werr, err)
-			}
-			if policy.Mode == cluster.RolloutWarn {
-				fmt.Printf("  Warning: %v\n", werr)
-				return nil
-			}
-			return werr
+			return p.readinessTimedOut(envName, last, err, plan, policy)
 		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(interval):
 		}
 	}
+}
+
+// readinessTimedOut ends a wait whose readiness budget ran out. last is the
+// most recent successful read's not-ready reasons (nil if no read succeeded,
+// in which case nothing is known ready); readErr is the latest read's error,
+// if it failed. Each workload is observed TIMED OUT or ready accordingly.
+// Under --rollout warn the error is printed and nil returned.
+func (p HostedProvider) readinessTimedOut(envName string, last map[string]string, readErr error, plan []hostedPlanItem, policy cluster.RolloutPolicy) error {
+	var lines []string
+	for _, item := range plan {
+		if r, notReady := last[item.Name]; notReady || last == nil {
+			p.observe(item.Name, cluster.RolloutStateTimedOut, errors.New(r))
+			lines = append(lines, fmt.Sprintf("%s: %s", item.Name, emptyOr(r, "no status reported")))
+		} else {
+			p.observe(item.Name, cluster.RolloutStateReady, nil)
+		}
+	}
+	sort.Strings(lines)
+	werr := fmt.Errorf("hosted env %q: TIMED OUT after %s waiting for readiness (published, not confirmed running):\n  %s",
+		envName, policy.Timeout, strings.Join(lines, "\n  "))
+	if readErr != nil {
+		werr = fmt.Errorf("%w\n  last status read failed: %v", werr, readErr)
+	}
+	if policy.Mode == cluster.RolloutWarn {
+		fmt.Printf("  Warning: %v\n", werr)
+		return nil
+	}
+	return werr
+}
+
+// applyProgress is what wait has already printed about the platform's apply,
+// so each change is announced once rather than on every poll.
+type applyProgress struct{ current, failure string }
+
+// announce prints what changed since the last poll: a reconciler failure of
+// this promotion, and the revision the platform currently has applied.
+func (a *applyProgress) announce(state bundleApplyState, bundleDigest string) {
+	if state.failure != "" && a.failure != state.failure {
+		a.failure = state.failure
+		fmt.Printf("  platform reports the apply of %s failed: %s (still waiting; the reconciler retries)\n", shortDigest(bundleDigest), state.failure)
+	}
+	if cur := shortDigest(state.current); a.current != cur {
+		a.current = cur
+		fmt.Printf("  waiting for the platform to apply %s (currently %s)\n", shortDigest(bundleDigest), emptyOr(cur, "none"))
+	}
+}
+
+// applyNotLanded ends a wait whose apply budget ran out before the platform
+// applied the recorded bundle. Every workload is observed TIMED OUT, and the
+// error names the missing — or failed — apply rather than any workload's
+// state, which still describes the previous revision. Under --rollout warn
+// the error is printed and nil returned.
+func (p HostedProvider) applyNotLanded(envName, bundleDigest string, state bundleApplyState, plan []hostedPlanItem, mode cluster.RolloutMode) error {
+	cause := errBundleNotApplied
+	msg := fmt.Sprintf("the platform has not applied this release yet (waiting for %s, currently %s); workloads were not judged",
+		shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"))
+	if state.failure != "" {
+		cause = fmt.Errorf("the platform failed to apply this release: %s", state.failure)
+		msg = fmt.Sprintf("the platform failed to apply this release (%s, currently %s): %s",
+			shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"), state.failure)
+	}
+	for _, item := range plan {
+		p.observe(item.Name, cluster.RolloutStateTimedOut, cause)
+	}
+	werr := fmt.Errorf("hosted env %q: TIMED OUT waiting for the platform to apply: %s", envName, msg)
+	if mode == cluster.RolloutWarn {
+		fmt.Printf("  Warning: %v\n", werr)
+		return nil
+	}
+	return werr
 }
 
 // errRolloutSuperseded ends the wait immediately: a newer promotion replaced

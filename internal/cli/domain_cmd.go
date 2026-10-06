@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // `forge domain` — custom hostnames as control-plane resources.
@@ -156,7 +157,9 @@ environment while an env file renders to many. A hosted spec that carries a
 forge.ControlPlane declaration — a domain itself has no environment. Your
 organization comes from the credential and is never sent, so there is
 nothing to widen. The credential is --token, then the declared env var, then
-the credentials file entry for that endpoint (` + "`forge login`" + `).`,
+the credentials file entry for that endpoint (` + "`forge login`" + `), then the
+credential helper $` + cloudcred.HelperEnv + ` (a host application's session —
+Reliant sets it, so a user signed in to Reliant needs no ` + "`forge login`" + `).`,
 	}
 	cmd.AddCommand(
 		newDomainAddCmd(),

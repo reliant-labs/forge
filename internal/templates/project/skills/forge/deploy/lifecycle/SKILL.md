@@ -5,8 +5,11 @@ description: Stopping, starting and deleting a HOSTED environment from the CLI �
 
 # Hosted env lifecycle
 
-Everything the Reliant UI does to a hosted env is available with a plain
-`forge login`:
+Everything the Reliant UI does to a hosted env is available from the CLI. Signed
+in to Reliant (running `reliant forge …`, or in a Reliant agent's shell) you are
+already authenticated — do NOT run `forge login`; forge asks Reliant's
+credential helper (`$FORGE_CREDENTIAL_HELPER`) for a short-lived token. Standalone
+forge uses `forge login`; CI sets the env's token variable.
 
 ```
 forge env stop prod [--target api] [--wait]    # suspend; never refused
@@ -34,7 +37,17 @@ forge env delete preview [--yes]               # tear the env down
 
 ## Missing-scope rejections
 
-A 403 naming a scope (e.g. `domain:read`): re-run `forge login` to pick it up.
-If the new token still lacks it, your role has no grant — ask an org admin, who
-can mint `forge cloud token create --env <env> --name <n> --scopes <scope>`;
-export it as the env's declared token variable.
+A 403 naming a scope (e.g. `domain:read`): the credential lacks it. Under
+Reliant, the Reliant session it was minted from lacks it — grant it in Reliant
+(Settings → Tokens) or sign in again with `reliant auth login`; standalone,
+re-run `forge login`. If a fresh token still lacks it, your role has no grant —
+ask an org admin, who can mint
+`forge cloud token create --env <env> --name <n> --scopes <scope>`; export it as
+the env's declared token variable.
+
+## Where the credential comes from
+
+`--token`, then the env's declared token variable (CI), then what `forge login`
+stored, then the credential helper `$FORGE_CREDENTIAL_HELPER` (Reliant's
+session). `forge cloud status <env>` prints which one a command will use —
+never the token.

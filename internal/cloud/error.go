@@ -207,7 +207,7 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 				"  endpoint:   %s   (declared by env %q)\n"+
 				"  credential: from %s\n%s%s",
 			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL, c.Endpoint.Env,
-			c.Credential.From, authFix(detail, c.Endpoint.TokenEnv), detailSuffix(detail))
+			c.Credential.From, authFix(detail, c.Endpoint.TokenEnv, c.Credential), detailSuffix(detail))
 	case http.StatusNotImplemented:
 		out.message = fmt.Sprintf("%s is not implemented by %s%s", procedure, c.Endpoint.URL, detailSuffix(detail))
 	default:
@@ -240,7 +240,25 @@ var missingScopeRe = regexp.MustCompile(`\b([a-z]+:(?:read|write))\b scope`)
 // missing scope the generic "log in again" is wrong advice on its own — a
 // token minted without the scope stays without it — so it says what is
 // actually true about scopes and how to get one.
-func authFix(detail, tokenEnv string) string {
+//
+// A credential a HELPER minted gets the host's remedy, never `forge login`:
+// the user is meant to be signed in once, to the host, and the helper only
+// ever hands out what that session holds. So a missing scope is the session's
+// missing permission, and the fix is wherever that session is managed.
+func authFix(detail, tokenEnv string, cred Credential) string {
+	if cred.Source == SourceHelper {
+		if m := missingScopeRe.FindStringSubmatch(detail); m != nil {
+			return fmt.Sprintf(
+				"The token is valid but lacks the %[1]s scope: the session it was minted from (%[2]s) does not hold %[1]s.\n"+
+					"fix: grant that session %[1]s (or sign in to it again) in the application that provides it.\n"+
+					"     If you still lack it, your role has no %[1]s grant: ask an org admin.\n"+
+					"     For CI, a token with the scope bypasses the helper: export %[3]s=<token>",
+				m[1], cred.From, tokenEnv)
+		}
+		return fmt.Sprintf(
+			"fix: sign in again in the application that provided this credential (%s)\n"+
+				"     export %s=<token>      (CI — a token bypasses the credential helper)", cred.From, tokenEnv)
+	}
 	if m := missingScopeRe.FindStringSubmatch(detail); m != nil {
 		return fmt.Sprintf(
 			"The token is valid but lacks the %[1]s scope.\n"+

@@ -30,6 +30,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/hostedimage"
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // platformRegistryUsername is the username forge presents to our realm.
@@ -171,9 +172,9 @@ func errPlatformRegistryTakesNoFlags(env, host, tokenEnv string) error {
 		fmt.Sprintf("%s is the platform registry for env %q (forge.ControlPlane's registry_host), and it takes your control-plane credential — not a --username and --password", host, env),
 		fmt.Sprintf("deploy/kcl/%s/main.k", env),
 		fmt.Sprintf("drop the flags: forge registry login %s\n"+
-			"  forge resolves the same rlat_ it reaches the control plane with (--token, then $%s, then `forge login`) "+
-			"and presents it to %s on stdin. There is no second credential to mint",
-			env, tokenEnv, host))
+			"  forge resolves the same rlat_ it reaches the control plane with (--token, then $%s, then `forge login`, "+
+			"then the credential helper $%s) and presents it to %s on stdin. There is no second credential to mint",
+			env, tokenEnv, cloudcred.HelperEnv, host))
 }
 
 // errForeignRegistryNeedsFlags is an env that declares OUR registry and also

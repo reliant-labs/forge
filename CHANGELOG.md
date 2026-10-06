@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
+  `Delete`, `HostClientID`, `Location`, `Credential`).** A host used to copy its
+  own session token into `credentials.json` under client `host-app`, and forge
+  presented it to the control plane's deploy API. That token was a permanent,
+  multi-purpose session credential (Reliant's daemon or CLI login) which mostly
+  did NOT hold deploy authority, so deploys 403'd and users ran `forge login`
+  anyway — and where it did work, the deploy API, the registry login and every
+  subprocess saw a credential that could also connect as the user's daemon.
+  forge no longer reads `host-app` entries at all; `cloudcred.RemoveLegacyHostDeposits`
+  lets a host purge what it wrote. Replaced by the credential helper below.
 - **forge no longer requires cgo.** `kcl_plugin.forge` is bridged through a
   purego callback, so `go install` works with any `CGO_ENABLED` setting,
   including Windows without a C toolchain. `env diff`'s `unsupported` status is
@@ -165,6 +175,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolve across the proto tree, and a required parameter can say so with
   `[(buf.validate.field).required = true]` instead.
 
+- **Signed in to Reliant means signed in to the control plane — no `forge
+  login`.** forge has a credential-helper protocol (`pkg/cloudcred`, the model
+  of kubectl exec plugins and git credential helpers): when
+  `$FORGE_CREDENTIAL_HELPER` names a command, forge writes
+  `{"version":1,"endpoint":…,"scopes":[…]}` to its stdin and reads a token (or a
+  structured refusal: `no_session`, `denied`, `unavailable`) from its stdout.
+  The value is a JSON argv array, or a single executable path. Reliant sets it
+  for `reliant forge …` and for every shell its agents run, and answers with a
+  short-lived token minted from the user's Reliant session for exactly the
+  endpoint the env declares. Hosted commands (`env deploy`, `secret`,
+  `domain`, `cloud`, `release`, `env promote|verify|start|stop`, `registry
+  login`, …) resolve a credential in this order: `--token`, the env's declared
+  token variable (CI), the stored `forge login`, then the helper — and an
+  EXPIRED `forge login` falls through to the helper instead of failing. A
+  helper's token is reused within one process until a minute before it
+  expires; caching across processes is the helper's job. When the helper
+  refuses, forge prints the host's own advice (Reliant: "sign in to Reliant
+  (`reliant auth login` / the app)") and the CI variable — never `forge login`
+  — and a 401/403 on a helper-minted token says to sign in again there. Helper
+  stdout never reaches an error message or a log. `forge cloud status <env>`
+  shows the source and expiry; `forge login` notes when a helper is already
+  set. `forge login` and the token variable are unchanged for standalone forge
+  and CI.
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,
   `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,

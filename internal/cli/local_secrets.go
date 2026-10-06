@@ -75,8 +75,8 @@ func pullLocalSecretsWith(ctx context.Context, client cloudCaller, envName, proj
 		// cloud.Client errors quote the server's message, never the
 		// response body of a successful call — no value reaches this.
 		return nil, fmt.Errorf("pull secrets for LOCAL env %q from %s: %w\n"+
-			"fix: `forge login` if the credential is missing or expired; the env must be LOCAL on the control plane "+
-			"(declared with control_plane + forge.HostedSecrets and no hosted tier)", envName, endpoint, err)
+			"fix: %s if the credential is missing or expired; the env must be LOCAL on the control plane "+
+			"(declared with control_plane + forge.HostedSecrets and no hosted tier)", envName, endpoint, err, cloud.SignInHint())
 	}
 	out := make(map[string]string, len(resp.Secrets))
 	for _, s := range resp.Secrets {

@@ -37,7 +37,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/reliant-labs/forge/internal/envutil"
 )
@@ -117,6 +120,38 @@ type RunnerSpec struct {
 // the program ignored.
 func (s RunnerSpec) IgnoresArgs() bool {
 	return strings.TrimSpace(s.Runner) == "air" && len(s.Args) > 0
+}
+
+// AirRunsArgs reports whether the air config this spec launches with runs
+// the binary it builds with exactly the declared Args — its `[build]
+// entrypoint` is `[<binary>, <Args>...]` — so the args are honoured after
+// all, by the config rather than by forge. The scaffolded `.air.toml` runs
+// `<bin> server`, which is what a dev env's API workload declares.
+//
+// false when the config cannot be read or parsed, names no entrypoint, or
+// passes different args: the caller then says the declared args are not
+// passed, because nothing proves they are.
+func (s RunnerSpec) AirRunsArgs() bool {
+	cfg := s.AirConfig
+	if cfg == "" {
+		cfg = DefaultAirConfig
+	}
+	if !filepath.IsAbs(cfg) {
+		base := resolveWorkingDir(s.WorkingDir, s.ProjectDir)
+		if base == "" {
+			base = s.ProjectDir
+		}
+		cfg = filepath.Join(base, cfg)
+	}
+	var doc struct {
+		Build struct {
+			Entrypoint []string `toml:"entrypoint"`
+		} `toml:"build"`
+	}
+	if _, err := toml.DecodeFile(cfg, &doc); err != nil || len(doc.Build.Entrypoint) == 0 {
+		return false
+	}
+	return slices.Equal(doc.Build.Entrypoint[1:], s.Args)
 }
 
 // BuildCmd composes the *exec.Cmd for a host workload. The argv is DERIVED,

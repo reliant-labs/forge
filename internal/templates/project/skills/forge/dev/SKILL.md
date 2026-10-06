@@ -40,26 +40,33 @@ scaffolded `deploy/kcl/dev/main.k` binds each workload through a named binder:
 # deploy/kcl/dev/main.k
 _workloads = [
     _on_host_job(wl.migrate)    # go run ./cmd/acme db migrate up, to completion, first
-    _on_host(wl.item)           # go run ./cmd/acme item, on its own resolve_port
+    _on_host(_api)              # air: ./tmp/acme server — EVERY service + worker, hot reload
     _on_k3d(wl.reaper)          # an operator: a pod in the local k3d cluster
 ]
 ```
 
-`_on_host` binds `forge.OnHost {runner = "go-run", listen_ports = [...]}`, and
-the argv is DERIVED from the workload's `build` + `args` — nothing about the
-workload is re-stated. `_on_k3d` binds `forge.OnCluster {target = _k3d}`: the
-image `forge build dev` pushes, with the same `args`.
+**The API is one process.** `_api` (declared in the env) runs the binary's
+`server`: every service on one Connect mux, every worker beside it. The
+frontend's dev config resolves the API at the `<project>-dev-api` port, which
+`_port_of` gives `_api`, so the browser reaches every service at one origin —
+the same `_api` staging and prod host (`deploy/hosting`). A new service or
+worker needs no line here.
 
-Rebinding is editing one line. To run `item` as a pod instead,
-`_on_k3d(wl.item)`; for hot reload, bind it by hand with air:
+`_on_host` binds `forge.OnHost {runner = ..., listen_ports = [...]}`. `server`
+runs under **air** — rebuilt and restarted when a .go file changes;
+`.air.toml`'s `entrypoint` is the same `server`, and `forge env up` refuses
+to start, naming the fix, when air is not installed (`go install
+github.com/air-verse/air@latest`, or `runner = "go-run"` to give up the
+reload). Anything else runs `go run`, its argv DERIVED from the workload's
+`build` + `args`. `_on_k3d` binds `forge.OnCluster {target = _k3d}`: the image
+`forge build dev` pushes, with the same `args`.
 
-```kcl
-wl.item | {env = _env(wl.item), runtime = forge.OnHost {runner = "air", air_config = ".air.toml", listen_ports = [_port_of("item")]}}
-```
-
-To vary HOW it launches per run without an edit, declare a render option
-and read it in the binding (`runner = option("host_runner") or "go-run"`,
-then `-D host_runner=air`).
+Rebinding is editing one line: `_on_k3d(_api)` runs the API as a pod. To run
+ONE service alone (to debug it), bind `_on_host(wl.item)` and take it out of
+`server`'s mount (cmd/acme/cmd/server.go), or both serve it. To vary HOW
+something launches per run without an edit, declare a render option and read
+it in the binding (`runner = option("host_runner") or "air"`, then `-D
+host_runner=go-run`).
 
 The decision rule:
 
@@ -113,10 +120,10 @@ For fine-grained control:
 forge cluster up --wait
 forge env deploy dev
 
-# Terminal 2: the workload you're actively editing
-forge env up dev --target item                 # foreground; Ctrl-C to stop
+# Terminal 2: the API (every service; air reloads it as you edit)
+forge env up dev --target api                  # foreground; Ctrl-C to stop
 # or detach + tail logs separately:
-forge env up dev --target item --background    # detach; PIDs tracked per env
+forge env up dev --target api --background     # detach; PIDs tracked per env
 forge env down dev                                     # later teardown
 ```
 
@@ -239,8 +246,7 @@ tasks:
     cmds:
       - forge cluster up --wait
       - forge env deploy dev --prune       # cluster-bound workloads only
-      - forge env up dev --target item --background
-      - forge env up dev --target mailer --background
+      - forge env up dev --target api --background
 
   dev-stop:
     cmds:

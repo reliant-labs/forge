@@ -12,11 +12,10 @@ import "strings"
 type EnvTemplateData struct {
 	ProjectName string
 	EnvName     string
-	// PrimaryIdent is the KCL identifier of the workload the env's worked
-	// examples rebind (`_on_cluster(wl.<ident>)`).
-	PrimaryIdent string
-	// PrimaryWorkload names that workload; on the host loop its port is the
-	// one the frontend's dev config reads.
+	// PrimaryWorkload names the workload holding the dev env's
+	// `<project>-<env>-api` port key — the port the frontend's dev config
+	// reads. The API, `_api` (codegen.APIWorkloadName), unless a caller says
+	// otherwise.
 	PrimaryWorkload string
 	// IngressEnabled wires the dev env's Gateway. A hosted env has no
 	// ingress of its own (the platform allocates every public hostname), so
@@ -51,10 +50,7 @@ type EnvTemplateData struct {
 // knows.
 func (d EnvTemplateData) withDefaults() interface{} {
 	if d.PrimaryWorkload == "" {
-		d.PrimaryWorkload = d.ProjectName
-	}
-	if d.PrimaryIdent == "" {
-		d.PrimaryIdent = d.PrimaryWorkload
+		d.PrimaryWorkload = "api" // codegen.APIWorkloadName; codegen imports this package
 	}
 	if d.FrontendIdent == "" {
 		d.FrontendIdent = strings.NewReplacer("-", "_", ".", "_").Replace(d.FrontendName)

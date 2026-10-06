@@ -21,7 +21,7 @@ func writeScaffoldedEnvs(t *testing.T, root string) {
 			bindings = "    _on_host_job(wl.migrate)"
 		}
 		out, err := templates.DeployTemplates().Render(scaffoldedEnvTemplate(env), templates.EnvTemplateData{
-			ProjectName: "acme", EnvName: env, IngressEnabled: true, PrimaryWorkload: "acme", Bindings: bindings,
+			ProjectName: "acme", EnvName: env, IngressEnabled: true, Bindings: bindings,
 			APIWorkload: codegen.APIWorkloadStanza("github.com/acme/acme", "acme"),
 		})
 		if err != nil {
@@ -111,11 +111,11 @@ func TestBindWorkloadInEnvs_CronComponentIsHosted(t *testing.T) {
 	}
 }
 
-// A hosted env serves every service at one origin through `_api`, the
-// binary's `server`. A service scaffolded into it is already mounted there,
-// so it gets no hosted workload of its own — the frontend could never call
-// that hostname — while dev still runs it as its own process.
-func TestBindWorkloadInEnvs_ServiceRunsInTheHostedAPI(t *testing.T) {
+// Every env serves every service at one origin through `_api`, the binary's
+// `server`. A service scaffolded into it is already mounted there, so it gets
+// no workload of its own — in dev a process on a port the frontend never
+// dials, hosted a hostname it never calls.
+func TestBindWorkloadInEnvs_ServiceRunsInTheAPI(t *testing.T) {
 	root := t.TempDir()
 	writeScaffoldedEnvs(t, root)
 
@@ -127,14 +127,14 @@ func TestBindWorkloadInEnvs_ServiceRunsInTheHostedAPI(t *testing.T) {
 		bindWorkloadInEnvs(root, "acme", config.ComponentConfig{Name: "billing", Kind: config.ComponentKindServer})
 		return nil
 	})
-	if got := readEnvMain(t, root, "dev"); !strings.Contains(got, "    _on_host(wl.orders)\n    _on_host(wl.billing)\n]") {
-		t.Errorf("dev must run each service as its own host process:\n%s", got)
-	}
-	for _, env := range []string{"staging", "prod"} {
+	for env, line := range map[string]string{"dev": "    _on_host(_api)\n", "staging": "    _hosted(_api)\n", "prod": "    _hosted(_api)\n"} {
 		got := readEnvMain(t, root, env)
-		if strings.Count(got, "    _hosted(_api)\n") != 1 || strings.Contains(got, "wl.orders") || strings.Contains(got, "wl.billing") {
+		if strings.Count(got, line) != 1 || strings.Contains(got, "wl.orders") || strings.Contains(got, "wl.billing") {
 			t.Errorf("%s must bind `_api` once and no service on its own:\n%s", env, got)
 		}
+	}
+	if !strings.Contains(first, "deploy/kcl/dev/main.k (service 'orders' runs in _api, the binary's `server`, now bound: _on_host)") {
+		t.Errorf("first service: dev output does not say it bound the API:\n%s", first)
 	}
 	if !strings.Contains(first, "deploy/kcl/prod/main.k (service 'orders' runs in _api, the binary's `server`, now bound: _hosted)") {
 		t.Errorf("first service: output does not say it bound the API:\n%s", first)

@@ -289,7 +289,7 @@ interface to `struct{ ... }` and lists no methods — it cannot tell you
 | Command | What it does |
 |---|---|
 | `forge env up` | Host services + frontends; auto-seeds a fresh dev DB on first boot |
-| `forge env up dev` | Full stack: Docker infra + Go services (hot reload) + frontends |
+| `forge env up dev` | Full stack: host infra (postgres, dev IdP) + the API (air, hot reload) + frontends |
 | `forge env up <env>` | Build + deploy + host launch + frontend dev — reads `deploy/kcl/<env>/` |
 | `forge env deploy dev` | Deploy to local k3d (or whatever dev's KCL targets) |
 | `forge generate` | Re-project from protos + applied migrations. Safe anytime; never touches business logic |
@@ -298,9 +298,11 @@ interface to `struct{ ... }` and lists no methods — it cannot tell you
 | `task test` / `task test:e2e` | Unit + frontends / E2E (needs a stack up); `task test:all` adds integration |
 
 Auth is enforced in every mode — present a real bearer token (`auth`). There is
-no per-service port: one binary serves every service on one mux (`PORT`, default
-`8080`), and the dev loop gives the backend and each frontend a free port the
-kernel picks at launch, printed in the launch banner. Depth: `dev`, `deploy`.
+no per-service port: one process, the binary's `server` (`_api` in every env),
+serves every service on one mux (`PORT`; 8080 in a container), so the frontend
+reaches all of them at one origin. Dev runs it under air (hot reload) on the
+env's `<project>-dev-api` port, printed in the launch banner. Depth: `dev`,
+`deploy`.
 
 ## Pre-flight: what forge already does for you
 

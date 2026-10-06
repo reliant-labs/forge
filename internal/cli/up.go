@@ -663,6 +663,51 @@ func staleModuleDiff(out []byte) bool {
 	return strings.Contains(t, "diff ") && strings.Contains(t, "go.mod")
 }
 
+// hostRunnerLookPath is exec.LookPath, swappable so a test can stand in for a
+// machine with or without a runner installed.
+var hostRunnerLookPath = exec.LookPath
+
+// hostRunnerTools names the executable each host runner launches beyond the Go
+// toolchain, with how to install it. go-run and binary need only `go`, which
+// the build already requires.
+var hostRunnerTools = map[string]struct{ bin, install, what string }{
+	"air":   {"air", "go install github.com/air-verse/air@latest", "hot reload"},
+	"delve": {"dlv", "go install github.com/go-delve/delve/cmd/dlv@latest", "the debugger"},
+}
+
+// preflightHostRunners refuses a run that would start a host workload under a
+// runner whose tool is not installed, before anything builds or starts. The
+// scaffolded dev env runs its API under air — the hot-reload runner — so a
+// machine without air would otherwise get as far as the host phase and fail
+// on `exec: "air": executable file not found`, naming neither the workload
+// nor the fix. The message names both ways out: install the tool, or bind
+// the workload to `go run` and give up the reload.
+func preflightHostRunners(e *KCLEntities, targets []string, env string) error {
+	if e == nil {
+		return nil
+	}
+	var missing []string
+	for _, w := range e.WorkloadsOn(RuntimeHost) {
+		if !w.LongRunning() || !inTargetSet(targets, w.Name) || w.Runtime.Host == nil {
+			continue
+		}
+		tool, ok := hostRunnerTools[strings.TrimSpace(w.Runtime.Host.Runner)]
+		if !ok {
+			continue
+		}
+		if _, err := hostRunnerLookPath(tool.bin); err != nil {
+			missing = append(missing, fmt.Sprintf("  %s runs under %s (%s), which is not on PATH: %s",
+				w.Name, w.Runtime.Host.Runner, tool.what, tool.install))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return cliutil.UserErr("forge env up "+env,
+		"a host workload's runner is not installed:\n"+strings.Join(missing, "\n"), "",
+		fmt.Sprintf("install it, or run the workload without it: `runner = \"go-run\"` in its binder in deploy/kcl/%s/main.k (`forge doctor` lists every tool this project needs)", env))
+}
+
 // preflightGoModulesTidy fails fast when a Go module graph the build depends on
 // is stale, instead of letting the build discover it.
 //
@@ -1430,6 +1475,9 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	// are already built. Detecting it here costs one `go mod tidy -diff` and
 	// turns four minutes of wasted work into an immediate, actionable message.
 	if err := preflightGoModulesTidy(ctx, entities, in.projectDir); err != nil {
+		return err
+	}
+	if err := preflightHostRunners(entities, opts.targets, opts.env); err != nil {
 		return err
 	}
 
@@ -2780,7 +2828,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	if err != nil {
 		return nil, "", err
 	}
-	if spec.IgnoresArgs() {
+	if spec.IgnoresArgs() && !spec.AirRunsArgs() {
 		fmt.Printf("[up] host %s: runner air takes its argv from %s (entrypoint / args_bin); the workload's args %v are not passed\n",
 			w.Name, emptyAs(spec.AirConfig, hostlaunch.DefaultAirConfig), spec.Args)
 	}

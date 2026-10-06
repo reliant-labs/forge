@@ -65,8 +65,8 @@ _workloads = [
 ]
 ```
 
-- workloads.k still declares each service and worker; **dev** still runs each
-  as its own host process.
+- workloads.k still declares each service and worker; **dev** runs the same
+  `_api`, as a host process under air (hot reload).
 - `forge scaffold service|worker` adds no line to a hosted env — `server`
   already runs it — and binds `_api` if it was not bound yet (a project born
   with no service declares `_api` unbound, so it pays for no idle workload).

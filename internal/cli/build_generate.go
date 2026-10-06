@@ -37,9 +37,9 @@ func ensureGeneratedCode(projectDir string, skip bool) error {
 		return nil
 	}
 	fmt.Printf("[build] generated code %s — running `forge generate` first (pass --no-generate to skip)\n", reason)
-	generateMu.Lock()
-	err := runGeneratePipelineFlags(projectDir, pipelineFlags{})
-	generateMu.Unlock()
+	err := withGenerateLock(projectDir, func() error {
+		return runGeneratePipelineFlags(projectDir, pipelineFlags{})
+	})
 	if err != nil {
 		return fmt.Errorf("auto-generate before build: %w", err)
 	}

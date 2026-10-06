@@ -125,6 +125,7 @@ Examples:
 	cmd.Flags().StringVar(&serviceFlag, "service", "", "narrow every phase of the sweep to one service")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the full plan (phase 1+2 predictions) and write nothing")
 	addNounCmds(cmd, f)
+	holdProjectLock(cmd, f)
 	return cmd
 }
 

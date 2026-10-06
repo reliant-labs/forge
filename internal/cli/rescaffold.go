@@ -96,10 +96,13 @@ Examples:
 				return err
 			}
 			root := filepath.Dir(configPath)
-			generateMu.Lock()
-			defer generateMu.Unlock()
-			return rescaffoldPaths(cmd.OutOrStdout(), root, store.Config(), args, func() error {
-				return runGeneratePipelineFlags(root, pipelineFlags{})
+			// The lock spans the deletions as well as the regenerate: a
+			// concurrent run must not see the paths removed but not yet
+			// re-created.
+			return withGenerateLock(root, func() error {
+				return rescaffoldPaths(cmd.OutOrStdout(), root, store.Config(), args, func() error {
+					return runGeneratePipelineFlags(root, pipelineFlags{})
+				})
 			})
 		},
 	}

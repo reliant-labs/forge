@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Concurrent `forge generate` / `forge scaffold` runs in one project now
+  queue instead of failing.** Every run takes the project's lock
+  (`.forge/forge.lock`). A second run prints one line,
+  `⏳ forge: waiting for pid N (<command>) …`, and starts when the first
+  finishes. Previously the lock was an O_EXCL marker file: every concurrent
+  run failed at once with "another forge process is running … remove it with:
+  rm .forge/forge.lock". Agents that followed that advice ran two pipelines
+  in one tree, and their revert-on-failure rollbacks restored each other's
+  writes. The lock is now an OS file lock (flock; LockFileEx on Windows) that
+  dies with its process, so a killed run cannot leave a stale lock and there
+  is no 10-minute reclaim window. `forge scaffold` and all its nouns hold it
+  for the whole command, not only for the generate pass at the end, so another
+  run never sees a half-scaffolded tree: protos with the CRUD quintet injected
+  and a migration written, but no ORM or handlers. Build's auto-generate,
+  `generate --watch`, `--check`, `project rescaffold` and `project new` take
+  the same lock. The file stays on disk between runs and is already
+  gitignored (`.forge/*`); do not delete it.
 - **`orm.Context` gains `RunTx`, `RunTxReadOnly` and `RunTxWithOptions`.**
   They are on the interface so `s.deps.DB.RunTx(…)` compiles against the
   injected `DB orm.Context`. A hand-written `orm.Context` implementation, such

@@ -128,15 +128,25 @@ func SetAuditAPI(a AuditAPI) { auditAPI = a }
 // owned by the internal/cli-side closures, so callers here never touch a
 // lock.
 type GenAPI struct {
+	// HoldProjectLock takes the project's cross-process generate lock
+	// (.forge/forge.lock) and returns its release. It blocks — printing one
+	// line naming the holder — while another forge generate or scaffold run
+	// in the same project holds it. The scaffold group holds it for each
+	// command's whole run, so the command's own writes and the pipeline run
+	// it ends with never interleave with another run's. Not reentrant.
+	HoldProjectLock func(projectDir string) (release func(), err error)
+
 	// RunPipeline runs the FULL generate pipeline for the project rooted at
 	// projectDir (the equivalent of `forge generate`), serialized under the
-	// internal/cli generate mutex. Used by `scaffold service` / `scaffold operator`.
+	// internal/cli generate mutex. The caller must already hold
+	// HoldProjectLock for projectDir — every scaffold command does. Used by
+	// `scaffold service` / `scaffold operator`.
 	RunPipeline func(projectDir string) error
 
 	// RunPipelineBootstrapOnly runs the generate pipeline narrowed to the
 	// "bootstrap-only" step preset (regenerates pkg/app/{bootstrap,testing,
 	// migrate}.go and nothing else), serialized under the generate mutex.
-	// Used by `scaffold worker`.
+	// Same lock contract as RunPipeline. Used by `scaffold worker`.
 	RunPipelineBootstrapOnly func(projectDir string) error
 
 	// LoadServiceRegistry parses the user-owned pkg/app/services.go and

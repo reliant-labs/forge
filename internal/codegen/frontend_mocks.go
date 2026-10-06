@@ -67,6 +67,26 @@ func (d MockTransportTemplateData) HasWritableEntities() bool {
 	return false
 }
 
+// UpdateResponse is the response message the Update dispatch row names: its
+// own when the extraction resolved one, otherwise Create's (the historical
+// shape). Never empty for an entity with an Update row — an empty name would
+// render as the undefined import `Schema`.
+func (e MockTransportEntity) UpdateResponse() string {
+	if e.UpdateResponseType != "" {
+		return e.UpdateResponseType
+	}
+	return e.CreateResponseType
+}
+
+// UpdateEntityField is the wrapping field on UpdateResponse, with the same
+// fallback.
+func (e MockTransportEntity) UpdateEntityField() string {
+	if e.UpdateEntityFieldCamel != "" {
+		return e.UpdateEntityFieldCamel
+	}
+	return e.CreateEntityFieldCamel
+}
+
 // MockTransportSchemaImportGroup bundles every response-schema symbol the
 // mock-transport.ts file imports from a single proto-generated module.
 // Two entities whose schemas live in the same `@/gen/services/api/v1/api_pb`
@@ -107,8 +127,13 @@ func BuildMockTransportSchemaImportGroups(entities []MockTransportEntity) []Mock
 		if e.HasGet {
 			add(e.ImportPath, e.GetResponseType+"Schema")
 		}
-		if e.HasCreate || e.HasUpdate {
+		if e.HasUpdate && e.UpdateResponseType != "" && e.UpdateResponseType != e.CreateResponseType {
+			add(e.ImportPath, e.UpdateResponseType+"Schema")
+		}
+		if e.HasCreate {
 			add(e.ImportPath, e.CreateResponseType+"Schema")
+		}
+		if e.HasCreate || e.HasUpdate {
 			// The mutable store builds new entity records on Create/Update,
 			// so it needs the entity's own schema — from the file that
 			// declares the entity, which may differ from the service file.
@@ -210,6 +235,12 @@ type MockTransportEntity struct {
 	UpdateRequestType  string
 	GetRequestType     string
 	DeleteRequestType  string
+	// UpdateResponseType / UpdateEntityFieldCamel are what the Update dispatch
+	// row returns. It reuses Create's response shape when the service has a
+	// Create RPC, and otherwise the Update RPC's own response — never an empty
+	// name, which would render as the undefined import `Schema`.
+	UpdateResponseType     string
+	UpdateEntityFieldCamel string
 }
 
 // ScenarioRPCEntry is one unary RPC row in the generated typed scenario
@@ -607,6 +638,11 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 			if !ok {
 				continue
 			}
+			updateResp, updateField := page.CreateResponseType, responseEntityField(svc, page.CreateResponseType, page.EntityName)
+			if updateResp == "" {
+				updateResp, updateField = page.UpdateResponseType, responseEntityField(svc, page.UpdateResponseType, page.EntityName)
+			}
+			hasUpdate := page.HasUpdate && updateResp != ""
 			entityImportPath := importPath
 			if entityDef.ProtoFile != "" {
 				entityImportPath = ProtoFileToTSImportPath(entityDef.ProtoFile)
@@ -625,7 +661,7 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 				HasList:                page.HasList,
 				HasGet:                 page.HasGet,
 				HasCreate:              page.HasCreate,
-				HasUpdate:              page.HasUpdate,
+				HasUpdate:              hasUpdate,
 				HasDelete:              page.HasDelete,
 				ItemsField:             page.ItemsField,
 				PkFieldCamel:           mockPkFieldCamel(entityDef),
@@ -640,6 +676,8 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 				CreateRequestType:      page.CreateRequestType,
 				CreateResponseType:     page.CreateResponseType,
 				UpdateRequestType:      page.UpdateRequestType,
+				UpdateResponseType:     updateResp,
+				UpdateEntityFieldCamel: updateField,
 				GetRequestType:         page.GetRequestType,
 				DeleteRequestType:      page.DeleteRequestType,
 			})

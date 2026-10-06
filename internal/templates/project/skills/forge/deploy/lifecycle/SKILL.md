@@ -39,7 +39,7 @@ forge env delete preview [--yes]               # tear the env down
 
 A 403 naming a scope (e.g. `domain:read`): the credential lacks it. Under
 Reliant, the Reliant session it was minted from lacks it — grant it in Reliant
-(Settings → Tokens) or sign in again with `reliant auth login`; standalone,
+(Settings → Access Tokens) or sign in again with `reliant auth login`; standalone,
 re-run `forge login`. If a fresh token still lacks it, your role has no grant —
 ask an org admin, who can mint
 `forge cloud token create --env <env> --name <n> --scopes <scope>`; export it as

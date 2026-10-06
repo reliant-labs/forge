@@ -90,12 +90,9 @@ type Frontend struct {
 	// RelDir is Dir relative to the project root, slash-separated. Every
 	// finding's File is under it, which is what `forge lint --scope` matches.
 	RelDir string
-	// DeclaredOutput is forge.yaml's effective `output:` for the frontend
-	// ("static", "standalone", "server").
-	DeclaredOutput string
 	// Bindings are the envs that bind it to a static runtime. A frontend
-	// declared `output: static` with no such binding is still checked: the
-	// declaration is the promise.
+	// whose next.config is a static export with no such binding is still
+	// checked.
 	Bindings []Binding
 }
 
@@ -157,7 +154,7 @@ func (c *checker) rel(frontendRel string) string {
 // why is the clause naming what makes this frontend static, for messages.
 func (c *checker) why() string {
 	if len(c.fe.Bindings) == 0 {
-		return fmt.Sprintf("frontend %q declares `output: static` in forge.yaml", c.fe.Name)
+		return fmt.Sprintf("frontend %q is a static export", c.fe.Name)
 	}
 	return fmt.Sprintf("frontend %q is bound to %s", c.fe.Name, describeBindings(c.fe.Bindings))
 }

@@ -35,7 +35,7 @@ export default nextConfig;
 `
 
 // frontendTree writes files under a fresh frontend dir and returns a
-// Frontend declared static in forge.yaml.
+// A static-export frontend.
 func frontendTree(t *testing.T, files map[string]string) Frontend {
 	t.Helper()
 	dir := t.TempDir()
@@ -48,7 +48,7 @@ func frontendTree(t *testing.T, files map[string]string) Frontend {
 			t.Fatal(err)
 		}
 	}
-	return Frontend{Name: "web", Dir: dir, RelDir: "frontends/web", DeclaredOutput: "static"}
+	return Frontend{Name: "web", Dir: dir, RelDir: "frontends/web"}
 }
 
 // withConfig adds the exporting next.config unless the case brings its own.
@@ -102,38 +102,26 @@ func TestNotExported(t *testing.T) {
 
 	t.Run("server build bound to a static runtime", func(t *testing.T) {
 		fe := frontendTree(t, map[string]string{"next.config.ts": standaloneConfig})
-		fe.DeclaredOutput = "standalone"
 		fe.Bindings = []Binding{{Env: "prod", Runtime: "hosted"}}
 		fs := check(t, fe)
 		assertFindings(t, fs, "static-export-not-exported error frontends/web/next.config.ts:5")
-		for _, want := range []string{"forge.OnHosted in env prod", "`output: standalone`", "`forge env render` refuses"} {
+		for _, want := range []string{"forge.OnHosted in env prod", "`forge env render` refuses"} {
 			if !strings.Contains(fs[0].Message, want) {
 				t.Errorf("message does not say %q: %s", want, fs[0].Message)
 			}
 		}
-		for _, want := range []string{"set `output: static` on frontend \"web\" in forge.yaml", "forge project upgrade --force frontends/web/next.config.ts", "forge.DockerBuild {dockerfile = \"frontends/web/Dockerfile\"}"} {
+		for _, want := range []string{"forge project upgrade --force frontends/web/next.config.ts", "forge.DockerBuild {dockerfile = \"frontends/web/Dockerfile\"}"} {
 			if !strings.Contains(fs[0].Remediation, want) {
 				t.Errorf("fix does not say %q: %s", want, fs[0].Remediation)
 			}
 		}
 	})
 
-	t.Run("declared static, next.config does not export", func(t *testing.T) {
+	t.Run("next.config does not export", func(t *testing.T) {
 		fs := check(t, frontendTree(t, map[string]string{"next.config.ts": standaloneConfig}))
 		assertFindings(t, fs, "static-export-not-exported error frontends/web/next.config.ts:5")
-		if !strings.Contains(fs[0].Message, "never sets `output: \"export\"`") {
+		if !strings.Contains(fs[0].Message, "does not set `output: \"export\"`") {
 			t.Errorf("message: %s", fs[0].Message)
-		}
-	})
-
-	t.Run("code exports but forge.yaml still says standalone", func(t *testing.T) {
-		fe := frontendTree(t, withConfig(map[string]string{}))
-		fe.DeclaredOutput = "standalone"
-		fe.Bindings = []Binding{{Env: "staging", Runtime: "bucket"}}
-		fs := check(t, fe)
-		assertFindings(t, fs, "static-export-not-exported error frontends/web/next.config.ts:4")
-		if !strings.Contains(fs[0].Remediation, "set `output: static` on frontend \"web\" in forge.yaml") {
-			t.Errorf("fix: %s", fs[0].Remediation)
 		}
 	})
 
@@ -143,7 +131,7 @@ func TestNotExported(t *testing.T) {
 	})
 
 	t.Run("absent frontend dir judges nothing", func(t *testing.T) {
-		fs, err := Check(Frontend{Name: "web", Dir: filepath.Join(t.TempDir(), "missing"), DeclaredOutput: "static"})
+		fs, err := Check(Frontend{Name: "web", Dir: filepath.Join(t.TempDir(), "missing")})
 		if err != nil || len(fs) != 0 {
 			t.Errorf("got %v, %v; want nothing", fs, err)
 		}

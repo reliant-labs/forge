@@ -10,20 +10,27 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// staticRuntimeProject writes a project whose forge.yaml declares one
-// Next.js frontend `web` with the given `output:` line ("" = unset) and whose
-// `env` binds it with runtimeExpr.
-func staticRuntimeProject(t *testing.T, env, outputLine, runtimeExpr string) string {
+// staticRuntimeProject writes a project with one Next.js frontend `web`
+// whose next.config builds the given output ("export", "standalone" or ""
+// for no `output:` key = a server build), and whose `env` binds it with
+// runtimeExpr. The build shape is read from that next.config: there is no
+// forge.yaml declaration of it.
+func staticRuntimeProject(t *testing.T, env, output, runtimeExpr string) string {
 	t.Helper()
 	dir := t.TempDir()
-	forgeYAML := "name: acme\nmodule_path: github.com/example/acme\nversion: 0.1.0\nfrontends:\n" +
-		"  - name: web\n    type: nextjs\n    path: frontends/web\n"
-	if outputLine != "" {
-		forgeYAML += "    output: " + outputLine + "\n"
+	nextConfig := "const nextConfig = {};\nexport default nextConfig;\n"
+	switch output {
+	case "static":
+		nextConfig = "const nextConfig = {\n  output: \"export\",\n};\nexport default nextConfig;\n"
+	case "standalone":
+		nextConfig = "const nextConfig = {\n  output: \"standalone\",\n};\nexport default nextConfig;\n"
 	}
+	forgeYAML := "name: acme\nmodule_path: github.com/example/acme\n"
 	files := map[string]string{
-		"forge.yaml":         forgeYAML,
-		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
+		"forge.yaml":                   forgeYAML,
+		"frontends/web/next.config.ts": nextConfig,
+		"frontends/web/package.json":   "{\"dependencies\":{\"next\":\"15.0.0\"}}\n",
+		"deploy/kcl/kcl.mod":           "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
 		"deploy/kcl/" + env + "/main.k": "import forge\n\n" +
 			"_web = forge.Frontend {name = \"web\", path = \"frontends/web\", public_dir = \"out\"}\n\n" +
 			"output = forge.render(forge.Bundle {\n" +
@@ -45,7 +52,7 @@ func staticRuntimeProject(t *testing.T, env, outputLine, runtimeExpr string) str
 }
 
 // TestRenderKCL_RefusesServerFrontendOnStaticRuntime is the render-time half
-// of the static-export guard, end to end: forge.yaml says the build is a
+// of the static-export guard, end to end: the frontend's next.config builds a
 // server, the env binds it to a runtime that serves files, and the render —
 // the one path every `forge env render|deploy|up` and `forge build` takes —
 // refuses, naming the frontend, the env and both fixes.
@@ -64,10 +71,10 @@ func TestRenderKCL_RefusesServerFrontendOnStaticRuntime(t *testing.T) {
 		refused                            bool
 	}{
 		{"standalone on hosted", "standalone", hosted, "hosted", true},
-		{"server on bucket", "server", bucket, "bucket", true},
+		{"server on bucket", "", bucket, "bucket", true},
 		// An unset field is the LEGACY standalone shape: every frontend
 		// scaffolded before forge wrote `output:` has a server next.config.
-		{"unset output is the legacy standalone shape", "", hosted, "hosted", true},
+		{"no output key is a server build", "", hosted, "hosted", true},
 		{"static on hosted", "static", hosted, "hosted", false},
 		{"static on bucket", "static", bucket, "bucket", false},
 		{"standalone on the dev server", "standalone", `runtime = forge.OnHost {}`, "host", false},
@@ -92,7 +99,7 @@ func TestRenderKCL_RefusesServerFrontendOnStaticRuntime(t *testing.T) {
 			for _, want := range []string{
 				"frontend 'web' cannot run on the " + tc.runtimeType + " runtime",
 				"in env 'prod'",
-				"set `output: static` on frontend 'web' in forge.yaml",
+				"frontends/web's next.config a static export",
 				"forge lint --static-export",
 				"bind 'web' elsewhere",
 			} {
@@ -112,10 +119,10 @@ func TestRenderKCL_RefusesServerFrontendOnStaticRuntime(t *testing.T) {
 func TestFrontendOutputsBinding(t *testing.T) {
 	got := frontendOutputsBinding([]config.FrontendConfig{
 		{Name: "web", Type: "nextjs", Output: "Standalone"},
-		{Name: "admin", Type: "nextjs"},
+		{Name: "admin", Type: "nextjs", Output: "server"},
 		{Name: "spa", Type: "vite-spa", Output: "standalone"},
 	})
-	want := `frontend_outputs="{\"admin\":\"standalone\",\"spa\":\"static\",\"web\":\"standalone\"}"`
+	want := `frontend_outputs="{\"admin\":\"server\",\"spa\":\"static\",\"web\":\"standalone\"}"`
 	if got != want {
 		t.Errorf("binding:\n got %s\nwant %s", got, want)
 	}

@@ -8,16 +8,16 @@ a server under .next-prod/. Without the refusal the env renders, deploys and
 builds green, and the failure arrives at publish time as a missing out/ —
 or as a stale one, shipped as the new release.
 
-`frontend_outputs` is the forge.yaml fact forge binds on every render it
+`frontend_outputs` is the next.config fact forge binds on every render it
 drives (internal/cli renderKCLRaw). The refusal names the frontend, the env
 and both fixes.
 """
 
 # kcl-args: env="prod" frontend_outputs="{\"web\":\"standalone\"}"
 # expect: frontend 'web' cannot run on the bucket runtime
-# expect: forge.yaml declares `output: standalone` for frontend 'web'
+# expect: its next.config builds `output: standalone` for frontend 'web'
 # expect: in env 'prod'
-# expect: set `output: static` on frontend 'web' in forge.yaml
+# expect: make the production build in frontends/web's next.config a static export
 # expect: forge lint --static-export
 # expect: forge.DockerBuild {dockerfile = "frontends/web/Dockerfile"}
 

@@ -71,9 +71,9 @@ func TestStaticExportTargets(t *testing.T) {
 	targets := staticExportTargets(context.Background(), "/p", cfg, bindings)
 	var got []string
 	for _, tg := range targets {
-		got = append(got, tg.Name+":"+tg.DeclaredOutput+":"+tg.RelDir)
+		got = append(got, tg.Name+":"+tg.RelDir)
 	}
-	want := "web:standalone:frontends/web admin:static:frontends/admin"
+	want := "web:frontends/web admin:frontends/admin"
 	if strings.Join(got, " ") != want {
 		t.Errorf("targets = %v, want %s", got, want)
 	}

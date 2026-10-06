@@ -1,7 +1,7 @@
 """
 Positive test — what the static-export refusal leaves alone.
 
-  * a frontend forge.yaml declares `output: static`, on every static runtime;
+  * a frontend whose next.config is a static export, on every static runtime;
   * a `standalone` frontend on the dev server (forge.OnHost), which runs it
     and publishes nothing;
   * a frontend forge.yaml does not declare at all (a cross-repo `source`

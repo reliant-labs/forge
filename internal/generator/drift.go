@@ -23,7 +23,11 @@
 // policy — hence one probe.
 package generator
 
-import "github.com/reliant-labs/forge/internal/checksums"
+import (
+	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/checksums"
+)
 
 // tier2ManagedPathSet is a single-load cache of the Tier-2 managed path
 // set. It is constant for the binary's lifetime: Tier2ManagedPaths()
@@ -33,7 +37,7 @@ var tier2ManagedPathSet = Tier2ManagedPaths()
 // IsTier2Managed reports whether relPath's canonical template tier is
 // Tier-2 (user-owned after the first write). Hand-edits there are
 // sanctioned and must never be reported as drift.
-func IsTier2Managed(relPath string) bool { return tier2ManagedPathSet[relPath] }
+func IsTier2Managed(relPath string) bool { return tier2ManagedPathSet[filepath.ToSlash(relPath)] }
 
 // FilterTier2Managed drops drift entries for Tier-2-managed paths.
 func FilterTier2Managed(drift []Tier1DriftEntry) []Tier1DriftEntry {

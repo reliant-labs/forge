@@ -45,6 +45,12 @@
 //	map<K, scalar>                     JSONB NOT NULL DEFAULT '{}'
 //	nested message (same package)      JSONB NOT NULL DEFAULT '{}' ('[]' when
 //	                                   repeated, plain JSONB when optional)
+//	any of: scalar / enum / Timestamp  <type> NOT NULL GENERATED ALWAYS AS
+//	  + `// forge:generated <expr>`    (<expr>) STORED — no DEFAULT; nullable
+//	                                   when optional (and for a Timestamp);
+//	                                   an enum keeps its CHECK. Repeated, map,
+//	                                   oneof and JSONB fields are refused
+//	                                   (see GeneratedColumnRefusal)
 //
 // Deliberately carried as TODO comment lines inside the CREATE TABLE —
 // never silently dropped: oneof members, google.protobuf.* well-knowns
@@ -228,6 +234,7 @@ var protoSQLStructuralMappings = []ProtoSQLMapping{
 	{Proto: "google.protobuf.Timestamp", SQL: "TIMESTAMPTZ", Notes: "nullable; the REPEATED form is refused — an array of instants is an event list, give it its own table. BUCKETING WARNING: two-argument `date_trunc('day', col)` truncates a TIMESTAMPTZ in the SESSION timezone, which the driver sets from the client host — so every bucketed total moves with the deploy host, silently. Pin the zone: `date_trunc('day', col, 'UTC')`. See `forge lint --time-bucketing` and the `db` skill"},
 	{Proto: "nested message (same package)", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "'[]' when repeated; plain JSONB when optional"},
 	{Proto: "map<K, scalar>", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "maps with message or enum VALUES are refused — the CRUD generator emits no conversion for them"},
+	{Proto: "<field> // forge:generated <expr>", SQL: "<type> NOT NULL GENERATED ALWAYS AS (<expr>) STORED", Notes: "the expression is copied verbatim and applied to the shadow database before birth writes anything — postgres rejecting it fails the birth naming the marker's file and line; no DEFAULT; nullable when the field is optional (and for a Timestamp); an enum keeps its CHECK; single-valued scalar, enum and Timestamp fields only; the field is read-only (omitted from the born Create request)"},
 }
 
 // ProtoSQLMappings returns the full proto→column mapping the birth renderer
@@ -455,6 +462,101 @@ func emitEnumColumn(
 	}
 }
 
+// GeneratedColumnRefusal returns why a `// forge:generated` field cannot be
+// born as a GENERATED column, or "" when it can.
+//
+// The supported set is every field birth gives ONE single-valued column with
+// a mechanical conversion: a scalar (including a `<x>_id` reference), a
+// same-package enum with known values, and a singular Timestamp. Repeated,
+// map and nested-message fields are JSONB or array columns whose generated
+// form nobody has asked for; refusing them keeps the marker's meaning one
+// sentence long, and the owned migration takes any hand-written generated
+// column after birth. A field birth carries as a TODO has no column to
+// generate at all, and a managed column (id, created_at, …) is the
+// migration's own.
+//
+// Exported so the CLI refuses the birth BEFORE writing anything, naming the
+// marker's file and line; the renderer applies the same rule as a TODO.
+func GeneratedColumnRefusal(f codegen.SchemaFieldDef, spec EntityFromProtoSpec) string {
+	switch {
+	case managedEntityColumns[f.Name]:
+		return fmt.Sprintf("cannot apply to %s — the migration provides that managed column itself", f.Name)
+	case f.Oneof != "":
+		return fmt.Sprintf("cannot apply to a member of oneof %q — oneof members get no column", f.Oneof)
+	case f.Kind == "map", f.Repeated:
+		return "applies to single-valued fields only — a repeated or map field is an array/JSONB column; write its GENERATED form in the migration by hand"
+	case f.Kind == "enum":
+		if !strings.HasPrefix(f.TypeName, spec.ProtoPkg+".") {
+			return fmt.Sprintf("cannot apply to cross-package enum %s — it gets no column", f.TypeName)
+		}
+		if len(spec.Enums[f.TypeName]) == 0 {
+			return fmt.Sprintf("cannot apply to enum %s — it has no values in the descriptor (stale? run `forge generate`)", f.TypeName)
+		}
+		return ""
+	case f.Kind == "message":
+		if f.TypeName == "google.protobuf.Timestamp" {
+			return ""
+		}
+		return fmt.Sprintf("cannot apply to a %s field — only scalar, enum and Timestamp fields are born as GENERATED columns", f.TypeName)
+	}
+	if _, _, ok := scalarSQL(f.Kind); !ok {
+		return fmt.Sprintf("cannot apply to a field of kind %q — it gets no column", f.Kind)
+	}
+	return ""
+}
+
+// emitGeneratedColumn emits the column for one `// forge:generated <expr>`
+// field GeneratedColumnRefusal accepted, and reports whether it is a
+// `<x>_id` reference that joins the foreign-key plan.
+//
+// The column is the type the field would be born with anyway, minus the
+// DEFAULT (postgres refuses one on a generated column, and the expression is
+// the value), with GENERATED ALWAYS AS (<expr>) STORED in its place.
+//
+// NOT NULL follows the rule every other born column follows — proto3
+// presence IS the column's nullability — so a plain field is NOT NULL and an
+// `optional` one is nullable, as is a Timestamp, whose message type always
+// carries presence. The consequence is deliberate: an expression that
+// yields NULL for some row (it reads a nullable column, divides by a NULL)
+// fails that INSERT loudly instead of storing a NULL the non-optional wire
+// field cannot represent. Mark the field `optional` when NULL is a real
+// answer.
+//
+// protovalidate rules still project to CHECKs (postgres checks a generated
+// value like any other), and an enum keeps its vocabulary CHECK, so the
+// expression cannot produce a value the domain does not have.
+func emitGeneratedColumn(
+	f codegen.SchemaFieldDef,
+	spec EntityFromProtoSpec,
+	col func(string, ...any),
+	comment func(string, ...any),
+) (isRef bool) {
+	notNull := " NOT NULL"
+	if f.Optional || f.Kind == "message" {
+		notNull = ""
+	}
+	generated := fmt.Sprintf(" GENERATED ALWAYS AS (%s) STORED", f.Generated)
+	comment("-- %s: forge:generated — postgres computes it; no INSERT or UPDATE may write it.", f.Name)
+	switch f.Kind {
+	case "enum":
+		vocab := bornEnumVocabulary(spec.Enums[f.TypeName])
+		col("%s TEXT%s%s CHECK (%s IN (%s))", f.Name, notNull, generated, f.Name, quoteSQLList(vocab))
+		return false
+	case "message": // google.protobuf.Timestamp — GeneratedColumnRefusal admits no other
+		col("%s TIMESTAMPTZ%s", f.Name, generated)
+		return false
+	}
+	sqlType, _, _ := scalarSQL(f.Kind)
+	checkSuffix := ""
+	if f.Validate.HasAny() {
+		if cs := f.Validate.SQLChecks(f.Name, f.Kind); len(cs) > 0 {
+			checkSuffix = " " + strings.Join(cs, " ")
+		}
+	}
+	col("%s %s%s%s%s", f.Name, sqlType, notNull, generated, checkSuffix)
+	return f.Kind == "string" && strings.HasSuffix(f.Name, "_id")
+}
+
 // RenderEntityMigrationFromProto renders the create-table migration pair
 // for one already-authored proto message, per the mapping table in the
 // file header. Pure: no filesystem, no descriptor loading — the CLI owns
@@ -487,6 +589,20 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 	for _, f := range spec.Fields {
 		if managedEntityColumns[f.Name] {
 			notes = append(notes, fmt.Sprintf("field %s: managed by convention — the migration provides it; skipped from the mapped columns", f.Name))
+			continue
+		}
+
+		if f.Generated != "" {
+			// The CLI refuses an unsupported generated field before it ever
+			// renders; this TODO is the renderer's own refusal to emit a
+			// plain column in silence should a caller skip that check.
+			if reason := GeneratedColumnRefusal(f, spec); reason != "" {
+				todo(f, "`forge:generated` "+reason)
+				continue
+			}
+			if emitGeneratedColumn(f, spec, col, comment) {
+				fks = append(fks, f.Name)
+			}
 			continue
 		}
 

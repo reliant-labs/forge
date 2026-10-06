@@ -213,6 +213,55 @@ func TestListRequestScaffoldsEnumAndForeignKeyFacets(t *testing.T) {
 	}
 }
 
+// A NULLABLE reference is a facet like any other. The roofers Job carried
+//
+//	optional string crew_id = 7;  // forge:read-only
+//
+// and its born ListJobsRequest filtered by customer_id and property_id but
+// not crew_id: the facet gate skipped every `optional` field, which is
+// exactly the shape a reference takes while the relationship is not yet
+// made (a job is unassigned until dispatch). The read-only marker played no
+// part — it shapes the Create request, never the List one — so it rides
+// along here to pin that too. Optional enums and bools were dropped the
+// same way.
+func TestListRequestScaffoldsFacetsForNullableFields(t *testing.T) {
+	defs := []codegen.SchemaFieldDef{
+		{Name: "customer_id", Kind: "string"},
+		{Name: "crew_id", Kind: "string", Optional: true, ReadOnly: true},
+		{Name: "priority", Kind: "enum", TypeName: "services.jobs.v1.JobPriority", Optional: true},
+		{Name: "warranty", Kind: "bool", Optional: true},
+		{Name: "site_notes", Kind: "string", Optional: true},
+		{Name: "photo_ids", Kind: "string", Repeated: true},
+	}
+	fields, _ := entityFieldsFromSchemaDefs("services.jobs.v1", defs)
+
+	var listReq string
+	for _, p := range buildEntityCRUDMessagePieces("Job", fields) {
+		if p.name == "ListJobsRequest" {
+			listReq = p.text
+		}
+	}
+	if listReq == "" {
+		t.Fatal("ListJobsRequest piece not built")
+	}
+	for _, want := range []string{
+		"optional string customer_id",
+		"optional string crew_id",
+		"optional JobPriority priority",
+		"optional bool warranty",
+		// A nullable text column is still text the search spans.
+		"optional string search",
+	} {
+		if !strings.Contains(listReq, want) {
+			t.Errorf("ListJobsRequest is missing %q:\n%s", want, listReq)
+		}
+	}
+	// A repeated field has no single value to match exactly.
+	if strings.Contains(listReq, "photo_ids") {
+		t.Errorf("a repeated field must not get a facet:\n%s", listReq)
+	}
+}
+
 // A plain text column is spanned by `search` and must NOT also get its own
 // exact-match facet: an exact match on free text is not a filter anyone wants,
 // and it would collide with the search span over the same column.

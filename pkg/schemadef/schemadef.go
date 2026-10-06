@@ -660,19 +660,87 @@ func ApplyAndIntrospectShadowAt(migDir, baseURL string) ([]Table, *Shadow, error
 		return nil, nil, fmt.Errorf("open postgres shadow db: %w", err)
 	}
 	shadow := &Shadow{db: db, cleanup: cleanup}
-
-	for _, name := range ups {
-		raw, rerr := os.ReadFile(filepath.Join(migDir, name))
-		if rerr != nil {
-			return nil, shadow, fmt.Errorf("read migration %s: %w", name, rerr)
-		}
-		if aerr := applyMigration(db, string(raw)); aerr != nil {
-			return nil, shadow, fmt.Errorf("apply migration %s to shadow schema: %w", name, aerr)
-		}
+	if err := applyMigrationFiles(db, migDir, ups); err != nil {
+		return nil, shadow, err
 	}
 
 	tables, err := introspect(db)
 	return tables, shadow, err
+}
+
+// OpenShadowAt opens a scratch shadow database with every migration under
+// migDir applied and returns it live: the replay ApplyAndIntrospectShadowAt
+// performs, without the introspection. Unlike that function it opens a shadow
+// even when migDir holds no migrations yet (or does not exist) — a project's
+// FIRST migration is exactly the one a caller wants to try against postgres
+// before writing it.
+//
+// A non-nil *Shadow is returned whenever one was opened, INCLUDING on a
+// replay error, so the caller's deferred Close always reclaims the scratch
+// database.
+func OpenShadowAt(migDir, baseURL string) (*Shadow, error) {
+	ups, err := upMigrations(migDir)
+	if err != nil {
+		return nil, err
+	}
+	db, cleanup, err := openShadow(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres shadow db: %w", err)
+	}
+	shadow := &Shadow{db: db, cleanup: cleanup}
+	return shadow, applyMigrationFiles(db, migDir, ups)
+}
+
+// TryApply runs sqlText against the shadow inside a transaction that is
+// ALWAYS rolled back, and returns postgres's verdict on it: nil when every
+// schema-defining statement applied, else the first one's error, unwrapped,
+// so the caller can attribute it. The shadow is left exactly as it was, so
+// one shadow answers any number of "would this migration apply?" questions —
+// postgres DDL is transactional, which is what makes the rollback complete.
+//
+// The statement policy is applyMigration's: a statement that cannot affect
+// the table/column model (a function, a COMMENT, a trigger) may fail without
+// failing the try. Each one runs under its own savepoint so its failure does
+// not abort the transaction around the statements that do count.
+func (s *Shadow) TryApply(ctx context.Context, sqlText string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin shadow transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for i, stmt := range SplitStatements(sqlText) {
+		if isSchemaDefining(stmt) {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+			continue
+		}
+		savepoint := fmt.Sprintf("forge_try_apply_%d", i)
+		if _, err := tx.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
+			return fmt.Errorf("shadow savepoint: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			if _, rerr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); rerr != nil {
+				return fmt.Errorf("shadow rollback to savepoint: %w", rerr)
+			}
+		}
+	}
+	return nil
+}
+
+// applyMigrationFiles replays the named *.up.sql files under migDir, in the
+// order given, onto db.
+func applyMigrationFiles(db *sql.DB, migDir string, ups []string) error {
+	for _, name := range ups {
+		raw, rerr := os.ReadFile(filepath.Join(migDir, name))
+		if rerr != nil {
+			return fmt.Errorf("read migration %s: %w", name, rerr)
+		}
+		if aerr := applyMigration(db, string(raw)); aerr != nil {
+			return fmt.Errorf("apply migration %s to shadow schema: %w", name, aerr)
+		}
+	}
+	return nil
 }
 
 // openShadow creates the ephemeral shadow database: a scratch DB on the

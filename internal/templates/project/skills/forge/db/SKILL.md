@@ -43,7 +43,7 @@ CRUD RPCs without a table generate **nothing** — honest stubs, no pages, no OR
 
 **The proto is the only place an entity is declared.** Write the message under a leading `// forge:entity` comment, then run bare `forge scaffold` (`--dry-run` plans; `--service <svc>` narrows): it births every marked message — missing CRUD quintet + owned migration pair — and generates, stubbing each custom RPC pb-through. The marker is consumed at birth only; once the table exists it is inert and evolution is a new migration. Envelope messages are refused even when marked.
 
-There is no CLI field grammar (`forge scaffold entity <name> <field:type ...>` is refused, printing the equivalent message for you): everything an entity needs — enums, `optional` for nullable, `buf.validate` rules, `// forge:read-only` / `// forge:secret` / `// forge:append-only`, and real foreign keys — can only be spelled in the message.
+There is no CLI field grammar (`forge scaffold entity <name> <field:type ...>` is refused, printing the equivalent message for you): everything an entity needs — enums, `optional` for nullable, `buf.validate` rules, `// forge:read-only` / `// forge:secret` / `// forge:append-only`, a same-row derived column (`// forge:generated <expr>`), and real foreign keys — can only be spelled in the message.
 
 `forge project annotations --kind field --json` is the **authoritative annotation spec** — the proto→column mapping a birth applies, every marker, and the `buf.validate` rules with their db/zod effects. It derives from forge's own renderer, recognizers and descriptors, so trust it over any table, including this one. A rule it omits (`const`, `uuid`, CEL) is still wire-enforced, just not projected.
 
@@ -68,9 +68,10 @@ Everything a marker adds lands in the **user-owned birth migration**, never a fo
 - **`// forge:append-only`** — a real **DB trigger** in the birth migration raises on any `UPDATE`/`DELETE`, so no bug or compromised caller can rewrite history. The CRUD quintet completes to Create/Get/List only.
 - **`// forge:secret`** — the column stays real schema truth and settable on Create/Update; only the read path (`<entity>ToProto`) drops it.
 - **`// forge:read-only`** — the input-side mirror: readable but not client-writable (status, computed price, a lifecycle timestamp). The born Create omits it; the generated Update preserves it on a full replace and refuses an `update_mask` naming it (every `forge generate`; vs `forge:immutable`: `db/write-policy`). Your RPCs write it via `db.Update<Entity>Masked`; give the column a DB `DEFAULT` or the first insert lands the zero. Mark it up front: the born `new/page.tsx`, edit form and `handlers_crud_test.go` leave it out.
+- **`// forge:generated <expr>`** — births `<col> <type> NOT NULL GENERATED ALWAYS AS (<expr>) STORED`, the rest of the comment line copied verbatim (NOT NULL unless `optional`; implies `forge:read-only`). Birth tries it against the shadow database first and refuses, at the marker's file and line, an expression postgres rejects. See `db/derived-values`.
 - **`// forge:soft-delete`** — **OPT-IN**: unmarked entities get no `deleted_at` and hard-delete. Beyond the read filter, `ListAll<Entities>` returns tombstones. The `--soft-delete` flag and a message already carrying a `deleted_at` field do the same thing.
 
-Proto → SQL, in both birth forms: scalars to `NOT NULL` columns with zero defaults, `optional` to nullable, enums to `TEXT` + `CHECK (col IN (...))` (DEFAULT = first non-`_UNSPECIFIED` member), repeated scalars to arrays, maps/nested messages to `JSONB`, and an `*_id` string whose stem resolves to a real entity to `TEXT` + an applied `REFERENCES` and index. oneof/`Any`/cross-package fields become TODO comment lines, never silently dropped. Envelopes — Request/Response messages, anything carrying `page_size`/`page_token`/`update_mask` — are refused.
+Proto → SQL, in both birth forms: scalars to `NOT NULL` columns with zero defaults, `optional` to nullable, enums to `TEXT` + `CHECK (col IN (...))` (DEFAULT = first non-`_UNSPECIFIED` member), repeated scalars to arrays, maps/nested messages to `JSONB`, an `*_id` string whose stem resolves to a real entity to `TEXT` + an applied `REFERENCES` and index, and a `// forge:generated <expr>` field to the same type with `GENERATED ALWAYS AS (<expr>) STORED` in place of its DEFAULT. oneof/`Any`/cross-package fields become TODO comment lines, never silently dropped. Envelopes — Request/Response messages, anything carrying `page_size`/`page_token`/`update_mask` — are refused.
 
 ### Column write policy — ownership, immutability, concurrency
 
@@ -150,21 +151,9 @@ The columns ARE the declaration. The generators read these off the introspected 
 | text columns | spanned by the generated list `search` filter |
 | `GENERATED ALWAYS AS (…) STORED` | derived column: postgres maintains it, the ORM excludes it from writes, and the seeder skips it |
 
-### A value derived from the SAME row is a generated column
+### A derived value is generated, or written by its owner
 
-`total = subtotal + tax`, `line_total = quantity * unit_price`, `balance = amount - amount_paid`. Declare the derivation; do not assert it and then maintain it by hand:
-
-```sql
--- YES: the database computes it, always, for every writer.
-total_cents BIGINT GENERATED ALWAYS AS (subtotal_cents + tax_cents) STORED
-
--- NO: states the rule without implementing it. Nothing computes the column,
--- so it sits at its DEFAULT and every INSERT violates the CHECK.
-total_cents BIGINT NOT NULL DEFAULT 0,
-CONSTRAINT total_is_subtotal_plus_tax CHECK (total_cents = subtotal_cents + tax_cents)
-```
-
-The CHECK version costs you the whole chain: forge's write envelopes exclude the column (correctly — no client should assert it), so nothing writes it; `forge db seed` warns it cannot place the value; and the fix people reach for is hand-written CRUD overrides that every future entity needs too. The generated column needs none of that, and no CHECK — the equality is true by construction.
+Derived from the SAME row (`line_total = quantity * unit_price`) → a `GENERATED ALWAYS AS (…) STORED` column, declared at birth with `// forge:generated <expr>`; never a plain column plus a CHECK asserting the equality, which nothing ever satisfies. Derived from OTHER rows (`amount_paid` summing `payments`) → a plain column marked `// forge:computed`, written by the RPC that owns the change. Load `db/derived-values` for the postgres rules a generated expression must meet (birth checks them) and worked examples.
 
 ### A status-lifecycle rule is an implication, not a biconditional
 
@@ -187,8 +176,6 @@ columns are drawn independently. `apply` is one transaction, so the cost is the
 entire dev dataset. Enforce the mirror half (not approved ⇒ NULL stamp) in the
 RPC that owns the transition — it is a single-writer invariant. Full reasoning
 and the mixing rule are in the `db/seeding` skill.
-
-**Derived from OTHER ROWS is the other case, and no generated column can express it.** An invoice's `amount_paid` summing a `payments` table, a job's cost rolling up its materials: postgres cannot reach another table from a generated column. Keep the column plain, mark the proto field `// forge:computed`, and write it from the RPC that owns the change (no CRUD Update writes it) — `forge lint --computed-fields` then holds you to it and fails if nothing assigns it.
 
 ## Just write postgres
 

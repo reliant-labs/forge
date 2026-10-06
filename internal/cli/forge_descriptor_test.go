@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 
+	"google.golang.org/protobuf/compiler/protogen"
+
 	"github.com/reliant-labs/forge/internal/codegen"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 )
@@ -200,6 +202,39 @@ func TestReadOnlyFieldMarkerRE(t *testing.T) {
 	for _, s := range noMatch {
 		if readOnlyFieldMarkerRE.MatchString(s) {
 			t.Errorf("did not expect read-only marker to match %q", s)
+		}
+	}
+	// forge:generated puts a field off the write surface on this pass too.
+	if !readOnlyFieldMarkerRE.MatchString(" forge:generated a - b\n") {
+		t.Error("forge:generated must be read-only on the descriptor path")
+	}
+}
+
+// TestFieldGeneratedExpr pins the descriptor-side expression extractor: the
+// same rest-of-line rule as the raw scanner, from either comment position,
+// so `forge scaffold entity --from-proto <svc>.<Message>` births the column
+// a bare `forge scaffold` would.
+func TestFieldGeneratedExpr(t *testing.T) {
+	field := func(leading, trailing string) *protogen.Field {
+		return &protogen.Field{Comments: protogen.CommentSet{
+			Leading:  protogen.Comments(leading),
+			Trailing: protogen.Comments(trailing),
+		}}
+	}
+	cases := []struct {
+		name string
+		f    *protogen.Field
+		want string
+	}{
+		{"trailing", field("", " forge:generated round(quantity * unit_price_cents)::BIGINT\n"), "round(quantity * unit_price_cents)::BIGINT"},
+		{"leading under prose", field(" What is left to pay.\n forge:generated amount_cents - amount_paid_cents\n", ""), "amount_cents - amount_paid_cents"},
+		{"leading read-only, trailing generated", field(" forge:read-only\n", " forge:generated a * 2\n"), "a * 2"},
+		{"no expression", field("", " forge:generated\n"), ""},
+		{"unmarked", field(" just prose\n", ""), ""},
+	}
+	for _, c := range cases {
+		if got := fieldGeneratedExpr(c.f); got != c.want {
+			t.Errorf("%s: fieldGeneratedExpr = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

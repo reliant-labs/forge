@@ -125,6 +125,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caps at 100% unless you pass `max`. Plain library functions: codegen does not
   infer money from field names. A forge app (roofers) hand-wrote these, along
   with a per-page `bpsToPercentInput`.
+- **`// forge:generated <expr>` births a GENERATED column.** The db skill says a
+  value derived from the same row should be `GENERATED ALWAYS AS (…) STORED`,
+  but birth could only emit `BIGINT NOT NULL DEFAULT 0`, so the owned
+  migration was hand-edited straight after every birth (`line_total_cents`,
+  `tax_cents`, `balance_cents` in the roofers run). Write the expression on the
+  field instead: `int64 line_total_cents = 9; // forge:generated
+  round(quantity * unit_price_cents)::BIGINT`. The rest of the comment line is
+  copied verbatim into `<col> <type> NOT NULL GENERATED ALWAYS AS (<expr>)
+  STORED`. NOT NULL follows the presence rule every born column follows:
+  dropped for an `optional` field and for a Timestamp, so an expression that
+  yields NULL for a plain field fails the write rather than storing a value
+  the wire cannot carry. There is no DEFAULT; an enum keeps its CHECK and
+  protovalidate rules still project. The marker implies `forge:read-only`: the
+  field leaves the born Create request, and the generated Update refuses an
+  `update_mask` naming it. Before writing anything, birth applies the rendered
+  migration to the shadow database inside a rolled-back transaction. An
+  expression postgres rejects refuses the birth, naming the marker's file and
+  line with postgres's message, and leaves the proto untouched: an unknown
+  column, a non-`IMMUTABLE` function such as `now()`, or one generated column
+  reading another (both are named). So does a marker with no expression, two
+  markers on one field, or a repeated/map/oneof/JSONB field. Supported fields
+  are single-valued scalars, enums and Timestamps. The descriptor carries the
+  expression too (`SchemaFieldDef.Generated`), so `forge scaffold entity
+  --from-proto <svc>.<Message>` births the same column as bare `forge
+  scaffold`. `forge project annotations` lists the marker and the mapping row.
+  `pkg/schemadef` gains `OpenShadowAt` and `(*Shadow).TryApply` for asking
+  postgres whether SQL would apply without changing the shadow.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
   `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
   context.Context) error)` runs fn in a transaction carried by the ctx it
@@ -268,6 +295,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comes from the Connect method descriptor, so `mock-transport_gen.ts` is
   unchanged. Custom (non-CRUD) RPCs are still answered only by scenario
   handlers.
+- **Born List requests filter by `optional` fields too.** Quintet completion
+  gave a List facet to every bool, enum and `<stem>_id` reference except an
+  `optional` one, so the nullable reference was the one FK a born list could
+  not filter by (`optional string crew_id` on the roofers `Job`, unassigned
+  until dispatch, while `customer_id` and `property_id` got facets). The
+  `forge:read-only` marker on it played no part. The facet gate predated FK and
+  enum facets and skipped every field with presence, though a facet is
+  `optional` on the request either way. An optional reference, enum or bool now
+  gets its facet, and a nullable text column counts toward `search`. The
+  generated filter is unchanged: `col = $1`, which rows holding NULL never
+  match. Matching the NULL rows ("jobs with no crew") is not a facet; add a
+  request field and filter in the op. Born once: an existing List request
+  gains nothing, so add the field by hand.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

@@ -75,7 +75,8 @@ var (
 )
 
 // readOnlyFieldMarkerRE matches the FIELD-level read-only markers
-// (ReadOnlyProtoMarkers: `// forge:read-only` and `// forge:computed`), in
+// (ReadOnlyProtoMarkers: `// forge:read-only`, `// forge:computed` and
+// `// forge:generated`, whose expression GeneratedMarkerExpr reads), in
 // two spellings the scanner accepts: a full-line comment PRECEDING the
 // field (the documented site, mirroring the entity markers) or a TRAILING
 // inline comment (`string status = 4; // forge:read-only`). It is anchored
@@ -129,12 +130,21 @@ type RawProtoMessage struct {
 	// (their own space). An appended field takes MaxFieldNumber+1 and can
 	// therefore never collide with, or renumber, what the author wrote.
 	MaxFieldNumber int
-	// UnappliedReadOnlyMarkers are `// forge:read-only` markers written
-	// inside this message that attached to NO captured field. A marker the
-	// scanner cannot honour must never be dropped in silence — the author
-	// believes the field is off the write surface and it would ship on the
-	// born Create request — so birth refuses the entity and names the site.
+	// UnappliedReadOnlyMarkers are read-only-family field markers
+	// (ReadOnlyProtoMarkers: `// forge:read-only`, `// forge:computed`,
+	// `// forge:generated`) written inside this message that attached to NO
+	// captured field. A marker the scanner cannot honour must never be
+	// dropped in silence — the author believes the field is off the write
+	// surface and it would ship on the born Create request — so birth
+	// refuses the entity and names the site.
 	UnappliedReadOnlyMarkers []RawProtoMarkerSite
+	// GeneratedMarkers are the `// forge:generated <expr>` markers bound to
+	// a field of this message, one per marker, in declaration order. The
+	// expression also lands on the field (SchemaFieldDef.Generated); this
+	// ledger adds the SITE, so a birth that refuses the expression — empty,
+	// on a field with no single column, or rejected by postgres — names the
+	// file and line the author has to fix.
+	GeneratedMarkers []GeneratedFieldMarker
 	// RetiredMarkers are `forge:*` spellings written inside this message
 	// that forge USED to recognize and deliberately removed
 	// (RemovedProtoMarkers) — today they read as ordinary prose and do
@@ -183,6 +193,18 @@ type RawProtoMarkerSite struct {
 // String renders the site as `<file>:<line>: <source line>`.
 func (s RawProtoMarkerSite) String() string {
 	return fmt.Sprintf("%s:%d: %s", filepath.Base(s.File), s.Line, s.Text)
+}
+
+// GeneratedFieldMarker is one `// forge:generated <expr>` marker the raw scan
+// bound to a field.
+type GeneratedFieldMarker struct {
+	// Field is the proto field name the marker attached to.
+	Field string
+	// Expr is the SQL expression, verbatim ("" when the marker carried
+	// none — birth refuses that).
+	Expr string
+	// Site locates the marker in its .proto file.
+	Site RawProtoMarkerSite
 }
 
 // RawProtoRPC is one rpc declaration captured by the raw scan.
@@ -282,6 +304,7 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 		oneof     string
 		options   string // trailing `[...]` inline options (buf.validate rules)
 		readOnly  bool   // carries a `// forge:read-only` leading/trailing marker
+		generated string // the `// forge:generated <expr>` expression, if any
 	}
 	type rawMessage struct {
 		msg    *RawProtoMessage
@@ -327,8 +350,11 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 		// FIELD-level marker: a leading `// forge:read-only` comment line is
 		// pending until the very next captured field consumes it (the trailing
 		// inline spelling is read off the field's own statement instead).
+		// Several marker lines may stack above one field (`// forge:read-only`
+		// over `// forge:generated …`), so every pending site is kept: the
+		// field consumes them all, and none is reported as unapplied.
 		pendingFieldReadOnly := false
-		pendingFieldReadOnlyAt := -1 // byte offset of the pending marker
+		var pendingFieldReadOnlyAt []int // byte offsets of the pending markers
 
 		// Every `// forge:read-only` occurrence in this file, and which of
 		// them a field actually consumed. Whatever is left over is a marker
@@ -368,7 +394,8 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 					// FIELD-level marker on its own line: attaches to the next
 					// captured field, NOT to the message (never tablizes).
 					pendingFieldReadOnly = true
-					pendingFieldReadOnlyAt = lineOffset + readOnlyFieldMarkerRE.FindStringIndex(line)[0]
+					pendingFieldReadOnlyAt = append(pendingFieldReadOnlyAt,
+						lineOffset+readOnlyFieldMarkerRE.FindStringIndex(line)[0])
 				}
 				continue // comment line — a pending marker survives
 			}
@@ -496,29 +523,47 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 							if top.kind == "oneof" {
 								oneofName = top.name
 							}
-							// A `// forge:read-only` marker LEADING this field
-							// (pending) or TRAILING its declaration. Either way the
-							// marker's site is recorded as consumed.
-							takeReadOnly := func(fieldName string) bool {
-								got := false
+							// The read-only-family markers LEADING this field
+							// (pending) or TRAILING its declaration. Either way each
+							// marker's site is recorded as consumed, and a
+							// `forge:generated` one also yields its expression and
+							// joins the message's site ledger.
+							takeReadOnly := func(fieldName string) (readOnly bool, generated string) {
+								sites := []int{}
 								if pendingFieldReadOnly {
-									consumedReadOnly[pendingFieldReadOnlyAt] = true
-									got = true
+									sites = append(sites, pendingFieldReadOnlyAt...)
 								}
 								if off, ok := rawFieldTrailingReadOnly(restFromLine, fieldName); ok {
-									consumedReadOnly[lineOffset+off] = true
-									got = true
+									sites = append(sites, lineOffset+off)
 								}
-								return got
+								for _, at := range sites {
+									consumedReadOnly[at] = true
+									readOnly = true
+									expr, isGenerated := GeneratedMarkerExpr(commentAt(content, at))
+									if !isGenerated {
+										continue
+									}
+									if generated == "" {
+										generated = expr
+									}
+									currentMsg.msg.GeneratedMarkers = append(currentMsg.msg.GeneratedMarkers, GeneratedFieldMarker{
+										Field: fieldName,
+										Expr:  expr,
+										Site:  RawProtoMarkerSite{File: path, Line: lineNumberAt(content, at), Text: sourceLineAt(content, at)},
+									})
+								}
+								return readOnly, generated
 							}
 							if m := rawMapFieldRE.FindStringSubmatch(trimmed); m != nil {
+								readOnly, generated := takeReadOnly(m[3])
 								currentMsg.fields = append(currentMsg.fields, rawField{
 									typeToken: "map", mapKey: m[1], mapValue: m[2], name: m[3], oneof: oneofName,
-									readOnly: takeReadOnly(m[3]),
+									readOnly: readOnly, generated: generated,
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
-								pendingFieldReadOnly = false
+								pendingFieldReadOnly, pendingFieldReadOnlyAt = false, nil
 							} else if m := rawFieldRE.FindStringSubmatch(trimmed); m != nil {
+								readOnly, generated := takeReadOnly(m[3])
 								currentMsg.fields = append(currentMsg.fields, rawField{
 									label: strings.TrimSpace(m[1]), typeToken: m[2], name: m[3], oneof: oneofName,
 									// Read inline options off the ORIGINAL text (strings
@@ -526,11 +571,12 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 									// brace-safety, which would erase a `pattern = "..."`.
 									// restFromLine (not `line`) so a braced value spanning
 									// several physical lines is captured whole.
-									options:  findInlineOptions(restFromLine, m[3]),
-									readOnly: takeReadOnly(m[3]),
+									options:   findInlineOptions(restFromLine, m[3]),
+									readOnly:  readOnly,
+									generated: generated,
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
-								pendingFieldReadOnly = false
+								pendingFieldReadOnly, pendingFieldReadOnlyAt = false, nil
 							}
 						}
 					}
@@ -575,7 +621,7 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 				// only: any non-field statement (a decl, an enum value) drops it.
 				// Comment/blank lines `continue` above without reaching here, so
 				// the marker still survives those between it and its field.
-				pendingFieldReadOnly = false
+				pendingFieldReadOnly, pendingFieldReadOnlyAt = false, nil
 			}
 		}
 
@@ -703,6 +749,9 @@ func ScanRawProtoDir(dir string) (*RawProtoScan, error) { //nolint:gocognit,funl
 			// `// forge:read-only` — carried so the born Create/Update
 			// request messages omit this non-client-writable field.
 			def.ReadOnly = f.readOnly
+			// `// forge:generated <expr>` — the born column is
+			// GENERATED ALWAYS AS (<expr>) STORED.
+			def.Generated = f.generated
 			rm.msg.Fields = append(rm.msg.Fields, def)
 		}
 		scan.Messages = append(scan.Messages, *rm.msg)
@@ -745,6 +794,19 @@ func lineNumberAt(content string, off int) int {
 		off = len(content)
 	}
 	return strings.Count(content[:off], "\n") + 1
+}
+
+// commentAt returns content from byte offset `off` to the end of that line —
+// the comment a marker site starts, with its leading `//`.
+func commentAt(content string, off int) string {
+	if off > len(content) {
+		return ""
+	}
+	rest := content[off:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		return rest[:nl]
+	}
+	return rest
 }
 
 // sourceLineAt returns the trimmed source line containing byte offset `off`.

@@ -83,9 +83,9 @@ message Customer {
 ```
 
 There is no CLI field grammar — enums, `optional` (nullable), `buf.validate`
-rules, `forge:read-only` / `forge:secret` / `forge:append-only` and foreign-key
-references are all spelled in the message. Full vocabulary:
-`forge project annotations`.
+rules, `forge:read-only` / `forge:secret` / `forge:append-only`, a same-row
+derived column (`forge:generated <sql expr>`) and foreign-key references are
+all spelled in the message. Full vocabulary: `forge project annotations`.
 
 `protovalidate` vendors itself: add `import "buf/validate/validate.proto";` and
 `forge generate` pulls the protos into your `proto/` tree on the first run that

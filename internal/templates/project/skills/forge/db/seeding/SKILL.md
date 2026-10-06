@@ -323,6 +323,15 @@ warning for a demo database where every money column reads zero.
 untouched, so a failed run is always safe to retry and never leaves a
 half-populated dev database behind.
 
+**The same planner builds your test factories — in MINIMAL mode.** The dev
+dataset fills every column and rotates through every union branch; the
+regenerated `New<Entity>` / `New<CreateRequest>` factories (see `testing`) write
+only what the schema requires — keys, NOT NULL columns without a usable
+DEFAULT, NOT NULL references — leave the rest to DEFAULT or NULL, and take the
+guard branch that keeps the status at its DEFAULT. So the implications above,
+and a column made `GENERATED`, are safe to add to the birth migration right
+after scaffolding: the next `forge generate` re-derives every test row.
+
 ## Two paths to one parent (`forge:ref`)
 
 When an entity reaches the same parent **two ways** — `orders.patient_id` and

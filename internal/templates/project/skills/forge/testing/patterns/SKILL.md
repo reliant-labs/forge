@@ -54,7 +54,7 @@ func TestCreateUser(t *testing.T) {
 
 Scaffold contract: forge-generated rows assert `WantErr: connect.CodeUnimplemented` and are SELF-DESTRUCTING — they fail the moment the handler is implemented, forcing real `Check`/`WantErr` assertions to replace them. There is deliberately no "any outcome" mode in `pkg/tdd`: every row must be able to fail.
 
-When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) drives the same in-process service against a real migrated DB — `<pkg>.NewTest<Svc>(t, <pkg>.WithDB(db))`, then `svc.Create<Entity>(ctx, connect.NewRequest(...))`. (`<pkg>.NewTest<Svc>Server(t)` exists too, returning an `httptest.Server` + typed client, for tests that need the wire.) A handler's own access checks live in the handler, so exercise them the same way as any other branch: drive the handler with claims that hold — or lack — what the check requires via `<pkg>.AuthedContext(t, testkit.WithRoles(...), testkit.WithOrgID(...))` and assert the `CodePermissionDenied` / `CodeNotFound` outcome.
+When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) drives the same in-process service against a real migrated DB — `<pkg>.NewTest<Svc>(t, <pkg>.WithDB(db))`, then `svc.Create<Entity>(ctx, connect.NewRequest(<pkg>.NewCreate<Entity>Request(t, db, 0)))`. (`<pkg>.NewTest<Svc>Server(t)` exists too, returning an `httptest.Server` + typed client, for tests that need the wire.) A handler's own access checks live in the handler, so exercise them the same way as any other branch: drive the handler with claims that hold — or lack — what the check requires via `<pkg>.AuthedContext(t, testkit.WithRoles(...), testkit.WithOrgID(...))` and assert the `CodePermissionDenied` / `CodeNotFound` outcome.
 
 ## Pattern 2: Contract test (use `tdd.TableContract`)
 
@@ -174,6 +174,29 @@ func TestNamingPascalCase(t *testing.T) {
 ```
 
 When to use: pure functions, formatters, parsers, naming helpers. Anything that takes data in and returns data out with no side effects.
+
+## Pattern 5: Test rows come from the generated factories
+
+A DB-backed test needs rows. Never write them as literal SQL or hand-filled request structs in a file forge does not regenerate — the schema keeps moving (a column becomes `GENERATED`, a one-way status `CHECK` lands) and the literals rot. Use the factories forge regenerates from the applied schema into `internal/handlers/<svc>/factories_gen_test.go` (`package <svc>`, so they are callable unqualified from internal tests and as `<svc>.X` from `<svc>_test`):
+
+```go
+db := orders.NewMigratedTestDB(t)
+
+// A minimal valid row at its initial lifecycle state: NOT NULL columns
+// without a DEFAULT and FK parents filled, everything else DEFAULT/NULL,
+// every CHECK satisfied. Override only what the test asserts on.
+o := orders.NewOrder(t, db, func(x *db.Order) { x.Notes = "rush" })
+
+// A create request the schema accepts, its FK parents already seeded.
+// Variants 0 and 1 are distinct rows (UNIQUE columns differ).
+req := orders.NewCreateOrderRequest(t, db, 0)
+req.Notes = "rush"
+resp, err := svc.CreateOrder(ctx, connect.NewRequest(req))
+```
+
+To move a row along its lifecycle, override the status AND the columns the state requires (`x.Status = "SHIPPED"; x.ShippedAt = &now`) — or, better, drive the RPC that owns the transition. A factory forge cannot derive a valid row for still compiles; calling it fails the test with postgres's reason, which `forge generate` also prints.
+
+**Migrating an older lifecycle test.** Lifecycle tests scaffolded before the factories embed a literal `INSERT` seed block and literal `&pb.Create<Entity>Request{...}` values. `forge lint --fixture-drift` executes that SQL against the current schema and reports each statement postgres rejects. The file is yours: delete the seed block and replace each literal create request with `<svc>.NewCreate<Entity>Request(t, db, 0)` / `(t, db, 1)` — exactly what a freshly scaffolded test does.
 
 ## Library helpers cheat sheet
 

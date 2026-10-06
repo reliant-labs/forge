@@ -94,10 +94,13 @@ Two properties of that placement are load-bearing:
   augmented package — so the helpers are usable from BOTH internal and
   external test files in that directory, and from nowhere else.
 
-Typed entity factories (`New<Entity>(t, db, …)`) land beside the handler whose
-CRUD RPCs own that entity, as `internal/handlers/<svc>/factories_gen_test.go` —
-same package clause, same visibility rule as the harness above. Tests in that
-directory call `NewItem(t, db)` unqualified; a test elsewhere drives the entity
-through its RPCs rather than seeding rows behind them.
+Typed entity factories (`New<Entity>(t, db, …)`, a minimal valid row) and
+create-request factories (`New<CreateRequest>(t, db, variant)`) land beside the
+handler whose CRUD RPCs own that entity, as
+`internal/handlers/<svc>/factories_gen_test.go` — regenerated from the applied
+schema every run, same package clause, same visibility rule as the harness
+above. Tests in that directory call `NewItem(t, db)` unqualified; a test
+elsewhere drives the entity through its RPCs rather than seeding rows behind
+them.
 
 See the `testing/patterns` skill for the canonical patterns.

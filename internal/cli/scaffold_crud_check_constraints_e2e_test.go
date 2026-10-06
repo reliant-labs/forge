@@ -152,11 +152,13 @@ func TestE2ECRUDFixtureSatisfiesCheckConstraints(t *testing.T) {
 		t.Fatalf("lifecycle test was not scaffolded against the constrained schema:\n%s", crudTest)
 	}
 
-	// The fixtures must NOT be the type-blind placeholders the run shipped.
-	// This is a property of the DERIVATION (a placeholder is the emitter's own
-	// stamp for "I invented this"), not a hardcoded expected value.
+	// The fixtures live in the regenerated factory, and must NOT be the
+	// type-blind placeholders the run shipped. This is a property of the
+	// DERIVATION (a placeholder is the emitter's own stamp for "I invented
+	// this"), not a hardcoded expected value.
+	factories := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "storefront", "factories_gen_test.go"))
 	for _, dead := range []string{`"sample_customer_email_1"`, `"sample_shipping_country_1"`} {
-		if strings.Contains(crudTest, dead) {
+		if strings.Contains(factories, dead) {
 			t.Errorf("fixture %s violates its own CHECK and was emitted anyway", dead)
 		}
 	}
@@ -167,9 +169,14 @@ func TestE2ECRUDFixtureSatisfiesCheckConstraints(t *testing.T) {
 }
 
 // TestE2ECRUDFixtureGuardFailsLoudlyOnUninvertibleCheck pins the other half of
-// the contract: when the derivation CANNOT satisfy a constraint, generation
-// must fail loudly naming the column and the constraint — never emit a fixture
+// the contract: when the derivation CANNOT satisfy a constraint, forge must
+// say so loudly, naming the column and the constraint — never emit a fixture
 // its own schema rejects and leave it to surface as a mysterious test failure.
+//
+// The fixture lives in the REGENERATED factory, so refusing to generate would
+// hold every other change hostage to a test fixture on every run. Instead the
+// generate prints the violation as a warning, and the factory's body fails
+// the lifecycle test with the same message — the request is never built.
 //
 // The constraint is a lookahead: postgres's POSIX engine accepts it, Go's RE2
 // cannot compile it, so there is nothing to invert. Before the guard, this
@@ -201,23 +208,30 @@ func TestE2ECRUDFixtureGuardFailsLoudlyOnUninvertibleCheck(t *testing.T) {
 		t.Fatalf("write migration: %v", err)
 	}
 
-	crudTestPath := filepath.Join(projectDir, "internal", "handlers", "account", "handlers_crud_test.go")
-	forgetScaffoldRecordE2E(t, projectDir, crudTestPath,
-		filepath.Join("internal", "handlers", "account", "handlers_crud_test.go"))
-
-	// Generation must FAIL, and the message must locate the problem.
+	// Generation succeeds and WARNS, locating the problem.
 	out, err := runCmdAllowFail(t, projectDir, forgeBin, "generate")
-	if err == nil {
-		t.Fatalf("generate succeeded against a constraint it cannot satisfy; output:\n%s", out)
+	if err != nil {
+		t.Fatalf("generate failed over a test fixture it cannot derive; it must warn instead:\n%s", out)
 	}
-	for _, want := range []string{"passcode", "credentials_passcode_check", "vocab.yaml"} {
+	for _, want := range []string{"NewCreateCredentialRequest", "credentials_passcode_check", "vocab.yaml"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("failure message omits %q — the author cannot act on it:\n%s", want, out)
+			t.Errorf("generate output omits %q — the author cannot act on it:\n%s", want, out)
 		}
 	}
 
-	// And the violating file must not have been written.
-	if _, statErr := os.Stat(crudTestPath); statErr == nil {
-		t.Errorf("a fixture file the schema rejects was written anyway: %s", crudTestPath)
+	// The lifecycle test fails, with the same located message — and the
+	// rejected value was never emitted.
+	factories := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "account", "factories_gen_test.go"))
+	if strings.Contains(factories, "Passcode:") {
+		t.Errorf("a fixture value the schema rejects was emitted anyway:\n%s", factories)
+	}
+	testOut, err := runCmdAllowFail(t, projectDir, "go", "test", "-count=1", "./internal/handlers/account/")
+	if err == nil {
+		t.Fatalf("the lifecycle test passed against a constraint no fixture satisfies:\n%s", testOut)
+	}
+	for _, want := range []string{"credentials.passcode", "credentials_passcode_check"} {
+		if !strings.Contains(testOut, want) {
+			t.Errorf("test failure omits %q:\n%s", want, testOut)
+		}
 	}
 }

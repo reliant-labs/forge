@@ -208,11 +208,14 @@ func seedPrice(t *testing.T, db orm.Context, variantID, kind string, cents int64
 ## Related: typed single-entity factories
 
 When you need **one valid row of a specific entity** rather than a whole spine,
-`app.New<Entity>(t, db, overrides…)` is the typed tool: it inserts one row with
-every NOT NULL column and FK parent satisfied, gives each call a fresh primary
-key, and returns the typed `*db.<Entity>`. Use `SeedGraph` for "a whole
+`New<Entity>(t, db, overrides…)` (in the owning handler package's
+`factories_gen_test.go`) is the typed tool: it inserts one MINIMAL row — every
+NOT NULL column without a DEFAULT and every FK parent satisfied, everything
+else left to its DEFAULT or NULL, every CHECK honoured — gives each call a fresh
+primary key, and returns the typed `*db.<Entity>`. Use `SeedGraph` for "a whole
 referential spine addressed by table name", `New<Entity>` for "a valid Order I
-can override two fields on".
+can override two fields on", and `New<CreateRequest>(t, db, variant)` for "a
+create request the schema accepts, parents seeded".
 
 See also: `testing` (the pyramid + harness overview), `testing/integration`
 (the build-tag discipline), `testing/e2e` (full-stack flows over the network).

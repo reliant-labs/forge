@@ -2227,10 +2227,10 @@ type K8sConfig struct {
 // scaffolded packages start with.
 type ObservabilityConfig struct {
 	// LogLevel is the slog level at which the LogMiddleware records
-	// SUCCESSFUL component calls ("debug" | "info" | "warn" | "error").
-	// Failures always log at Error regardless. Default "debug" keeps
-	// success logging quiet under a production Info handler. An unknown
-	// value falls back to the default.
+	// SUCCESSFUL component calls ("debug" | "info" | "warn" | "error"),
+	// which it samples per method. Failures always log at Error
+	// regardless. Default "debug" keeps success logging quiet under a
+	// production Info handler. An unknown value falls back to the default.
 	LogLevel string `yaml:"log_level,omitempty"`
 }
 

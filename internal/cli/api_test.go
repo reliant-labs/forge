@@ -90,6 +90,17 @@ func markServiceProject(t *testing.T, dir string) {
 	}
 }
 
+// markDeployProject is markServiceProject plus the deploy tree. deploy derives
+// from deploy/kcl existing, not from the project being a service, so a fixture
+// that exercises a deploy-gated path needs both.
+func markDeployProject(t *testing.T, dir string) {
+	t.Helper()
+	markServiceProject(t, dir)
+	if err := os.MkdirAll(filepath.Join(dir, "deploy", "kcl"), 0o755); err != nil {
+		t.Fatalf("mark deploy project (mkdir deploy/kcl): %v", err)
+	}
+}
+
 // TestZeroValueFor pins the proto-zero mapping per scalar kind. nil for
 // non-scalar branches is deliberate — the body builder renders it as
 // JSON null, which ProtoJSON accepts for any nullable field.

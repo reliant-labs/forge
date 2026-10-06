@@ -3,6 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // deriveProjectKindFromSources determines the project kind by reading the
@@ -79,4 +82,90 @@ func dirExists(p string) bool {
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()
+}
+
+// hasProtos reports whether the project has .proto files: under proto/, or
+// under any module a buf.yaml declares. This is the evidence for codegen — a
+// buf run over a module with no files fails ("had no .proto files"), so a
+// project that has none must not be told to run one. With no on-disk project
+// the kind stands in.
+func (c *ProjectConfig) hasProtos() bool {
+	if c.projectDir == "" {
+		return c.IsServiceKind()
+	}
+	for _, rel := range append([]string{"proto"}, bufModulePaths(c.projectDir)...) {
+		if dirHasProtoFile(filepath.Join(c.projectDir, filepath.FromSlash(rel))) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasServerSources reports whether the project carries a server's own
+// sources (the composition root, handlers, or service protos) — the evidence
+// for the features that only make sense for a long-running server. A tree
+// that is only deploy/kcl is not one.
+func (c *ProjectConfig) hasServerSources() bool {
+	if c.projectDir == "" {
+		return c.IsServiceKind()
+	}
+	for _, rel := range []string{"pkg/app", "internal/handlers", "proto/services"} {
+		if dirExists(filepath.Join(c.projectDir, filepath.FromSlash(rel))) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDeployTree reports whether deploy/kcl exists: the evidence for deploy.
+func (c *ProjectConfig) hasDeployTree() bool {
+	if c.projectDir == "" {
+		return c.IsServiceKind()
+	}
+	return dirExists(filepath.Join(c.projectDir, "deploy", "kcl"))
+}
+
+// bufModulePaths returns the module paths declared in buf.yaml (v2
+// `modules[].path`), or nil when there is no buf.yaml or it does not parse.
+func bufModulePaths(projectDir string) []string {
+	data, err := os.ReadFile(filepath.Join(projectDir, "buf.yaml"))
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Modules []struct {
+			Path string `yaml:"path"`
+		} `yaml:"modules"`
+	}
+	if yaml.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	var out []string
+	for _, m := range doc.Modules {
+		if m.Path != "" {
+			out = append(out, m.Path)
+		}
+	}
+	return out
+}
+
+// dirHasProtoFile reports whether any .proto file lives under dir.
+func dirHasProtoFile(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if d.IsDir() {
+			if n := d.Name(); n == "node_modules" || n == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".proto") {
+			found = true
+		}
+		return nil
+	})
+	return found
 }

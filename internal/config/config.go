@@ -1518,10 +1518,10 @@ func (f FeaturesConfig) MigrationsEnabled() bool { return f.resolve(FeatureMigra
 func (f FeaturesConfig) CIEnabled() bool { return f.resolve(FeatureCI) }
 
 // DeployEnabled reports whether the deploy feature is on. Stable flag:
-// absent derives from project shape (deploy ⇔ kind == service — see
+// absent derives from the tree (deploy ⇔ deploy/kcl exists — see
 // DeriveFeatureDefaults), explicit `features.deploy: true|false` wins.
 // Service scaffolds ship a deploy/kcl tree, so deploy is ON for the
-// canonical service shape; cli/library kinds derive OFF.
+// canonical service shape; a tree without one derives OFF.
 func (f FeaturesConfig) DeployEnabled() bool { return f.resolve(FeatureDeploy) }
 
 // ContractsEnabled reports whether contract enforcement is on (default: on).

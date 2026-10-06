@@ -25,7 +25,7 @@ func deployEnabledProject(t *testing.T) string {
 		"name: "+testProjectName+"\nmodule_path: example.com/cp\n"), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	markServiceProject(t, dir) // deploy derives on for a service
+	markDeployProject(t, dir) // deploy derives from deploy/kcl existing
 	t.Chdir(dir)
 	return dir
 }

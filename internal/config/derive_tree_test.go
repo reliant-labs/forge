@@ -34,11 +34,14 @@ func loadTree(t *testing.T, root string) *ProjectConfig {
 }
 
 // serviceTree is a service-shaped project with a database, which is what
-// control-plane and every scaffolded service is.
+// control-plane and every scaffolded service is. The service proto is the
+// evidence codegen derives from.
 func serviceTree(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	write(t, root, "internal/handlers/.keep", "")
+	write(t, root, "proto/services/demo/v1/demo.proto", "syntax = \"proto3\";\n")
+	write(t, root, "deploy/kcl/kcl.mod", "")
 	write(t, root, "db/migrations/00001_init.up.sql", "CREATE TABLE t (id bigint primary key);\n")
 	return root
 }
@@ -68,6 +71,7 @@ func TestDeriveFeatures_ServiceWithMigrations(t *testing.T) {
 func TestDeriveFeatures_NoMigrationsMeansNoDatabase(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "internal/handlers/.keep", "")
+	write(t, root, "proto/services/demo/v1/demo.proto", "syntax = \"proto3\";\n")
 	cfg := loadTree(t, root)
 	if cfg.Database.Driver != "none" || cfg.Database.MigrationsDir != "" {
 		t.Errorf("database = %+v, want driver none", cfg.Database)
@@ -76,7 +80,7 @@ func TestDeriveFeatures_NoMigrationsMeansNoDatabase(t *testing.T) {
 		t.Error("orm and migrations must derive OFF without db/migrations")
 	}
 	if !cfg.Features.CodegenEnabled() {
-		t.Error("codegen is a function of the kind, not of the database")
+		t.Error("codegen is a function of the protos, not of the database")
 	}
 }
 
@@ -224,4 +228,92 @@ func TestNormalizeForWriteEmitsNoRemovedKeys(t *testing.T) {
 func marshalNormalized(cfg *ProjectConfig) (string, error) {
 	b, err := yaml.Marshal(NormalizeForWrite(cfg))
 	return string(b), err
+}
+
+// deployOnlyTree is deploy/kcl and nothing else: no protos, no server, no
+// database. It is a service-KIND project (deploy/kcl is service evidence), and
+// the case that exposed codegen being derived from the kind: forge generate
+// ran buf over a module with no files and failed.
+func deployOnlyTree(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	write(t, root, "deploy/kcl/kcl.mod", "")
+	write(t, root, "deploy/kcl/prod/main.k", "")
+	write(t, root, "cmd/echo/main.go", "package main\n")
+	return root
+}
+
+func TestDeriveFeatures_DeployOnlyProjectGetsDeployButNoCodegen(t *testing.T) {
+	cfg := loadTree(t, deployOnlyTree(t))
+	if cfg.EffectiveKind() != ProjectKindService {
+		t.Fatalf("deploy/kcl should still read as a service-kind project, got %s", cfg.EffectiveKind())
+	}
+	want := map[FeatureName]bool{
+		FeatureDeploy:        true,
+		FeatureBuild:         true,
+		FeatureCI:            true,
+		FeatureContracts:     true,
+		FeatureCodegen:       false,
+		FeatureORM:           false,
+		FeatureMigrations:    false,
+		FeatureFrontend:      false,
+		FeatureObservability: false,
+		FeatureHotReload:     false,
+		FeatureIngress:       false,
+		FeatureOperators:     false,
+	}
+	for name, on := range want {
+		if got := cfg.Features.resolve(name); got != on {
+			t.Errorf("feature %q = %v, want %v for a deploy-only project", name, got, on)
+		}
+	}
+	if cfg.CI.Lint.Buf || cfg.CI.Lint.BufBreaking {
+		t.Errorf("buf CI lints must be off with no protos, got %+v", cfg.CI.Lint)
+	}
+}
+
+// codegen follows .proto files, wherever the project keeps them: proto/, or
+// any module buf.yaml names. An empty module is not evidence.
+func TestDeriveFeatures_CodegenFollowsProtoFiles(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"proto dir with a .proto", map[string]string{"proto/a/v1/a.proto": "syntax = \"proto3\";"}, true},
+		{"proto dir with no .proto", map[string]string{"proto/.keep": ""}, false},
+		{"buf module elsewhere with a .proto", map[string]string{
+			"buf.yaml":             "version: v2\nmodules:\n  - path: api\n",
+			"api/svc/v1/svc.proto": "syntax = \"proto3\";",
+		}, true},
+		{"buf module that is empty", map[string]string{"buf.yaml": "version: v2\nmodules:\n  - path: api\n", "api/.keep": ""}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := deployOnlyTree(t)
+			for rel, body := range tc.files {
+				write(t, root, rel, body)
+			}
+			if got := loadTree(t, root).Features.resolve(FeatureCodegen); got != tc.want {
+				t.Errorf("codegen = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A db/migrations directory is a database whatever the kind; the ORM and
+// migrations features additionally need codegen, so a deploy-only project with
+// migrations has a database but neither.
+func TestDeriveFeatures_DatabaseWithoutProtosHasNoORMOrMigrations(t *testing.T) {
+	root := deployOnlyTree(t)
+	write(t, root, "db/migrations/00001_init.up.sql", "CREATE TABLE t (id bigint primary key);\n")
+	cfg := loadTree(t, root)
+	if cfg.Database.Driver != "postgres" {
+		t.Errorf("db/migrations should still derive a postgres database, got %+v", cfg.Database)
+	}
+	for _, name := range []FeatureName{FeatureORM, FeatureMigrations, FeatureCodegen} {
+		if cfg.Features.resolve(name) {
+			t.Errorf("feature %q needs codegen, which has no protos to run on", name)
+		}
+	}
 }

@@ -235,7 +235,7 @@ func newOrphanFixture(t *testing.T, procText string, open []string, procErr erro
 	r := goRunner(t, f.out)
 	r.GoCacheRoot = f.shared
 	r.GoModCacheRoot = filepath.Join(scan, "shared-mod")
-	r.GoCacheScanRoots = []string{scan}
+	r.Policy.HostPaths = []string{scan}
 	r.ProcessEnv = func(context.Context) (string, error) {
 		if procErr != nil {
 			return "", procErr

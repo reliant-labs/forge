@@ -47,8 +47,6 @@ type Runner struct {
 	GoModCacheRoot    string // shared GOMODCACHE
 	GolangciCacheRoot string
 	GoimportsRoot     string
-	// GoCacheScanRoots are extra directories searched for orphaned private caches.
-	GoCacheScanRoots []string
 	// ProcessEnv returns the text of every live process's environment; an error
 	// makes the orphan layer skip. OpenPaths is the lsof snapshot. Both are
 	// REFUSED under test when unset.

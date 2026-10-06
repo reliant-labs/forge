@@ -36,15 +36,14 @@ forge env up dev             # host services + frontends, on a fresh seeded DB
 `cmd.Execute(...)` arg list.
 
 A later `forge scaffold service <name>` appends its constructor to that same
-call; if it cannot find the `cmd.Execute(...)` call it declines and prints the
+call; if it cannot find `cmd.Execute(...)` it declines and prints the
 import and argument to add by hand.
 
 Batch later ones: `forge scaffold service sales jobs billing` generates once.
 
 A bare `forge project new` scaffolds **zero services**: binary shell, `internal/app`
 composition root, buf/proto scaffolding, Taskfile/CI/deploy. The binary is a
-deployment unit that mounts services, not a domain entity, so forge never invents
-a `<project>Service` from the binary name.
+deployment unit, not a domain entity, so forge never invents a service from its name.
 
 ### The `project new` flags that matter
 
@@ -313,10 +312,9 @@ forge env deploy prod      # build → push → release → plan → apply
 forge env status prod      # then verify
 ```
 
-A static site alone is free; hosted workloads and the database need billing.
-Without it the deploy is **queued, not refused** and goes live by itself once
-billing is set up: `env deploy` exits **7** and prints the billing link. Give
-the user that link, don't retry, then verify. Under Reliant you are signed in:
+One static site is free; workloads and the database need billing.
+Without it the deploy is **queued, not refused** and goes live once billing is set up: `env deploy` exits **7** and prints the billing link. Give
+the user that link; don't retry; then verify. Under Reliant you are signed in:
 never ask for `forge login`. Depth: `deploy`, `deploy/hosting`, `deploy/static-site`.
 
 ## Pre-flight: what forge already does for you

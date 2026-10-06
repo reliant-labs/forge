@@ -144,11 +144,9 @@ _bundle = forge.Bundle {
   in on their own before the first push. So the only image-related secret a
   hosted CI job needs is the one it already has. See the `deploy` and `ci`
   skills.
-  A managed secret a hosted workload reads is a **deploy gate**: until
-  `forge secret set --env <env> <KEY>` has run, the workload keeps its previous
-  Secret and pods (a first deploy has nothing to run on). Set secrets before
-  `forge env deploy`; `deploy/hosting` lists the gates. What happens to the
-  values depends on the env's KIND, which forge derives
+  Set a hosted workload's secrets with `forge secret set --env <env> <KEY>`
+  before `forge env deploy`: deploys that need an unset one fail until it is
+  set (not yet a queued gate). What happens to the values depends on the env's KIND, which forge derives
   from the env's own workloads:
   - **persistent** — the env declares ≥1 hosted tier (SimpleBackend /
     StaticSite / ManagedDatabase). The platform runs it and materializes the

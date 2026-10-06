@@ -40,6 +40,13 @@ process with one image and one set of args. `args = ["server"]` runs
 every service, worker and operator in one process; `args = ["<name>"]`
 runs exactly one.
 
+A subcommand of your own that mounts SEVERAL components (an `admin-api`
+serving every admin service, say) is one workload too. List what it
+runs in its `serves`, so `forge lint` knows those components are
+deployed and `forge scaffold` does not declare a second workload for one:
+
+    serves = ["billing-admin", "user-admin"]
+
   kind = "service"   Deployment + Service (named ports)
   kind = "worker"    Deployment, no Service (nothing dials it)
   kind = "cron"      CronJob on `schedule` (a process that runs to completion)

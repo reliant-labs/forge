@@ -43,7 +43,30 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 		return
 	}
 
+	// A component another workload's process already runs gets no workload
+	// of its own: one would deploy it a second time, as its own Deployment.
+	// And in a project that groups components (`serves`), forge cannot see
+	// which group a new one belongs to — that lives in the project's Go — so
+	// it shows the choice rather than declaring the workload the project
+	// most likely does not want. Lint reads the file the same way
+	// (codegen.ServingWorkload), so what scaffold leaves out, lint does not
+	// then report missing.
+	if content, ok := readWorkloadsKCL(root); ok && !codegen.WorkloadDeclared(content, comp.Name) {
+		declared := codegen.DeclaredWorkloads(content)
+		if by, served := codegen.ServingWorkload(declared, cfg.Name, comp); served {
+			fmt.Printf("   - %s (%s '%s' runs in workload '%s'; nothing to declare)\n",
+				codegen.WorkloadsKCLRelPath, comp.EffectiveKind(), comp.Name, by)
+			return
+		}
+		if codegen.DeclaresServes(declared) {
+			fmt.Printf("\n📝 %s\n", codegen.ServesChoiceHint(cfg.ModulePath, cfg.Name, comp))
+			return
+		}
+	}
+
 	applied, err := codegen.AppendWorkloadStanza(root, cfg.ModulePath, cfg.Name, comp)
+	content, _ := readWorkloadsKCL(root)
+	declared := codegen.WorkloadDeclared(content, comp.Name)
 	switch {
 	case err != nil:
 		fmt.Printf("\n⚠️  could not update %s: %v\n\n%s\n",
@@ -54,12 +77,30 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 			// kind it was derived from: the user is being told what is now in
 			// the file, and `forge scaffold binary` writes kind="tool".
 			codegen.WorkloadsKCLRelPath, codegen.WorkloadKindFor(comp.EffectiveKind()), comp.Name)
+	case declared:
+		// A re-run (--resume, --force): the declaration is already there.
+		fmt.Printf("   - %s ('%s' already declared)\n", codegen.WorkloadsKCLRelPath, comp.Name)
 	default:
-		// Already declared, or the file has been restructured past the point
-		// where an append is unambiguous. Either way: show, do not guess.
+		// The file has been restructured past the point where an append is
+		// unambiguous. Show, do not guess.
 		fmt.Printf("\n📝 %s\n", codegen.WorkloadStanzaHint(cfg.ModulePath, cfg.Name, comp))
 	}
-	bindWorkloadInEnvs(root, comp)
+	// Bind only what is declared. An env binding names `wl.<ident>`, so
+	// binding a workload whose declaration was printed rather than written
+	// would leave every env's main.k referencing a name that does not exist.
+	if declared {
+		bindWorkloadInEnvs(root, comp)
+	}
+}
+
+// readWorkloadsKCL returns the project's deploy/kcl/workloads.k, and false
+// when there is none to read.
+func readWorkloadsKCL(root string) (string, bool) {
+	raw, err := os.ReadFile(filepath.Join(root, codegen.WorkloadsKCLRelPath))
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
 }
 
 // bindWorkloadInEnvs adds the new workload's binding to every env's

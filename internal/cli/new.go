@@ -1252,10 +1252,9 @@ func runGoModTidy(ctx context.Context, path string) error {
 }
 
 func bootstrapGeneratedCode(path string) error {
-	generateMu.Lock()
-	defer generateMu.Unlock()
-
-	return runGeneratePipeline(path, false)
+	return withGenerateLock(path, func() error {
+		return runGeneratePipeline(path, false)
+	})
 }
 
 func shouldRunRootGoModTidy(path string) (bool, error) {

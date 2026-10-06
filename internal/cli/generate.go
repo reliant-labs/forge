@@ -28,6 +28,29 @@ import (
 // It is legitimately package-level shared state used by generate, add, and new commands.
 var generateMu sync.Mutex
 
+// withGenerateLock runs fn holding both locks the generate pipeline needs:
+// the project's cross-process generate lock (.forge/forge.lock — blocks, and
+// says so, while another forge run holds it; see acquireGenerateLock), then
+// the in-process generateMu that guards the pipeline's package-level state.
+// Every entry point that runs the pipeline outside a scaffold command goes
+// through here; scaffold commands hold the project lock for their whole run
+// (GenAPI.HoldProjectLock) and take only generateMu around the pipeline.
+//
+// The order is fixed — project lock, then generateMu — on every path. Taken
+// the other way round anywhere, a host embedding forge could deadlock: one
+// goroutine holding generateMu waits for the project lock while the
+// scaffold goroutine holding that lock waits for generateMu.
+func withGenerateLock(projectDir string, fn func() error) error {
+	release, err := acquireGenerateLock(projectDir)
+	if err != nil {
+		return err
+	}
+	defer release()
+	generateMu.Lock()
+	defer generateMu.Unlock()
+	return fn()
+}
+
 func newGenerateCmd() *cobra.Command {
 	var (
 		watch           bool
@@ -96,52 +119,55 @@ forensics, parallel-lane and migration escape hatches); run
 					Steps:           steps,
 				})
 			}
-			// Capture pre-pipeline body hashes (from the embedded
-			// markers) so --explain can diff against post-pipeline
-			// state to label rewritten vs idempotent.
-			var preChecksums map[string]string
-			if explain {
-				pre := checksums.ScanMarkers(".")
-				preChecksums = make(map[string]string, len(pre))
-				for k, v := range pre {
-					preChecksums[k] = v.Body
-				}
-			}
-
-			generateMu.Lock()
-			err := runGeneratePipelineFlags(".", pipelineFlags{
-				Force:           force,
-				ExplainDrift:    explainDrift,
-				SkipValidate:    skipValidate,
-				SkipPreChecks:   skipPreChecks,
-				SkipConfigCheck: skipConfigCheck,
-				ForceCleanup:    forceCleanup,
-				TemplatesOnly:   templatesOnly,
-				Strict:          strict,
-				Verbose:         verbose,
-				Heal:            heal,
-				NoRevert:        noRevert,
-				Steps:           steps,
-			})
-			generateMu.Unlock()
-
-			// Print the explain log even when the pipeline failed — partial
-			// provenance is still useful for diagnosing what got generated
-			// before the build break. The original error is returned below.
-			//
-			// Honor --strict: a failed explain render under strict promotes
-			// to a fatal error (consistent with the rest of the pipeline's
-			// loud-by-default thesis). Outside strict it stays a soft warn
-			// so an explain-log bug doesn't mask a successful generate.
-			if explain {
-				if explainErr := printExplainLog(".", preChecksums); explainErr != nil {
-					if strict {
-						return fmt.Errorf("explain log failed: %w (--strict)", explainErr)
+			// The explain scans run inside the lock too: a concurrent run
+			// finishing between the pre-scan and this run's pipeline would
+			// otherwise be labeled as this run's rewrites.
+			err := withGenerateLock(".", func() error {
+				// Capture pre-pipeline body hashes (from the embedded
+				// markers) so --explain can diff against post-pipeline
+				// state to label rewritten vs idempotent.
+				var preChecksums map[string]string
+				if explain {
+					pre := checksums.ScanMarkers(".")
+					preChecksums = make(map[string]string, len(pre))
+					for k, v := range pre {
+						preChecksums[k] = v.Body
 					}
-					fmt.Fprintf(os.Stderr, "⚠️  Warning: explain log failed: %v — pass --strict to fail on this\n", explainErr)
 				}
-			}
 
+				pipeErr := runGeneratePipelineFlags(".", pipelineFlags{
+					Force:           force,
+					ExplainDrift:    explainDrift,
+					SkipValidate:    skipValidate,
+					SkipPreChecks:   skipPreChecks,
+					SkipConfigCheck: skipConfigCheck,
+					ForceCleanup:    forceCleanup,
+					TemplatesOnly:   templatesOnly,
+					Strict:          strict,
+					Verbose:         verbose,
+					Heal:            heal,
+					NoRevert:        noRevert,
+					Steps:           steps,
+				})
+
+				// Print the explain log even when the pipeline failed — partial
+				// provenance is still useful for diagnosing what got generated
+				// before the build break. The original error is returned below.
+				//
+				// Honor --strict: a failed explain render under strict promotes
+				// to a fatal error (consistent with the rest of the pipeline's
+				// loud-by-default thesis). Outside strict it stays a soft warn
+				// so an explain-log bug doesn't mask a successful generate.
+				if explain {
+					if explainErr := printExplainLog(".", preChecksums); explainErr != nil {
+						if strict {
+							return fmt.Errorf("explain log failed: %w (--strict)", explainErr)
+						}
+						fmt.Fprintf(os.Stderr, "⚠️  Warning: explain log failed: %v — pass --strict to fail on this\n", explainErr)
+					}
+				}
+				return pipeErr
+			})
 			if err != nil {
 				return err
 			}
@@ -217,7 +243,8 @@ forensics, parallel-lane and migration escape hatches); run
 // step is now its own GenStep entry with a dedicated stepXxx body.
 //
 // projectDir is the root of the project (contains go.mod, proto/, etc.).
-// The caller must hold generateMu.
+// The caller must hold the project's generate lock and generateMu — via
+// withGenerateLock, or inside a scaffold command (see that function).
 func runGeneratePipeline(projectDir string, force bool) error {
 	return runGeneratePipelineOpts(projectDir, force, false)
 }
@@ -355,16 +382,12 @@ type pipelineFlags struct {
 // runGeneratePipelineFlags is the canonical entrypoint. Both the
 // shorter runGeneratePipeline (force) and runGeneratePipelineOpts
 // (+ skipValidate) call through here. New flags land on pipelineFlags.
+//
+// It takes no lock itself: the caller holds the project's generate lock
+// and generateMu (withGenerateLock), because several callers must hold
+// them across more than the pipeline — a scaffold command's own writes,
+// rescaffold's deletions, --explain's before/after scans.
 func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
-	// Cross-process file lock (complements the in-process generateMu).
-	// Held for the lifetime of the pipeline so a parallel `forge scaffold`
-	// can't race a long `forge generate`.
-	release, err := acquireGenerateLock(projectDir)
-	if err != nil {
-		return err
-	}
-	defer release()
-
 	ctx, err := newPipelineContextWithFlags(projectDir, flags)
 	if err != nil {
 		return err
@@ -1187,9 +1210,9 @@ func runGenerateCheck() error {
 	}
 
 	fmt.Println("[generate --check] running generate against current tree...")
-	generateMu.Lock()
-	pipeErr := runGeneratePipelineOpts(".", false, true)
-	generateMu.Unlock()
+	pipeErr := withGenerateLock(".", func() error {
+		return runGeneratePipelineOpts(".", false, true)
+	})
 	if pipeErr != nil {
 		return fmt.Errorf("generate pipeline: %w", pipeErr)
 	}

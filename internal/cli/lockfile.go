@@ -9,103 +9,138 @@ import (
 	"time"
 )
 
-const lockStaleDuration = 10 * time.Minute
+// generateLockRel is the per-project lock every forge run that rewrites the
+// project's generated outputs holds: `forge generate` (and everything that
+// runs its pipeline — build's auto-generate, rescaffold, project new) and
+// every `forge scaffold` command, for its whole run.
+const generateLockRel = ".forge/forge.lock"
 
-// acquireGenerateLock creates .forge/forge.lock in the project directory.
-// Returns a cleanup function to release the lock.
+// acquireGenerateLock takes the project's exclusive generate lock, BLOCKING
+// while another forge run holds it, and returns the function that releases
+// it.
 //
-// A held lock is reclaimed when its owner is gone — the PID recorded in the
-// file is no longer a live process (the classic case: the daemon disconnected
-// or was killed mid-`forge generate`, so its defer never removed the lock) —
-// or, as a fallback for PIDs we can't probe (Windows, a recycled PID), when
-// the file is older than lockStaleDuration. Reclaiming on a dead PID is
-// immediate: the next generate no longer has to wait out the 10-minute
-// staleness window or be told to `rm` the lock by hand (fr F9).
+// Parallel agents sharing one checkout run generate concurrently, and two
+// pipelines in one tree interleave their writes and, worse, their
+// revert-on-failure rollbacks: each run restores what IT saw before writing,
+// which can be the other run's fresh output, so a failed run's code survives a
+// "reverted byte for byte" report. Queueing is the right behavior for that
+// collision — the second run's inputs are as valid as the first's, it just
+// has to go after — so a contended lock waits rather than fails. The wait is
+// announced in one line naming the holder, because a silently stuck command
+// is indistinguishable from a hung one.
+//
+// The lock is an OS file lock (flock(2); LockFileEx on Windows), not the
+// file's existence. The OS drops it when the holding process exits however it
+// exits, so a killed or crashed run never strands it: there is no staleness
+// window, no pid-liveness probe, and nothing for anyone to `rm`. The previous
+// O_EXCL marker file got all three wrong — it failed every concurrent run
+// outright, told the agent to delete the live lock, and its pid/age reclaim
+// could hand the lock to two runs at once. For the same reason the file is
+// never deleted on release: a waiter blocked on the old inode and a newcomer
+// that created a fresh one would both "hold" the lock.
+//
+// After acquiring, the holder records its pid and command in the file; that
+// record exists only to make the waiting line informative.
+//
+// The lock is not reentrant: a second acquisition from the same process
+// blocks like any other (forge also runs embedded in long-lived hosts, where
+// two goroutines must exclude each other). Code already inside a held lock —
+// a scaffold command running the pipeline — must not acquire it again.
 func acquireGenerateLock(projectDir string) (release func(), err error) {
-	lockDir := filepath.Join(projectDir, ".forge")
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+	lockPath := filepath.Join(projectDir, generateLockRel)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create .forge directory: %w", err)
 	}
-
-	lockPath := filepath.Join(lockDir, "forge.lock")
-
-	// One reclaim attempt: create → on collision, decide whether to reclaim,
-	// then retry the create exactly once. A second collision means a live
-	// forge genuinely holds the lock.
-	for attempt := 0; attempt < 2; attempt++ {
-		f, createErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if createErr == nil {
-			// Write PID and timestamp so a later run can probe liveness.
-			_, _ = fmt.Fprintf(f, "pid=%d\ntime=%s\n", os.Getpid(), time.Now().Format(time.RFC3339))
-			_ = f.Close()
-			return func() { _ = os.Remove(lockPath) }, nil
-		}
-		if !os.IsExist(createErr) {
-			return nil, fmt.Errorf("create lock file: %w", createErr)
-		}
-		if attempt == 0 && reclaimAbandonedLock(lockPath) {
-			continue // reclaimed — retry the exclusive create
-		}
-		return nil, fmt.Errorf(
-			"another forge process is running in this project (lock: %s). "+
-				"If it is stale, remove it with: rm %s", lockPath, lockPath)
-	}
-	// Unreachable: the loop returns on every path.
-	return nil, fmt.Errorf("failed to acquire generate lock: %s", lockPath)
-}
-
-// reclaimAbandonedLock removes the lock file when it is safe to take over.
-// Two independent conditions, either of which reclaims:
-//
-//   - the recorded owner PID is a dead process (the F9 fix: a disconnected
-//     daemon's lock is reclaimed immediately, no waiting), OR
-//   - the file is older than lockStaleDuration (the pre-existing age gate,
-//     kept as the safety net for legacy locks with no PID and for a PID that
-//     has been recycled to an unrelated live process).
-//
-// An owner PID that is still alive AND a lock younger than the staleness
-// window is left untouched, so a legitimately long-running generate is never
-// yanked. Note the age gate matching the historical behavior means a >10min
-// live generate can still be reclaimed exactly as before — that trade-off is
-// unchanged by this function. Returns true when the lock was removed.
-func reclaimAbandonedLock(lockPath string) bool {
-	data, err := os.ReadFile(lockPath)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		// Vanished between the failed create and this read — another process
-		// may have just released it. Treat as reclaimable so we retry the
-		// create; a genuine race just re-collides on the next attempt.
-		return os.IsNotExist(err)
+		return nil, fmt.Errorf("open generate lock %s: %w", lockPath, err)
 	}
 
-	// Dead-owner reclaim: only for a PID that is BOTH parseable and not our
-	// own (a live self-PID means we already hold it — never reclaim that).
-	if pid, ok := lockOwnerPID(data); ok && pid != os.Getpid() && !processAlive(pid) {
-		fmt.Fprintf(os.Stderr, "warning: reclaiming abandoned lock %s (owner pid %d is gone)\n", lockPath, pid)
-		return os.Remove(lockPath) == nil
+	acquired, err := tryLockFile(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock %s: %w", lockPath, err)
 	}
-
-	// Age reclaim (owner alive/unknown): the historical staleness window.
-	if info, statErr := os.Stat(lockPath); statErr == nil {
-		if age := time.Since(info.ModTime()); age > lockStaleDuration {
-			fmt.Fprintf(os.Stderr, "warning: removing stale lock file %s (age: %s)\n", lockPath, age.Round(time.Second))
-			return os.Remove(lockPath) == nil
+	if !acquired {
+		fmt.Fprintln(os.Stderr, generateLockWaitNotice(lockPath))
+		if err := lockFile(f); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("lock %s: %w", lockPath, err)
 		}
 	}
-	return false
+
+	recordGenerateLockHolder(f)
+	return func() {
+		_ = unlockFile(f)
+		_ = f.Close()
+	}, nil
 }
 
-// lockOwnerPID extracts the pid recorded in a lock file body of the form
-// "pid=<n>\ntime=<rfc3339>\n". Returns (0, false) when no pid line parses.
-func lockOwnerPID(body []byte) (int, bool) {
+// generateLockWaitNotice is the one line a waiting run prints. The holder
+// details come from the record the holder wrote after acquiring; a holder
+// that has not written it yet (a sub-millisecond window) is reported without
+// them rather than delaying the notice.
+func generateLockWaitNotice(lockPath string) string {
+	holder := "another forge run"
+	if data, err := os.ReadFile(lockPath); err == nil {
+		rec := parseGenerateLockRecord(data)
+		if rec.pid > 0 {
+			holder = fmt.Sprintf("pid %d", rec.pid)
+			if rec.cmd != "" {
+				holder += fmt.Sprintf(" (%s)", rec.cmd)
+			}
+		}
+	}
+	return fmt.Sprintf("⏳ forge: waiting for %s, which holds this project's generate lock (%s); this run starts as soon as it finishes.", holder, generateLockRel)
+}
+
+// recordGenerateLockHolder overwrites the lock file's body with this
+// process's pid and command. Best effort: the record only feeds the waiting
+// notice, so a failed write never fails the run.
+func recordGenerateLockHolder(f *os.File) {
+	body := fmt.Sprintf("pid=%d\ncmd=%s\ntime=%s\n", os.Getpid(), generateLockCommandLine(), time.Now().Format(time.RFC3339))
+	if err := f.Truncate(0); err != nil {
+		return
+	}
+	_, _ = f.WriteAt([]byte(body), 0)
+}
+
+// generateLockCommandLine is a short, single-line rendering of how this
+// process was invoked ("forge generate", "reliant forge scaffold rpc …").
+func generateLockCommandLine() string {
+	if len(os.Args) == 0 {
+		return ""
+	}
+	parts := append([]string{filepath.Base(os.Args[0])}, os.Args[1:]...)
+	line := strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
+	const maxLen = 80
+	if len(line) > maxLen {
+		line = line[:maxLen] + "…"
+	}
+	return line
+}
+
+// generateLockRecord is the parsed holder record ("pid=<n>\ncmd=<...>\n…").
+type generateLockRecord struct {
+	pid int
+	cmd string
+}
+
+func parseGenerateLockRecord(body []byte) generateLockRecord {
+	var rec generateLockRecord
 	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		rest, ok := strings.CutPrefix(line, "pid=")
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
 			continue
 		}
-		if pid, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil && pid > 0 {
-			return pid, true
+		switch key {
+		case "pid":
+			if pid, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && pid > 0 {
+				rec.pid = pid
+			}
+		case "cmd":
+			rec.cmd = strings.TrimSpace(value)
 		}
 	}
-	return 0, false
+	return rec
 }

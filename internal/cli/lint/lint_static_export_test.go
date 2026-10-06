@@ -35,31 +35,33 @@ func loadTestConfig(t *testing.T, yaml string) *config.ProjectConfig {
 
 const staticExportForgeYAML = `name: acme
 module_path: github.com/example/acme
-version: 0.1.0
-frontends:
-  - name: web
-    type: nextjs
-    path: frontends/web
-    output: standalone
-  - name: admin
-    type: nextjs
-    path: frontends/admin
-    output: static
-  - name: docs
-    type: nextjs
-    path: frontends/docs
-    output: standalone
-  - name: spa
-    type: vite-spa
-    path: frontends/spa
 `
 
-// TestStaticExportTargets: the lane judges a Next.js frontend when forge.yaml
-// declares it static OR any env binds it to a static runtime — and nothing
+// staticExportFrontends is the inventory the lane judges. The inventory is
+// derived from frontends/<name> on disk, never declared in forge.yaml, so a
+// test that wants a particular shape sets it on the loaded config.
+func staticExportFrontends() []config.FrontendConfig {
+	return []config.FrontendConfig{
+		config.FrontendConfig{Name: "web", Type: "nextjs", Output: "standalone"}.WithDir("frontends/web"),
+		config.FrontendConfig{Name: "admin", Type: "nextjs", Output: "static"}.WithDir("frontends/admin"),
+		config.FrontendConfig{Name: "docs", Type: "nextjs", Output: "standalone"}.WithDir("frontends/docs"),
+		config.FrontendConfig{Name: "spa", Type: "vite-spa"}.WithDir("frontends/spa"),
+	}
+}
+
+func loadStaticExportConfig(t *testing.T) *config.ProjectConfig {
+	t.Helper()
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg.Frontends = staticExportFrontends()
+	return cfg
+}
+
+// TestStaticExportTargets: the lane judges a Next.js frontend when it is
+// detected as a static export OR any env binds it to a static runtime — and nothing
 // else. A server build nobody ships statically is none of its business, and
 // a Vite app has no server features to find.
 func TestStaticExportTargets(t *testing.T) {
-	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg := loadStaticExportConfig(t)
 	bindings := func(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding {
 		return map[string][]staticexport.Binding{
 			"web": {{Env: "prod", Runtime: "hosted"}},
@@ -90,7 +92,7 @@ func TestStaticExportFindings_EndToEnd(t *testing.T) {
 		"frontends/admin/src/app/jobs/[id]/page.tsx": "\"use client\";\nexport default function P() { return null }\n",
 		"frontends/admin/src/app/api/x/route.ts":     "// forge:lint-disable-next-line static-export-route-handler: posted to only by the dev tooling\nexport async function POST() { return new Response(null) }\n",
 	})
-	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg := loadStaticExportConfig(t)
 	none := func(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding { return nil }
 	fs, judged, err := staticExportFindings(context.Background(), root, cfg, none)
 	if err != nil {
@@ -156,7 +158,7 @@ output = forge.render(forge.Bundle {
 })
 `,
 	})
-	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg := loadStaticExportConfig(t)
 	got := renderStaticBindings(context.Background(), root, cfg)
 	if len(got) != 1 || len(got["web"]) != 1 || got["web"][0] != (staticexport.Binding{Env: "prod", Runtime: "hosted"}) {
 		t.Errorf("bindings = %+v, want web on hosted in prod only", got)

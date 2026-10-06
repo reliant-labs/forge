@@ -237,8 +237,9 @@ Dockerfile`.
   embed a literal `INSERT` seed block and literal create-request values,
   frozen against the birth schema. Editing the birth migration afterwards —
   the db skill's own advice: a `GENERATED` column, a one-way status `CHECK` —
-  broke it (`cannot insert a non-DEFAULT value into column …`, `violates check
-constraint …`). It now calls `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
+  broke it (`cannot insert a non-DEFAULT value into column …`,
+  `violates check constraint …`). It now calls
+  `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
   rendered into the forge-owned `factories_gen_test.go` from the applied schema
   on every `forge generate`: it seeds the FK parents and returns a request the
   current constraints accept (enums the column DEFAULT supplies, nullable
@@ -304,8 +305,8 @@ constraint …`). It now calls `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
   resolver `forge generate` uses; forge does not guess which rpc writes which
   column.
 - **A failing `forge lint` names the failed linters on its last line**
-  (`forge lint: 2 gating linter(s) failed: computed-fields lint,
-read-only-fields lint`), instead of "one or more linters reported errors".
+  (`forge lint: 2 gating linter(s) failed: computed-fields lint, read-only-fields lint`),
+  instead of "one or more linters reported errors".
   The verdict is the last line in every mode.
 - **`frontend lint` no longer "passes" on a project with no frontend.** With no
   declared frontend and no `frontends/` directory it is a silent no-op, as the

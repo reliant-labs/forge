@@ -551,8 +551,7 @@ var (
 // applies them — so a later ADD COLUMN, DROP COLUMN, SET DEFAULT or DROP
 // TABLE wins over what an earlier file declared, and the result describes
 // the schema as it stands after the last migration rather than every
-// column the history ever mentioned. Matches foreignKeysFromMigrations,
-// which answers the same question about constraints.
+// column the history ever mentioned.
 func readOnlyColumnsFromMigrations(migrationsDir string) (map[string]map[string]sqlColumn, error) {
 	if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
 		return nil, nil

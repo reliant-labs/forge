@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // writeFile writes content at dir/rel, creating parent dirs.
@@ -60,9 +62,12 @@ func TestMissingGoWorkModule(t *testing.T) {
 
 // TestGeneratedCodeNeedsRefresh_MissingDevRuntimeConfig: public/config.js is
 // gitignored (it bakes in machine-local ports), so a fresh clone has none.
-// A web frontend whose committed config_gen.ts reads it must trigger a
-// regenerate before `forge build` / `forge env up`; a frontend that does not
-// consume one (no config module, or React Native with no public/) must not.
+// That used to trigger a FULL `forge generate` before every build — which
+// refuses outright when the forge on PATH is not the project's pin, so a
+// fresh worktree could not `forge env build prod --target <a Go workload>`,
+// a build that never reads a frontend's dev config. The missing document is
+// still DETECTED (ensureDevRuntimeConfigs renders just it, where a build
+// consumes it), but it no longer asks for a regenerate.
 func TestGeneratedCodeNeedsRefresh_MissingDevRuntimeConfig(t *testing.T) {
 	fresh := func(t *testing.T) string {
 		t.Helper()
@@ -70,25 +75,27 @@ func TestGeneratedCodeNeedsRefresh_MissingDevRuntimeConfig(t *testing.T) {
 		writeFileAt(t, dir, "go.mod", "module example.com/x\n\ngo 1.26.2\n")
 		return dir
 	}
-	t.Run("web frontend without its dev document regenerates", func(t *testing.T) {
+	t.Run("a missing dev document is detected but does not regenerate", func(t *testing.T) {
 		dir := fresh(t)
 		writeFileAt(t, dir, "frontends/web/src/lib/config_gen.ts", "// generated\n")
 		writeFileAt(t, dir, "frontends/web/public/favicon.ico", "x")
-		reason, needs := generatedCodeNeedsRefresh(dir)
-		if !needs || !strings.Contains(reason, "frontends/web/public/config.js") {
-			t.Fatalf("got (%q, %v); want a regenerate naming frontends/web/public/config.js", reason, needs)
+		if got := missingDevRuntimeConfig(dir); got != "frontends/web/public/config.js" {
+			t.Fatalf("missingDevRuntimeConfig = %q, want frontends/web/public/config.js", got)
+		}
+		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
+			t.Fatalf("a missing machine-local config.js must not trigger a full generate, got %q", reason)
 		}
 		writeFileAt(t, dir, "frontends/web/public/config.js", "window.__FORGE_CONFIG__ = {};\n")
-		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
-			t.Fatalf("document present, still asked to regenerate: %q", reason)
+		if got := missingDevRuntimeConfig(dir); got != "" {
+			t.Fatalf("document present, still reported missing: %q", got)
 		}
 	})
 	t.Run("frontends that consume no document are ignored", func(t *testing.T) {
 		dir := fresh(t)
 		writeFileAt(t, dir, "frontends/plain/public/favicon.ico", "x")           // no config module
 		writeFileAt(t, dir, "frontends/mobile/src/lib/config_gen.ts", "// rn\n") // no public/
-		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
-			t.Fatalf("asked to regenerate for a frontend with no runtime document: %q", reason)
+		if got := missingDevRuntimeConfig(dir); got != "" {
+			t.Fatalf("reported a document for a frontend that consumes none: %q", got)
 		}
 	})
 }
@@ -158,4 +165,40 @@ func TestGeneratedCodeNeedsRefresh(t *testing.T) {
 			t.Fatal("want needs=false when project has no go.work/proto")
 		}
 	})
+}
+
+// A fresh clone lacks the gitignored dev document; ensureDevRuntimeConfigs
+// must put it back by rendering that one file from the env's KCL — no
+// generate pipeline, so no forge-version gate can stand in the way.
+func TestEnsureDevRuntimeConfigs_RendersOnlyTheMissingDocument(t *testing.T) {
+	dir := frontendConfigProject(t, map[string]string{"dev": "dev"})
+	writeFrontendDescriptor(t, dir)
+	writeFileAt(t, dir, "frontends/web/src/lib/config_gen.ts", "// generated\n")
+	writeFileAt(t, dir, "frontends/web/public/favicon.ico", "x")
+	cfg := &config.ProjectConfig{
+		Name:      "demo",
+		Frontends: []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "vite"}.WithDir("frontends/web")},
+	}
+	if got := missingDevRuntimeConfig(dir); got != "frontends/web/public/config.js" {
+		t.Fatalf("fixture is wrong: missingDevRuntimeConfig = %q", got)
+	}
+
+	n, err := ensureDevRuntimeConfigs(cfg, dir)
+	if err != nil {
+		t.Fatalf("ensureDevRuntimeConfigs: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rendered %d document(s), want 1", n)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "frontends", "web", "public", "config.js"))
+	if err != nil {
+		t.Fatalf("config.js not written: %v", err)
+	}
+	if !strings.Contains(string(body), "__FORGE_CONFIG__") || !strings.Contains(string(body), `"dev"`) {
+		t.Errorf("config.js is not dev's runtime config document:\n%s", body)
+	}
+	// Present now: a second call is a no-op.
+	if n, err := ensureDevRuntimeConfigs(cfg, dir); err != nil || n != 0 {
+		t.Errorf("second call: n=%d err=%v, want a no-op", n, err)
+	}
 }

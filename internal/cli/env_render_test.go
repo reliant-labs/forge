@@ -519,7 +519,11 @@ func TestRenderWriteScanDisabledSaysSo(t *testing.T) {
 // stack up; listing them buries the one line that matters.
 func TestRenderWriteScanSkipsForgesOwnChurn(t *testing.T) {
 	root := t.TempDir()
-	for _, rel := range []string{".git/objects/ab/cdef", ".forge/logs/dev/api.log", "deploy/real.conf"} {
+	// .forge/hostinfra is forge's own postgres/IdP runtime and data dir,
+	// written by a live server (and a first-run binary extraction) while
+	// `forge env up` renders. It is never a render's write.
+	churn := []string{".git/objects/ab/cdef", ".forge/logs/dev/api.log", ".forge/hostinfra/postgres/data/pg_wal/000000010000000000000004", "deploy/real.conf"}
+	for _, rel := range churn {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
@@ -529,7 +533,7 @@ func TestRenderWriteScanSkipsForgesOwnChurn(t *testing.T) {
 		}
 	}
 	scan := newRenderWriteScan(root, false)
-	for _, rel := range []string{".git/objects/ab/cdef", ".forge/logs/dev/api.log", "deploy/real.conf"} {
+	for _, rel := range churn {
 		if err := os.WriteFile(filepath.Join(root, rel), []byte("after the render"), 0o644); err != nil {
 			t.Fatalf("rewrite: %v", err)
 		}

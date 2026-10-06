@@ -91,11 +91,11 @@ layout segment, so `forge env build` pushes
 ## Run it locally
 
 ```bash
-forge env up dev --no-deploy    # the frontend's dev server; prints its URL
+forge env up dev    # the frontend's dev server; prints its URL
 ```
 
-`--no-deploy` is needed until #401 lands: an env that declares no cluster
-still runs the deploy phase against your current kubectl context.
+No cluster is needed: nothing in the dev env runs in one, so `env up` leaves
+its declared `k3d-<project>` cluster alone and says so.
 
 ## 3. Ship it
 

@@ -149,3 +149,54 @@ func TestEnvDeclaresNoCluster(t *testing.T) {
 		t.Error("a missing env declares nothing")
 	}
 }
+
+// The frontend's dev config resolves the API at the `<project>-dev-api` port
+// key; `_port_of` gives that key to one workload. A project created with no
+// service names ITSELF — a workload that does not exist — so the first
+// `forge scaffold service task` bound task under its own key, which stepped
+// to the next free port, and config.js pointed at a port nothing listened
+// on. The first service bound must take the key over; a bound owner keeps it.
+func TestAppendEnvBinding_FirstServiceClaimsTheAPIPortKey(t *testing.T) {
+	const portOf = `_port_of = lambda name: str -> int {
+    plugin.resolve_port("demo-dev-api" if name == "demo" else "demo-dev-" + name, 8085)
+}
+`
+	dir := t.TempDir()
+	p := filepath.Join(dir, "deploy", "kcl", "dev", "main.k")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unowned := portOf + "_workloads = [\n    _on_host_job(wl.migrate)\n]\n"
+	if err := os.WriteFile(p, []byte(unowned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, applied, err := AppendEnvBinding(dir, "dev", WorkloadKindService, "task"); !applied || err != nil {
+		t.Fatalf("bind task: applied=%v err=%v", applied, err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), `resolve_port("demo-dev-api" if name == "task" else`) {
+		t.Errorf("the first bound service must own the API port key:\n%s", b)
+	}
+
+	// A second service must not take it from the first, which is bound.
+	if _, applied, err := AppendEnvBinding(dir, "dev", WorkloadKindService, "billing"); !applied || err != nil {
+		t.Fatalf("bind billing: applied=%v err=%v", applied, err)
+	}
+	b, _ = os.ReadFile(p)
+	if !strings.Contains(string(b), `if name == "task" else`) {
+		t.Errorf("a bound owner must keep the API port key:\n%s", b)
+	}
+
+	// A worker is not an API: it never claims the key.
+	if err := os.WriteFile(p, []byte(unowned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, applied, err := AppendEnvBinding(dir, "dev", WorkloadKindWorker, "mailer"); !applied || err != nil {
+		t.Fatalf("bind mailer: applied=%v err=%v", applied, err)
+	}
+	b, _ = os.ReadFile(p)
+	if !strings.Contains(string(b), `if name == "demo" else`) {
+		t.Errorf("a worker must not claim the API port key:\n%s", b)
+	}
+}

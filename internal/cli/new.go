@@ -124,7 +124,7 @@ checkout stop being the same source; drop the bridge with
 	}
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
-	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (required, e.g., github.com/example/my-project)")
+	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (e.g., github.com/example/my-project). Defaults to example.com/<name>, so a first project needs no flag; set it to the path you will publish under")
 	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
@@ -139,9 +139,27 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
 	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks + packages/ui-web shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
 	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default; required for a service scaffold from an unreleased forge build (also: "+linkForgeEnv+"=1)")
-	_ = cmd.MarkFlagRequired("mod")
 
 	return cmd
+}
+
+// defaultModulePath returns the Go module path a new project uses: --mod when
+// given, else `example.com/<name>` — the shape the Go tutorial itself uses
+// (`go mod init example.com/greetings`), a valid main-module path for an
+// application nobody imports yet, and one forge.yaml's module_path check
+// accepts. example.com is reserved for examples (RFC 2606), so the default
+// reads as the placeholder it is.
+//
+// --mod used to be REQUIRED, which made the README's first command
+// (`forge project new my-app`) fail before anything was written. A module
+// path only matters once the code is published or imported from elsewhere,
+// and the GitHub-derived defaults (CI image owner, CODEOWNERS) already fall
+// back cleanly for a non-github path, so a working default beats a wall.
+func defaultModulePath(flag, projectName string) (modulePath string, defaulted bool) {
+	if m := strings.TrimSpace(flag); m != "" {
+		return m, false
+	}
+	return "example.com/" + projectName, true
 }
 
 // validateNewArgs runs the pure validation/normalization logic for runNew —
@@ -242,6 +260,10 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
 	if err != nil {
 		return err
+	}
+	modulePath, defaulted := defaultModulePath(modulePath, projectName)
+	if defaulted {
+		fmt.Printf("Go module path: %s (no --mod given; pass --mod github.com/<you>/%s to set the path you will publish under)\n", modulePath, projectName)
 	}
 
 	// Validate service names
@@ -854,12 +876,14 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 		// with a CRUD backend nobody asked for. The service step stays one
 		// line away for the project that does grow an API.
 		//
-		// No bare `env up dev` here: a frontend-only scaffold still binds a
-		// migrate job and a k3d cluster (forge#401), so the skill — which
-		// carries the dev-loop and env-file steps that work today — is the
-		// first command, not a dev loop that would fail.
+		// The dev loop is the first command: the scaffolded dev env needs no
+		// cluster (its k3d cluster_target places only a Namespace and a
+		// Gateway, which `env up` leaves alone until something runs there),
+		// so it comes up on a fresh machine. The skill follows for shipping.
 		out = append(out,
 			"  build the site in frontends/ — it is starter code, yours to rewrite",
+			fmt.Sprintf("  %s env up dev", n),
+			"      ↳ the frontend's dev server (and its sign-in), on this machine",
 			fmt.Sprintf("  %s skill load deploy/static-site", n),
 			"      ↳ the dev loop, the static export, hosted static hosting, and deploying it",
 			"",

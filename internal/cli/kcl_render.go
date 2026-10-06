@@ -165,6 +165,17 @@ type KCLEntities struct {
 	// its own, so a forge.Manifests group on an otherwise empty cluster is
 	// applied there instead of silently never applied.
 	ManifestClusters []ManifestClusterEntity `json:"-"`
+
+	// ClusterWork names ("Kind/name") every rendered object that DOES
+	// something on a cluster — everything in `output.manifests` except the
+	// env's own support objects: its Namespaces, and the Gateways it
+	// declares in Bundle.gateways. A Namespace holds nothing by itself and
+	// a Gateway routes nothing until a route attaches to it, so an env
+	// whose stream is ONLY those has placed no work in a cluster, however
+	// many cluster_target / gateway declarations it carries. Read through
+	// envClusterDemand, which also counts the cluster work forge applies
+	// outside the stream (helm charts, placed Secrets, minted kubeconfigs).
+	ClusterWork []string `json:"-"`
 }
 
 // SecretProviderEntity is the parsed bundle-level secret provider
@@ -1082,6 +1093,16 @@ type kclRenderRaw struct {
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
+	// BundledCharts and Generated are bring-your-own YAML that
+	// internal/cluster expands into the apply outside `manifests`. Only
+	// their names are read here, as cluster work (see ClusterWork).
+	BundledCharts []namedRaw `json:"bundled_charts,omitempty"`
+	Generated     []namedRaw `json:"generated,omitempty"`
+}
+
+// namedRaw reads only the name of a render-output entry.
+type namedRaw struct {
+	Name string `json:"name"`
 }
 
 // kclWorkloadRaw is one `output.workloads[]` entry before dispatch.
@@ -1121,6 +1142,28 @@ type ManifestClusterEntity struct {
 // sends an object by, so every stamped context is a place the deploy WRITES —
 // whether or not a workload runs there (a forge.Manifests group, a cluster
 // database, a secondary cluster's Namespace).
+// manifestClusterWork returns "Kind/name" for every rendered object that is
+// not one of the env's support objects (see KCLEntities.ClusterWork). Only a
+// Gateway the Bundle itself declares is support: one a raw forge.Manifests
+// group carries is the author's own object and counts as work.
+func manifestClusterWork(manifests []rawManifest, gateways []GatewayEntity) []string {
+	declaredGateway := map[string]bool{}
+	for _, g := range gateways {
+		declaredGateway[g.Name] = true
+	}
+	var work []string
+	for _, m := range manifests {
+		switch {
+		case m.Kind == "Namespace":
+			continue
+		case m.Kind == "Gateway" && declaredGateway[m.Metadata.Name]:
+			continue
+		}
+		work = append(work, m.Kind+"/"+m.Metadata.Name)
+	}
+	return work
+}
+
 func manifestClusters(manifests []rawManifest) []ManifestClusterEntity {
 	byCluster := map[string][]rawManifest{}
 	for _, m := range manifests {
@@ -1324,6 +1367,13 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ManifestNamespace:    manifestNamespace(raw.Manifests),
 		ManifestServiceNames: manifestServiceNames(raw.Manifests),
 		ManifestClusters:     manifestClusters(raw.Manifests),
+		ClusterWork:          manifestClusterWork(raw.Manifests, raw.Gateways),
+	}
+	for _, c := range raw.BundledCharts {
+		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)
+	}
+	for _, g := range raw.Generated {
+		out.ClusterWork = append(out.ClusterWork, "Generated/"+g.Name)
 	}
 	seen := map[string]bool{}
 	for _, w := range raw.Workloads {

@@ -10,6 +10,7 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // ensureGeneratedCode runs the generate pipeline when the project's
@@ -66,9 +67,15 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 	if missing := missingGoWorkModule(projectDir); missing != "" {
 		return fmt.Sprintf("module %q is missing (listed in go.work, no go.mod)", missing), true
 	}
-	if missing := missingDevRuntimeConfig(projectDir); missing != "" {
-		return fmt.Sprintf("%s is missing (machine-local, gitignored)", missing), true
-	}
+	// A missing dev runtime document (public/config.js) is deliberately NOT
+	// a trigger. It used to be, and it made every fresh checkout run the
+	// WHOLE generate pipeline before any build — including
+	// `forge env build prod --target <a Go workload>`, which never reads a
+	// frontend's dev config — and the pipeline refuses outright when the
+	// forge on PATH is not the one the project pins. One gitignored file
+	// that a single KCL evaluation renders is not a reason to regenerate a
+	// tree that is committed and current: ensureDevRuntimeConfigs renders
+	// just that file, where a build actually consumes it.
 	protoNewest, okProto := newestModTime(filepath.Join(projectDir, "proto"))
 	genNewest, okGen := newestModTime(filepath.Join(projectDir, "gen"))
 	if okProto && okGen && protoNewest.After(genNewest) {
@@ -153,6 +160,27 @@ func missingDevRuntimeConfig(projectDir string) string {
 		}
 	}
 	return ""
+}
+
+// ensureDevRuntimeConfigs renders each web frontend's dev runtime document
+// (public/config.js) when it is missing, and nothing else — one evaluation of
+// deploy/kcl/dev/config.k through the same renderer `forge generate` and
+// `forge env up` use. Returns the number of documents written.
+//
+// It replaces a full `forge generate` that ran for the same reason (see
+// generatedCodeNeedsRefresh): rendering the document does not touch the
+// generated tree, so it needs no forge-version gate and works with whatever
+// forge is running. A no-op when every document is present.
+func ensureDevRuntimeConfigs(cfg *config.ProjectConfig, projectDir string) (int, error) {
+	missing := missingDevRuntimeConfig(projectDir)
+	if missing == "" {
+		return 0, nil
+	}
+	n, err := refreshFrontendRuntimeConfigs(cfg, projectDir, codegen.DevEnvName, nil)
+	if err != nil {
+		return n, fmt.Errorf("render %s: %w", missing, err)
+	}
+	return n, nil
 }
 
 // newestModTime walks dir and returns the most recent file modtime. The

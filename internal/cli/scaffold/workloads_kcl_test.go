@@ -22,6 +22,7 @@ func writeScaffoldedEnvs(t *testing.T, root string) {
 		}
 		out, err := templates.DeployTemplates().Render(scaffoldedEnvTemplate(env), templates.EnvTemplateData{
 			ProjectName: "acme", EnvName: env, IngressEnabled: true, PrimaryWorkload: "acme", Bindings: bindings,
+			APIWorkload: codegen.APIWorkloadStanza("github.com/acme/acme", "acme"),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -55,7 +56,7 @@ func TestBindWorkloadInEnvs_OperatorBindsToClusterAndWarns(t *testing.T) {
 	writeScaffoldedEnvs(t, root)
 
 	out, _ := captureStdout(t, func() error {
-		bindWorkloadInEnvs(root, config.ComponentConfig{Name: "reaper", Kind: config.ComponentKindOperator})
+		bindWorkloadInEnvs(root, "acme", config.ComponentConfig{Name: "reaper", Kind: config.ComponentKindOperator})
 		return nil
 	})
 
@@ -84,22 +85,62 @@ func TestBindWorkloadInEnvs_OperatorBindsToClusterAndWarns(t *testing.T) {
 }
 
 // forge's cron component is a worker running its own scheduler, so it is
-// hosted like any worker: no cluster, no warning.
+// hosted like any worker — inside the env's one API workload, the binary's
+// `server`, which supervises every worker: no cluster, no warning, and no
+// second hosted workload running it again.
 func TestBindWorkloadInEnvs_CronComponentIsHosted(t *testing.T) {
 	root := t.TempDir()
 	writeScaffoldedEnvs(t, root)
 
 	out, _ := captureStdout(t, func() error {
-		bindWorkloadInEnvs(root, config.ComponentConfig{Name: "cleanup", Kind: config.ComponentKindCron})
+		bindWorkloadInEnvs(root, "acme", config.ComponentConfig{Name: "cleanup", Kind: config.ComponentKindCron})
 		return nil
 	})
 	for _, env := range []string{"staging", "prod"} {
-		if got := readEnvMain(t, root, env); !strings.Contains(got, "    _hosted(wl.cleanup)\n]") {
-			t.Errorf("%s must host the cron component (a worker):\n%s", env, got)
+		got := readEnvMain(t, root, env)
+		// Born with no service, the env had not bound `_api` yet.
+		if !strings.Contains(got, "    _hosted(_api)\n]") || strings.Contains(got, "wl.cleanup") {
+			t.Errorf("%s must run the cron component in the hosted `_api`, not on a line of its own:\n%s", env, got)
 		}
+	}
+	if !strings.Contains(out, "worker 'cleanup' runs in _api, the binary's `server`, now bound: _hosted") {
+		t.Errorf("scaffold output does not say where the worker runs:\n%s", out)
 	}
 	if strings.Contains(out, "cannot run on Reliant hosting") {
 		t.Errorf("a hosted-admissible workload drew the refusal warning:\n%s", out)
+	}
+}
+
+// A hosted env serves every service at one origin through `_api`, the
+// binary's `server`. A service scaffolded into it is already mounted there,
+// so it gets no hosted workload of its own — the frontend could never call
+// that hostname — while dev still runs it as its own process.
+func TestBindWorkloadInEnvs_ServiceRunsInTheHostedAPI(t *testing.T) {
+	root := t.TempDir()
+	writeScaffoldedEnvs(t, root)
+
+	first, _ := captureStdout(t, func() error {
+		bindWorkloadInEnvs(root, "acme", config.ComponentConfig{Name: "orders", Kind: config.ComponentKindServer})
+		return nil
+	})
+	second, _ := captureStdout(t, func() error {
+		bindWorkloadInEnvs(root, "acme", config.ComponentConfig{Name: "billing", Kind: config.ComponentKindServer})
+		return nil
+	})
+	if got := readEnvMain(t, root, "dev"); !strings.Contains(got, "    _on_host(wl.orders)\n    _on_host(wl.billing)\n]") {
+		t.Errorf("dev must run each service as its own host process:\n%s", got)
+	}
+	for _, env := range []string{"staging", "prod"} {
+		got := readEnvMain(t, root, env)
+		if strings.Count(got, "    _hosted(_api)\n") != 1 || strings.Contains(got, "wl.orders") || strings.Contains(got, "wl.billing") {
+			t.Errorf("%s must bind `_api` once and no service on its own:\n%s", env, got)
+		}
+	}
+	if !strings.Contains(first, "deploy/kcl/prod/main.k (service 'orders' runs in _api, the binary's `server`, now bound: _hosted)") {
+		t.Errorf("first service: output does not say it bound the API:\n%s", first)
+	}
+	if !strings.Contains(second, "deploy/kcl/prod/main.k (service 'billing' runs in _api, the binary's `server`; nothing to bind)") {
+		t.Errorf("second service: output does not say the API already runs it:\n%s", second)
 	}
 }
 

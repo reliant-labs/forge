@@ -115,6 +115,53 @@ func TestRunInWorkDirRestoresTheCallerCwd(t *testing.T) {
 	}
 }
 
+// TestRunResolvesARelativeProjectDirOnce: a caller holding a RELATIVE project
+// dir builds its source the ordinary Go way, filepath.Join(projectDir, ...),
+// so both arguments are relative to the process cwd. kpm resolves a relative
+// source against workDir instead, which named every path twice:
+//
+//	kpm run shop/deploy/kcl/dev/zz_forge_frontend_config_probe_17401.k:
+//	Cannot find the kcl file, please check the file path
+//	shop/shop/deploy/kcl/dev/zz_forge_frontend_config_probe_17401.k
+//
+// That is what `forge project new shop` printed on every scaffold — its
+// target is `<--path>/<name>`, relative — and the fallback it took wrote the
+// dev frontend's config.js from proto defaults, pointing the browser at the
+// dev IdP's port instead of the API's. Both entry points, and a single-file
+// source as well as a package dir.
+func TestRunResolvesARelativeProjectDirOnce(t *testing.T) {
+	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
+	parent := t.TempDir()
+	for rel, body := range map[string]string{
+		"shop/deploy/kcl/kcl.mod":     "[package]\nname = \"relative_probe\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n",
+		"shop/deploy/kcl/dev/main.k":  "import forge\n\nok = forge.Bundle is not None\n",
+		"shop/deploy/kcl/dev/probe.k": "probe = \"single file\"\n",
+	} {
+		p := filepath.Join(parent, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(parent)
+
+	projectDir := "shop"
+	for name, run := range map[string]func(string, string, []string) ([]byte, error){
+		"Run": kclrender.Run, "RunInWorkDir": kclrender.RunInWorkDir,
+	} {
+		for _, source := range []string{
+			filepath.Join(projectDir, "deploy", "kcl", "dev"),
+			filepath.Join(projectDir, "deploy", "kcl", "dev", "probe.k"),
+		} {
+			if _, err := run(projectDir, source, []string{"env=dev"}); err != nil {
+				t.Errorf("%s(%q, %q) from %s: a cwd-relative source must resolve once: %v", name, projectDir, source, parent, err)
+			}
+		}
+	}
+}
+
 // TestRunDoesNotChdir pins the OPT-IN half. os.Chdir is process-global, so a
 // library that moved the process on every render would change the meaning of
 // every relative path in the calling program for the duration — including in

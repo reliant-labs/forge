@@ -460,7 +460,7 @@ func renderDeployEnvs(projectDir string, shaper DeployShaper) []envRender {
 		// checks report a project non-applyable over a conditional that
 		// would have been satisfied. internal/cli's renderKCLRaw passes the
 		// same argument; the two renderers disagreeing is the bug.
-		raw, rerr := kclrender.Run(projectDir, rel, []string{"env=" + name})
+		raw, rerr := kclrender.Run(projectDir, filepath.Join(projectDir, rel), []string{"env=" + name})
 		if rerr != nil {
 			renders = append(renders, envRender{env: name, err: rerr})
 			continue

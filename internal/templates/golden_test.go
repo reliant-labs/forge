@@ -49,6 +49,19 @@ func renderCI(t *testing.T, provider, name string, data any) []byte {
 }
 
 // renderDeployTemplate renders a deploy/ template.
+// goldenAPIWorkload is what codegen.APIWorkloadStanza renders for the golden
+// cloud envs' project (shop, ghcr.io/acme). A literal, not a call: codegen
+// imports this package.
+const goldenAPIWorkload = `_api = fw.Workload {
+    name = "api"
+    kind = "service"
+    image = "ghcr.io/acme/shop"
+    build = forge.GoBuild {cmd = "./cmd/shop", output_name = "shop"}
+    args = ["server"]
+    ports = [fw.Port {name = "http", port = 8080, expose = True}]
+    config_secrets = ["DATABASE_URL"]
+}`
+
 func renderDeployTemplate(t *testing.T, name string, data any) []byte {
 	t.Helper()
 	out, err := DeployTemplates().Render(name, data)
@@ -321,7 +334,9 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderDeployTemplate(t, "kcl/cloud/main.k.tmpl", EnvTemplateData{
 					ProjectName: "shop", EnvName: "prod", PrimaryWorkload: "orders", PrimaryIdent: "orders",
 					HasFrontend: true, FrontendName: "web",
-					Bindings: "    _hosted(wl.migrate)\n    _hosted(wl.orders)\n    _hosted(wl.billing)",
+					// orders and billing run in `_api`, the binary's `server`.
+					Bindings:    "    _hosted(wl.migrate)\n    _hosted(_api)",
+					APIWorkload: goldenAPIWorkload,
 				})
 			},
 		},
@@ -330,6 +345,8 @@ func TestGoldenSnapshots(t *testing.T) {
 			render: func(t *testing.T) []byte {
 				return renderDeployTemplate(t, "kcl/cloud/main.k.tmpl", EnvTemplateData{
 					ProjectName: "shop", EnvName: "staging", Bindings: "    _hosted(wl.migrate)",
+					// Declared, unbound until the first service: no idle workload.
+					APIWorkload: goldenAPIWorkload,
 				})
 			},
 		},

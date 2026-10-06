@@ -262,3 +262,75 @@ func TestAppendWorkloadStanza_ResultEvaluates(t *testing.T) {
 		})
 	}
 }
+
+// `forge scaffold operator` declares its workload with `crds = []` — it owns
+// no CRD yet — and `forge scaffold crd` adds each one. The operator's derived
+// ClusterRole covers exactly what `crds` lists, so each new kind lands there,
+// written in the style the list already has, and nothing else in the file
+// moves.
+func TestAppendOperatorCRD(t *testing.T) {
+	const docstring = `"""
+What demo RUNS. A worked example, NOT a declaration:
+
+    reaper = fw.Workload {
+        name = "reaper"
+        crds = ["Example"]
+    }
+"""
+`
+	const opFresh = `reaper = fw.Workload {
+    name = "reaper"
+    kind = "operator"
+    group = "demo.io"
+    crds = []
+    config_secrets = ["DATABASE_URL"]
+}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, WorkloadsKCLRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if edit, err := AppendOperatorCRD(dir, "reaper", "Widget"); err != nil || edit != CRDListNotEditable {
+		t.Fatalf("no workloads.k: %v, %v — want not editable", edit, err)
+	}
+	other := "billing = fw.Workload {name = \"billing\", image = \"example.com/demo\"}\n"
+	if err := os.WriteFile(path, []byte(docstring+other+opFresh), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := func() string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	for _, kind := range []string{"Widget", "Gadget"} {
+		if edit, err := AppendOperatorCRD(dir, "reaper", kind); err != nil || edit != CRDListAdded {
+			t.Fatalf("append %s: %v, %v", kind, edit, err)
+		}
+	}
+	want := docstring + other + strings.Replace(opFresh, "crds = []", `crds = ["Widget", "Gadget"]`, 1)
+	if got := read(); got != want {
+		t.Errorf("after two CRDs:\n%s\nwant:\n%s", got, want)
+	}
+
+	if edit, err := AppendOperatorCRD(dir, "reaper", "Widget"); err != nil || edit != CRDListAlreadyListed {
+		t.Errorf("re-adding Widget: %v, %v — want already listed", edit, err)
+	}
+	if got := read(); got != want {
+		t.Errorf("an already-listed CRD rewrote the file:\n%s", got)
+	}
+	// A workload with no `crds` field, and one that does not exist: forge
+	// does not guess where the field goes.
+	for _, name := range []string{"billing", "nope"} {
+		if edit, err := AppendOperatorCRD(dir, name, "Widget"); err != nil || edit != CRDListNotEditable {
+			t.Errorf("%s: %v, %v — want not editable", name, edit, err)
+		}
+	}
+	if got := read(); got != want {
+		t.Errorf("a refused edit wrote the file:\n%s", got)
+	}
+}

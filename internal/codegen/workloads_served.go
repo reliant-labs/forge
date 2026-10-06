@@ -164,7 +164,7 @@ func ServingWorkload(declared map[string]DeclaredWorkload, projectName string, c
 	}
 	for _, name := range names {
 		w := declared[name]
-		if ProjectBinaryRuns(projectName, w.BuildCmd) && len(w.Args) > 0 && w.Args[0] == "server" {
+		if ProjectBinaryRuns(projectName, w.BuildCmd) && len(w.Args) > 0 && w.Args[0] == ServerSubcommand {
 			return w.Name, true
 		}
 	}

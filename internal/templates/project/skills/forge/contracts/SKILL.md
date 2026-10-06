@@ -116,7 +116,7 @@ Forge reads directives in a way that survives this:
 
 ## Suppressing a contract or convention finding
 
-Every forge rule, including `forgeconv-internal-package-contract-names`, `forgeconv-deps-are-interfaces`, `forgeconv-one-service-per-file` and `forgeconv-create-request-nullability` (the last in a `.proto`), takes the same directive:
+Every forge rule, including `forgeconv-internal-package-contract-names`, `forgeconv-deps-are-interfaces`, `forgeconv-one-service-per-file`, `forgeconv-list-filter-optional` and `forgeconv-create-request-nullability` (the last three in a `.proto`), takes the same directive:
 
 ```go
 type Deps struct {

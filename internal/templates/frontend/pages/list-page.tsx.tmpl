@@ -46,7 +46,9 @@ import { usePathname, useRouter } from "next/navigation";
 import { {{joinStrings .ListReactImports ", "}} } from "react";
 import { z } from "zod";
 {{- else}}
+{{- if .EmitsDetailPage}}
 import { useRouter } from "next/navigation";
+{{- end}}
 {{- if .HasCursorPagination}}
 import { useState } from "react";
 {{- end}}
@@ -76,9 +78,15 @@ const PAGE_SIZE = 25;
 
 // ---- Typed columns ----
 // One entry per renderable proto field, type-checked against {{.EntityName}}.
+{{- if .EmitsDetailPage}}
 // The id and the created/updated timestamps are deliberately NOT here — the row
 // already links to the detail page, which is where they belong. Add one back if
 // this list needs it; this file is yours.
+{{- else}}
+// The service has no Get RPC, so there is no detail page: rows are not links,
+// and the id and timestamps a detail page would show stay here instead. Add a
+// Get RPC (and delete + rescaffold this file) to give records a page of their own.
+{{- end}}
 const columns: ResourceColumn<{{.EntityName}}>[] = [
 {{- range .ListColumns}}
   {
@@ -129,7 +137,9 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
 {{if .HasURLFilters}}function {{.EntityNamePlural}}PageContent() {
 {{- else}}export default function {{.EntityNamePlural}}Page() {
 {{- end}}
+{{- if or .HasURLFilters .EmitsDetailPage}}
   const router = useRouter();
+{{- end}}
 {{- if .HasURLFilters}}
   const pathname = usePathname();
   const params = useTypedSearchParams(searchParamsSchema);
@@ -228,7 +238,9 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
       isFetching={query.isFetching}
       columns={columns}
       rowKey={(item) => String(item.{{.PkFieldCamel}})}
+{{- if .EmitsDetailPage}}
       onRowClick={(item) => router.push(`/{{.EntitySlug}}/${item.{{.PkFieldCamel}}}`)}
+{{- end}}
       emptyTitle="No {{.EntityNamePlural | humanLower}} found"
       emptyMessage="No records match the current view."
 {{- if .SearchFilterField}}

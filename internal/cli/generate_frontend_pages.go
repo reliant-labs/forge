@@ -175,7 +175,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 					kind string
 				}{
 					{entity.HasList, layout.listTmpl, layout.listPath(entity.EntitySlug), "list"},
-					{entity.HasGet, layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
+					{entity.EmitsDetailPage(), layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
 					{entity.HasCreate, layout.createTmpl, layout.createPath(entity.EntitySlug), "create"},
 					{entity.EmitsEditPage(), layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
 				}

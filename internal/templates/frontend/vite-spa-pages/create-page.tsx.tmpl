@@ -57,7 +57,7 @@ export default function Create{{.EntityName}}Page() {
   const navigate = useNavigate();
 
   const mutation = use{{.CreateRPC}}({
-{{- if and .HasGet .CreateEntityFieldCamel}}
+{{- if and .EmitsDetailPage .CreateEntityFieldCamel}}
     // Land on the record just created — its detail page is where the next
     // step (editing it, adding a related row) starts.
     onSuccess: ({ {{.CreateEntityFieldCamel}}: created }) => void navigate({ to: created ? `/{{.EntitySlug}}/${created.{{.PkFieldCamel}}}` : "/{{.EntitySlug}}" }),

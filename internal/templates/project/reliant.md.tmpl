@@ -150,11 +150,11 @@ SQL is the schema language. Entities are PROJECTIONS of the applied `db/migratio
 - Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete, text columns ⇒ generated list search (`db` skill).
 - Access control and row scoping are app-owned handler logic — read the caller via `middleware.GetUser` and add the checks and `WHERE` filters your product needs; forge generates none of it (`auth` + `db` skills).
 - `auth_required` is enforced, fail-closed and per-rpc: unset or `true` needs a valid token, and `auth_required: false` publishes that one rpc (projected into `pkg/middleware/procedures_gen.go`). It decides only WHETHER a caller is signed in; what they may do is the handler logic above.
-- List request filter fields **must** be `optional` — without it, generated filters silently no-op.
+- List request filter fields **must** be `optional` — without it, generated filters silently no-op (`{{.CLI}} lint` rejects it: `forgeconv-list-filter-optional`).
 - One service per `.proto` file (`{{.CLI}} lint` rejects multi-service files; see `proto-split`).
 - Cross-service shared messages go in `proto/shared/v1/types.proto`. No service-to-service proto imports.
 
-Load `proto` and `db` for the full rulesets. `{{.CLI}} lint --conventions` enforces the structural ones (`forgeconv-one-service-per-file`, `forgeconv-internal-package-contract-names`, `forgeconv-no-handler-error-mapping`).
+Load `proto` and `db` for the full rulesets. `{{.CLI}} lint --conventions` enforces the structural ones (`forgeconv-one-service-per-file`, `forgeconv-list-filter-optional`, `forgeconv-internal-package-contract-names`, `forgeconv-no-handler-error-mapping`).
 
 ## The scaffolded frontend is starter code
 

@@ -9,6 +9,9 @@
 //	forgeconv-one-service-per-file      one service per .proto, full stop
 //	forgeconv-service-dir-consistency   proto service name must match its
 //	                                    proto/services/<dir>/ directory
+//	forgeconv-list-filter-optional      a List request's scalar/enum filter
+//	                                    fields must be `optional`
+//	                                    (see list_filter_optional.go)
 //	forgeconv-allocate-port-spacing     two allocate_port() base literals
 //	                                    congruent mod BlockSize collide at
 //	                                    a block reachable within MaxStacks
@@ -157,6 +160,12 @@ func LintProtoTreeOpts(rootDir string, opts LintOptions) (Result, error) {
 
 	sort.Strings(protoFiles)
 
+	// Tree-level rules need every file before they can judge any one of
+	// them (an enum in proto/shared/ types a filter in proto/services/), so
+	// they run once up front; their findings join each file's own below and
+	// go through the same suppression pass.
+	treeFindings := checkListFilterOptional(rootDir, protoFiles)
+
 	var result Result
 	for _, file := range protoFiles {
 		content, err := os.ReadFile(file)
@@ -174,7 +183,8 @@ func LintProtoTreeOpts(rootDir string, opts LintOptions) (Result, error) {
 		// offending declaration, and a reasonless one of a gating rule is
 		// itself reported. Applied here rather than by the caller so
 		// every consumer (lint, audit) sees the same verdict.
-		applied := suppress.Apply(string(content), lintProtoFile(rel, string(content), opts))
+		findings := append(lintProtoFile(rel, string(content), opts), treeFindings[rel]...)
+		applied := suppress.Apply(string(content), findings)
 		result.Findings = append(result.Findings, applied.Kept...)
 		result.Findings = append(result.Findings, applied.Violations...)
 	}

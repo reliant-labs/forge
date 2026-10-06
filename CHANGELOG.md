@@ -153,6 +153,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forgeconv-list-filter-optional`: `forge lint --conventions` now rejects a
+  List-request filter field without `optional`.** The rule ("List request
+  filter fields must be optional") was documented in every project's
+  CLAUDE.md and the proto skill and checked by nothing. A scalar or enum field
+  on a `List<X>Request` (or the request of a `List<X>` rpc) with no presence
+  is an error: unset and the zero value are the same on the wire, so the
+  generated List op either can never filter on the zero value or — for a
+  bool/enum — always applies it and returns only the `false`/UNSPECIFIED rows.
+  Pagination/ordering controls and message-typed fields are exempt, enums
+  resolve across the proto tree, and a required parameter can say so with
+  `[(buf.validate.field).required = true]` instead.
+
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,
   `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,
@@ -332,6 +344,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renders.
 
 ### Fixed
+
+- **A born list page no longer links its rows to a detail page that does not
+  exist.** Every list row called `router.push('/<slug>/<id>')`, but the detail
+  page is only generated when the service has a Get RPC — so a List-only
+  entity's rows were all 404s. Rows link only when the detail page is
+  generated (`PageTemplateData.EmitsDetailPage`, which also gates the detail
+  route itself and the create page's landing); otherwise they are inert and
+  the list keeps the id/created/updated columns it would have left to the
+  detail page.
 
 - **`next dev` no longer rewrites the scaffolded `tsconfig.json`.** Next 16
   checks the file on every `next dev` and `next build`. When it finds a value

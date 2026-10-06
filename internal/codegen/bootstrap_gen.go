@@ -494,9 +494,12 @@ type BootstrapTestServiceData struct {
 	// The testing.go template builds its import line from this, never from
 	// Package — a dir may legally declare a package name that differs from
 	// its directory name, and only the directory name belongs in the path.
-	ImportPath             string
-	FieldName              string // e.g. "API" (exported struct field)
-	ProtoServiceName       string // e.g. "ApiService" (proto service name for connect client)
+	ImportPath string
+	FieldName  string // e.g. "API" (exported struct field)
+	// ConnectServiceGoName is protoc-gen-connect-go's base for the service
+	// (naming.ConnectServiceGoName): the test client is <base>Client.
+	// "Alphav1connectService" → Alphav1ConnectService.
+	ConnectServiceGoName   string
 	ProtoConnectImportPath string // e.g. "github.com/foo/bar/gen/services/api/v1/apiv1connect"
 	ProtoConnectPkg        string // e.g. "apiv1connect" (Go identifier used at call sites)
 	// MountMethod is the handler method that mounts the service — "Register"
@@ -731,7 +734,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			Package:                pkg,
 			ImportPath:             res.ImportLeaf,
 			FieldName:              naming.ToPascalCase(pkg),
-			ProtoServiceName:       svc.Name,
+			ConnectServiceGoName:   svc.GoName(),
 			ProtoConnectImportPath: connectImport,
 			ProtoConnectPkg:        connectPkg,
 			MountMethod:            mountMethodFor(svc),
@@ -996,7 +999,7 @@ type componentTestHelperData struct {
 	NeedsTime       bool
 	NeedsULID       bool
 
-	ProtoServiceName       string
+	ConnectServiceGoName   string
 	ProtoConnectImportPath string
 	ProtoConnectPkg        string
 	MountMethod            string
@@ -1050,7 +1053,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			Fallible:               svc.Fallible,
 			HasDB:                  svc.HasDB,
 			HasMigrationsFS:        data.HasMigrationsFS,
-			ProtoServiceName:       svc.ProtoServiceName,
+			ConnectServiceGoName:   svc.ConnectServiceGoName,
 			MountMethod:            svc.MountMethod,
 			ProtoConnectImportPath: svc.ProtoConnectImportPath,
 			ProtoConnectPkg:        svc.ProtoConnectPkg,
@@ -1676,7 +1679,7 @@ func ComponentTestHelperRelPath(handlerLeaf string) string {
 // case, so every generated call site has to follow.
 func mountMethodFor(svc ServiceDef) string {
 	for _, m := range svc.Methods {
-		if m.Name == "Register" {
+		if m.GoName() == "Register" {
 			return "Mount"
 		}
 	}

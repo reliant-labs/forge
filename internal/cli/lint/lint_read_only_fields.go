@@ -310,7 +310,7 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 				candidates = append(candidates, candidate{
 					entity:  msg.Name,
 					field:   name,
-					goField: naming.ToProtoPascalCase(name),
+					goField: naming.GoCamelCase(name),
 					file:    msg.File,
 					line:    fieldLineIn(msg, name),
 					table:   table,
@@ -346,7 +346,7 @@ func collectReadOnlyFieldFindings(projectDir, migrationsDir string) ([]readOnlyF
 
 	var findings []readOnlyFieldFinding
 	for _, c := range candidates {
-		if written[c.goField] || sqlWritten[c.field] {
+		if fieldWritten(written, c.field) || sqlWritten[c.field] {
 			continue
 		}
 		findings = append(findings, readOnlyFieldFinding{

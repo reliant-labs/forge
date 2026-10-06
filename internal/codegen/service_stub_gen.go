@@ -212,15 +212,24 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	// duplicate method and the package fails to compile. Discriminate by name:
 	// a method in handlers_crud.go whose name is NOT a CRUD method is a hand
 	// impl (the CRUD-shaped delegating shims are exactly crudMethodNames).
+	//
+	// crudMethodNames is keyed by proto RPC name; the scans return Go method
+	// names, so every comparison against them goes through Method.GoName.
+	crudGoNames := make(map[string]bool, len(crudMethodNames))
+	for _, m := range svc.Methods {
+		if crudMethodNames[m.Name] {
+			crudGoNames[m.GoName()] = true
+		}
+	}
 	for name := range ScanHandlersCrudMethods(targetDir) {
-		if !crudMethodNames[name] {
+		if !crudGoNames[name] {
 			existing[name] = true
 		}
 	}
 
 	var missing []Method
 	for _, m := range svc.Methods {
-		if !existing[m.Name] && !crudMethodNames[m.Name] {
+		if !existing[m.GoName()] && !crudMethodNames[m.Name] {
 			missing = append(missing, m)
 		}
 	}

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // FrontendHookTemplateData holds data for rendering a single service's
@@ -67,11 +69,16 @@ type HookImportGroup struct {
 
 // FrontendHookMethod represents a single unary RPC method for hook generation.
 type FrontendHookMethod struct {
-	Name       string // PascalCase: "GetUser"
-	NameCamel  string // camelCase: "getUser"
-	InputType  string // "GetUserRequest"
-	OutputType string // "GetUserResponse"
-	IsQuery    bool   // true for Get/List/Search, false for mutations
+	Name      string // PascalCase: "GetUser"
+	NameCamel string // camelCase: "getUser" — forge's own query-key / hook spelling
+	// ClientMethod is the method the connect-es client has for this RPC —
+	// protobuf-es's localName (naming.EsMethodName), which lowers the
+	// FIRST CHARACTER ONLY: "LLMChat" → client.lLMChat. NameCamel lowers
+	// the whole leading acronym, so it names a method the client lacks.
+	ClientMethod string
+	InputType    string // "GetUserRequest"
+	OutputType   string // "GetUserResponse"
+	IsQuery      bool   // true for Get/List/Search, false for mutations
 	// EntityScope is the camelCase singular CRUD entity this method
 	// operates on ("task" for ListTasks/GetTask/CreateTask), derived
 	// from the RPC-name CRUD pattern. Empty for non-CRUD methods.
@@ -247,6 +254,7 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 		data.Methods = append(data.Methods, FrontendHookMethod{
 			Name:           m.Name,
 			NameCamel:      toCamelCaseFromPascal(m.Name),
+			ClientMethod:   naming.EsMethodName(m.Name),
 			InputType:      m.InputType,
 			OutputType:     m.OutputType,
 			IsQuery:        isQuery,

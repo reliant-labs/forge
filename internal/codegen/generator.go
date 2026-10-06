@@ -25,6 +25,19 @@ type MethodTemplateData struct {
 	AuthRequired bool
 }
 
+// GoName is the method protoc-gen-connect-go declares for this RPC on the
+// service's Handler interface — what a handler must name its method
+// ("CreateOauth2token" → CreateOauth2Token). Name stays the proto
+// spelling, which is what descriptor lookups and CRUD matching key on.
+func (m MethodTemplateData) GoName() string { return naming.GoCamelCase(m.Name) }
+
+// InputGoName / OutputGoName are the pb Go types protoc-gen-go generates
+// for the request and response messages, unqualified.
+func (m MethodTemplateData) InputGoName() string { return naming.GoCamelCase(m.InputType) }
+
+// OutputGoName — see InputGoName.
+func (m MethodTemplateData) OutputGoName() string { return naming.GoCamelCase(m.OutputType) }
+
 // ServiceTemplateData holds the data shape expected by the embedded service templates.
 type ServiceTemplateData struct {
 	ServiceName    string // e.g. "EchoService" (or hyphenated CLI form)
@@ -38,7 +51,7 @@ type ServiceTemplateData struct {
 	ProtoImportPath     string               // e.g. "proto/services/echo" (without /v1)
 	ProtoPackage        string               // same as ProtoImportPath for handlers.go.tmpl
 	ProtoConnectPackage string               // e.g. "echov1connect"
-	HandlerName         string               // e.g. "EchoService"
+	HandlerName         string               // connect-go's base for the service: "EchoService" (Unimplemented<base>Handler)
 	ProtoFileSymbol     string               // e.g. "File_services_echo_v1_echo_proto"
 	Methods             []MethodTemplateData // method data for handlers.go.tmpl and test templates
 	// TestHelperName is the disambiguated suffix that the bootstrap testing
@@ -130,7 +143,7 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		ProtoImportPath:     importPath,
 		ProtoPackage:        importPath,
 		ProtoConnectPackage: connectPkg,
-		HandlerName:         svc.Name,
+		HandlerName:         svc.GoName(),
 		ProtoFileSymbol:     protoFileSymbol,
 		Methods:             methods,
 		TestHelperName:      ComputeTestHelperName(pkgName, pd),
@@ -267,6 +280,8 @@ func (r *mockTypeResolver) qualify(msgType, fqType, protoFile string) string {
 	if i := strings.LastIndex(short, "."); i >= 0 {
 		short = short[i+1:]
 	}
+	// The proto short name, cased the way protoc-gen-go declares the type.
+	short = naming.GoCamelCase(short)
 	goPkg := GoPackageForProtoFile(protoFile, r.svc.ModulePath)
 	// Same-file (or unknown provenance) → the service's own package, `pb`.
 	if protoFile == "" || goPkg == "" || protoFile == r.svc.ProtoFile || goPkg == r.svc.GoPackage {
@@ -309,7 +324,7 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 
 	for _, method := range svc.Methods {
 		methods = append(methods, map[string]any{
-			"Name":       method.Name,
+			"Name":       method.GoName(),
 			"Signature":  buildMethodSignature(method, res),
 			"ReturnType": buildReturnType(method, res),
 			"ReturnStub": buildReturnStub(method),
@@ -324,24 +339,27 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 	// and the error names a method the author never wrote.
 	hasRegisterRPC := false
 	for _, m := range svc.Methods {
-		if m.Name == "Register" {
+		if m.GoName() == "Register" {
 			hasRegisterRPC = true
 			break
 		}
 	}
 
 	return map[string]any{
-		"ServiceName":    svc.Name,
-		"ServicePackage": naming.ServicePackage(svc.Name),
-		"GoPackage":      svc.GoPackage,
-		"PkgName":        svc.PkgName,
-		"ModulePath":     svc.ModulePath,
-		"Methods":        methods,
-		"HasMethods":     len(svc.Methods) > 0,
-		"HasRegisterRPC": hasRegisterRPC,
-		"NeedsEmptypb":   res.needsEmp,
-		"NeedsPb":        res.needsPb,
-		"ForeignImports": res.imports,
+		// The mock embeds and constructs connect-go's handler types, so it
+		// is named by connect-go's base for the service.
+		"ServiceName":      svc.GoName(),
+		"ProtoServiceName": svc.Name,
+		"ServicePackage":   naming.ServicePackage(svc.Name),
+		"GoPackage":        svc.GoPackage,
+		"PkgName":          svc.PkgName,
+		"ModulePath":       svc.ModulePath,
+		"Methods":          methods,
+		"HasMethods":       len(svc.Methods) > 0,
+		"HasRegisterRPC":   hasRegisterRPC,
+		"NeedsEmptypb":     res.needsEmp,
+		"NeedsPb":          res.needsPb,
+		"ForeignImports":   res.imports,
 	}
 }
 

@@ -37,11 +37,11 @@ import (
 // returns an error when a stored enum column holds a value name the current
 // proto no longer declares (a corrupt/renamed enum) — the op turns that into
 // CodeInternal rather than silently reading the row back as UNSPECIFIED.
-func {{.EntityLower}}ToProto(e *db.{{.EntityName}}) (*pb.{{.EntityName}}, error) {
+func {{.EntityLower}}ToProto(e *db.{{.EntityName}}) (*pb.{{.EntityPbType}}, error) {
 	if e == nil {
 		return nil, nil
 	}
-	m := &pb.{{.EntityName}}{}
+	m := &pb.{{.EntityPbType}}{}
 {{- range .ToProtoAssigns}}
 	{{.}}
 {{- end}}
@@ -52,7 +52,7 @@ func {{.EntityLower}}ToProto(e *db.{{.EntityName}}) (*pb.{{.EntityName}}, error)
 // It returns an error when a supplied value cannot be encoded for its
 // column (a json/jsonb pairing that fails to marshal) — the write is
 // refused rather than storing a default the caller never sent.
-func {{.EntityLower}}FromProto(m *pb.{{.EntityName}}) (*db.{{.EntityName}}, error) {
+func {{.EntityLower}}FromProto(m *pb.{{.EntityPbType}}) (*db.{{.EntityName}}, error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -213,9 +213,9 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 			return db.Count{{.EntityName}}(ctx, s.deps.DB, opts...)
 		},
 {{- end}}
-		EntityID: func(entity *db.{{.EntityName}}) string { return entity.{{.PkField}} },
+		EntityID: func(entity *db.{{.EntityName}}) string { return entity.{{.PkDBField}} },
 		Pack: func(items []*db.{{.EntityName}}, nextPageToken string, totalCount int64) (*pb.{{.OutputType}}, error) {
-			out := make([]*pb.{{.EntityName}}, 0, len(items))
+			out := make([]*pb.{{.EntityPbType}}, 0, len(items))
 			for _, it := range items {
 				m, err := {{.EntityLower}}ToProto(it)
 				if err != nil {
@@ -224,7 +224,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 				out = append(out, m)
 			}
 			return &pb.{{.OutputType}}{
-				{{.ResponseField | plural}}: out,
+				{{.ResponseField}}: out,
 {{- if .HasPagination}}
 				NextPageToken: nextPageToken,
 {{- end}}
@@ -262,7 +262,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 		// who rewrites the owner column in their request must not pass a
 		// check made against their own submission.
 		Persist: func(ctx context.Context, entity *db.{{.EntityName}}, opts ...orm.QueryOption) error {
-			return crud.ScopedUpdate(ctx, "{{.PkColumnName}}", entity.{{.PkField}}, entity, opts,
+			return crud.ScopedUpdate(ctx, "{{.PkColumnName}}", entity.{{.PkDBField}}, entity, opts,
 				func(ctx context.Context, entity *db.{{.EntityName}}) error {
 {{- if .ReadOnlyColumns}}
 					return db.Update{{.EntityName}}(ctx, s.deps.DB, entity,
@@ -284,7 +284,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 {{- end}}
 		Mask: func(req *pb.{{.InputType}}) []string { return req.Get{{.UpdateMaskField}}().GetPaths() },
 		PersistMasked: func(ctx context.Context, entity *db.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
-			return crud.ScopedUpdateMasked(ctx, "{{.PkColumnName}}", entity.{{.PkField}}, entity, fields, opts,
+			return crud.ScopedUpdateMasked(ctx, "{{.PkColumnName}}", entity.{{.PkDBField}}, entity, fields, opts,
 				func(ctx context.Context, entity *db.{{.EntityName}}, fields []string) error {
 					return db.Update{{.EntityName}}Masked(ctx, s.deps.DB, entity, fields)
 				},

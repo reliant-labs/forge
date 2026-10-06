@@ -230,7 +230,7 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 				declared = append(declared, computedField{
 					entity:   msg.Name,
 					field:    name,
-					goField:  naming.ToProtoPascalCase(name),
+					goField:  naming.GoCamelCase(name),
 					file:     msg.File,
 					line:     fieldLineIn(msg, name),
 					kind:     kind,
@@ -251,7 +251,7 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 
 	var findings []computedFieldFinding
 	for _, d := range declared {
-		if written[d.goField] {
+		if fieldWritten(written, d.field) {
 			continue
 		}
 		findings = append(findings, computedFieldFinding{
@@ -361,6 +361,16 @@ func protoFieldNameOnLine(line string) (string, bool) {
 // Anchored to the line's start (modulo indentation) so a type or default
 // value that happens to contain a `=` cannot be read as a declaration.
 var protoFieldDeclRE = regexp.MustCompile(`^\s*(?:optional\s+|repeated\s+)?[\w.]+\s+(\w+)\s*=\s*\d+`)
+
+// fieldWritten reports whether the project assigns the proto field
+// protoField through either struct that carries it: the generated pb
+// message (protoc-gen-go's spelling, naming.GoCamelCase) or the db.<Entity>
+// row (forge's ORM spelling, naming.ColumnGoName). The two differ for a name
+// with a digit in it ("sha256sum": Sha256Sum vs Sha256sum), and a write
+// through either one populates the column.
+func fieldWritten(written map[string]bool, protoField string) bool {
+	return written[naming.GoCamelCase(protoField)] || written[naming.ColumnGoName(protoField)]
+}
 
 // assignedGoFields returns the set of struct-field identifiers assigned
 // anywhere in the project's non-generated, non-test Go source.

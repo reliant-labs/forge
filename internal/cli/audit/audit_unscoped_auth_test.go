@@ -145,6 +145,22 @@ func TestUnscopedAuth_FlagsAuthenticatedRPCThatNeverReadsTheCaller(t *testing.T)
 	}
 }
 
+// TestUnscopedAuth_FindsTheHandlerOfADigitNamedRPC: connect-go names the
+// handler method for rpc GetOauth2token GetOauth2Token (a digit starts a new
+// word). Looking the handler up by the proto spelling found nothing, and an
+// RPC with no handler is orphan_stubs' to report — so an unscoped,
+// authenticated RPC with a digit in its name passed the security gate.
+func TestUnscopedAuth_FindsTheHandlerOfADigitNamedRPC(t *testing.T) {
+	src := handlerHeader + delegationBody("GetOauth2Token")
+	dir := writeProject(t, "ShopService", map[string]bool{"GetOauth2token": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if names := unscopedMethods(t, cat); len(names) != 1 || names[0] != "GetOauth2token" {
+		t.Fatalf("unscoped = %v, want [GetOauth2token] — its handler GetOauth2Token reads no caller\nsummary: %s", names, cat.Summary)
+	}
+}
+
 // TestUnscopedAuth_IgnoresPublicRPCs pins the false-positive boundary
 // that matters most: auth_required: false means no principal exists, so
 // reading claims is not expected and absence is not a finding.

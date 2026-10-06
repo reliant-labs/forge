@@ -343,14 +343,22 @@ func startsUpper(s string) bool {
 // produced the same placeholder as `forge generate` and none of the
 // signal.
 func buildRPCHandlerStub(pkg, rpcName, pbImportPath string, mode rpcStreamMode) string {
-	reqType := rpcName + "Request"
-	respType := rpcName + "Response"
-	errExpr := fmt.Sprintf(`svcerr.Wrap(svcerr.ScaffoldStub(%q))`, rpcName)
+	// rpcName is the PROTO spelling (the snippet declares it verbatim). The
+	// stub spells Go identifiers, which the generators derive from it by
+	// their own rule: rpc GetOauth2token is the handler method
+	// GetOauth2Token taking a pb.GetOauth2TokenRequest. Declaring the
+	// method under the proto spelling compiles — the embedded
+	// Unimplemented handler supplies the real one — and never serves.
+	goMethod := naming.GoCamelCase(rpcName)
+	reqType := naming.GoCamelCase(rpcName + "Request")
+	respType := naming.GoCamelCase(rpcName + "Response")
+	errExpr := fmt.Sprintf(`svcerr.Wrap(svcerr.ScaffoldStub(%q))`, goMethod)
 
 	// Qualify the request/response types with the generated proto
 	// package. They live in gen/, never in the handler package.
 	reqType = "pb." + reqType
 	respType = "pb." + respType
+	rpcName = goMethod // everything below — signature, doc line, marker — spells the Go method
 
 	var sig, body string
 	switch mode {

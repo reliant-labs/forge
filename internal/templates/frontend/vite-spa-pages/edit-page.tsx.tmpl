@@ -65,9 +65,9 @@ export default function Edit{{.EntityName}}Page() {
   const navigate = useNavigate();
 
   const { data, isLoading, error: fetchError } = use{{.GetRPC}}({ id });
-  // Typed access: the response wraps the entity in `{{.EntityName | camelCase}}` —
+  // Typed access: the response wraps the entity in `{{.GetEntityAccessor}}` —
   // no `?? data` hedging, no Record<string, unknown> cast.
-  const item = data?.{{.EntityName | camelCase}};
+  const item = data?.{{.GetEntityAccessor}};
 
   const mutation = use{{.UpdateRPC}}({
     onSuccess: () => void navigate({ to: `/{{.EntitySlug}}/${id}` }),

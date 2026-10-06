@@ -101,13 +101,13 @@ const entities: readonly MockEntityDescriptor[] = [
     get: { rpc: "{{ .GetRPC }}", responseSchema: {{ .GetResponseSchema }}, entityField: "{{ .GetEntityFieldCamel }}" },
 {{- end }}
 {{- if .HasCreate }}
-    create: { rpc: "{{ .CreateRPC }}", responseSchema: {{ .CreateResponseSchema }}, entityField: "{{ .CreateEntityFieldCamel }}", requestField: "{{ .EntityName | camelCase }}" },
+    create: { rpc: "{{ .CreateRPC }}", responseSchema: {{ .CreateResponseSchema }}, entityField: "{{ .CreateEntityFieldCamel }}", requestField: "{{ .RequestEntityFieldCamel }}" },
 {{- end }}
 {{- if .HasUpdate }}
     // Update reuses Create's response shape. AIP-134 requests nest the
-    // entity ({ {{ .EntityName | camelCase }}: {...}, updateMask }); the generated forms
+    // entity ({ {{ .RequestEntityFieldCamel }}: {...}, updateMask }); the generated forms
     // submit it flattened. The engine accepts both.
-    update: { rpc: "{{ .UpdateRPC }}", responseSchema: {{ .UpdateResponseSchema }}, entityField: "{{ .UpdateEntityField }}", requestField: "{{ .EntityName | camelCase }}" },
+    update: { rpc: "{{ .UpdateRPC }}", responseSchema: {{ .UpdateResponseSchema }}, entityField: "{{ .UpdateEntityField }}", requestField: "{{ .RequestEntityFieldCamel }}" },
 {{- end }}
 {{- if .HasDelete }}
     delete: { rpc: "{{ .DeleteRPC }}" },

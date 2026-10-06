@@ -1,6 +1,10 @@
 package codegen
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/naming"
+)
 
 // ServiceDef represents a parsed Connect RPC service definition.
 type ServiceDef struct {
@@ -247,12 +251,18 @@ func (m Method) IsOutputEmpty() bool {
 	return m.OutputType == "google.protobuf.Empty"
 }
 
+// GoName is the Go method protoc-gen-connect-go declares for this RPC on
+// the service's Handler interface ("CreateOauth2token" →
+// CreateOauth2Token). Name is the proto spelling; anything matched against
+// Go source — a handler method, a stub, a mock — must use this.
+func (m Method) GoName() string { return naming.GoCamelCase(m.Name) }
+
 // GoInputType returns the Go type reference for the input (handles Empty).
 func (m Method) GoInputType() string {
 	if m.IsInputEmpty() {
 		return "emptypb.Empty"
 	}
-	return "pb." + m.InputType
+	return "pb." + naming.GoCamelCase(m.InputType)
 }
 
 // GoOutputType returns the Go type reference for the output (handles Empty).
@@ -260,8 +270,15 @@ func (m Method) GoOutputType() string {
 	if m.IsOutputEmpty() {
 		return "emptypb.Empty"
 	}
-	return "pb." + m.OutputType
+	return "pb." + naming.GoCamelCase(m.OutputType)
 }
+
+// GoName is the base protoc-gen-connect-go builds this service's
+// identifiers from (naming.ConnectServiceGoName): the handler interface is
+// <GoName>Handler, the client <GoName>Client. Name is the proto spelling —
+// which is also what the generated `<Name>Name` constant is spelled from
+// (naming.ConnectServiceNameConst).
+func (s ServiceDef) GoName() string { return naming.ConnectServiceGoName(s.Name) }
 
 // EntityDef is a database entity: the join of an introspected table
 // from the APPLIED schema (db/migrations executed against the shadow
@@ -376,8 +393,11 @@ const (
 
 // EntityField represents a single field in an entity.
 type EntityField struct {
-	Name      string    // Proto field name: "patient_id"
-	GoName    string    // Go name: "PatientId"
+	Name string // Proto field name: "patient_id"
+	// GoName is the field on the GENERATED pb message ("PatientId";
+	// "base64item" → "Base64Item") — naming.GoFieldNames. The db.<Entity>
+	// struct spells the same column naming.ColumnGoName, which can differ.
+	GoName    string
 	ProtoType string    // "int64", "string", etc.
 	GoType    string    // "int64", "string", etc.
 	Kind      FieldKind // scalar, enum, message, etc.

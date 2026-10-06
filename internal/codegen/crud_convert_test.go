@@ -126,7 +126,7 @@ func TestSchemaDefaults_EveryScalarColumnDefaultIsWritten(t *testing.T) {
 		// The Go field name is spelled by the SAME function the generator
 		// uses, so this asserts the whole assignment rather than just the
 		// presence of a literal that could belong to any field.
-		wantAssign := fmt.Sprintf("e.%s = %s", naming.ToProtoPascalCase(col.Name), want.goLiteral)
+		wantAssign := fmt.Sprintf("e.%s = %s", naming.ColumnGoName(col.Name), want.goLiteral)
 		if !strings.Contains(joined, wantAssign) {
 			t.Errorf("%s column (%s DEFAULT %s): create op does not write the schema default.\n"+
 				"want an assignment %q\ngot:\n%s",

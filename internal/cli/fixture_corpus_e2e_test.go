@@ -1509,6 +1509,12 @@ func corpusSkipDir(name string) bool {
 // every regular file. Nothing forge-owned is excluded: .forge state files,
 // side renders, go.sum — a second generate must leave ALL of it
 // untouched. (Only non-forge trees are skipped; see corpusSkipDir.)
+//
+// The one exception is the generate lock (generateLockRel). It is not
+// output: it is the OS lock every run takes, and the holder writes its pid
+// and start time into it on every acquisition (recordGenerateLockHolder)
+// so a waiting run can name it. Two runs therefore always differ there,
+// and hashing it would fail every idempotence check on the second run.
 func hashProjectTree(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -1525,11 +1531,14 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		rel, rerr := filepath.Rel(root, path)
 		if rerr != nil {
 			return rerr
 		}
-		rel, rerr := filepath.Rel(root, path)
+		if filepath.ToSlash(rel) == generateLockRel {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return rerr
 		}

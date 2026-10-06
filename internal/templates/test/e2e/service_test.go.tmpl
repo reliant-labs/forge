@@ -44,7 +44,7 @@ func TestHealthCheck(t *testing.T) {
 // Library reference: github.com/reliant-labs/forge/pkg/tdd
 // Skill: forge skill load testing/e2e
 {{range .Methods}}
-func Test{{$.ProtoServiceName}}Service_{{.Name}}(t *testing.T) {
+func Test{{$.ConnectServiceGoName}}_{{.Name}}(t *testing.T) {
 	t.Parallel()
 	client := newClient(t, baseURL)
 

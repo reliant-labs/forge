@@ -591,6 +591,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A service, entity, field or RPC whose name has a digit in it now builds —
+  forge spells every identifier it shares with buf's generators by THEIR
+  casing rules.** protoc-gen-go camel-cases a proto name word by word and
+  treats a digit as a word, so the letter after it is capitalised; forge
+  title-cased only after `_`. A service named `alphav1connect` made forge emit
+  `UnimplementedAlphav1connectServiceHandler` where connect-go declares
+  `UnimplementedAlphav1ConnectServiceHandler`; an entity `Base64Item`
+  (field `base64item`) made the Update op read `req.Base64item` where the
+  field is `Base64Item`; and an entity scaffolded as `Oauth2token` broke every
+  pb type, RPC method and response field (`pb.CreateOauth2tokenRequest` vs
+  `CreateOauth2TokenRequest`). `internal/naming` now carries ports of the
+  generators' own rules — `GoCamelCase` (protoc-gen-go's `strs.GoCamelCase`),
+  `GoFieldNames` (its per-message rename of a field that collides with a
+  generated method or getter: `descriptor` → `Descriptor_`), the connect-go
+  names (whose `<Service>Name` constant, alone, is spelled from the RAW proto
+  name), and protobuf-es's `protoCamelCase`, method `localName` and `$`
+  escapes — and every emitter that names a generated symbol goes through them:
+  the CRUD ops, shims and born tests, handler stubs and the stub/shim
+  dedupe scans, the mocks, `service.go`, the test clients, the public
+  procedure list, `forge scaffold rpc`, the read-only/computed-field lints,
+  the `unscoped_auth` audit (which looked a handler up by the proto rpc name,
+  so a digit-named authenticated RPC was never inspected), and on the TS side the hooks' `client.<method>` (an RPC `LLMChat` is
+  `client.lLMChat`, not `llmChat`) and the pages' and mock transport's entity
+  fields (`data?.base64item`, not `base64Item`). The pb message and forge's
+  `db.<Entity>` row name a column differently (`sha256sum`: pb `Sha256Sum`,
+  db `Sha256sum`; `address_line_2`: pb `AddressLine_2`, db `AddressLine2`), so
+  the conversions now spell each side with its own rule; the ORM's rule is
+  unchanged (`naming.ColumnGoName`, formerly `ToProtoPascalCase`, which claimed
+  to be protoc-gen-go's and was not), so no existing struct field is renamed.
+  The same derivation fixes entities with a leading acronym, whose response
+  field forge spelled from the entity name (`LLMKey` → field `llm_key` →
+  `LlmKey`, not `LLMKey`). `TestGeneratedNames_MatchRealPlugins` builds
+  protoc-gen-go and protoc-gen-connect-go at the go.mod versions, runs them on
+  a fixture of such names and checks every derived identifier is declared;
+  `TestE2EDigitNamedServicesAndEntitiesBuild` scaffolds them end to end
+  (build, vet, idempotent regenerate, the born CRUD tests on postgres, `tsc`).
+  Not covered: a message named after a TS-reserved identifier (`Object`,
+  `Partial`), which protoc-gen-es exports as `Object$`.
+
 - **Two services may declare the same message name without breaking the
   frontend's `tsc`.** Proto keeps message names per package, so alpha and beta
   each declaring `PingRequest` is ordinary — but the generated TS files that

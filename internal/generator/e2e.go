@@ -11,7 +11,9 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// E2EMethodInfo holds method metadata for E2E test template rendering.
+// E2EMethodInfo holds method metadata for E2E test template rendering:
+// the RPC and its messages as the proto spells them. GenerateE2ETests
+// re-cases them to the Go identifiers the generators declare.
 type E2EMethodInfo struct {
 	Name       string
 	InputType  string
@@ -20,15 +22,17 @@ type E2EMethodInfo struct {
 
 // E2ETemplateData holds all data needed to render E2E test templates.
 type E2ETemplateData struct {
-	Module           string
-	ServiceName      string // display form, may contain hyphens
-	ServicePackage   string // Go/proto-package-safe form (snake_case)
-	ProtoServiceName string // PascalCase service name for Connect client types
-	ProtoPackage     string
-	ProjectName      string
-	Port             int
-	Methods          []E2EMethodInfo
-	FirstRequestType string // Used to anchor the pb import in helpers
+	Module         string
+	ServiceName    string // display form, may contain hyphens
+	ServicePackage string // Go/proto-package-safe form (snake_case)
+	// ConnectServiceGoName is protoc-gen-connect-go's base for the service
+	// (naming.ConnectServiceGoName): the client is <base>Client.
+	ConnectServiceGoName string
+	ProtoPackage         string
+	ProjectName          string
+	Port                 int
+	Methods              []E2EMethodInfo
+	FirstRequestType     string // Used to anchor the pb import in helpers
 	// ServeArgs is the argv (after the binary) that runs this service: its
 	// own top-level subcommand, named by the same derivation that generates
 	// the CLI tree (codegen.CmdServiceCommand), so the harness and the CLI
@@ -49,7 +53,9 @@ func e2eServeArgs(serviceName string) []string {
 // GenerateE2ETests renders E2E test templates into e2e/<servicePackage>/ under projectDir.
 // It does not overwrite existing files — only creates new ones.
 func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, methods []E2EMethodInfo) error {
-	protoServiceName := naming.ToPascalCase(serviceName)
+	// The proto template declares `service <PascalCase>Service`; the client
+	// is spelled the way protoc-gen-connect-go spells it from that name.
+	connectService := naming.ConnectServiceGoName(naming.ToPascalCase(serviceName) + "Service")
 	servicePackage := strings.ReplaceAll(strings.ToLower(serviceName), "-", "_")
 
 	destDir := filepath.Join(projectDir, "e2e", servicePackage)
@@ -57,17 +63,28 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 		return fmt.Errorf("create e2e directory: %w", err)
 	}
 
+	// The templates spell generated Go identifiers: the client's methods
+	// and the pb request/response types.
+	goMethods := make([]E2EMethodInfo, len(methods))
+	for i, m := range methods {
+		goMethods[i] = E2EMethodInfo{
+			Name:       naming.GoCamelCase(m.Name),
+			InputType:  naming.GoCamelCase(m.InputType),
+			OutputType: naming.GoCamelCase(m.OutputType),
+		}
+	}
+
 	data := E2ETemplateData{
-		Module:           modulePath,
-		ServiceName:      serviceName,
-		ServicePackage:   servicePackage,
-		ProtoServiceName: protoServiceName,
-		ProtoPackage:     servicePackage + "v1",
-		ProjectName:      projectName,
-		Port:             0, // E2E uses freePort(); this is available as a template var
-		Methods:          methods,
-		FirstRequestType: "",
-		ServeArgs:        e2eServeArgs(serviceName),
+		Module:               modulePath,
+		ServiceName:          serviceName,
+		ServicePackage:       servicePackage,
+		ConnectServiceGoName: connectService,
+		ProtoPackage:         servicePackage + "v1",
+		ProjectName:          projectName,
+		Port:                 0, // E2E uses freePort(); this is available as a template var
+		Methods:              goMethods,
+		FirstRequestType:     "",
+		ServeArgs:            e2eServeArgs(serviceName),
 	}
 
 	templateFiles := []struct {

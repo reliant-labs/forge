@@ -591,6 +591,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Two services may declare the same message name without breaking the
+  frontend's `tsc`.** Proto keeps message names per package, so alpha and beta
+  each declaring `PingRequest` is ordinary — but the generated TS files that
+  import from several proto modules into one scope imported each name bare, and
+  a name from two modules is TS2300 `Duplicate identifier 'PingRequest'`. The
+  project-wide scenario handler map (`src/mocks/scenario-rpcs_gen.ts`) hit this
+  as soon as two services shared an RPC shape; `mock-transport_gen.ts` did for
+  two entities whose services name a response alike (`GetResponse`); and a
+  service's hooks file did when an RPC took a request type from another proto
+  file that shared a name with one of its own. A name imported from more than
+  one module is now imported `as <module>_<Name>`
+  (`services_alpha_v1_alpha_pb_PingRequest`) from each, and the file refers to
+  that; a name only one module supplies keeps its own, so files without a
+  clash are byte-identical. `mock-transport_gen.ts` also imported an entity's
+  fixture module once per service that lists the entity (`import * as
+  thingsMocks` three times for a `ListThings` in three services); it is now
+  imported once and every service's dispatch row is seeded from it.
+
 - **A component named like an identifier `compose.go` itself uses no longer
   breaks the first build.** A service, worker or operator was imported into
   `internal/app` under its package name, beside the names the generated files

@@ -40,9 +40,11 @@ import (
 // that matters: it is exactly the fetch-then-compare an author would
 // otherwise have to remember to write by hand, in every handler,
 // correctly. Generated once and named is strictly better than remembered
-// five times. An application that needs the write itself to be atomic
-// should replace the closure and put the predicate in the UPDATE's own
-// WHERE clause against s.deps.DB.
+// five times. An application that needs the check and the write to be
+// atomic wraps the closure body in s.deps.DB.RunTx: both statements then
+// run in one SERIALIZABLE transaction carried by ctx, and a concurrent
+// owner change aborts this one and re-runs the check against the committed
+// row.
 //
 // # Zero options is the untouched path
 //

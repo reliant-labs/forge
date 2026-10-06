@@ -27,8 +27,8 @@ Scaffold it — don't hand-roll the package: `forge scaffold package <name>` emi
 - Input validation at the top of each method (`if in.Foo == "" { return ... }`).
 - The sequence of dep calls expressing the use case.
 - Error wrapping so the failure chain points at the failing step (`fmt.Errorf("step: %w", err)` in Go; equivalents elsewhere).
-- Transaction coordination — open tx, defer rollback, commit on success.
-- Domain-event emission after the workflow's commit point.
+- Transaction coordination — one transaction around the steps that must commit together. A serializable transaction may be retried on conflict, so a step that leaves the database (charge a card, call a partner API) does not belong inside it.
+- Domain-event emission after the workflow's commit point — registered inside the transaction, run only once it commits, never for a rolled-back attempt.
 
 ## What does NOT go in
 
@@ -224,6 +224,7 @@ Each dep is filled by its interface, so swapping the real in-process adapter for
 
 - **The outbound boundary itself** (third-party calls, response mapping) — see `adapter`.
 - **The Service / Deps / New shape** — see `service-layer`.
+- **Transactions** — declare `DB orm.Context` and wrap the steps in `s.deps.DB.RunTx(ctx, fn)`: every dep that writes through forge's ORM with `fn`'s `ctx` joins it (a dep's own `RunTx` joins too), and `orm.AfterCommit` carries the post-commit event. See `service-layer/transactions`.
 - **Handler-side validation and error wrapping** — see `api`.
 - **Translating vendor errors into svcerr sentinels at the boundary** — see `service-layer`'s errors section and `forge/pkg/svcerr`.
 <!-- @forge-only:end -->

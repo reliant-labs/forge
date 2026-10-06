@@ -57,7 +57,31 @@ type Context interface {
 	// than opening a nested one (this API has no savepoints). That is what
 	// lets a service be called standalone or from inside a larger
 	// transaction without knowing which it is in.
+	//
+	// Prefer RunTx for new code; see Client.RunTransaction for how the two
+	// relate.
 	RunTransaction(ctx context.Context, fn func(Context) error) error
+
+	// RunTx runs fn in a SERIALIZABLE transaction CARRIED BY the ctx fn
+	// receives, retrying on serialization failure and deadlock. Every query
+	// made with that ctx against this database — generated delegates,
+	// stores, pkg/crud, raw SQL — joins the transaction, with no handle to
+	// thread. fn may run more than once, so it must have no effect outside
+	// the database; defer those with AfterCommit. A ctx that already carries
+	// a transaction on this database is joined, not nested.
+	//
+	// On the interface for the same reason as RunTransaction: `DB
+	// orm.Context` is the handle forge injects, so `s.deps.DB.RunTx(…)` has
+	// to compile against it.
+	RunTx(ctx context.Context, fn func(ctx context.Context) error) error
+
+	// RunTxReadOnly is RunTx as SERIALIZABLE READ ONLY DEFERRABLE: no
+	// predicate locks, never aborted by a conflict. See TxOptions.ReadOnly.
+	RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) error) error
+
+	// RunTxWithOptions is RunTx with explicit isolation, read-only mode and
+	// retry budget. Options are ignored when joining.
+	RunTxWithOptions(ctx context.Context, opts TxOptions, fn func(ctx context.Context) error) error
 
 	// Dialect returns the SQL dialect (postgres — forge is postgres-pinned).
 	// The raw-SQL escape hatch needs it: a hand-written handler that builds

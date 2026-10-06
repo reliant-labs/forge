@@ -36,8 +36,34 @@ scaffold writes). A frontend scaffolded by forge ≤ v0.1.43 has no `output:`
 (it is standalone) and dynamic `[id]` pages: `forge skill load
 migrations/v0.1.44`.
 
-Billing: hosted workloads and the managed database need it (Reliant →
-Settings → Billing); a static site alone is free.
+## Shipping it: `forge env deploy prod`
+
+Signed in to Reliant (`reliant forge …`, or a Reliant agent's shell) there is no
+`forge login`: forge mints a token from your session. Standalone forge uses
+`forge login`; CI sets the env's token variable. Deploy `staging` first, then
+promote the same release to `prod`; check with `forge env status <env>`.
+
+### Gates: what holds a deploy, and how each clears
+
+| Gate | What happens | Clear it |
+|---|---|---|
+| **Billing** — a hosted workload or managed database, and the org has no Reliant Compute plan (a static site alone is free: 1 site per org) | The deploy is **queued, not refused**: built, recorded, promoted, held. `env deploy` prints why/do/open and **exits 7**; the env page shows "Waiting on billing" | A person with the right role subscribes in Reliant → Settings → Billing (the printed `open` URL goes there). Nothing to re-run: it goes live by itself. Block with `forge env status <env> --wait`; then `forge env smoke <env>` |
+| **Exceeds the plan** or **spend cap reached** | Refused (not queued) before any build | Reduce resources, upgrade, or raise the cap |
+| **Unset managed secret** a workload reads | Workloads keep their previous Secret and pods until the value exists | `forge secret set --env <env> <KEY>`; changing a value rolls the pods that read it (`secrets`) |
+
+Exit 7 is a person's turn, not a failure: relay the link to the user, do not
+retry in a loop. A newer deploy to the same env supersedes a queued one. An
+older control plane (no holds) still refuses with the billing reason.
+
+### What hosting provides and refuses
+
+| Provides | Refuses (bind to a cluster you operate) |
+|---|---|
+| kinds `service`, `worker`, `job`; `replicas`, `resources`, `command`/`args`, `probes`, `storageGiB`, `activeDeadlineSeconds`, `strategy` | kind `cron` (a CronJob, not metered yet; a worker running its own scheduler IS fine) |
+| `ports` (the `expose = True` one is routed) | `operator`, `namespacedRBAC`, `clusterRBAC`, `crds`, ServiceAccount fields: no Kubernetes API on shared nodes |
+| env from a literal, `forge.ManagedSecret`, `forge.DatabaseRef`, `forge.WorkloadURL`; a config-projected `forge.SecretRef` lowers to a ManagedSecret | `sidecars`, `volumes`, `securityContext`, `terminationGracePeriodSeconds`, `podAnnotations`: the platform composes the pod |
+| a managed Postgres (`forge.ManagedDatabase`) | `nodeSelector`, `tolerations`, `priorityClassName`: the platform decides placement |
+| static frontends on hosted hosting + CDN (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
 
 ## The API is one workload
 

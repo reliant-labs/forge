@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Skills and project memory now lead with shipping.** The start-here `forge`
+  skill gains a "Ship it" section (hosting is the default, `forge env deploy`,
+  the free static tier, queued-on-billing exit 7, no `forge login` under
+  Reliant); `deploy/hosting` holds the gates table and the provides/refuses
+  table; `frontend/serving`, `deploy/static-site`, `db/deploy-migrations` and
+  `secrets` state what hosting accepts and gates on. The project memory template
+  gets a one-line Shipping note.
+
 ### Removed
 
 - **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,

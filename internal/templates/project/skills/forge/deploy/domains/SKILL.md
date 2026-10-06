@@ -29,7 +29,7 @@ itself, which a spec field would then contradict.
 
 If a domain command is rejected for a missing `domain:read`/`domain:write`
 scope, the credential lacks it: under Reliant, grant it to your Reliant session
-(Settings → Access Tokens, or `reliant auth login`); standalone, re-run `forge login`.
+(Settings → Access Tokens, or `reliant auth login`); standalone, run `forge login`.
 If a fresh token still lacks it, your role has no grant — an org admin can mint
 `forge cloud token create --env <env> --name <n> --scopes domain:read,domain:write`.
 

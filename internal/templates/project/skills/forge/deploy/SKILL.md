@@ -5,6 +5,11 @@ description: Ship code — declare workloads once, bind each one to a runtime pe
 
 # Ship It
 
+**New projects ship to Reliant hosting by default** — `staging` and `prod` bind
+everything to it, and `forge env deploy prod` is the whole procedure. What it
+provides, what it refuses, and the gates (billing, unset secrets):
+`deploy/hosting`. A cluster you operate is the secondary path, below.
+
 ## The model: declare once, bind per env
 
 Everything that runs is a `fw.Workload`, declared ONCE in
@@ -127,33 +132,10 @@ deploy/shape.
 
 ### The hosted runtime is a restricted profile
 
-A hosted workload shares nodes with other hosted users, so the control plane
-admits only what it can run safely there. forge runs the same check at render,
-so a refusal names the workload and field in your env file rather than after a
-publish. Bind a refused workload to a cluster you operate instead.
-
-- **Allowed:** kinds `service`, `worker`, `job`; `replicas`, `resources`,
-  `command`/`args`, `ports` (the platform routes the `expose = True` one),
-  `probes`, `storageGiB`,
-  `activeDeadlineSeconds`, `strategy`; env from a literal, `forge.ManagedSecret`,
-  `forge.DatabaseRef` or `forge.WorkloadURL`. A config-projected
-  `forge.SecretRef` lowers to a `forge.ManagedSecret` of the same store key
-  automatically.
-- **Refused, and why:**
-  - `cron` — not metered yet.
-  - `operator`, `namespacedRBAC`, `clusterRBAC`, `crds`, ServiceAccount
-    fields — no Kubernetes API access on shared nodes.
-  - `sidecars`, `volumes`, `securityContext`,
-    `terminationGracePeriodSeconds`, `podAnnotations` — the platform
-    composes the pod and owns its identity and grace period.
-  - `nodeSelector`, `tolerations`, `priorityClassName` — the platform
-    decides placement and ranks hosted pods on its own ladder.
-  - `ports.domains` — a hosted hostname is a control-plane resource, not
-    spec; see Custom domains.
-  - Raw `secretRef`, `configMapRef` and `fieldRef` env — they address
-    namespace objects you did not write.
-  - A hostless or unpinned image — the release pins every artifact by
-    digest.
+A hosted workload shares nodes with other users, so the control plane admits
+only what it can run safely there, and forge runs the same check at render: a
+refusal names the workload and field in your env file. Bind a refused workload
+to a cluster you operate instead. The allowed/refused table: `deploy/hosting`.
 
 ## Pre-flight checks
 

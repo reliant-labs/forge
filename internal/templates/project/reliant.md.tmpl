@@ -13,6 +13,10 @@ This is a long-lived product. For consequential decisions — architecture, publ
 
 Skip this depth for trivial/mechanical work — there, just do it.
 
+## Shipping
+
+Publishing defaults to Reliant hosting (staging/prod are already bound to it; static sites are free): load `deploy`, then `{{.CLI}} env deploy <env>`. Never ask for `forge login` when running under Reliant.
+
 ## Use forge skills to guide your work
 
 Forge ships an extensive skill catalog (architecture, proto, db, api, services, testing, frontend, deploy, debug, packs, observability, and more). **Prefer loading a forge skill before guessing** — they encode the exact conventions this project relies on, and the rules they describe are enforced by `{{.CLI}} lint`.

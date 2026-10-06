@@ -36,12 +36,10 @@ forge env up dev             # host services + frontends, on a fresh seeded DB
 `cmd.Execute(...)` arg list.
 
 A later `forge scaffold service <name>` appends its constructor to that same
-call. `main.go` stays owned code, so the append is surgical and forge declines
-rather than guesses when it cannot find the `cmd.Execute(...)` call — then it
-prints the exact import and argument to add by hand.
+call; if it cannot find the `cmd.Execute(...)` call it declines and prints the
+import and argument to add by hand.
 
-Batch the ones you discover later: `forge scaffold service sales jobs billing`
-runs the generate pipeline once for all three instead of once each.
+Batch later ones: `forge scaffold service sales jobs billing` generates once.
 
 A bare `forge project new` scaffolds **zero services**: binary shell, `internal/app`
 composition root, buf/proto scaffolding, Taskfile/CI/deploy. The binary is a
@@ -303,6 +301,23 @@ serves every service on one mux (`PORT`; 8080 in a container), so the frontend
 reaches all of them at one origin. Dev runs it under air (hot reload) on the
 env's `<project>-dev-api` port, printed in the launch banner. Depth: `dev`,
 `deploy`.
+
+## Ship it
+
+Asked to publish or deploy? **Reliant hosting is the default**: a new project's
+`staging` and `prod` already bind its services, workers, jobs, managed Postgres
+and static frontend to it:
+
+```bash
+forge env deploy prod      # build → push → release → plan → apply
+forge env status prod      # then verify
+```
+
+A static site alone is free; hosted workloads and the database need billing.
+Without it the deploy is **queued, not refused** and goes live by itself once
+billing is set up: `env deploy` exits **7** and prints the billing link. Give
+the user that link, don't retry, then verify. Under Reliant you are signed in:
+never ask for `forge login`. Depth: `deploy`, `deploy/hosting`, `deploy/static-site`.
 
 ## Pre-flight: what forge already does for you
 

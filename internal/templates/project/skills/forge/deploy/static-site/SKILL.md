@@ -54,6 +54,11 @@ A frontend states where it runs in each env's `deploy/kcl/<env>/main.k`:
 | `forge.OnBucket {bucket = ...}` | your own bucket: `releases/<digest>/` + `live/`, then CDN invalidation |
 | `forge.OnFirebase {project, site}` | `firebase deploy` |
 
+Hosted static hosting accepts only a static export, and **a static site alone
+is free** (one per org, no billing). Past that — a second site, or any hosted
+workload or managed database beside it — the deploy needs billing and is
+queued, not refused, until it is set up (exit 7; `deploy/hosting`).
+
 A site with no backend needs nothing else in the env. This is a complete
 hosted `prod`:
 

@@ -216,7 +216,7 @@ func lifecycleCallError(verb, env string, err error) error {
 	if verb == "start" && errors.As(err, &cerr) && cerr.HasCode(cloud.CodeFailedPrecondition) {
 		return fmt.Errorf("the control plane refused to start env %q: %s%s\n"+
 			"fix: resolve the condition above (billing is managed in Reliant → Settings → Billing, or ask an org admin), then re-run `forge env start %s`.\n"+
-			"Nothing was started.", env, cerr.Message, reasonSuffix(cerr.Reason), env)
+			"Nothing was started", env, cerr.Message, reasonSuffix(cerr.Reason), env)
 	}
 	return fmt.Errorf("forge env %s %s: %w", verb, env, err)
 }

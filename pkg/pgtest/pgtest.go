@@ -249,6 +249,12 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres: %w", err)
 	}
+	// Windows: the server pg_ctl just started holds THIS process's working
+	// directory for its whole life. See cwd_windows.go.
+	if err := releaseCallerCwd(runtimeDir(port), port, startParameters(runtime.GOOS)); err != nil {
+		stopSharedByPort(port)
+		return "", 0, nil, fmt.Errorf("pgtest: restart embedded postgres outside the caller's directory: %w", err)
+	}
 
 	base := fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable", user, pass, port)
 	// Verify reachability once here so a failed boot is reported now, not on

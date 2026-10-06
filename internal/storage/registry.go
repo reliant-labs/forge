@@ -732,6 +732,10 @@ func (r Runner) registryServing(ctx context.Context, container string) error {
 func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err error) {
 	info, err := r.inspect(ctx, reg.Container)
 	if err != nil {
+		if strings.Contains(err.Error(), "No such object") {
+			r.print("registry %s no longer exists; skipping\n", reg.Container)
+			return nil
+		}
 		return err
 	}
 	helper, gc := reg.Container+"-forge-retention", reg.Container+"-forge-gc"

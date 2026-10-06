@@ -250,3 +250,14 @@ func TestPruneDropsRegistriesWhoseContainerIsGone(t *testing.T) {
 		t.Fatalf("dropped a registry on an unreadable docker answer: %+v", got.Registries)
 	}
 }
+
+// TestRegistryGCSkipsARegistryWhoseContainerIsGone: a registered registry that
+// vanished between the prune and the pass must not fail the pass.
+func TestRegistryGCSkipsARegistryWhoseContainerIsGone(t *testing.T) {
+	r := Runner{Policy: DefaultPolicy(), Command: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("docker %v: exit status 1: Error: No such object: k3d-x-registry", args)
+	}}
+	if err := r.RegistryGC(context.Background(), Registry{Container: "k3d-x-registry", Repositories: []string{"app"}, Contexts: []string{"k3d-x"}}, true); err != nil {
+		t.Fatalf("a vanished registry failed the pass: %v", err)
+	}
+}

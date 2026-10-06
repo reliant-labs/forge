@@ -78,45 +78,42 @@ func ScanStandalone(root, judgePrefix string) ([]Finding, error) {
 // file+offset (scan.counted), so a file every OS compiles is counted once.
 var scanGOOS = []string{"linux", "darwin", "windows"}
 
+// scanWith loads, extracts and DROPS one target OS at a time.
+//
+// Each load is a whole program — syntax and type information for every
+// package, dependencies included — and holding all of them at once is what
+// made this guard the largest allocation in the test suite: three live
+// whole-program loads peaked at ~23 GB RSS under -race, and on a 16 GB CI
+// runner that took the whole Test job down ("The runner has received a
+// shutdown signal", exit 143). Nothing below retains a reference into a
+// load — the scan keeps only positions and strings — so a load is garbage
+// the moment its iteration ends, and the peak is one load rather than the sum.
+//
+// The merge stays exact without the loads coexisting. A use is recorded
+// whether or not its field's declaration has been seen yet (a field declared
+// only in another OS's files may arrive in a later load), nothing is judged
+// until every load has been visited, and uses are deduplicated by
+// file+offset across loads. See scan.record.
 func scanWith(root, judgePrefix string, extraEnv []string) ([]Finding, error) {
-	var loads [][]*packages.Package
+	s := &scan{root: root, judge: judgePrefix, fields: map[fieldKey]*fieldFacts{}, counted: map[string]bool{}, generated: map[string]bool{}}
+	var stubs []Finding
+	implemented := map[string]bool{}
 	for _, goos := range scanTargets() {
-		env := append([]string{}, extraEnv...)
-		if goos != "" {
-			// CGO_ENABLED=0: a cross-OS load cannot use the host's C
-			// toolchain, and forge builds cgo-free on every target anyway.
-			env = append(env, "GOOS="+goos, "CGO_ENABLED=0")
-		}
-		pkgs, err := loadForScan(root, env)
+		pkgs, err := loadForScan(root, scanEnv(extraEnv, goos))
 		if err != nil {
 			return nil, err
 		}
-		loads = append(loads, pkgs)
-	}
-
-	s := &scan{root: root, judge: judgePrefix, fields: map[fieldKey]*fieldFacts{}, counted: map[string]bool{}, generated: map[string]bool{}}
-	// Declarations from every load before any uses: record drops a use of a
-	// field it has not seen declared, and a field may be declared in a file
-	// only one OS compiles.
-	for _, pkgs := range loads {
 		s.collectGenerated(pkgs)
-	}
-	for _, pkgs := range loads {
 		s.collectFieldDecls(pkgs)
-	}
-	for _, pkgs := range loads {
 		s.collectFieldUses(pkgs)
-	}
-	out := s.phantomFields()
-	var stubs []Finding
-	implemented := map[string]bool{}
-	for _, pkgs := range loads {
 		found, impl := s.noopFuncs(pkgs)
 		stubs = append(stubs, found...)
 		for k := range impl {
 			implemented[k] = true
 		}
 	}
+
+	out := s.phantomFields()
 	seen := map[string]bool{}
 	for _, f := range stubs {
 		if implemented[f.Key] || seen[f.Key] {
@@ -144,6 +141,18 @@ func scanTargets() []string {
 		}
 	}
 	return targets
+}
+
+// scanEnv is the loader environment for one scan target: extraEnv, plus the
+// GOOS override for any target other than the host ("").
+func scanEnv(extraEnv []string, goos string) []string {
+	env := append([]string{}, extraEnv...)
+	if goos != "" {
+		// CGO_ENABLED=0: a cross-OS load cannot use the host's C
+		// toolchain, and forge builds cgo-free on every target anyway.
+		env = append(env, "GOOS="+goos, "CGO_ENABLED=0")
+	}
+	return env
 }
 
 func loadForScan(root string, extraEnv []string) ([]*packages.Package, error) {
@@ -190,6 +199,12 @@ type fieldKey struct{ pkg, typ, field string }
 func (k fieldKey) String() string { return short(k.pkg) + "." + k.typ + "." + k.field }
 
 type fieldFacts struct {
+	// judged is set once some load declared the field in a judgeable shape
+	// (collectFieldDecls), and decl is that first declaration. Uses are
+	// recorded whether or not it is set: scanWith visits one OS at a time, so
+	// the declaration that makes a field judgeable may arrive in a later load
+	// than some of its uses. Only judged fields are reported.
+	judged                           bool
 	decl                             token.Position
 	prodRead, prodWrite, testWrite   int
 	readSites, writeSites, testSites []string
@@ -264,9 +279,9 @@ func (s *scan) collectFieldDecls(pkgs []*packages.Package) {
 				case *types.Signature, *types.Interface:
 					continue
 				}
-				k := fieldKey{p.PkgPath, name, fv.Name()}
-				if s.fields[k] == nil {
-					s.fields[k] = &fieldFacts{decl: pos}
+				f := s.facts(fieldKey{p.PkgPath, name, fv.Name()})
+				if !f.judged {
+					f.judged, f.decl = true, pos
 				}
 			}
 		}
@@ -323,16 +338,31 @@ func (s *scan) collectFieldUses(pkgs []*packages.Package) {
 	})
 }
 
-func (s *scan) record(k fieldKey, pos token.Position, isTest, write bool) {
+// facts returns k's facts, creating them on first sight.
+func (s *scan) facts(k fieldKey) *fieldFacts {
 	f := s.fields[k]
 	if f == nil {
-		return // not a judgeable field
+		f = &fieldFacts{}
+		s.fields[k] = f
+	}
+	return f
+}
+
+// record counts one use of k. Uses of fields outside the judged prefix are
+// dropped — collectFieldDecls can never judge them — but a judged-prefix field
+// is recorded even before (or without) a judgeable declaration, because the
+// declaration may come from a load not yet visited. phantomFields filters on
+// fieldFacts.judged.
+func (s *scan) record(k fieldKey, pos token.Position, isTest, write bool) {
+	if !strings.HasPrefix(k.pkg, s.judge) {
+		return
 	}
 	id := fmt.Sprintf("%s:%d:%v", pos.Filename, pos.Offset, write)
 	if s.counted[id] {
 		return
 	}
 	s.counted[id] = true
+	f := s.facts(k)
 	where := s.rel(pos)
 	switch {
 	case isTest && write:
@@ -352,7 +382,7 @@ func (s *scan) record(k fieldKey, pos token.Position, isTest, write bool) {
 func (s *scan) phantomFields() []Finding {
 	var out []Finding
 	for k, f := range s.fields {
-		if f.prodWrite > 0 || f.prodRead == 0 {
+		if !f.judged || f.prodWrite > 0 || f.prodRead == 0 {
 			continue
 		}
 		detail := fmt.Sprintf("read by production code %d× and written by production code 0× — "+

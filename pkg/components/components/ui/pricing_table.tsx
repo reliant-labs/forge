@@ -33,12 +33,8 @@ export default function PricingTable({ tiers }: PricingTableProps) {
           <h3 className="text-lg font-semibold text-ink">{tier.name}</h3>
 
           <div className="mt-4 flex items-baseline gap-1">
-            <span className="text-4xl font-bold tracking-tight text-ink">
-              {tier.price}
-            </span>
-            {tier.period && (
-              <span className="text-sm text-ink-muted">/{tier.period}</span>
-            )}
+            <span className="text-4xl font-bold tracking-tight text-ink">{tier.price}</span>
+            {tier.period && <span className="text-sm text-ink-muted">/{tier.period}</span>}
           </div>
 
           <ul className="mt-8 flex-1 space-y-3">
@@ -70,9 +66,7 @@ export default function PricingTable({ tiers }: PricingTableProps) {
                   </svg>
                 )}
                 <span
-                  className={`text-sm ${
-                    feature.included ? "text-ink-muted" : "text-ink-subtle"
-                  }`}
+                  className={`text-sm ${feature.included ? "text-ink-muted" : "text-ink-subtle"}`}
                 >
                   {feature.text}
                 </span>

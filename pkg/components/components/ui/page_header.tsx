@@ -42,10 +42,8 @@ export default function PageHeader({
 }: PageHeaderProps) {
   const variantStyles: Record<NonNullable<Action["variant"]>, string> = {
     primary: "bg-accent text-on-accent hover:bg-accent-hover shadow-sm",
-    secondary:
-      "border border-border-strong bg-surface text-ink hover:bg-surface-muted shadow-sm",
-    danger:
-      "border border-danger-border bg-surface text-danger hover:bg-danger-surface shadow-sm",
+    secondary: "border border-border-strong bg-surface text-ink hover:bg-surface-muted shadow-sm",
+    danger: "border border-danger-border bg-surface text-danger hover:bg-danger-surface shadow-sm",
   };
 
   return (
@@ -83,12 +81,8 @@ export default function PageHeader({
       <div className="flex items-start justify-between gap-4">
         <div>
           {/* tracking-tight: display sizes set at default tracking read loose. */}
-          <h1 className="text-2xl font-semibold tracking-tight text-ink">
-            {title}
-          </h1>
-          {subtitle ? (
-            <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>
-          ) : null}
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
+          {subtitle ? <p className="mt-1 text-sm text-ink-muted">{subtitle}</p> : null}
         </div>
         {actions.length > 0 && (
           <div className="flex items-center gap-2">

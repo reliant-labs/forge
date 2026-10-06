@@ -37,8 +37,7 @@ export default function VariationGrid({
   columns,
   artboardHeight = "auto",
 }: VariationGridProps) {
-  const cols =
-    columns ?? (Math.min(Math.max(variations.length, 1), 4) as 1 | 2 | 3 | 4);
+  const cols = columns ?? (Math.min(Math.max(variations.length, 1), 4) as 1 | 2 | 3 | 4);
   const heightStyle: React.CSSProperties =
     artboardHeight === "auto" ? {} : { height: artboardHeight };
 
@@ -46,14 +45,8 @@ export default function VariationGrid({
     <section className="w-full">
       {(title || subtitle) && (
         <header className="mb-6">
-          {title && (
-            <h2 className="text-xl font-semibold leading-tight text-ink">
-              {title}
-            </h2>
-          )}
-          {subtitle && (
-            <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>
-          )}
+          {title && <h2 className="text-xl font-semibold leading-tight text-ink">{title}</h2>}
+          {subtitle && <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>}
         </header>
       )}
 
@@ -65,11 +58,7 @@ export default function VariationGrid({
           >
             <figcaption className="flex items-baseline justify-between gap-3 border-b border-border px-4 py-3">
               <span className="text-sm font-semibold text-ink">{v.label}</span>
-              {v.note && (
-                <span className="truncate text-xs text-ink-muted">
-                  {v.note}
-                </span>
-              )}
+              {v.note && <span className="truncate text-xs text-ink-muted">{v.note}</span>}
             </figcaption>
             <div
               className="min-w-0 flex-1 relative overflow-auto bg-surface-muted p-4"

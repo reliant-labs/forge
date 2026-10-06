@@ -8,12 +8,7 @@ interface SlideTwoColumnProps {
   subtitle?: string;
 }
 
-export const SlideTwoColumn: React.FC<SlideTwoColumnProps> = ({
-  title,
-  left,
-  right,
-  subtitle,
-}) => {
+export const SlideTwoColumn: React.FC<SlideTwoColumnProps> = ({ title, left, right, subtitle }) => {
   return (
     <div
       className="slide relative flex flex-col overflow-hidden bg-gray-950"
@@ -21,9 +16,7 @@ export const SlideTwoColumn: React.FC<SlideTwoColumnProps> = ({
     >
       {/* Title bar */}
       <div className="flex-shrink-0 border-b border-gray-800 px-16 pb-6 pt-12">
-        <h1 className="text-4xl font-bold tracking-tight text-white">
-          {title}
-        </h1>
+        <h1 className="text-4xl font-bold tracking-tight text-white">{title}</h1>
         {subtitle && <p className="mt-2 text-lg text-gray-400">{subtitle}</p>}
       </div>
 
@@ -32,9 +25,7 @@ export const SlideTwoColumn: React.FC<SlideTwoColumnProps> = ({
         <div className="flex w-1/2 flex-col justify-center border-r border-gray-800/50 px-16 py-10">
           {left}
         </div>
-        <div className="flex w-1/2 flex-col justify-center px-16 py-10">
-          {right}
-        </div>
+        <div className="flex w-1/2 flex-col justify-center px-16 py-10">{right}</div>
       </div>
     </div>
   );

@@ -6,11 +6,7 @@ interface SlideQuoteProps {
   role?: string;
 }
 
-export const SlideQuote: React.FC<SlideQuoteProps> = ({
-  quote,
-  attribution,
-  role,
-}) => {
+export const SlideQuote: React.FC<SlideQuoteProps> = ({ quote, attribution, role }) => {
   return (
     <div
       className="slide relative flex items-center justify-center overflow-hidden bg-gray-950"
@@ -45,9 +41,7 @@ export const SlideQuote: React.FC<SlideQuoteProps> = ({
         </blockquote>
 
         <div className="flex flex-col items-center gap-1">
-          <span className="text-lg font-semibold text-white">
-            {attribution}
-          </span>
+          <span className="text-lg font-semibold text-white">{attribution}</span>
           {role && <span className="text-base text-gray-500">{role}</span>}
         </div>
       </div>

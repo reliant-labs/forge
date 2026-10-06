@@ -27,16 +27,10 @@ export default function DashboardAnalytics({
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-6 py-8">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-ink">
-            {title}
-          </h1>
-          {subtitle && (
-            <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>
-          )}
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
+          {subtitle && <p className="mt-1 text-sm text-ink-muted">{subtitle}</p>}
         </div>
-        {filters && (
-          <div className="flex flex-wrap items-center gap-2">{filters}</div>
-        )}
+        {filters && <div className="flex flex-wrap items-center gap-2">{filters}</div>}
       </header>
 
       <section aria-label="Key metrics">{kpis}</section>

@@ -20,12 +20,7 @@ export interface LabelProps extends TextProps {
   style?: StyleProp<TextStyle>;
 }
 
-export default function Label({
-  required,
-  children,
-  style,
-  ...rest
-}: LabelProps) {
+export default function Label({ required, children, style, ...rest }: LabelProps) {
   const scheme = useColorScheme() ?? "light";
   const palette = colors[scheme];
   return (

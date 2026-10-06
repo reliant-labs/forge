@@ -7,11 +7,7 @@ interface SplitViewProps {
   ratio?: number;
 }
 
-export default function SplitView({
-  left,
-  right,
-  ratio = 0.5,
-}: SplitViewProps) {
+export default function SplitView({ left, right, ratio = 0.5 }: SplitViewProps) {
   const leftPercent = Math.round(ratio * 100);
   const rightPercent = 100 - leftPercent;
 
@@ -23,10 +19,7 @@ export default function SplitView({
       >
         {left}
       </div>
-      <div
-        className="relative overflow-y-auto"
-        style={{ flexBasis: `${rightPercent}%` }}
-      >
+      <div className="relative overflow-y-auto" style={{ flexBasis: `${rightPercent}%` }}>
         {right}
       </div>
     </div>

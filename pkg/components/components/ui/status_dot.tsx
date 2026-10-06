@@ -1,12 +1,6 @@
 import React from "react";
 
-type StatusDotVariant =
-  | "active"
-  | "paused"
-  | "pending"
-  | "error"
-  | "warning"
-  | "neutral";
+type StatusDotVariant = "active" | "paused" | "pending" | "error" | "warning" | "neutral";
 type StatusDotSize = "sm" | "md" | "lg";
 
 interface StatusDotProps {
@@ -67,9 +61,7 @@ export default function StatusDot({
         } ${pulse ? "animate-pulse motion-reduce:animate-none" : ""}`}
       />
       {label !== undefined && (
-        <span className={`text-xs font-medium ${labelTint[variant]}`}>
-          {label}
-        </span>
+        <span className={`text-xs font-medium ${labelTint[variant]}`}>{label}</span>
       )}
     </span>
   );

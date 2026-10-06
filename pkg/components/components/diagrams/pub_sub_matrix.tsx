@@ -27,15 +27,11 @@ export default function PubSubMatrix({
   subscriptions,
   title,
 }: PubSubMatrixProps) {
-  const subSet = new Set(
-    subscriptions.map((s) => `${s.topicId}::${s.consumerId}`),
-  );
+  const subSet = new Set(subscriptions.map((s) => `${s.topicId}::${s.consumerId}`));
 
   return (
     <div className="w-full overflow-x-auto">
-      {title && (
-        <h3 className="mb-3 text-sm font-semibold text-gray-900">{title}</h3>
-      )}
+      {title && <h3 className="mb-3 text-sm font-semibold text-gray-900">{title}</h3>}
       <table className="min-w-full border-collapse text-sm">
         <thead>
           <tr>

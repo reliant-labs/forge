@@ -10,12 +10,7 @@ interface FooterProps {
   socials?: Array<{ icon: React.ReactNode; href: string }>;
 }
 
-export default function Footer({
-  brand,
-  columns,
-  copyright,
-  socials,
-}: FooterProps) {
+export default function Footer({ brand, columns, copyright, socials }: FooterProps) {
   return (
     <footer className="border-t border-border bg-surface">
       <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">

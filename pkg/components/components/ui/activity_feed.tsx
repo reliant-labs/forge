@@ -47,11 +47,7 @@ function RelativeTime({ timestamp }: { timestamp: string }) {
     });
 
   return (
-    <time
-      dateTime={timestamp}
-      className="text-xs text-ink-subtle"
-      title={date.toLocaleString()}
-    >
+    <time dateTime={timestamp} className="text-xs text-ink-subtle" title={date.toLocaleString()}>
       {display}
     </time>
   );
@@ -64,13 +60,9 @@ export default function ActivityFeed({
 }: ActivityFeedProps) {
   return (
     <div>
-      {title && (
-        <h3 className="mb-4 text-sm font-semibold text-ink">{title}</h3>
-      )}
+      {title && <h3 className="mb-4 text-sm font-semibold text-ink">{title}</h3>}
       {items.length === 0 ? (
-        <p className="py-6 text-center text-sm text-ink-subtle">
-          {emptyMessage}
-        </p>
+        <p className="py-6 text-center text-sm text-ink-subtle">{emptyMessage}</p>
       ) : (
         <div className="flow-root">
           <ul className="-mb-4">
@@ -107,16 +99,11 @@ export default function ActivityFeed({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm text-ink-muted">
-                        <span className="font-medium text-ink">
-                          {item.user.name}
-                        </span>{" "}
-                        {item.action}
+                        <span className="font-medium text-ink">{item.user.name}</span> {item.action}
                         {item.target && (
                           <>
                             {" "}
-                            <span className="font-medium text-ink">
-                              {item.target}
-                            </span>
+                            <span className="font-medium text-ink">{item.target}</span>
                           </>
                         )}
                       </p>

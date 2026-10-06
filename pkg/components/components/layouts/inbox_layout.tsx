@@ -18,12 +18,7 @@ interface InboxLayoutProps {
  * decides what the preview renders. On narrow screens (< md), the layout
  * collapses to single-column with the list above the preview.
  */
-export default function InboxLayout({
-  header,
-  list,
-  preview,
-  listRatio = 0.35,
-}: InboxLayoutProps) {
+export default function InboxLayout({ header, list, preview, listRatio = 0.35 }: InboxLayoutProps) {
   const listPercent = Math.round(Math.max(0.2, Math.min(0.6, listRatio)) * 100);
   const previewPercent = 100 - listPercent;
   return (

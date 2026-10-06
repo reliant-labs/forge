@@ -5,10 +5,7 @@ interface FormWizardProps {
   currentStep?: number;
 }
 
-export default function FormWizard({
-  steps,
-  currentStep = 0,
-}: FormWizardProps) {
+export default function FormWizard({ steps, currentStep = 0 }: FormWizardProps) {
   const clampedStep = Math.max(0, Math.min(currentStep, steps.length - 1));
 
   return (
@@ -21,12 +18,7 @@ export default function FormWizard({
             const isCurrent = i === clampedStep;
 
             return (
-              <li
-                key={i}
-                className={`flex items-center ${
-                  i < steps.length - 1 ? "flex-1" : ""
-                }`}
-              >
+              <li key={i} className={`flex items-center ${i < steps.length - 1 ? "flex-1" : ""}`}>
                 <div className="flex items-center gap-2">
                   <span
                     className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium ${

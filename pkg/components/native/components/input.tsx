@@ -62,9 +62,7 @@ const Input = React.forwardRef<TextInput, InputProps>(function Input(
       {label ? (
         <Text style={[styles.label, { color: palette.foreground }]}>
           {label}
-          {required ? (
-            <Text style={{ color: palette.destructive }}> *</Text>
-          ) : null}
+          {required ? <Text style={{ color: palette.destructive }}> *</Text> : null}
         </Text>
       ) : null}
       <TextInput
@@ -90,9 +88,7 @@ const Input = React.forwardRef<TextInput, InputProps>(function Input(
         {...rest}
       />
       {errorText ? (
-        <Text style={[styles.error, { color: palette.destructive }]}>
-          {errorText}
-        </Text>
+        <Text style={[styles.error, { color: palette.destructive }]}>{errorText}</Text>
       ) : null}
     </View>
   );

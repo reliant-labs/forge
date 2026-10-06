@@ -50,13 +50,10 @@ export default function FlowHorizontal({
   secondaryColor,
 }: FlowHorizontalProps): React.ReactElement {
   if (steps.length === 0) {
-    return (
-      <div className="text-sm text-gray-400 italic">No steps provided</div>
-    );
+    return <div className="text-sm text-gray-400 italic">No steps provided</div>;
   }
 
-  const getStatus = (step: FlowHorizontalProps["steps"][number]) =>
-    step.status ?? "pending";
+  const getStatus = (step: FlowHorizontalProps["steps"][number]) => step.status ?? "pending";
 
   return (
     <div className="relative w-full overflow-x-auto">
@@ -68,11 +65,7 @@ export default function FlowHorizontal({
           const isEven = i % 2 === 0;
 
           const boxBg =
-            accentColor && isEven
-              ? undefined
-              : secondaryColor && !isEven
-                ? undefined
-                : undefined;
+            accentColor && isEven ? undefined : secondaryColor && !isEven ? undefined : undefined;
 
           const inlineStyle: React.CSSProperties = {};
           if (accentColor && isEven) {
@@ -95,17 +88,11 @@ export default function FlowHorizontal({
                 {/* Status dot */}
                 <div className="flex items-center gap-2 mb-1">
                   <span
-                    className={`inline-block w-2.5 h-2.5 rounded-full ${
-                      s.dot
-                    } ${
-                      status === "active"
-                        ? "animate-pulse motion-reduce:animate-none"
-                        : ""
+                    className={`inline-block w-2.5 h-2.5 rounded-full ${s.dot} ${
+                      status === "active" ? "animate-pulse motion-reduce:animate-none" : ""
                     }`}
                   />
-                  <span
-                    className={`text-xs font-semibold uppercase tracking-wide ${s.text}`}
-                  >
+                  <span className={`text-xs font-semibold uppercase tracking-wide ${s.text}`}>
                     {status}
                   </span>
                 </div>
@@ -125,10 +112,7 @@ export default function FlowHorizontal({
 
               {/* Arrow connector between steps */}
               {i < steps.length - 1 && (
-                <div
-                  className="flex items-center justify-center shrink-0"
-                  style={{ width: 48 }}
-                >
+                <div className="flex items-center justify-center shrink-0" style={{ width: 48 }}>
                   <svg width="48" height="24" viewBox="0 0 48 24" fill="none">
                     <line
                       x1="0"

@@ -13,11 +13,7 @@ interface FeatureComparisonProps {
 
 function CheckIcon() {
   return (
-    <svg
-      className="mx-auto h-5 w-5 text-success"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-    >
+    <svg className="mx-auto h-5 w-5 text-success" viewBox="0 0 20 20" fill="currentColor">
       <path
         fillRule="evenodd"
         d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
@@ -29,11 +25,7 @@ function CheckIcon() {
 
 function CrossIcon() {
   return (
-    <svg
-      className="mx-auto h-5 w-5 text-ink-subtle"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-    >
+    <svg className="mx-auto h-5 w-5 text-ink-subtle" viewBox="0 0 20 20" fill="currentColor">
       <path
         fillRule="evenodd"
         d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -43,10 +35,7 @@ function CrossIcon() {
   );
 }
 
-export default function FeatureComparison({
-  products,
-  groups,
-}: FeatureComparisonProps) {
+export default function FeatureComparison({ products, groups }: FeatureComparisonProps) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[600px] border-collapse text-sm">
@@ -59,9 +48,7 @@ export default function FeatureComparison({
               <th
                 key={product.name}
                 className={`border-b border-border px-4 py-4 text-center font-semibold ${
-                  product.highlight
-                    ? "bg-accent-surface text-accent-ink"
-                    : "text-ink"
+                  product.highlight ? "bg-accent-surface text-accent-ink" : "text-ink"
                 }`}
               >
                 {product.name}

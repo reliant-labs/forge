@@ -146,13 +146,7 @@ export default function FunnelChart({
             >
               {stage.label}
             </text>
-            <text
-              x={cx}
-              y={midY + 12}
-              textAnchor="middle"
-              fill="#cbd5e1"
-              fontSize={11}
-            >
+            <text x={cx} y={midY + 12} textAnchor="middle" fill="#cbd5e1" fontSize={11}>
               {stage.value}
             </text>
 

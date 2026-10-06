@@ -46,8 +46,7 @@ export default function CrudForm({
   const [values, setValues] = useState<Record<string, unknown>>(() => {
     const defaults: Record<string, unknown> = {};
     for (const field of fields) {
-      defaults[field.name] =
-        initialValues[field.name] ?? (field.type === "checkbox" ? false : "");
+      defaults[field.name] = initialValues[field.name] ?? (field.type === "checkbox" ? false : "");
     }
     return defaults;
   });
@@ -69,9 +68,7 @@ export default function CrudForm({
       {(title || description) && (
         <div className="border-b border-border px-6 py-4">
           {title && <h2 className="text-lg font-semibold text-ink">{title}</h2>}
-          {description && (
-            <p className="mt-1 text-sm text-ink-muted">{description}</p>
-          )}
+          {description && <p className="mt-1 text-sm text-ink-muted">{description}</p>}
         </div>
       )}
 
@@ -95,15 +92,10 @@ export default function CrudForm({
                   className="mt-1 h-4 w-4 rounded border-border-strong text-accent focus:ring-accent"
                 />
                 <div>
-                  <label
-                    htmlFor={field.name}
-                    className="text-sm font-medium text-ink-muted"
-                  >
+                  <label htmlFor={field.name} className="text-sm font-medium text-ink-muted">
                     {field.label}
                   </label>
-                  {field.helpText && (
-                    <p className="text-xs text-ink-muted">{field.helpText}</p>
-                  )}
+                  {field.helpText && <p className="text-xs text-ink-muted">{field.helpText}</p>}
                 </div>
               </div>
             );
@@ -111,14 +103,9 @@ export default function CrudForm({
 
           return (
             <div key={field.name}>
-              <label
-                htmlFor={field.name}
-                className="mb-1 block text-sm font-medium text-ink-muted"
-              >
+              <label htmlFor={field.name} className="mb-1 block text-sm font-medium text-ink-muted">
                 {field.label}
-                {field.required && (
-                  <span className="ml-0.5 text-danger">*</span>
-                )}
+                {field.required && <span className="ml-0.5 text-danger">*</span>}
               </label>
 
               {field.type === "textarea" ? (
@@ -154,9 +141,7 @@ export default function CrudForm({
                   onChange={(e) =>
                     handleChange(
                       field.name,
-                      field.type === "number"
-                        ? Number(e.target.value)
-                        : e.target.value,
+                      field.type === "number" ? Number(e.target.value) : e.target.value,
                     )
                   }
                   placeholder={field.placeholder}

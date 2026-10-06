@@ -33,9 +33,7 @@ export default function ProcessSteps({
   accentColor,
 }: ProcessStepsProps): React.ReactElement {
   if (steps.length === 0) {
-    return (
-      <div className="text-sm text-gray-400 italic">No steps provided</div>
-    );
+    return <div className="text-sm text-gray-400 italic">No steps provided</div>;
   }
 
   const isVertical = direction === "vertical";
@@ -46,8 +44,7 @@ export default function ProcessSteps({
     switch (status) {
       case "completed":
         return {
-          className:
-            "flex items-center justify-center w-9 h-9 rounded-full shrink-0",
+          className: "flex items-center justify-center w-9 h-9 rounded-full shrink-0",
           style: { backgroundColor: accentColor ?? "#10b981" },
         };
       case "active":
@@ -61,8 +58,7 @@ export default function ProcessSteps({
         };
       case "pending":
         return {
-          className:
-            "flex items-center justify-center w-9 h-9 rounded-full shrink-0 bg-gray-200",
+          className: "flex items-center justify-center w-9 h-9 rounded-full shrink-0 bg-gray-200",
         };
     }
   };
@@ -105,10 +101,7 @@ export default function ProcessSteps({
                   )}
                 </div>
                 {!isLast && (
-                  <div
-                    className="w-0.5 grow min-h-[32px]"
-                    style={{ backgroundColor: lineColor }}
-                  />
+                  <div className="w-0.5 grow min-h-[32px]" style={{ backgroundColor: lineColor }} />
                 )}
               </div>
 
@@ -176,10 +169,7 @@ export default function ProcessSteps({
             {/* Horizontal connector line */}
             {!isLast && (
               <div className="flex items-center h-9 flex-1 min-w-[24px] px-1">
-                <div
-                  className="w-full h-0.5"
-                  style={{ backgroundColor: lineColor }}
-                />
+                <div className="w-full h-0.5" style={{ backgroundColor: lineColor }} />
               </div>
             )}
           </div>

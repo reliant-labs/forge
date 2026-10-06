@@ -202,6 +202,10 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 #   image_digests -> JSON name→digest map `forge env deploy` pins so each image
 #                   resolves to ITS content-addressed digest. forge.image_digests().
 #                   Absent on the local-registry / `kcl run` path (→ {}).
+#   frontend_outputs -> JSON name→build-shape map ("static" | "standalone" |
+#                   "server") projected from forge.yaml `frontends[].output`.
+#                   forge.render refuses a server build on a static runtime
+#                   with it. Absent on a plain `kcl run` (→ nothing judged).
 #
 # The image REGISTRY is not among them, and is not an env field either: it is
 # part of each WORKLOAD's `image`. forge binds no option for it and invents no

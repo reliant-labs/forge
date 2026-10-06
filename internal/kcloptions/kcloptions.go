@@ -69,6 +69,10 @@ var Reserved = map[string]string{
 	"worktree":      "the git worktree basename — resolved by the parallel-dev-stack primitives",
 	"branch":        "the git branch — resolved by the parallel-dev-stack primitives",
 	"kubeconfig":    "the default kubeconfig path on this machine — resolved by forge, read via `<cluster>.kubeconfig`",
+	// The render refuses a frontend bound to a static runtime whose build
+	// is not a static export; this is how it knows. A caller-supplied value
+	// would let a server build through the refusal.
+	"frontend_outputs": "each frontend's production build shape — derived from forge.yaml frontends[].output",
 }
 
 // Option is one render option a project's KCL declares. Type/Default/Help are

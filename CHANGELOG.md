@@ -109,6 +109,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `forge lint --guarded-fields` reads the new `<slug>/edit/page.tsx` as
     well as the old `[id]/edit` path. The stale-route report recognizes both
     page shapes.
+- **The render refuses a Next.js server build bound to a static runtime.**
+  `forge.OnHosted` for a frontend, `forge.OnBucket` and `forge.OnFirebase`
+  serve files and run nothing. A frontend whose forge.yaml `output` is
+  `standalone` or `server` used to render, deploy and build green, then fail
+  at publish on an `out/` nothing wrote. The roofers scaffold bound one this
+  way. `forge env render` / `deploy` / `up` and `forge build` now refuse it
+  at render. The refusal names the frontend, the env and both fixes: set
+  `output: static` and migrate (`forge lint --static-export` lists what), or
+  bind it elsewhere, since a Next.js server ships as a workload with a
+  `forge.DockerBuild`. forge.yaml stays the one declaration of the build
+  shape. forge binds it into every render it drives as the reserved
+  `-D frontend_outputs` option, and the KCL never restates it. An env with no
+  forge.yaml frontend of that name, or a plain `kcl run`, is not judged.
+  **Adoption:** a project whose forge.yaml frontend has no `output:` reads as
+  `standalone` (what its scaffold-once next.config says). If such a frontend
+  is bound to a static runtime, set `output: static` and follow
+  `forge skill load migrations/v0.1.44`.
 - **Concurrent `forge generate` / `forge scaffold` runs in one project now
   queue instead of failing.** Every run takes the project's lock
   (`.forge/forge.lock`). A second run prints one line,
@@ -279,6 +296,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the source and expiry; `forge login` notes when a helper is already
   set. `forge login` and the token variable are unchanged for standalone forge
   and CI.
+
+- **`forge lint --static-export`, and a `static-export lint` lane in every
+  `forge lint`.** It judges each Next.js frontend that must build to a static
+  export: forge.yaml declares `output: static` for it, or any env binds it to
+  `forge.OnHosted`, `forge.OnBucket` or `forge.OnFirebase` (learned from each
+  env's real render, not a text scan). It reports with file:line and a fix:
+  - **errors**, which `next build` refuses for an export: a dynamic segment
+    (`[x]`, `[...x]`, `[[...x]]`) with no `generateStaticParams`, a GET route
+    handler not declared `force-static`, `'use server'`, `next/headers`,
+    `dynamic = "force-dynamic"` / `revalidate = 0`, and next/image without
+    `images.unoptimized` or a custom loader. Also a frontend whose build is not
+    an export at all, and forge.yaml and next.config disagreeing about it.
+  - **warnings**, for what the export accepts and then drops: `middleware.ts` /
+    `proxy.ts`, non-GET route handlers that are not dev-only, next.config
+    `rewrites` / `redirects` / `headers` not gated to development,
+    `revalidate = N`, and an export bound to `forge.OnBucket` without
+    `trailingSlash: true` (a bucket resolves no `.html`, so every route but
+    `/` 404s; the hosted origin tries `<path>.html` itself).
+
+  CI's `NODE_ENV=production npm run build`, `forge build` and
+  `forge env deploy` run the real export, which stays authoritative. This lane
+  reports the same failures earlier and offline. A `[id]` page born from
+  forge's CRUD templates names the `migrations/v0.1.44` route migration. It is
+  a text scan with no TypeScript AST, so it stays silent rather than guess: a
+  re-exported `generateStaticParams` or a next.config built by a function is
+  not followed. Honours `--quiet`, `--scope` (by file) and `--json`, and the
+  shared `// forge:lint-disable-next-line <rule>: <reason>` directive.
 
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,

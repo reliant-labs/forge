@@ -101,6 +101,7 @@ its declared `k3d-<project>` cluster alone and says so.
 ## 3. Ship it
 
 ```bash
+forge lint --static-export                 # what the export can't serve, with file:line
 forge env render prod                      # 0 cluster objects; hosted: web (static)
 forge ci validate-kcl                      # the control plane would admit it
 forge env build prod --release v0.1.0 --plan   # what would be pushed and recorded; builds nothing
@@ -108,6 +109,16 @@ forge env build prod --release v0.1.0      # build once, push, record the releas
 forge env deploy prod v0.1.0               # publish; the platform syncs it and writes config.js
 forge env status prod                      # the release prod runs, and its health
 ```
+
+`forge env render` (and every deploy and build) refuses a Next.js frontend on
+a static runtime whose forge.yaml `output` is not `static`: its build would be
+a Node server, with nothing in `out/` to publish. The error names the
+frontend, the env and both fixes. `forge lint --static-export` runs offline and
+reports, each with file:line, what `next build` would refuse for an export: a
+`[id]` route without `generateStaticParams`, server actions, `next/headers`,
+next/image without `unoptimized`. It also warns on what the export drops
+silently, such as middleware and rewrites. The real `next build` in CI stays
+authoritative. The lane only tells you sooner.
 
 A hosted deploy ships only what a release froze, never a local build. Without a
 release it refuses, and the error prints the cut-then-deploy command.

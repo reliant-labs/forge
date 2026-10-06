@@ -143,6 +143,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// the backend without paying for the Node toolchain", and it mirrors
 		// the frontend-skipping vocabulary `forge build` already uses.
 		"skip-frontends",
+		// Visible: a static runtime (hosted, bucket, firebase) serves files
+		// only, and `next dev` serves everything a static export cannot —
+		// so without this the first signal is the export failing in CI, or
+		// production quietly lacking what dev had.
+		"static-export",
 		"strict",
 		"tests",
 		// The read-only-fields twin for REPORTING queries, and silent in

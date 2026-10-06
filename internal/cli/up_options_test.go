@@ -102,6 +102,7 @@ func TestParseRenderOptions(t *testing.T) {
 func TestParseRenderOptionsRefusesEveryReservedName(t *testing.T) {
 	for _, name := range []string{
 		"env", "namespace", "image_tag", "image_digests", "worktree", "branch",
+		"frontend_outputs",
 	} {
 		if _, err := parseRenderOptions([]string{name + "=x"}); err == nil {
 			t.Errorf("-D %s=x was accepted; it is derived by forge", name)

@@ -108,6 +108,12 @@ type meta struct {
 	// from the database holds the real computed value, and re-inserting it
 	// would send that value literally. See generatedTagValue.
 	generatedCols []string
+	// insertDefaultable are the fields Bun may send as DEFAULT on INSERT —
+	// a nil pointer, or a Go zero on a ,nullzero or ,default: field — so
+	// the DATABASE picks the stored value. Create and Upsert RETURN each one
+	// that did, so the caller's entity holds what was stored rather than
+	// the zero it sent. See returnDatabaseFilled.
+	insertDefaultable []*schema.Field
 }
 
 // sliceCol pairs a NOT NULL slice-typed column's struct-field index with
@@ -343,6 +349,19 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 			}
 		}
 
+		// Columns the database may fill on INSERT. The PK is handled on its
+		// own (server-allocated → always returned; string → ULID-filled
+		// here), and generated columns are always returned, so neither is
+		// listed.
+		for _, f := range tbl.Fields {
+			if f.IsPK || generatedTagged(f) {
+				continue
+			}
+			if f.IsPtr || f.NullZero || f.SQLDefault != "" {
+				r.m.insertDefaultable = append(r.m.insertDefaultable, f)
+			}
+		}
+
 		// Two distinct allowlists, both starting from every declared column
 		// EXCEPT the PK, deleted_at, the version column, and — under managed
 		// timestamps — created_at and updated_at (the latter is repo-stamped,
@@ -468,6 +487,57 @@ func (r *Repo[M]) columnIsGenerated(col string) bool {
 func (r *Repo[M]) excludeGeneratedColumns(q *bun.InsertQuery) *bun.InsertQuery {
 	for _, col := range r.m.generatedCols {
 		q = q.ExcludeColumn(col)
+	}
+	return q
+}
+
+// returnDatabaseFilled makes an INSERT read back, via RETURNING, every
+// column whose stored value the DATABASE chose: a server-allocated PK, every
+// generated column, and each column this entity is about to send as DEFAULT.
+// Bun scans the returned row into entity, so after Create a caller holds the
+// stored row — `line_total_cents` computed, `status` defaulted — without the
+// re-read every hand-written caller otherwise adds.
+//
+// The list is explicit rather than `RETURNING *`: a column added by a
+// migration that is applied before the code that knows about it (the expand
+// half of a rolling deploy) would fail every insert with "does not have
+// column". Naming only the struct's own columns keeps writes working across
+// that window, exactly as the SELECT projection does.
+//
+// Bun has its own RETURNING for DEFAULT-sent fields, but it switches itself
+// off as soon as any explicit Returning is present — and generated columns
+// are excluded from the column list, so Bun never sees them to return. The
+// repo therefore states the whole list itself.
+func (r *Repo[M]) returnDatabaseFilled(q *bun.InsertQuery, entity *M) *bun.InsertQuery {
+	cols := make([]string, 0, 1+len(r.m.generatedCols)+len(r.m.insertDefaultable))
+	if r.m.pkAutoInc {
+		cols = append(cols, r.m.pkColumn)
+	}
+	cols = append(cols, r.m.generatedCols...)
+	v := reflect.ValueOf(entity).Elem()
+	for _, f := range r.m.insertDefaultable {
+		// The same predicate Bun applies when it writes DEFAULT for the
+		// field (InsertQuery.marshalsToDefault).
+		if (f.IsPtr && f.HasNilValue(v)) || (f.HasZeroValue(v) && (f.NullZero || f.SQLDefault != "")) {
+			cols = append(cols, f.Name)
+		}
+	}
+	for _, col := range cols {
+		q = q.Returning("?", bun.Ident(col))
+	}
+	return q
+}
+
+// returnGenerated makes an UPDATE read back every generated column. A
+// generated column is recomputed from the row's other columns, so after
+// Update or UpdateMasked the value the caller holds is stale whenever a
+// column it depends on changed — and the dependency may be on a column the
+// mask did not even name. Nothing else the UPDATE writes comes back: every
+// other column holds exactly what the caller sent (updated_at is stamped in
+// Go, the version column is advanced by advanceVersion).
+func (r *Repo[M]) returnGenerated(q *bun.UpdateQuery) *bun.UpdateQuery {
+	for _, col := range r.m.generatedCols {
+		q = q.Returning("?", bun.Ident(col))
 	}
 	return q
 }
@@ -613,15 +683,9 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 	}
 	r.normalizeArrays(entity)
 
-	q := r.excludeGeneratedColumns(db.Bun().NewInsert().Model(entity))
+	q := r.returnDatabaseFilled(r.excludeGeneratedColumns(db.Bun().NewInsert().Model(entity)), entity)
 	if r.m.pkAutoInc {
-		q = q.ExcludeColumn(r.m.pkColumn).Returning("?", bun.Ident(r.m.pkColumn))
-		pk := r.pkFieldValue(entity)
-		if _, err := q.Exec(ctx, pk.Addr().Interface()); err != nil {
-			recordErr(span, err)
-			return fmt.Errorf("create %s: %w", r.m.table, err)
-		}
-		return nil
+		q = q.ExcludeColumn(r.m.pkColumn)
 	}
 	if _, err := q.Exec(ctx); err != nil {
 		recordErr(span, err)
@@ -719,15 +783,7 @@ func (r *Repo[M]) Upsert(ctx context.Context, db orm.Context, entity *M) error {
 		q = q.Set("? = NULL", bun.Ident("deleted_at"))
 	}
 
-	if r.m.pkAutoInc {
-		q = q.Returning("?", bun.Ident(r.m.pkColumn))
-		pk := r.pkFieldValue(entity)
-		if _, err := q.Exec(ctx, pk.Addr().Interface()); err != nil {
-			recordErr(span, err)
-			return fmt.Errorf("upsert %s: %w", r.m.table, err)
-		}
-		return nil
-	}
+	q = r.returnDatabaseFilled(q, entity)
 	if _, err := q.Exec(ctx); err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("upsert %s: %w", r.m.table, err)
@@ -898,6 +954,7 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, entity)
+	r.returnGenerated(q)
 	res, err := q.Exec(ctx)
 	if err != nil {
 		recordErr(span, err)
@@ -979,6 +1036,7 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	q = q.Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, entity)
+	r.returnGenerated(q)
 	res, err := q.Exec(ctx)
 	if err != nil {
 		recordErr(span, err)

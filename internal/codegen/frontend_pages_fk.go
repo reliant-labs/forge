@@ -165,6 +165,7 @@ func AttachForeignKeys(page *PageTemplateData, referents map[string]PageFieldFK)
 		page.CreateFields[i].FK = fk
 		if fk != nil {
 			page.CreateFields[i].Label = trimIDLabel(page.CreateFields[i].Label)
+			requireReference(&page.CreateFields[i])
 		}
 	}
 	for i := range page.UpdateFields {
@@ -174,6 +175,7 @@ func AttachForeignKeys(page *PageTemplateData, referents map[string]PageFieldFK)
 			// picker needs <EntityName> to turn that id into a name.
 			fk.ResolveSelectedLabel = true
 			page.UpdateFields[i].Label = trimIDLabel(page.UpdateFields[i].Label)
+			requireReference(&page.UpdateFields[i])
 		}
 		page.UpdateFields[i].FK = fk
 	}
@@ -184,6 +186,24 @@ func AttachForeignKeys(page *PageTemplateData, referents map[string]PageFieldFK)
 			page.Columns[i].Label = trimIDLabel(page.Columns[i].Label)
 		}
 	}
+}
+
+// requireReference marks a resolved, NON-optional foreign key required.
+//
+// This is the one required-ness that does not come from a protovalidate
+// rule. It adds no inference of its own: the reference was already resolved
+// (it is why the field is a picker), by the same `<owner>_id` rule
+// scaffold.referencedTable used to birth the column as `NOT NULL REFERENCES
+// <parent>` with no DEFAULT. An empty pick can therefore never be stored —
+// the form would only trade its own message for a foreign-key violation from
+// the database. An `optional` reference is a nullable column: its picker may
+// be cleared, and EmptyIsUnset submits it as unset.
+func requireReference(pf *PageField) {
+	if pf.Optional || pf.Required {
+		return
+	}
+	pf.Required = true
+	attachZodExpr(pf)
 }
 
 // trimIDLabel drops the trailing " Id" from a resolved foreign key's display

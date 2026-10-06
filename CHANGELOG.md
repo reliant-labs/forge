@@ -308,6 +308,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   match. Matching the NULL rows ("jobs with no crew") is not a facet; add a
   request field and filter in the op. Born once: an existing List request
   gains nothing, so add the field by hand.
+- **Generated create/edit forms and list filters follow the field's declared
+  rules.** Four defects from the roofers run, in both the Next.js and Vite
+  page templates:
+  - A field is required only when a rule says so: protovalidate
+    `required = true`, `string.min_len >= 1`, or a non-optional foreign key
+    (born `NOT NULL REFERENCES` with no DEFAULT). Every other `NOT NULL`
+    column used to be born `.min(1, "Required")`, so a `string notes` column
+    (`NOT NULL DEFAULT ''`) was mandatory. `max_len`, `email`, `pattern` and
+    numeric bounds are still projected as before.
+  - An empty input for a proto3 `optional` field submits as unset on both
+    forms. Its zod schema maps `""` to `undefined` before validating, so
+    `optional int32 year` stores NULL instead of 0, and an empty optional
+    email is not rejected by `.email()`. The edit prefill no longer seeds
+    the zero, and the update mask still names the field, so clearing a
+    stored value writes NULL.
+  - The enum zero value (`*_UNSPECIFIED`, found by wire number 0) is never
+    offered in a form select or a list filter. The born CHECK rejects it.
+    Both forms refuse it in zod. A `NOT NULL` enum's create select starts on
+    the first real member, which is the column DEFAULT and what Create stores
+    when the field is omitted. An `optional` enum gets a None option.
+  - Create navigates to the new record's detail page (`/<entity>/<id>`),
+    read from the Create response's entity field. It falls back to the list
+    when the response does not carry the entity.
+
+  Scaffolded pages are yours, so existing projects keep their pages. Delete
+  a page and run `forge project rescaffold <path>` to pick up the new form.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

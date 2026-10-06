@@ -95,17 +95,23 @@ enum BrandStatus {
 	create := readFileE2E(t, createPath)
 	for _, want := range []string{
 		`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
-		// CREATE refuses the zero value: UNSPECIFIED is not a state the
-		// domain has, so the form makes the author pick one. (The EDIT
-		// page below carries the same schema WITHOUT the refine — an
-		// existing row is allowed to still hold the sentinel.)
-		`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v) => v !== 0, "Required"),`,
+		// The zero value is never a choice and zod refuses it on both
+		// forms — the mirror of the born CHECK, which does not admit it.
+		`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+		// The NOT NULL enum starts on its column DEFAULT, the first real
+		// member — what Create stores when the field is omitted.
+		"defaultValue={ BrandStatus.DRAFT }",
 		`{...register("name")}`,
 		`{...register("tagline")}`,
 		`{...register("priority")}`,
 		`{...register("status")}`,
 		"<select",
 		"<option value={ BrandStatus.ACTIVE }>Active</option>",
+		// Create lands on the record it made.
+		"onSuccess: ({ brand: created }) => router.push(created ? `/brands/${created.id}` : \"/brands\"),",
+		// No rule on tagline: its born column is NOT NULL DEFAULT '', and
+		// the empty string is a value, not a validation error.
+		"tagline: z.string(),",
 	} {
 		if !strings.Contains(create, want) {
 			t.Errorf("born create page missing %q:\n%s", want, create)
@@ -113,6 +119,9 @@ enum BrandStatus {
 	}
 	if strings.Contains(create, "status: z.string()") {
 		t.Errorf("born create page types the enum as z.string() — guaranteed MessageInit type error at mutate():\n%s", create)
+	}
+	if strings.Contains(create, "BrandStatus.UNSPECIFIED }>") {
+		t.Errorf("born create page offers the UNSPECIFIED zero value as a choice:\n%s", create)
 	}
 
 	// ── Born edit page: NOT empty — carries the same editable fields,
@@ -122,8 +131,8 @@ enum BrandStatus {
 	edit := readFileE2E(t, editPath)
 	for _, want := range []string{
 		`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
-		"status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)),",
-		"status: item.status ?? BrandStatus.UNSPECIFIED,",
+		`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+		"status: item.status,",
 		`{...register("name")}`,
 		`{...register("tagline")}`,
 		`{...register("priority")}`,
@@ -137,6 +146,9 @@ enum BrandStatus {
 	}
 	if strings.Contains(edit, "const schema = z.object({\n});") {
 		t.Errorf("born edit page has an EMPTY form schema:\n%s", edit)
+	}
+	if strings.Contains(edit, "BrandStatus.UNSPECIFIED }>") {
+		t.Errorf("born edit page offers the UNSPECIFIED zero value as a choice:\n%s", edit)
 	}
 
 	// ── The `forge build` gates: Go half… ──

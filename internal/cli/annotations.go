@@ -797,7 +797,9 @@ func writeAnnotationsText(w io.Writer, spec AnnotationsSpec) error {
 		if err := p("\nVALIDATE RULES — the (buf.validate.field) rules forge PROJECTS to db + zod\n" +
 			"  Every other protovalidate rule (const, uuid, in/not_in, CEL, …) is still\n" +
 			"  enforced on the wire by the protovalidate interceptor; it is simply not\n" +
-			"  projected onto the migration or the generated form.\n"); err != nil {
+			"  projected onto the migration or the generated form.\n" +
+			"  `required` and `min_len >= 1` are what make a generated form field\n" +
+			"  required; a NOT NULL column alone does not.\n"); err != nil {
 			return err
 		}
 		for _, r := range spec.ValidateRules {

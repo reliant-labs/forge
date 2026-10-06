@@ -99,9 +99,9 @@ function Edit{{.EntityName}}Form({ id }: { id: string }) {
   const router = useRouter();
 
   const { data, isLoading, error: fetchError } = use{{.GetRPC}}({ id });
-  // Typed access: the response wraps the entity in `{{.GetEntityFieldCamel}}` —
+  // Typed access: the response wraps the entity in `{{.GetEntityAccessor}}` —
   // no `?? data` hedging, no Record<string, unknown> cast.
-  const item = data?.{{.GetEntityFieldCamel}};
+  const item = data?.{{.GetEntityAccessor}};
 
   const mutation = use{{.UpdateRPC}}({
     onSuccess: () => router.push(entityViewHref("{{.EntitySlug}}", id)),

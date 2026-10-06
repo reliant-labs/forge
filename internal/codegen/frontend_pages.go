@@ -77,10 +77,11 @@ type PageTemplateData struct {
 	CreateEntityFieldCamel string
 	// GetEntityFieldCamel is the TS property of the Get RESPONSE field that
 	// carries the entity — what the detail and edit pages read the record
-	// off (`data?.base64item`). Read off the descriptor, falling back to the
-	// scaffolded field name (entityFieldCamel); never the entity name with
-	// its first letter lowered, which protoc-gen-es does not generate for
-	// "Base64Item" (base64item) or "LLMKey" (llmKey).
+	// off (`data?.base64item`, via GetEntityAccessor). Read off the
+	// descriptor, falling back to the scaffolded field name
+	// (entityFieldCamel); never the entity name with its first letter
+	// lowered, which protoc-gen-es does not generate for "Base64Item"
+	// (base64item) or "LLMKey" (llmKey).
 	GetEntityFieldCamel string
 	// Response type names for imports
 	ListResponseType   string // "ListTasksResponse"

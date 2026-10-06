@@ -69,8 +69,8 @@ export default function {{.EntityName}}DetailPage() {
   );
 
   // Typed access: the generator knows the response wraps the entity in
-  // `{{.GetEntityFieldCamel}}` — no `?? data` hedging, no Record<string, unknown> cast.
-  const item = data?.{{.GetEntityFieldCamel}};
+  // `{{.GetEntityAccessor}}` — no `?? data` hedging, no Record<string, unknown> cast.
+  const item = data?.{{.GetEntityAccessor}};
   const title = {{if .DisplayField}}item?.{{.DisplayField}} || {{end}}String(item?.{{.PkFieldCamel}} ?? "{{.EntityName | humanize}}");
 
   // Typed field rows — one entry per renderable proto field, declared by

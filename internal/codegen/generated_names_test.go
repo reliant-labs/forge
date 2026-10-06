@@ -24,7 +24,9 @@ import (
 // pb AddressLine_2 / db AddressLine2).
 
 func digitEntityService() (ServiceDef, []EntityDef) {
-	entity := func(n string) MessageFieldDef { return MessageFieldDef{Name: n, ProtoType: "message", MessageType: "Oauth2token"} }
+	entity := func(n string) MessageFieldDef {
+		return MessageFieldDef{Name: n, ProtoType: "message", MessageType: "Oauth2token"}
+	}
 	svc := ServiceDef{
 		Name:       "Oauth2Service",
 		Package:    "services.oauth2.v1",

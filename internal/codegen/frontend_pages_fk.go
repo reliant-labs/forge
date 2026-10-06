@@ -263,6 +263,8 @@ func lookupFKByProtoName(page *PageTemplateData, protoName, camelName string, re
 // entity it is wrong in one place. Page data built without it falls back to
 // the AIP-134 update request's entity wrapper (read off the real descriptor),
 // then to the field the entity scaffolder writes, as protoc-gen-es spells it.
+//
+// Templates reach it as PageTemplateData.GetEntityAccessor.
 func getResponseEntityField(p PageTemplateData) string {
 	if p.GetEntityFieldCamel != "" {
 		return p.GetEntityFieldCamel
@@ -275,6 +277,11 @@ func getResponseEntityField(p PageTemplateData) string {
 	}
 	return entityFieldCamel(p.EntityName)
 }
+
+// GetEntityAccessor is the property the detail and edit pages read the
+// record off a Get response (`data?.<accessor>`): GetEntityFieldCamel, with
+// getResponseEntityField's fallbacks for page data assembled without it.
+func (p PageTemplateData) GetEntityAccessor() string { return getResponseEntityField(p) }
 
 // fkOwner returns the lowercased entity name a foreign-key field names, or
 // "" when the field is not `<owner>_id` shaped. `id` itself is the primary

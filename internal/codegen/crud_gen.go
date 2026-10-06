@@ -1345,8 +1345,8 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// Determine the entity field name in the update request message.
 	// Proto generates a field named after the entity (e.g., "Project project = 1;"
 	// becomes Go field "Project"). We look it up in the parsed message fields;
-	// if not found, we fall back to the entity name.
-	updateEntityField := naming.GoCamelCase(cm.Entity.Name)
+	// see updateEntityGoField for the fallback.
+	updateEntityField := ""
 	if cm.Operation == "update" {
 		updateEntityField = updateEntityGoField(svc, cm.Method.InputType, cm.Entity.Name)
 	}
@@ -2494,9 +2494,10 @@ func updateMaskGoField(svc ServiceDef, inputType string) string {
 }
 
 // updateEntityGoField is the pb Go field of update request inputType that
-// carries the entity (`Project project = 1;` → Project). Falls back to the
-// entity's own Go name when the descriptor does not carry the request's
-// fields or none of them is typed as the entity.
+// carries the entity (`Project project = 1;` → Project). When the
+// descriptor does not carry the request's fields, or none of them is typed
+// as the entity, it falls back to the field the entity scaffolder writes
+// (naming.EntityFieldName), camel-cased by protoc-gen-go's rule.
 func updateEntityGoField(svc ServiceDef, inputType, entityName string) string {
 	fields := svc.Messages[inputType]
 	for _, f := range fields {
@@ -2504,7 +2505,7 @@ func updateEntityGoField(svc ServiceDef, inputType, entityName string) string {
 			return messageFieldGoName(fields, f.Name)
 		}
 	}
-	return naming.GoCamelCase(entityName)
+	return naming.GoCamelCase(naming.EntityFieldName(entityName))
 }
 
 // responseEntityGoField is the pb Go field of response message outputType

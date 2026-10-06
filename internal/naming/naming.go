@@ -100,6 +100,30 @@ func ToSnakeCase(s string) string {
 	return b.String()
 }
 
+// Humanize splits a PascalCase/camelCase/snake_case identifier into
+// space-separated words, preserving each word's case: "RetainedDatabases" ->
+// "Retained Databases". For human-facing UI copy only; never for identifiers.
+func Humanize(s string) string {
+	runes := []rune(strings.NewReplacer("_", " ", "-", " ").Replace(s))
+	var b strings.Builder
+	for i, r := range runes {
+		if i > 0 && unicode.IsUpper(r) {
+			prev := runes[i-1]
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) ||
+				(unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1])) {
+				b.WriteByte(' ')
+			}
+		}
+		b.WriteRune(r)
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// HumanizeLower is Humanize lowercased as a whole: "retained databases".
+func HumanizeLower(s string) string {
+	return strings.ToLower(Humanize(s))
+}
+
 // Pluralize returns the English plural form of a word using the inflection library.
 func Pluralize(s string) string {
 	if len(s) == 0 {

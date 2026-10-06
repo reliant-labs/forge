@@ -153,7 +153,7 @@ export default function Edit{{.EntityName}}Page() {
       <div className="mx-auto max-w-xl px-4 py-8">
         <AlertBanner variant="error" message={userMessage(fetchError)} />
         <Link href="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-accent underline hover:text-accent-hover">
-          Back to {{.EntityNamePlural | lower}}
+          Back to {{.EntityNamePlural | humanLower}}
         </Link>
       </div>
     );
@@ -164,9 +164,9 @@ export default function Edit{{.EntityName}}Page() {
   return (
     <div className="mx-auto max-w-xl px-4 py-8">
       <PageHeader
-        title="Edit {{.EntityName}}"
+        title="Edit {{.EntityName | humanize}}"
         breadcrumbs={[
-          { label: "{{.EntityNamePlural}}", href: "/{{.EntitySlug}}" },
+          { label: "{{.EntityNamePlural | humanize}}", href: "/{{.EntitySlug}}" },
           { label: title, href: `/{{.EntitySlug}}/${id}` },
           { label: "Edit" },
         ]}

@@ -416,9 +416,9 @@ func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) 
 			seen[e.EntitySlug] = true
 
 			pages = append(pages, templates.NavPageData{
-				Label:           e.EntityNamePlural,
-				LabelLower:      strings.ToLower(e.EntityNamePlural),
-				LabelSingular:   e.EntityName,
+				Label:           naming.Humanize(e.EntityNamePlural),
+				LabelLower:      naming.HumanizeLower(e.EntityNamePlural),
+				LabelSingular:   naming.Humanize(e.EntityName),
 				Slug:            e.EntitySlug,
 				HasCreate:       e.HasCreate,
 				ListHook:        "use" + e.ListRPC,

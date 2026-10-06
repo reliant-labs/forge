@@ -313,7 +313,7 @@ func absPaths(workDir, source string) (string, string, error) {
 // back `deploy%5Ckcl%5Cprod`, which names no file, and every render failed
 // with "Cannot find the kcl file". Since absPaths the source is absolute, and
 // forward slashes keep it a plain path through that round trip too (`C:/a/b`
-// parses as scheme `c`, path `/a/b`, and prints back unchanged). Windows
+// parses as scheme `c`, path `/a/b`, and prints back as `c:/a/b`). Windows
 // accepts forward slashes in every file API. A no-op on POSIX.
 func kpmSourceURL(source string) string {
 	return filepath.ToSlash(source)

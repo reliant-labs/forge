@@ -218,35 +218,56 @@ func overBytes(victims []goCacheEntry, over int) uint64 {
 	return n
 }
 
-// scanGoCache lists every cache entry. complete is false when ctx ended first.
+// scanGoCache lists every cache entry, one worker per fan-out slot across the
+// 256 shard directories. complete is false when ctx ended first.
 func scanGoCache(ctx context.Context, root string) (entries []goCacheEntry, complete bool, err error) {
 	subs, err := os.ReadDir(root)
 	if err != nil {
 		return nil, false, err
 	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var cut atomic.Bool
+	work := make(chan string)
+	for w := 0; w < goCacheWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for sub := range work {
+				files, err := os.ReadDir(filepath.Join(root, sub))
+				if err != nil {
+					continue
+				}
+				var local []goCacheEntry
+				for _, f := range files {
+					if !goCacheEntryName.MatchString(f.Name()) {
+						continue
+					}
+					info, err := f.Info()
+					if err != nil || !info.Mode().IsRegular() {
+						continue
+					}
+					local = append(local, goCacheEntry{sub, f.Name(), info.Size(), info.ModTime()})
+				}
+				mu.Lock()
+				entries = append(entries, local...)
+				mu.Unlock()
+			}
+		}()
+	}
 	for _, sub := range subs {
 		if ctx.Err() != nil {
-			return entries, false, nil
+			cut.Store(true)
+			break
 		}
 		if !sub.IsDir() || len(sub.Name()) != 2 {
 			continue // README, trim.txt, testexpire.txt and anything else: never touched
 		}
-		files, err := os.ReadDir(filepath.Join(root, sub.Name()))
-		if err != nil {
-			continue
-		}
-		for _, f := range files {
-			if !goCacheEntryName.MatchString(f.Name()) {
-				continue
-			}
-			info, err := f.Info()
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			entries = append(entries, goCacheEntry{sub.Name(), f.Name(), info.Size(), info.ModTime()})
-		}
+		work <- sub.Name()
 	}
-	return entries, true, nil
+	close(work)
+	wg.Wait()
+	return entries, !cut.Load() && ctx.Err() == nil, nil
 }
 
 // selectGoCacheVictims returns the entries to delete, oldest first. over is

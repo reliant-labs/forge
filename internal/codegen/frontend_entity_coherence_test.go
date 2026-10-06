@@ -51,6 +51,26 @@ func TestFrontendEntities_DropsEntityWhosePKIsNotOnTheWire(t *testing.T) {
 	}
 }
 
+// An entity whose table holds a surrogate `id` but whose message exposes the
+// conventional domain key (control-plane's UsageEvent) is coherent: the key
+// resolves to usage_event_id. Dropping it would delete a working page.
+func TestFrontendEntities_KeepsEntityKeyedByConventionalDomainID(t *testing.T) {
+	usage := EntityDef{Name: "UsageEvent", TableName: "usage_events", PkField: "id",
+		Fields: []EntityField{{Name: "usage_event_id", ProtoType: "string", Kind: FieldKindScalar}, {Name: "model", ProtoType: "string", Kind: FieldKindScalar}}}
+	kept, dropped := FrontendEntities([]EntityDef{usage})
+	if len(kept) != 1 || len(dropped) != 0 {
+		t.Fatalf("UsageEvent must stay: kept=%d dropped=%v", len(kept), dropped)
+	}
+	if got := mockPkFieldCamel(usage); got != "usageEventId" {
+		t.Errorf("mock key = %q, want usageEventId", got)
+	}
+	page := PageTemplateData{}
+	AttachEntityMeta(&page, usage, ServiceDef{})
+	if page.PkFieldCamel != "usageEventId" {
+		t.Errorf("page key = %q, want usageEventId (the page must key rows by a field the message has)", page.PkFieldCamel)
+	}
+}
+
 func TestFrontendEntities_KeepsEntityWithNoWireInventory(t *testing.T) {
 	legacy := EntityDef{Name: "Legacy", TableName: "legacies", PkField: "id"}
 	if kept, dropped := FrontendEntities([]EntityDef{legacy}); len(kept) != 1 || len(dropped) != 0 {

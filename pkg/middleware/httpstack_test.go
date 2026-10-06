@@ -62,6 +62,11 @@ func TestHTTPStack_AuditIdentity(t *testing.T) {
 	if !strings.Contains(buf.String(), `"user_id":"u-9"`) {
 		t.Fatalf("authenticated request must audit the claim subject, got: %s", buf.String())
 	}
+	// Identified by id only: an email in a per-request log line is personal
+	// data in every line.
+	if strings.Contains(buf.String(), "u@x.io") {
+		t.Fatalf("the audit log line must not carry the email, got: %s", buf.String())
+	}
 }
 
 func TestHTTPAuth(t *testing.T) {

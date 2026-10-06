@@ -118,6 +118,15 @@ func TestAuditInterceptorWithSink_SuccessPopulatesAllFields(t *testing.T) {
 	if !strings.Contains(out, `"trace_id":"`+wantTrace+`"`) {
 		t.Errorf("slog must carry trace_id: %s", out)
 	}
+	// The slog record identifies the caller by id only. It is emitted for
+	// every RPC into the general log stream, so an email there is personal
+	// data in every log line; the durable sink (above) still receives it.
+	if !strings.Contains(out, `"user_id":"u-7"`) {
+		t.Errorf("slog must carry user_id: %s", out)
+	}
+	if strings.Contains(out, "u@example.com") {
+		t.Errorf("slog audit record must not carry the email: %s", out)
+	}
 }
 
 // Error path: the sink event records status/code/message, and slog logs

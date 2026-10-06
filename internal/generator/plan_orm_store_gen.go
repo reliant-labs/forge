@@ -180,8 +180,9 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 		fmt.Fprintf(b, "\t// Delete%s removes a %s by primary key.\n", msgName, msgName)
 		fmt.Fprintf(b, "\tDelete%s(ctx context.Context, id %s) error\n\n", msgName, pkGoType)
 	}
-	b.WriteString("\t// WithTx returns the same store bound to a transaction handle, so a\n")
-	b.WriteString("\t// multi-step use case runs atomically without changing any signature.\n")
+	b.WriteString("\t// WithTx returns the same store bound to an explicit transaction handle\n")
+	b.WriteString("\t// (from orm RunTransaction). Code using RunTx does not need it: called\n")
+	b.WriteString("\t// with the ctx RunTx hands its fn, the store joins that transaction.\n")
 	fmt.Fprintf(b, "\tWithTx(tx orm.Context) %s\n", iface)
 	b.WriteString("}\n\n")
 
@@ -211,15 +212,18 @@ func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
 		fmt.Fprintf(b, "\treturn Delete%s(ctx, s.db, id)\n}\n\n", msgName)
 	}
 
-	// WithTx is what preserves the per-call-handle property the delegates
-	// were designed around. orm.Context is per-call so one method can run
-	// inside or outside a transaction; binding it in the adapter would lose
-	// that if the ONLY handle were the one fixed at construction. Instead the
-	// caller rebinds explicitly at the site that owns the transaction:
+	// WithTx preserves the per-call-handle property the delegates were
+	// designed around, for the explicit-handle API: a store bound to the
+	// client at construction can be rebound at the site that owns a
+	// RunTransaction:
 	//
 	//	err := client.RunTransaction(ctx, func(tx orm.Context) error {
 	//	    return svc.deps.Estimates.WithTx(tx).UpdateEstimate(ctx, e)
 	//	})
+	//
+	// RunTx makes the rebinding unnecessary — the transaction rides in ctx,
+	// and the client's connection resolver hands it to every query the
+	// store makes with that ctx — so WithTx stays for existing callers.
 	fmt.Fprintf(b, "func (s %s) WithTx(tx orm.Context) %s { return %s{db: tx} }\n\n", adapter, iface, adapter)
 
 	// Compile-time proof. If a delegate's signature ever drifts from the

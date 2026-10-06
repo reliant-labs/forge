@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`orm.Context` gains `RunTx`, `RunTxReadOnly` and `RunTxWithOptions`.**
+  They are on the interface so `s.deps.DB.RunTx(…)` compiles against the
+  injected `DB orm.Context`. A hand-written `orm.Context` implementation, such
+  as a test fake, must add the three methods. `orm.Client.Bun()` now returns a
+  thin wrapper around the `*bun.DB`, so `ExecContext`/`QueryContext`/
+  `QueryRowContext` can join a ctx transaction. Use `BunDB()` when you need the
+  concrete type. `RunTransaction` keeps its semantics: database-default
+  isolation, one attempt, handle-passing. It now joins a transaction already
+  carried in ctx, and `Tx.Commit` runs after-commit callbacks registered
+  through `tx.RunTx`.
 - **`forge doctor`'s `forge: kcl-plugin` check is now a real probe.** It
   evaluates a one-line KCL program through `kcl_plugin.forge` instead of
   reading a build flag, so it fails for what can actually break now: KCL's
@@ -35,6 +45,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
+  `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
+  context.Context) error)` runs fn in a transaction carried by the ctx it
+  receives. Every query made with that ctx against the same database joins it:
+  generated delegates (`db.GetJobByID(ctx, s.deps.DB, id)`), stores,
+  `pkg/crud.Repo`, `db.Bun()` builders and raw `Exec`/`Query`/`QueryRow`, with
+  no handle threaded through signatures. It is SERIALIZABLE by default and
+  retries serialization failures and deadlocks (SQLSTATE 40001/40P01) with
+  jittered backoff, up to `orm.DefaultTxMaxAttempts` (7). Still conflicting
+  after that, it returns `svcerr.Aborted`. A ctx that already carries a
+  transaction on the same database is joined, and the inner call's options are
+  ignored. `orm.AfterCommit(ctx, fn)` runs fn once, after the outermost commit;
+  rolled-back and retried attempts discard it. fn may run more than once, so it
+  must have no side effects outside the database. Read-check-write state
+  transitions therefore need no `SELECT … FOR UPDATE` lock helpers. The new
+  `service-layer/transactions` skill covers RunTx, AfterCommit, a lock-free
+  state-transition recipe and migrating lock helpers, and `service-layer`,
+  `db`, `db/crud-overrides` and `interactor` point to it. Executor resolution is
+  guarded by identity: a transaction carried for one `*sql.DB` never runs a
+  statement sent to another.
 - **Windows support.** Native windows/amd64 and windows/arm64, no C toolchain:
   - process lifecycle (tree kill, liveness, parent/port/start-time lookup,
     reading another process's argv and environment for stale-stack reclaim);

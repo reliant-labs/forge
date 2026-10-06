@@ -91,6 +91,36 @@ that second question matters here, `op.Persist` / `op.PersistMasked` are where
 it gets answered, and answering it means reading the stored row rather than
 trusting the submitted entity.
 
+### An override that reads, checks, then writes
+
+When a `Persist` / `PersistMasked` override (or any custom RPC) loads the
+stored row, decides whether the change is allowed, and then writes, wrap the
+three steps in `s.deps.DB.RunTx` and use the `ctx` it hands you for all of
+them:
+
+```go
+// (This op carries no per-caller predicate; if yours does, the read must honor
+// opts — see "Where a per-caller policy attaches" above.)
+op.PersistMasked = func(ctx context.Context, e *db.Job, fields []string, _ ...orm.QueryOption) error {
+    return s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+        stored, err := db.GetJobByID(ctx, s.deps.DB, e.Id) // inside the transaction
+        if err != nil {
+            return err
+        }
+        if stored.Status == "COMPLETED" {
+            return svcerr.FailedPrecondition("a completed job cannot be edited")
+        }
+        return db.UpdateJobMasked(ctx, s.deps.DB, e, fields)
+    })
+}
+```
+
+No `SELECT … FOR UPDATE`: the generated delegates join the transaction
+carried by `ctx`, and `RunTx`'s SERIALIZABLE-plus-retry turns a concurrent
+writer into a re-run that sees the committed row. The closure may run more
+than once, so keep side effects out of it (`orm.AfterCommit`).
+`service-layer/transactions` explains why this is safe.
+
 ## Errors from an override must be classified
 
 Return `svcerr` sentinels (or a `*connect.Error`) from any op closure —

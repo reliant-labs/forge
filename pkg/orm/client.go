@@ -53,7 +53,9 @@ func NewClientWithDB(db *sql.DB, dialectName string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	bdb := bun.NewDB(db, pgdialect.New())
+	// The resolver is what makes a transaction carried in ctx (RunTx) reach
+	// every query built off this handle — see ambientResolver in tx.go.
+	bdb := bun.NewDB(db, pgdialect.New(), bun.WithConnResolver(ambientResolver{db: db}))
 	// Trace ORM SQL onto the active OTel span (forge's observability
 	// convention). The generated layer also opens per-op spans; this adds
 	// the SQL statement attributes.
@@ -68,11 +70,16 @@ func requirePostgres(dialectName string) error {
 	return nil
 }
 
-// Bun returns the underlying *bun.DB as a bun.IDB.
-func (c *Client) Bun() bun.IDB { return c.bun }
+// Bun returns the client's bun.IDB. Every query run through it with a ctx
+// carrying a RunTx transaction on this database runs inside that
+// transaction: query builders via the client's connection resolver, and
+// ExecContext/QueryContext/QueryRowContext via the ambientDB wrapper.
+func (c *Client) Bun() bun.IDB { return ambientDB{c.bun} }
 
 // BunDB returns the concrete *bun.DB (for advanced callers that need
-// connection-pool control or BeginTx with bun's transaction type).
+// connection-pool control or BeginTx with bun's transaction type). Query
+// builders off it still join a ctx-carried transaction; its own
+// ExecContext/QueryContext/QueryRowContext do NOT — use Bun() for those.
 func (c *Client) BunDB() *bun.DB { return c.bun }
 
 // DB returns the underlying *sql.DB for advanced usage and for the kept
@@ -88,23 +95,23 @@ func (c *Client) Dialect() Dialect { return c.dialect }
 func (c *Client) Close() error { return c.bun.Close() }
 
 // Exec runs a raw SQL statement (escape hatch). It goes straight to the
-// underlying *sql.DB, NOT through bun's query formatter: callers write
-// native postgres SQL with $1/$2 placeholders, and bun's `?`-rewriting
-// must not touch it. (Generated code uses db.Bun()'s typed builders,
-// which handle their own placeholders.)
+// underlying *sql.DB — or to the RunTx transaction ctx carries for it — NOT
+// through bun's query formatter: callers write native postgres SQL with
+// $1/$2 placeholders, and bun's `?`-rewriting must not touch it. (Generated
+// code uses db.Bun()'s typed builders, which handle their own placeholders.)
 func (c *Client) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return c.bun.DB.ExecContext(ctx, query, args...)
+	return c.conn(ctx).ExecContext(ctx, query, args...)
 }
 
 // Query runs a raw SQL query (escape hatch). See Exec for the
 // raw-passthrough rationale.
 func (c *Client) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return c.bun.DB.QueryContext(ctx, query, args...)
+	return c.conn(ctx).QueryContext(ctx, query, args...)
 }
 
 // QueryRow runs a raw SQL query returning at most one row (escape hatch).
 func (c *Client) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return c.bun.DB.QueryRowContext(ctx, query, args...)
+	return c.conn(ctx).QueryRowContext(ctx, query, args...)
 }
 
 // Tx wraps a bun transaction as an orm.Context, so the same generated
@@ -112,6 +119,10 @@ func (c *Client) QueryRow(ctx context.Context, query string, args ...interface{}
 type Tx struct {
 	tx      bun.Tx
 	dialect Dialect
+	// state carries the transaction's pool identity and after-commit
+	// callbacks. It is shared with every ctx RunTx derives from this
+	// transaction, so Commit runs what AfterCommit registered there.
+	state *txState
 }
 
 // Bun returns the transaction as a bun.IDB.
@@ -122,11 +133,32 @@ func (t *Tx) Bun() bun.IDB { return t.tx }
 // on *Client. Carried from the parent Client at BeginTx time.
 func (t *Tx) Dialect() Dialect { return t.dialect }
 
-// Commit commits the transaction.
-func (t *Tx) Commit() error { return t.tx.Commit() }
+// Commit commits the transaction, then runs the callbacks AfterCommit
+// registered against it, in order. A failed commit runs none.
+func (t *Tx) Commit() error {
+	err := t.tx.Commit()
+	if t.state == nil {
+		return err
+	}
+	callbacks := t.state.finish(err == nil)
+	if err != nil {
+		return err
+	}
+	for _, callback := range callbacks {
+		callback(t.state.outer)
+	}
+	return nil
+}
 
-// Rollback rolls back the transaction.
-func (t *Tx) Rollback() error { return t.tx.Rollback() }
+// Rollback rolls back the transaction and discards its after-commit
+// callbacks.
+func (t *Tx) Rollback() error {
+	err := t.tx.Rollback()
+	if t.state != nil {
+		t.state.finish(false)
+	}
+	return err
+}
 
 // Exec runs a raw SQL statement within the transaction. Like Client.Exec
 // it bypasses bun's query formatter (native $1/$2 placeholders) by going
@@ -157,24 +189,44 @@ func (t *Tx) RunTransaction(ctx context.Context, fn func(Context) error) error {
 	return fn(t)
 }
 
-// BeginTx starts a transaction.
+// BeginTx starts a transaction. It is the low-level primitive: it never
+// joins a ctx-carried transaction, never retries, and leaves Commit or
+// Rollback to the caller. Prefer RunTx.
 func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 	tx, err := c.bun.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	return &Tx{tx: tx, dialect: c.dialect}, nil
+	state := &txState{db: c.bun.DB, tx: tx, outer: ctx}
+	return &Tx{tx: tx, dialect: c.dialect, state: state}, nil
 }
 
 // RunTransaction executes fn within a transaction, committing on success
 // and rolling back on error or panic. The transaction Context is passed
 // to fn so generated ORM ops transparently use it.
+//
+// Prefer RunTx for new code. RunTransaction is the handle-passing form and
+// keeps its original semantics — the database's default isolation (or
+// whatever opts asks for), one attempt, no retry — because its existing
+// callers' closures were written for exactly that: re-running them on a
+// serialization failure could repeat side effects they were never written to
+// repeat. fn also receives only a handle, not a ctx carrying the
+// transaction, so code called with the OUTER ctx and the plain client does
+// not participate; use the handle, or call handle.RunTx to get such a ctx.
+//
+// It does join a transaction ctx already carries for this database (from
+// RunTx), handing fn a handle on that transaction, so legacy code composes
+// inside a RunTx exactly as RunTx composes inside it.
 func (c *Client) RunTransaction(ctx context.Context, fn func(ctx Context) error) error {
 	return c.RunTransactionWithOptions(ctx, nil, fn)
 }
 
-// RunTransactionWithOptions is RunTransaction with custom tx options.
+// RunTransactionWithOptions is RunTransaction with custom tx options. opts
+// are ignored when it joins a ctx-carried transaction.
 func (c *Client) RunTransactionWithOptions(ctx context.Context, opts *sql.TxOptions, fn func(ctx Context) error) error {
+	if st := ambientTx(ctx, c.bun.DB); st != nil {
+		return fn(&Tx{tx: st.tx, dialect: c.dialect, state: st})
+	}
 	tx, err := c.BeginTx(ctx, opts)
 	if err != nil {
 		return NewTransactionError("begin", err)

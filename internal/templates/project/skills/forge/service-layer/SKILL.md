@@ -88,36 +88,22 @@ generator source instead is a detour that cost one measured run 11 turns.
 | what YOUR generated code offers (stores, RPCs, handlers, tables) | `forge project shapes --grep Estimate` |
 | what a `forge/pkg` LIBRARY offers (`orm`, `crud`, `svcerr`, `tdd`, `testkit`) | `forge project libraries orm crud` |
 
-`forge project libraries orm` answers `RunTransaction` — a symbol one measured
-run grepped for **sixteen times** while the skill documenting it was already
-loaded. Bare `go doc <pkg>` does not: it prints a struct as `struct{ ... }` with
-no methods. `go doc <pkg> <Type>` does work if you already know the type name.
+`forge project libraries orm` answers `RunTx` — the transaction symbol one
+measured run grepped for **sixteen times** while the skill documenting it was
+already loaded. Bare `go doc <pkg>` does not: it prints a struct as
+`struct{ ... }` with no methods. `go doc <pkg> <Type>` does work if you already
+know the type name.
 
-The aggregate exposes one accessor per entity, and either form rebinds to a
-transaction with `WithTx`, so a multi-step use case commits as a unit.
-
-**`RunTransaction` is on the ORM CLIENT, not on the store.** The store is the
-data surface; the client owns the transaction. Declare both when a use case
-spans entities — a measured run grepped for `RunTransaction` **sixteen times**
-and then wrote throwaway compile probes to discover it is not a `Store` method:
-
-```go
-type Deps struct {
-    DB  db.Store    // the data surface: DB.Estimates(), DB.Jobs(), …
-    ORM *orm.Client // the transaction boundary: ORM.RunTransaction(…)
-}
-
-err := deps.ORM.RunTransaction(ctx, func(tx orm.Context) error {
-    s := deps.DB.WithTx(tx) // rebind every store onto this transaction
-    if err := s.Estimates().UpdateEstimate(ctx, est); err != nil {
-        return err
-    }
-    return s.Jobs().CreateJob(ctx, job)
-})
-```
-
-`go doc ./internal/db Store` shows `WithTx` on the store; `forge project
-libraries orm` shows `RunTransaction` on the client.
+**Transactions live on `DB orm.Context`, not on the store.** Declare
+`DB orm.Context` (forge already wires it) beside your stores and wrap the
+use case in `s.deps.DB.RunTx(ctx, func(ctx context.Context) error { … })`.
+Every store method and generated delegate called with that `ctx` joins the
+transaction — no handle to thread, nothing to rebind. It is SERIALIZABLE and
+retried on conflict, so a read-check-write state transition needs **no
+`SELECT … FOR UPDATE` lock helper**, and `fn` may run more than once (side
+effects go in `orm.AfterCommit`). The guarantees, the state-transition recipe
+and how the older `RunTransaction`/`WithTx` relate are in
+`service-layer/transactions`.
 
 Two measured runs missed this and hand-wrote the layer anyway: 723 lines across
 four packages in one, 464 across two in the other, almost all of it one-line
@@ -324,5 +310,5 @@ Required deps live in `validateDeps()` so they fail fast at construction. An **o
 
 ## When this skill is not enough (forge sub-skills)
 
-Whether a package needs a contract at all (pure utilities) → `contracts`. The handler half (validation, `svcerr.Wrap`, proto↔internal conversion) → `api`. Multiple implementations / strategy pattern → `contracts`. Cross-service orchestration (never inline in a handlers package) → `interactor`. DB schema and ORM → `db`. Naming for the `Service`/`Deps`/`New` triple and directory paths → `architecture` → **Naming conventions**.
+Whether a package needs a contract at all (pure utilities) → `contracts`. The handler half (validation, `svcerr.Wrap`, proto↔internal conversion) → `api`. Multiple implementations / strategy pattern → `contracts`. Cross-service orchestration (never inline in a handlers package) → `interactor`. Transactions, `RunTx`, `AfterCommit` and lock-free state transitions → `service-layer/transactions`. DB schema and ORM → `db`. Naming for the `Service`/`Deps`/`New` triple and directory paths → `architecture` → **Naming conventions**.
 <!-- @forge-only:end -->

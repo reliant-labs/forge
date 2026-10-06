@@ -489,6 +489,26 @@ func (f FrontendConfig) EffectiveOutput() string {
 	return FrontendOutputStandalone
 }
 
+// StaticExport reports whether the frontend's production build is a static
+// export — files a CDN or bucket can serve with no server behind them. That
+// is the precondition of every static runtime (forge.OnHosted for a
+// frontend, forge.OnBucket, forge.OnFirebase): each publishes the build's
+// public_dir and runs nothing.
+//
+// Only a Next.js frontend has a choice. A Vite SPA and an Expo web build
+// emit static files by construction, whatever `output:` says.
+func (f FrontendConfig) StaticExport() bool {
+	return !f.IsNextJS() || f.EffectiveOutput() == FrontendOutputStatic
+}
+
+// IsNextJS reports whether the frontend is a Next.js app. An empty type is
+// Next.js: it is the scaffold default, and the load seam fills it in for a
+// frontend whose directory holds a next.config.
+func (f FrontendConfig) IsNextJS() bool {
+	t := strings.ToLower(strings.TrimSpace(f.Type))
+	return t == "" || t == "nextjs"
+}
+
 // Dev-runner values for FrontendConfig.DevRunner, mirroring the KCL
 // Frontend schema's `dev_runner`.
 const (

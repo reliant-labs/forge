@@ -943,6 +943,58 @@ _public_dir = lambda f: Frontend -> str {
     f.public_dir if f.public_dir else ("out" if f.type == "nextjs" else "dist")
 }
 
+# The production build shape of each frontend the PROJECT declares, by name:
+# "static" | "standalone" | "server" — forge.yaml `frontends[].output`,
+# resolved the way the scaffolder resolves it (an unset field is the default;
+# a Vite or Expo build is always "static").
+#
+# WHY IT IS AN OPTION AND NOT A Frontend FIELD. Whether the build is a static
+# export is a fact about the frontend's CODE — its next.config, its routes —
+# and it is the same in every env, because one build is promoted through all
+# of them. forge.yaml already declares it, and it is what generates the
+# next.config and the Dockerfile. A per-env KCL field would be a second
+# declaration of that fact, free to disagree with the first in exactly the
+# env nobody is looking at. So forge projects the one declaration into every
+# render it drives (`-D frontend_outputs='{"web":"standalone"}'`, bound by
+# internal/cli renderKCLRaw), and the env states only where the build goes.
+#
+# Unbound — a plain `kcl run`, or a frontend forge.yaml does not declare (a
+# cross-repo `source` frontend) — reads as "": unknown, and nothing is refused
+# on a guess.
+_frontend_outputs = lambda -> {str:str} {
+    _raw = option("frontend_outputs") or ""
+    json.decode(_raw) if _raw else {}
+}
+
+# The runtimes that SERVE FILES: each publishes the frontend's public_dir and
+# runs nothing behind it.
+_STATIC_FRONTEND_RUNTIMES = {
+    "hosted" = "forge.OnHosted"
+    "bucket" = "forge.OnBucket"
+    "firebase" = "forge.OnFirebase"
+}
+
+# A frontend bound to a static runtime whose build is NOT a static export.
+#
+# Without this the binding renders, deploys and builds green: `npm run build`
+# produces a Node server under .next-prod/, nothing writes public_dir, and the
+# failure arrives at publish time as a missing directory — or, for a project
+# that once exported, as a stale out/ shipped as the new release. Refused HERE
+# because render is where the author is still looking at the binding, and the
+# fix is either one forge.yaml line plus a page migration, or a different
+# binding — both named.
+_not_static_export = lambda f: Frontend -> [str] {
+    _t = f.runtime.type
+    _outs = _frontend_outputs()
+    _out = _outs[f.name] if f.name in _outs else ""
+    _env = option("env") or ""
+    _where = " in env '${_env}'" if _env else ""
+    _dir = f.path if f.path else "frontends/${f.name}"
+    [
+        "output '${_out}': its production build is not a static export. forge.yaml declares `output: ${_out}` for frontend '${f.name}' — a Node.js server — and ${_STATIC_FRONTEND_RUNTIMES[_t]} serves only the files a static export writes to public_dir '${_public_dir(f)}', so${_where} nothing would be published. Fix: set `output: static` on frontend '${f.name}' in forge.yaml and migrate what a static export cannot serve — `forge lint --static-export` lists each construct with its file:line and fix — or bind '${f.name}' elsewhere${_where}: a Next.js server is a process, so it ships as a workload (fw.Workload with build = forge.DockerBuild {dockerfile = \"${_dir}/Dockerfile\"})"
+    ] if _t in _STATIC_FRONTEND_RUNTIMES and _out and _out != "static" else []
+}
+
 # What a frontend's runtime cannot honour, and why. OnHost and OnHosted are
 # the workload schemas, so they carry workload-only fields a frontend has no
 # use for: a declared one is REFUSED, naming it, rather than silently ignored.
@@ -964,6 +1016,7 @@ _frontend_violations = lambda f: Frontend -> [str] {
             if f.image and _t != "hosted" else []) \
         + (["image is REQUIRED on forge.OnHosted: the site release is pushed to a registry, and the registry is part of the reference (e.g. image = \"ghcr.io/<owner>/${f.name}\"). forge appends the platform's own static.v1 layout to it. There is no env-level registry"] \
             if _t == "hosted" and not f.image else []) \
+        + _not_static_export(f) \
         # A BARE image is accepted on forge.OnHosted, exactly as it is on a
         # hosted workload (ADR-0003 F1, _check_image_names_registry): forge
         # resolves it against the base the env DECLARES

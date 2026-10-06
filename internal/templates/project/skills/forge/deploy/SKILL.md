@@ -280,11 +280,11 @@ no default, and a frontend with no `runtime` is a render error naming it:
 | `forge.OnFirebase {project, site, ...}`       | `firebase deploy`                                                             |
 | `forge.BuildOnly {}`                          | builds it for a sibling frontend's `bundle`; ships nothing                    |
 
-The build facts are the frontend's, the same on every runtime: `public_dir`
-(default `out` for Next.js, `dist` otherwise), `base_path`, `bundle`,
-`cache_control` (OnBucket only). A Next.js frontend published statically needs
-`output: static` in forge.yaml; a server-rendered one is a workload with a
-`forge.DockerBuild`.
+Build facts are the frontend's on every runtime: `public_dir` (default `out`
+for Next.js, `dist` otherwise), `base_path`, `bundle`, `cache_control`
+(OnBucket only). A static Next.js frontend needs `output: static` in forge.yaml
+(render refuses others; `forge lint --static-export` lists what an export
+can't serve); a server build is a workload (`forge.DockerBuild`).
 
 ```kcl
 _web = forge.Frontend {name = "web", path = "frontends/web", public_dir = "out"}
@@ -295,7 +295,7 @@ frontends = [_web | {runtime = forge.OnBucket {bucket = "acme-prod-web"}}]
 `forge env new cloud --from prod --bind web=bucket` rebinds a scaffolded
 frontend's line (`_hosted_frontend(_web_frontend)` → `_on_bucket(...)`).
 `forge env deploy <env> <version> --frontends-only` ships only the bucket /
-Firebase frontends of a release that exists (a scope flag needs a version).
+Firebase frontends of a release.
 
 ### Hosted static sites
 

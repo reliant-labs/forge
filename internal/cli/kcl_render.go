@@ -1327,6 +1327,9 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	kclplugin.UsePortStoreReadOnly(filepath.Join(projectDir, ".forge", "ports-"+env+".json"))
 
 	dArgs := append([]string{"env=" + env}, activeRenderOptionDArgs()...)
+	if fo := frontendOutputsDArg(projectDir); fo != "" {
+		dArgs = append(dArgs, fo)
+	}
 	dArgs = append(dArgs, extra...)
 	return kclrender.Run(projectDir, kclDir, dArgs)
 }

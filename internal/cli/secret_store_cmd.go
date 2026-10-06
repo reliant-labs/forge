@@ -31,7 +31,7 @@ func newSecretCmd() *cobra.Command {
 		Short: "Manage an environment's secret store (local file or hosted control plane)",
 		Long: `Manage the secret store an environment's secret_provider declares:
 
-  forge.FileSecrets    the gitignored YAML store (dev/e2e) — a flat map of
+  forge.FileSecrets    the gitignored YAML store (a local env) — a flat map of
                        env-var NAME to value.
   forge.HostedSecrets  the env's control plane (control_plane). set / unset /
                        list go through its API. A hosted env's values are

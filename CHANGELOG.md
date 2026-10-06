@@ -611,7 +611,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the CRUD ops, shims and born tests, handler stubs and the stub/shim
   dedupe scans, the mocks, `service.go`, the test clients, the public
   procedure list, `forge scaffold rpc`, the read-only/computed-field lints,
-  and on the TS side the hooks' `client.<method>` (an RPC `LLMChat` is
+  the `unscoped_auth` audit (which looked a handler up by the proto rpc name,
+  so a digit-named authenticated RPC was never inspected), and on the TS side the hooks' `client.<method>` (an RPC `LLMChat` is
   `client.lLMChat`, not `llmChat`) and the pages' and mock transport's entity
   fields (`data?.base64item`, not `base64Item`). The pb message and forge's
   `db.<Entity>` row name a column differently (`sha256sum`: pb `Sha256Sum`,

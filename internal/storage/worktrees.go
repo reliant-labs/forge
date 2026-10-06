@@ -166,7 +166,7 @@ func (r Runner) worktreeRepos() []string {
 		if _, err := os.Stat(dir); err != nil {
 			continue
 		}
-		if b, err := r.command(r.hostCtx(), "git", "-C", dir, "rev-parse", "--show-toplevel"); err == nil {
+		if b, err := r.readGit(r.hostCtx(), dir, "rev-parse", "--show-toplevel"); err == nil {
 			add(strings.TrimSpace(string(b)))
 		}
 	}
@@ -226,7 +226,7 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 		}
 		// One repository may be reached through several registered paths (a
 		// project and its worktrees); classify its worktrees once.
-		if b, err := r.command(ctx, "git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
+		if b, err := r.readGit(ctx, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
 			common := strings.TrimSpace(string(b))
 			if seenCommon[common] {
 				continue
@@ -240,7 +240,7 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 				continue
 			}
 		}
-		b, err := r.command(ctx, "git", "-C", repo, "worktree", "list", "--porcelain")
+		b, err := r.readGit(ctx, repo, "worktree", "list", "--porcelain")
 		if err != nil {
 			failures = append(failures, fmt.Errorf("list worktrees of %s: %w", repo, err))
 			continue
@@ -276,7 +276,7 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 				hold(HoldActive, fmt.Sprintf("touched %s ago", idle.Round(time.Minute)))
 				continue
 			}
-			b, err := r.command(ctx, "git", "-C", e.path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=normal")
+			b, err := r.readGit(ctx, e.path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=normal")
 			if err != nil {
 				hold(HoldUnchecked, err.Error())
 				continue
@@ -342,12 +342,12 @@ func suffix(detail string) string {
 
 // defaultBase is origin/HEAD's target, else origin/main, else "".
 func (r Runner) defaultBase(ctx context.Context, repo string) string {
-	if b, err := r.command(ctx, "git", "-C", repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"); err == nil {
+	if b, err := r.readGit(ctx, repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		if ref := strings.TrimSpace(string(b)); ref != "" {
 			return ref
 		}
 	}
-	if _, err := r.command(ctx, "git", "-C", repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}"); err == nil {
+	if _, err := r.readGit(ctx, repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}"); err == nil {
 		return "origin/main"
 	}
 	return ""
@@ -356,13 +356,13 @@ func (r Runner) defaultBase(ctx context.Context, repo string) string {
 // pushed reports whether head is safe on a remote: reachable from some
 // remote-tracking ref, or an ancestor of the default base.
 func (r Runner) pushed(ctx context.Context, worktree, head, base string) bool {
-	if b, err := r.command(ctx, "git", "-C", worktree, "for-each-ref", "--contains", head, "refs/remotes"); err == nil && strings.TrimSpace(string(b)) != "" {
+	if b, err := r.readGit(ctx, worktree, "for-each-ref", "--contains", head, "refs/remotes"); err == nil && strings.TrimSpace(string(b)) != "" {
 		return true
 	}
 	if base == "" {
 		return false
 	}
-	_, err := r.command(ctx, "git", "-C", worktree, "merge-base", "--is-ancestor", head, base)
+	_, err := r.readGit(ctx, worktree, "merge-base", "--is-ancestor", head, base)
 	return err == nil
 }
 
@@ -486,4 +486,11 @@ func worktreeAdminDir(worktree string) string {
 		dir = filepath.Join(worktree, dir)
 	}
 	return dir
+}
+
+// readGit runs a read-only git command. --no-optional-locks matters: `git
+// status` otherwise rewrites <admin>/index when its stat cache is stale, which
+// would reset the very idle clock worktreeActivity reads.
+func (r Runner) readGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return r.command(ctx, "git", append([]string{"--no-optional-locks", "-C", dir}, args...)...)
 }

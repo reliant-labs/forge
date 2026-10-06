@@ -340,3 +340,33 @@ func TestConvergeRecordsRepos(t *testing.T) {
 		t.Fatalf("repos = %v", p.Repos)
 	}
 }
+
+// The scan must not reset the idle clock it measures: a stale stat cache makes
+// plain `git status` rewrite the index.
+func TestWorktreeScanDoesNotTouchIndex(t *testing.T) {
+	repo, worktree := gitRepoWithWorktree(t)
+	readme := filepath.Join(worktree, ".gitignore")
+	content, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if err := os.WriteFile(readme, content, 0o600); err != nil { // same content, new mtime
+		t.Fatal(err)
+	}
+	ageDir(t, worktree)
+	index := filepath.Join(worktreeAdminDir(worktree), "index")
+	before, err := os.Stat(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	reapOnce(t, Runner{}, repo, false)
+	after, err := os.Stat(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("scan rewrote the worktree index: %v -> %v", before.ModTime(), after.ModTime())
+	}
+}

@@ -125,6 +125,39 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 	return entities
 }
 
+// FrontendEntities is the subset of entities the frontend projections (CRUD
+// pages, nav, mock fixtures, mock transport) can render coherently: those whose
+// primary-key field is actually a field of the wire message. The pages key rows,
+// build detail/edit links and the mock store by that field, so an entity whose
+// key is not on the wire (a table's surrogate `id` the message never exposes,
+// served by a custom List+Update pair) would emit `item.id` against a message
+// with no `id` — code that cannot typecheck. Such an entity stays schema and
+// server CRUD; it just gets no generated UI. An entity with no wire fields at
+// all (a legacy descriptor with no deep inventory) proves nothing and is kept.
+// The second return names each dropped entity and why, for one-line reporting.
+func FrontendEntities(entities []EntityDef) (kept []EntityDef, dropped []string) {
+	for _, e := range entities {
+		if reason := entityWirePKGap(e); reason != "" {
+			dropped = append(dropped, reason)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept, dropped
+}
+
+func entityWirePKGap(e EntityDef) string {
+	if len(e.Fields) == 0 || e.PkField == "" {
+		return ""
+	}
+	for _, f := range e.Fields {
+		if f.Name == e.PkField {
+			return ""
+		}
+	}
+	return fmt.Sprintf("%s: primary key %q is not a field of its wire message — no CRUD pages or mocks generated (the entity stays schema and server CRUD)", e.Name, e.PkField)
+}
+
 // declaresWireMessage reports whether svc's descriptor actually contains a
 // message named pkg.name — the entity's wire shape.
 //

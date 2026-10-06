@@ -96,6 +96,7 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 
 	// Build entity→service mapping: match entity names to the service that
 	// owns them, and the transport's per-entity dispatch rows.
+	entities, _ = codegen.FrontendEntities(entities)
 	entityToService := buildEntityServiceMap(services, entities)
 	transportEntities := codegen.ExtractMockTransportEntities(services, entities)
 

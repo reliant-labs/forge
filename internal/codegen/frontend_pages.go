@@ -81,6 +81,7 @@ type PageTemplateData struct {
 	CreateRequestType  string // "CreateTaskRequest"
 	CreateResponseType string // "CreateTaskResponse"
 	UpdateRequestType  string // "UpdateTaskRequest"
+	UpdateResponseType string // "UpdateTaskResponse"
 	GetRequestType     string // "GetTaskRequest"
 	DeleteRequestType  string // "DeleteTaskRequest"
 
@@ -933,6 +934,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 		createReqFQ string
 		createResp  string
 		updateReq   string
+		updateResp  string
 		updateReqFQ string
 		getReq      string
 		deleteReq   string
@@ -979,6 +981,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 		case "update":
 			em.updateRPC = m.Name
 			em.updateReq = m.InputType
+			em.updateResp = m.OutputType
 			em.updateReqFQ = m.InputTypeFQ
 		case "delete":
 			em.deleteRPC = m.Name
@@ -1030,6 +1033,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 			CreateResponseType: em.createResp,
 			GetRequestType:     em.getReq,
 			UpdateRequestType:  em.updateReq,
+			UpdateResponseType: em.updateResp,
 			DeleteRequestType:  em.deleteReq,
 		}
 		data.CreateEntityFieldCamel = wrappedEntityField(svc, em.createResp, entityName)
@@ -1876,3 +1880,9 @@ func mergeEnumImports(a, b []PageEnumImport) []PageEnumImport {
 func PascalToKebab(s string) string {
 	return naming.ToKebabCase(s)
 }
+
+// EmitsEditPage reports whether the edit page can be scaffolded. The page loads
+// the record through the entity's Get hook before it renders the form, so an
+// entity served by an Update RPC but no Get RPC has nothing to load from — the
+// template would emit `use({ id })` with an empty hook name. No Get, no edit page.
+func (p PageTemplateData) EmitsEditPage() bool { return p.HasUpdate && p.HasGet }

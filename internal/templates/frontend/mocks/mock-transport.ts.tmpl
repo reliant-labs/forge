@@ -107,7 +107,7 @@ const entities: readonly MockEntityDescriptor[] = [
     // Update reuses Create's response shape. AIP-134 requests nest the
     // entity ({ {{ .EntityName | camelCase }}: {...}, updateMask }); the generated forms
     // submit it flattened. The engine accepts both.
-    update: { rpc: "{{ .UpdateRPC }}", responseSchema: {{ .CreateResponseType }}Schema, entityField: "{{ .CreateEntityFieldCamel }}", requestField: "{{ .EntityName | camelCase }}" },
+    update: { rpc: "{{ .UpdateRPC }}", responseSchema: {{ .UpdateResponse }}Schema, entityField: "{{ .UpdateEntityField }}", requestField: "{{ .EntityName | camelCase }}" },
 {{- end }}
 {{- if .HasDelete }}
     delete: { rpc: "{{ .DeleteRPC }}" },

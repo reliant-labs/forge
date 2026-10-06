@@ -87,6 +87,10 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		return nil
 	}
 
+	entities, dropped := codegen.FrontendEntities(entities)
+	for _, why := range dropped {
+		fmt.Printf("  ℹ️  %s\n", why)
+	}
 	entityByName := make(map[string]codegen.EntityDef, len(entities))
 	for _, e := range entities {
 		entityByName[strings.ToLower(e.Name)] = e
@@ -173,7 +177,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 					{entity.HasList, layout.listTmpl, layout.listPath(entity.EntitySlug), "list"},
 					{entity.HasGet, layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
 					{entity.HasCreate, layout.createTmpl, layout.createPath(entity.EntitySlug), "create"},
-					{entity.HasUpdate, layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
+					{entity.EmitsEditPage(), layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
 				}
 				for _, k := range kinds {
 					if !k.emit {

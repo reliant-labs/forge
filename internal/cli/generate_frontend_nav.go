@@ -393,6 +393,7 @@ func navSlugSet(pages []templates.NavPageData) map[string]bool {
 }
 
 func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) []templates.NavPageData {
+	entities, _ = codegen.FrontendEntities(entities)
 	entitySet := make(map[string]struct{}, len(entities))
 	for _, e := range entities {
 		entitySet[codegen.PascalToKebab(naming.Pluralize(e.Name))] = struct{}{}

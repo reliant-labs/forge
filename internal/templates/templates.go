@@ -27,7 +27,15 @@ var templateFS embed.FS
 func FuncMap() template.FuncMap {
 	caser := cases.Title(language.English)
 	return template.FuncMap{
-		"lower":         strings.ToLower,
+		"lower": strings.ToLower,
+		"humanize": func(s string) string {
+			words := strings.Fields(naming.Humanize(s))
+			for i, w := range words {
+				words[i] = strings.ToUpper(w[:1]) + w[1:]
+			}
+			return strings.Join(words, " ")
+		},
+		"humanLower":    naming.HumanizeLower,
 		"upper":         strings.ToUpper,
 		"title":         caser.String,
 		"snakeCase":     hyphenToUnderscore,

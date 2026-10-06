@@ -148,7 +148,7 @@ export default function {{.EntityNamePlural}}Page() {
 
   return (
     <Resource<{{.EntityName}}>
-      title="{{.EntityNamePlural}}"
+      title="{{.EntityNamePlural | humanize}}"
       status={resource.status}
       data={resource.status === "success" ? resource.data.{{.ItemsField}} : undefined}
       error={resource.status === "error" ? resource.error : undefined}
@@ -157,7 +157,7 @@ export default function {{.EntityNamePlural}}Page() {
       columns={columns}
       rowKey={(item) => String(item.{{.PkFieldCamel}})}
       onRowClick={(item) => void navigate({ to: `/{{.EntitySlug}}/$id`, params: { id: String(item.{{.PkFieldCamel}}) } })}
-      emptyTitle="No {{.EntityNamePlural | lower}} found"
+      emptyTitle="No {{.EntityNamePlural | humanLower}} found"
       emptyMessage="No records match the current view."
 {{- if .SearchFilterField}}
       filter={search}
@@ -167,7 +167,7 @@ export default function {{.EntityNamePlural}}Page() {
         setCursor([]);
 {{- end}}
       }}
-      filterPlaceholder="Search {{.EntityNamePlural | lower}}…"
+      filterPlaceholder="Search {{.EntityNamePlural | humanLower}}…"
 {{- end}}
 {{- if .HasCursorPagination}}
       onNextPage={() => setCursor((c) => [...c, nextToken])}
@@ -243,7 +243,7 @@ export default function {{.EntityNamePlural}}Page() {
             className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-sm hover:bg-accent-hover"
           >
             <Plus aria-hidden className="h-4 w-4" strokeWidth={2} />
-            Create {{.EntityName}}
+            Create {{.EntityName | humanize}}
           </Link>
 {{- end}}
         </>

@@ -249,3 +249,19 @@ func TestProtoPackageBase(t *testing.T) {
 		}
 	}
 }
+
+func TestHumanize(t *testing.T) {
+	for in, want := range map[string]string{
+		"RetainedDatabases": "Retained Databases",
+		"Task":              "Task",
+		"HTTPServer":        "HTTP Server",
+		"module_config":     "module config",
+	} {
+		if got := Humanize(in); got != want {
+			t.Errorf("Humanize(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := HumanizeLower("RetainedDatabases"); got != "retained databases" {
+		t.Errorf("HumanizeLower = %q", got)
+	}
+}

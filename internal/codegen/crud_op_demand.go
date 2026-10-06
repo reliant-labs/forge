@@ -133,10 +133,11 @@ func isServiceReceiver(recv *ast.FieldList) bool {
 	return ok && ident.Name == "Service"
 }
 
-// crudOpName is the generated op constructor for a CRUD RPC — the name
-// handlers_crud_ops_gen.go.tmpl declares (`crud{{.MethodName}}Op`).
-func crudOpName(rpc string) string {
-	return "crud" + rpc + "Op"
+// crudOpName is the generated op constructor for a CRUD RPC, given the
+// RPC's Go method name — the name handlers_crud_ops_gen.go.tmpl declares
+// (`crud{{.MethodName}}Op`, MethodName being the Go name).
+func crudOpName(goMethod string) string {
+	return "crud" + goMethod + "Op"
 }
 
 // calls reports whether the package's code references name without
@@ -147,9 +148,10 @@ func (s handlerPackageScan) calls(name string) bool {
 
 // demandsOp reports whether the package needs crud<rpc>Op emitted: either
 // nothing declares the RPC (forge is about to shim it) or code somewhere
-// in the package calls the op.
-func (s handlerPackageScan) demandsOp(rpc string) bool {
-	return !s.methods[rpc] || s.calls(crudOpName(rpc))
+// in the package calls the op. goMethod is the RPC's Go method name — what
+// a declaration in the package is spelled as.
+func (s handlerPackageScan) demandsOp(goMethod string) bool {
+	return !s.methods[goMethod] || s.calls(crudOpName(goMethod))
 }
 
 // crudOpsDemand splits a service's CRUD RPCs by what the handler package
@@ -158,7 +160,7 @@ func (s handlerPackageScan) demandsOp(rpc string) bool {
 func crudOpsDemand(scan handlerPackageScan, crudMethods []CRUDMethod) (opMethods []CRUDMethod, helperEntities []EntityDef) {
 	covered := map[string]bool{}
 	for _, cm := range crudMethods {
-		if scan.demandsOp(cm.Method.Name) {
+		if scan.demandsOp(cm.Method.GoName()) {
 			opMethods = append(opMethods, cm)
 			covered[cm.Entity.Name] = true
 		}

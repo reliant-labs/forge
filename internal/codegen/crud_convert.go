@@ -23,7 +23,10 @@ import (
 
 // EntityConvTemplateData renders one entity's conversion pair.
 type EntityConvTemplateData struct {
-	EntityName       string   // "Item"
+	EntityName string // "Item" — the db.<Entity> struct
+	// EntityPbType is the generated pb message type: EntityName in
+	// protoc-gen-go's casing ("Oauth2token" → Oauth2Token).
+	EntityPbType     string
 	EntityLower      string   // "item"
 	ToProtoAssigns   []string // statements: "m.Name = e.Name"
 	FromProtoAssigns []string
@@ -82,8 +85,9 @@ func entityConvLower(entityName string) string {
 // (wire field, column) pair it could not map.
 func BuildEntityConv(svc ServiceDef, entity EntityDef) (EntityConvTemplateData, []UnmappedField) {
 	conv := EntityConvTemplateData{
-		EntityName:  entity.Name,
-		EntityLower: entityConvLower(entity.Name),
+		EntityName:   entity.Name,
+		EntityPbType: naming.GoCamelCase(entity.Name),
+		EntityLower:  entityConvLower(entity.Name),
 	}
 	var unmapped []UnmappedField
 	colByName := map[string]EntityColumn{}
@@ -297,16 +301,16 @@ func enumInServicePackage(svc ServiceDef, fq string) (string, bool) {
 }
 
 // enumWireGoName maps a fully-qualified SAME-PACKAGE enum name to its
-// protoc-gen-go identifier: strip the proto package, join the remaining
-// declaration path with underscores (top-level "orders.v1.OrderStatus"
-// → "OrderStatus"; nested "orders.v1.Order.Status" → "Order_Status").
+// protoc-gen-go identifier (naming.GoTypeName): top-level
+// "orders.v1.OrderStatus" → "OrderStatus"; nested "orders.v1.Order.Status"
+// → "Order_Status"; "orders.v1.Oauth2provider" → "Oauth2Provider".
 // ok=false for cross-package or unnamed enums — those cannot be
 // referenced through the pb import and stay unmapped.
 func enumWireGoName(protoPkg, fq string) (string, bool) {
 	if protoPkg == "" || !strings.HasPrefix(fq, protoPkg+".") {
 		return "", false
 	}
-	return strings.ReplaceAll(strings.TrimPrefix(fq, protoPkg+"."), ".", "_"), true
+	return naming.GoTypeName(protoPkg, fq), true
 }
 
 // enumWireShape decodes the concrete wire shape promoteEnum stamped onto
@@ -430,15 +434,24 @@ func isScalarProtoKind(kind string) bool {
 // pairing forge maps.
 func isJSONColumn(col EntityColumn) bool { return col.Type == "json" && !col.IsArray }
 
+// pbFieldRef / dbFieldRef spell one field of a conversion on each side.
+// The pb message's field is protoc-gen-go's name (EntityField.GoName); the
+// db struct's is forge's ORM name (naming.ColumnGoName). They agree for
+// most names and differ exactly where a digit or an underscore before one
+// sits ("base64item": m.Base64Item, e.Base64item), so a conversion that
+// spells both sides one way references a field one of the structs lacks.
+func pbFieldRef(v string, wf EntityField) string { return v + "." + wf.GoName }
+
+func dbFieldRef(v string, col EntityColumn) string { return v + "." + naming.ColumnGoName(col.Name) }
+
 // assignJSONBToDB emits the write half of a json/jsonb pairing: marshal the
 // wire value, then store the text. A NULLABLE column stores SQL NULL for an
 // absent value rather than a fabricated empty document, so "no value" and
 // "empty value" stay distinguishable in the table.
 func assignJSONBToDB(dst, src string, wf EntityField, col EntityColumn) string {
-	g := wf.GoName
-	d, s := dst+"."+g, src+"."+g
+	d, s := dbFieldRef(dst, col), pbFieldRef(src, wf)
 	marshal, _ := jsonbPair(wf)
-	v := jsonVarName(g)
+	v := jsonVarName(wf.GoName)
 	fail := fmt.Sprintf("return nil, fmt.Errorf(%q, err)", wf.Name+": %w")
 
 	if dbNullable(col) {
@@ -457,8 +470,7 @@ func assignJSONBToDB(dst, src string, wf EntityField, col EntityColumn) string {
 // onto the wire field. The destination is passed by ADDRESS so pkg/orm
 // allocates the message (or the slice) only when the column holds one.
 func assignJSONBToProto(dst, src string, wf EntityField, col EntityColumn) string {
-	g := wf.GoName
-	d, s := dst+"."+g, src+"."+g
+	d, s := pbFieldRef(dst, wf), dbFieldRef(src, col)
 	_, unmarshal := jsonbPair(wf)
 	fail := fmt.Sprintf("return nil, fmt.Errorf(%q, err)", wf.Name+": %w")
 
@@ -538,8 +550,7 @@ func legacyTextTimestampToProto(d, s, col string, nullable bool) string {
 // unmappable pairing fails the generate (see UnmappedField); it never
 // ships as a comment.
 func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, string) {
-	g := wf.GoName
-	d, s := dst+"."+g, src+"."+g
+	d, s := dbFieldRef(dst, col), pbFieldRef(src, wf)
 	base := dbBaseGoType(col)
 	nullable := dbNullable(col)
 
@@ -685,8 +696,7 @@ func enumSingularAssign(d, s string, optional, nullable bool, col EntityColumn) 
 // onto the wire message. src is the entity variable. The second return is
 // the REASON the pairing has no conversion, or "" when it mapped.
 func assignToProto(dst, src string, wf EntityField, col EntityColumn) (string, string) {
-	g := wf.GoName
-	d, s := dst+"."+g, src+"."+g
+	d, s := pbFieldRef(dst, wf), dbFieldRef(src, col)
 	base := dbBaseGoType(col)
 	nullable := dbNullable(col)
 
@@ -1077,7 +1087,7 @@ func schemaDefaultAssigns(entity EntityDef, assigned map[string]bool) []string {
 			continue // Bun writes exactly this anyway
 		}
 		out = append(out, fmt.Sprintf("e.%s = %s // %s: column DEFAULT (not on the create request)",
-			naming.ToProtoPascalCase(col.Name), lit, col.Name))
+			naming.ColumnGoName(col.Name), lit, col.Name))
 	}
 	return out
 }
@@ -1153,7 +1163,7 @@ func requestWireFields(svc ServiceDef, m Method) []EntityField {
 				f = promoteEnum(f, svc, d.Repeated)
 				fields = append(fields, f)
 			}
-			return fields
+			return withMessageGoNames(fields)
 		}
 	}
 	defs, ok := svc.Messages[m.InputType]
@@ -1167,5 +1177,5 @@ func requestWireFields(svc ServiceDef, m Method) []EntityField {
 		// the honest comment (legacy-descriptor degradation).
 		fields = append(fields, promoteOptionalScalar(messageFieldToEntityField(d)))
 	}
-	return fields
+	return withMessageGoNames(fields)
 }

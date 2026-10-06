@@ -440,7 +440,7 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 	// pins the TEMPLATE behavior independent of go/packages resolution.
 	svc := BootstrapTestServiceData{
 		Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing",
-		ProtoServiceName:       "BillingService",
+		ConnectServiceGoName:   "BillingService",
 		ProtoConnectImportPath: "example.com/proj/gen/services/billing/v1/billingv1connect",
 		ProtoConnectPkg:        "billingv1connect",
 		Alias:                  "billing", VarName: "billing",
@@ -466,7 +466,7 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 		FieldName:              svc.FieldName,
 		IsService:              true,
 		ConstructorName:        svc.ConstructorName(),
-		ProtoServiceName:       svc.ProtoServiceName,
+		ConnectServiceGoName:   svc.ConnectServiceGoName,
 		ProtoConnectImportPath: svc.ProtoConnectImportPath,
 		ProtoConnectPkg:        svc.ProtoConnectPkg,
 		AutoStubs:              svc.AutoStubs,

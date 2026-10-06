@@ -247,7 +247,12 @@ type MockTransportEntity struct {
 	// literal may only specify known properties".
 	GetEntityFieldCamel    string
 	CreateEntityFieldCamel string
-	ImportPath             string // service proto import path for response-schema imports
+	// RequestEntityFieldCamel is the request field an AIP-134 Create/Update
+	// nests the entity under ({ base64item: {...}, updateMask }), as
+	// protoc-gen-es names it: the update request's wrapper off the
+	// descriptor, else the field the entity scaffolder writes.
+	RequestEntityFieldCamel string
+	ImportPath              string // service proto import path for response-schema imports
 	// EntityImportPath is the module declaring the ENTITY message schema
 	// ("db/v1/patients_pb"). May differ from ImportPath when the entity
 	// lives in its own proto file; the mutable-store Create/Update paths
@@ -649,7 +654,7 @@ func responseEntityField(svc ServiceDef, respType, entityName string) string {
 			}
 		}
 	}
-	return fieldNameToCamel(entityName)
+	return entityFieldCamel(entityName)
 }
 
 // ExtractMockTransportEntities builds MockTransportEntity data from services
@@ -683,39 +688,44 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 			if entityDef.ProtoFile != "" {
 				entityImportPath = ProtoFileToTSImportPath(entityDef.ProtoFile)
 			}
+			requestField := page.UpdateEntityFieldCamel
+			if requestField == "" {
+				requestField = entityFieldCamel(page.EntityName)
+			}
 			result = append(result, MockTransportEntity{
-				EntityName:             page.EntityName,
-				EntityNamePlural:       page.EntityNamePlural,
-				EntitySlug:             page.EntitySlug,
-				ServiceName:            svc.Name,
-				ServiceTypeName:        svc.Package + "." + svc.Name,
-				ListRPC:                page.ListRPC,
-				GetRPC:                 page.GetRPC,
-				CreateRPC:              page.CreateRPC,
-				UpdateRPC:              page.UpdateRPC,
-				DeleteRPC:              page.DeleteRPC,
-				HasList:                page.HasList,
-				HasGet:                 page.HasGet,
-				HasCreate:              page.HasCreate,
-				HasUpdate:              hasUpdate,
-				HasDelete:              page.HasDelete,
-				ItemsField:             page.ItemsField,
-				PkFieldCamel:           mockPkFieldCamel(entityDef),
-				GetEntityFieldCamel:    responseEntityField(svc, page.GetResponseType, page.EntityName),
-				CreateEntityFieldCamel: responseEntityField(svc, page.CreateResponseType, page.EntityName),
-				ImportPath:             importPath,
-				EntityImportPath:       entityImportPath,
-				TypeImport:             page.EntityName,
-				SchemaImport:           page.EntityName + "Schema",
-				ListResponseType:       page.ListResponseType,
-				GetResponseType:        page.GetResponseType,
-				CreateRequestType:      page.CreateRequestType,
-				CreateResponseType:     page.CreateResponseType,
-				UpdateRequestType:      page.UpdateRequestType,
-				UpdateResponseType:     updateResp,
-				UpdateEntityFieldCamel: updateField,
-				GetRequestType:         page.GetRequestType,
-				DeleteRequestType:      page.DeleteRequestType,
+				EntityName:              page.EntityName,
+				EntityNamePlural:        page.EntityNamePlural,
+				EntitySlug:              page.EntitySlug,
+				ServiceName:             svc.Name,
+				ServiceTypeName:         svc.Package + "." + svc.Name,
+				ListRPC:                 page.ListRPC,
+				GetRPC:                  page.GetRPC,
+				CreateRPC:               page.CreateRPC,
+				UpdateRPC:               page.UpdateRPC,
+				DeleteRPC:               page.DeleteRPC,
+				HasList:                 page.HasList,
+				HasGet:                  page.HasGet,
+				HasCreate:               page.HasCreate,
+				HasUpdate:               hasUpdate,
+				HasDelete:               page.HasDelete,
+				ItemsField:              page.ItemsField,
+				PkFieldCamel:            mockPkFieldCamel(entityDef),
+				GetEntityFieldCamel:     responseEntityField(svc, page.GetResponseType, page.EntityName),
+				CreateEntityFieldCamel:  responseEntityField(svc, page.CreateResponseType, page.EntityName),
+				RequestEntityFieldCamel: requestField,
+				ImportPath:              importPath,
+				EntityImportPath:        entityImportPath,
+				TypeImport:              page.EntityName,
+				SchemaImport:            page.EntityName + "Schema",
+				ListResponseType:        page.ListResponseType,
+				GetResponseType:         page.GetResponseType,
+				CreateRequestType:       page.CreateRequestType,
+				CreateResponseType:      page.CreateResponseType,
+				UpdateRequestType:       page.UpdateRequestType,
+				UpdateResponseType:      updateResp,
+				UpdateEntityFieldCamel:  updateField,
+				GetRequestType:          page.GetRequestType,
+				DeleteRequestType:       page.DeleteRequestType,
 			})
 		}
 	}

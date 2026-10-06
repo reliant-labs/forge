@@ -327,7 +327,7 @@ func writeORMFile(root, name string, content []byte, cs *FileChecksums) error {
 // fieldInfo but is derived directly from PlanEntityField.
 type ormField struct {
 	planField   config.PlanEntityField
-	goName      string // PascalCase Go field name (proto-style)
+	goName      string // Go field name on the db struct: naming.ColumnGoName(column)
 	columnName  string // snake_case column name
 	goType      string // base Go type (notnull variant), e.g. "time.Time"
 	isTimestamp bool
@@ -935,7 +935,7 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 		goType, _ := planFieldGoType(e.Type)
 		f := ormField{
 			planField:   e.PlanEntityField,
-			goName:      naming.ToProtoPascalCase(e.Name),
+			goName:      naming.ColumnGoName(e.Name),
 			columnName:  e.Name,
 			goType:      goType,
 			isTimestamp: isTimePlanType(e.Type),

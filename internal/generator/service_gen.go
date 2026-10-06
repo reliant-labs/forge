@@ -75,7 +75,12 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		}
 	}
 
+	// The proto below declares `service <handlerName>Service`; service.go
+	// embeds and constructs the handler protoc-gen-connect-go generates for
+	// it, which is spelled from the service's GoName, not the proto name
+	// ("alphav1connect" → Alphav1connectService → Alphav1ConnectServiceHandler).
 	handlerName := naming.ToPascalCase(serviceName)
+	connectService := naming.ConnectServiceGoName(handlerName + "Service")
 
 	// -- service.go (via service/service.go.tmpl) --
 	svcData := struct {
@@ -94,7 +99,7 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		ProtoImportPath:     fmt.Sprintf("services/%s", servicePackage),
 		ProtoConnectPackage: fmt.Sprintf("%sv1connect", servicePackage),
 		ProtoFileSymbol:     fmt.Sprintf("File_services_%s_v1_%s_proto", servicePackage, servicePackage),
-		HandlerName:         fmt.Sprintf("%sService", handlerName),
+		HandlerName:         connectService,
 		Methods:             []string{},
 	}
 

@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // Create-request factories: the rows the scaffolded CRUD lifecycle test
@@ -78,7 +76,7 @@ type createRequestSpec struct {
 // request type prefixed with New. The scaffold-once lifecycle test calls it by
 // this name, so both sides derive it from the same CRUDMethod.
 func createRequestFactoryName(cm CRUDMethod) string {
-	return "New" + cm.Method.InputType
+	return "New" + cm.Method.InputGoName()
 }
 
 // buildCreateRequestFields derives one create RPC's request fields and their
@@ -151,7 +149,7 @@ func buildCreateRequestFields(svc ServiceDef, cm CRUDMethod, fix *crudTestFixtur
 			}
 		}
 		out = append(out, CRUDTestFieldData{
-			ProtoName:  naming.ToProtoPascalCase(f.Name),
+			ProtoName:  messageFieldGoName(msgFields, f.Name),
 			GoType:     goType,
 			Kind:       kind,
 			TestValue:  tv1,
@@ -171,7 +169,7 @@ func buildCreateRequestSpecs(ctx context.Context, svc ServiceDef, methods []CRUD
 		}
 		spec := createRequestSpec{
 			funcName:  createRequestFactoryName(cm),
-			inputType: cm.Method.InputType,
+			inputType: cm.Method.InputGoName(),
 			entity:    cm.Entity.Name,
 			fields:    buildCreateRequestFields(svc, cm, fix),
 		}

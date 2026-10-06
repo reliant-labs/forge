@@ -83,7 +83,7 @@ func BuildOpenProcedures(services []ServiceDef, modulePath string) OpenProcedure
 		alias = seenImport[path]
 		for _, m := range open {
 			data.Open = append(data.Open, OpenProcedureEntry{
-				Const:   fmt.Sprintf("%s.%s%sProcedure", alias, svc.Name, m.Name),
+				Const:   alias + "." + naming.ConnectProcedureConst(svc.Name, m.Name),
 				Service: svc.Package + "." + svc.Name,
 				Method:  m.Name,
 			})
@@ -104,7 +104,7 @@ func BuildOpenProcedures(services []ServiceDef, modulePath string) OpenProcedure
 // neither field (synthetic fixtures, pre-descriptor scaffolds).
 func connectPackageFor(svc ServiceDef, modulePath string) (alias, path string) {
 	if svc.GoPackage != "" && svc.PkgName != "" {
-		alias = svc.PkgName + "connect"
+		alias = naming.ConnectPackage(svc.PkgName)
 		return alias, svc.GoPackage + "/" + alias
 	}
 	if modulePath == "" {

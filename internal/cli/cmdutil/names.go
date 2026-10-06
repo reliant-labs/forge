@@ -147,7 +147,7 @@ func ValidateServiceDirConsistency(protoServiceName, dirName string) error {
 	if protoServiceName == expected {
 		return nil
 	}
-	bufIdentifier := "New" + protoServiceName + "Handler"
+	bufIdentifier := "New" + naming.ConnectServiceGoName(protoServiceName) + "Handler"
 	forgeIdentifier := "Mount" + naming.ToPascalCase(dirName)
 	fixDir := naming.ToSnakeCase(strings.TrimSuffix(protoServiceName, "Service"))
 	return fmt.Errorf(

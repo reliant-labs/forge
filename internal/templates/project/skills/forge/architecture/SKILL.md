@@ -135,6 +135,8 @@ Forge spans four ecosystems (Go, proto, TS, KCL) with different idiomatic casing
 | TS hook / variable export | camelCase | `useListUsers`, `pageSize` |
 | URL route param / query key | kebab-case | `/audit-events`, `?page-token=...` |
 
+**Generated identifiers are spelled by their generator, not by this table.** Code that references generated Go or TS uses whatever protoc-gen-go, protoc-gen-connect-go or protoc-gen-es declared — and they disagree with a naive title-case at digits. protoc-gen-go capitalises the letter after a digit and keeps an underscore before one (`rpc GetOauth2token` → method `GetOauth2Token`, type `GetOauth2TokenRequest`; field `sha256sum` → `Sha256Sum`, `address_line_2` → `AddressLine_2`); protoc-gen-es does neither (`sha256sum`, `addressLine2`); connect-es lowers only an RPC's first letter (`LLMChat` → `client.lLMChat`). forge's own `db.<Entity>` rows keep forge's spelling (`Sha256sum`, `AddressLine2`). forge derives every reference it emits this way (`internal/naming/generated.go`); when you name a message, RPC or service, prefer a spelling already in the generators' casing (`Oauth2Token`, not `Oauth2token`) so the proto, Go and TS names read the same.
+
 Lint enforces the structural halves (`forgeconv-one-service-per-file`, `forgeconv-internal-package-contract-names`, `--scaffolds`); `gofmt`/`goimports`/`staticcheck` enforce the Go-style rules.
 
 ## Deep detail lives in the owning skill

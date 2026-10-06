@@ -153,13 +153,25 @@ type CRUDTemplateData struct {
 }
 
 // CRUDMethodTemplateData holds per-method template data.
+//
+// Every name here is a Go identifier the rendered code spells, so each is
+// derived with the rule of whoever DECLARES that identifier: MethodName,
+// InputType, OutputType, EntityPbType and the pb field names
+// (PkField, ResponseField, UpdateEntityField, UpdateMaskField, filter
+// GoNames) are protoc-gen-go/connect-go's (naming.GoCamelCase,
+// naming.GoFieldNames); EntityName and PkDBField/OwnerField are forge's
+// db.<Entity> struct's. The proto spellings stay on CRUDMethod.Method.
 type CRUDMethodTemplateData struct {
-	MethodName  string // "CreatePatient"
-	InputType   string // "CreatePatientRequest"
-	OutputType  string // "CreatePatientResponse"
-	EntityName  string // "Patient"
-	EntityLower string // "patient"
-	Operation   string // "create", "get", "list", "update", "delete"
+	MethodName string // "CreatePatient" — the Go method the connect handler interface declares
+	InputType  string // "CreatePatientRequest" — pb Go type
+	OutputType string // "CreatePatientResponse" — pb Go type
+	EntityName string // "Patient" — the db.<Entity> struct and db.Create<Entity> funcs
+	// EntityPbType is the entity's generated pb message type. It equals
+	// EntityName unless the proto name is not already in protoc-gen-go's
+	// casing ("Oauth2token" → pb.Oauth2Token, db.Oauth2token).
+	EntityPbType string
+	EntityLower  string // "patient"
+	Operation    string // "create", "get", "list", "update", "delete"
 	// AuthRequired is the RPC's (forge.v1.method).auth_required, true
 	// unless the proto explicitly opts out. It gates nothing — it selects
 	// which sentence the method's comment shows the handler author, so
@@ -169,12 +181,18 @@ type CRUDMethodTemplateData struct {
 	// AuthSeam is the app-owned function that resolves the caller, e.g.
 	// "middleware.GetUser". Rendered rather than spelled in the template
 	// so renaming the seam moves every scaffolded mention with it.
-	AuthSeam        string
-	PkField         string // "Id" (proto PascalCase Go field name)
-	PkColumnName    string // "id" (raw DB column name)
-	PkGoType        string // "int64"
-	HasPkInInput    bool   // true if the request message likely has an ID field
-	ResponseField   string // "Patient" — the proto field name in the response that holds the entity
+	AuthSeam     string
+	PkField      string // "Id" — the PK's field on the pb request/entity message
+	PkDBField    string // "Id" — the PK's field on the db.<Entity> struct (naming.ColumnGoName)
+	PkColumnName string // "id" (raw DB column name)
+	PkGoType     string // "int64"
+	HasPkInInput bool   // true if the request message likely has an ID field
+	// ResponseField is the pb Go field of the response that carries the
+	// entity — the single entity for create/get/update ("Patient"), the
+	// repeated one for list ("Patients"). Read off the response message's
+	// own fields, so an entity whose name protoc-gen-go re-cases
+	// ("LLMKey" → field llm_key → LlmKey) packs the field that exists.
+	ResponseField   string
 	HasPagination   bool   // true when List method's InputType follows AIP-158 convention
 	PaginationStyle string // "cursor" (default for now)
 	HasFilters      bool   // true if list method has filter fields
@@ -491,9 +509,11 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// were forced, a duplicate-method compile error). Only pristine marked
 	// stubs for methods CRUD is about to implement are removed; a stub the
 	// user has edited (marker removed or body changed) is left in place.
+	// Keyed by Go method name: excision matches the *Service methods the
+	// handler files declare.
 	crudNames := make(map[string]bool, len(crudMethods))
 	for _, cm := range crudMethods {
-		crudNames[cm.Method.Name] = true
+		crudNames[cm.Method.GoName()] = true
 	}
 	if excised, xerr := ExciseUnwiredStubs(projectDir, targetDir, crudNames); xerr != nil {
 		return fmt.Errorf("excise unwired stubs for %s: %w", pkg, xerr)
@@ -1287,8 +1307,10 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 					hasOrderBy = true
 					continue
 				}
+				var ff FilterFieldData
 				if strictFilters {
-					ff, ferr := classifyEntityFilterField(mf, cm.Entity)
+					var ferr error
+					ff, ferr = classifyEntityFilterField(mf, cm.Entity)
 					if ferr != nil {
 						// LOUD by design: a filter the generator cannot map
 						// to a declared column must fail the generate, not
@@ -1296,10 +1318,11 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 						// nothing (or leaks SQL errors) at runtime.
 						return CRUDMethodTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, ferr)
 					}
-					filterFields = append(filterFields, ff)
 				} else {
-					filterFields = append(filterFields, classifyFilterField(mf))
+					ff = classifyFilterField(mf)
 				}
+				ff.GoName = messageFieldGoName(msgFields, mf.Name)
+				filterFields = append(filterFields, ff)
 			}
 		}
 	}
@@ -1323,16 +1346,9 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// Proto generates a field named after the entity (e.g., "Project project = 1;"
 	// becomes Go field "Project"). We look it up in the parsed message fields;
 	// if not found, we fall back to the entity name.
-	updateEntityField := cm.Entity.Name
-	if cm.Operation == "update" && svc.Messages != nil {
-		if fields, ok := svc.Messages[cm.Method.InputType]; ok {
-			for _, f := range fields {
-				if fieldMatchesEntity(f, cm.Entity.Name) {
-					updateEntityField = naming.ToProtoPascalCase(f.Name)
-					break
-				}
-			}
-		}
+	updateEntityField := naming.GoCamelCase(cm.Entity.Name)
+	if cm.Operation == "update" {
+		updateEntityField = updateEntityGoField(svc, cm.Method.InputType, cm.Entity.Name)
 	}
 
 	// AIP-134: a FieldMask field on the update request wires the
@@ -1409,24 +1425,26 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	ownerColumn, ownerField := "", ""
 	if shapeOK {
 		if ownerColumn = OwnerColumn(cm.Entity); ownerColumn != "" {
-			ownerField = naming.ToProtoPascalCase(ownerColumn)
+			ownerField = naming.ColumnGoName(ownerColumn)
 		}
 	}
 
 	return CRUDMethodTemplateData{
-		MethodName:         cm.Method.Name,
-		InputType:          cm.Method.InputType,
-		OutputType:         cm.Method.OutputType,
+		MethodName:         cm.Method.GoName(),
+		InputType:          cm.Method.InputGoName(),
+		OutputType:         cm.Method.OutputGoName(),
 		EntityName:         cm.Entity.Name,
+		EntityPbType:       naming.GoCamelCase(cm.Entity.Name),
 		EntityLower:        strings.ToLower(cm.Entity.Name),
 		Operation:          cm.Operation,
 		AuthRequired:       cm.Method.AuthRequired,
 		AuthSeam:           crudAuthSeam,
-		PkField:            naming.ToProtoPascalCase(cm.Entity.PkField),
+		PkField:            naming.GoCamelCase(cm.Entity.PkField),
+		PkDBField:          naming.ColumnGoName(cm.Entity.PkField),
 		PkColumnName:       cm.Entity.PkField,
 		PkGoType:           cm.Entity.PkGoType,
 		HasPkInInput:       cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
-		ResponseField:      cm.Entity.Name,
+		ResponseField:      responseEntityGoField(svc, cm.Method.OutputType, cm.Entity.Name, cm.Operation == "list"),
 		HasPagination:      hasPagination,
 		PaginationStyle:    paginationStyle,
 		HasFilters:         len(filterFields) > 0,
@@ -1726,7 +1744,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	}
 	var filteredMethods []CRUDMethod
 	for _, cm := range crudMethods {
-		if existingMethods[cm.Method.Name] {
+		if existingMethods[cm.Method.GoName()] {
 			continue
 		}
 		filteredMethods = append(filteredMethods, cm)
@@ -1901,18 +1919,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			}
 
 			// Determine update entity field name from UpdateRequest message
-			updateEntityField := cm.Entity.Name
-			if svc.Messages != nil {
-				updateReqName := "Update" + cm.Entity.Name + "Request"
-				if msgFields, ok := svc.Messages[updateReqName]; ok {
-					for _, f := range msgFields {
-						if fieldMatchesEntity(f, cm.Entity.Name) {
-							updateEntityField = naming.ToProtoPascalCase(f.Name)
-							break
-						}
-					}
-				}
-			}
+			updateEntityField := updateEntityGoField(svc, "Update"+cm.Entity.Name+"Request", cm.Entity.Name)
 
 			mutable, second := "", ""
 			for _, f := range fields {
@@ -1982,7 +1989,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			ent = &CRUDTestEntityData{
 				EntityName:             cm.Entity.Name,
 				EntityLower:            strings.ToLower(cm.Entity.Name),
-				PkField:                naming.ToProtoPascalCase(cm.Entity.PkField),
+				PkField:                naming.GoCamelCase(cm.Entity.PkField),
 				PkGoType:               cm.Entity.PkGoType,
 				HasTimestamps:          cm.Entity.Timestamps && protoHasCreatedAt,
 				MutableStringField:     mutable,
@@ -2224,6 +2231,7 @@ func buildCustomFilters(svc ServiceDef, cm CRUDMethod) []FilterFieldData {
 			continue
 		}
 		ff := classifyFilterField(mf)
+		ff.GoName = messageFieldGoName(msgFields, mf.Name)
 		if ff.FilterType == "search" {
 			cols := entityStringColumns(cm.Entity)
 			if len(cols) == 0 {
@@ -2278,8 +2286,11 @@ func classifyFilterField(mf MessageFieldDef) FilterFieldData {
 	}
 
 	return FilterFieldData{
-		ProtoName:  mf.Name,
-		GoName:     naming.ToProtoPascalCase(mf.Name),
+		ProtoName: mf.Name,
+		// Exact unless the field collides with a sibling or a generated
+		// method; callers holding the whole request message correct it
+		// with messageFieldGoName.
+		GoName:     naming.GoCamelCase(mf.Name),
 		ColumnName: mf.Name,
 		FieldType:  goType,
 		FilterType: filterType,
@@ -2473,12 +2484,57 @@ func updateMaskGoField(svc ServiceDef, inputType string) string {
 	if svc.Messages == nil {
 		return ""
 	}
-	for _, f := range svc.Messages[inputType] {
+	fields := svc.Messages[inputType]
+	for _, f := range fields {
 		if f.MessageType == "google.protobuf.FieldMask" || strings.HasSuffix(f.MessageType, ".FieldMask") || f.MessageType == "FieldMask" {
-			return naming.ToProtoPascalCase(f.Name)
+			return messageFieldGoName(fields, f.Name)
 		}
 	}
 	return ""
+}
+
+// updateEntityGoField is the pb Go field of update request inputType that
+// carries the entity (`Project project = 1;` → Project). Falls back to the
+// entity's own Go name when the descriptor does not carry the request's
+// fields or none of them is typed as the entity.
+func updateEntityGoField(svc ServiceDef, inputType, entityName string) string {
+	fields := svc.Messages[inputType]
+	for _, f := range fields {
+		if fieldMatchesEntity(f, entityName) {
+			return messageFieldGoName(fields, f.Name)
+		}
+	}
+	return naming.GoCamelCase(entityName)
+}
+
+// responseEntityGoField is the pb Go field of response message outputType
+// that carries the entity: the field named the way the entity scaffolder
+// names it (naming.EntityFieldName, or EntityListFieldName for a list),
+// else the first field typed as the entity. The scaffolded name, camel-cased
+// by protoc-gen-go's rule, is the fallback when the descriptor does not carry
+// the response's fields.
+//
+// It reads the field rather than restating the entity name because the two
+// are spelled by different rules: entity "LLMKey" is carried in field
+// llm_key, which protoc-gen-go names LlmKey — `LLMKey: m` packs a field the
+// response does not have.
+func responseEntityGoField(svc ServiceDef, outputType, entityName string, list bool) string {
+	want := naming.EntityFieldName(entityName)
+	if list {
+		want = naming.EntityListFieldName(entityName)
+	}
+	fields := svc.Messages[outputType]
+	for _, f := range fields {
+		if f.Name == want {
+			return messageFieldGoName(fields, f.Name)
+		}
+	}
+	for _, f := range fields {
+		if fieldMatchesEntity(f, entityName) {
+			return messageFieldGoName(fields, f.Name)
+		}
+	}
+	return naming.GoCamelCase(want)
 }
 
 // describeFields renders an observed-field list ("name type, ...") for

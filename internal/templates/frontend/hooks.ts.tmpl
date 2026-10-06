@@ -84,12 +84,12 @@ export const {{.ServiceNameCamel}}Keys = {
 {{- if .IsQuery}}
 export const use{{.Name}} = createQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
-  (req) => client.{{.NameCamel}}(req),
+  (req) => client.{{.ClientMethod}}(req),
 );
 {{- else}}
 export const use{{.Name}} = createMutationHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{if .EntityScope}}{{.EntityScope}}{{else}}all{{end}},
-  (req) => client.{{.NameCamel}}(req),
+  (req) => client.{{.ClientMethod}}(req),
 );
 {{- end}}
 {{end -}}

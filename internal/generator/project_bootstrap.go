@@ -49,7 +49,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		Package                string
 		ImportPath             string // handlers/ dir leaf; see generateBootstrap's bootstrapService
 		FieldName              string
-		ProtoServiceName       string
+		ConnectServiceGoName   string
 		ProtoConnectImportPath string
 		ProtoConnectPkg        string
 		MountMethod            string
@@ -81,9 +81,10 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 	if g.ServiceName != "" {
 		pkg := naming.ServicePackage(g.ServiceName)
 		fieldName := naming.ToPascalCase(g.ServiceName)
-		// ProtoServiceName matches what the proto template emits:
-		// `service {{.ServiceName | pascalCase}}Service` (PascalCase handles hyphens).
-		protoServiceName := naming.ToPascalCase(g.ServiceName) + "Service"
+		// The proto template emits `service {{.ServiceName | pascalCase}}Service`
+		// (PascalCase handles hyphens); the client is spelled the way
+		// protoc-gen-connect-go spells it from that name.
+		connectService := naming.ConnectServiceGoName(naming.ToPascalCase(g.ServiceName) + "Service")
 		// Project bootstrap is the first scaffold pass before any descriptor
 		// exists; use the convention path. The codegen-pass regenerator will
 		// later replace this file with descriptor-derived imports.
@@ -95,7 +96,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				Package:                pkg,
 				ImportPath:             pkg,
 				FieldName:              fieldName,
-				ProtoServiceName:       protoServiceName,
+				ConnectServiceGoName:   connectService,
 				ProtoConnectImportPath: connectImport,
 				ProtoConnectPkg:        connectPkg,
 				MountMethod:            "Register",
@@ -140,7 +141,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			NeedsTime       bool
 			NeedsULID       bool
 
-			ProtoServiceName       string
+			ConnectServiceGoName   string
 			ProtoConnectImportPath string
 			ProtoConnectPkg        string
 			MountMethod            string
@@ -170,7 +171,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			NeedsTime:       false, // Clock/IDGen func defaults are derived post-codegen
 			NeedsULID:       false, // (GenerateBootstrapTesting) once services declare them
 
-			ProtoServiceName:       svc.ProtoServiceName,
+			ConnectServiceGoName:   svc.ConnectServiceGoName,
 			ProtoConnectImportPath: svc.ProtoConnectImportPath,
 			ProtoConnectPkg:        svc.ProtoConnectPkg,
 			MountMethod:            svc.MountMethod,

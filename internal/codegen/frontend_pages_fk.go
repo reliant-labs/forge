@@ -3,7 +3,6 @@ package codegen
 import (
 	"sort"
 	"strings"
-	"unicode"
 )
 
 // Foreign keys in generated pages.
@@ -258,24 +257,23 @@ func lookupFKByProtoName(page *PageTemplateData, protoName, camelName string, re
 // getResponseEntityField returns the camelCase field a Get response wraps the
 // entity in ("patient" on GetPatientResponse).
 //
-// Preferred source is UpdateEntityFieldCamel — the AIP-134 update request's
-// entity wrapper, read off the real descriptor, so it is the authored name
-// and not a guess. When the entity has no AIP-134 update request there is no
-// descriptor-derived answer available here, and the fallback is the SAME rule
-// the referent's own detail and edit pages use for the wrapper
-// (`{{.EntityName | camelCase}}` — lower the first rune). Sharing the rule is
-// the point: the picker's label and the page it links to read the same field,
-// so if the convention is ever wrong for an entity it is wrong in one place.
+// It is GetEntityFieldCamel — the SAME field the referent's own detail and
+// edit pages read the record off. Sharing it is the point: the picker's label
+// and the page it links to read the same field, so if it is ever wrong for an
+// entity it is wrong in one place. Page data built without it falls back to
+// the AIP-134 update request's entity wrapper (read off the real descriptor),
+// then to the field the entity scaffolder writes, as protoc-gen-es spells it.
 func getResponseEntityField(p PageTemplateData) string {
+	if p.GetEntityFieldCamel != "" {
+		return p.GetEntityFieldCamel
+	}
 	if p.UpdateEntityFieldCamel != "" {
 		return p.UpdateEntityFieldCamel
 	}
 	if p.EntityName == "" {
 		return ""
 	}
-	runes := []rune(p.EntityName)
-	runes[0] = unicode.ToLower(runes[0])
-	return string(runes)
+	return entityFieldCamel(p.EntityName)
 }
 
 // fkOwner returns the lowercased entity name a foreign-key field names, or

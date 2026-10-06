@@ -312,7 +312,7 @@ forge env deploy prod      # build → push → release → plan → apply
 forge env status prod      # then verify
 ```
 
-One static site is free; workloads and the database need billing.
+Everything hosted, static sites included, needs billing.
 Without it the deploy is **queued, not refused** and goes live once billing is set up: `env deploy` exits **7** and prints the billing link. Give
 the user that link; don't retry; then verify. Under Reliant you are signed in:
 never ask for `forge login`. Depth: `deploy`, `deploy/hosting`, `deploy/static-site`.

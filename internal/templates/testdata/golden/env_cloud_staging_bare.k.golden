@@ -20,8 +20,8 @@ CDN:
   secrets    the control plane's write-only store:
              `forge secret set --env staging <KEY>` (value on stdin)
 
-Hosted workloads and the managed database need billing on your Reliant
-organization (Reliant → Settings → Billing). A static site alone is free.
+Hosted workloads, the managed database and static sites all need billing on
+your Reliant organization (Reliant → Settings → Billing).
 
 HOSTING ELSEWHERE is a binding edit, not a rewrite: the binders for a
 cluster you operate (`_on_cluster`) and your own bucket (`_on_bucket`) are

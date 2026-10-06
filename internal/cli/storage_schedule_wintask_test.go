@@ -59,3 +59,18 @@ func TestEncodeUTF16LEBOM(t *testing.T) {
 		t.Errorf("got % x want % x", got, want)
 	}
 }
+
+func TestWindowsHourlyTaskXML(t *testing.T) {
+	data := windowsTaskXMLFor(`C:\f\forge-storage.exe`, []string{"storage", "auto-gc", "--policy", `C:\p`}, time.Date(2026, 7, 4, 9, 0, 0, 0, time.UTC), true)
+	var task struct {
+		Interval string `xml:"Triggers>TimeTrigger>Repetition>Interval"`
+		Limit    string `xml:"Settings>ExecutionTimeLimit"`
+		Args     string `xml:"Actions>Exec>Arguments"`
+	}
+	if err := xml.NewDecoder(bytes.NewReader(bytes.Replace(data, []byte(`encoding="UTF-16"`), []byte(`encoding="UTF-8"`), 1))).Decode(&task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Interval != "PT1H" || task.Limit != "PT20M" || !strings.Contains(task.Args, "auto-gc") || strings.Contains(task.Args, "--apply") {
+		t.Fatalf("unexpected hourly task: %+v", task)
+	}
+}

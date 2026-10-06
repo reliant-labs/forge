@@ -113,23 +113,51 @@ func installStorageSchedule(ctx context.Context, out io.Writer, path string, p s
 	}
 	args := append([]string{executable}, tokens[1:]...)
 	args = append(args, "storage", "gc", "--policy", path, "--apply")
+	// The hourly job is the bounded, non-disruptive pass (`auto-gc`): Go build
+	// cache growth under agent load (~40 GB/h) outruns a once-a-day trim. It
+	// takes the same maintenance lock as the daily full pass, so they never
+	// overlap, and it never touches the registry.
+	hourly := []string{executable}
+	hourly = append(hourly, tokens[1:]...)
+	hourly = append(hourly, "storage", "auto-gc", "--policy", path)
 	switch runtime.GOOS {
 	case "darwin":
-		err = installLaunchAgent(ctx, args, home)
+		err = installLaunchAgent(ctx, args, home, dailyLaunchdSchedule)
+		if err == nil {
+			err = installLaunchAgent(ctx, hourly, home, hourlyLaunchdSchedule)
+		}
 	case "windows":
-		err = installWindowsTask(ctx, executable, args[1:])
+		err = installWindowsTask(ctx, executable, args[1:], false)
+		if err == nil {
+			err = installWindowsTask(ctx, executable, hourly[1:], true)
+		}
 	default:
-		err = installSystemdTimer(ctx, args, home)
+		err = installSystemdTimer(ctx, args, home, dailySystemdSchedule)
+		if err == nil {
+			err = installSystemdTimer(ctx, hourly, home, hourlySystemdSchedule)
+		}
 	}
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(out, "Installed daily storage maintenance at 03:30 using %s; policy %s. Registry cleanup briefly interrupts pulls/pushes.\n", executable, path)
+	fmt.Fprintf(out, "Installed daily storage maintenance at 03:30 and an hourly bounded cache pass using %s; policy %s. Registry cleanup (daily only) briefly interrupts pulls/pushes.\n", executable, path)
 	return nil
 }
 
-func installLaunchAgent(ctx context.Context, args []string, home string) error {
+// schedule is one installed job: launchd label / systemd unit stem plus when it fires.
+type launchdSchedule struct{ label, trigger string }
+type systemdSchedule struct{ unit, description, timer string }
+
+var (
+	dailyLaunchdSchedule  = launchdSchedule{"com.reliant.forge-storage", "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>30</integer></dict>"}
+	hourlyLaunchdSchedule = launchdSchedule{"com.reliant.forge-storage-hourly", "<key>StartInterval</key><integer>3600</integer>"}
+
+	dailySystemdSchedule  = systemdSchedule{"forge-storage", "Daily Forge storage maintenance", "OnCalendar=*-*-* 03:30:00\nPersistent=true\n"}
+	hourlySystemdSchedule = systemdSchedule{"forge-storage-hourly", "Hourly Forge cache maintenance", "OnCalendar=hourly\nPersistent=true\n"}
+)
+
+func installLaunchAgent(ctx context.Context, args []string, home string, sched launchdSchedule) error {
 	var err error
 
 	var arguments strings.Builder
@@ -143,8 +171,8 @@ func installLaunchAgent(ctx context.Context, args []string, home string) error {
 		return err
 	}
 	escape := func(s string) string { var b strings.Builder; _ = xml.EscapeText(&b, []byte(s)); return b.String() }
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>com.reliant.forge-storage</string><key>ProgramArguments</key><array>%s</array><key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>30</integer></dict><key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string></dict><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string><key>ExitTimeOut</key><integer>120</integer></dict></plist>`, arguments.String(), escape(os.Getenv("PATH")), escape(filepath.Join(logs, "maintenance.log")), escape(filepath.Join(logs, "errors.log")))
-	file := filepath.Join(home, "Library", "LaunchAgents", "com.reliant.forge-storage.plist")
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array>%s</array>%s<key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string></dict><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string><key>ExitTimeOut</key><integer>120</integer></dict></plist>`, sched.label, arguments.String(), sched.trigger, escape(os.Getenv("PATH")), escape(filepath.Join(logs, sched.label+".log")), escape(filepath.Join(logs, sched.label+".err.log")))
+	file := filepath.Join(home, "Library", "LaunchAgents", sched.label+".plist")
 	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
 		return err
 	}
@@ -152,13 +180,13 @@ func installLaunchAgent(ctx context.Context, args []string, home string) error {
 		return err
 	}
 	domain := "gui/" + strconv.Itoa(os.Getuid())
-	_, _ = storage.Exec(ctx, "launchctl", "bootout", domain+"/com.reliant.forge-storage")
+	_, _ = storage.Exec(ctx, "launchctl", "bootout", domain+"/"+sched.label)
 	if _, err = storage.Exec(ctx, "launchctl", "bootstrap", domain, file); err != nil {
 		return err
 	}
 	return nil
 }
-func installSystemdTimer(ctx context.Context, args []string, home string) error {
+func installSystemdTimer(ctx context.Context, args []string, home string, sched systemdSchedule) error {
 	var err error
 
 	dir := filepath.Join(home, ".config", "systemd", "user")
@@ -169,18 +197,18 @@ func installSystemdTimer(ctx context.Context, args []string, home string) error 
 	for _, arg := range args {
 		quoted = append(quoted, strconv.Quote(strings.ReplaceAll(arg, "%", "%%")))
 	}
-	service := "[Unit]\nDescription=Forge local storage maintenance\n[Service]\nType=oneshot\nTimeoutStartSec=30min\nTimeoutStopSec=120s\nExecStart=" + strings.Join(quoted, " ") + "\nEnvironment=" + strconv.Quote("PATH="+os.Getenv("PATH")) + "\n"
-	timer := "[Unit]\nDescription=Daily Forge storage maintenance\n[Timer]\nOnCalendar=*-*-* 03:30:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n"
-	if err := os.WriteFile(filepath.Join(dir, "forge-storage.service"), []byte(service), 0600); err != nil {
+	service := "[Unit]\nDescription=" + sched.description + "\n[Service]\nType=oneshot\nTimeoutStartSec=30min\nTimeoutStopSec=120s\nExecStart=" + strings.Join(quoted, " ") + "\nEnvironment=" + strconv.Quote("PATH="+os.Getenv("PATH")) + "\n"
+	timer := "[Unit]\nDescription=" + sched.description + "\n[Timer]\n" + sched.timer + "[Install]\nWantedBy=timers.target\n"
+	if err := os.WriteFile(filepath.Join(dir, sched.unit+".service"), []byte(service), 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "forge-storage.timer"), []byte(timer), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, sched.unit+".timer"), []byte(timer), 0600); err != nil {
 		return err
 	}
 	if _, err = storage.Exec(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 		return err
 	}
-	if _, err = storage.Exec(ctx, "systemctl", "--user", "enable", "--now", "forge-storage.timer"); err != nil {
+	if _, err = storage.Exec(ctx, "systemctl", "--user", "enable", "--now", sched.unit+".timer"); err != nil {
 		return err
 	}
 	return nil

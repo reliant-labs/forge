@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,7 +43,14 @@ func maintenanceRunner(p storage.Policy, policyPath string, out io.Writer) stora
 	if err != nil {
 		sourceRoot = ""
 	}
-	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot, PolicyPath: policyPath}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var gocache, gomodcache, golangci, goimports string
+	if !testing.Testing() { // a test must never be handed the real Go caches
+		gocache, gomodcache, golangci, goimports = storage.ProductionGoCacheRoots(ctx, storage.Exec)
+	}
+	return storage.Runner{Policy: p, Out: out, TempRoot: os.TempDir(), SourceCacheRoot: sourceRoot, PolicyPath: policyPath,
+		GoCacheRoot: gocache, GoModCacheRoot: gomodcache, GolangciCacheRoot: golangci, GoimportsRoot: goimports}
 }
 
 // fullGCFn is the full maintenance pass `storage gc` runs, seamed so the

@@ -42,8 +42,12 @@ shared cache; a private cache per task is a cold 5-14 GB copy nobody reuses, and
 `go clean -cache` under running builds produces `link: cannot open file
 …/go-build/…-d`. Age-based trim is the safe mechanism: Go bumps an entry's mtime
 on use once it is an hour stale, so an entry older than 2h is not in use by a
-live build. `forge storage auto-gc` (started daily by `forge env up`) and
-`forge storage gc` apply it; `forge storage status` reports the shared cache
+live build. The installed schedule (`forge storage install`) runs the bounded
+non-disruptive pass (`forge storage auto-gc`) HOURLY, because agent load adds
+~40 GB/h of cache entries and a daily trim cannot hold a 60 GiB budget; the
+full pass, with registry downtime, stays daily at 03:30. Both take the
+maintenance lock, so they never overlap. `forge env up` additionally starts
+auto-gc at most once per 24h. `forge storage gc`/`auto-gc` apply it; `forge storage status` reports the shared cache
 size. Orphan reaping fails closed: if the process list or the open-file listing
 cannot be read, private caches are kept. The detached auto-gc pass has a 15
 minute budget so a first trim of a very large cache can make progress; a pass

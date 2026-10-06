@@ -69,7 +69,7 @@ func (r Runner) orphanScanRoots(ctx context.Context) []string {
 	for _, p := range r.GoCacheScanRoots {
 		add(p)
 	}
-	for _, project := range r.Policy.Projects {
+	for _, project := range append(append([]string(nil), r.Policy.Projects...), r.Policy.Repos...) {
 		out, err := r.command(ctx, "git", "--no-optional-locks", "-C", project, "worktree", "list", "--porcelain")
 		if err != nil {
 			continue

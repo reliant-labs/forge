@@ -441,3 +441,25 @@ func (r Runner) goCacheStatus(ctx context.Context) {
 			float64(total)/float64(GiB), len(entries), r.Policy.GoCacheGiB, r.Policy.GoCacheUnused)
 	}
 }
+
+// ProductionGoCacheRoots resolves the machine's Go-toolchain cache locations
+// for a Runner: the shared GOCACHE/GOMODCACHE (from `go env`), the
+// golangci-lint cache and the goimports index. Anything that cannot be located
+// is left empty, which the layers skip rather than guess.
+func ProductionGoCacheRoots(ctx context.Context, command func(context.Context, string, ...string) ([]byte, error)) (gocache, gomodcache, golangci, goimports string) {
+	if out, err := command(ctx, "go", "env", "GOCACHE", "GOMODCACHE"); err == nil {
+		if lines := strings.Split(strings.TrimSpace(string(out)), "\n"); len(lines) == 2 {
+			gocache, gomodcache = strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+		}
+	}
+	if env := os.Getenv("GOLANGCI_LINT_CACHE"); env != "" {
+		golangci = env
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		if golangci == "" {
+			golangci = filepath.Join(dir, "golangci-lint")
+		}
+		goimports = filepath.Join(dir, "goimports")
+	}
+	return
+}

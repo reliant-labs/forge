@@ -16,7 +16,10 @@ import (
 
 // Task Scheduler folder + name; the folder keeps forge's task out of the
 // root namespace.
-const windowsTaskName = `\Reliant\forge-storage`
+const (
+	windowsTaskName       = `\Reliant\forge-storage`
+	windowsHourlyTaskName = `\Reliant\forge-storage-hourly`
+)
 
 // windowsTaskMarkerPath is where installWindowsTask keeps a copy of the task
 // XML. storageScheduleInstalled stats this file instead of spawning schtasks
@@ -78,17 +81,33 @@ func joinWindowsArgs(args []string) string {
 // would add a quoting layer for no gain. Output is not captured either, and
 // forge storage gc keeps no log file of its own.
 func windowsTaskXML(command string, args []string, start time.Time) []byte {
+	return windowsTaskXMLFor(command, args, start, false)
+}
+
+// windowsTaskXMLFor builds the daily task, or with hourly the bounded cache
+// pass: a time trigger repeating every hour, 20 minute cap.
+func windowsTaskXMLFor(command string, args []string, start time.Time, hourly bool) []byte {
 	esc := func(s string) string { var b strings.Builder; _ = xml.EscapeText(&b, []byte(s)); return b.String() }
 	boundary := time.Date(start.Year(), start.Month(), start.Day(), 3, 30, 0, 0, time.UTC).Format("2006-01-02T15:04:05")
-	return []byte(`<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>Daily Forge storage maintenance</Description></RegistrationInfo>
-  <Triggers>
-    <CalendarTrigger>
+	trigger := `<CalendarTrigger>
       <StartBoundary>` + boundary + `</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
-    </CalendarTrigger>
+    </CalendarTrigger>`
+	description, limit := "Daily Forge storage maintenance", "PT30M"
+	if hourly {
+		trigger = `<TimeTrigger>
+      <Repetition><Interval>PT1H</Interval></Repetition>
+      <StartBoundary>` + start.UTC().Format("2006-01-02T15:04:05") + `</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>`
+		description, limit = "Hourly Forge cache maintenance", "PT20M"
+	}
+	return []byte(`<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>` + description + `</Description></RegistrationInfo>
+  <Triggers>
+    ` + trigger + `
   </Triggers>
   <Principals>
     <Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
@@ -98,7 +117,7 @@ func windowsTaskXML(command string, args []string, start time.Time) []byte {
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <StartWhenAvailable>true</StartWhenAvailable>
-    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+    <ExecutionTimeLimit>` + limit + `</ExecutionTimeLimit>
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author">
@@ -123,9 +142,14 @@ func encodeUTF16LEBOM(b []byte) []byte {
 	return out.Bytes()
 }
 
-func installWindowsTask(ctx context.Context, executable string, args []string) error {
-	data := encodeUTF16LEBOM(windowsTaskXML(executable, args, time.Now()))
+func installWindowsTask(ctx context.Context, executable string, args []string, hourly bool) error {
+	data := encodeUTF16LEBOM(windowsTaskXMLFor(executable, args, time.Now(), hourly))
 	marker, err := windowsTaskMarkerPath()
+	name := windowsTaskName
+	if hourly {
+		name = windowsHourlyTaskName
+		marker = strings.TrimSuffix(marker, ".task.xml") + "-hourly.task.xml"
+	}
 	if err != nil {
 		return err
 	}
@@ -135,7 +159,7 @@ func installWindowsTask(ctx context.Context, executable string, args []string) e
 	if err := os.WriteFile(marker, data, 0600); err != nil {
 		return err
 	}
-	if _, err := storage.Exec(ctx, "schtasks", "/Create", "/TN", windowsTaskName, "/XML", marker, "/F"); err != nil {
+	if _, err := storage.Exec(ctx, "schtasks", "/Create", "/TN", name, "/XML", marker, "/F"); err != nil {
 		_ = os.Remove(marker)
 		return fmt.Errorf("register scheduled task: %w", err)
 	}

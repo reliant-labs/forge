@@ -10,7 +10,8 @@ import (
 
 // TestE2EComponentsKCLDeclaredFromSources pins that a scaffolded project's
 // deploy/kcl/workloads.k ends up declaring every service the project has,
-// and that the envs render from it with NOTHING generated first.
+// and that the envs render from the tracked tree with NOTHING generated
+// first.
 //
 // The second half is the whole point of workloads.k being a tracked, scaffolded
 // file rather than a generated one: this test deletes every gitignored
@@ -93,20 +94,31 @@ func TestE2EComponentsKCLDeclaredFromSources(t *testing.T) {
 	// of the tree's state — which would mask exactly the clean-tree
 	// regression this test exists to catch.
 	out := runCmdOutput(t, projectDir, forgeBin, "env", "render", "dev")
-	for _, svc := range []string{"order", "intake"} {
-		if !strings.Contains(out, svc) {
-			t.Fatalf("dev KCL render did not derive a workload for %q from a clean tree:\n%s", svc, out)
+	// Require the workloads to be BOUND and lowered, not merely named: a
+	// render that produced only scalars would still mention them in labels.
+	// The scaffolded dev env binds to the host runtime (ADR 0002, #291), so
+	// the proof is the host launch line `forge env up` would run, not a
+	// Deployment, which a host-bound dev env correctly never renders.
+	//
+	// The services are served by ONE process (#529): `_api`, the binary's
+	// `server`, mounts every service on one Connect mux and runs under air.
+	// So the dev render carries one API line, and the migrate job — which
+	// dev/main.k binds straight out of workloads.k (`wl.migrate`) — is what
+	// proves workloads.k itself was read from the clean tree.
+	for _, want := range []string{
+		"api (service): air -c .air.toml",
+		"migrate (job): go run ./cmd/multiapp db migrate up",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dev KCL render from a clean tree did not bind %q — the workload did not lower:\n%s", want, out)
 		}
 	}
-	// A render that produced only scalars would still "contain" the service
-	// names via labels; require each workload to be BOUND and lowered. The
-	// scaffolded dev env binds every workload to the host runtime (ADR 0002,
-	// #291), so the proof is the host launch line `forge env up` would run —
-	// the service subcommand of the one shared binary — not a Deployment,
-	// which a host-bound dev env correctly never renders.
+	// ...and NOT a host process per service. That was the dev loop #529
+	// replaced: each service on its own port, the frontend reaching only the
+	// first, its sign-in cookie stranded on that one origin.
 	for _, svc := range []string{"order", "intake"} {
-		if want := svc + " (service): go run ./cmd/multiapp " + svc; !strings.Contains(out, want) {
-			t.Fatalf("dev KCL render did not bind %q to a host process (want %q) — the workload did not lower:\n%s", svc, want, out)
+		if bad := svc + " (service):"; strings.Contains(out, bad) {
+			t.Fatalf("dev render runs %q as its own host process; every service belongs in the one `server` process:\n%s", svc, out)
 		}
 	}
 	assertWorkloadsKCL("fresh clone")

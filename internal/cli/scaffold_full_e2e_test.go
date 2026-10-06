@@ -128,10 +128,13 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"frontends/web/src/components/ui/toast_notification.tsx",
 		"frontends/web/src/components/ui/key_value_list.tsx",
 
-		// CI workflows.
+		// CI workflows. The scaffold's staging and prod are hosted (#518),
+		// so the deploy path is release.yml driving the vendored
+		// forge-deploy action — see the deploy.yml guard below.
 		".github/workflows/ci.yml",
 		".github/workflows/build-images.yml",
-		".github/workflows/deploy.yml",
+		".github/workflows/release.yml",
+		".github/actions/forge-deploy/action.yml",
 		".github/workflows/e2e.yml",
 
 		// KCL deploy manifests. Per-env main.k files only — the
@@ -152,6 +155,12 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	for _, rel := range mustExist {
 		assertPathExistsE2E(t, filepath.Join(projectDir, rel))
 	}
+	// Past bug (#518): the first generate of a fresh project took its hosted
+	// envs for cluster envs and wrote a deploy.yml beside release.yml. A
+	// project whose every env is hosted has no env for deploy.yml to deploy,
+	// and a deploy.yml with no env renders no trigger and no job — a workflow
+	// GitHub rejects as invalid on every push.
+	assertPathNotExistsE2E(t, filepath.Join(projectDir, ".github", "workflows", "deploy.yml"))
 
 	// The handler package is generated for the scaffolded service. There is
 	// deliberately no handlers_gen.go: the pb-through collapse made every

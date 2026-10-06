@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -38,19 +39,28 @@ func TestE2EGenerateFailsOnUnrenderableDeployKCL(t *testing.T) {
 	// proves nothing about the fault we are about to inject.
 	runCmd(t, projectDir, forgeBin, "generate")
 
-	// Inject the fault: a member the closed ClusterTarget schema does not
-	// have. This is the shape of #322's break (`registry` was removed from
-	// this exact schema), without depending on that particular field name.
+	// Inject the fault: a member a closed forge schema does not have. This
+	// is the shape of #322's break (`registry` was removed from
+	// ClusterTarget), without depending on that field or that schema.
+	//
+	// It goes into the first LIVE schema instance — `<name> = forge.<Schema>
+	// {` on a line of its own — never into a commented-out one. Since #518
+	// prod is hosted and its only `forge.ClusterTarget {` is in the
+	// commented example of how to bind a cluster instead; injecting there
+	// left the KCL compiling and turned this test into an assertion about a
+	// comment.
 	mainK := filepath.Join(projectDir, "deploy", "kcl", "prod", "main.k")
 	src, err := os.ReadFile(mainK)
 	if err != nil {
 		t.Fatalf("read prod main.k: %v", err)
 	}
-	broken := strings.Replace(string(src), "forge.ClusterTarget {",
-		"forge.ClusterTarget {\n    no_such_field_on_this_schema = \"x\"", 1)
-	if broken == string(src) {
-		t.Fatal("prod/main.k declares no forge.ClusterTarget; the fault could not be injected")
+	loc := liveSchemaInstance.FindStringSubmatchIndex(string(src))
+	if loc == nil {
+		t.Fatalf("prod/main.k instantiates no forge schema on a live line; the fault could not be injected:\n%s", src)
 	}
+	opener := string(src[loc[2]:loc[3]])
+	broken := string(src[:loc[3]]) + "\n    no_such_field_on_this_schema = \"x\"" + string(src[loc[3]:])
+	t.Logf("fault injected into %q", strings.TrimSpace(opener))
 	if err := os.WriteFile(mainK, []byte(broken), 0o644); err != nil {
 		t.Fatalf("write prod main.k: %v", err)
 	}
@@ -63,9 +73,15 @@ func TestE2EGenerateFailsOnUnrenderableDeployKCL(t *testing.T) {
 		t.Fatalf("forge generate EXITED 0 on a deploy tree that does not compile — the break then surfaces at render, with nothing pointing back here:\n%s", out)
 	}
 	got := string(out)
-	for _, want := range []string{"deploy KCL", "prod"} {
+	for _, want := range []string{"deploy KCL", "prod", "no_such_field_on_this_schema"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the failure must name %q so the user knows what to fix:\n%s", want, got)
 		}
 	}
 }
+
+// liveSchemaInstance matches the opening line of a top-level or nested forge
+// schema instance, `<name> = forge.<Schema> {`, and captures it. Comment
+// lines cannot match (they start with `#`), and neither can a lambda's
+// `-> forge.<Schema> {` (there is no `= forge.` before the brace).
+var liveSchemaInstance = regexp.MustCompile(`(?m)^(\s*[A-Za-z_]\w*\s*=\s*forge\.[A-Z]\w*\s*\{)\s*$`)

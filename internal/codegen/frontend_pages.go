@@ -1674,7 +1674,11 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 		page.EntityTypeImportPath = "@/gen/" + ProtoFileToTSImportPath(importSource)
 	}
 
-	page.PkFieldCamel = fieldNameToCamel(entity.PkField)
+	if key, ok := EntityWireKey(entity); ok {
+		page.PkFieldCamel = fieldNameToCamel(key)
+	} else {
+		page.PkFieldCamel = fieldNameToCamel(entity.PkField)
+	}
 	if page.PkFieldCamel == "" {
 		page.PkFieldCamel = "id"
 	}

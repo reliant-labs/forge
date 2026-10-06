@@ -127,11 +127,11 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 
 // FrontendEntities is the subset of entities the frontend projections (CRUD
 // pages, nav, mock fixtures, mock transport) can render coherently: those whose
-// primary-key field is actually a field of the wire message. The pages key rows,
-// build detail/edit links and the mock store by that field, so an entity whose
-// key is not on the wire (a table's surrogate `id` the message never exposes,
-// served by a custom List+Update pair) would emit `item.id` against a message
-// with no `id` — code that cannot typecheck. Such an entity stays schema and
+// wire message carries a real key (EntityWireKey). The pages key rows, build
+// detail/edit links and the mock store by that field, so an entity with no key on
+// the wire (a surrogate `id` the message never exposes, served by a custom
+// List+Update pair) would emit `item.id` against a message with no `id` — code
+// that cannot typecheck. Such an entity stays schema and
 // server CRUD; it just gets no generated UI. An entity with no wire fields at
 // all (a legacy descriptor with no deep inventory) proves nothing and is kept.
 // The second return names each dropped entity and why, for one-line reporting.
@@ -147,15 +147,34 @@ func FrontendEntities(entities []EntityDef) (kept []EntityDef, dropped []string)
 }
 
 func entityWirePKGap(e EntityDef) string {
-	if len(e.Fields) == 0 || e.PkField == "" {
+	if len(e.Fields) == 0 {
 		return ""
 	}
-	for _, f := range e.Fields {
-		if f.Name == e.PkField {
-			return ""
-		}
+	if _, ok := EntityWireKey(e); ok {
+		return ""
 	}
-	return fmt.Sprintf("%s: primary key %q is not a field of its wire message — no CRUD pages or mocks generated (the entity stays schema and server CRUD)", e.Name, e.PkField)
+	return fmt.Sprintf("%s: neither its primary key %q nor a conventional %q field is on its wire message — no CRUD pages or mocks generated (the entity stays schema and server CRUD)",
+		e.Name, e.PkField, inflection.Singular(e.TableName)+"_id")
+}
+
+// EntityWireKey is the field the frontend keys an entity's rows by, and ok=false
+// when the wire message offers no real key. In order: the DB primary key when the
+// message carries it, else the conventional `<singular table>_id` domain key (a
+// table can hold a surrogate `id` while the published proto exposes
+// `usage_event_id` instead). Picking "the first field" or a literal "id" is a
+// guess, not a key, and is deliberately not offered here.
+func EntityWireKey(e EntityDef) (field string, ok bool) {
+	wire := make(map[string]bool, len(e.Fields))
+	for _, f := range e.Fields {
+		wire[f.Name] = true
+	}
+	if e.PkField != "" && wire[e.PkField] {
+		return e.PkField, true
+	}
+	if conventional := inflection.Singular(e.TableName) + "_id"; wire[conventional] {
+		return conventional, true
+	}
+	return "", false
 }
 
 // declaresWireMessage reports whether svc's descriptor actually contains a

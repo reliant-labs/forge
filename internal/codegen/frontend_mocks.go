@@ -581,15 +581,8 @@ func alreadyRepeated(protoType string) bool {
 //  3. the first wire field;
 //  4. "id" as a last resort (matches the page generator's fallback).
 func mockPkFieldCamel(e EntityDef) string {
-	wire := make(map[string]bool, len(e.Fields))
-	for _, f := range e.Fields {
-		wire[f.Name] = true
-	}
-	if e.PkField != "" && wire[e.PkField] {
-		return fieldNameToCamel(e.PkField)
-	}
-	if conventional := inflection.Singular(e.TableName) + "_id"; wire[conventional] {
-		return fieldNameToCamel(conventional)
+	if key, ok := EntityWireKey(e); ok {
+		return fieldNameToCamel(key)
 	}
 	if len(e.Fields) > 0 {
 		return fieldNameToCamel(e.Fields[0].Name)

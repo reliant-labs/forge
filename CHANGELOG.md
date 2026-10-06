@@ -198,6 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the source and expiry; `forge login` notes when a helper is already
   set. `forge login` and the token variable are unchanged for standalone forge
   and CI.
+
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,
   `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,

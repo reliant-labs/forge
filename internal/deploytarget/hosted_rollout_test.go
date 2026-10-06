@@ -3,6 +3,7 @@ package deploytarget
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -43,6 +44,8 @@ type rolloutCP struct {
 	unpinned string
 	// rolloutErr, when set, is the Connect code GetRollout fails with.
 	rolloutErr string
+	// holds is the rollout's holds, as raw JSON (a HELD phase carries them).
+	holds string
 }
 
 func (f *rolloutCP) Call(_ context.Context, proc string, req, out any) error {
@@ -88,10 +91,14 @@ func (f *rolloutCP) Call(_ context.Context, proc string, req, out any) error {
 		if unpinned == "" {
 			unpinned = `[{"deploymentId":"dep-orders","name":"orders","observedState":"DEPLOY_OBSERVED_STATE_READY","verdict":"DEPLOY_VERDICT_CONVERGED"}]`
 		}
+		holds := f.holds
+		if holds == "" {
+			holds = "[]"
+		}
 		reply = fmt.Sprintf(`{"rollout":{"promotion":{"id":"promo-1","releaseVersion":"v1"},
 		 "phase":%q,"workloads":%s,"unpinned":%s,"stabilityWindowMs":"120000",
-		 "convergesPromotions":true,"reason":"api: %s"}}`,
-			phase, workloads, unpinned, rolloutPhaseLabel(phase))
+		 "convergesPromotions":true,"reason":"api: %s","holds":%s}}`,
+			phase, workloads, unpinned, rolloutPhaseLabel(phase), holds)
 	default:
 		f.mu.Unlock()
 		return fmt.Errorf("unexpected procedure %s", proc)
@@ -308,6 +315,50 @@ func TestHostedWaitRolloutReadFailureFallsBackRatherThanTimingOut(t *testing.T) 
 	}
 	if n := len(cp.rolloutBodies()); n != rolloutReadAttempts {
 		t.Errorf("GetRollout was tried %d times, want exactly %d before the fallback", n, rolloutReadAttempts)
+	}
+}
+
+// A QUEUED promotion (phase HELD: accepted, recorded, waiting on billing) is
+// reported at once, as a HeldError carrying the hold — not waited on for the
+// whole budget and reported as a timeout of a release nothing is wrong with.
+// Both ways a deploy can meet it: the loop's own rollout read, and — when the
+// deploy recorded a bundle the platform has not applied — the one check made
+// while waiting for the apply.
+func TestHostedWaitReportsAQueuedPromotionAtOnce(t *testing.T) {
+	for name, recorded := range map[string]bool{
+		"by the rollout read":                false,
+		"while waiting for the bundle apply": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cp := &rolloutCP{
+				phases: []string{WireRolloutPhaseHeld},
+				holds: `[{"kind":"DEPLOY_HOLD_KIND_BILLING","promotionId":"promo-1",
+				  "reason":"this runs compute (1 workload) and the organization has no active compute plan",
+				  "fix":"Subscribe… nothing needs to be re-run.","actionUrl":"https://app.example/forge/env/prod?forgeProject=app"}]`,
+			}
+			provider := HostedProvider{Client: cp, PollInterval: time.Millisecond,
+				Rollout: cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 10 * time.Second}}
+			if recorded {
+				provider.RecordBundle = func(context.Context, string) (string, error) { return digestA, nil }
+			}
+			start := time.Now()
+			err := provider.Deploy(context.Background(), promotedGroup("promo-1"))
+
+			var held *HeldError
+			if !errors.As(err, &held) {
+				t.Fatalf("err = %v, want a *HeldError for a queued promotion", err)
+			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Errorf("a queued promotion took %s to report; it must not wait out the budget", elapsed)
+			}
+			if len(held.Holds) != 1 || held.Holds[0].Label() != "billing" || held.Env != "prod" ||
+				held.Holds[0].ActionURL == "" || held.Release != "v1" || held.PromotionID != "promo-1" {
+				t.Errorf("held = %+v, want the billing hold with its link, for prod promo-1 / v1", held)
+			}
+			if n := len(cp.rolloutBodies()); n != 1 {
+				t.Errorf("GetRollout was called %d times, want 1", n)
+			}
+		})
 	}
 }
 

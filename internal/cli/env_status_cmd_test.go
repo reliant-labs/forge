@@ -695,11 +695,18 @@ func TestEnvStatus_HelpNamesEveryModeAndExitCode(t *testing.T) {
 			t.Errorf("the help does not name %s", want)
 		}
 	}
-	// The wait outcomes, which are the codes CI branches on directly.
-	for _, want := range []string{"5", "6"} {
+	// The wait outcomes, which are the codes CI branches on directly:
+	// superseded, queued and timed out. Timed out is 8, not 5 — 5 has been
+	// the deploy's plan confirmation since O-13 (exitcodes.go), and a help
+	// that still said 5 sent a pipeline to branch on a code the wait never
+	// returns.
+	for _, want := range []string{"  6  ", "  7  ", "  8  "} {
 		if !strings.Contains(long, want) {
-			t.Errorf("the help does not name exit code %s", want)
+			t.Errorf("the help does not name exit code %q", strings.TrimSpace(want))
 		}
+	}
+	if strings.Contains(long, "  5  --wait only") {
+		t.Error("the help still names 5 as the wait's timeout; it is 8")
 	}
 	// And it must not point at a command that no longer exists.
 	for _, dead := range []string{"forge env verify", "forge env wait", "forge env rollout",

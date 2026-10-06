@@ -235,6 +235,9 @@ const (
 	wireRolloutPhaseDegraded    = "DEPLOY_ROLLOUT_PHASE_DEGRADED"
 	wireRolloutPhaseSuperseded  = "DEPLOY_ROLLOUT_PHASE_SUPERSEDED"
 	wireRolloutPhaseUnknown     = "DEPLOY_ROLLOUT_PHASE_UNKNOWN"
+	// HELD: accepted and recorded, QUEUED on a human action (billing). Not
+	// in flight, not failing, not progressing — waiting on a person.
+	wireRolloutPhaseHeld = deploytarget.WireRolloutPhaseHeld
 )
 
 // rolloutPhaseName renders a phase enum value for a human and for --json:
@@ -272,6 +275,11 @@ func exitCodeForRolloutPhase(wire string) int {
 		return exitUndetermined
 	case wireRolloutPhasePending, wireRolloutPhaseProgressing, wireRolloutPhaseStabilizing:
 		return exitTimedOut
+	case wireRolloutPhaseHeld:
+		// Accepted and waiting on a person, not on time: 7, so a pipeline
+		// hands the action to a human instead of retrying a wait that no
+		// amount of waiting will finish.
+		return exitQueued
 	default:
 		// A phase forge does not recognise is unobservable to forge,
 		// which is exactly what 2 means. Reading it as a pass would be
@@ -335,6 +343,9 @@ type wireRollout struct {
 	// out a timeout whose cause is "nobody was ever going to apply this".
 	ConvergesPromotions bool   `json:"convergesPromotions,omitempty"`
 	Reason              string `json:"reason,omitempty"`
+	// Holds is set exactly when Phase is HELD: what the queued promotion
+	// waits on, each with its own sentence, remedy and link.
+	Holds []deploytarget.HostedHold `json:"holds,omitempty"`
 }
 
 // wirePromoteRefusal is controlplane.v1.DeployPromoteRefusal, carried as a
@@ -611,6 +622,9 @@ type hostedStore struct {
 
 	mu     sync.Mutex
 	envIDs map[string]string // env name → control-plane id, per process
+	// holds is promotion id → what the write said it is queued on, for the
+	// promotions THIS process appended (see QueuedHolds).
+	holds map[string][]deploytarget.HostedHold
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -827,6 +841,11 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	guardWireFields(guard, req)
 	var resp struct {
 		Promotion wirePromotion `json:"promotion"`
+		// Holds is non-empty when the control plane ACCEPTED and RECORDED
+		// the promotion but QUEUED it on a human action (billing). Read
+		// off the write itself, so the deploy knows at once — with no
+		// extra call, even under --no-wait.
+		Holds []deploytarget.HostedHold `json:"holds,omitempty"`
 	}
 	if err := s.client.Call(ctx, procPromote, req, &resp); err != nil {
 		if refused := s.refusalFromWire(p.Env, err); refused != nil {
@@ -834,7 +853,25 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 		}
 		return release.Promotion{}, err
 	}
-	return s.promotionFromWire(p.Env, resp.Promotion)
+	written, err := s.promotionFromWire(p.Env, resp.Promotion)
+	if err == nil && len(resp.Holds) > 0 {
+		s.mu.Lock()
+		if s.holds == nil {
+			s.holds = map[string][]deploytarget.HostedHold{}
+		}
+		s.holds[written.ID] = resp.Holds
+		s.mu.Unlock()
+	}
+	return written, err
+}
+
+// QueuedHolds reports what the control plane said, on the write, that a
+// promotion this store appended is waiting on. Nil for a promotion admitted
+// outright — or appended by someone else, which this store cannot know.
+func (s *hostedStore) QueuedHolds(promotionID string) []deploytarget.HostedHold {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holds[promotionID]
 }
 
 // Cut calls CutRelease.

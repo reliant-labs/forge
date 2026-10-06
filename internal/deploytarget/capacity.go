@@ -110,7 +110,16 @@ type CapacityVerdict struct {
 	// (an older server): nothing was decided, and the server still enforces at
 	// RecordBundle / Promote.
 	Unchecked bool
+	// Holds is set when Allowed is false but the control plane would ACCEPT
+	// the deploy and QUEUE it on a human action (billing) rather than refuse
+	// it. A deploy then proceeds — build, record, promote — and is reported
+	// queued. An older control plane never sends it, so it keeps refusing.
+	Holds []HostedHold
 }
+
+// Queued reports a verdict that refuses to RUN the deploy now but would
+// accept and queue it: proceed, and report the queue.
+func (v CapacityVerdict) Queued() bool { return !v.Allowed && !v.Unchecked && len(v.Holds) > 0 }
 
 // CheckHostedCapacity asks the control plane whether demand fits, for the
 // environment envID ("" when the environment does not exist yet). A server
@@ -118,14 +127,15 @@ type CapacityVerdict struct {
 // other failure is returned.
 func CheckHostedCapacity(ctx context.Context, c HostedCaller, envID string, demand CapacityDemand) (CapacityVerdict, error) {
 	var resp struct {
-		Allowed             bool      `json:"allowed"`
-		Code                string    `json:"code"`
-		Reason              string    `json:"reason"`
-		Fix                 string    `json:"fix"`
-		HasComputePlan      bool      `json:"hasComputePlan"`
-		CeilingCPUMillicore wireInt64 `json:"ceilingCpuMillicores"`
-		CeilingMemoryBytes  wireInt64 `json:"ceilingMemoryBytes"`
-		CeilingStorageGiB   wireInt64 `json:"ceilingStorageGib"`
+		Allowed             bool         `json:"allowed"`
+		Code                string       `json:"code"`
+		Reason              string       `json:"reason"`
+		Fix                 string       `json:"fix"`
+		HasComputePlan      bool         `json:"hasComputePlan"`
+		CeilingCPUMillicore wireInt64    `json:"ceilingCpuMillicores"`
+		CeilingMemoryBytes  wireInt64    `json:"ceilingMemoryBytes"`
+		CeilingStorageGiB   wireInt64    `json:"ceilingStorageGib"`
+		Holds               []HostedHold `json:"holds,omitempty"`
 	}
 	req := map[string]any{
 		"environmentId": envID,
@@ -150,7 +160,7 @@ func CheckHostedCapacity(ctx context.Context, c HostedCaller, envID string, dema
 		Allowed: resp.Allowed, Code: strings.TrimPrefix(resp.Code, capacityCodePrefix),
 		Reason: resp.Reason, Fix: resp.Fix, HasComputePlan: resp.HasComputePlan,
 		CeilingCPU: resp.CeilingCPUMillicore.Int64(), CeilingMemory: resp.CeilingMemoryBytes.Int64(),
-		CeilingStorage: resp.CeilingStorageGiB.Int64(),
+		CeilingStorage: resp.CeilingStorageGiB.Int64(), Holds: resp.Holds,
 	}, nil
 }
 
@@ -197,6 +207,8 @@ func (v CapacityVerdict) Summary() string {
 		return fmt.Sprintf("OK (ceiling %dm CPU, %s memory, %d GiB storage)", v.CeilingCPU, gibString(v.CeilingMemory), v.CeilingStorage)
 	case v.Allowed:
 		return "OK (within the free static tier)"
+	case v.Queued():
+		return "QUEUED on " + v.Holds[0].Label() + " — accepted and recorded, live once that is done: " + v.Reason
 	default:
 		return "REFUSED (" + v.Code + "): " + v.Reason
 	}

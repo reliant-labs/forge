@@ -15,7 +15,6 @@ import (
 // reason, and belongs in a tracked follow-up rather than here.
 var uiOnlyRPCs = map[string]string{
 	"DeployService/ListUsage":        "metered-usage and spend charts on the Settings → Billing screen; billing is a UI/dashboard flow, not an environment operation an agent needs.",
-	"DeployService/ListConvergences": "read-only converger history rendered as a UI timeline; `forge env status` (and its --wait mode) already exposes the verdict it summarizes.",
 }
 
 var forgeRPCCallRe = regexp.MustCompile(`controlplane\.v1\.(DeployService|DomainService)/(\w+)`)

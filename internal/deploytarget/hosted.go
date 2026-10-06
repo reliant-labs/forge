@@ -1051,7 +1051,10 @@ type HostedProvider struct {
 	// RecordBundle builds, pushes and records the env's bundle once the
 	// environment exists. The provider cannot do it itself: building needs
 	// the project render, which only the CLI can drive.
-	RecordBundle func(ctx context.Context, environmentID string) error
+	// It returns the recorded bundle's digest, which the readiness wait
+	// uses to confirm the platform applied THIS bundle before judging
+	// workloads ("" skips that confirmation).
+	RecordBundle func(ctx context.Context, environmentID string) (bundleDigest string, err error)
 }
 
 // Name is the provider's registry id.
@@ -1109,16 +1112,19 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	// the same recorded bundle every other env ships; the control plane's hub
 	// Flux applies it when the promotion lands. forge writes no deployment row
 	// and no config artifact.
+	bundleDigest := ""
 	if p.RecordBundle != nil {
-		if err := p.RecordBundle(ctx, envID); err != nil {
+		d, err := p.RecordBundle(ctx, envID)
+		if err != nil {
 			return err
 		}
+		bundleDigest = d
 	}
 	promotionID := ""
 	if group.Hosted != nil {
 		promotionID = group.Hosted.PromotionID
 	}
-	return p.wait(ctx, c, group.Env, envID, promotionID, plan)
+	return p.wait(ctx, c, group.Env, envID, promotionID, bundleDigest, plan)
 }
 
 // wait polls until every published workload is confirmed running the bytes
@@ -1148,7 +1154,7 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 // rolloutPhaseServing). A deploy that waited for the window would be two
 // minutes slower every time, to answer a question `forge env status --wait` is the
 // verb for.
-func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID, promotionID string, plan []hostedPlanItem) error {
+func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID, promotionID, bundleDigest string, plan []hostedPlanItem) error {
 	policy := p.Rollout.Normalize()
 	if policy.Mode == cluster.RolloutSkip {
 		for _, item := range plan {
@@ -1168,7 +1174,44 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	// time would spend a call per poll re-learning the same answer.
 	rollout := promotionID != ""
 	rolloutFailures := 0
+	// applied gates every readiness read: until the platform reports the
+	// recorded bundle applied, workload status describes the PREVIOUS
+	// revision and must not be judged (or reported) as this deploy's.
+	applied := bundleDigest == ""
+	var announced string
 	for {
+		if !applied {
+			state, perr := pollBundleApplied(ctx, c, envID, bundleDigest)
+			switch {
+			case perr != nil && !state.known:
+				fmt.Printf("  readiness: could not read the platform's applied revision (%v); judging workloads directly\n", perr)
+				applied = true
+			case state.applied:
+				applied = true
+			default:
+				if cur := shortDigest(state.current); announced != cur {
+					announced = cur
+					fmt.Printf("  waiting for the platform to apply %s (currently %s)\n", shortDigest(bundleDigest), emptyOr(cur, "none"))
+				}
+				if time.Now().After(deadline) || ctx.Err() != nil {
+					for _, item := range plan {
+						p.observe(item.Name, cluster.RolloutStateTimedOut, errBundleNotApplied)
+					}
+					werr := fmt.Errorf("hosted env %q: TIMED OUT after %s: the platform has not applied this release yet (waiting for %s, currently %s); workloads were not judged",
+						envName, policy.Timeout, shortDigest(bundleDigest), emptyOr(shortDigest(state.current), "none"))
+					if policy.Mode == cluster.RolloutWarn {
+						fmt.Printf("  Warning: %v\n", werr)
+						return nil
+					}
+					return werr
+				}
+				select {
+				case <-ctx.Done():
+				case <-time.After(interval):
+				}
+				continue
+			}
+		}
 		pending, reasons, domains, err := p.pollOnce(ctx, c, envID, plan)
 		if rollout {
 			rolloutPending, rolloutReasons, rerr := p.pollRolloutOnce(ctx, c, envID, promotionID, plan)

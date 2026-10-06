@@ -260,3 +260,64 @@ func rolloutPendingOf(plan []hostedPlanItem, rollout wireRollout) (pending []str
 	}
 	return pending, reasons
 }
+
+// procListConvergences is controlplane.v1.DeployService/ListConvergences.
+const procListConvergences = "controlplane.v1.DeployService/ListConvergences"
+
+var errBundleNotApplied = errors.New("the platform has not applied this release yet")
+
+// bundleApplyState is what the control plane says it has applied.
+type bundleApplyState struct {
+	// known is false when the platform gave no answer at all.
+	known   bool
+	applied bool
+	// current is the sha256 digest the newest observation reports applied.
+	current string
+}
+
+// pollBundleApplied asks the control plane whether the reconciler has applied
+// the bundle this deploy recorded. Readiness is meaningless before that: until
+// the hub applies the promoted bundle, workload status describes the previous
+// revision. An unimplemented procedure or an empty history is reported as
+// unknown, so a control plane that cannot answer degrades to judging workloads
+// directly rather than failing every deploy.
+func pollBundleApplied(ctx context.Context, c HostedCaller, envID, bundleDigest string) (bundleApplyState, error) {
+	var resp struct {
+		Convergences []struct {
+			Revision string `json:"revision"`
+			State    string `json:"state"`
+		} `json:"convergences"`
+	}
+	if err := c.Call(ctx, procListConvergences, map[string]any{"environmentId": envID, "limit": 1}, &resp); err != nil {
+		var coded codedWireError
+		if errors.As(err, &coded) && (coded.HasCode(wireCodeUnimplemented) || coded.HasCode(wireCodeNotFound)) {
+			return bundleApplyState{}, err
+		}
+		// A transient failure keeps waiting rather than judging stale workloads.
+		return bundleApplyState{known: true}, err
+	}
+	if len(resp.Convergences) == 0 {
+		return bundleApplyState{known: true}, nil
+	}
+	rev := resp.Convergences[0].Revision
+	st := bundleApplyState{known: true, current: revisionDigest(rev)}
+	st.applied = bundleDigest != "" && strings.Contains(rev, strings.TrimPrefix(bundleDigest, "sha256:"))
+	return st, nil
+}
+
+// revisionDigest extracts the sha256 digest from a reconciler revision such as
+// "latest@sha256:abc…"; a revision without one is returned verbatim.
+func revisionDigest(rev string) string {
+	if i := strings.Index(rev, "sha256:"); i >= 0 {
+		return rev[i:]
+	}
+	return rev
+}
+
+func shortDigest(d string) string {
+	const shown = len("sha256:") + 12
+	if len(d) <= shown {
+		return d
+	}
+	return d[:shown]
+}

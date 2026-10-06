@@ -495,6 +495,17 @@ type Probes struct {
 	// +kubebuilder:validation:Pattern=`^/.*$`
 	LivenessPath string `json:"livenessPath,omitempty"`
 
+	// StartupPath is the HTTP startup-probe path. Unset means no startup
+	// probe. The kubelet holds off readiness and liveness until it passes,
+	// and a NATIVE sidecar (Container.Native) is only considered started,
+	// so the main container only launches, once it does. Unlike the other
+	// two paths it has no default: only the container knows what "started"
+	// means.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^/.*$`
+	StartupPath string `json:"startupPath,omitempty"`
+
 	// TCP probes with a TCP connect instead of an HTTP GET. A TCP probe
 	// sets no paths.
 	// +optional
@@ -538,6 +549,12 @@ const (
 	DefaultProbePeriodSeconds       int32 = 5
 	DefaultProbeTimeoutSeconds      int32 = 3
 	DefaultProbeFailureThreshold    int32 = 3
+
+	// A startup probe polls every DefaultStartupPeriodSeconds for up to
+	// DefaultStartupPeriodSeconds*DefaultStartupFailureThreshold (60s)
+	// before the kubelet restarts the container.
+	DefaultStartupPeriodSeconds    int32 = 1
+	DefaultStartupFailureThreshold int32 = 60
 
 	DefaultReadinessPath = "/readyz"
 	DefaultLivenessPath  = "/healthz"

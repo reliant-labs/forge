@@ -240,6 +240,7 @@ schema Container:
     env?: [EnvVar]
     image: str
     name: str
+    native?: bool
     ports?: [Port]
     probes?: Probes
     resources: Resources = Resources {}
@@ -264,6 +265,7 @@ container_json = lambda v: Container -> {str:} {
         "env": [env_var_json(_i) for _i in v.env] if v.env else Undefined
         "image": v.image
         "name": v.name
+        "native": v.native
         "ports": [port_json(_i) for _i in v.ports] if v.ports else Undefined
         "probes": probes_json(v.probes) if v.probes else Undefined
         "resources": resources_json(v.resources) if v.resources else Undefined
@@ -502,6 +504,7 @@ schema Probes:
     periodSeconds: int = 5
     port?: int
     readinessPath?: str
+    startupPath?: str
     tcp?: bool
     timeoutSeconds: int = 3
 
@@ -515,6 +518,8 @@ schema Probes:
         port == Undefined or port <= 65535, "Probes.port must be at most 65535"
         readinessPath == Undefined or regex.match(readinessPath, "^/.*$"), "Probes.readinessPath must match ^/.*$"
         readinessPath == Undefined or len(readinessPath) <= 2048, "Probes.readinessPath must be at most 2048 characters"
+        startupPath == Undefined or regex.match(startupPath, "^/.*$"), "Probes.startupPath must match ^/.*$"
+        startupPath == Undefined or len(startupPath) <= 2048, "Probes.startupPath must be at most 2048 characters"
         timeoutSeconds >= 1, "Probes.timeoutSeconds must be at least 1"
 
 probes_json = lambda v: Probes -> {str:} {
@@ -525,6 +530,7 @@ probes_json = lambda v: Probes -> {str:} {
         "periodSeconds": v.periodSeconds
         "port": v.port
         "readinessPath": v.readinessPath
+        "startupPath": v.startupPath
         "tcp": v.tcp
         "timeoutSeconds": v.timeoutSeconds
     }

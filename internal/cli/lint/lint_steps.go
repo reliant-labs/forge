@@ -807,6 +807,35 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-sexies-quater. Static-export — a Next.js frontend served by a
+		// static runtime (or declared `output: static`) must not use what an
+		// export cannot serve: a `[id]` route without generateStaticParams,
+		// a server action, cookies(), next/image's server loader, a rewrite.
+		// `next dev` serves all of them, so nothing else notices before the
+		// export fails in CI — or, for the constructs the export accepts,
+		// before production quietly lacks what dev had.
+		//
+		// GATES on error findings: each is a build `next build` refuses, or
+		// a build that is not an export at all (nothing to publish). The
+		// silently-dropped constructs are warnings. Scoped by file: every
+		// finding is anchored to the source line that causes it.
+		{
+			name:  "static-export lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.skipFrontends {
+					return false, "--skip-frontends — skipping static-export lint"
+				}
+				return rc.cwd != "" && hasNextJSFrontend(rc.cfg), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runStaticExportLint(rc.ctx, rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ static-export lint: %v\n",
+			collect:   collectStaticExportJSON,
+		},
+
 		// 13d-septies. Guarded-fields — the marker's blind spot. The page
 		// generator honours `forge:guards` for every page it emits, but
 		// pages are WRITE-IF-ABSENT: the natural order (scaffold CRUD,

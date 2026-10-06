@@ -271,6 +271,7 @@ func targetedLaneName(flags lintFlags) (string, bool) {
 		{flags.computedFields, "computed-fields"},
 		{flags.readOnlyFields, "read-only-fields"},
 		{flags.guardedFields, "guarded-fields"},
+		{flags.staticExport, "static-export"},
 		{flags.vendoredProtos, "vendored-protos"},
 		{flags.configReach, "config-reach"},
 	} {

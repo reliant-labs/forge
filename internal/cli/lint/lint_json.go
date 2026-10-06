@@ -360,6 +360,8 @@ func collectSingleLinterJSON(
 		return reportBySeverity(collectReadOnlyFieldsJSON(cwd, migrationsDirFor(cfg)))
 	case flags.guardedFields:
 		return reportUngated(collectGuardedFieldsJSON(cwd, frontendDirsForLint()))
+	case flags.staticExport:
+		return report(collectStaticExportJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	case flags.protoOptions:
 		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
 	case flags.vendoredProtos:

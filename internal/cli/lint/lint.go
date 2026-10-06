@@ -52,6 +52,7 @@ type lintFlags struct {
 	computedFields    bool
 	readOnlyFields    bool
 	guardedFields     bool
+	staticExport      bool
 	vendoredProtos    bool
 	configReach       bool
 	generatedDrift    bool
@@ -148,6 +149,18 @@ Examples:
                                  # form bypasses the rpc's own rules, and
                                  # scaffold-once means regenerating cannot
                                  # fix it
+  forge lint --static-export     # For every Next.js frontend that must be a
+                                 # static export (forge.yaml output: static,
+                                 # or bound to OnHosted/OnBucket/OnFirebase
+                                 # in any env): FAIL on what the export
+                                 # refuses — a [id] route without
+                                 # generateStaticParams, server actions,
+                                 # cookies()/headers(), next/image's server
+                                 # loader, a build that is not an export —
+                                 # and WARN on what it silently drops
+                                 # (middleware, rewrites, POST handlers).
+                                 # CI's real next build is authoritative;
+                                 # this says it first, with file:line
   forge lint --proto-options     # Flag a (forge.v1.*) annotation naming an
                                  # option field forge's descriptors do not
                                  # define — it compiles, and forge reads it
@@ -259,11 +272,12 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.computedFields, "computed-fields", false, "Flag a forge:computed field that no non-generated Go file assigns — nothing populates it, so the insert takes the column default. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
 	cmd.Flags().BoolVar(&flags.readOnlyFields, "read-only-fields", false, "Flag a forge:read-only field whose column nothing populates — no non-generated Go file assigns it, no meaningful DEFAULT, not GENERATED — so every row ships as the type's zero with no error anywhere. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
 	cmd.Flags().BoolVar(&flags.guardedFields, "guarded-fields", false, "Flag a scaffolded edit page whose update_mask still names a column declared `forge:guards` — saving the form writes it raw and bypasses the rpc that owns it, and pages are scaffold-once so `forge generate` cannot repair them (warnings only)")
+	cmd.Flags().BoolVar(&flags.staticExport, "static-export", false, "For each Next.js frontend that must build to a static export (forge.yaml output: static, or bound to forge.OnHosted / OnBucket / OnFirebase in any env), report with file:line what the export cannot serve. FAILS on what next build refuses (a dynamic route without generateStaticParams, server actions, next/headers, next/image without images.unoptimized, a build that is not an export); WARNS on what it silently drops (middleware, non-GET route handlers, ungated rewrites/redirects/headers)")
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
 	cmd.Flags().BoolVar(&flags.vendoredProtos, "vendored-protos", false, "Fail when a vendored proto (proto/forge/v1/forge.proto) differs from the copy embedded in this forge binary — forge's upgrade path does not track these copies, so drift is otherwise invisible")
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
-	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck) for a backend-only gate that needs no Node toolchain")
+	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, frontend prettier, eslint --fix); gate only and mutate nothing (CI / read-only)")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
@@ -407,6 +421,13 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runWithCwd(func(cwd string) error {
 			return runGuardedFieldsLint(cwd, frontendDirsForLint())
 		})
+	}
+	if flags.staticExport {
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error { return runStaticExportLint(ctx, cwd, cfg) })
 	}
 	if flags.protoOptions {
 		return runProtoOptionsLint(protoDirDefault)

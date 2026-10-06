@@ -81,7 +81,33 @@ func (r Runner) pruned(ctx context.Context) (Policy, bool) {
 		}
 		p.Registries = registries
 	}
+	p.Registries = r.withoutAbsentRegistries(ctx, p.Registries)
 	return p, p.fingerprint() != before
+}
+
+// withoutAbsentRegistries drops registries whose container does not exist, as
+// a clean docker listing (not an inspect error) reports. An e2e cluster's
+// registry dies with the cluster, but nothing removed it from the policy, and
+// every later pass then failed on `docker inspect` for each one. A listing that
+// errors keeps everything. Re-registration on the next converge brings back a
+// registry that comes back.
+func (r Runner) withoutAbsentRegistries(ctx context.Context, registries []Registry) []Registry {
+	if len(registries) == 0 {
+		return registries
+	}
+	if err := r.Local(ctx); err != nil {
+		return registries
+	}
+	var kept []Registry
+	for _, reg := range registries {
+		b, err := r.docker(ctx, "ps", "-aq", "--filter", "name=^/"+reg.Container+"$")
+		if err == nil && strings.TrimSpace(string(b)) == "" {
+			r.print("storage policy: dropping registry %s (its container no longer exists)\n", reg.Container)
+			continue
+		}
+		kept = append(kept, reg)
+	}
+	return kept
 }
 
 // goneClusters returns the registered clusters that both kubeconfig and docker

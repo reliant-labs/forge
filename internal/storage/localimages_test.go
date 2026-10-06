@@ -2,14 +2,23 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 )
 
+type fakeContainer struct {
+	name     string
+	running  bool
+	hostPort string // published host port ("" when none)
+	imageID  string
+	imageRef string
+}
+
 type fakeImageHost struct {
-	ps, images string
-	used       string // output of inspect --format
+	containers []fakeContainer
+	images     string
 	removed    []string
 	rmiFails   map[string]bool
 }
@@ -20,11 +29,46 @@ func (f *fakeImageHost) command(_ context.Context, name string, args ...string) 
 	case name == "docker" && joined == "context inspect":
 		return []byte(`[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]`), nil
 	case strings.HasPrefix(joined, "ps --format"):
-		return []byte(f.ps), nil
+		// Running containers only, and only they report published ports.
+		var out strings.Builder
+		for _, c := range f.containers {
+			if !c.running {
+				continue
+			}
+			ports := ""
+			if c.hostPort != "" {
+				ports = "0.0.0.0:" + c.hostPort + "->5000/tcp"
+			}
+			fmt.Fprintf(&out, `{"Names":%q,"Ports":%q}`+"\n", c.name, ports)
+		}
+		return []byte(out.String()), nil
 	case joined == "ps -aq":
-		return []byte("c1\nc2\n"), nil
+		var ids []string
+		for i := range f.containers {
+			ids = append(ids, fmt.Sprintf("c%d", i))
+		}
+		return []byte(strings.Join(ids, "\n")), nil
 	case strings.HasPrefix(joined, "inspect --format"):
-		return []byte(f.used), nil
+		var out []string
+		for _, c := range f.containers {
+			out = append(out, c.imageID+" "+c.imageRef)
+		}
+		return []byte(strings.Join(out, "\n")), nil
+	case strings.HasPrefix(joined, "inspect "):
+		var rows []map[string]any
+		for _, c := range f.containers {
+			bindings := map[string]any{}
+			if c.hostPort != "" {
+				bindings["5000/tcp"] = []map[string]string{{"HostPort": c.hostPort}}
+			}
+			rows = append(rows, map[string]any{
+				"Name": "/" + c.name, "Image": c.imageID,
+				"Config":     map[string]any{"Image": c.imageRef},
+				"HostConfig": map[string]any{"PortBindings": bindings},
+			})
+		}
+		b, _ := json.Marshal(rows)
+		return b, nil
 	case strings.HasPrefix(joined, "image ls"):
 		return []byte(f.images), nil
 	case strings.HasPrefix(joined, "rmi "):
@@ -44,10 +88,11 @@ func imageRow(repo, tag, id string) string {
 
 func newFakeImageHost() *fakeImageHost {
 	return &fakeImageHost{
-		// One live registry publishing 5051.
-		ps: `{"Names":"k3d-live-registry","Ports":"0.0.0.0:5051->5000/tcp"}` + "\n" +
-			`{"Names":"web","Ports":"0.0.0.0:8080->80/tcp"}` + "\n",
-		used: "sha256:inuse localhost:5061/inuse:1\n",
+		containers: []fakeContainer{
+			{name: "k3d-live-registry", running: true, hostPort: "5051", imageID: "sha256:reg", imageRef: "registry:2"},
+			{name: "web", running: true, hostPort: "8080", imageID: "sha256:web", imageRef: "web:1"},
+			{name: "user", running: false, imageID: "sha256:inuse", imageRef: "localhost:5061/inuse:1"},
+		},
 		images: imageRow("localhost:5061/workspace-base", "t1", "sha256:a") + // dead port
 			imageRow("registry.localhost:5061/workspace-base", "t1", "sha256:a") + // same image, second tag
 			imageRow("localhost:5051/workspace-base", "t2", "sha256:b") + // live port
@@ -104,5 +149,33 @@ func TestStaleLocalImagesKeepsAliasesOfARunningRegisteredRegistry(t *testing.T) 
 	got, err := r.StaleLocalImages(context.Background())
 	if err != nil || len(got) != 0 {
 		t.Fatalf("stale = %v, %v", got, err)
+	}
+}
+
+// TestStaleLocalImagesKeepsImagesOfAStoppedRegistry: the full GC pass stops the
+// registry for garbage-collect, and k3d registries can sit stopped after a
+// Docker Desktop restart. A stopped container publishes no ports in `docker ps`
+// output, so liveness must come from the container's own port bindings, and an
+// alias is dead only when NO container, running or stopped, backs it.
+func TestStaleLocalImagesKeepsImagesOfAStoppedRegistry(t *testing.T) {
+	f := newFakeImageHost()
+	f.containers = []fakeContainer{
+		{name: "k3d-stopped-registry", running: false, hostPort: "5051", imageID: "sha256:reg", imageRef: "registry:2"},
+		{name: "k3d-registered-registry", running: false, imageID: "sha256:reg", imageRef: "registry:2"},
+	}
+	f.images = imageRow("localhost:5051/workspace-base", "t", "sha256:a") +
+		imageRow("registry.localhost:5051/workspace-base", "t", "sha256:a") +
+		imageRow("k3d-stopped-registry:5000/app", "x", "sha256:b") +
+		imageRow("registry.localhost:5099/app", "x", "sha256:c") + // registered, stopped, no known port
+		imageRow("localhost:5077/gone", "x", "sha256:d") // nothing backs it
+	r := Runner{Command: f.command, Policy: Policy{Registries: []Registry{{
+		Container: "k3d-registered-registry", Aliases: []string{"registry.localhost:5099"},
+	}}}}
+	got, err := r.StaleLocalImages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Ref != "localhost:5077/gone:x" {
+		t.Fatalf("stale = %+v; only the image nothing backs may be untagged", got)
 	}
 }

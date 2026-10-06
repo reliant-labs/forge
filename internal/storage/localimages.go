@@ -16,7 +16,6 @@ import (
 
 var (
 	localRegistryHost = regexp.MustCompile(`^(?:localhost|registry\.localhost|k3d-[A-Za-z0-9._-]+):([0-9]+)$`)
-	publishedHostPort = regexp.MustCompile(`:([0-9]+)->`)
 )
 
 // StaleLocalImage is one host image reference to be untagged.
@@ -36,40 +35,25 @@ type hostImageRow struct {
 // `k3d-<name>:<port>`) that no running container backs, and whose image no
 // container, running or stopped, uses.
 //
-// A `localhost` or `registry.localhost` alias is live when a running container
-// publishes that host port. A `k3d-<name>` alias is live when a running
-// container of that name exists. Anything unparseable is kept; a failed docker
+// An alias is dead only when NO container, running or stopped, backs it: a
+// `localhost` or `registry.localhost` alias is backed by any container whose
+// port bindings include that host port, a `k3d-<name>` alias by any container
+// of that name, and a registry registered in the policy by its container name.
+// A stopped registry (the full pass stops it for garbage-collect; Docker
+// Desktop restarts leave k3d registries stopped) therefore keeps its images. Anything unparseable is kept; a failed docker
 // call fails the layer rather than guessing.
 func (r Runner) StaleLocalImages(ctx context.Context) ([]StaleLocalImage, error) {
-	b, err := r.docker(ctx, "ps", "--format", "{{json .}}")
+	livePorts, liveNames, err := r.backedLocalRegistries(ctx)
 	if err != nil {
 		return nil, err
 	}
-	livePorts, liveNames := map[string]bool{}, map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		if line == "" {
-			continue
-		}
-		var c struct{ Names, Ports string }
-		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			return nil, fmt.Errorf("parse docker ps: %w", err)
-		}
-		for _, m := range publishedHostPort.FindAllStringSubmatch(c.Ports, -1) {
-			livePorts[m[1]] = true
-		}
-		for _, name := range strings.Split(c.Names, ",") {
-			liveNames[name] = true
-		}
-	}
-
-	// An alias a registered, running registry answers to is live even when no
-	// host port says so (registry.localhost:5000 is the in-cluster spelling).
+	// A registry registered in the policy was not pruned as dead, so it counts
+	// as live by container name whatever its state.
 	liveAliases := map[string]bool{}
 	for _, reg := range r.Policy.Registries {
-		if liveNames[reg.Container] {
-			for _, alias := range reg.Aliases {
-				liveAliases[alias] = true
-			}
+		liveNames[reg.Container] = true
+		for _, alias := range reg.Aliases {
+			liveAliases[alias] = true
 		}
 	}
 
@@ -77,7 +61,7 @@ func (r Runner) StaleLocalImages(ctx context.Context) ([]StaleLocalImage, error)
 	if err != nil {
 		return nil, err
 	}
-	b, err = r.docker(ctx, "image", "ls", "--no-trunc", "--format", "{{json .}}")
+	b, err := r.docker(ctx, "image", "ls", "--no-trunc", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
@@ -166,4 +150,45 @@ func (r Runner) LocalImages(ctx context.Context, apply bool) error {
 		return fmt.Errorf("could not untag %d image(s): %s", len(failed), strings.Join(failed, "; "))
 	}
 	return nil
+}
+
+// backedLocalRegistries returns the host ports and names of every container,
+// running or stopped. Ports come from HostConfig.PortBindings, because a
+// stopped container reports none in `docker ps`.
+func (r Runner) backedLocalRegistries(ctx context.Context) (ports, names map[string]bool, err error) {
+	ports, names = map[string]bool{}, map[string]bool{}
+	b, err := r.docker(ctx, "ps", "-aq")
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := strings.Fields(string(b))
+	if len(ids) == 0 {
+		return ports, names, nil
+	}
+	b, err = r.docker(ctx, append([]string{"inspect"}, ids...)...)
+	if err != nil {
+		return nil, nil, err
+	}
+	var containers []struct {
+		Name       string `json:"Name"`
+		HostConfig struct {
+			PortBindings map[string][]struct {
+				HostPort string `json:"HostPort"`
+			} `json:"PortBindings"`
+		} `json:"HostConfig"`
+	}
+	if err := json.Unmarshal(b, &containers); err != nil {
+		return nil, nil, fmt.Errorf("parse docker inspect: %w", err)
+	}
+	for _, c := range containers {
+		names[strings.TrimPrefix(c.Name, "/")] = true
+		for _, bindings := range c.HostConfig.PortBindings {
+			for _, binding := range bindings {
+				if binding.HostPort != "" {
+					ports[binding.HostPort] = true
+				}
+			}
+		}
+	}
+	return ports, names, nil
 }

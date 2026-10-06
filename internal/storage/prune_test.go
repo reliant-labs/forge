@@ -199,6 +199,9 @@ func TestGCPrunesBeforeTheRegistryLayer(t *testing.T) {
 			if strings.HasPrefix(joined, "buildx inspect") {
 				return []byte(buildxInspectText("default", "docker-container", "unix:///var/run/docker.sock")), nil
 			}
+			if strings.HasPrefix(joined, "ps --format") || joined == "ps -aq" || strings.HasPrefix(joined, "image ls") {
+				return nil, nil
+			}
 			return clusterWorld{contexts: []string{"k3d-other"}}.command(ctx, name, args...)
 		},
 	}

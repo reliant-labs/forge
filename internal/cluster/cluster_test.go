@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -1380,5 +1381,61 @@ func TestApplyWithImmutableRecovery_BatchedMultiConflict_ExitsZero(t *testing.T)
 		if gotNames[key] != ns {
 			t.Fatalf("delete must scope %s to namespace %q, got %q (all: %+v)", key, ns, gotNames[key], deleted)
 		}
+	}
+}
+
+// scImmutableStderr is the apiserver's real rejection of a StorageClass
+// `parameters` change (captured from a k3d cluster, server-side apply, forge's
+// exact flags). StorageClass is cluster-scoped and owns nothing: bound PVs carry
+// their own resolved disk spec, so delete + re-apply is safe for it.
+const scImmutableStderr = `The StorageClass "workspace-ssd" is invalid: parameters: Invalid value: {"labels":"a=1","type":"pd-balanced"}: field is immutable`
+
+const storageClassManifest = `apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: workspace-ssd
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced`
+
+// TestApplyWithImmutableRecovery_RecreatesStorageClass pins that a StorageClass
+// parameters change is healed by deleting the class (cluster-scoped: empty
+// namespace) and re-applying, not surfaced as a failed deploy.
+func TestApplyWithImmutableRecovery_RecreatesStorageClass(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+	apply := func() (string, error) {
+		applies++
+		if applies == 1 {
+			return scImmutableStderr, errors.New("exit status 1")
+		}
+		return "", nil
+	}
+	del := func(t immutableTarget) error { deleted = append(deleted, t); return nil }
+
+	if _, err := applyWithImmutableRecovery(storageClassManifest, stderrOnlyApply(apply), del, noopWaitGone); err != nil {
+		t.Fatalf("a StorageClass parameters change must recover, got %v", err)
+	}
+	if applies != 2 || len(deleted) != 1 {
+		t.Fatalf("want fail, delete, re-apply (applies=2 deletes=1), got applies=%d deletes=%v", applies, deleted)
+	}
+	if got := deleted[0]; got.Kind != "StorageClass" || got.Name != "workspace-ssd" || got.Namespace != "" {
+		t.Fatalf("delete must target the cluster-scoped StorageClass, got %+v", got)
+	}
+}
+
+// TestImmutableRecovery_RefusesKindsThatOwnData pins the safety boundary the
+// recovery had implicitly: a PersistentVolumeClaim's immutable field must NEVER
+// be answered by deleting it (that destroys a workspace's disk). Only kinds
+// whose delete loses no state are recoverable.
+func TestImmutableRecovery_RefusesKindsThatOwnData(t *testing.T) {
+	for _, kind := range []string{"PersistentVolumeClaim", "PersistentVolume", "StatefulSet", "Namespace", "CustomResourceDefinition"} {
+		stderr := fmt.Sprintf(`The %s "x" is invalid: spec: Forbidden: field is immutable`, kind)
+		if got := immutableResources(stderr, ""); len(got) != 0 {
+			t.Errorf("%s immutable conflict must not be auto-deleted, got %+v", kind, got)
+		}
+	}
+	if got := immutableResources(`The Job "j" is invalid: spec.template: field is immutable`, ""); len(got) != 1 {
+		t.Errorf("Job must stay recoverable, got %+v", got)
 	}
 }

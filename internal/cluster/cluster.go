@@ -1962,6 +1962,28 @@ func immutableResource(stderr, manifests string) (immutableTarget, bool) {
 	return immutableTarget{Kind: kind, Name: name, Namespace: ns}, true
 }
 
+// recreatableKinds is the allowlist of kinds the immutable recovery may delete
+// and re-apply. Membership means: deleting the object loses no state, because
+// it owns no data and nothing is garbage-collected through it — workloads are
+// re-created from the manifest, and cluster-scoped config objects (a
+// StorageClass's bound PVs and PVCs keep their own resolved disk spec and only
+// reference the class by name) are re-created by name. A kind that holds data
+// (PersistentVolumeClaim, PersistentVolume, StatefulSet), or whose delete
+// cascades to everything inside it (Namespace, CustomResourceDefinition), is
+// deliberately absent: an immutable conflict there must fail the deploy loudly
+// rather than be "healed" by destroying a workspace's disk.
+var recreatableKinds = map[string]bool{
+	"Job":                true,
+	"Deployment":         true,
+	"DaemonSet":          true,
+	"Service":            true,
+	"StorageClass":       true,
+	"RuntimeClass":       true,
+	"PriorityClass":      true,
+	"ClusterRoleBinding": true,
+	"RoleBinding":        true,
+}
+
 // immutableResources is the batch-aware extractor: it returns EVERY distinct
 // recoverable immutable-field conflict reported by a single apply, not just
 // the first. forge applies the workload batch (the migrate Job + Deployments)
@@ -2005,7 +2027,7 @@ func immutableResources(stderr, manifests string) []immutableTarget {
 			continue
 		}
 		kind, name, ok := parseInvalidResource(head)
-		if !ok {
+		if !ok || !recreatableKinds[kind] {
 			continue
 		}
 		ns := namespaceForResource(manifests, kind, name)

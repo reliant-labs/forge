@@ -70,7 +70,7 @@ func (r Runner) orphanScanRoots(ctx context.Context) []string {
 		add(p)
 	}
 	for _, project := range r.Policy.Projects {
-		out, err := r.command(ctx, "git", "-C", project, "worktree", "list", "--porcelain")
+		out, err := r.command(ctx, "git", "--no-optional-locks", "-C", project, "worktree", "list", "--porcelain")
 		if err != nil {
 			continue
 		}

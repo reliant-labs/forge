@@ -230,7 +230,7 @@ The born create/edit pages derive each field's zod line from the proto. Keep the
 - **Required means a rule says so.** A field is required (`*`, a length floor in zod) only when it has protovalidate `required = true` or `string.min_len >= 1`, or when it is a non-optional foreign key, whose column is `NOT NULL REFERENCES` with no DEFAULT. A plain `string notes` is born `NOT NULL DEFAULT ''`, so `""` is a valid value. To make a field mandatory, add the rule to the proto. It then applies on the wire and in the DB CHECK as well as in the form.
 - **An empty `optional` field is unset, not zero.** For a proto3 `optional` scalar, zod maps `""` to `undefined` (`z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().optional())`), so the request omits it and the column stays NULL. Without this, `z.coerce.number()` turns an empty `optional int32 year` into year 0. On edit, keep the field in `update_mask`: a masked path whose value is unset is written as NULL, which is how a user clears a stored value.
 - **The enum zero is never a choice.** `*_UNSPECIFIED` (wire number 0) is how the wire says "unset". The born CHECK rejects it, so form selects and list filters list only real members. A `NOT NULL` enum's create select starts on the first real member, which is the column DEFAULT. An `optional` enum adds a None option that submits as unset.
-- **Create lands on the new record:** ``onSuccess: ({ order: created }) => router.push(created ? `/orders/${created.id}` : "/orders")``.
+- **Create lands on the new record:** `onSuccess: ({ order: created }) => router.push(created ? entityViewHref("orders", created.id) : "/orders")`.
 
 ## Step 4 — Zustand for client state, if needed
 
@@ -277,6 +277,37 @@ For the tokens you'll repeat — colors, spacing, radii — extend the `@theme` 
 
 Next.js App Router auto-routes anything under `src/app/`. Adding `src/app/users/page.tsx` creates `/users`. To gate the page behind auth, the auth provider in `src/lib/auth/` already runs at layout level — components can read `useAuth()` for current user / token.
 
+**Every route is static.** A frontend is a static export by default (`output: static`). An export contains only pages it can enumerate at build time, and a row's id exists only at runtime, so **never add a `[id]` segment**. `next build` fails with `missing "generateStaticParams()"`. The generated pages put the id in the query string instead:
+
+| Route | File | URL |
+|---|---|---|
+| list | `src/app/users/page.tsx` | `/users` |
+| create | `src/app/users/new/page.tsx` | `/users/new` |
+| detail | `src/app/users/view/page.tsx` | `/users/view?id=<id>` |
+| edit | `src/app/users/edit/page.tsx` | `/users/edit?id=<id>` |
+
+Build and read those URLs with `src/lib/entity-routes.ts`. Do not hand-roll the query string:
+
+```tsx
+import { entityEditHref, entityViewHref, useEntityIdParam } from "@/lib/entity-routes";
+
+router.push(entityViewHref("users", user.id));     // "/users/view?id=…"
+<Link href={entityEditHref("users", id)}>Edit</Link>
+
+// In the page: useEntityIdParam() calls useSearchParams, so render the
+// component that calls it inside <Suspense>. Without the boundary the export fails.
+export default function UserDetailPage() {
+  return <Suspense fallback={<SkeletonLoader />}><UserDetailRoute /></Suspense>;
+}
+function UserDetailRoute() {
+  const id = useEntityIdParam();   // undefined when ?id= is missing
+  if (id === undefined) return <MissingIdState />;
+  return <UserDetail id={id} />;
+}
+```
+
+Hand-written pages that take a parameter follow the same rule. An entity nested under another reads two query parameters (`/orders/lines?order=…`), not two segments. A frontend set to `output: standalone` can use dynamic segments, but then it cannot ship on hosted static hosting.
+
 For navigation links, use the project's existing nav component (likely in `src/components/layout/`).
 
 ## Step 7 — verify visually
@@ -303,7 +334,8 @@ take_screenshot()    # actual rendered pixels
 5. **Hand-editing a generated `*-hooks.ts`.** Overwritten on next `forge generate`.
 6. **Skipping screenshots.** Snapshots compile, tests pass, layout is broken in the browser.
 7. **Leaving a scaffolded form on the raw CRUD RPC when a domain verb owns the operation.** The generated create page wires `Create<Entity>`: the generator cannot tell whether `IssuePrescription` creates a row or transitions one, so it never guesses. You can. Point the form at the domain RPC when one exists — that is where the invariants and side effects live. Rewire the mutation hook only. To stop the *edit* page writing a column a domain RPC owns, declare it in the proto with `// forge:guards <table>.<column>` on that RPC's request (see `proto`): the column then leaves the scaffolded `update_mask` and renders as a disabled row naming the RPC, instead of being written raw and tripping whatever CHECK the RPC exists to enforce. Note that pages are scaffolded **once** — a page that predates the marker keeps writing the column, and `forge lint --guarded-fields` is what finds it.
-8. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@reliantlabs/forge-web-runtime`), never raw `err.message`.
+8. **Adding a `src/app/<entity>/[id]/` route.** `npm run build` refuses a dynamic segment in a static export. Use `/<entity>/view?id=…` (Step 6). A project scaffolded before forge v0.1.44 still has `[id]` pages. `forge skill load migrations/v0.1.44` converts them.
+9. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@reliantlabs/forge-web-runtime`), never raw `err.message`.
 
 ## Rules
 

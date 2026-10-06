@@ -1,37 +1,86 @@
 ---
 name: serving
-description: How a forge frontend is built and served — the three output shapes (standalone/static/server), fenced build dirs, and mounting under a URL prefix with base_path and joinBasePath.
+description: How a forge frontend is built and served — the three output shapes (static by default, standalone, server), static-exportable routes, how a static host resolves them, fenced build dirs, and mounting under a URL prefix with base_path and joinBasePath.
 ---
 
 # Frontend build & serving shapes
 
 ## Production build shape (`output:`)
 
-`forge scaffold frontend` emits a `next.config.ts` captured in `forge.yaml` as
-`output:`. Opt in at scaffold time (`forge scaffold frontend dashboard --output
-static`); three values:
+`forge scaffold frontend` and `forge project new --frontend` write the
+frontend's `output:` into `forge.yaml` and render `next.config.ts` and the
+`Dockerfile` from it. Pick a different shape at scaffold time with
+`forge scaffold frontend dashboard --output standalone`. There are three
+values:
 
 | `output:`    | Production shape | Use when |
 | ------------ | ---------------- | -------- |
-| `standalone` | Node sidecar (`output: "standalone"`) | **The default.** Pairs with the shipped Dockerfile; supports the generated dynamic CRUD routes, server components/actions, request-time `redirect()`/`cookies()`. |
-| `static`     | Static export (`output: "export"`) | Pure UI shell with NO dynamic routes — drop `out/` on a CDN. |
+| `static`     | Static export (`output: "export"`) into `out/` | **The scaffold default.** Ships to hosted static hosting (`forge.OnHosted {}`), `forge.OnBucket`, any CDN, or the scaffolded nginx image. No Node in prod. |
+| `standalone` | Node server (`output: "standalone"`) | The frontend needs a server at request time: server actions, middleware, request-time `redirect()`/`cookies()`/`headers()`, route handlers that answer GET dynamically. Ships as a workload (Dockerfile), never as a static site. |
 | `server`     | Full Next.js (no `output:`) | Custom server, ISR, managed host (Vercel). |
 
-**FOOTGUN: `static` is incompatible with generated CRUD pages.** `output:
-"export"` requires `generateStaticParams()` on every dynamic segment, and the
-generated detail/edit pages (`/<entity>/[id]`) are dynamic client routes whose
-ids only exist at runtime, so `npm run build` fails on any project with a CRUD
-entity. Server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`,
-server actions) also require `standalone` or `server`; for a root redirect under
-static export use a client component with `useRouter().replace()` in a
-`useEffect`.
+An entry with **no** `output:` is a frontend scaffolded before static became
+the default (forge ≤ v0.1.43). It reads as `standalone`, because that is
+what its `next.config.ts` says.
+
+`next dev` is the same in every mode.
+
+## Static export: what a route may be
+
+An export holds only the pages Next can enumerate at build time. That gives
+three rules:
+
+- **No dynamic segments.** `src/app/books/[id]/page.tsx` fails `npm run build`:
+  `Page "/books/[id]" is missing "generateStaticParams()"`. Put the id in the
+  query string. The generated pages are `/<entity>/view?id=…` and
+  `/<entity>/edit?id=…`. Build those URLs with `entityViewHref` and
+  `entityEditHref`, and read the id with `useEntityIdParam`, all from
+  `src/lib/entity-routes.ts`.
+- **`useSearchParams` sits under `<Suspense>`.** The export prerenders each
+  page with no query string. A page that reads search params outside a
+  Suspense boundary fails the build. The generated detail and edit pages
+  render a Suspense shell around the component that reads the id.
+- **No server at request time.** Static mode does not support server actions,
+  `middleware.ts`, `next/headers`, next.config `rewrites`/`redirects`/`headers`,
+  or route handlers that answer GET dynamically. `images: { unoptimized: true }`
+  is set, because next/image's optimizer is a server route. The scaffolded
+  `src/app/%5F_forge/log/route.ts` is a dev-only POST receiver, and the export
+  leaves it out. Server-runtime redirects become a client component calling
+  `useRouter().replace()` in a `useEffect`.
+
+A frontend scaffolded before v0.1.44 has `[id]` pages. To convert it:
+`forge skill load migrations/v0.1.44`.
+
+## How a static host resolves the export
+
+`trailingSlash` stays at Next's default (`false`). The export writes one file
+per route: `out/books.html`, `out/books/view.html`, `out/books/edit.html`. A
+request for `/books/view?id=b-1` is served `books/view.html`, and the page
+reads `id` in the browser. The hosts forge ships to resolve that file as
+follows:
+
+- **Hosted static hosting** (`forge.OnHosted {}`) tries `<path>`, then
+  `<path>.html`, then `<path>/index.html`. A route-shaped miss falls back to
+  the site's `index.html`.
+- **The scaffolded nginx image** uses `try_files $uri $uri.html $uri/ =404`.
+- **A host that only maps directories to `index.html`** (a bare bucket website,
+  `python -m http.server`) cannot find `books/view.html` from `/books/view`.
+  Set `trailingSlash: true` in `next.config.ts` for such a host. The export
+  then writes `books/view/index.html`, and Next adds the slash to every link.
+  The entity-route helpers need no change.
+
+Do not rely on the hosted SPA fallback for a route you exported. It serves
+the root `index.html`, which is the dashboard and not your page.
 
 **Build dirs are fenced.** In `standalone`/`server`, production builds write to
 `.next-prod` while `next dev` keeps `.next`, so `npm run build` during a live
 `forge env up` session can't clobber the dev cache; `next start` and the
 Dockerfile read `.next-prod`. `static` keeps Next.js defaults, so avoid
-production builds during a live dev session in that mode. `output:` takes effect
-only at scaffold time (`next.config.ts` is yours to edit after).
+production builds during a live dev session in that mode. `output:` is read at
+scaffold time: `next.config.ts` and the `Dockerfile` are yours afterwards. To
+switch an existing frontend, change `output:` and run
+`forge project upgrade --force frontends/<name>/next.config.ts frontends/<name>/Dockerfile`.
+That command overwrites the two files, so read `--check <path>` first.
 
 ## Serving under a path prefix (`base_path`)
 
@@ -65,5 +114,5 @@ strings in hand-built URLs, and reading any env var other than
 `absoluteAdminUrl`) wraps the same helper for strings handed to an external
 system that round-trips back.
 
-See also: `frontend` for the rest of the frontend surface, `deploy` for how the
-built artifact ships.
+See also: `frontend` for the rest of the frontend surface, `frontend/pages` for
+the route shape, `deploy/static-site` for shipping the export.

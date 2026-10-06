@@ -1404,12 +1404,15 @@ Use --kind mobile to scaffold a React Native app using Expo.
 Use --kind vite-spa to scaffold a Vite + React + tanstack-router SPA.
 
 For Next.js frontends (--kind web, the default), --output selects the
-production build/runtime shape. "standalone" (the default) emits a
-self-contained Node server that pairs with the generated Dockerfile and
-supports the dynamic [id] CRUD routes forge generates. Opt into
-"static" only when the frontend has no dynamic routes — static export
-fails the build on the generated /<entity>/[id] pages. Use "server"
-for full Next.js dev+prod (next start).
+production build/runtime shape, persisted as frontends[].output.
+"static" (the default) makes "npm run build" a static export into out/ —
+what the hosted runtime (forge.OnHosted) and every bucket/CDN serves. The
+generated CRUD pages are static routes (/<entity>/view?id=…,
+/<entity>/edit?id=…), so a project with entities exports cleanly.
+"standalone" emits a self-contained Node server that the generated
+Dockerfile runs — opt in when the frontend needs a server at request time
+(server actions, middleware, cookies()). Use "server" for full Next.js
+dev+prod (next start). "next dev" is the same in every mode.
 
 --routes limits which entities get generated CRUD pages. By default forge
 scaffolds a list/detail/create/edit route set for EVERY entity in the
@@ -1445,7 +1448,7 @@ Example:
   forge scaffold frontend dashboard --port 3001
   forge scaffold frontend mobile --kind mobile
   forge scaffold frontend admin --kind vite-spa
-  forge scaffold frontend dashboard --output standalone
+  forge scaffold frontend dashboard --output standalone   # a Node server instead of a static export
   forge scaffold frontend admin --base-path /admin
   forge scaffold frontend web --auth-mode native
   forge scaffold frontend ops --routes users,usage-events`,
@@ -1457,7 +1460,7 @@ Example:
 
 	cmd.Flags().IntVar(&port, "port", 0, "Pin the frontend dev-server port. Default (unset) allocates a free port at launch — set this only when the port is externally fixed (e.g. an OAuth redirect URI registered with an IdP).")
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
-	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: standalone (default), static, or server. Only applies to --kind web.")
+	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: static (default — a static export into out/), standalone, or server. Only applies to --kind web.")
 	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
 	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in flow for this frontend. Only `native` (the default) is scaffolded: your own form POSTs credentials to your own API and gets an HttpOnly session cookie; the server runs the OIDC flow (internal/app/login_broker.go) and the browser never contacts the IdP.")
 	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events), or `--routes none` for no generated pages at all. Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
@@ -1497,7 +1500,7 @@ func validateFrontendFlags(ctxLabel, kind, output, basePath, authMode string) (f
 	default:
 		return frontendFlags{}, cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("invalid --output %q", output), "",
-			"pass --output standalone (default), static, or server")
+			"pass --output static (default), standalone, or server")
 	}
 	if output != "" && kind != "" && kind != "web" {
 		return frontendFlags{}, cliutil.UserErr(ctxLabel,
@@ -1581,6 +1584,13 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		return err
 	}
 	kind, output, basePath, authMode = flags.kind, flags.output, flags.basePath, flags.authMode
+	// Resolve the Next.js output shape HERE, not in the renderer, so the
+	// value the files are rendered with is the value forge.yaml records
+	// (buildFrontendEntry persists it). Left empty, the entry would read
+	// back as the legacy standalone shape — see FrontendConfig.EffectiveOutput.
+	if output == "" && (kind == "" || kind == "web") {
+		output = config.FrontendOutputScaffoldDefault
+	}
 
 	root, err := projectRoot()
 	if err != nil {
@@ -2121,6 +2131,13 @@ type frontendEntryInput struct {
 // field empty lets its scaffold default evolve in a later forge version
 // without every existing forge.yaml pinning the old value. That is why each
 // assignment below is conditional rather than unconditional.
+//
+// `output` is the exception, and runFrontend always resolves it for a web
+// frontend before it gets here. Its consequence is next.config.ts, which is
+// scaffold-once: a later default cannot reach a frontend that was already
+// rendered, so an empty field could never follow the default anyway — it
+// would only misdescribe the file. Empty reads as the legacy standalone
+// shape (FrontendConfig.EffectiveOutput).
 func buildFrontendEntry(in frontendEntryInput) config.FrontendConfig {
 	// NO default port here, and that is the fix for a real outage of the dev
 	// loop. The frontend's dev port is declared in deploy/kcl/dev/main.k

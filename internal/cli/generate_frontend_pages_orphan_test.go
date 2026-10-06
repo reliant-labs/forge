@@ -18,16 +18,30 @@ func mkfile(t *testing.T, path string) {
 }
 
 // TestLooksLikeGeneratedCRUDRouteDir_Nextjs pins the shape fingerprint: only a
-// dir carrying the generated `[id]/page.tsx` dynamic-detail route counts, so a
-// user's hand-authored route (a bare page.tsx) is not misread as generated.
+// dir carrying the generated list + `view/page.tsx` detail pair (or the
+// `[id]/page.tsx` dynamic detail an older forge wrote) counts, so a user's
+// hand-authored route (a bare page.tsx) is not misread as generated.
 func TestLooksLikeGeneratedCRUDRouteDir_Nextjs(t *testing.T) {
 	root := t.TempDir()
 
 	gen := filepath.Join(root, "widgets")
 	mkfile(t, filepath.Join(gen, "page.tsx"))
-	mkfile(t, filepath.Join(gen, "[id]", "page.tsx"))
+	mkfile(t, filepath.Join(gen, "view", "page.tsx"))
 	if !looksLikeGeneratedCRUDRouteDir("nextjs", gen) {
-		t.Error("a dir with [id]/page.tsx should read as a generated CRUD route")
+		t.Error("a dir with page.tsx + view/page.tsx should read as a generated CRUD route")
+	}
+
+	legacy := filepath.Join(root, "gizmos")
+	mkfile(t, filepath.Join(legacy, "page.tsx"))
+	mkfile(t, filepath.Join(legacy, "[id]", "page.tsx"))
+	if !looksLikeGeneratedCRUDRouteDir("nextjs", legacy) {
+		t.Error("a dir with the legacy [id]/page.tsx should read as a generated CRUD route")
+	}
+
+	viewOnly := filepath.Join(root, "reports")
+	mkfile(t, filepath.Join(viewOnly, "view", "page.tsx"))
+	if looksLikeGeneratedCRUDRouteDir("nextjs", viewOnly) {
+		t.Error("a lone view/page.tsx with no list page must NOT be flagged (a user route named view)")
 	}
 
 	userRoute := filepath.Join(root, "about")
@@ -45,9 +59,11 @@ func TestReportStaleFrontendRouteDirs_OrphanDetected(t *testing.T) {
 	appDir := filepath.Join(root, "src", "app")
 
 	// Live entity route (gadgets) — present in liveSlugs, must be left alone.
-	mkfile(t, filepath.Join(appDir, "gadgets", "[id]", "page.tsx"))
+	mkfile(t, filepath.Join(appDir, "gadgets", "page.tsx"))
+	mkfile(t, filepath.Join(appDir, "gadgets", "view", "page.tsx"))
 	// Orphaned generated route (widgets) — renamed away, NOT in liveSlugs.
-	orphan := filepath.Join(appDir, "widgets", "[id]", "page.tsx")
+	orphan := filepath.Join(appDir, "widgets", "view", "page.tsx")
+	mkfile(t, filepath.Join(appDir, "widgets", "page.tsx"))
 	mkfile(t, orphan)
 	// A user's own route — not generated-shaped, must never be flagged.
 	mkfile(t, filepath.Join(appDir, "settings", "page.tsx"))
@@ -58,7 +74,7 @@ func TestReportStaleFrontendRouteDirs_OrphanDetected(t *testing.T) {
 	reportStaleFrontendRouteDirs("nextjs", root, "web", live)
 
 	for _, p := range []string{
-		filepath.Join(appDir, "gadgets", "[id]", "page.tsx"),
+		filepath.Join(appDir, "gadgets", "view", "page.tsx"),
 		orphan,
 		filepath.Join(appDir, "settings", "page.tsx"),
 	} {

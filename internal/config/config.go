@@ -470,28 +470,31 @@ type FrontendConfig struct {
 	// vite-spa (those have their own production shapes).
 	//
 	// Valid values:
-	//   - "standalone" (default): production builds emit a self-contained
-	//     Node server at `.next-prod/standalone/server.js`. This is the shape
-	//     the shipped Dockerfile copies into its runner image, and the
-	//     only default that supports the dynamic `[id]` CRUD detail/edit
-	//     routes forge generates for every entity.
-	//   - "static": production builds emit a static export
-	//     (`output: "export"` gated on NODE_ENV=production) — pure HTML +
-	//     JS + CSS the user can drop on a CDN or object store. The dev
-	//     server stays unchanged (`next dev`). EXPLICIT OPT-IN ONLY:
-	//     `output: "export"` requires generateStaticParams() on every
-	//     dynamic route segment, and the generated CRUD detail/edit
-	//     pages (`/<slug>/[id]`) are dynamic client routes whose ids
-	//     only exist at runtime — `npm run build` fails on any project
-	//     with a CRUD entity unless those pages are removed or given
-	//     hand-written static params.
+	//   - "static" (what `forge project new --frontend` and `forge scaffold
+	//     frontend` write): production builds emit a static export
+	//     (`output: "export"` gated on NODE_ENV=production) into `out/` —
+	//     plain HTML + JS + CSS for a CDN, an object store, or the hosted
+	//     runtime's static hosting (`forge.OnHosted {}`), which serves
+	//     nothing else. The dev server stays unchanged (`next dev`). The
+	//     generated CRUD pages are static routes (`/<slug>/view?id=…`,
+	//     `/<slug>/edit?id=…`), so a project with entities exports cleanly.
+	//   - "standalone": production builds emit a self-contained Node server
+	//     at `.next-prod/standalone/server.js`, which the shipped
+	//     Dockerfile runs. Opt in when the frontend needs a server at
+	//     request time: server components that fetch per request, server
+	//     actions, middleware, `cookies()`/`headers()`.
 	//   - "server": full Next.js dev AND prod (no `output:` set). Use
 	//     when you want `next start` semantics in prod for custom edge /
 	//     ISR workflows.
 	//
-	// Defaults to "standalone" when empty. Pre-existing projects keep
-	// their checked-in `next.config.ts`; the field doesn't
-	// retroactively rewrite it.
+	// An EMPTY value means "standalone" — read it through EffectiveOutput.
+	// That is not the scaffold default, and the difference is deliberate:
+	// every frontend scaffolded before static became the default was
+	// written with this field empty AND a standalone next.config.ts, which
+	// is scaffold-once and never re-rendered. Reading empty as the CURRENT
+	// default would describe those projects as something their own config
+	// file says they are not. New scaffolds therefore always write the
+	// field, so the value on disk is the truth for every project.
 	Output string `yaml:"output,omitempty"`
 	// BasePath is the URL path prefix this frontend is mounted under
 	// when it is NOT served from the host root — e.g. "/admin" for an
@@ -591,6 +594,36 @@ func (f FrontendConfig) RoutesNone() bool {
 		}
 	}
 	return false
+}
+
+// Output values for FrontendConfig.Output — the Next.js production shape.
+const (
+	// FrontendOutputStatic is a static export into out/ (`output: "export"`).
+	FrontendOutputStatic = "static"
+	// FrontendOutputStandalone is a self-contained Node server
+	// (`output: "standalone"`).
+	FrontendOutputStandalone = "standalone"
+	// FrontendOutputServer is full Next.js (`next start`, no `output:`).
+	FrontendOutputServer = "server"
+
+	// FrontendOutputScaffoldDefault is what a NEW Next.js frontend is
+	// scaffolded with, and written into forge.yaml. Static because the
+	// hosted runtime serves frontends as static sites, and because the
+	// generated CRUD routes export cleanly — so the default ships
+	// anywhere. It is deliberately not what an empty field means; see
+	// EffectiveOutput.
+	FrontendOutputScaffoldDefault = FrontendOutputStatic
+)
+
+// EffectiveOutput returns the frontend's Next.js production shape,
+// lowercased. An unset field is "standalone": the shape every frontend
+// scaffolded before the field was always written was given, and still has
+// in its scaffold-once next.config.ts. See the Output field.
+func (f FrontendConfig) EffectiveOutput() string {
+	if o := strings.ToLower(strings.TrimSpace(f.Output)); o != "" {
+		return o
+	}
+	return FrontendOutputStandalone
 }
 
 // Dev-runner values for FrontendConfig.DevRunner, mirroring the KCL

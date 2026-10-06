@@ -6,7 +6,8 @@
 // EVERY entity, but a purpose-built frontend uses only a fraction — if this
 // entity isn't part of THIS frontend's product surface, delete the route
 // instead of leaving it wired into navigation.
-// Detail page emitted by `forge scaffold page`. See `forge skill load frontend/pages` for canonical patterns.
+// Detail page emitted by `forge scaffold page`, served at
+// /{{.EntitySlug}}/view?id=<id>. See `forge skill load frontend/pages` for canonical patterns.
 {{- /* Import ORDER is derived, not authored: the page writer sorts the
        imports this render actually emitted into the groups the scaffold's
        eslint import/order rule expects (templates.CanonicalTSImportOrder).
@@ -19,11 +20,10 @@ import Link from "next/link";
 {{- /* useRouter is only consumed by the delete flow's onSuccess redirect —
        importing it unconditionally ships an eslint no-unused-vars warning
        on every entity without a Delete RPC. */}}
-import { useParams{{if .HasDelete}}, useRouter{{end}} } from "next/navigation";
 {{- if .HasDelete}}
-import { useState } from "react";
+import { useRouter } from "next/navigation";
 {{- end}}
-import { z } from "zod";
+import { Suspense{{if .HasDelete}}, useState{{end}} } from "react";
 
 {{if .HasDetailFK}}import { EntityName } from "@/components/entity-name";
 {{end -}}
@@ -41,19 +41,47 @@ import { {{range $i, $t := .Types}}{{if $i}}, {{end}}{{$t}}{{end}} } from "{{.Pa
 {{- range .DetailHookImports}}
 import { {{joinStrings .Symbols ", "}} } from "{{.Module}}";
 {{- end}}
+{{- if .HasUpdate}}
+import { entityEditHref, useEntityIdParam } from "@/lib/entity-routes";
+{{- else}}
+import { useEntityIdParam } from "@/lib/entity-routes";
+{{- end}}
 import { {{if .HasMoneyColumns}}formatMoneyCents, {{end}}formatValue } from "@/lib/format-utils";
 
-// Route params are an external boundary — validate, don't cast. See the
-// `frontend/patterns` skill ("Typed boundaries"). Swap `min(1)` for
-// `z.string().uuid()` if your IDs are UUIDs.
-const paramsSchema = z.object({ id: z.string().min(1) });
-
+// The id rides in the query string, not a `[id]` path segment, so this page
+// is ONE static route that `output: "export"` can build — the id exists only
+// in the browser (src/lib/entity-routes.ts). Reading it calls
+// useSearchParams, which must sit under a Suspense boundary: the export
+// prerenders the fallback, and the browser renders the row.
 export default function {{.EntityName}}DetailPage() {
+  return (
+    <Suspense fallback={<SkeletonLoader variant="list-item" count={5} />}>
+      <{{.EntityName}}DetailRoute />
+    </Suspense>
+  );
+}
+
+// The query string is an external boundary — validate, don't cast (the
+// `frontend/patterns` skill, "Typed boundaries"). A link that lost its id
+// gets a way back, not a crash.
+function {{.EntityName}}DetailRoute() {
+  const id = useEntityIdParam();
+  if (id === undefined) {
+    return (
+      <div className="px-4 py-8">
+        <AlertBanner variant="warning" message="This link doesn't say which {{.EntityName | humanLower}} to show." />
+        <Link href="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-accent underline hover:text-accent-hover">
+          Back to {{.EntityNamePlural | humanLower}}
+        </Link>
+      </div>
+    );
+  }
+  return <{{.EntityName}}Detail id={id} />;
+}
+
+function {{.EntityName}}Detail({ id }: { id: string }) {
   {{- if .HasDelete}}
   const router = useRouter();
-  {{- end}}
-  const { id } = paramsSchema.parse(useParams());
-  {{- if .HasDelete}}
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   {{- end}}
 
@@ -111,7 +139,7 @@ export default function {{.EntityName}}DetailPage() {
     {{- if .HasUpdate}}
     {
       label: "Edit",
-      href: `/{{.EntitySlug}}/${id}/edit`,
+      href: entityEditHref("{{.EntitySlug}}", id),
       variant: "secondary" as const,
       icon: <SquarePen aria-hidden className="h-4 w-4" strokeWidth={1.5} />,
     },

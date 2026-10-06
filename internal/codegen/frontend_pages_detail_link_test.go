@@ -74,7 +74,7 @@ func usageEventPageForTest(t *testing.T, withGet bool) PageTemplateData {
 
 func TestListPage_RowLinksOnlyToAGeneratedDetailPage(t *testing.T) {
 	const (
-		nextRowLink = "onRowClick={(item) => router.push(`/usage-events/${item.id}`)}"
+		nextRowLink = `onRowClick={(item) => router.push(entityViewHref("usage-events", item.id))}`
 		viteRowLink = "onRowClick={(item) => void navigate({ to: `/usage-events/$id`, params: { id: String(item.id) } })}"
 	)
 	for _, tc := range []struct {
@@ -101,7 +101,7 @@ func TestListPage_RowLinksOnlyToAGeneratedDetailPage(t *testing.T) {
 			}
 			// No link, so nothing the link needed: an unused router hook
 			// is an eslint error in the file forge just wrote.
-			for _, bad := range []string{"onRowClick", "useRouter", "router."} {
+			for _, bad := range []string{"onRowClick", "useRouter", "router.", "entityViewHref"} {
 				if strings.Contains(next, bad) {
 					t.Errorf("Next.js list page without a detail page still has %q:\n%s", bad, next)
 				}

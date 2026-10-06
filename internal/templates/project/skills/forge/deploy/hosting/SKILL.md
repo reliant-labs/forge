@@ -30,7 +30,9 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 `_hosted_frontend` sets the bare `image` and `runtime_config = {API_URL =
 forge.WorkloadURL {workload = <first hosted service>}}`: the control plane
 writes config.js after every sync, so one release promotes unchanged. The
-frontend must be a static export (`output: static`).
+frontend must be a static export (`output: static`, which the scaffold
+writes). A frontend scaffolded by forge ≤ v0.1.43 has no `output:` (it is
+standalone) and dynamic `[id]` pages: `forge skill load migrations/v0.1.44`.
 
 Billing: hosted workloads and the managed database need it (Reliant →
 Settings → Billing); a static site alone is free.

@@ -108,7 +108,7 @@ enum BrandStatus {
 		"<select",
 		"<option value={ BrandStatus.ACTIVE }>Active</option>",
 		// Create lands on the record it made.
-		"onSuccess: ({ brand: created }) => router.push(created ? `/brands/${created.id}` : \"/brands\"),",
+		"onSuccess: ({ brand: created }) => router.push(created ? entityViewHref(\"brands\", created.id) : \"/brands\"),",
 		// No rule on tagline: its born column is NOT NULL DEFAULT '', and
 		// the empty string is a value, not a validation error.
 		"tagline: z.string(),",
@@ -126,7 +126,7 @@ enum BrandStatus {
 
 	// ── Born edit page: NOT empty — carries the same editable fields,
 	// and the AIP-134 mask names exactly those fields ──
-	editPath := filepath.Join(appDir, "brands", "[id]", "edit", "page.tsx")
+	editPath := filepath.Join(appDir, "brands", "edit", "page.tsx")
 	assertPathExistsE2E(t, editPath)
 	edit := readFileE2E(t, editPath)
 	for _, want := range []string{

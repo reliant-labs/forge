@@ -399,7 +399,7 @@ func TestCreatePage_NavigatesToCreatedRecord(t *testing.T) {
 		t.Fatalf("CreateEntityFieldCamel = %q, want thing (CreateThingResponse.thing)", page.CreateEntityFieldCamel)
 	}
 	want := map[string]string{
-		"pages":          "onSuccess: ({ thing: created }) => router.push(created ? `/things/${created.id}` : \"/things\"),",
+		"pages":          "onSuccess: ({ thing: created }) => router.push(created ? entityViewHref(\"things\", created.id) : \"/things\"),",
 		"vite-spa-pages": "onSuccess: ({ thing: created }) => void navigate({ to: created ? `/things/${created.id}` : \"/things\" }),",
 	}
 	for kind, line := range want {

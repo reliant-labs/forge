@@ -80,8 +80,16 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 // from .forge/scaffolded.json.
 //
 // Per-kind dispatch:
-//   - nextjs:   pages/ templates → src/app/<slug>/[id]/{,edit/}page.tsx
+//   - nextjs:   pages/ templates → src/app/<slug>/{,new/,view/,edit/}page.tsx
 //   - vite-spa: vite-spa-pages/ templates → src/pages/<slug>/{List,Detail,Create,Edit}.tsx
+//
+// Next.js routes are all STATIC — detail and edit read the id from the query
+// string (`/<slug>/view?id=…`) — so `output: "export"` builds them. A
+// frontend that still has the dynamic `<slug>/[id]/` routes an older forge
+// scaffolded keeps them: forge adds no view/edit pages beside them (two
+// detail routes for one entity, neither linked to the other), and says so.
+// Deleting `[id]/` is the migration's signal; the next generate scaffolds
+// the static pair.
 func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef, cs *checksums.FileChecksums) error {
 	if len(services) == 0 {
 		return nil
@@ -144,6 +152,10 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		}
 
 		var pageCount, skipCount int
+		// Entities whose detail/edit pages are still the dynamic `[id]`
+		// routes an older forge scaffolded (nextjs only). Reported once per
+		// frontend below.
+		var legacySlugs []string
 
 		for _, svc := range services {
 			pages := codegen.ExtractCRUDEntities(svc)
@@ -162,6 +174,13 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 				if !wantRoute(entity.EntitySlug) {
 					continue
 				}
+				// The user's own `[id]` detail/edit routes stay the routes
+				// for this entity until they delete them; a static pair
+				// written beside them would be a second, unlinked copy.
+				legacyIDRoutes := feType == "nextjs" && hasDynamicIDRoute(filepath.Join(projectDir, feDir), entity.EntitySlug)
+				if legacyIDRoutes {
+					legacySlugs = append(legacySlugs, entity.EntitySlug)
+				}
 				// Typed columns / search fields / detail rows: the
 				// templates render explicit field declarations from the
 				// proto entity instead of Object.keys reflection. svc
@@ -175,9 +194,9 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 					kind string
 				}{
 					{entity.HasList, layout.listTmpl, layout.listPath(entity.EntitySlug), "list"},
-					{entity.EmitsDetailPage(), layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
+					{entity.EmitsDetailPage() && !legacyIDRoutes, layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
 					{entity.HasCreate, layout.createTmpl, layout.createPath(entity.EntitySlug), "create"},
-					{entity.EmitsEditPage(), layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
+					{entity.EmitsEditPage() && !legacyIDRoutes, layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
 				}
 				for _, k := range kinds {
 					if !k.emit {
@@ -197,17 +216,112 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			}
 		}
 
+		if pageCount > 0 && feType == "nextjs" {
+			// Every Next.js page imports @/lib/entity-routes. A frontend
+			// scaffolded before the helper existed does not have it, and
+			// the page just written would not compile without it.
+			ensureEntityRoutesModule(projectDir, feDir, fe.Name)
+		}
 		if pageCount > 0 {
 			fmt.Printf("  ✅ Generated %d CRUD page(s) for frontend %s\n", pageCount, fe.Name)
 		}
 		if skipCount > 0 {
 			routinef("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (delete a file and regenerate to re-scaffold it)\n", skipCount, fe.Name)
 		}
+		reportDynamicIDRoutes(fe, feDir, legacySlugs)
 
 		reportStaleFrontendRouteDirs(feType, filepath.Join(projectDir, feDir), fe.Name, liveSlugs)
 	}
 
 	return nil
+}
+
+// staticRoutesMigrationSkill is the playbook that converts a frontend's
+// dynamic `[id]` CRUD routes into the static view/edit pair. `forge generate`
+// points users at it by this name, and
+// TestStaticRoutesMigration_DetectsDynamicIDRoutes fails if it is not shipped.
+const staticRoutesMigrationSkill = "migrations/v0.1.44"
+
+// dynamicIDSegment is the App Router directory an older forge put an
+// entity's detail and edit pages under: src/app/<slug>/[id]/{,edit/}page.tsx.
+const dynamicIDSegment = "[id]"
+
+// hasDynamicIDRoute reports whether the Next.js frontend at frontendAbsDir
+// still routes slug's detail/edit pages through a `[id]` dynamic segment.
+// Any `<slug>/[id]/` directory counts — the user owns those pages, so what
+// is in it is theirs; that it exists is what matters.
+func hasDynamicIDRoute(frontendAbsDir, slug string) bool {
+	info, err := os.Stat(filepath.Join(frontendAbsDir, "src", "app", slug, dynamicIDSegment))
+	return err == nil && info.IsDir()
+}
+
+// reportDynamicIDRoutes tells the user which entities kept their dynamic
+// `[id]` routes this run, and so got no static view/edit pages.
+//
+// LOUD when the frontend builds a static export: `next build` refuses a
+// dynamic segment there, so these pages are a build failure waiting for the
+// next `npm run build`. Verbose-only otherwise: under standalone the old
+// routes work, and keeping them is a legitimate choice nobody needs to hear
+// about on every generate.
+func reportDynamicIDRoutes(fe config.FrontendConfig, feDir string, slugs []string) {
+	if len(slugs) == 0 {
+		return
+	}
+	sort.Strings(slugs)
+	dirs := make([]string, len(slugs))
+	for i, s := range slugs {
+		dirs[i] = filepath.ToSlash(filepath.Join(feDir, "src", "app", s, dynamicIDSegment))
+	}
+	entities := plural(len(slugs), "entity", "entities")
+	if fe.EffectiveOutput() == config.FrontendOutputStatic {
+		fmt.Fprintf(os.Stderr, "\n⚠️  frontend %s is a static export (output: static), but %d %s still route detail/edit through a dynamic [id] segment, which `next build` refuses:\n",
+			fe.Name, len(slugs), entities)
+		for _, d := range dirs {
+			fmt.Fprintf(os.Stderr, "  - %s/\n", d)
+		}
+		fmt.Fprintf(os.Stderr, "  forge adds no static view/edit pages beside them. Convert them: `%s skill load %s`.\n", Name(), staticRoutesMigrationSkill)
+		return
+	}
+	routinef("  ℹ️  frontend %s: %d %s keep dynamic [id] detail/edit routes (%s); static view/edit pages are scaffolded once those are removed — `%s skill load %s`\n",
+		fe.Name, len(slugs), entities, strings.Join(dirs, ", "), Name(), staticRoutesMigrationSkill)
+}
+
+// entityRoutesModules are the Next.js frontend files that build and read the
+// static CRUD URLs (`/<slug>/view?id=…`). Every generated page imports the
+// first; the second pins its URL shape. Both are part of the frontend
+// template tree, so a new frontend is born with them.
+var entityRoutesModules = []string{
+	"src/lib/entity-routes.ts",
+	"src/lib/entity-routes.test.ts",
+}
+
+// ensureEntityRoutesModule backfills the entity-route helper into a frontend
+// that predates it, right after forge wrote pages that import it.
+//
+// Scaffold-once rules apply. A present file is the user's, and is left
+// alone. A file the ledger says the user DELETED stays deleted. forge says
+// so, because the pages it just wrote import that file.
+func ensureEntityRoutesModule(projectDir, feDir, feName string) {
+	for _, rel := range entityRoutesModules {
+		content, err := templates.FrontendTemplates().Get(filepath.Join("nextjs", filepath.FromSlash(rel)))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ⚠️  frontend %s: read the %s template: %v\n", feName, rel, err)
+			continue
+		}
+		relPath := filepath.Join(feDir, filepath.FromSlash(rel))
+		wrote, err := checksums.WriteScaffoldIfMissing(projectDir, relPath, content)
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "  ⚠️  frontend %s: write %s: %v\n", feName, relPath, err)
+		case wrote:
+			fmt.Printf("  ✅ Scaffolded %s (the static CRUD routes' URL helper — yours to edit)\n", relPath)
+		case rel == entityRoutesModules[0]:
+			if _, statErr := os.Stat(filepath.Join(projectDir, relPath)); os.IsNotExist(statErr) {
+				fmt.Fprintf(os.Stderr, "  ⚠️  frontend %s: the pages just generated import @/lib/entity-routes, which you deleted; restore it with `%s project rescaffold %s`\n",
+					feName, Name(), filepath.ToSlash(relPath))
+			}
+		}
+	}
 }
 
 // crudPagesWithMeta returns every CRUD entity page the generator considers
@@ -261,11 +375,10 @@ func liveEntitySlugs(services []codegen.ServiceDef, entityByName map[string]code
 // False positives are avoided by keying on the DISTINCTIVE generated-CRUD
 // shape rather than "any directory whose name isn't a live slug":
 //
-//   - nextjs:   a `<slug>/[id]/` dynamic-detail subdir (forge emits
-//     `<slug>/[id]/page.tsx` + `<slug>/[id]/edit/page.tsx`). A hand-authored
-//     route almost never reproduces the `[id]` App-Router segment by
-//     coincidence, so an unmatched slug with an `[id]` child is a strong
-//     orphan signal.
+//   - nextjs:   a `<slug>/` dir with BOTH a list page and a `view/page.tsx`
+//     detail page (forge emits `<slug>/page.tsx` + `<slug>/view/page.tsx`),
+//     or the `<slug>/[id]/page.tsx` dynamic detail an older forge emitted. A
+//     hand-authored route seldom reproduces either pair by coincidence.
 //   - vite-spa: a `<slug>/` dir containing BOTH `List.tsx` and `Detail.tsx`
 //     (the generated pair).
 func reportStaleFrontendRouteDirs(feType, frontendAbsDir, feName string, liveSlugs map[string]bool) {
@@ -315,8 +428,14 @@ func reportStaleFrontendRouteDirs(feType, frontendAbsDir, feName string, liveSlu
 func looksLikeGeneratedCRUDRouteDir(feType, dir string) bool {
 	switch feType {
 	case "nextjs":
-		// The dynamic detail route `<slug>/[id]/page.tsx` is the fingerprint.
-		if _, err := os.Stat(filepath.Join(dir, "[id]", "page.tsx")); err == nil {
+		// The list + static detail pair is the fingerprint; so is the
+		// dynamic detail route `<slug>/[id]/page.tsx` an older forge wrote.
+		_, listErr := os.Stat(filepath.Join(dir, "page.tsx"))
+		_, viewErr := os.Stat(filepath.Join(dir, "view", "page.tsx"))
+		if listErr == nil && viewErr == nil {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(dir, dynamicIDSegment, "page.tsx")); err == nil {
 			return true
 		}
 		return false
@@ -331,8 +450,9 @@ func looksLikeGeneratedCRUDRouteDir(feType, dir string) bool {
 
 // pageLayout bundles parsed templates with the per-kind output-path policy
 // used when emitting CRUD pages. Output paths are framework-specific
-// (Next.js App Router uses [id]/page.tsx routes; tanstack-router code-based
-// routing has no on-disk route convention so we write to src/pages/).
+// (Next.js App Router routes are directories — static ones, the id rides in
+// the query string; tanstack-router code-based routing has no on-disk route
+// convention so we write to src/pages/).
 type pageLayout struct {
 	listTmpl   *template.Template
 	detailTmpl *template.Template
@@ -367,13 +487,18 @@ func pageLayoutForKind(feType string) (*pageLayout, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Every route is static so `output: "export"` can build it: the
+		// detail and edit pages are /<slug>/view?id=… and /<slug>/edit?id=…,
+		// reading the id in the browser (src/lib/entity-routes.ts). A
+		// `[id]` segment would need generateStaticParams(), and an entity
+		// id only exists at runtime.
 		appDir := filepath.Join("src", "app")
 		return &pageLayout{
 			listTmpl: listTmpl, detailTmpl: detailTmpl, createTmpl: createTmpl, editTmpl: editTmpl,
 			listPath:   func(slug string) string { return filepath.Join(appDir, slug, "page.tsx") },
-			detailPath: func(slug string) string { return filepath.Join(appDir, slug, "[id]", "page.tsx") },
+			detailPath: func(slug string) string { return filepath.Join(appDir, slug, "view", "page.tsx") },
 			createPath: func(slug string) string { return filepath.Join(appDir, slug, "new", "page.tsx") },
-			editPath:   func(slug string) string { return filepath.Join(appDir, slug, "[id]", "edit", "page.tsx") },
+			editPath:   func(slug string) string { return filepath.Join(appDir, slug, "edit", "page.tsx") },
 		}, nil
 	case "vite-spa":
 		listTmpl, err := loadPageTemplate("vite-spa-pages", "list-page.tsx.tmpl")

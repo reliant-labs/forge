@@ -75,6 +75,10 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 				// — two dev stacks never fight for the frontend port. An
 				// explicit override (>0) is serialized verbatim.
 				Port: g.FrontendPort,
+				// Written, not left to a default: an empty output reads
+				// as the legacy standalone shape (EffectiveOutput), so
+				// the static export this scaffold renders must say so.
+				Output: config.FrontendOutputScaffoldDefault,
 			}.WithDir(fmt.Sprintf("frontends/%s", g.FrontendName)),
 		}
 	}
@@ -422,6 +426,11 @@ func AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, 
 		Kind: kind,
 		Port: port,
 	}.WithDir(fmt.Sprintf("frontends/%s", frontendName))
+	if feType == "nextjs" {
+		// The frontend was rendered with the scaffold default; record it,
+		// because an empty output reads as standalone (EffectiveOutput).
+		entry.Output = config.FrontendOutputScaffoldDefault
+	}
 	return appendToProjectConfigSequence(configPath, "frontends", entry)
 }
 

@@ -244,7 +244,7 @@ func TestPageTemplates_TypedColumnsNoReflection(t *testing.T) {
 		// typed container + row key + navigation
 		`<Resource<Task>`,
 		`rowKey={(item) => String(item.id)}`,
-		"router.push(`/tasks/${item.id}`)",
+		`router.push(entityViewHref("tasks", item.id))`,
 	} {
 		if !strings.Contains(list, want) {
 			t.Errorf("list page missing %q:\n%s", want, list)

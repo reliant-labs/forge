@@ -50,7 +50,7 @@
 // The table half of the target is matched against the page's ROUTE SLUG, not
 // against a schema introspection. The slug is derived from the entity name
 // by the same naming rules that produce the table name, so `invoices` in the
-// marker and `src/app/invoices/[id]/edit/page.tsx` on disk are the same
+// marker and `src/app/invoices/edit/page.tsx` on disk are the same
 // fact — and it means the rule needs neither a database nor a migration
 // parse. A page whose slug resolves to no guard is silent.
 //
@@ -334,14 +334,14 @@ func guardedMaskWritesIn(projectDir, feDir string, guards map[string]guardDecl) 
 }
 
 // guardTableForPage resolves the table a scaffolded page edits from its
-// path, or ok=false when the path is not one of forge's two emitted edit
-// routes.
+// path, or ok=false when the path is not one of forge's emitted edit routes.
 //
-// Next.js emits `<slug>/[id]/edit/page.tsx` and Vite `<slug>/Edit.tsx`, so
-// the slug is the parent directory of the route marker in both layouts. The
-// slug is kebab-case of the entity name; the table is its pluralized
-// snake_case — the same two derivations the generator applies, run here in
-// the same order so the two spellings of one entity cannot drift.
+// Next.js emits `<slug>/edit/page.tsx` (an older forge, `<slug>/[id]/edit/
+// page.tsx`, which projects still carry) and Vite `<slug>/Edit.tsx`, so the
+// slug is the directory above the route marker in every layout. The slug is
+// kebab-case of the entity name; the table is its pluralized snake_case —
+// the same two derivations the generator applies, run here in the same
+// order so the two spellings of one entity cannot drift.
 func guardTableForPage(path string) (string, bool) {
 	parts := strings.Split(filepath.ToSlash(path), "/")
 	if len(parts) < 2 {
@@ -356,6 +356,8 @@ func guardTableForPage(path string) (string, bool) {
 	case base == "page.tsx" && len(parts) >= 4 &&
 		parts[len(parts)-2] == "edit" && parts[len(parts)-3] == "[id]":
 		slug = parts[len(parts)-4]
+	case base == "page.tsx" && len(parts) >= 3 && parts[len(parts)-2] == "edit":
+		slug = parts[len(parts)-3]
 	default:
 		return "", false
 	}

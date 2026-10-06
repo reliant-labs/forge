@@ -243,7 +243,7 @@ keeps writing the column forever — it typechecks, nothing logs, and the only
 symptom is that 500. `forge lint --guarded-fields` finds exactly that case:
 
 ```
-⚠ [forgeconv-guarded-field-written] frontends/web/src/app/invoices/[id]/edit/page.tsx:42
+⚠ [forgeconv-guarded-field-written] frontends/web/src/app/invoices/edit/page.tsx:42
     → This page's update_mask names invoices.amount_paid_cents, but that column
       is declared `forge:guards invoices.amount_paid_cents` … RecordPayment owns
       its writes.

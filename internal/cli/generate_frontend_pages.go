@@ -480,7 +480,13 @@ func renderPageScaffoldIfMissing(tmpl *template.Template, data codegen.PageTempl
 	// can be canonical for every entity — the scaffold has to sort what it
 	// actually emitted. Same contract as the gofmt/goimports pass the Tier-1
 	// writer runs over .go renders.
-	return checksums.WriteScaffoldIfMissing(projectDir, relPath, templates.CanonicalTSImportOrder(buf.Bytes()))
+	wrote, err := checksums.WriteScaffoldIfMissing(projectDir, relPath, finalizeScaffoldTSX(templates.CanonicalTSImportOrder(buf.Bytes())))
+	if wrote && err == nil {
+		// Born in the shape the project's own prettier expects; best-effort,
+		// and only ever on the file forge just created.
+		formatScaffoldedFrontendFile(fullPath)
+	}
+	return wrote, err
 }
 
 // routeFilterFor builds this frontend's route predicate from its declared

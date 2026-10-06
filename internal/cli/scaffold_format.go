@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -93,4 +94,11 @@ func nearestProjectRoot(dir string) string {
 		}
 		dir = parent
 	}
+}
+
+// finalizeScaffoldTSX normalizes what no template can guarantee: the file
+// ends in exactly one newline (a trailing {{end}} or blank line otherwise
+// leaves extras that end-of-file-fixer and prettier both strip).
+func finalizeScaffoldTSX(src []byte) []byte {
+	return append(bytes.TrimRight(src, " \t\r\n"), '\n')
 }

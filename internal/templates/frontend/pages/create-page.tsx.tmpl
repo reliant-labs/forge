@@ -50,7 +50,8 @@ const schema = z.object({
          rather than accept the empty "Select…" placeholder. */}}
   {{.Name}}: {{.ZodExpr}}{{if .IsEnum}}.refine((v) => v !== 0, "Required"){{end}},
   {{- end}}
-});
+{{- if not .CreateFields}}}){{else}}
+}){{end}};
 
 type FormValues = z.infer<typeof schema>;
 

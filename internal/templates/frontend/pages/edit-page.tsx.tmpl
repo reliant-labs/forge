@@ -56,7 +56,8 @@ const schema = z.object({
          row is allowed to still hold the sentinel. */}}
   {{.Name}}: {{.ZodExpr}},
   {{- end}}
-});
+{{- if not .UpdateFields}}}){{else}}
+}){{end}};
 
 type FormValues = z.infer<typeof schema>;
 

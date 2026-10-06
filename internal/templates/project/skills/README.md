@@ -63,7 +63,7 @@ task test              # run tests with race detector
 
 Content outside `@forge-only` blocks is included in both emits. **The general prose has to be more than just CLI-free — it has to be architecture-free.** Anything that assumes a forge-shaped project belongs in `@forge-only`, including:
 
-- Specific generated files / paths (`wire_gen.go`, `internal/<svc>/`, `pkg/tdd`).
+- Specific generated files / paths (`wire_gen.go`, `internal/handlers/<svc>/`, `pkg/tdd`).
 - Forge architectural concepts (proto-as-canonical-input, generated mocks, Tier-1 vs Tier-2 ownership, DI wiring, `forge generate` pipelines, `forge project audit`).
 - Cross-references to forge sibling skills (`see the X sub-skill`) — those links are dead in a non-forge project. Fold the key idea inline in the general prose, then name the sub-skill inside the `@forge-only` block.
 - Stack-specific tooling that only makes sense in a forge project (Connect RPC handler patterns, KCL deploy specifics, sqlc query files).

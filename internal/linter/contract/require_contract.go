@@ -41,16 +41,18 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	// Skip proto-service handler packages (internal/handlers/<svc>). By forge
-	// convention these are thin-translation Connect handlers: the package's
+	// convention these are pb-through Connect handlers: the package's
 	// exported methods are the proto-defined RPC methods (GetCurrentUser, ...)
 	// plus framework glue (Name/Register/RegisterHTTP), and the package
 	// IMPLEMENTS the generated Connect handler interface
 	// (<svc>v1connect.<Svc>ServiceHandler). Their contract is the proto service,
-	// not a hand-written Go contract.go — business logic lives in a separate
-	// domain package (internal/<svc>), which this rule still covers. Requiring a
-	// contract.go here would duplicate the proto boundary. See the api-handlers
-	// skill. (When a handler package DOES declare a contract.go the single-seam
-	// Analyzer still enforces it; this only removes the *requirement*.)
+	// not a hand-written Go contract.go — the *Service methods ARE the rpc
+	// logic, and logic extracted for isolation goes into a `forge scaffold
+	// package` domain package (internal/<name>), which this rule still covers.
+	// Requiring a contract.go here would duplicate the proto boundary. See the
+	// api skill. (When a handler package DOES declare a contract.go the
+	// single-seam Analyzer still enforces it; this only removes the
+	// *requirement*.)
 	if isHandlerPackage(pkgPath) {
 		return nil, nil
 	}

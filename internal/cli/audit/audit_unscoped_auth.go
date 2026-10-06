@@ -5,14 +5,12 @@
 //
 // Why this is a category and not a comment
 //
-// The CRUD shim template already says the thing. Above every delegating
-// method it emits, verbatim:
+// The CRUD shim template already says the thing. Its file header explains
+// it once, and every delegating method carries the pointer:
 //
-//	AUTHENTICATED, UNSCOPED: this RPC's proto declares auth_required: true,
-//	so the interceptor rejected any caller without a valid token before this
-//	ran. Nothing below reads WHO they are — call middleware.GetUser(ctx) above
-//	the delegation and scope the rows it touches to those claims.
+//	Auth: AUTHENTICATED, UNSCOPED — nothing reads the caller; scope with middleware.GetUser(ctx) (see file header).
 //
+// (It used to repeat the full four-line explanation above every method.)
 // A measured run read that comment, wrote a plan that repeated it back
 // ("later work can add authorization/row scoping in owned CRUD
 // delegations"), and shipped sixteen delegations that read no caller. One

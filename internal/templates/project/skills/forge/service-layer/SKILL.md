@@ -304,7 +304,7 @@ Required deps live in `validateDeps()` so they fail fast at construction. An **o
 
 ## Forge-specific rules
 
-- **Never hand-edit the generated mock** (`internal/handlers/mocks/<svc>_mock.go`). Edit `contract.go` and re-run `forge generate`.
+- **Never hand-edit a generated mock.** `internal/<pkg>/mock_gen.go` follows the package's `contract.go`; `internal/handlers/mocks/<svc>_mock_gen.go` follows the service proto. Edit the input and re-run `forge generate`.
 - **`Service` is the canonical interface name** for single-impl (no annotation). If a role name reads better (`Gateway`, `Provider`), keep it and put a `//forge:service` (or `//forge:contract`) marker directly above the interface — codegen + the contract-name lint key off the marker under any name. `// forge:constructor` does the same for a constructor forge must FIND (`Open`, `Connect`, `NewReadOnly`); the contract-name lint still wants the canonical `New(Deps) (Service, error)` in an internal package, so keep `New` as the entry point and mark the others. `Deps` stays canonical. Use `<Name>er` only for multi-impl strategies.
 - **Construct and wire in `NewComponents`** — every `Deps` field by interface, by type.
 

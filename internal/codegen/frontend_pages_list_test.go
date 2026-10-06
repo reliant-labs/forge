@@ -297,6 +297,12 @@ func TestListPage_DegradesWithoutFilters(t *testing.T) {
 				{Name: "page_size", Kind: "int32"},
 				{Name: "page_token", Kind: "string"},
 			},
+			// The deep graph always holds the entity a List response
+			// references; without it, ListWidgets is a custom rpc.
+			"services.widgets.v1.Widget": {
+				{Name: "id", Kind: "string"},
+				{Name: "name", Kind: "string"},
+			},
 		},
 	}
 	pages := ExtractCRUDEntities(svc)

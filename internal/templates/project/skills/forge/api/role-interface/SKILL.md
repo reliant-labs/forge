@@ -5,7 +5,7 @@ description: Extend a service's Repository without breaking sibling fakes — th
 
 # Extending Repository without breaking fakes (role-interface pattern)
 
-`Repository` is the canonical name for a service's storage interface — one per service, extended as needed. But in a **parallel-migration round**, adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes, in-memory `e2e/` fakes, the generated `mocks/<svc>_mock.go`). The fix is the **opt-in role interface**: declare a narrow interface in the consuming file and type-assert `s.deps.Repo` to it at call time:
+`Repository` is the canonical name for a service's storage interface — one per service, extended as needed. But in a **parallel-migration round**, adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes, in-memory `e2e/` fakes, the generated `mocks/<svc>_mock_gen.go`). The fix is the **opt-in role interface**: declare a narrow interface in the consuming file and type-assert `s.deps.Repo` to it at call time:
 
 ```go
 type ModelPerformanceLister interface {

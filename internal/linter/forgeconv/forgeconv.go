@@ -14,8 +14,9 @@
 //	                                    a block reachable within MaxStacks
 //	                                    (see allocate_port_spacing.go)
 //
-// `auth_required` stays as informational proto metadata (forge map),
-// lint-free — forge reads no access-control annotations.
+// `auth_required` is lint-free here: it is enforced at runtime (projected
+// into pkg/middleware/procedures_gen.go, read fail-closed by the auth
+// interceptor), and forge reads no authorization annotations beyond it.
 //
 // The package exposes a single LintProtoTree entry point that takes a
 // project root (or any directory containing .proto files) and returns a

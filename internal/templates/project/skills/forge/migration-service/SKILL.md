@@ -97,7 +97,7 @@ A single wide `Repository` (a "god DAO") trips `interfacebloat`. The lint is cor
 
 ### Adding a dep is a compile-time edit to the composition
 
-Adding or removing a collaborator means editing the component's `Deps` struct in `internal/handlers/<svc>/contract.go` and ensuring the matching field exists on the owned `Infra` provider set so `NewComponents` can fill it by type. Both are caught by the Go compiler (or surface as a `forge generate` "no provider" report if `Infra` lacks the type). If a port phase drops a vestigial `Logger` field from `<pkg>.Deps`, regen stops filling it and `go build` points straight at any stale reference.
+Adding or removing a collaborator means editing the component's `Deps` struct (`internal/handlers/<svc>/service.go` for a service, `internal/<name>/contract.go` for a domain package) and ensuring the matching field exists on the owned `Infra` provider set so `NewComponents` can fill it by type. Both are caught by the Go compiler (or surface as a `forge generate` "no provider" report if `Infra` lacks the type). If a port phase drops a vestigial `Logger` field from `<pkg>.Deps`, regen stops filling it and `go build` points straight at any stale reference.
 
 ### Goose → golang-migrate
 

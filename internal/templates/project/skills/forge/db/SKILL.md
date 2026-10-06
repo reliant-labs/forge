@@ -25,7 +25,7 @@ emit: both
 There is no schema DSL and no proto annotation: `db/migrations/*.up.sql` is the **single source of truth**. `forge generate` applies every up-migration (lexical order) to an ephemeral postgres shadow database, introspects the resulting tables (columns, types, nullability, PKs, indexes), and projects:
 
 - **Entity structs + ORM** — `internal/db/<entity>_orm.go`, mirroring the applied schema: `time.Time` for timestamp columns (never `timestamppb`), pointers for nullable columns, native slices for arrays.
-- **CRUD wiring** — `internal/handlers/<svc>/handlers_crud_ops_gen.go` (beside the service's `contract.go` + handlers), including `<entity>ToProto` / `<entity>FromProto` conversions to the service-proto wire message.
+- **CRUD wiring** — `internal/handlers/<svc>/handlers_crud_ops_gen.go` (beside the service's `service.go` and rpc methods), including `<entity>ToProto` / `<entity>FromProto` conversions to the service-proto wire message.
 - **Frontend pages, nav, and mocks** for each entity.
 
 `db/migrations/` and `db/queries/` are yours and forge never modifies them; `internal/db/<entity>_orm.go` is regenerated.

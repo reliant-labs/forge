@@ -52,6 +52,10 @@ type PageTemplateData struct {
 	GuardedFields []GuardedPageField
 	// HasGuardedFields gates the edit form's read-only guarded section.
 	HasGuardedFields bool
+	// readOnlyEditFields are the entity's `forge:read-only` fields, kept off
+	// the edit form (and so off the update_mask) but held here so a guard on
+	// one still surfaces as a GuardedFields row. Never rendered directly.
+	readOnlyEditFields []PageField
 	// UpdateEntityFieldCamel is the camelCase request field wrapping the
 	// entity when the update request follows AIP-134 ("task" for
 	// `Task task = 1;`). The edit page then nests the form values under
@@ -942,15 +946,12 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 			continue
 		}
 
-		op, rawEntity := parseCRUDOperation(m.Name)
+		// crudEntity singularizes a List's plural and refuses a name that
+		// merely starts with a CRUD verb (ListJobsByCrew) — the server
+		// projection's rule, so a custom rpc births no page.
+		op, entityName := crudEntity(svc, m.Name)
 		if op == "" {
 			continue
-		}
-
-		// Normalize: for "list", the method uses plural form — singularize
-		entityName := rawEntity
-		if op == "list" {
-			entityName = inflection.Singular(rawEntity)
 		}
 
 		em, ok := entities[entityName]
@@ -1107,7 +1108,13 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData { //nolint:gocognit,
 					// the update_mask and the stored value is never clobbered.
 					// (The create form reads the CreateRequest, which already
 					// omits them, so only the entity-driven edit form needs this.)
+					// They are parked rather than dropped: a read-only column a
+					// custom rpc also guards still renders as the disabled row
+					// naming that rpc (attachGuardedFields).
 					if f.ReadOnly {
+						if pf, ok := formPageField(svc, entityName, f); ok {
+							data.readOnlyEditFields = append(data.readOnlyEditFields, pf)
+						}
 						continue
 					}
 					// Never render the mask or the entity wrapper itself
@@ -1597,6 +1604,11 @@ func guardedColumns(svc ServiceDef) map[string]string {
 // (RecordPayment refuses an overpayment, ScheduleJob refuses a double
 // booking); the initial value is the author's to set, and stripping it from
 // Create would leave a NOT NULL column with nothing to fill it.
+//
+// A guarded column that is also `forge:read-only` was never on the form, so
+// there is nothing to remove — but it still gets its row. Read-only is the
+// API refusing the write; the guard is the page saying who CAN make it. The
+// two compose, and together they are the right shape for a lifecycle column.
 func attachGuardedFields(page *PageTemplateData, tableName string, guards map[string]string) {
 	if page == nil || tableName == "" || len(guards) == 0 {
 		return
@@ -1613,6 +1625,13 @@ func attachGuardedFields(page *PageTemplateData, tableName string, guards map[st
 		})
 	}
 	page.UpdateFields = kept
+	for _, f := range page.readOnlyEditFields {
+		if rpc, guarded := guards[tableName+"."+f.ProtoName]; guarded {
+			page.GuardedFields = append(page.GuardedFields, GuardedPageField{
+				Name: f.Name, Label: f.Label, ProtoName: f.ProtoName, GuardedBy: rpc,
+			})
+		}
+	}
 	page.HasGuardedFields = len(page.GuardedFields) > 0
 
 	// Recompute what the edit form's IMPORT block is gated on. Both are

@@ -225,8 +225,9 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	if len(mo.Errors) > 0 {
 		method.Errors = append([]string(nil), mo.Errors...)
 	}
-	// auth_required stays as informational metadata above; forge reads no
-	// access-control annotations from the descriptor.
+	// auth_required (above) is the one access annotation forge reads: it
+	// feeds pkg/middleware/procedures_gen.go, which the auth interceptor
+	// enforces fail-closed. Authorization stays handler logic.
 }
 
 // extractService builds a codegen.ServiceDef from a protogen.Service.

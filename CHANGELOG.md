@@ -140,6 +140,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of being laid down by any dev build for its own checkout. **Adopting:**
   existing bridged projects are untouched; a contributor scaffolding with a
   dev forge adds `--link-forge`.
+- **The scaffolded `handlers_crud.go` says each thing once.** Every delegating
+  method used to carry the same eight-to-ten-line comment (what pkg/crud does,
+  where the wiring lives, and the full AUTHENTICATED / PUBLIC / SCOPED
+  explanation). Now each method has a summary line and one `Auth:` line that
+  still names `middleware.GetUser` (an author editing `DeleteOrder` reads
+  `DeleteOrder`'s comment, not the header). The file header explains each tag
+  once, and only the tags the file contains. Update methods keep a line on mask
+  handling, which now mentions that `op.ReadOnly` columns are refused and kept.
+  The file is yours, so existing projects keep their comments; methods appended
+  later get the short form.
 
 ### Added
 
@@ -194,6 +204,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no forge commit) a checkout that moved after the binary was written. The
   line names both sides and the fix:
   `⚠️  forge skew: reliant (built 2026-10-01 01:31) records no forge commit, and go.work bridges /src/forge, which changed after it was built (now 750833054b78) — generated code and library differ. Fix: rebuild reliant from that checkout, or unbridge: go work edit -dropuse=/src/forge`.
+- **A decision table for column write markers** in `db/write-policy`. It picks
+  `forge:read-only`, `forge:computed`, `forge:generated`, `forge:guards` or
+  `forge:immutable` by who writes the value. It reflects the Update enforcement
+  below: guards adds no protection to a read-only column, only the disabled edit
+  row naming the rpc that owns it. `forge`, `proto` and the project memory point
+  to it.
+- **The rule for CRUD vs custom rpcs, stated once and the same everywhere.** An
+  rpc is CRUD only when it is unary and named exactly
+  `Create|Get|Update|Delete<E>` or `List<Es>`, where `<E>` has a table and a
+  same-name proto message. `UpdateJobStatus`, `CreateInvoiceFromEstimate` and
+  `ListJobsByCrew` are custom, so there is no need to rename them defensively
+  (an agent did in the roofers run). This is in the project memory and in the
+  `forge`, `proto` and `api` skills.
+- **A retired-claims registry over all shipped guidance**
+  (`internal/templates/retired_claims_test.go`). It covers every project and
+  service template (skills, `reliant.md.tmpl` and `reliant-reliant.md.tmpl`,
+  which render as reliant.md / CLAUDE.md / AGENTS.md / .cursorrules /
+  copilot-instructions.md), plus the README and `docs/`. Each row is a claim
+  forge retired, with the truth that replaced it, the skill that carries that
+  truth (checked to exist), and a bad and a good sample the pattern must catch
+  and spare. Against the previous main it reports 16 stale lines.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
   `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
   context.Context) error)` runs fn in a transaction carried by the ctx it
@@ -415,6 +446,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing) when the stack it would replace hosts it. The tree-kill primitive
   refuses an ancestor too, and skips a group-wide signal to a process group
   the command belongs to.
+- **A custom rpc whose name starts with a CRUD verb is custom on the frontend
+  too.** The server has always required a CRUD rpc's entity to have a table and
+  a wire message. The hook and page generators split the name on the verb alone.
+  So `useUpdateJobStatus` invalidated a `jobStatus` query scope that no query is
+  keyed under, and the Job list and detail it had just changed stayed cached
+  until a hard refresh. `CreateInvoiceFromEstimate` left the invoice list stale
+  in the same way, and `ListJobsByCrew` produced a `jobs-by-crews` CRUD page,
+  nav entry and mock fixture. Both generators now apply the server's message
+  check (`crudEntity`). A custom mutation invalidates every query on its service,
+  and a custom List births no page. A descriptor written before the deep message
+  inventory existed keeps the old name-only answer. Regenerate to pick it up.
+- **`forge:guards` on a `forge:read-only` column renders its disabled row.** The
+  edit page dropped read-only fields before the guard pass looked, so with both
+  markers the column vanished from the page and nothing named the rpc that owns
+  it. Now read-only alone still hides the field, and read-only plus guards
+  renders the disabled "changed through `<Rpc>`" row. That combination is right
+  for a lifecycle column: the API refuses the write, and the page says who can
+  make it.
+- **The project memory no longer contradicts the code.** `reliant.md.tmpl` is
+  loaded into every session, and it described thin handlers in front of an
+  `internal/<svc>/contract.go` business layer, with an `errors.go`
+  `connect.Code` switch, that `forge scaffold service` has never written and
+  `forgeconv-no-handler-error-mapping` flags. It also said `auth_required`
+  "gates nothing at runtime", although the interceptor enforces it fail-closed.
+  It now shows what scaffold writes: logic on the `*Service` rpc methods in
+  `internal/handlers/<svc>/`, with `forge scaffold package` for logic that
+  needs isolation, `svcerr.Wrap` and `RunTx`. The same corrections apply to the
+  `api`, `db`, `services`, `proto-split`, `migration`, `migration-service`,
+  `service-layer`, `architecture` and `api/role-interface` skills (stale
+  `contract.go`-beside-handlers and `<svc>_mock.go` paths), to
+  `docs/getting-started.md`, and to the scaffolded `service.go` comment, which
+  said Deps were resolved by name (they are resolved by type).
+  `internal/app/compose.go` ownership was already consistent on main (yours,
+  reconciled). A harness with an older embedded forge can still show "forge-owned
+  and regenerated", and the retired-claims registry keeps that phrasing out.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

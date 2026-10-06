@@ -21,7 +21,8 @@ This is a Forge-generated Go + Next.js application with:
 
 - Service protos go in `proto/services/<service>/v1/`; an entity is CRUD RPCs there PLUS the matching table in `db/migrations/`
 - Generated code lives in `gen/` and `*_gen.go` files — do NOT edit these
-- Custom business logic goes in `internal/handlers/<svc>/` (not `*_gen.go`); wiring goes in the owned `internal/app/providers.go`
+- Custom business logic goes on the `*Service` rpc methods in `internal/handlers/<svc>/` (not `*_gen.go`) — there is no `contract.go` there and no `internal/<svc>/` layer behind it; `{{.CLI}} scaffold package <name>` gives logic that needs isolation its own `internal/<name>/` contract. Wiring goes in the owned `internal/app/providers.go`
+- An rpc is CRUD only when named exactly `Create|Get|Update|Delete<Entity>` or `List<Entities>` for an entity with a table and a same-name message; `UpdateJobStatus` or `CreateInvoiceFromEstimate` is a custom rpc — no renaming needed
 - Frontend hooks in `frontends/*/src/hooks/` are generated — use them, don't write manual fetch calls
 - Run `{{.CLI}} generate` after proto changes, then `{{.CLI}} build` to verify
 

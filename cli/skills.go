@@ -137,3 +137,40 @@ func LoadSkillForAudience(projectRoot, skillPath, audience string) ([]byte, erro
 	}
 	return internalcli.RenderSkillForAudience(body, internalcli.SkillAudience(audience)), nil
 }
+
+// RenderSkillOptions tunes [RenderSkill]. The zero value renders exactly what
+// `forge skill load` prints from THIS process.
+type RenderSkillOptions struct {
+	// Audience filters the body the same way as [LoadSkillForAudience]:
+	// "general" strips `@forge-only` blocks, "forge" or "" keeps the full
+	// body (which is what `skill load` prints).
+	Audience string
+	// CLIName is the command a reader types to invoke forge — "forge" for
+	// the standalone binary, "reliant forge" when forge is mounted inside
+	// reliant. Every bare `forge ` command reference in the body is
+	// rewritten to it. "" means the name this process reports for itself,
+	// the same one [RenderProjectMemory] renders, so a harness that injects
+	// both gets one consistent spelling.
+	CLIName string
+}
+
+// RenderSkill returns skillPath's content exactly as `<cli> skill load
+// <skillPath>` prints it: the same user > project > forge resolution and
+// version-skew advisory as [LoadSkill], plus the command-name rewrite the CLI
+// applies so every command in the skill is copy-pasteable under the mount
+// that serves it. `skill load` itself calls the same renderer, so the two
+// cannot drift.
+//
+// Harnesses that inject a skill into an agent's context should use this
+// rather than [LoadSkill]: the raw body says `forge generate`, which under a
+// `reliant forge` mount names a command the agent may not have — or a
+// different forge build than the one that generated its project.
+//
+// A "forge/" prefix on skillPath is accepted, matching `skill load`.
+func RenderSkill(projectRoot, skillPath string, opts RenderSkillOptions) ([]byte, error) {
+	cliName := opts.CLIName
+	if cliName == "" {
+		cliName = internalcli.Name()
+	}
+	return internalcli.RenderSkillContentAt(projectRoot, skillPath, internalcli.SkillAudience(opts.Audience), cliName)
+}

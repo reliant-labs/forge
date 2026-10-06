@@ -118,10 +118,7 @@ func runStart(w io.Writer) error {
 	// Match `forge skill load`: rewrite bare `forge ` command references
 	// when this binary is mounted under another name (`reliant forge`),
 	// so every command in the brief is copy-pasteable as printed.
-	if name := cmdutil.Name(); name != "forge" {
-		brief = string(forgeCmdRE.ReplaceAll([]byte(brief), []byte(name+"$1")))
-	}
-	_, err = io.WriteString(w, brief)
+	_, err = w.Write(rewriteForgeCommands([]byte(brief), cmdutil.Name()))
 	return err
 }
 

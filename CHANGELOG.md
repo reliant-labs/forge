@@ -53,6 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`forge doctor` checks air** (any OS, >= 1.63.2) for projects with an
   `.air.toml`: the scaffolded config names its binary with `entrypoint`, which
   older air does not read, so it would have nothing to run.
+- **`cli.RenderSkill` — a skill exactly as `skill load` prints it, for
+  harnesses.** `cli.LoadSkill` returns the raw body, so a harness injecting a
+  skill into an agent's context handed it `forge generate` while
+  `reliant forge skill load` (and the project memory) said
+  `reliant forge generate` — a command the agent may not have, or a different
+  forge build than the one that generated its project. `RenderSkill` applies
+  the same resolution, version-skew advisory, audience filter and command-name
+  rewrite as the CLI; `skill load` and `forge start` now call the same
+  renderer, so the two cannot drift. `RenderSkillOptions.CLIName` defaults to
+  the name this process reports, the same one `cli.RenderProjectMemory`
+  renders.
 
 ### Fixed
 

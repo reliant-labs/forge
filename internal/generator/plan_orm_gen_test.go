@@ -149,7 +149,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	if !strings.Contains(code, "func CountProject(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {") {
 		t.Error("missing CountProject")
 	}
-	if !strings.Contains(code, "func UpdateProject(ctx context.Context, db orm.Context, msg *Project) error {") {
+	if !strings.Contains(code, "func UpdateProject(ctx context.Context, db orm.Context, msg *Project, opts ...crud.UpdateOption) error {") {
 		t.Error("missing UpdateProject")
 	}
 	if !strings.Contains(code, "func DeleteProject(ctx context.Context, db orm.Context, id string) error {") {
@@ -280,7 +280,7 @@ func TestGeneratePlanORM_Minimal(t *testing.T) {
 	if !strings.Contains(code, "func CountTag(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {") {
 		t.Error("wrong CountTag signature")
 	}
-	if !strings.Contains(code, "func UpdateTag(ctx context.Context, db orm.Context, msg *Tag) error {") {
+	if !strings.Contains(code, "func UpdateTag(ctx context.Context, db orm.Context, msg *Tag, opts ...crud.UpdateOption) error {") {
 		t.Error("wrong UpdateTag signature")
 	}
 	if !strings.Contains(code, "func DeleteTag(ctx context.Context, db orm.Context, id string) error {") {
@@ -321,7 +321,7 @@ func TestGeneratePlanORM_Minimal(t *testing.T) {
 	if !strings.Contains(code, `return tagRepo.Delete(ctx, db, id)`) {
 		t.Error("DeleteTag should delegate to tagRepo.Delete")
 	}
-	if !strings.Contains(code, `return tagRepo.Update(ctx, db, msg)`) {
+	if !strings.Contains(code, `return tagRepo.Update(ctx, db, msg, opts...)`) {
 		t.Error("UpdateTag should delegate to tagRepo.Update")
 	}
 
@@ -758,7 +758,7 @@ func TestGeneratePlanORM_NoSoftDelete(t *testing.T) {
 	}
 
 	// Delegates forward to the repo.
-	if !strings.Contains(code, "return settingRepo.Update(ctx, db, msg)") {
+	if !strings.Contains(code, "return settingRepo.Update(ctx, db, msg, opts...)") {
 		t.Error("UpdateSetting should delegate to settingRepo.Update")
 	}
 	if !strings.Contains(code, "return settingRepo.Delete(ctx, db, id)") {
@@ -918,7 +918,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 			t.Errorf("Task entity should declare the %s column", want)
 		}
 	}
-	if !strings.Contains(code, "return taskRepo.Update(ctx, db, msg)") {
+	if !strings.Contains(code, "return taskRepo.Update(ctx, db, msg, opts...)") {
 		t.Error("UpdateTask should delegate to taskRepo.Update")
 	}
 	// The Columns var still lists every declared column (it doubles as the
@@ -1406,7 +1406,7 @@ func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 	if !strings.Contains(code, "\treturn prescriptionRepo.Delete(ctx, db, id)\n") {
 		t.Error("DeletePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
 	}
-	if !strings.Contains(code, "\treturn prescriptionRepo.Update(ctx, db, msg)\n") {
+	if !strings.Contains(code, "\treturn prescriptionRepo.Update(ctx, db, msg, opts...)\n") {
 		t.Error("UpdatePrescription must stay a pure delegate: pkg/crud's Persist-closure escape hatch matches orm.ErrNoRows")
 	}
 	if n := strings.Count(code, "return nil, svcerr.NotFound("); n != 1 {

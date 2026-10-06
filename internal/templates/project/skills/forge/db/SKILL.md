@@ -67,7 +67,7 @@ Everything a marker adds lands in the **user-owned birth migration**, never a fo
 
 - **`// forge:append-only`** — a real **DB trigger** in the birth migration raises on any `UPDATE`/`DELETE`, so no bug or compromised caller can rewrite history. The CRUD quintet completes to Create/Get/List only.
 - **`// forge:secret`** — the column stays real schema truth and settable on Create/Update; only the read path (`<entity>ToProto`) drops it.
-- **`// forge:read-only`** — the input-side mirror: readable but not client-writable (status, computed price, a lifecycle timestamp). It removes the field from the write envelopes and nothing more, so give the column a DB `DEFAULT` or set it in your handler, or the first insert lands the zero. Mark it up front — the AIP-134 `Update<Entity>Request` wraps the whole entity, so excluding the field at birth also keeps it out of the born `new/page.tsx`, edit form and `handlers_crud_test.go`, and hand-stripping it later breaks those scaffold-once files.
+- **`// forge:read-only`** — the input-side mirror: readable but not client-writable (status, computed price, a lifecycle timestamp). The born Create omits it; the generated Update preserves it on a full replace and refuses an `update_mask` naming it (every `forge generate`; vs `forge:immutable`: `db/write-policy`). Your RPCs write it via `db.Update<Entity>Masked`; give the column a DB `DEFAULT` or the first insert lands the zero. Mark it up front: the born `new/page.tsx`, edit form and `handlers_crud_test.go` leave it out.
 - **`// forge:soft-delete`** — **OPT-IN**: unmarked entities get no `deleted_at` and hard-delete. Beyond the read filter, `ListAll<Entities>` returns tombstones. The `--soft-delete` flag and a message already carrying a `deleted_at` field do the same thing.
 
 Proto → SQL, in both birth forms: scalars to `NOT NULL` columns with zero defaults, `optional` to nullable, enums to `TEXT` + `CHECK (col IN (...))` (DEFAULT = first non-`_UNSPECIFIED` member), repeated scalars to arrays, maps/nested messages to `JSONB`, and an `*_id` string whose stem resolves to a real entity to `TEXT` + an applied `REFERENCES` and index. oneof/`Any`/cross-package fields become TODO comment lines, never silently dropped. Envelopes — Request/Response messages, anything carrying `page_size`/`page_token`/`update_mask` — are refused.
@@ -188,7 +188,7 @@ entire dev dataset. Enforce the mirror half (not approved ⇒ NULL stamp) in the
 RPC that owns the transition — it is a single-writer invariant. Full reasoning
 and the mixing rule are in the `db/seeding` skill.
 
-**Derived from OTHER ROWS is the other case, and no generated column can express it.** An invoice's `amount_paid` summing a `payments` table, a job's cost rolling up its materials: postgres cannot reach another table from a generated column. Keep the column plain, mark the proto field `// forge:computed`, and write it from the RPC that owns the change — `forge lint --computed-fields` then holds you to it and fails if nothing assigns it.
+**Derived from OTHER ROWS is the other case, and no generated column can express it.** An invoice's `amount_paid` summing a `payments` table, a job's cost rolling up its materials: postgres cannot reach another table from a generated column. Keep the column plain, mark the proto field `// forge:computed`, and write it from the RPC that owns the change (no CRUD Update writes it) — `forge lint --computed-fields` then holds you to it and fails if nothing assigns it.
 
 ## Just write postgres
 
@@ -215,7 +215,7 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 ## Generated ORM semantics
 
 - `Create<Entity>` is a plain `INSERT`, never an upsert. Unset string PKs are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back via `RETURNING` — any caller-provided value is ignored.
-- Writes scan database-computed values back via `RETURNING` — generated columns on every write, DB defaults on insert — so never re-read a row you just wrote.
+- Writes scan database-computed values back via `RETURNING` — generated columns on every write, DB defaults on insert, unwritten columns on update — so never re-read a row you just wrote.
 - With stampable `created_at` / `updated_at` columns, both are stamped on create and `updated_at` on update; `created_at` is immutable on update. Stamps use the column's projected type: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
 - `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 self-certifying: each carries an embedded `forge:hash` marker, so hand-edits trip the drift guard in any clone or worktree. `forge project disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit.
 - Each entity exports `<Entity>Columns`, the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.

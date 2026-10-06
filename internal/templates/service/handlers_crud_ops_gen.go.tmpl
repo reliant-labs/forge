@@ -242,6 +242,15 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 	return crud.UpdateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}]{
 		EntityLower:    "{{.EntityLower}}",
 		EntityFieldLow: "{{.UpdateEntityField | lower}}",
+{{- if .ReadOnlyColumns}}
+		// The `forge:read-only` / `forge:computed` fields of the entity:
+		// readable, never written by a client. An update_mask naming one is
+		// InvalidArgument, and Persist below keeps them out of a full
+		// replace, so a request can neither set them nor reset them by
+		// leaving them out. The code that owns them writes them with
+		// db.Update{{.EntityName}}Masked.
+		ReadOnly: []string{ {{- range $i, $c := .ReadOnlyColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} },
+{{- end}}
 		Entity: func(_ context.Context, req *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
 			if req.{{.UpdateEntityField}} == nil {
 				return nil, crud.ErrEntityRequired
@@ -255,7 +264,12 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 		Persist: func(ctx context.Context, entity *db.{{.EntityName}}, opts ...orm.QueryOption) error {
 			return crud.ScopedUpdate(ctx, "{{.PkColumnName}}", entity.{{.PkField}}, entity, opts,
 				func(ctx context.Context, entity *db.{{.EntityName}}) error {
+{{- if .ReadOnlyColumns}}
+					return db.Update{{.EntityName}}(ctx, s.deps.DB, entity,
+						crud.Preserve({{- range $i, $c := .ReadOnlyColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}}))
+{{- else}}
 					return db.Update{{.EntityName}}(ctx, s.deps.DB, entity)
+{{- end}}
 				},
 				func(ctx context.Context, opts ...orm.QueryOption) ([]*db.{{.EntityName}}, error) {
 					return db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
@@ -265,6 +279,9 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 		// AIP-134: concrete update_mask paths write ONLY those columns; an
 		// absent/empty/"*" mask is a full replace via Persist above.
 		// db.Update{{.EntityName}}Masked rejects unknown/immutable paths.
+{{- if .ReadOnlyColumns}}
+		// Read-only paths never reach it: HandleUpdate refuses them first.
+{{- end}}
 		Mask: func(req *pb.{{.InputType}}) []string { return req.Get{{.UpdateMaskField}}().GetPaths() },
 		PersistMasked: func(ctx context.Context, entity *db.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
 			return crud.ScopedUpdateMasked(ctx, "{{.PkColumnName}}", entity.{{.PkField}}, entity, fields, opts,

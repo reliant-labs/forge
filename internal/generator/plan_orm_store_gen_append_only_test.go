@@ -207,7 +207,7 @@ func TestPlanORM_MutableEntityKeepsItsPackageLevelMutators(t *testing.T) {
 	src := appendOnlyORMSource(t, "invoice")
 
 	for _, want := range []string{
-		"func UpdateInvoice(ctx context.Context, db orm.Context, msg *Invoice) error",
+		"func UpdateInvoice(ctx context.Context, db orm.Context, msg *Invoice, opts ...crud.UpdateOption) error",
 		"func UpdateInvoiceMasked(ctx context.Context, db orm.Context, msg *Invoice, fields []string) error",
 		"func DeleteInvoice(ctx context.Context, db orm.Context, id string) error",
 	} {

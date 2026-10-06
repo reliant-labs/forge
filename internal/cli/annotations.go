@@ -273,14 +273,14 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      codegen.ProtoMarkerReadOnly,
 			AppliesTo: "field",
-			Effect:    "Field is kept on the entity message and Get/List responses but OMITTED from the born Create/Update request messages — readable, not client-writable. The write-side mirror of forge:secret. Nothing assigns the value for you: give the column a DB DEFAULT (or set it in your handler), or an insert lands the zero value. If the value is DERIVED rather than defaulted, use forge:computed instead — it does the same thing and lint holds you to the derivation.",
+			Effect:    "Field is kept on the entity message and Get/List responses but is never CLIENT-writable — the write-side mirror of forge:secret. At birth it is OMITTED from the Create request. On every `forge generate` it also shapes the CRUD Update, whose AIP-134 request carries the whole entity: an update_mask naming the column is InvalidArgument (reason unknown_field), and a full replace leaves it as stored whatever the request carried (crud.Preserve), so a client can neither set it nor reset it to the column default by leaving it out. Your own code still writes it — Create, or db.Update<Entity>Masked naming it, which is what a custom RPC owning a state machine calls; a plain db.Update<Entity> from app code writes it too. Nothing assigns the value for you: give the column a DB DEFAULT (or set it in your handler), or an insert lands the zero value. If the value is DERIVED rather than defaulted, use forge:computed instead — it does the same thing and lint holds you to the derivation.",
 			Placement: "leading full-line comment above the field, or a trailing comment after the field's terminating `;` — inline `[...]` options, including multi-line braced protovalidate values, sit between them harmlessly. A marker no field consumes REFUSES the birth, naming file and line.",
 			Example:   "int64 unit_price_cents = 4 [(buf.validate.field).int64.gte = 0]; // forge:read-only",
 		},
 		{
 			Name:      codegen.ProtoMarkerComputed,
 			AppliesTo: "field",
-			Effect:    "Everything forge:read-only does (kept on the entity + Get/List, OMITTED from the born Create/Update requests), PLUS a declared obligation that your app derives the value. `forge lint --computed-fields` fails the field when no non-generated Go file assigns it. Use this instead of forge:read-only whenever the value is calculated rather than defaulted: a read-only field nothing computes takes the column DEFAULT, which for a money column is 0 — no constraint is violated, no test fails, and the only symptom is a screen showing $0.00.",
+			Effect:    "Everything forge:read-only does (kept on the entity + Get/List, OMITTED from the born Create request, and never written by a client Update — a mask naming it is refused, a full replace leaves it as stored), PLUS a declared obligation that your app derives the value. `forge lint --computed-fields` fails the field when no non-generated Go file assigns it. Because no CRUD Update writes it, derive it where its inputs change: a GENERATED column for a same-row value, db.Update<Entity>Masked naming it for one that depends on other rows. Use this instead of forge:read-only whenever the value is calculated rather than defaulted: a read-only field nothing computes takes the column DEFAULT, which for a money column is 0 — no constraint is violated, no test fails, and the only symptom is a screen showing $0.00.",
 			Placement: "leading full-line comment above the field, or a trailing comment after the field's terminating `;` — same two positions as forge:read-only, and a marker no field consumes REFUSES the birth.",
 			Example:   "// quantity_milli * unit_price_cents / 1000, maintained on write.\nint64 amount_cents = 7; // forge:computed",
 		},
@@ -317,7 +317,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      schemadef.ColumnMarkerImmutable,
 			AppliesTo: "column",
-			Effect:    "The column is omitted from a full-replace UPDATE's SET clause — projects to Bun's `,skipupdate` tag on the generated struct — while an explicit update_mask naming it still writes it. Use for a value the server owns that a client round-trip must not clobber.",
+			Effect:    "The column is omitted from EVERY full-replace UPDATE's SET clause — projects to Bun's `,skipupdate` tag on the generated struct, so app code's db.Update<Entity> skips it as well as the client's — while an explicit update_mask naming it still writes it, from a client too. Use for a value no full replace should rewrite (an owner id, an externally-issued identifier). To keep a value away from CLIENTS while your own code keeps full-replace writes, mark the wire field forge:read-only instead.",
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:immutable'; in a migration",
 			Example:   "COMMENT ON COLUMN invoices.total_cents IS 'forge:immutable';",
 		},

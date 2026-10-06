@@ -65,6 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `db`, `db/crud-overrides` and `interactor` point to it. Executor resolution is
   guarded by identity: a transaction carried for one `*sql.DB` never runs a
   statement sent to another.
+- **`crud.Preserve(columns...)`, a per-call write policy for a full-replace
+  Update.** The generated `db.Update<Entity>` delegate takes
+  `opts ...crud.UpdateOption`; existing calls compile unchanged. `Preserve`
+  keeps the named columns out of that one write and reads their stored values
+  back. Use it when the caller, not the column, decides what may be written.
+  `forge:immutable` (`,skipupdate`) remains the answer when no full replace
+  should ever rewrite the column. Naming a column that does not exist is an
+  error, not a no-op, so a typo cannot silently disable the protection.
+- **`crud.UpdateOp.ReadOnly`**: the columns `HandleUpdate` refuses in a client
+  `update_mask`. Generated from the entity's `forge:read-only` /
+  `forge:computed` fields.
 - **Windows support.** Native windows/amd64 and windows/arm64, no C toolchain:
   - process lifecycle (tree kill, liveness, parent/port/start-time lookup,
     reading another process's argv and environment for stale-stack reclaim);
@@ -110,6 +121,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The RETURNING list names only the struct's own columns, never `*`, so
   inserts keep working while a migration that adds a column has been applied
   ahead of the code. A write that matches no row is still `orm.ErrNoRows`.
+- **A client Update no longer writes `forge:read-only` / `forge:computed`
+  columns.** Both markers promise "readable, not client-writable", and the born
+  Create request keeps that promise. The AIP-134 `Update<Entity>Request` wraps
+  the whole entity, though, and the generated CRUD Update wrote it all back. Any
+  authenticated caller could set a server-owned column directly (an invoice
+  straight to PAID, past the RPC that owns the state machine), and a maskless
+  Update from a client that simply didn't echo the field reset it: an unset enum
+  became the column DEFAULT, a lifecycle timestamp became NULL, a computed total
+  became 0. Nothing errored and nothing was logged. An `update_mask` naming the
+  column was accepted as well. The generated Update op now carries the entity's
+  read-only columns as `op.ReadOnly`. `crud.HandleUpdate` refuses a mask path
+  naming one with `InvalidArgument`, reason `unknown_field`, and the full
+  replace passes `crud.Preserve(...)`, so the stored value survives whatever the
+  request carried. Your own code is unaffected: `db.Update<Entity>Masked`
+  naming the column (what a custom RPC calls), `Create`, and a plain
+  `db.Update<Entity>` all still write it. The policy is read from the proto on
+  every `forge generate`, the same reading that already shapes the Create
+  request and the edit form, so existing projects are fixed by regenerating, with
+  no migration. Hand-written overrides that reloaded the stored row and copied
+  the editable fields onto it, or filtered lifecycle paths out of the mask, can
+  go. AIP-203 asks servers to ignore output-only mask paths; forge refuses them
+  instead, because a 200 that changed nothing is a silent non-write (an override
+  wanting AIP behaviour sets `op.ReadOnly = nil`). A value derived in an Update
+  `op.Entity` hook is no longer persisted by the generated Update. Derive it
+  where its inputs change, with `db.Update<Entity>Masked` naming it, or as a
+  GENERATED column.
+- **Update responses report the stored row, not the request.** Beyond the
+  generated columns above, `Repo.Update` and `Repo.UpdateMasked` now read back
+  (`RETURNING`) every column the write did not set, in the same round trip. The
+  entity a caller holds afterwards, and so the CRUD response, carries the stored
+  value of a held-back (`forge:immutable`, read-only, secret) column and of every
+  column a mask did not name, rather than whatever the request carried. Before,
+  a full replace that correctly left `status` alone still answered with the
+  reset `status` the client sent.
 - **forge only kills processes it can prove are its own.** On every OS, a pid
   read from a pidfile (embedded postgres, the host zitadel, a recorded dlv)
   is killed only if its executable matches and it started no later than the

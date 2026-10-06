@@ -146,6 +146,16 @@ marker list and what each emits. In practice: `forge:entity` tablizes a message;
 `forge:read-only` and `forge:secret` trim a field off the born write and read
 sides respectively.
 
+`forge:read-only` (and `forge:computed`, which implies it) is also read on every
+`forge generate`, because the AIP-134 Update request wraps the whole entity and
+so still carries the field. The generated Update refuses an `update_mask` naming
+it (`InvalidArgument`, reason `unknown_field`) and keeps it out of a full replace,
+so a client can neither set it nor reset it by leaving it out. Your own RPCs write
+it with `db.Update<Entity>Masked`. This is stricter than AIP-203, which asks a
+server to silently ignore output-only mask paths: a caller who names `status`
+believes it is changing status, and a 200 that changed nothing is the silent
+non-write forge refuses to ship.
+
 ```proto
 // forge:soft-delete
 message Product {

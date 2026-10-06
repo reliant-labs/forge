@@ -534,7 +534,8 @@ func (r *Repo[M]) returnDatabaseFilled(q *bun.InsertQuery, entity *M) *bun.Inser
 // column it depends on changed — and the dependency may be on a column the
 // mask did not even name. Nothing else the UPDATE writes comes back: every
 // other column holds exactly what the caller sent (updated_at is stamped in
-// Go, the version column is advanced by advanceVersion).
+// Go, the version column is advanced by advanceVersion). The columns the
+// UPDATE does NOT write come back too, via readBackUnwritten.
 func (r *Repo[M]) returnGenerated(q *bun.UpdateQuery) *bun.UpdateQuery {
 	for _, col := range r.m.generatedCols {
 		q = q.Returning("?", bun.Ident(col))
@@ -932,9 +933,24 @@ func (r *Repo[M]) scopeRead(q *bun.SelectQuery) {
 //
 // An entity that declared a `forge:version` column additionally gets
 // optimistic concurrency control: see applyVersionGuard.
-func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
+//
+// Every column the SET clause does not name is read back into entity (see
+// readBackUnwritten), so after a nil return the caller holds the row as
+// stored — a held-back column reports its stored value, not whatever the
+// caller's struct carried for it.
+//
+// opts tune this one call; see Preserve.
+func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ...UpdateOption) error {
 	r.ensureMeta(db)
-	if len(r.m.updatable) == 0 {
+	var o updateOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	cols, err := r.withoutPreserved(r.m.updatable, o.preserve)
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
 		return nil // no updatable fields
 	}
 	ctx, span := r.startSpan(ctx, "Update")
@@ -945,7 +961,6 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 	}
 	r.normalizeArrays(entity)
 
-	cols := r.m.updatable
 	if r.m.timestamps && r.m.hasUpdatedAt {
 		cols = appendCol(cols, "updated_at")
 	}
@@ -955,6 +970,7 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, entity)
 	r.returnGenerated(q)
+	r.readBackUnwritten(q, cols)
 	res, err := q.Exec(ctx)
 	if err != nil {
 		recordErr(span, err)
@@ -986,6 +1002,10 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M) error {
 // still version-CHECKED — writing one field of a row someone else has since
 // rewritten is the same lost update as replacing the whole row — so the
 // same predicate and increment apply here. See applyVersionGuard.
+//
+// Like Update, every column the write did not set is read back, so the
+// unmasked fields of entity hold the stored row afterwards rather than
+// whatever the caller's struct carried.
 func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string) error {
 	r.ensureMeta(db)
 	if len(fields) == 0 {
@@ -1037,6 +1057,7 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, entity)
 	r.returnGenerated(q)
+	r.readBackUnwritten(q, slices.Concat(cols, forced))
 	res, err := q.Exec(ctx)
 	if err != nil {
 		recordErr(span, err)
@@ -1048,6 +1069,89 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	}
 	r.advanceVersion(entity)
 	return nil
+}
+
+// UpdateOption tunes one full-replace Update. See Preserve.
+type UpdateOption func(*updateOptions)
+
+type updateOptions struct {
+	preserve []string
+}
+
+// Preserve keeps the named columns out of ONE full-replace Update's SET
+// clause, whatever the entity holds for them. Like every column the write
+// does not set, they are read back, so the entity reports the stored values
+// afterwards.
+//
+// It is the per-CALL twin of ,skipupdate. A ,skipupdate column
+// (forge:immutable, a forge:secret field) is held back from every full
+// replace, because what makes rewriting it unsafe is a fact about the
+// COLUMN. Preserve expresses a fact about the CALLER. The generated CRUD
+// Update op passes the entity's forge:read-only and forge:computed columns:
+// a client may not write those, but the custom RPC that owns them writes
+// through this same repository and must. Declaring that on the column
+// would take the write away from the code that owns it.
+//
+// A name that is not a column of the entity is an error, not a no-op: a
+// misspelled Preserve would otherwise drop its protection with no symptom.
+// A column a full replace never writes anyway (the PK, a forge:version or
+// GENERATED column, a ,skipupdate column) is accepted and changes nothing.
+func Preserve(columns ...string) UpdateOption {
+	return func(o *updateOptions) { o.preserve = append(o.preserve, columns...) }
+}
+
+// withoutPreserved returns cols minus preserve, as a fresh slice — cols is
+// the shared r.m.updatable allowlist and must never be mutated.
+func (r *Repo[M]) withoutPreserved(cols, preserve []string) ([]string, error) {
+	if len(preserve) == 0 {
+		return cols, nil
+	}
+	for _, p := range preserve {
+		if !slices.Contains(r.m.columns, p) {
+			return nil, fmt.Errorf("update %s: Preserve names %q, which is not a column of the table", r.m.table, p)
+		}
+	}
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if !slices.Contains(preserve, c) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// readBackUnwritten adds a RETURNING clause for every column the UPDATE's
+// SET does not name, so Bun scans the stored values of those columns into
+// the entity in the same round trip. It is the complement of
+// returnGenerated: that one refreshes the columns the database recomputed,
+// this one the columns the write left alone.
+//
+// Without it an update leaves the caller holding values the row does not
+// have. Every column a write deliberately skips is one the caller's struct
+// may disagree about — a ,skipupdate column a client blanked, a column
+// Preserve held back, the columns a mask did not name — and the CRUD
+// response is packed from that struct. Before this, a full replace that
+// correctly left a read-only status alone still answered with the status
+// the request carried, so the client was told of a reset that never
+// happened.
+//
+// The PK addresses the row and already matches. Generated columns are
+// returnGenerated's (naming one twice would scan it twice). The
+// forge:version column is left to advanceVersion, which mirrors the
+// increment this statement makes; reading it back as well would advance it
+// twice.
+//
+// With RETURNING, Bun scans instead of executing (UpdateQuery.scanOrExec),
+// and the sql.Result it hands back counts scanned rows — so zero rows still
+// reaches requireWriteLanded as zero rows affected, with the entity untouched.
+func (r *Repo[M]) readBackUnwritten(q *bun.UpdateQuery, written []string) {
+	for _, c := range r.m.columns {
+		if c == r.m.pkColumn || c == r.m.versionColumn ||
+			slices.Contains(written, c) || slices.Contains(r.m.generatedCols, c) {
+			continue
+		}
+		q.Returning("?", bun.Ident(c))
+	}
 }
 
 // scopeWrite applies the soft-delete guard to an UPDATE.

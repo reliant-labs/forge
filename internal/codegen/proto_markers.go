@@ -61,8 +61,10 @@ const (
 	ProtoMarkerAppendOnly = "forge:append-only"
 
 	// ProtoMarkerReadOnly keeps a field on the entity and on Get/List but
-	// omits it from the born Create/Update requests. Read by BOTH the raw
-	// scanner (at birth) and the descriptor path (fieldHasReadOnlyMarker).
+	// never lets a client write it: omitted from the born Create request,
+	// and refused/preserved by the generated CRUD Update on every generate
+	// (ReadOnlyColumns). Read by BOTH the raw scanner (at birth) and the
+	// descriptor path (fieldHasReadOnlyMarker).
 	ProtoMarkerReadOnly = "forge:read-only"
 
 	// ProtoMarkerComputed is ProtoMarkerReadOnly plus a DECLARED OBLIGATION:

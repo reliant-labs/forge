@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -104,8 +105,12 @@ const (
 	// Wire code: InvalidArgument.
 	ReasonInvalidFormat = "invalid_format"
 
-	// ReasonUnknownField — an update_mask path names a field that is not
-	// an updatable column of this entity. Wire code: InvalidArgument.
+	// ReasonUnknownField — an update_mask path names a field the caller
+	// may not update: not a column at all, a column the repository owns
+	// (forge:version, GENERATED), or a field the wire declares read-only
+	// (forge:read-only / forge:computed, see UpdateOp.ReadOnly). One code
+	// for all three because the caller's move is the same — drop the path.
+	// Wire code: InvalidArgument.
 	ReasonUnknownField = "unknown_field"
 
 	// ReasonVersionConflict — the row was modified by another writer
@@ -516,6 +521,25 @@ type UpdateOp[Req, Resp, Ent any] struct {
 	//
 	// The variadic opts mean the same thing they do on Persist.
 	PersistMasked func(ctx context.Context, entity Ent, fields []string, opts ...orm.QueryOption) error
+
+	// ReadOnly names the columns a CLIENT may not write through this op:
+	// those whose entity wire field is marked `forge:read-only` or
+	// `forge:computed`. HandleUpdate refuses an update_mask path naming
+	// one with InvalidArgument (reason unknown_field) before anything
+	// runs, and the generated Persist keeps the same columns out of a
+	// full replace with Preserve — so a client can neither set a
+	// server-owned column nor reset it by omitting it.
+	//
+	// The refusal lives here, on the op, rather than in the repository,
+	// because the same repository is how the code that OWNS these
+	// columns writes them: a custom RPC's Update<Entity>Masked naming
+	// "status" must land, while a client's update_mask naming "status"
+	// must not. Only the op knows which of the two is calling.
+	//
+	// Generated from the proto on every `forge generate`. An override
+	// that wants AIP-203's "silently ignore output-only paths" instead
+	// can set it to nil and filter in PersistMasked.
+	ReadOnly []string
 }
 
 // HandleUpdate runs validate-required -> persist -> pack.
@@ -528,15 +552,30 @@ type UpdateOp[Req, Resp, Ent any] struct {
 //     partial update MUST send a mask.
 //   - mask with concrete paths → op.PersistMasked writes only those
 //     fields. Paths are proto field names (snake_case, == column names).
+//   - a path named in op.ReadOnly → CodeInvalidArgument naming the path,
+//     refused before the entity is even built. Nothing is written.
 //   - unknown or immutable path → CodeInvalidArgument naming the path
 //     (mapped from orm.UnknownFieldError by mapRepoErr).
 //
-// After a masked write the response echoes the request entity: masked
-// fields hold their new values, unmasked fields hold whatever the caller
-// sent (NOT necessarily the stored values). Re-read with Get for the
-// authoritative row.
+// The response packs the entity as the repository left it. The generated
+// repository reads back every column a write did not set (see
+// Repo.Update), so on both paths the response reports the STORED value of
+// a column the caller could not write — a read-only status, a GENERATED
+// total — rather than echoing whatever the request carried for it.
 func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
+		var paths []string
+		masked := false
+		if op.Mask != nil {
+			var full bool
+			paths, full = maskPaths(op.Mask(req.Msg))
+			masked = !full
+		}
+		if masked {
+			if err := refuseReadOnlyPaths(op.EntityLower, op.ReadOnly, paths); err != nil {
+				return nil, err
+			}
+		}
 		entity, err := op.Entity(ctx, req.Msg)
 		if errors.Is(err, ErrEntityRequired) {
 			return nil, clientErr(connect.NewError(
@@ -547,26 +586,24 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 		if err != nil {
 			return nil, mapPackErr(err)
 		}
-		if op.Mask != nil {
-			if paths, full := maskPaths(op.Mask(req.Msg)); !full {
-				if op.PersistMasked == nil {
-					// Wiring bug, not caller error: the generator emits Mask
-					// and PersistMasked together. Fail loudly rather than
-					// silently rewriting every column.
-					return nil, clientErr(connect.NewError(
-						connect.CodeInternal,
-						fmt.Errorf("update %s: update_mask received but masked persistence is not wired", op.EntityLower),
-					), ReasonInternal)
-				}
-				if err := op.PersistMasked(ctx, entity, paths); err != nil {
-					return nil, mapRepoErr("update", op.EntityLower, err)
-				}
-				resp, err := op.Pack(entity)
-				if err != nil {
-					return nil, mapPackErr(err)
-				}
-				return connect.NewResponse(resp), nil
+		if masked {
+			if op.PersistMasked == nil {
+				// Wiring bug, not caller error: the generator emits Mask
+				// and PersistMasked together. Fail loudly rather than
+				// silently rewriting every column.
+				return nil, clientErr(connect.NewError(
+					connect.CodeInternal,
+					fmt.Errorf("update %s: update_mask received but masked persistence is not wired", op.EntityLower),
+				), ReasonInternal)
 			}
+			if err := op.PersistMasked(ctx, entity, paths); err != nil {
+				return nil, mapRepoErr("update", op.EntityLower, err)
+			}
+			resp, err := op.Pack(entity)
+			if err != nil {
+				return nil, mapPackErr(err)
+			}
+			return connect.NewResponse(resp), nil
 		}
 		if err := op.Persist(ctx, entity); err != nil {
 			return nil, mapRepoErr("update", op.EntityLower, err)
@@ -616,6 +653,23 @@ func orderKeysetSafe(clause string, descending bool, pkColumn string) bool {
 		return false
 	}
 	return true
+}
+
+// refuseReadOnlyPaths rejects an update_mask that names a column the client
+// may not write. Refused, not silently dropped: AIP-203 asks a server to
+// ignore output-only mask paths, but a caller who names `status` believes it
+// is changing status, and a 200 that changed nothing is exactly the silent
+// non-write this op exists to stop. The reason matches the one a
+// forge:version path already gets, since the caller's move is the same.
+func refuseReadOnlyPaths(entityLower string, readOnly, paths []string) error {
+	for _, p := range paths {
+		if slices.Contains(readOnly, p) {
+			return clientErr(svcerr.InvalidArgument(fmt.Sprintf(
+				"update %s: update_mask path %q is read-only", entityLower, p)),
+				ReasonUnknownField)
+		}
+	}
+	return nil
 }
 
 // maskPaths normalizes update_mask paths: blank entries are dropped, and

@@ -71,12 +71,19 @@ func UnmappedFieldsError(fields []UnmappedField) error {
 	return errors.New(b.String())
 }
 
+// entityConvLower is the prefix of an entity's generated conversion pair,
+// `<lower>ToProto` / `<lower>FromProto` (EntityConvTemplateData.EntityLower).
+// One definition, because crudOpsDemand looks those names up in user code.
+func entityConvLower(entityName string) string {
+	return strings.ToLower(entityName)
+}
+
 // BuildEntityConv builds the conversion data for one entity, plus every
 // (wire field, column) pair it could not map.
 func BuildEntityConv(svc ServiceDef, entity EntityDef) (EntityConvTemplateData, []UnmappedField) {
 	conv := EntityConvTemplateData{
 		EntityName:  entity.Name,
-		EntityLower: strings.ToLower(entity.Name),
+		EntityLower: entityConvLower(entity.Name),
 	}
 	var unmapped []UnmappedField
 	colByName := map[string]EntityColumn{}

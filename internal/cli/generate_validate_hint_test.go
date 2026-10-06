@@ -73,17 +73,37 @@ gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			},
 		},
 		{
-			name:      "unknown-error-default-fallthrough",
-			errOutput: `internal/foo/bar.go:42:18: undefined: SomeUnrelatedSymbol`,
+			// A hand-written file is fixed where it stands — and the
+			// hint names it, rather than guessing at imports.
+			name:      "hand-written-file-named",
+			errOutput: "# example.com/app/internal/foo\ninternal/foo/bar.go:42:18: undefined: SomeUnrelatedSymbol",
+			wantContains: []string{
+				"internal/foo/bar.go is hand-written",
+				"re-run 'forge generate'",
+			},
+		},
+		{
+			// A generated file is fixed at its inputs, never by editing it.
+			name:      "generated-file-named",
+			errOutput: "internal/handlers/x/handlers_crud_ops_gen.go:9:2: undefined: db.UpdateThing",
+			wantContains: []string{
+				"internal/handlers/x/handlers_crud_ops_gen.go is generated — do not edit it",
+				"forge bug",
+			},
+		},
+		{
+			name:      "no-coordinate-fallthrough",
+			errOutput: "go: updates to go.mod needed; to update it:\n\tgo mod tidy",
 			wantContains: []string{
 				"ensure all referenced types are imported",
 			},
 		},
 	}
 
+	isGenerated := func(rel string) bool { return strings.HasSuffix(rel, "_gen.go") }
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := goBuildValidateFixHint(tc.errOutput)
+			got := goBuildValidateFixHint(tc.errOutput, isGenerated)
 			if got == "" {
 				t.Fatalf("goBuildValidateFixHint returned empty hint for %q", tc.errOutput)
 			}
@@ -108,7 +128,7 @@ func TestGoBuildValidateFixHint_OrmSkewBeatsOtherClassifiers(t *testing.T) {
 	// reference. The orm marker wins.
 	mixed := `gen/db/v1/foo.pb.orm.go:42:18: undefined: orm.TypeDoublePrecision
 internal/bootstrap.go:90:5: imports pkg/config: foo.go:1:1: package config`
-	got := goBuildValidateFixHint(mixed)
+	got := goBuildValidateFixHint(mixed, nil)
 	if !strings.Contains(got, "forge/pkg pin is older") {
 		t.Errorf("orm.Type* classifier did not win against pkg/config classifier:\n  got: %q", got)
 	}

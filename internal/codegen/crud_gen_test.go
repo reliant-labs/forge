@@ -1470,7 +1470,7 @@ func TestBuildCRUDTemplateData_WithFilters(t *testing.T) {
 		},
 	}
 
-	data, err := buildCRUDTemplateData(svc, crudMethods, "example.com/test")
+	data, err := buildCRUDTemplateData(svc, crudMethods, nil, "example.com/test")
 	if err != nil {
 		t.Fatalf("buildCRUDTemplateData() error = %v", err)
 	}
@@ -1568,7 +1568,7 @@ func TestBuildCRUDTemplateData_FilterMappingErrors(t *testing.T) {
 			},
 			SearchColumns: []string{"name"},
 		}
-		_, err := buildCRUDTemplateData(svc, listMethod(entity), "example.com/test")
+		_, err := buildCRUDTemplateData(svc, listMethod(entity), nil, "example.com/test")
 		if err == nil {
 			t.Fatal("expected error for exact filter naming no declared column")
 		}
@@ -1600,7 +1600,7 @@ func TestBuildCRUDTemplateData_FilterMappingErrors(t *testing.T) {
 				{Name: "age", Type: "int64", NotNull: true},
 			},
 		}
-		_, err := buildCRUDTemplateData(svc, listMethod(entity), "example.com/test")
+		_, err := buildCRUDTemplateData(svc, listMethod(entity), nil, "example.com/test")
 		if err == nil {
 			t.Fatal("expected error for search filter on an entity with no string columns")
 		}
@@ -1994,7 +1994,7 @@ func TestBuildCRUDTemplateData_NoFilters(t *testing.T) {
 		},
 	}
 
-	data, err := buildCRUDTemplateData(svc, crudMethods, "example.com/test")
+	data, err := buildCRUDTemplateData(svc, crudMethods, nil, "example.com/test")
 	if err != nil {
 		t.Fatalf("buildCRUDTemplateData() error = %v", err)
 	}
@@ -3286,7 +3286,7 @@ func TestBuildCRUDTemplateData_CreateAssigns(t *testing.T) {
 		Operation: "create",
 	}}
 
-	data, err := buildCRUDTemplateData(svc, crudMethods, "example.com/test")
+	data, err := buildCRUDTemplateData(svc, crudMethods, nil, "example.com/test")
 	if err != nil {
 		t.Fatalf("buildCRUDTemplateData() error = %v", err)
 	}

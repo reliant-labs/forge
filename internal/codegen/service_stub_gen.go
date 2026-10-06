@@ -552,8 +552,11 @@ func ScanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 			entry.Name() == "handlers_crud.go" || entry.Name() == "handlers_crud_ops_gen.go") {
 			// handlers_crud.go holds the forge-scaffolded thin CRUD shims:
 			// its methods delegate to generated ops, so they must not count
-			// as "user implemented this RPC by hand" (that would suppress
-			// regeneration of the very ops they delegate to).
+			// as "user implemented this RPC by hand" for the stub and CRUD
+			// test scaffolds. CRUD op EMISSION does not use this scan at
+			// all: it reads which ops the package calls, in any file
+			// (scanHandlerPackage) — a file-name rule there dropped the op
+			// of every shim moved out of this file.
 			continue
 		}
 

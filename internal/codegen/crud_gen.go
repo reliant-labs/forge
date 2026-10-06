@@ -440,8 +440,8 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// Stub→CRUD transition: an RPC that was a pristine `forge:gen
 	// unwired-stub` method in its own rpc_<name>.go (or, in a project born
 	// before the per-RPC split, in handlers.go) and has now become entity-backed
-	// must have that marked stub EXCISED. Otherwise ScanExistingMethods
-	// below counts it as user-implemented and filters it out of CRUD gen —
+	// must have that marked stub EXCISED. Otherwise the package scan below
+	// counts it as implemented by hand and CRUD gen leaves it alone —
 	// leaving the RPC stuck on the CodeUnimplemented stub (or, if the shim
 	// were forced, a duplicate-method compile error). Only pristine marked
 	// stubs for methods CRUD is about to implement are removed; a stub the
@@ -456,20 +456,14 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		fmt.Printf("  ✂️  Excised %d now-entity-backed unwired stub(s) so CRUD can take over: %s\n", len(excised), strings.Join(excised, ", "))
 	}
 
-	// Scan existing user-owned methods to avoid generating duplicates
-	existingMethods, err := ScanExistingMethods(targetDir, false)
+	// Which ops the package needs is read from what its code references,
+	// across every file — never from which file declares a method. See
+	// crud_op_demand.go for the rule and the incident behind it.
+	scan, err := scanHandlerPackage(targetDir)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("scan existing methods for %s: %w", pkg, err)
+		return fmt.Errorf("scan handler package %s: %w", pkg, err)
 	}
-
-	// Filter out methods that already exist
-	var filteredMethods []CRUDMethod
-	for _, cm := range crudMethods {
-		if existingMethods[cm.Method.Name] {
-			continue
-		}
-		filteredMethods = append(filteredMethods, cm)
-	}
+	opMethods, helperEntities := crudOpsDemand(scan, crudMethods)
 
 	relDir := filepath.Join("internal", "handlers", filepath.FromSlash(res.ImportLeaf))
 	opsRel := filepath.Join(relDir, "handlers_crud_ops_gen.go")
@@ -484,15 +478,19 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	previouslyImplemented := implementedMethodsIn(filepath.Join(projectDir, relDir, "handlers_crud_gen.go"))
 	removeRetiredForgeFile(projectDir, filepath.Join(relDir, "handlers_crud_gen.go"), cs)
 
-	if len(filteredMethods) == 0 {
-		// No CRUD methods left for forge to wire — drop the ops file.
+	if len(opMethods) == 0 && len(helperEntities) == 0 {
+		// Every CRUD RPC is implemented by hand and nothing calls into
+		// the ops file — drop it.
 		removeRetiredForgeFile(projectDir, opsRel, cs)
 		return nil
 	}
 
-	// Ensure the Deps struct in service.go has a DB field for CRUD operations.
-	if err := ensureDepsDBField(targetDir); err != nil {
-		return fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
+	// Ensure the Deps struct in service.go has a DB field for CRUD
+	// operations. Conversion helpers alone never touch s.deps.DB.
+	if len(opMethods) > 0 {
+		if err := ensureDepsDBField(targetDir); err != nil {
+			return fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
+		}
 	}
 
 	// Build template data. Package is overridden with the disk-resolved
@@ -501,7 +499,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// A filter-mapping failure here is a hard error by design: a filter
 	// field that maps to no declared column must fail the generate, not
 	// ship a phantom-column query.
-	data, err := buildCRUDTemplateData(svc, filteredMethods, modulePath)
+	data, err := buildCRUDTemplateData(svc, opMethods, helperEntities, modulePath)
 	if err != nil {
 		return err
 	}
@@ -525,8 +523,16 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 
 	// User-owned implementation: scaffold handlers_crud.go once; on later
 	// runs append shims for newly-added CRUD RPCs only (existing content
-	// is never modified).
-	return ensureCRUDShimFile(projectDir, relDir, data, cs, previouslyImplemented)
+	// is never modified). A shim is owed only to an RPC no file of the
+	// package declares — a demanded op whose method already exists (a
+	// shim moved to a sibling file) must not be declared twice.
+	var unshimmed []CRUDMethodTemplateData
+	for _, m := range data.CRUDMethods {
+		if !scan.methods[m.MethodName] {
+			unshimmed = append(unshimmed, m)
+		}
+	}
+	return ensureCRUDShimFile(projectDir, relDir, data, unshimmed, cs, previouslyImplemented)
 }
 
 // removeRetiredForgeFile deletes a generated file forge no longer
@@ -756,18 +762,18 @@ func renderCRUDShimMethods(methods []CRUDMethodTemplateData) (string, error) {
 	return b.String(), nil
 }
 
-// ensureCRUDShimFile maintains the user-owned handlers_crud.go:
+// ensureCRUDShimFile maintains the user-owned handlers_crud.go for the
+// RPCs in unshimmed — those no file of the package declares a method for:
 //
 //   - absent  → scaffold the whole file (the ONLY full write, ever);
-//   - present → append shims for CRUD RPCs that have no method in the
-//     file yet (a newly-annotated entity, a new RPC). Existing content
-//     is never rewritten; needed imports are inserted into the existing
-//     import block if missing.
+//   - present → append shims for them (a newly-annotated entity, a new
+//     RPC). Existing content is never rewritten; needed imports are
+//     inserted into the existing import block if missing.
 //
-// Methods the user implemented in sibling files were already filtered
-// out by the caller, so an append never collides with a hand-written
-// handler.
-func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *checksums.FileChecksums, previouslyImplemented map[string]bool) error {
+// The caller computed unshimmed over EVERY file of the package, so an
+// append never collides with a method declared in a sibling file —
+// whether that method is a hand-written handler or a shim moved there.
+func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshimmed []CRUDMethodTemplateData, cs *checksums.FileChecksums, previouslyImplemented map[string]bool) error {
 	shimRel := filepath.Join(relDir, "handlers_crud.go")
 	fullPath := filepath.Join(projectDir, shimRel)
 
@@ -777,16 +783,25 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 	}
 
 	if os.IsNotExist(readErr) {
-		blocks, err := renderCRUDShimMethods(data.CRUDMethods)
+		if len(unshimmed) == 0 {
+			// Every RPC already has a method somewhere in the package:
+			// nothing to scaffold, and an empty shim file helps no one.
+			return nil
+		}
+		blocks, err := renderCRUDShimMethods(unshimmed)
 		if err != nil {
 			return err
 		}
-		warnCustomReadShapeStubs(data.CRUDMethods, shimRel, previouslyImplemented)
+		warnCustomReadShapeStubs(unshimmed, shimRel, previouslyImplemented)
+		// Header and imports describe the file being written, so they
+		// are computed from the methods it will actually contain.
+		scaffolded := data
+		scaffolded.CRUDMethods = unshimmed
 		var b strings.Builder
-		b.WriteString(crudShimHeader(data))
+		b.WriteString(crudShimHeader(scaffolded))
 		b.WriteString("package " + data.Package + "\n\n")
 		b.WriteString("import (\n")
-		for _, imp := range crudShimImports(data) {
+		for _, imp := range crudShimImports(scaffolded) {
 			if alias, path, ok := strings.Cut(imp, " "); ok {
 				b.WriteString("\t" + alias + " \"" + path + "\"\n")
 			} else {
@@ -806,9 +821,12 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 		return nil
 	}
 
-	// Append shims for methods missing from the file.
+	// Append shims for methods missing from the package. The textual
+	// check is a backstop for a handlers_crud.go that does not parse (the
+	// package scan skipped it): never append a second declaration of a
+	// method the file visibly already has.
 	var missing []CRUDMethodTemplateData
-	for _, m := range data.CRUDMethods {
+	for _, m := range unshimmed {
 		if !bytes.Contains(existing, []byte("func (s *Service) "+m.MethodName+"(")) {
 			missing = append(missing, m)
 		}
@@ -1351,7 +1369,11 @@ func appendOnlyCRUDConflict(cm CRUDMethod) error {
 		verb, cm.Entity.Name, cm.Method.Name)
 }
 
-func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) (CRUDTemplateData, error) {
+// buildCRUDTemplateData builds the ops-file data for crudMethods (the RPCs
+// whose op is demanded) plus a conversion pair for each of helperEntities
+// (entities no demanded op covers whose helpers the package still calls —
+// see crudOpsDemand).
+func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntities []EntityDef, modulePath string) (CRUDTemplateData, error) {
 	// Synthesized Package is a placeholder only: GenerateCRUDHandlers
 	// overrides it with the disk-resolved package clause before rendering
 	// (the file lands inside an EXISTING handler dir).
@@ -1436,17 +1458,27 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 	// custom body calls <entity>ToProto to project the rows it fetches
 	// onto the wire, so the projection pair must exist even when every
 	// method on the service is custom (no real op constructor at all).
+	//
+	// Plus one pair per helper entity: no demanded op uses it, but the
+	// package's own code calls its <entity>ToProto / <entity>FromProto
+	// (a custom RPC, a custom-read-shape body, a hand-written handler).
 	var convs []EntityConvTemplateData
 	var unmapped []UnmappedField
 	seenConv := map[string]bool{}
-	for i, m := range methods {
-		if seenConv[m.EntityName] {
-			continue
+	addConv := func(entity EntityDef) {
+		if seenConv[entity.Name] {
+			return
 		}
-		seenConv[m.EntityName] = true
-		conv, u := BuildEntityConv(svc, crudMethods[i].Entity)
+		seenConv[entity.Name] = true
+		conv, u := BuildEntityConv(svc, entity)
 		convs = append(convs, conv)
 		unmapped = append(unmapped, u...)
+	}
+	for _, cm := range crudMethods {
+		addConv(cm.Entity)
+	}
+	for _, e := range helperEntities {
+		addConv(e)
 	}
 	// Every (wire field, column) pair with no conversion fails the whole
 	// generate, listing all of them at once. The alternative this replaced
@@ -2057,7 +2089,7 @@ func classifyEntityFilterField(mf MessageFieldDef, entity EntityDef) (FilterFiel
 		}
 	}
 	return ff, fmt.Errorf(
-		"list filter field %q has no matching column on entity %s in the applied schema (columns: %s); rename the request field to a real column (or add the column via a migration), or implement the RPC by hand in a sibling file",
+		"list filter field %q has no matching column on entity %s in the applied schema (columns: %s); rename the request field to a real column (or add the column via a migration), or implement the RPC by hand — a method, in any file of the handler package, that does not call its generated crud<Rpc>Op",
 		mf.Name, entity.Name, entityColumnList(entity))
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -204,11 +205,9 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		out.message = fmt.Sprintf(
 			"%s rejected the credential (HTTP %d%s)\n"+
 				"  endpoint:   %s   (declared by env %q)\n"+
-				"  credential: from %s\n"+
-				"fix: forge login            (human — opens a browser)\n"+
-				"     export %s=<token>      (CI — a pipeline has no browser)%s",
+				"  credential: from %s\n%s%s",
 			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL, c.Endpoint.Env,
-			c.Credential.From, c.Endpoint.TokenEnv, detailSuffix(detail))
+			c.Credential.From, authFix(detail, c.Endpoint.TokenEnv), detailSuffix(detail))
 	case http.StatusNotImplemented:
 		out.message = fmt.Sprintf("%s is not implemented by %s%s", procedure, c.Endpoint.URL, detailSuffix(detail))
 	default:
@@ -233,4 +232,24 @@ func detailSuffix(detail string) string {
 		return ""
 	}
 	return "\n  server said: " + detail
+}
+
+var missingScopeRe = regexp.MustCompile(`\b([a-z]+:(?:read|write))\b scope`)
+
+// authFix is the remedy for a rejected credential. When the server names a
+// missing scope the generic "log in again" is wrong advice on its own — a
+// token minted without the scope stays without it — so it says what is
+// actually true about scopes and how to get one.
+func authFix(detail, tokenEnv string) string {
+	if m := missingScopeRe.FindStringSubmatch(detail); m != nil {
+		return fmt.Sprintf(
+			"The token is valid but lacks the %[1]s scope.\n"+
+				"fix: re-run `forge login` to pick up the scope — a token only carries scopes the control plane granted it at login.\n"+
+				"     If the new token still lacks it, your role has no %[1]s grant: ask an org admin.\n"+
+				"     An admin can mint one: `forge cloud token create --env <env> --name <name> --scopes %[1]s`, then export %[2]s=<token>",
+			m[1], tokenEnv)
+	}
+	return fmt.Sprintf(
+		"fix: forge login            (human — opens a browser)\n"+
+			"     export %s=<token>      (CI — a pipeline has no browser)", tokenEnv)
 }

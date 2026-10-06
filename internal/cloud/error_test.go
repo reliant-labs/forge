@@ -247,3 +247,39 @@ func TestCall_AuthFailureStaysActionableAndTyped(t *testing.T) {
 		t.Errorf("the error must never echo the credential itself; got:\n%s", msg)
 	}
 }
+
+// A 403 that NAMES a missing scope must not send the user round the circle
+// "forge login" -> same token -> same 403. It says the token lacks the scope,
+// that login picks it up only if the control plane grants it, and how an
+// admin mints one.
+func TestCall_MissingScopeHintIsNotCircular(t *testing.T) {
+	srv := connectErrorServer(t, http.StatusForbidden, map[string]any{
+		"code": "permission_denied", "message": "ListDomains rejected: token does not carry the domain:read scope",
+	}, "")
+	err := callAgainst(t, srv)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"lacks the domain:read scope",
+		"re-run `forge login` to pick up the scope",
+		"your role has no domain:read grant: ask an org admin",
+		"forge cloud token create --env <env> --name <name> --scopes domain:read",
+		"export ACME_TOKEN=<token>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hint missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "(human — opens a browser)") {
+		t.Errorf("a missing-scope 403 must not give the generic login advice:\n%s", got)
+	}
+}
+
+func TestCall_PlainRejectionKeepsGenericLoginAdvice(t *testing.T) {
+	srv := connectErrorServer(t, http.StatusUnauthorized, map[string]any{"code": "unauthenticated", "message": "expired"}, "")
+	if got := callAgainst(t, srv).Error(); !strings.Contains(got, "forge login            (human — opens a browser)") {
+		t.Errorf("generic advice lost:\n%s", got)
+	}
+}

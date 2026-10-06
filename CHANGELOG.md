@@ -28,6 +28,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isolation, one attempt, handle-passing. It now joins a transaction already
   carried in ctx, and `Tx.Commit` runs after-commit callbacks registered
   through `tx.RunTx`.
+- **Scaffolded CRUD lifecycle tests carry no fixtures; their rows come from
+  regenerated factories.** `handlers_crud_test.go` (scaffold-once) used to
+  embed a literal `INSERT` seed block and literal create-request values,
+  frozen against the birth schema. Editing the birth migration afterwards —
+  the db skill's own advice: a `GENERATED` column, a one-way status `CHECK` —
+  broke it (`cannot insert a non-DEFAULT value into column …`, `violates check
+  constraint …`). It now calls `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
+  rendered into the forge-owned `factories_gen_test.go` from the applied schema
+  on every `forge generate`: it seeds the FK parents and returns a request the
+  current constraints accept (enums the column DEFAULT supplies, nullable
+  timestamps and GENERATED columns are left unset). A factory forge cannot
+  derive a valid request or row for is still emitted, with a body that fails
+  the calling test naming postgres's verdict, and `forge generate` prints it
+  as a warning — it no longer fails the generate.
+- **`New<Entity>` factories insert minimal, lifecycle-consistent rows.** Every
+  NOT NULL column without a DEFAULT and every FK parent is filled; every other
+  column is left to its DEFAULT or NULL; GENERATED columns are skipped; CHECKs
+  are satisfied, including length/range/vocabulary checks, a DEFAULT the
+  column's own CHECK rejects, and one-way status implications (the
+  union/guard branch closest to the DEFAULTs). A jobs factory that used to
+  insert a LEAD job with a crew, a schedule, `completed_at` and `lost_reason`
+  now inserts a bare LEAD. Each factory is executed against the shadow schema
+  at generate time; if the minimal row is rejected the full row is tried.
+- **`forge lint --fixture-drift` executes literal fixtures instead of
+  pattern-matching them.** Every fixture statement in a scaffolded
+  `handlers_crud_test.go` runs against the shadow schema in a rolled-back
+  transaction (grouped per test function, one savepoint per statement), and
+  postgres's own error is reported per statement — GENERATED columns, UNIQUE
+  collisions, dangling foreign keys and the CHECK violations the old matchers
+  missed. A project with no literal fixtures opens no database; an unreachable
+  shadow is reported as `forge-fixture-unverified`, never as clean. The rule id
+  is now `forge-fixture-rejected` (was `forge-fixture-generated-column` /
+  `forge-fixture-duplicate-unique`). `--crud-fixtures` (the dangling-FK
+  matcher, rule `forge-crud-fixtures`) is folded in and kept as a hidden,
+  deprecated alias.
+  **Existing projects:** run `forge generate` (factories gain the
+  `New<CreateRequest>` functions), then `forge lint --fixture-drift`. Your
+  `handlers_crud_test.go` is yours and is not rewritten; to adopt the new shape,
+  delete its seed block and replace each literal `&pb.Create<Entity>Request{…}`
+  with `<svc>.NewCreate<Entity>Request(t, db, 0)` / `(t, db, 1)`. Tests that
+  relied on `New<Entity>` populating optional columns now get DEFAULT/NULL
+  there — set them with an override.
 - **`forge doctor`'s `forge: kcl-plugin` check is now a real probe.** It
   evaluates a one-line KCL program through `kcl_plugin.forge` instead of
   reading a build flag, so it fails for what can actually break now: KCL's
@@ -133,6 +175,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `--quiet`; refused with positional package paths and with `--gate-json`
   (a gate records whole-project evidence). Every pipeline lane must declare
   its scope mode, pinned by a test.
+- **`seedplan.Config.Minimal`** — plan the smallest row the schema accepts
+  instead of the fullest: only keys, NOT NULL columns without a usable
+  DEFAULT, NOT NULL references, UNIQUE/ordered NOT NULL columns and columns a
+  child references are written; discriminated-union and status-guard CHECKs
+  take the branch closest to the column DEFAULTs, the same branch on every
+  row. `Plan.Writes(table, column)`, `Plan.NaturalValue(...)` and
+  `MinimalUnionPlacement` expose the decision; `UnionCell.Present` reports a
+  branch's IS NOT NULL requirement. `forge db seed` is unchanged (full plans).
 - **Windows support.** Native windows/amd64 and windows/arm64, no C toolchain:
   - process lifecycle (tree kill, liveness, parent/port/start-time lookup,
     reading another process's argv and environment for stale-stack reclaim);

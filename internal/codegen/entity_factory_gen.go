@@ -1,9 +1,11 @@
 package codegen
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -16,7 +18,6 @@ import (
 	"github.com/jinzhu/inflection"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
@@ -81,6 +82,10 @@ type entityFactorySpec struct {
 	// exists — so for these entities the factory inserts and returns, and a
 	// test wanting specific values inserts them itself.
 	appendOnly bool
+	// failure, when set, is postgres's reason for rejecting every row forge
+	// could plan for this entity. The emitted factory then fails the calling
+	// test with it rather than inserting SQL forge has already seen refused.
+	failure string
 }
 
 // dbEntity is the table↔Go-name mapping parsed from the generated ORM package.
@@ -95,65 +100,90 @@ type dbEntity struct {
 	pkString bool // single string PK → factory-eligible (Get/Create take an id string)
 }
 
-// buildEntityFactorySpecs introspects the applied schema, joins it with the ORM
+// buildEntityFactorySpecs joins the fixture model's applied schema with the ORM
 // structs' table↔Go-name mapping, and bakes a factory spec for every
 // single-string-PK entity whose FK closure the seed planner can satisfy.
-func buildEntityFactorySpecs(projectDir string) ([]entityFactorySpec, error) {
-	migDir := filepath.Join(projectDir, "db", "migrations")
-	tables, err := schemadef.ApplyAndIntrospectAt(migDir, shadowdb.Resolve(projectDir))
-	if err != nil {
-		var fetchErr *pgtest.FetchError
-		if errors.As(err, &fetchErr) {
-			return nil, err
-		}
-		return nil, nil
-	}
-	if len(tables) == 0 {
-		return nil, nil
-	}
-	byName := make(map[string]schemadef.Table, len(tables))
-	for _, t := range tables {
-		byName[t.Name] = t
-	}
-
+func buildEntityFactorySpecs(ctx context.Context, projectDir string, fx *crudTestFixtures) []entityFactorySpec {
 	dbEntities := parseDBEntities(filepath.Join(projectDir, "internal", "db"))
 	if len(dbEntities) == 0 {
-		return nil, nil
+		return nil
 	}
-
-	pools := seedplan.PoolsFromTables(tables)
-	bounds := seedplan.BoundsFromTables(tables)
-	vocab, _ := seedplan.LoadVocab(seedplan.VocabPath(migDir))
-
-	var specs []entityFactorySpec
 	roots := make([]string, 0, len(dbEntities))
 	for table := range dbEntities {
 		roots = append(roots, table)
 	}
 	sort.Strings(roots)
 
+	var specs []entityFactorySpec
 	for _, root := range roots {
 		ent := dbEntities[root]
 		if !ent.pkString {
 			continue // Get/Create take a string id — non-string PKs are out of scope
 		}
-		tbl, ok := byName[root]
+		tbl, ok := fx.tables[root]
 		if !ok || len(tbl.PKCols) != 1 {
 			continue
 		}
-		spec, ok := bakeEntityFactory(byName, root, ent, pools, bounds, vocab)
-		if ok {
+		if spec, ok := bakeVerifiedEntityFactory(ctx, fx, root, ent); ok {
 			specs = append(specs, spec)
 		}
 	}
-	return specs, nil
+	return specs
 }
 
+// bakeVerifiedEntityFactory bakes an entity's factory from a MINIMAL plan —
+// the smallest row its schema accepts, at its initial lifecycle state (see
+// seedplan.Config.Minimal) — and checks it against the live shadow schema by
+// executing it in a rolled-back transaction.
+//
+// A minimal row trusts the column DEFAULTs, and a DEFAULT can contradict a
+// constraint forge cannot read. When postgres rejects the minimal row, the
+// FULL plan's row (every column synthesized, the shape factories had before
+// minimal rows existed) is tried before giving up, so no schema that had a
+// working factory loses it. When both are rejected the spec carries the
+// minimal row's error, and the emitted factory reports it.
+func bakeVerifiedEntityFactory(ctx context.Context, fx *crudTestFixtures, root string, ent dbEntity) (entityFactorySpec, bool) {
+	minimal, ok := bakeEntityFactory(fx.tables, root, ent, fx.pools, fx.bounds, fx.vocab, true)
+	if !ok {
+		return entityFactorySpec{}, false
+	}
+	minimalErr := verifyEntityFactory(ctx, fx, minimal)
+	if minimalErr == nil {
+		return minimal, true
+	}
+	if full, okFull := bakeEntityFactory(fx.tables, root, ent, fx.pools, fx.bounds, fx.vocab, false); okFull {
+		if verifyEntityFactory(ctx, fx, full) == nil {
+			return full, true
+		}
+	}
+	minimal.failure = minimalErr.Error()
+	return minimal, true
+}
+
+// verifyEntityFactory executes a baked factory's SQL against the fixture
+// model's shadow schema in a transaction that is rolled back. nil when it
+// runs, or when there is no live schema to ask (a hand-built model).
+func verifyEntityFactory(ctx context.Context, fx *crudTestFixtures, spec entityFactorySpec) error {
+	if fx == nil || fx.shadow == nil {
+		return nil
+	}
+	return execRolledBack(ctx, fx.shadow.DB(),
+		sqlStep{query: spec.parentSQL},
+		sqlStep{query: spec.rootSQL, args: []any{factoryVerifyID}},
+	)
+}
+
+// factoryVerifyID is the primary key bound to $1 when a factory's root INSERT
+// is verified. ULID-shaped, like the ids the emitted factory mints, so a key
+// CHECK that accepts those accepts this.
+const factoryVerifyID = "01FORGEVERIFY0000000000000"
+
 // bakeEntityFactory renders one entity's parent + root SQL from a Rows:1 plan
-// over its FK closure (root included). Returns ok=false when the closure is
-// unsatisfiable or the root statement/PK can't be resolved — the caller then
-// skips that entity, exactly as the seed-graph builder skips an unseedable root.
-func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEntity, pools seedplan.EnumPools, bounds seedplan.CheckBounds, vocab *seedplan.Vocab) (entityFactorySpec, bool) {
+// over its FK closure (root included) — a minimal plan when minimal is set,
+// else the full one. Returns ok=false when the closure is unsatisfiable or the
+// root statement/PK can't be resolved — the caller then skips that entity,
+// exactly as the seed-graph builder skips an unseedable root.
+func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEntity, pools seedplan.EnumPools, bounds seedplan.CheckBounds, vocab *seedplan.Vocab, minimal bool) (entityFactorySpec, bool) {
 	all := make([]schemadef.Table, 0, len(byName))
 	for _, t := range byName {
 		all = append(all, t)
@@ -163,7 +193,7 @@ func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEnt
 	for _, n := range closure {
 		closureTables = append(closureTables, byName[n])
 	}
-	plan, err := seedplan.BuildPlan(closureTables, pools, seedplan.Config{Rows: 1, Salt: 0})
+	plan, err := seedplan.BuildPlan(closureTables, pools, seedplan.Config{Rows: 1, Salt: 0, Minimal: minimal})
 	if err != nil {
 		return entityFactorySpec{}, false
 	}
@@ -308,24 +338,33 @@ func pgQuoteIdent(s string) string {
 }
 
 // renderEntityFactoryFile renders one handler package's forge-owned
-// factories_gen_test.go. All baked SQL goes through strconv.Quote so any
-// character stays a valid Go string.
+// factories_gen_test.go: the typed New<Entity> row factories and the
+// New<CreateRequest> request factories the scaffolded lifecycle test calls.
+// Baked SQL is a raw string literal where it can be, strconv.Quote otherwise,
+// so any character stays a valid Go string.
 //
-// pkgName is the handler package's own clause (`order`), so the file compiles
+// g.pkg is the handler package's own clause (`order`), so the file compiles
 // INTO that package's test binary and its exported factories are visible to the
 // directory's internal and external (`order_test`) test files alike.
-func renderEntityFactoryFile(modulePath, pkgName string, specs []entityFactorySpec) []byte {
+func renderEntityFactoryFile(modulePath string, g factoryGroup) []byte {
+	pkgName := g.pkg
 	var b strings.Builder
 	b.WriteString("// Code generated by forge. DO NOT EDIT.\n")
 	b.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
 	b.WriteString("// Source: the APPLIED schema (db/migrations), baked through forge's seed planner.\n")
 	b.WriteString("//\n")
-	b.WriteString("// Typed entity factories for tests. New<Entity>(t, db, overrides…) inserts one\n")
-	b.WriteString("// valid row — every NOT-NULL column and FK parent satisfied — and returns the\n")
-	b.WriteString("// typed *db.<Entity>. Each call gets a fresh primary key, so call it once per\n")
-	b.WriteString("// row:\n")
+	b.WriteString("// Typed test factories, derived from your schema on every `forge generate`:\n")
 	b.WriteString("//\n")
-	b.WriteString("//\titem := NewItem(t, database)\n")
+	b.WriteString("//   - New<Entity>(t, db, overrides…) inserts one MINIMAL valid row and returns\n")
+	b.WriteString("//     the typed *db.<Entity>: every NOT NULL column without a DEFAULT and every\n")
+	b.WriteString("//     FK parent satisfied, every other column left to its DEFAULT or NULL, and\n")
+	b.WriteString("//     every CHECK honoured — so the row sits at its initial lifecycle state.\n")
+	b.WriteString("//     Each call gets a fresh primary key: `item := NewItem(t, database)`.\n")
+	b.WriteString("//   - New<CreateRequest>(t, db, variant) seeds a create RPC's FK parents and\n")
+	b.WriteString("//     returns a request the schema accepts; variants 0 and 1 are distinct rows.\n")
+	b.WriteString("//     The scaffolded handlers_crud_test.go builds its rows from these, so a\n")
+	b.WriteString("//     migration edit flows in here instead of breaking a file forge never\n")
+	b.WriteString("//     rewrites.\n")
 	b.WriteString("//\n")
 	b.WriteString("// WHY THIS IS A `_test.go` FILE. The toolchain compiles it only into this\n")
 	b.WriteString("// package's test binary, so the `testing` import below is never linked into\n")
@@ -341,76 +380,119 @@ func renderEntityFactoryFile(modulePath, pkgName string, specs []entityFactorySp
 	b.WriteString("// this directory (including the scaffolded CRUD lifecycle test), and to no\n")
 	b.WriteString("// other package. See the forge `testing` skill.\n")
 	b.WriteString("package " + pkgName + "\n\n")
+
+	needTimestamppb, needTime := createSpecsNeed(g.creates)
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
-	b.WriteString("\t\"testing\"\n\n")
-	b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
-	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n\n")
-	fmt.Fprintf(&b, "\tdb %s\n", strconv.Quote(modulePath+"/internal/db"))
+	b.WriteString("\t\"testing\"\n")
+	if needTime {
+		b.WriteString("\t\"time\"\n")
+	}
+	b.WriteString("\n")
+	if len(g.specs) > 0 {
+		b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
+	}
+	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
+	if needTimestamppb {
+		b.WriteString("\t\"google.golang.org/protobuf/types/known/timestamppb\"\n")
+	}
+	if len(g.specs) > 0 || len(g.creates) > 0 {
+		b.WriteString("\n")
+	}
+	if len(g.creates) > 0 {
+		fmt.Fprintf(&b, "\tpb %s\n", strconv.Quote(g.pbImport))
+	}
+	if len(g.specs) > 0 {
+		fmt.Fprintf(&b, "\tdb %s\n", strconv.Quote(modulePath+"/internal/db"))
+	}
 	b.WriteString(")\n\n")
 
 	b.WriteString(entityFactoryHelperSource)
 
-	for _, s := range specs {
-		fmt.Fprintf(&b, "\n// --- %s ---\n\n", s.goName)
-		if !s.appendOnly {
-			fmt.Fprintf(&b, "// %sOverride mutates the *db.%s New%s is about to insert.\n", s.goName, s.goName, s.goName)
-			fmt.Fprintf(&b, "type %sOverride func(*db.%s)\n\n", s.goName, s.goName)
-		}
-
-		if s.parentSQL != "" {
-			fmt.Fprintf(&b, "const %sFactoryParentSQL = %s\n\n", s.lower, backquoteOrQuote(s.parentSQL))
-		}
-		fmt.Fprintf(&b, "const %sFactoryRootSQL = %s\n\n", s.lower, backquoteOrQuote(s.rootSQL))
-
-		fmt.Fprintf(&b, "// New%s inserts one %s row with every NOT-NULL column and FK parent\n", s.goName, s.goName)
-		b.WriteString("// satisfied (forge's seed planner), and returns it. Each call gets a fresh\n")
-		b.WriteString("// primary key, so call it once per row you need.\n")
-		if s.appendOnly {
-			// No override seam: applying one means writing the loaded row
-			// back, and this table refuses UPDATE at the database.
-			b.WriteString("//\n")
-			fmt.Fprintf(&b, "// %s is APPEND-ONLY, so this factory takes no overrides — applying\n", s.goName)
-			b.WriteString("// one would mean UPDATEing the row it just inserted, which the table's\n")
-			b.WriteString("// guard rejects. A test needing particular values inserts the row itself.\n")
-			fmt.Fprintf(&b, "func New%s(t testing.TB, database orm.Context) *db.%s {\n", s.goName, s.goName)
-		} else {
-			b.WriteString("// Override the columns your\n")
-			b.WriteString("// test asserts on; leave the rest to the seeded defaults:\n")
-			b.WriteString("//\n")
-			fmt.Fprintf(&b, "//\t%s := New%s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, s.goName, s.goName)
-			b.WriteString("//\n")
-			b.WriteString("// A single-column-unique NOT-NULL field other than the primary key keeps its\n")
-			b.WriteString("// seeded value across calls — override such a field yourself to insert more\n")
-			b.WriteString("// than one row.\n")
-			fmt.Fprintf(&b, "func New%s(t testing.TB, database orm.Context, overrides ...%sOverride) *db.%s {\n", s.goName, s.goName, s.goName)
-		}
-		b.WriteString("\tt.Helper()\n")
-		if s.parentSQL != "" {
-			fmt.Fprintf(&b, "\tseedFactoryParents(t, database, %sFactoryParentSQL)\n", s.lower)
-		}
-		b.WriteString("\tid := ulid.Make().String()\n")
-		fmt.Fprintf(&b, "\tif _, err := database.Exec(context.Background(), %sFactoryRootSQL, id); err != nil {\n", s.lower)
-		fmt.Fprintf(&b, "\t\tt.Fatalf(\"New%s: insert row: %%v\", err)\n", s.goName)
-		b.WriteString("\t}\n")
-		fmt.Fprintf(&b, "\trow, err := db.Get%sByID(context.Background(), database, id)\n", s.goName)
-		b.WriteString("\tif err != nil {\n")
-		fmt.Fprintf(&b, "\t\tt.Fatalf(\"New%s: load inserted row: %%v\", err)\n", s.goName)
-		b.WriteString("\t}\n")
-		if !s.appendOnly {
-			b.WriteString("\tif len(overrides) > 0 {\n")
-			b.WriteString("\t\tfor _, o := range overrides {\n")
-			b.WriteString("\t\t\to(row)\n")
-			b.WriteString("\t\t}\n")
-			fmt.Fprintf(&b, "\t\tif err := db.Update%s(context.Background(), database, row); err != nil {\n", s.goName)
-			fmt.Fprintf(&b, "\t\t\tt.Fatalf(\"New%s: apply overrides: %%v\", err)\n", s.goName)
-			b.WriteString("\t\t}\n")
-			b.WriteString("\t}\n")
-		}
-		b.WriteString("\treturn row\n")
-		b.WriteString("}\n")
+	for _, s := range g.specs {
+		renderRowFactory(&b, s)
+	}
+	for _, s := range g.creates {
+		renderCreateRequestFactory(&b, s)
+	}
+	// gofmt here rather than trusting a later pass: request literals carry
+	// fields of uneven width, and the bytes this returns are what the
+	// checksum ledger and the idempotency check compare.
+	if formatted, err := format.Source([]byte(b.String())); err == nil {
+		return formatted
 	}
 	return []byte(b.String())
+}
+
+// renderRowFactory writes one entity's New<Entity> row factory into b.
+func renderRowFactory(b *strings.Builder, s entityFactorySpec) {
+	fmt.Fprintf(b, "\n// --- %s ---\n\n", s.goName)
+	if !s.appendOnly {
+		fmt.Fprintf(b, "// %sOverride mutates the *db.%s New%s is about to insert.\n", s.goName, s.goName, s.goName)
+		fmt.Fprintf(b, "type %sOverride func(*db.%s)\n\n", s.goName, s.goName)
+	}
+
+	if s.failure == "" {
+		if s.parentSQL != "" {
+			fmt.Fprintf(b, "const %sFactoryParentSQL = %s\n\n", s.lower, backquoteOrQuote(s.parentSQL))
+		}
+		fmt.Fprintf(b, "const %sFactoryRootSQL = %s\n\n", s.lower, backquoteOrQuote(s.rootSQL))
+	}
+
+	fmt.Fprintf(b, "// New%s inserts one MINIMAL %s row and returns it: every NOT NULL\n", s.goName, s.goName)
+	b.WriteString("// column without a DEFAULT and every FK parent satisfied (forge's seed\n")
+	b.WriteString("// planner), every other column left to its DEFAULT or NULL, every CHECK\n")
+	b.WriteString("// honoured. Each call gets a fresh primary key, so call it once per row.\n")
+	if s.appendOnly {
+		// No override seam: applying one means writing the loaded row
+		// back, and this table refuses UPDATE at the database.
+		b.WriteString("//\n")
+		fmt.Fprintf(b, "// %s is APPEND-ONLY, so this factory takes no overrides — applying\n", s.goName)
+		b.WriteString("// one would mean UPDATEing the row it just inserted, which the table's\n")
+		b.WriteString("// guard rejects. A test needing particular values inserts the row itself.\n")
+		fmt.Fprintf(b, "func New%s(t testing.TB, database orm.Context) *db.%s {\n", s.goName, s.goName)
+	} else {
+		b.WriteString("// Override the columns your test asserts on; leave the rest to the schema:\n")
+		b.WriteString("//\n")
+		fmt.Fprintf(b, "//\t%s := New%s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, s.goName, s.goName)
+		b.WriteString("//\n")
+		b.WriteString("// A single-column-unique NOT-NULL field other than the primary key keeps its\n")
+		b.WriteString("// seeded value across calls — override such a field yourself to insert more\n")
+		b.WriteString("// than one row.\n")
+		fmt.Fprintf(b, "func New%s(t testing.TB, database orm.Context, overrides ...%sOverride) *db.%s {\n", s.goName, s.goName, s.goName)
+	}
+	b.WriteString("\tt.Helper()\n")
+	if s.failure != "" {
+		// The signature stays, so callers compile; there is no row to insert.
+		fmt.Fprintf(b, "\tt.Fatalf(\"New%s: postgres rejects every row forge could plan for this table (seen at `forge generate`): %%s\", %s)\n",
+			s.goName, backquoteOrQuote(s.failure))
+		b.WriteString("\treturn nil\n")
+		b.WriteString("}\n")
+		return
+	}
+	if s.parentSQL != "" {
+		fmt.Fprintf(b, "\tseedFactoryParents(t, database, %sFactoryParentSQL)\n", s.lower)
+	}
+	b.WriteString("\tid := ulid.Make().String()\n")
+	fmt.Fprintf(b, "\tif _, err := database.Exec(context.Background(), %sFactoryRootSQL, id); err != nil {\n", s.lower)
+	fmt.Fprintf(b, "\t\tt.Fatalf(\"New%s: insert row: %%v\", err)\n", s.goName)
+	b.WriteString("\t}\n")
+	fmt.Fprintf(b, "\trow, err := db.Get%sByID(context.Background(), database, id)\n", s.goName)
+	b.WriteString("\tif err != nil {\n")
+	fmt.Fprintf(b, "\t\tt.Fatalf(\"New%s: load inserted row: %%v\", err)\n", s.goName)
+	b.WriteString("\t}\n")
+	if !s.appendOnly {
+		b.WriteString("\tif len(overrides) > 0 {\n")
+		b.WriteString("\t\tfor _, o := range overrides {\n")
+		b.WriteString("\t\t\to(row)\n")
+		b.WriteString("\t\t}\n")
+		fmt.Fprintf(b, "\t\tif err := db.Update%s(context.Background(), database, row); err != nil {\n", s.goName)
+		fmt.Fprintf(b, "\t\t\tt.Fatalf(\"New%s: apply overrides: %%v\", err)\n", s.goName)
+		b.WriteString("\t\t}\n")
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("\treturn row\n")
+	b.WriteString("}\n")
 }
 
 // entityFactoryHelperSource is the schema-independent shared helper.
@@ -439,13 +521,20 @@ func backquoteOrQuote(s string) string {
 }
 
 // GenerateEntityFactories writes one forge-owned factories_gen_test.go per
-// handler package, holding the typed New<Entity> factories for the entities
-// that package's CRUD RPCs own.
+// handler package, holding the typed New<Entity> row factories for the entities
+// that package's CRUD RPCs own, and the New<CreateRequest> request factories
+// for its create RPCs (create_request_factory.go).
 //
-// Best-effort and forge-owned + checksum-tracked: a no-op (writes nothing,
-// returns nil) when there are no factory-eligible entities or the schema can't
-// be introspected, so it never fails a generate run on a machine without a
-// reachable shadow database.
+// Forge-owned + checksum-tracked, and regenerated on every run from the
+// APPLIED schema. A project with no schema to model writes nothing. A schema
+// that cannot be READ (an unreachable shadow server, a migration that does not
+// apply) also writes nothing — the file on disk is left as it was rather than
+// rewritten from no information — and only an embedded-postgres fetch failure
+// is returned, so the caller can say why. A factory forge cannot derive a valid
+// row or request for is still EMITTED, with a body that fails the calling test
+// naming postgres's reason, and that reason is printed here as a warning: the
+// scaffold-once lifecycle test calls these by name, so leaving one out would
+// break compilation of every test beside it.
 //
 // An entity whose CRUD RPCs no service declares is SKIPPED rather than parked
 // in a shared package. The factory's whole value is being callable from the
@@ -455,22 +544,73 @@ func backquoteOrQuote(s string) string {
 // it. Emitting one anyway would reintroduce exactly the importable-from-
 // anywhere non-test package this move removed.
 func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDef, cs *checksums.FileChecksums) error {
-	specs, err := buildEntityFactorySpecs(projectDir)
+	fx, err := loadCRUDTestFixtures(projectDir, nil)
 	if err != nil {
-		return err
-	}
-	if len(specs) == 0 {
+		var fetchErr *pgtest.FetchError
+		if errors.As(err, &fetchErr) {
+			return err
+		}
 		return nil
 	}
+	if fx == nil {
+		return nil
+	}
+	defer fx.close()
+	ctx := context.Background()
 
-	byService := groupFactorySpecsByService(projectDir, services, specs)
+	byService := groupFactorySpecsByService(projectDir, services, buildEntityFactorySpecs(ctx, projectDir, fx))
+
+	// The create-request factories. Each create RPC's entity gets its minimal
+	// seed plan (parents + the entity's own row shape) before its request is
+	// derived from it.
+	entities := entitiesForTables(fx.tableList(), services)
+	for _, svc := range services {
+		methods := MatchCRUDMethods(svc, entities)
+		var creates []CRUDMethod
+		for _, cm := range methods {
+			if cm.Operation == "create" {
+				creates = append(creates, cm)
+				fx.ensurePlan(cm.Entity.TableName)
+			}
+		}
+		if len(creates) == 0 || svc.GoPackage == "" {
+			continue
+		}
+		res, err := ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			continue // not scaffolded yet; no lifecycle test calls these
+		}
+		g := byService[res.Dir]
+		if g.pbImport != "" && g.pbImport != svc.GoPackage {
+			// Two services' wire packages in one handler directory: the
+			// request literals all spell their enums against `pb`, so only
+			// the first service's requests can be rendered here.
+			fmt.Fprintf(os.Stderr, "Warning: %s shares handler directory %s with another service; its create-request factories were not emitted\n", svc.Name, res.ImportLeaf)
+			continue
+		}
+		g.pkg = res.PackageName
+		g.pbImport = svc.GoPackage
+		g.creates = append(g.creates, buildCreateRequestSpecs(ctx, svc, creates, fx)...)
+		byService[res.Dir] = g
+	}
+
 	for _, dir := range sortedFactoryDirs(byService) {
 		group := byService[dir]
-		content := renderEntityFactoryFile(modulePath, group.pkg, group.specs)
 		rel, err := filepath.Rel(projectDir, filepath.Join(dir, entityFactoryFile))
 		if err != nil {
 			return fmt.Errorf("resolve factory path for %s: %w", group.pkg, err)
 		}
+		for _, s := range group.specs {
+			if s.failure != "" {
+				fmt.Fprintf(os.Stderr, "Warning: %s: New%s cannot insert a row its schema accepts; calling it fails the test:\n  %s\n", rel, s.goName, s.failure)
+			}
+		}
+		for _, s := range group.creates {
+			if s.failure != "" {
+				fmt.Fprintf(os.Stderr, "Warning: %s: %s cannot build a request its schema accepts; calling it fails the test:\n  %s\n", rel, s.funcName, strings.ReplaceAll(s.failure, "\n", "\n  "))
+			}
+		}
+		content := renderEntityFactoryFile(modulePath, group)
 		if err := writeForgeOwned(projectDir, rel, content, cs); err != nil {
 			return fmt.Errorf("write %s: %w", rel, err)
 		}
@@ -483,10 +623,13 @@ func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDe
 const entityFactoryFile = "factories_gen_test.go"
 
 // factoryGroup is one handler package's share of the factories: the package
-// clause to render under, and the entity specs it owns.
+// clause to render under, the entity row factories it owns, and its create
+// RPCs' request factories with the wire package they build.
 type factoryGroup struct {
-	pkg   string
-	specs []entityFactorySpec
+	pkg      string
+	specs    []entityFactorySpec
+	creates  []createRequestSpec
+	pbImport string // the service's Go proto package, imported as pb
 }
 
 // groupFactorySpecsByService routes each entity spec to the handler directory

@@ -103,6 +103,12 @@ func TestE2EScaffoldReadOnlyFieldOmittedFromCreate(t *testing.T) {
 	if strings.Contains(crudTest, "Status:") || strings.Contains(crudTest, "GetStatus()") || strings.Contains(crudTest, ".Status =") {
 		t.Errorf("born handlers_crud_test.go must not reference the read-only field:\n%s", crudTest)
 	}
+	// Nor may the create-request factory it builds its rows from: the
+	// request type has no such field, so setting it would not compile.
+	factories := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "orders", "factories_gen_test.go"))
+	if strings.Contains(factories, "Status:") {
+		t.Errorf("the create-request factory sets the read-only field:\n%s", factories)
+	}
 
 	// The rendered project compiles and vets clean.
 	runCmd(t, projectDir, "go", "build", "./...")

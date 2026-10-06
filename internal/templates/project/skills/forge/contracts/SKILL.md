@@ -280,7 +280,7 @@ func TestCreateUser_SendsWelcomeEmail(t *testing.T) {
 }
 ```
 
-For integration tests that need the real implementation, use the generated harness in that service's own `helpers_gen_test.go` (`internal/handlers/<svc>/`, `package <svc>`): `<pkg>.NewMigratedTestDB(t)` for a database with your migrations applied, then `<pkg>.NewTest<Svc>(t, <pkg>.WithDB(db))` for the real service wired to it (`<pkg>.With<Svc>Deps(...)` swaps one `Deps` field, `<pkg>.AuthedContext(t)` supplies claims). Typed entity factories live beside that same handler, in `internal/handlers/<svc>/factories_gen_test.go` (`package <svc>`), so a test in that directory calls `New<Entity>(t, db)` unqualified.
+For integration tests that need the real implementation, use the generated harness in that service's own `helpers_gen_test.go` (`internal/handlers/<svc>/`, `package <svc>`): `<pkg>.NewMigratedTestDB(t)` for a database with your migrations applied, then `<pkg>.NewTest<Svc>(t, <pkg>.WithDB(db))` for the real service wired to it (`<pkg>.With<Svc>Deps(...)` swaps one `Deps` field, `<pkg>.AuthedContext(t)` supplies claims). Typed factories live beside that same handler, in `internal/handlers/<svc>/factories_gen_test.go` (`package <svc>`), regenerated from the applied schema: a test in that directory calls `New<Entity>(t, db)` (a minimal valid row) or `New<CreateRequest>(t, db, 0)` (a create request with its FK parents seeded) unqualified.
 
 ## Pure-utility packages — three options
 

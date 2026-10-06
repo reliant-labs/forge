@@ -35,7 +35,7 @@ func TestRenderEntityFactoryFile_AppendOnlyEntityHasNoOverrideSeam(t *testing.T)
 		},
 	}
 
-	out := renderEntityFactoryFile("github.com/acme/shop", "billing", specs)
+	out := renderEntityFactoryFile("github.com/acme/shop", factoryGroup{pkg: "billing", specs: specs})
 	if _, err := format.Source(out); err != nil {
 		t.Fatalf("rendered factories_gen_test.go is not valid Go: %v\n---\n%s", err, out)
 	}

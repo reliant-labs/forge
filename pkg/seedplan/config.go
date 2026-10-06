@@ -21,6 +21,20 @@ type Config struct {
 	// schema that holds more than CRUD demo data: a payments ledger, an
 	// idempotency log, a reservations table whose rows mean money moved.
 	Tables []string
+	// Minimal plans the SMALLEST row the schema accepts instead of the
+	// fullest one. A column is written only when the database will not
+	// supply an acceptable value itself — a key, a NOT NULL column with no
+	// DEFAULT, a NOT NULL reference, a UNIQUE or ordered NOT NULL column, a
+	// DEFAULT the column's own CHECK rejects — and every other column is
+	// left to its DEFAULT, or NULL. A discriminated-union or status-guard
+	// CHECK takes the branch closest to that default row, the same branch on
+	// every row. See minimal.go.
+	//
+	// The dev dataset wants the opposite (every column populated, every
+	// branch covered), so this is off for `forge db seed`. It is what a test
+	// factory wants: a freshly created row, at its initial lifecycle state,
+	// with nothing set that the schema did not ask for.
+	Minimal bool
 }
 
 const defaultRows = 20

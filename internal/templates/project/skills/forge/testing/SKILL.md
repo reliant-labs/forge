@@ -33,10 +33,26 @@ stays real at every tier.
   test sees your real schema — including CHECK constraints, FKs and triggers
   that a fixture struct would not reproduce. `FORGE_TEST_POSTGRES_URL` points it
   at a server instead of the embedded binary.
-- **Scaffolded CRUD lifecycle tests seed their own FK parents** with
-  deterministic ids, inline in the test. When you add a constraint those rows
-  do not satisfy, the fix is that seed block — it is yours, and forge does not
-  rewrite it.
+- **Test rows come from regenerated factories, never frozen literals.**
+  `internal/handlers/<svc>/factories_gen_test.go` is rebuilt from the applied
+  schema on every `forge generate`:
+  - `New<Entity>(t, db, overrides…)` inserts one **minimal** valid row — every
+    NOT NULL column without a DEFAULT and every FK parent filled, every other
+    column left to its DEFAULT or NULL, every CHECK satisfied (lengths, ranges,
+    vocabularies, one-way status implications). So a new row sits at its
+    initial lifecycle state; override only what your test asserts on.
+  - `New<CreateRequest>(t, db, variant)` seeds a create RPC's FK parents and
+    returns a request the schema accepts; variants 0 and 1 are distinct rows.
+    The scaffold-once `handlers_crud_test.go` builds its rows from these, so a
+    migration you edit later (a GENERATED column, a new CHECK) flows into the
+    test through `forge generate` instead of breaking it.
+  A factory forge cannot derive a valid row for still compiles; calling it fails
+  the test with postgres's reason, and `forge generate` prints the same warning.
+- **Older lifecycle tests embed literal fixture SQL.** `forge lint
+  --fixture-drift` executes each such statement against the current schema
+  (rolled back) and reports postgres's own error per statement. The file is
+  yours; the durable fix is to replace the seed block and literal create
+  requests with the factory calls (see `testing/patterns`).
 - **Mock at the typed client interface, not at HTTP.** Forge generates the
   former for every interface in a `contract.go`; mocking HTTP instead forces
   each test to know your serialization shape.

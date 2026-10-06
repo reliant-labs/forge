@@ -115,15 +115,11 @@ Examples:
                                  # exact proto block + AppConfig line to write
   forge lint --column-markers    # Flag COMMENT ON COLUMN/CONSTRAINT text
                                  # carrying an unrecognized forge:* marker
-  forge lint --crud-fixtures     # Flag a seeded foreign-key value in a
-                                 # scaffolded lifecycle test that names no
-                                 # seeded parent row (a FK added after the
-                                 # test was scaffolded)
-  forge lint --fixture-drift     # Flag a scaffolded lifecycle test whose
-                                 # seed INSERT the CURRENT schema rejects:
-                                 # a column list naming a GENERATED ALWAYS
-                                 # column, or one statement writing the same
-                                 # value twice into a now-UNIQUE column
+  forge lint --fixture-drift     # Execute every literal fixture statement in
+                                 # a scaffolded handlers_crud_test.go against
+                                 # the CURRENT schema (shadow postgres,
+                                 # rolled back) and report postgres's own
+                                 # error per statement it rejects
   forge lint --time-bucketing    # Flag a two-argument date_trunc over a
                                  # TIMESTAMPTZ column — it truncates in the
                                  # SESSION timezone, so every bucketed total
@@ -250,8 +246,13 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of // forge:optional-dep Deps fields (warnings only; suppress with // forge:optional-checked on the deref line)")
 	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/config and take it as a typed field (warnings only)")
 	cmd.Flags().BoolVar(&flags.columnMarkers, "column-markers", false, "Flag COMMENT ON COLUMN/CONSTRAINT text containing forge: that matches no known column marker (warnings only)")
-	cmd.Flags().BoolVar(&flags.crudFixtures, "crud-fixtures", false, "Flag seeded foreign-key values in handlers_crud_test.go that name no seeded parent row — a foreign key added after the test was scaffolded (warnings only)")
-	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Flag a scaffolded handlers_crud_test.go seed INSERT the current schema rejects — a column list naming a column a later migration made GENERATED ALWAYS (postgres refuses it outright), or one statement writing the same value twice into a column a later migration made UNIQUE (warnings only)")
+	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Execute every literal fixture statement in a scaffolded handlers_crud_test.go against the current schema — migrations applied to a shadow postgres, each statement run in a rolled-back transaction — and report postgres's own error for each one it rejects: a GENERATED column, a UNIQUE collision, a dangling foreign key, a CHECK a later migration added (warnings only)")
+	// --crud-fixtures checked one failure class (a dangling foreign key) by
+	// reading migration text; --fixture-drift now executes the statements, so
+	// postgres reports that class along with every other. Kept as a hidden
+	// alias so an existing script keeps running the check it asked for.
+	cmd.Flags().BoolVar(&flags.crudFixtures, "crud-fixtures", false, "Alias of --fixture-drift")
+	_ = cmd.Flags().MarkDeprecated("crud-fixtures", "use --fixture-drift, which now executes each fixture statement against the shadow schema and reports foreign-key violations along with every other rejection")
 	cmd.Flags().BoolVar(&flags.timeBucketing, "time-bucketing", false, "Flag a two-argument date_trunc over a TIMESTAMPTZ column — postgres truncates it in the SESSION timezone, which the driver sets from the client host, so every bucketed total is attributed to the wrong day by an amount that changes with the deploy host. Pin the zone: date_trunc('day', col, 'UTC') (warnings only)")
 	cmd.Flags().BoolVar(&flags.protoMarkers, "proto-markers", false, "Flag .proto comments containing forge: that match no known proto marker — a misspelled marker is inert and warns nowhere (warnings only)")
 	cmd.Flags().BoolVar(&flags.createNullability, "create-nullability", false, "Fail when a field's optional label disagrees between an entity message and its Create<Entity>Request — the flattened request drops write presence silently")
@@ -370,14 +371,7 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		}
 		return runColumnMarkersLint(cfg)
 	}
-	if flags.crudFixtures {
-		_, cfg, err := loadLintConfig()
-		if err != nil {
-			return err
-		}
-		return runWithCwd(func(cwd string) error { return runCrudFixturesLint(cwd, cfg) })
-	}
-	if flags.fixtureDrift {
+	if flags.fixtureDrift || flags.crudFixtures {
 		_, cfg, err := loadLintConfig()
 		if err != nil {
 			return err

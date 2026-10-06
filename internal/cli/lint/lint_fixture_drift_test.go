@@ -7,12 +7,14 @@ import (
 )
 
 // The birth schema from the dogfood run that motivated this check, reduced
-// to the three tables whose fixtures broke. At birth, total_cents is an
-// ordinary column and nothing is unique beyond the primary keys — which is
-// exactly the schema the lifecycle test's seed block was written from.
+// to the two tables whose fixtures broke. At birth, total_cents is an
+// ordinary column and nothing constrains it — which is exactly the schema the
+// lifecycle test's seed block was written from.
 const estimatesBirthSQL = `
 CREATE TABLE estimates (
     id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'SENT')),
+    sent_at TIMESTAMPTZ,
     subtotal_cents BIGINT NOT NULL DEFAULT 0,
     tax_cents BIGINT NOT NULL DEFAULT 0,
     total_cents BIGINT NOT NULL DEFAULT 0,
@@ -26,12 +28,20 @@ CREATE TABLE jobs (
 );
 `
 
-// The later migration that made total_cents derived — the one change that
-// turned every CRUD lifecycle test in two packages into a pq 428C9.
+// The later migration that made total_cents derived — the change that turned
+// every CRUD lifecycle test in two packages into a pq 428C9.
 const totalCentsGeneratedSQL = `
 ALTER TABLE estimates DROP COLUMN total_cents;
 ALTER TABLE estimates ADD COLUMN total_cents BIGINT
     GENERATED ALWAYS AS (subtotal_cents + tax_cents) STORED NOT NULL;
+`
+
+// The later migration the db skill recommends for a lifecycle column: a
+// one-way implication. No text matcher in the old lanes recognized it, so
+// they reported clean over a fixture postgres rejects.
+const sentHasStampSQL = `
+ALTER TABLE estimates ADD CONSTRAINT estimates_sent_has_stamp
+    CHECK (status <> 'SENT' OR sent_at IS NOT NULL);
 `
 
 // The later migration that made the estimate -> job edge one-to-one.
@@ -40,8 +50,8 @@ ALTER TABLE jobs ADD CONSTRAINT jobs_estimate_id_key UNIQUE (estimate_id);
 `
 
 // staleFixtureGo is the scaffolded lifecycle test as forge wrote it BEFORE
-// either migration: the estimates column list names total_cents, and the two
-// jobs rows share an estimate_id.
+// any later migration: the estimates column list names total_cents, the
+// second estimate is SENT with no stamp, and the two jobs share an estimate.
 //
 // Written with explicit escapes rather than a raw literal because the file
 // itself contains backticks — this is Go source embedding a SQL string.
@@ -51,9 +61,9 @@ const staleFixtureGo = "package handlers_test\n\n" +
 	"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n" +
 	"\tdb := crudTestDB(t)\n\n" +
 	"\tif _, err := db.Exec(context.Background(), `\n" +
-	"INSERT INTO \"estimates\" (\"id\", \"subtotal_cents\", \"tax_cents\", \"total_cents\") VALUES\n" +
-	"    ('est-1', 1000, 80, 1080),\n" +
-	"    ('est-2', 2000, 160, 2160);\n" +
+	"INSERT INTO \"estimates\" (\"id\", \"status\", \"subtotal_cents\", \"tax_cents\", \"total_cents\") VALUES\n" +
+	"    ('est-1', 'DRAFT', 1000, 80, 1080),\n" +
+	"    ('est-2', 'SENT', 2000, 160, 2160);\n" +
 	"INSERT INTO \"jobs\" (\"id\", \"estimate_id\", \"title\") VALUES\n" +
 	"    ('job-1', 'est-1', 'sample_title_1'),\n" +
 	"    ('job-2', 'est-1', 'sample_title_2');\n" +
@@ -62,522 +72,272 @@ const staleFixtureGo = "package handlers_test\n\n" +
 	"\t}\n" +
 	"}\n"
 
+const estimatesTestPath = "internal/handlers/estimates/handlers_crud_test.go"
+
 // newEstimateProject lays down the project shape every direction of these
-// tests shares: the birth migrations, and the stale lifecycle test.
+// tests shares: the birth migration, and the stale lifecycle test.
 func newEstimateProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	writeFile(t, root, "db/migrations/20240101000000_create_estimates.up.sql", estimatesBirthSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go", staleFixtureGo)
+	writeFile(t, root, estimatesTestPath, staleFixtureGo)
 	return root
 }
 
-// findingsOfKind filters to one check's findings, so each test speaks about
-// the check it is pinning even when the fixture trips both.
-func findingsOfKind(findings []fixtureDriftFinding, kind fixtureDriftKind) []fixtureDriftFinding {
-	var out []fixtureDriftFinding
-	for _, f := range findings {
-		if f.Kind == kind {
-			out = append(out, f)
-		}
+// skipWithoutPostgres skips a test that executes fixtures against a shadow
+// postgres under -short, like every other real-postgres test in the repo.
+func skipWithoutPostgres(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("executes fixtures against a shadow postgres; skipped under -short")
 	}
-	return out
 }
 
-// ── Check 1: an INSERT naming a now-GENERATED column ──────────────────────
-
-// TestFixtureDrift_GeneratedColumnInInsert is the reproduction. With
-// total_cents now GENERATED ALWAYS, the scaffolded column list names a
-// column postgres refuses to accept, and the check must say so — naming the
-// file, the line, the column, and the migration that changed it.
-//
-// The NEGATIVE CONTROL is TestFixtureDrift_PlainColumnNoFinding below: the
-// same file, the same column list, without the later migration.
-func TestFixtureDrift_GeneratedColumnInInsert(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240301000000_total_cents_generated.up.sql", totalCentsGeneratedSQL)
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
+// collectOrFail runs the lane and fails the test on an engine error or an
+// unverified run — every test below needs a real verdict.
+func collectOrFail(t *testing.T, root string) fixtureDriftReport {
+	t.Helper()
+	rep, err := collectFixtureDriftFindings(root, "db/migrations")
 	if err != nil {
 		t.Fatalf("collectFixtureDriftFindings: %v", err)
 	}
-	findings := findingsOfKind(all, driftGeneratedColumn)
-	if len(findings) != 1 {
-		t.Fatalf("got %d generated-column findings, want 1\n%+v", len(findings), findings)
+	if rep.Unverified != "" {
+		t.Fatalf("lane did not run: %s", rep.Unverified)
 	}
+	return rep
+}
 
-	f := findings[0]
-	if f.Table != "estimates" || f.Column != "total_cents" {
-		t.Errorf("finding targets %s.%s, want estimates.total_cents", f.Table, f.Column)
+// TestFixtureDrift_CleanAgainstTheBirthSchema is the negative control for
+// every rejection below: the same file against the schema it was written
+// from executes cleanly, and the report says how much it executed.
+func TestFixtureDrift_CleanAgainstTheBirthSchema(t *testing.T) {
+	skipWithoutPostgres(t)
+	rep := collectOrFail(t, newEstimateProject(t))
+	if len(rep.Findings) != 0 {
+		t.Fatalf("fixture written from this schema is reported rejected:\n%+v", rep.Findings)
 	}
-	if f.File != "internal/handlers/estimates/handlers_crud_test.go" {
-		t.Errorf("File = %q, want the handler test path", f.File)
+	if rep.Statements != 2 {
+		t.Errorf("Statements = %d, want 2 (both INSERTs executed)", rep.Statements)
 	}
-	// The line must point at the column list, which is the text to edit.
-	wantLine := lineOf(staleFixtureGo, strings.Index(staleFixtureGo, `"total_cents"`))
+}
+
+// TestFixtureDrift_CheckAddedLaterIsRejected is the reproduction for the
+// class the old text matchers missed entirely: a one-way status CHECK added
+// after birth. Postgres's own verdict is the finding — constraint named, the
+// migration that declared it attributed, the line of the statement to edit.
+func TestFixtureDrift_CheckAddedLaterIsRejected(t *testing.T) {
+	skipWithoutPostgres(t)
+	root := newEstimateProject(t)
+	writeFile(t, root, "db/migrations/20240401000000_sent_has_stamp.up.sql", sentHasStampSQL)
+
+	rep := collectOrFail(t, root)
+	if len(rep.Findings) == 0 {
+		t.Fatal("a fixture the new CHECK rejects is reported clean")
+	}
+	f := rep.Findings[0]
+	if f.Constraint != "estimates_sent_has_stamp" || f.Code != "23514" {
+		t.Errorf("finding = constraint %q code %q, want estimates_sent_has_stamp / 23514 (check_violation)", f.Constraint, f.Code)
+	}
+	if f.DeclaredIn != "db/migrations/20240401000000_sent_has_stamp.up.sql" {
+		t.Errorf("DeclaredIn = %q, want the migration that added the CHECK", f.DeclaredIn)
+	}
+	if f.File != estimatesTestPath || f.Table != `"estimates"` {
+		t.Errorf("finding at %s (table %s), want %s / \"estimates\"", f.File, f.Table, estimatesTestPath)
+	}
+	wantLine := lineOf(staleFixtureGo, strings.Index(staleFixtureGo, `INSERT INTO "estimates"`))
 	if f.Line != wantLine {
-		t.Errorf("Line = %d, want %d (the INSERT column list)", f.Line, wantLine)
+		t.Errorf("Line = %d, want %d (the INSERT the author edits)", f.Line, wantLine)
 	}
-	// Attribution to the migration that made the column generated is the
-	// fact that turns "wrong fixture" into "fixture older than this change".
-	if !strings.Contains(f.DeclaredIn, "20240301000000_total_cents_generated") {
-		t.Errorf("DeclaredIn = %q, want the later migration", f.DeclaredIn)
+	if !strings.Contains(fixtureDriftFixHint(f), "yours") || !strings.Contains(fixtureDriftFixHint(f), "factories_gen_test.go") {
+		t.Errorf("fix hint must state ownership and point at the factories:\n%s", fixtureDriftFixHint(f))
 	}
-	if !strings.Contains(f.Expression, "subtotal_cents") {
-		t.Errorf("Expression = %q, want the GENERATED ALWAYS AS body", f.Expression)
-	}
+}
 
-	if f.ruleID() != fixtureDriftRuleGeneratedColumn {
-		t.Errorf("ruleID = %q, want %q", f.ruleID(), fixtureDriftRuleGeneratedColumn)
-	}
-	hint := fixtureDriftFixHint(f)
-	for _, want := range []string{
-		"GENERATED ALWAYS",
-		"428C9",
-		"total_cents",
-		"yours",
-		"factories_gen_test.go",
-	} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("fix hint missing %q:\n%s", want, hint)
+// TestFixtureDrift_GeneratedColumnIsRejected: a column made GENERATED after
+// birth. Postgres refuses the whole statement (428C9); the finding carries
+// that, attributed to the migration whose GENERATED clause names the column.
+func TestFixtureDrift_GeneratedColumnIsRejected(t *testing.T) {
+	skipWithoutPostgres(t)
+	root := newEstimateProject(t)
+	writeFile(t, root, "db/migrations/20240301000000_total_cents_generated.up.sql", totalCentsGeneratedSQL)
+
+	rep := collectOrFail(t, root)
+	var gen *fixtureDriftFinding
+	for i := range rep.Findings {
+		if rep.Findings[i].Code == "428C9" {
+			gen = &rep.Findings[i]
 		}
 	}
+	if gen == nil {
+		t.Fatalf("no 428C9 finding for an INSERT naming a GENERATED column:\n%+v", rep.Findings)
+	}
+	if !strings.Contains(gen.Message, "total_cents") {
+		t.Errorf("message %q does not name the column", gen.Message)
+	}
+	if gen.DeclaredIn != "db/migrations/20240301000000_total_cents_generated.up.sql" {
+		t.Errorf("DeclaredIn = %q, want the migration that made it GENERATED", gen.DeclaredIn)
+	}
 }
 
-// TestFixtureDrift_PlainColumnNoFinding is the negative control for the case
-// above. Same file, same column list, WITHOUT the migration that makes the
-// column generated. An ordinary column accepts an explicit value, so there
-// is nothing to report — and a check that fired here would be flagging the
-// NAME `total_cents` rather than a real schema conflict.
-func TestFixtureDrift_PlainColumnNoFinding(t *testing.T) {
+// TestFixtureDrift_UniqueAndForeignKeyAreRejected: the two classes the old
+// lanes each had a bespoke matcher for — a value repeated in a now-UNIQUE
+// column, and (the crud-fixtures lane) a reference to a row nothing seeds —
+// fall out of execution with no matcher at all.
+func TestFixtureDrift_UniqueAndForeignKeyAreRejected(t *testing.T) {
+	skipWithoutPostgres(t)
 	root := newEstimateProject(t)
+	writeFile(t, root, "db/migrations/20240501000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
+	dangling := strings.Replace(staleFixtureGo, "('job-2', 'est-1',", "('job-2', 'est-9',", 1)
+	writeFile(t, root, estimatesTestPath, dangling)
 
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
+	rep := collectOrFail(t, root)
+	codes := map[string]bool{}
+	for _, f := range rep.Findings {
+		codes[f.Code] = true
 	}
-	if fs := findingsOfKind(all, driftGeneratedColumn); len(fs) != 0 {
-		t.Fatalf("got %d generated-column findings on an unchanged schema, want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_FixtureOmittingGeneratedColumnIsClean pins the CORRECT
-// state — the one a user reaches after acting on a finding, and the one the
-// regenerated factory already emits. The column is generated and the fixture
-// does not name it, which is precisely right; firing here would tell the
-// author to undo the fix.
-func TestFixtureDrift_FixtureOmittingGeneratedColumnIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240301000000_total_cents_generated.up.sql", totalCentsGeneratedSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"estimates\" (\"id\", \"subtotal_cents\", \"tax_cents\") VALUES\n"+
-			"    ('est-1', 1000, 80);\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatalf(\"seed parent rows: %v\", err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if len(all) != 0 {
-		t.Fatalf("got %d findings on a correctly-updated fixture, want 0\n%+v", len(all), all)
+	// The jobs INSERT is ONE statement, so postgres reports the first
+	// violation it meets; either is a correct verdict on that statement.
+	if !codes["23503"] && !codes["23505"] {
+		t.Fatalf("jobs fixture with a dangling reference under a new UNIQUE is reported clean:\n%+v", rep.Findings)
 	}
 }
 
-// TestFixtureDrift_ColumnNameInCommentOrStringIsClean pins the exclusion that
-// makes the check structural rather than textual. The generated column's name
-// appears in a Go comment, in a t.Fatalf message, and in a WHERE clause —
-// but never in an INSERT column list, which is the only place this rule
-// looks. A grep-shaped check would report all three.
-func TestFixtureDrift_ColumnNameInCommentOrStringIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240301000000_total_cents_generated.up.sql", totalCentsGeneratedSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"// total_cents is derived by the database; do not seed it here.\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"estimates\" (\"id\", \"subtotal_cents\") VALUES ('est-1', 1000);\n"+
-			"SELECT total_cents FROM \"estimates\" WHERE total_cents > 0;\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatalf(\"seed failed, check total_cents: %v\", err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if len(all) != 0 {
-		t.Fatalf("got %d findings from a comment/string/WHERE mention, want 0\n%+v", len(all), all)
-	}
-}
-
-// TestFixtureDrift_UntouchedTableIsClean pins the table-scoping exclusion. A
-// generated column on a table no fixture inserts into produces nothing, and a
-// same-named column on the table the fixture DOES touch is a different
-// column — so the check must key on table AND column, not on column alone.
-func TestFixtureDrift_UntouchedTableIsClean(t *testing.T) {
+// TestFixtureDrift_BlocksArePerTestFunction pins the grouping: each lifecycle
+// test starts from a fresh database, so a parent seeded by one test function
+// is NOT there for another. Executing the whole file in one transaction would
+// report this fixture clean and the test would still fail.
+func TestFixtureDrift_BlocksArePerTestFunction(t *testing.T) {
+	skipWithoutPostgres(t)
 	root := t.TempDir()
-	writeFile(t, root, "db/migrations/20240101000000_create.up.sql", `
-CREATE TABLE invoices (
-    id TEXT PRIMARY KEY,
-    total_cents BIGINT GENERATED ALWAYS AS (1) STORED
-);
-CREATE TABLE estimates (
-    id TEXT PRIMARY KEY,
-    total_cents BIGINT NOT NULL DEFAULT 0
-);
-`)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"estimates\" (\"id\", \"total_cents\") VALUES ('est-1', 1080);\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatal(err)\n"+
-			"\t}\n"+
-			"}\n")
+	writeFile(t, root, "db/migrations/20240101000000_create_estimates.up.sql", estimatesBirthSQL)
+	writeFile(t, root, estimatesTestPath, "package handlers_test\n\n"+
+		"func TestA(t *testing.T) {\n\tmustExec(t, `INSERT INTO estimates (id) VALUES ('est-1');`)\n}\n\n"+
+		"func TestB(t *testing.T) {\n\tmustExec(t, `INSERT INTO jobs (id, estimate_id, title) VALUES ('job-1', 'est-1', 'x');`)\n}\n")
 
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if len(all) != 0 {
-		t.Fatalf("got %d findings for a generated column on an untouched table, want 0\n%+v", len(all), all)
+	rep := collectOrFail(t, root)
+	if len(rep.Findings) != 1 || rep.Findings[0].Code != "23503" {
+		t.Fatalf("TestB references a row only TestA seeds; want one FK finding, got:\n%+v", rep.Findings)
 	}
 }
 
-// TestFixtureDrift_NoScaffoldedTestsIsClean pins the lane's applicability. A
-// project with migrations but none of forge's scaffold-once lifecycle tests
-// has nothing for this rule to speak about, and a lane that does not apply is
-// not a gap — it must be silent, not an error.
+// TestFixtureDrift_FactoryStyleTestOpensNoDatabase pins the cost contract: a
+// lifecycle test that builds its rows from the factories carries no literal
+// SQL, so the lane reports clean without applying a single migration — even
+// pointed at a shadow server that does not exist.
+func TestFixtureDrift_FactoryStyleTestOpensNoDatabase(t *testing.T) {
+	t.Setenv("FORGE_TEST_POSTGRES_URL", "postgres://nobody:nothing@127.0.0.1:1/postgres?sslmode=disable")
+	root := t.TempDir()
+	writeFile(t, root, "db/migrations/20240101000000_create_estimates.up.sql", estimatesBirthSQL)
+	writeFile(t, root, estimatesTestPath, "package handlers_test\n\n"+
+		"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
+		"\tdb := crudTestDB(t)\n"+
+		"\tfirst, err := svc.CreateEstimate(ctx, connect.NewRequest(estimates.NewCreateEstimateRequest(t, db, 0)))\n"+
+		"\t_ = `SELECT count(*) FROM estimates`\n"+
+		"}\n")
+	rep, err := collectFixtureDriftFindings(root, "db/migrations")
+	if err != nil {
+		t.Fatalf("collectFixtureDriftFindings: %v", err)
+	}
+	if rep.Unverified != "" || rep.Statements != 0 || len(rep.Findings) != 0 {
+		t.Fatalf("a fixture-free test must cost nothing and report clean; got %+v", rep)
+	}
+}
+
+// TestFixtureDrift_UnreachableShadowIsNotClean: literal fixtures that could
+// not be executed are reported as NOT checked. A lane that read "could not
+// look" as "clean" would be worse than no lane.
+func TestFixtureDrift_UnreachableShadowIsNotClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the shadow server's connect retries; skipped under -short")
+	}
+	t.Setenv("FORGE_TEST_POSTGRES_URL", "postgres://nobody:nothing@127.0.0.1:1/postgres?sslmode=disable&connect_timeout=2")
+	root := newEstimateProject(t)
+	rep, err := collectFixtureDriftFindings(root, "db/migrations")
+	if err != nil {
+		t.Fatalf("collectFixtureDriftFindings: %v", err)
+	}
+	if rep.Unverified == "" {
+		t.Fatalf("an unreachable shadow must report the lane as not run; got %+v", rep)
+	}
+	var buf bytes.Buffer
+	formatFixtureDrift(&buf, rep)
+	if strings.Contains(buf.String(), "fixture-drift clean") || !strings.Contains(buf.String(), "did NOT run") {
+		t.Errorf("unverified run reads as a verdict:\n%s", buf.String())
+	}
+	js, err := collectFixtureDriftJSONAt(root, "db/migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(js) != 1 || js[0].Rule != fixtureDriftUnverifiedRule || js[0].Severity != lintSevWarning {
+		t.Errorf("JSON must carry one %s warning, got %+v", fixtureDriftUnverifiedRule, js)
+	}
+}
+
+// TestFixtureDrift_NoScaffoldedTestsIsClean / NoMigrations: ordinary states
+// for a project this lane does not apply to.
 func TestFixtureDrift_NoScaffoldedTestsIsClean(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "db/migrations/20240101000000_create.up.sql", estimatesBirthSQL)
-	writeFile(t, root, "db/migrations/20240301000000_gen.up.sql", totalCentsGeneratedSQL)
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if len(all) != 0 {
-		t.Fatalf("got %d findings in a project with no lifecycle tests, want 0\n%+v", len(all), all)
+	writeFile(t, root, "db/migrations/20240101000000_create_estimates.up.sql", estimatesBirthSQL)
+	rep, err := collectFixtureDriftFindings(root, "db/migrations")
+	if err != nil || rep.Unverified != "" || len(rep.Findings) != 0 {
+		t.Fatalf("rep=%+v err=%v, want an empty report", rep, err)
 	}
 }
 
-// TestFixtureDrift_NoMigrationsIsClean pins the other half of applicability:
-// a project whose migrations directory does not exist yet yields silence
-// rather than an error.
 func TestFixtureDrift_NoMigrationsIsClean(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go", staleFixtureGo)
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if len(all) != 0 {
-		t.Fatalf("got %d findings with no migrations, want 0\n%+v", len(all), all)
+	writeFile(t, root, estimatesTestPath, staleFixtureGo)
+	rep, err := collectFixtureDriftFindings(root, "db/migrations")
+	if err != nil || rep.Unverified != "" || len(rep.Findings) != 0 {
+		t.Fatalf("rep=%+v err=%v, want an empty report", rep, err)
 	}
 }
 
-// TestFixtureDrift_CommentedOutInsertIsClean pins the comment-blanking that
-// the sibling rules depend on. A commented-out INSERT is not a statement, and
-// reporting one would flag a fixture that never runs.
-func TestFixtureDrift_CommentedOutInsertIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240301000000_total_cents_generated.up.sql", totalCentsGeneratedSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"-- INSERT INTO \"estimates\" (\"id\", \"total_cents\") VALUES ('est-1', 1080);\n"+
-			"INSERT INTO \"estimates\" (\"id\", \"subtotal_cents\") VALUES ('est-1', 1000);\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatal(err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
+// TestFixtureBlocks_Parsing pins what counts as fixture SQL: raw literals
+// carrying an INSERT, split on statement-ending semicolons only, with
+// bind-parameter statements skipped and line numbers pointing at each
+// statement.
+func TestFixtureBlocks_Parsing(t *testing.T) {
+	src := "package x_test\n\n" +
+		"// A comment with `INSERT INTO nope (a) VALUES (1);` in backticks is not a literal.\n" +
+		"func TestX(t *testing.T) {\n" +
+		"\texec(`\n" +
+		"-- a comment; with a semicolon\n" +
+		"INSERT INTO \"a\" (\"v\") VALUES ('x;y'), ('it''s');\n" +
+		"INSERT INTO b (v) VALUES ($1);\n" +
+		"UPDATE a SET v = 'z';\n" +
+		"`)\n" +
+		"\tquery(`SELECT 1; SELECT 2`)\n" +
+		"}\n"
+	blocks := fixtureBlocks("x_test.go", src)
+	if len(blocks) != 1 {
+		t.Fatalf("got %d blocks, want 1 (the SELECT literal carries no INSERT):\n%+v", len(blocks), blocks)
 	}
-	if len(all) != 0 {
-		t.Fatalf("got %d findings from a commented-out INSERT, want 0\n%+v", len(all), all)
+	stmts := blocks[0].stmts
+	if len(stmts) != 2 {
+		t.Fatalf("got %d statements, want 2 (INSERT a + UPDATE; $1 skipped):\n%+v", len(stmts), stmts)
 	}
-}
-
-// ── Check 2: repeated literals in a now-UNIQUE column ─────────────────────
-
-// TestFixtureDrift_DuplicateValueInNowUniqueColumn is the second
-// reproduction: two scaffolded job rows share an estimate_id, which was legal
-// until the edge became one-to-one.
-func TestFixtureDrift_DuplicateValueInNowUniqueColumn(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
+	if !strings.Contains(stmts[0].sql, "('x;y'), ('it''s')") {
+		t.Errorf("a semicolon inside a string literal split the statement: %q", stmts[0].sql)
 	}
-	findings := findingsOfKind(all, driftDuplicateUnique)
-	// One finding, not two: the FIRST write is legal, so only the colliding
-	// row is reported.
-	if len(findings) != 1 {
-		t.Fatalf("got %d duplicate-unique findings, want 1 (the second row only)\n%+v", len(findings), findings)
+	if stmts[0].table != `"a"` || stmts[1].table != "" {
+		t.Errorf("tables = %q, %q; want \"a\" and none", stmts[0].table, stmts[1].table)
 	}
-
-	f := findings[0]
-	if f.Table != "jobs" || f.Column != "estimate_id" {
-		t.Errorf("finding targets %s.%s, want jobs.estimate_id", f.Table, f.Column)
+	if want := lineOf(src, strings.Index(src, `INSERT INTO "a"`)); stmts[0].line != want {
+		t.Errorf("line = %d, want %d", stmts[0].line, want)
 	}
-	if f.Constraint != "jobs_estimate_id_key" {
-		t.Errorf("Constraint = %q, want jobs_estimate_id_key", f.Constraint)
+	if want := lineOf(src, strings.Index(src, "UPDATE a")); stmts[1].line != want {
+		t.Errorf("line = %d, want %d", stmts[1].line, want)
 	}
-	if !strings.Contains(f.DeclaredIn, "20240302000000_job_estimate_unique") {
-		t.Errorf("DeclaredIn = %q, want the later unique migration", f.DeclaredIn)
-	}
-	// The line must point at the SECOND row, the one postgres rejects.
-	wantLine := lineOf(staleFixtureGo, strings.Index(staleFixtureGo, "'job-2'"))
-	if f.Line != wantLine {
-		t.Errorf("Line = %d, want %d (the colliding row)", f.Line, wantLine)
-	}
-	if f.ruleID() != fixtureDriftRuleDuplicateUnique {
-		t.Errorf("ruleID = %q, want %q", f.ruleID(), fixtureDriftRuleDuplicateUnique)
-	}
-	hint := fixtureDriftFixHint(f)
-	for _, want := range []string{"jobs_estimate_id_key", "duplicate key value", "yours", "ON CONFLICT"} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("fix hint missing %q:\n%s", want, hint)
-		}
+	if fixtureBlocks("broken.go", "package x\nfunc {") != nil {
+		t.Error("a file that does not parse must be skipped, not guessed at")
 	}
 }
 
-// TestFixtureDrift_DuplicateWithoutUniqueIsClean is the negative control for
-// the case above: the same two rows sharing an estimate_id, with no UNIQUE
-// constraint. A non-unique column accepts repeats, and a check that fired
-// here would be flagging ordinary one-to-many seed data.
-func TestFixtureDrift_DuplicateWithoutUniqueIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d duplicate findings with no UNIQUE constraint, want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_DistinctValuesInUniqueColumnIsClean pins the other correct
-// state: the constraint exists and the fixture already honours it.
-func TestFixtureDrift_DistinctValuesInUniqueColumnIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"jobs\" (\"id\", \"estimate_id\") VALUES\n"+
-			"    ('job-1', 'est-1'),\n"+
-			"    ('job-2', 'est-2');\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatal(err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if len(all) != 0 {
-		t.Fatalf("got %d findings on distinct unique values, want 0\n%+v", len(all), all)
-	}
-}
-
-// TestFixtureDrift_CompositeUniqueIsClean pins the exclusion that keeps
-// check 2 sound. `UNIQUE (estimate_id, title)` forbids repeated PAIRS, not
-// repeated estimate_ids — the fixture below is legal, and a per-column
-// reading of the constraint would call it broken.
-func TestFixtureDrift_CompositeUniqueIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_composite.up.sql",
-		"ALTER TABLE jobs ADD CONSTRAINT jobs_estimate_title_key UNIQUE (estimate_id, title);\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d findings on a COMPOSITE unique, want 0 (only the pair must be distinct)\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_PartialUniqueIndexIsClean pins the partial-index
-// exclusion: the predicate decides whether the duplicate is legal, and this
-// parser does not evaluate predicates.
-func TestFixtureDrift_PartialUniqueIndexIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_partial.up.sql",
-		"CREATE UNIQUE INDEX jobs_active_estimate_idx ON jobs (estimate_id) WHERE deleted_at IS NULL;\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d findings on a PARTIAL unique index, want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_OnConflictSuppresses pins the suppression: a statement
-// that tells postgres to swallow this exact collision does not fail, so
-// reporting it would be reporting working code.
-func TestFixtureDrift_OnConflictSuppresses(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"jobs\" (\"id\", \"estimate_id\") VALUES\n"+
-			"    ('job-1', 'est-1'),\n"+
-			"    ('job-2', 'est-1')\n"+
-			"ON CONFLICT (estimate_id) DO NOTHING;\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatal(err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d findings despite ON CONFLICT (estimate_id), want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_BareOnConflictSuppressesStatement pins the conservative
-// arm: a bare `ON CONFLICT DO NOTHING` names no target this parser can
-// resolve, so the whole statement is left alone rather than guessed at.
-func TestFixtureDrift_BareOnConflictSuppressesStatement(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"jobs\" (\"id\", \"estimate_id\") VALUES\n"+
-			"    ('job-1', 'est-1'),\n"+
-			"    ('job-2', 'est-1')\n"+
-			"ON CONFLICT DO NOTHING;\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatal(err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d findings despite a bare ON CONFLICT DO NOTHING, want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_RepeatedNullsAndOpaqueValuesAreClean pins the two literal
-// kinds that cannot evidence a collision: postgres permits many NULLs in a
-// unique column, and a value this parser cannot decode has no known identity.
-func TestFixtureDrift_RepeatedNullsAndOpaqueValuesAreClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"jobs\" (\"id\", \"estimate_id\") VALUES\n"+
-			"    ('job-1', NULL),\n"+
-			"    ('job-2', NULL),\n"+
-			"    ('job-3', gen_random_uuid()),\n"+
-			"    ('job-4', gen_random_uuid());\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatal(err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d findings on repeated NULLs / opaque calls, want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_DuplicateAcrossStatementsIsClean pins the within-statement
-// restriction. Two separate INSERTs writing the same value may be perfectly
-// legal — the block between them can delete, truncate or upsert — and
-// reasoning across statements would mean modelling all of that.
-func TestFixtureDrift_DuplicateAcrossStatementsIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-	writeFile(t, root, "internal/handlers/estimates/handlers_crud_test.go",
-		"package handlers_test\n\n"+
-			"func TestCRUD_Estimate_Lifecycle(t *testing.T) {\n"+
-			"\tif _, err := db.Exec(context.Background(), `\n"+
-			"INSERT INTO \"jobs\" (\"id\", \"estimate_id\") VALUES ('job-1', 'est-1');\n"+
-			"DELETE FROM \"jobs\";\n"+
-			"INSERT INTO \"jobs\" (\"id\", \"estimate_id\") VALUES ('job-2', 'est-1');\n"+
-			"`); err != nil {\n"+
-			"\t\tt.Fatal(err)\n"+
-			"\t}\n"+
-			"}\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d findings across separate statements, want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestFixtureDrift_DroppedUniqueIsClean pins the replay. A constraint added
-// and then dropped is not part of the live schema, and reporting against it
-// would flag a fixture the current database accepts.
-func TestFixtureDrift_DroppedUniqueIsClean(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-	writeFile(t, root, "db/migrations/20240303000000_drop_unique.up.sql",
-		"ALTER TABLE jobs DROP CONSTRAINT jobs_estimate_id_key;\n")
-
-	all, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-	if fs := findingsOfKind(all, driftDuplicateUnique); len(fs) != 0 {
-		t.Fatalf("got %d findings for a DROPPED unique constraint, want 0\n%+v", len(fs), fs)
-	}
-}
-
-// TestMigrationColumns_DropThenRecreateInOneFile pins the statement-ORDER
-// replay in applyMigrationColumns, a shared helper the read-only-fields rule
-// also depends on.
-//
-// Postgres has no ALTER that makes an existing column generated, so
-// drop-then-recreate in one migration is the ordinary way to do it — and it
-// is exactly the migration that motivated this whole lane. Grouping every
-// ADD before every DROP (the previous behaviour) deleted the column
-// outright, so the replay claimed a column the database really has does not
-// exist. Every caller reads that as "unresolved" and stays silent, which is
-// indistinguishable from a clean project.
+// TestMigrationColumns_DropThenRecreateInOneFile pins the shared column
+// replay the read-only rule depends on: a drop-then-recreate in one migration
+// is the ordinary way to make a column GENERATED, and grouping every ADD
+// before every DROP deleted the column outright.
 func TestMigrationColumns_DropThenRecreateInOneFile(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "db/migrations/20240101000000_create.up.sql", estimatesBirthSQL)
@@ -599,68 +359,56 @@ func TestMigrationColumns_DropThenRecreateInOneFile(t *testing.T) {
 
 // ── Report shape ──────────────────────────────────────────────────────────
 
-// TestFormatFixtureDrift_Clean pins the success line, so a user who runs the
-// lane on a healthy project sees that it ran.
-func TestFormatFixtureDrift_Clean(t *testing.T) {
-	var buf bytes.Buffer
-	formatFixtureDrift(&buf, nil)
-	if !strings.Contains(buf.String(), "fixture-drift clean") {
-		t.Errorf("clean report = %q, want a fixture-drift clean line", buf.String())
+// TestFormatFixtureDrift_CleanLinesSayWhatWasChecked: the two clean lines
+// state their scope exactly — no fixtures at all, or N statements executed —
+// so neither reads as a broader clearance than it is.
+func TestFormatFixtureDrift_CleanLinesSayWhatWasChecked(t *testing.T) {
+	var none bytes.Buffer
+	formatFixtureDrift(&none, fixtureDriftReport{})
+	if !strings.Contains(none.String(), "fixture-drift clean") || !strings.Contains(none.String(), "no scaffolded") {
+		t.Errorf("no-fixture clean line = %q", none.String())
+	}
+	var ran bytes.Buffer
+	formatFixtureDrift(&ran, fixtureDriftReport{Statements: 3})
+	if !strings.Contains(ran.String(), "all 3 literal fixture statement(s)") {
+		t.Errorf("executed clean line = %q", ran.String())
 	}
 }
 
-// TestFormatFixtureDrift_WarnsWithoutGating pins the severity contract: the
-// report must mark findings as warnings and say plainly that the build is not
-// failing, matching its crud-fixtures and guarded-fields neighbours.
 func TestFormatFixtureDrift_WarnsWithoutGating(t *testing.T) {
-	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240301000000_total_cents_generated.up.sql", totalCentsGeneratedSQL)
-	findings, err := collectFixtureDriftFindings(root, "db/migrations")
-	if err != nil {
-		t.Fatalf("collectFixtureDriftFindings: %v", err)
-	}
-
 	var buf bytes.Buffer
-	formatFixtureDrift(&buf, findings)
+	formatFixtureDrift(&buf, fixtureDriftReport{Statements: 1, Findings: []fixtureDriftFinding{{
+		File: estimatesTestPath, Line: 7, Table: `"estimates"`, Code: "23514",
+		Message:    `new row for relation "estimates" violates check constraint "estimates_sent_has_stamp"`,
+		Constraint: "estimates_sent_has_stamp", DeclaredIn: "db/migrations/2_x.up.sql",
+	}}})
 	out := buf.String()
-	for _, want := range []string{"⚠", fixtureDriftRuleGeneratedColumn, "warnings only"} {
+	for _, want := range []string{
+		"[" + fixtureDriftRule + "] " + estimatesTestPath + ":7",
+		"SQLSTATE 23514",
+		"declared in db/migrations/2_x.up.sql",
+		"warnings only",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "❌") {
-		t.Errorf("advisory lane must not render a gating ❌:\n%s", out)
-	}
 }
 
-// TestFixtureDriftJSON_SeverityIsWarning pins the JSON contract, which is
-// what CI and other tools read. Severity warning, and the rule id present on
-// every finding.
 func TestFixtureDriftJSON_SeverityIsWarning(t *testing.T) {
+	skipWithoutPostgres(t)
 	root := newEstimateProject(t)
-	writeFile(t, root, "db/migrations/20240301000000_total_cents_generated.up.sql", totalCentsGeneratedSQL)
-	writeFile(t, root, "db/migrations/20240302000000_job_estimate_unique.up.sql", jobEstimateUniqueSQL)
-
-	findings, err := collectFixtureDriftJSONAt(root, "db/migrations")
+	writeFile(t, root, "db/migrations/20240401000000_sent_has_stamp.up.sql", sentHasStampSQL)
+	js, err := collectFixtureDriftJSONAt(root, "db/migrations")
 	if err != nil {
-		t.Fatalf("collectFixtureDriftJSONAt: %v", err)
+		t.Fatal(err)
 	}
-	if len(findings) != 2 {
-		t.Fatalf("got %d JSON findings, want 2 (one per check)\n%+v", len(findings), findings)
+	if len(js) == 0 {
+		t.Fatal("no JSON findings for a rejected fixture")
 	}
-	rules := map[string]bool{}
-	for _, f := range findings {
-		if f.Severity != lintSevWarning {
-			t.Errorf("finding %s severity = %q, want %q", f.Rule, f.Severity, lintSevWarning)
-		}
-		if f.FixHint == "" {
-			t.Errorf("finding %s has no fix hint", f.Rule)
-		}
-		rules[f.Rule] = true
-	}
-	for _, want := range []string{fixtureDriftRuleGeneratedColumn, fixtureDriftRuleDuplicateUnique} {
-		if !rules[want] {
-			t.Errorf("JSON findings missing rule %q, got %v", want, rules)
+	for _, f := range js {
+		if f.Severity != lintSevWarning || f.Rule != fixtureDriftRule {
+			t.Errorf("finding %+v: want severity %s rule %s", f, lintSevWarning, fixtureDriftRule)
 		}
 	}
 }

@@ -28,7 +28,8 @@ internal/                     # the application: components, DI, data access
     service.go                #     yours: Deps + validateDeps + New + Register
     handlers_crud.go          #     yours: thin CRUD delegations (access-control / row-scoping WHERE goes here)
     rpc_<name>.go             #     yours: ONE custom RPC per file (scaffold rpc + generate agree)
-    handlers_crud_test.go     #     yours: CRUD lifecycle test (scaffolded once)
+    handlers_crud_test.go     #     yours: CRUD lifecycle test (scaffolded once; rows from the factories)
+    factories_gen_test.go     #     generated: New<Entity> / New<CreateRequest> test factories from the applied schema
     handlers_crud_ops_gen.go  #     generated: per-RPC CRUD ops + ToProto/FromProto
   handlers/mocks/             #   generated cross-service mocks (package mocks, one <svc>_mock.go each)
   <name>/                     #   standalone domain package: contract.go (yours) + mock_gen.go

@@ -1,7 +1,6 @@
 package codegen
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -16,14 +15,16 @@ import (
 )
 
 // crudTestFixtures is the schema-derived model behind constraint-correct
-// lifecycle-test fixtures. The blind `"test-value"`/`1` literals the test
-// scaffold used to emit violate real schemas immediately — CHECK
-// vocabularies, email-regex CHECKs, char_length CHECKs, numeric range
-// CHECKs, and NOT NULL foreign keys all reject them at create #1. This
-// model joins the APPLIED schema (tables + FKs + CHECK constraints, the
-// same introspection the rest of the generate pipeline runs on) with the
-// seed synthesizer's constraint-aware value heuristics, so the scaffolded
-// test passes against the real migrated schema out of the box.
+// create-request fixtures — the values the regenerated New<CreateRequest>
+// factories (create_request_factory.go) hand the CRUD lifecycle test. The
+// blind `"test-value"`/`1` literals the test scaffold used to emit violate
+// real schemas immediately — CHECK vocabularies, email-regex CHECKs,
+// char_length CHECKs, numeric range CHECKs, and NOT NULL foreign keys all
+// reject them at create #1. This model joins the APPLIED schema (tables + FKs
+// + CHECK constraints, the same introspection the rest of the generate
+// pipeline runs on) with the seed synthesizer's constraint-aware value
+// heuristics, so the requests pass against the real migrated schema — and,
+// being re-derived on every generate, keep passing as that schema evolves.
 //
 // A nil *crudTestFixtures is valid everywhere and means "no schema model"
 // (no migrations, or introspection failed): every lookup falls back to the
@@ -47,9 +48,9 @@ type crudTestFixtures struct {
 	// nil in unit tests that build a model from hand-written tables — the
 	// guard is then simply not run, never silently reported as passing.
 	shadow *schemadef.Shadow
-	// unions memoizes the discriminated-union placement of each table's ROW
-	// 0 — the branch every fixture this model hands out is written against.
-	// See unionPlacement.
+	// unions memoizes the discriminated-union placement of each table's
+	// MINIMAL row — the branch every fixture this model hands out is written
+	// against. See unionPlacement.
 	unions map[string]map[string]seedplan.UnionCell
 	// emitted records every fixture handed out, per table, so the guard can
 	// verify the exact set the generated file will carry. It is appended by
@@ -83,51 +84,19 @@ func (fx *crudTestFixtures) record(table, column, goLit, goType string) {
 		fixtureValue{column: column, sqlLit: sqlLit, goLit: goLit})
 }
 
-// verify runs the generate-time guard over everything the model emitted:
-// every recorded fixture is evaluated against the applied schema's own CHECK
-// constraints. It returns one error naming every column and constraint that
-// rejects its fixture, or nil.
-//
-// A model with no live shadow (unit-test construction) verifies nothing and
-// says so by returning nil — the guard's job is to speak when postgres calls a
-// value wrong, and with no postgres there is no verdict to report.
-func (fx *crudTestFixtures) verify(ctx context.Context) error {
-	if fx == nil || fx.shadow == nil {
-		return nil
-	}
-	tables := make([]string, 0, len(fx.emitted))
-	for name := range fx.emitted {
-		tables = append(tables, name)
-	}
-	sort.Strings(tables)
-
-	var violations []fixtureViolation
-	for _, name := range tables {
-		t, ok := fx.tables[name]
-		if !ok {
-			continue
-		}
-		vs, _, err := verifyFixtures(ctx, fx.shadow.DB(), t, fx.emitted[name])
-		if err != nil {
-			// The guard could not reach its authority. That is a failure of
-			// the CHECK, not of the fixtures, and claiming a verdict either
-			// way would be a lie — so it is reported as what it is.
-			return fmt.Errorf("verify generated fixtures against applied schema: %w", err)
-		}
-		violations = append(violations, vs...)
-	}
-	if len(violations) == 0 {
-		return nil
-	}
-	return &FixtureConstraintError{Violations: violations}
-}
-
-// entitySeedPlan is one entity's DB-level test setup: the deterministic
-// seed plan over the entity table's foreign-key parent closure, and the
-// rendered INSERT statements the generated test executes after migrations.
+// entitySeedPlan is one entity's DB-level test setup: a MINIMAL seed plan
+// (seedplan.Config.Minimal) over the entity table and its foreign-key parent
+// closure, and the rendered INSERT statements for the PARENTS only, which the
+// generated create-request factory executes before handing back a request.
 // Parents are seeded at the DB level — not through their own create RPCs —
 // because foreign keys may cross services (a clinical entity referencing a
-// catalog table) while the lifecycle test only has its own service's stack.
+// catalog table) while a handler test only has its own service's stack.
+//
+// The entity's own table is IN the plan but never in seedSQL. It is planned
+// so the create-request derivation can ask what a minimal row of it writes
+// (plan.Writes) — an enum the DEFAULT already supplies stays off the request,
+// a timestamp the schema requires goes on it — and it is never inserted,
+// because the rows a lifecycle test asserts on are the ones it creates.
 type entitySeedPlan struct {
 	plan    *seedplan.Plan
 	seedSQL string
@@ -140,11 +109,27 @@ type entitySeedPlan struct {
 // The shadow database is kept OPEN for the model's lifetime so the fixtures it
 // derives can be verified against it (see verify); the caller must call close.
 func buildCRUDTestFixtures(projectDir string, methods []CRUDMethod) *crudTestFixtures {
+	fx, _ := loadCRUDTestFixtures(projectDir, methods)
+	return fx
+}
+
+// loadCRUDTestFixtures is buildCRUDTestFixtures that reports WHY there is no
+// model: a nil model with a nil error means the project has no schema to model
+// (no migrations, nothing applied), while an error means the schema could not
+// be read — the shadow server could not be reached or fetched, or a migration
+// does not apply. Callers that regenerate a file on every run need the
+// difference: "nothing to emit" and "could not look" call for different
+// actions on a file that already exists.
+func loadCRUDTestFixtures(projectDir string, methods []CRUDMethod) (*crudTestFixtures, error) {
 	tables, shadow, err := schemadef.ApplyAndIntrospectShadowAt(
 		filepath.Join(projectDir, "db", "migrations"), shadowdb.Resolve(projectDir))
-	if err != nil || len(tables) == 0 {
+	if err != nil {
 		shadow.Close()
-		return nil
+		return nil, err
+	}
+	if len(tables) == 0 {
+		shadow.Close()
+		return nil, nil
 	}
 	byName := make(map[string]schemadef.Table, len(tables))
 	for _, t := range tables {
@@ -174,15 +159,20 @@ func buildCRUDTestFixtures(projectDir string, methods []CRUDMethod) *crudTestFix
 		}
 		fx.plans[tn] = fx.buildEntitySeedPlan(tn)
 	}
-	return fx
+	return fx, nil
 }
 
-// buildEntitySeedPlan builds the seed plan for one entity table's proper
-// FK ancestors: every table reachable from it over declared foreign keys,
-// excluding the entity table itself (seeding it would break the lifecycle
-// test's exact row-count assertions). Two rows per parent: row 0 is what
-// create requests reference; row 1 exists so a UNIQUE (1-1) foreign key
-// can give create #2 a distinct parent.
+// buildEntitySeedPlan builds the MINIMAL seed plan for one entity table and
+// its proper FK ancestors: every table reachable from it over declared
+// foreign keys. Only the ancestors are rendered into seedSQL (seeding the
+// entity's own table would break the lifecycle test's exact row-count
+// assertions). Two rows per parent: row 0 is what create #1 references; row 1
+// exists so a UNIQUE (1-1) foreign key can give create #2 a distinct parent.
+//
+// Minimal, because these rows exist only to be referenced: a parent needs its
+// key and whatever its schema REQUIRES, and every column beyond that is one
+// more value a later migration (a GENERATED column, a one-way status CHECK)
+// can turn into a rejected INSERT.
 func (fx *crudTestFixtures) buildEntitySeedPlan(root string) *entitySeedPlan {
 	closure := map[string]bool{}
 	var walk func(string)
@@ -202,14 +192,12 @@ func (fx *crudTestFixtures) buildEntitySeedPlan(root string) *entitySeedPlan {
 		}
 	}
 	walk(root)
-	if len(closure) == 0 {
-		return &entitySeedPlan{} // no parents — nothing to seed
-	}
-	names := make([]string, 0, len(closure))
+	names := make([]string, 0, len(closure)+1)
 	for name := range closure {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	names = append(names, root)
 	// Hand BuildPlan the SAME view of the foreign keys the walk above used.
 	// The closure is discovered through fx.foreignKeys(), which augments the
 	// DECLARED keys with the ones forge's own birth migration proposes — but
@@ -225,7 +213,7 @@ func (fx *crudTestFixtures) buildEntitySeedPlan(root string) *entitySeedPlan {
 		t.ForeignKeys = fx.foreignKeys(t)
 		closureTables = append(closureTables, t)
 	}
-	cfg := seedplan.Config{Rows: 2, Salt: 0}
+	cfg := seedplan.Config{Rows: 2, Salt: 0, Minimal: true}
 	plan, err := seedplan.BuildPlan(closureTables, fx.pools, cfg)
 	if err != nil {
 		// Unsatisfiable closure (NOT NULL FK back into the entity, or into
@@ -235,7 +223,92 @@ func (fx *crudTestFixtures) buildEntitySeedPlan(root string) *entitySeedPlan {
 	}
 	plan.SetBounds(fx.bounds)
 	plan.ApplyVocab(fx.vocab) // warnings surface via the seed CLI, not here
-	return &entitySeedPlan{plan: plan, seedSQL: strings.Join(plan.Statements(), "\n")}
+	rootPrefix := "INSERT INTO " + pgQuoteIdent(root) + " "
+	var parents []string
+	for _, stmt := range plan.Statements() {
+		if !strings.HasPrefix(stmt, rootPrefix) {
+			parents = append(parents, strings.TrimSpace(stmt))
+		}
+	}
+	return &entitySeedPlan{plan: plan, seedSQL: strings.Join(parents, "\n")}
+}
+
+// ensurePlan builds (once) the entity seed plan for a table the model knows.
+func (fx *crudTestFixtures) ensurePlan(table string) {
+	if fx == nil {
+		return
+	}
+	if _, done := fx.plans[table]; done {
+		return
+	}
+	if _, ok := fx.tables[table]; !ok {
+		return
+	}
+	fx.plans[table] = fx.buildEntitySeedPlan(table)
+}
+
+// tableList returns the model's tables, sorted by name.
+func (fx *crudTestFixtures) tableList() []schemadef.Table {
+	if fx == nil {
+		return nil
+	}
+	names := make([]string, 0, len(fx.tables))
+	for name := range fx.tables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]schemadef.Table, 0, len(names))
+	for _, name := range names {
+		out = append(out, fx.tables[name])
+	}
+	return out
+}
+
+// minimalWrites reports whether a MINIMAL row of the entity's table writes
+// column — whether the schema requires a value the database will not supply
+// itself (see seedplan.Config.Minimal). known is false when there is no plan
+// to ask (no schema model, or an unsatisfiable closure); the caller then keeps
+// its schema-blind behavior.
+func (fx *crudTestFixtures) minimalWrites(ent EntityDef, column string) (writes, known bool) {
+	if fx == nil {
+		return false, false
+	}
+	esp := fx.plans[ent.TableName]
+	if esp == nil || esp.plan == nil {
+		return false, false
+	}
+	if _, ok := fx.tables[ent.TableName]; !ok {
+		return false, false
+	}
+	return esp.plan.Writes(ent.TableName, column), true
+}
+
+// columnIsGenerated reports whether the entity's column is GENERATED ALWAYS
+// in the applied schema.
+func (fx *crudTestFixtures) columnIsGenerated(ent EntityDef, column string) bool {
+	if fx == nil {
+		return false
+	}
+	t, ok := fx.tables[ent.TableName]
+	if !ok {
+		return false
+	}
+	col, ok := tableColumn(t, column)
+	return ok && col.IsGenerated
+}
+
+// unionRequiresPresent reports whether the discriminated-union branch the
+// fixtures are written against requires the column to hold a value — a
+// status guard's consequent on the branch the minimal row takes.
+func (fx *crudTestFixtures) unionRequiresPresent(ent EntityDef, column string) bool {
+	if fx == nil {
+		return false
+	}
+	t, ok := fx.tables[ent.TableName]
+	if !ok {
+		return false
+	}
+	return fx.unionPlacement(t)[column].Present
 }
 
 // foreignKeys returns the table's declared foreign keys PLUS the ones
@@ -588,27 +661,31 @@ func clampFloat(f float64, b seedplan.NumBound) float64 {
 	return f
 }
 
-// unionFixtureRow is the row every fixture this model hands out is written
-// against.
-//
-// It is 0, and it is the SAME row for create #1 and create #2, which is the
-// one place the fixtures deliberately do not follow the seeder's round robin.
-// The lifecycle test's two creates share ONE field list and differ only in the
-// values in it — and which columns a discriminated union requires to be ABSENT
-// is a property of the field list, not of the values. Two creates on two
-// branches cannot be spelled by one list, so both take the branch seeded row 0
-// takes, and the two creates differ on the unconstrained columns as they always
-// did.
-const unionFixtureRow = 0
-
 // unionPlacement returns what the table's discriminated-union CHECKs require of
-// unionFixtureRow, memoized. A table with no placeable union memoizes an empty
-// map, so the parse runs once per table rather than once per field.
+// the rows the create requests mint, memoized. A table with no placeable union
+// memoizes an empty map, so the parse runs once per table rather than once per
+// field.
+//
+// The branch is the MINIMAL row's (seedplan.MinimalUnionPlacement), and it is
+// the SAME branch for create #1 and create #2. Two reasons, both load-bearing:
+//
+//   - The two creates share ONE field list and differ only in the values in
+//     it, and which columns a discriminated union requires to be ABSENT is a
+//     property of the list, not of the values. Two creates on two branches
+//     cannot be spelled by one list.
+//   - A create does not write every column. The ones it leaves unset take
+//     their DEFAULT (an unset enum stores the column DEFAULT; a read-only
+//     status is not on the request at all), so the branch a create can
+//     actually satisfy is the one that keeps those columns at their DEFAULT
+//     — a status guard's initial state — not whichever branch the dev
+//     dataset's rotation reaches first. That is exactly the branch a minimal
+//     factory row takes, so the create requests and New<Entity> agree about
+//     one schema.
 func (fx *crudTestFixtures) unionPlacement(t schemadef.Table) map[string]seedplan.UnionCell {
 	if got, ok := fx.unions[t.Name]; ok {
 		return got
 	}
-	got := seedplan.UnionPlacement(t, fx.pools, unionFixtureRow)
+	got := seedplan.MinimalUnionPlacement(t, fx.pools)
 	if got == nil {
 		got = map[string]seedplan.UnionCell{}
 	}

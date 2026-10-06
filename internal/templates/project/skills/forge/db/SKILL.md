@@ -96,10 +96,7 @@ vocabulary one level up:
   routes to a write: the `PaymentStore` interface and its adapter lose
   `UpdatePayment` / `UpdatePaymentMasked` / `DeletePayment`, and so does the
   package-level delegate set in the entity's generated ORM file —
-  `db.DeletePayment(ctx, tx, id)` does not resolve. (Omitting them from the interface alone was not
-  enough: the exported delegates reopened exactly the write the interface was
-  narrowed to forbid, and the guarantee decayed back to a SQLSTATE P0001 at
-  runtime.) The generated test factory also takes no overrides — applying one
+  `db.DeletePayment(ctx, tx, id)` does not resolve. The generated test factory also takes no overrides — applying one
   would UPDATE the row it just inserted. `forge scaffold entity --from-proto`
   writes this alongside the guard trigger when the message carries
   `// forge:append-only`; declare it by hand on a table a hand-written migration
@@ -218,6 +215,7 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 ## Generated ORM semantics
 
 - `Create<Entity>` is a plain `INSERT`, never an upsert. Unset string PKs are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back via `RETURNING` — any caller-provided value is ignored.
+- Writes scan database-computed values back via `RETURNING` — generated columns on every write, DB defaults on insert — so never re-read a row you just wrote.
 - With stampable `created_at` / `updated_at` columns, both are stamped on create and `updated_at` on update; `created_at` is immutable on update. Stamps use the column's projected type: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
 - `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 self-certifying: each carries an embedded `forge:hash` marker, so hand-edits trip the drift guard in any clone or worktree. `forge project disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit.
 - Each entity exports `<Entity>Columns`, the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.

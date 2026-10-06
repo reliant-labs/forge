@@ -97,6 +97,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
+  Create, Upsert, Update and UpdateMasked now `RETURNING` every
+  `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert
+  also return each column the insert left to its DB `DEFAULT` (a nil pointer,
+  or a zero `,nullzero` / `,default:` field), along with a server-allocated
+  PK. The generated delegates and stores inherit this. Previously a generated
+  column came back as the Go zero after Create and stale after an update, and
+  on a serial-PK table the explicit `RETURNING id` also suppressed Bun's own
+  read-back of defaulted columns. So every caller re-read the row
+  (`line_total_cents`, `total_cents`, `balance_cents` in the roofers run).
+  The RETURNING list names only the struct's own columns, never `*`, so
+  inserts keep working while a migration that adds a column has been applied
+  ahead of the code. A write that matches no row is still `orm.ErrNoRows`.
 - **forge only kills processes it can prove are its own.** On every OS, a pid
   read from a pidfile (embedded postgres, the host zitadel, a recorded dlv)
   is killed only if its executable matches and it started no later than the

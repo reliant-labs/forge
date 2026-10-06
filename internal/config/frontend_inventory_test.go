@@ -276,3 +276,27 @@ func TestMergeFrontendInventory_KCLWithoutTypeKeepsTheDiscoveredType(t *testing.
 		t.Errorf("want the on-disk type with the KCL port, got %+v", got)
 	}
 }
+
+func TestDeriveFrontendsFromKCL_NormalizesKCLTypeSpellings(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"spa", "mobile", "web"} {
+		if err := os.MkdirAll(filepath.Join(dir, "frontends", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := DeriveFrontendsFromKCL(dir, []KCLFrontend{
+		{Name: "spa", Type: "vite", Path: "frontends/spa"},
+		{Name: "mobile", Type: "rn", Path: "frontends/mobile"},
+		{Name: "web", Type: "nextjs", Path: "frontends/web"},
+	})
+	types := map[string]string{}
+	for _, fe := range got {
+		types[fe.Name] = fe.Type
+	}
+	want := map[string]string{"spa": "vite-spa", "mobile": "react-native", "web": "nextjs"}
+	for n, w := range want {
+		if types[n] != w {
+			t.Errorf("%s: type = %q, want %q", n, types[n], w)
+		}
+	}
+}

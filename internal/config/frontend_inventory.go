@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // frontend_inventory.go — the frontend inventory, derived.
@@ -443,7 +444,7 @@ func DeriveFrontendsFromKCL(projectDir string, kcl []KCLFrontend) []FrontendConf
 		}
 		byName[fe.Name] = FrontendConfig{
 			Name:      fe.Name,
-			Type:      fe.Type,
+			Type:      normalizeKCLFrontendType(fe.Type),
 			Port:      fe.Port,
 			DevRunner: fe.DevRunner,
 			BasePath:  basePath,
@@ -512,4 +513,17 @@ func devRunnerFromLockfile(projectDir, feDir string) string {
 		}
 	}
 	return ""
+}
+
+// normalizeKCLFrontendType maps KCL's Frontend.type spellings (nextjs | vite |
+// rn) onto the inventory's (nextjs | vite-spa | react-native), which is what
+// every generator compares against.
+func normalizeKCLFrontendType(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "vite":
+		return "vite-spa"
+	case "rn":
+		return "react-native"
+	}
+	return t
 }

@@ -1736,7 +1736,7 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	// Declare it where the environments are declared, exactly as
 	// `forge project new --frontend` does: without this the dev loop has no
 	// KCL-resolved port for it and `forge env up` falls back to a literal.
-	declareFrontendInKCL(root, cfg.Name, name, port, routes)
+	declareFrontendInKCL(root, cfg.Name, name, kclFrontendType(frontendType), port, routes)
 
 	// Install the new frontend's npm dependencies so the user can run
 	// the dev server (or `forge generate` post-codegen for the hooks

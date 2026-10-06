@@ -591,6 +591,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A component named like an identifier `compose.go` itself uses no longer
+  breaks the first build.** A service, worker or operator was imported into
+  `internal/app` under its package name, beside the names the generated files
+  already use — `NewComponents`' locals (`c`, `infra`, `err`), its imports
+  (`fmt`, `slog`, `time`, `db`, `ctrl`, …) and package `app`'s own
+  declarations — so `forge project new x --service c` failed its first
+  generate with `c.New undefined (type *Components has no field or method
+  New)`, and `fmt`, `slog`, `err`, `infra` failed the same way (`fmt
+  redeclared in this block`). Such a component is now imported as
+  `<role><Name>` (`svcC`, `wkrFmt`), the form two components that share a
+  package name already get; every other keeps its package name, so no
+  `compose.go` that compiled before changes. The set of names in use is not a
+  list forge maintains: it is read off the `compose.go`/`lifecycle.go`
+  templates themselves and the project's own `internal/app` files, so a local
+  added to a template later is covered the day it is written. A
+  `TestGenerateCompose_EveryTemplateIdentifierAsAComponentName` sweep builds a
+  project with one service — and one worker — per such name. `main` is
+  refused up front by `forge project new --service`, `forge scaffold
+  service|worker|operator|library`: Go cannot import package main, so the
+  project could never build.
+
 - **`forge project rescaffold` re-creates the hosted CI pipeline again.**
   Since new projects are born hosted, the scaffold writes `release.yml` and
   `.github/actions/forge-deploy/action.yml` for the staging and prod it just

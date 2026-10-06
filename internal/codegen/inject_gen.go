@@ -1945,6 +1945,13 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 		svcComponents = append(svcComponents, BootstrapServiceData{Package: res.PackageName})
 	}
 	counts := CollisionCounts(svcComponents, in.Packages, in.Workers, in.Operators)
+	// The names compose.go and lifecycle.go already use for something else;
+	// a component whose import name is one of them is imported as
+	// `<role><Package>` instead (component_import_alias.go).
+	taken := appPackageNames(in.ProjectDir)
+	for name := range appTemplateIdentifiers() {
+		taken[name] = true
+	}
 
 	var comps []BuildComponent
 
@@ -1957,6 +1964,7 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 			fallbackField = naming.ToPascalCase(svc.Name)
 		}
 		alias, fieldName := ResolveCollisionNaming(pkg, fallbackField, "svc", counts)
+		alias = appImportAlias(alias, "svc", taken)
 		runtimeName := naming.ToKebabCase(strings.TrimSuffix(svc.Name, "Service"))
 		if runtimeName == "" {
 			runtimeName = naming.ToKebabCase(svc.Name)
@@ -2016,6 +2024,7 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	addRole := func(role string, role4 string, datas []BootstrapComponentData) error {
 		for _, c := range datas {
 			alias, fieldName := ResolveCollisionNaming(c.Package, c.FieldName, role4, counts)
+			alias = appImportAlias(alias, role4, taken)
 			compDir := filepath.Join(in.ProjectDir, role, filepath.FromSlash(c.ImportPath))
 			deps, _ := ParseServiceDeps(compDir)
 			depsKeys, depsFound := DepsLiteralKeys(compDir)

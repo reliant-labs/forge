@@ -58,6 +58,16 @@ func validateIdentifier(name string) error   { return cmdutil.ValidateIdentifier
 func validateProjectName(name string) error  { return cmdutil.ValidateProjectName(name) }
 func validateFrontendName(name string) error { return cmdutil.ValidateFrontendName(name) }
 
+// validatePackageName is validateIdentifier for a name that becomes an
+// importable Go package (worker, operator, library). Services get the same
+// check through validateServiceName.
+func validatePackageName(name string) error {
+	if err := cmdutil.ValidateIdentifier(name); err != nil {
+		return err
+	}
+	return cmdutil.ValidateImportablePackageName(name)
+}
+
 // projectRoot forwards to cmdutil.ProjectRoot — the shared project-root
 // resolver. The unexported alias keeps the many call sites in this package
 // unchanged from their pre-move form.
@@ -1038,7 +1048,7 @@ Example:
 
 func runWorker(f *factory.Factory, name, kind, schedule string, noGenerate bool) error {
 	ctxLabel := fmt.Sprintf("forge scaffold worker %s", name)
-	if err := validateIdentifier(name); err != nil {
+	if err := validatePackageName(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid worker name", "",
 			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
@@ -1160,7 +1170,7 @@ func runOperator(f *factory.Factory, name, group, version, apiPackage, crdType s
 		name:     name,
 		ctxLabel: ctxLabel,
 		validate: func(name string) error {
-			if err := validateIdentifier(name); err != nil {
+			if err := validatePackageName(name); err != nil {
 				return cliutil.WrapUserErr(ctxLabel, "invalid operator name", "",
 					"use a name starting with a letter, containing letters/digits/_/-", err)
 			}

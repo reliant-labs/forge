@@ -57,3 +57,26 @@ func TestValidateServiceDirConsistency(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateServiceName_RejectsPackageMain: a component named main is Go
+// package main, which no other package may import — and internal/app imports
+// every service. Accepting it defers the failure to go build ("is a program,
+// not an importable package"). Every spelling that folds to package main is
+// refused; names that merely contain "main" are ordinary.
+func TestValidateServiceName_RejectsPackageMain(t *testing.T) {
+	for _, name := range []string{"main", "Main", "MAIN", "MainService"} {
+		err := ValidateServiceName(name)
+		if err == nil {
+			t.Errorf("ValidateServiceName(%q) = nil; want an error naming package main", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "package main") {
+			t.Errorf("ValidateServiceName(%q) error does not say why: %v", name, err)
+		}
+	}
+	for _, name := range []string{"domain", "maintenance", "main_menu", "mains"} {
+		if err := ValidateServiceName(name); err != nil {
+			t.Errorf("ValidateServiceName(%q) = %v; want nil — it is not package main", name, err)
+		}
+	}
+}

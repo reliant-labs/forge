@@ -87,6 +87,33 @@ const (
 	// spelling of nothing.
 	ProtoMarkerComputed = "forge:computed"
 
+	// ProtoMarkerGenerated carries a SQL expression, verbatim, as the rest
+	// of the comment line: `// forge:generated round(quantity *
+	// unit_price_cents)::BIGINT`. Birth emits the field's column as
+	// `<col> <type> [NOT NULL] GENERATED ALWAYS AS (<expr>) STORED` — NOT
+	// NULL exactly when the field is not `optional`, the same
+	// presence-is-nullability rule every other born column follows — and the
+	// field is read-only (omitted from the born Create request) because
+	// postgres refuses any write to the column anyway.
+	//
+	// It exists because the db skill's own advice — a value derived from the
+	// SAME row is `GENERATED ALWAYS AS (…) STORED` — could not be followed at
+	// birth: the field was born `BIGINT NOT NULL DEFAULT 0` and the owned
+	// migration was hand-edited immediately afterwards, every time.
+	//
+	// The expression is copied, never parsed. Birth applies the rendered
+	// migration to the shadow database before writing anything, so an
+	// expression postgres rejects fails the birth naming this marker's file
+	// and line — postgres is the only parser of postgres expressions forge
+	// trusts. After birth the marker is inert like every birth marker; the
+	// applied schema's GENERATED column is the truth from then on.
+	//
+	// Read by BOTH read-only recognizers (it is in ReadOnlyProtoMarkers) so
+	// the field leaves the write surface on every pass, and by the
+	// expression extractors (GeneratedMarkerExpr) in the raw scanner and the
+	// descriptor path.
+	ProtoMarkerGenerated = "forge:generated"
+
 	// ProtoMarkerSecret keeps the column but strips the field from read
 	// responses. Read by the descriptor path (fieldHasSecretMarker) ONLY —
 	// the raw scanner has no need for it, which is precisely why the
@@ -142,6 +169,7 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerAppendOnly,
 	ProtoMarkerReadOnly,
 	ProtoMarkerComputed,
+	ProtoMarkerGenerated,
 	ProtoMarkerSecret,
 	ProtoMarkerGuards,
 	ProtoMarkerMutation,
@@ -356,12 +384,56 @@ func protoMarkerLineRE(marker string) *regexp.Regexp {
 // be a second spelling of nothing, and a field marked computed but still
 // client-writable is the exact silent-write hole read-only exists to close.
 //
-// Exported as a set rather than left as two independent regexes because the
+// ProtoMarkerGenerated is here for the same reason: postgres refuses every
+// write to a GENERATED column, so a field still carried on the Create request
+// would be a client-writable value the database rejects on insert.
+//
+// Exported as a set rather than left as independent regexes because the
 // implication has to hold in BOTH recognizers (the raw scanner at birth and
 // the descriptor path). Two hand-maintained lists is how one of them ends up
 // honouring a marker the other ignores, which would make a field's
 // writability depend on which pass found it.
-var ReadOnlyProtoMarkers = []string{ProtoMarkerReadOnly, ProtoMarkerComputed}
+var ReadOnlyProtoMarkers = []string{ProtoMarkerReadOnly, ProtoMarkerComputed, ProtoMarkerGenerated}
+
+// generatedExprRE captures the expression a `forge:generated` marker
+// carries: everything after the token and at least one blank, to the end of
+// that line. It accepts both comment shapes forge reads — a raw
+// `//`-prefixed source line and the text buf has already stripped the
+// slashes from — on any line of a multi-line block, like guardTargetRE.
+//
+// The token must be followed by whitespace. `forge:generated(a + b)` is
+// recognized as the marker by the read-only family's looser grammar
+// (ProtoMarkerAnyLineRE accepts any non-word character after a name) but
+// yields no expression here, so birth refuses it by line rather than
+// guessing where the token ends and the SQL begins.
+var generatedExprRE = regexp.MustCompile(`(?m)^[ \t]*(?://+[ \t]*)?` +
+	regexp.QuoteMeta(ProtoMarkerGenerated) + `(?:[ \t]+([^\n]*))?$`)
+
+// GeneratedMarkerExpr returns the SQL expression carried by a
+// `forge:generated` marker in comment, trimmed, and whether comment carries
+// the marker at all. A marker with nothing after it reports ("", true): the
+// caller refuses that, since a GENERATED column with no expression is not a
+// column postgres can create.
+//
+// The expression is the REST OF THE LINE, verbatim. Prose cannot share the
+// line — there is no telling where SQL ends — so a comment explaining the
+// derivation goes on its own line above.
+func GeneratedMarkerExpr(comment string) (expr string, found bool) {
+	if !generatedMarkerPresentRE.MatchString(comment) {
+		return "", false
+	}
+	if m := generatedExprRE.FindStringSubmatch(comment); m != nil {
+		return strings.TrimSpace(strings.TrimSuffix(m[1], "\r")), true
+	}
+	return "", true
+}
+
+// generatedMarkerPresentRE is the presence test, with exactly the grammar the
+// read-only recognizers use to put the field off the write surface — so a
+// field the scanners treat as generated is always one this extractor
+// reports, even when it can recover no expression from it.
+var generatedMarkerPresentRE = regexp.MustCompile(`(?m)^[ \t]*(?://+[ \t]*)?` +
+	regexp.QuoteMeta(ProtoMarkerGenerated) + `(\s|$|[^\w])`)
 
 // ProtoMarkerAnyLineRE builds a recognizer matching ANY of markers in a
 // `//`-prefixed proto comment, with the same spacing/trailing-prose rules as

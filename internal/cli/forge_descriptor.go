@@ -398,6 +398,7 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 		fd.Validate = fieldConstraintsFromDescriptor(f.Desc)
 		fd.Secret = fieldHasSecretMarker(f)
 		fd.ReadOnly = fieldHasReadOnlyMarker(f)
+		fd.Generated = fieldGeneratedExpr(f)
 		fd.Guards = fieldGuardTargets(f)
 		fields = append(fields, fd)
 	}
@@ -451,6 +452,20 @@ var readOnlyFieldMarkerRE = codegen.ProtoMarkerAnyCommentRE(codegen.ReadOnlyProt
 func fieldHasReadOnlyMarker(f *protogen.Field) bool {
 	return readOnlyFieldMarkerRE.MatchString(string(f.Comments.Leading)) ||
 		readOnlyFieldMarkerRE.MatchString(string(f.Comments.Trailing))
+}
+
+// fieldGeneratedExpr returns the SQL expression a `// forge:generated <expr>`
+// marker carries, from the field's LEADING comment block or a TRAILING one,
+// or "" when there is none. The extractor is codegen.GeneratedMarkerExpr —
+// the one the raw scanner uses — so a field births the same column whichever
+// pass supplied it. The read-only half of the marker is already covered by
+// fieldHasReadOnlyMarker (forge:generated is in codegen.ReadOnlyProtoMarkers).
+func fieldGeneratedExpr(f *protogen.Field) string {
+	if expr, ok := codegen.GeneratedMarkerExpr(string(f.Comments.Leading)); ok && expr != "" {
+		return expr
+	}
+	expr, _ := codegen.GeneratedMarkerExpr(string(f.Comments.Trailing))
+	return expr
 }
 
 // fieldGuardTargets reads the `// forge:guards <table>.<column>` targets a

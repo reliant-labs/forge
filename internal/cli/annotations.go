@@ -6,7 +6,7 @@
 //
 //   - markers        the `// forge:*` comment markers the proto scanner reads
 //     (forge:entity, forge:soft-delete, forge:append-only,
-//     forge:read-only, forge:secret).
+//     forge:read-only, forge:computed, forge:generated, forge:secret, …).
 //   - field_types    the proto→column mapping an entity birth applies,
 //     iterated from the real scaffold.ProtoSQLMappings (whose
 //     scalar half is projected from the renderer's scalarSQL).
@@ -283,6 +283,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Everything forge:read-only does (kept on the entity + Get/List, OMITTED from the born Create request, and never written by a client Update — a mask naming it is refused, a full replace leaves it as stored), PLUS a declared obligation that your app derives the value. `forge lint --computed-fields` fails the field when no non-generated Go file assigns it. Because no CRUD Update writes it, derive it where its inputs change: a GENERATED column for a same-row value, db.Update<Entity>Masked naming it for one that depends on other rows. Use this instead of forge:read-only whenever the value is calculated rather than defaulted: a read-only field nothing computes takes the column DEFAULT, which for a money column is 0 — no constraint is violated, no test fails, and the only symptom is a screen showing $0.00.",
 			Placement: "leading full-line comment above the field, or a trailing comment after the field's terminating `;` — same two positions as forge:read-only, and a marker no field consumes REFUSES the birth.",
 			Example:   "// quantity_milli * unit_price_cents / 1000, maintained on write.\nint64 amount_cents = 7; // forge:computed",
+		},
+		{
+			Name:      codegen.ProtoMarkerGenerated,
+			AppliesTo: "field",
+			Effect:    "Births the column as `<col> <type> NOT NULL GENERATED ALWAYS AS (<expr>) STORED`, the expression copied verbatim from the rest of the comment line — postgres computes the value on every INSERT and UPDATE and refuses any write to it. NOT NULL exactly when the field is not `optional` (a Timestamp is always nullable), the rule every born column follows, so an expression that yields NULL fails that write loudly; no DEFAULT; an enum keeps its CHECK and protovalidate rules still project to CHECKs. Implies forge:read-only: the field leaves the born Create request (and every pass that honours read-only), since the database would reject a client's value anyway. Before writing anything, birth applies the rendered migration to the shadow database; an expression postgres rejects (unknown column, wrong type, a non-IMMUTABLE function, a reference to another generated column) REFUSES the birth, naming the marker's file and line and postgres's message. Use it for a value derived from the SAME row (line_total = quantity × unit price, balance = amount − amount_paid); a value derived from OTHER rows cannot be a generated column — use forge:computed. Single-valued scalar, enum and Timestamp fields only. Inert after birth: the applied schema's GENERATED column is the truth, evolved by a new migration.",
+			Placement: "leading full-line comment above the field, or a trailing comment after the field's terminating `;` — same two positions as forge:read-only. The expression is the REST OF THE LINE after the marker and a space, so prose explaining it goes on its own comment line above.",
+			Example:   "int64 line_total_cents = 9; // forge:generated round(quantity * unit_price_cents)::BIGINT",
 		},
 		{
 			Name:      codegen.ProtoMarkerGuards,

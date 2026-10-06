@@ -44,12 +44,12 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 			t.Errorf("markers missing %q", want)
 		}
 	}
-	// Eight proto markers plus the column-comment markers plus the
+	// Nine proto markers plus the column-comment markers plus the
 	// Go-source markers. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
 	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 22 {
-		t.Errorf("expected 22 markers, got %d", len(spec.Markers))
+	if len(spec.Markers) != 23 {
+		t.Errorf("expected 23 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -274,6 +274,7 @@ message WidgetEntity {
   string id = 1;
   string status = 2; // forge:read-only
   string api_token = 3; // forge:secret
+  int64 doubled = 4; // forge:generated status_len * 2
 }
 
 // forge:soft-delete
@@ -313,6 +314,15 @@ message LedgerEntity {
 	if !readOnlySeen {
 		t.Error("forge:read-only not recognized on the field")
 	}
+	generatedSeen := false
+	for _, f := range widget.Fields {
+		if f.Name == "doubled" && f.ReadOnly && f.Generated == "status_len * 2" {
+			generatedSeen = true
+		}
+	}
+	if !generatedSeen {
+		t.Error("forge:generated not recognized on the field (want read-only with its expression)")
+	}
 	// buf strips the `//` before protogen sees the comment, so the secret
 	// regex matches the comment text WITHOUT slashes — mirror that form here.
 	if !secretFieldMarkerRE.MatchString(" forge:secret\n") {
@@ -329,7 +339,7 @@ message LedgerEntity {
 	}
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
-		"forge:read-only", "forge:secret", "forge:guards", "forge:mutation",
+		"forge:read-only", "forge:generated", "forge:secret", "forge:guards", "forge:mutation",
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
 		"forge:external-component", "forge:outbound-io",
@@ -338,8 +348,8 @@ message LedgerEntity {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 21 {
-		t.Errorf("expected 21 marker specs, got %d", len(got))
+	if len(got) != 22 {
+		t.Errorf("expected 22 marker specs, got %d", len(got))
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same

@@ -188,6 +188,19 @@ type SchemaFieldDef struct {
 	// quintet from the raw scan, before the descriptor knows it).
 	// `json:",omitempty"` keeps old descriptors parseable (additive contract).
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Generated is the SQL expression a `// forge:generated <expr>` marker
+	// carries, verbatim (see codegen.ProtoMarkerGenerated), or "" when the
+	// field has none. Birth emits the column as `GENERATED ALWAYS AS
+	// (<expr>) STORED`; the marker also sets ReadOnly, so the field leaves
+	// the born write envelopes. Nothing after birth reads it — the applied
+	// schema's GENERATED column is the truth from then on.
+	//
+	// Read off BOTH extractors, like ReadOnly: the raw scan for a
+	// brand-new `// forge:entity` message, and the compiled descriptor for
+	// `forge scaffold entity --from-proto <svc>.<Message>`, which would
+	// otherwise see a read-only field and birth a plain column nothing ever
+	// writes. `json:",omitempty"` keeps old descriptors parseable.
+	Generated string `json:"generated,omitempty"`
 	// Guards are the `<table>.<column>` targets this field declares with
 	// `// forge:guards` — the columns whose writes the ENCLOSING RPC owns.
 	//

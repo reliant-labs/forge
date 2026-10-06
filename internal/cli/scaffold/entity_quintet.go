@@ -68,7 +68,18 @@ func entityFieldsFromSchemaDefs(protoPkg string, defs []codegen.SchemaFieldDef) 
 		// out made every born list unfilterable on its single most useful
 		// column, and the workaround (fetch a page, filter client-side)
 		// silently truncates past the page cap. See buildEntityCRUDMessagePieces.
-		if !f.Repeated && !f.Optional {
+		//
+		// `optional` fields are facets too. The List filter field is
+		// `optional` either way (unset = no filter), so the entity field's
+		// own presence changes nothing about the request shape — it only
+		// makes the COLUMN nullable, and an exact match on a nullable column
+		// is the same `col = $1`, which NULL rows simply do not satisfy.
+		// Gating on it dropped the facet on exactly the references that are
+		// born nullable: a job's crew_id, unassigned until dispatch, was the
+		// one FK on the entity a born ListJobsRequest could not filter by.
+		// Matching the rows where the column IS NULL ("unassigned jobs") is
+		// not a facet; add a request field for it and filter in the op.
+		if !f.Repeated {
 			switch {
 			case f.Kind == "string" && f.Name != "id" && strings.HasSuffix(f.Name, "_id"):
 				ef.Decl = "fk"

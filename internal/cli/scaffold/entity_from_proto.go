@@ -217,10 +217,15 @@ func birthListedEntityFromProto(bc birthContext, msgName, name string, opts enti
 	}
 
 	known := fkKnownTables(applied, sd, scan)
+	emit := entityMigrationEmit{migDir, table, sd, msgName, fields, known, opts, markers, fkReg}
+	if err := generatedPreflight(migDir, emit.spec(), scanMessageOrEmpty(scan, msgName)); err != nil {
+		return cliutil.WrapUserErr(ctxLabel, "forge:generated marker", "",
+			"fix the marker at the line named above and re-run", err)
+	}
 	softDelete := opts.SoftDelete || markers.SoftDelete || messageHasField(fields, "deleted_at")
 	added, merr := birthManagedFields(scan, msgName, !opts.NoTimestamps, softDelete)
 	reportManagedFields(msgName, added, merr)
-	if err := emitEntityFromProtoMigration(entityMigrationEmit{migDir, table, sd, msgName, fields, known, opts, markers, fkReg}); err != nil {
+	if err := emitEntityFromProtoMigration(emit); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "write migration", migDir, "verify db/migrations is writable", err)
 	}
 	reportQuintetCompletion(completeQuintetForEntity(root, scan, msgName, sd.Package, fields, markers.AppendOnly))
@@ -239,7 +244,8 @@ func readOnlyMarkerRefusal(m codegen.RawProtoMessage) error {
 		return nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "message %s carries a `// forge:read-only` marker that attaches to no field:", m.Name)
+	fmt.Fprintf(&b, "message %s carries a field marker (%s) that attaches to no field:",
+		m.Name, strings.Join(codegen.ReadOnlyProtoMarkers, " / "))
 	for _, site := range m.UnappliedReadOnlyMarkers {
 		fmt.Fprintf(&b, "\n    %s", site)
 	}
@@ -366,10 +372,15 @@ func runEntityFromProtoBatch(ctxLabel, root, migDir string, sd codegen.ServiceDe
 			return cliutil.WrapUserErr(ctxLabel, "retired marker", "",
 				"rewrite the retired marker as its replacement", err)
 		}
+		emit := entityMigrationEmit{migDir, table, sd, msgName, fields, known, opts, entityBirthMarkers{}, fkReg}
+		if err := generatedPreflight(migDir, emit.spec(), scanMessageOrEmpty(scan, msgName)); err != nil {
+			return cliutil.WrapUserErr(ctxLabel, "forge:generated marker", "",
+				"fix the marker at the line named above and re-run", err)
+		}
 		added, merr := birthManagedFields(scan, msgName,
 			!opts.NoTimestamps, opts.SoftDelete || messageHasField(fields, "deleted_at"))
 		reportManagedFields(msgName, added, merr)
-		if err := emitEntityFromProtoMigration(entityMigrationEmit{migDir, table, sd, msgName, fields, known, opts, entityBirthMarkers{}, fkReg}); err != nil {
+		if err := emitEntityFromProtoMigration(emit); err != nil {
 			return cliutil.WrapUserErr(ctxLabel, "write migration", migDir, "verify db/migrations is writable", err)
 		}
 	}
@@ -615,10 +626,6 @@ func birthMarkedEntity(migDir, root string, scan *codegen.RawProtoScan, m codege
 	timestamps := !opts.NoTimestamps
 	softDelete := opts.SoftDelete || m.SoftDeleteMarked || messageHasField(m.Fields, "deleted_at")
 
-	// The author's message declares its own managed fields from here on —
-	// injected before anything else so a failure costs no migration.
-	rep.ManagedFields, rep.ManagedFieldsErr = injectManagedEntityFields(m.File, m.Name, timestamps, softDelete)
-
 	spec := entityscaffold.EntityFromProtoSpec{
 		Table:          table,
 		MessageFQ:      m.Package + "." + m.Name,
@@ -631,6 +638,16 @@ func birthMarkedEntity(migDir, root string, scan *codegen.RawProtoScan, m codege
 		KnownTables:    known,
 		ExistingTables: fkReg.snapshot(),
 	}
+	// Refused before the managed-field injection below, so a bad expression
+	// leaves the author's proto exactly as they wrote it.
+	if err := generatedPreflight(migDir, spec, m); err != nil {
+		return nil, err
+	}
+
+	// The author's message declares its own managed fields from here on —
+	// injected before the migration so a failure costs no migration.
+	rep.ManagedFields, rep.ManagedFieldsErr = injectManagedEntityFields(m.File, m.Name, timestamps, softDelete)
+
 	mig := entityscaffold.RenderEntityMigrationFromProto(spec)
 	upPath, err := writeBirthMigration(migDir, table, mig.UpSQL)
 	if err != nil {
@@ -685,24 +702,27 @@ type entityMigrationEmit struct {
 	fkReg *fkRegistry
 }
 
-func emitEntityFromProtoMigration(e entityMigrationEmit) error {
-	migDir, table := e.migDir, e.table
-	sd, msgName, fields := e.sd, e.msgName, e.fields
-	known, opts, markers := e.known, e.opts, e.markers
-	timestamps := !opts.NoTimestamps
-	spec := entityscaffold.EntityFromProtoSpec{
-		Table:          table,
-		MessageFQ:      sd.Package + "." + msgName,
-		ProtoPkg:       sd.Package,
-		Fields:         fields,
-		Enums:          sd.Enums,
-		SoftDelete:     opts.SoftDelete || markers.SoftDelete || messageHasField(fields, "deleted_at"),
-		Timestamps:     timestamps,
-		AppendOnly:     markers.AppendOnly,
-		KnownTables:    known,
+// spec is the renderer input this emission writes — computed separately so
+// the birth's pre-flight (generatedPreflight) checks the very migration the
+// emission will write, before anything is written.
+func (e entityMigrationEmit) spec() entityscaffold.EntityFromProtoSpec {
+	return entityscaffold.EntityFromProtoSpec{
+		Table:          e.table,
+		MessageFQ:      e.sd.Package + "." + e.msgName,
+		ProtoPkg:       e.sd.Package,
+		Fields:         e.fields,
+		Enums:          e.sd.Enums,
+		SoftDelete:     e.opts.SoftDelete || e.markers.SoftDelete || messageHasField(e.fields, "deleted_at"),
+		Timestamps:     !e.opts.NoTimestamps,
+		AppendOnly:     e.markers.AppendOnly,
+		KnownTables:    e.known,
 		ExistingTables: e.fkReg.snapshot(),
 	}
-	mig := entityscaffold.RenderEntityMigrationFromProto(spec)
+}
+
+func emitEntityFromProtoMigration(e entityMigrationEmit) error {
+	migDir, table := e.migDir, e.table
+	mig := entityscaffold.RenderEntityMigrationFromProto(e.spec())
 	upPath, err := writeBirthMigration(migDir, table, mig.UpSQL)
 	if err != nil {
 		return err

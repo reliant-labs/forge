@@ -185,6 +185,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broke the runtime's own rule that errors are displayed through
   `userMessage`. Both now render the framing-free message as body text.
   `<Resource>` falls back to generic copy when the error has no message.
+- **Mock mode signs the UI in.** With `MOCK_API` set to `"true"` or
+  `"hybrid"`, the scaffolded web auth context (`src/lib/auth/context.tsx`)
+  now takes its identity from the fixture session in `session-provider.ts`
+  (new export `isMockMode()`) and never sends `GET /auth/session`, so the
+  route guard lets every page through. Previously the context asked the
+  server in every mode: in pure mock the request failed, the app read
+  signed-out, and every page bounced to `/auth/sign-in`. In mock mode, logout
+  ends the fixture session locally, and a reload restores it. Hybrid renders
+  the same fixture user, but the fixture is presentation only. Its token is
+  still handed out in pure mock alone, so a forwarded hybrid RPC carries only
+  the real session cookie the browser already holds, and `/auth/sign-in`
+  still posts to the real server. With mock mode off, nothing changes. New
+  frontends ship `src/lib/auth/context.test.tsx` (Vitest), which pins all
+  three modes. `context.tsx` is scaffold-once, so existing projects see the
+  change through `forge project upgrade`'s advisory lane.
+- **Fixture Lists answer like the backend's generated List.**
+  `@reliantlabs/forge-web-runtime/mock-transport` now:
+  - filters by equality on every `optional` List request field that is set
+    and names an entity field (enums compare by value; implicit-presence
+    fields never filter, matching the generated `Filters` closure);
+  - applies `search` as a case-insensitive substring match over string fields
+    and enum value names;
+  - sorts by `order_by` / `descending`, rejecting an unknown column with
+    `InvalidArgument`;
+  - applies `page_size` (default 50, max 100) with an offset `page_token`;
+  - returns `total_count` as the filtered count before paging.
+
+  Previously every List returned every fixture row with `total_count` 0, so
+  filtered lists showed everything and dashboard counts read 0. Like the
+  backend, an ordered list mints no `next_page_token`. The request schema
+  comes from the Connect method descriptor, so `mock-transport_gen.ts` is
+  unchanged. Custom (non-CRUD) RPCs are still answered only by scenario
+  handlers.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

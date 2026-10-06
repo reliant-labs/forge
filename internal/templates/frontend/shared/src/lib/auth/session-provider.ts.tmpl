@@ -34,17 +34,18 @@
  * `jwt_jwks_url` at the same issuer and both halves agree.
 {{- else}}
  *
- * ── Why the browser frontends do not use this ─────────────────────────
- * They sign in NATIVELY: credentials are POSTed to this app's own API, the
- * server runs the whole OIDC flow, and the session comes back as an
- * HttpOnly cookie the browser attaches by itself (src/lib/auth/
- * native-login.ts). There is no token in JavaScript to supply, so
- * `src/lib/auth/context.tsx` reads its identity from the server rather than
- * from a provider object.
+ * ── The browser frontends use this in mock mode ONLY ──────────────────
+ * Against a real backend they sign in NATIVELY: credentials are POSTed to
+ * this app's own API, the server runs the whole OIDC flow, and the session
+ * comes back as an HttpOnly cookie the browser attaches by itself
+ * (src/lib/auth/native-login.ts). There is no token in JavaScript to supply,
+ * so `src/lib/auth/context.tsx` reads its identity from the server.
  *
- * This file survives because PURE-MOCK frontend development is a supported
- * mode, not a legacy state: a UI built against locally-answered RPCs still
- * needs a user to render. Reach for it when there is no server to ask.
+ * In mock mode (`isMockMode()` below) there is no server to ask — or, in
+ * hybrid, none whose answer the scenarios are built against — so the
+ * context takes its identity from THIS provider's fixture instead of from
+ * GET /auth/session. Without that, every page of a mocked app bounced to the
+ * sign-in screen, whose form posts to a server that is not there.
 {{- end}}
  */
 {{- if .HasTypedConfig}}
@@ -85,7 +86,15 @@ function mockMode(): string | undefined {
 //            forwarded. Those DO need a credential this provider does not
 //            have, so the fixture session renders but nothing is sent.
 const isPureMock = () => mockMode() === "true";
-const isMocked = () => isPureMock() || mockMode() === "hybrid";
+
+/**
+ * Whether this bundle runs in a mock mode ("true" or "hybrid") — the modes in
+ * which the signed-in user is the fixture below rather than whoever the
+ * server says. `src/lib/auth/context.tsx` asks this before it asks the server.
+ */
+export function isMockMode(): boolean {
+  return isPureMock() || mockMode() === "hybrid";
+}
 
 // A stand-in session for mock mode, where nothing reaches the network. It is
 // not a credential and no server accepts it — it exists so scaffolded UI has
@@ -99,7 +108,7 @@ const MOCK_TOKEN = "mock-token-dev";
 
 export function createSessionAuthProvider(): AuthProvider {
   // The session this provider can offer at all. Null against a real backend.
-  const fixtureUser: AuthUser | null = isMocked() ? MOCK_USER : null;
+  const fixtureUser: AuthUser | null = isMockMode() ? MOCK_USER : null;
 
   // Starts signed in when there is something to be signed in WITH. The value
   // is inlined into the bundle at build time, so a server render and the

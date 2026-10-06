@@ -16,6 +16,7 @@ import {
 import {
   FileDescriptorProtoSchema,
   type DescriptorProto,
+  type EnumDescriptorProto,
 } from "@bufbuild/protobuf/wkt";
 import { ConnectError, Code, type Transport } from "@connectrpc/connect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,8 +38,11 @@ const SERVICE = `${PACKAGE}.ItemService`;
 // definitions below read as proto rather than as magic integers.
 const OPTIONAL = 1;
 const REPEATED = 3;
+const BOOL = 8;
 const STRING = 9;
 const MESSAGE = 11;
+const INT32 = 5;
+const ENUM = 14;
 
 /**
  * Compile real protobuf schemas in-memory.
@@ -51,12 +55,14 @@ const MESSAGE = 11;
  */
 function compileSchemas(
   messages: DescriptorProto[],
+  enums: EnumDescriptorProto[] = [],
 ): Record<string, DescMessage> {
   const fdp = create(FileDescriptorProtoSchema, {
     name: "mock-transport-test.proto",
     syntax: "proto3",
     package: PACKAGE,
     messageType: messages,
+    enumType: enums,
   });
   const registry = createFileRegistry(fdp, () => undefined);
   const out: Record<string, DescMessage> = {};
@@ -116,14 +122,23 @@ const ItemSchema = schemas.Item!;
 const ListItemsResponseSchema = schemas.ListItemsResponse!;
 const GetItemResponseSchema = schemas.GetItemResponse!;
 
-/** A Connect method descriptor, as the transport reads it. */
-function method(name: string) {
-  return { name, parent: { typeName: SERVICE } } as never;
+/**
+ * A Connect method descriptor, as the transport reads it. `input` is the
+ * request schema — a real Connect client always supplies it, and the List
+ * arm reads field presence off it.
+ */
+function method(name: string, input?: DescMessage) {
+  return { name, parent: { typeName: SERVICE }, input } as never;
 }
 
-function callUnary(transport: Transport, name: string, input: unknown) {
+function callUnary(
+  transport: Transport,
+  name: string,
+  input: unknown,
+  requestSchema?: DescMessage,
+) {
   return transport.unary(
-    method(name),
+    method(name, requestSchema),
     undefined as never,
     undefined as never,
     {} as never,
@@ -331,6 +346,301 @@ describe("entity fixture dispatch", () => {
     expect(err.message).toContain(
       `no scenario handler or entity fixture for ${SERVICE}/Unknown`,
     );
+  });
+});
+
+/**
+ * List request semantics: the fixture List arm answers the way the real
+ * backend's generated CRUD List does (pkg/crud HandleList + the generated
+ * Filters closure), so a filtered list, a paged list and a "how many" tile
+ * read the same against fixtures as against a server.
+ *
+ * The schemas mirror a forge CRUD entity: `optional` request fields are the
+ * filters (explicit presence — an UNSET field never filters), page_size /
+ * page_token / order_by / descending / search are controls, and the
+ * response carries next_page_token + total_count.
+ */
+describe("list request semantics", () => {
+  const LEAD = 1;
+  const SCHEDULED = 2;
+  const DONE = 3;
+
+  // proto3 `optional` = explicit presence: the field joins a synthetic
+  // oneof and carries proto3Optional, exactly what protoc emits.
+  function optionalField(
+    name: string,
+    number: number,
+    type: number,
+    oneofIndex: number,
+    extra: Partial<DescriptorProto["field"][number]> = {},
+  ) {
+    return {
+      name,
+      number,
+      type,
+      label: OPTIONAL,
+      jsonName: name.replace(/_(\w)/g, (_, c: string) => c.toUpperCase()),
+      oneofIndex,
+      proto3Optional: true,
+      ...extra,
+    };
+  }
+  function field(
+    name: string,
+    number: number,
+    type: number,
+    extra: Partial<DescriptorProto["field"][number]> = {},
+  ) {
+    return {
+      name,
+      number,
+      type,
+      label: OPTIONAL,
+      jsonName: name.replace(/_(\w)/g, (_, c: string) => c.toUpperCase()),
+      ...extra,
+    };
+  }
+  const statusEnum = { typeName: `.${PACKAGE}.JobStatus` };
+
+  const listSchemas = compileSchemas(
+    [
+      {
+        name: "Job",
+        field: [
+          field("id", 1, STRING),
+          field("title", 2, STRING),
+          field("status", 3, ENUM, statusEnum),
+          field("customer_id", 4, STRING),
+          optionalField("crew_id", 5, STRING, 0),
+          field("insurance_claim", 6, BOOL),
+        ],
+        oneofDecl: [{ name: "_crew_id" }],
+      },
+      {
+        name: "ListJobsRequest",
+        field: [
+          field("page_size", 1, INT32),
+          field("page_token", 2, STRING),
+          optionalField("search", 3, STRING, 0),
+          optionalField("customer_id", 4, STRING, 1),
+          optionalField("status", 5, ENUM, 2, statusEnum),
+          optionalField("insurance_claim", 6, BOOL, 3),
+          field("order_by", 7, STRING),
+          field("descending", 8, BOOL),
+          // IMPLICIT presence: the backend generates no filter for a
+          // non-optional field, so neither may the mock.
+          field("title", 9, STRING),
+          // Optional, but Job has no such field — nothing to compare.
+          optionalField("property_id", 10, STRING, 4),
+          optionalField("crew_id", 11, STRING, 5),
+        ],
+        oneofDecl: [
+          { name: "_search" },
+          { name: "_customer_id" },
+          { name: "_status" },
+          { name: "_insurance_claim" },
+          { name: "_property_id" },
+          { name: "_crew_id" },
+        ],
+      },
+      {
+        name: "ListJobsResponse",
+        field: [
+          field("jobs", 1, MESSAGE, {
+            label: REPEATED,
+            typeName: `.${PACKAGE}.Job`,
+          }),
+          field("next_page_token", 2, STRING),
+          field("total_count", 3, INT32),
+        ],
+      },
+      {
+        name: "CreateJobResponse",
+        field: [field("job", 1, MESSAGE, { typeName: `.${PACKAGE}.Job` })],
+      },
+    ] as DescriptorProto[],
+    [
+      {
+        name: "JobStatus",
+        value: [
+          { name: "JOB_STATUS_UNSPECIFIED", number: 0 },
+          { name: "JOB_STATUS_LEAD", number: LEAD },
+          { name: "JOB_STATUS_SCHEDULED", number: SCHEDULED },
+          { name: "JOB_STATUS_DONE", number: DONE },
+        ],
+      },
+    ] as EnumDescriptorProto[],
+  );
+  const JobSchema = listSchemas.Job!;
+  const ListJobsRequestSchema = listSchemas.ListJobsRequest!;
+  const ListJobsResponseSchema = listSchemas.ListJobsResponse!;
+  const CreateJobResponseSchema = listSchemas.CreateJobResponse!;
+
+  function jobsDescriptor(): MockEntityDescriptor {
+    return {
+      service: SERVICE,
+      label: "job",
+      pkField: "id",
+      entitySchema: JobSchema,
+      fixtures: [
+        create(JobSchema, { id: "j1", title: "Tear-off and re-roof", status: LEAD, customerId: "c1", insuranceClaim: false }),
+        create(JobSchema, { id: "j2", title: "Gutter repair", status: SCHEDULED, customerId: "c1", crewId: "k1", insuranceClaim: true }),
+        create(JobSchema, { id: "j3", title: "Skylight reflash", status: LEAD, customerId: "c2", insuranceClaim: true }),
+        create(JobSchema, { id: "j4", title: "Re-roof after hail", status: DONE, customerId: "c1", crewId: "k2", insuranceClaim: true }),
+        create(JobSchema, { id: "j5", title: "Chimney flashing", status: LEAD, customerId: "c1", crewId: "k1", insuranceClaim: false }),
+      ],
+      list: {
+        rpc: "ListJobs",
+        responseSchema: ListJobsResponseSchema,
+        itemsField: "jobs",
+      },
+      create: {
+        rpc: "CreateJob",
+        responseSchema: CreateJobResponseSchema,
+        entityField: "job",
+        requestField: "job",
+      },
+    };
+  }
+
+  interface ListJobs {
+    jobs: { id: string; title: string }[];
+    nextPageToken: string;
+    totalCount: number;
+  }
+
+  let transport: Transport;
+  beforeEach(() => {
+    transport = createMockTransport({
+      scenario: scenario(),
+      entities: [jobsDescriptor()],
+    });
+  });
+
+  /** List with a request built the way a generated hook builds one. */
+  async function list(init: Record<string, unknown>): Promise<ListJobs> {
+    const res = await callUnary(
+      transport,
+      "ListJobs",
+      create(ListJobsRequestSchema, init),
+      ListJobsRequestSchema,
+    );
+    return msg<ListJobs>(res);
+  }
+  const ids = (r: ListJobs) => r.jobs.map((j) => j.id);
+
+  it("filters by a SET optional field and counts the filtered rows", async () => {
+    const res = await list({ customerId: "c1" });
+    expect(ids(res)).toEqual(["j1", "j2", "j4", "j5"]);
+    expect(res.totalCount).toBe(4);
+  });
+
+  it("compares enums by value", async () => {
+    const res = await list({ status: LEAD });
+    expect(ids(res)).toEqual(["j1", "j3", "j5"]);
+    expect(res.totalCount).toBe(3);
+  });
+
+  it("treats a present falsy value as a filter, not as unset", async () => {
+    // `false` is a value the caller chose; presence, not truthiness, is
+    // what makes a filter apply.
+    expect(ids(await list({ insuranceClaim: false }))).toEqual(["j1", "j5"]);
+    // UNSPECIFIED (0) is a provided value too — the backend binds its name
+    // and matches no row, and the mock agrees.
+    expect(ids(await list({ status: 0 }))).toEqual([]);
+  });
+
+  it("ANDs every set filter, including a nullable entity field", async () => {
+    expect(ids(await list({ customerId: "c1", status: LEAD }))).toEqual([
+      "j1",
+      "j5",
+    ]);
+    expect(ids(await list({ crewId: "k1" }))).toEqual(["j2", "j5"]);
+  });
+
+  it("applies no filter for unset, implicit-presence or unknown fields", async () => {
+    const res = await list({ title: "Gutter repair", propertyId: "p9" });
+    expect(ids(res)).toEqual(["j1", "j2", "j3", "j4", "j5"]);
+    expect(res.totalCount).toBe(5);
+  });
+
+  it("accepts a plain request object as well as a built message", async () => {
+    const res = await callUnary(
+      transport,
+      "ListJobs",
+      { status: SCHEDULED, customerId: undefined },
+      ListJobsRequestSchema,
+    );
+    expect(ids(msg<ListJobs>(res))).toEqual(["j2"]);
+  });
+
+  it("pages by page_size and reports total_count across ALL pages", async () => {
+    const first = await list({ customerId: "c1", pageSize: 3 });
+    expect(ids(first)).toEqual(["j1", "j2", "j4"]);
+    expect(first.totalCount).toBe(4);
+    expect(first.nextPageToken).not.toBe("");
+
+    const second = await list({
+      customerId: "c1",
+      pageSize: 3,
+      pageToken: first.nextPageToken,
+    });
+    expect(ids(second)).toEqual(["j5"]);
+    expect(second.totalCount).toBe(4);
+    expect(second.nextPageToken).toBe("");
+  });
+
+  it("rejects a page_token it did not mint", async () => {
+    const err = await rejection(list({ pageToken: "not-a-token" }));
+    expect(err.code).toBe(Code.InvalidArgument);
+  });
+
+  it("searches string fields and enum names, case-insensitively", async () => {
+    expect(ids(await list({ search: "RE-ROOF" }))).toEqual(["j1", "j4"]);
+    // The backend stores enum columns as value NAMES and ILIKEs them.
+    expect(ids(await list({ search: "scheduled" }))).toEqual(["j2"]);
+  });
+
+  it("honours order_by and descending", async () => {
+    const asc = await list({ orderBy: "title" });
+    expect(asc.jobs.map((j) => j.title)).toEqual([
+      "Chimney flashing",
+      "Gutter repair",
+      "Re-roof after hail",
+      "Skylight reflash",
+      "Tear-off and re-roof",
+    ]);
+    const desc = await list({ orderBy: "title", descending: true });
+    expect(ids(desc)).toEqual([...ids(asc)].reverse());
+  });
+
+  it("mints no page_token for an ordered list, like the backend", async () => {
+    // The backend's keyset cursor only pages a primary-key order, so an
+    // ordered list is single-page there. A mock that paged it anyway would
+    // hide that until the UI met a real server.
+    const res = await list({ orderBy: "title", pageSize: 2 });
+    expect(res.jobs).toHaveLength(2);
+    expect(res.totalCount).toBe(5);
+    expect(res.nextPageToken).toBe("");
+  });
+
+  it("rejects an order_by column the entity does not have", async () => {
+    const err = await rejection(list({ orderBy: "nope" }));
+    expect(err.code).toBe(Code.InvalidArgument);
+  });
+
+  it("filters rows created in this session too", async () => {
+    await callUnary(transport, "CreateJob", {
+      title: "New lead",
+      status: LEAD,
+      customerId: "c2",
+    });
+    const res = await list({ customerId: "c2" });
+    expect(res.jobs.map((j) => j.title)).toEqual([
+      "Skylight reflash",
+      "New lead",
+    ]);
+    expect(res.totalCount).toBe(2);
   });
 });
 

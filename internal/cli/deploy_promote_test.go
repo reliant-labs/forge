@@ -403,8 +403,9 @@ func TestDeployCmd_DeclaresEveryReleaseFlag(t *testing.T) {
 		"expect-current", "expect-unbound", "supersede",
 		"gate", "from", "from-promotion",
 		"run-id", "run-url", "no-run",
-		// The health gate, opt-OUT.
-		"no-wait", "timeout", "fail-fast",
+		// The health gate, opt-OUT — and --wait, which waits THROUGH a
+		// deploy the control plane queued on billing (exit 7 otherwise).
+		"no-wait", "timeout", "fail-fast", "wait",
 		// The apply half, which a release deploy forwards.
 		"target", "namespace", "dry-run", "json",
 	} {
@@ -412,11 +413,11 @@ func TestDeployCmd_DeclaresEveryReleaseFlag(t *testing.T) {
 			t.Errorf("--%s is not declared on `forge env deploy`", name)
 		}
 	}
-	// `promote --wait` / `--deploy` are gone, not renamed: waiting is the
-	// default and applying is what the verb means. A surviving flag would
-	// let a pipeline ask for what it already has and read as if the default
-	// were the other way.
-	for _, gone := range []string{"wait", "deploy", "to"} {
+	// `promote --deploy` is gone, not renamed: applying is what the verb
+	// means. (`--wait` was retired with it and came back with ONE new
+	// meaning — wait through a queue on billing, which the default does not
+	// — so it no longer asks for what a deploy already has.)
+	for _, gone := range []string{"deploy", "to"} {
 		if cmd.Flags().Lookup(gone) != nil {
 			t.Errorf("--%s must not exist on `forge env deploy`", gone)
 		}

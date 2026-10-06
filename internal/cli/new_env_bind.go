@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/naming"
 )
@@ -30,10 +31,12 @@ var frontendBinders = map[string]string{
 	"bucket": "_on_bucket",
 }
 
-// bindingLine matches one scaffolded workload binding, `<binder>(wl.<ident>)`,
-// capturing the binder.
+// bindingLine matches one scaffolded workload binding, capturing the binder
+// and the bound reference: `<binder>(wl.<ident>)` for a workload workloads.k
+// declares, or `<binder>(_<ident>)` for one the env declares itself — a
+// hosted env's `_api`, which `--bind api=cluster` rebinds.
 func bindingLine(ident string) *regexp.Regexp {
-	return regexp.MustCompile(`(?m)^(\s*)(_[a-z_]+)\(wl\.` + regexp.QuoteMeta(ident) + `\)`)
+	return regexp.MustCompile(`(?m)^(\s*)(_[a-z_]+)\((wl\.` + regexp.QuoteMeta(ident) + `|_` + regexp.QuoteMeta(ident) + `)\)`)
 }
 
 // frontendBindingLine matches one scaffolded frontend binding,
@@ -88,13 +91,20 @@ func applyEnvBinds(env string, binds []string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 	content := string(raw)
+	// The project name tells the env's own API workload (the project
+	// binary's `server`) from any other; an unreadable forge.yaml only costs
+	// the more specific refusal below.
+	projectName := ""
+	if cfg, err := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile)); err == nil {
+		projectName = cfg.Name
+	}
 	hosted := false
 	for _, b := range binds {
 		name, target, ok := strings.Cut(b, "=")
 		if !ok || name == "" || !bindTargetKnown(target) {
 			return cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "", bindUsage)
 		}
-		rebound, err := rebindOne(content, env, b, naming.KCLIdentifier(name), target)
+		rebound, err := rebindOne(content, projectName, env, b, naming.KCLIdentifier(name), target)
 		if err != nil {
 			return err
 		}
@@ -128,7 +138,7 @@ func applyEnvBinds(env string, binds []string) error {
 // is unique across an env's workloads and frontends (the Bundle refuses a
 // duplicate), so a hit on both, or on neither, is a file forge will not guess
 // about.
-func rebindOne(content, env, bind, ident, target string) (string, error) {
+func rebindOne(content, projectName, env, bind, ident, target string) (string, error) {
 	wl, fe := bindingLine(ident), frontendBindingLine(ident)
 	wlHits, feHits := len(wl.FindAllStringIndex(content, -1)), len(fe.FindAllStringIndex(content, -1))
 	switch {
@@ -138,7 +148,7 @@ func rebindOne(content, env, bind, ident, target string) (string, error) {
 			return "", cliutil.UserErr("forge env new",
 				fmt.Sprintf("--bind %s: %s is a workload, which binds hosted or cluster", bind, ident), "", bindUsage)
 		}
-		return wl.ReplaceAllString(content, "${1}"+binder+"(wl."+ident+")"), nil
+		return wl.ReplaceAllString(content, "${1}"+binder+"(${3})"), nil
 	case feHits == 1 && wlHits == 0:
 		binder, ok := frontendBinders[target]
 		if !ok {
@@ -146,6 +156,13 @@ func rebindOne(content, env, bind, ident, target string) (string, error) {
 				fmt.Sprintf("--bind %s: %s is a frontend, which binds hosted or bucket", bind, ident), "", bindUsage)
 		}
 		return fe.ReplaceAllString(content, "${1}"+binder+"(_"+ident+"_frontend)"), nil
+	}
+	// A hosted env runs its services and workers in its one API workload,
+	// so a service has no line of its own there: the API is what moves.
+	if api, ok := codegen.EnvServerWorkload(content, projectName); ok && wlHits == 0 && feHits == 0 {
+		return "", cliutil.UserErr("forge env new",
+			fmt.Sprintf("--bind %s: in deploy/kcl/%s/main.k, %s runs inside %s — the binary's `server`, which serves every service at the one origin the frontend calls — so it has no binding line of its own", bind, env, ident, api),
+			"", fmt.Sprintf("rebind the whole API with --bind %s=%s, or split %s out by hand: its own `_<binder>(wl.%s)` line, and taking it out of `server`", strings.TrimPrefix(api, "_"), target, ident, ident))
 	}
 	return "", cliutil.UserErr("forge env new",
 		fmt.Sprintf("--bind %s: deploy/kcl/%s/main.k has no single `_<binder>(wl.%s)` or `_<binder>(_%s_frontend)` line to rebind", bind, env, ident, ident),

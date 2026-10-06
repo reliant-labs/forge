@@ -228,7 +228,8 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:MaxItems=64
 	ClusterRBAC []PolicyRule `json:"clusterRBAC,omitempty"`
 
-	// CRDs are the custom resource kinds an operator's manager owns.
+	// CRDs are the custom resource kinds an operator's manager owns. May be
+	// empty: an operator that owns none yet, or reconciles built-in kinds.
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:validation:items:Pattern=`^[A-Z][A-Za-z0-9]*$`

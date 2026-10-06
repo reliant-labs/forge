@@ -69,7 +69,7 @@ its own:
 # deploy/kcl/prod/main.k
 _workloads = [
     _hosted(wl.migrate)
-    _hosted(wl.item)
+    _hosted(_api)
 ]
 ```
 
@@ -81,7 +81,7 @@ _workloads = [
 **Hosting elsewhere is a one-line rebind**: declare `_cluster` / `_bucket`
 as the env shows, then edit the line to `_on_cluster(...)` /
 `_on_bucket(...)`. An operator (hosting refuses it) is scaffolded
-`_on_cluster`. Billing, details, adopting in an older project:
+`_on_cluster`. One-workload API, billing, adopting in an older project:
 `deploy/hosting`.
 
 Derive another env — each binding is copied; a declared cluster's context,
@@ -306,7 +306,7 @@ frontend's `runtime_config` becomes the spec's `runtimeConfig`:
 
 ```yaml
 runtimeConfig:
-  API_URL: {workloadURL: {name: item}}   # resolved by the control plane to the hosted item's URL
+  API_URL: {workloadURL: {name: api}}   # resolved by the control plane to the hosted api's URL
   APP_NAME: {value: acme}
 ```
 

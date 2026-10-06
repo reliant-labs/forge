@@ -67,7 +67,66 @@ const (
 	wireRolloutPhaseStabilizing = "DEPLOY_ROLLOUT_PHASE_STABILIZING"
 	wireRolloutPhaseSucceeded   = "DEPLOY_ROLLOUT_PHASE_SUCCEEDED"
 	wireRolloutPhaseSuperseded  = "DEPLOY_ROLLOUT_PHASE_SUPERSEDED"
+	// WireRolloutPhaseHeld: the promotion was ACCEPTED and RECORDED and is
+	// queued on a human action (billing) before the control plane applies
+	// it. Exported because the CLI's wait and status read the same value.
+	WireRolloutPhaseHeld = "DEPLOY_ROLLOUT_PHASE_HELD"
 )
+
+// HostedHold is controlplane.v1.DeployHold: one reason an accepted deploy has
+// not started. The control plane applies the promotion — with no further
+// command — the moment the hold clears, so a hold is a state to REPORT, never
+// a failure to retry.
+//
+// EVERY FIELD IS RENDERED GENERICALLY. A hold carries its own sentence, remedy
+// and link, so a kind this forge has never heard of is still a complete answer;
+// Kind is read only for a short label.
+type HostedHold struct {
+	// Kind is the DeployHoldKind value name (DEPLOY_HOLD_KIND_BILLING).
+	Kind        string `json:"kind,omitempty"`
+	PromotionID string `json:"promotionId,omitempty"`
+	// Reason states the real quantity: "this runs compute (1 workload, 1
+	// database) and the organization has no active compute plan".
+	Reason string `json:"reason,omitempty"`
+	// Fix is the literal next step, written by the control plane.
+	Fix string `json:"fix,omitempty"`
+	// ActionURL is where a human resolves it: the environment's page in
+	// the Reliant web app. Empty when the control plane has none to give.
+	ActionURL        string     `json:"actionUrl,omitempty"`
+	CallerCanResolve bool       `json:"callerCanResolve,omitempty"`
+	HeldSince        *time.Time `json:"heldSince,omitempty"`
+}
+
+// Label is the hold's short name: "billing" for DEPLOY_HOLD_KIND_BILLING, and
+// a neutral phrase for a kind this build does not know.
+func (h HostedHold) Label() string {
+	const prefix = "DEPLOY_HOLD_KIND_"
+	k := strings.TrimPrefix(h.Kind, prefix)
+	if k == h.Kind || k == "" || k == "UNSPECIFIED" {
+		return "a human action"
+	}
+	return strings.ToLower(strings.ReplaceAll(k, "_", " "))
+}
+
+// HeldError is a hosted deploy that was ACCEPTED and RECORDED and is QUEUED on
+// a human action: nothing failed, nothing needs retrying, and the platform
+// applies it on its own once the hold clears. The provider returns it instead
+// of waiting out a rollout nobody is moving; the CLI renders it as the queued
+// block and its own exit code.
+type HeldError struct {
+	Env         string
+	PromotionID string
+	Release     string
+	Holds       []HostedHold
+}
+
+func (e *HeldError) Error() string {
+	label := "a human action"
+	if len(e.Holds) > 0 {
+		label = e.Holds[0].Label()
+	}
+	return fmt.Sprintf("hosted env %q: the deploy is recorded and QUEUED, waiting on %s", e.Env, label)
+}
 
 // wireRolloutPromotion is the subset of DeployPromotion a deploy's wait
 // reads. The CLI's `env wait` decodes the full promotion; a deploy only has
@@ -120,6 +179,9 @@ type wireRollout struct {
 	StabilityWindowMS   wireInt64 `json:"stabilityWindowMs,omitempty"`
 	ConvergesPromotions bool      `json:"convergesPromotions,omitempty"`
 	Reason              string    `json:"reason,omitempty"`
+	// Holds is set exactly when Phase is HELD: what the queued promotion is
+	// waiting on.
+	Holds []HostedHold `json:"holds,omitempty"`
 }
 
 // errRolloutUnavailable means this control plane cannot answer GetRollout for

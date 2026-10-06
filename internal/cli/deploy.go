@@ -100,6 +100,16 @@ any byte had moved and the release's actual failure surfaced minutes later with
 nothing connecting the two. So the health gate is ON by default; --no-wait is
 how you opt out, and it says what to run instead.
 
+A HOSTED DEPLOY CAN BE QUEUED, NOT REFUSED. When what the env runs needs
+something only a person can provide — billing for its hosted workloads or
+managed database (static sites alone are free) — the control plane still
+ACCEPTS the deploy: the release and its bundle are recorded, the promotion is
+written, and the env shows "waiting on billing". It goes live by itself the
+moment billing is set up; nothing is re-run. forge prints one block — what it
+waits on, why, and the URL to act at — and exits 7. --wait instead blocks
+(up to --timeout) until it is live. A newer deploy to the env replaces a
+queued one.
+
 WHO APPLIES IT IS DECLARED, NOT CHOSEN. An env whose KCL declares
 forge.ControlPlane is converged by that control plane — forge records the
 promotion and waits on the rollout the server computes. Every other env is
@@ -162,6 +172,11 @@ Exit codes (release deploys):
   5  plan_unconfirmed — the plan was printed and nobody approved it: no
      terminal to prompt on and no --yes. NOTHING was promoted. Add --yes
   6  superseded — the env was promoted past the promotion being waited on
+  7  queued — the deploy was ACCEPTED and RECORDED and the control plane is
+     holding it on a person (today: billing for the hosted workloads or
+     database it runs). Nothing failed and nothing is to be re-run: it goes
+     live on its own once they act. The output names what it waits on and
+     the action URL (--json: .queued). --wait blocks until it is live instead
   8  the wait's budget expired while the rollout was still progressing
 
 5 USED TO MEAN THE TIMEOUT, which is now 8. The confirmation gate took 5
@@ -366,6 +381,9 @@ type promoteCmdFlags struct {
 	noWait   bool
 	timeout  time.Duration
 	failFast bool
+	// wait blocks THROUGH a queued deploy (held on billing) until it is
+	// live or --timeout; without it a queued deploy reports and exits 7.
+	wait bool
 }
 
 // fromSource is the two --from flags as the options struct the release path
@@ -412,6 +430,9 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Record and apply, but do NOT wait for health. Gate on it later with `forge env status <env> --wait`")
 	flags.DurationVar(&f.timeout, "timeout", 0, "Whole health-gate budget (default 15m hosted, 5m per resource self-managed)")
 	flags.BoolVar(&f.failFast, "fail-fast", false, "Exit 1 on the first DEGRADED observation instead of waiting out --timeout")
+	flags.BoolVar(&f.wait, "wait", false,
+		"Block until the deploy is LIVE even when the control plane queues it on a person (billing): wait for them to act, up to --timeout. Without it a queued deploy prints what it waits on and the action URL, and exits 7")
+	cmd.MarkFlagsMutuallyExclusive("wait", "no-wait")
 
 	// Evidence.
 	flags.StringArrayVar(&f.gates, "gate", nil,
@@ -626,6 +647,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		},
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,
+			Wait:     p.wait,
 			jsonOut:  f.jsonOut,
 			Timeout:  p.timeout,
 			FailFast: p.failFast,

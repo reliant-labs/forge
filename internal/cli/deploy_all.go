@@ -138,6 +138,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		},
 		Follow: &promoteFollowOptions{
 			NoWait:   p.noWait,
+			Wait:     p.wait,
 			jsonOut:  f.jsonOut,
 			Timeout:  p.timeout,
 			FailFast: p.failFast,

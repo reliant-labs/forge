@@ -201,3 +201,60 @@ func TestGenerateFrontendPages_KeepsLegacyIDRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerateFrontendPages_DoesNotResurrectDeletedIDRoutes is the control-plane
+// v1.7.35 regression. Its operator console scaffolded `<slug>/[id]/` pages long
+// ago and the owner DELETED them (keeping only list and new). The birth ledger
+// still records them. Reading "no [id] directory" as "migrated" scaffolded a
+// static view/edit pair back for four entities — pages that did not typecheck
+// against the project's own proto (`id` is not a field of GetDaemonRequest).
+// A deletion is a decision; scaffold-once must never undo it.
+func TestGenerateFrontendPages_DoesNotResurrectDeletedIDRoutes(t *testing.T) {
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "demo",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs"}},
+	}
+	services, entities := staticPagesFixture()
+	appDir := filepath.Join(projectDir, "frontends", "web", "src", "app")
+
+	// forge scaffolded the dynamic pages once (the ledger remembers) ...
+	checksums.RecordScaffold(projectDir, "frontends/web/src/app/patients/[id]/page.tsx")
+	checksums.RecordScaffold(projectDir, "frontends/web/src/app/patients/[id]/edit/page.tsx")
+	// ... and the owner deleted them: no [id] directory on disk.
+
+	if err := generateFrontendPages(cfg, services, projectDir, entities, &checksums.FileChecksums{}); err != nil {
+		t.Fatalf("generateFrontendPages: %v", err)
+	}
+	for _, rel := range []string{"view", "edit"} {
+		if _, err := os.Stat(filepath.Join(appDir, "patients", rel, "page.tsx")); !os.IsNotExist(err) {
+			t.Errorf("patients/%s/page.tsx was re-created although its [id] pages were deliberately deleted (stat err = %v)", rel, err)
+		}
+	}
+	// List and create were not deleted and are still maintained as before.
+	for _, rel := range []string{"page.tsx", "new/page.tsx"} {
+		if _, err := os.Stat(filepath.Join(appDir, "patients", rel)); err != nil {
+			t.Errorf("patients/%s should still be scaffolded: %v", rel, err)
+		}
+	}
+}
+
+// A frontend that never had [id] pages (no ledger record) still gets the static
+// pair — the guard above must not turn the feature off for new projects.
+func TestGenerateFrontendPages_FreshFrontendStillGetsStaticPair(t *testing.T) {
+	projectDir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name:      "demo",
+		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs", Output: config.FrontendOutputStatic}},
+	}
+	services, entities := staticPagesFixture()
+	if err := generateFrontendPages(cfg, services, projectDir, entities, &checksums.FileChecksums{}); err != nil {
+		t.Fatalf("generateFrontendPages: %v", err)
+	}
+	appDir := filepath.Join(projectDir, "frontends", "web", "src", "app")
+	for _, rel := range []string{"view", "edit"} {
+		if _, err := os.Stat(filepath.Join(appDir, "patients", rel, "page.tsx")); err != nil {
+			t.Errorf("a fresh frontend must get patients/%s/page.tsx: %v", rel, err)
+		}
+	}
+}

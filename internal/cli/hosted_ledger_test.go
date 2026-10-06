@@ -76,6 +76,12 @@ type fakeDeployService struct {
 	// gates is the append-only child record RecordGate writes:
 	// promotion id → gates, in the order they were recorded (F4, §3.3).
 	gates map[string][]wireGate
+
+	// queueOn, when set, makes every promotion this fake appends QUEUED:
+	// accepted and recorded, with these holds in the Promote response —
+	// what a control plane does for a deploy that needs billing the org
+	// has not set up.
+	queueOn []deploytarget.HostedHold
 }
 
 // hasPromotion reports whether any env holds a promotion of this id. Called
@@ -400,7 +406,20 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		p.FromPromotionID = str("fromPromotionId")
 		f.promotions[envID] = append(f.promotions[envID], p)
-		_ = json.NewEncoder(w).Encode(map[string]any{"promotion": p})
+		// QUEUE, DON'T REFUSE (control-plane deploy holds): a control plane
+		// that accepts the promotion but holds it on billing says so on
+		// the write, in the same response, with the hold's own sentence,
+		// remedy and link.
+		resp := map[string]any{"promotion": p}
+		if len(f.queueOn) > 0 {
+			holds := make([]deploytarget.HostedHold, 0, len(f.queueOn))
+			for _, h := range f.queueOn {
+				h.PromotionID = p.ID
+				holds = append(holds, h)
+			}
+			resp["holds"] = holds
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 
 	case "/controlplane.v1.DeployService/RecordGate":
 		// Models control-plane C5. The rules asserted here are the

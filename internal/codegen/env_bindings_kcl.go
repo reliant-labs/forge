@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -83,6 +84,92 @@ func EnvBinding(env, kind, workloadName string) string {
 	return bindingLine(EnvBinder(env, kind), workloadName)
 }
 
+// THE HOSTED API IS ONE WORKLOAD.
+//
+// A browser reaches a project's API at ONE origin: the scaffolded frontend's
+// Connect transport has one base URL (a call is `/<package>.<Service>/<Method>`,
+// so one origin serves every service), and sign-in answers with an HttpOnly
+// session cookie the browser returns to that origin only. The hosted platform
+// gives every workload its own hostname and routes no paths between them, so
+// an env that hosts each service as its own workload leaves the frontend
+// able to reach one of them — and signed in to none of the others. That is
+// not fixable in the browser: per-service URLs would still strand the cookie.
+//
+// So a hosted env declares its API once, as `_api`: the project binary's
+// all-in-one `server` command, which mounts every service on one Connect mux
+// and supervises every worker beside it, in one process. It binds `_api`
+// instead of its services and workers. workloads.k still declares each of
+// them, and dev still runs each as its own process.
+const (
+	// APIWorkloadName is the hosted API workload's name: its platform
+	// hostname, and what the frontend's API_URL references.
+	APIWorkloadName = "api"
+	// APIWorkloadIdent is the env-local KCL identifier it is declared as.
+	APIWorkloadIdent = "_api"
+	// ServerSubcommand is the project binary's all-in-one command
+	// (cmd-tree-server.go.tmpl): every service mounted, every worker and
+	// operator supervised.
+	ServerSubcommand = "server"
+)
+
+// RunsInServer reports whether a workload of kind is part of what the project
+// binary's `server` runs: a service (mounted on its mux) or a worker
+// (supervised beside it). Jobs run to completion on their own; an operator
+// needs the Kubernetes API, which a hosted `server` does not have (it logs
+// that operators are disabled and serves without them); a tool never runs.
+func RunsInServer(kind string) bool {
+	return kind == WorkloadKindService || kind == WorkloadKindWorker
+}
+
+// APIWorkloadStanza renders a hosted env's `_api` declaration: the project
+// binary's `server` as one service workload. The facts are the ones
+// WorkloadStanza gives every component of that binary — the image, the build,
+// the `http` port, the credential the DI graph reads — with `server` as the
+// subcommand, so `_api` and the services it runs cannot disagree about them.
+func APIWorkloadStanza(modulePath, projectName string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s = fw.Workload {\n", APIWorkloadIdent)
+	fmt.Fprintf(&b, "    name = %q\n", APIWorkloadName)
+	fmt.Fprintf(&b, "    kind = %q\n", WorkloadKindService)
+	fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
+	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
+	fmt.Fprintf(&b, "    args = %s\n", kclStringList([]string{ServerSubcommand}))
+	fmt.Fprintf(&b, "    ports = [fw.Port {name = \"http\", port = %d, expose = True}]\n", config.DefaultServePort)
+	b.WriteString("    config_secrets = [\"DATABASE_URL\"]\n")
+	b.WriteString("}")
+	return b.String()
+}
+
+// workloadLiteralIdent is workloadLiteral with the declared identifier
+// captured.
+var workloadLiteralIdent = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*fw\.Workload\s*\{`)
+
+// EnvServerWorkload returns the identifier of a workload an env's main.k
+// declares FOR ITSELF that runs the project binary's `server` — a hosted
+// env's `_api`. Read from the source, like DeclaredWorkloads, so scaffold and
+// `forge env new` need no render. Comments and docstrings are stripped first,
+// so the worked examples in a scaffolded file are not mistaken for one.
+func EnvServerWorkload(content, projectName string) (string, bool) {
+	src := StripKCLProse(content)
+	for _, m := range workloadLiteralIdent.FindAllStringSubmatchIndex(src, -1) {
+		body, ok := kclBlockBody(src, m[1])
+		if !ok {
+			continue
+		}
+		args := kclStringListField(body, "args")
+		build := goBuildCmd.FindStringSubmatch(body)
+		if len(args) > 0 && args[0] == ServerSubcommand && build != nil && ProjectBinaryRuns(projectName, build[1]) {
+			return src[m[2]:m[3]], true
+		}
+	}
+	return "", false
+}
+
+// identRef matches a whole KCL identifier.
+func identRef(ident string) *regexp.Regexp {
+	return regexp.MustCompile(`(^|[^A-Za-z0-9_.])` + regexp.QuoteMeta(ident) + `\b`)
+}
+
 func bindingLine(binder, workloadName string) string {
 	return fmt.Sprintf("    %s(wl.%s)", binder, naming.KCLIdentifier(workloadName))
 }
@@ -126,42 +213,73 @@ var migrateBinder = regexp.MustCompile(`(?m)^\s*(_[a-z_]+)\(wl\.` + MigrateWorkl
 //nolint:gocritic // badRegexp misreads the second `^`: under (?m) it anchors the closing `]` at a line start.
 var envWorkloadsList = regexp.MustCompile(`(?ms)^_workloads = \[\n(.*?)^\]$`)
 
+// EnvBindingResult is what AppendEnvBinding did to one env.
+type EnvBindingResult struct {
+	// Applied is true when a line was written.
+	Applied bool
+	// Binder is the binder of the line written.
+	Binder string
+	// Bound is what that line binds: `wl.<ident>` for the new workload, or
+	// the env's own API workload (`_api`) when that is what runs it.
+	Bound string
+	// ServedBy names the env's own API workload when it is already bound and
+	// already runs the new workload, so nothing was written.
+	ServedBy string
+}
+
 // AppendEnvBinding adds the binding for a new workload to one env's main.k,
-// at the end of its `_workloads` list, and reports whether it did and with
+// at the end of its `_workloads` list, and reports what it wrote and with
 // which binder (envBinderIn: the way that env binds its workloads).
 //
-// Like AppendWorkloadStanza it never rewrites what is there: it returns
-// applied=false with no write when the file is missing, already binds the
-// workload (`wl.<ident>` anywhere in the list), or has been restructured
-// past the point where the list is unambiguous. The caller prints the line.
-func AppendEnvBinding(projectDir, env, kind, workloadName string) (binder string, applied bool, err error) {
+// In an env that serves its API as one `server` workload (a hosted env's
+// `_api`, see EnvServerWorkload), a new service or worker is already run by
+// it, so it gets no line of its own — a second, separate workload would be
+// one the browser cannot reach, or a worker run twice. If that API workload
+// is not bound yet (a project born with no service), it is bound instead.
+//
+// Like AppendWorkloadStanza it never rewrites what is there: nothing is
+// written when the file is missing, already binds the workload (`wl.<ident>`
+// anywhere in the list), or has been restructured past the point where the
+// list is unambiguous. The caller prints the line.
+func AppendEnvBinding(projectDir, projectName, env, kind, workloadName string) (EnvBindingResult, error) {
 	path := filepath.Join(projectDir, "deploy", "kcl", env, "main.k")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", false, nil
+			return EnvBindingResult{}, nil
 		}
-		return "", false, err
+		return EnvBindingResult{}, err
 	}
 	content := string(raw)
 	locs := envWorkloadsList.FindAllStringSubmatchIndex(content, -1)
 	if len(locs) != 1 {
-		return "", false, nil
+		return EnvBindingResult{}, nil
 	}
 	body := StripKCLProse(content[locs[0][2]:locs[0][3]])
 	ref := regexp.MustCompile(`\bwl\.` + regexp.QuoteMeta(naming.KCLIdentifier(workloadName)) + `\b`)
 	if ref.MatchString(body) {
-		return "", false, nil
+		return EnvBindingResult{}, nil
 	}
-	binder = envBinderIn(body, env, kind)
-	updated := content[:locs[0][3]] + bindingLine(binder, workloadName) + "\n" + content[locs[0][3]:]
-	if kind == WorkloadKindService {
+	res := EnvBindingResult{Binder: envBinderIn(body, env, kind), Bound: "wl." + naming.KCLIdentifier(workloadName)}
+	line := bindingLine(res.Binder, workloadName)
+	ownLine := true
+	if api, ok := EnvServerWorkload(content, projectName); ok && RunsInServer(kind) {
+		if identRef(api).MatchString(body) {
+			return EnvBindingResult{ServedBy: api}, nil
+		}
+		res.Binder, res.Bound = envBinderIn(body, env, WorkloadKindService), api
+		line = fmt.Sprintf("    %s(%s)", res.Binder, api)
+		ownLine = false
+	}
+	updated := content[:locs[0][3]] + line + "\n" + content[locs[0][3]:]
+	if kind == WorkloadKindService && ownLine {
 		updated = claimAPIPortKey(updated, body, workloadName)
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
-		return "", false, err
+		return EnvBindingResult{}, err
 	}
-	return binder, true, nil
+	res.Applied = true
+	return res, nil
 }
 
 // EnvDeclaresNoCluster reports whether an env's main.k still carries the

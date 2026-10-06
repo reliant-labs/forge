@@ -326,7 +326,7 @@ func renderEnvForCluster(ctx context.Context, env *Environment) (envRender, *Che
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		raw, err := kclrender.Run(env.ProjectDir, rel, []string{"env=" + name})
+		raw, err := kclrender.Run(env.ProjectDir, filepath.Join(env.ProjectDir, rel), []string{"env=" + name})
 		done <- outcome{raw: raw, err: err}
 	}()
 

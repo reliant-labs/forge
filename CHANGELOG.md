@@ -29,8 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **New projects deploy to Reliant hosting by default.** `forge project new`
-  scaffolds `staging` and `prod` hosted on the forge control plane: every
-  service, worker and job bound `_hosted` (its image's registry host dropped,
+  scaffolds `staging` and `prod` hosted on the forge control plane: the API
+  (every service and worker, as one workload — below) and the migrate job
+  bound `_hosted` (its image's registry host dropped,
   since the platform pulls only from its own registry), a
   `forge.ManagedDatabase` each workload reads through `forge.DatabaseRef`,
   `forge.HostedSecrets`, the frontend on platform static hosting with
@@ -42,6 +43,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scaffolded CI is the hosted pipeline (`release.yml`, no registry login)
   instead of `deploy.yml`. `dev` is unchanged. Hosted workloads and the
   managed database need billing; a static site alone is free.
+  - **The hosted API is ONE workload, `_api`: the binary's `server`.** A
+    browser reaches the API at one origin — the frontend's Connect transport
+    has one base URL (`/<package>.<Service>/<Method>`, so one origin serves
+    every service), and sign-in answers with an HttpOnly session cookie the
+    browser returns to that origin only. The platform gives each workload its
+    own hostname and routes no paths between them, so hosting each service as
+    its own workload (as first shipped) left a 3-service project's frontend
+    able to call one service: `API_URL` named the first. Per-service URLs in
+    the browser cannot fix that — the session cookie would still be stranded
+    on one host — so each hosted env declares `_api` (`args = ["server"]`:
+    every service on one Connect mux, every worker supervised beside it) and
+    binds it instead of its services and workers; the frontend's `API_URL`
+    names it. One workload is also one bill, not one per service. It is bound
+    once there is something for it to run (a project born with no service
+    pays for no idle workload; `forge scaffold service` binds it with the
+    first). `forge scaffold service|worker` then adds no hosted line — `server`
+    already runs it — while dev still runs each as its own process; a job,
+    an operator (which `server` skips without a Kubernetes API) and a tool
+    bind as before. `forge env new X --from prod --bind api=cluster` rebinds
+    the API; `--bind <service>=…` is refused, naming `_api`. Splitting a
+    service or worker out is its own `_hosted(wl.<name>)` line plus taking it
+    out of `server` (cmd/<bin>/cmd/server.go). The binary mode
+    (`--binary per-service|shared`) never reached the deploy files and does
+    not now: both modes ship one binary with a subcommand per component and
+    the all-in-one `server`.
   - **Hosting elsewhere stays a one-line rebind.** Each env declares
     `_on_cluster` and `_on_bucket` beside the hosted binders, unused, with
     the `forge.ClusterTarget` / `forge.OnBucket` to fill shown in a comment
@@ -63,7 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Bundle, give `_hosted` the bare image and `DATABASE_URL =
     forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
     beside prod with `forge env new cloud --from prod --bind <name>=hosted`
-    first. The `deploy` skill has the exact edits.
+    first. The `deploy` skill has the exact edits. A project scaffolded
+    between the hosting default and the one-workload API binds each service
+    `_hosted(wl.<name>)` and its frontend calls only the first: replace those
+    service and worker lines with `_api` (copy the declaration and the
+    `_api_config` / `_hosted_frontend` lines from a fresh `forge project new`'s
+    `deploy/kcl/prod/main.k`; the `deploy/hosting` skill shows them).
 - **Next.js frontends are scaffolded as static exports, and the generated CRUD
   pages are static routes.** Before, the default was `output: standalone`, a
   Node server that hosted static hosting (`forge.OnHosted {}`) cannot run. The
@@ -324,6 +355,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not followed. Honours `--quiet`, `--scope` (by file) and `--json`, and the
   shared `// forge:lint-disable-next-line <rule>: <reason>` directive.
 
+- **Queued hosted deploys: exit 7, the block, and `--wait`.** A control plane
+  that ACCEPTS a deploy but holds it on a person — today, billing for the
+  hosted workloads or managed database it runs, or for static sites past the
+  free tier — no longer makes `forge env deploy` fail or sit out a
+  fifteen-minute wait on a promotion nothing is moving. The release, bundle
+  and promotion are recorded as usual; forge reads the hold off the Promote
+  response (rollout phase `HELD` as the fallback) and prints ONE block — what
+  it waits on, why, what to do, and the action URL — then exits **7
+  (queued)**, a code nothing else uses.
+  The deploy goes live by itself once billing is set up; nothing is re-run, and
+  a newer deploy replaces a queued one. `--json` carries the same facts as
+  `.queued` (`waiting_on`, `holds[].action_url`). `forge env deploy --wait`
+  blocks through the queue until the release is live (or `--timeout`; still
+  queued then is 7), and is mutually exclusive with `--no-wait`.
+  `forge env status <env>` on a queued env exits 7 with the block instead of
+  reporting drift, and `forge env status <env> --wait` waits through it. The
+  capacity pre-flight now continues past a "would be queued" answer
+  (`CheckDeployCapacity` holds) instead of refusing before the build; an older
+  control plane that sends no holds is refused exactly as before. See the
+  `deploy/hosted-capacity` skill.
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,
   `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,
@@ -504,6 +555,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge project rescaffold` re-creates the hosted CI pipeline again.**
+  Since new projects are born hosted, the scaffold writes `release.yml` and
+  `.github/actions/forge-deploy/action.yml` for the staging and prod it just
+  wrote — but rescaffold decides which CI files a project has from a render of
+  every env, and those envs import config modules (`config_gen.k`, each env's
+  `config.k`) only `forge generate` writes. On a project generate had not
+  completed on (a fresh scaffold whose bootstrap generate failed), the envs
+  did not render, rescaffold took them for envs that are not hosted, and
+  refused both files ("this project declares none"). It also memoized that
+  answer and handed it to the generate pipeline it ran next, so the
+  pipeline's CI step — after writing the very modules that made the envs
+  render — still wrote a `deploy.yml` beside `release.yml` and a
+  `build-images.yml` for cluster envs. Rescaffold now writes the env config
+  modules first when an env does not render (the new `forge generate --steps
+  env-config` preset), never hands its answer to the pipeline, and names an
+  env that still fails to render (`forge env render <env>`) instead of
+  calling it unhosted. `TestRescaffold_EveryScaffoldedFileIsReemittable` had
+  been failing on main since #518.
+
+- **`forge project new` no longer warns `frontend config: could not read
+  deploy/kcl/dev/config.k` — and no longer writes the dev `config.js` from
+  proto defaults.** It scaffolds into `<--path>/<name>`, a relative path, and
+  generates from there; the frontend-config probe at
+  `shop/deploy/kcl/dev/zz_forge_frontend_config_probe_<pid>.k` was handed to
+  kpm, which resolves a relative source against the work dir (`shop`) and
+  looked for `shop/shop/deploy/...`. The fallback's `API_URL` was the proto
+  default, `http://localhost:8080` — the dev IdP's port. `kclrender` now
+  resolves the work dir and the source against the process cwd before kpm
+  sees either, so every render means one thing by a relative path — the
+  backend config probe, `env new --check` and `RunInWorkDir` (which entered a
+  relative work dir and resolved it again from inside) had the same defect;
+  #520 anchored the frontend probe alone. The two doctor renders that passed
+  a work-dir-relative source pass an absolute one.
+- **A freshly scaffolded operator renders.** `forge scaffold operator`
+  declares the workload before its first CRD (`crds = []`; `forge scaffold
+  crd` is the next step), and the workload schema required at least one CRD
+  of every operator — so every env, dev included, failed to render with a
+  schema error naming neither the operator nor the fix. An operator may now
+  list none: one that owns no CRD yet, or reconciles built-in kinds only
+  (granted by `clusterRBAC`); `crds` is what its derived ClusterRole covers,
+  and an empty list derives nothing. Dev renders it on k3d; a hosted env,
+  where it is bound `_on_cluster`, refuses only for the undeclared `_cluster`,
+  naming the operator. `forge scaffold crd <Kind>` now adds the kind to the
+  operator's `crds` in `deploy/kcl/workloads.k` (the derived RBAC reads only
+  that list; before, the user had to know to), and prints the edit when the
+  list cannot be found unambiguously. Relaxed in `pkg/deploy/v1alpha1`'s
+  `WorkloadSpec.Validate` too, so the control plane's admission agrees.
 - **A born list page no longer links its rows to a detail page that does not
   exist.** Every list row called `router.push('/<slug>/<id>')`, but the detail
   page is only generated when the service has a Get RPC — so a List-only

@@ -105,6 +105,11 @@ type envStatusDocument struct {
 	Images []imageVerification `json:"images"`
 	// Tally counts the five states. Unreachable stays its own bucket.
 	Tally envStatusReleaseTally `json:"tally"`
+	// Queued is set when the bound release is ACCEPTED and RECORDED but the
+	// control plane holds it on a person (billing): what it waits on and
+	// the action URL. exit_code is then 7, and drift in `images` is the
+	// expected state of an env whose release has not been applied yet.
+	Queued *deployQueuedJSON `json:"queued,omitempty"`
 	// Detail carries the one-line human reason for a non-OK result, or the
 	// explanation of an unbound env. Empty on a clean verify.
 	Detail string `json:"detail,omitempty"`
@@ -324,6 +329,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		results                []imageVerification
 		kubeContext, namespace string
 		source                 string
+		queued                 *deployQueuedError
 	)
 	if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
 		// A HOSTED env: forge cannot read its cluster, so the control
@@ -333,12 +339,19 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		if !opts.JSON {
 			fmt.Printf("  source   %s (forge cannot read a hosted env's cluster)\n", source)
 		}
-		results = verifyHosted(ctx, envName, binding, opts)
+		results, queued = verifyHosted(ctx, envName, binding, opts)
 	} else {
 		results, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
 	tally := tallyEnvStatusRelease(results)
 	failure := envStatusReleaseVerdict(envName, binding.Release, staleErr, tally)
+	if queued != nil && staleErr == nil {
+		// QUEUED OUTRANKS DRIFT. The declared release is accepted and
+		// waiting on a person, so "the env does not run it yet" is the
+		// expected state, not a defect: exit 7 with what it waits on and
+		// where to act, instead of exit 1 blaming the release.
+		failure = queued
+	}
 
 	if opts.JSON {
 		report := envStatusDocument{
@@ -355,6 +368,9 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			Runtime:     opts.Runtime,
 			Ledger:      ledger,
 			Records:     &records,
+		}
+		if queued != nil {
+			report.Queued = queued.document()
 		}
 		if failure != nil {
 			report.Detail = failure.Error()
@@ -397,7 +413,12 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 // verifyHosted reads the env's CURRENT promotion's rollout from its control
 // plane and maps it onto the five states. A read failure is every pinned image
 // UNREACHABLE (exit 2), never a guess.
-func verifyHosted(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) []imageVerification {
+//
+// A QUEUED promotion (phase HELD: accepted, recorded, waiting on a person) is
+// returned as such beside the rows. Its workloads still run the PREVIOUS
+// release or nothing, so the per-image rows read as drift — which is true and
+// is not the verdict: the env is where it should be while it waits.
+func verifyHosted(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) ([]imageVerification, *deployQueuedError) {
 	read := opts.HostedRollout
 	if read == nil {
 		read = readDeclaredRollout
@@ -406,9 +427,13 @@ func verifyHosted(ctx context.Context, envName string, binding release.Promotion
 	defer cancel()
 	rollout, err := read(readCtx, envName, binding.ID)
 	if err != nil {
-		return unreachableVerifications(binding.Resolved, err)
+		return unreachableVerifications(binding.Resolved, err), nil
 	}
-	return verifyHostedRollout(rollout)
+	var queued *deployQueuedError
+	if rollout.Phase == wireRolloutPhaseHeld {
+		queued = &deployQueuedError{Env: envName, Release: binding.Release, PromotionID: binding.ID, Holds: rollout.Holds}
+	}
+	return verifyHostedRollout(rollout), queued
 }
 
 // readDeclaredRollout is the production hosted read: the env's declared

@@ -100,8 +100,9 @@ Examples:
 			// concurrent run must not see the paths removed but not yet
 			// re-created.
 			return withGenerateLock(root, func() error {
-				return rescaffoldPaths(cmd.OutOrStdout(), root, store.Config(), args, func() error {
-					return runGeneratePipelineFlags(root, pipelineFlags{})
+				return rescaffoldPaths(cmd.OutOrStdout(), root, store.Config(), args, rescaffoldGenerate{
+					envConfig: func() error { return runGeneratePipelineFlags(root, pipelineFlags{Steps: envConfigStepPreset}) },
+					pipeline:  func() error { return runGeneratePipelineFlags(root, pipelineFlags{}) },
 				})
 			})
 		},
@@ -114,12 +115,21 @@ func rescaffoldCmd(paths ...string) string {
 	return fmt.Sprintf("%s project rescaffold %s", Name(), strings.Join(paths, " "))
 }
 
+// rescaffoldGenerate is the part of `forge generate` a rescaffold drives,
+// injected so tests can stand in the steps that own the paths they exercise.
+type rescaffoldGenerate struct {
+	// envConfig writes the config modules every env's KCL imports
+	// (`forge generate --steps env-config`). Run only when an env does not
+	// render as rescaffold asks which CI files the project has — see
+	// refuseCIPathsTheProjectLacks. nil skips it.
+	envConfig func() error
+	// pipeline runs the `forge generate` pipeline. It is run once, after
+	// every path's birth record is dropped, and only when a path needs it.
+	pipeline func() error
+}
+
 // rescaffoldPaths re-creates each absent scaffold-once path under root.
-//
-// runGenerate runs the `forge generate` pipeline (injected so tests can stand
-// in the step that owns the paths they exercise). It is run once, after every
-// path's birth record is dropped, and only when a path needs it.
-func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPaths []string, runGenerate func() error) error {
+func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPaths []string, gen rescaffoldGenerate) error {
 	paths, err := normalizeRescaffoldPaths(root, rawPaths)
 	if err != nil {
 		return err
@@ -162,16 +172,9 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 
 	// CI paths answer to the mapper, and a workflow the mapper does not
 	// emit for this project is not re-created from any other renderer.
-	inputs := ciInputs(root, cfg)
-	for _, p := range paths {
-		if !generator.IsCIMapperPath(p) {
-			continue
-		}
-		if _, ok, rerr := generator.CIWorkflowFileFor(root, cfg, inputs, p); rerr != nil {
-			return rerr
-		} else if !ok {
-			return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReason(p)),
-				"change forge.yaml or the project so it has one, then re-run rescaffold")
+	if slices.ContainsFunc(paths, generator.IsCIMapperPath) {
+		if err := refuseCIPathsTheProjectLacks(root, cfg, paths, gen.envConfig); err != nil {
+			return err
 		}
 	}
 
@@ -190,8 +193,8 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 			break
 		}
 	}
-	if needsPipeline && runGenerate != nil {
-		if err := runGenerate(); err != nil {
+	if needsPipeline && gen.pipeline != nil {
+		if err := gen.pipeline(); err != nil {
 			return fmt.Errorf("forge generate (re-scaffolding %s): %w", strings.Join(paths, ", "), err)
 		}
 	}
@@ -247,6 +250,68 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 		return rescaffoldErr(unrenderable,
 			fmt.Sprintf("forge does not scaffold %s for this project", strings.Join(unrenderable, ", ")),
 			"check the path: rescaffold re-creates files forge writes for this project's forge.yaml (kind, features, frontends, services)")
+	}
+	return nil
+}
+
+// refuseCIPathsTheProjectLacks refuses every CI-mapper path in paths that
+// the mapper does not emit for this project — before anything of the
+// user's is written.
+//
+// Which CI files a project has is read off a RENDER of every env: a hosted
+// env gets release.yml and the forge-deploy action (generate_ci_hosted.go).
+// An env imports config modules only `forge generate` writes, so on a
+// project generate has not completed on — a fresh scaffold whose bootstrap
+// generate failed — its hosted envs do not render, and reading that as "not
+// hosted" refused the very release.yml the scaffold wrote. The full pipeline
+// orders its CI step after those modules for the same reason; here, when an
+// env does not render, envConfig writes them and the question is asked
+// again. An env that still does not render is named as the reason, never
+// reported as an env that is not hosted.
+func refuseCIPathsTheProjectLacks(root string, cfg *config.ProjectConfig, paths []string, envConfig func() error) error {
+	// The question is about the tree as it is now, whatever an earlier
+	// asker in this process memoized — and the answer is for this check
+	// alone. Left memoized, it was handed to the pipeline's CI step, which
+	// must render the envs as the PIPELINE leaves them: on a project whose
+	// env config modules the pipeline was about to write, that step wrote
+	// CI for hosted envs it still took for cluster envs (a deploy.yml beside
+	// release.yml, a build-images.yml for the wrong topology).
+	forgetCIDiscovery(root)
+	defer forgetCIDiscovery(root)
+	if len(discoverCIHostedEnvs(root).Unrendered) > 0 && envConfig != nil {
+		if err := envConfig(); err != nil {
+			return fmt.Errorf("write the env config modules so every env renders (forge generate --steps %s): %w", envConfigStepPreset, err)
+		}
+		forgetCIDiscovery(root)
+	}
+	unrendered := discoverCIHostedEnvs(root).Unrendered
+	inputs := ciInputs(root, cfg)
+	for _, p := range paths {
+		if !generator.IsCIMapperPath(p) {
+			continue
+		}
+		_, ok, err := generator.CIWorkflowFileFor(root, cfg, inputs, p)
+		if err != nil {
+			return err
+		}
+		if ok {
+			continue
+		}
+		// Would the project have it if the envs that did not render were
+		// hosted? Then its absence is forge not knowing, not the project
+		// lacking it.
+		if len(unrendered) > 0 {
+			ifHosted := inputs
+			ifHosted.HostedEnvs = append(slices.Clone(inputs.HostedEnvs), unrendered...)
+			if _, wouldHave, _ := generator.CIWorkflowFileFor(root, cfg, ifHosted, p); wouldHave {
+				return rescaffoldErr(paths,
+					fmt.Sprintf("forge cannot tell whether this project has %s: that depends on which envs are hosted, which forge reads off a render of each env, and %s did not render",
+						p, strings.Join(unrendered, ", ")),
+					fmt.Sprintf("run `%s env render %s` to see why, fix it, then re-run rescaffold", Name(), unrendered[0]))
+			}
+		}
+		return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReason(p)),
+			"change forge.yaml or the project so it has one, then re-run rescaffold")
 	}
 	return nil
 }

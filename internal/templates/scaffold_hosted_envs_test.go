@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclrender"
@@ -142,7 +143,12 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 				}
 
 				workloads, _ := out["workloads"].([]any)
-				wantWorkloads := len(tc.services) + 1 // + migrate
+				// migrate, and the one API workload once there is a service
+				// for it to run (TestHostedFrontendReachesEveryService).
+				wantWorkloads := 1
+				if len(tc.services) > 0 {
+					wantWorkloads++
+				}
 				if len(workloads) != wantWorkloads {
 					t.Fatalf("%s: %d workloads, want %d:\n%#v", env, len(workloads), wantWorkloads, workloads)
 				}
@@ -180,14 +186,141 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 					continue
 				}
 				// API_URL is a reference the control plane resolves to the
-				// first hosted service's allocated URL.
+				// hosted API's allocated URL.
 				api, _ := spec["API_URL"].(map[string]any)
 				ref, _ := api["workloadURL"].(map[string]any)
-				if ref["name"] != tc.services[0] {
-					t.Errorf("%s: frontend runtime_config API_URL = %#v, want a workloadURL to %s", env, spec["API_URL"], tc.services[0])
+				if ref["name"] != "api" {
+					t.Errorf("%s: frontend runtime_config API_URL = %#v, want a workloadURL to api", env, spec["API_URL"])
 				}
 			}
 		})
+	}
+}
+
+// TestHostedFrontendReachesEveryService: in a hosted env, the ONE origin the
+// frontend is given serves every service the project has.
+//
+// One origin is not a detail of the transport that a per-service URL map
+// could route around. The scaffolded frontend dials one base URL — a Connect
+// call is `/<package>.<Service>/<Method>`, so one origin can serve them all —
+// and sign-in answers with an HttpOnly session cookie the browser returns to
+// that origin only. The hosted platform gives every workload its own
+// hostname and routes no paths between them.
+//
+// So #518, which hosted each service as its own workload and pointed API_URL
+// at the first, shipped a frontend that could call one of three services. The
+// fix is the topology: the env runs the binary's `server` — every service on
+// one Connect mux — as one workload, and API_URL names it. Asserted on the
+// render: the referenced workload runs `server`, and no other hosted service
+// exists for the browser to miss.
+func TestHostedFrontendReachesEveryService(t *testing.T) {
+	root := scaffoldForRender(t, "shop", []string{"alpha", "beta", "gamma"}, "web")
+	for _, env := range []string{"staging", "prod"} {
+		out := renderEnvOutput(t, root, env)
+
+		frontends, _ := out["frontends"].([]any)
+		if len(frontends) != 1 {
+			t.Fatalf("%s: frontends = %#v", env, frontends)
+		}
+		f, _ := frontends[0].(map[string]any)
+		spec, _ := f["runtime_config_spec"].(map[string]any)
+		apiURL, _ := spec["API_URL"].(map[string]any)
+		ref, _ := apiURL["workloadURL"].(map[string]any)
+		target, _ := ref["name"].(string)
+		if target == "" {
+			t.Fatalf("%s: the hosted frontend's API_URL references no workload: %#v", env, spec)
+		}
+
+		var hostedServices []string
+		var api map[string]any
+		for _, w := range out["workloads"].([]any) {
+			wm := w.(map[string]any)
+			if wm["kind"] == "service" && runtimeType(wm) == "hosted" {
+				hostedServices = append(hostedServices, wm["name"].(string))
+			}
+			if wm["name"] == target {
+				api = wm
+			}
+		}
+		if api == nil {
+			t.Fatalf("%s: API_URL names %q, which this env does not run", env, target)
+		}
+		spec, _ = api["spec"].(map[string]any)
+		if args, _ := spec["args"].([]any); len(args) != 1 || args[0] != "server" {
+			t.Errorf("%s: API_URL names %q, which runs %v — one service's subcommand mounts only that service, so the "+
+				"frontend reaches one of alpha/beta/gamma; want the binary's `server`, which mounts them all", env, target, spec["args"])
+		}
+		if len(hostedServices) != 1 || hostedServices[0] != target {
+			t.Errorf("%s: hosted services %v — every one but the API_URL target (%s) is a hostname the frontend never calls", env, hostedServices, target)
+		}
+		vars := map[string]map[string]any{}
+		for _, e := range spec["env"].([]any) {
+			em := e.(map[string]any)
+			vars[em["name"].(string)] = em
+		}
+		if cors := vars["CORS_ORIGINS"]["workloadURL"]; cors == nil {
+			t.Errorf("%s/%s: the API does not accept the site's browser calls (CORS_ORIGINS = %#v)", env, target, vars["CORS_ORIGINS"])
+		}
+		if db := vars["DATABASE_URL"]["databaseRef"]; db == nil {
+			t.Errorf("%s/%s: the API does not read the managed database (DATABASE_URL = %#v)", env, target, vars["DATABASE_URL"])
+		}
+	}
+}
+
+// TestFreshOperatorRendersUntilOnlyTheClusterIsMissing: `forge scaffold
+// operator` declares the operator before it has a CRD (`forge scaffold crd`
+// is the next step), so its workload says `crds = []`. That declaration must
+// render: in dev, where the operator runs on k3d, outright; in a hosted env,
+// where it is bound `_on_cluster`, refused ONLY for the cluster the env has
+// not declared — the one fix the author has to make there.
+//
+// The workload schema used to require at least one CRD of every operator, so
+// the fresh declaration failed the render of EVERY env, dev included, with a
+// schema error naming neither the operator nor the next step.
+func TestFreshOperatorRendersUntilOnlyTheClusterIsMissing(t *testing.T) {
+	root := scaffoldForRender(t, "shop", []string{"orders"}, "")
+	op := config.ComponentConfig{Name: "reaper", Kind: config.ComponentKindOperator, Group: "shop.io", Version: "v1alpha1"}
+	workloads := filepath.Join(root, codegen.WorkloadsKCLRelPath)
+	raw, err := os.ReadFile(workloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stanza := codegen.WorkloadStanza("github.com/acme/shop", "shop", op)
+	if !strings.Contains(stanza, "crds = []") {
+		t.Fatalf("precondition: a fresh operator's stanza is not the CRD-less one:\n%s", stanza)
+	}
+	if err := os.WriteFile(workloads, []byte(string(raw)+"\n"+stanza), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, env := range []string{"dev", "staging", "prod"} {
+		res, err := codegen.AppendEnvBinding(root, "shop", env, codegen.WorkloadKindOperator, op.Name)
+		if err != nil || !res.Applied {
+			t.Fatalf("bind reaper in %s: %+v, %v", env, res, err)
+		}
+	}
+
+	dev := renderEnvOutput(t, root, "dev")
+	var devOp bool
+	for _, w := range dev["workloads"].([]any) {
+		devOp = devOp || w.(map[string]any)["name"] == "reaper"
+	}
+	if !devOp {
+		t.Errorf("dev renders no reaper workload: %#v", dev["workloads"])
+	}
+
+	for _, env := range []string{"staging", "prod"} {
+		_, err := kclrender.Run(root, filepath.Join(root, "deploy/kcl", env), []string{"env=" + env})
+		if err == nil {
+			t.Fatalf("%s: an operator bound to an undeclared cluster rendered", env)
+		}
+		for _, want := range []string{"workload 'reaper' is bound to _on_cluster", "declares no `_cluster`", "the hosted platform refuses operators"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the refusal does not say %q:\n%v", env, want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "CRD") {
+			t.Errorf("%s: refused over the operator's CRDs, not the missing cluster:\n%v", env, err)
+		}
 	}
 }
 
@@ -215,9 +348,10 @@ func TestScaffoldedClusterBinderRefusesUntilDeclared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := strings.Replace(string(raw), "    _hosted(wl.orders)\n", "    _on_cluster(wl.orders)\n", 1)
+	// The API — `server`, running orders — is the workload to rebind.
+	src := strings.Replace(string(raw), "    _hosted(_api)\n", "    _on_cluster(_api)\n", 1)
 	if src == string(raw) {
-		t.Fatalf("precondition: prod/main.k does not bind orders `_hosted`:\n%s", raw)
+		t.Fatalf("precondition: prod/main.k does not bind _api `_hosted`:\n%s", raw)
 	}
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -226,7 +360,7 @@ func TestScaffoldedClusterBinderRefusesUntilDeclared(t *testing.T) {
 	if err == nil {
 		t.Fatal("an `_on_cluster` binding with no `_cluster` declared rendered")
 	}
-	for _, want := range []string{"workload 'orders' is bound to _on_cluster", "declares no `_cluster`"} {
+	for _, want := range []string{"workload 'api' is bound to _on_cluster", "declares no `_cluster`"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("render error does not say %q:\n%v", want, err)
 		}
@@ -241,7 +375,7 @@ func TestScaffoldedClusterBinderRefusesUntilDeclared(t *testing.T) {
 	for _, w := range out["workloads"].([]any) {
 		wm := w.(map[string]any)
 		want := "hosted"
-		if wm["name"] == "orders" {
+		if wm["name"] == "api" {
 			want = "cluster"
 		}
 		if runtimeType(wm) != want {

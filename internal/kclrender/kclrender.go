@@ -13,6 +13,7 @@ package kclrender
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -160,6 +161,10 @@ func withDevStackDArgs(dArgs []string) []string {
 // Run renders the KCL at source — a package directory or a single .k
 // file — and returns the raw JSON result.
 //
+// Both paths mean what any Go path means: relative to the process cwd. A
+// caller holding a relative project dir builds source as
+// filepath.Join(projectDir, ...), and that is correct here (see absPaths).
+//
 // workDir is the process cwd KCL resolves relative reads against, and the
 // project root whose managed kcl.mod files are checked for a legacy `forge`
 // dependency (forgeModuleArg), so it is part of the contract. The `forge`
@@ -217,6 +222,11 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 		return nil, err
 	}
 
+	workDir, source, err := absPaths(workDir, source)
+	if err != nil {
+		return nil, err
+	}
+
 	// The project's pin vs this binary. Read once: it feeds the up-front
 	// refusal AND the annotation on a render that fails anyway. Resolved
 	// from workDir, which may be a directory beneath the project root —
@@ -266,6 +276,32 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 			pinnedVersion, buildinfo.Version())
 	}
 	return []byte(res.GetRawJsonResult()), nil
+}
+
+// absPaths resolves workDir and source against the process cwd, before kpm
+// sees either.
+//
+// kpm resolves a RELATIVE source against workDir, not against the cwd. So a
+// caller with a relative project dir — `forge project new shop` scaffolds
+// into `<--path>/shop`, and its generate pipeline renders from there — handed
+// kpm `shop/deploy/kcl/dev/...` with workDir `shop`, and kpm looked for
+// `shop/shop/deploy/kcl/dev/...`. The frontend-config probe failed that way on
+// every fresh scaffold, and its fallback wrote the dev config.js from proto
+// defaults. RunInWorkDir was worse off still: it entered workDir and then
+// handed kpm the same relative workDir from inside it.
+//
+// Resolving both here, at the seam every render passes through, makes the
+// two paths mean one thing for every caller instead of auditing each one.
+func absPaths(workDir, source string) (string, string, error) {
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve render work dir %q: %w", workDir, err)
+	}
+	absSource, err := filepath.Abs(source)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve render source %q: %w", source, err)
+	}
+	return absWork, absSource, nil
 }
 
 // chdir moves the process to dir and returns a func restoring the previous

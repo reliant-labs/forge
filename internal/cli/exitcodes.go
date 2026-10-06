@@ -27,12 +27,17 @@ package cli
 //   - 6 (superseded) means a newer promotion replaced the one being waited
 //     on. The wait's subject is gone, so neither retry nor failure is right
 //     — the pipeline's release was overtaken.
+//   - 7 (queued) means the deploy was ACCEPTED and RECORDED and is waiting on
+//     a HUMAN — today, billing for what it runs. Nothing failed and nothing
+//     is to be retried: the control plane applies it on its own the moment
+//     the hold clears. The pipeline (or agent) hands the printed action URL
+//     to a person and stops; `--wait` blocks until it is live instead.
 //   - 8 (timed out) means the rollout was still progressing when the budget
 //     ran out. Retrying the WAIT is correct; re-promoting is not.
 //
-// 6 and 8 are deliberately NOT 1. A timeout and an overtaken wait are both
-// "we never saw this finish", and reporting either as "the release is bad"
-// would fail builds for releases that were fine.
+// 6, 7 and 8 are deliberately NOT 1. A timeout, an overtaken wait and a queued
+// deploy are all "we never saw this finish", and reporting any of them as "the
+// release is bad" would fail builds for releases that were fine.
 //
 // WHY 5 MOVED, AND WHY THAT IS THE RIGHT TRADE. 5 meant "the wait's budget
 // expired" until O-13 gave `forge env deploy` a confirmation gate, which
@@ -88,6 +93,14 @@ const (
 	// exitSuperseded: the environment was promoted past the promotion
 	// being waited on. Wait only.
 	exitSuperseded = 6
+
+	// exitQueued: the deploy was accepted and recorded, and the control
+	// plane is HOLDING it on a human action (billing). It proceeds on its
+	// own when the hold clears — nothing is to be re-run. Deploy, wait and
+	// status. Not exitRefused (4): nothing was declined. Not exitTimedOut
+	// (8): nothing is moving, and no amount of waiting by a pipeline will
+	// move it — a person has to act.
+	exitQueued = 7
 
 	// exitTimedOut: the budget expired while the rollout was still
 	// progressing. Wait only. (Was 5 before O-13 — see the header.)

@@ -46,12 +46,12 @@ func TestAppendEnvBinding(t *testing.T) {
 		// siblings on the cluster, never on a control plane it may not have.
 		{"legacy", WorkloadKindService, "billing", "_on_cluster"},
 	} {
-		binder, applied, err := AppendEnvBinding(dir, tc.env, tc.kind, tc.name)
-		if err != nil || !applied {
-			t.Fatalf("%s %s: applied=%v err=%v", tc.env, tc.name, applied, err)
+		res, err := AppendEnvBinding(dir, "shop", tc.env, tc.kind, tc.name)
+		if err != nil || !res.Applied {
+			t.Fatalf("%s %s: applied=%v err=%v", tc.env, tc.name, res.Applied, err)
 		}
-		if binder != tc.wantBinder {
-			t.Errorf("%s %s (%s): binder = %s, want %s", tc.env, tc.name, tc.kind, binder, tc.wantBinder)
+		if res.Binder != tc.wantBinder || res.Bound != "wl."+tc.name {
+			t.Errorf("%s %s (%s): bound %s with %s, want wl.%s with %s", tc.env, tc.name, tc.kind, res.Bound, res.Binder, tc.name, tc.wantBinder)
 		}
 		b, _ := os.ReadFile(filepath.Join(dir, "deploy", "kcl", tc.env, "main.k"))
 		if want := "    " + tc.wantBinder + "(wl." + tc.name + ")\n]"; !strings.Contains(string(b), want) {
@@ -64,8 +64,8 @@ func TestAppendEnvBinding(t *testing.T) {
 
 	// Already bound (by an earlier run, or by hand, under any binder): no-op.
 	before, _ := os.ReadFile(dev)
-	if _, applied, err := AppendEnvBinding(dir, "dev", WorkloadKindService, "item"); applied || err != nil {
-		t.Errorf("rebinding an already-bound workload: applied=%v err=%v", applied, err)
+	if res, err := AppendEnvBinding(dir, "shop", "dev", WorkloadKindService, "item"); res.Applied || err != nil {
+		t.Errorf("rebinding an already-bound workload: applied=%v err=%v", res.Applied, err)
 	}
 	if after, _ := os.ReadFile(dev); string(after) != string(before) {
 		t.Errorf("a no-op append wrote the file")
@@ -73,8 +73,85 @@ func TestAppendEnvBinding(t *testing.T) {
 
 	// Restructured past recognition: no write, the caller prints the line.
 	write("staging", "_workloads = [w for w in wl.ALL]\n")
-	if _, applied, err := AppendEnvBinding(dir, "staging", WorkloadKindService, "item"); applied || err != nil {
-		t.Errorf("no recognisable list: applied=%v err=%v", applied, err)
+	if res, err := AppendEnvBinding(dir, "shop", "staging", WorkloadKindService, "item"); res.Applied || err != nil {
+		t.Errorf("no recognisable list: applied=%v err=%v", res.Applied, err)
+	}
+}
+
+// A hosted env serves its API as ONE workload, `_api` — the binary's
+// `server`, which mounts every service and supervises every worker — so the
+// browser reaches every service at one origin. A service or worker scaffolded
+// later is already run by it: binding it on a line of its own would host a
+// second workload the browser cannot reach (or run a worker twice). What
+// `server` does not run still binds as before: a job, an operator, a tool.
+func TestAppendEnvBinding_HostedAPIRunsServicesAndWorkers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy", "kcl", "prod", "main.k")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(bindings string) {
+		t.Helper()
+		body := "# An example, not a declaration:\n#     _example = fw.Workload {name = \"x\", args = [\"server\"], build = forge.GoBuild {cmd = \"./cmd/shop\"}}\n" +
+			APIWorkloadStanza("github.com/acme/shop", "shop") + "\n\n_workloads = [\n" + bindings + "]\n\noutput = 1\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	if ident, ok := EnvServerWorkload(APIWorkloadStanza("github.com/acme/shop", "shop"), "shop"); !ok || ident != APIWorkloadIdent {
+		t.Fatalf("EnvServerWorkload(the scaffolded _api) = %q, %v", ident, ok)
+	}
+	// Another project's binary, or one subcommand of this one, is not the API.
+	for _, other := range []string{
+		strings.Replace(APIWorkloadStanza("github.com/acme/shop", "shop"), `"./cmd/shop"`, `"./cmd/admin"`, 1),
+		strings.Replace(APIWorkloadStanza("github.com/acme/shop", "shop"), `["server"]`, `["orders"]`, 1),
+	} {
+		if ident, ok := EnvServerWorkload(other, "shop"); ok {
+			t.Errorf("EnvServerWorkload found %q in a workload that does not run shop's `server`:\n%s", ident, other)
+		}
+	}
+
+	// Bound already: services and workers are served, nothing is written.
+	write("    _hosted(wl.migrate)\n    _hosted(_api)\n")
+	before := read()
+	for _, kind := range []string{WorkloadKindService, WorkloadKindWorker} {
+		res, err := AppendEnvBinding(dir, "shop", "prod", kind, "billing")
+		if err != nil || res.Applied || res.ServedBy != APIWorkloadIdent {
+			t.Errorf("%s in an env binding _api: %+v, %v — want served by _api, nothing written", kind, res, err)
+		}
+	}
+	if read() != before {
+		t.Errorf("a served workload wrote the file:\n%s", read())
+	}
+	// What `server` does not run binds on its own line, as before.
+	for kind, want := range map[string]string{WorkloadKindJob: "_hosted", WorkloadKindOperator: "_on_cluster", WorkloadKindTool: "_build_only"} {
+		res, err := AppendEnvBinding(dir, "shop", "prod", kind, "x-"+kind)
+		if err != nil || !res.Applied || res.Binder != want || res.ServedBy != "" {
+			t.Errorf("%s: %+v, %v — want its own %s line", kind, res, err, want)
+		}
+	}
+
+	// Born with no service, so `_api` is declared but not bound: the first
+	// service binds the API itself, once, the way the env binds migrate.
+	write("    _hosted(wl.migrate)\n")
+	res, err := AppendEnvBinding(dir, "shop", "prod", WorkloadKindService, "orders")
+	if err != nil || !res.Applied || res.Bound != APIWorkloadIdent || res.Binder != "_hosted" {
+		t.Fatalf("first service in an env with an unbound _api: %+v, %v — want _api bound _hosted", res, err)
+	}
+	if got := read(); !strings.Contains(got, "    _hosted(wl.migrate)\n    _hosted(_api)\n]") || strings.Contains(got, "wl.orders") {
+		t.Errorf("want `_hosted(_api)` appended and no per-service line:\n%s", got)
+	}
+	if res, _ := AppendEnvBinding(dir, "shop", "prod", WorkloadKindWorker, "mailer"); res.Applied || res.ServedBy != APIWorkloadIdent {
+		t.Errorf("a worker after _api is bound: %+v — want served", res)
 	}
 }
 
@@ -171,8 +248,8 @@ func TestAppendEnvBinding_FirstServiceClaimsTheAPIPortKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, applied, err := AppendEnvBinding(dir, "dev", WorkloadKindService, "task"); !applied || err != nil {
-		t.Fatalf("bind task: applied=%v err=%v", applied, err)
+	if res, err := AppendEnvBinding(dir, "demo", "dev", WorkloadKindService, "task"); !res.Applied || err != nil {
+		t.Fatalf("bind task: applied=%v err=%v", res.Applied, err)
 	}
 	b, _ := os.ReadFile(p)
 	if !strings.Contains(string(b), `resolve_port("demo-dev-api" if name == "task" else`) {
@@ -180,8 +257,8 @@ func TestAppendEnvBinding_FirstServiceClaimsTheAPIPortKey(t *testing.T) {
 	}
 
 	// A second service must not take it from the first, which is bound.
-	if _, applied, err := AppendEnvBinding(dir, "dev", WorkloadKindService, "billing"); !applied || err != nil {
-		t.Fatalf("bind billing: applied=%v err=%v", applied, err)
+	if res, err := AppendEnvBinding(dir, "demo", "dev", WorkloadKindService, "billing"); !res.Applied || err != nil {
+		t.Fatalf("bind billing: applied=%v err=%v", res.Applied, err)
 	}
 	b, _ = os.ReadFile(p)
 	if !strings.Contains(string(b), `if name == "task" else`) {
@@ -192,8 +269,8 @@ func TestAppendEnvBinding_FirstServiceClaimsTheAPIPortKey(t *testing.T) {
 	if err := os.WriteFile(p, []byte(unowned), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, applied, err := AppendEnvBinding(dir, "dev", WorkloadKindWorker, "mailer"); !applied || err != nil {
-		t.Fatalf("bind mailer: applied=%v err=%v", applied, err)
+	if res, err := AppendEnvBinding(dir, "demo", "dev", WorkloadKindWorker, "mailer"); !res.Applied || err != nil {
+		t.Fatalf("bind mailer: applied=%v err=%v", res.Applied, err)
 	}
 	b, _ = os.ReadFile(p)
 	if !strings.Contains(string(b), `if name == "demo" else`) {

@@ -59,6 +59,15 @@ func hostedCapacityPreflight(ctx context.Context, envName string, entities *KCLE
 	switch {
 	case verdict.Unchecked:
 		fmt.Fprintf(out, "WARNING: capacity could not be pre-checked: %s\n", verdict.Summary())
+	case verdict.Queued():
+		// NOT a refusal. The control plane will accept this deploy and
+		// queue it on a person (billing), so the build, the record and the
+		// promote all still run — that is what lets it go live with no
+		// re-run once they act. Said up front, before a nine-minute build,
+		// so nobody is surprised by the queue at the end of it.
+		fmt.Fprintf(out, "Capacity: this deploy will be QUEUED on %s — %s.\n"+
+			"  It is still built, recorded and promoted now, and goes live by itself once that is done.\n",
+			verdict.Holds[0].Label(), verdict.Reason)
 	case !verdict.Allowed:
 		return report, &deploytarget.CapacityRefusedError{Env: envName, Verdict: verdict, Demand: demand}
 	}
@@ -115,7 +124,14 @@ func renderCapacitySection(out io.Writer, c *promotePlanCapacity) {
 	if c.Verdict.HasComputePlan {
 		fmt.Fprintf(out, "  ceiling   %dm CPU, %s memory, %d GiB storage\n", c.Verdict.CeilingCPU, gibStringCLI(c.Verdict.CeilingMemory), c.Verdict.CeilingStorage)
 	}
-	if !c.Verdict.Allowed && !c.Verdict.Unchecked && c.Verdict.Fix != "" {
+	switch {
+	case c.Verdict.Queued():
+		// The HOLD's remedy, not the refusal's: a queued deploy needs no
+		// retry, and the refusal's "then retry" would say otherwise.
+		if fix := c.Verdict.Holds[0].Fix; fix != "" {
+			fmt.Fprintf(out, "  do        %s\n", fix)
+		}
+	case !c.Verdict.Allowed && !c.Verdict.Unchecked && c.Verdict.Fix != "":
 		fmt.Fprintf(out, "  fix       %s\n", c.Verdict.Fix)
 	}
 }

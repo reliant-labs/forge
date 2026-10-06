@@ -1375,8 +1375,20 @@ func runCRD(name, group, version, shape, operator string) error {
 		fmt.Printf("  ✅ Generated %s\n", rel)
 	}
 
-	// Nothing is written back: the emitted <lower>_controller.go IS the CRD's
-	// declaration, and that is what the duplicate check above reads.
+	// The emitted <lower>_controller.go IS the CRD's declaration, and that is
+	// what the duplicate check above reads. The one thing written back is
+	// the operator workload's `crds`, which is all its derived ClusterRole
+	// covers: a CRD missing from it is one the manager is forbidden to list.
+	switch edit, err := codegen.AppendOperatorCRD(root, operator, name); {
+	case err != nil:
+		fmt.Printf("\n⚠️  could not update %s: %v\n", codegen.WorkloadsKCLRelPath, err)
+		fallthrough
+	case edit == codegen.CRDListNotEditable:
+		fmt.Printf("\n📝 Add %q to the `crds` list of workload '%s' in %s, so the operator's derived ClusterRole covers it.\n",
+			name, operator, codegen.WorkloadsKCLRelPath)
+	case edit == codegen.CRDListAdded:
+		fmt.Printf("   - %s (operator '%s' crds += %q)\n", codegen.WorkloadsKCLRelPath, operator, name)
+	}
 	fmt.Printf("\n✅ CRD '%s' added to operator '%s'!\n", name, operator)
 	return nil
 }

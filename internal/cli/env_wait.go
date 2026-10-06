@@ -118,6 +118,12 @@ type envWaitOptions struct {
 	IncludeUnpinned bool
 	// Interval is the poll cadence; zero means envWaitDefaultInterval.
 	Interval time.Duration
+	// StopOnHold returns exit 7 (queued) at the first HELD read instead of
+	// waiting through it. A deploy that was not given --wait sets it: the
+	// promotion is accepted and waits on a PERSON (billing), and a command
+	// that keeps polling cannot move it. `env status --wait` leaves it
+	// false — waiting until it is live is what the caller asked for.
+	StopOnHold bool
 	// JSON emits one document at the end; WatchJSON adds a line per
 	// phase change while waiting.
 	JSON      bool
@@ -217,6 +223,10 @@ type envWaitReport struct {
 	// Unpinned are reported and (without --include-unpinned) do not gate.
 	Unpinned    []envWaitWorkloadJSON `json:"unpinned,omitempty"`
 	Transitions []envWaitTransition   `json:"transitions,omitempty"`
+	// Queued is set while the promotion is HELD: accepted and recorded,
+	// waiting on a human action, with the action URL. Exit 7 when the
+	// wait ends there.
+	Queued *deployQueuedJSON `json:"queued,omitempty"`
 }
 
 // ─── Resolution ──────────────────────────────────────────────────────────────
@@ -435,6 +445,15 @@ func waitForRollout(ctx context.Context, env string, opts envWaitOptions) (envWa
 			// Otherwise: tolerated. Keep waiting — a cold-start
 			// crash loop that settles is the common case, and the
 			// deadline below is what turns a persistent one red.
+		case wireRolloutPhaseHeld:
+			// QUEUED on a person. A deploy without --wait stops here
+			// with the block; `env status --wait` keeps polling —
+			// the hold clears when they act, and the phase moves on to
+			// pending and the ordinary rollout.
+			if opts.StopOnHold {
+				report.WaitedMS = time.Since(start).Milliseconds()
+				return report, queuedRolloutError(env, rollout, 0)
+			}
 		}
 
 		// Once stops HERE, after exactly one read, and reports where
@@ -570,6 +589,13 @@ func applyRolloutToReport(report *envWaitReport, rollout wireRollout, includeUnp
 	report.ConvergesPromotions = rollout.ConvergesPromotions
 	report.Workloads = waitWorkloadsJSON(rollout.Workloads)
 	report.Unpinned = waitWorkloadsJSON(rollout.Unpinned)
+	report.Queued = nil
+	if rollout.Phase == wireRolloutPhaseHeld {
+		report.Queued = (&deployQueuedError{
+			Env: report.Env, Release: rollout.Promotion.ReleaseVersion,
+			PromotionID: rollout.Promotion.ID, Holds: rollout.Holds,
+		}).document()
+	}
 	if p := rollout.Promotion; p.ID != "" {
 		entry := &envWaitPromotionJSON{ID: p.ID, Release: p.ReleaseVersion}
 		switch {
@@ -649,6 +675,9 @@ func rolloutSingleReadError(env string, report envWaitReport, rollout wireRollou
 	if code == exitOK {
 		return nil
 	}
+	if phase == wireRolloutPhaseHeld {
+		return queuedRolloutError(env, rollout, 0)
+	}
 	detail := emptyOr(describeUnhealthyWorkloads(rollout), emptyOr(rollout.Reason, "no workload status was reported"))
 	return &exitCodeError{code: code, msg: fmt.Sprintf(
 		"rollout of %s to %s is %s: %s", waitReleaseLabel(report), env, rolloutPhaseName(phase), detail)}
@@ -659,6 +688,12 @@ func rolloutSingleReadError(env string, report envWaitReport, rollout wireRollou
 // a rollout that was still progressing exits 5 — retry the wait — and one
 // that was degraded exits 1.
 func rolloutDeadlineError(env string, report envWaitReport, rollout wireRollout, phase string, budget time.Duration) error {
+	if phase == wireRolloutPhaseHeld {
+		// Still queued when the budget ran out: 7, with the block, so the
+		// caller hands the link to a person rather than retrying a wait
+		// that only a person can finish.
+		return queuedRolloutError(env, rollout, budget)
+	}
 	code := exitCodeForRolloutPhase(phase)
 	detail := emptyOr(describeUnhealthyWorkloads(rollout), emptyOr(rollout.Reason, "no workload status was reported"))
 	hint := ""
@@ -671,6 +706,16 @@ func rolloutDeadlineError(env string, report envWaitReport, rollout wireRollout,
 	return &exitCodeError{code: code, msg: fmt.Sprintf(
 		"rollout of %s to %s was still %s after %s: %s%s",
 		waitReleaseLabel(report), env, rolloutPhaseName(phase), budget, detail, hint)}
+}
+
+// queuedRolloutError is a wait that ended on a HELD promotion: exit 7, and the
+// queued block naming what it waits on and where to act. waited is the
+// budget a --wait spent (zero when the wait stopped at the first read).
+func queuedRolloutError(env string, rollout wireRollout, waited time.Duration) error {
+	return &deployQueuedError{
+		Env: env, Release: rollout.Promotion.ReleaseVersion, PromotionID: rollout.Promotion.ID,
+		Holds: rollout.Holds, WaitedFor: waited,
+	}
 }
 
 // describeUnhealthyWorkloads is the per-workload detail on a failure: every

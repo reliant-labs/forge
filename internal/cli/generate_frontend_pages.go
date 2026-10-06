@@ -181,6 +181,12 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 				if legacyIDRoutes {
 					legacySlugs = append(legacySlugs, entity.EntitySlug)
 				}
+				// Deleted on purpose: the `[id]` pages were scaffolded here once
+				// and the owner removed them. The entity's detail/edit routes
+				// stay removed — the static pair is for projects that never had
+				// them, not a replacement for pages somebody chose to drop.
+				deletedIDRoutes := feType == "nextjs" && !legacyIDRoutes &&
+					dynamicIDRouteWasScaffoldedHere(projectDir, feDir, entity.EntitySlug)
 				// Typed columns / search fields / detail rows: the
 				// templates render explicit field declarations from the
 				// proto entity instead of Object.keys reflection. svc
@@ -194,9 +200,9 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 					kind string
 				}{
 					{entity.HasList, layout.listTmpl, layout.listPath(entity.EntitySlug), "list"},
-					{entity.EmitsDetailPage() && !legacyIDRoutes, layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
+					{entity.EmitsDetailPage() && !legacyIDRoutes && !deletedIDRoutes, layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
 					{entity.HasCreate, layout.createTmpl, layout.createPath(entity.EntitySlug), "create"},
-					{entity.EmitsEditPage() && !legacyIDRoutes, layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
+					{entity.EmitsEditPage() && !legacyIDRoutes && !deletedIDRoutes, layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
 				}
 				for _, k := range kinds {
 					if !k.emit {
@@ -253,6 +259,28 @@ const dynamicIDSegment = "[id]"
 func hasDynamicIDRoute(frontendAbsDir, slug string) bool {
 	info, err := os.Stat(filepath.Join(frontendAbsDir, "src", "app", slug, dynamicIDSegment))
 	return err == nil && info.IsDir()
+}
+
+// dynamicIDRouteWasScaffoldedHere reports whether forge ever scaffolded slug's
+// `[id]` detail/edit pages in this frontend, according to the scaffold-once
+// birth ledger — whether or not they still exist.
+//
+// WHY THE LEDGER AND NOT THE DIRECTORY. A purpose-built console keeps a handful
+// of entity routes and deletes the rest (the generated header says to). Deleting
+// `<slug>/[id]/` is a DELETION, which scaffold-once must never undo; reading the
+// absence of the directory as "migrated, so scaffold the static pair" re-creates
+// exactly the pages the owner removed — and, for a project that never adopted
+// the static pair's helpers, pages that do not typecheck against its own proto
+// (control-plane v1.7.35: four entities, 10 type errors). A frontend that never
+// had `[id]` pages (a fresh scaffold) has no such record and still gets the pair.
+func dynamicIDRouteWasScaffoldedHere(projectDir, feDir, slug string) bool {
+	base := filepath.ToSlash(filepath.Join(feDir, "src", "app", slug, dynamicIDSegment))
+	for _, rel := range []string{base + "/page.tsx", base + "/edit/page.tsx"} {
+		if checksums.ScaffoldRecorded(projectDir, rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // reportDynamicIDRoutes tells the user which entities kept their dynamic

@@ -445,6 +445,62 @@ export default nextConfig;
 	})
 }
 
+// ── trailing slash on a bucket ───────────────────────────────────────────
+
+func TestTrailingSlash(t *testing.T) {
+	pages := map[string]string{
+		"src/app/page.tsx":            "export default function P() { return null }\n",
+		"src/app/books/view/page.tsx": "export default function P() { return null }\n",
+	}
+	bucket := []Binding{{Env: "prod", Runtime: "bucket"}, {Env: "staging", Runtime: "hosted"}}
+
+	t.Run("bucket without trailingSlash 404s every non-root route", func(t *testing.T) {
+		fe := frontendTree(t, withConfig(copyFiles(pages)))
+		fe.Bindings = bucket
+		fs := check(t, fe)
+		assertFindings(t, fs, "static-export-trailing-slash warning frontends/web/next.config.ts:3")
+		for _, want := range []string{"forge.OnBucket in env prod", "books/view.html for /books/view"} {
+			if !strings.Contains(fs[0].Message, want) {
+				t.Errorf("message does not say %q: %s", want, fs[0].Message)
+			}
+		}
+		if strings.Contains(fs[0].Message, "OnHosted in env staging") {
+			t.Errorf("the hosted binding resolves .html itself and must not be named: %s", fs[0].Message)
+		}
+		if !strings.Contains(fs[0].Remediation, "`trailingSlash: true`") {
+			t.Errorf("fix: %s", fs[0].Remediation)
+		}
+	})
+
+	t.Run("trailingSlash true is clean", func(t *testing.T) {
+		files := copyFiles(pages)
+		files["next.config.ts"] = strings.Replace(exportingConfig, "images:", "trailingSlash: true,\n  images:", 1)
+		fe := frontendTree(t, files)
+		fe.Bindings = bucket
+		assertFindings(t, check(t, fe))
+	})
+
+	t.Run("hosted only is clean", func(t *testing.T) {
+		fe := frontendTree(t, withConfig(copyFiles(pages)))
+		fe.Bindings = []Binding{{Env: "prod", Runtime: "hosted"}}
+		assertFindings(t, check(t, fe))
+	})
+
+	t.Run("a single-page site has nothing to 404", func(t *testing.T) {
+		fe := frontendTree(t, withConfig(map[string]string{"src/app/page.tsx": pages["src/app/page.tsx"]}))
+		fe.Bindings = bucket
+		assertFindings(t, check(t, fe))
+	})
+}
+
+func copyFiles(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // ── comment stripping ────────────────────────────────────────────────────
 
 func TestStripCommentsKeepsLinesAndStrings(t *testing.T) {

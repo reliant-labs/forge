@@ -62,6 +62,7 @@ const (
 	RuleDynamicConfig  = "static-export-dynamic-config"
 	RuleNextImage      = "static-export-next-image"
 	RuleConfigRoutes   = "static-export-config-routes"
+	RuleTrailingSlash  = "static-export-trailing-slash"
 )
 
 // RuleIDs lists every rule this package emits.
@@ -69,7 +70,7 @@ func RuleIDs() []string {
 	return []string{
 		RuleNotExported, RuleDynamicSegment, RuleRouteHandler, RuleMiddleware,
 		RuleServerAction, RuleNextHeaders, RuleDynamicConfig, RuleNextImage,
-		RuleConfigRoutes,
+		RuleConfigRoutes, RuleTrailingSlash,
 	}
 }
 
@@ -116,6 +117,7 @@ func Check(fe Frontend) ([]finding.Finding, error) {
 	c.checkSourceConstructs()
 	c.checkNextImage()
 	c.checkConfigRoutes()
+	c.checkTrailingSlash()
 	sort.SliceStable(c.out, func(i, j int) bool {
 		if c.out[i].File != c.out[j].File {
 			return c.out[i].File < c.out[j].File

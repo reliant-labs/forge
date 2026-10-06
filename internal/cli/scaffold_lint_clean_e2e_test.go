@@ -122,6 +122,15 @@ message ArchiveOrderResponse {
 	if !strings.Contains(out, "Running contract interface enforcement linter") {
 		t.Errorf("contractlint lane did not run:\n%s", out)
 	}
+	// The scaffold's frontend is a static export (`output: static`) bound to
+	// forge.OnHosted in staging and prod, so the static-export lane JUDGES it
+	// — and must find nothing: the generated CRUD pages are query-param
+	// routes, next/image is unoptimized, and the dev log route is POST-only
+	// and dev-guarded. A scaffold this lane flagged would be one whose
+	// staging/prod `npm run build` fails, or whose hosted site lacks pages.
+	if !strings.Contains(out, "✓ static-export clean — 1 static frontend(s)") {
+		t.Errorf("static-export lane did not judge the scaffolded frontend clean:\n%s", out)
+	}
 
 	// The scaffold's expected FORGE_SCAFFOLD markers are surfaced as a
 	// WARNING — visible, but not gating.

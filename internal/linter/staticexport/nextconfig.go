@@ -55,11 +55,15 @@ func configLine(cfg *sourceFile, key *regexp.Regexp) int {
 	if loc := key.FindStringIndex(cfg.code); loc != nil {
 		return cfg.lineAt(loc[0])
 	}
-	if i := strings.Index(cfg.code, "NextConfig"); i >= 0 {
-		return cfg.lineAt(i)
+	if loc := configObjectRE.FindStringIndex(cfg.code); loc != nil {
+		return cfg.lineAt(loc[0])
 	}
 	return 1
 }
+
+// configObjectRE is the declaration of the config object itself:
+// `const nextConfig: NextConfig = {` or `export default {`.
+var configObjectRE = regexp.MustCompile(`\b(?:const|let|var)\s+[\w$]+\s*(?::\s*NextConfig\s*)?=\s*\{|\bexport\s+default\s*\{|\bmodule\.exports\s*=\s*\{`)
 
 // checkExported: the production build must BE an export before anything else
 // about it matters. This is the lint twin of the render-time refusal
@@ -154,6 +158,49 @@ func (c *checker) checkConfigRoutes() {
 			fmt.Sprintf("serve it from the backend or your CDN instead, or make the dev-only intent explicit: `...(process.env.NODE_ENV === \"development\" ? { async %s() { … } } : {})`", key))
 	}
 }
+
+// trailingSlashRE is the next.config switch that makes the export write
+// `<route>/index.html` instead of `<route>.html`.
+var trailingSlashRE = regexp.MustCompile(`\btrailingSlash\s*:\s*true\b`)
+
+// checkTrailingSlash: a bucket resolves no `.html`. With Next's default
+// (`trailingSlash: false`) the export writes `books/view.html` for
+// `/books/view`; the hosted origin tries `<path>.html`, but a bucket serves
+// objects by exact name (and a bucket website maps only directories to
+// index.html), so every route but `/` 404s there. Only the frontend's
+// OnBucket bindings are judged: forge.OnHosted resolves the `.html` itself.
+func (c *checker) checkTrailingSlash() {
+	cfg := c.nextConfig
+	if cfg == nil || trailingSlashRE.MatchString(cfg.code) {
+		return
+	}
+	var buckets []Binding
+	for _, b := range c.fe.Bindings {
+		if b.Runtime == "bucket" {
+			buckets = append(buckets, b)
+		}
+	}
+	if len(buckets) == 0 {
+		return
+	}
+	example := ""
+	for _, rf := range c.appRouteFiles() {
+		if rf.kind == "page" && urlOf(rf.segments) != "/" {
+			example = urlOf(rf.segments)
+			break
+		}
+	}
+	if example == "" {
+		return // a single-page site: index.html is all there is
+	}
+	c.add(RuleTrailingSlash, finding.SeverityWarning, c.rel(cfg.rel), configLine(cfg, trailingSlashKeyRE),
+		fmt.Sprintf("frontend %q is bound to %s, and %s leaves `trailingSlash` off: the export writes %s.html for %s, and a bucket resolves no `.html` (forge.OnHosted tries <path>.html; a bucket serves objects by exact name), so every route but / 404s there — the export builds fine",
+			c.fe.Name, describeBindings(buckets), cfg.rel, strings.TrimPrefix(example, "/"), example),
+		fmt.Sprintf("set `trailingSlash: true` in %s: the export then writes %s/index.html, which a bucket website serves for %s/, and Next adds the slash to every link (the entity-route helpers need no change). A CDN in front that maps /x to x.html works too", cfg.rel, strings.TrimPrefix(example, "/"), example))
+}
+
+// trailingSlashKeyRE anchors the finding on an existing `trailingSlash:` key.
+var trailingSlashKeyRE = regexp.MustCompile(`\btrailingSlash\s*:`)
 
 // isObjectKey reports whether the match at off begins an object member — the
 // previous non-space character is `{`, `,` or the `async` keyword — rather

@@ -310,8 +310,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     an export at all, and forge.yaml and next.config disagreeing about it.
   - **warnings**, for what the export accepts and then drops: `middleware.ts` /
     `proxy.ts`, non-GET route handlers that are not dev-only, next.config
-    `rewrites` / `redirects` / `headers` not gated to development, and
-    `revalidate = N`.
+    `rewrites` / `redirects` / `headers` not gated to development,
+    `revalidate = N`, and an export bound to `forge.OnBucket` without
+    `trailingSlash: true` (a bucket resolves no `.html`, so every route but
+    `/` 404s; the hosted origin tries `<path>.html` itself).
 
   CI's `NODE_ENV=production npm run build`, `forge build` and
   `forge env deploy` run the real export, which stays authoritative. This lane

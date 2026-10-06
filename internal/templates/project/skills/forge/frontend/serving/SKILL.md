@@ -108,6 +108,8 @@ being exportable without anything noticing. Two checks catch it:
     - non-GET route handlers that are not dev-only
     - `rewrites` / `redirects` / `headers` not gated to development
     - `revalidate = N`
+    - an export bound to `forge.OnBucket` without `trailingSlash: true`: a
+      bucket resolves no `.html` (above), so every route but `/` 404s
 
   A dev-only handler says so in its first statement:
   `if (process.env.NODE_ENV === "production") return …`, as the scaffolded

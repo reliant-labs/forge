@@ -557,7 +557,7 @@ type UpdateOp[Req, Resp, Ent any] struct {
 //   - unknown or immutable path → CodeInvalidArgument naming the path
 //     (mapped from orm.UnknownFieldError by mapRepoErr).
 //
-// The response packs the entity as the repository left it. The generated
+// The response carries the entity as the repository left it. The generated
 // repository reads back every column a write did not set (see
 // Repo.Update), so on both paths the response reports the STORED value of
 // a column the caller could not write — a read-only status, a GENERATED

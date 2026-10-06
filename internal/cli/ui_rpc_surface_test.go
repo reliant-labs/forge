@@ -14,7 +14,7 @@ import (
 // CLI path for. Every entry needs a reason; "not built yet" is a gap, not a
 // reason, and belongs in a tracked follow-up rather than here.
 var uiOnlyRPCs = map[string]string{
-	"DeployService/ListUsage":        "metered-usage and spend charts on the Settings → Billing screen; billing is a UI/dashboard flow, not an environment operation an agent needs.",
+	"DeployService/ListUsage": "metered-usage and spend charts on the Settings → Billing screen; billing is a UI/dashboard flow, not an environment operation an agent needs.",
 }
 
 var forgeRPCCallRe = regexp.MustCompile(`controlplane\.v1\.(DeployService|DomainService)/(\w+)`)

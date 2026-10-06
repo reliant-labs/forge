@@ -221,7 +221,7 @@ package %s
 //
 // The function uses yaml.Node round-tripping so user comments, key
 // ordering, and any non-canonical fields under contracts: survive
-// untouched. This is the same shape appendToProjectConfigSequence uses
+// untouched. This is the same shape the in-place forge.yaml setters use
 // for top-level keys, but parameterized for the nested
 // contracts.exclude path.
 func appendToContractsExclude(configPath, entry string) (bool, error) {

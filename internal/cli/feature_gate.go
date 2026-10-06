@@ -1,9 +1,8 @@
 // Package cli — feature-gating helpers shared across cobra commands.
 //
-// `forge.yaml` exposes a `features:` block (see config.FeaturesConfig)
-// that gates major subsystems — deploy, build, frontend, packs,
-// starters, ci, docs, observability, ... — so projects can opt out of
-// surface they don't use. Two modes are supported:
+// Features (see config.FeaturesConfig) gate major subsystems — deploy, build,
+// frontend, ci, observability, ... — and are DERIVED from what exists in the
+// repo, not configured. Two modes are supported:
 //
 //   - requireFeature is the strict gate: a direct cobra subcommand
 //     (e.g. `forge env deploy`, `forge build`) returns
@@ -29,61 +28,17 @@ package cli
 
 import (
 	"fmt"
-	"io"
-	"strings"
-	"sync/atomic"
-
-	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
-// experimentalWarningEmitted ensures the startup warning fires at most
-// once per process. PersistentPreRun runs for every cobra command in
-// the tree (root + subcommand), so without this guard `forge cluster
-// up` would print the warning twice.
-var experimentalWarningEmitted atomic.Bool
-
-// machineInvokedAnnotation marks a command that forge runs as a
-// subprocess of its own pipeline rather than one a person types. Such a
-// command must not emit interactive nudges: nobody is reading them, and
-// the parent invocation has already said whatever there was to say.
-//
-// The once-per-process guard on the experimental warning cannot cover
-// this, because each subprocess IS a fresh process. `protoc-gen-forge`
-// is spawned by buf once per proto file, so in a project with
-// experimental features on, `forge generate` printed the same
-// "warning: experimental: …" line 27 times in control-plane — once for
-// the user's own invocation and 26 more from plugin subprocesses that
-// no user asked for.
+// machineInvokedAnnotation marks a command that forge runs as a subprocess of
+// its own pipeline rather than one a person types. Such a command must not
+// emit interactive output: nobody is reading it, and the parent invocation has
+// already said whatever there was to say. `protoc-gen-forge` is spawned by buf
+// once per proto file, and each spawn is a fresh process.
 const machineInvokedAnnotation = "forge.machine-invoked"
-
-// machineInvoked reports whether cmd is a forge-spawned subprocess
-// rather than a user-typed command.
-func machineInvoked(cmd *cobra.Command) bool {
-	_, ok := cmd.Annotations[machineInvokedAnnotation]
-	return ok
-}
-
-// emitExperimentalWarning prints the canonical "experimental features
-// are on" line to stderr the first time it's called per process.
-// Subsequent calls are no-ops. The exact wording is the public
-// contract: humans grepping logs and sub-agents matching on the
-// "warning: experimental features enabled:" prefix find one
-// authoritative string.
-func emitExperimentalWarning(w io.Writer, names []config.FeatureName) {
-	if len(names) == 0 {
-		return
-	}
-	if !experimentalWarningEmitted.CompareAndSwap(false, true) {
-		return
-	}
-	// One short grep-friendly line. Stays "warning:" so log scrapers and
-	// agents matching on that prefix keep working.
-	_, _ = fmt.Fprintf(w, "warning: experimental: %s (--silence-experimental to hide)\n",
-		strings.Join(names, ", "))
-}
 
 // featureCheck is the per-feature predicate signature. Each Feature*
 // constant in package config has a paired FeaturesConfig.<Name>Enabled
@@ -95,9 +50,7 @@ type featureCheck func(config.FeaturesConfig) bool
 // FeaturesConfig accessor. Used by requireFeature so call sites pass
 // just the feature name and the helper knows which accessor to invoke
 // — keeps the name-to-accessor mapping in one place (mismatch is a
-// compile-time error rather than a runtime mis-spelling). Experimental
-// features share this map; the default-OFF semantics come from the
-// underlying accessor (e.g. IngressEnabled() reads Experimental.Ingress).
+// compile-time error rather than a runtime mis-spelling).
 var featureChecks = map[string]featureCheck{
 	config.FeatureORM:           func(f config.FeaturesConfig) bool { return f.ORMEnabled() },
 	config.FeatureCodegen:       func(f config.FeaturesConfig) bool { return f.CodegenEnabled() },
@@ -111,8 +64,6 @@ var featureChecks = map[string]featureCheck{
 	config.FeatureDeploy:        func(f config.FeaturesConfig) bool { return f.DeployEnabled() },
 	config.FeatureIngress:       func(f config.FeaturesConfig) bool { return f.IngressEnabled() },
 	config.FeatureOperators:     func(f config.FeaturesConfig) bool { return f.OperatorsEnabled() },
-	config.FeatureStrictWiring:  func(f config.FeaturesConfig) bool { return f.StrictWiringEnabled() },
-	config.FeatureReconcile:     func(f config.FeaturesConfig) bool { return f.ReconcileEnabled() },
 }
 
 // featureReader is the narrow slice of the project store the feature-gate
@@ -169,20 +120,10 @@ func requireFeature(name string) (*projectstore.Store, error) {
 // projects that have those features turned off. Unlike requireFeature
 // this never errors — the orchestrator wants to finish whatever
 // remaining phases are enabled.
-//
-// Experimental features get a distinct skip message — the historical
-// "disabled in forge.yaml" wording implies the user opted out, which
-// is misleading for default-off opt-in features the user never
-// touched.
 func skipFeature(store featureReader, name, phase string) bool {
 	if isFeatureEnabled(store, name) {
 		return false
 	}
-	if config.IsExperimentalFeature(name) {
-		fmt.Printf("[%s] feature '%s' is experimental and not opted in (set features.experimental.%s: true) — skipping\n",
-			phase, name, name)
-		return true
-	}
-	fmt.Printf("[%s] feature '%s' is disabled in forge.yaml — skipping\n", phase, name)
+	fmt.Printf("[%s] feature '%s' is off for this project (derived from the repo; see `forge project features`) — skipping\n", phase, name)
 	return true
 }

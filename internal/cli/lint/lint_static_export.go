@@ -13,8 +13,8 @@
 //
 // Every Next.js frontend whose EFFECTIVE output is static:
 //
-//   - forge.yaml declares `output: static` for it — the declaration is a
-//     promise, whether or not an env ships it yet; or
+//   - its next.config is a static export, whether or not an env ships it
+//     yet; or
 //   - ANY env binds it to a static runtime. The bindings come from each
 //     env's real render, not a text scan: the scaffold declares binder
 //     helpers (`_hosted_frontend`, `_on_bucket`) in every env file whether
@@ -90,11 +90,10 @@ func staticExportTargets(ctx context.Context, projectDir string, cfg *config.Pro
 			continue
 		}
 		out = append(out, staticexport.Frontend{
-			Name:           fe.Name,
-			Dir:            filepath.Join(projectDir, filepath.FromSlash(rel)),
-			RelDir:         rel,
-			DeclaredOutput: fe.EffectiveOutput(),
-			Bindings:       bs,
+			Name:     fe.Name,
+			Dir:      filepath.Join(projectDir, filepath.FromSlash(rel)),
+			RelDir:   rel,
+			Bindings: bs,
 		})
 	}
 	return out
@@ -189,7 +188,7 @@ func runStaticExportLint(ctx context.Context, projectDir string, cfg *config.Pro
 		return err
 	}
 	if judged == 0 {
-		fmt.Println("  static-export: no frontend is a static export (none declares `output: static` or is bound to a static runtime) — nothing to check")
+		fmt.Println("  static-export: no frontend is a static export (none is a static export or is bound to a static runtime) — nothing to check")
 		return nil
 	}
 	if len(fs) == 0 {

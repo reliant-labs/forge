@@ -43,56 +43,51 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// stepDeriveFrontendInventory recovers the codegen inventory from the
-// DEPLOY GRAPH for a project whose frontends the cheap half could not
-// find — one at a custom path, declared in KCL and nowhere else.
+// stepDeriveFrontendInventory overlays the DEPLOY GRAPH onto the inventory
+// the loader found on disk.
 //
-// The cheap half already ran. config.ResolveInventoryAtLoad resolves the
-// marker-gated frontends/<name> scan inside LoadProject, so every command
-// — lint, doctor, build, this pipeline — already agrees on the inventory
-// before this step is reached. What is left here is only the half that
-// costs a KCL render per environment (1.6-2.2s each, four environments on
-// control-plane), which is why it stays on the commands that already
-// render rather than moving to the load seam and taxing shell completion.
+// There is no `frontends:` key in forge.yaml: the inventory is derived. The
+// cheap half already ran — config.ResolveInventoryAtLoad scans frontends/<name>
+// inside LoadProject, so every command (lint, doctor, build, this pipeline)
+// agrees on it. What is left here is the half that costs a KCL render per
+// environment (1.6-2.2s each, four environments on control-plane), which is
+// why it stays on the commands that already render rather than moving to the
+// load seam and taxing shell completion.
 //
-// So the residual set this closes is narrow and precise: a frontend whose
-// code is in this repository at a path the frontends/<name> convention
-// cannot express. DiscoverInRepoFrontends deliberately cannot find it —
-// a non-conventional layout is exactly the case where a declaration
-// should be required rather than guessed.
+// The overlay is what supplies every field a directory cannot carry: the KCL
+// forge.Frontend's port, dev_runner, base_path and `routes` allowlist, and a
+// frontend at a path the frontends/<name> convention cannot express.
 //
 // Best-effort. A project whose KCL does not render (no dev env yet, a
 // half-written main.k, kcl not installed) keeps whatever the cheap half
-// resolved rather than failing generate: failing here would turn a
-// degraded generate into no generate at all.
+// resolved rather than failing generate: failing here would turn a degraded
+// generate into no generate at all.
 func stepDeriveFrontendInventory(ctx *pipelineContext) error {
-	if ctx.Cfg == nil || len(ctx.Cfg.Frontends) > 0 {
+	if ctx.Cfg == nil {
 		return nil
 	}
 
-	derived := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.ProjectDir))
-	if len(derived) == 0 {
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.ProjectDir))
+	if len(fromKCL) == 0 {
 		return nil
 	}
 
-	ctx.Cfg.Frontends = derived
-	// features.frontend is derived from the inventory being non-empty
-	// (DeriveFeatureDefaults), and it was resolved at load time against
-	// the empty one. Re-resolve so the frontend steps are not gated off
-	// by a feature flag computed before the inventory existed.
-	//
-	// Still required HERE, and only here: the load seam resolves the
-	// cheap half BEFORE feature derivation runs, so it needs no repair.
-	// This late KCL-only half is the one case that still changes the
-	// inventory after features were computed.
+	before := len(ctx.Cfg.Frontends)
+	ctx.Cfg.Frontends = config.MergeFrontendInventory(ctx.Cfg.Frontends, fromKCL)
+	// The frontend feature derives from the inventory being non-empty, and it
+	// was resolved at load time against the disk-only one. Re-resolve so the
+	// frontend steps are not gated off by a flag computed before the KCL
+	// declarations were folded in.
 	config.ApplyDerivedDefaults(ctx.Cfg)
 
-	names := make([]string, 0, len(derived))
-	for _, fe := range derived {
-		names = append(names, fmt.Sprintf("%s (%s)", fe.Name, fe.DeclaredDir()))
+	if len(ctx.Cfg.Frontends) > before {
+		names := make([]string, 0, len(ctx.Cfg.Frontends))
+		for _, fe := range ctx.Cfg.Frontends {
+			names = append(names, fmt.Sprintf("%s (%s)", fe.Name, fe.DeclaredDir()))
+		}
+		fmt.Printf("  ℹ️  generating for %d frontend(s) found in frontends/ or declared in deploy/kcl: %v\n",
+			len(names), names)
 	}
-	fmt.Printf("  ℹ️  forge.yaml declares no frontends; generating for %d found in deploy/kcl or frontends/: %v\n",
-		len(names), names)
 	return nil
 }
 
@@ -126,6 +121,10 @@ func kclDeclaredFrontends(projectDir string) []config.KCLFrontend {
 				Type:      fe.Type,
 				Path:      fe.Path,
 				HasSource: fe.Source != nil && fe.Source.Repo != "",
+				Port:      fe.Port,
+				DevRunner: fe.DevRunner,
+				BasePath:  fe.BasePath,
+				Routes:    fe.Routes,
 			})
 		}
 	}

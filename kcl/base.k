@@ -203,7 +203,7 @@ env_merge = lambda base: [EnvVar], overrides: [EnvVar] -> [EnvVar] {
 #                   resolves to ITS content-addressed digest. forge.image_digests().
 #                   Absent on the local-registry / `kcl run` path (→ {}).
 #   frontend_outputs -> JSON name→build-shape map ("static" | "standalone" |
-#                   "server") projected from forge.yaml `frontends[].output`.
+#                   "server") read from each frontend's next.config.
 #                   forge.render refuses a server build on a static runtime
 #                   with it. Absent on a plain `kcl run` (→ nothing judged).
 #

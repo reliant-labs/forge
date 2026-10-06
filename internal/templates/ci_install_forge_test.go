@@ -71,7 +71,7 @@ func fullCIData() CIWorkflowData {
 var stampedForgeRefRE = regexp.MustCompile(`cmd/forge@[^"$\s]`)
 
 // Every workflow that installs forge — every such job in ci.yml, deploy.yml,
-// e2e.yml's k3d runtime and reconcile.yml — runs installForgeScript, byte for
+// and e2e.yml's k3d runtime — runs installForgeScript, byte for
 // byte, and none carries a literal ref. A second, divergent install recipe is
 // how one job ends up checking with a different forge than its neighbour, and
 // how a fix lands in three copies of a script and misses the fourth.
@@ -86,15 +86,12 @@ func TestCIWorkflows_InstallForgeFromProjectAtRunTime(t *testing.T) {
 	}
 	workflows := map[string][]byte{
 		"ci.yml": render("ci.yml.tmpl", fullCIData()),
-		"reconcile.yml": render("reconcile.yml.tmpl", ReconcileWorkflowData{
-			ProjectName: "demo", Environments: []DeployEnv{{Name: "staging"}},
-		}),
 		"deploy.yml": render("deploy.yml.tmpl", DeployWorkflowData{
 			ProjectName: "demo", Environments: []DeployEnv{{Name: "prod", Protection: true}},
 		}),
 		"e2e.yml": render("e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "k3d"}),
 	}
-	want := map[string]int{"ci.yml": 5, "reconcile.yml": 1, "deploy.yml": 1, "e2e.yml": 1}
+	want := map[string]int{"ci.yml": 5, "deploy.yml": 1, "e2e.yml": 1}
 	for name, wf := range workflows {
 		if m := stampedForgeRefRE.Find(wf); m != nil {
 			t.Errorf("%s stamps a forge ref at scaffold time (%q) — it will drift from go.mod on the next forge bump", name, m)

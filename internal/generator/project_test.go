@@ -86,9 +86,23 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("Generate() error = %v", err)
 	}
 
+	// The scaffolded forge.yaml names no frontend, no features and no database:
+	// all three derive from the tree just written.
 	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(configContents, "type: nextjs") {
-		t.Fatalf("expected scaffolded frontend type to be normalized to nextjs, got:\n%s", configContents)
+	for _, removed := range []string{"frontends:", "features:", "stack:", "frontend:", "driver:", "migrations_dir:"} {
+		if strings.Contains(configContents, "\n"+removed) {
+			t.Fatalf("scaffolded forge.yaml must not emit the removed key %q:\n%s", removed, configContents)
+		}
+	}
+	loaded, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("scaffolded forge.yaml must load: %v", err)
+	}
+	if len(loaded.Frontends) != 1 || loaded.Frontends[0].Name != "web" || loaded.Frontends[0].Type != "nextjs" {
+		t.Fatalf("the scaffolded frontend must be derived from frontends/web as nextjs, got %+v", loaded.Frontends)
+	}
+	if !loaded.Features.FrontendEnabled() {
+		t.Fatal("the frontend feature must derive on from the scaffolded frontend")
 	}
 
 	serviceContents := readFile(t, filepath.Join(root, "internal", "handlers", "api", "service.go"))
@@ -596,46 +610,6 @@ func TestCompareGoVersion(t *testing.T) {
 	}
 }
 
-func TestAppendFrontendToConfigPreservesUnknownFields(t *testing.T) {
-	root := t.TempDir()
-	configPath := filepath.Join(root, "forge.yaml")
-
-	// forge.yaml is project-global only; this fixture exercises the frontend
-	// append path, which stays in forge.yaml and must preserve user-added
-	// unknown keys.
-	original := `name: sample
-module_path: example.com/sample
-version: 0.1.0
-frontends:
-  - name: web
-    type: nextjs
-    path: frontends/web
-    port: 3000
-    feature_flags:
-      beta: true
-experimental_section:
-  enabled: false
-`
-	if err := os.WriteFile(configPath, []byte(original), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := AppendFrontendToConfig(root, "admin", 3001); err != nil {
-		t.Fatalf("AppendFrontendToConfig() error = %v", err)
-	}
-
-	after := readFile(t, configPath)
-	if !strings.Contains(after, "feature_flags") || !strings.Contains(after, "beta: true") {
-		t.Errorf("expected unknown per-frontend key to be preserved, got:\n%s", after)
-	}
-	if !strings.Contains(after, "experimental_section:") {
-		t.Errorf("expected unknown top-level key to be preserved, got:\n%s", after)
-	}
-	if !strings.Contains(after, "name: admin") {
-		t.Errorf("expected new frontend to be appended, got:\n%s", after)
-	}
-}
-
 func assertPathExists(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
@@ -1042,16 +1016,11 @@ func TestProjectGeneratorIsIdempotentForforgeOwnedFiles(t *testing.T) {
 
 // --- Feature flag gating tests ---
 
-func falsePtr() *bool { f := false; return &f }
-
 func TestFeatureFlag_MigrationsDisabled(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "no-migrations")
 	gen := NewProjectGenerator("no-migrations", root, "example.com/no-migrations")
 	gen.ServiceName = "api"
-	gen.Features = config.FeaturesConfig{
-		Migrations: falsePtr(),
-		ORM:        falsePtr(), // db/ is created when either migrations or ORM is enabled
-	}
+	gen.Features = gen.Features.With(config.FeatureMigrations, false).With(config.FeatureORM, false) // db/ is created when either is enabled
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -1123,9 +1092,7 @@ func TestFeatureFlag_CodegenDisabled(t *testing.T) {
 	gen := NewProjectGenerator("no-codegen", root, "example.com/no-codegen")
 	// No ServiceName — setting one would create proto/services/<svc>/v1
 	// unconditionally via MkdirAll.
-	gen.Features = config.FeaturesConfig{
-		Codegen: falsePtr(),
-	}
+	gen.Features = gen.Features.With(config.FeatureCodegen, false)
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -1188,9 +1155,7 @@ func TestFeatureFlag_CIDisabled(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "no-ci")
 	gen := NewProjectGenerator("no-ci", root, "example.com/no-ci")
 	gen.ServiceName = "api"
-	gen.Features = config.FeaturesConfig{
-		CI: falsePtr(),
-	}
+	gen.Features = gen.Features.With(config.FeatureCI, false)
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -1217,9 +1182,7 @@ func TestFeatureFlag_HotReloadDisabled(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "no-hotreload")
 	gen := NewProjectGenerator("no-hotreload", root, "example.com/no-hotreload")
 	gen.ServiceName = "api"
-	gen.Features = config.FeaturesConfig{
-		HotReload: falsePtr(),
-	}
+	gen.Features = gen.Features.With(config.FeatureHotReload, false)
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -1238,9 +1201,7 @@ func TestFeatureFlag_ObservabilityDisabled(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "no-observability")
 	gen := NewProjectGenerator("no-observability", root, "example.com/no-observability")
 	gen.ServiceName = "api"
-	gen.Features = config.FeaturesConfig{
-		Observability: falsePtr(),
-	}
+	gen.Features = gen.Features.With(config.FeatureObservability, false)
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)

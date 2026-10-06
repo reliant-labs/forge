@@ -21,8 +21,6 @@ func TestRunDevStatusJSON_IngressDisabledEmitsEmptyArray(t *testing.T) {
 module_path: github.com/example/testproj
 version: "0.1.0"
 binary: shared
-features:
-  ingress: false
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)

@@ -45,13 +45,6 @@ func TestE2EAddVerbsProduceABuildableTree(t *testing.T) {
 	)
 	projectDir := filepath.Join(dir, "addverbs")
 
-	// Operators are an opt-in feature; `project new` has no flag for it. The
-	// key is `features.operators`: operators graduated out of experimental,
-	// and `features.experimental.operators` is now refused by forge.yaml
-	// validation (so `scaffold operator` fails with "feature disabled").
-	appendCorpusFile(t, filepath.Join(projectDir, "forge.yaml"),
-		"features:\n    operators: true\n")
-
 	// ── the add verbs ────────────────────────────────────────────────
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "nightly",
 		"--kind", "cron", "--schedule", "0 3 * * *")

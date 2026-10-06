@@ -42,9 +42,15 @@ func runVerifyTestRun(t *testing.T, stdin string, args ...string) (string, error
 func writeProject(t *testing.T, extra string) string {
 	t.Helper()
 	root := t.TempDir()
-	// features.ci must be explicit: a bare forge.yaml derives it off, and
-	// the `ci` group is gated on it like every other `forge ci` subcommand.
-	body := "name: app\nmodule_path: example.com/app\nfeatures:\n  ci: true\n" + extra
+	// The `ci` group is gated on the ci feature, which derives on for any
+	// project that is not a library — so give the project a binary.
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cmd", "app", "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "name: app\nmodule_path: example.com/app\n" + extra
 	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

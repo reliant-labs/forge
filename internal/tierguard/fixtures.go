@@ -82,6 +82,15 @@ type fixture struct {
 	Entities map[string][]entityMessage
 	// Frontends are `--frontend` names (forge.yaml shape + features).
 	Frontends []string
+	// GatewayHTTPPort, when non-zero, moves the scaffolded `public` Gateway's
+	// http listener off its default (18080) in deploy/kcl/ingress.k.
+	//
+	// This is the input deploy/k3d-ports.yaml projects. Since `ingress` derives
+	// from a forge.Gateway being declared in deploy/kcl, every scaffolded
+	// project emits that file, and it is a function of the listener ports the
+	// user's KCL declares. A fixture set where nobody moves a listener leaves
+	// it byte-identical and indistinguishable from library code.
+	GatewayHTTPPort int
 	// InternalPackages each contribute a contract.go.
 	InternalPackages []internalPackage
 	// PublicRPCs maps a service name to RPCs declared with
@@ -197,6 +206,7 @@ func projectB() fixture {
 			}},
 		},
 		InternalPackages: []internalPackage{{Name: "ledger"}},
+		GatewayHTTPPort:  18180,
 		PublicRPCs:       map[string][]string{"billing": {"GetStatus"}},
 		ConfigBlocks: []configBlock{{
 			Name: "Ledger",
@@ -341,6 +351,10 @@ func render(parent string, fx fixture) (*renderResult, error) {
 
 	root := filepath.Join(parent, fx.Name)
 
+	if err := retargetGatewayListener(root, fx.GatewayHTTPPort); err != nil {
+		return nil, err
+	}
+
 	for _, svc := range fx.Services[1:] {
 		if err := forgeIn(root, "scaffold", "service", svc); err != nil {
 			return nil, fmt.Errorf("scaffold service %s: %w", svc, err)
@@ -414,6 +428,26 @@ func render(parent string, fx fixture) (*renderResult, error) {
 	}
 	sort.Strings(res.Missing)
 	return res, nil
+}
+
+// retargetGatewayListener moves the scaffolded `public` Gateway's http listener
+// to port in deploy/kcl/ingress.k — the edit a user makes when 18080 is taken.
+// A zero port leaves the scaffold's default alone.
+func retargetGatewayListener(root string, port int) error {
+	if port == 0 {
+		return nil
+	}
+	path := filepath.Join(root, "deploy", "kcl", "ingress.k")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	const scaffolded = "port = 18080"
+	if !strings.Contains(string(raw), scaffolded) {
+		return fmt.Errorf("%s no longer declares %q — the fixture's anchor moved with the ingress template", path, scaffolded)
+	}
+	out := strings.Replace(string(raw), scaffolded, fmt.Sprintf("port = %d", port), 1)
+	return os.WriteFile(path, []byte(out), 0o644)
 }
 
 // binPlaceholder stands in for the binary-name path segment so renders

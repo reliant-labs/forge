@@ -180,10 +180,10 @@ func featureDisabledReport(flag, feature string) *lintJSONReport {
 	return buildLintJSONReport([]lintJSONFinding{{
 		Severity: lintSevError,
 		Rule:     "feature-disabled",
-		Message: fmt.Sprintf("`forge lint %s` was requested but the %s feature is disabled in forge.yaml, "+
+		Message: fmt.Sprintf("`forge lint %s` was requested but the %s feature is off for this project, "+
 			"so nothing was checked", flag, feature),
-		FixHint: fmt.Sprintf("set `features.%s: true` in forge.yaml, or drop %s from this command. "+
-			"Note that %s also derives OFF when `database.driver` is empty or \"none\"", feature, flag, feature),
+		FixHint: fmt.Sprintf("%s — or drop %s from this command. `forge project features` shows why it is off.",
+			featureTurnOn(feature), flag),
 	}}, true)
 }
 

@@ -72,7 +72,7 @@ var Reserved = map[string]string{
 	// The render refuses a frontend bound to a static runtime whose build
 	// is not a static export; this is how it knows. A caller-supplied value
 	// would let a server build through the refusal.
-	"frontend_outputs": "each frontend's production build shape — derived from forge.yaml frontends[].output",
+	"frontend_outputs": "each frontend's production build shape — read from each frontend's next.config",
 }
 
 // Option is one render option a project's KCL declares. Type/Default/Help are

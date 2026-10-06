@@ -65,7 +65,6 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		// HasFrontends without a path is the setup-node fallback branch
 		// (a fixed node-version), the one scalar the other cases miss.
 		{"e2e frontend without path", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true}},
-		{"reconcile", "reconcile.yml.tmpl", ReconcileWorkflowData{ProjectName: "demo", Environments: envs}},
 		{"dependabot", "dependabot.yml.tmpl", struct{ FrontendName string }{"web"}},
 	}
 	out := map[string][]byte{}

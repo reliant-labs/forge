@@ -67,10 +67,9 @@ var configObjectRE = regexp.MustCompile(`\b(?:const|let|var)\s+[\w$]+\s*(?::\s*N
 
 // checkExported: the production build must BE an export before anything else
 // about it matters. This is the lint twin of the render-time refusal
-// (kcl/render.k _not_static_export), and it also catches the drift the
-// render cannot see: forge.yaml and next.config disagreeing.
+// (kcl/render.k _not_static_export); next.config is the one source of the
+// build shape for both.
 func (c *checker) checkExported() {
-	declaredStatic := c.fe.DeclaredOutput == "static"
 	cfg := c.nextConfig
 	if cfg == nil {
 		// No next.config at all is Next's default: a server build.
@@ -80,30 +79,17 @@ func (c *checker) checkExported() {
 		return
 	}
 	file := c.rel(cfg.rel)
-	exported := outputExportRE.MatchString(cfg.code)
-	switch {
-	case exported && declaredStatic:
+	if outputExportRE.MatchString(cfg.code) {
 		return
-	case exported:
-		// The code exports; forge.yaml still says server. The render reads
-		// forge.yaml, so it refuses the binding this build would satisfy.
-		c.add(RuleNotExported, finding.SeverityError, file, configLine(cfg, outputExportRE),
-			fmt.Sprintf("%s and %s sets `output: \"export\"`, but forge.yaml still declares `output: %s` for it — forge reads the build shape from forge.yaml, so the render refuses the binding", c.why(), cfg.rel, c.fe.DeclaredOutput),
-			fmt.Sprintf("set `output: static` on frontend %q in forge.yaml so it says what the code does", c.fe.Name))
-	case declaredStatic:
-		c.add(RuleNotExported, finding.SeverityError, file, configLine(cfg, outputKeyRE),
-			fmt.Sprintf("forge.yaml declares `output: static` for frontend %q, but %s never sets `output: \"export\"`: `next build` writes no out/, so a static runtime has nothing to publish", c.fe.Name, cfg.rel),
-			"make the production build an export — `...(process.env.NODE_ENV === \"production\" ? { output: \"export\" } : {})` in the config object"+c.exportTemplateHint())
-	default:
-		c.add(RuleNotExported, finding.SeverityError, file, configLine(cfg, outputKeyRE),
-			fmt.Sprintf("%s, but its build is not a static export: forge.yaml declares `output: %s` (a Node.js server) and %s does not set `output: \"export\"`, so there is nothing to publish — `forge env render` refuses this binding", c.why(), c.fe.DeclaredOutput, cfg.rel),
-			fmt.Sprintf("either set `output: static` on frontend %q in forge.yaml, switch %s to the static export%s and fix the other static-export findings for this frontend; or bind it elsewhere — a Next.js server is a process, so it ships as a workload (fw.Workload with build = forge.DockerBuild {dockerfile = %q})",
-				c.fe.Name, cfg.rel, c.exportTemplateHint(), path.Join(c.fe.RelDir, "Dockerfile")))
 	}
+	c.add(RuleNotExported, finding.SeverityError, file, configLine(cfg, outputKeyRE),
+		fmt.Sprintf("%s, but its build is not a static export: %s does not set `output: \"export\"`, so there is nothing to publish — `forge env render` refuses this binding", c.why(), cfg.rel),
+		fmt.Sprintf("either switch %s to the static export%s and fix the other static-export findings for this frontend; or bind it elsewhere — a Next.js server is a process, so it ships as a workload (fw.Workload with build = forge.DockerBuild {dockerfile = %q})",
+			cfg.rel, c.exportTemplateHint(), path.Join(c.fe.RelDir, "Dockerfile")))
 }
 
 // exportTemplateHint points at the scaffold's own static next.config, which
-// `forge project upgrade` renders from forge.yaml's `output:`.
+// `forge project upgrade` renders.
 func (c *checker) exportTemplateHint() string {
 	p := c.rel("next.config.ts")
 	return fmt.Sprintf(" (with forge.yaml at `output: static`, `forge project upgrade --check %s` shows the scaffold's static next.config, and `forge project upgrade --force %s` adopts it)", p, p)

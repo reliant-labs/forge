@@ -167,9 +167,6 @@ func TestEnvStatusJSONIsParseable(t *testing.T) {
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
-features:
-  codegen: true
-  frontend: false
 `)
 	fixture := fmt.Sprintf(`{
   "output": {

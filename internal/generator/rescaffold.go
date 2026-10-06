@@ -173,7 +173,7 @@ func IsForgeGenerated(content []byte) bool {
 //
 // This is the authority rescaffold consults for .github/workflows/* and
 // .github/dependabot.yml: CIWorkflows decides which workflows a project HAS
-// (e2e.yml only with an e2e suite, reconcile.yml only with the reconcile
+// (e2e.yml only with an e2e suite
 // feature), and a staging render of `forge project new` must never smuggle in
 // one it would not emit.
 func CIWorkflowFileFor(projectDir string, cfg *config.ProjectConfig, in CIInputs, relPath string) (content []byte, ok bool, err error) {
@@ -227,8 +227,6 @@ func CIWorkflowAbsenceReason(relPath string) string {
 	case ".github/workflows/e2e.yml":
 		return "it runs the project's e2e suite, and this project has none: add an e2e/ suite " +
 			"(scaffolded with the first service) or set ci.e2e.enabled: true in forge.yaml"
-	case ".github/workflows/reconcile.yml":
-		return "it is part of the reconcile feature: set features.experimental.reconcile: true in forge.yaml"
 	case ".github/workflows/proto-breaking.yml":
 		return "it checks service protos for breaking changes, which only a service project with codegen on has"
 	case ".github/workflows/release.yml", ForgeDeployActionPath:

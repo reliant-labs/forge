@@ -17,7 +17,7 @@ func workloadURLProject(t *testing.T, env, bundleBody string) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\nversion: 0.1.0\nfrontends: []\n",
+		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\n\n",
 		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
 		"deploy/kcl/" + env + "/main.k": "import forge\nimport forge.tiers\nimport forge.workloads as fw\n\n_bundle = forge.Bundle {\n" + bundleBody + "\n}\n\n" +
 			"output = forge.render(_bundle)\n",

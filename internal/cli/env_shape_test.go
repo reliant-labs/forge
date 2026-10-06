@@ -691,13 +691,14 @@ func TestEnvBuildPlanRecordsNothing(t *testing.T) {
 func withBuildableProject(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	// features.build is stated rather than left to derivation: a project
-	// with no cmd/ tree derives as a library, which disables build and
-	// makes `forge env build` refuse at the gate.
-	const forgeYAML = "name: shapetest\nmodule_path: github.com/example/shapetest\nfeatures:\n  build: true\n"
+	// The build feature derives from the project not being a library, so the
+	// project needs the tree of a binary: a project with no cmd/ tree derives
+	// as a library and makes `forge env build` refuse at the gate.
+	const forgeYAML = "name: shapetest\nmodule_path: github.com/example/shapetest\n"
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(forgeYAML), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	markServiceProject(t, dir)
 	t.Chdir(dir)
 	return dir
 }

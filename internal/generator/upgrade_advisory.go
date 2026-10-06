@@ -338,17 +338,12 @@ func frontendAdvisoryTypedConfig(root, frontend string) FrontendTypedConfig {
 	return FrontendTypedConfig{}
 }
 
-// frontendTemplateTreeFor resolves a forge.yaml frontend entry to its
-// template tree name. forge.yaml carries the framework under `type`
-// ("nextjs" / "react-native" / "vite-spa") while the scaffold flow passes
-// a `kind` ("web" / "mobile" / "vite-spa"); both vocabularies reach this
-// function, so both are resolved here rather than at each call site.
+// frontendTemplateTreeFor resolves a frontend's type to its template tree
+// name. The inventory spells the type as detected from disk ("nextjs" /
+// "react-native" / "vite-spa") or as a KCL declaration wrote it ("nextjs" /
+// "vite" / "rn"); both reach this function, so both are resolved here.
 func frontendTemplateTreeFor(fe config.FrontendConfig) string {
-	name := strings.ToLower(strings.TrimSpace(fe.Type))
-	if name == "" {
-		name = strings.ToLower(strings.TrimSpace(fe.Kind))
-	}
-	switch name {
+	switch strings.ToLower(strings.TrimSpace(fe.Type)) {
 	case "react-native", "react_native", "mobile", "rn":
 		return "react-native"
 	case "vite-spa", "vite":

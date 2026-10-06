@@ -626,7 +626,7 @@ func (*Adapter) Pending(_ context.Context) ([]string, error) {
 // frontends[].base_path feature end to end:
 //
 //	render level (always, no node needed):
-//	  - forge.yaml persists base_path (it drives regeneration);
+//	  - base_path is detected from next.config.ts (no forge.yaml key);
 //	  - next.config.ts sources basePath from NEXT_PUBLIC_BASE_PATH with
 //	    the "/admin" literal default, emits basePath AND assetPrefix
 //	    (same value), and carries the static-branch fail-loud guard;
@@ -726,10 +726,6 @@ message ListItemsResponse { repeated Item items = 1; string next_page_token = 2;
 	runCmd(t, projectDir, forgeBin, "scaffold", "frontend", "console", "--base-path", "/admin", "--output", "static")
 	feDir := filepath.Join(projectDir, "frontends", "console")
 	assertPathExistsE2E(t, filepath.Join(feDir, "package.json"))
-
-	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "base_path: /admin") {
-		t.Fatalf("forge.yaml does not persist `base_path: /admin` for frontend console — generate would lose the prefix on the next run")
-	}
 
 	// ── 1. generate ×2 — idempotency. Covers basepath_gen.ts, nav/
 	// dashboard/hooks/mocks/pages emission and (when node_modules
@@ -1413,7 +1409,7 @@ func snapshotSmallFiles(t *testing.T, root string) map[string]string {
 			return nil
 		}
 		info, ierr := d.Info()
-		if ierr != nil || info.Size() > 1<<20 {
+		if ierr != nil || info.Size() > 1<<20 || d.Name() == "forge.lock" {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)
@@ -1528,7 +1524,7 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if !d.Type().IsRegular() || d.Name() == "forge.lock" {
 			return nil
 		}
 		rel, rerr := filepath.Rel(root, path)

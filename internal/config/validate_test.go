@@ -2,7 +2,6 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,8 +15,8 @@ import (
 const validBaseYAML = `name: demo
 module_path: github.com/example/demo
 database:
-  driver: postgres
-  migrations_dir: db/migrations
+  migration_safety:
+    enabled: true
 ci:
   provider: github
 docker:
@@ -70,7 +69,7 @@ func TestLoadProject_MultipleUnknownKeys(t *testing.T) {
 	// Drop the real contracts:/database: blocks first so we don't get a duplicate
 	// issue from the still-valid originals while testing the typos.
 	in = strings.Replace(in, "contracts:\n  exclude: []\n", "", 1)
-	in = strings.Replace(in, "database:\n  driver: postgres\n  migrations_dir: db/migrations\n", "", 1)
+	in = strings.Replace(in, "database:\n  migration_safety:\n    enabled: true\n", "", 1)
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "contarcts", "contracts", "databse", "database") { //nolint:misspell // checks suggestion output
@@ -166,7 +165,6 @@ func TestLoadProject_MissingRequired_ModulePath(t *testing.T) {
 func TestLoadProject_MissingRequired_Multiple(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "name: demo\n", "", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
-	in += "frontends:\n  - type: nextjs\n"
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
@@ -175,9 +173,6 @@ func TestLoadProject_MissingRequired_Multiple(t *testing.T) {
 	}
 	if !strings.Contains(got, "'module_path' is required") {
 		t.Errorf("expected 'module_path' required, got:\n%s", got)
-	}
-	if !strings.Contains(got, "frontends[0].name is required") {
-		t.Errorf("expected frontends[0].name required, got:\n%s", got)
 	}
 }
 
@@ -192,94 +187,16 @@ func TestLoadProject_TypeMismatch(t *testing.T) {
 }
 
 func TestLoadProject_NestedUnknownKey(t *testing.T) {
-	// database: has bogus subkey "migrations_dur" — should be detected at
+	// migration_safety has a bogus subkey "unsafe_add_colum" — should be detected at
 	// the nested level with a path-prefixed message and a suggestion.
 	// (Components moved out of forge.yaml, so the nested-walk path is now
 	// exercised against a still-YAML-parsed block.)
-	in := strings.Replace(validBaseYAML, "  migrations_dir: db/migrations\n",
-		"  migrations_dir: db/migrations\n  migrations_dur: typo\n", 1)
+	in := strings.Replace(validBaseYAML, "    enabled: true\n",
+		"    enabled: true\n    unsafe_add_colum: warn\n", 1)
 	_, err := LoadProject([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "database.migrations_dur", "did you mean", "migrations_dir") {
+	if !containsAll(ve.Error(), "database.migration_safety.unsafe_add_colum", "did you mean", "unsafe_add_column") {
 		t.Errorf("expected nested-path unknown-key + suggestion, got:\n%s", ve.Error())
-	}
-}
-
-// TestLoadProject_FrontendOutput_ValidValues_Accepted covers the three
-// supported `frontends[].output` values: "static" (the new default),
-// "standalone" (Node sidecar, the legacy default), and "server" (full
-// Next.js dev+prod). Empty (unset) is also accepted — the scaffold
-// canonicalises that to "static" downstream.
-func TestLoadProject_FrontendOutput_ValidValues_Accepted(t *testing.T) {
-	cases := []string{"static", "standalone", "server"}
-	for _, value := range cases {
-		t.Run(value, func(t *testing.T) {
-			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    output: " + value + "\n"
-			if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-				t.Errorf("expected output=%q to validate, got: %v", value, err)
-			}
-		})
-	}
-}
-
-// TestLoadProject_FrontendOutput_InvalidValue_Rejected pins the
-// validator's error shape so anyone adding a new mode (e.g. "edge")
-// must remember to extend the validator at the same time. Catching the
-// invalid value at load time turns a runtime template fall-through
-// into a clear actionable error.
-func TestLoadProject_FrontendOutput_InvalidValue_Rejected(t *testing.T) {
-	in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    output: edge\n"
-	_, err := LoadProject([]byte(in), "forge.yaml")
-	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "frontends[0].output", "invalid", "static", "standalone", "server") {
-		t.Errorf("expected output validation error mentioning the supported values, got:\n%s", ve.Error())
-	}
-}
-
-// TestLoadProject_FrontendBasePath_ValidValues_Accepted covers the
-// accepted shapes for `frontends[].base_path`: a "/"-prefixed path with
-// no trailing slash, segments limited to [A-Za-z0-9._-]. Multi-segment
-// prefixes are legal (an app proxied two levels deep).
-func TestLoadProject_FrontendBasePath_ValidValues_Accepted(t *testing.T) {
-	cases := []string{"/admin", "/internal/admin", "/v2.1_beta", "/app-shell"}
-	for _, value := range cases {
-		t.Run(value, func(t *testing.T) {
-			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    base_path: " + value + "\n"
-			if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-				t.Errorf("expected base_path=%q to validate, got: %v", value, err)
-			}
-		})
-	}
-}
-
-// TestLoadProject_FrontendBasePath_InvalidValues_Rejected pins the shape
-// contract: the literal is spliced verbatim into next.config.ts and
-// generated TypeScript string literals, so anything outside the strict
-// grammar must fail at forge.yaml load time — not as a silently broken
-// deploy. Values are written in their YAML-quoted form where quoting is
-// needed for the YAML parser to see the intended string.
-func TestLoadProject_FrontendBasePath_InvalidValues_Rejected(t *testing.T) {
-	cases := []struct {
-		name  string
-		value string // YAML form (quoted where needed)
-	}{
-		{"no_leading_slash", `admin`},
-		{"trailing_slash", `/admin/`},
-		{"bare_root", `"/"`},
-		{"embedded_space", `"/ad min"`},
-		{"double_slash", `"/admin//x"`},
-		{"percent_escape", `"/a%2Fb"`},
-		{"quote_injection", `"/ad\"min"`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    base_path: " + tc.value + "\n"
-			_, err := LoadProject([]byte(in), "forge.yaml")
-			ve := requireValidationError(t, err)
-			if !containsAll(ve.Error(), "frontends[0].base_path", "invalid") {
-				t.Errorf("expected base_path validation error for %s, got:\n%s", tc.value, ve.Error())
-			}
-		})
 	}
 }
 
@@ -315,86 +232,6 @@ func TestLoadProject_FourIssuesAtOnce(t *testing.T) {
 			t.Errorf("expected suggestion %q, got:\n%s", suggestion, got)
 		}
 	}
-}
-
-// TestLoadProject_FrontendNameCollision_AfterNormalisation covers the
-// validateFrontendNames lint: two entries whose canonical Go-package form
-// is the same would race for the same scaffold directory. The lint must
-// surface that BEFORE the user discovers it via a confusing downstream
-// codegen error.
-//
-// Component names go through the same rules at `forge scaffold` time —
-// where the name is chosen and the discovered inventory is in hand — not
-// here: forge.yaml carries no components.
-func TestLoadProject_FrontendNameCollision_AfterNormalisation(t *testing.T) {
-	_, err := LoadProject([]byte(frontendsYAML("admin-web", "admin_web")), "forge.yaml")
-	ve := requireValidationError(t, err)
-	got := ve.Error()
-	// Post-2026-06-08 snake-canonicalisation: "admin-web" and "admin_web"
-	// both normalize to "admin_web" (hyphen → underscore), so the collision
-	// message names the snake form.
-	if !containsAll(got, "collides", "admin_web") {
-		t.Errorf("expected collision message naming admin_web, got:\n%s", got)
-	}
-}
-
-// TestLoadProject_FrontendName_ReservedWord_Rejected covers names whose
-// canonical Go-package form lands on a Go keyword / predeclared
-// identifier. The downstream symptom is a broken `package <reserved>`
-// declaration that fails compilation deep in the codegen output; the
-// lint catches it at forge.yaml-parse time.
-func TestLoadProject_FrontendName_ReservedWord_Rejected(t *testing.T) {
-	_, err := LoadProject([]byte(frontendsYAML("select")), "forge.yaml")
-	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "reserved word", "select") {
-		t.Errorf("expected reserved-word rejection, got:\n%s", ve.Error())
-	}
-}
-
-// TestLoadProject_FrontendName_LeadingDigit_Rejected covers names whose
-// canonical Go-package form starts with a digit. Go package idents must
-// begin with a letter or underscore; the lint guards against the
-// surprising downstream parse error.
-func TestLoadProject_FrontendName_LeadingDigit_Rejected(t *testing.T) {
-	_, err := LoadProject([]byte(frontendsYAML("2fast")), "forge.yaml")
-	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "invalid Go package", "2fast") {
-		t.Errorf("expected leading-digit rejection, got:\n%s", ve.Error())
-	}
-}
-
-// TestLoadProject_FrontendName_PunctuationSurvivingNormalisation_Rejected
-// covers names containing punctuation that the canonical
-// ServicePackage transform leaves intact (dots, slashes). Those
-// characters can never produce a legal package directory.
-func TestLoadProject_FrontendName_PunctuationSurvivingNormalisation_Rejected(t *testing.T) {
-	_, err := LoadProject([]byte(frontendsYAML("foo.bar")), "forge.yaml")
-	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "invalid Go package", "foo.bar") {
-		t.Errorf("expected punctuation rejection, got:\n%s", ve.Error())
-	}
-}
-
-// TestLoadProject_ValidFrontendVariants_Accepted is the positive case for
-// the lint: hyphenated, snake_case, and plain-lowercase names all coexist
-// peacefully as long as their canonical forms differ.
-func TestLoadProject_ValidFrontendVariants_Accepted(t *testing.T) {
-	_, err := LoadProject([]byte(frontendsYAML("web", "admin-web", "billing_v2")), "forge.yaml")
-	if err != nil {
-		t.Fatalf("expected clean load, got: %v", err)
-	}
-}
-
-// frontendsYAML builds a minimal forge.yaml declaring one frontend per
-// name, for the name-shape lint above.
-func frontendsYAML(names ...string) string {
-	var b strings.Builder
-	b.WriteString(validBaseYAML)
-	b.WriteString("frontends:\n")
-	for _, n := range names {
-		fmt.Fprintf(&b, "  - name: %q\n    type: nextjs\n", n)
-	}
-	return b.String()
 }
 
 // TestLoadProject_NestedUnknownKey_LineAndPath pins down both the
@@ -477,36 +314,13 @@ func TestLoadProject_DocsKeysRemovedWarn(t *testing.T) {
 	prev := SetConfigWarningSink(&sink)
 	defer SetConfigWarningSink(prev)
 
-	in := validBaseYAML + "docs:\n  output_dir: docs/generated\nfeatures:\n  docs: true\n"
+	in := validBaseYAML + "docs:\n  output_dir: docs/generated\n"
 	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
 		t.Fatalf("a removed docs key must warn, not fail; err=%v", err)
 	}
 	got := sink.String()
-	if !containsAll(got, `"docs" is no longer a forge.yaml key`, `"features.docs" is no longer a forge.yaml key`,
-		"forge no longer generates documentation") {
-		t.Errorf("expected both docs keys reported as removed, got:\n%s", got)
-	}
-}
-
-func TestLoadProject_StackDeploy_RemovedKeyWarns(t *testing.T) {
-	var sink strings.Builder
-	prev := SetConfigWarningSink(&sink)
-	defer SetConfigWarningSink(prev)
-
-	in := validBaseYAML + `stack:
-  deploy:
-    target: k8s
-    provider: k3d
-    registry: ghcr.io
-`
-	// LoadProject returns nil error for warning-only keys (they don't gate),
-	// so a clean load is the expected outcome for a removed-but-tolerated key.
-	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-		t.Fatalf("removed `stack.deploy` must load (warn, not fail) so mid-migration projects aren't stranded. err=%v", err)
-	}
-	got := sink.String()
-	if !containsAll(got, `"stack.deploy" is no longer a forge.yaml key`, "deploy/kcl/<env>/main.k") {
-		t.Errorf("expected stack.deploy→per-env KCL migration warning, got:\n%s", got)
+	if !containsAll(got, `"docs" is no longer a forge.yaml key`, "forge no longer generates documentation") {
+		t.Errorf("expected the docs key reported as removed, got:\n%s", got)
 	}
 }
 
@@ -672,29 +486,6 @@ func TestLoadProject_DeprecatedEnvironmentsStillLoads(t *testing.T) {
 	// stays true whether or not a migration is currently shipped.
 	if !strings.Contains(out, "config.<env>.yaml") {
 		t.Errorf("expected warning to name where per-env config moves to, got: %q", out)
-	}
-}
-
-// TestLoadProject_RetiredNestedKey_FeaturesExperimentalDeploy pins the
-// headline fr-57edf33aca case: `features.experimental.deploy: true` —
-// a key forge ITSELF wrote in the experimental window — must NOT
-// hard-fail every config-loading command after the schema graduated the
-// flag. It loads with a non-fatal warning carrying the migration hint.
-func TestLoadProject_RetiredNestedKey_FeaturesExperimentalDeploy(t *testing.T) {
-	var sink strings.Builder
-	prev := SetConfigWarningSink(&sink)
-	defer SetConfigWarningSink(prev)
-
-	in := validBaseYAML + "features:\n  experimental:\n    deploy: true\n"
-	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-		t.Fatalf("forge's own retired key features.experimental.deploy must WARN, not fail; got: %v", err)
-	}
-	got := sink.String()
-	if !containsAll(got, `"features.experimental.deploy" is no longer a forge.yaml key`, "features.deploy") {
-		t.Errorf("expected migration warning pointing at features.deploy, got:\n%s", got)
-	}
-	if strings.Contains(got, "did you mean") {
-		t.Errorf("retired key must not emit a typo suggestion, got:\n%s", got)
 	}
 }
 
@@ -945,5 +736,71 @@ func TestLoadProject_DockerBuildContextsStay(t *testing.T) {
 	}
 	if cfg.Docker.BuildContexts["shared"] != "../shared" {
 		t.Errorf("BuildContexts = %v, want the declared context", cfg.Docker.BuildContexts)
+	}
+}
+
+// TestLoadProject_RemovedBlocksAreRefusedWithTheirHint pins every key the
+// forge.yaml cleanup removed. Each must FAIL the load (not warn) — a stale value
+// that merely stopped being read would silently change what forge does — and the
+// failure must carry the specific migration, never a typo suggestion.
+func TestLoadProject_RemovedBlocksAreRefusedWithTheirHint(t *testing.T) {
+	const base = "name: demo\nmodule_path: github.com/example/demo\n"
+	cases := []struct {
+		name  string
+		yaml  string
+		key   string
+		hints []string
+	}{
+		{"features", "features:\n  orm: false\n", "features",
+			[]string{"derived", "//forge:no-orm", "internal/db", "forge.Gateway", "internal/operators"}},
+		{"stack", "stack:\n  frontend:\n    framework: nextjs\n", "stack",
+			[]string{"frontends/<name>", "forge.Frontend"}},
+		{"frontends", "frontends:\n  - name: web\n    type: nextjs\n", "frontends",
+			[]string{"forge.Frontend", "routes", "frontends/"}},
+		{"frontend", "frontend:\n  workspaces: true\n", "frontend",
+			[]string{"pnpm-workspace.yaml"}},
+		{"smoke", "smoke:\n  flow_checks:\n    - name: x\n      url: http://localhost:1/x\n", "smoke",
+			[]string{"flow_checks", "forge.FlowCheck", "workload"}},
+		{"database.driver", "database:\n  driver: postgres\n", "database.driver",
+			[]string{"derived", "db/migrations"}},
+		{"database.migrations_dir", "database:\n  migrations_dir: db/migrations\n", "database.migrations_dir",
+			[]string{"db/migrations"}},
+		{"database.seed", "database:\n  seed:\n    rows: 5\n", "database.seed",
+			[]string{"20 rows", "--no-seed"}},
+		{"database.migration_safety.allowed_destructive",
+			"database:\n  migration_safety:\n    allowed_destructive:\n      - db/migrations/1_x.up.sql\n",
+			"database.migration_safety.allowed_destructive",
+			[]string{"-- forge:allow-destructive"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadProject([]byte(base+tc.yaml), "forge.yaml")
+			ve := requireValidationError(t, err)
+			got := ve.Error()
+			if !strings.Contains(got, `"`+tc.key+`" is no longer a forge.yaml key`) {
+				t.Errorf("want a refusal naming %q, got:\n%s", tc.key, got)
+			}
+			if !containsAll(got, tc.hints...) {
+				t.Errorf("refusal for %q must carry its migration hint %v, got:\n%s", tc.key, tc.hints, got)
+			}
+			if strings.Contains(got, "did you mean") {
+				t.Errorf("a retired key must get its runbook, not a typo suggestion:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestRemovedBlocksAreRefusedNotWarned guards the registry choice itself: these
+// keys live in refusedSchemaKeys (fatal), never removedSchemaKeys (warning).
+func TestRemovedBlocksAreRefusedNotWarned(t *testing.T) {
+	for _, key := range []string{"features", "stack", "frontends", "frontend", "smoke",
+		"database.driver", "database.migrations_dir", "database.seed",
+		"database.migration_safety.allowed_destructive"} {
+		if _, ok := refusedSchemaKeys[key]; !ok {
+			t.Errorf("%q must be in refusedSchemaKeys so a stale value cannot be silently ignored", key)
+		}
+		if _, ok := removedSchemaKeys[key]; ok {
+			t.Errorf("%q must not also be in removedSchemaKeys (it would shadow nothing and mislead)", key)
+		}
 	}
 }

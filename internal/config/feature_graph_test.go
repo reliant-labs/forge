@@ -5,163 +5,68 @@ import (
 	"testing"
 )
 
-// TestFeatureGraph_FrontendRequiresCodegen pins the canonical error
-// shape from the spec: a feature enabled with a dependency off is a load
-// error naming both sides and the fix.
+// withFeatures builds a config whose derived feature set is forced, to drive
+// the graph validator with a contradiction no derivation rule would produce.
+func withFeatures(db string, force map[FeatureName]bool) *ProjectConfig {
+	c := &ProjectConfig{Name: "demo", ModulePath: "github.com/example/demo", Kind: ProjectKindService}
+	c.Database.Driver = db
+	for name, on := range force {
+		c.Features = c.Features.With(name, on)
+	}
+	return c
+}
+
+func requireGraphIssue(t *testing.T, c *ProjectConfig, wants ...string) {
+	t.Helper()
+	issues := validateFeatureGraph(c)
+	if len(issues) == 0 {
+		t.Fatal("expected a feature-graph violation, got none")
+	}
+	var all strings.Builder
+	for _, i := range issues {
+		all.WriteString(i.msg + " | " + i.fix + "\n")
+	}
+	for _, want := range wants {
+		if !strings.Contains(all.String(), want) {
+			t.Errorf("violation missing %q\ngot: %s", want, all.String())
+		}
+	}
+}
+
 func TestFeatureGraph_FrontendRequiresCodegen(t *testing.T) {
-	in := `name: demo
-module_path: github.com/example/demo
-features:
-  codegen: false
-  frontend: true
-`
-	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
-	if err == nil {
-		t.Fatal("expected load error for frontend-on/codegen-off, got nil")
-	}
-	msg := err.Error()
-	for _, want := range []string{"frontend", "codegen", "disabled", "Fix:"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error missing %q\ngot: %s", want, msg)
-		}
-	}
+	requireGraphIssue(t, withFeatures("postgres", map[FeatureName]bool{FeatureCodegen: false, FeatureFrontend: true}),
+		"frontend", "codegen", "disabled")
 }
 
-// TestFeatureGraph_ORMRequiresDriver: orm on with no database driver is a
-// shape-precondition violation.
 func TestFeatureGraph_ORMRequiresDriver(t *testing.T) {
-	in := `name: demo
-module_path: github.com/example/demo
-database:
-  driver: none
-features:
-  orm: true
-  migrations: false
-`
-	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
-	if err == nil {
-		t.Fatal("expected load error for orm-on/driver-none, got nil")
-	}
-	if !strings.Contains(err.Error(), "orm") || !strings.Contains(err.Error(), "database driver") {
-		t.Errorf("error missing orm/driver wording\ngot: %s", err.Error())
-	}
+	requireGraphIssue(t, withFeatures("none", map[FeatureName]bool{FeatureORM: true, FeatureMigrations: false}),
+		"orm", "database driver", "db/migrations")
 }
 
-// TestFeatureGraph_DeployRequiresBuild: deploy on, build off → error.
 func TestFeatureGraph_DeployRequiresBuild(t *testing.T) {
-	in := `name: demo
-module_path: github.com/example/demo
-features:
-  build: false
-  deploy: true
-`
-	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
-	if err == nil {
-		t.Fatal("expected load error for deploy-on/build-off, got nil")
-	}
-	if !strings.Contains(err.Error(), "deploy") || !strings.Contains(err.Error(), "build") {
-		t.Errorf("error missing deploy/build wording\ngot: %s", err.Error())
-	}
+	requireGraphIssue(t, withFeatures("postgres", map[FeatureName]bool{FeatureBuild: false, FeatureDeploy: true}),
+		"deploy", "build")
 }
 
-// TestFeatureGraph_IngressRequiresDeploy: ingress on while deploy off →
-// error. ingress graduated out of experimental, so it is declared at the
-// top level; the dependency edge is unchanged (ingress IS a deploy-time
-// Gateway API overlay).
 func TestFeatureGraph_IngressRequiresDeploy(t *testing.T) {
-	in := `name: demo
-module_path: github.com/example/demo
-features:
-  deploy: false
-  ingress: true
-`
-	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
-	if err == nil {
-		t.Fatal("expected load error for ingress-on/deploy-off, got nil")
-	}
-	if !strings.Contains(err.Error(), "ingress") || !strings.Contains(err.Error(), "deploy") {
-		t.Errorf("error missing ingress/deploy wording\ngot: %s", err.Error())
-	}
+	requireGraphIssue(t, withFeatures("postgres", map[FeatureName]bool{FeatureDeploy: false, FeatureIngress: true}),
+		"ingress", "deploy")
 }
 
-// TestFeatureGraph_BatchesMultipleViolations: a config with several
-// contradictions surfaces them all in one ValidationError.
 func TestFeatureGraph_BatchesMultipleViolations(t *testing.T) {
-	in := `name: demo
-module_path: github.com/example/demo
-features:
-  codegen: false
-  frontend: true
-  build: false
-  deploy: true
-`
-	_, err := LoadProject([]byte(in), serviceProjectPath(t, in))
-	if err == nil {
-		t.Fatal("expected batched load error, got nil")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "frontend") || !strings.Contains(msg, "deploy") {
-		t.Errorf("expected both frontend and deploy violations batched\ngot: %s", msg)
-	}
+	c := withFeatures("postgres", map[FeatureName]bool{
+		FeatureCodegen: false, FeatureFrontend: true, FeatureBuild: false, FeatureDeploy: true,
+	})
+	requireGraphIssue(t, c, "frontend", "deploy")
 }
 
-// TestFeatureGraph_ALaCarteLitmus is the spec's à la carte litmus: a
-// kind:service project with ONLY orm + codegen + migrations on (frontend,
-// deploy, observability, hot_reload explicitly off)
-// loads with NO contradiction — "forge as pure postgres schema-truth ORM
-// + codegen." The dependency graph must accept this clean.
-func TestFeatureGraph_ALaCarteLitmus(t *testing.T) {
-	in := `name: pure-orm
-module_path: github.com/example/pure-orm
-database:
-  driver: postgres
-features:
-  codegen: true
-  orm: true
-  migrations: true
-  frontend: false
-  deploy: false
-  build: false
-  ci: false
-  observability: false
-  hot_reload: false
-  contracts: false
-`
-	cfg, err := LoadProject([]byte(in), serviceProjectPath(t, in))
-	if err != nil {
-		t.Fatalf("à la carte ORM+codegen+migrations config must load clean: %v", err)
-	}
-	// Confirm the resolved set is exactly what we asked for.
-	eff := cfg.Features.EffectiveFeatures()
-	on := map[string]bool{FeatureCodegen: true, FeatureORM: true, FeatureMigrations: true}
-	for name, want := range map[string]bool{
-		FeatureCodegen:       true,
-		FeatureORM:           true,
-		FeatureMigrations:    true,
-		FeatureFrontend:      false,
-		FeatureDeploy:        false,
-		FeatureBuild:         false,
-		FeatureObservability: false,
-		FeatureHotReload:     false,
-	} {
-		if eff[name] != want {
-			t.Errorf("feature %q: got %v, want %v", name, eff[name], want)
-		}
-		_ = on
-	}
-}
-
-// TestDeriveFeatureDefaults_Consistent asserts the DERIVED default set is
-// always dependency-consistent: validateFeatureGraph must pass on a
-// config that carries no explicit feature overrides, across every kind.
+// TestDeriveFeatureDefaults_Consistent asserts the DERIVED set is always
+// dependency-consistent across every kind: validateFeatureGraph must pass on a
+// config the loader produced, whatever is on disk.
 func TestDeriveFeatureDefaults_Consistent(t *testing.T) {
 	for _, kind := range []string{ProjectKindService, ProjectKindCLI, ProjectKindLibrary} {
 		t.Run(kind, func(t *testing.T) {
-			c := &ProjectConfig{
-				Name:       "demo",
-				ModulePath: "github.com/example/demo",
-				Kind:       kind,
-			}
+			c := &ProjectConfig{Name: "demo", ModulePath: "github.com/example/demo", Kind: kind}
 			ApplyDerivedDefaults(c)
 			if issues := validateFeatureGraph(c); len(issues) > 0 {
 				t.Errorf("derived defaults for kind=%s are not dependency-consistent: %+v", kind, issues)
@@ -170,16 +75,13 @@ func TestDeriveFeatureDefaults_Consistent(t *testing.T) {
 	}
 }
 
-// TestDeriveFeatureDefaults_FrontendGatedOnCodegen: a non-service project
-// that nonetheless declares a frontend must NOT derive frontend=on while
-// codegen=off (that would trip the validator). The derived default gates
-// frontend on codegen.
+// TestDeriveFeatureDefaults_FrontendGatedOnCodegen: a non-service project that
+// nonetheless has a frontend must NOT derive frontend=on while codegen=off
+// (that would trip the validator).
 func TestDeriveFeatureDefaults_FrontendGatedOnCodegen(t *testing.T) {
 	c := &ProjectConfig{
-		Name:       "demo",
-		ModulePath: "github.com/example/demo",
-		Kind:       ProjectKindCLI,
-		Frontends:  []FrontendConfig{{Name: "web"}},
+		Name: "demo", ModulePath: "github.com/example/demo", Kind: ProjectKindCLI,
+		Frontends: []FrontendConfig{{Name: "web"}},
 	}
 	ApplyDerivedDefaults(c)
 	if c.Features.FrontendEnabled() {
@@ -190,8 +92,6 @@ func TestDeriveFeatureDefaults_FrontendGatedOnCodegen(t *testing.T) {
 	}
 }
 
-// TestFeatureDependencies pins the public accessor used by `forge
-// features`.
 func TestFeatureDependencies(t *testing.T) {
 	if got := FeatureDependencies(FeatureFrontend); len(got) != 1 || got[0] != FeatureCodegen {
 		t.Errorf("frontend deps = %v, want [codegen]", got)

@@ -22,8 +22,8 @@ import (
 //     assert presence/count instead.
 
 // writeGraphProjectYAML writes a minimal forge.yaml the graph command
-// can consume — one frontend ("web") and the schema-required empty
-// sections. The service inventory comes from the proto descriptor and the
+// can consume, plus the frontend ("web") it derives from disk, and the
+// schema-required empty sections. The service inventory comes from the proto descriptor and the
 // internal-package inventory from internal/<pkg>/contract.go, so neither is
 // declared here. The caller may add more bodies on top via os.WriteFile.
 func writeGraphProjectYAML(t *testing.T, dir string) {
@@ -32,11 +32,6 @@ func writeGraphProjectYAML(t *testing.T, dir string) {
 module_path: github.com/demo/demo
 version: 0.0.1
 forge_version: dev
-frontends:
-    - name: web
-      type: nextjs
-      path: frontends/web
-      port: 3000
 database: {}
 ci: {}
 docker: {}
@@ -47,6 +42,14 @@ auth: {}
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
+	}
+	// The frontend inventory is derived: a directory under frontends/ with its
+	// framework's config file.
+	if err := os.MkdirAll(filepath.Join(dir, "frontends", "web"), 0o755); err != nil {
+		t.Fatalf("mkdir frontends/web: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "frontends", "web", "next.config.ts"), []byte("export default {}\n"), 0o644); err != nil {
+		t.Fatalf("write next.config.ts: %v", err)
 	}
 	// The service inventory is enumerated from the proto descriptor
 	// (codegen.IntrospectComponents). "TasksService"

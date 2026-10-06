@@ -2970,6 +2970,21 @@ schema Frontend:
     # SAME env stream as env_vars; an explicit env_vars entry wins on the
     # same variable (forge warns). See FrontendConfig.
     config?: FrontendConfig
+    # Which entities this frontend gets generated CRUD pages for: route
+    # SLUGS as they appear on disk and in the URL — the plural, kebab-cased
+    # entity name ("llm-keys", "usage-events"). Empty (the default) means
+    # EVERY CRUD entity, which is right for a project's single frontend and
+    # wrong for every frontend after that: a purpose-built frontend (an
+    # operator console that wants two of twenty entities) would start by
+    # deleting most of what was just written, and re-delete anything added
+    # later. Naming slugs makes the set an ALLOWLIST — a new entity does not
+    # silently appear in this frontend. An unknown slug is reported by
+    # `forge generate` rather than ignored.
+    #
+    # The single value ["none"] means NO generated CRUD pages at all (a
+    # marketing site, or an app whose every screen is hand-written). It is a
+    # value, not a slug: it cannot be combined with real slugs.
+    routes: [str] = []
 
     # --- The static build (every runtime that publishes one) ---
     # WHERE THE RELEASE IS PUSHED, for a frontend that publishes one to a
@@ -3058,6 +3073,8 @@ schema Frontend:
         dev_runner in ["npm", "pnpm", "yarn"], \
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
         port > 0 and port < 65536, "Frontend.port must be 1..65535"
+        "none" not in routes or len(routes) == 1, \
+            "Frontend '${name}'.routes combines \"none\" with route slugs ${routes}: use [\"none\"] for no generated pages, OR list the slugs you want — not both"
         not public_dir or not public_dir.startswith("/"), \
             "Frontend '${name}'.public_dir must be relative to the frontend's code (e.g. 'dist')"
         base_path == Undefined or base_path.startswith("/"), \

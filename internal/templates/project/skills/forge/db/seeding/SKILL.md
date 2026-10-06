@@ -50,22 +50,17 @@ forge db seed reset    # wipe seeded tables and re-seed (dev only)
 (every in-scope table empty). `apply`/`reset` refuse any non-dev environment,
 and the applier is never compiled into your server binary.
 
-**What auto-seed writes to.** By default only the tables behind your CRUD
-entities (a service with `Create<X>`/`List<Xs>`/… RPCs over a matching table),
-plus any table those reach through a NOT NULL foreign key. Every other table is
-plain schema your own code owns — a ledger, an idempotency log, a payments
-table — and synthesized rows there are fabricated facts, not demo data. Control
-it in `forge.yaml`:
+**What auto-seed writes to.** Only the tables behind your CRUD entities (a service
+with `Create<X>`/`List<Xs>`/… RPCs over a matching table), plus any table those
+reach through a NOT NULL foreign key. Every other table is plain schema your own
+code owns — a ledger, an idempotency log, a payments table — and synthesized rows
+there are fabricated facts, not demo data. An explicit `forge db seed apply`
+seeds every table.
 
-```yaml
-database:
-  seed:
-    auto: false            # never auto-seed this project (per run: --no-seed)
-    tables: [tasks, plans] # seed exactly these (+ required FK parents); [] = none
-```
-
-`tables` also scopes `forge db seed apply`/`reset`; unset, those explicit
-commands seed every table.
+**There is no seed configuration in `forge.yaml`**: 20 rows per table, auto-seed on
+for a fresh dev database, scoped as above. Skip it for one run with
+`forge env up --no-seed`; for different rows, write the dataset under
+`db/seeds/custom/` and `db/seeds/vocab.yaml`.
 
 Keep seed data out of migrations: migrations define schema, seeds populate it.
 Mixing them makes both harder to reason about.

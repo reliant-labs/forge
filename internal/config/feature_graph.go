@@ -1,18 +1,17 @@
 // feature_graph.go — the explicit feature dependency graph.
 //
-// forge's `features:` block used to be a flat set of independent
-// booleans whose interdependencies lived implicitly in the generate
-// pipeline's gate functions (frontend codegen runs after proto codegen;
-// the ORM step reads proto/services; ingress gates on deploy). That
-// made it possible to write a config that LOADS clean but then either
-// silently no-ops a feature or blows up mid-generate with a confusing
-// downstream error.
+// Features are derived from the repo (DeriveFeatureDefaults), and the edges
+// between them used to live implicitly in the generate pipeline's gate
+// functions (frontend codegen runs after proto codegen; the ORM step reads
+// proto/services; ingress gates on deploy). That made it possible for a
+// derivation rule to produce a set that LOADS clean but then either silently
+// no-ops a feature or blows up mid-generate with a confusing downstream error.
 //
-// This file makes those edges EXPLICIT and à la carte. Each feature
-// declares the features and shape preconditions it requires; config
-// load validates the resolved (derived + explicit) feature set against
-// the graph and rejects any enabled feature whose dependency is off —
-// loudly, naming both sides and the fix.
+// This file makes those edges EXPLICIT. Each feature declares the features and
+// shape preconditions it requires; config load validates the derived feature
+// set against the graph and rejects any enabled feature whose dependency is
+// off — loudly, naming both sides and the fix. With nothing configurable it is
+// the guard that keeps a future derivation rule honest.
 //
 // The edges are verified against real consumers in the generate
 // pipeline (internal/cli/generate_pipeline.go) — see the comment on each
@@ -77,28 +76,21 @@ type featureRequirement struct {
 // validator (validateFeatureGraph) rather than this map.
 var featureDeps = map[FeatureName][]featureRequirement{
 	FeatureFrontend: {
-		{Feature: FeatureCodegen, fix: "enable codegen, or disable frontend"},
+		{Feature: FeatureCodegen, fix: "codegen derives from the project being a service; a frontend needs it"},
 	},
 	FeatureORM: {
-		{Feature: FeatureCodegen, fix: "enable codegen, or disable orm"},
-		{Shape: hasDatabaseDriver, label: "a database driver", fix: "set database.driver: postgres, or disable orm"},
+		{Feature: FeatureCodegen, fix: "codegen derives from the project being a service; the ORM needs it"},
+		{Shape: hasDatabaseDriver, label: "a database driver", fix: "add db/migrations — the ORM projects the applied schema"},
 	},
 	FeatureMigrations: {
-		{Feature: FeatureCodegen, fix: "enable codegen, or disable migrations"},
-		{Shape: hasDatabaseDriver, label: "a database driver", fix: "set database.driver: postgres, or disable migrations"},
+		{Feature: FeatureCodegen, fix: "codegen derives from the project being a service; migrations need it"},
+		{Shape: hasDatabaseDriver, label: "a database driver", fix: "add db/migrations"},
 	},
 	FeatureDeploy: {
-		{Feature: FeatureBuild, fix: "enable build, or disable deploy"},
+		{Feature: FeatureBuild, fix: "build derives from the project not being a library; deploy needs it"},
 	},
 	FeatureIngress: {
-		{Feature: FeatureDeploy, fix: "enable deploy, or set features.ingress: false"},
-	},
-	// reconcile → deploy: the loop observes DEPLOY TARGETS through
-	// deploytarget.Provider, which only exist for a project with a deploy
-	// pipeline. Reconciling with deploy off would have nothing to read
-	// and nowhere to converge.
-	FeatureReconcile: {
-		{Feature: FeatureDeploy, fix: "enable deploy, or disable experimental.reconcile"},
+		{Feature: FeatureDeploy, fix: "deploy derives from the project being a service; ingress is a deploy-time overlay"},
 	},
 }
 

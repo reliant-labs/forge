@@ -1623,7 +1623,7 @@ func TestFlagValidatorCatchesKnownBadClaims(t *testing.T) {
 		t.Error("`forge scaffold entity --soft-delete` is gone; the db skill's flag table is now wrong")
 	}
 	// Global flags are inherited, not misses.
-	if !commandHasFlag(ent, "silence-experimental") {
+	if !commandHasFlag(ent, "project-dir") {
 		t.Error("root persistent flags are not visible to the validator — every skill using one would false-positive")
 	}
 	// ...and so is cobra's lazily-added --help, on a command with no flags

@@ -14,7 +14,7 @@ import (
 // they did not: the ORM half was gated on features.orm and the projection
 // half was not.
 //
-// What that cost, in a real project: control-plane sets features.orm=false
+// What that cost, in a real project: control-plane sets the ORM being off
 // because its internal/db is hand-written. Adding a `Domain` proto message
 // and a `domains` table was enough — entity matching resolves a message to
 // a table BY NAME — to make `forge generate` emit a
@@ -47,14 +47,18 @@ func crudStepGate(t *testing.T, stepName string) func(*pipelineContext) bool {
 }
 
 func crudProjectionCtx(orm *bool) *pipelineContext {
+	features := config.FeaturesConfig{}
+	if orm != nil {
+		features = features.With(config.FeatureORM, *orm)
+	}
 	return &pipelineContext{
-		Cfg:         &config.ProjectConfig{Features: config.FeaturesConfig{ORM: orm}},
+		Cfg:         &config.ProjectConfig{Features: features},
 		HasServices: true,
 	}
 }
 
 // TestCRUDProjectionGate_SkippedWhenORMDisabled is the regression guard.
-// With features.orm=false the ORM emitter does not run, so the projection
+// With the ORM being off the ORM emitter does not run, so the projection
 // that consumes its output must not run either.
 func TestCRUDProjectionGate_SkippedWhenORMDisabled(t *testing.T) {
 	ormOff := false
@@ -63,11 +67,11 @@ func TestCRUDProjectionGate_SkippedWhenORMDisabled(t *testing.T) {
 	// Sanity: the fixture must be one the ORM step really declines, or a
 	// passing projection assertion would prove nothing.
 	if gateORMHasServices(ctx) {
-		t.Fatal("fixture does not disable the ORM step — features.orm=false must gate stepInternalDBORM off")
+		t.Fatal("fixture does not disable the ORM step — the ORM being off must gate stepInternalDBORM off")
 	}
 
 	if crudStepGate(t, "CRUD handlers")(ctx) {
-		t.Error("the CRUD projection ran with features.orm=false. Its generated ops reference " +
+		t.Error("the CRUD projection ran with the ORM being off. Its generated ops reference " +
 			"db.<Entity> / db.Create<Entity> / db.Get<Entity>ByID, which stepInternalDBORM did not " +
 			"emit, so `forge generate` writes a handlers_crud_ops_gen.go that cannot compile and " +
 			"then fails its own validate step")
@@ -76,7 +80,7 @@ func TestCRUDProjectionGate_SkippedWhenORMDisabled(t *testing.T) {
 
 // TestCRUDProjectionGate_StaleSweepSkippedWhenORMDisabled: the Tier-1
 // stale sweep has to use the emitter's own gate. If it kept the looser
-// codegen gate, a project with features.orm=false would have any existing
+// codegen gate, a project with the ORM being off would have any existing
 // handlers_crud_ops_gen.go treated as stale and deleted, because the step
 // that would have rewritten it never ran — turning a bad emission into a
 // silent removal of the user's wiring.
@@ -107,7 +111,7 @@ func TestCRUDProjectionGate_RunsOnANormalForgeProject(t *testing.T) {
 		name string
 		orm  *bool
 	}{
-		{"ORM unset (forge's default: on)", nil},
+		{"ORM unset (zero value: on)", nil},
 		{"ORM explicitly on", &ormOn},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

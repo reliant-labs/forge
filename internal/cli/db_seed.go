@@ -16,7 +16,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
-	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -195,14 +194,13 @@ func seedShadowServer(projectDir string) string {
 	return shadowdb.Resolve(projectDir)
 }
 
-// seedConfigFromProject maps the project's forge.yaml database.seed block onto
-// the seedplan.Config the applier consumes, anchored at today (seedNow) so
-// relative and synthesized timestamps read as current.
+// seedConfigFromProject is the seedplan.Config the applier consumes: the
+// library defaults (20 rows per table, salt 0), anchored at today (seedNow) so
+// relative and synthesized timestamps read as current. There is no forge.yaml
+// seed block — the defaults are the contract, and `forge env up --no-seed`
+// skips auto-seed for one run.
 func seedConfigFromProject() seedplan.Config {
 	c := seedplan.DefaultConfig()
-	if store, err := loadProjectStore(); err == nil {
-		c = seedConfigFromStore(store)
-	}
 	c.Now = seedNow()
 	return c
 }
@@ -214,26 +212,6 @@ func seedConfigFromProject() seedplan.Config {
 // against.
 func seedNow() time.Time {
 	return time.Now().UTC().Truncate(24 * time.Hour)
-}
-
-// seedConfigFromStore is the pure, testable core of seedConfigFromProject:
-// it maps an already-loaded project store onto the seedplan.Config.
-func seedConfigFromStore(store *projectstore.Store) seedplan.Config {
-	c := seedplan.DefaultConfig()
-	s := store.Database().Seed
-	if s.Rows > 0 {
-		c.Rows = s.Rows
-	}
-	c.Salt = s.Salt
-	if len(s.RowsPerTable) > 0 {
-		c.RowsPerTable = s.RowsPerTable
-	}
-	if s.Tables != nil {
-		// Non-nil even when empty: `tables: []` means "seed nothing",
-		// which a nil slice would read as "seed everything".
-		c.Tables = append([]string{}, (*s.Tables)...)
-	}
-	return c
 }
 
 // errNonDevSeedTarget is the structural CLI gate: apply/reset refuse any

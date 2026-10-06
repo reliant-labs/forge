@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // smoke_flow.go — the APP-FLOW CHECK phase of `forge env smoke`.
@@ -25,15 +23,16 @@ import (
 // THE DESIGN. The OWNING SERVICE (the one holding the state internally) asserts
 // the invariant and exposes it as an HTTP flow-health endpoint returning 200
 // (healthy) / 503 (unhealthy) — status-only in public so it leaks nothing
-// sensitive. The app DECLARES that endpoint in forge.yaml (`smoke.flow_checks`)
-// and `forge env smoke <env>` simply CURLS it, folding the 200/503 into the SAME
-// summary + table + --json + exit logic the route probes use. smoke needs only
-// a URL + reachability — no DB creds, no privileged command, no auth juggling.
-// A 503 (or unreachable) flow endpoint turns smoke RED (exit 1), so a green
-// smoke now means the app actually works, not just that its ports are open.
+// sensitive. The workload DECLARES that endpoint in its KCL
+// (`flow_checks = [forge.FlowCheck {path = "/flow-health"}]`), and `forge env
+// smoke <env>` curls it, folding the 200/503 into the SAME summary + table +
+// --json + exit logic the route probes use. A 503 (or unreachable) flow
+// endpoint turns smoke RED (exit 1), so a green smoke means the app actually
+// works, not just that its ports are open.
 //
-// Generic by design: any forge app can declare flow-health endpoints; the
-// daemon-attachment endpoint is just reliant/control-plane's instance.
+// The URL is never written down. It is resolved from the env being smoked, off
+// the workload that owns the endpoint (resolveFlowChecks), so there is no port
+// to go stale and no `envs:` filter: the check exists where the workload does.
 
 // smokeFlowReason* are the reason classes for the flow-check phase. Stable
 // strings (the --json `reason` field keys off them), distinct from the
@@ -52,40 +51,135 @@ const (
 // (transport failure) — distinct from a reachable endpoint that answered 503.
 type flowProbe func(ctx context.Context, url string, timeout time.Duration) (int, string, error)
 
-// runSmokeFlowChecks probes every declared flow-health endpoint that applies
-// to env and returns the projected result rows. Checks scoped out via `envs:`
-// are skipped. A nil/empty declaration yields no rows — the route probes alone
-// decide the verdict, so existing projects are unaffected.
+// flowCheck is one declared flow check resolved to the thing smoke can probe.
+// URL is empty — with Misdeclared set — when forge could not work out where the
+// endpoint is served in this env.
+type flowCheck struct {
+	Name        string
+	Workload    string
+	URL         string
+	Description string
+	// Misdeclared explains why URL is empty, in terms of the fix.
+	Misdeclared string
+}
+
+// resolveFlowChecks turns every workload's declared flow checks into probe
+// targets for the env that was rendered. Order of resolution, first match wins:
+//
+//  1. an HTTPRoute/GRPCRoute to the workload whose path prefix covers the
+//     check's path — the route forwards the request, so the listener's origin
+//     plus the check's path reaches it (and a route with a narrower path, or
+//     none covering it, does not);
+//  2. a host workload's first listen port: http://localhost:<port><path>;
+//  3. a hosted workload's platform URL, from the control plane's status.
+//
+// A check none of these reaches is returned Misdeclared rather than dropped:
+// a silently skipped assertion is exactly the green-while-broken failure this
+// phase exists to close.
+func resolveFlowChecks(e *KCLEntities, hostedURL map[string]string) []flowCheck {
+	if e == nil {
+		return nil
+	}
+	var out []flowCheck
+	for _, w := range e.Workloads {
+		for _, fc := range w.FlowChecks {
+			name := fc.Name
+			if name == "" {
+				name = w.Name + ":" + fc.Path
+			}
+			c := flowCheck{Name: name, Workload: w.Name, Description: fc.Description}
+			switch {
+			case routeFlowURL(e, w.Name, fc.Path) != "":
+				c.URL = routeFlowURL(e, w.Name, fc.Path)
+			case w.Runtime.Type == RuntimeHost && w.HostPort() > 0:
+				c.URL = fmt.Sprintf("http://localhost:%d%s", w.HostPort(), fc.Path)
+			case w.Runtime.Type == RuntimeHosted && hostedURL[w.Name] != "":
+				c.URL = strings.TrimRight(hostedURL[w.Name], "/") + fc.Path
+			default:
+				c.Misdeclared = fmt.Sprintf("workload %q declares flow check %q but nothing in this env reaches it: add an HTTPRoute to %q whose path covers %q (or serve it on a host listen port)",
+					w.Name, fc.Path, w.Name, fc.Path)
+			}
+			out = append(out, c)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// routeFlowURL finds a route to workload whose path covers path, and returns
+// the URL it is served at, or "". Both route kinds can carry the check (a
+// flow-health endpoint is plain HTTP, so only an HTTPRoute can actually
+// forward a GET — a GRPCRoute is skipped).
+func routeFlowURL(e *KCLEntities, workload, path string) string {
+	best, bestLen := "", -1
+	for _, r := range e.HTTPRoutes {
+		if r.Service != workload && r.Workload != workload {
+			continue
+		}
+		gw := findGateway(e, r.Gateway)
+		if gw == nil {
+			continue
+		}
+		l := findListener(gw, r.Listener)
+		if l == nil || l.Port == 0 {
+			continue
+		}
+		prefix := normalizeSmokePath(r.Path)
+		if !pathCovers(prefix, path) {
+			continue
+		}
+		scheme := "http"
+		if strings.EqualFold(l.Protocol, "HTTPS") {
+			scheme = "https"
+		}
+		host := gw.EffectiveHost(l, r.Host)
+		if host == "" || strings.HasPrefix(host, "*.") {
+			host = "localhost"
+		}
+		origin := fmt.Sprintf("%s://%s:%d", scheme, host, l.Port)
+		if (scheme == "http" && l.Port == 80) || (scheme == "https" && l.Port == 443) {
+			origin = fmt.Sprintf("%s://%s", scheme, host)
+		}
+		if len(prefix) > bestLen {
+			best, bestLen = origin+path, len(prefix)
+		}
+	}
+	return best
+}
+
+// pathCovers reports whether a route's path prefix forwards path: "/" covers
+// everything, otherwise prefix must equal path or be a whole-segment prefix of it.
+func pathCovers(prefix, path string) bool {
+	prefix = strings.TrimRight(prefix, "/")
+	return prefix == "" || path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+// runSmokeFlowChecks probes every resolved flow-health endpoint and returns the
+// projected result rows, in name order so the table is deterministic. No
+// declared checks yields no rows — the route probes alone decide the verdict,
+// so existing projects are unaffected.
 //
 // The probe is injected so the orchestration (which checks run, how 200/503
 // map to PASS/FAIL) is testable without a real HTTP server.
-func runSmokeFlowChecks(ctx context.Context, env string, checks []config.SmokeFlowCheck, probe flowProbe, timeout time.Duration) []smokeRouteResult {
+func runSmokeFlowChecks(ctx context.Context, checks []flowCheck, probe flowProbe, timeout time.Duration) []smokeRouteResult {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	applicable := make([]config.SmokeFlowCheck, 0, len(checks))
-	for _, c := range checks {
-		if c.RunsInEnv(env) {
-			applicable = append(applicable, c)
-		}
-	}
-	// Stable order by name so the table is deterministic regardless of
-	// forge.yaml ordering.
-	sort.SliceStable(applicable, func(i, j int) bool { return applicable[i].Name < applicable[j].Name })
-
-	results := make([]smokeRouteResult, 0, len(applicable))
-	for _, c := range applicable {
+	ordered := append([]flowCheck(nil), checks...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
+	results := make([]smokeRouteResult, 0, len(ordered))
+	for _, c := range ordered {
 		results = append(results, probeOneFlowCheck(ctx, c, probe, timeout))
 	}
 	return results
 }
 
-// probeOneFlowCheck curls a single declared flow-health endpoint and projects
-// its outcome into a smokeRouteResult so it folds into the shared
+// probeOneFlowCheck curls a single flow-health endpoint and projects its
+// outcome into a smokeRouteResult so it folds into the shared
 // summary/table/json. The check's name + URL are surfaced as the route
 // metadata (RouteKind "flow") so the existing output helpers render it without
 // special-casing.
-func probeOneFlowCheck(ctx context.Context, c config.SmokeFlowCheck, probe flowProbe, timeout time.Duration) smokeRouteResult {
+func probeOneFlowCheck(ctx context.Context, c flowCheck, probe flowProbe, timeout time.Duration) smokeRouteResult {
 	target := smokeTarget{
 		RouteKind: "flow",
 		RouteName: c.Name,
@@ -98,7 +192,7 @@ func probeOneFlowCheck(ctx context.Context, c config.SmokeFlowCheck, probe flowP
 			Target: target,
 			Status: smokeStatusFail,
 			Reason: smokeFlowReasonErr,
-			Detail: fmt.Sprintf("flow check %q declares no url", c.Name),
+			Detail: c.Misdeclared,
 		}
 	}
 
@@ -200,18 +294,6 @@ func flowDetail(verdict, bodySummary, description string) string {
 		out += "  [" + description + "]"
 	}
 	return out
-}
-
-// projectFlowChecks loads the project's declared smoke flow-health checks. A
-// missing forge.yaml (or no project) yields no checks and no error — smoke
-// still runs its route probes. Surfaced as a seam so the smoke paths resolve
-// the declaration once.
-func projectFlowChecks() []config.SmokeFlowCheck {
-	cfg, err := loadProjectConfig()
-	if err != nil {
-		return nil
-	}
-	return cfg.Smoke.FlowChecks
 }
 
 // flowCheckTimeout derives the flow-health probe timeout from the smoke

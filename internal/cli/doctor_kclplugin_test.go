@@ -12,8 +12,7 @@ import (
 func deployEnabledConfig(t *testing.T) *config.ProjectConfig {
 	t.Helper()
 	cfg := &config.ProjectConfig{}
-	enabled := true
-	cfg.Features.Deploy = &enabled
+	cfg.Features = cfg.Features.With(config.FeatureDeploy, true)
 	if !cfg.Features.DeployEnabled() {
 		t.Fatalf("test setup: deploy feature did not enable; the FeaturesConfig shape has changed")
 	}
@@ -54,9 +53,8 @@ func TestKCLPluginCheckFailsWithARunbook(t *testing.T) {
 }
 
 func TestKCLPluginCheckSkippedWhenDeployDisabled(t *testing.T) {
-	disabled := false
 	cfg := &config.ProjectConfig{}
-	cfg.Features.Deploy = &disabled
+	cfg.Features = cfg.Features.With(config.FeatureDeploy, false)
 	probed := false
 	got := kclPluginCheckResult(cfg, t.TempDir(), func() error { probed = true; return nil })
 	if got.Status != doctor.StatusSkip {

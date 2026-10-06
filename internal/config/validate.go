@@ -10,11 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"unicode"
 
 	"go.yaml.in/yaml/v3"
-
-	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // configWarningSink is where non-fatal config warnings (deprecated
@@ -174,6 +171,7 @@ func LoadProject(data []byte, path string) (*ProjectConfig, error) {
 	// (byte-only loads against a synthetic path) there is nothing to read a
 	// shape off, so the config is a bare module: library.
 	projectDir := sourceProjectDir(path)
+	cfg.projectDir = projectDir
 	if projectDir != "" {
 		cfg.Kind = deriveProjectKindFromSources(projectDir)
 	} else {
@@ -201,7 +199,6 @@ func LoadProject(data []byte, path string) (*ProjectConfig, error) {
 	// catches Go-package collisions and reserved-word/identifier shapes
 	// that would otherwise blow up the generator with a confusing
 	// downstream error.
-	issues = append(issues, validateFrontendNames(&cfg, root)...)
 
 	// Partition non-fatal warnings (deprecated top-level keys) out of the
 	// gating error set. Warnings are flushed to the user unconditionally —
@@ -327,6 +324,34 @@ var refusedSchemaKeys = map[string]string{
 	"deploy.registry": "delete the key: the generated CI workflows name no registry. Declare it in " +
 		"each env's KCL — `registry = \"<registry>\"` on the env's forge.ClusterTarget (or " +
 		"forge.ControlPlane for a hosted env) in deploy/kcl/<env>/main.k.",
+
+	// features: is gone. Every feature is derived from the repo, and a stale
+	// `orm: false` that merely stopped being read would start generating an ORM
+	// over a hand-written DB layer — so the key is refused, not warned about.
+	"features": "delete the block — features are derived from what exists in the repo, not configured. " +
+		"If you set `orm: false` because the DB layer is hand-written, put `//forge:no-orm: <why>` in the " +
+		"doc comment of the internal/db package instead (beside the code it affects). " +
+		"`ingress` derives from a forge.Gateway declared in deploy/kcl, `operators` from internal/operators/<name>/, " +
+		"`frontend` from a frontend existing, `deploy`/`build`/`ci`/`codegen` from the project kind. " +
+		"`forge project features` shows what each one resolved to and why.",
+	"stack": "delete the block — the frontend inventory is derived from frontends/<name> on disk and from the " +
+		"KCL forge.Frontend declarations; there is no framework setting.",
+	"frontends": "delete the block — frontends are derived: a directory under frontends/ is detected by its own " +
+		"next.config / vite.config / app.json, and a KCL `forge.Frontend {...}` in deploy/kcl/<env>/main.k declares " +
+		"the rest. Port, dev_runner, base_path, path or source, and `routes` (the CRUD-page allowlist; `[\"none\"]` for " +
+		"no generated pages) are fields of that forge.Frontend.",
+	"frontend": "delete the block — the pnpm-workspaces layout is detected from pnpm-workspace.yaml at the project " +
+		"root (`forge project new --frontend-workspaces` writes it).",
+	"smoke": "delete the block — declare the check on the workload that owns the endpoint, in its KCL: " +
+		"`flow_checks = [forge.FlowCheck {path = \"/flow-health\", description = \"...\"}]`. " +
+		"`forge env smoke <env>` resolves the URL from that workload's route or port in the env.",
+	"database.driver": "delete the key — the driver is derived: a service project with db/migrations uses " +
+		"postgres, one without has no database.",
+	"database.migrations_dir": "delete the key — migrations live in db/migrations.",
+	"database.seed": "delete the block — dev seeding uses fixed defaults (20 rows per table, auto-seed on, " +
+		"scoped to the tables behind CRUD entities). `forge env up --no-seed` skips it for one run.",
+	"database.migration_safety.allowed_destructive": "delete the key and mark each intentional migration in the " +
+		"file itself with a `-- forge:allow-destructive` SQL comment. The exemption then sits next to the SQL it excuses.",
 }
 
 // removedSchemaKeys maps a normalized key path of a forge.yaml key that
@@ -394,9 +419,9 @@ var removedSchemaKeys = map[string]string{
 	"version": "delete the key — stamp the binary version from a KCL " +
 		"GoBuild.ldflags `-X` entry in deploy/kcl/<env>/main.k, which is where " +
 		"per-environment build facts live.",
-	// hot_reload lived at the top level AND under features:. Only the
-	// features one was ever resolved by a caller.
-	"hot_reload": "move the value to `features.hot_reload`, which is the live switch.",
+	// hot_reload lived at the top level AND under features:. Neither exists
+	// any more: hot reload derives from the project being a service.
+	"hot_reload": "delete the key — hot reload is derived (on for a service project).",
 	// ci.go_version was written into the workflow template data and read by
 	// no template: every setup-go step pins with `go-version-file: go.mod`,
 	// so the key changed nothing and a project that set it got a CI Go
@@ -409,14 +434,13 @@ var removedSchemaKeys = map[string]string{
 	// populated, so every declared job silently vanished.
 	"ci.extra_jobs": "delete the block and add the job directly to .github/workflows/ci.yml — " +
 		"that file is scaffold-once and yours to edit; forge never re-renders it.",
-	// lint.contract had no reader. Whether the contract lint runs is
-	// features.contracts.
-	"lint.contract": "delete the key — set `features.contracts: false` to turn the contract " +
-		"lint off, or list the package under `contracts.exclude` to exempt just that package.",
+	// lint.contract had no reader. The contract lint is always on.
+	"lint.contract": "delete the key — the contract lint is always on; list the package under " +
+		"`contracts.exclude` to exempt just that package.",
 	// The contract severity dials had no reader either: the contract rules
 	// are unconditional and the only real escape hatch is contracts.exclude.
-	"contracts.strict": "delete the key — the contract rules are unconditional. Turn the whole " +
-		"lint off with `features.contracts: false`, or exempt one package via `contracts.exclude`.",
+	"contracts.strict": "delete the key — the contract rules are unconditional. Exempt one package " +
+		"via `contracts.exclude`.",
 	"contracts.allow_exported_vars": "delete the key — exempt the package via `contracts.exclude`, or opt it out " +
 		"in code with a `// forge:exclude-contract` package-doc directive.",
 	"contracts.allow_exported_funcs": "delete the key — exempt the package via `contracts.exclude`, or opt it out " +
@@ -433,8 +457,6 @@ var removedSchemaKeys = map[string]string{
 		"(`forge skill load auth`).",
 	"pack_overrides": "delete the block — there are no packs to override. " +
 		"Frontend components are owned scaffold and auth/audit are code + libraries (`forge skill load auth`).",
-	"features.packs": "delete the key — the `packs` feature no longer exists. " +
-		"Frontend components are owned scaffold; auth/audit are code + libraries (`forge skill load auth`).",
 	"k8s.provider": "remove the key — per-environment cluster choice now lives in KCL " +
 		"`forge.K8sCluster` blocks under deploy/kcl/.",
 	// deploy.provider was never read: the CI provider lives in `ci.provider`
@@ -491,13 +513,6 @@ var removedSchemaKeys = map[string]string{
 	// canonical sources. Removed in the forge.yaml schema cleanup
 	// (FORGE_SHAPE_REDESIGN §4). Only `stack.frontend` survives. Each old
 	// sub-block points the user at the real source of truth.
-	"stack.backend": "delete the key — backend language/framework is not a codegen input; " +
-		"forge projects are Go + Connect RPC.",
-	"stack.database": "delete the key and set the driver under `database.driver` (postgres | none).",
-	"stack.proto":    "delete the key — the proto toolchain is buf; there is no per-project toggle.",
-	"stack.deploy": "delete the key — the image registry and the deploy target/cluster are " +
-		"declared per-env in `deploy/kcl/<env>/main.k` (forge.ClusterTarget).",
-	"stack.ci": "delete the key and set the CI provider under `ci.provider` (github is the default).",
 	// down_files_allowed_until grandfathered pre-policy down migrations as a
 	// warning. There is nothing to grandfather: forge never runs a down file,
 	// so deleting one is always safe, and every down file is a lint error.
@@ -507,28 +522,18 @@ var removedSchemaKeys = map[string]string{
 	// deploy graduated from experimental to a stable kind-derived flag in
 	// the front-door rework; projects scaffolded in the experimental
 	// window still carry the old nesting.
-	"features.experimental.deploy": "move the value to `features.deploy` — or delete it entirely if it matches " +
-		"the derived default (true for kind: service).",
 	// ingress and operators graduated out of experimental: both are
 	// prod-critical, and warning on every invocation about a project's own
 	// production configuration bought nobody safety. `forge generate`
 	// rewrites these automatically (stepGraduateExperimental); the warning
 	// is for the commands that only read.
-	"features.experimental.ingress": "move the value to `features.ingress` — ingress graduated out of experimental. " +
-		"`forge generate` migrates this for you.",
-	"features.experimental.operators": "move the value to `features.operators` — operators graduated out of experimental. " +
-		"`forge generate` migrates this for you.",
 	// external_builds was deleted, not graduated: it had already been
 	// reduced to an inert key nothing consulted (fr-da9a6614fb).
-	"features.experimental.external_builds": "delete the key — `build_cmd` builds unconditionally, the same way " +
-		"`External.deploy_cmd` deploys unconditionally. `forge generate` removes this for you.",
 	// forge does not manage documentation. `forge docs generate` and the
 	// ADR scaffolding `forge new` wrote are gone, so both switches gate
 	// nothing; a project's docs/ directory is entirely its own.
 	"docs": "delete the block — forge no longer generates documentation (`forge docs` was removed). " +
 		"Anything already under docs/ is yours and is left alone.",
-	"features.docs": "delete the key — forge no longer generates documentation or scaffolds docs/adr, " +
-		"so there is nothing for it to switch.",
 }
 
 // sliceIndexRe matches "[<digits>]" path segments so removed-key lookup
@@ -835,8 +840,6 @@ func splitYAMLErrorLines(err error) []string {
 func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
 	out = append(out, validateProjectFields(cfg, root)...)
-	out = append(out, validateFrontends(cfg, root)...)
-	out = append(out, validateORMDriver(cfg, root)...)
 	out = append(out, validateConfigGuard(cfg, root)...)
 	out = append(out, validateDevStack(cfg, root)...)
 	out = append(out, validateAPIProtoPackage(cfg, root)...)
@@ -988,189 +991,14 @@ func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssu
 	return out
 }
 
-// validateFrontends checks per-frontend required fields and the
-// enumerated values (name, type, output, base_path).
-func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
-	var out []validationIssue
-
-	for i, fe := range cfg.Frontends {
-		prefix := fmt.Sprintf("frontends[%d]", i)
-		if strings.TrimSpace(fe.Name) == "" {
-			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i)})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.name is required", prefix),
-				fix:    "add a 'name:' for this frontend entry.",
-			})
-		}
-		// frontends[].type and frontends[].path are filled in by the
-		// loader when omitted (type → "nextjs", path → "frontends/<name>"),
-		// so we only validate non-empty values here. Required-ness would
-		// be a regression for existing forge.yaml files.
-		if t := strings.ToLower(strings.TrimSpace(fe.Type)); t != "" {
-			if t != "nextjs" && t != "react_native" && t != "react-native" && t != "vite-spa" {
-				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "type"})
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s.type value %q is invalid", prefix, fe.Type),
-					fix:    "use one of: nextjs, react-native, vite-spa.",
-				})
-			}
-		}
-		// frontends[].source declares the code as a pinned cross-repo
-		// dependency. It is an ALTERNATIVE to `path`, never a companion:
-		// with both set there are two answers to "where is this
-		// frontend's code", and silently preferring one would make the
-		// other a lie that reads as truth in review. Reject instead.
-		if fe.Source != nil {
-			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "source"})
-			if fe.DeclaredDir() != "" {
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s declares both 'path' and 'source'", prefix),
-					fix:    "keep one: 'path' for a directory in this repo, 'source' for a pinned checkout of another repo. To build a local working copy of a `source` frontend, add an override in .forge/source-overrides.yaml instead of re-adding 'path'.",
-				})
-			}
-			if strings.TrimSpace(fe.Source.Repo) == "" {
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s.source.repo is required", prefix),
-					fix:    "add 'repo:' — e.g. github.com/org/app.",
-				})
-			}
-			if strings.TrimSpace(fe.Source.Ref) == "" {
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s.source.ref is required", prefix),
-					fix:    "add 'ref:' — a tag, branch, or commit sha. forge does not default to a branch: an unpinned cross-repo source is what makes a build unreproducible.",
-				})
-			}
-		}
-		// frontends[].output selects the Next.js build/runtime shape.
-		// Only meaningful for type=nextjs; we still validate the value
-		// for other types because changing the type later shouldn't
-		// silently re-validate against a stale value. Empty reads as
-		// "standalone" (FrontendConfig.EffectiveOutput).
-		if o := strings.ToLower(strings.TrimSpace(fe.Output)); o != "" {
-			if o != FrontendOutputStatic && o != FrontendOutputStandalone && o != FrontendOutputServer {
-				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "output"})
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s.output value %q is invalid", prefix, fe.Output),
-					fix:    "use one of: static (the scaffold default), standalone, server.",
-				})
-			}
-		}
-		// frontends[].base_path mounts the frontend under a URL prefix.
-		// The shape is deliberately strict (see FrontendConfig.BasePath):
-		// the literal is rendered verbatim into next.config.ts and the
-		// generated basepath_gen.ts helper, so a malformed value here
-		// becomes a silently-broken deploy there. As with `output`, we
-		// validate regardless of frontend type so a later type change
-		// can't resurrect a stale invalid value.
-		if bp := strings.TrimSpace(fe.BasePath); bp != "" {
-			if msg, ok := ValidateBasePath(bp); !ok {
-				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "base_path"})
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s.base_path value %q is invalid: %s", prefix, fe.BasePath, msg),
-					fix:    `use a "/"-prefixed path with no trailing slash, e.g. "/admin" (omit the field entirely for root mounting).`,
-				})
-			}
-		}
-		// frontends[].auth_mode names the sign-in flow: "native" (the app's
-		// own form posts to the app's own API, and the server runs the OIDC
-		// flow) or "none" (a public frontend with no sign-in gate). A
-		// rejected value here is better than a silently-ignored one.
-		if am := strings.ToLower(strings.TrimSpace(fe.AuthMode)); am != "" && am != AuthModeNative && am != AuthModeNone {
-			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "auth_mode"})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.auth_mode value %q is invalid", prefix, fe.AuthMode),
-				fix:    "use native (sign-in gated) or none (public, no sign-in gate) — see `forge skill load auth/frontend`.",
-			})
-		}
-		// frontends[].routes: `none` means "no generated pages" and is
-		// meaningless beside real slugs — reject the mix rather than guess.
-		if fe.RoutesNone() && len(fe.Routes) > 1 {
-			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "routes"})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.routes combines %q with route slugs %v", prefix, RoutesNone, fe.Routes),
-				fix:    "use `routes: [none]` for no generated pages, OR list the slugs you want — not both.",
-			})
-		}
-		// frontends[].dev_runner selects the package manager forge shells
-		// into. Validated against the same set the KCL Frontend schema
-		// accepts, so the two spellings of the knob cannot disagree.
-		switch strings.ToLower(strings.TrimSpace(fe.DevRunner)) {
-		case "", DevRunnerNPM, DevRunnerPNPM, DevRunnerYarn:
-		default:
-			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "dev_runner"})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.dev_runner value %q is invalid", prefix, fe.DevRunner),
-				fix:    "use npm (the default), pnpm, or yarn.",
-			})
-		}
-	}
-
-	return out
-}
-
-// validateORMDriver requires database.driver when the ORM feature has
-// been explicitly enabled.
-func validateORMDriver(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
-	var out []validationIssue
-
-	// rootPos is the fallback when the `database:` block is absent.
-	var rootLine, rootCol int
-	if root != nil {
-		rootLine, rootCol = root.Line, root.Column
-	}
-
-	// Only require database.driver when ORM has been *explicitly* enabled.
-	// Features.ORM defaults to nil → ORMEnabled() reports true, but a nil
-	// value means "user didn't make a choice"; many legacy projects work
-	// without a driver because they aren't actually exercising the ORM
-	// codegen at runtime. Demanding a driver in that case would be a
-	// breaking change. Explicit `features.orm: true` is the signal that
-	// the user is committing to the ORM and so must declare a driver.
-	if cfg.Features.ORM != nil && *cfg.Features.ORM && strings.TrimSpace(cfg.Database.Driver) == "" {
-		// Point at the `database:` block (or the file root if absent).
-		line, col := findNodePos(root, []string{"database"})
-		if line == 0 {
-			line, col = rootLine, rootCol
-		}
-		out = append(out, validationIssue{
-			line:   line,
-			column: col,
-			msg:    "'database.driver' is required when features.orm is explicitly enabled",
-			fix:    "add 'database:\\n  driver: postgres'.",
-		})
-	}
-
-	return out
-}
-
-// basePathSegmentRE matches one path segment of frontends[].base_path:
+// basePathSegmentRE matches one path segment of a frontend base_path:
 // letters, digits, dot, underscore, hyphen. Deliberately narrower than
 // what URLs technically allow — the value is spliced verbatim into
 // next.config.ts (basePath / assetPrefix) and into generated TypeScript
 // string literals, so "no fancy chars" is the safety contract.
 var basePathSegmentRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// ValidateBasePath checks the shape of a non-empty frontends[].base_path
+// ValidateBasePath checks the shape of a non-empty frontend base_path
 // value. Returns (reason, false) on failure, ("", true) when valid.
 //
 // Valid:   "/admin", "/internal/admin", "/v2.1_beta"
@@ -1250,139 +1078,6 @@ func findNodePos(node *yaml.Node, segments []string) (int, int) {
 		return 0, 0
 	}
 	return cur.Line, cur.Column
-}
-
-// goReservedWords is the set of Go keywords plus predeclared identifiers
-// that cannot be used as package names without breaking the build.
-// We use this to flag service / binary / frontend names whose canonical
-// Go-package form (naming.ServicePackage) lands on one of them — e.g.
-// a service named "select" or "type" would compile-fail downstream.
-var goReservedWords = map[string]bool{
-	// Keywords.
-	"break": true, "case": true, "chan": true, "const": true, "continue": true,
-	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
-	"func": true, "go": true, "goto": true, "if": true, "import": true,
-	"interface": true, "map": true, "package": true, "range": true, "return": true,
-	"select": true, "struct": true, "switch": true, "type": true, "var": true,
-	// Predeclared identifiers that would shadow basic types and break
-	// `package <name>` in the generated tree.
-	"bool": true, "byte": true, "complex64": true, "complex128": true,
-	"error": true, "float32": true, "float64": true, "int": true, "int8": true,
-	"int16": true, "int32": true, "int64": true, "rune": true, "string": true,
-	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
-	"uintptr": true, "any": true, "true": true, "false": true, "nil": true,
-	"iota": true, "init": true,
-}
-
-// validateFrontendNames rejects frontend name shapes that would silently
-// break codegen downstream:
-//
-//   - empty name (or name that normalises to empty)
-//   - non-Go-legal package shape after normalisation (starts with a
-//     digit, contains punctuation/space that survives `ServicePackage`)
-//   - normalisation collisions (e.g. `admin-server` and `admin_server`
-//     both → `admin_server` since hyphens normalise to underscores)
-//   - the canonical form lands on a Go reserved word / predeclared
-//     identifier (e.g. "select", "type"), which would compile-fail
-//
-// The lint is name-shape-only — it does not look at config semantics.
-// Returning the issues batched lets ValidationError surface every
-// problem in one go. Component names go through the same rules at
-// `forge scaffold` time, where the name is actually chosen.
-func validateFrontendNames(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
-	var out []validationIssue
-
-	// Track canonical -> first-seen-source so collisions can name both
-	// the earlier and the later entry in the error message.
-	seen := map[string]string{}
-
-	check := func(rawName, source string, pathSegs []string) {
-		trimmed := strings.TrimSpace(rawName)
-		if trimmed == "" {
-			// Empty-name issues are already reported by validateRequired
-			// for the slices that have a required-name rule. Don't double
-			// up; just skip the canonical check.
-			return
-		}
-		// Resolve position once for whichever issue fires. Falls back to
-		// (0,0) if the path doesn't resolve — formatIssueLocation handles
-		// that by omitting the position part of the error.
-		line, col := findNodePos(root, pathSegs)
-		canonical := naming.ServicePackage(trimmed)
-		if canonical == "" {
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.name %q normalises to an empty Go package", source, rawName),
-				fix:    "use at least one ASCII letter or digit in the name.",
-			})
-			return
-		}
-		if !isValidGoPackageIdent(canonical) {
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.name %q produces invalid Go package %q", source, rawName, canonical),
-				fix:    "use ASCII letters, digits, hyphens, and underscores only; must not start with a digit.",
-			})
-			return
-		}
-		if goReservedWords[canonical] {
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.name %q normalises to Go reserved word %q", source, rawName, canonical),
-				fix:    "rename so the compact lowercase form is not a Go keyword or predeclared identifier.",
-			})
-			return
-		}
-		if prev, ok := seen[canonical]; ok {
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s.name %q collides with %s after normalisation (both → %q)", source, rawName, prev, canonical),
-				fix:    "rename one of the entries so their compact lowercase forms differ.",
-			})
-			return
-		}
-		seen[canonical] = source
-	}
-
-	for i, fe := range cfg.Frontends {
-		check(fe.Name, fmt.Sprintf("frontends[%d]", i), []string{"frontends", fmt.Sprintf("[%d]", i), "name"})
-	}
-
-	return out
-}
-
-// isValidGoPackageIdent reports whether s is a syntactically-legal Go
-// package identifier: starts with an ASCII letter or underscore, and
-// the rest are ASCII letters, digits, or underscores. We restrict to
-// ASCII even though Go technically allows broader Unicode-letter
-// package names — every forge-generated import path, directory name,
-// and KCL/k8s identifier downstream assumes ASCII, so a Unicode-letter
-// service name would surface as a downstream error far from the cause.
-func isValidGoPackageIdent(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, r := range s {
-		if r > unicode.MaxASCII {
-			return false
-		}
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
-		isDigit := r >= '0' && r <= '9'
-		if i == 0 {
-			if !isLetter {
-				return false
-			}
-			continue
-		}
-		if !isLetter && !isDigit {
-			return false
-		}
-	}
-	return true
 }
 
 // looksLikeGoModulePath does a cheap shape check so we catch obvious

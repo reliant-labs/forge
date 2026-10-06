@@ -158,8 +158,9 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	// The static detail route must exist — it is the half of this test
 	// that guards the build/export-mode interaction.
 	assertPathExistsE2E(t, filepath.Join(webDir, "src", "app", "items", "view", "page.tsx"))
-	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "output: static") {
-		t.Fatal("forge.yaml does not record `output: static` for the scaffolded frontend")
+	// The build shape lives in next.config — there is no forge.yaml record.
+	if !strings.Contains(readFileE2E(t, filepath.Join(webDir, "next.config.ts")), `output: "export"`) {
+		t.Fatal("next.config.ts does not build a static export for the scaffolded frontend")
 	}
 
 	// npm install — the longest single step. Use --no-audit/--no-fund

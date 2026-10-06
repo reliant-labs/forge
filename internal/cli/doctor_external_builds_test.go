@@ -197,13 +197,12 @@ func TestBuildExternalBuildDoctorChecks_ReportsCmdVerbatim(t *testing.T) {
 }
 
 // TestRunExternalBuildDoctorChecks_FeatureOffReturnsNil — when
-// features.build=false, the wrapper returns no checks. Mirrors
+// the build feature is off, the wrapper returns no checks. Mirrors
 // runIngressDoctorChecks's feature-off behaviour.
 func TestRunExternalBuildDoctorChecks_FeatureOffReturnsNil(t *testing.T) {
-	off := false
 	cfg := &config.ProjectConfig{
 		Name:     "t",
-		Features: config.FeaturesConfig{Build: &off},
+		Features: config.FeaturesConfig{}.With(config.FeatureBuild, false),
 	}
 	results := runExternalBuildDoctorChecks(context.Background(), cfg, t.TempDir(), "")
 	if results != nil {

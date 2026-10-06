@@ -34,8 +34,6 @@ import (
 	"sort"
 	"strings"
 
-	"go.yaml.in/yaml/v3"
-
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
@@ -153,15 +151,18 @@ type ProjectConfig struct {
 	// that does. They now resolve through codegen.DiscoverInternalPackages.
 	// A `packages:` key is reported with a migration hint (see
 	// removedSchemaKeys).
-	Frontends []FrontendConfig `yaml:"frontends,omitempty"`
-	// Frontend holds project-level frontend settings — distinct from
-	// the per-frontend `Frontends []FrontendConfig` slice above. Today
-	// it only carries the opt-in `workspaces:` flag that turns on the
-	// pnpm-workspace + packages/api + packages/hooks layout so multiple
-	// frontends (web + mobile) can share generated Connect clients and
-	// React Query hook wrappers. When the flag is false (the default)
-	// forge keeps the historic per-frontend layout exactly as before.
-	Frontend FrontendProjectConfig `yaml:"frontend,omitempty"`
+	// Frontends is the frontend inventory. It is DERIVED, never read from
+	// forge.yaml (there is no `frontends:` key): the loader fills it from the
+	// frontends found on disk, and `forge generate` overlays the KCL
+	// `forge.Frontend` declarations onto it. See frontend_inventory.go.
+	Frontends []FrontendConfig `yaml:"-"`
+	// workspaces records whether the project uses the pnpm-workspaces
+	// layout. It is DERIVED from the tree (see DeriveFrontendWorkspaces), not
+	// a forge.yaml key.
+	workspaces bool
+	// projectDir is the directory the project was loaded from; derivation
+	// reads the tree under it. Empty for a hand-constructed config.
+	projectDir string
 	// The section blocks below are all omitempty: a freshly scaffolded
 	// forge.yaml leaves them absent and the loader fills shape-derived
 	// defaults (see ApplyDerivedDefaults in derive.go). A present block
@@ -191,8 +192,9 @@ type ProjectConfig struct {
 	// issuer/audience/JWKS are per-deployment values that live in env vars
 	// routed through KCL. An `auth:` key is reported with a migration hint
 	// (see removedSchemaKeys).
-	Features FeaturesConfig `yaml:"features,omitempty"`
-	Stack    StackConfig    `yaml:"stack,omitempty"`
+	// Features is DERIVED from what exists in the repo (see
+	// DeriveFeatureDefaults); there is no `features:` key.
+	Features FeaturesConfig `yaml:"-"`
 	// Observability seeds the OWNED per-package observe_chain.go seam that a
 	// generated component decorator routes through. The values are read at
 	// `forge scaffold` time to stamp the initial chain (log level, etc.);
@@ -203,11 +205,6 @@ type ProjectConfig struct {
 	// existing projects regenerate identically. See [APIConfig] for the
 	// per-field semantics.
 	API APIConfig `yaml:"api,omitempty"`
-	// Smoke declares APP-FLOW health checks that `forge env smoke <env>` runs in
-	// addition to its built-in ingress route / dev-port probes. A route probe
-	// only proves listeners are up; a flow check proves the APP actually works
-	// (an end-to-end invariant only the app can express). See [SmokeConfig].
-	Smoke SmokeConfig `yaml:"smoke,omitempty"`
 	// DevStack bounds forge's parallel-dev-stack port allocation — how many
 	// stacks can run side by side, and how far apart their port blocks sit.
 	// See [DevStackConfig] for why this has to be declared rather than
@@ -401,184 +398,50 @@ type CRDConfig struct {
 	Shape string
 }
 
-// FrontendConfig defines a frontend application (e.g. Next.js, React Native).
+// FrontendConfig is one frontend in a project's inventory.
+//
+// There is no `frontends:` key in forge.yaml. Every field is either declared
+// in the KCL `forge.Frontend` (kcl/schema.k) or read off the frontend's own
+// files (frontend_inventory.go), so nothing here is a setting you write.
 type FrontendConfig struct {
-	Name string `yaml:"name"`
-	Type string `yaml:"type"`           // "nextjs", "react-native", "vite-spa"
-	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native), "vite-spa" (Vite + React + tanstack-router)
+	Name string
+	// Type is "nextjs", "react-native" or "vite-spa" — detected from the
+	// framework's own config file, or the KCL declaration's `type`.
+	Type string
 	// path is the frontend's directory, relative to the project root (or
-	// absolute), as declared by `path:` in forge.yaml — later REWRITTEN
-	// in memory to the resolved directory for a frontend whose code came
-	// from a `source:` pin (see cli.resolveFrontendSources).
+	// absolute) — later REWRITTEN in memory to the resolved directory for a
+	// frontend whose code came from a `source:` pin (see
+	// cli.resolveFrontendSources).
 	//
-	// It is UNEXPORTED on purpose, and that is the single load-bearing
-	// line in this type. The convention "empty means frontends/<name>"
-	// used to be applied by each caller, inline:
-	//
-	//	feDir := fe.Path
-	//	if feDir == "" { feDir = filepath.Join("frontends", fe.Name) }
-	//
-	// ~20 emitters wrote that, none of them checked containment, and two
-	// earlier helpers that did it properly (EffectivePath, FrontendDirWithin)
-	// went unadopted for four years' worth of call sites — because an
-	// exported string field made the inline version legal and locally
-	// correct. Unexporting is what makes it not compile. Read the
-	// directory through Dir, which applies the fallback AND the
-	// containment check, or through DeclaredDir when the empty case is
-	// the thing you are asking about.
-	//
-	// The `yaml:"path"` tag stays for two reasons even though yaml.v3
-	// cannot itself decode into an unexported field: LoadProject's
-	// unknown-key walker (walkUnknownKeys/yamlKeysOf) reads struct tags
-	// reflectively to decide which keys forge.yaml may contain, so
-	// dropping the tag would make a perfectly valid `path:` line a
-	// validation error. The actual decode and encode go through
-	// UnmarshalYAML/MarshalYAML below.
-	path string `yaml:"path"` //nolint:unused // read/written via UnmarshalYAML, MarshalYAML and yamlKeysOf reflection
-	// Source declares this frontend's code as "that repo at that ref"
-	// instead of a directory that must already be on disk. Set it INSTEAD
-	// of Path when the frontend lives in another repository:
-	//
-	//	frontends:
-	//	  - name: reliant-web
-	//	    type: vite-spa
-	//	    source:
-	//	      repo: github.com/reliant-labs/reliant
-	//	      ref: v1.6.3
-	//	      subdir: web
-	//
-	// forge fetches the pin into a machine-local cache and builds from
-	// there, so the frontend builds in CI — where only this repository is
-	// checked out — and builds the SAME bytes on every machine. A bare
-	// `path` to a sibling checkout has neither property: it fails wherever
-	// the sibling is absent, and where it is present it ships whatever
-	// happened to be checked out.
-	//
-	// Path and Source are mutually exclusive; a frontend declaring both is
-	// rejected at load. Local iteration against a working copy goes through
-	// `.forge/source-overrides.yaml` (machine-local, gitignored) rather
-	// than through editing the pin — see internal/gitsource.
-	Source *GitSource `yaml:"source,omitempty"`
-	// Port is the frontend's dev-server listen port. Omitted / 0 means
-	// EPHEMERAL: `forge env up` allocate a free OS port at
-	// launch and report it (see resolveEphemeralFrontendPorts). omitempty so
-	// a scaffolded ephemeral frontend writes no `port:` line at all; an
-	// explicit port is honored verbatim.
-	Port int `yaml:"port,omitempty"`
-	// Output selects the Next.js build/runtime shape for this frontend.
-	// Only meaningful when Type == "nextjs"; ignored for react-native and
-	// vite-spa (those have their own production shapes).
-	//
-	// Valid values:
-	//   - "static" (what `forge project new --frontend` and `forge scaffold
-	//     frontend` write): production builds emit a static export
-	//     (`output: "export"` gated on NODE_ENV=production) into `out/` —
-	//     plain HTML + JS + CSS for a CDN, an object store, or the hosted
-	//     runtime's static hosting (`forge.OnHosted {}`), which serves
-	//     nothing else. The dev server stays unchanged (`next dev`). The
-	//     generated CRUD pages are static routes (`/<slug>/view?id=…`,
-	//     `/<slug>/edit?id=…`), so a project with entities exports cleanly.
-	//   - "standalone": production builds emit a self-contained Node server
-	//     at `.next-prod/standalone/server.js`, which the shipped
-	//     Dockerfile runs. Opt in when the frontend needs a server at
-	//     request time: server components that fetch per request, server
-	//     actions, middleware, `cookies()`/`headers()`.
-	//   - "server": full Next.js dev AND prod (no `output:` set). Use
-	//     when you want `next start` semantics in prod for custom edge /
-	//     ISR workflows.
-	//
-	// An EMPTY value means "standalone" — read it through EffectiveOutput.
-	// That is not the scaffold default, and the difference is deliberate:
-	// every frontend scaffolded before static became the default was
-	// written with this field empty AND a standalone next.config.ts, which
-	// is scaffold-once and never re-rendered. Reading empty as the CURRENT
-	// default would describe those projects as something their own config
-	// file says they are not. New scaffolds therefore always write the
-	// field, so the value on disk is the truth for every project.
-	Output string `yaml:"output,omitempty"`
-	// BasePath is the URL path prefix this frontend is mounted under
-	// when it is NOT served from the host root — e.g. "/admin" for an
-	// admin UI that a reverse proxy blends with another app on the same
-	// host. Only meaningful when Type == "nextjs".
-	//
-	// Shape rules (validated by `forge validate` / LoadProject):
-	//   - must start with "/"            ("/admin", "/internal/admin")
-	//   - must not end with "/"          ("/admin/" is rejected)
-	//   - must not be bare "/"           (root mount == leave it empty)
-	//   - segments are limited to [A-Za-z0-9._-]
-	//
-	// What it drives:
-	//   - next.config.ts: rendered as the build-time default for both
-	//     `basePath` and `assetPrefix` (same value — assetPrefix is what
-	//     keeps RSC/chunk URLs under the prefix so hydration works).
-	//   - src/lib/basepath_gen.ts (Tier-1, regenerated every `forge
-	//     generate`): exports BASE_PATH + joinBasePath() for URLs Next.js
-	//     can't rewrite (window.location-built redirects, share links).
-	//
-	// The single runtime override is the NEXT_PUBLIC_BASE_PATH env var —
-	// the ONLY base-path variable forge ever reads or writes. Empty
-	// (the default) means the frontend is served from the host root.
-	BasePath string `yaml:"base_path,omitempty"`
-	// Routes restricts which entities this frontend gets generated CRUD
-	// pages for. Entries are route SLUGS as they appear on disk and in the
-	// URL — the plural, kebab-cased entity name ("llm-keys", "usage-events").
-	//
-	// Empty (the default) means EVERY CRUD entity in the project, which is
-	// the right behavior for a project's single frontend and the wrong one
-	// for every frontend after that. forge scaffolds a full list/detail/
-	// create/edit route set per entity, so a purpose-built frontend — an
-	// operator console that wants two of twenty entities — starts by deleting
-	// most of what was just written, and re-deletes anything added later.
-	//
-	// Naming them here is an ALLOWLIST: a new entity added to the project
-	// does not silently appear in this frontend. That is the safer default
-	// for a frontend whose route set is a product decision (an internal
-	// console must not grow a customer-facing page because someone added a
-	// table), and it makes the intended surface readable in forge.yaml
-	// instead of inferable only from which directories survived.
-	//
-	// Unknown slugs are reported by `forge generate` rather than ignored: a
-	// typo'd or renamed entity would otherwise silently yield a frontend
-	// missing the page its author asked for.
-	//
-	// The single value `none` (RoutesNone) means NO generated CRUD pages at
-	// all — a marketing site, or an app whose every screen is hand-written.
-	// It is a value, not a slug: it cannot be combined with real slugs.
-	Routes []string `yaml:"routes,omitempty"`
-	// AuthMode names the sign-in FLOW this frontend uses. It does not
-	// change what authentication means anywhere else: the backend
-	// validates the same JWT either way, and forge still issues no tokens.
-	//
-	// "none" is a PUBLIC frontend (AuthModeNone): no route guard, no
-	// sign-in screen. It is the default `forge scaffold frontend` picks for
-	// a project whose dev env declares no identity provider.
-	//
-	// "native" is the gated default otherwise. The scaffolded frontend
-	// POSTs credentials to this app's own API and receives an HttpOnly
-	// session cookie; the server runs the whole OIDC flow against the
-	// issuer (internal/app/login_broker.go, over forge/pkg/devidp). The
-	// browser never contacts the identity provider, so there is no
-	// redirect, no PKCE in the bundle, and no token in JavaScript.
-	//
-	// The field is kept (rather than removed) because the flow is a real
-	// axis of variation — a project that replaces the broker with a
-	// different sign-in shape has somewhere to declare it.
-	//
-	// See the `auth/frontend` skill for what the native flow guarantees,
-	// in particular why the credential check happens server-side.
-	AuthMode string `yaml:"auth_mode,omitempty"`
-	// DevRunner is the package manager forge drives this frontend with:
-	// "npm" (the default), "pnpm" or "yarn". It selects the binary for the
-	// dev server (`<runner> run dev`), the dependency install, and the
-	// production build (`<runner> run build`).
-	//
-	// The same knob exists on the KCL Frontend schema (`dev_runner`), and a
-	// frontend the env's KCL declares takes it from there. It is ALSO
-	// accepted here because forge.yaml is how an existing app is adopted:
-	// a pnpm frontend listed only in forge.yaml used to be refused at load
-	// ("unknown key"), leaving no way to tell forge not to run npm against a
-	// pnpm lockfile short of hand-writing a KCL declaration first.
-	DevRunner string `yaml:"dev_runner,omitempty"`
+	// It is UNEXPORTED on purpose, and that is the single load-bearing line
+	// in this type. The convention "empty means frontends/<name>" used to be
+	// applied by each caller, inline, ~20 times, none of them checking
+	// containment. Unexporting is what makes the inline version not compile.
+	// Read the directory through Dir, which applies the fallback AND the
+	// containment check, or through DeclaredDir when the empty case is the
+	// thing you are asking about.
+	path string
+	// Source pins this frontend's code to another repository at a ref (the
+	// KCL `source = forge.GitSource {...}`). nil for an in-repo frontend.
+	Source *GitSource
+	// Port is the dev-server listen port (KCL `port`). 0 means EPHEMERAL:
+	// `forge env up` allocates a free OS port at launch.
+	Port int
+	// DevRunner is the package manager forge drives the frontend with:
+	// "npm", "pnpm" or "yarn". KCL `dev_runner`, else the lockfile on disk.
+	DevRunner string
+	// BasePath is the URL prefix the frontend is mounted under ("/admin"),
+	// "" for the host root. KCL `base_path`, else the literal fallback in the
+	// frontend's own next.config.ts. Only meaningful for nextjs.
+	BasePath string
+	// Output is the Next.js build shape: "standalone", "static" or "server".
+	// Read from the frontend's own next.config.ts; "" means standalone.
+	Output string
+	// Routes restricts which entities this frontend gets generated CRUD pages
+	// for (KCL `routes`): route SLUGS ("llm-keys"), an ALLOWLIST. Empty means
+	// every CRUD entity. The single value `none` (RoutesNone) means NO
+	// generated pages at all.
+	Routes []string
 }
 
 // RoutesNone is the frontends[].routes value meaning "generate no CRUD
@@ -660,31 +523,6 @@ func (f FrontendConfig) EffectiveDevRunner() string {
 		return r
 	}
 	return DevRunnerNPM
-}
-
-// Auth-mode values for FrontendConfig.AuthMode.
-const (
-	// AuthModeNative signs users in through this app's own API, with the
-	// server running the OIDC flow on the browser's behalf.
-	AuthModeNative = "native"
-	// AuthModeNone is a PUBLIC frontend: no route guard and no sign-in
-	// screen, every page renders for every visitor. `forge scaffold
-	// frontend` picks it by default when the project's dev environment
-	// declares no identity provider, because a guarded frontend there can
-	// only redirect every page to a sign-in nothing can complete. The
-	// backend's own auth is untouched — an RPC that requires a caller still
-	// answers 401.
-	AuthModeNone = "none"
-)
-
-// EffectiveAuthMode returns the frontend's sign-in mode, defaulting to the
-// native flow. Empty means unset, which is native — "no sign-in gate" is
-// spelled explicitly as AuthModeNone.
-func (f FrontendConfig) EffectiveAuthMode() string {
-	if f.AuthMode == "" {
-		return AuthModeNative
-	}
-	return f.AuthMode
 }
 
 // GitSource declares a component's code as "that repository at that ref"
@@ -808,86 +646,14 @@ func (f FrontendConfig) WithDir(dir string) FrontendConfig {
 	return f
 }
 
-// UnmarshalYAML decodes a frontend entry, routing `path:` into the
-// unexported field yaml.v3's reflection cannot reach.
-//
-// Without this the field would decode as empty with NO error — verified:
-// yaml.v3 skips unexported fields silently, tag or no tag — and every
-// frontend in every project would quietly fall back to the
-// frontends/<name> convention, breaking exactly the custom-path projects
-// this type exists to serve.
-func (f *FrontendConfig) UnmarshalYAML(node *yaml.Node) error {
-	// The alias sheds the methods, so decoding into it does not recurse
-	// back into this function.
-	type plain FrontendConfig
-	var v plain
-	if err := node.Decode(&v); err != nil {
-		return err
-	}
-	var pathOnly struct {
-		Path string `yaml:"path"`
-	}
-	if err := node.Decode(&pathOnly); err != nil {
-		return err
-	}
-	*f = FrontendConfig(v)
-	f.path = pathOnly.Path
-	return nil
-}
-
-// MarshalYAML re-emits `path:` from the unexported field, so a config
-// forge WRITES (scaffold, NormalizeForWrite) round-trips through the
-// same key it reads. Without it, `forge scaffold frontend` would append
-// an entry with no path at all.
-//
-// The key is inserted after `kind`/`type` rather than appended, which is
-// where it sits in every forge.yaml on disk today and in the scaffold
-// templates — so an existing file re-serialized by forge does not
-// reorder its own keys.
-func (f FrontendConfig) MarshalYAML() (any, error) {
-	type plain FrontendConfig
-	var node yaml.Node
-	if err := node.Encode(plain(f)); err != nil {
-		return nil, err
-	}
-	if f.path == "" {
-		return &node, nil
-	}
-	at := len(node.Content)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if k := node.Content[i].Value; k == "kind" || k == "type" || k == "name" {
-			at = i + 2
-		}
-	}
-	pathPair := []*yaml.Node{
-		{Kind: yaml.ScalarNode, Tag: "!!str", Value: "path"},
-		{Kind: yaml.ScalarNode, Tag: "!!str", Value: f.path},
-	}
-	node.Content = append(node.Content[:at], append(pathPair, node.Content[at:]...)...)
-	return &node, nil
-}
-
 // HasGitSource reports whether this frontend's code comes from another
 // repository rather than from a directory in the project tree.
 func (f FrontendConfig) HasGitSource() bool {
 	return f.Source != nil && f.Source.Repo != ""
 }
 
-// FrontendToolchainDisabled reports whether the project has opted OUT of
-// forge driving a Node toolchain over its frontends, via
-// `stack.frontend.framework: none`. That setting means the frontends build
-// and check out-of-band (deps not installed under forge's control, a
-// non-npm toolchain, a vendored bundle), so forge must not shell into them
-// — not for `npm run build`, and not for a typecheck either. Frontends
-// stay in Frontends for the commands that only need their paths
-// (generate, dev-serve).
-func (c *ProjectConfig) FrontendToolchainDisabled() bool {
-	return c != nil && c.Stack.EffectiveFrontendFramework() == "none"
-}
-
 // ToolchainFrontends returns the frontends forge owns a Node toolchain for:
-// every declared frontend with its path resolved, or nil when the project
-// opted out via `stack.frontend.framework: none`. It is the single
+// every frontend in the inventory with its path resolved. It is the single
 // project-level answer to "which frontends may forge shell into, and
 // where do they live" — shared by the build target resolution and the
 // lint pipeline's frontend lane so the two can never disagree about the
@@ -912,7 +678,7 @@ func (c *ProjectConfig) FrontendToolchainDisabled() bool {
 // applies the frontends/<name> convention for a config assembled in
 // memory rather than loaded from disk.
 func (c *ProjectConfig) ToolchainFrontends() []FrontendConfig {
-	if c == nil || c.FrontendToolchainDisabled() {
+	if c == nil {
 		return nil
 	}
 	out := make([]FrontendConfig, 0, len(c.Frontends))
@@ -925,45 +691,20 @@ func (c *ProjectConfig) ToolchainFrontends() []FrontendConfig {
 	return out
 }
 
-// FrontendProjectConfig holds project-level frontend settings — fields
-// that apply to the whole project rather than a single frontend entry.
-// Distinct from FrontendConfig (per-frontend) and from the cli loader's
-// "did the user pass --frontend" notion. Today the only field is
-// Workspaces, the opt-in pnpm workspaces toggle.
-//
-// The flag is intentionally project-level (not per-frontend) because
-// the workspace layout reshapes the whole project tree (packages/api,
-// packages/hooks, pnpm-workspace.yaml at root), not just one frontend.
-type FrontendProjectConfig struct {
-	// Workspaces opts the project into the pnpm-workspaces layout. When
-	// true:
-	//
-	//   - A `pnpm-workspace.yaml` is emitted at the project root listing
-	//     `packages/*` and `frontends/*` as members.
-	//   - `packages/api/` contains the buf-generated Connect TS clients
-	//     and proto types as a single workspace package (`@<scope>/api`).
-	//   - `packages/hooks/` contains the React Query wrappers
-	//     (`use-api-query.ts` / `use-api-mutation.ts`) and the generated
-	//     per-service hooks (`packages/hooks/src/generated/`), exposed as
-	//     `@<scope>/hooks`.
-	//   - Each frontend `package.json` declares the workspace deps via
-	//     `"@<scope>/api": "workspace:*"` and imports them by package name
-	//     rather than by relative path.
-	//
-	// When false (the default), forge emits the historic per-frontend
-	// layout — `frontends/<name>/src/gen/` for buf output, hooks
-	// templated into each `frontends/<name>/src/hooks/` — byte-identical
-	// to projects scaffolded before this flag landed.
-	Workspaces bool `yaml:"workspaces,omitempty"`
+// IsFrontendWorkspacesEnabled reports whether the project uses the
+// pnpm-workspaces layout (root pnpm-workspace.yaml + packages/api +
+// packages/hooks shared across frontends). It is read off the tree, not
+// configured: see DeriveFrontendWorkspaces.
+func (c ProjectConfig) IsFrontendWorkspacesEnabled() bool {
+	return c.workspaces
 }
 
-// IsFrontendWorkspacesEnabled reports whether the project opted in to
-// the pnpm-workspaces layout. Wraps ProjectConfig.Frontend.Workspaces
-// so callers can read the effective flag without poking into the nested
-// struct (and so we have one place to enforce future invariants — e.g.
-// requiring at least 2 frontends before enabling).
-func (c ProjectConfig) IsFrontendWorkspacesEnabled() bool {
-	return c.Frontend.Workspaces
+// WithFrontendWorkspaces returns a copy that uses (or does not use) the
+// pnpm-workspaces layout, for a config assembled in memory rather than loaded
+// from a tree that already shows the layout.
+func (c ProjectConfig) WithFrontendWorkspaces(on bool) ProjectConfig {
+	c.workspaces = on
+	return c
 }
 
 // HasReactNativeFrontend reports whether any frontend in the project is
@@ -985,72 +726,31 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 
 // DatabaseConfig holds database-related settings.
 //
-// The driver is pinned to postgres: forge generates postgres-only data
-// layers (the runtime ORM, the generate-time schema introspection, and
-// the test harness all target real postgres). The only meaningful choice
-// is postgres vs "none" (no database).
+// Only migration_safety is forge.yaml surface. The driver and migrations
+// directory are DERIVED: a service project whose tree has db/migrations uses
+// postgres and that directory, and one without it has no database (driver
+// "none"). The dev seed has no config at all — rows, auto-seed and table
+// scoping are fixed defaults (see internal/cli/db_seed.go).
 type DatabaseConfig struct {
-	Driver          string                `yaml:"driver"` // "postgres" or "none"
-	MigrationsDir   string                `yaml:"migrations_dir"`
+	// Driver is "postgres" or "none" — derived, see DeriveDatabase.
+	Driver string `yaml:"-"`
+	// MigrationsDir is always db/migrations when there is a database.
+	MigrationsDir   string                `yaml:"-"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
-	Seed            SeedConfig            `yaml:"seed,omitempty"`
 }
 
-// SeedConfig controls the deterministic development seed data materialized at
-// runtime by `forge db seed` and `forge env up` auto-seed. Seeds are never
-// written into the project as files, and these settings only ever reach a dev
-// database: `forge db seed apply`/`reset` refuse any other environment, and
-// the migrate path — the one thing that runs against production — has no seed
-// code path at all. The planner itself is a library (pkg/seedplan) that tests
-// may call directly against their own database.
-type SeedConfig struct {
-	// Rows is the default rows per table (default 20 — fills a page and
-	// exercises pagination).
-	Rows int `yaml:"rows,omitempty"`
-	// Salt perturbs synthesis: change for a different-but-stable dataset.
-	Salt int `yaml:"salt,omitempty"`
-	// RowsPerTable overrides Rows for specific tables.
-	RowsPerTable map[string]int `yaml:"rows_per_table,omitempty"`
-	// Auto controls `forge env up` first-boot auto-seed. Nil =
-	// on by default. `auto: false` is the per-project opt-out; the
-	// per-run one is --no-seed.
-	Auto *bool `yaml:"auto,omitempty"`
-	// Tables scopes seeding — auto-seed AND `forge db seed` — to these
-	// tables plus the tables they require through a NOT NULL foreign key.
-	// An empty list (`tables: []`) seeds nothing.
-	//
-	// Unset, auto-seed defaults to the tables behind the project's CRUD
-	// entities: the ones generated pages list, which is what demo rows are
-	// FOR. Every other table is plain schema owned by hand-written code —
-	// a ledger, an idempotency log, a payments table — where a random row is
-	// not demo data but a lie (a "paid" deposit nobody paid). An explicit
-	// `forge db seed apply` with Tables unset still seeds every table.
-	Tables *[]string `yaml:"tables,omitempty"`
-}
-
-// EffectiveRows returns the default rows-per-table (falls back to 20).
-func (c SeedConfig) EffectiveRows() int {
-	if c.Rows > 0 {
-		return c.Rows
-	}
-	return 20
-}
-
-// AutoEnabled reports whether `forge env up` first-boot auto-seed is on. Nil
-// Auto means "on by default".
-func (c SeedConfig) AutoEnabled() bool {
-	return c.Auto == nil || *c.Auto
-}
+// DefaultMigrationsDir is where migrations live.
+const DefaultMigrationsDir = "db/migrations"
 
 // MigrationSafetyConfig controls migrationlint's three severity dials
-// (unsafe add-column, destructive change, volatile default) and its
-// list of allowlisted destructive migrations.
+// (unsafe add-column, destructive change, volatile default). An intentional
+// destructive migration is marked in the file itself with
+// `-- forge:allow-destructive`; there is no forge.yaml allowlist.
 type MigrationSafetyConfig struct {
-	Enabled            *bool    `yaml:"enabled,omitempty"`             // nil = enabled
-	UnsafeAddColumn    string   `yaml:"unsafe_add_column,omitempty"`   // error, warn, off
-	DestructiveChange  string   `yaml:"destructive_change,omitempty"`  // error, warn, off
-	VolatileDefault    string   `yaml:"volatile_default,omitempty"`    // warn, error, off
-	AllowedDestructive []string `yaml:"allowed_destructive,omitempty"` // file globs that may contain destructive changes
+	Enabled           *bool  `yaml:"enabled,omitempty"`            // nil = enabled
+	UnsafeAddColumn   string `yaml:"unsafe_add_column,omitempty"`  // error, warn, off
+	DestructiveChange string `yaml:"destructive_change,omitempty"` // error, warn, off
+	VolatileDefault   string `yaml:"volatile_default,omitempty"`   // warn, error, off
 }
 
 // IsEnabled reports whether migration safety linting is on. Nil
@@ -1333,69 +1033,6 @@ type DeployEnvConfig struct {
 type DeployConcurrency struct {
 	Enabled          bool `yaml:"enabled"`                      // default true
 	CancelInProgress bool `yaml:"cancel_in_progress,omitempty"` // default false
-}
-
-// SmokeConfig declares APP-FLOW health checks `forge env smoke <env>` probes
-// alongside its built-in ingress/dev-port probes. The built-in probes only
-// verify TRANSPORT (a listener answered); they can be GREEN while the app is
-// functionally broken. A flow check lets the app DECLARE an end-to-end
-// invariant that the OWNING SERVICE asserts INTERNALLY and exposes as an HTTP
-// flow-health endpoint (200 healthy / 503 unhealthy). smoke just CURLS that
-// endpoint and folds the status into its PASS/FAIL/exit report — so a green
-// smoke means the app actually works, not just that ports are open.
-//
-// WHY AN ENDPOINT, NOT A COMMAND. The owning service already holds the access
-// (DB creds, cluster vantage point) the assertion needs; running the check
-// inside it avoids handing smoke privileged creds. smoke needs only a URL +
-// reachability. The endpoint is STATUS-ONLY in public (200/503 + aggregate
-// counts) so it leaks nothing sensitive anonymously; per-entity DETAIL lives
-// behind auth or an internal-only port.
-//
-// The daemon-flow case that motivated this: `forge env smoke dev` was GREEN while
-// the managed-daemon flow was broken, because no built-in probe could assert
-// "every Ready daemon is attached to the gateway". reliant's daemon-gateway
-// owns that state, so it exposes `/flow-health` (200/503) and smoke curls it.
-type SmokeConfig struct {
-	// FlowChecks are the declared app-flow health endpoints. Each is an HTTP
-	// endpoint smoke probes; 2xx = PASS, anything else (typically 503) = FAIL
-	// (RED), and any FAIL fails the whole smoke run (non-zero exit), exactly
-	// like a failed route probe.
-	FlowChecks []SmokeFlowCheck `yaml:"flow_checks,omitempty"`
-}
-
-// SmokeFlowCheck is one declared app-flow health endpoint `forge env smoke <env>`
-// probes. The owning service asserts the invariant internally and returns 200
-// (healthy) / 503 (unhealthy) at this endpoint; smoke curls it and merges the
-// verdict into its summary + exit logic. It is the HTTP-endpoint analogue of a
-// route probe — same machinery, declared by the app.
-type SmokeFlowCheck struct {
-	// Name labels the check in the smoke table / JSON (e.g. "daemon-flow").
-	Name string `yaml:"name"`
-	// URL is the flow-health endpoint smoke GETs. It may be a per-env literal
-	// (e.g. "http://localhost:28091/flow-health" for dev) — scope it with Envs
-	// when the URL differs per env. A 2xx is PASS; any other status (or a
-	// transport failure) is FAIL.
-	URL string `yaml:"url"`
-	// Envs optionally scopes the check to specific smoke environments (by
-	// name). Empty = probe in every env. Use it when the endpoint URL is
-	// env-specific (the usual case — different host/port per env).
-	Envs []string `yaml:"envs,omitempty"`
-	// Description is an optional human note shown in the smoke detail column.
-	Description string `yaml:"description,omitempty"`
-}
-
-// RunsInEnv reports whether this flow check should be probed for the given
-// smoke environment. An empty Envs list means "every env".
-func (c SmokeFlowCheck) RunsInEnv(env string) bool {
-	if len(c.Envs) == 0 {
-		return true
-	}
-	for _, e := range c.Envs {
-		if e == env {
-			return true
-		}
-	}
-	return false
 }
 
 // IsConcurrencyEnabled returns true if deploy concurrency is enabled.
@@ -1765,201 +1402,65 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 	return MatchExclude(c.Exclude, pkgPath)
 }
 
-// FeaturesConfig controls which forge project features are active. The `features:`
-// block in forge.yaml gates major subsystems (deploy, build, frontend,
-// ci, docs, observability, ...).
+// FeaturesConfig is the resolved on/off state of each forge subsystem
+// (codegen, orm, deploy, ...).
 //
-// THE BLOCK IS AN OVERRIDE SURFACE, NOT REQUIRED CONFIGURATION. Scaffolded
-// forge.yaml files do not contain it. All fields are *bool so the loader can
-// distinguish three states:
+// There is NO `features:` key in forge.yaml. Every feature is DERIVED from
+// what exists in the repository — the project kind, whether db/migrations
+// exists, whether a frontend exists, whether deploy/kcl declares a gateway,
+// whether internal/operators exists, whether internal/db carries a
+// `//forge:no-orm` marker. See DeriveFeatureDefaults for the rule per feature.
 //
-//   - absent (nil): the value is DERIVED from the project shape at load
-//     time — kind (service/cli/library), whether a database driver is
-//     configured, whether the frontends list is non-empty. See
-//     DeriveFeatureDefaults in derive.go for the exact rule per feature.
-//     For the canonical shape (kind=service, postgres, frontends present)
-//     every derived value is "enabled", matching the historical
-//     all-enabled default for projects without a features: block.
-//   - explicitly true / explicitly false: taken literally; derivation
-//     never overrides an explicit value.
-//
-// A FeaturesConfig that was not produced by the config loader (zero value
-// in tests, hand-constructed) has no derivation context and resolves
-// nil → enabled, preserving the historical zero-value semantics.
-//
-// Effect on the CLI surface and codegen pipeline:
-//
-//   - Direct invocations of a disabled subsystem's cobra command return a
-//     clear `feature '<name>' is disabled in forge.yaml. Set
-//     features.<name>: true to enable.` error.
-//   - Implicit invocations from orchestrators (e.g. `forge env up` driving
-//     the build/deploy/frontend phases) log a skip line and continue —
-//     letting `forge env up` succeed on whatever subsystems ARE enabled.
-//   - Codegen pipeline steps gated on a feature skip silently when off,
-//     mirroring the existing gate function shape under
-//     internal/cli/generate_pipeline.go.
-//
-// New project scaffolding (`forge project new --kind`) sets defaults per kind:
-//
-//   - service (default): all features enabled (preserves today's behavior).
-//   - cli:               build/ci/docs enabled; everything else disabled.
-//   - library:           ci/docs enabled; everything else disabled.
+// A FeaturesConfig not produced by the config loader (the zero value, or one
+// hand-built in a test) resolves every feature to "enabled" except the
+// default-off ones; With overrides a single feature on such a value.
 type FeaturesConfig struct {
-	ORM           *bool `yaml:"orm,omitempty"`           // ORM projection of db/migrations (internal/db/*_orm.go)
-	Codegen       *bool `yaml:"codegen,omitempty"`       // service/handler codegen from protos
-	Migrations    *bool `yaml:"migrations,omitempty"`    // auto-generate SQL migrations
-	CI            *bool `yaml:"ci,omitempty"`            // generate CI/CD workflows
-	Build         *bool `yaml:"build,omitempty"`         // `forge build` Go binary + docker image pipeline
-	Contracts     *bool `yaml:"contracts,omitempty"`     // contract linter enforcement
-	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
-	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
-	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
-	Deploy        *bool `yaml:"deploy,omitempty"`        // deploy pipeline: KCL render → kubectl apply, per-env deploy config codegen
-
-	// Ingress and Operators GRADUATED out of experimental. Both are
-	// prod-critical: ingress is how a deployed service is reachable, and
-	// operators back real controllers. Keeping them behind an
-	// opt-in-and-be-warned gate meant every `forge` invocation in a project
-	// that uses them printed a warning about its own production
-	// configuration — in control-plane, on every generate, forever.
-	//
-	// They are *bool like every other stable flag, and they DERIVE to
-	// false (see DeriveFeatureDefaults): a project that does not use
-	// ingress or operators should not get either, and absent-means-enabled
-	// would be wrong for both. So graduating changes the spelling and the
-	// warning, not the effective behaviour of any project.
-	Ingress   *bool `yaml:"ingress,omitempty"`   // Gateway API + cert-manager + Envoy Gateway wiring
-	Operators *bool `yaml:"operators,omitempty"` // controller-runtime managers + CRD codegen
-
-	// Diagnostics was to enable runtime emission of pkg/diagnostics records
-	// at Bootstrap time. Nothing reads it: no codegen path emits the
-	// registration file the runtime would boot from, so the knob drives
-	// nothing today. It stays declared only so a forge.yaml that already
-	// sets it does not trip the unknown-key check — give it a reader or
-	// drop it in a major, but do not add a consumer that pretends it works.
-	Diagnostics *bool `yaml:"diagnostics,omitempty"`
-
-	// Experimental gates surface that hasn't been battle-tested across
-	// real projects + cloud providers. Everything inside is default-OFF
-	// (opt-in), every gated CLI invocation prints a one-line warning the
-	// first time per process, and the schema is allowed to break between
-	// forge versions without a deprecation cycle. Graduates to the
-	// top-level FeaturesConfig (with the usual opt-out default-ON
-	// semantics) when the feature has shipped through enough real
-	// deployments to earn a backwards-compatibility promise.
-	Experimental ExperimentalConfig `yaml:"experimental,omitempty"`
-
-	// derived carries the shape-derived default for every stable feature,
-	// resolved by the loader (ApplyDerivedDefaults via DeriveFeatureDefaults)
-	// from kind / database / frontends. nil (zero-value FeaturesConfig,
-	// hand-constructed in tests) falls back to the historical "absent =
-	// enabled" semantics. Unexported + yaml-invisible: never serialized,
-	// never user-set.
-	derived map[FeatureName]bool `yaml:"-"`
+	// derived is the loader-resolved state of every feature. nil (zero value)
+	// falls back to the historical "absent = enabled" semantics.
+	derived map[FeatureName]bool
 }
 
-// stablePtrs is the single feature registry: it maps every stable
-// FeatureName to the address of its explicit *bool override field. The
-// resolver, the write-side normalizer, and EffectiveFeatures all drive
-// off this one map, so adding a stable feature is a single edit here (plus
-// the field, the FeatureName constant, and its DeriveFeatureDefaults rule)
-// instead of a transcription scattered across parallel switch arms.
-func (f *FeaturesConfig) stablePtrs() map[FeatureName]**bool {
-	return map[FeatureName]**bool{
-		FeatureORM:           &f.ORM,
-		FeatureCodegen:       &f.Codegen,
-		FeatureMigrations:    &f.Migrations,
-		FeatureCI:            &f.CI,
-		FeatureBuild:         &f.Build,
-		FeatureContracts:     &f.Contracts,
-		FeatureFrontend:      &f.Frontend,
-		FeatureObservability: &f.Observability,
-		FeatureHotReload:     &f.HotReload,
-		FeatureDeploy:        &f.Deploy,
-		FeatureIngress:       &f.Ingress,
-		FeatureOperators:     &f.Operators,
-	}
-}
-
-// IsZero reports whether the features block carries no explicit user
-// choices — every stable flag nil and no experimental opt-ins. Implements
-// yaml.IsZeroer so `features,omitempty` omits the block entirely from a
-// marshalled forge.yaml when there is nothing explicit to record (the
-// derived field is resolution context, not content).
-func (f FeaturesConfig) IsZero() bool {
-	return f.ORM == nil && f.Codegen == nil && f.Migrations == nil &&
-		f.CI == nil && f.Build == nil && f.Contracts == nil &&
-		f.Frontend == nil && f.Observability == nil &&
-		f.HotReload == nil &&
-		f.Deploy == nil && f.Ingress == nil && f.Operators == nil &&
-		f.Diagnostics == nil && f.Experimental.IsZero()
-}
-
-// ExperimentalConfig gates features that are not yet promised. Fields
-// are plain bool (not *bool) — the zero value IS the default, and the
-// default IS off. Loud-warning policy on startup when any field is true.
-//
-// What lives here today:
-//
-// Ingress and Operators GRADUATED to the top-level FeaturesConfig, and
-// ExternalBuilds was DELETED (it had already been reduced to an inert gate
-// no code consulted). See the migration in internal/kclmigrate and
-// removedSchemaKeys in validate.go — a forge.yaml that still nests them is
-// rewritten in place on the next generate.
-//
-//   - StrictWiring:   diagnostics fail-fast — any registered diagnostic
-//     terminates the process after Bootstrap. Implies
-//     Diagnostics: true. Stays experimental because the
-//     diagnostics catalogue itself is still settling.
-//   - Reconcile:      the reconciliation loop — Provider.Observe reads
-//     back what is actually running, and desired state is
-//     pulled as a content-addressed OCI artifact rather
-//     than re-rendered. OFF means Deploy behaves
-//     exactly as it always has and NOTHING observes;
-//     the verb still exists on the interface (an interface
-//     that changed shape with a config flag would be
-//     unimplementable), it is simply never driven. Stays
-//     experimental because most providers still report
-//     unsupported, so a loop built on it today would be
-//     reconciling a minority of tiers.
-type ExperimentalConfig struct {
-	StrictWiring bool `yaml:"strict_wiring,omitempty"`
-	Reconcile    bool `yaml:"reconcile,omitempty"`
-}
-
-// IsZero reports whether the experimental block carries nothing explicit.
-func (e ExperimentalConfig) IsZero() bool {
-	return !e.StrictWiring && !e.Reconcile
-}
-
-// resolve resolves a stable feature flag by name: an explicit value wins;
-// absent (nil) resolves to the shape-derived default when the loader
-// attached one, else to the historical "absent = enabled" default (zero
-// value FeaturesConfig, hand-constructed in tests, no forge.yaml context).
-// All public XxxEnabled() accessors are thin wrappers over this.
-func (f FeaturesConfig) resolve(name FeatureName) bool {
-	if ptr := *f.stablePtrs()[name]; ptr != nil {
-		return *ptr
-	}
+// With returns a copy with one feature forced on or off. The scaffold uses it
+// to describe a project that does not exist on disk yet (a CLI or library
+// has no codegen); nothing persists it, because the next load derives the
+// same answer from the tree the scaffold wrote.
+func (f FeaturesConfig) With(name FeatureName, on bool) FeaturesConfig {
+	next := make(map[FeatureName]bool, len(f.derived)+1)
 	if f.derived == nil {
-		// No derivation context (a hand-constructed FeaturesConfig, or a
-		// config that never went through the loader): fall back to the
-		// historical "absent = enabled" — except for the features that are
-		// default-OFF by construction. ingress and operators have no shape
-		// that implies them, so "absent" means "this project does not use
-		// it", and inheriting the permissive default here would turn on
-		// Gateway API codegen and CRD generation for every project that
-		// builds a config without the loader.
+		for n := range featureDeps {
+			next[n] = !defaultOffFeatures[n]
+		}
+		for _, n := range allFeatureNames {
+			next[n] = !defaultOffFeatures[n]
+		}
+	} else {
+		for k, v := range f.derived {
+			next[k] = v
+		}
+	}
+	next[name] = on
+	f.derived = next
+	return f
+}
+
+// resolve resolves a feature by name: the loader-derived value when there is
+// one, else the historical "absent = enabled" default (zero value
+// FeaturesConfig, hand-constructed in tests, no forge.yaml context). All
+// public XxxEnabled() accessors are thin wrappers over this.
+func (f FeaturesConfig) resolve(name FeatureName) bool {
+	if f.derived == nil {
+		// No derivation context: fall back to "absent = enabled", except for
+		// the features that are default-off by construction. ingress and
+		// operators have no shape that implies them, so "absent" means "this
+		// project does not use it".
 		return !defaultOffFeatures[name]
 	}
 	return f.derived[name]
 }
 
-// defaultOffFeatures are the stable features whose absent state is OFF
-// rather than the historical ON. They graduated out of experimental and
-// kept their opt-in semantics: the spelling and the warning changed, not
-// the behaviour. DeriveFeatureDefaults says the same thing for a config
-// that DID go through the loader; this covers the one that did not.
+// defaultOffFeatures are the features whose absent state is OFF rather than
+// ON. DeriveFeatureDefaults says the same thing for a config that DID go
+// through the loader; this covers the one that did not.
 var defaultOffFeatures = map[FeatureName]bool{
 	FeatureIngress:   true,
 	FeatureOperators: true,
@@ -2057,7 +1558,7 @@ func (f FeaturesConfig) OperatorsEnabled() bool { return f.resolve(FeatureOperat
 // disabled feature. Centralised so every gate site emits the same
 // wording — sub-agents and humans grepping for the string find one
 // authoritative format. The name argument is the lowercased feature
-// name as it appears in forge.yaml (e.g. "deploy", "build", "frontend").
+// name (e.g. "deploy", "build", "frontend").
 func DisabledFeatureError(name string) error {
 	return errDisabledFeature{name: name}
 }
@@ -2072,25 +1573,16 @@ type errDisabledFeature struct {
 }
 
 func (e errDisabledFeature) Error() string {
-	if IsExperimentalFeature(e.name) {
-		return "feature '" + e.name + "' is experimental and opt-in. Set features.experimental." + e.name +
-			": true in forge.yaml to enable; the API may change between forge versions."
-	}
-	return "feature '" + e.name + "' is disabled in forge.yaml. Set features." + e.name + ": true to enable."
+	return "feature '" + e.name + "' is off for this project. Features are derived from the repository, not configured — `forge project features` shows why each one is on or off."
 }
 
 // FeatureName is the canonical feature key. Stays a string alias so the
-// constants below are usable directly anywhere the feature name shows up
-// as a config key, a `--disable` flag value, or a `forge project audit` field.
+// constants below are usable directly anywhere the feature name shows up,
+// e.g. in the strings emitted by `forge project audit --json | jq '.features'`.
 type FeatureName = string
 
-// Feature name constants. These are the wire format — both YAML field
-// names under `features:` (top-level) or `features.experimental:`
-// (nested) and the strings emitted by `forge project audit --json | jq
-// '.features'`. Kept exported so external tooling can match against
-// them without re-encoding the spelling. The Experimental* constants
-// live under the nested block in YAML but flatten back to a single
-// per-name keyspace at the audit-JSON layer.
+// Feature name constants — the wire format of `forge project audit --json`
+// and `forge project features`.
 const (
 	FeatureORM           FeatureName = "orm"
 	FeatureCodegen       FeatureName = "codegen"
@@ -2102,130 +1594,28 @@ const (
 	FeatureObservability FeatureName = "observability"
 	FeatureHotReload     FeatureName = "hot_reload"
 	FeatureDeploy        FeatureName = "deploy"
-	// Graduated out of experimental — prod-critical, and warning about a
-	// project's own production configuration on every invocation was not
-	// buying anyone safety. Both DERIVE to false.
-	FeatureIngress   FeatureName = "ingress"
-	FeatureOperators FeatureName = "operators"
-
-	// Experimental feature names — opt-in under
-	// `features.experimental.<name>: true`. Default OFF.
-	FeatureStrictWiring FeatureName = "strict_wiring"
-	FeatureReconcile    FeatureName = "reconcile"
+	FeatureIngress       FeatureName = "ingress"
+	FeatureOperators     FeatureName = "operators"
 )
 
-// ExperimentalFeatureNames lists every Feature* constant that lives
-// under `features.experimental:`. Iteration order is the stable display
-// order used by `forge project audit`, the startup warning, and `forge project features`.
-var ExperimentalFeatureNames = []FeatureName{
-	FeatureStrictWiring,
-	FeatureReconcile,
+// allFeatureNames lists every feature in display order.
+var allFeatureNames = []FeatureName{
+	FeatureCodegen, FeatureORM, FeatureMigrations, FeatureContracts,
+	FeatureFrontend, FeatureObservability, FeatureHotReload, FeatureCI,
+	FeatureBuild, FeatureDeploy, FeatureIngress, FeatureOperators,
 }
 
-// IsExperimentalFeature reports whether a feature name lives under the
-// `features.experimental:` block (i.e. is default-OFF, opt-in, subject
-// to schema change). Centralised so audit, the gate helper, and the
-// startup-warning emitter share one source of truth.
-func IsExperimentalFeature(name FeatureName) bool {
-	for _, n := range ExperimentalFeatureNames {
-		if n == name {
-			return true
-		}
-	}
-	return false
-}
+// FeatureNames returns every feature name in display order.
+func FeatureNames() []FeatureName { return append([]FeatureName(nil), allFeatureNames...) }
 
-// EnabledExperimentalFeatures returns the names of experimental
-// features currently turned on, in ExperimentalFeatureNames order.
-// Used by the startup warning and `forge project features`.
-func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
-	checks := map[FeatureName]bool{
-		FeatureStrictWiring: f.Experimental.StrictWiring,
-		FeatureReconcile:    f.Experimental.Reconcile,
-	}
-	out := make([]FeatureName, 0, len(checks))
-	for _, name := range ExperimentalFeatureNames {
-		if checks[name] {
-			out = append(out, name)
-		}
+// EffectiveFeatures projects the resolved enabled/disabled state of every
+// feature into a stable name→bool map, for `forge project audit` and tests.
+func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
+	out := make(map[string]bool, len(allFeatureNames))
+	for _, n := range allFeatureNames {
+		out[n] = f.resolve(n)
 	}
 	return out
-}
-
-// EffectiveFeatures projects the resolved enabled/disabled state of
-// every feature into a stable name→bool map. Used by `forge project audit` to
-// surface the project's feature configuration at a glance, and by tests
-// to assert per-kind scaffold defaults. The map is keyed by Feature*
-// constants and is safe to JSON-marshal directly. Experimental features
-// are flattened in alongside the stable set under their own keys —
-// audit consumers can branch on IsExperimentalFeature(name) when they
-// need to distinguish the two tiers.
-func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
-	return map[string]bool{
-		FeatureORM:           f.ORMEnabled(),
-		FeatureCodegen:       f.CodegenEnabled(),
-		FeatureMigrations:    f.MigrationsEnabled(),
-		FeatureCI:            f.CIEnabled(),
-		FeatureBuild:         f.BuildEnabled(),
-		FeatureContracts:     f.ContractsEnabled(),
-		FeatureFrontend:      f.FrontendEnabled(),
-		FeatureObservability: f.ObservabilityEnabled(),
-		FeatureHotReload:     f.HotReloadEnabled(),
-		FeatureDeploy:        f.DeployEnabled(),
-		FeatureIngress:       f.IngressEnabled(),
-		FeatureOperators:     f.OperatorsEnabled(),
-		FeatureStrictWiring:  f.StrictWiringEnabled(),
-		FeatureReconcile:     f.ReconcileEnabled(),
-	}
-}
-
-// ReconcileEnabled reports whether the reconciliation loop is wired
-// (default: OFF — opt-in under `features.experimental.reconcile: true`).
-//
-// OFF is a genuine no-op, not a degraded mode: `forge env deploy` runs
-// exactly the code it ran before this feature existed, nothing calls Provider.Observe, and no desired-state artifact
-// is fetched. The flag gates the DRIVING of the loop, not the existence
-// of Observe on the Provider interface — an interface whose method set
-// changed with a config value could not be implemented at all.
-func (f FeaturesConfig) ReconcileEnabled() bool { return f.Experimental.Reconcile }
-
-// StrictWiringEnabled reports whether the diagnostics strict-mode
-// exit is wired by bootstrap (default: OFF — opt-in under
-// `features.experimental.strict_wiring: true`) — strict-mode wraps the
-// LogEmitter with StrictEmitter so any registered diagnostic terminates
-// the process after the summary line.
-func (f FeaturesConfig) StrictWiringEnabled() bool {
-	return f.Experimental.StrictWiring
-}
-
-// StackConfig declares the technology choices for the project.
-//
-// Historically this block carried six sub-sections (backend, frontend,
-// database, proto, deploy, ci) of "forward-looking declarations". Five of
-// those (backend/database/proto/deploy/ci) were never consumed by any
-// codegen path and merely DUPLICATED the canonical sources — `database.driver`,
-// `ci.provider`, per-env KCL — so they were removed in
-// the forge.yaml schema cleanup (FORGE_SHAPE_REDESIGN §4). Old keys parse
-// with a migration warning (see removedSchemaKeys: stack.backend etc.).
-//
-// Only `stack.frontend.framework` remains: it is genuinely load-bearing
-// (read by `forge scaffold frontend` and the frontend-build skip in build.go to
-// know whether the project ships a frontend framework at all).
-type StackConfig struct {
-	Frontend StackFrontend `yaml:"frontend,omitempty"`
-}
-
-// StackFrontend declares the frontend framework.
-type StackFrontend struct {
-	Framework string `yaml:"framework,omitempty"` // "nextjs" (default), "react-native", "svelte", "none"
-}
-
-// EffectiveFrontendFramework returns the frontend framework, defaulting to "nextjs".
-func (s StackConfig) EffectiveFrontendFramework() string {
-	if s.Frontend.Framework != "" {
-		return s.Frontend.Framework
-	}
-	return "nextjs"
 }
 
 // APIConfig holds project-level API protocol-skin toggles. Both fields

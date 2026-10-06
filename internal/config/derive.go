@@ -1,105 +1,221 @@
-// derive.go — shape-derived defaults for forge.yaml.
+// derive.go — everything forge.yaml no longer says, derived from the repo.
 //
-// A freshly scaffolded forge.yaml is minimal: name, module_path,
-// forge_version, services, frontends. Everything else — the features:
-// block and the section blocks (database, ci, lint, deploy, docker,
-// k8s) — is DERIVED from the project shape at load time:
+// A scaffolded forge.yaml is minimal: name, module_path, forge_version and
+// the few real settings. Everything else is DERIVED at load time from what
+// exists in the tree:
 //
-//   - feature flags derive from kind / database / frontends (see
-//     DeriveFeatureDefaults for the per-flag rule);
-//   - absent section blocks are filled with the canonical scaffold
-//     defaults for the project kind (see sectionDefaults).
+//   - the project kind (service | cli | library) from the sources;
+//   - every feature flag (DeriveFeatureDefaults) from the kind and from
+//     marker files and directories — there is no `features:` block;
+//   - the database driver and migrations directory (DeriveDatabase) from
+//     whether db/migrations exists;
+//   - the pnpm-workspaces layout (DeriveFrontendWorkspaces) from
+//     pnpm-workspace.yaml;
+//   - the frontend inventory from frontends/ on disk, overlaid by the KCL
+//     `forge.Frontend` declarations (frontend_inventory.go);
+//   - absent section blocks (ci, lint, deploy, k8s, database.migration_safety)
+//     are filled with the canonical scaffold defaults for the kind.
 //
-// Anything the user writes explicitly is taken literally; derivation
-// never overrides a present value. The features: block and the section
-// blocks therefore remain valid override surfaces — they are just no
-// longer required boilerplate.
-//
-// The write side is symmetric: NormalizeForWrite drops values that are
-// byte-identical to what derivation would produce, so a load → mutate →
-// write round-trip keeps forge.yaml minimal instead of materializing
-// every derived default back into the file.
+// Anything the user writes in a section that still exists is taken
+// literally; derivation never overrides a present value. The write side is
+// symmetric: NormalizeForWrite drops values byte-identical to what
+// derivation would produce, so a load → mutate → write round-trip keeps
+// forge.yaml minimal.
 package config
 
 import (
+	"bufio"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
 	"go.yaml.in/yaml/v3"
 )
 
-// DeriveFeatureDefaults computes the default enabled/disabled state of
-// every stable feature from the project shape. The rules:
+// NoORMDirective is the package-level marker that opts a project out of the
+// generated ORM. It goes in the doc comment of the hand-written DB package
+// (internal/db), beside the code it affects:
 //
-//	orm           ⇔ kind == service AND a database driver is configured
+//	// Package db is the hand-owned repository layer.
+//	//
+//	//forge:no-orm: the repository is hand-written; entities are not projected
+//	package db
+//
+// It mirrors `//forge:exclude-contract: <why>`, the other per-package opt-out
+// already in use: the exemption sits in the package it exempts, with a
+// reason, where a reader of that package sees it. A forge.yaml key was the
+// wrong home because it described a property of internal/db from a file that
+// never mentions internal/db. The reason is not required by the loader.
+const NoORMDirective = "//forge:no-orm"
+
+// hasNoORMMarker reports whether internal/db declares `//forge:no-orm`.
+// Only non-test, non-generated .go files directly in internal/db are read,
+// and only line comments — the same scope `//forge:exclude-contract` is
+// honoured in.
+func hasNoORMMarker(projectDir string) bool {
+	if projectDir == "" {
+		return false
+	}
+	dir := filepath.Join(projectDir, "internal", "db")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") ||
+			strings.HasSuffix(n, "_test.go") || strings.HasSuffix(n, "_gen.go") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(dir, n))
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		found := false
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if strings.HasPrefix(line, NoORMDirective) {
+				rest := line[len(NoORMDirective):]
+				if rest == "" || rest[0] == ':' || rest[0] == ' ' || rest[0] == '\t' {
+					found = true
+					break
+				}
+			}
+		}
+		_ = f.Close()
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// gatewayDeclRE matches a KCL `forge.Gateway { ... }` declaration.
+var gatewayDeclRE = regexp.MustCompile(`\bforge\.Gateway\s*\{`)
+
+// declaresGateway reports whether the project's KCL tree declares a Gateway —
+// the object that makes ingress mean anything. It is a TEXT scan of
+// deploy/kcl, deliberately not a render: a render costs seconds per env, and
+// config load runs on every command. A `forge.Gateway {` literal is exactly
+// the declaration the renderer would lower, so the two cannot disagree about
+// whether one exists. The vendored copy (.forge-kcl) is not under deploy/kcl.
+func declaresGateway(projectDir string) bool {
+	if projectDir == "" {
+		return false
+	}
+	root := filepath.Join(projectDir, "deploy", "kcl")
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".k") {
+			return nil
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr == nil && gatewayDeclRE.Match(body) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+// hasOperatorPackage reports whether internal/operators holds an operator —
+// the same presence test the generate pipeline's component discovery uses.
+func hasOperatorPackage(projectDir string) bool {
+	if projectDir == "" {
+		return false
+	}
+	entries, err := os.ReadDir(filepath.Join(projectDir, "internal", "operators"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() && e.Name() != "testdata" {
+			return true
+		}
+	}
+	return false
+}
+
+// DeriveDatabase fills the database driver and migrations directory from the
+// tree: a service project with db/migrations uses postgres and that
+// directory; anything else has no database. There is no setting to write —
+// the directory IS the declaration, the same way the schema is (the
+// migrations are the source of truth for it).
+func DeriveDatabase(c *ProjectConfig) {
+	if c.IsServiceKind() && c.projectDir != "" && dirExists(filepath.Join(c.projectDir, DefaultMigrationsDir)) {
+		c.Database.Driver = "postgres"
+		c.Database.MigrationsDir = DefaultMigrationsDir
+		return
+	}
+	c.Database.Driver = "none"
+	c.Database.MigrationsDir = ""
+}
+
+// DeriveFrontendWorkspaces reads the pnpm-workspaces layout off the tree: a
+// root pnpm-workspace.yaml means the project shares generated clients and
+// hooks across frontends through packages/api and packages/hooks.
+func DeriveFrontendWorkspaces(c *ProjectConfig) {
+	if c.projectDir == "" {
+		return
+	}
+	c.workspaces = fileExists(filepath.Join(c.projectDir, "pnpm-workspace.yaml"))
+}
+
+// DeriveFeatureDefaults computes the enabled/disabled state of every feature
+// from what exists in the repo. The rules:
+//
 //	codegen       ⇔ kind == service
-//	migrations    ⇔ kind == service AND a database driver is configured
+//	orm           ⇔ a database AND codegen AND no //forge:no-orm marker in internal/db
+//	migrations    ⇔ a database AND codegen
 //	ci            ⇔ kind != library
 //	build         ⇔ kind != library
 //	contracts     ⇔ always on (contract.go works for every kind)
-//	docs          ⇔ always on
-//	frontend      ⇔ frontends list non-empty
+//	frontend      ⇔ a frontend exists (frontends/ or KCL) AND codegen
 //	observability ⇔ kind == service
 //	hot_reload    ⇔ kind == service
 //	deploy        ⇔ kind == service
+//	ingress       ⇔ deploy AND deploy/kcl declares a forge.Gateway
+//	operators     ⇔ kind == service AND internal/operators holds an operator
 //
-// "database driver configured" means Database.Driver after section
-// defaulting — i.e. postgres for a service project unless the user
-// explicitly set `database: driver: none`. For the canonical service
-// shape every rule resolves to enabled, matching the historical
-// all-enabled default; for cli/library kinds the rules reproduce the
-// per-kind matrix that `forge project new --kind` used to write out explicitly.
+// "a database" means db/migrations exists (DeriveDatabase). deploy derives
+// from kind, NOT from a deploy/kcl probe: the scaffold ships deploy/kcl for
+// every service, so kind==service is the honest proxy, and the per-env
+// deploy steps are already a no-op when no env directories exist.
 //
-// deploy derives from kind, NOT from a deploy/kcl/ directory probe.
-// This is deliberate: derivation is intentionally pure project-shape —
-// config load must not become order- or cwd-dependent by sniffing the
-// filesystem. The scaffold ships deploy/kcl/ for every service project,
-// so kind==service is the honest proxy; and the per-env deploy-config
-// generate step is already a no-op when no deploy/kcl/<env>/ dirs exist
-// on disk, so a user who deleted the deploy tree loses nothing (the
-// steps simply find no envs to render). "deploy dir exists" was
-// considered and rejected for those reasons.
-//
-// Experimental features (ingress, external_builds, operators,
-// strict_wiring) and diagnostics are NOT derived — they stay default-off
-// opt-ins regardless of shape.
+// The set is dependency-consistent by construction (see feature_graph.go):
+// every dependent is gated on the EFFECTIVE value of what it requires, so a
+// derived set can never trip the graph validator.
 func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 	isService := c.IsServiceKind()
 	isLibrary := c.IsLibraryKind()
 	hasDB := isService && c.Database.Driver != "" && c.Database.Driver != "none"
 	codegen := isService
-	// Derivation MUST be dependency-consistent (see feature_graph.go): the
-	// default set it produces can never trip the load-time graph validator.
-	// codegen is the foundational dependency — orm, migrations, and frontend
-	// all require it. Gate every derived codegen-dependent default on the
-	// EFFECTIVE codegen value (an explicit `features.codegen: false` wins
-	// over the shape-derived default), so disabling codegen cascades its
-	// dependents off instead of leaving them on to trip the validator. A
-	// user who wants one of them without codegen still has to opt in
-	// explicitly, and then the validator makes them turn codegen on too.
-	codegenEffective := codegen
-	if c.Features.Codegen != nil {
-		codegenEffective = *c.Features.Codegen
-	}
-	frontend := len(c.Frontends) > 0 && codegenEffective
+	deploy := isService
 	return map[FeatureName]bool{
-		FeatureORM:           hasDB && codegenEffective,
+		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir),
 		FeatureCodegen:       codegen,
-		FeatureMigrations:    hasDB && codegenEffective,
+		FeatureMigrations:    hasDB && codegen,
 		FeatureCI:            !isLibrary,
 		FeatureBuild:         !isLibrary,
 		FeatureContracts:     true,
-		FeatureFrontend:      frontend,
+		FeatureFrontend:      len(c.Frontends) > 0 && codegen,
 		FeatureObservability: isService,
 		FeatureHotReload:     isService,
-		FeatureDeploy:        isService,
-		// ingress and operators graduated out of experimental but keep
-		// their default-OFF semantics, expressed here as a derivation
-		// rather than as a plain-bool zero value. There is no project
-		// shape that implies either one: a service is not reachable via
-		// Gateway API unless someone said so, and an operator is a
-		// deliberate addition. "absent = enabled" — the historical
-		// default for a stable flag — would be wrong for both, which is
-		// exactly why they must derive rather than fall through.
-		FeatureIngress:   false,
-		FeatureOperators: false,
+		FeatureDeploy:        deploy,
+		FeatureIngress:       deploy && declaresGateway(c.projectDir),
+		FeatureOperators:     isService && hasOperatorPackage(c.projectDir),
 	}
 }
 
@@ -150,8 +266,6 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 		// Server-shaped sections only exist for service projects: a CLI
 		// or library has no DB layer, nothing to deploy, no image.
 		d.Database = DatabaseConfig{
-			Driver:        "postgres",
-			MigrationsDir: "db/migrations",
 			MigrationSafety: MigrationSafetyConfig{
 				Enabled:           &t,
 				UnsafeAddColumn:   "error",
@@ -207,8 +321,11 @@ func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	fillSectionDefaults(&c.Deploy, d.Deploy, "deploy", present)
 	fillSectionDefaults(&c.K8s, d.K8s, "k8s", present)
 	fillSectionDefaults(&c.Lint, d.Lint, "lint", present)
-	// Features derivation runs AFTER the database fill — the orm /
-	// migrations rules read the effective driver.
+	// Tree-derived state runs AFTER the section fill, and in dependency
+	// order: the database (feature derivation reads it), the workspaces
+	// layout, then the features that read both.
+	DeriveDatabase(c)
+	DeriveFrontendWorkspaces(c)
 	c.Features.derived = DeriveFeatureDefaults(c)
 }
 
@@ -233,34 +350,5 @@ func NormalizeForWrite(c *ProjectConfig) *ProjectConfig {
 	stripSectionDefaults(&out.K8s, d.K8s)
 	stripSectionDefaults(&out.Lint, d.Lint)
 
-	// Feature flags: drop every explicit value that matches derivation.
-	// Recompute fresh against the EFFECTIVE shape (absent sections filled
-	// — e.g. a minimal service config derives orm/migrations from the
-	// filled postgres driver, not from the empty on-disk block) and fresh
-	// because the caller may have mutated shape (e.g. appended a
-	// frontend) since the config was loaded.
-	eff := *c
-	ApplyDerivedDefaults(&eff)
-	out.Features = normalizeFeatures(out.Features, eff.Features.derived)
 	return &out
-}
-
-func normalizeFeatures(f FeaturesConfig, d map[FeatureName]bool) FeaturesConfig {
-	drop := func(b *bool, derived bool) *bool {
-		if b != nil && *b == derived {
-			return nil
-		}
-		return b
-	}
-	// Drop every explicit stable flag that equals its derived default by
-	// rewriting through the FeatureName→*bool field map — same single
-	// registry the resolver reads, so adding a feature never needs a
-	// matching line here.
-	for name, ptr := range f.stablePtrs() {
-		*ptr = drop(*ptr, d[name])
-	}
-	// Diagnostics derives to off; drop an explicit false.
-	f.Diagnostics = drop(f.Diagnostics, false)
-	f.derived = d
-	return f
 }

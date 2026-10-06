@@ -51,7 +51,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 			}
 			dev := tc.env == "dev"
 			binding := frontendBindingFor(in, dev)
-			out, status := spliceFrontendIntoEnvKCL(in, "acme", tc.env, "web", binding, 0)
+			out, status := spliceFrontendIntoEnvKCL(in, "acme", tc.env, "web", "nextjs", binding, 0, nil)
 			if status != frontendKCLApplied {
 				t.Fatalf("splice did not apply (status %d) — an anchor moved in %s", status, tc.tmpl)
 			}
@@ -87,7 +87,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 			}
 
 			// Idempotent: a second scaffold of the same name is a no-op.
-			if again, st := spliceFrontendIntoEnvKCL(out, "acme", tc.env, "web", binding, 0); st != frontendKCLAlreadyDeclared || again != out {
+			if again, st := spliceFrontendIntoEnvKCL(out, "acme", tc.env, "web", "nextjs", binding, 0, nil); st != frontendKCLAlreadyDeclared || again != out {
 				t.Errorf("second splice must be a no-op, status %d", st)
 			}
 		})
@@ -98,8 +98,8 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 // second frontend is added beside the first rather than replacing it.
 func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
-	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", frontendOnHost, 0)
-	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", frontendOnHost, 0)
+	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", "nextjs", frontendOnHost, 0, nil)
+	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", "nextjs", frontendOnHost, 0, nil)
 	if status != frontendKCLApplied {
 		t.Fatalf("second frontend not applied: %d", status)
 	}
@@ -114,7 +114,7 @@ func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 // the literal, with no resolve_port that could step it elsewhere.
 func TestSpliceFrontendIntoEnvKCL_PinnedPort(t *testing.T) {
 	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
-	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", frontendOnHost, 4123)
+	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", "nextjs", frontendOnHost, 4123, nil)
 	if status != frontendKCLApplied {
 		t.Fatalf("status %d", status)
 	}
@@ -132,7 +132,7 @@ func TestFrontendBindingFor(t *testing.T) {
 	if got := frontendBindingFor(legacy, false); got != frontendOnBucket {
 		t.Fatalf("pre-hosting env: binding = %d, want frontendOnBucket", got)
 	}
-	out, status := spliceFrontendIntoEnvKCL(legacy, "acme", "prod", "web", frontendOnBucket, 0)
+	out, status := spliceFrontendIntoEnvKCL(legacy, "acme", "prod", "web", "nextjs", frontendOnBucket, 0, nil)
 	if status != frontendKCLApplied || !strings.Contains(out, `runtime = forge.OnBucket {bucket = "REPLACE_ME_BUCKET"}`) {
 		t.Errorf("pre-hosting env must keep the bucket binding (status %d):\n%s", status, out)
 	}
@@ -150,7 +150,7 @@ func TestFrontendBindingFor(t *testing.T) {
 
 func TestSpliceFrontendIntoEnvKCL_NoAnchorLeavesFileAlone(t *testing.T) {
 	in := "output = {}\n"
-	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", frontendOnHost, 0)
+	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", "nextjs", frontendOnHost, 0, nil)
 	if status != frontendKCLNoAnchor || out != in {
 		t.Fatalf("an unrecognised file must be left untouched, status %d", status)
 	}
@@ -202,5 +202,32 @@ func TestRunAddFrontend_DeclaresFrontendInKCL(t *testing.T) {
 	yml, _ := os.ReadFile(filepath.Join(root, "forge.yaml"))
 	if strings.Contains(string(yml), "port: 3000") {
 		t.Errorf("forge.yaml must not pin port 3000 — the dev port is KCL's:\n%s", yml)
+	}
+}
+
+func TestSpliceFrontendIntoEnvKCL_CarriesRoutes(t *testing.T) {
+	for _, env := range []struct {
+		name    string
+		binding frontendBinding
+	}{{"dev", frontendOnHost}, {"prod", frontendOnBucket}} {
+		entry := frontendKCLEntry("web", "nextjs", env.binding, 0, []string{"none"})
+		if !strings.Contains(entry, `routes = ["none"]`) {
+			t.Errorf("%s: the route allowlist must be declared in every env's frontend:\n%s", env.name, entry)
+		}
+	}
+	if strings.Contains(frontendKCLEntry("web", "nextjs", frontendOnHost, 0, nil), "routes") {
+		t.Error("no routes requested: none must be emitted")
+	}
+}
+
+func TestFrontendKCLEntry_DeclaresANonDefaultType(t *testing.T) {
+	cases := map[string]string{"vite-spa": `type = "vite"`, "react-native": `type = "rn"`}
+	for scaffoldType, want := range cases {
+		if got := frontendKCLEntry("spa", kclFrontendType(scaffoldType), frontendOnHost, 0, nil); !strings.Contains(got, want) {
+			t.Errorf("%s: the stanza must declare %s so it is not read as the nextjs default:\n%s", scaffoldType, want, got)
+		}
+	}
+	if got := frontendKCLEntry("web", kclFrontendType("nextjs"), frontendOnHost, 0, nil); strings.Contains(got, "type =") {
+		t.Errorf("a Next.js frontend is the schema default and must not declare a type:\n%s", got)
 	}
 }

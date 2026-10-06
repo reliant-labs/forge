@@ -64,7 +64,7 @@ Each category is the same shape:
 
 ### Category keys
 
-`ingress` appears only under `features.ingress: true` and
+`ingress` appears only when the repo declares a `forge.Gateway` in `deploy/kcl` and
 `prerequisites` only for deploy-shaped projects; the rest are always emitted.
 Iterate `.categories | keys[]` rather than hard-coding the list.
 
@@ -73,14 +73,14 @@ Iterate `.categories | keys[]` rather than hard-coding the list.
 | `version` | `pinned_version`, `binary_version`, `ci_pin`, `state_pin`, `intentional`, `hint` (when mismatch) |
 | `shape` | `services[]`, `frontends[]` (each `{name, type}`), `packages[]`, `proto_integrity` (only when proto parsing failed). Workers and operators are owned code with no proto contract — forge does **not** inventory them. |
 | `shape.services[]` | `name`, `type`, `rpc_count`, `rpcs[]` — each rpc is `{name, streaming?}`. `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`. |
-| `features` | `resolved{}` (every feature → bool), `enabled[]`, `disabled[]`, `experimental_enabled[]`, `experimental_available[]`. Informational — always `ok`. |
+| `features` | `resolved{}` (every feature → bool), `enabled[]`, `disabled[]`. Features are derived from the repo, never configured. Informational — always `ok`. |
 | `ingress` | `gateways`, `http_routes`, `grpc_routes`, `services_without_route`, `findings[]` |
 | `environments` | `environments[]` (each `{name, status}` — one per `deploy/kcl/<env>/main.k`) |
 | `external_builds` | `enabled`, `services[]` |
 | `prerequisites` | `external_secrets`, `dns_records`, `byte_match_groups`, `undeclared_secret_mounts`, `findings[]` |
 | `conventions` | `counts{}` (per-rule violation counts), `hint` |
 | `codegen` | `tracked_files` / `certified_files` (same count), `last_generate`, `legacy_manifest`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `disowned_files[]` (`{path, since, reason}`) + `disowned_hint`, and `forked_files[]` (**legacy**: always empty, kept only so a consumer reading the key does not break — see `forked_files_note`) |
-| `migration_safety` | `migration_count`, `migrations_dir`, `latest_migration`, `latest_migration_mtime`, `allowed_destructive[]`, `destructive_change_severity`, `hint`. `warn` when `allowed_destructive` is non-empty. |
+| `migration_safety` | `migration_count`, `migrations_dir`, `latest_migration`, `latest_migration_mtime`, `allow_destructive_files[]` (migrations carrying `-- forge:allow-destructive`), `destructive_change_severity`, `hint`. `warn` when any migration carries the directive. |
 | `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}`, `hint` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
 | `config_deps` | same rollup shape as `optional_deps_guard` — scalar Deps fields, which wire can never resolve; declare a component config block in `proto/config` instead |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |

@@ -228,29 +228,6 @@ func TestDBSeedApply_ZeroRowsIntoAnEmptyDatabaseIsAnError(t *testing.T) {
 	}
 }
 
-// `database.seed.tables: []` is a deliberate "synthesize nothing" — a project
-// whose dev data comes only from db/seeds/custom. That must keep working.
-func TestDBSeedApply_ExplicitlyEmptyScopeAppliesOnlyOverlays(t *testing.T) {
-	if testing.Short() {
-		t.Skip("needs a real postgres server")
-	}
-	dsn := scratchDatabase(t)
-	proj := seedTestProject(t, dsn, "database:\n  seed:\n    tables: []\n")
-	db := migrateByHand(t, dsn)
-	elsewhere(t)
-
-	out, err := runForgeDB(t, "-C", proj, "db", "seed", "apply")
-	if err != nil {
-		t.Fatalf("seed apply with tables: [] must succeed: %v\n%s", err, out)
-	}
-	if n := countRows(t, db, `SELECT count(*) FROM crews`); n != 1 {
-		t.Errorf("crews has %d rows; want exactly the custom overlay's one", n)
-	}
-	if n := countRows(t, db, `SELECT count(*) FROM jobs`); n != 0 {
-		t.Errorf("jobs has %d rows; tables: [] must synthesize nothing", n)
-	}
-}
-
 // --dsn naming a LOOPBACK database the env does not declare — a throwaway
 // postgres on another port — is accepted: there was no supported way to
 // seed one, and port 5432 is usually taken.

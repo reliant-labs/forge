@@ -279,17 +279,6 @@ func lintPipeline() []linterStep {
 				if rc.cfg != nil && rc.cfg.Lint.Frontend.EffectiveTypecheck() == "off" {
 					return false, "lint.frontend.typecheck is \"off\" — skipping frontend typecheck"
 				}
-				// `stack.frontend.framework: none` is the project saying
-				// forge does not drive a Node toolchain here — the same
-				// switch that drops these frontends from `forge build`. The
-				// lane honors it because it would otherwise warn on EVERY
-				// run of a project that deliberately opted out (its deps are
-				// not installed under forge's control, so the typecheck
-				// could never run). Step 5's eslint lane needs no such gate:
-				// its missing-deps path is already a silent skip.
-				if rc.cfg.FrontendToolchainDisabled() && len(rc.cfg.Frontends) > 0 {
-					return false, "stack.frontend.framework is \"none\" — skipping frontend typecheck"
-				}
 				// No declared frontend and no frontends/ directory: a clean
 				// silent no-op, not a finding. A backend-only project must
 				// not be told about a lane that does not apply to it.

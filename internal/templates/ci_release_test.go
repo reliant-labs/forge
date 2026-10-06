@@ -114,7 +114,6 @@ func TestRelease_NoCurlNoIdsNoDeployToken(t *testing.T) {
 		"release.yml":  renderCIText(t, "release.yml.tmpl", releaseFixture()),
 		"forge-deploy": renderCIText(t, "forge-deploy-action.yml.tmpl", releaseFixture()),
 		"build-images": renderCIText(t, "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true}),
-		"reconcile":    renderCIText(t, "reconcile.yml.tmpl", ReconcileWorkflowData{ProjectName: "demo", Environments: []DeployEnv{{Name: "prod"}}}),
 	}
 	for name, text := range texts {
 		for _, banned := range []string{"curl ", "DEPLOY_TOKEN", "DEPLOY_ENVIRONMENT_ID", "forge reconcile", "cut-release"} {
@@ -125,14 +124,6 @@ func TestRelease_NoCurlNoIdsNoDeployToken(t *testing.T) {
 	}
 	if !strings.Contains(texts["release.yml"], "FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}") {
 		t.Error("release.yml must read the one token name forge reads")
-	}
-	// The `$` matters: `{{ matrix.environment }}` without it is a literal
-	// string to GitHub, and the read would name an env called that.
-	if !strings.Contains(texts["reconcile"], `forge env status "${{ matrix.environment }}" --json`) {
-		t.Error("reconcile.yml must run forge env status on the matrix env")
-	}
-	if strings.Contains(texts["reconcile"], " {{ matrix.environment }}") {
-		t.Error("reconcile.yml has a `{{ matrix.environment }}` with no `$`: GitHub renders it literally")
 	}
 }
 

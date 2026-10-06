@@ -520,7 +520,7 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "build": _render_build(w.build)
         "runtime": _render_runtime(w, _rt)
         "spec": _spec_json(w, _rt, bundle)
-    }
+    } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {})
 }
 
 # `before` names a workload the env declares, on the same runtime set that
@@ -944,9 +944,8 @@ _public_dir = lambda f: Frontend -> str {
 }
 
 # The production build shape of each frontend the PROJECT declares, by name:
-# "static" | "standalone" | "server" — forge.yaml `frontends[].output`,
-# resolved the way the scaffolder resolves it (an unset field is the default;
-# a Vite or Expo build is always "static").
+# "static" | "standalone" | "server" — read from the frontend's own
+# next.config (a Vite or Expo build is always "static").
 #
 # WHY IT IS AN OPTION AND NOT A Frontend FIELD. Whether the build is a static
 # export is a fact about the frontend's CODE — its next.config, its routes —
@@ -991,7 +990,7 @@ _not_static_export = lambda f: Frontend -> [str] {
     _where = " in env '${_env}'" if _env else ""
     _dir = f.path if f.path else "frontends/${f.name}"
     [
-        "output '${_out}': its production build is not a static export. forge.yaml declares `output: ${_out}` for frontend '${f.name}' — a Node.js server — and ${_STATIC_FRONTEND_RUNTIMES[_t]} serves only the files a static export writes to public_dir '${_public_dir(f)}', so${_where} nothing would be published. Fix: set `output: static` on frontend '${f.name}' in forge.yaml and migrate what a static export cannot serve — `forge lint --static-export` lists each construct with its file:line and fix — or bind '${f.name}' elsewhere${_where}: a Next.js server is a process, so it ships as a workload (fw.Workload with build = forge.DockerBuild {dockerfile = \"${_dir}/Dockerfile\"})"
+        "output '${_out}': its production build is not a static export. its next.config builds `output: ${_out}` for frontend '${f.name}' — a Node.js server — and ${_STATIC_FRONTEND_RUNTIMES[_t]} serves only the files a static export writes to public_dir '${_public_dir(f)}', so${_where} nothing would be published. Fix: make the production build in frontends/${f.name}'s next.config a static export (`output: \"export\"`) and migrate what a static export cannot serve — `forge lint --static-export` lists each construct with its file:line and fix — or bind '${f.name}' elsewhere${_where}: a Next.js server is a process, so it ships as a workload (fw.Workload with build = forge.DockerBuild {dockerfile = \"${_dir}/Dockerfile\"})"
     ] if _t in _STATIC_FRONTEND_RUNTIMES and _out and _out != "static" else []
 }
 
@@ -1101,7 +1100,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # as the StaticSite spec's runtimeConfig.
         "runtime_config": _rc
         "runtime_config_spec": _rc_spec
-    }
+    } | ({"routes": f.routes} if f.routes else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string

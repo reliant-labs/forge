@@ -558,8 +558,7 @@ func TestCleanupStaleArtifacts_MockGenOwnerGateWhenContractsDisabled(t *testing.
 
 	cs := &checksums.FileChecksums{}
 
-	off := false
-	cfg := &config.ProjectConfig{Features: config.FeaturesConfig{Contracts: &off}}
+	cfg := &config.ProjectConfig{Features: config.FeaturesConfig{}.With(config.FeatureContracts, false)}
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeptService"}}, cfg)
 	removed, _, err := cleanupStaleArtifacts(ctx)
 	if err != nil {

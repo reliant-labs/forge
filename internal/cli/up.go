@@ -347,7 +347,7 @@ func readRuntimeStatus(ctx context.Context, env string) (runtimeStatusRead, erro
 	// resolves it, so the report and the phase can never disagree. No
 	// phase-skip log line here — that would pollute the --json output and is
 	// meaningless (the `services` command runs no phase).
-	frontendsOn := frontendPhaseEnabled(store, entities)
+	frontendsOn := frontendPhaseEnabled(entities)
 	// Collect the declared rows WITHOUT probing yet: the fresh render reverts
 	// resolve_port drift, so a service on an ephemeral (bind :0) port renders
 	// with no/wrong port here. Overlay the LIVE ports `forge env up` persisted
@@ -1024,7 +1024,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 
 	// Pre-flight. Respects --target (only the services this invocation would
 	// start are considered) and the frontend feature gate.
-	frontendsOn := frontendPhaseEnabled(store, entities)
+	frontendsOn := frontendPhaseEnabled(entities)
 	if err := upPreflight(projectID, opts.env, entities, opts.targets, frontendsOn); err != nil {
 		// Undo any resolve_port drift this rejected render persisted, so the
 		// next clean run still gets the canonical port assignments.
@@ -1069,7 +1069,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// is printed only when the render actually declares frontends: on a
 	// backend-only project there is nothing to elide and the line was
 	// pure noise.
-	if frontendPhaseEnabled(store, entities) {
+	if frontendPhaseEnabled(entities) {
 		feFailures := upFrontends(ctx, frontendLaunch{
 			entities: entities, env: opts.env, background: detach,
 			noInstall: opts.noInstall, targets: opts.targets,
@@ -1481,7 +1481,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 		return err
 	}
 
-	if frontendPhaseEnabled(store, entities) && !opts.noInstall {
+	if frontendPhaseEnabled(entities) && !opts.noInstall {
 		if err := preflightFrontendDeps(ctx, entities, opts.targets); err != nil {
 			return err
 		}
@@ -3033,31 +3033,10 @@ type frontendLaunch struct {
 }
 
 // frontendPhaseEnabled reports whether `forge env up` should start the
-// frontends THIS render declares.
-//
-// features.frontend is an explicit OPT-OUT, not a shape signal. Its derived
-// default comes from DeriveFeatureDefaults, which answers "does this project
-// have frontends?" by reading forge.yaml's `frontends:` inventory — and that
-// inventory is no longer where frontend topology lives. A project that
-// declares its frontends in deploy/kcl/<env>/ only (the supported shape:
-// `forge build --target <frontend>` and the deploy path both resolve them
-// from the render) therefore derives features.frontend = false, and gating
-// the phase on that derived default skipped every declared frontend while
-// printing "feature 'frontend' is disabled in forge.yaml" — about a file that
-// says nothing of the sort. The stack came up with no dev server, and the
-// only loud symptom was some OTHER service that waits on a frontend port.
-//
-// So the question is asked of the two sources that can actually answer it:
-// an explicit forge.yaml value wins in BOTH directions (a project that turns
-// the feature off gets no frontend phase, one that turns it on keeps it),
-// and with no explicit value the RENDER decides — frontends declared means
-// frontends started.
-func frontendPhaseEnabled(store featureReader, e *KCLEntities) bool {
-	if store != nil {
-		if f := store.Features(); featureExplicitlySet(f, config.FeatureFrontend) {
-			return f.FrontendEnabled()
-		}
-	}
+// frontends THIS render declares: frontends declared means frontends started.
+// Frontend topology lives in deploy/kcl/<env>/, so the render is the only
+// thing that can answer — there is no forge.yaml switch to consult.
+func frontendPhaseEnabled(e *KCLEntities) bool {
 	return e != nil && len(e.Frontends) > 0
 }
 

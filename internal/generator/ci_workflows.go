@@ -242,16 +242,6 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 	if ci.LintBufBreaking {
 		files = append(files, CIWorkflowFile{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", ci})
 	}
-	// OPT-IN, OFF BY DEFAULT: the scheduled drift report (`forge env status`
-	// per env) is part of the reconcile feature, so an unconditional
-	// scheduled workflow would hand every project an hourly job it never
-	// asked for.
-	if isService && cfg.Features.ReconcileEnabled() {
-		files = append(files, CIWorkflowFile{"reconcile.yml.tmpl", ".github/workflows/reconcile.yml", templates.ReconcileWorkflowData{
-			ProjectName:  cfg.Name,
-			Environments: deployEnvs,
-		}})
-	}
 	files = append(files, CIWorkflowFile{"dependabot.yml.tmpl", ".github/dependabot.yml", struct{ FrontendName string }{firstFrontendName}})
 	return files
 }

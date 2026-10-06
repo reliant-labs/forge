@@ -53,10 +53,10 @@ func TestSetProjectConfigScalar_PreservesForgeOwnManifest(t *testing.T) {
 	for _, marker := range []string{
 		"# Forge project manifest", // leading comment block
 		"\nci:\n",                  // block NormalizeForWrite drops
-		"\nfeatures:\n",            // block NormalizeForWrite drops
-		"# Experimental features",  // comment nested inside a block
-		"# Pure stateless string",  // trailing end-of-line comment
-		"driver: \"\"",             // explicitly-quoted empty scalar
+		"# Features, the database and the frontends", // comment NormalizeForWrite would drop
+		"\ncontracts:\n",          // block NormalizeForWrite drops
+		"# Pure stateless string", // trailing end-of-line comment
+		"forge_version: v",        // the very scalar being rewritten
 	} {
 		if !strings.Contains(string(before), marker) {
 			t.Fatalf("fixture forge.yaml no longer contains %q — this guard has gone blind", marker)

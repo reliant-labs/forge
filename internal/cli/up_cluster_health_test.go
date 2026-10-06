@@ -31,8 +31,7 @@ import (
 type stubFeatures struct{ deploy bool }
 
 func (s stubFeatures) Features() projectstore.FeatureSet {
-	d := s.deploy
-	return config.FeaturesConfig{Deploy: &d}
+	return config.FeaturesConfig{}.With(config.FeatureDeploy, s.deploy)
 }
 
 // withClusterCheck swaps the doctor check for a fabricated verdict for the

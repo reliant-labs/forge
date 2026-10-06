@@ -735,59 +735,28 @@ func (g *ProjectGenerator) ApplyKindFeatureDefaults(kind string) {
 // right thing without learning about Kind). Explicit user overrides via
 // `--disable` already set fields to false; this helper additionally
 // disables service-shaped features for non-service kinds.
-//
-// Note: these are scaffold-time defaults. The generated forge.yaml records
-// the resulting Features state so subsequent forge runs see the same flags.
 func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	if g.isService() {
 		return
 	}
-	off := func() *bool { b := false; return &b }
-	// CLI and library: no protobuf/RPC codegen, no service migrations,
-	// no deploy artefacts, no observability infra, no frontend, no
-	// hot-reload (no long-running server to reload).
-	if g.Features.Codegen == nil {
-		g.Features.Codegen = off()
+	// CLI and library: no protobuf/RPC codegen, no service migrations, no
+	// deploy artefacts, no observability infra, no frontend, no hot-reload (no
+	// long-running server to reload). Library additionally has no CI/build:
+	// there is no binary to lint/test/build, and the historic forge convention
+	// is to leave .github/workflows/ absent on a library scaffold.
+	//
+	// Nothing here is persisted. The scaffold writes the tree, and every later
+	// load derives the same answer from that tree and the project kind.
+	off := []config.FeatureName{
+		config.FeatureCodegen, config.FeatureORM, config.FeatureMigrations,
+		config.FeatureObservability, config.FeatureFrontend, config.FeatureHotReload,
+		config.FeatureDeploy,
 	}
-	if g.Features.ORM == nil {
-		g.Features.ORM = off()
-	}
-	if g.Features.Migrations == nil {
-		g.Features.Migrations = off()
-	}
-	if g.Features.Observability == nil {
-		g.Features.Observability = off()
-	}
-	if g.Features.Frontend == nil {
-		g.Features.Frontend = off()
-	}
-	if g.Features.HotReload == nil {
-		g.Features.HotReload = off()
-	}
-	// Deploy derives from kind (deploy ⇔ service) at load time, but
-	// generators consult g.Features before any forge.yaml exists, so
-	// record the explicit false here like the other service-shaped
-	// features. NormalizeForWrite drops it again (matches derivation).
-	if g.Features.Deploy == nil {
-		g.Features.Deploy = off()
-	}
-	// Ingress is experimental (default-off for every kind), so no
-	// per-kind override is needed — see ExperimentalConfig.
-	// Library: every server-shaped feature is off. CI/Build are
-	// off because there's no binary to lint/test/build — the user
-	// can re-enable manually if they want a lint+test workflow
-	// against the package, but the historic forge convention is
-	// to leave the .github/workflows/ tree absent on a library
-	// scaffold (TestProjectGeneratorKindLibraryScaffold asserts
-	// this). Docs stays on — godoc-style API reference is the
-	// headline output of a library project.
 	if g.isLibrary() {
-		if g.Features.CI == nil {
-			g.Features.CI = off()
-		}
-		if g.Features.Build == nil {
-			g.Features.Build = off()
-		}
+		off = append(off, config.FeatureCI, config.FeatureBuild)
+	}
+	for _, name := range off {
+		g.Features = g.Features.With(name, false)
 	}
 }
 

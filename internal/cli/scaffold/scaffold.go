@@ -1177,9 +1177,6 @@ func runOperator(f *factory.Factory, name, group, version, apiPackage, crdType s
 			return nil
 		},
 		preflight: func(cfg *config.ProjectConfig, _ codegen.Inventory, root string) error {
-			if !cfg.Features.OperatorsEnabled() {
-				return config.DisabledFeatureError(config.FeatureOperators)
-			}
 			// Default group from project name. Runs before announce/scaffold
 			// so both see the resolved value.
 			if group == "" {
@@ -1447,9 +1444,8 @@ frontends[].routes and honored by every subsequent forge generate run.
 frontend whose screens are all hand-written).
 
 --base-path mounts the frontend under a URL prefix (e.g. /admin behind a
-reverse proxy that blends several apps on one host). It is persisted as
-frontends[].base_path in forge.yaml and rendered into next.config.ts
-(basePath + assetPrefix) and the generated src/lib/basepath_gen.ts
+reverse proxy that blends several apps on one host). It is rendered into
+next.config.ts (basePath + assetPrefix; forge reads it back from there) and the generated src/lib/basepath_gen.ts
 helper. The single runtime override is NEXT_PUBLIC_BASE_PATH.
 
 --auth-mode names the sign-in flow this frontend uses. "native" is the
@@ -1652,7 +1648,6 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	// redirect URI registered with an IdP is a literal string).
 
 	frontendType := "nextjs"
-	frontendKind := kind
 	frontendDescription := "frontend"
 	switch kind {
 	case "mobile":
@@ -1661,8 +1656,6 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	case "vite-spa":
 		frontendType = "vite-spa"
 		frontendDescription = "Vite SPA frontend"
-	case "":
-		frontendKind = ""
 	}
 
 	if port == 0 {
@@ -1717,7 +1710,7 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		Output:      output,
 		BasePath:    basePath,
 		TypedConfig: typedConfig,
-		Public:      authMode == config.AuthModeNone,
+		Public:      authMode == authModeNone,
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
@@ -1744,65 +1737,16 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		}
 	}
 
-	// ── Write back THREE fields, each in place. ──
+	// Nothing is written to forge.yaml: the frontend inventory is derived from
+	// frontends/<name> on disk and the KCL declaration below, and the
+	// frontend feature derives from a frontend existing. The route allowlist
+	// and the dev port live on the KCL forge.Frontend, which is where the
+	// dev loop reads them.
 	//
-	// This command runs against a forge.yaml the user has been living in
-	// for the life of the project, and it changes three things. It used to
-	// change them by marshalling the whole config struct back over the
-	// file, which is a rewrite, not an update: a Go struct models no
-	// comments and no key order, and NormalizeForWrite drops every section
-	// whose values happen to match what forge would derive. On a real
-	// manifest that silently deleted the comment header, the ci: and lint:
-	// blocks, and most of features:. The file still loaded, so nothing
-	// complained. Each mutation below edits only its own bytes.
-	configPath := filepath.Join(root, "forge.yaml")
-
-	entry := buildFrontendEntry(frontendEntryInput{
-		Name:         name,
-		FrontendType: frontendType,
-		FrontendKind: frontendKind,
-		Kind:         kind,
-		Output:       output,
-		BasePath:     basePath,
-		AuthMode:     authMode,
-		Port:         port,
-		Routes:       routes,
-	})
-	cfg.Frontends = append(cfg.Frontends, entry)
-	if err := generator.AppendFrontendEntryToConfig(configPath, entry); err != nil {
-		return fmt.Errorf("update project config: %w", err)
-	}
-
 	// Declare it where the environments are declared, exactly as
 	// `forge project new --frontend` does: without this the dev loop has no
 	// KCL-resolved port for it and `forge env up` falls back to a literal.
-	declareFrontendInKCL(root, cfg.Name, name, port)
-
-	// Flip features.frontend on so subsequent `forge generate` runs
-	// pick up the frontend codegen pass. Projects scaffolded with
-	// `forge project new --kind service` (no --frontend) leave this field
-	// explicitly false; without this flip the frontend dir + files
-	// would be emitted but never regenerated. Use a stable address so
-	// the *bool survives marshal round-trips.
-	frontendOn := true
-	cfg.Features.Frontend = &frontendOn
-	if err := generator.SetProjectConfigScalarPath(configPath, []string{"features", "frontend"}, true); err != nil {
-		return fmt.Errorf("update project config: %w", err)
-	}
-
-	// Bring stack.frontend.framework in sync with the frontend we just
-	// added. Projects scaffolded without --frontend leave this field as
-	// "none" — downstream tooling (lint config, CI, codegen branching)
-	// reads the framework field directly and would misread the project
-	// as having no frontend stack. Only overwrite when empty or "none"
-	// so a user who set something exotic (e.g. "svelte") keeps it.
-	if cfg.Stack.Frontend.Framework == "" || cfg.Stack.Frontend.Framework == "none" {
-		cfg.Stack.Frontend.Framework = frontendType
-		if err := generator.SetProjectConfigScalarPath(configPath,
-			[]string{"stack", "frontend", "framework"}, frontendType); err != nil {
-			return fmt.Errorf("update project config: %w", err)
-		}
-	}
+	declareFrontendInKCL(root, cfg.Name, name, kclFrontendType(frontendType), port, routes)
 
 	// Install the new frontend's npm dependencies so the user can run
 	// the dev server (or `forge generate` post-codegen for the hooks
@@ -1831,8 +1775,8 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	generator.ReconcileFrontendTsconfigPeers(root)
 
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
-	if authMode == config.AuthModeNone {
-		fmt.Printf("\n🌐 '%s' is a PUBLIC frontend (auth_mode: none): this project's dev environment declares no\n"+
+	if authMode == authModeNone {
+		fmt.Printf("\n🌐 '%s' is a PUBLIC frontend (--auth-mode none): this project's dev environment declares no\n"+
 			"   identity provider, so no sign-in gate was scaffolded — every page renders for every visitor.\n"+
 			"   The API's own auth is unchanged. To gate it later: `forge skill load auth/frontend`.\n", name)
 		return nil
@@ -2131,74 +2075,17 @@ func normalizeRouteSlugs(in []string) []string {
 	return out
 }
 
-// frontendEntryInput is buildFrontendEntry's parameter set. A struct rather
-// than nine positional args: several are same-typed strings, so a swapped pair
-// would compile cleanly and write the wrong forge.yaml.
-type frontendEntryInput struct {
-	Name         string
-	FrontendType string
-	FrontendKind string
-	Kind         string
-	Output       string
-	BasePath     string
-	AuthMode     string
-	Port         int
-	Routes       []string
-}
-
-// buildFrontendEntry assembles the forge.yaml entry for a newly scaffolded
-// frontend.
-//
-// Optional fields are written ONLY when the user asked for them: leaving a
-// field empty lets its scaffold default evolve in a later forge version
-// without every existing forge.yaml pinning the old value. That is why each
-// assignment below is conditional rather than unconditional.
-//
-// `output` is the exception, and runFrontend always resolves it for a web
-// frontend before it gets here. Its consequence is next.config.ts, which is
-// scaffold-once: a later default cannot reach a frontend that was already
-// rendered, so an empty field could never follow the default anyway — it
-// would only misdescribe the file. Empty reads as the legacy standalone
-// shape (FrontendConfig.EffectiveOutput).
-func buildFrontendEntry(in frontendEntryInput) config.FrontendConfig {
-	// NO default port here, and that is the fix for a real outage of the dev
-	// loop. The frontend's dev port is declared in deploy/kcl/dev/main.k
-	// (declareFrontendInKCL writes `plugin.resolve_port(..., 3000)` there),
-	// and the render is what `forge env up` launches and preflights. This
-	// used to also write `port: 3000` into forge.yaml — a second, literal
-	// copy of the number that nothing kept in step with the resolved one, so
-	// on any machine where 3000 was taken the preflight probed the stale
-	// literal and refused to start. forge.yaml carries a port only when the
-	// user pinned one with --port, which the KCL declaration then repeats
-	// verbatim.
-	port := in.Port
-	fe := config.FrontendConfig{
-		Name: in.Name,
-		Type: in.FrontendType,
-		Kind: in.FrontendKind,
-		Port: port,
-	}.WithDir(fmt.Sprintf("frontends/%s", in.Name))
-	isWeb := in.Kind == "" || in.Kind == "web"
-	if in.Output != "" && isWeb {
-		fe.Output = in.Output
-	}
-	// base_path drives the regenerated basepath_gen.ts helper's prefix.
-	if in.BasePath != "" && isWeb {
-		fe.BasePath = in.BasePath
-	}
-	// The route allowlist MUST persist: otherwise the next `forge generate`
-	// re-scaffolds the whole entity set this flag was used to avoid, and the
-	// frontend's route surface would depend on which command last touched it.
-	if len(in.Routes) > 0 {
-		fe.Routes = normalizeRouteSlugs(in.Routes)
-	}
-	// auth_mode persists whenever the scaffold decided it, so a public
-	// frontend is visibly public in forge.yaml rather than silently so.
-	if in.AuthMode != "" {
-		fe.AuthMode = in.AuthMode
-	}
-	return fe
-}
+// authModeNative and authModeNone are the values of `forge scaffold frontend
+// --auth-mode`. They steer which template set is rendered and are not
+// persisted anywhere: a public frontend is simply one with no route guard in
+// its files.
+const (
+	// authModeNative gates every page behind the app's own sign-in; the
+	// server runs the OIDC flow on the browser's behalf.
+	authModeNative = "native"
+	// authModeNone is a PUBLIC frontend: no route guard, no sign-in screen.
+	authModeNone = "none"
+)
 
 // frontendTypedConfigFor reports which typed config fields the project
 // declares for the named frontend, by reading the config protos and finding
@@ -2235,7 +2122,7 @@ func frontendTypedConfigFor(root, frontendName string) generator.FrontendTypedCo
 // to the app's own API, and the server runs the OIDC flow against the issuer.
 func validateAuthMode(ctxLabel, authMode string) error {
 	switch authMode {
-	case "", config.AuthModeNative, config.AuthModeNone:
+	case "", authModeNative, authModeNone:
 		return nil
 	default:
 		return cliutil.UserErr(ctxLabel,
@@ -2278,13 +2165,13 @@ func projectDeclaresDevIDP(root string) bool {
 // user may be about to point it at a hosted issuer) but called out.
 func resolveFrontendAuthMode(root, requested string) string {
 	if requested != "" {
-		if requested == config.AuthModeNative && !projectDeclaresDevIDP(root) {
+		if requested == authModeNative && !projectDeclaresDevIDP(root) {
 			fmt.Println("⚠️  --auth-mode native: deploy/kcl/dev/main.k declares no identity provider, so the sign-in gate has no issuer to sign in against until you configure one (`forge skill load auth/dev-loop`).")
 		}
 		return requested
 	}
 	if projectDeclaresDevIDP(root) {
-		return config.AuthModeNative
+		return authModeNative
 	}
-	return config.AuthModeNone
+	return authModeNone
 }

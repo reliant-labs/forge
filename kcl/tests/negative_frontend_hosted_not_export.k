@@ -9,7 +9,7 @@ over a standalone frontend) and nothing objected.
 
 # kcl-args: env="staging" frontend_outputs="{\"admin\":\"server\",\"web\":\"static\"}"
 # expect: frontend 'admin' cannot run on the hosted runtime
-# expect: forge.yaml declares `output: server` for frontend 'admin'
+# expect: its next.config builds `output: server` for frontend 'admin'
 # expect: forge.OnHosted serves only the files a static export writes to public_dir 'out'
 # expect: in env 'staging'
 

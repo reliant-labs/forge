@@ -370,8 +370,8 @@ func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
 			config.FrontendConfig{Name: "web", Type: "nextjs"}.WithDir("frontends/web"),
 			config.FrontendConfig{Name: "mobile", Type: "react-native"}.WithDir("frontends/mobile"),
 		},
-		Frontend: config.FrontendProjectConfig{Workspaces: true},
 	}
+	*cfg = cfg.WithFrontendWorkspaces(true)
 	services := []codegen.ServiceDef{
 		fakeService("UserService", "proto/services/users/v1/users.proto"),
 	}

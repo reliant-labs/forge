@@ -89,18 +89,6 @@ func (c *configSvc) SetProjectConfigScalarPath(path string, keys []string, value
 	return SetProjectConfigScalarPath(path, keys, value)
 }
 
-func (c *configSvc) AppendFrontendEntryToConfig(configPath string, entry config.FrontendConfig) error {
-	return AppendFrontendEntryToConfig(configPath, entry)
-}
-
-func (c *configSvc) AppendFrontendToConfig(projectRoot, frontendName string, port int) error {
-	return AppendFrontendToConfig(projectRoot, frontendName, port)
-}
-
-func (c *configSvc) AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, kind string) error {
-	return AppendFrontendToConfigWithKind(projectRoot, frontendName, port, kind)
-}
-
 var (
 	_ Service       = (*svc)(nil)
 	_ ConfigService = (*configSvc)(nil)

@@ -35,9 +35,6 @@ func (s stubVersion) Run(_ context.Context, name string, _ []string) (string, er
 	return s.out[name], s.err[name]
 }
 
-// boolPtr is a local helper because config doesn't export one.
-func boolPtr(b bool) *bool { return &b }
-
 // minimalServiceCfg returns a service-kind project with all features
 // at their defaults (enabled) — the baseline state for tool-check
 // predicates.
@@ -290,10 +287,10 @@ func TestRequiredWhen(t *testing.T) {
 	pred := requiredWhen(func(f config.FeaturesConfig) bool { return f.DeployEnabled() })
 
 	cfgOn := &config.ProjectConfig{
-		Features: config.FeaturesConfig{Deploy: boolPtr(true)},
+		Features: config.FeaturesConfig{}.With(config.FeatureDeploy, true),
 	}
 	cfgOff := &config.ProjectConfig{
-		Features: config.FeaturesConfig{Deploy: boolPtr(false)},
+		Features: config.FeaturesConfig{}.With(config.FeatureDeploy, false),
 	}
 
 	if !pred(cfgOn, "") {
@@ -308,7 +305,7 @@ func TestRequiredWhen(t *testing.T) {
 
 	// Stable opt-out: Build defaults on, can be opted out.
 	stablePred := requiredWhen(func(f config.FeaturesConfig) bool { return f.BuildEnabled() })
-	cfgBuildOff := &config.ProjectConfig{Features: config.FeaturesConfig{Build: boolPtr(false)}}
+	cfgBuildOff := &config.ProjectConfig{Features: config.FeaturesConfig{}.With(config.FeatureBuild, false)}
 	cfgBuildNil := &config.ProjectConfig{}
 	if stablePred(cfgBuildOff, "") {
 		t.Errorf("Build=false should not require tool")

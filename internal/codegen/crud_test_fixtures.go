@@ -30,9 +30,12 @@ import (
 // (no migrations, or introspection failed): every lookup falls back to the
 // legacy type-blind literals.
 type crudTestFixtures struct {
-	tables map[string]schemadef.Table
-	pools  seedplan.EnumPools
-	bounds seedplan.CheckBounds
+	// enumImports maps the alias a create-request literal uses for an enum in
+	// a foreign Go package to that package's import path (see enumQualifier).
+	enumImports map[string]string
+	tables      map[string]schemadef.Table
+	pools       seedplan.EnumPools
+	bounds      seedplan.CheckBounds
 	// vocab is the project's db/seeds/vocab.yaml domain-vocabulary overlay,
 	// when present: the parent-closure seed rows then carry the same domain
 	// values the dev dataset does (same Plan, same determinism). nil is the
@@ -826,8 +829,8 @@ func (fx *crudTestFixtures) enumFixture(svc ServiceDef, ent EntityDef, inputType
 			}
 		}
 	}
-	if _, okN := enumWireGoName(svc.Package, fq); !okN {
-		return "", "", false // cross-package / unresolvable — legacy fixture
+	if _, _, okN := fx.enumQualifier(svc, fq); !okN {
+		return "", "", false // unresolvable — legacy fixture
 	}
 	choices := seedplan.SeedEnumChoices(svc.Enums[fq])
 	if pool, okP := fx.pools[ent.TableName]; okP {
@@ -892,7 +895,7 @@ func (fx *crudTestFixtures) enumConstant(svc ServiceDef, ent EntityDef, inputTyp
 			}
 		}
 	}
-	goName, okN := enumWireGoName(svc.Package, fq)
+	qual, goName, okN := fx.enumQualifier(svc, fq)
 	if !okN || value == "" {
 		return "", false
 	}
@@ -900,7 +903,37 @@ func (fx *crudTestFixtures) enumConstant(svc ServiceDef, ent EntityDef, inputTyp
 	if idx := strings.LastIndex(goName, "_"); idx >= 0 {
 		prefix = goName[:idx]
 	}
-	return "pb." + prefix + "_" + value, true
+	return qual + "." + prefix + "_" + value, true
+}
+
+// enumQualifier spells how the generated factory file refers to an enum's Go
+// package: `pb` for the service's own package, otherwise a deterministic alias
+// whose import is recorded in fx.enumImports for the renderer. A real constant
+// from the enum's own package beats a generic literal — a typo in a value name
+// stays a compile error instead of a runtime CHECK failure. ok=false only when
+// the enum cannot be located at all (a legacy descriptor naming a foreign
+// proto package).
+func (fx *crudTestFixtures) enumQualifier(svc ServiceDef, fq string) (qual, goName string, ok bool) {
+	ref, known := svc.EnumGoRefs[fq]
+	if !known {
+		name, okN := enumWireGoName(svc.Package, fq)
+		return "pb", name, okN
+	}
+	if ref.ImportPath == svc.GoPackage {
+		return "pb", ref.GoName, true
+	}
+	if ref.ImportPath == "" {
+		return "", "", false
+	}
+	alias := mockImportAlias(ref.ImportPath, 0)
+	if alias == "pb" || alias == "db" {
+		alias += "enum"
+	}
+	if fx.enumImports == nil {
+		fx.enumImports = map[string]string{}
+	}
+	fx.enumImports[alias] = ref.ImportPath
+	return alias, ref.GoName, true
 }
 
 // stringFixture derives a string column's create values: CHECK vocabulary

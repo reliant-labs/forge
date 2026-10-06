@@ -602,6 +602,10 @@ func recordEnum(sd *codegen.ServiceDef, en *protogen.Enum) {
 		sd.EnumNumbers = make(map[string][]int32)
 	}
 	sd.EnumNumbers[fq] = nums
+	if sd.EnumGoRefs == nil {
+		sd.EnumGoRefs = make(map[string]codegen.EnumGoRef)
+	}
+	sd.EnumGoRefs[fq] = codegen.EnumGoRef{ImportPath: string(en.GoIdent.GoImportPath), GoName: en.GoIdent.GoName}
 }
 
 // extractMessageFields populates the Messages map with field definitions for a message.

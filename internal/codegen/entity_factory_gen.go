@@ -401,6 +401,9 @@ func renderEntityFactoryFile(modulePath string, g factoryGroup) []byte {
 	}
 	if len(g.creates) > 0 {
 		fmt.Fprintf(&b, "\tpb %s\n", strconv.Quote(g.pbImport))
+		for _, alias := range sortedEnumImportAliases(g.creates) {
+			fmt.Fprintf(&b, "\t%s %s\n", alias, strconv.Quote(createSpecsEnumImports(g.creates)[alias]))
+		}
 	}
 	if len(g.specs) > 0 {
 		fmt.Fprintf(&b, "\tdb %s\n", strconv.Quote(modulePath+"/internal/db"))
@@ -712,4 +715,29 @@ func sortedFactoryDirs(byService map[string]factoryGroup) []string {
 // file that imports `testing`, which is the shape this move exists to remove.
 func RetiredEntityFactoryRelPath() string {
 	return filepath.Join("internal", "testfactory", "factory_gen.go")
+}
+
+// createSpecsEnumImports merges the foreign enum packages every request
+// factory in a group references.
+func createSpecsEnumImports(specs []createRequestSpec) map[string]string {
+	merged := map[string]string{}
+	for _, s := range specs {
+		if s.failure != "" {
+			continue
+		}
+		for alias, path := range s.imports {
+			merged[alias] = path
+		}
+	}
+	return merged
+}
+
+func sortedEnumImportAliases(specs []createRequestSpec) []string {
+	merged := createSpecsEnumImports(specs)
+	aliases := make([]string, 0, len(merged))
+	for alias := range merged {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	return aliases
 }

@@ -93,7 +93,7 @@ func BuildEntityConv(svc ServiceDef, entity EntityDef) (EntityConvTemplateData, 
 	enumRepeated := enumRepeatedWireFields(svc, entity.Name)
 	for _, wf := range entity.Fields {
 		wf = promoteOptionalScalar(wf)
-		wf = promoteEnum(wf, svc.Package, enumRepeated[wf.Name])
+		wf = promoteEnum(wf, svc, enumRepeated[wf.Name])
 		col, ok := colByName[wf.Name]
 		if !ok {
 			conv.ToProtoAssigns = append(conv.ToProtoAssigns,
@@ -261,11 +261,11 @@ func promoteOptionalScalar(f EntityField) EntityField {
 // no column — the normal case, since birth TODO-skips them — the field is
 // simply wire-only; with a hand-written column it fails the generate,
 // because a field forge cannot map is dead over the API.
-func promoteEnum(f EntityField, protoPkg string, repeated bool) EntityField {
+func promoteEnum(f EntityField, svc ServiceDef, repeated bool) EntityField {
 	if f.Kind != FieldKindEnum {
 		return f
 	}
-	name, ok := enumWireGoName(protoPkg, f.MessageType)
+	name, ok := enumInServicePackage(svc, f.MessageType)
 	if !ok {
 		return f
 	}
@@ -278,6 +278,22 @@ func promoteEnum(f EntityField, protoPkg string, repeated bool) EntityField {
 		f.GoType = "pb." + name
 	}
 	return f
+}
+
+// enumInServicePackage is the Go identifier of an enum reachable through the
+// service's own `pb` import, ok=false for any enum generated into a different
+// Go package. The deciding fact is the enum's go_package (EnumGoRefs), not its
+// proto package: two files of one proto package routinely generate into two Go
+// packages, and a constant spelled `pb.X` for the second does not compile.
+// Descriptors without EnumGoRefs fall back to the proto-package rule.
+func enumInServicePackage(svc ServiceDef, fq string) (string, bool) {
+	if ref, known := svc.EnumGoRefs[fq]; known {
+		if ref.ImportPath != svc.GoPackage {
+			return "", false
+		}
+		return ref.GoName, true
+	}
+	return enumWireGoName(svc.Package, fq)
 }
 
 // enumWireGoName maps a fully-qualified SAME-PACKAGE enum name to its
@@ -1134,7 +1150,7 @@ func requestWireFields(svc ServiceDef, m Method) []EntityField {
 				// pointers on the Go struct; enums resolve to their
 				// concrete pb.<Enum> shape (see promoteEnum).
 				f := promoteOptionalScalar(schemaFieldToEntityField(d))
-				f = promoteEnum(f, svc.Package, d.Repeated)
+				f = promoteEnum(f, svc, d.Repeated)
 				fields = append(fields, f)
 			}
 			return fields

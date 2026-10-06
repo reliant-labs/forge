@@ -504,6 +504,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge project rescaffold` re-creates the hosted CI pipeline again.**
+  Since new projects are born hosted, the scaffold writes `release.yml` and
+  `.github/actions/forge-deploy/action.yml` for the staging and prod it just
+  wrote — but rescaffold decides which CI files a project has from a render of
+  every env, and those envs import config modules (`config_gen.k`, each env's
+  `config.k`) only `forge generate` writes. On a project generate had not
+  completed on (a fresh scaffold whose bootstrap generate failed), the envs
+  did not render, rescaffold took them for envs that are not hosted, and
+  refused both files ("this project declares none"). It also memoized that
+  answer and handed it to the generate pipeline it ran next, so the
+  pipeline's CI step — after writing the very modules that made the envs
+  render — still wrote a `deploy.yml` beside `release.yml` and a
+  `build-images.yml` for cluster envs. Rescaffold now writes the env config
+  modules first when an env does not render (the new `forge generate --steps
+  env-config` preset), never hands its answer to the pipeline, and names an
+  env that still fails to render (`forge env render <env>`) instead of
+  calling it unhosted. `TestRescaffold_EveryScaffoldedFileIsReemittable` had
+  been failing on main since #518.
+
 - **A born list page no longer links its rows to a detail page that does not
   exist.** Every list row called `router.push('/<slug>/<id>')`, but the detail
   page is only generated when the service has a Get RPC — so a List-only

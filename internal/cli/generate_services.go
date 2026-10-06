@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -234,17 +233,11 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 		fmt.Printf("  ✅ Generated handlers/%s CRUD wiring (%d methods; ops in handlers_crud_ops_gen.go, shims in user-owned handlers_crud.go)\n", pkg, len(crudMethods))
 
 		if err := codegen.GenerateCRUDTests(svc, crudMethods, modulePath, projectDir, cs); err != nil {
-			// Fixtures the applied schema REJECTS are a hard failure. Every
-			// other scaffold problem stays a warning (a project without a
-			// lifecycle test still generates), but emitting a test forge can
-			// prove its own migration will refuse is the defect this guard
-			// exists to stop — and a warning is what let it ship, surfacing
-			// much later as an unattributed create #1 failure in a
-			// scaffold-once file the author was told not to rewrite.
-			var fce *codegen.FixtureConstraintError
-			if errors.As(err, &fce) {
-				return fmt.Errorf("CRUD test generation for %s: %w", svc.Name, err)
-			}
+			// A scaffold problem is a warning: a project without a lifecycle
+			// test still generates. The lifecycle test carries no fixture data
+			// to get wrong — its rows come from the regenerated
+			// create-request factories, which report a fixture the schema
+			// rejects themselves (see codegen.GenerateEntityFactories).
 			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD test generation for %s failed: %v\n", svc.Name, err)
 		} else {
 			fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_test.go (CRUD lifecycle against real postgres — scaffolded once, yours from line one)\n", pkg)

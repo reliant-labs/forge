@@ -12,18 +12,12 @@ import (
 	"sort"
 	"strings"
 	"testing"
-{{- if .NeedsTimestamppb}}
-	"time"
-{{- end}}
 
 	"connectrpc.com/connect"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/testkit"
 {{- if .NeedsFieldMask}}
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
-{{- end}}
-{{- if .NeedsTimestamppb}}
-	"google.golang.org/protobuf/types/known/timestamppb"
 {{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
@@ -122,37 +116,24 @@ func assertCleanError(t *testing.T, label string, err error, want connect.Code) 
 // path for {{.EntityName}} end to end.
 func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	db := crudTestDB(t)
-{{- if .ParentSeedSQL}}
-
-	// Rows for {{.EntityName}}'s foreign-key parent closure, seeded at the
-	// DB level (foreign keys may cross services) with deterministic ids —
-	// the create requests below reference them.
-	if _, err := db.Exec(context.Background(), `
-{{.ParentSeedSQL}}`); err != nil {
-		t.Fatalf("seed parent rows: %v", err)
-	}
-{{- end}}
 	svc := {{$.Package}}.NewTest{{$.TestHelperName}}(t, {{$.Package}}.WithDB(db))
 	ctx := crudTestCtx()
 
 	// Two creates must produce two rows with distinct, non-empty IDs.
-	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.CreateMethod.InputType}}{
-{{- range .CreateFields}}
-{{- if eq .Kind "scalar" "enum" "timestamp"}}
-		{{.ProtoName}}: {{.TestValue}},
-{{- end}}
-{{- end}}
-	}))
+	//
+	// The requests come from New{{.CreateMethod.InputType}}, which forge
+	// REGENERATES from the applied schema on every `forge generate`
+	// (factories_gen_test.go, beside this file): it seeds the foreign-key
+	// parents the request references and fills every field with a value the
+	// current constraints accept. A migration you edit later — a GENERATED
+	// column, a one-way status CHECK — flows into it instead of breaking this
+	// file. Variants 0 and 1 are distinct rows; override any field you assert
+	// on (`req.Name = "..."`) after the call.
+	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 0)))
 	if err != nil {
 		t.Fatalf("create #1: %v", err)
 	}
-	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.CreateMethod.InputType}}{
-{{- range .CreateFields}}
-{{- if eq .Kind "scalar" "enum" "timestamp"}}
-		{{.ProtoName}}: {{.TestValue2}},
-{{- end}}
-{{- end}}
-	}))
+	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 1)))
 	if err != nil {
 		t.Fatalf("create #2: %v", err)
 	}

@@ -416,6 +416,10 @@ func (p *Plan) finalize() {
 		p.tables[i].n = p.rowsTarget[name]
 		p.rowsOf[name] = p.tables[i].n
 	}
+	// A minimal plan's column set and union branches. Resolved before the
+	// row-count caps and diamonds below, which read requireEdge through the
+	// reference path.
+	p.applyMinimal()
 
 	// Topological order: a parent's final row count is settled before any child
 	// caps against it.

@@ -1,7 +1,9 @@
 package codegen
 
 import (
+	"context"
 	"encoding/json"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -133,29 +135,51 @@ func productSvcAndMethods() (ServiceDef, []CRUDMethod) {
 	return svc, methods
 }
 
+// createFieldsByName indexes one create RPC's derived request fields.
+func createFieldsByName(svc ServiceDef, cm CRUDMethod, fx *crudTestFixtures) (map[string]CRUDTestFieldData, []CRUDTestFieldData) {
+	fields := buildCreateRequestFields(svc, cm, fx)
+	byName := map[string]CRUDTestFieldData{}
+	for _, f := range fields {
+		byName[f.ProtoName] = f
+	}
+	return byName, fields
+}
+
+// renderFactoriesForTest renders a factories_gen_test.go carrying one create
+// RPC's request factory and asserts it is valid, gofmt-clean Go.
+func renderFactoriesForTest(t *testing.T, svc ServiceDef, cm CRUDMethod, fx *crudTestFixtures) string {
+	t.Helper()
+	spec := createRequestSpec{
+		funcName:  createRequestFactoryName(cm),
+		inputType: cm.Method.InputType,
+		entity:    cm.Entity.Name,
+		fields:    buildCreateRequestFields(svc, cm, fx),
+	}
+	if esp := fx.plans[cm.Entity.TableName]; esp != nil {
+		spec.parentSQL = esp.seedSQL
+	}
+	out := renderEntityFactoryFile("example.com/test", factoryGroup{
+		pkg: "shop", pbImport: "example.com/test/gen/services/shop/v1", creates: []createRequestSpec{spec},
+	})
+	if _, err := format.Source(out); err != nil {
+		t.Fatalf("rendered factories_gen_test.go is not valid Go: %v\n----\n%s", err, out)
+	}
+	return string(out)
+}
+
 // TestCRUDTestFixtures_ConstraintAwareCreateValues pins the create-fixture
-// contract: every literal the scaffolded creates carry satisfies the
-// column's schema constraints, and only UNIQUE columns differ between
-// create #1 and create #2.
+// contract: every literal the create-request factory carries satisfies the
+// column's schema constraints, and every field differs between variant 0 and
+// variant 1.
 func TestCRUDTestFixtures_ConstraintAwareCreateValues(t *testing.T) {
 	fx := fixtureModel(t, fixtureSchema(), "products")
 	svc, methods := productSvcAndMethods()
+	byName, fields := createFieldsByName(svc, methods[0], fx)
 
-	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", fx)
-	if len(data.Entities) != 1 {
-		t.Fatalf("expected 1 entity, got %d", len(data.Entities))
-	}
-	ent := data.Entities[0]
-
-	byName := map[string]CRUDTestFieldData{}
-	for _, f := range ent.CreateFields {
-		byName[f.ProtoName] = f
-	}
-
-	// FK → the seeded brands rows: row 0 for create #1, row 1 for create #2.
+	// FK → the seeded brands rows: row 0 for variant 0, row 1 for variant 1.
 	// Distinct parents, so a UNIQUE index added later on the FK column (a
-	// 1-1 relationship, the most common evolution of one) cannot break the
-	// born test.
+	// 1-1 relationship, the most common evolution of one) cannot collide the
+	// two rows a test creates.
 	esp := fx.plans["products"]
 	if esp == nil || esp.plan == nil {
 		t.Fatal("expected a seed plan for products")
@@ -171,12 +195,13 @@ func TestCRUDTestFixtures_ConstraintAwareCreateValues(t *testing.T) {
 	if got := byName["BrandId"]; got.TestValue != `"`+wantBrand+`"` || got.TestValue2 != `"`+wantBrand2+`"` {
 		t.Errorf("BrandId fixture = (%s, %s), want (%q, %q)", got.TestValue, got.TestValue2, wantBrand, wantBrand2)
 	}
-	// ... and the seeded parent row must actually be in the seed SQL.
-	if !strings.Contains(ent.ParentSeedSQL, `INSERT INTO "brands"`) || !strings.Contains(ent.ParentSeedSQL, wantBrand) {
-		t.Errorf("ParentSeedSQL must insert the referenced brands row; got:\n%s", ent.ParentSeedSQL)
+	// ... and the seeded parent row must actually be in the parent SQL.
+	parentSQL := fx.seedSQLFor("products")
+	if !strings.Contains(parentSQL, `INSERT INTO "brands"`) || !strings.Contains(parentSQL, wantBrand) {
+		t.Errorf("parent SQL must insert the referenced brands row; got:\n%s", parentSQL)
 	}
-	if strings.Contains(ent.ParentSeedSQL, `INSERT INTO "products"`) {
-		t.Errorf("ParentSeedSQL must NOT seed the entity's own table (it would break the list row-count assertion); got:\n%s", ent.ParentSeedSQL)
+	if strings.Contains(parentSQL, `INSERT INTO "products"`) {
+		t.Errorf("parent SQL must NOT seed the entity's own table (it would break the list row-count assertion); got:\n%s", parentSQL)
 	}
 
 	// Email-regex CHECK → a real address.
@@ -187,7 +212,9 @@ func TestCRUDTestFixtures_ConstraintAwareCreateValues(t *testing.T) {
 	if got := strings.Trim(byName["Currency"].TestValue, `"`); len(got) != 3 {
 		t.Errorf("Currency fixture %q must be exactly 3 chars (char_length CHECK)", got)
 	}
-	// Enum vocabulary CHECK → a real pb constant, never the 0 sentinel.
+	// Enum vocabulary CHECK on a column with no DEFAULT → the minimal row
+	// must write it, so it is set, to a real pb constant (never the 0
+	// sentinel).
 	if got := byName["Status"].TestValue; got != "pb.ProductStatus_PRODUCT_STATUS_ACTIVE" {
 		t.Errorf("Status fixture = %s, want pb.ProductStatus_PRODUCT_STATUS_ACTIVE", got)
 	}
@@ -196,18 +223,14 @@ func TestCRUDTestFixtures_ConstraintAwareCreateValues(t *testing.T) {
 		t.Errorf("PriceCents fixture = %s, want 100 (range CHECK clamp)", got)
 	}
 	// Unconstrained name → the legacy literal, and a DISTINCT second one.
-	// The born test is scaffold-once and the schema is not: identical rows
-	// buy nothing and break on the first UNIQUE index the author adds.
 	if got := byName["Name"]; got.TestValue != `"test-value"` || got.TestValue2 != `"test-value-2"` {
 		t.Errorf("Name fixture = (%s, %s), want (\"test-value\", \"test-value-2\")", got.TestValue, got.TestValue2)
 	}
-	// Every create field differs across the two creates, so any UNIQUE
-	// index the author adds later leaves the born test passing. There is no
-	// exception any more: `currency` used to seed the constant "USD" for
-	// every row, which left create #2 with no second value to pick.
-	for _, f := range ent.CreateFields {
+	// Every field differs across the two variants, so any UNIQUE index the
+	// author adds later leaves the lifecycle test passing.
+	for _, f := range fields {
 		if f.TestValue == f.TestValue2 {
-			t.Errorf("field %s carries the same value on both creates (%s) — a UNIQUE index would break create #2",
+			t.Errorf("field %s carries the same value on both variants (%s) — a UNIQUE index would break create #2",
 				f.ProtoName, f.TestValue)
 		}
 	}
@@ -216,10 +239,40 @@ func TestCRUDTestFixtures_ConstraintAwareCreateValues(t *testing.T) {
 	// The mutation target skips constrained columns: contact_email (regex
 	// CHECK) is the first string field, but "lifecycle-updated" would
 	// violate its CHECK — sku (unique, unconstrained) is the right pick.
+	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", fx)
+	if len(data.Entities) != 1 {
+		t.Fatalf("expected 1 entity, got %d", len(data.Entities))
+	}
+	ent := data.Entities[0]
 	if ent.MutableStringField != "Sku" {
 		t.Errorf("MutableStringField = %q, want Sku (constrained columns are not mutation targets)", ent.MutableStringField)
 	}
-	// The rendered scaffold must be valid Go and carry the seed exec.
+
+	// The factory file carries the parent seed and both variants.
+	content := renderFactoriesForTest(t, svc, methods[0], fx)
+	for _, want := range []string{
+		"func NewCreateProductRequest(t testing.TB, database orm.Context, variant int) *pb.CreateProductRequest",
+		"seedFactoryParents(t, database, createProductRequestParentSQL)",
+		`INSERT INTO "brands"`,
+		sku.TestValue2, // variant 1 carries the distinct unique value
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("rendered factories missing %q\n----\n%s", want, content)
+		}
+	}
+}
+
+// TestCRUDTestFixtures_LifecycleTestCarriesNoFixtures pins the shape this
+// whole file exists for: the scaffold-once lifecycle test builds its rows from
+// the regenerated create-request factory and carries NO literal fixture —
+// no INSERT, no request field values — so nothing in it can age out of a
+// schema the author keeps hardening.
+func TestCRUDTestFixtures_LifecycleTestCarriesNoFixtures(t *testing.T) {
+	fx := fixtureModel(t, fixtureSchema(), "products")
+	svc, methods := productSvcAndMethods()
+	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", fx)
+	data.Package = "shop"
+	data.ServiceImportPath = "shop"
 	rendered, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -229,28 +282,29 @@ func TestCRUDTestFixtures_ConstraintAwareCreateValues(t *testing.T) {
 		t.Fatalf("rendered lifecycle test is not valid Go: %v\n----\n%s", err, content)
 	}
 	for _, want := range []string{
-		"seed parent rows",
-		sku.TestValue2, // create #2 carries the distinct unique value
+		"shop.NewCreateProductRequest(t, db, 0)",
+		"shop.NewCreateProductRequest(t, db, 1)",
 	} {
 		if !strings.Contains(content, want) {
-			t.Errorf("rendered lifecycle test missing %q\n----\n%s", want, content)
+			t.Errorf("lifecycle test does not build its rows from the factory (%q missing)\n----\n%s", want, content)
+		}
+	}
+	for _, frozen := range []string{"INSERT INTO", "seed parent rows", "ContactEmail:", "&pb.CreateProductRequest{"} {
+		if strings.Contains(content, frozen) {
+			t.Errorf("lifecycle test carries a frozen fixture (%q) — it would age out of the schema\n----\n%s", frozen, content)
 		}
 	}
 }
 
 // TestCRUDTestFixtures_NilModelKeepsLegacyValues pins the degradation
-// contract: with no schema model (no migrations at scaffold time) the
-// values are the type-blind legacy ones and there is no seed SQL. The two
-// creates still differ — that property is about the schema the author will
-// write LATER, so it cannot depend on forge having read one.
+// contract: with no schema model the values are the type-blind legacy ones and
+// there is no parent SQL. The two variants still differ — that property is
+// about the schema the author will write LATER, so it cannot depend on forge
+// having read one.
 func TestCRUDTestFixtures_NilModelKeepsLegacyValues(t *testing.T) {
 	svc, methods := productSvcAndMethods()
-	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", nil)
-	ent := data.Entities[0]
-	if ent.ParentSeedSQL != "" {
-		t.Errorf("nil fixture model must emit no seed SQL, got:\n%s", ent.ParentSeedSQL)
-	}
-	for _, f := range ent.CreateFields {
+	_, fields := createFieldsByName(svc, methods[0], nil)
+	for _, f := range fields {
 		// An enum with no descriptor behind it degrades to the numeric zero
 		// value and has no second spelling to pick — the one shape that
 		// legitimately repeats.
@@ -258,14 +312,15 @@ func TestCRUDTestFixtures_NilModelKeepsLegacyValues(t *testing.T) {
 			continue
 		}
 		if f.TestValue == f.TestValue2 {
-			t.Errorf("field %s carries the same value on both creates (%s) without a schema model", f.ProtoName, f.TestValue)
+			t.Errorf("field %s carries the same value on both variants (%s) without a schema model", f.ProtoName, f.TestValue)
 		}
 		if f.GoType == "string" && f.TestValue != `"test-value"` {
-			t.Errorf("field %s: create #1 = %s, want the legacy \"test-value\"", f.ProtoName, f.TestValue)
+			t.Errorf("field %s: variant 0 = %s, want the legacy \"test-value\"", f.ProtoName, f.TestValue)
 		}
 	}
 	// First string field is the mutation target again (no constraint model).
-	if ent.MutableStringField != "ContactEmail" {
+	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", nil)
+	if ent := data.Entities[0]; ent.MutableStringField != "ContactEmail" {
 		t.Errorf("MutableStringField = %q, want ContactEmail (legacy first-string pick)", ent.MutableStringField)
 	}
 }
@@ -477,18 +532,10 @@ func TestCRUDTestFixtures_OrderedColumnsInCreate(t *testing.T) {
 		{Method: MethodTemplateData{Name: "GetPrescription", InputType: "GetPrescriptionRequest", OutputType: "GetPrescriptionResponse"}, Entity: entity, Operation: "get"},
 	}
 
-	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", fx)
-	if len(data.Entities) != 1 {
-		t.Fatalf("expected 1 entity, got %d", len(data.Entities))
-	}
-	ent := data.Entities[0]
-	byName := map[string]CRUDTestFieldData{}
-	for _, f := range ent.CreateFields {
-		byName[f.ProtoName] = f
-	}
+	byName, fields := createFieldsByName(svc, methods[0], fx)
 
 	// The lower bound keeps the value it would have had anyway; the upper
-	// bound sits one ordering step above it. Both creates carry both fields —
+	// bound sits one ordering step above it. Both variants carry both fields —
 	// an unset field is how both ends collapsed onto one instant.
 	for _, want := range []struct{ field, v1, v2 string }{
 		{"IssuedAt", "timestamppb.Now()", "timestamppb.New(time.Now().AddDate(0, 0, 1))"},
@@ -509,26 +556,20 @@ func TestCRUDTestFixtures_OrderedColumnsInCreate(t *testing.T) {
 	}
 
 	// The imports the ordered literals need are gated on actually emitting
-	// them, and the scaffold must still be valid Go.
-	if !data.NeedsTimestamppb {
-		t.Error("NeedsTimestamppb must be set when a create carries an ordered timestamp, or the scaffold does not compile")
+	// them, and the rendered factory must still be valid Go.
+	spec := createRequestSpec{funcName: "NewCreatePrescriptionRequest", inputType: "CreatePrescriptionRequest", fields: fields}
+	if ts, tm := createSpecsNeed([]createRequestSpec{spec}); !ts || !tm {
+		t.Errorf("createSpecsNeed = (timestamppb %t, time %t), want both: an ordered timestamp literal uses both", ts, tm)
 	}
-	rendered, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	content := string(rendered)
-	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud_test.go", content, parser.SkipObjectResolution); err != nil {
-		t.Fatalf("rendered lifecycle test is not valid Go: %v\n----\n%s", err, content)
-	}
+	content := renderFactoriesForTest(t, svc, methods[0], fx)
 	for _, want := range []string{
 		`"time"`,
 		`"google.golang.org/protobuf/types/known/timestamppb"`,
-		"IssuedAt: timestamppb.Now(),",
-		"ExpiresAt: timestamppb.New(time.Now().AddDate(0, 0, 30)),",
+		"IssuedAt:      timestamppb.Now(),",
+		"ExpiresAt:     timestamppb.New(time.Now().AddDate(0, 0, 30)),",
 	} {
 		if !strings.Contains(content, want) {
-			t.Errorf("rendered lifecycle test missing %q\n----\n%s", want, content)
+			t.Errorf("rendered factory missing %q\n----\n%s", want, content)
 		}
 	}
 }
@@ -551,8 +592,11 @@ func TestCRUDTestFixtures_ParentClosureSatisfiesOrdering(t *testing.T) {
 		Name: "prescriptions", PKCols: []string{"id"},
 		Columns: []schemadef.Column{
 			c("id", schemadef.TypeString, true, true),
-			c("issued_at", schemadef.TypeTime, false, false),
-			c("expires_at", schemadef.TypeTime, false, false),
+			// NOT NULL: the parents are seeded from a MINIMAL plan, which
+			// leaves a nullable column NULL (vacuously satisfying the CHECK).
+			// Required columns are the ones it must PLACE.
+			c("issued_at", schemadef.TypeTime, true, false),
+			c("expires_at", schemadef.TypeTime, true, false),
 		},
 		Checks: []schemadef.CheckConstraint{{
 			Name:    "prescriptions_expires_after_issued",
@@ -594,55 +638,124 @@ func TestCRUDTestFixtures_ParentClosureSatisfiesOrdering(t *testing.T) {
 	}
 }
 
-// TestCRUDTestFixtures_UnorderedTimestampStaysUnset pins the OTHER half of
-// that gate: forge changes only what the schema says it must. A timestamp no
-// ordering constraint governs keeps its historical treatment — omitted from
-// the create — so no existing scaffold gains a field or an import it never
-// needed.
-func TestCRUDTestFixtures_UnorderedTimestampStaysUnset(t *testing.T) {
+// TestCRUDTestFixtures_TimestampSetOnlyWhenRequired pins which timestamps a
+// create request carries: the ones the schema REQUIRES. A NOT NULL timestamp
+// with no DEFAULT must be set — left unset, the create writes the zero time or
+// nothing at all — while a nullable one stays unset, so a fresh row does not
+// arrive already stamped (a LEAD job with a completion time).
+func TestCRUDTestFixtures_TimestampSetOnlyWhenRequired(t *testing.T) {
 	notes := schemadef.Table{
 		Name:   "notes",
 		PKCols: []string{"id"},
 		Columns: []schemadef.Column{
 			{Name: "id", Type: schemadef.TypeString, NotNull: true, IsPK: true},
 			{Name: "noted_at", Type: schemadef.TypeTime, NotNull: true},
+			{Name: "archived_at", Type: schemadef.TypeTime},
+			{Name: "seen_at", Type: schemadef.TypeTime, NotNull: true, Default: "now()"},
 		},
 	}
 	fx := fixtureModel(t, []schemadef.Table{notes}, "notes")
+	ts := func(name, goName string) EntityField {
+		return EntityField{Name: name, GoName: goName, ProtoType: "message", GoType: "*timestamppb.Timestamp",
+			Kind: FieldKindTimestamp, MessageType: "google.protobuf.Timestamp"}
+	}
 	entity := EntityDef{
 		Name: "Note", TableName: "notes", PkField: "id", PkGoType: "string",
 		Fields: []EntityField{
 			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
-			{Name: "noted_at", GoName: "NotedAt", ProtoType: "message", GoType: "*timestamppb.Timestamp",
-				Kind: FieldKindTimestamp, MessageType: "google.protobuf.Timestamp"},
+			ts("noted_at", "NotedAt"), ts("archived_at", "ArchivedAt"), ts("seen_at", "SeenAt"),
 		},
 	}
 	svc := ServiceDef{
 		Name: "NotesService", Package: "notes.v1", PkgName: "notesv1", ModulePath: "example.com/test",
 		Messages: map[string][]MessageFieldDef{
-			"CreateNoteRequest": {{Name: "noted_at", ProtoType: "message", MessageType: "google.protobuf.Timestamp"}},
+			"CreateNoteRequest": {
+				{Name: "noted_at", ProtoType: "message", MessageType: "google.protobuf.Timestamp"},
+				{Name: "archived_at", ProtoType: "message", MessageType: "google.protobuf.Timestamp"},
+				{Name: "seen_at", ProtoType: "message", MessageType: "google.protobuf.Timestamp"},
+			},
 		},
 	}
-	methods := []CRUDMethod{
-		{Method: MethodTemplateData{Name: "CreateNote", InputType: "CreateNoteRequest", OutputType: "CreateNoteResponse"}, Entity: entity, Operation: "create"},
-		{Method: MethodTemplateData{Name: "GetNote", InputType: "GetNoteRequest", OutputType: "GetNoteResponse"}, Entity: entity, Operation: "get"},
-	}
+	cm := CRUDMethod{Method: MethodTemplateData{Name: "CreateNote", InputType: "CreateNoteRequest", OutputType: "CreateNoteResponse"}, Entity: entity, Operation: "create"}
 
-	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", fx)
-	if data.NeedsTimestamppb {
-		t.Error("an unordered timestamp must not pull the timestamppb/time imports into the scaffold")
+	byName, _ := createFieldsByName(svc, cm, fx)
+	if got, ok := byName["NotedAt"]; !ok || got.TestValue != "timestamppb.Now()" {
+		t.Errorf("NOT NULL timestamp with no DEFAULT: got %+v (set=%t), want timestamppb.Now()", got, ok)
 	}
-	for _, f := range data.Entities[0].CreateFields {
-		if f.ProtoName == "NotedAt" {
-			t.Errorf("an unordered timestamp must stay out of the create request; got %s: %s", f.ProtoName, f.TestValue)
+	for _, unset := range []string{"ArchivedAt", "SeenAt"} {
+		if f, ok := byName[unset]; ok {
+			t.Errorf("%s is filled by the database (NULL / its DEFAULT), yet the request sets it to %s", unset, f.TestValue)
 		}
 	}
-	rendered, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
-	if err != nil {
-		t.Fatalf("render: %v", err)
+}
+
+// TestCRUDTestFixtures_LifecycleConsistentRequest is the reproduction for the
+// create-request half of the defect: a status guard the author adds after
+// birth. The request must leave the guarded status at its DEFAULT (the row's
+// initial state) and must not stamp the lifecycle timestamp — the old
+// fixtures put the SECOND enum value on create #2, which the guard rejects.
+func TestCRUDTestFixtures_LifecycleConsistentRequest(t *testing.T) {
+	tickets := schemadef.Table{
+		Name:   "tickets",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			{Name: "id", Type: schemadef.TypeString, NotNull: true, IsPK: true},
+			{Name: "title", Type: schemadef.TypeString, NotNull: true, Default: "''::text"},
+			{Name: "status", Type: schemadef.TypeString, NotNull: true, Default: "'TICKET_STATUS_OPEN'::text"},
+			{Name: "resolved_at", Type: schemadef.TypeTime},
+			{Name: "total_cents", Type: schemadef.TypeInt, IsGenerated: true},
+		},
+		Checks: []schemadef.CheckConstraint{
+			{Name: "tickets_status_check", Columns: []string{"status"},
+				Def: "CHECK ((status = ANY (ARRAY['TICKET_STATUS_OPEN'::text, 'TICKET_STATUS_RESOLVED'::text])))"},
+			{Name: "tickets_resolved_has_stamp", Columns: []string{"status", "resolved_at"},
+				Def: "CHECK (((status <> 'TICKET_STATUS_RESOLVED'::text) OR (resolved_at IS NOT NULL)))"},
+		},
 	}
-	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud_test.go", string(rendered), parser.SkipObjectResolution); err != nil {
-		t.Fatalf("rendered lifecycle test is not valid Go: %v\n----\n%s", err, rendered)
+	fx := fixtureModel(t, []schemadef.Table{tickets}, "tickets")
+	entity := EntityDef{
+		Name: "Ticket", TableName: "tickets", PkField: "id", PkGoType: "string",
+		Fields: []EntityField{
+			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "title", GoName: "Title", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "status", GoName: "Status", ProtoType: "enum", GoType: "TicketStatus", Kind: FieldKindEnum, MessageType: "ops.v1.TicketStatus"},
+			{Name: "resolved_at", GoName: "ResolvedAt", ProtoType: "message", GoType: "*timestamppb.Timestamp",
+				Kind: FieldKindTimestamp, MessageType: "google.protobuf.Timestamp"},
+			{Name: "total_cents", GoName: "TotalCents", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+		},
+	}
+	svc := ServiceDef{
+		Name: "OpsService", Package: "ops.v1", PkgName: "opsv1", ModulePath: "example.com/test",
+		Messages: map[string][]MessageFieldDef{
+			"CreateTicketRequest": {
+				{Name: "title", ProtoType: "string"},
+				{Name: "status", ProtoType: "enum"},
+				{Name: "resolved_at", ProtoType: "message", MessageType: "google.protobuf.Timestamp"},
+				{Name: "total_cents", ProtoType: "int64"},
+			},
+		},
+		Schemas: map[string][]SchemaFieldDef{
+			"ops.v1.CreateTicketRequest": {{Name: "status", Kind: "enum", TypeName: "ops.v1.TicketStatus"}},
+		},
+		Enums: map[string][]string{
+			"ops.v1.TicketStatus": {"TICKET_STATUS_UNSPECIFIED", "TICKET_STATUS_OPEN", "TICKET_STATUS_RESOLVED"},
+		},
+	}
+	cm := CRUDMethod{Method: MethodTemplateData{Name: "CreateTicket", InputType: "CreateTicketRequest", OutputType: "CreateTicketResponse"}, Entity: entity, Operation: "create"}
+
+	byName, _ := createFieldsByName(svc, cm, fx)
+	if f, ok := byName["Status"]; ok {
+		t.Errorf("Status is set to (%s, %s); left unset the create stores the column DEFAULT, the initial state the guard allows unstamped",
+			f.TestValue, f.TestValue2)
+	}
+	if f, ok := byName["ResolvedAt"]; ok {
+		t.Errorf("ResolvedAt is set to %s on a fresh ticket", f.TestValue)
+	}
+	if f, ok := byName["TotalCents"]; ok {
+		t.Errorf("TotalCents is GENERATED, yet the request sets it to %s", f.TestValue)
+	}
+	if _, ok := byName["Title"]; !ok {
+		t.Error("a plain scalar always writes a value, so the request must carry a valid one")
 	}
 }
 
@@ -702,42 +815,124 @@ CREATE TABLE products (
 	if err != nil {
 		t.Fatalf("scaffolded handlers_crud_test.go not found: %v", err)
 	}
-	content := string(raw)
+	lifecycle := string(raw)
+	if !strings.Contains(lifecycle, "shop.NewCreateProductRequest(t, db, 0)") {
+		t.Errorf("the scaffold-once lifecycle test must build its rows from the regenerated factory:\n%s", lifecycle)
+	}
+	if strings.Contains(lifecycle, "INSERT INTO") {
+		t.Errorf("the scaffold-once lifecycle test must carry no literal INSERT fixture:\n%s", lifecycle)
+	}
+
+	// The factory is derived from the real applied schema and verified
+	// against it.
+	fx, err := loadCRUDTestFixtures(projectDir, methods)
+	if err != nil || fx == nil {
+		t.Fatalf("loadCRUDTestFixtures: fx=%v err=%v", fx, err)
+	}
+	defer fx.close()
+	specs := buildCreateRequestSpecs(context.Background(), svc, methods, fx)
+	if len(specs) != 1 {
+		t.Fatalf("expected one create-request spec, got %d", len(specs))
+	}
+	if specs[0].failure != "" {
+		t.Fatalf("a schema forge can satisfy produced a failing factory: %s", specs[0].failure)
+	}
+	out := renderEntityFactoryFile("example.com/test", factoryGroup{
+		pkg: "shop", pbImport: "example.com/test/gen/proto/services/shop/v1", creates: specs,
+	})
+	content := string(out)
 	for _, want := range []string{
 		`INSERT INTO "brands"`,                   // FK parent seeded
-		"seed parent rows",                       // executed in setup
 		"pb.ProductStatus_PRODUCT_STATUS_ACTIVE", // enum vocabulary satisfied
 		"100",                                    // price range CHECK satisfied
 	} {
 		if !strings.Contains(content, want) {
-			t.Errorf("scaffolded lifecycle test missing %q", want)
+			t.Errorf("create-request factory missing %q\n----\n%s", want, content)
 		}
 	}
 	// The regex-CHECKed column, asserted against the CHECK the migration above
 	// DECLARES rather than against a literal.
-	//
-	// This assertion used to read `strings.Contains(content, "@example.com")`,
-	// and it was already dead: the only "@example.com" in the file is the auth
-	// middleware's `Email: "test@example.com"` claim, so it stayed green no
-	// matter what the fixture put in ContactEmail. That is what a quoted
-	// literal buys — it survives the thing it was checking.
 	emailCheck := regexp.MustCompile(`^[^@]+@[^@]+\.[^@]+$`)
 	assign := regexp.MustCompile(`ContactEmail:\s*"([^"]*)"`)
 	fixtures := assign.FindAllStringSubmatch(content, -1)
 	if len(fixtures) == 0 {
-		t.Fatal("no ContactEmail fixture in the scaffolded lifecycle test — nothing was checked")
+		t.Fatal("no ContactEmail fixture in the factory — nothing was checked")
 	}
 	for _, m := range fixtures {
 		if !emailCheck.MatchString(m[1]) {
-			t.Errorf("ContactEmail fixture %q violates the CHECK the migration declares — "+
-				"the born lifecycle test fails at create #1 against the schema it was born from", m[1])
+			t.Errorf("ContactEmail fixture %q violates the CHECK the migration declares", m[1])
 		}
 	}
 	if strings.Contains(content, `INSERT INTO "products"`) {
-		t.Error("scaffold must not seed the entity's own table")
+		t.Error("the factory must not seed the entity's own table")
 	}
-	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud_test.go", content, parser.SkipObjectResolution); err != nil {
-		t.Errorf("scaffold is not valid Go: %v\n----\n%s", err, content)
+	if _, err := format.Source(out); err != nil {
+		t.Errorf("factory is not valid Go: %v\n----\n%s", err, content)
+	}
+}
+
+// TestCreateRequestFactory_UninvertibleCheckFailsTheTestNotTheGenerate pins
+// what happens when the derivation CANNOT satisfy a constraint. The factory is
+// regenerated on every run, so refusing to generate would hold every other
+// change hostage to a test fixture; emitting a value postgres rejects would
+// resurface as an unattributed create #1 failure. Instead the factory's body
+// fails the calling test with the violation — column, constraint, remedy —
+// and the request is never built.
+func TestCreateRequestFactory_UninvertibleCheckFailsTheTestNotTheGenerate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots real postgres; skipped under -short")
+	}
+	projectDir := t.TempDir()
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A lookahead: postgres accepts it, Go's RE2 cannot compile it, so there
+	// is nothing to invert.
+	migration := `
+CREATE TABLE credentials (
+    id TEXT PRIMARY KEY,
+    passcode TEXT NOT NULL CHECK (passcode ~ '^(?=.*[A-Z])[a-zA-Z]{8,}$')
+);
+`
+	if err := os.WriteFile(filepath.Join(migDir, "00001_init.up.sql"), []byte(migration), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entity := EntityDef{Name: "Credential", TableName: "credentials", PkField: "id", PkGoType: "string",
+		Fields: []EntityField{
+			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "passcode", GoName: "Passcode", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+		}}
+	svc := ServiceDef{Name: "AccountService", Package: "account.v1", ModulePath: "example.com/test",
+		Messages: map[string][]MessageFieldDef{"CreateCredentialRequest": {{Name: "passcode", ProtoType: "string"}}}}
+	methods := []CRUDMethod{{Method: MethodTemplateData{Name: "CreateCredential", InputType: "CreateCredentialRequest"}, Entity: entity, Operation: "create"}}
+
+	fx, err := loadCRUDTestFixtures(projectDir, methods)
+	if err != nil || fx == nil {
+		t.Fatalf("loadCRUDTestFixtures: fx=%v err=%v", fx, err)
+	}
+	defer fx.close()
+	specs := buildCreateRequestSpecs(context.Background(), svc, methods, fx)
+	if len(specs) != 1 || specs[0].failure == "" {
+		t.Fatalf("an uninvertible CHECK must mark the factory failed; got %+v", specs)
+	}
+	for _, want := range []string{"credentials.passcode", "credentials_passcode_check", "db/seeds/vocab.yaml"} {
+		if !strings.Contains(specs[0].failure, want) {
+			t.Errorf("failure does not name %q:\n%s", want, specs[0].failure)
+		}
+	}
+	out := renderEntityFactoryFile("example.com/test", factoryGroup{
+		pkg: "account", pbImport: "example.com/test/gen/services/account/v1", creates: specs,
+	})
+	if _, err := format.Source(out); err != nil {
+		t.Fatalf("failing factory is not valid Go: %v\n----\n%s", err, out)
+	}
+	content := string(out)
+	if !strings.Contains(content, "t.Fatalf(\"NewCreateCredentialRequest: forge could not derive") {
+		t.Errorf("failing factory does not fail the calling test:\n%s", content)
+	}
+	if strings.Contains(content, "Passcode:") {
+		t.Errorf("failing factory still emits the rejected value:\n%s", content)
 	}
 }
 

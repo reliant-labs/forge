@@ -85,7 +85,14 @@ type columnPlan struct {
 	// guarded optional FK cannot be both "sometimes absent" and "present
 	// whenever the status demands it" without the seeder reasoning about
 	// the two columns jointly, and always-present is the safe half.
+	//
+	// A MINIMAL plan instead sets it only from the one branch its rows take
+	// (see applyMinimal), since every row takes the same branch.
 	requireEdge bool
+	// omit leaves the column out of the INSERT entirely, so the database
+	// supplies its DEFAULT, or NULL. Only a minimal plan omits a column (see
+	// Config.Minimal and minimal.go); a full plan writes every one it plans.
+	omit bool
 }
 
 // uniqueSingleColumn reports whether the table has a UNIQUE index/constraint on
@@ -288,6 +295,11 @@ type Plan struct {
 	// multi-column shape.
 	unions     map[string][]unionSpec
 	unionWarns []string
+	// minimalBranches is a MINIMAL plan's fixed branch per union spec:
+	// table -> one index per entry of unions[table]. nil for a full plan,
+	// whose rows rotate through the branches instead. Set by finalize
+	// (applyMinimal); read by unionBranch.
+	minimalBranches map[string]minimalChoice
 }
 
 // Warnings returns every plan-level warning: vocabulary validation problems

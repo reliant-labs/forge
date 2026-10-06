@@ -386,7 +386,25 @@ func (p *Plan) referencedValue(refTable, refColumn string, idx, depth int) strin
 // create request pointing at a seeded FK parent). ok is false when the
 // plan doesn't seed that cell, the cell is NULL, or the cell isn't a
 // plain scalar literal (arrays, bytea casts).
+//
+// A column a minimal plan leaves out (see Writes) reports ok=false too: the
+// plan seeds nothing there, the database does. NaturalValue reads the value
+// the planner WOULD write, for a caller that has to supply one anyway.
 func (p *Plan) SeedValue(table, column string, row int) (string, bool) {
+	tp, cp, ok := p.colPlan(table, column)
+	if !ok || cp.omit || row < 0 || row >= tp.n {
+		return "", false
+	}
+	return decodeScalarLiteral(p.cellLiteral(tp, cp, row, 0))
+}
+
+// NaturalValue is SeedValue without the minimal plan's omission: the raw
+// value the planner places at (table, column, row) whether or not the INSERT
+// names the column. A caller that writes rows through some other path — a
+// create RPC whose plain proto field always writes a value, set or not —
+// needs a valid value for a column the database would otherwise have
+// defaulted. ok is false when the cell is NULL or not a plain scalar.
+func (p *Plan) NaturalValue(table, column string, row int) (string, bool) {
 	tp, cp, ok := p.colPlan(table, column)
 	if !ok || row < 0 || row >= tp.n {
 		return "", false
@@ -424,20 +442,36 @@ func decodeScalarLiteral(lit string) (string, bool) {
 	return lit, lit != ""
 }
 
-// statement renders one table's INSERT.
+// statement renders one table's INSERT. Only the columns the plan writes are
+// named (a minimal plan leaves some to the database — see Writes).
 func (p *Plan) statement(tp tablePlan) string {
 	if tp.n == 0 || len(tp.cols) == 0 {
 		return ""
 	}
+	written := make([]columnPlan, 0, len(tp.cols))
+	for _, cp := range tp.cols {
+		if !cp.omit {
+			written = append(written, cp)
+		}
+	}
+	if len(written) == 0 {
+		// Every column is the database's to fill. A multi-row VALUES list
+		// cannot be empty, so each row is its own DEFAULT VALUES insert.
+		var b strings.Builder
+		for i := 0; i < tp.n; i++ {
+			fmt.Fprintf(&b, "INSERT INTO %s DEFAULT VALUES;\n", quoteIdent(tp.table.Name))
+		}
+		return b.String()
+	}
 	var b strings.Builder
-	cols := make([]string, len(tp.cols))
-	for i, cp := range tp.cols {
+	cols := make([]string, len(written))
+	for i, cp := range written {
 		cols[i] = quoteIdent(cp.col.Name)
 	}
 	fmt.Fprintf(&b, "INSERT INTO %s (%s) VALUES\n", quoteIdent(tp.table.Name), strings.Join(cols, ", "))
 	for i := 0; i < tp.n; i++ {
-		vals := make([]string, len(tp.cols))
-		for j, cp := range tp.cols {
+		vals := make([]string, len(written))
+		for j, cp := range written {
 			vals[j] = p.cellLiteral(tp, cp, i, 0)
 		}
 		b.WriteString("    (")

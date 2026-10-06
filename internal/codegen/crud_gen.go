@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1491,10 +1490,6 @@ type CRUDTestTemplateData struct {
 	// NeedsFieldMask gates the fieldmaskpb import: true when at least one
 	// entity's lifecycle test emits the AIP-134 masked-update block.
 	NeedsFieldMask bool
-	// NeedsTimestamppb gates the timestamppb + time imports: true when at
-	// least one entity's create carries a timestamp the schema ORDERS
-	// against another column (see crudTestFixtures.orderedFixture).
-	NeedsTimestamppb bool
 	// TestHelperName mirrors ServiceTemplateData.TestHelperName: the suffix
 	// the bootstrap testing generator emits on `NewTest<X>` /
 	// `NewTest<X>Server`. CRUD test scaffolds use this rather than
@@ -1544,14 +1539,7 @@ type CRUDTestEntityData struct {
 	UpdateMethod          CRUDMethodTemplateData
 	DeleteMethod          CRUDMethodTemplateData
 	Fields                []CRUDTestFieldData // entity proto message fields (minus PK, minus deleted_at)
-	CreateFields          []CRUDTestFieldData // fields from the CreateRequest message
 	UpdateEntityField     string              // Go field name holding entity in UpdateRequest, e.g. "Project"
-	// ParentSeedSQL is the rendered INSERT set for the entity table's
-	// foreign-key parent closure (topologically ordered, deterministic
-	// ids). The lifecycle test executes it after migrations so create
-	// requests carrying FK fields resolve. Empty when the entity has no
-	// FK parents (or no schema model was available at scaffold time).
-	ParentSeedSQL string
 }
 
 // CRUDTestFieldData holds per-field data for generating test values.
@@ -1559,10 +1547,10 @@ type CRUDTestFieldData struct {
 	ProtoName string    // "Name"
 	GoType    string    // "string"
 	Kind      FieldKind // scalar, enum, message, wrapper, timestamp, etc.
-	TestValue string    // create #1 literal: `"test-value"`, a seeded FK id, a CHECK-pool value, ...
-	// TestValue2 is create #2's literal. It differs from TestValue only
-	// where the schema forces it to (single-column UNIQUE index, 1-1
-	// foreign key) — everywhere else the two creates stay identical.
+	TestValue string    // variant 0's literal: `"test-value"`, a seeded FK id, a CHECK-pool value, ...
+	// TestValue2 is variant 1's literal — distinct from TestValue wherever
+	// the column admits a second value, so a UNIQUE index added later cannot
+	// collide the two rows a test creates.
 	TestValue2 string
 }
 
@@ -1648,13 +1636,20 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 		return nil
 	}
 
-	// Constraint-correct fixtures come from the applied schema (the same
-	// shadow introspection the rest of the pipeline runs): CHECK-satisfying
-	// literals and DB-level seeding of each entity's FK parent closure.
-	// Introspection happens only on this first-scaffold path — never on
-	// the (common) already-scaffolded re-generate. A nil model (no
-	// migrations) degrades to the legacy type-blind values.
-	fix := buildCRUDTestFixtures(projectDir, filteredMethods)
+	// The file carries NO fixture data. Its rows come from the regenerated
+	// create-request factories in factories_gen_test.go (see
+	// create_request_factory.go), which re-derive values and FK parents from
+	// the applied schema on every generate — so a migration edit made after
+	// birth (a GENERATED column, a one-way status CHECK) flows into them,
+	// instead of breaking literals frozen into a file forge never rewrites.
+	//
+	// The schema model is still read here, for one decision that IS frozen at
+	// birth: which string column the update leg mutates. It must be one no
+	// constraint governs, or the mutation literal is itself rejected.
+	// Introspection happens only on this first-scaffold path — never on the
+	// (common) already-scaffolded re-generate. A nil model (no migrations)
+	// degrades to the first plain string field.
+	fix := buildCRUDTestFixtures(projectDir, nil)
 	defer fix.close()
 
 	// Package + TestHelperName are overridden with the disk-resolved
@@ -1666,15 +1661,6 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
 	// relDir is internal/handlers/<leaf>; the import needs the leaf.
 	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
-
-	// The fixtures are now fixed; verify them against the schema that will
-	// enforce them BEFORE the file is written. A fixture forge's own
-	// migration rejects must fail here, naming the column and the
-	// constraint, rather than reaching the author as a create #1 failure in
-	// a scaffold-once file they were told not to rewrite.
-	if err := fix.verify(context.Background()); err != nil {
-		return fmt.Errorf("scaffold %s: %w", filepath.Join(relDir, "handlers_crud_test.go"), err)
-	}
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {
@@ -1709,9 +1695,11 @@ func removeRetiredScaffoldTest(projectDir, relPath string, cs *checksums.FileChe
 	_ = cs
 }
 
-// fix carries the schema-derived fixture model (constraint-aware values +
-// FK parent seeding); nil degrades every value to the legacy type-blind
-// literal and emits no seed SQL.
+// fix carries the schema model, consulted only to keep constrained columns out
+// of the update leg's mutation targets; nil falls back to the first plain
+// string field. The create requests are not built here — the lifecycle test
+// calls the regenerated New<CreateRequest> factories (see
+// buildCreateRequestFields).
 func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath, projectDir string, fix *crudTestFixtures) CRUDTestTemplateData {
 	// Synthesized Package/TestHelperName are placeholders only:
 	// GenerateCRUDTests overrides both with disk-resolved values before
@@ -1869,88 +1857,9 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				SecondStringFieldPath:  protoNameByGoName[second],
 				Fields:                 fields,
 				UpdateEntityField:      updateEntityField,
-				ParentSeedSQL:          fix.seedSQLFor(cm.Entity.TableName),
 			}
 			entityMap[cm.Entity.Name] = ent
 			entityOrder = append(entityOrder, cm.Entity.Name)
-		}
-
-		// Build CreateFields from the actual create request message
-		if cm.Operation == "create" && svc.Messages != nil {
-			if msgFields, ok := svc.Messages[cm.Method.InputType]; ok {
-				var createFields []CRUDTestFieldData
-				for _, f := range msgFields {
-					// Explicit-presence (`optional`) request fields are
-					// pointers on the wire struct; the emitted literal
-					// (`Name: "test-value"`) would not compile against
-					// them. They are, by definition, omittable — the
-					// generated create exercises the presence-absent path.
-					if f.IsOptional {
-						continue
-					}
-					// Repeated fields are slices on the wire struct and
-					// equally omittable. Most already classify as
-					// repeated_* kinds and are skipped by the template,
-					// but a repeated ENUM's entity GoType drops the slice
-					// marker — DetermineFieldKind then saw a scalar and
-					// the template emitted `History: 0` into a
-					// []pb.<Enum> field, which does not compile.
-					if strings.HasPrefix(f.ProtoType, "[]") {
-						continue
-					}
-					// A discriminated-union CHECK requires this column to hold
-					// NO value on the branch these creates are written against
-					// (see unionOmitsField). There is no literal that means
-					// absent — setting the field to its zero value is the write
-					// the constraint rejects — so the field is left off the
-					// request, and an unset field writes NULL.
-					if fix.unionOmitsField(cm.Entity, f.Name) {
-						continue
-					}
-					goType := ProtoTypeToGoType(f.ProtoType)
-					// Try to get richer GoType from entity definition
-					for _, ef := range cm.Entity.Fields {
-						if ef.Name == f.Name {
-							goType = ef.GoType
-							break
-						}
-					}
-					kind := DetermineFieldKind(f.ProtoType, goType)
-					// Schema-informed values first: seeded FK parent ids,
-					// CHECK-pool vocabulary, bounded/length-fitted scalars.
-					// Only genuinely unconstrained fields keep the legacy
-					// type-blind literal.
-					tv1, tv2, okFix := fix.fieldFixture(svc, cm.Entity, cm.Method.InputType, f.Name, goType, kind)
-					if !okFix {
-						// A timestamp the schema does not ORDER keeps the
-						// historical treatment: the create leaves it unset.
-						// Only a column another one must sit above needs a
-						// value here, and only then does the emitted file
-						// carry the timestamppb import.
-						if kind == FieldKindTimestamp {
-							continue
-						}
-						tv1, tv2 = testValueForType(goType), testValueForType2(goType)
-						// The legacy literal is a fixture like any other: it
-						// is written to the same column under the same
-						// constraints. It is in fact the value the guard most
-						// needs to see, because reaching it means the
-						// derivation found nothing — which is either an
-						// unconstrained column (fine) or a constraint forge
-						// could not invert (not fine, and previously silent).
-						fix.record(cm.Entity.TableName, f.Name, tv1, goType)
-						fix.record(cm.Entity.TableName, f.Name, tv2, goType)
-					}
-					createFields = append(createFields, CRUDTestFieldData{
-						ProtoName:  naming.ToProtoPascalCase(f.Name),
-						GoType:     goType,
-						Kind:       kind,
-						TestValue:  tv1,
-						TestValue2: tv2,
-					})
-				}
-				ent.CreateFields = createFields
-			}
 		}
 
 		switch cm.Operation {
@@ -2008,31 +1917,14 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		}
 	}
 
-	// timestamppb (and time) likewise: imported only when some lifecycle
-	// test emits an ordered timestamp create field. Same entity gate as the
-	// create block itself.
-	needsTimestamppb := false
-	for _, e := range entities {
-		if !e.HasCreate || !e.HasGet || e.PkGoType != "string" {
-			continue
-		}
-		for _, f := range e.CreateFields {
-			if f.Kind == FieldKindTimestamp {
-				needsTimestamppb = true
-				break
-			}
-		}
-	}
-
 	return CRUDTestTemplateData{
-		Package:          pkg,
-		Module:           modulePath,
-		ProtoPackage:     protoPackage,
-		Entities:         entities,
-		CRUDMethods:      allMethods,
-		NeedsFieldMask:   needsFieldMask,
-		NeedsTimestamppb: needsTimestamppb,
-		TestHelperName:   ComputeTestHelperName(pkg, projectDir),
+		Package:        pkg,
+		Module:         modulePath,
+		ProtoPackage:   protoPackage,
+		Entities:       entities,
+		CRUDMethods:    allMethods,
+		NeedsFieldMask: needsFieldMask,
+		TestHelperName: ComputeTestHelperName(pkg, projectDir),
 	}
 }
 

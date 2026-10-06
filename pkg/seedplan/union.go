@@ -116,11 +116,16 @@ type unionTerm struct {
 
 // unionCell is the placement one branch imposes on one column: NULL, an exact
 // literal, or a narrowed numeric range the column's natural value is clamped
-// into. A column a branch only asserts IS NOT NULL gets no cell — forge never
-// synthesizes NULL into a plain data column, so its natural value already
-// satisfies that (and unionEligible is what makes "plain data column" true).
+// into. A column a branch only asserts IS NOT NULL gets a PRESENT cell, which
+// places no value: a full plan never synthesizes NULL into a plain data column,
+// so its natural value already satisfies it (and unionEligible is what makes
+// "plain data column" true). A MINIMAL plan leaves nullable columns NULL, and
+// the present cell is what tells it this one must be written (see minimal.go).
 type unionCell struct {
 	null bool
+	// present marks a plain data column the branch asserts IS NOT NULL and
+	// places nothing else on.
+	present bool
 	// requireEdge marks a nullable FOREIGN KEY the branch asserts IS NOT
 	// NULL. It places no value — the reference path still picks the parent
 	// — it only forbids that path from declining the edge on this table.
@@ -584,8 +589,14 @@ func unionBranchCells(
 			// optional edge on ~1 row in 5 for variety, which is exactly
 			// the row that then violates the guard. Record it so the plan
 			// can force the edge present (columnPlan.requireEdge).
+			//
+			// Any other column records that it must be present, which a
+			// full plan already guarantees and a minimal plan (which leaves
+			// nullable columns NULL) must act on.
 			if !a.col.NotNull && isForeignKey(t, name) {
 				cells[name] = unionCell{requireEdge: true}
+			} else {
+				cells[name] = unionCell{present: true}
 			}
 		}
 	}
@@ -721,11 +732,11 @@ func intersectBounds(a, b NumBound) NumBound {
 // come from the SAME branch — which is the entire point: a row assembled from
 // two branches satisfies neither.
 func (p *Plan) unionLiteral(table string, col schemadef.Column, i int) (string, bool) {
-	for _, spec := range p.unions[table] {
+	for s, spec := range p.unions[table] {
 		if len(spec.branches) == 0 {
 			continue
 		}
-		cell, ok := spec.branches[i%len(spec.branches)][col.Name]
+		cell, ok := p.unionBranch(table, s, spec, i)[col.Name]
 		if !ok {
 			continue
 		}
@@ -758,7 +769,10 @@ func (p *Plan) unionVocabWarnings() []string {
 		for _, spec := range specs {
 			for _, branch := range spec.branches {
 				for name, cell := range branch {
-					if cell.hasBound || named[name] || len(cols[name]) == 0 {
+					// Only a cell that decides the VALUE overrides the
+					// overlay: a range keeps drawing from it, and a
+					// presence requirement places nothing at all.
+					if cell.hasBound || cell.present || cell.requireEdge || named[name] || len(cols[name]) == 0 {
 						continue
 					}
 					named[name] = true
@@ -802,10 +816,9 @@ func unionBounded(lit string, col schemadef.Column, b NumBound) string {
 // ──────────────────────────────────────────────────────────────────────
 
 // UnionCell is what a discriminated-union CHECK requires of ONE column of one
-// row. Exactly one of the three states holds: the column must be absent
-// (Null), it must carry a specific value (Value), or it must stay inside a
-// narrowed numeric range (Bound). A column the branch only requires to be
-// PRESENT gets no cell at all — its ordinary value already satisfies that.
+// row. Exactly one of the four states holds: the column must be absent
+// (Null), it must carry a specific value (Value), it must stay inside a
+// narrowed numeric range (Bound), or it must merely hold SOME value (Present).
 type UnionCell struct {
 	// Null is true when the branch requires the column to hold no value.
 	Null bool
@@ -816,6 +829,22 @@ type UnionCell struct {
 	// whether it states one.
 	Bound    NumBound
 	HasBound bool
+	// Present is true when the branch requires the column to be non-NULL
+	// and says nothing else about it — `status <> 'RESOLVED' OR resolved_at
+	// IS NOT NULL` on its RESOLVED branch. Any ordinary value satisfies it;
+	// a caller that would otherwise leave the column unset must not.
+	Present bool
+}
+
+// exportUnionCell projects a placement onto the exported shape.
+func exportUnionCell(cell unionCell) UnionCell {
+	return UnionCell{
+		Null:     cell.null,
+		Value:    cell.raw,
+		Bound:    cell.bound,
+		HasBound: cell.hasBound,
+		Present:  cell.present || cell.requireEdge,
+	}
 }
 
 // UnionPlacement returns what every PLACEABLE discriminated-union CHECK on t
@@ -863,12 +892,7 @@ func UnionPlacement(t schemadef.Table, pools EnumPools, row int) map[string]Unio
 			continue
 		}
 		for name, cell := range spec.branches[row%len(spec.branches)] {
-			out[name] = UnionCell{
-				Null:     cell.null,
-				Value:    cell.raw,
-				Bound:    cell.bound,
-				HasBound: cell.hasBound,
-			}
+			out[name] = exportUnionCell(cell)
 		}
 	}
 	if len(out) == 0 {

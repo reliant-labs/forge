@@ -518,7 +518,8 @@ func TestFrontendTypecheckTargets_ResolvesFromProject(t *testing.T) {
 	}
 	got := frontendTypecheckTargets(cfg)
 	want := []frontendTarget{
-		{name: "web", dir: filepath.Join("frontends", "web")},
+		// Slash-separated on every OS: config.FrontendConfig.Dir returns it so.
+		{name: "web", dir: "frontends/web"},
 		{name: "admin", dir: "apps/admin"},
 	}
 	if len(got) != len(want) {

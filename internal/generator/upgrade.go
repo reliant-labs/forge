@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/format"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -81,7 +82,7 @@ func ForceAll() ForceSelection { return ForceSelection{all: true} }
 func ForcePaths(paths ...string) ForceSelection {
 	sel := ForceSelection{paths: make(map[string]bool, len(paths))}
 	for _, p := range paths {
-		sel.paths[filepath.Clean(p)] = true
+		sel.paths[forceKey(p)] = true
 	}
 	return sel
 }
@@ -91,7 +92,7 @@ func (f ForceSelection) Allows(relPath string) bool {
 	if f.all {
 		return true
 	}
-	return f.paths[filepath.Clean(relPath)]
+	return f.paths[forceKey(relPath)]
 }
 
 // Names reports whether relPath was named EXPLICITLY — the whole-project
@@ -102,7 +103,13 @@ func (f ForceSelection) Allows(relPath string) bool {
 // "overwrite everything you have edited" cannot be a statement about them:
 // a flag that names nothing carries no intent about a file forge already
 // handed over. Naming the path is the intent.
-func (f ForceSelection) Names(relPath string) bool { return f.paths[filepath.Clean(relPath)] }
+func (f ForceSelection) Names(relPath string) bool { return f.paths[forceKey(relPath)] }
+
+// forceKey is the comparable form of a project-relative path: cleaned and
+// slash-separated, the form destPath takes. The user's argument may arrive
+// either way on Windows (`forge project upgrade --force cmd\x\cmd\root.go`),
+// and both spellings must name the same file.
+func forceKey(relPath string) string { return path.Clean(filepath.ToSlash(relPath)) }
 
 // Any reports whether the selection can overwrite anything at all.
 func (f ForceSelection) Any() bool { return f.all || len(f.paths) > 0 }
@@ -220,7 +227,11 @@ func cmdTreePath(binName string, segs ...string) string {
 	}
 	parts = append(parts, "cmd")
 	parts = append(parts, segs...)
-	return filepath.Join(parts...)
+	// path, not filepath: a destPath is a slash-separated project identity —
+	// it is compared against ScanMarkers keys and the run sets, which are
+	// slash-separated on every OS. File operations join it onto the project
+	// root with filepath.Join, which accepts it on Windows too.
+	return path.Join(parts...)
 }
 
 // managedFilesForCfg is like managedFiles but consults the project

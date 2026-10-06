@@ -110,6 +110,7 @@ func recordPreWrite(root, relPath string) {
 	if rollbackJournal == nil {
 		return
 	}
+	relPath = slashKey(relPath)
 	if _, seen := rollbackJournal[relPath]; seen {
 		return
 	}

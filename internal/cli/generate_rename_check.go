@@ -293,7 +293,7 @@ func findStaleReferences(root, pkgName string, droppedNames []string, skipPath s
 					rel = path
 				}
 				sites = append(sites, renameCallSite{
-					File:   rel,
+					File:   filepath.ToSlash(rel), // project-relative identity, as the warning prints beside marker paths
 					Line:   line,
 					Symbol: needle,
 				})

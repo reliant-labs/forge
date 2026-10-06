@@ -127,6 +127,7 @@ var Tier1TargetSet = map[string]bool{}
 // the set reflects what forge WOULD regenerate independent of ownership
 // transfers.
 func markTier1Target(relPath string) {
+	relPath = slashKey(relPath)
 	runSetsMu.Lock()
 	defer runSetsMu.Unlock()
 	Tier1TargetSet[relPath] = true
@@ -135,6 +136,7 @@ func markTier1Target(relPath string) {
 // IsTier1Target reports whether relPath was recorded as a Tier-1 emit
 // target this run.
 func IsTier1Target(relPath string) bool {
+	relPath = slashKey(relPath)
 	runSetsMu.Lock()
 	defer runSetsMu.Unlock()
 	return Tier1TargetSet[relPath]
@@ -172,6 +174,7 @@ var WrittenThisRun = map[string]bool{}
 // current run. Exposed publicly so tests that bypass the
 // WriteGeneratedFile* chokepoint can still simulate the post-emit set.
 func MarkWrittenThisRun(relPath string) {
+	relPath = slashKey(relPath)
 	runSetsMu.Lock()
 	defer runSetsMu.Unlock()
 	WrittenThisRun[relPath] = true
@@ -179,6 +182,7 @@ func MarkWrittenThisRun(relPath string) {
 
 // WasWrittenThisRun reports whether relPath was written this run.
 func WasWrittenThisRun(relPath string) bool {
+	relPath = slashKey(relPath)
 	runSetsMu.Lock()
 	defer runSetsMu.Unlock()
 	return WrittenThisRun[relPath]
@@ -210,7 +214,7 @@ var sideRenderOnly = map[string]bool{}
 
 // AddSideRenderOnly marks relPath as side-render-only for the current
 // run. Idempotent.
-func AddSideRenderOnly(relPath string) { sideRenderOnly[relPath] = true }
+func AddSideRenderOnly(relPath string) { sideRenderOnly[slashKey(relPath)] = true }
 
 // ResetPerRunState clears the per-pipeline-run tracking sets (the
 // side-render redirects, the heal-notice machinery, the --heal opt-in
@@ -252,7 +256,7 @@ var forceScope map[string]bool
 func SetForceScope(relPaths []string) {
 	forceScope = make(map[string]bool, len(relPaths))
 	for _, p := range relPaths {
-		forceScope[p] = true
+		forceScope[slashKey(p)] = true
 	}
 }
 
@@ -488,7 +492,7 @@ func (cs *FileChecksums) IsDisowned(relPath string) bool {
 	if cs == nil {
 		return false
 	}
-	_, ok := cs.Disowned[relPath]
+	_, ok := cs.Disowned[slashKey(relPath)]
 	return ok
 }
 
@@ -614,6 +618,8 @@ func Hash(content []byte) string {
 // remaining caller emits regenerated-every-run output, so both names
 // now share Tier-1 semantics.
 func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
+	relPath = slashKey(relPath)
+
 	// Record the Tier-1 emit TARGET before any disown-skip below: forge
 	// would regenerate this path this run, whether or not it's disowned.
 	// The obsolete-disown retirement consults this set — a disowned path
@@ -751,6 +757,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 // the content actually changes), mismatch → hand-edited (skip unless
 // force), no record → write.
 func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
+	relPath = slashKey(relPath)
 	newBody := BodyHash(content)
 	if sideRenderOnly[relPath] {
 		if err := WriteSideRenderNoBase(root, relPath, content); err != nil {
@@ -871,6 +878,7 @@ func atomicWriteFile(path string, content []byte, perm os.FileMode) error {
 // deleted one are both left exactly as they are, returning (false, nil).
 // Parent directories are created as needed.
 func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) {
+	relPath = slashKey(relPath)
 	if !ScaffoldOnceDecision(root, relPath) {
 		return false, nil // exists, deliberately deleted, or unreadable
 	}
@@ -1085,6 +1093,7 @@ func (cs *FileChecksums) DisownPaths(root string, relPaths []string, reason stri
 		return nil
 	}
 	for _, p := range relPaths {
+		p = slashKey(p)
 		full := filepath.Join(root, p)
 		content, err := os.ReadFile(full)
 		if err != nil {

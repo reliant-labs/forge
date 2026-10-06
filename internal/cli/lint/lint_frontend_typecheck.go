@@ -54,6 +54,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -159,7 +160,9 @@ func frontendTypecheckTargets(cfg *config.ProjectConfig) []frontendTarget {
 	var out []frontendTarget
 	for _, e := range entries {
 		if e.IsDir() {
-			out = append(out, frontendTarget{name: e.Name(), dir: filepath.Join("frontends", e.Name())})
+			// Slash-separated, the form config.FrontendConfig.Dir returns for a
+			// declared frontend, so both sources name a directory the same way.
+			out = append(out, frontendTarget{name: e.Name(), dir: path.Join("frontends", e.Name())})
 		}
 	}
 	return out

@@ -106,11 +106,37 @@ func (l *Local) legacyPath(k Key) string {
 	return filepath.Join(l.dir, name)
 }
 
+// shareRetryBudget bounds how long a read or a replacing rename waits out
+// another handle on the same file (see isTransientShareErr). A state file is
+// a few hundred bytes, so the other side holds it for microseconds; the
+// budget only has to outlast scheduling noise, not real work.
+const shareRetryBudget = 2 * time.Second
+
+// retryShared runs op until it succeeds, fails with anything other than a
+// transient sharing error, or shareRetryBudget runs out. Off Windows the
+// first error is always final.
+func retryShared(op func() error) error {
+	deadline := time.Now().Add(shareRetryBudget)
+	delay := time.Millisecond
+	for {
+		err := op()
+		if err == nil || !isTransientShareErr(err) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(delay)
+		if delay < 50*time.Millisecond {
+			delay *= 2
+		}
+	}
+}
+
 // writeJSON persists v via a temp file and a rename.
 //
-// The rename is what makes a concurrent READER safe: on every platform
-// forge targets, a reader either sees the whole old file or the whole
-// new one, never a half-written one. It does NOT make concurrent WRITERS
+// The rename is what makes a concurrent READER safe: a reader either sees
+// the whole old file or the whole new one, never a half-written one. On
+// POSIX that holds outright; on Windows the replace can also briefly refuse
+// the reader's open, or be refused by it, and both sides retry that
+// (retryShared) rather than report it. It does NOT make concurrent WRITERS
 // safe — last writer still wins — which is the gap [Store] documents
 // rather than hides.
 func writeJSON(path, label string, v any) error {
@@ -140,7 +166,7 @@ func writeJSON(path, label string, v any) error {
 	if err := os.Chmod(tmpName, fileMode); err != nil {
 		return fmt.Errorf("chmod %s: %w", label, err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := retryShared(func() error { return os.Rename(tmpName, path) }); err != nil {
 		return fmt.Errorf("rename %s %s: %w", label, path, err)
 	}
 	return nil
@@ -148,7 +174,11 @@ func writeJSON(path, label string, v any) error {
 
 // readJSON decodes a state file. A missing file yields (false, nil).
 func readJSON[T any](path, label string, out *T) (bool, error) {
-	data, err := os.ReadFile(path)
+	var data []byte
+	err := retryShared(func() (err error) {
+		data, err = os.ReadFile(path)
+		return err
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil

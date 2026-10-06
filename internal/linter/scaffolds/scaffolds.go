@@ -301,14 +301,19 @@ func firstLines(data []byte, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// relPath returns path relative to root, falling back to path if Rel
-// fails. Used solely for human-friendly finding output.
+// relPath returns path relative to root, slash-separated, falling back to
+// path if Rel fails.
+//
+// Slash-separated because it is not only finding output: the banner
+// classifier matches it against "internal/templates/<dir>/" prefixes, which a
+// backslashed Windows path never contained — so every directory-scoped rule
+// missed, and templates fell through to banner-unclassified there.
 func relPath(path, root string) string {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return path
 	}
-	return rel
+	return filepath.ToSlash(rel)
 }
 
 // bytesContains is a wrapper around strings.Contains that operates on

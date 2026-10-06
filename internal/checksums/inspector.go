@@ -21,6 +21,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -70,6 +71,7 @@ func (i *Inspector) IsTracked(relPath string) bool {
 	if i == nil {
 		return false
 	}
+	relPath = slashKey(relPath)
 	if i.IsDisowned(relPath) {
 		return true
 	}
@@ -98,6 +100,7 @@ func (i *Inspector) IsTier1(relPath string) bool {
 	if i == nil || i.IsDisowned(relPath) {
 		return false
 	}
+	relPath = slashKey(relPath)
 	if i.cs != nil {
 		if _, ok := i.cs.Unstampable[relPath]; ok {
 			return true
@@ -129,7 +132,10 @@ func (i *Inspector) DisownedGoFilesByDir() map[string][]string {
 		if !IsGoPath(relPath) {
 			continue
 		}
-		dir := filepath.Dir(relPath)
+		// path, not filepath: the keys are slash-separated identities (see
+		// slashKey), and filepath.Dir would hand Windows callers a
+		// backslashed directory that matches nothing else.
+		dir := path.Dir(relPath)
 		out[dir] = append(out[dir], relPath)
 	}
 	for dir := range out {
@@ -165,7 +171,10 @@ func (i *Inspector) Tier1GoFiles() []string {
 // GoSiblingsIn returns the project-relative paths of every *.go file
 // (excluding *_test.go) physically present under projectRoot/relDir.
 // Reads the directory once and memoizes the result.
+// The paths are slash-separated (see slashKey), so they compare equal to
+// DisownedGoFilesByDir's values on every OS.
 func (i *Inspector) GoSiblingsIn(relDir string) ([]string, error) {
+	relDir = slashKey(relDir)
 	if cached, ok := i.goSiblingsCache[relDir]; ok {
 		return cached, nil
 	}
@@ -186,7 +195,7 @@ func (i *Inspector) GoSiblingsIn(relDir string) ([]string, error) {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		out = append(out, filepath.Join(relDir, name))
+		out = append(out, path.Join(relDir, name))
 	}
 	sort.Strings(out)
 	i.goSiblingsCache[relDir] = out

@@ -170,6 +170,39 @@ func Shutdown() {
 // DSN, port, and handle. Only the pool (attachEmbedded) calls it, under the
 // pool lock; every other caller shares the instance it boots. It reaps
 // orphaned instances first so a past crash's leftovers do not accumulate.
+// startParameters is the shared server's postgresql.conf overrides for a
+// host running goos.
+//
+// Shrink the per-instance footprint and — critically, on POSIX — use
+// mmap-backed shared memory instead of System V (shmget). The default sysv
+// shared memory exhausts the kernel's SHMMNI limit on macOS ("could not
+// create shared memory segment: No space left on device"). mmap avoids the
+// sysv segment table entirely. fsync=off is safe — these databases are
+// ephemeral and dropped after use.
+//
+// Windows gets no shared-memory override: its postgres build implements
+// exactly one type for each setting, "windows", and REFUSES to start on any
+// other value ("invalid value for parameter dynamic_shared_memory_type:
+// mmap"), so the POSIX fix is what broke every embedded server there. There
+// is no SHMMNI table on Windows for the default to exhaust.
+func startParameters(goos string) map[string]string {
+	params := map[string]string{
+		"shared_buffers": "32MB",
+		// One shared server fans out to many per-call databases AND the
+		// generated bootstrap pools ~25 connections; keep the ceiling
+		// generous so the parallel corpus never starves.
+		"max_connections":    "200",
+		"fsync":              "off",
+		"synchronous_commit": "off",
+		"full_page_writes":   "off",
+	}
+	if goos != "windows" {
+		params["dynamic_shared_memory_type"] = "mmap"
+		params["shared_memory_type"] = "mmap"
+	}
+	return params
+}
+
 func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedPostgres, err error) {
 	// Reap instances orphaned by SIGKILLed processes before booting a fresh
 	// one — otherwise they accumulate across runs and exhaust the kernel's
@@ -200,24 +233,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *embeddedpostgres.EmbeddedP
 		Encoding("UTF8").
 		Port(port).
 		RuntimePath(runtimeDir(port)).
-		// Shrink the per-instance footprint and — critically — use
-		// mmap-backed shared memory instead of System V (shmget). The default
-		// sysv shared memory exhausts the kernel's SHMMNI limit on macOS
-		// ("could not create shared memory segment: No space left on
-		// device"). mmap avoids the sysv segment table entirely. fsync=off
-		// is safe — these databases are ephemeral and dropped after use.
-		StartParameters(map[string]string{
-			"shared_buffers": "32MB",
-			// One shared server fans out to many per-call databases AND the
-			// generated bootstrap pools ~25 connections; keep the ceiling
-			// generous so the parallel corpus never starves.
-			"max_connections":            "200",
-			"dynamic_shared_memory_type": "mmap",
-			"shared_memory_type":         "mmap",
-			"fsync":                      "off",
-			"synchronous_commit":         "off",
-			"full_page_writes":           "off",
-		}).
+		StartParameters(startParameters(runtime.GOOS)).
 		// CachePath defaults under the user cache dir; the downloaded
 		// binary is reused across runs. StartTimeout is generous for the
 		// first run that has to extract the binary.

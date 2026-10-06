@@ -16,6 +16,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -50,7 +51,7 @@ func runUpgradeDetail(projectDir string, cfg *config.ProjectConfig, paths []stri
 	}
 
 	for i, raw := range paths {
-		rel := filepath.Clean(strings.TrimSpace(raw))
+		rel := upgradeDetailKey(strings.TrimSpace(raw))
 		if i > 0 {
 			fmt.Println()
 		}
@@ -61,17 +62,23 @@ func runUpgradeDetail(projectDir string, cfg *config.ProjectConfig, paths []stri
 	return nil
 }
 
+// upgradeDetailKey is the comparable form of a project-relative path: cleaned
+// and slash-separated, the form the upgrade results report. filepath.Clean
+// alone turned the user's no/such/file.ts into no\such\file.ts on Windows,
+// so a refusal named a path they never typed.
+func upgradeDetailKey(p string) string { return path.Clean(filepath.ToSlash(p)) }
+
 // printOneFileDetail prints one path's diff and the remedies for its lane.
 func printOneFileDetail(rel string, managed []generator.UpgradeResult, advisory []generator.AdvisoryResult) error {
 	for _, r := range managed {
-		if filepath.Clean(r.Path) != rel {
+		if upgradeDetailKey(r.Path) != rel {
 			continue
 		}
 		printManagedDetail(r)
 		return nil
 	}
 	for _, r := range advisory {
-		if filepath.Clean(r.Path) != rel {
+		if upgradeDetailKey(r.Path) != rel {
 			continue
 		}
 		printAdvisoryDetail(r)

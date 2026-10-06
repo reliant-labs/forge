@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -35,6 +36,9 @@ func TestBuildHostServiceCmd(t *testing.T) {
 	sharedBinary := func(w *WorkloadEntity) {
 		w.Build = BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/myproj", OutputName: "myproj"}}
 	}
+	// The built binary as the host names it: hostlaunch adds .exe on Windows
+	// (its own table pins that per OS); this test pins only that up feeds it.
+	myprojBin := hostlaunch.ExeName(runtime.GOOS, "./bin/myproj")
 	cases := []struct {
 		name    string
 		svc     WorkloadEntity
@@ -61,14 +65,14 @@ func TestBuildHostServiceCmd(t *testing.T) {
 		{
 			name: "binary runs the built output with args",
 			svc:  hostWL("admin-server", sharedBinary, withRunner("binary"), withArgs("admin")),
-			want: []string{"./bin/myproj", "admin"},
+			want: []string{myprojBin, "admin"},
 		},
 		{
 			name: "delve runner custom port",
 			svc: hostWL("api", sharedBinary, withRunner("delve"), withArgs("api"), func(w *WorkloadEntity) {
 				w.Runtime.Host.DelvePort = 3030
 			}),
-			want: []string{"dlv", "exec", "--headless", "--listen=:3030", "--api-version=2", "--accept-multiclient", "--continue", "./bin/myproj", "--", "api"},
+			want: []string{"dlv", "exec", "--headless", "--listen=:3030", "--api-version=2", "--accept-multiclient", "--continue", myprojBin, "--", "api"},
 		},
 		{
 			name: "an explicit spec.command runs verbatim with args",
@@ -143,13 +147,13 @@ func TestUpStatePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upStatePath: %v", err)
 	}
-	wantSuffix := "/.cache/forge/up/" + projectID + "/dev.pids"
+	wantSuffix := filepath.FromSlash("/.cache/forge/up/" + projectID + "/dev.pids")
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Errorf("upStatePath: got %q, want suffix %q", got, wantSuffix)
 	}
 	// The ledger must live UNDER a project-id segment, never directly at
 	// up/dev.pids — the old, cross-project-colliding shape.
-	if strings.HasSuffix(got, "/.cache/forge/up/dev.pids") {
+	if strings.HasSuffix(got, filepath.FromSlash("/.cache/forge/up/dev.pids")) {
 		t.Errorf("upStatePath is not project-scoped: %q", got)
 	}
 	// An unidentifiable project gets an ERROR, never a shared fallback path:
@@ -165,8 +169,10 @@ func TestUpLogPath_Sanitises(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upLogPath: %v", err)
 	}
-	// Colons and slashes must be replaced so the path is safe.
-	if strings.Contains(got, ":") {
+	// Colons and slashes in the NAME must be replaced so the file name is
+	// safe. Only the base is checked: a Windows project dir carries a drive
+	// colon (D:\a\...) that is not the name's to sanitise.
+	if strings.Contains(filepath.Base(got), ":") {
 		t.Errorf("upLogPath returned unsanitised path %q", got)
 	}
 	if !strings.HasSuffix(got, "frontend_admin_web.log") {
@@ -375,7 +381,9 @@ func TestSummaryLogPath_MatchesUpLogPath(t *testing.T) {
 		t.Fatalf("upLogPath: %v", err)
 	}
 	disp := summaryLogPath("dev", "frontend:admin/web")
-	if !strings.HasSuffix(full, disp) {
+	// The display path is slash-separated on every OS (see upLogDir); the
+	// file it names is the native one.
+	if !strings.HasSuffix(filepath.ToSlash(full), disp) {
 		t.Errorf("summaryLogPath %q is not a suffix of upLogPath %q", disp, full)
 	}
 	if want := ".forge/logs/dev/frontend_admin_web.log"; disp != want {

@@ -47,7 +47,7 @@ promote the same release to `prod`; check with `forge env status <env>`.
 
 | Gate | What happens | Clear it |
 |---|---|---|
-| **Billing** — a hosted workload or managed database, or a second static site, and the org has no Reliant Compute plan (one static site per org is free) | The deploy is **queued, not refused**: built, recorded, promoted, held (rollout phase `HELD`). `env deploy` prints waiting-on/why/do/link and **exits 7**; `env status` also exits 7; `--json` carries the same facts | Someone who can manage billing for the org subscribes in Reliant → Settings → Billing (the printed link goes there). Nothing to re-run: the Stripe webhook releases it. Block with `forge env deploy --wait` or `env status <env> --wait`; then `forge env smoke <env>` |
+| **Billing** — a hosted workload, managed database or static site, and the org has no Reliant Compute plan | The deploy is **queued, not refused**: built, recorded, promoted, held (rollout phase `HELD`). `env deploy` prints waiting-on/why/do/link and **exits 7**; `env status` also exits 7; `--json` carries the same facts | Someone who can manage billing for the org subscribes in Reliant → Settings → Billing (the printed link goes there). Nothing to re-run: the Stripe webhook releases it. Block with `forge env deploy --wait` or `env status <env> --wait`; then `forge env smoke <env>` |
 | **Over the plan ceiling**, **plan unknown**, **spend cap reached** | Refused, not queued (a spend cap is deliberate: it can clear unattended) | Reduce resources, upgrade, retry, or raise the cap |
 
 Exit 7 is a person's turn, not a failure: relay the link to the user, do not

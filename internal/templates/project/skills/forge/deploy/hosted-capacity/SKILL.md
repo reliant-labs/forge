@@ -17,9 +17,8 @@ answer arrive in seconds instead of after a build.
 ## Queued, not refused: a deploy that needs billing
 
 A deploy that only needs **billing the org has not set up** is ACCEPTED and
-QUEUED, not refused. Static sites alone are free (one per org); anything with a
-hosted workload or a managed database needs a Reliant Compute plan. When the org
-has none:
+QUEUED, not refused. Anything hosted — a workload, a managed database or a
+static site — needs a Reliant Compute plan. When the org has none:
 
 - the pre-flight prints `Capacity: this deploy will be QUEUED on billing — …`
   and the deploy continues: built, pushed, release cut, bundle recorded,
@@ -53,8 +52,7 @@ exits 7 with the same block rather than reporting drift.
 
 | Code | Meaning | Fix |
 |---|---|---|
-| `NO_COMPUTE_PLAN` | Compute with no active compute plan — **queued** (above) on a current control plane; refused by one that predates queueing | Subscribe to a compute plan in billing settings |
-| `STATIC_FREE_TIER_EXCEEDED` | No plan; static-only deploy beyond the free tier (1 site) — **queued** likewise | Delete another env's site, or subscribe |
+| `NO_COMPUTE_PLAN` | Anything hosted (static sites included) with no active compute plan — **queued** (above) on a current control plane; refused by one that predates queueing | Subscribe to a compute plan in billing settings |
 | `EXCEEDS_CEILING` | The plan's CPU/memory/storage ceiling is below the demand | Reduce resources or upgrade |
 | `SPEND_CAP_REACHED` | The org's spend cap is reached | Raise the cap |
 | `PLAN_UNKNOWN` | The plan could not be determined | Retry; it is never read as "no plan" |

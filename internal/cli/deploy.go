@@ -101,8 +101,8 @@ nothing connecting the two. So the health gate is ON by default; --no-wait is
 how you opt out, and it says what to run instead.
 
 A HOSTED DEPLOY CAN BE QUEUED, NOT REFUSED. When what the env runs needs
-something only a person can provide — billing for its hosted workloads or
-managed database (static sites alone are free) — the control plane still
+something only a person can provide — billing for its hosted workloads,
+managed database or static sites — the control plane still
 ACCEPTS the deploy: the release and its bundle are recorded, the promotion is
 written, and the env shows "waiting on billing". It goes live by itself the
 moment billing is set up; nothing is re-run. forge prints one block — what it

@@ -88,7 +88,6 @@ func gibString(b int64) string { return fmt.Sprintf("%.1f GiB", float64(b)/(1<<3
 const (
 	CapacityCodeOK                = "DEPLOY_CAPACITY_CODE_OK"
 	CapacityCodeNoComputePlan     = "DEPLOY_CAPACITY_CODE_NO_COMPUTE_PLAN"
-	CapacityCodeStaticFreeTier    = "DEPLOY_CAPACITY_CODE_STATIC_FREE_TIER_EXCEEDED"
 	CapacityCodeExceedsCeiling    = "DEPLOY_CAPACITY_CODE_EXCEEDS_CEILING"
 	CapacityCodeSpendCapReached   = "DEPLOY_CAPACITY_CODE_SPEND_CAP_REACHED"
 	CapacityCodePlanUnknown       = "DEPLOY_CAPACITY_CODE_PLAN_UNKNOWN"
@@ -206,7 +205,7 @@ func (v CapacityVerdict) Summary() string {
 	case v.Allowed && v.HasComputePlan:
 		return fmt.Sprintf("OK (ceiling %dm CPU, %s memory, %d GiB storage)", v.CeilingCPU, gibString(v.CeilingMemory), v.CeilingStorage)
 	case v.Allowed:
-		return "OK (within the free static tier)"
+		return "OK (nothing that needs a plan)"
 	case v.Queued():
 		return "QUEUED on " + v.Holds[0].Label() + " — accepted and recorded, live once that is done: " + v.Reason
 	default:

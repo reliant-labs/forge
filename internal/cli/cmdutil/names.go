@@ -91,6 +91,9 @@ func ValidateServiceName(name string) error {
 	if err := ValidateIdentifier(name); err != nil {
 		return err
 	}
+	if err := ValidateImportablePackageName(name); err != nil {
+		return err
+	}
 	if ReservedServiceNames[strings.ToLower(name)] {
 		return fmt.Errorf("%q is reserved (reserved service names: %s) — these collide with forge's "+
 			"worker/scheduler subsystems.\n"+
@@ -101,6 +104,22 @@ func ValidateServiceName(name string) error {
 			"entity messages can still be called %s",
 			name, strings.Join(ReservedServiceNameList(), ", "), name, name,
 			reservedNameAlternatives(strings.ToLower(name)), naming.ToPascalCase(name))
+	}
+	return nil
+}
+
+// ValidateImportablePackageName rejects a component name whose Go package
+// cannot be imported. A service, worker, operator or library becomes a
+// package that other code imports — internal/app imports every component —
+// and Go refuses to import package main ("is a program, not an importable
+// package"). Without this check the name is accepted and the project fails
+// at go build, far from the command that chose it. This is a Go language
+// rule, not a forge reservation, so it is the only name checked here.
+func ValidateImportablePackageName(name string) error {
+	if naming.ServicePackage(name) == "main" {
+		return fmt.Errorf("%q would be Go package main, which is a program and cannot be imported — "+
+			"forge imports every service, worker and operator into internal/app; "+
+			"name the component for what it owns instead", name)
 	}
 	return nil
 }

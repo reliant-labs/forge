@@ -82,6 +82,44 @@ switch an existing frontend, change `output:` and run
 `forge project upgrade --force frontends/<name>/next.config.ts frontends/<name>/Dockerfile`.
 That command overwrites the two files, so read `--check <path>` first.
 
+## Checking a static export before CI does
+
+`next dev` serves everything an export cannot, so a frontend drifts out of
+being exportable without anything noticing. Two checks catch it:
+
+- **`forge env render` refuses the binding.** A frontend bound to
+  `forge.OnHosted`, `forge.OnBucket` or `forge.OnFirebase` whose forge.yaml
+  `output` is not `static` fails every render, deploy and build. The error
+  names the frontend, the env and both fixes. forge.yaml is the one
+  declaration of the build shape, and the KCL never repeats it.
+- **`forge lint --static-export`** runs as part of every `forge lint`. It covers
+  each Next.js frontend that is `output: static` or bound to a static runtime
+  in any env, and reports each finding with file:line and a fix.
+  - Errors are what `next build` refuses for an export:
+    - a `[id]`, `[...x]` or `[[...x]]` route with no `generateStaticParams`
+    - a GET route handler that is not `force-static`
+    - `'use server'`
+    - `next/headers`
+    - `dynamic = "force-dynamic"` or `revalidate = 0`
+    - next/image without `images.unoptimized`
+    - a next.config that does not export, or that disagrees with forge.yaml
+  - Warnings are what the export drops silently:
+    - `middleware.ts` / `proxy.ts`
+    - non-GET route handlers that are not dev-only
+    - `rewrites` / `redirects` / `headers` not gated to development
+    - `revalidate = N`
+
+  A dev-only handler says so in its first statement:
+  `if (process.env.NODE_ENV === "production") return …`, as the scaffolded
+  dev log route does. Suppress a single finding with
+  `// forge:lint-disable-next-line <rule>: <reason>`.
+
+The real `next build` stays authoritative. CI's
+`NODE_ENV=production npm run build`, `forge build` and `forge env deploy` all
+run it. The lint is a text scan: it does not follow a re-exported
+`generateStaticParams` or a computed next.config, and stays silent rather
+than guess.
+
 ## Serving under a path prefix (`base_path`)
 
 To mount a frontend under a URL prefix, declare `base_path: /admin` in

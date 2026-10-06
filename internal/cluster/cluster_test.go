@@ -1424,6 +1424,50 @@ func TestApplyWithImmutableRecovery_RecreatesStorageClass(t *testing.T) {
 	}
 }
 
+// gkeSCForbiddenStderr is GKE's (v1.35.8) rejection of the SAME StorageClass
+// parameters change, verbatim from a failed `forge env deploy prod`. GKE's
+// apiserver says "Forbidden: updates to parameters are forbidden", not k3d's
+// "field is immutable" — and the recovery that only knew the k3d phrasing
+// passed every test above while failing the real deploy.
+const gkeSCForbiddenStderr = `The StorageClass "workspace-ssd" is invalid: parameters: Forbidden: updates to parameters are forbidden.`
+
+func TestApplyWithImmutableRecovery_RecreatesStorageClassOnGKEPhrasing(t *testing.T) {
+	var applies int
+	var deleted []immutableTarget
+	apply := func() (string, error) {
+		applies++
+		if applies == 1 {
+			return gkeSCForbiddenStderr, errors.New("exit status 1")
+		}
+		return "", nil
+	}
+	del := func(t immutableTarget) error { deleted = append(deleted, t); return nil }
+
+	if _, err := applyWithImmutableRecovery(storageClassManifest, stderrOnlyApply(apply), del, noopWaitGone); err != nil {
+		t.Fatalf("GKE's forbidden-update phrasing must recover like k3d's, got %v", err)
+	}
+	if applies != 2 || len(deleted) != 1 || deleted[0].Kind != "StorageClass" || deleted[0].Name != "workspace-ssd" {
+		t.Fatalf("want fail, delete StorageClass/workspace-ssd, re-apply; got applies=%d deletes=%+v", applies, deleted)
+	}
+}
+
+// The forbidden-update phrasing widens what counts as IMMUTABLE, not what may
+// be DELETED: a kind that owns data still fails loudly in that phrasing too.
+func TestImmutableRecovery_ForbiddenUpdateOnDataKindIsNotRecreated(t *testing.T) {
+	stderr := `The StatefulSet "db" is invalid: spec: Forbidden: updates to statefulset spec for fields other than 'replicas' are forbidden`
+	if got := immutableResources(stderr, ""); len(got) != 0 {
+		t.Fatalf("StatefulSet must never be auto-deleted, got %+v", got)
+	}
+}
+
+// An unrelated Forbidden (RBAC, admission) is not an immutable update.
+func TestImmutableRecovery_UnrelatedForbiddenIsNotRecoverable(t *testing.T) {
+	stderr := `The StorageClass "workspace-ssd" is invalid: metadata.labels: Forbidden: label not allowed`
+	if got := immutableResources(stderr, storageClassManifest); len(got) != 0 {
+		t.Fatalf("a non-immutability Forbidden must surface unchanged, got %+v", got)
+	}
+}
+
 // TestImmutableRecovery_RefusesKindsThatOwnData pins the safety boundary the
 // recovery had implicitly: a PersistentVolumeClaim's immutable field must NEVER
 // be answered by deleting it (that destroys a workspace's disk). Only kinds

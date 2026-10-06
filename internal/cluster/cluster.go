@@ -40,6 +40,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1951,7 +1952,7 @@ func withDefaultNamespace(t immutableTarget, namespace string) immutableTarget {
 // ok=false when the stderr isn't an immutable-field error or the named
 // resource can't be found in the bundle.
 func immutableResource(stderr, manifests string) (immutableTarget, bool) {
-	if !strings.Contains(stderr, "is invalid:") || !strings.Contains(stderr, "field is immutable") {
+	if !strings.Contains(stderr, "is invalid:") || !reportsImmutableUpdate(stderr) {
 		return immutableTarget{}, false
 	}
 	kind, name, ok := parseInvalidResource(stderr)
@@ -1960,6 +1961,27 @@ func immutableResource(stderr, manifests string) (immutableTarget, bool) {
 	}
 	ns := namespaceForResource(manifests, kind, name)
 	return immutableTarget{Kind: kind, Name: name, Namespace: ns}, true
+}
+
+// forbiddenUpdateRe matches the OTHER way the apiserver says "this field
+// cannot change": a type's own update validation using field.Forbidden rather
+// than the generic ValidateImmutableField. StorageClass is the case that
+// matters — its validation answers a `parameters` or `provisioner` change with
+//
+//	The StorageClass "workspace-ssd" is invalid: parameters: Forbidden: updates to parameters are forbidden.
+//
+// (verified on GKE v1.35.8), while k3d's apiserver phrased the same rejection
+// as `field is immutable`. Matching only that phrasing let the k3d-pinned
+// recovery pass its tests and then fail a real prod deploy.
+var forbiddenUpdateRe = regexp.MustCompile(`Forbidden: updates to [^\s]+ (?:is|are) forbidden`)
+
+// reportsImmutableUpdate reports whether an apply error body is the apiserver
+// refusing to change a field in place, in either phrasing. It decides only
+// "immutable or not"; whether the kind may be deleted to heal it is
+// recreatableKinds' call, so a forbidden update on a kind that owns data still
+// fails the deploy.
+func reportsImmutableUpdate(body string) bool {
+	return strings.Contains(body, "field is immutable") || forbiddenUpdateRe.MatchString(body)
 }
 
 // recreatableKinds is the allowlist of kinds the immutable recovery may delete
@@ -2023,7 +2045,7 @@ func immutableResources(stderr, manifests string) []immutableTarget {
 		if next := strings.Index(rest, inv); next >= 0 {
 			body = rest[:next]
 		}
-		if !strings.Contains(body, "field is immutable") {
+		if !reportsImmutableUpdate(body) {
 			continue
 		}
 		kind, name, ok := parseInvalidResource(head)

@@ -128,20 +128,24 @@ describe("mock fixture freshness", () => {
     // absence of evidence — and it must not pass silently.
     expect(
       SEED_FINGERPRINT,
-      "These mock fixtures carry no schema fingerprint, so there is no way to tell whether " +
-        "they match db/migrations. Re-run `forge generate` to record one.",
+      "These mock fixtures carry no seed fingerprint, so there is no way to tell whether " +
+        "they match db/migrations and db/seeds/vocab.yaml. From the project root, run " +
+        "`forge generate` (`reliant forge generate` when forge runs inside reliant) to record one.",
     ).not.toBe("");
 
     expect(
       actual,
       "STALE MOCK FIXTURES.\n\n" +
-        "src/mocks/<entity>_gen.ts holds rows generated from an OLDER version of " +
-        "db/migrations + db/seeds/vocab.yaml than the one on disk now. Those fixtures are " +
-        "what mock mode (NEXT_PUBLIC_MOCK_API / VITE_MOCK_API) serves and what your tests " +
-        "assert against, so every one of them is now describing a schema this project no " +
-        "longer has — a column you added is missing from them, and a column you dropped is " +
-        "still there.\n\n" +
-        "Fix: re-run `forge generate` to regenerate the fixtures from the current schema.\n",
+        "src/mocks/<entity>_gen.ts was generated from different seed inputs than the ones " +
+        "on disk now. The fixtures are derived from TWO inputs, and one of them changed " +
+        "since the last generate:\n" +
+        "  - the schema: db/migrations/*.up.sql (a migration was added or edited), or\n" +
+        "  - the seed vocabulary: db/seeds/vocab.yaml (its pools or columns were edited).\n" +
+        "Either one changes the rows mock mode (NEXT_PUBLIC_MOCK_API / VITE_MOCK_API) serves " +
+        "and your tests assert against, so the cached fixtures no longer match.\n\n" +
+        "Fix: from the project root, run `forge generate` (`reliant forge generate` when " +
+        "forge runs inside reliant). It rewrites src/mocks/*_gen.ts and the fingerprint " +
+        "this test compares.\n",
     ).toBe(SEED_FINGERPRINT);
   });
 });

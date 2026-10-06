@@ -1325,7 +1325,7 @@ LIMIT $1 OFFSET $2;
 }
 
 // seedVocabTemplate is the scaffolded db/seeds/vocab.yaml. It lives at package
-// scope because it is a 70-line document, not logic: inline it made
+// scope because it is a long document, not logic: inline it made
 // generateSeeds read as one long literal with four file writes buried in it.
 const seedVocabTemplate = `# db/seeds/vocab.yaml — domain vocabulary for ` + "`forge db seed`" + ` (yours; forge
 # never regenerates it).
@@ -1369,7 +1369,8 @@ const seedVocabTemplate = `# db/seeds/vocab.yaml — domain vocabulary for ` + "
 # pools:                       # shared pools, referenced from several columns
 #   product_names: [Alpha One, Beta Two, Gamma Three]
 # columns:                     # "table.column": inline list, {pool: name},
-#                              # {type: name}, or {min: n, max: n}
+#                              # {type: name}, {min: n, max: n}, or
+#                              # {from: -30d, to: now} for a time column
 #   products.name: {pool: product_names}
 #   catalog_items.name: {pool: product_names}
 #   brands.name: [Northwind, Contoso Labs]
@@ -1384,6 +1385,21 @@ const seedVocabTemplate = `# db/seeds/vocab.yaml — domain vocabulary for ` + "
 #   products.price_cents: {min: 1200, max: 24900, step: 100}
 #   products.stock_quantity: {min: 0, max: 250}
 #   products.rating: {min: 1.0, max: 5.0, step: 0.5, decimals: 1}
+#
+# TIMESTAMP and DATE columns take instants RELATIVE TO NOW (the day the seed
+# runs), so seeded dates stay current: a range, or a list of offsets
+# (m/h/d/w) and absolute ISO dates. Undescribed ones land in the last 4 weeks.
+#
+#   orders.placed_at: {from: -90d, to: now}
+#   deliveries.scheduled_for: {from: -1w, to: +4w, step: 1h}
+#   invoices.due_on: [+2w, +4w, +30d]
+#
+# BOOLEAN columns take true/false; null fills a NULLABLE column. Repeating an
+# entry weights the draw, for every kind of value:
+#
+#   products.active: [true, true, true, false]      # ~75% active
+#   orders.notes: [null, null, "Leave at the door"] # ~2/3 empty
+#   orders.shipped_at: [null, -2d, -5d]             # null on NOT NULL refuses the seed
 #
 # TWO TRAPS WORTH THE 30 SECONDS, both of which produce data that satisfies
 # the schema and still breaks a page:

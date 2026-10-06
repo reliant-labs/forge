@@ -143,11 +143,7 @@ func (p *Plan) valueLiteral(table string, col schemadef.Column, i int) string {
 	// ApplyVocab time, drawn with the same column-local hash-pick as every
 	// built-in pool (adding vocab for one column never reshuffles another).
 	if vals := p.vocab[table][col.Name]; len(vals) > 0 {
-		v := vals[pick(salt, table, col.Name, i, len(vals))]
-		if col.Type == schemadef.TypeInt || col.Type == schemadef.TypeFloat {
-			return v // validated numeric literal
-		}
-		return sqlString(v)
+		return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))])
 	}
 
 	// Enum / CHECK-constrained pool: draw from the allowed set, preferring

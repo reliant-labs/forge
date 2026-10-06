@@ -344,7 +344,7 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 		fmt.Println("[up] auto-seed: no tables in scope (no CRUD entities, and database.seed.tables unset) — nothing seeded")
 		return
 	}
-	plan, err := seedplan.BuildLivePlan(ctx, db, migrationsDefault(), seedShadowFor(migrationsDefault()), seedCfg)
+	plan, err := seedplan.BuildLivePlan(ctx, db, resolveMigrationsDir(""), seedShadowServer(dbProjectRoot()), seedCfg)
 	if err != nil {
 		fmt.Printf("[up] auto-seed skipped: %v\n", err)
 		return

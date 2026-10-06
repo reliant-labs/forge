@@ -1,6 +1,7 @@
 package seedplan
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -246,6 +247,9 @@ type Plan struct {
 	// CLI to surface.
 	vocab      map[string]map[string][]string
 	vocabWarns []string
+	// vocabErrs holds the vocab problems that refuse the seed rather than
+	// warn — a null declared for a NOT NULL column. Reported by Validate.
+	vocabErrs []string
 	// planWarns holds constraint-satisfaction notes recorded by finalize.
 	planWarns []string
 	// derivedRefs maps table -> foreign-key column -> the transitive route its
@@ -316,12 +320,20 @@ func (p *Plan) Warnings() []string {
 }
 
 // Validate reports the conditions under which forge refuses to write this
-// plan's rows. Today that is exactly one: a foreign-key reference reachable by
-// two paths whose authority nobody declared (see diamond.go). It is checked at
-// APPLY time rather than at BuildPlan, so `forge generate` — which builds
-// one-row plans for entity factories, where the two paths cannot disagree —
-// is never blocked by a decision that only affects a real dataset.
-func (p *Plan) Validate() error { return p.diamondRefusal() }
+// plan's rows: a db/seeds/vocab.yaml null declared for a NOT NULL column, and
+// a foreign-key reference reachable by two paths whose authority nobody
+// declared (see diamond.go). Both are checked at APPLY time rather than at
+// BuildPlan, so `forge generate` — which builds one-row plans for entity
+// factories and fixtures — is never blocked by a decision that only affects a
+// real dataset.
+func (p *Plan) Validate() error {
+	if len(p.vocabErrs) == 0 {
+		return p.diamondRefusal()
+	}
+	vocabErr := fmt.Errorf("refusing to seed: db/seeds/vocab.yaml declares a value the schema cannot hold:\n  %s",
+		strings.Join(p.vocabErrs, "\n  "))
+	return errors.Join(vocabErr, p.diamondRefusal())
+}
 
 // Tables returns the planned table names in insert (topological) order.
 func (p *Plan) Tables() []string {

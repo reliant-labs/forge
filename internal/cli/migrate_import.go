@@ -99,7 +99,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 
 	destDir := opts.DestDir
 	if destDir == "" {
-		destDir = migrationsDefault()
+		destDir = resolveMigrationsDir("")
 	}
 
 	destAbs, err := filepath.Abs(destDir)

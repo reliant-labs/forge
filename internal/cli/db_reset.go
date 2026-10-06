@@ -119,7 +119,10 @@ It is destructive and dev-only, so it is gated three ways:
   - the environment must be confirmed development (from deploy/kcl/<env>/config.k);
     there is no override flag
   - the connection string must be the one that environment declares — a DSN
-    forge cannot reconcile with <env> is refused, not assumed
+    forge cannot reconcile with <env> is refused, not assumed. Unlike
+    'forge db seed apply', an arbitrary loopback --dsn is NOT accepted: this
+    command DROPs the database, and other projects' databases live on
+    loopback too
   - the resolved host and database name are printed and must be confirmed;
     pass --yes for non-interactive use
 
@@ -137,13 +140,18 @@ Examples:
 			// which deploy/kcl/<env>/ they are talking about, and resolving
 			// it twice inside is how they could come to disagree.
 			opts.projectDir = projectDirForKCL()
+			migDir, err := requireMigrationsDir(opts.migDir)
+			if err != nil {
+				return err
+			}
+			opts.migDir = migDir
 			return runDBReset(cmd.Context(), opts)
 		},
 	}
 
 	cmd.Flags().StringVar(&opts.dsn, "dsn", "", "Database connection string (falls back to $DATABASE_URL, then what the env declares)")
 	cmd.Flags().StringVar(&opts.env, "env", "dev", "Target environment (must be dev; there is no override)")
-	cmd.Flags().StringVar(&opts.migDir, "dir", migrationsDefault(), "Migrations directory")
+	cmd.Flags().StringVar(&opts.migDir, "dir", "", migrationsDirFlagUsage)
 	cmd.Flags().BoolVar(&opts.yes, "yes", false, "Skip the confirmation prompt (non-interactive use)")
 	return cmd
 }
@@ -256,7 +264,7 @@ func runDBReset(ctx context.Context, opts resetOptions) error {
 
 	// 6. Seed. A reset that stopped at an empty schema would leave the user
 	//    exactly one command short of where they were trying to get.
-	return resetSeed(ctx, dsn, opts.migDir)
+	return resetSeed(ctx, dsn, opts.migDir, opts.projectDir)
 }
 
 // resetSeed materializes the seed dataset into the freshly migrated database.
@@ -266,14 +274,15 @@ func runDBReset(ctx context.Context, opts resetOptions) error {
 // check here would only re-derive answers this command established two steps
 // ago, and the pending check in particular has nothing to say about a
 // database whose schema forge just applied itself.
-func resetSeed(ctx context.Context, dsn, migDir string) error {
+func resetSeed(ctx context.Context, dsn, migDir, projectDir string) error {
 	db, err := database.ConnectDB(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("reset: migrated the database but could not connect to seed it: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowFor(migDir), seedConfigFromProject())
+	cfg := seedConfigFromProject()
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(projectDir), cfg)
 	if err != nil {
 		return fmt.Errorf("reset: migrated the database but could not plan seeds: %w", err)
 	}
@@ -282,6 +291,9 @@ func resetSeed(ctx context.Context, dsn, migDir string) error {
 	if err != nil {
 		return fmt.Errorf("reset: migrated the database but seeding failed: %w", err)
 	}
-	fmt.Fprintf(os.Stdout, "Migrated to head and seeded %d row(s) across %d table(s).\n", res.Total(), len(res.Tables))
+	if err := seedOutcomeError(ctx, db, plan, cfg, res, migDir); err != nil {
+		return fmt.Errorf("reset: migrated the database but %w", err)
+	}
+	printSeedResult("Migrated to head and seeded", plan, cfg, res)
 	return applyCustomSeedOverlay(ctx, db, migDir)
 }

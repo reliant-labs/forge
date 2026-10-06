@@ -306,16 +306,38 @@ func managedRoleOf(conv schemadef.Conventions, col schemadef.Column) managedRole
 // after created; a soft-deleting table seeds LIVE rows, so the marker is
 // NULL. TIMESTAMPTZ and the legacy TEXT spelling both take this literal,
 // which is why the role is resolved before the type switch.
-func managedTimestampLiteral(role managedRole, i int) string {
+//
+// Both sit inside the four weeks before now (see windowInstant), one day per
+// row: created rows read as "made recently", never as "made in the future".
+func managedTimestampLiteral(now time.Time, role managedRole, i int) string {
 	switch role {
 	case managedDeletedAt:
 		return "NULL"
 	case managedUpdatedAt:
-		return fmt.Sprintf("'2024-01-%02dT12:00:00Z'", (i%28)+1)
+		return sqlString(windowInstant(now, i, 12))
 	default:
-		return fmt.Sprintf("'2024-01-%02dT08:00:00Z'", (i%28)+1)
+		return sqlString(windowInstant(now, i, 8))
 	}
 }
+
+// syntheticWindowDays is how far before now a synthesized timestamp reaches.
+const syntheticWindowDays = 28
+
+// windowInstant is the instant row-day `day` of the synthetic window lands on:
+// `day mod 28` days into the four weeks that END at the start of now's UTC day,
+// at `hour` o'clock. Anchoring on the DAY rather than the instant keeps every
+// seed run on one day byte-identical, and keeps the hours readable.
+func windowInstant(now time.Time, day, hour int) string {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).
+		AddDate(0, 0, -syntheticWindowDays)
+	at := start.AddDate(0, 0, day%syntheticWindowDays).Add(time.Duration(hour) * time.Hour)
+	return at.Format(timeLiteralLayout)
+}
+
+// timeLiteralLayout is how every seeded instant is spelled: RFC 3339 in UTC.
+// The ordering placement re-parses it (time.RFC3339), so one spelling
+// everywhere keeps a vocab-drawn instant and a synthesized one comparable.
+const timeLiteralLayout = "2006-01-02T15:04:05Z"
 
 // ──────────────────────────────────────────────────────────────────────
 // Synthesis
@@ -330,7 +352,7 @@ func (p *Plan) synthScalar(t schemadef.Table, col schemadef.Column, i int, b Num
 		return arrayLiteral(t, col, i)
 	}
 	if role := managedRoleOf(p.conv[t.Name], col); role != managedNone {
-		return managedTimestampLiteral(role, i)
+		return managedTimestampLiteral(p.cfg.EffectiveNow(), role, i)
 	}
 
 	switch col.Type {
@@ -353,7 +375,7 @@ func (p *Plan) synthScalar(t schemadef.Table, col schemadef.Column, i int, b Num
 	case schemadef.TypeBytes:
 		return byteaLiteral(t, col, i)
 	case schemadef.TypeTime:
-		return timestampLiteral(i)
+		return timestampLiteral(p.cfg.EffectiveNow(), i)
 	default: // string
 		return sqlString(SynthString(t, col, i))
 	}
@@ -389,12 +411,15 @@ func isUUIDArrayColumn(col schemadef.Column) bool {
 }
 
 // timestampLiteral is the instant an UNMANAGED time column carries: one
-// deterministic point per row, spread across Jan 2024. A column that must sit
-// above another is not placed here — a two-column ordering CHECK is a
-// DECLARATION, and ordering.go satisfies it from the constraint rather than
-// from what the columns happen to be called.
-func timestampLiteral(i int) string {
-	return fmt.Sprintf("'2024-01-%02dT08:00:00Z'", ((i+7)%28)+1)
+// deterministic point per row, spread across the four weeks before now (see
+// windowInstant), offset a week from the managed columns' cycle. A column
+// that must sit above another is not placed here — a two-column ordering
+// CHECK is a DECLARATION, and ordering.go satisfies it from the constraint
+// rather than from what the columns happen to be called. A column whose
+// values MEAN something in time (a schedule in the future, a due date) is
+// described in db/seeds/vocab.yaml with a range relative to now.
+func timestampLiteral(now time.Time, i int) string {
+	return sqlString(windowInstant(now, i+7, 8))
 }
 
 // placeholderString is the value an undeclared string column carries:

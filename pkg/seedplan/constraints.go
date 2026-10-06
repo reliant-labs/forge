@@ -125,10 +125,14 @@ func (p *Plan) closedPool(table string, col schemadef.Column) ([]string, bool) {
 	return nil, false
 }
 
-// poolLiteral renders a pool value the way valueLiteral does — bare for
-// numeric columns, single-quoted otherwise.
+// poolLiteral renders a pool value — the ONE renderer for anything drawn from
+// a vocabulary or CHECK pool: NULL for a vocab null, bare for numeric and
+// boolean columns, single-quoted otherwise.
 func poolLiteral(col schemadef.Column, v string) string {
-	if col.Type == schemadef.TypeInt || col.Type == schemadef.TypeFloat {
+	switch {
+	case v == vocabNull:
+		return "NULL"
+	case col.Type == schemadef.TypeInt || col.Type == schemadef.TypeFloat || col.Type == schemadef.TypeBool:
 		return v
 	}
 	return sqlString(v)

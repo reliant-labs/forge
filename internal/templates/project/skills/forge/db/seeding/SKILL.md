@@ -23,6 +23,7 @@ columns:
   products.name: {pool: product_names}
   products.currency: [USD]                              # see the traps below
   products.price_cents: {min: 1200, max: 24900, step: 100}
+  orders.placed_at: {from: -90d, to: now}               # relative to today
 ```
 
 Two defaults produce schema-valid data that still breaks a page, and both are
@@ -41,6 +42,9 @@ forge db seed apply    # introspect db/migrations, INSERT deterministic rows (de
 forge db seed status   # per-table seeded-row counts vs the seed model
 forge db seed reset    # wipe seeded tables and re-seed (dev only)
 ```
+
+`-C` from anywhere, a throwaway postgres (any loopback `--dsn`), or a
+`seeded nothing` error: load `db/seeding/targets`.
 
 `forge env up` auto-seed a fresh dev database on first boot
 (every in-scope table empty). `apply`/`reset` refuse any non-dev environment,
@@ -93,13 +97,29 @@ context is fresh:**
 pools:                              # shared pools, referenced by name
   city_names: [Lisbon, Osaka, Nairobi, Montreal, Reykjavik]
 columns:                            # "table.column": inline list, {pool: name},
-                                    # {type: name}, or {min: n, max: n}
+                                    # {type: name}, {min: n, max: n},
+                                    # or {from: offset, to: offset}
   warehouses.city: {pool: city_names}
   suppliers.city: {pool: city_names}
   carriers.name: [Northwind Freight, Cordon Logistics, Alto Shipping]
   shipments.weight_grams: {min: 100, max: 25000, step: 50}
   carriers.rating: {min: 1.0, max: 5.0, step: 0.5, decimals: 1}
+  carriers.active: [true, true, false]
+  shipments.delivered_at: [null, -1d, -3d, -7d]
 ```
+
+**A repeated entry weights the draw**, whatever the value's kind.
+
+### Time, booleans and NULL
+
+Time columns (`TIMESTAMPTZ`, `DATE`, …) are written **relative to now**, the
+start of today (UTC): `{from: -90d, to: +30d}` spreads across a range (optional
+`step:`; default 1m, 1d for `DATE`); `[now, -3d, +1w]` or ISO dates list exact
+instants. Units: `m` `h` `d` `w`. Undescribed, one lands in the last four
+weeks; describe any whose dates *mean* something.
+
+`BOOLEAN` takes `true`/`false` (undescribed: a coin flip). `null` is a list value
+for a **nullable** column; on a NOT NULL column it refuses the seed.
 
 ### Numeric columns take a range
 

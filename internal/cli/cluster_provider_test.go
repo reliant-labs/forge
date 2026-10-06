@@ -68,6 +68,7 @@ func TestLookupClusterProvider_UnknownProviderErrors(t *testing.T) {
 // (nil) so a call into any of them panics/fails the test — the assertion
 // IS that reconcile never reaches them.
 func TestReconcileDeclaredClusters_RejectsUnimplementedProviderBeforeAnyK3dWork(t *testing.T) {
+	withReachableDocker(t)
 	origState := clusterRuntimeStateFn
 	t.Cleanup(func() { clusterRuntimeStateFn = origState })
 	clusterRuntimeStateFn = func(context.Context, string) (k3dClusterRuntimeState, error) {

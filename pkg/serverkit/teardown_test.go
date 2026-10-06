@@ -27,6 +27,7 @@ func (o *drainingOperator) Name() string { return o.name }
 // controller-manager goroutine is supervised on a WaitGroup, so Run must
 // not return until RunOperators has fully drained.
 func TestRun_WaitsForOperatorDrainOnShutdown(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	op := &drainingOperator{name: "draining-op"}
@@ -58,6 +59,7 @@ func TestRun_WaitsForOperatorDrainOnShutdown(t *testing.T) {
 // shutdown drain must still surface as Run's return value (the WaitGroup
 // wait happens BEFORE the final componentFailure read).
 func TestRun_OperatorFailureAfterShutdownStartIsNotLost(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	srv := serverkit.Server{
@@ -101,6 +103,7 @@ func TestRun_OperatorFailureAfterShutdownStartIsNotLost(t *testing.T) {
 // It does not — it falls through, and the assertions below prove the service
 // stayed up and then shut down normally, OnShutdown and all.
 func TestRun_PprofBindFailureNeverTakesTheServiceDown(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — exercises the shared signal/shutdown path.
 	mainAddr := freeAddr(t)
 

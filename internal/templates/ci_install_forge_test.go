@@ -161,7 +161,14 @@ func writeForgeModuleProxy(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	return "file://" + filepath.ToSlash(root)
+	// A file URL's path is absolute and slash-separated: /tmp/x on POSIX,
+	// /C:/Users/x on Windows. Without the leading slash a drive letter
+	// would parse as the URL's HOST and the proxy would resolve nothing.
+	p := filepath.ToSlash(root)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file://" + p
 }
 
 // Runs installForgeScript against real modules with the real go toolchain,
@@ -188,7 +195,10 @@ func TestCIWorkflows_InstallForgeScriptResolvesFromProject(t *testing.T) {
 
 	// `go install` reports its target; every other go subcommand is real.
 	shimDir := t.TempDir()
-	shim := "#!/bin/sh\nif [ \"$1\" = install ]; then echo \"INSTALL $2\"; exit 0; fi\nexec " + goBin + " \"$@\"\n"
+	// goBin is single-quoted and slash-separated: sh reads a backslash as an
+	// escape, so a native Windows path (C:\hostedtoolcache\...) reached exec
+	// as "C:hostedtoolcache..." and the shim exited 127.
+	shim := "#!/bin/sh\nif [ \"$1\" = install ]; then echo \"INSTALL $2\"; exit 0; fi\nexec '" + filepath.ToSlash(goBin) + "' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}

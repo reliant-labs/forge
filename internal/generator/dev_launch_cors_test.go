@@ -193,7 +193,9 @@ func vscodeLaunchSites(t *testing.T, root, name string) []devLaunchSite {
 
 	var sites []devLaunchSite
 	for _, c := range launch.Configurations {
-		if !strings.Contains(c.Program, filepath.Join("cmd", name)) {
+		// "/", not filepath.Join: launch.json is generated content, and its
+		// program path is slash-separated on every OS.
+		if !strings.Contains(c.Program, "cmd/"+name) {
 			continue // attach-to-delve, debug-current-test, …
 		}
 		sites = append(sites, devLaunchSite{

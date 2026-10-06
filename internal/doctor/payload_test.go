@@ -183,7 +183,9 @@ func Serve() {
 			if got.Status != tt.want {
 				t.Fatalf("status = %q, want %q (msg=%s ev=%s)", got.Status, tt.want, got.Message, got.Evidence)
 			}
-			if tt.evidence != "" && !strings.Contains(got.Evidence, tt.evidence) {
+			// Evidence cites project files by their native path (backslashed on
+			// Windows); the expectations are written slash-separated.
+			if tt.evidence != "" && !strings.Contains(filepath.ToSlash(got.Evidence), tt.evidence) {
 				t.Errorf("evidence %q does not mention %q", got.Evidence, tt.evidence)
 			}
 		})

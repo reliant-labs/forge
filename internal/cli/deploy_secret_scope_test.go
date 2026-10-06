@@ -43,6 +43,7 @@ output = {manifests = [
 // the `<context> <namespace>/<name>` of every Secret it was asked for.
 func scopeFakeKubectl(t *testing.T, has ...string) func() []string {
 	t.Helper()
+	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	log := filepath.Join(dir, "secret-gets.log")
 	script := `#!/bin/sh

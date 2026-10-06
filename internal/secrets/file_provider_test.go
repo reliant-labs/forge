@@ -3,6 +3,7 @@ package secrets
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -122,7 +123,9 @@ func TestWriteSecretFile_RoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	// POSIX mode bits only: Windows reports 0666 for any writable file and
+	// protects it with the directory's ACL instead.
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("mode = %v, want 0600", perm)
 	}
 }

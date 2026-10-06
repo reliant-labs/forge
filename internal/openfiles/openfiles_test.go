@@ -131,6 +131,9 @@ func TestTakeFailsClosedOnDeadline(t *testing.T) {
 }
 
 func TestTakeWithoutLsof(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows takes its snapshot through the Restart Manager and process table, not lsof (openfiles_windows.go)")
+	}
 	t.Setenv("PATH", t.TempDir())
 	if _, err := Take(context.Background()); err == nil {
 		t.Fatal("a machine with no lsof produced a snapshot")

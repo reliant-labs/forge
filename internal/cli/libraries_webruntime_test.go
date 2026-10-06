@@ -345,7 +345,8 @@ func TestBuildWebRuntimeSpec_DeclaredButNotInstalled(t *testing.T) {
 	if spec == nil || spec.Dir != "" {
 		t.Fatalf("want a spec with no Dir, got %+v", spec)
 	}
-	for _, want := range []string{"frontends/dashboard/package.json", "npm install"} {
+	// The manifest is named by its native path (backslashed on Windows).
+	for _, want := range []string{filepath.FromSlash("frontends/dashboard/package.json"), "npm install"} {
 		if !strings.Contains(spec.Reason, want) {
 			t.Errorf("Reason %q must name %q", spec.Reason, want)
 		}

@@ -79,6 +79,7 @@ func (c kubectlCall) IsApply() bool {
 // the silent-partial-apply incident and fails every apply path.
 func fakeKubectlRecorder(t *testing.T) func() []kubectlCall {
 	t.Helper()
+	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "kubectl-calls.log")
 

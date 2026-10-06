@@ -85,6 +85,17 @@ func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
 	}
 }
 
+// withFreshLoadBalancers stubs the k3d load-balancer freshness check, which
+// shells out to `docker inspect` on every existing cluster before its health
+// probe. Reconcile tests that stub the k3d/kubectl seams must stub this one
+// too, or they pass only where a Docker daemon happens to answer.
+func withFreshLoadBalancers(t *testing.T) {
+	t.Helper()
+	orig := ensureClusterLBFreshFn
+	t.Cleanup(func() { ensureClusterLBFreshFn = orig })
+	ensureClusterLBFreshFn = func(context.Context, string) error { return nil }
+}
+
 // TestReconcileDeclaredClusters_NoImperativeIngress guards the
 // declarative-ingress invariant: reconcile NEVER installs the Gateway API
 // stack imperatively, even for a cluster that still carries the legacy
@@ -96,6 +107,8 @@ func TestReconcileDeclaredClusters_EmptyIsNoop(t *testing.T) {
 // the absence of any ingress shell-out is the assertion (the test would not
 // compile if an installClusterIngressFn seam were still referenced).
 func TestReconcileDeclaredClusters_NoImperativeIngress(t *testing.T) {
+	withReachableDocker(t)
+	withFreshLoadBalancers(t)
 	origState := clusterRuntimeStateFn
 	origHealth := ensureRunningClusterHealthyFn
 	origHostDNS := ensureClusterHostGatewayDNSFn
@@ -158,6 +171,8 @@ func TestIsNestedSecondary(t *testing.T) {
 // reached (the warm path also gates the secondary setup on the same
 // predicate, so this exercises that path).
 func TestReconcileDeclaredClusters_SecondarySetup(t *testing.T) {
+	withReachableDocker(t)
+	withFreshLoadBalancers(t)
 	origState := clusterRuntimeStateFn
 	origHealth := ensureRunningClusterHealthyFn
 	origHostDNS := ensureClusterHostGatewayDNSFn
@@ -214,6 +229,8 @@ func TestReconcileDeclaredClusters_SecondarySetup(t *testing.T) {
 // stop`: start and wait for the owner before touching the nested secondary,
 // then start and wait for the secondary before its DNS/MSS setup.
 func TestReconcileDeclaredClusters_StartsStoppedInDeclarationOrder(t *testing.T) {
+	withReachableDocker(t)
+	withFreshLoadBalancers(t)
 	origState := clusterRuntimeStateFn
 	origStart := startDeclaredClusterFn
 	origWait := waitDeclaredClusterReadyFn
@@ -277,6 +294,7 @@ func TestReconcileDeclaredClusters_StartsStoppedInDeclarationOrder(t *testing.T)
 }
 
 func TestReconcileDeclaredClusters_StoppedClusterStartFailureStopsReconcile(t *testing.T) {
+	withReachableDocker(t)
 	origState := clusterRuntimeStateFn
 	origStart := startDeclaredClusterFn
 	origWait := waitDeclaredClusterReadyFn

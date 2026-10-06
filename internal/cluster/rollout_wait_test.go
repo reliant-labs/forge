@@ -25,6 +25,7 @@ import (
 //     otherwise.
 func fakeMultiClusterKubectl(t *testing.T, failing ...string) func() []string {
 	t.Helper()
+	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	script := `#!/bin/sh
 state='` + dir + `'

@@ -116,7 +116,9 @@ func TestProjectIDShape(t *testing.T) {
 			if strings.ContainsAny(got, `/\`) {
 				t.Fatalf("ProjectID(%q) = %q, which spans directories", name, got)
 			}
-			home := "/tmp/ledger"
+			// Cleaned like the joined path, so the prefix comparison uses the
+			// host separator on both sides (\tmp\ledger on Windows).
+			home := filepath.Clean("/tmp/ledger")
 			resolved := filepath.Clean(filepath.Join(home, got))
 			if !strings.HasPrefix(resolved, home+string(filepath.Separator)) {
 				t.Fatalf("ProjectID(%q) = %q resolves to %q, outside the ledger home", name, got, resolved)

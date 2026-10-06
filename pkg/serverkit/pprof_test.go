@@ -21,6 +21,7 @@ import (
 // because "200 OK with an empty body" is the failure mode that would still
 // leave you unable to answer what a process is holding.
 func TestRun_ServesHeapProfileOnItsOwnListener(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM through shutdownAndWait.
 	mainAddr := freeAddr(t)
 	pprofAddr := freeAddr(t)

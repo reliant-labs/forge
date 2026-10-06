@@ -127,6 +127,7 @@ func TestRetargetedTSTemplate_RetargetsInMemory(t *testing.T) {
 // hoisted to the root leaves the committed buf.gen.yaml byte-identical, and
 // hands buf the retargeted template instead.
 func TestRunBufGenerateTypeScript_NeverRewritesCommittedBufGen(t *testing.T) {
+	requirePOSIXFake(t, "buf")
 	projectDir := t.TempDir()
 	feRel := filepath.Join("frontends", "web")
 	feBufGen := filepath.Join(projectDir, feRel, "buf.gen.yaml")

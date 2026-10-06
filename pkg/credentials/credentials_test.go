@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -13,9 +14,10 @@ func TestDirs_PathPrecedence(t *testing.T) {
 		d    Dirs
 		want string
 	}{
-		{Dirs{ForgeHome: "/fh", XDGConfigHome: "/xdg", Home: "/h"}, "/fh/credentials.json"},
-		{Dirs{XDGConfigHome: "/xdg", Home: "/h"}, "/xdg/forge/credentials.json"},
-		{Dirs{Home: "/h"}, "/h/.config/forge/credentials.json"},
+		// FromSlash: Path joins with the host separator.
+		{Dirs{ForgeHome: "/fh", XDGConfigHome: "/xdg", Home: "/h"}, filepath.FromSlash("/fh/credentials.json")},
+		{Dirs{XDGConfigHome: "/xdg", Home: "/h"}, filepath.FromSlash("/xdg/forge/credentials.json")},
+		{Dirs{Home: "/h"}, filepath.FromSlash("/h/.config/forge/credentials.json")},
 	} {
 		if got, err := tc.d.Path(); err != nil || got != tc.want {
 			t.Errorf("%+v: got %q %v, want %q", tc.d, got, err, tc.want)
@@ -91,13 +93,17 @@ func TestSave_ModesAndAtomicity(t *testing.T) {
 	if err := Save(path, f); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("file mode %o; a bearer credential must be 0600", info.Mode().Perm())
-	}
-	dinfo, _ := os.Stat(dir)
-	if dinfo.Mode().Perm() != 0o700 {
-		t.Errorf("dir mode %o; want 0700", dinfo.Mode().Perm())
+	// POSIX mode bits only: Windows reports 0666/0777 regardless of the mode
+	// asked for, and protects the user's config directory with its ACL.
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(path)
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("file mode %o; a bearer credential must be 0600", info.Mode().Perm())
+		}
+		dinfo, _ := os.Stat(dir)
+		if dinfo.Mode().Perm() != 0o700 {
+			t.Errorf("dir mode %o; want 0700", dinfo.Mode().Perm())
+		}
 	}
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {

@@ -83,8 +83,12 @@ func runActionStepVerbs(t *testing.T, step actionStep, env map[string]string, re
 		t.Fatal(err)
 	}
 	argvLog := filepath.Join(dir, "argv.log")
+	// Paths enter the stub single-quoted and slash-separated: bash reads a
+	// backslash as an escape, so a native Windows path (C:\Users\...) named a
+	// different, relative file and the stub recorded and replayed nothing.
+	shPath := func(p string) string { return "'" + filepath.ToSlash(p) + "'" }
 	var stub strings.Builder
-	stub.WriteString("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> " + argvLog + "\ncase \"$2\" in\n")
+	stub.WriteString("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> " + shPath(argvLog) + "\ncase \"$2\" in\n")
 	for verb, r := range replies {
 		payload := filepath.Join(dir, "payload-"+verb)
 		if err := os.WriteFile(payload, []byte(r.stdout), 0o644); err != nil {
@@ -94,7 +98,7 @@ func runActionStepVerbs(t *testing.T, step actionStep, env map[string]string, re
 		if verb == "" {
 			pattern = "*"
 		}
-		stub.WriteString("  " + pattern + ") cat " + payload + "; exit " + strconv.Itoa(r.code) + " ;;\n")
+		stub.WriteString("  " + pattern + ") cat " + shPath(payload) + "; exit " + strconv.Itoa(r.code) + " ;;\n")
 	}
 	stub.WriteString("esac\nexit 0\n")
 	if err := os.WriteFile(filepath.Join(bin, "forge"), []byte(stub.String()), 0o755); err != nil {

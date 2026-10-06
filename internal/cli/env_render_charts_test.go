@@ -16,6 +16,7 @@ import (
 // Returns the argv log path.
 func fakeHelmOnPath(t *testing.T) string {
 	t.Helper()
+	requirePOSIXFake(t, "helm")
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "helm.log")
 	script := `#!/bin/sh

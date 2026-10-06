@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,12 @@ func job(name string, command []string, before ...string) WorkloadEntity {
 }
 
 func svc(name string) WorkloadEntity { return hostWL(name) }
+
+// shPath is p as an `sh -c` script must spell it: single-quoted and
+// slash-separated. sh reads a backslash as an escape, so a native Windows
+// temp path (C:\Users\...) named a different, relative file and the job's
+// marker never appeared where the test looked.
+func shPath(p string) string { return "'" + filepath.ToSlash(p) + "'" }
 
 // The rendered contract's host jobs are what the host runner reads: a
 // workload of kind job bound to forge.OnHost, its gating in spec.before.
@@ -141,7 +148,7 @@ func TestRunOneHostJob_FailureIsFailClosed(t *testing.T) {
 
 func TestRunOneHostJob_SuccessRunsToCompletion(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
-	j := job("provision", []string{"sh", "-c", "echo done > " + marker})
+	j := job("provision", []string{"sh", "-c", "echo done > " + shPath(marker)})
 	if err := runOneHostJob(context.Background(), nil, j, nil, ""); err != nil {
 		t.Fatalf("job failed: %v", err)
 	}
@@ -175,7 +182,7 @@ func TestRunOneHostJob_TimeoutIsReported(t *testing.T) {
 // The job's own spec.env reaches the process.
 func TestRunOneHostJob_EnvVarsReachTheProcess(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "env")
-	j := job("provision", []string{"sh", "-c", "echo $IDP_URL > " + marker})
+	j := job("provision", []string{"sh", "-c", "echo $IDP_URL > " + shPath(marker)})
 	j.Spec.Env = []deployv1alpha1.EnvVar{{Name: "IDP_URL", Value: "http://idp:8080"}}
 	if err := runOneHostJob(context.Background(), nil, j, nil, ""); err != nil {
 		t.Fatalf("job failed: %v", err)
@@ -204,8 +211,8 @@ func TestRunHostJobs_RunsInDependencyOrder(t *testing.T) {
 		svc("api"),
 		// Declared second-first on purpose: `seed` is gated by
 		// `provision`, so provision must still run first.
-		job("seed", []string{"sh", "-c", "echo seed >> " + log}, "api"),
-		job("provision", []string{"sh", "-c", "echo provision >> " + log}, "seed"),
+		job("seed", []string{"sh", "-c", "echo seed >> " + shPath(log)}, "api"),
+		job("provision", []string{"sh", "-c", "echo provision >> " + shPath(log)}, "seed"),
 	}}
 	if err := runHostJobs(context.Background(), nil, e, nil, ""); err != nil {
 		t.Fatalf("jobs failed: %v", err)
@@ -226,7 +233,7 @@ func TestRunHostJobs_StopsAtFirstFailure(t *testing.T) {
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		svc("api"),
 		job("broken", []string{"sh", "-c", "exit 1"}, "api"),
-		job("later", []string{"sh", "-c", "echo later >> " + log}, "api"),
+		job("later", []string{"sh", "-c", "echo later >> " + shPath(log)}, "api"),
 	}}
 	if err := runHostJobs(context.Background(), nil, e, nil, ""); err == nil {
 		t.Fatal("expected the failing job to stop the sequence")
@@ -297,8 +304,8 @@ func TestRunHostJobs_BroadcastRunsBeforeOtherJobs(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "order")
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		svc("api"),
-		job("seed", []string{"sh", "-c", "echo seed >> " + log}, "api"),
-		job("migrate", []string{"sh", "-c", "echo migrate >> " + log}, BeforeAll),
+		job("seed", []string{"sh", "-c", "echo seed >> " + shPath(log)}, "api"),
+		job("migrate", []string{"sh", "-c", "echo migrate >> " + shPath(log)}, BeforeAll),
 	}}
 	if err := runHostJobs(context.Background(), nil, e, nil, ""); err != nil {
 		t.Fatalf("jobs failed: %v", err)
@@ -358,9 +365,15 @@ func slicesEqual(a, b []string) bool {
 // would orphan that grandchild still running, which is a deadline in name
 // only — so the test also proves the whole tree is gone.
 func TestRunOneHostJob_ActiveDeadlineKillsTheProcessTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The grandchild's pid comes from sh's $!, which under the Windows
+		// runner's sh (MSYS) is an MSYS pid, not a Windows one — processAlive
+		// cannot observe it, so the tree-kill assertion has nothing to check.
+		t.Skip("the grandchild pid is sh's $!, which on Windows (MSYS sh) is not a Windows pid processAlive can observe")
+	}
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
 	deadline := int64(1)
-	j := job("seed", []string{"sh", "-c", "sleep 60 & echo $! > " + pidFile + "; wait"}, "api")
+	j := job("seed", []string{"sh", "-c", "sleep 60 & echo $! > " + shPath(pidFile) + "; wait"}, "api")
 	j.Spec.ActiveDeadlineSeconds = &deadline
 
 	start := time.Now()
@@ -417,7 +430,7 @@ func TestRunHostJobs_DeadlineFailureStopsTheGatedJobs(t *testing.T) {
 	deadline := int64(1)
 	slow := job("slow", []string{"sh", "-c", "sleep 30"}, "after")
 	slow.Spec.ActiveDeadlineSeconds = &deadline
-	after := job("after", []string{"sh", "-c", "touch " + marker}, "api")
+	after := job("after", []string{"sh", "-c", "touch " + shPath(marker)}, "api")
 	e := &KCLEntities{Workloads: []WorkloadEntity{slow, after, svc("api")}}
 	err := runHostJobs(context.Background(), nil, e, nil, "")
 	if err == nil || !strings.Contains(err.Error(), "activeDeadlineSeconds") {

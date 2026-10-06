@@ -200,6 +200,7 @@ func TestWriteDefaultBufGenYaml(t *testing.T) {
 }
 
 func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
+	requirePOSIXFake(t, "buf")
 	dir := t.TempDir()
 
 	feRelDir := filepath.Join("frontends", "web")

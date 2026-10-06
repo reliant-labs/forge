@@ -45,7 +45,7 @@ func (s stubLookupErr) Lookup(name string) (string, error) {
 // path: build_cwd exists, first token resolves, → pass.
 func TestBuildExternalBuildDoctorChecks_CwdPresentCmdOnPath(t *testing.T) {
 	projectDir := "/proj"
-	cwd := "/proj/sibling"
+	cwd := filepath.Join(projectDir, "sibling") // the host-separated path the check stats and reports
 	stat := stubStat{cwd: {}}.Stat
 	lookup := stubLookupErr{"docker": {}}.Lookup
 
@@ -87,7 +87,7 @@ func TestBuildExternalBuildDoctorChecks_MissingCwdWarns(t *testing.T) {
 	if r.Status != doctor.StatusWarn {
 		t.Fatalf("status = %q, want warn", r.Status)
 	}
-	if !strings.Contains(r.Evidence, "warn: build_cwd /proj/missing does not exist on disk") {
+	if !strings.Contains(r.Evidence, "warn: build_cwd "+filepath.Join(projectDir, "missing")+" does not exist on disk") {
 		t.Errorf("evidence should call out missing cwd; got %s", r.Evidence)
 	}
 	if !strings.Contains(r.Evidence, "skip-with-warn") {

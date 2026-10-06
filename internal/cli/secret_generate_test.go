@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -68,7 +69,9 @@ func TestSecretEnsure_GeneratesMissingValue(t *testing.T) {
 	if vals["STRIPE_KEY"] != "sk" {
 		t.Fatalf("existing value disturbed: %v", vals)
 	}
-	if info, _ := os.Stat(store); info.Mode().Perm() != 0o600 {
+	// POSIX mode bits only: Windows reports 0666 for any writable file and
+	// protects it with the directory's ACL instead.
+	if info, _ := os.Stat(store); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("store mode = %v, want 0600", info.Mode().Perm())
 	}
 	if strings.Contains(out.String(), v) {

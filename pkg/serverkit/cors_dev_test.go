@@ -91,6 +91,7 @@ func markerCORSFactory(header string) (func([]string, bool) func(http.Handler) h
 // and the response carried no CORS header, which is exactly what blocked a
 // scaffolded frontend from calling its own backend in a browser.
 func TestRun_DevelopmentEnablesCORSWithoutOrigins(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — shutdownAndWait sends SIGTERM to the test process.
 	addr := freeAddr(t)
 
@@ -131,6 +132,7 @@ func TestRun_DevelopmentEnablesCORSWithoutOrigins(t *testing.T) {
 // ONLY. A staging/production Config with no origins must not reach the
 // CORS layer at all.
 func TestRun_DeployedEnvWithoutOriginsHasNoCORS(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — shutdownAndWait sends SIGTERM to the test process.
 	addr := freeAddr(t)
 

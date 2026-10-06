@@ -29,7 +29,7 @@ func TestZitadelBinaryPath_IsTheDocumentedCacheContract(t *testing.T) {
 		t.Skipf("UserCacheDir: %v", err)
 	}
 	want := filepath.Join(cache, "forge", "zitadel", ZitadelVersion,
-		runtime.GOOS+"-"+runtime.GOARCH, "zitadel")
+		runtime.GOOS+"-"+runtime.GOARCH, zitadelBinaryName(runtime.GOOS))
 	if got != want {
 		t.Errorf("cache path drifted from the published contract\n got: %s\nwant: %s\n"+
 			"anything that pre-caches this binary (control-plane's workspace image) writes to the "+
@@ -41,9 +41,10 @@ func TestZitadelBinaryPath_IsTheDocumentedCacheContract(t *testing.T) {
 		t.Errorf("cache path %q does not carry the version — a version bump would reuse the old binary", got)
 	}
 	// The filename is what a pre-caching image writes. Bare `zitadel`, no
-	// version suffix, because the version is already a directory.
-	if filepath.Base(got) != "zitadel" {
-		t.Errorf("cached binary filename = %q, want \"zitadel\"", filepath.Base(got))
+	// version suffix, because the version is already a directory (plus the
+	// .exe Windows requires to run it at all).
+	if want := zitadelBinaryName(runtime.GOOS); filepath.Base(got) != want {
+		t.Errorf("cached binary filename = %q, want %q", filepath.Base(got), want)
 	}
 }
 
@@ -128,7 +129,9 @@ func TestExtractZitadel_FindsTheBinaryInsideThePlatformDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := extractZitadel(archive, dest); err != nil {
+	// The darwin layout this archive mimics; extractZitadelFor's windows case
+	// (member zitadel.exe) is pinned separately below.
+	if err := extractZitadelFor(archive, dest, "darwin"); err != nil {
 		t.Fatalf("extractZitadel: %v", err)
 	}
 
@@ -145,7 +148,8 @@ func TestExtractZitadel_FindsTheBinaryInsideThePlatformDirectory(t *testing.T) {
 	}
 	// Not executable means the whole download succeeded and the server
 	// still cannot start — with an error that names permissions, not this.
-	if info.Mode()&0o111 == 0 {
+	// (A POSIX bit: Windows runs a file by its .exe name, and keeps none.)
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 		t.Errorf("extracted binary is not executable (mode %v)", info.Mode())
 	}
 }
@@ -320,11 +324,15 @@ func TestZitadelSpecPaths_ResolveAgainstTheProjectRoot(t *testing.T) {
 			"this must match the idp-provision job's --pat-file default, or the job cannot authenticate", got, want)
 	}
 
-	abs := Spec{IDPStepsFile: "/etc/steps.yaml", IDPPATPath: "/var/pat.txt"}
-	if got := abs.idpStepsPath(root); got != "/etc/steps.yaml" {
+	// Host-absolute: "/etc/steps.yaml" is only ROOTED on Windows (no volume),
+	// so it would be joined onto the project root there.
+	absDir := t.TempDir()
+	stepsAbs, patAbs := filepath.Join(absDir, "steps.yaml"), filepath.Join(absDir, "pat.txt")
+	abs := Spec{IDPStepsFile: stepsAbs, IDPPATPath: patAbs}
+	if got := abs.idpStepsPath(root); got != stepsAbs {
 		t.Errorf("an absolute steps path must pass through, got %q", got)
 	}
-	if got := abs.idpPATPath(root); got != "/var/pat.txt" {
+	if got := abs.idpPATPath(root); got != patAbs {
 		t.Errorf("an absolute PAT path must pass through, got %q", got)
 	}
 }

@@ -115,6 +115,7 @@ const (
 // two concurrent Job-wait watchers cannot interleave their records.
 func fakeGateKubectl(t *testing.T, outcome jobOutcome, deployments ...string) func() []kubectlCall {
 	t.Helper()
+	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "kubectl-calls.log")
 	script := `#!/bin/sh

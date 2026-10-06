@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -182,6 +183,15 @@ func TestUnpackRefusesNonGzip(t *testing.T) {
 // than honoured (honouring them is how a setuid or world-writable file
 // arrives, and nothing in a bundle needs to be executable).
 func TestUnpackExtractsAndFixesModes(t *testing.T) {
+	// What the fixed mode READS BACK as. Windows keeps no POSIX mode bits —
+	// only a read-only attribute — and os.Stat reports any writable file as
+	// 0666, so the property that survives there is "writable, nothing more";
+	// an archive's 0777 would read back the same, and the executable bit
+	// the check guards against does not exist on that OS.
+	wantMode := unpackFileMode
+	if runtime.GOOS == "windows" {
+		wantMode = 0o666
+	}
 	built := mustBuild(t, buildFixture())
 	layer, _ := built.Layer(release.BundleManifestsLayer)
 	dest := t.TempDir()
@@ -202,8 +212,8 @@ func TestUnpackExtractsAndFixesModes(t *testing.T) {
 		if serr != nil {
 			t.Fatalf("%s: %v", rel, serr)
 		}
-		if got := info.Mode().Perm(); got != unpackFileMode {
-			t.Errorf("%s has mode %v, want the fixed %v", rel, got, unpackFileMode)
+		if got := info.Mode().Perm(); got != wantMode {
+			t.Errorf("%s has mode %v, want the fixed %v", rel, got, wantMode)
 		}
 	}
 
@@ -218,7 +228,7 @@ func TestUnpackExtractsAndFixesModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != unpackFileMode {
+	if got := info.Mode().Perm(); got != wantMode {
 		t.Errorf("an archive's 0777 survived as %v", got)
 	}
 }

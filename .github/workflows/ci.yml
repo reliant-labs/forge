@@ -280,6 +280,10 @@ jobs:
       - name: Go tests (-short)
         env:
           CGO_ENABLED: "0"
+          # buf is not installed here (see the header), and a test that
+          # needs it treats CI=true as "missing tool is a provisioning bug".
+          # This is the documented override that turns that back into a skip.
+          FORGE_E2E_REQUIRE_TOOLS: "0"
         run: go test -short -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
       - name: Install forge
         env:

@@ -79,6 +79,7 @@ metadata:
 
 func byoFakeHelm(t *testing.T, stream string) {
 	t.Helper()
+	requirePOSIXFake(t, "helm")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "chart.yaml"), []byte(stream), 0o644); err != nil {
 		t.Fatal(err)
@@ -96,7 +97,9 @@ func byoTree(t *testing.T, mainK string) (stream string, tree map[string]string)
 		t.Fatal(err)
 	}
 	byoFakeHelm(t, byoChartYAML)
-	out := renderKCLProject(t, writeKCLProject(t, strings.ReplaceAll(mainK, "GEN_YAML", gen)))
+	// ToSlash: the path lands in a KCL string literal, where a Windows
+	// backslash would be read as an escape.
+	out := renderKCLProject(t, writeKCLProject(t, strings.ReplaceAll(mainK, "GEN_YAML", filepath.ToSlash(gen))))
 	stream, err := cluster.ExtractManifests(out)
 	if err != nil {
 		t.Fatalf("ExtractManifests: %v", err)
@@ -186,7 +189,7 @@ func TestBYO_HostedEnvRefusesBothSources(t *testing.T) {
 `, 1)
 	gen := filepath.Join(t.TempDir(), "gen.yaml")
 	_ = os.WriteFile(gen, []byte(byoGenYAML), 0o644)
-	out := renderKCLProject(t, writeKCLProject(t, strings.ReplaceAll(hosted, "GEN_YAML", gen)))
+	out := renderKCLProject(t, writeKCLProject(t, strings.ReplaceAll(hosted, "GEN_YAML", filepath.ToSlash(gen))))
 	_, err := cluster.ExtractManifests(out)
 	if err == nil || !strings.Contains(err.Error(), "hosted") {
 		t.Fatalf("a hosted env using BYO sources must be refused at render, got %v", err)

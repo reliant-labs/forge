@@ -68,11 +68,12 @@ forge generate
 forge env up dev
 ```
 
-That last command brings up your services and frontends, and — on a fresh
-database — **seeds it with realistic, foreign-key-coherent data introspected
-from your own schema**, so the app boots alive instead of booting empty. You
-get back a table of URLs: the app, the frontend, Grafana, and a per-service log
-file for each process.
+That last command brings up Postgres, runs your migrations, and starts your
+services and frontends. You get back a table of URLs and a log file for each
+process. Once you add tables, a fresh database is **seeded with realistic,
+foreign-key-coherent data introspected from your own schema**, so the app boots
+alive instead of booting empty. Turn on observability and the table includes
+Grafana too.
 
 No signup, no external accounts, no cloud project, no cluster.
 

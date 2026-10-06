@@ -30,6 +30,9 @@ func TestWorkloadValidateMinimalPerKind(t *testing.T) {
 		"job":                      {Kind: KindJob, Image: pinnedImage, Args: []string{"migrate"}},
 		"cron":                     {Kind: KindCron, Image: pinnedImage, Command: []string{"/app/sweep"}, Schedule: "*/5 * * * *"},
 		"operator":                 {Kind: KindOperator, Image: pinnedImage, CRDs: []string{"Widget"}},
+		// Before its first CRD (`forge scaffold operator`, then `forge
+		// scaffold crd`), or reconciling built-in kinds only.
+		"operator owning no CRD":   {Kind: KindOperator, Image: pinnedImage},
 		"tool":                     {Kind: KindTool, Image: pinnedImage},
 		"bare local image on Full": {Image: "api:dev"},
 	} {
@@ -65,7 +68,6 @@ func TestWorkloadValidateStructuralRules(t *testing.T) {
 		"deployPhase not with before": {WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, Before: []string{"api"}, DeployPhase: DeployPhasePreRollout},
 			"deployPhase is only for a standalone job"},
 		"deployPhase enum":        {WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, DeployPhase: "during"}, "must be pre-rollout or post-rollout"},
-		"operator needs crds":     {WorkloadSpec{Kind: KindOperator, Image: pinnedImage}, "kind operator must list at least one CRD"},
 		"crds only for operator":  {WorkloadSpec{Image: pinnedImage, CRDs: []string{"Widget"}}, `crds is not supported for kind "service"`},
 		"group only for operator": {WorkloadSpec{Image: pinnedImage, Group: "acme.dev"}, `group is not supported for kind "service"`},
 		"leaderElection only for operator": {WorkloadSpec{Image: pinnedImage, LeaderElection: ptr(true)},

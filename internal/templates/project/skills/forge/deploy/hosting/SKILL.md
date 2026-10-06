@@ -1,6 +1,6 @@
 ---
 name: deploy/hosting
-description: The scaffolded staging/prod envs are hosted on Reliant — what `_hosted` / `_hosted_frontend` wire, rebinding a workload to a cluster you operate or a frontend to your own bucket, kinds hosting refuses (cron, operator), and how an existing cluster-bound project adopts hosting.
+description: The scaffolded staging/prod envs are hosted on Reliant — what `_hosted` / `_hosted_frontend` wire, why the API is one workload (`_api`, the binary's `server`) so the browser reaches every service at one origin, rebinding to a cluster you operate or a frontend to your own bucket, kinds hosting refuses (cron, operator), and how an existing cluster-bound project adopts hosting.
 ---
 
 # Hosted by default
@@ -12,7 +12,8 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 |---|---|
 | `control_plane = forge.ControlPlane {}` | Reliant cloud; set `endpoint` for another control plane |
 | `_db = forge.ManagedDatabase {runtime = forge.OnHosted {}}` | a dedicated Postgres, `deletionPolicy` RETAIN |
-| `_hosted(wl.<name>)` | the workload on the platform (kinds service/worker/job) |
+| `_hosted(_api)` | THE API: the binary's `server` — every service and worker — as one workload |
+| `_hosted(wl.<name>)` | a workload `server` does not run (a job such as `migrate`; one you split out) |
 | `_hosted_frontend(_web_frontend)` | the static export on platform static hosting + CDN |
 | `secret_provider = forge.HostedSecrets {}` | write-only store: `forge secret set --env <env> <KEY>` |
 
@@ -27,15 +28,58 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
   when the project was born with a frontend (`forge scaffold frontend` later
   prints the line to add).
 
-`_hosted_frontend` sets the bare `image` and `runtime_config = {API_URL =
-forge.WorkloadURL {workload = <first hosted service>}}`: the control plane
-writes config.js after every sync, so one release promotes unchanged. The
-frontend must be a static export (`output: static`, which the scaffold
-writes). A frontend scaffolded by forge ≤ v0.1.43 has no `output:` (it is
-standalone) and dynamic `[id]` pages: `forge skill load migrations/v0.1.44`.
+`_hosted_frontend` sets the bare `image` and `runtime_config = _api_config`
+(`{API_URL = forge.WorkloadURL {workload = "api"}}` once `_api` is bound): the
+control plane writes config.js after every sync, so one release promotes
+unchanged. The frontend must be a static export (`output: static`, which the
+scaffold writes). A frontend scaffolded by forge ≤ v0.1.43 has no `output:`
+(it is standalone) and dynamic `[id]` pages: `forge skill load
+migrations/v0.1.44`.
 
 Billing: hosted workloads and the managed database need it (Reliant →
 Settings → Billing); a static site alone is free.
+
+## The API is one workload
+
+A browser reaches the API at ONE origin: the frontend's Connect transport has
+one base URL (a call is `/<package>.<Service>/<Method>`, so one origin serves
+every service), and sign-in answers with an HttpOnly session cookie the browser
+returns to that origin only. The platform gives every workload its own hostname
+and routes no paths between them. So a hosted env does not host each service
+as its own workload — the frontend could call only one of them, and would be
+signed in to none of the others — it declares `_api`:
+
+```kcl
+_api = fw.Workload {
+    name = "api"
+    kind = "service"
+    image = "ghcr.io/acme/shop"
+    build = forge.GoBuild {cmd = "./cmd/shop", output_name = "shop"}
+    args = ["server"]        # every service on one Connect mux, every worker beside it
+    ports = [fw.Port {name = "http", port = 8080, expose = True}]
+    config_secrets = ["DATABASE_URL"]
+}
+_workloads = [
+    _hosted(wl.migrate)
+    _hosted(_api)
+]
+```
+
+- workloads.k still declares each service and worker; **dev** still runs each
+  as its own host process.
+- `forge scaffold service|worker` adds no line to a hosted env — `server`
+  already runs it — and binds `_api` if it was not bound yet (a project born
+  with no service declares `_api` unbound, so it pays for no idle workload).
+  A job, an operator and a tool bind on their own line as before.
+- `server` runs no operator on hosted: with no Kubernetes API it logs
+  `operators disabled` and serves on. The operator runs `_on_cluster`.
+- **Splitting one out** — a service no browser calls, a worker that needs its
+  own capacity: bind it on its own line, `_hosted(wl.<name>)`, AND take it out
+  of `server` (cmd/<bin>/cmd/server.go: a narrower mount, a filtered worker
+  list), or it runs twice. A split-out service the browser does call needs an
+  origin the frontend can reach — which hosting does not give it.
+- `forge env new <env> --from prod --bind api=cluster` moves the whole API;
+  `--bind <service>=…` is refused there, naming `_api`.
 
 ## Hosting elsewhere
 
@@ -51,7 +95,7 @@ _cluster = forge.ClusterTarget {          # was: _cluster = None
 }
 _workloads = [
     _hosted(wl.migrate)
-    _on_cluster(wl.search)                # rebound
+    _on_cluster(_api)                     # rebound
 ]
 ```
 
@@ -81,7 +125,10 @@ running its own scheduler, so it IS hosted.
 
 `forge scaffold operator` binds the new workload `_on_cluster` in every
 deployed env — the only binding that can run it — and warns, naming the envs,
-that they refuse to render until `_cluster` is declared. The ways out:
+that they refuse to render until `_cluster` is declared. (Its `crds = []` is
+fine: an operator may own no CRD yet; `forge scaffold crd <Kind>` adds each
+kind to that list, which is what its derived ClusterRole covers.) The ways
+out:
 
 1. declare `_cluster` — the env becomes mixed (hosted + your cluster);
 2. drop the line from an env that should not run it (dev runs it on k3d).
@@ -104,8 +151,13 @@ env and adds the control plane):
 2. In `_hosted`: `image = w.image[w.image.rfind("/") + 1:] if w.image else
    w.image`, and `DATABASE_URL = forge.DatabaseRef {name = _db.name}` in its
    env (or keep your own Postgres: `forge secret set --env <env> DATABASE_URL`).
-3. Rebind each line `_hosted(wl.<name>)`; a frontend
-   `_on_bucket(...)` → hosted (`image = "<name>"`, `runtime = forge.OnHosted {}`).
+3. Declare `_api` (above) and bind `_hosted(_api)` in place of every service
+   and worker line; rebind the rest (`migrate`, other jobs) `_hosted(wl.<name>)`.
+   A frontend `_on_bucket(...)` → hosted (`image = "<name>"`, `runtime =
+   forge.OnHosted {}`, `runtime_config = {API_URL = forge.WorkloadURL
+   {workload = "api"}}`). A project scaffolded hosted BEFORE `_api` existed
+   binds each service `_hosted(wl.<name>)` and its frontend reaches only the
+   first: make the same `_api` edit.
 4. Drop the cluster-only fields (`cluster_target`, `network_policy`,
    gateways/routes, `ExternalSecrets`) once nothing is bound to the cluster.
 

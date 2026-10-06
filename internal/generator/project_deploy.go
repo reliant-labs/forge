@@ -94,6 +94,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
+			APIWorkload:     codegen.APIWorkloadStanza(g.ModulePath, g.Name),
 		}
 		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {
@@ -181,10 +182,25 @@ func scaffoldEnvBindings(env string, components codegen.Inventory, hasFrontend b
 	if hasFrontend && env == codegen.DevEnvName {
 		lines = append(lines, codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.IDPProvisionWorkloadName))
 	}
+	// A hosted env runs its services and workers as ONE workload, `_api` (the
+	// binary's `server`), so the browser reaches every service at one origin
+	// — see codegen.APIWorkloadName. It is bound once there is something for
+	// it to run: a project born with no service pays for no idle workload,
+	// and `forge scaffold service` binds it with the first one.
+	var others []string
+	served := false
 	for _, c := range components {
-		lines = append(lines, codegen.EnvBinding(env, codegen.WorkloadKindFor(c.EffectiveKind()), c.Name))
+		kind := codegen.WorkloadKindFor(c.EffectiveKind())
+		if env != codegen.DevEnvName && codegen.RunsInServer(kind) {
+			served = true
+			continue
+		}
+		others = append(others, codegen.EnvBinding(env, kind, c.Name))
 	}
-	return strings.Join(lines, "\n")
+	if served {
+		lines = append(lines, "    "+codegen.EnvBinder(env, codegen.WorkloadKindService)+"("+codegen.APIWorkloadIdent+")")
+	}
+	return strings.Join(append(lines, others...), "\n")
 }
 
 // bornComponents is the component set a freshly-scaffolded project declares:

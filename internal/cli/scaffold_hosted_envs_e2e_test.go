@@ -16,7 +16,8 @@ import (
 //
 // Hosting is the default deploy target, so staging and prod must render and
 // pass the check AS SCAFFOLDED. Before, they bound every workload to a
-// cluster the author had to name first.
+// cluster the author had to name first. Both services are served by one
+// hosted workload, the binary's `server`, at the one origin a frontend calls.
 func TestE2EFreshScaffoldRendersEveryEnv(t *testing.T) {
 	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
@@ -34,9 +35,16 @@ func TestE2EFreshScaffoldRendersEveryEnv(t *testing.T) {
 		if env == "dev" {
 			continue
 		}
-		for _, want := range []string{"cluster:   hosted", "orders (service)", "billing (service)", "migrate (job)", "shop (database)"} {
+		// orders and billing run in ONE hosted workload, `api` (the binary's
+		// `server`), so a browser reaches both at one origin.
+		for _, want := range []string{"cluster:   hosted", "api (service)", "migrate (job)", "shop (database)"} {
 			if !strings.Contains(out, want) {
-				t.Errorf("%s render lacks %q — every workload and the database are hosted as scaffolded:\n%s", env, want, out)
+				t.Errorf("%s render lacks %q — the API, migrate and the database are hosted as scaffolded:\n%s", env, want, out)
+			}
+		}
+		for _, unwanted := range []string{"orders (service)", "billing (service)"} {
+			if strings.Contains(out, unwanted) {
+				t.Errorf("%s render hosts %q on its own, beside the API that already serves it:\n%s", env, unwanted, out)
 			}
 		}
 		runCmd(t, projectDir, forgeBin, "env", "new", env, "--check")

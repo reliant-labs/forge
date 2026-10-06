@@ -295,6 +295,8 @@ schema Workload:
     deployPhase?: str
     namespacedRBAC?: [tiers.PolicyRule]
     clusterRBAC?: [tiers.PolicyRule]
+    # The custom resource kinds an operator's manager owns; forge derives its
+    # ClusterRole rules on them (with `group`). May be empty — see the check.
     crds?: [str]
     group?: str
     version?: str
@@ -357,7 +359,11 @@ schema Workload:
             "Workload.deployPhase places a standalone one-shot Job (kind='job', no `before`) in the deploy; '${name}' is a '${kind}'${' with `before`' if before else ''} — remove deployPhase"
 
         # --- operator ---
-        kind != "operator" or crds, "kind='operator' must list at least one CRD kind in `crds`"
+        # No minimum on `crds`. An operator with none is real: one that owns
+        # no CRD yet (`forge scaffold operator` declares it before `forge
+        # scaffold crd` adds the first), or one that reconciles built-in
+        # kinds only and states what it needs in `clusterRBAC`. `crds` is what
+        # its derived ClusterRole covers, and an empty list derives nothing.
 
         # --- kind x capability (lib/capabilities.k) ---
         # A declaration the kind cannot express is REJECTED, naming the

@@ -89,7 +89,7 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 	// binding a workload whose declaration was printed rather than written
 	// would leave every env's main.k referencing a name that does not exist.
 	if declared {
-		bindWorkloadInEnvs(root, comp)
+		bindWorkloadInEnvs(root, cfg.Name, comp)
 	}
 }
 
@@ -116,7 +116,11 @@ func readWorkloadsKCL(root string) (string, bool) {
 // None`) that binding fails the render, naming the workload, until the
 // author declares one or drops the line; the scaffold says so here, so the
 // first anyone hears of it is not a red CI run.
-func bindWorkloadInEnvs(root string, comp config.ComponentConfig) {
+//
+// An env that serves its API as one `server` workload (a hosted env's
+// `_api`) runs a new service or worker there already: it gets no line of its
+// own, and that API workload is bound if it was not yet.
+func bindWorkloadInEnvs(root, projectName string, comp config.ComponentConfig) {
 	envs, err := os.ReadDir(filepath.Join(root, "deploy", "kcl"))
 	if err != nil {
 		return
@@ -130,11 +134,16 @@ func bindWorkloadInEnvs(root string, comp config.ComponentConfig) {
 		if _, err := os.Stat(filepath.Join(root, "deploy", "kcl", e.Name(), "main.k")); err != nil {
 			continue
 		}
-		binder, applied, err := codegen.AppendEnvBinding(root, e.Name(), kind, comp.Name)
+		res, err := codegen.AppendEnvBinding(root, projectName, e.Name(), kind, comp.Name)
 		switch {
 		case err != nil:
 			fmt.Printf("\n⚠️  could not update deploy/kcl/%s/main.k: %v\n\n%s\n", e.Name(), err, codegen.EnvBindingHint(e.Name(), kind, comp.Name))
-		case applied:
+		case res.ServedBy != "":
+			fmt.Printf("   - deploy/kcl/%s/main.k (%s '%s' runs in %s, the binary's `server`; nothing to bind)\n", e.Name(), kind, comp.Name, res.ServedBy)
+		case res.Applied && res.Bound != "wl."+naming.KCLIdentifier(comp.Name):
+			fmt.Printf("   - deploy/kcl/%s/main.k (%s '%s' runs in %s, the binary's `server`, now bound: %s)\n", e.Name(), kind, comp.Name, res.Bound, res.Binder)
+		case res.Applied:
+			binder := res.Binder
 			fmt.Printf("   - deploy/kcl/%s/main.k (%s bound: %s)\n", e.Name(), comp.Name, binder)
 			if codegen.HostedRefusal(kind) != "" && binder == "_on_cluster" && codegen.EnvDeclaresNoCluster(root, e.Name()) {
 				needCluster = append(needCluster, "deploy/kcl/"+e.Name()+"/main.k")

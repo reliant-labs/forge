@@ -13,7 +13,8 @@ CDN:
 
   workloads  `forge.OnHosted`: each a Workload the platform admits under its
              Restricted profile (kinds service, worker, job) and renders with
-             the same Go renderer a cluster you operate uses
+             the same Go renderer a cluster you operate uses. The API is ONE
+             of them, `_api`: every service and worker, in one process
   database   `_db`, a dedicated managed Postgres; workloads read its URL
              through `forge.DatabaseRef`, so nobody handles the password
   secrets    the control plane's write-only store:
@@ -84,8 +85,7 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
 # A CLUSTER YOU OPERATE, for what hosting refuses — an operator (no
 # Kubernetes API on shared nodes), a `kind = "cron"` CronJob (not metered
 # yet) — or what you would rather run yourself. Declare the cluster, then
-# rebind the workload's line:
-# `_hosted(wl.{{.PrimaryIdent}})` → `_on_cluster(wl.{{.PrimaryIdent}})`.
+# rebind the workload's line: `_hosted(_api)` → `_on_cluster(_api)`.
 #
 #     _cluster = forge.ClusterTarget {
 #         cluster = "gke_acme_us-central1_{{.EnvName}}"   # its kubectl context
@@ -104,7 +104,7 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
 _cluster = None
 _on_cluster = lambda w: fw.Workload -> fw.Workload {
     assert _cluster, "workload '${w.name}' is bound to _on_cluster, but deploy/kcl/{{.EnvName}}/main.k declares no `_cluster`: declare the cluster you operate there" \
-        + (" — the hosted platform refuses a ${w.kind}, so it cannot be rebound `_hosted`; drop the line to not run it here" if w.kind in ["cron", "operator"] else ", or rebind the line `_hosted`")
+        + (" — the hosted platform refuses ${w.kind}s, so it cannot be rebound `_hosted`; drop the line to not run it here" if w.kind in ["cron", "operator"] else ", or rebind the line `_hosted`")
     _configured(w) | {
         resources = fw.Resources {
             cpuRequestMillicores = forge.cpu({{.CPURequest}})
@@ -127,6 +127,26 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
     w | {runtime = forge.BuildOnly {}}
 }
 
+# THE API, as ONE workload: the binary's `server` command, which mounts
+# every service on one Connect mux and supervises every worker beside it.
+#
+# A browser reaches the API at one origin. Its Connect transport has one
+# base URL (a call is `/<package>.<Service>/<Method>`, so one origin serves
+# every service), and sign-in answers with an HttpOnly session cookie the
+# browser sends back to that origin only. The platform gives each workload
+# its own hostname and routes no paths between them, so a workload per
+# service would leave the frontend reaching one of them, signed in to none
+# of the others.
+#
+# workloads.k still declares each service and worker, and dev still runs
+# each as its own process. Here `server` runs them, so `forge scaffold
+# service|worker` adds no line below for one. Splitting one out — a service
+# no browser calls, a worker that needs its own capacity — is its own line,
+# `_hosted(wl.<name>)`, and taking it out of `server`'s mount or worker list:
+# cmd/{{.ProjectName}}/cmd/server.go. (`server` runs no operator here — with
+# no Kubernetes API it logs that operators are disabled and serves on.)
+{{.APIWorkload}}
+
 # Every workload this env runs, one binding each. `forge scaffold` appends
 # a line here when it adds a workload; drop a line to not run it here.
 # (The dev-IdP convergence job is not here: this env's issuer is a real
@@ -141,8 +161,9 @@ _workloads = [
 # `public_dir`.
 # ---------------------------------------------------------------------------
 
-# The API the browser calls: this env's first hosted service.
-_api = [w.name for w in _workloads if w.kind == "service" and w.runtime.type == "hosted"]
+# The API the browser calls: `_api`, once this env runs it — every
+# service, at one origin.
+_api_config = {API_URL = forge.WorkloadURL {workload = _api.name}} if any w in _workloads {w.name == _api.name} else {}
 
 # HOSTED: the platform's static hosting and CDN. Like a workload, its image
 # names no registry host. The release carries no config.js: the control
@@ -152,7 +173,7 @@ _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
     f | {
         image = f.name
         runtime = forge.OnHosted {}
-        runtime_config = {API_URL = forge.WorkloadURL {workload = _api[0]}} if _api else {}
+        runtime_config = _api_config
     }
 }
 

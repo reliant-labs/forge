@@ -201,9 +201,9 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	}
 
 	// --- operator ---
-	if kind == KindOperator && len(s.CRDs) == 0 {
-		errs = append(errs, errors.New("kind operator must list at least one CRD kind in crds"))
-	}
+	// No minimum on CRDs: an operator may own none yet (scaffolded before its
+	// first CRD) or reconcile built-in kinds only, granted by ClusterRBAC.
+	// CRDs is what its derived ClusterRole covers; empty derives nothing.
 
 	// --- ports (the main container's, then pod-wide uniqueness) ---
 	errs = append(errs, validatePorts(kind, s.Ports)...)

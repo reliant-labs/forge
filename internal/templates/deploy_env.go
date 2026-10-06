@@ -33,6 +33,10 @@ type EnvTemplateData struct {
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string
+	// APIWorkload is a hosted env's `_api` declaration — the project
+	// binary's `server` as the one workload serving every service
+	// (codegen.APIWorkloadStanza). The cloud template only.
+	APIWorkload string
 	// Capacity floor of the cloud envs' (unused as scaffolded) `_on_cluster`
 	// binder.
 	Replicas         int

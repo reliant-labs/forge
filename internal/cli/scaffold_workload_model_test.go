@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,13 +21,14 @@ import (
 //
 // `forge project new` writes deploy/kcl/workloads.k once, and every env binds
 // each workload to where it runs, one line per workload. This scaffolds a
-// project, then renders that SAME declaration bound three ways: dev (host
-// processes), prod (hosted on the forge control plane, as scaffolded), and a
-// MIXED env derived from prod with `forge env new cloud --from prod --bind
-// item=cluster --bind web=bucket` — item on a cluster the author operates
-// beside migrate on the control plane, and the web frontend in the author's
-// own bucket (ADR 0002 §6). Each render goes through the production decoder
-// and the consumer the deploy path runs for that runtime:
+// project, then renders it bound three ways: dev (host processes, item as its
+// own), prod (hosted on the forge control plane, as scaffolded — the API, the
+// binary's `server` running item, as one workload), and a MIXED env derived
+// from prod with `forge env new cloud --from prod --bind api=cluster --bind
+// web=bucket` — the API on a cluster the author operates beside migrate on
+// the control plane, and the web frontend in the author's own bucket (ADR
+// 0002 §6). Each render goes through the production decoder and the consumer
+// the deploy path runs for that runtime:
 //
 //   - hosted: the spec is admitted under ProfileRestricted (Workload.Validate
 //     plus a restricted render of the set), exactly as the control plane
@@ -74,8 +76,13 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	}
 	prod, _ := render("prod")
 	pw := byName(prod)
-	if pw["item"].Runtime.Type != RuntimeHosted || pw["migrate"].Runtime.Type != RuntimeHosted {
-		t.Fatalf("prod runtimes: item=%q migrate=%q, want hosted/hosted", pw["item"].Runtime.Type, pw["migrate"].Runtime.Type)
+	if pw["api"].Runtime.Type != RuntimeHosted || pw["migrate"].Runtime.Type != RuntimeHosted {
+		t.Fatalf("prod runtimes: api=%q migrate=%q, want hosted/hosted", pw["api"].Runtime.Type, pw["migrate"].Runtime.Type)
+	}
+	// item runs in the API, so it is no hosted workload of its own: a second
+	// hostname for it would be one the frontend never calls.
+	if _, ok := pw["item"]; ok {
+		t.Errorf("prod hosts item as its own workload beside the API that already serves it")
 	}
 	group, err := buildHostedGroup("prod", prod)
 	if err != nil || group == nil {
@@ -87,19 +94,19 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	}
 	var admittedService bool
 	for _, it := range items {
-		if it.Workload == nil || it.Name != "item" {
+		if it.Workload == nil || it.Name != "api" {
 			continue
 		}
 		admittedService = true
 		cr := deployv1alpha1.Workload{Spec: *it.Workload}
 		cr.Name = it.Name
 		if err := cr.Validate(deployv1alpha1.ProfileRestricted); err != nil {
-			t.Errorf("hosted item spec does not validate under ProfileRestricted: %v", err)
+			t.Errorf("hosted api spec does not validate under ProfileRestricted: %v", err)
 		}
-		assertServeProbes(t, "hosted item", it.Workload.Probes)
+		assertServeProbes(t, "hosted api", it.Workload.Probes)
 	}
 	if !admittedService {
-		t.Fatalf("the hosted env admitted no `item` Workload (items: %+v)", items)
+		t.Fatalf("the hosted env admitted no `api` Workload (items: %+v)", items)
 	}
 	var hostedSite, hostedDB bool
 	for _, s := range group.Services {
@@ -114,12 +121,23 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		t.Errorf("prod publishes site=%v database=%v, want both on the control plane: %+v", hostedSite, hostedDB, group.Services)
 	}
 
-	// ── mixed (derived): item on a cluster you operate, web in your bucket.
+	// ── mixed (derived): the API on a cluster you operate, web in your bucket.
+	//
+	// item runs inside the API here, so it has no line to rebind: asking to
+	// is refused, naming what to rebind instead, and writes no env.
 	withCwd(t, dir, func() {
 		cmd := newEnvNewCmd()
-		cmd.SetArgs([]string{"cloud", "--from", "prod", "--bind", "item=cluster", "--bind", "web=bucket"})
+		cmd.SetArgs([]string{"split", "--from", "prod", "--bind", "item=cluster"})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "runs inside _api") || !strings.Contains(err.Error(), "--bind api=cluster") {
+			t.Fatalf("--bind item=cluster where item runs in the API = %v, want a refusal naming _api and --bind api=cluster", err)
+		}
+	})
+	withCwd(t, dir, func() {
+		cmd := newEnvNewCmd()
+		cmd.SetArgs([]string{"cloud", "--from", "prod", "--bind", "api=cluster", "--bind", "web=bucket"})
 		if err := cmd.Execute(); err != nil {
-			t.Fatalf("forge env new cloud --from prod --bind item=cluster --bind web=bucket: %v", err)
+			t.Fatalf("forge env new cloud --from prod --bind api=cluster --bind web=bucket: %v", err)
 		}
 	})
 	cloudMain := filepath.Join(dir, "deploy", "kcl", "cloud", "main.k")
@@ -127,7 +145,7 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"_on_cluster(wl.item)", "_hosted(wl.migrate)", "_on_bucket(_web_frontend)", "control_plane = forge.ControlPlane {"} {
+	for _, want := range []string{"_on_cluster(_api)", "_hosted(wl.migrate)", "_on_bucket(_web_frontend)", "control_plane = forge.ControlPlane {"} {
 		if !strings.Contains(string(cloud), want) {
 			t.Fatalf("derived cloud/main.k lacks %q:\n%s", want, cloud)
 		}
@@ -152,14 +170,14 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	}
 	mixed, mixedRaw := render("cloud")
 	mw := byName(mixed)
-	if mw["item"].Runtime.Type != RuntimeCluster || mw["migrate"].Runtime.Type != RuntimeHosted {
-		t.Fatalf("cloud runtimes: item=%q migrate=%q, want cluster/hosted", mw["item"].Runtime.Type, mw["migrate"].Runtime.Type)
+	if mw["api"].Runtime.Type != RuntimeCluster || mw["migrate"].Runtime.Type != RuntimeHosted {
+		t.Fatalf("cloud runtimes: api=%q migrate=%q, want cluster/hosted", mw["api"].Runtime.Type, mw["migrate"].Runtime.Type)
 	}
 	if fe := mixed.Frontends; len(fe) != 1 || fe[0].Runtime.Type != FrontendRuntimeBucket {
 		t.Errorf("cloud frontends = %+v, want web on forge.OnBucket", fe)
 	}
 	// ── cluster: RenderWorkloads, probes present ──────────────────────────
-	assertClusterDeploymentProbed(t, "cloud", mixedRaw)
+	assertClusterDeploymentProbed(t, "cloud", "api", mixedRaw)
 	// The hosted half never reaches the cluster stream.
 	if stream, err := cluster.ExtractManifests(mixedRaw); err != nil {
 		t.Fatalf("cloud: expand output.manifests: %v", err)
@@ -184,10 +202,14 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 		t.Errorf("dev migrate args = %q", got)
 	}
 
-	// The binding changed nothing about WHAT item is.
-	for env, w := range map[string]WorkloadEntity{"prod": pw["item"], "cloud": mw["item"]} {
-		if strings.Join(w.Spec.Args, " ") != strings.Join(devW["item"].Spec.Args, " ") {
-			t.Errorf("binding item in %s changed its args", env)
+	// Rebinding the API changed nothing about WHAT it runs: the binary's
+	// `server`, which mounts item, from the same build dev runs item from.
+	for env, w := range map[string]WorkloadEntity{"prod": pw["api"], "cloud": mw["api"]} {
+		if got := strings.Join(w.Spec.Args, " "); got != "server" {
+			t.Errorf("the API in %s runs %q, want the binary's `server`", env, got)
+		}
+		if !reflect.DeepEqual(w.Build, devW["item"].Build) {
+			t.Errorf("the API in %s builds %+v, item in dev builds %+v — want the one project binary", env, w.Build.Go, devW["item"].Build.Go)
 		}
 	}
 }
@@ -259,9 +281,9 @@ func assertServeProbes(t *testing.T, where string, p *deployv1alpha1.Probes) {
 }
 
 // assertClusterDeploymentProbed expands a render's output.manifests through
-// the ONE Go renderer and requires the item Deployment to carry the split
+// the ONE Go renderer and requires the named Deployment to carry the split
 // probes.
-func assertClusterDeploymentProbed(t *testing.T, env string, raw []byte) {
+func assertClusterDeploymentProbed(t *testing.T, env, name string, raw []byte) {
 	t.Helper()
 	stream, err := cluster.ExtractManifests(raw)
 	if err != nil {
@@ -269,16 +291,16 @@ func assertClusterDeploymentProbed(t *testing.T, env string, raw []byte) {
 	}
 	var deployment string
 	for _, doc := range strings.Split(stream, "\n---\n") {
-		if strings.Contains(doc, "kind: Deployment") && strings.Contains(doc, "name: item\n") {
+		if strings.Contains(doc, "kind: Deployment") && strings.Contains(doc, "name: "+name+"\n") {
 			deployment = doc
 		}
 	}
 	if deployment == "" {
-		t.Fatalf("%s: RenderWorkloads produced no item Deployment:\n%s", env, stream)
+		t.Fatalf("%s: RenderWorkloads produced no %s Deployment:\n%s", env, name, stream)
 	}
 	for _, want := range []string{"readinessProbe:", "path: /readyz", "livenessProbe:", "path: /healthz"} {
 		if !strings.Contains(deployment, want) {
-			t.Errorf("%s: item Deployment lacks %q:\n%s", env, want, deployment)
+			t.Errorf("%s: %s Deployment lacks %q:\n%s", env, name, want, deployment)
 		}
 	}
 }

@@ -53,6 +53,80 @@ func AppendWorkloadStanza(projectDir, modulePath, projectName string, c config.C
 	return true, nil
 }
 
+// CRDListEdit is what AppendOperatorCRD did to an operator's `crds` list.
+type CRDListEdit int
+
+const (
+	// CRDListAdded: the kind was appended.
+	CRDListAdded CRDListEdit = iota
+	// CRDListAlreadyListed: the list already names the kind; nothing written.
+	CRDListAlreadyListed
+	// CRDListNotEditable: no workloads.k, no workload of that name, or no
+	// `crds = [...]` in it forge can edit unambiguously. Nothing written; the
+	// caller prints the edit.
+	CRDListNotEditable
+)
+
+// workloadLiteralHead is the opening of a top-level workload declaration in
+// the ORIGINAL source (the prose-stripped one shifts offsets). Top-level means
+// column 0, which the indented worked examples in the scaffolded docstring
+// and every `#` comment are not.
+var workloadLiteralHead = regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_]*\s*=\s*fw\.Workload\s*\{`)
+
+// crdsField is a `crds = [` field on a line of its own.
+var crdsField = regexp.MustCompile(`(?m)^\s*crds\s*=\s*\[`)
+
+// AppendOperatorCRD adds kind to the `crds` list of the operator workload
+// named workloadName in deploy/kcl/workloads.k — what `forge scaffold crd`
+// calls, so the CRD it writes is one the operator's derived ClusterRole
+// covers. `crds` is the only list that derivation reads the kinds from, and
+// an operator scaffolded before its first CRD declares `crds = []`.
+//
+// Additive like AppendWorkloadStanza: the one new entry, written in the
+// style the list already uses (appendKCLListElement); nothing else moves.
+func AppendOperatorCRD(projectDir, workloadName, kind string) (CRDListEdit, error) {
+	path := filepath.Join(projectDir, WorkloadsKCLRelPath)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return CRDListNotEditable, nil
+		}
+		return CRDListNotEditable, err
+	}
+	content := string(raw)
+	entry := fmt.Sprintf("%q", kind)
+	for _, head := range workloadLiteralHead.FindAllStringIndex(content, -1) {
+		body, ok := kclBlockBody(content, head[1])
+		if !ok {
+			continue
+		}
+		if m := workloadNameField.FindStringSubmatch(StripKCLProse(body)); m == nil || m[1] != workloadName {
+			continue
+		}
+		fields := crdsField.FindAllStringIndex(body, -1)
+		if len(fields) != 1 {
+			return CRDListNotEditable, nil
+		}
+		open := head[1] + fields[0][1] - 1
+		list, ok := scanKCLList(content, open)
+		if !ok {
+			return CRDListNotEditable, nil
+		}
+		if kclListHasEntry(list, entry) {
+			return CRDListAlreadyListed, nil
+		}
+		updated, ok := appendKCLListElement(content, open, entry)
+		if !ok {
+			return CRDListNotEditable, nil
+		}
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			return CRDListNotEditable, err
+		}
+		return CRDListAdded, nil
+	}
+	return CRDListNotEditable, nil
+}
+
 // addWorkloadDeclaration makes the two edits a new workload needs: its
 // declaration, and its identifier in the `ALL` list.
 //

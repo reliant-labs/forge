@@ -1054,16 +1054,16 @@ func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		// frontends[].output selects the Next.js build/runtime shape.
 		// Only meaningful for type=nextjs; we still validate the value
 		// for other types because changing the type later shouldn't
-		// silently re-validate against a stale value. Defaults to
-		// "standalone" when empty.
+		// silently re-validate against a stale value. Empty reads as
+		// "standalone" (FrontendConfig.EffectiveOutput).
 		if o := strings.ToLower(strings.TrimSpace(fe.Output)); o != "" {
-			if o != "static" && o != "standalone" && o != "server" {
+			if o != FrontendOutputStatic && o != FrontendOutputStandalone && o != FrontendOutputServer {
 				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "output"})
 				out = append(out, validationIssue{
 					line:   line,
 					column: col,
 					msg:    fmt.Sprintf("%s.output value %q is invalid", prefix, fe.Output),
-					fix:    "use one of: standalone (default), static, server.",
+					fix:    "use one of: static (the scaffold default), standalone, server.",
 				})
 			}
 		}

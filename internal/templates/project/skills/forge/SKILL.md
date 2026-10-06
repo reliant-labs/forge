@@ -176,6 +176,13 @@ deliberately: an invented one is harder to replace than an obviously neutral
 one. Before showing any of it to a user, load `frontend/design` — it asks for a
 brief first and will not invent an aesthetic without one.
 
+A Next.js frontend builds as a **static export** (`output: static`, into
+`out/`), the only shape hosted static hosting serves. So every route is
+static: detail and edit are `/<entity>/view?id=…` and `/<entity>/edit?id=…`
+(`src/lib/entity-routes.ts`). A hand-written `[id]` segment fails
+`npm run build`. Depth: `frontend/serving`. If the project's pages predate
+v0.1.44 and still use `[id]`, load `migrations/v0.1.44`.
+
 ## Evolving the schema
 
 Migrations lead; projections follow.

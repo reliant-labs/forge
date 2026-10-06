@@ -64,6 +64,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
     beside prod with `forge env new cloud --from prod --bind <name>=hosted`
     first. The `deploy` skill has the exact edits.
+- **Next.js frontends are scaffolded as static exports, and the generated CRUD
+  pages are static routes.** Before, the default was `output: standalone`, a
+  Node server that hosted static hosting (`forge.OnHosted {}`) cannot run. The
+  generated detail and edit pages were dynamic `src/app/<slug>/[id]/` routes,
+  so switching to `output: static` failed `npm run build` on the first entity
+  with `Page "/<slug>/[id]" is missing "generateStaticParams()"`. Now:
+  - `forge project new --frontend` and `forge scaffold frontend` write
+    `output: static` into `forge.yaml`. `npm run build` exports into `out/`,
+    and the Dockerfile serves `out/` from nginx. `--output standalone` is the
+    explicit opt-in for a Node server. `next dev` is unchanged. A `forge.yaml`
+    entry with no `output:` still means standalone, because every frontend
+    scaffolded before this change has a standalone `next.config.ts`.
+  - Detail and edit are `src/app/<slug>/view/page.tsx` and
+    `src/app/<slug>/edit/page.tsx`, served at `/<slug>/view?id=…` and
+    `/<slug>/edit?id=…`. Each reads the id with `useSearchParams` under a
+    Suspense boundary, and renders a "which row?" state when `?id=` is
+    missing. List row clicks, create-then-redirect, the Edit action, edit's
+    Cancel, breadcrumb and save redirect all build the new URLs through
+    `src/lib/entity-routes.ts` (`entityViewHref`, `entityEditHref`,
+    `useEntityIdParam`). That file is a new scaffold-once helper with its
+    own vitest suite. `forge generate` backfills it into an older frontend
+    the first time it writes a page that imports it.
+  - The id is in the query string, not the path, because an export can only
+    hold pages it enumerates at build time. `trailingSlash` stays off, so
+    the export writes `out/<slug>/view.html`. Hosted static hosting and the
+    scaffolded nginx image both resolve `/<slug>/view` to that file by
+    trying `.html`. No CDN rewrite is involved.
+  - The static `next.config.ts` sets `images: { unoptimized: true }`, since
+    next/image's optimizer is a server route. The dev-only browser-log
+    route (`app/%5F_forge/log`) answers POST only, so the export leaves it
+    out.
+  - The sign-in guard keeps the query string in `returnTo`, so a visitor
+    bounced off `/<slug>/view?id=…` comes back to the same row.
+  - **Existing projects are not rewritten.** Their pages are scaffold-once.
+    While `src/app/<slug>/[id]/` exists, `forge generate` keeps it as that
+    entity's detail/edit route and writes no view/edit pair beside it. If
+    the frontend is `output: static`, generate warns that `next build` will
+    refuse those routes. `forge project upgrade list` offers the new
+    `migrations/v0.1.44` playbook to any project with a `[id]` route. The
+    playbook covers rescaffolding untouched pages, moving edited ones, and
+    switching `output:` with `forge project upgrade --force next.config.ts
+    Dockerfile`.
+  - `forge lint --guarded-fields` reads the new `<slug>/edit/page.tsx` as
+    well as the old `[id]/edit` path. The stale-route report recognizes both
+    page shapes.
 - **Concurrent `forge generate` / `forge scaffold` runs in one project now
   queue instead of failing.** Every run takes the project's lock
   (`.forge/forge.lock`). A second run prints one line,

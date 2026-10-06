@@ -162,18 +162,15 @@ func hasPathPrefix(dest, dir string) bool {
 	return dest == dir || strings.HasPrefix(dest, dir+"/")
 }
 
-// frontendAdvisoryOutput resolves the Next.js build shape for a frontend
-// the same way the scaffolder does, so next.config.ts renders here exactly
-// as it was written.
+// frontendAdvisoryOutput resolves the Next.js build shape a frontend's
+// next.config.ts and Dockerfile were scaffolded with, so they render here
+// exactly as they were written.
 //
-// The scaffolder canonicalises an empty Output to "standalone" before
-// rendering (GenerateFrontendFilesWithOptions). Leaving it empty here would
-// send the template down its `else` arm and report a permanent diff on
-// every project that never set the field — i.e. almost all of them.
+// An empty Output is "standalone" (config.FrontendConfig.EffectiveOutput),
+// NOT the current scaffold default: every frontend whose forge.yaml entry
+// leaves the field empty predates the static default and was scaffolded
+// standalone. Rendering those against the static template would report a
+// permanent diff — and `upgrade --force` would quietly convert the build.
 func frontendAdvisoryOutput(fe config.FrontendConfig) string {
-	out := strings.ToLower(strings.TrimSpace(fe.Output))
-	if out == "" {
-		return "standalone"
-	}
-	return out
+	return fe.EffectiveOutput()
 }

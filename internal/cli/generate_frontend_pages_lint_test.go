@@ -57,12 +57,12 @@ func TestGenerateFrontendPages_NoUnusedVars(t *testing.T) {
 	appDir := filepath.Join(projectDir, "frontends", "dashboard", "src", "app")
 
 	// Detail page: no delete RPC → no router at all (decl OR import).
-	detail := readPageFile(t, filepath.Join(appDir, "patients", "[id]", "page.tsx"))
+	detail := readPageFile(t, filepath.Join(appDir, "patients", "view", "page.tsx"))
 	if strings.Contains(detail, "useRouter") {
 		t.Errorf("detail page without a Delete RPC must not import/declare useRouter (eslint no-unused-vars on the pristine scaffold); got:\n%s", detail)
 	}
-	if !strings.Contains(detail, "useParams") {
-		t.Errorf("detail page must still read the id via useParams; got:\n%s", detail)
+	if !strings.Contains(detail, "useEntityIdParam()") {
+		t.Errorf("detail page must still read the id, via useEntityIdParam; got:\n%s", detail)
 	}
 
 	// Create page: zero form fields → no register/errors destructure.
@@ -108,7 +108,7 @@ func TestGenerateFrontendPages_DeleteFlowKeepsRouter(t *testing.T) {
 		t.Fatalf("generateFrontendPages: %v", err)
 	}
 
-	detail := readPageFile(t, filepath.Join(projectDir, "frontends", "dashboard", "src", "app", "patients", "[id]", "page.tsx"))
+	detail := readPageFile(t, filepath.Join(projectDir, "frontends", "dashboard", "src", "app", "patients", "view", "page.tsx"))
 	for _, want := range []string{"useRouter", "const router = useRouter();", `router.push("/patients")`} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("detail page WITH a Delete RPC must keep the post-delete redirect; missing %q in:\n%s", want, detail)

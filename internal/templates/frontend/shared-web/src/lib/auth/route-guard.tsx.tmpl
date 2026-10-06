@@ -110,7 +110,14 @@ export function RouteGuard({
     if (!blocked) return;
     // Where to come back to. The sign-in screen reads `returnTo` and lands the
     // user on the page they actually asked for instead of the home page.
-    const returnTo = encodeURIComponent(pathname);
+    //
+    // The QUERY STRING is part of that page: a generated detail route is
+    // /<slug>/view?id=…, and coming back without the id lands on "which
+    // row?" instead of the row. It is read here, in the effect, rather than
+    // injected like `pathname`: an effect only runs in the browser, and a
+    // useSearchParams() in the router adapter would push the whole app under
+    // a Suspense boundary in a static export.
+    const returnTo = encodeURIComponent(pathname + window.location.search);
     navigate(`${SIGN_IN_PATH}?returnTo=${returnTo}`);
   }, [blocked, navigate, pathname]);
 

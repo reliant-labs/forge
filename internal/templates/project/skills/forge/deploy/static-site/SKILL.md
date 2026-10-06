@@ -29,14 +29,15 @@ a plain `index.html` is fine, and forge is the wrong shape for it.
 ```bash
 forge project new site --mod github.com/acme/site --disable orm,migrations
 cd site
-forge scaffold frontend web --output static --routes none
+forge scaffold frontend web --routes none
 ```
 
-- `--output static` makes `npm run build` a static export into `out/`. A static
-  runtime publishes a directory, so it needs one: the default, `standalone`,
-  is a Node server.
-- `--routes none` generates no CRUD pages. They are dynamic `[id]` routes,
-  which a static export refuses to build.
+- `npm run build` is a static export into `out/`. That is the scaffold default
+  (`output: static` in `forge.yaml`). A static runtime publishes a directory,
+  and `out/` is that directory.
+- `--routes none` generates no CRUD pages, because a site with no backend has
+  no entities. A site that has entities keeps its generated pages, which are
+  static routes (`/<entity>/view?id=…`), so the export still builds.
 - `--kind vite-spa` is the other static-capable shape (its build lands in
   `dist/`).
 
@@ -144,6 +145,22 @@ A value that must stay secret belongs on a service (`forge secret set`).
 
 `forge scaffold service <entity>` adds the Go API to the same project, and a
 `fw.Workload` bound `forge.OnHosted {}` runs it beside the site. The frontend
-reaches it through `runtime_config` (`workloadURL`). If the frontend then needs
-dynamic routes or server rendering, switch `output` to `standalone` and ship it
-as a workload instead (`deploy`, `frontend/serving`).
+reaches it through `runtime_config` (`workloadURL`). The CRUD pages generated
+for the new entities are static routes, so the site still exports. Write your
+own pages the same way: put the id in the query string and never use a `[id]`
+segment (`frontend/pages`). A frontend scaffolded by forge ≤ v0.1.43 has
+`[id]` pages; `forge skill load migrations/v0.1.44` converts them.
+
+Two cases leave static hosting behind: server rendering, and request-time
+server APIs such as server actions, middleware, and `cookies()`. For those,
+switch `output` to `standalone` and ship the frontend as a workload instead
+(`deploy`, `frontend/serving`).
+
+## How hosted static hosting resolves a path
+
+A request for `/books/view?id=…` is served `books/view.html`. The export
+writes one `.html` file per route because `trailingSlash` is off, and the
+hosted origin tries `<path>`, then `<path>.html`, then `<path>/index.html`.
+Anything else route-shaped falls back to the site's root `index.html`. Every
+link the scaffold generates resolves to the file for its own route.
+`frontend/serving` covers hosts that only map directories to `index.html`.

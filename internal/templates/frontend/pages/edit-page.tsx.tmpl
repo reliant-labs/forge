@@ -6,7 +6,8 @@
 // EVERY entity, but a purpose-built frontend uses only a fraction — if this
 // entity isn't part of THIS frontend's product surface, delete the route
 // instead of leaving it wired into navigation.
-// Edit page emitted by `forge scaffold page`. See `forge skill load frontend/pages` for canonical patterns.
+// Edit page emitted by `forge scaffold page`, served at
+// /{{.EntitySlug}}/edit?id=<id>. See `forge skill load frontend/pages` for canonical patterns.
 {{- /* Import ORDER is derived, not authored: the page writer sorts the
        imports this render actually emitted into the groups the scaffold's
        eslint import/order rule expects (templates.CanonicalTSImportOrder).
@@ -20,7 +21,8 @@ import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { userMessage } from "@reliantlabs/forge-web-runtime";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
+import { Suspense } from "react";
 import { {{if .HasUpdateFK}}Controller, {{end}}useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -36,6 +38,7 @@ import { {{joinStrings .Types ", "}} } from "{{.Path}}";
 {{- range .EditHookImports}}
 import { {{joinStrings .Symbols ", "}} } from "{{.Module}}";
 {{- end}}
+import { entityViewHref, useEntityIdParam } from "@/lib/entity-routes";
 {{- if .HasDateUpdateFields}}
 import { toDatetimeLocal } from "@/lib/format-utils";
 {{- end}}
@@ -62,12 +65,38 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-// Route params are an external boundary — validate, don't cast.
-const paramsSchema = z.object({ id: z.string().min(1) });
-
+// The id rides in the query string, not a `[id]` path segment, so this page
+// is ONE static route that `output: "export"` can build — the id exists only
+// in the browser (src/lib/entity-routes.ts). Reading it calls
+// useSearchParams, which must sit under a Suspense boundary: the export
+// prerenders the fallback, and the browser renders the form.
 export default function Edit{{.EntityName}}Page() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-xl px-4 py-8"><SkeletonLoader variant="form-field" count={4} /></div>}>
+      <Edit{{.EntityName}}Route />
+    </Suspense>
+  );
+}
+
+// The query string is an external boundary — validate, don't cast. A link
+// that lost its id gets a way back, not a crash.
+function Edit{{.EntityName}}Route() {
+  const id = useEntityIdParam();
+  if (id === undefined) {
+    return (
+      <div className="mx-auto max-w-xl px-4 py-8">
+        <AlertBanner variant="warning" message="This link doesn't say which {{.EntityName | humanLower}} to edit." />
+        <Link href="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-accent underline hover:text-accent-hover">
+          Back to {{.EntityNamePlural | humanLower}}
+        </Link>
+      </div>
+    );
+  }
+  return <Edit{{.EntityName}}Form id={id} />;
+}
+
+function Edit{{.EntityName}}Form({ id }: { id: string }) {
   const router = useRouter();
-  const { id } = paramsSchema.parse(useParams());
 
   const { data, isLoading, error: fetchError } = use{{.GetRPC}}({ id });
   // Typed access: the response wraps the entity in `{{.EntityName | camelCase}}` —
@@ -75,7 +104,7 @@ export default function Edit{{.EntityName}}Page() {
   const item = data?.{{.EntityName | camelCase}};
 
   const mutation = use{{.UpdateRPC}}({
-    onSuccess: () => router.push(`/{{.EntitySlug}}/${id}`),
+    onSuccess: () => router.push(entityViewHref("{{.EntitySlug}}", id)),
     // The error renders inline below — opt out of the app-wide error
     // toast so the failure isn't announced twice.
     meta: { silenceErrorToast: true },
@@ -169,7 +198,7 @@ export default function Edit{{.EntityName}}Page() {
         title="Edit {{.EntityName | humanize}}"
         breadcrumbs={[
           { label: "{{.EntityNamePlural | humanize}}", href: "/{{.EntitySlug}}" },
-          { label: title, href: `/{{.EntitySlug}}/${id}` },
+          { label: title, href: entityViewHref("{{.EntitySlug}}", id) },
           { label: "Edit" },
         ]}
       />
@@ -295,7 +324,7 @@ export default function Edit{{.EntityName}}Page() {
 
         <div className="flex items-center justify-end gap-3 border-t border-border pt-6">
           <Link
-            href={`/{{.EntitySlug}}/${id}`}
+            href={entityViewHref("{{.EntitySlug}}", id)}
             className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-ink hover:bg-surface-muted"
           >
             Cancel

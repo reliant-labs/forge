@@ -6,25 +6,23 @@ import (
 	"testing"
 )
 
-// TestNextJSConfig_DefaultsToStandalone guards the new-project default:
-// production builds emit a self-contained Node server, not a static
-// export.
+// TestNextJSConfig_StandaloneShape guards the standalone branch, which
+// renders for `output: standalone` AND for an EMPTY Output.
 //
-// The previous default ("static" → `output: "export"` gated on
-// NODE_ENV=production) broke `npm run build` on every project the
-// moment it had one CRUD entity: forge generates dynamic detail/edit
-// routes (`/<slug>/[id]`) whose ids only exist at runtime, and
-// `output: "export"` requires generateStaticParams() on every dynamic
-// segment — Next.js fails the build with 'Page "/<slug>/[id]" is
-// missing "generateStaticParams()"'. Standalone supports dynamic
-// client routes AND is the shape the shipped Dockerfile copies
-// (.next-prod/standalone/server.js in production).
+// Empty is not the scaffold default — new frontends are scaffolded static,
+// and the scaffolder resolves "" before it renders (see
+// generator.TestGenerateFrontendFiles_DefaultsToStatic). Empty is what a
+// forge.yaml entry written before that default looks like, and every such
+// frontend's next.config.ts is the standalone render. The upgrade advisory
+// re-renders this template for those entries; if empty rendered the
+// static branch, every pre-existing project would see a permanent diff, and
+// `upgrade --force` would quietly convert its build.
 //
 // This test fails if anyone:
 //   - drops `output: "standalone"` / outputFileTracingRoot from the
 //     standalone branch, or
-//   - reverts the empty-Output default to the static-export shape.
-func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
+//   - points the empty-Output render at the static-export shape.
+func TestNextJSConfig_StandaloneShape(t *testing.T) {
 	for _, output := range []string{"standalone", ""} {
 		content, err := FrontendTemplates().Render(
 			filepath.Join("nextjs", "next.config.ts.tmpl"),
@@ -59,10 +57,11 @@ func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
 				"file tracing then writes a partial `next` into frontends/<name>/node_modules and poisons the "+
 				"following build; the root must be an ancestor of every traced file; got:\n%s", output, s)
 		}
-		// The default must NOT emit the static-export conditional — that
-		// shape fails `next build` on the generated dynamic [id] routes.
+		// Standalone must NOT also emit the static-export conditional —
+		// the two shapes are contradictory, and a legacy (empty-output)
+		// frontend's next.config.ts is the standalone render.
 		if strings.Contains(s, `{ output: "export" }`) {
-			t.Errorf("next.config.ts (output=%q) must NOT contain the static-export conditional — `output: \"export\"` breaks `npm run build` on generated dynamic CRUD routes; got:\n%s", output, s)
+			t.Errorf("next.config.ts (output=%q) must NOT contain the static-export conditional; got:\n%s", output, s)
 		}
 		// The distDir fence keeps a production build from clobbering the
 		// dev server's .next directory (journey fr-cb84c64912).
@@ -73,15 +72,14 @@ func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
 	}
 }
 
-// TestNextJSConfig_StaticOptIn guards the opt-in path. When the user
-// sets `output: static` in forge.yaml (or passes `--output static` to
-// `forge scaffold frontend`), the rendered next.config.ts must emit the
-// NODE_ENV-gated static-export spread — production builds emit `out/`
-// for CDN/object-store hosting while `next dev` stays unchanged.
-//
-// This mode is deliberately NOT the default: it is incompatible with
-// the generated dynamic CRUD routes (see the standalone-default test).
-func TestNextJSConfig_StaticOptIn(t *testing.T) {
+// TestNextJSConfig_Static guards the static-export shape — what every new
+// Next.js frontend is scaffolded with (`output: static` in forge.yaml,
+// written by `forge project new --frontend` and `forge scaffold frontend`).
+// The rendered next.config.ts must emit the NODE_ENV-gated static-export
+// spread — production builds emit `out/` for the hosted runtime's static
+// hosting, a bucket or a CDN while `next dev` stays unchanged — and turn
+// next/image's server-side optimizer off, which an export does not have.
+func TestNextJSConfig_Static(t *testing.T) {
 	content, err := FrontendTemplates().Render(
 		filepath.Join("nextjs", "next.config.ts.tmpl"),
 		FrontendTemplateData{
@@ -102,11 +100,19 @@ func TestNextJSConfig_StaticOptIn(t *testing.T) {
 		t.Errorf("next.config.ts (output=static) must contain %q so production builds emit a static export and dev stays unchanged; got:\n%s", want, s)
 	}
 
-	// The opt-in must document its dynamic-route incompatibility — the
-	// user who picks static needs to know `npm run build` fails on
-	// generated `/<slug>/[id]` pages.
-	if !strings.Contains(s, "generateStaticParams") {
-		t.Errorf("next.config.ts (output=static) must mention generateStaticParams so the dynamic-route incompatibility is documented at the point of use; got:\n%s", s)
+	// next/image's default loader is a server route; `next build` refuses
+	// an <Image> in an export without this.
+	if !strings.Contains(s, "images: { unoptimized: true },") {
+		t.Errorf("next.config.ts (output=static) must set images.unoptimized — an export has no image optimizer; got:\n%s", s)
+	}
+
+	// The constraint the export puts on hand-written routes — no dynamic
+	// segments, the id in the query string — must be documented where a
+	// user adding a route will read it.
+	for _, want := range []string{"generateStaticParams", "/<slug>/view?id=", "src/lib/entity-routes.ts"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("next.config.ts (output=static) must document the static-route shape (%q) at the point of use; got:\n%s", want, s)
+		}
 	}
 
 	// Static mode must NOT carry the distDir fence: in export mode

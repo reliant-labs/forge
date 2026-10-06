@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -81,12 +82,13 @@ type FrontendGenOptions struct {
 	// instead of relative @/gen / @/hooks paths.
 	Workspaces bool
 	// Output selects the Next.js build/runtime shape rendered into
-	// `next.config.ts`. Valid values: "standalone" (default), "static",
-	// "server". See config.FrontendConfig.Output for the per-mode
-	// semantics. Empty string defaults to "standalone" — the only mode
-	// that both pairs with the shipped Dockerfile and supports the
-	// dynamic `[id]` CRUD routes forge generates (static export fails
-	// `next build` on any dynamic segment without generateStaticParams).
+	// `next.config.ts` and the Dockerfile. Valid values: "static",
+	// "standalone", "server". See config.FrontendConfig.Output for the
+	// per-mode semantics. Empty string means the scaffold default,
+	// config.FrontendOutputScaffoldDefault ("static") — this renders a NEW
+	// frontend, so "the default" is the current one. (Reading an existing
+	// forge.yaml entry is different: there an empty field is the legacy
+	// standalone shape; see config.FrontendConfig.EffectiveOutput.)
 	//
 	// Ignored for kind=mobile (react-native) and kind=vite-spa; those
 	// trees have their own production shapes.
@@ -193,18 +195,17 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	}
 
 	layout := NewFrontendWorkspaceLayout(projectName)
-	// Default the Next.js output shape to "standalone" when unset. The
-	// generated CRUD detail/edit pages are dynamic client routes
-	// (`/<slug>/[id]`), and `output: "export"` (the "static" mode) fails
-	// `next build` on any dynamic segment without generateStaticParams —
-	// so a static default would break `npm run build` on every project
-	// the moment it has one entity. Standalone also pairs with the
-	// shipped Dockerfile (.next-prod/standalone/server.js). We canonicalise
-	// here rather than in every template so callers can pass "" for
-	// "use the scaffold default" without having to know what it is.
+	// Default the Next.js output shape to the scaffold default (a static
+	// export) when unset. The generated CRUD pages are static routes —
+	// `/<slug>/view?id=…`, `/<slug>/edit?id=…`, the id read client-side —
+	// so `output: "export"` builds on a project with entities, and the
+	// result ships to every static runtime, the hosted one included.
+	// We canonicalise here rather than in every template so callers can
+	// pass "" for "use the scaffold default" without having to know what
+	// it is.
 	output := strings.ToLower(strings.TrimSpace(opts.Output))
 	if output == "" {
-		output = "standalone"
+		output = config.FrontendOutputScaffoldDefault
 	}
 	data := templates.FrontendTemplateData{
 		Public:       opts.Public,

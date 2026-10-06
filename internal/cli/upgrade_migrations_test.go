@@ -562,3 +562,39 @@ func TestIsPreV01Baseline(t *testing.T) {
 		}
 	}
 }
+
+// TestStaticRoutesMigration_DetectsDynamicIDRoutes runs the SHIPPED
+// detection of the static-routes migration against the two shapes it has to
+// tell apart: a frontend still carrying `src/app/<slug>/[id]/` (offered) and
+// one already on the static `view/` + `edit/` pages (not offered). Detection
+// runs in forge's in-process shell, where a quoted `'[id]'` path component
+// never globs — the first draft of this skill read naturally and matched
+// nothing, so `upgrade list` reported every project up to date.
+func TestStaticRoutesMigration_DetectsDynamicIDRoutes(t *testing.T) {
+	metas, err := loadMigrationMetas()
+	if err != nil {
+		t.Fatalf("loadMigrationMetas: %v", err)
+	}
+	var m migrationMeta
+	for _, candidate := range metas {
+		if candidate.SkillPath == staticRoutesMigrationSkill {
+			m = candidate
+		}
+	}
+	if m.ID == "" {
+		t.Fatalf("no shipped migration at %s — `forge generate` points users at it", staticRoutesMigrationSkill)
+	}
+
+	legacy := t.TempDir()
+	mkfile(t, filepath.Join(legacy, "frontends", "web", "src", "app", "books", "[id]", "page.tsx"))
+	if !migrationApplies(m, "v0.1.29", legacy) {
+		t.Error("a frontend with src/app/books/[id]/ was not offered the static-routes migration")
+	}
+
+	current := t.TempDir()
+	mkfile(t, filepath.Join(current, "frontends", "web", "src", "app", "books", "view", "page.tsx"))
+	mkfile(t, filepath.Join(current, "frontends", "web", "src", "app", "books", "edit", "page.tsx"))
+	if migrationApplies(m, "v0.1.29", current) {
+		t.Error("a frontend already on static view/edit routes was offered the migration")
+	}
+}

@@ -58,6 +58,9 @@ import { useState } from "react";
 {{end -}}
 {{if .HasURLFilters}}import SkeletonLoader from "@/components/ui/skeleton_loader";
 {{end}}import { useQueryResource{{if .HasScalarExactFilter}}, useDebouncedValue{{end}} } from "@/hooks/use-query-resource";
+{{- if .EmitsDetailPage}}
+import { entityViewHref } from "@/lib/entity-routes";
+{{- end}}
 import { {{if .HasMoneyColumns}}formatMoneyCents, {{end}}formatValue } from "@/lib/format-utils";
 {{- if .HasURLFilters}}
 import { useTypedSearchParams } from "@/lib/search-schemas";
@@ -239,7 +242,7 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
       columns={columns}
       rowKey={(item) => String(item.{{.PkFieldCamel}})}
 {{- if .EmitsDetailPage}}
-      onRowClick={(item) => router.push(`/{{.EntitySlug}}/${item.{{.PkFieldCamel}}}`)}
+      onRowClick={(item) => router.push(entityViewHref("{{.EntitySlug}}", item.{{.PkFieldCamel}}))}
 {{- end}}
       emptyTitle="No {{.EntityNamePlural | humanLower}} found"
       emptyMessage="No records match the current view."

@@ -3,12 +3,59 @@
 package cli
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// assertStaticLinksResolve serves outDir the way hosted static hosting
+// resolves a path — the object itself, then `<path>.html`, then
+// `<path>/index.html`, with NO SPA fallback — and asserts each URL lands on
+// the exported page named for it, byte for byte. A fallback is left out on
+// purpose: hosted would answer a missing route with the root index.html, a
+// 200 that is the dashboard, not the page the link meant.
+func assertStaticLinksResolve(t *testing.T, outDir string, links map[string]string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(r.URL.Path, "/")
+		candidates := []string{p}
+		if path.Ext(p) == "" {
+			candidates = append(candidates, p+".html", path.Join(p, "index.html"))
+		}
+		for _, c := range candidates {
+			f := filepath.Join(outDir, filepath.FromSlash(c))
+			if info, err := os.Stat(f); err == nil && info.Mode().IsRegular() {
+				http.ServeFile(w, r, f)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	for link, page := range links {
+		resp, err := http.Get(srv.URL + link)
+		if err != nil {
+			t.Fatalf("GET %s: %v", link, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		want, err := os.ReadFile(filepath.Join(outDir, filepath.FromSlash(page)))
+		if err != nil {
+			t.Fatalf("read %s: %v", page, err)
+		}
+		if resp.StatusCode != http.StatusOK || string(body) != string(want) {
+			t.Errorf("GET %s = %d (%d bytes), want 200 with out/%s", link, resp.StatusCode, len(body), page)
+		}
+	}
+}
 
 // TestE2EScaffoldFrontendBuilds scaffolds a project with a --frontend web
 // plus ONE CRUD entity, and drives the frontend through its real
@@ -20,14 +67,16 @@ import (
 //	npx tsc --noEmit
 //
 // The CRUD entity (`forge scaffold service item` → Get/List/Create RPCs) is
-// load-bearing: it makes `forge generate` emit the dynamic detail route
-// (`src/app/items/[id]/page.tsx`), hooks, and dashboard tiles — the
+// load-bearing: it makes `forge generate` emit the detail route
+// (`src/app/items/view/page.tsx`), hooks, and dashboard tiles — the
 // exact generated surface that historically broke a pristine project:
 //
-//   - `npm run build` failed under the old static-export default
+//   - `npm run build` failed under a static export
 //     ('Page "/items/[id]" is missing "generateStaticParams()" so it
-//     cannot be used with "output: export"') because generated CRUD
-//     detail pages are dynamic client routes.
+//     cannot be used with "output: export"') while the generated detail
+//     page was a dynamic `[id]` route. The frontend is a static export by
+//     default now, so the build below is that export, and it must emit a
+//     page per generated route into out/.
 //   - `npm test` failed ('No QueryClient set') because page.test.tsx
 //     rendered the dashboard bare while dashboard_gen.tsx calls the
 //     generated list hooks once an entity exists.
@@ -106,9 +155,12 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 
 	webDir := filepath.Join(projectDir, "frontends", "web")
 	assertPathExistsE2E(t, filepath.Join(webDir, "package.json"))
-	// The dynamic detail route must exist — it is the half of this test
+	// The static detail route must exist — it is the half of this test
 	// that guards the build/export-mode interaction.
-	assertPathExistsE2E(t, filepath.Join(webDir, "src", "app", "items", "[id]", "page.tsx"))
+	assertPathExistsE2E(t, filepath.Join(webDir, "src", "app", "items", "view", "page.tsx"))
+	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "output: static") {
+		t.Fatal("forge.yaml does not record `output: static` for the scaffolded frontend")
+	}
 
 	// npm install — the longest single step. Use --no-audit/--no-fund
 	// to reduce noisy output that would otherwise dominate the test
@@ -127,6 +179,19 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	// missing import (codegen regression).
 	runCmdTimeout(t, webDir, 5*time.Minute,
 		"npm", "run", "build")
+
+	// The export holds one page per generated route, and every URL the
+	// pages link to resolves to its own page — served the way hosted
+	// static hosting resolves a path (<path>, then <path>.html).
+	outDir := filepath.Join(webDir, "out")
+	for _, page := range []string{"items.html", "items/new.html", "items/view.html"} {
+		assertPathExistsE2E(t, filepath.Join(outDir, filepath.FromSlash(page)))
+	}
+	assertStaticLinksResolve(t, outDir, map[string]string{
+		"/items":                "items.html",
+		"/items/new":            "items/new.html",
+		"/items/view?id=item-1": "items/view.html",
+	})
 
 	// npm test — the scaffolded vitest suite must be green on a pristine
 	// project with one entity.

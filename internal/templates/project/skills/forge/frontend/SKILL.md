@@ -13,13 +13,13 @@ Each frontend lives in `frontends/<name>/` as a Next.js App Router app (`forge s
 
 ## Build & serving shapes
 
-`forge.yaml`'s `output:` picks the production shape — `standalone` (the default
-Node sidecar), `static` (export to a CDN), or `server` (full Next.js). `static`
-is **incompatible with generated CRUD pages**, whose `/<entity>/[id]` routes are
-dynamic. `base_path: /admin` mounts a frontend under a URL prefix, and hand-built
-URLs then have to go through `joinBasePath` from `src/lib/basepath_gen.ts`.
-Both, with the footguns, are in `frontend/serving`.
-Each env binds the frontend's `runtime` (`deploy` skill).
+`forge.yaml`'s `output:` picks the production shape: `static` (the default, a
+static export into `out/` that hosted static hosting serves), `standalone` (a
+Node server), or `server`. **Every route must be static**: detail and edit are
+`/<entity>/view?id=…` and `/<entity>/edit?id=…` (`src/lib/entity-routes.ts`),
+never `[id]` (`frontend/pages`). `base_path: /admin` mounts under a URL
+prefix; hand-built URLs then go through `joinBasePath`. Both are in
+`frontend/serving`. Each env binds the frontend's `runtime` (`deploy` skill).
 
 ## Generated TypeScript hooks
 

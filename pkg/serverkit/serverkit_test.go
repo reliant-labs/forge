@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -203,7 +204,27 @@ func waitReady(t *testing.T, addr string, deadline time.Duration) {
 	t.Fatalf("readyz did not return 200 within %s", deadline)
 }
 
-// shutdownAndWait triggers SIGTERM and waits for Run to return.
+// requireSelfSIGTERM skips a Run-lifecycle test on Windows, and must be the
+// test's FIRST statement — skipping after Run starts would leave it serving in
+// the background, and shutdownAndWait is sometimes called from a goroutine,
+// where a skip cannot end the test at all.
+//
+// These tests end Run the way an orchestrator does: SIGTERM, delivered by
+// signalling their own process. Windows has no way to deliver it —
+// os.Process.Signal(SIGTERM) fails with "not supported by windows" — so the
+// trigger itself does not exist there. What the tests assert (readiness flip,
+// pre-stop drain, worker and OnShutdown ordering) is platform-independent Go,
+// and runs on every Linux job.
+func requireSelfSIGTERM(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("ends Run with a self-delivered SIGTERM, which Windows cannot send " +
+			"(os.Process.Signal: not supported by windows); the lifecycle is covered on Linux")
+	}
+}
+
+// shutdownAndWait triggers SIGTERM and waits for Run to return. Every test
+// that calls it starts with requireSelfSIGTERM.
 func shutdownAndWait(t *testing.T, errCh chan error, within time.Duration) error {
 	t.Helper()
 	p, err := os.FindProcess(os.Getpid())
@@ -262,6 +283,7 @@ func TestRun_RequiresRunOperatorsWhenOperatorsPresent(t *testing.T) {
 }
 
 func TestRun_StartsAndShutsDownCleanly(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM to the test process.
 	addr := freeAddr(t)
 	rec := &shutdownRecorder{}
@@ -280,6 +302,7 @@ func TestRun_StartsAndShutsDownCleanly(t *testing.T) {
 // serverkit's own top mux (the caller's Handler need not mount them) and
 // that /readyz reflects the lifecycle.
 func TestRun_HealthzReadyzLifecycle(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	srv := serverkit.Server{Handler: emptyHandler()}
@@ -306,6 +329,7 @@ func TestRun_HealthzReadyzLifecycle(t *testing.T) {
 // middleware that would tag every response it sees must NOT touch the
 // probe responses, while it DOES wrap the caller's handler.
 func TestRun_ProbesBypassEdgeMiddleware(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 
@@ -361,6 +385,7 @@ func TestRun_ProbesBypassEdgeMiddleware(t *testing.T) {
 }
 
 func TestRun_WorkerLifecycle(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	w := &stubWorker{name: "alpha"}
@@ -391,6 +416,7 @@ func TestRun_WorkerLifecycle(t *testing.T) {
 // calls Stop afterwards. A legacy worker rides along to prove the
 // fallback path is untouched by the new lifecycle.
 func TestRun_ContextWorkerPreferred(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	cw := &ctxWorker{name: "ctx-aware", runReturnErr: context.Canceled}
@@ -437,6 +463,7 @@ func TestRun_ContextWorkerPreferred(t *testing.T) {
 // tick contexts derived from the worker lifecycle ctx — observes
 // shutdown mid-tick.
 func TestRun_CronShapedContextWorker(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	cw := &cronishWorker{name: "cronish"}
@@ -467,6 +494,7 @@ func TestRun_CronShapedContextWorker(t *testing.T) {
 // the caller-composed teardown (old Application.Shutdown + OTel flush)
 // runs exactly once during graceful shutdown.
 func TestRun_OnShutdownCalledDuringShutdown(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	var shutdownObserved atomic.Bool
@@ -488,6 +516,7 @@ func TestRun_OnShutdownCalledDuringShutdown(t *testing.T) {
 }
 
 func TestRun_ShutdownWithinBudget(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	srv := serverkit.Server{Handler: emptyHandler()}

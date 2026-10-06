@@ -98,6 +98,7 @@ func fakeRegistry(t *testing.T) *[]string {
 // line per call, and succeeds. Returns the log path.
 func fakeDocker(t *testing.T) string {
 	t.Helper()
+	requirePOSIXFake(t, "docker")
 	bin := t.TempDir()
 	logPath := filepath.Join(bin, "docker.log")
 	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\n"

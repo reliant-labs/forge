@@ -19,10 +19,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 // entityFromProtoDescriptor builds the fixture descriptor: TasksService
@@ -90,6 +92,18 @@ func entityFromProtoDescriptor() codegen.ForgeDescriptor {
 func setupEntityFromProtoProject(t *testing.T) string {
 	t.Helper()
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	// The applied-schema check boots the shared embedded postgres from the
+	// CURRENT directory, which withTempProject made this project. On Windows
+	// pg_ctl's cmd.exe wrapper keeps that directory as its working directory
+	// for the server's whole life (embedded-postgres sets no Dir), and a
+	// directory that is some process's cwd cannot be removed — so TempDir's
+	// cleanup failed. A `forge` command never hits this: it detaches from the
+	// pool on exit (pgtest.Shutdown), which is what this does before the
+	// directory goes (cleanups run last-registered first). POSIX keeps the
+	// shared server for the rest of the binary, where a cwd pins nothing.
+	if runtime.GOOS == "windows" {
+		t.Cleanup(pgtest.Shutdown)
+	}
 	desc, err := json.MarshalIndent(entityFromProtoDescriptor(), "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +114,13 @@ func setupEntityFromProtoProject(t *testing.T) string {
 
 // captureStdout runs fn with os.Stdout redirected and returns what it
 // printed (the affordances promise specific next-step wording).
+//
+// The pipe is drained WHILE fn runs, not after. A pipe's buffer is finite
+// and platform-specific (64 KiB on Linux, far less on Windows), so reading
+// only once fn returns deadlocks as soon as fn prints more than the buffer
+// holds: fn blocks in write, and nothing reads until fn returns. On Windows
+// that hung TestProjectScaffold_BigFixtureBirthsEverythingThenNoOps until the
+// 30-minute test timeout.
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	old := os.Stdout
@@ -107,15 +128,24 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	type readResult struct {
+		out []byte
+		err error
+	}
+	drained := make(chan readResult, 1)
+	go func() {
+		out, rerr := io.ReadAll(r)
+		drained <- readResult{out, rerr}
+	}()
 	os.Stdout = w
 	runErr := fn()
 	w.Close()
 	os.Stdout = old
-	out, rerr := io.ReadAll(r)
-	if rerr != nil {
-		t.Fatal(rerr)
+	res := <-drained
+	if res.err != nil {
+		t.Fatal(res.err)
 	}
-	return string(out), runErr
+	return string(res.out), runErr
 }
 
 func TestAddEntityFromProto_SingleBirthsOwnedMigration(t *testing.T) {

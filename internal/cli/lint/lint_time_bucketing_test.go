@@ -2,6 +2,7 @@ package lint
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,7 +56,8 @@ FROM telemetry_samples GROUP BY 1 ORDER BY 1`))
 		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.File != "internal/handlers/telemetry/queries.go" {
+	// File is the native project-relative path (backslashed on Windows).
+	if filepath.ToSlash(f.File) != "internal/handlers/telemetry/queries.go" {
 		t.Errorf("file = %q", f.File)
 	}
 	if f.Line != 4 {

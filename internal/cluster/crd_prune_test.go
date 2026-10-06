@@ -52,6 +52,7 @@ func TestStampCRDOwnership(t *testing.T) {
 //   - `get <plural>.<group> -A -o name` prints instances for CRDs in inUse.
 func fakeCRDKubectl(t *testing.T, owned []string, inUse map[string]bool) func() []string {
 	t.Helper()
+	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls.log")
 	var inUseCase strings.Builder

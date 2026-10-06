@@ -17,6 +17,17 @@ func withDockerProbe(t *testing.T, fn func(context.Context) (string, error)) {
 	t.Cleanup(func() { dockerDaemonProbeFn = prev })
 }
 
+// withReachableDocker stubs the daemon probe to answer, for tests of the
+// cluster phase that stub every k3d/kubectl seam and must not depend on a
+// live Docker daemon either. reconcileDeclaredClusters probes the daemon
+// before anything else, so without this those tests passed only on hosts
+// that happened to run Docker — and failed on the Windows runner, whose
+// docker CLI has no engine behind it.
+func withReachableDocker(t *testing.T) {
+	t.Helper()
+	withDockerProbe(t, func(context.Context) (string, error) { return "28.0.1\n", nil })
+}
+
 // A daemon that answers is a clean pass with no error decoration.
 func TestEnsureDockerDaemonHealthy(t *testing.T) {
 	withDockerProbe(t, func(context.Context) (string, error) { return "28.0.1\n", nil })

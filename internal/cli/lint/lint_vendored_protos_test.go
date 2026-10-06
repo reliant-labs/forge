@@ -106,7 +106,9 @@ func TestCollectVendoredProtoFindings_FlagsMissingOptionField(t *testing.T) {
 	}
 	// Errors are runbooks: the literal fix command, and the escape hatch.
 	hint := vendoredProtoFixHint(f)
-	for _, want := range []string{"forge project upgrade", "forge project disown", "proto/forge/v1/forge.proto"} {
+	// The hint names the file as f.File does: the native path, which the
+	// user's shell takes as-is (and `forge project disown` normalizes).
+	for _, want := range []string{"forge project upgrade", "forge project disown", filepath.FromSlash("proto/forge/v1/forge.proto")} {
 		if !strings.Contains(hint, want) {
 			t.Errorf("fix hint missing %q:\n%s", want, hint)
 		}

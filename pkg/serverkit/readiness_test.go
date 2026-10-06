@@ -58,6 +58,7 @@ func (d *failingDependency) check(context.Context) error {
 // the process is still listening and still "alive", but it cannot serve, and
 // /readyz must say so.
 func TestReadyz_FailsWhenADependencyIsDown(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	dep := &failingDependency{}
@@ -126,6 +127,7 @@ func TestReadyz_FailsWhenADependencyIsDown(t *testing.T) {
 // that registers nothing keeps the old listener-bound semantics rather than
 // failing closed and becoming unroutable.
 func TestReadyz_NoChecksStillReportsBoundListener(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	errCh, _ := runInBackground(t, baseConfig(addr), serverkit.Server{Handler: emptyHandler()})
@@ -146,6 +148,7 @@ func TestReadyz_NoChecksStillReportsBoundListener(t *testing.T) {
 // several wedged dependencies must not multiply it — a kubelet probe has one
 // timeoutSeconds, not one per check.
 func TestReadyz_TimeoutBoundsTheWholeRequest(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 

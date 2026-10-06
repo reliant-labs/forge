@@ -41,6 +41,8 @@ func machinePolicyStandIn(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// os.UserConfigDir reads %AppData% on Windows, not HOME.
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("FORGE_STORAGE_POLICY", "")
 	path, err := DefaultPath()
 	if err != nil {

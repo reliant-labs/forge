@@ -410,6 +410,7 @@ func (e *stringErr) Error() string { return e.s }
 // fail every test that routes through applyCRDsThenRest.
 func fakeKubectlLog(t *testing.T) string {
 	t.Helper()
+	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "kubectl.log")
 	// The fake records argv then exits 0. `kubectl wait` succeeds silently;

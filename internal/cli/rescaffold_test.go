@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -158,7 +159,9 @@ func TestRescaffold_ReemitsFilesOnlyProjectNewWrites(t *testing.T) {
 			t.Errorf("rescaffolded %s differs from what the scaffold wrote\n--- born ---\n%s\n--- rescaffolded ---\n%s", rel, born[rel], got)
 		}
 	}
-	if info, err := os.Stat(filepath.Join(root, "scripts/bootstrap.sh")); err == nil && info.Mode().Perm()&0o100 == 0 {
+	// Windows has no executable mode bit to restore (os.Stat reports 0666 for
+	// every writable file), so the bit is only checked where it exists.
+	if info, err := os.Stat(filepath.Join(root, "scripts/bootstrap.sh")); err == nil && runtime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
 		t.Errorf("scripts/bootstrap.sh came back without its executable bit (mode %v)", info.Mode().Perm())
 	}
 }

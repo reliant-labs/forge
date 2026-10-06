@@ -101,6 +101,7 @@ func (o *stubOperator) Name() string { return o.name }
 // FailurePolicy=Ignore restores log-and-continue for deployments whose
 // workers are genuinely best-effort.
 func TestRun_WorkerErrorIgnorePolicyKeepsServing(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 	srv := serverkit.Server{

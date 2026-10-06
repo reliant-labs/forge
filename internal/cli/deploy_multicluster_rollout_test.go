@@ -50,6 +50,7 @@ const crossClusterBundle = `    project = "acme"
 // cluster applied before the first cluster's rollout was awaited?
 func fakeCrossClusterKubectl(t *testing.T) func() []string {
 	t.Helper()
+	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	script := `#!/bin/sh
 state='` + dir + `'

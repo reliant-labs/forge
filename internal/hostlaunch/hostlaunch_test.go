@@ -14,6 +14,10 @@ import (
 // runner, its GoBuild and its args. It is never authored per runtime, and
 // there is no `server <name>` convention any more — the args a workload
 // declares are the args it gets, on the host exactly as in its container.
+//
+// Derived for linux, so the expected argv is the same on every host: the only
+// per-OS difference is the .exe suffix, which TestBuildCmdForWindowsBinaryAndDelve
+// pins on its own.
 func TestBuildCmd_RunnerMatrix(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -99,7 +103,7 @@ func TestBuildCmd_RunnerMatrix(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd, err := BuildCmd(ctx, c.svc, c.spec)
+			cmd, err := buildCmdFor(ctx, "linux", c.svc, c.spec)
 			if err != nil {
 				t.Fatalf("BuildCmd: %v", err)
 			}
@@ -158,15 +162,21 @@ func TestAirIgnoresArgs(t *testing.T) {
 // Air's `build_cmd` paths resolve correctly.
 func TestBuildCmd_WorkingDir(t *testing.T) {
 	ctx := context.Background()
+	// Host-absolute roots: "/forge/project" is only ROOTED on Windows (no
+	// volume), so filepath.IsAbs would send the "absolute" case down the
+	// relative branch there.
+	base := t.TempDir()
+	projectDir := filepath.Join(base, "forge", "project")
+	absSibling := filepath.Join(base, "abs", "sibling")
 	cases := []struct {
 		name       string
 		workingDir string
 		projectDir string
 		wantDir    string
 	}{
-		{"empty WorkingDir leaves cmd.Dir empty (inherit parent cwd)", "", "/forge/project", ""},
-		{"absolute WorkingDir is used verbatim", "/abs/sibling", "/forge/project", "/abs/sibling"},
-		{"relative WorkingDir resolves against ProjectDir", "../sibling", "/forge/project", "/forge/sibling"},
+		{"empty WorkingDir leaves cmd.Dir empty (inherit parent cwd)", "", projectDir, ""},
+		{"absolute WorkingDir is used verbatim", absSibling, projectDir, absSibling},
+		{"relative WorkingDir resolves against ProjectDir", "../sibling", projectDir, filepath.Join(base, "forge", "sibling")},
 		{"relative WorkingDir with empty ProjectDir falls through verbatim", "../sibling", "", "../sibling"},
 	}
 	for _, c := range cases {
@@ -187,17 +197,19 @@ func TestBuildCmd_WorkingDir(t *testing.T) {
 // cross-repo use case.
 func TestBuildCmd_WorkingDir_AppliesAcrossRunners(t *testing.T) {
 	ctx := context.Background()
+	base := t.TempDir() // host-absolute; see TestBuildCmd_WorkingDir
+	wantDir := filepath.Join(base, "forge", "sibling")
 	for _, runner := range []string{"air", "binary", "delve", "go-run", ""} {
 		t.Run("runner="+runner, func(t *testing.T) {
 			cmd, err := BuildCmd(ctx, "api", RunnerSpec{
 				Runner: runner, GoPkg: "./cmd/api",
-				WorkingDir: "../sibling", ProjectDir: "/forge/project",
+				WorkingDir: "../sibling", ProjectDir: filepath.Join(base, "forge", "project"),
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cmd.Dir != "/forge/sibling" {
-				t.Errorf("cmd.Dir: got %q, want /forge/sibling", cmd.Dir)
+			if cmd.Dir != wantDir {
+				t.Errorf("cmd.Dir: got %q, want %q", cmd.Dir, wantDir)
 			}
 		})
 	}
@@ -426,8 +438,9 @@ func TestPIDPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PIDPath: %v", err)
 	}
-	if !strings.HasSuffix(got, "/.cache/forge/run/admin-server.pid") {
-		t.Errorf("want path ending in /.cache/forge/run/admin-server.pid, got %q", got)
+	want := filepath.Join(".cache", "forge", "run", "admin-server.pid")
+	if !strings.HasSuffix(got, string(filepath.Separator)+want) {
+		t.Errorf("want path ending in %s, got %q", want, got)
 	}
 }
 

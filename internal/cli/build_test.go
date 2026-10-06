@@ -328,6 +328,10 @@ func TestResolveBuildArchForImage(t *testing.T) {
 // without forge needing a per-scheme allowlist.
 func TestResolveBuildContext(t *testing.T) {
 	const root = "/tmp/proj"
+	// Absolute on the host OS: "/abs/..." is only ROOTED on Windows (no
+	// volume), so filepath.IsAbs rejects it there and the case would test
+	// the relative branch instead.
+	absShared := filepath.Join(t.TempDir(), "shared")
 	cases := []struct {
 		name  string
 		value string
@@ -354,9 +358,9 @@ func TestResolveBuildContext(t *testing.T) {
 		},
 		{
 			name:  "absolute path passes through",
-			value: "/abs/path/to/shared",
+			value: absShared,
 			root:  root,
-			want:  "/abs/path/to/shared",
+			want:  absShared,
 		},
 		{
 			name:  "relative path resolves against project root",
@@ -407,12 +411,14 @@ func TestAppendBuildContexts(t *testing.T) {
 	})
 
 	t.Run("deterministic order, path resolution, scheme passthrough", func(t *testing.T) {
+		// Host-absolute, for the reason TestResolveBuildContext gives.
+		absCtx := filepath.Join(t.TempDir(), "already-absolute")
 		cfg := &config.ProjectConfig{
 			Docker: config.DockerConfig{
 				BuildContexts: map[string]string{
 					"shared": "../shared-libs",
 					"base":   "docker-image://my-base:latest",
-					"abs":    "/etc/already-absolute",
+					"abs":    absCtx,
 				},
 			},
 		}
@@ -425,7 +431,7 @@ func TestAppendBuildContexts(t *testing.T) {
 
 		// Lexicographic order: abs < base < shared.
 		want := []string{
-			"--build-context", "abs=/etc/already-absolute",
+			"--build-context", "abs=" + absCtx,
 			"--build-context", "base=docker-image://my-base:latest",
 			"--build-context", "shared=" + filepath.Join("/tmp/proj", "../shared-libs"),
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -250,6 +251,15 @@ func TestDockerRawStat_SparseFileReportsAllocatedNotApparent(t *testing.T) {
 	u, ok, err := dockerRawStat(context.Background(), path)
 	if err != nil {
 		t.Fatalf("dockerRawStat: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		// Windows has no allocated-size read, by design (disk_alloc_windows.go:
+		// Docker.raw is a macOS artefact), and its contract there is NO number
+		// rather than the apparent size masquerading as one.
+		if ok {
+			t.Fatalf("dockerRawStat reported %+v on Windows; it must report no usage there", u)
+		}
+		return
 	}
 	if !ok {
 		t.Fatal("dockerRawStat reported no usage for a file that exists")

@@ -23,6 +23,7 @@ import (
 // request already executing when SIGTERM lands must observe that its
 // dependencies are still open, and OnShutdown must not have run yet.
 func TestRun_InFlightRequestCompletesBeforeOnShutdown(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 
@@ -128,6 +129,7 @@ func (w *wedgedWorker) Stop(context.Context) error { return nil }
 // ShutdownTimeout: one worker ignoring cancellation pinned the process until
 // the platform SIGKILLed it, skipping every remaining teardown step.
 func TestRun_WedgedWorkerCannotOutlastShutdownTimeout(t *testing.T) {
+	requireSelfSIGTERM(t)
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
 

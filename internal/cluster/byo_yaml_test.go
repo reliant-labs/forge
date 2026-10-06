@@ -52,6 +52,7 @@ func writeFile(t *testing.T, dir, name, body string) string {
 // fakeHelm puts a `helm` on PATH that prints stream for `helm template`.
 func fakeHelm(t *testing.T, stream string) {
 	t.Helper()
+	requirePOSIXFake(t, "helm")
 	dir := t.TempDir()
 	body := writeFile(t, dir, "chart.yaml", stream)
 	writeFile(t, dir, "helm", "#!/bin/sh\ncat "+body+"\n")

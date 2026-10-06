@@ -67,7 +67,10 @@ func TestWindowsHoldsWorkingDirectory(t *testing.T) {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	child := exec.Command("cmd", "/c", "ping", "-n", "30", "127.0.0.1")
+	// ping itself, not `cmd /c ping`: Kill ends only the process it started,
+	// and cmd's ping child would outlive it in the same working directory —
+	// which the snapshot then (correctly) still reports as holding the tree.
+	child := exec.Command("ping", "-n", "30", "127.0.0.1")
 	child.Dir = cwd
 	if err := child.Start(); err != nil {
 		t.Fatal(err)

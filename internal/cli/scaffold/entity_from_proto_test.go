@@ -19,10 +19,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 // entityFromProtoDescriptor builds the fixture descriptor: TasksService
@@ -90,6 +92,18 @@ func entityFromProtoDescriptor() codegen.ForgeDescriptor {
 func setupEntityFromProtoProject(t *testing.T) string {
 	t.Helper()
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	// The applied-schema check boots the shared embedded postgres from the
+	// CURRENT directory, which withTempProject made this project. On Windows
+	// pg_ctl's cmd.exe wrapper keeps that directory as its working directory
+	// for the server's whole life (embedded-postgres sets no Dir), and a
+	// directory that is some process's cwd cannot be removed — so TempDir's
+	// cleanup failed. A `forge` command never hits this: it detaches from the
+	// pool on exit (pgtest.Shutdown), which is what this does before the
+	// directory goes (cleanups run last-registered first). POSIX keeps the
+	// shared server for the rest of the binary, where a cwd pins nothing.
+	if runtime.GOOS == "windows" {
+		t.Cleanup(pgtest.Shutdown)
+	}
 	desc, err := json.MarshalIndent(entityFromProtoDescriptor(), "", "  ")
 	if err != nil {
 		t.Fatal(err)

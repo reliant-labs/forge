@@ -1188,7 +1188,7 @@ func assertZeroServiceShape(t *testing.T, projectDir, name string) {
 			return nil
 		}
 		info, ierr := d.Info()
-		if ierr != nil || info.Size() > 1<<20 || d.Name() == "forge.lock" {
+		if ierr != nil || info.Size() > 1<<20 {
 			return nil
 		}
 		body, rerr := os.ReadFile(path)
@@ -1337,7 +1337,7 @@ func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 			}
 			return os.MkdirAll(filepath.Join(dst, "pkg", rel), 0o755)
 		}
-		if !d.Type().IsRegular() || d.Name() == "forge.lock" {
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)
@@ -1412,7 +1412,7 @@ func snapshotSmallFiles(t *testing.T, root string) map[string]string {
 			return nil
 		}
 		info, ierr := d.Info()
-		if ierr != nil || info.Size() > 1<<20 {
+		if ierr != nil || info.Size() > 1<<20 || d.Name() == "forge.lock" {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)
@@ -1521,7 +1521,7 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if !d.Type().IsRegular() || d.Name() == "forge.lock" {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)

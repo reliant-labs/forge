@@ -596,7 +596,31 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"goimports on generated Go":  true,
 		"rehash tracked files":       true,
 	},
+	// The "env-config" step preset writes what every env's KCL imports
+	// from generate — config_gen.k, frontend_config_gen.k and each env's
+	// config.k instance — and nothing else, so an env renders. It is what
+	// the full pipeline runs before its CI step, and for the same reason:
+	// which workflows a project has is read off a render of every env.
+	// `forge project rescaffold` runs it when an env does not render
+	// before asking which CI files the project has (rescaffold.go). The
+	// Tier-1 guard stays: these are forge-owned files, and a hand edit to
+	// one must stop this preset exactly as it stops a full run. The
+	// forge/pkg compat handshake does not: it guards generated Go against
+	// a forge/pkg the project cannot fetch, and this preset emits no Go.
+	envConfigStepPreset: {
+		"load project config":           true,
+		"load checksums":                true,
+		"check Tier-1 file-stomp guard": true,
+		// Sets ctx.HasConfig, which gates the step below; without it the
+		// preset runs and writes nothing.
+		"detect proto directories": true,
+		"per-env deploy config":    true,
+	},
 }
+
+// envConfigStepPreset names the step preset that writes the env config
+// modules (see stepPresetAllowlist).
+const envConfigStepPreset = "env-config"
 
 // templatesOnlyStepAllow is the set of step.Name values that run when
 // pipelineFlags.TemplatesOnly is set. The list is the "template-driven"

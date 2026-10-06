@@ -12,8 +12,12 @@
 //
 // The generate pipeline is stood in for by its CI step, which is the emitter
 // that writes .github/workflows — the same function, over the same mapper
-// (generator.CIWorkflows). Everything else a rescaffold writes comes from
-// renderers that run in-process, so the whole file is pure filesystem work.
+// (generator.CIWorkflows). The env config modules that step's hosted-env
+// render needs come from the REAL `--steps env-config` preset: the fixture is
+// the bare `forge project new` scaffold, before its bootstrap generate, so its
+// hosted envs do not render until rescaffold writes them. Everything else a
+// rescaffold writes comes from renderers that run in-process, so the whole
+// file is pure filesystem work.
 //
 // Not t.Parallel: the birth ledger's in-memory cache is process-global (see
 // newLedgerProject).
@@ -54,8 +58,11 @@ func scaffoldForRescaffold(t *testing.T, shape func(g *generator.ProjectGenerato
 }
 
 // ciStepOnly stands in for the generate pipeline (see the file comment).
-func ciStepOnly(root string, cfg *config.ProjectConfig) func() error {
-	return func() error { return generateCIWorkflows(root, cfg, nil, false) }
+func ciStepOnly(root string, cfg *config.ProjectConfig) rescaffoldGenerate {
+	return rescaffoldGenerate{
+		envConfig: func() error { return runGeneratePipelineFlags(root, pipelineFlags{Steps: envConfigStepPreset}) },
+		pipeline:  func() error { return generateCIWorkflows(root, cfg, nil, false) },
+	}
 }
 
 func readRescaffoldFile(t *testing.T, root, rel string) []byte {
@@ -230,6 +237,115 @@ func TestRescaffold_ServiceProtoNamesScaffoldService(t *testing.T) {
 	err := rescaffoldPaths(&w, root, cfg, []string{rel}, ciStepOnly(root, cfg))
 	if err == nil || !strings.Contains(err.Error(), "scaffold service item") {
 		t.Fatalf("want a refusal naming `scaffold service item`, got: %v", err)
+	}
+}
+
+// The scaffold writes the hosted pipeline (release.yml + the forge-deploy
+// action) for the hosted staging and prod it just wrote. Those envs import
+// config modules only `forge generate` writes, so before a generate has
+// completed — the state a failed bootstrap generate leaves — they do not
+// render, and rescaffold took them for envs that are not hosted: "this
+// project has no release.yml ... declares none". It must write the modules
+// and look again.
+func TestRescaffold_HostedPipelineComesBackBeforeTheFirstGenerate(t *testing.T) {
+	root, cfg := scaffoldForRescaffold(t, nil)
+	if rescaffoldFileExists(root, "deploy/kcl/config_gen.k") {
+		t.Fatal("precondition: the bare scaffold has no env config modules yet")
+	}
+	paths := []string{".github/workflows/release.yml", generator.ForgeDeployActionPath}
+	born := map[string][]byte{}
+	for _, rel := range paths {
+		born[rel] = readRescaffoldFile(t, root, rel)
+		removeRescaffoldFile(t, root, rel)
+	}
+
+	var w bytes.Buffer
+	if err := rescaffoldPaths(&w, root, cfg, paths, ciStepOnly(root, cfg)); err != nil {
+		t.Fatalf("rescaffold: %v\n%s", err, w.String())
+	}
+	for _, rel := range paths {
+		if got := readRescaffoldFile(t, root, rel); !bytes.Equal(got, born[rel]) {
+			t.Errorf("rescaffolded %s differs from what the scaffold wrote\n--- born ---\n%s\n--- rescaffolded ---\n%s", rel, born[rel], got)
+		}
+	}
+	if rescaffoldFileExists(root, ".github/workflows/deploy.yml") {
+		t.Error("rescaffold wrote a deploy.yml: every env of this scaffold is hosted")
+	}
+}
+
+// The pipeline's CI step must render the envs as the PIPELINE leaves them.
+// Rescaffold asks the CI mapper its question before the pipeline runs, and
+// the answer is memoized per project; handed on to the CI step, it wrote CI
+// for a tree the pipeline had since changed — on a bare scaffold, a
+// build-images.yml for cluster envs and a deploy.yml beside release.yml.
+//
+// The stand-in is the slice of the real pipeline that matters, in its real
+// order: the env config modules, then the CI step. No envConfig hook, so
+// the only thing that can make the CI step see the modules is a fresh render.
+func TestRescaffold_PipelineCIStepRendersTheTreeThePipelineLeaves(t *testing.T) {
+	root, cfg := scaffoldForRescaffold(t, nil)
+	const rel = ".github/workflows/build-images.yml"
+	born := readRescaffoldFile(t, root, rel)
+	removeRescaffoldFile(t, root, rel)
+
+	gen := rescaffoldGenerate{pipeline: func() error {
+		cs, err := generator.LoadChecksums(root)
+		if err != nil {
+			return err
+		}
+		if err := generatePerEnvDeployConfig(root, cfg, cs); err != nil {
+			return err
+		}
+		return generateCIWorkflows(root, cfg, nil, false)
+	}}
+	var w bytes.Buffer
+	if err := rescaffoldPaths(&w, root, cfg, []string{rel}, gen); err != nil {
+		t.Fatalf("rescaffold: %v\n%s", err, w.String())
+	}
+	if got := readRescaffoldFile(t, root, rel); !bytes.Equal(got, born) {
+		t.Errorf("rescaffolded %s was rendered for a topology the pipeline had changed\n--- born ---\n%s\n--- rescaffolded ---\n%s", rel, born, got)
+	}
+	if rescaffoldFileExists(root, ".github/workflows/deploy.yml") {
+		t.Error("the pipeline wrote a deploy.yml for hosted envs: its CI step was handed the pre-pipeline render")
+	}
+}
+
+// An env that does not render is one forge cannot classify. When whether
+// the project has a file hinges on it, the refusal must say so and name the
+// way to see why — not claim the project declares no hosted env.
+func TestRescaffold_UnrenderableEnvIsNotReportedAsUnhosted(t *testing.T) {
+	root, cfg := scaffoldForRescaffold(t, nil)
+	// A project generate HAS run on, so the env config step cannot be
+	// what is missing: the envs themselves are broken.
+	if err := runGeneratePipelineFlags(root, pipelineFlags{Steps: envConfigStepPreset}); err != nil {
+		t.Fatalf("env-config preset: %v", err)
+	}
+	for _, env := range []string{"staging", "prod"} {
+		mainK := "deploy/kcl/" + env + "/main.k"
+		src := readRescaffoldFile(t, root, mainK)
+		if err := os.WriteFile(filepath.Join(root, mainK), append(src, "\n_broken = undefined_name_mid_edit\n"...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const rel = ".github/workflows/release.yml"
+	removeRescaffoldFile(t, root, rel)
+
+	var w bytes.Buffer
+	err := rescaffoldPaths(&w, root, cfg, []string{rel}, ciStepOnly(root, cfg))
+	if err == nil {
+		t.Fatalf("rescaffold of %s succeeded with no env rendering:\n%s", rel, w.String())
+	}
+	if rescaffoldFileExists(root, rel) {
+		t.Errorf("rescaffold wrote %s without knowing whether the project has it", rel)
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "declares none") {
+		t.Errorf("the refusal reports envs that did not render as envs that are not hosted: %v", err)
+	}
+	for _, want := range []string{"prod, staging", "env render prod"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the refusal should contain %q, got: %v", want, err)
+		}
 	}
 }
 

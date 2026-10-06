@@ -23,6 +23,10 @@ type ciHostedTopology struct {
 	// machine (envAppliesLocally — the same test dispatchHostedDeploy uses
 	// to decide a deploy is not hosted-only).
 	Mixed []string
+	// Unrendered are the envs that failed to render, in ListEnvs' order.
+	// Discovery cannot classify them, so they are in neither list above —
+	// which a caller must not report as "not hosted".
+	Unrendered []string
 }
 
 // discoverCIHostedEnvs returns the hosted and mixed envs. An env that fails
@@ -31,7 +35,8 @@ type ciHostedTopology struct {
 //
 // Memoized per project directory for the same reason discoverCIFrontends is:
 // several builders may ask in one `forge generate`, and the answer costs a
-// render of every env.
+// render of every env. A caller that asks OUTSIDE a generate run, and then
+// runs one, must forgetCIDiscovery in between (see rescaffold.go).
 func discoverCIHostedEnvs(projectDir string) ciHostedTopology {
 	ciHostedMu.Lock()
 	defer ciHostedMu.Unlock()
@@ -44,6 +49,7 @@ func discoverCIHostedEnvs(projectDir string) ciHostedTopology {
 		entities, restored, err := renderKCLPure(context.Background(), projectDir, env)
 		reportImpureRender(env, restored)
 		if err != nil || entities == nil {
+			out.Unrendered = append(out.Unrendered, env)
 			continue
 		}
 		if !ciEnvIsHosted(entities) {
@@ -68,3 +74,20 @@ var (
 	ciHostedMu    sync.Mutex
 	ciHostedCache = map[string]ciHostedTopology{}
 )
+
+// forgetCIDiscovery drops every memoized CI discovery answer for projectDir,
+// so the next question renders the envs as they are on disk now.
+//
+// The memo's lifetime is one `forge generate` run: inside it, the CI step is
+// the only asker and runs after every step that writes what an env imports.
+// A caller that asks before a run and then starts one would otherwise hand
+// the run's CI step an answer rendered from a tree the run has since
+// changed.
+func forgetCIDiscovery(projectDir string) {
+	ciHostedMu.Lock()
+	delete(ciHostedCache, projectDir)
+	ciHostedMu.Unlock()
+	ciFrontendsMu.Lock()
+	delete(ciFrontendsCache, projectDir)
+	ciFrontendsMu.Unlock()
+}

@@ -237,8 +237,8 @@ exposes, the right answer is almost always one of:
 ## Adding a custom workflow
 
 The Tier-2 path. Drop a new file under `.github/workflows/` with any
-name forge doesn't already own (`pre-commit.yml`, `release.yml`,
-`docs.yml`, `slack-notify.yml`, …). Convention: open with the canonical
+name forge doesn't already own (`docs.yml`, `tag-release.yml`,
+`slack-notify.yml`, …). Convention: open with the canonical
 "yours" banner so future readers see at a glance that the file is
 user-owned and forge will not touch it:
 
@@ -304,7 +304,7 @@ release tags), use a parallel Tier-2 workflow file instead.
 
 ## Common extensions
 
-- **Release.** Tier-2 `release.yml` triggered on `push: tags: ['v*']`
+- **Release.** Tier-2 `tag-release.yml` triggered on `push: tags: ['v*']`
   using GoReleaser, ko, or a hand-rolled `gh release create`.
   Generated `build-images.yml` covers main-branch image pushes;
   release adds tag-driven artifact + image promotion.
@@ -363,13 +363,18 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
 ## Rules
 
 - forge's workflows (`ci.yml`, `proto-breaking.yml`, `build-images.yml`,
-  `deploy.yml`, `e2e.yml`, `reconcile.yml`, `pre-commit.yml`,
-  `dependabot.yml`) are scaffold-once: written once, then yours to edit.
+  `deploy.yml`, `release.yml`, `e2e.yml`, `reconcile.yml`, `pre-commit.yml`,
+  `dependabot.yml`) and the vendored `.github/actions/forge-deploy/action.yml`
+  are scaffold-once: written once, then yours to edit.
   Deleting one sticks — `.forge/scaffolded.json` records it, so `forge
   generate` does not bring it back. To get forge's current version of one,
   delete it and run `forge project rescaffold .github/workflows/<name>.yml`
   (only workflows this project has: e2e.yml needs an e2e suite,
-  reconcile.yml the reconcile feature).
+  reconcile.yml the reconcile feature, release.yml and the forge-deploy
+  action a hosted env). Which envs are hosted is read off a render of each
+  env; when one does not render yet, rescaffold first writes the config
+  modules envs import (`forge generate --steps env-config`), and an env that
+  still fails is named — run `forge env render <env>` to see why.
 - Tier-2 workflows live alongside Tier-1 in `.github/workflows/`. Use
   any name forge doesn't own; open with `# yours: scaffolded once,
   never touched again — forge will not overwrite this file` so the

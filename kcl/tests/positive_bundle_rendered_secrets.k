@@ -14,7 +14,7 @@ prod (the kcl-args / reject-args directives).
 
 # kcl-args: env=dev | env=e2e
 # reject-args: env=prod
-# reject-expect: FileSecrets is dev/e2e only
+# reject-expect: only allowed in dev/e2e
 
 import forge
 import forge.workloads as fw

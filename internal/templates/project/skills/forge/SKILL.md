@@ -120,10 +120,10 @@ snippet to paste when the rpc is not in the proto yet.
 **What makes an rpc CRUD is its exact name.** A unary rpc named `Create<E>`,
 `Get<E>`, `Update<E>`, `Delete<E>` or `List<Es>`, where `<E>` has a table AND a
 proto message of that name, gets the CRUD wiring. Anything else is custom:
-`UpdateJobStatus`, `CreateInvoiceFromEstimate` and `ListJobsByCrew` get a stub,
-no page and a hook that invalidates the whole service's queries (a CRUD hook
-invalidates only its entity's). Name rpcs for the domain; never rename one to
-dodge CRUD detection.
+`UpdateJobStatus`, `CreateInvoiceFromEstimate` and `ListJobsByCrew` get a stub
+and no page, and a custom mutation's hook invalidates every query on its
+service (a CRUD mutation's, only its entity's). Name rpcs for the domain; never
+rename one to dodge CRUD detection.
 
 Every rpc is closed to unauthenticated callers unless it carries
 `auth_required: false` (`proto`, `auth`).

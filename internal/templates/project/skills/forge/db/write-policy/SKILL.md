@@ -21,16 +21,17 @@ comment on the proto field. Pick by asking who writes the value.
 | Your Go code, from OTHER rows — `amount_paid` summing payments | `// forge:computed` | Everything read-only does, and `forge lint` fails while no non-generated Go file assigns it (a warning while the writing rpc is still forge's unwired stub) |
 | A trigger, or a GENERATED column added after birth | the SQL in a migration, plus `// forge:read-only` | Read-only keeps clients off it. Not `forge:computed`: no Go assigns it, so that lint would fail |
 | The server once, then nobody — an owner id, a Stripe customer id | `COMMENT ON COLUMN … IS 'forge:immutable'`, usually with `// forge:read-only` too | `,skipupdate`: no full replace rewrites it; a masked write naming it still does (below) |
-| The client at Create; every later change goes through an rpc | `// forge:guards` alone | The edit page stops writing it and names the rpc. **The API still accepts it** through `Update<Entity>` — add `forge:read-only`, or refuse it in the `handlers_crud.go` shim |
+| The client at Create; every later change goes through an rpc | `// forge:guards` alone | The edit page stops writing it and names the rpc. **The API still accepts it** through `Update<Entity>`; if clients must not bypass the rpc, override the Update shim in `handlers_crud.go` (`db/crud-overrides`). `forge:read-only` would also drop it from Create |
 
 Since the generated Update enforces `forge:read-only` (and `forge:computed` /
-`forge:generated`, which imply it) itself, guards adds no protection to a read-only column. What it still adds is
-discoverability: read-only alone drops the field from the edit page without a
-word, while read-only plus guards renders it disabled, reading "changed through
-`ChangeJobStatus`", at the moment a user is looking for how to change it. Guards
-alone is the weaker choice: it only stops forge's own form from writing the
-column. Syntax and the `--guarded-fields` lint for pages scaffolded before the
-marker: `proto`. Unwritten read-only columns: `forge lint --read-only-fields`.
+`forge:generated`, which imply it) itself, guards adds no protection to a
+read-only column. What it still adds is discoverability: read-only alone drops
+the field from the edit page without a word, while read-only plus guards
+renders it disabled, reading "Changed through `ChangeJobStatus`", at the moment
+a user is looking for how to change it. Guards alone is the weaker choice: it
+only stops forge's own form from writing the column. Syntax, and the
+`--guarded-fields` lint for pages scaffolded before the marker: `proto`.
+Unwritten read-only columns: `forge lint --read-only-fields`.
 
 ## If rows belong to someone, that is a column
 

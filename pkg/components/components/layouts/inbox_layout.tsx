@@ -48,7 +48,10 @@ export default function InboxLayout({
         >
           {list}
         </aside>
-        <main aria-label="Item preview" className="min-h-0 relative overflow-y-auto">
+        <main
+          aria-label="Item preview"
+          className="min-h-0 relative overflow-y-auto"
+        >
           {preview}
         </main>
       </div>

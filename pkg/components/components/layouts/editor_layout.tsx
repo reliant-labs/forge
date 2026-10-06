@@ -56,7 +56,10 @@ export default function EditorLayout({
         )}
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <main aria-label="Canvas" className="min-h-0 flex-1 relative overflow-auto">
+          <main
+            aria-label="Canvas"
+            className="min-h-0 flex-1 relative overflow-auto"
+          >
             {canvas}
           </main>
 

@@ -495,6 +495,10 @@ Docker Compose containers, Kubernetes workloads/clusters, and Docker Desktop
 are not stopped by this command. The per-environment form also stops declared
 host infrastructure servers while preserving their data.
 
+This command never touches a HOSTED environment (one the control plane runs):
+suspend/resume it with ` + "`forge env stop`" + ` / ` + "`forge env start`" + `, tear it down with
+` + "`forge env delete`" + `.
+
 Use --all when a stack outlived its project directory: without a forge.yaml
 there is no project to scope to, and the per-environment form cannot reach
 it. ` + "`forge env ps`" + ` lists what is running first.

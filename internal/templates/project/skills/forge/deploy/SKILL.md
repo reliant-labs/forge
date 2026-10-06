@@ -319,8 +319,9 @@ A site with no backend is a whole project: `deploy/static-site`.
 Every hosted site and exposed hosted port already answers on a hostname the
 platform allocates. To ALSO serve your own, use the `forge domain` commands —
 **a hosted domain is NOT spec**, and a hosted frontend or port carrying
-`domains` is refused at render. `forge.OnCluster` keeps `Port.domains`. For
-the commands and how to read a bound domain's state: load `deploy/domains`.
+`domains` is refused at render. `forge.OnCluster` keeps `Port.domains`.
+Domains: `deploy/domains`. Hosted `forge env stop|start|delete`:
+`deploy/lifecycle`.
 
 PDB lint + stale-PDB prune: deploy/pdb.
 

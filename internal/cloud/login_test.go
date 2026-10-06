@@ -96,3 +96,10 @@ func TestBrowserLogin_TimesOutWithTheCITip(t *testing.T) {
 		t.Fatalf("the timeout should point at the non-interactive path; got %v", err)
 	}
 }
+
+func TestLoginScopes_PinsTheRequestedSet(t *testing.T) {
+	want := "deploy:read deploy:write secret:read secret:write domain:read domain:write"
+	if got := strings.Join(LoginScopes(), " "); got != want {
+		t.Errorf("LoginScopes = %q, want %q", got, want)
+	}
+}

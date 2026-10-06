@@ -27,6 +27,11 @@ human-gated, none of which a deploy converges. It also binds to ONE env,
 while an env file renders to many. And the platform may allocate a hostname
 itself, which a spec field would then contradict.
 
+If a domain command is rejected for a missing `domain:read`/`domain:write`
+scope, re-run `forge login` to pick it up; if the token still lacks it, your
+role has no grant — an org admin can mint `forge cloud token create --env <env>
+--name <n> --scopes domain:read,domain:write`.
+
 ## `forge.OnCluster` keeps `Port.domains`
 
 There you own the ingress, forge renders the Gateway and HTTPRoute, and

@@ -19,12 +19,13 @@ import (
 // ClientID is forge's OAuth client id at a control plane.
 const ClientID = "forge-cli"
 
-// LoginScopes is what `forge login` asks for: deploy and manage secrets for
-// the caller's organization. The control plane grants the intersection with
-// what the user's role allows and reports it, so a member who is not an admin
-// gets a narrower token rather than a refusal.
+// LoginScopes is what `forge login` asks for: deploy, manage secrets and manage
+// custom domains for the caller's organization. The control plane grants the
+// intersection of this list, the scopes the forge-cli client is allowed, and
+// what the user's role grants, and reports it — so an older control plane or a
+// member without a grant gets a narrower token, never a refusal.
 func LoginScopes() []string {
-	return []string{"deploy:read", "deploy:write", "secret:read", "secret:write"}
+	return []string{"deploy:read", "deploy:write", "secret:read", "secret:write", "domain:read", "domain:write"}
 }
 
 // BrowserLogin runs the interactive half of `forge login`: the OAuth 2.0

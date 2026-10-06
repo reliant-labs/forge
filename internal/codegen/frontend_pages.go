@@ -1517,7 +1517,9 @@ func isEnumLikeFieldName(name string) bool {
 
 // listColumnIdentityFields are the identity/audit columns a LIST page omits by
 // default. They stay on the DETAIL page, where "when was this created" is a
-// real question a reader asks about one record.
+// real question a reader asks about one record — and so they are omitted only
+// when there IS a detail page (EmitsDetailPage); otherwise they would be
+// reachable nowhere in the UI.
 //
 // This is the same judgement the existing deleted_at skip already makes —
 // machinery, not data — applied to the fields every measured run deleted by
@@ -1738,7 +1740,10 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 			}
 		}
 		page.Columns = append(page.Columns, col)
-		if !listColumnExcluded(f.Name) {
+		// The identity/audit columns are dropped from the list only
+		// because the detail page shows them. Without a detail page the
+		// list is the record's only view, so they stay.
+		if !page.EmitsDetailPage() || !listColumnExcluded(f.Name) {
 			page.ListColumns = append(page.ListColumns, col)
 		}
 
@@ -1884,6 +1889,14 @@ func mergeEnumImports(a, b []PageEnumImport) []PageEnumImport {
 func PascalToKebab(s string) string {
 	return naming.ToKebabCase(s)
 }
+
+// EmitsDetailPage reports whether the detail page (`/<slug>/<id>`) is
+// scaffolded. It is the ONE answer to "does a record have a page of its own":
+// the page generator writes the detail route on it, and every other page that
+// links to a record — the list's row click, the create page's landing — asks
+// it too. A link built on any other condition is a 404 the moment the service
+// has a List RPC but no Get RPC.
+func (p PageTemplateData) EmitsDetailPage() bool { return p.HasGet }
 
 // EmitsEditPage reports whether the edit page can be scaffolded. The page loads
 // the record through the entity's Get hook before it renders the form, so an

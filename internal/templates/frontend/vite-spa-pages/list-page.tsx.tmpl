@@ -38,7 +38,9 @@ import { useState } from "react";
 {{- end}}
 import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";
 import { keepPreviousData } from "@tanstack/react-query";
-import { {{if .HasCreate}}Link, {{end}}useNavigate } from "@tanstack/react-router";
+{{- if or .HasCreate .EmitsDetailPage}}
+import { {{if .HasCreate}}Link{{end}}{{if and .HasCreate .EmitsDetailPage}}, {{end}}{{if .EmitsDetailPage}}useNavigate{{end}} } from "@tanstack/react-router";
+{{- end}}
 {{- if .HasCreate}}
 import { Plus } from "lucide-react";
 {{- end}}
@@ -61,9 +63,15 @@ const PAGE_SIZE = 25;
 
 // ---- Typed columns ----
 // One entry per renderable proto field, type-checked against {{.EntityName}}.
+{{- if .EmitsDetailPage}}
 // The id and the created/updated timestamps are deliberately NOT here — the row
 // already links to the detail page, which is where they belong. Add one back if
 // this list needs it; this file is yours.
+{{- else}}
+// The service has no Get RPC, so there is no detail page: rows are not links,
+// and the id and timestamps a detail page would show stay here instead. Add a
+// Get RPC (and delete + rescaffold this file) to give records a page of their own.
+{{- end}}
 const columns: ResourceColumn<{{.EntityName}}>[] = [
 {{- range .ListColumns}}
   {
@@ -84,7 +92,9 @@ const columns: ResourceColumn<{{.EntityName}}>[] = [
 ];
 
 export default function {{.EntityNamePlural}}Page() {
+{{- if .EmitsDetailPage}}
   const navigate = useNavigate();
+{{- end}}
 {{- if .HasCursorPagination}}
 
   // Cursor stack: each entry is the page_token that opened that page (the
@@ -156,7 +166,9 @@ export default function {{.EntityNamePlural}}Page() {
       isFetching={query.isFetching}
       columns={columns}
       rowKey={(item) => String(item.{{.PkFieldCamel}})}
+{{- if .EmitsDetailPage}}
       onRowClick={(item) => void navigate({ to: `/{{.EntitySlug}}/$id`, params: { id: String(item.{{.PkFieldCamel}}) } })}
+{{- end}}
       emptyTitle="No {{.EntityNamePlural | humanLower}} found"
       emptyMessage="No records match the current view."
 {{- if .SearchFilterField}}

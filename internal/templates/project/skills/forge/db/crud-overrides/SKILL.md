@@ -32,6 +32,27 @@ overridable the same way; the lifecycle (persist → pack, error mapping) stays
 in `forge/pkg/crud`, and schema/proto changes keep flowing through the
 regenerated op underneath your override.
 
+## Which file, and when forge emits an op
+
+`handlers_crud.go` is where forge *appends* shims; it is not where a CRUD
+method has to *stay*. Move a shim — delegating, overridden, or scoped — to
+any file of the handler package and the next `forge generate` treats it the
+same. Per CRUD rpc, over every file of the package:
+
+- **no method declares the rpc** → forge appends a delegating shim to
+  `handlers_crud.go` and emits `crud<Rpc>Op`;
+- **a method declares it and anything in the package calls
+  `s.crud<Rpc>Op`** → the op is emitted (and no shim is appended);
+- **a method declares it and nothing calls the op** → the rpc is
+  implemented by hand: no op is emitted, and the op's own checks (a list
+  filter naming no column, an Update on an append-only table) do not apply.
+  This is the escape hatch those errors point you at.
+
+`<entity>ToProto` / `<entity>FromProto` stay emitted while anything in the
+package calls them — a custom rpc projecting rows keeps its helper even when
+every CRUD rpc of that entity is hand-written. Declare your own function of
+that name and forge stops emitting it.
+
 ## Where a per-caller policy attaches
 
 Forge enforces no policy of its own, so if rows are restricted to some callers,

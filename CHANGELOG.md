@@ -334,6 +334,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Scaffolded pages are yours, so existing projects keep their pages. Delete
   a page and run `forge project rescaffold <path>` to pick up the new form.
+- **A CRUD op no longer disappears when its shim moves out of
+  `handlers_crud.go`.** Generate decided which `crud<Rpc>Op`s to emit by
+  file: a method declared anywhere except `handlers_crud.go` counted as
+  "implemented by hand" and lost its op. Moving a shim verbatim into a
+  sibling file (roofers: `CreatePayment` into `invoice_ops.go`) therefore
+  made the next generate drop `crudCreatePaymentOp`, fail its own build
+  validation and revert 70 files. Emission now follows what the package's
+  code calls, in any file: an op is emitted when no method declares the rpc
+  (forge appends a shim) or when anything in the package calls
+  `s.crud<Rpc>Op`; a method that calls no op is hand-written wherever it
+  lives, so it gets no op and the op's own checks do not apply. Shims are
+  appended only for rpcs no file of the package declares, so a moved shim is
+  never declared twice. `<entity>ToProto` / `<entity>FromProto` stay emitted
+  while any code in the package calls them, even when every CRUD rpc of the
+  entity is hand-written. Behavior change: a real implementation written
+  inside `handlers_crud.go` (one that no longer calls its op) is now treated
+  like one in any other file — no op, no op validation.
+- **A failed validate build names the error on its ROOT CAUSE line.** The
+  line read `go build failed: exit status 1. Fix: ensure all referenced types
+  are imported` whatever the error was. It now quotes the first compiler
+  error (`file:line:col: message`, plus a count of the rest) and says whether
+  that file is hand-written (fix it) or generated (fix its inputs, or report
+  a forge bug). A failing generated `_test.go` typecheck quotes its first
+  error the same way. The revert is unchanged.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

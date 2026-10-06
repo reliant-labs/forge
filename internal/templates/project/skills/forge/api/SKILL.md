@@ -148,7 +148,7 @@ The explicit composition (`NewComponents`) fills each `Deps` field as an **inter
 ## Adding or customizing an RPC
 
 - **New custom RPC:** declare it in the proto and run `forge generate` (or `forge scaffold rpc <service> <Name>`, which self-heals a stale descriptor and writes a correctly-signed stub); generate emits a pb-through method returning `CodeUnimplemented` for you to fill in place (no generated `<Name>Input`/`Result` types or converters). After a batch of proto edits, `forge scaffold` does the whole chain in one phased run (`--dry-run` plans).
-- **Customizing a CRUD RPC:** replace its delegation in the owned `handlers_crud.go` — access-control / row-scoping `WHERE` goes there, never in `handlers_crud_ops_gen.go`.
+- **Customizing a CRUD RPC:** replace its delegation in the owned `handlers_crud.go` — access-control / row-scoping `WHERE` goes there, never in `handlers_crud_ops_gen.go`. The method may also move to any other file of the package: forge emits `crud<Rpc>Op` while anything in the package calls it, whichever file that is (`db/crud-overrides`).
 
 ## When this skill is not enough
 

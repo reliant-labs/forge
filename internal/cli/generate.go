@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -798,15 +799,74 @@ func runGoBuildValidate(projectDir string) error {
 	validateCmd.Stdout = os.Stdout
 	validateCmd.Stderr = io.MultiWriter(os.Stderr, &buildStderr)
 	if err := validateCmd.Run(); err != nil {
-		errOutput := buildStderr.String()
-		fix := goBuildValidateFixHint(errOutput)
-		return &validateBuildError{
-			Output: errOutput,
-			err: cliutil.WrapUserErr("forge generate (validate generated code)",
-				"go build failed", "", fix, err),
-		}
+		return goBuildValidateFailure(projectDir, buildStderr.String(), err)
 	}
 	return validateTestFilesTypecheck(projectDir)
+}
+
+// goBuildValidateFailure builds the error a failed validate build returns.
+// Its message is the ROOT CAUSE line of the failed-generate report and the
+// last line of the run, so it QUOTES the first compiler error verbatim —
+// file:line:col and message — rather than `exit status 1`.
+//
+// The roofers dogfood run is why: generate stopped emitting an op a
+// sibling file called, and the ROOT CAUSE line read "go build failed: exit
+// status 1. Fix: ensure all referenced types are imported" — wrong advice
+// about the wrong thing, while `invoice_ops.go:64:10: s.crudCreatePaymentOp
+// undefined` sat further down in the compiler dump. The full output still
+// follows the ROOT CAUSE line; this makes the line itself actionable.
+func goBuildValidateFailure(projectDir, errOutput string, runErr error) *validateBuildError {
+	cause := runErr
+	if errs := compilerErrorLines(errOutput); len(errs) > 0 {
+		quoted := errs[0]
+		if more := len(errs) - 1; more > 0 {
+			quoted += fmt.Sprintf(" (+%d more compiler error(s) in the output)", more)
+		}
+		cause = errors.New(quoted)
+	}
+	fix := goBuildValidateFixHint(errOutput, func(rel string) bool {
+		return isGeneratedGoSource(filepath.Join(projectDir, rel))
+	})
+	return &validateBuildError{
+		Output: errOutput,
+		err: cliutil.WrapUserErr("forge generate (validate generated code)",
+			"go build failed", "", fix, cause),
+	}
+}
+
+// compilerErrorLines returns the lines of compiler output that carry a
+// file:line coordinate, in order — the errors themselves, without the
+// `# package` headers and indented continuation lines around them.
+func compilerErrorLines(output string) []string {
+	var errs []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue // continuation of the error above (have/want, etc.)
+		}
+		if strings.HasSuffix(line, ": too many errors") {
+			continue // the compiler's truncation notice, not an error
+		}
+		if errorLineFile(line) != "" {
+			errs = append(errs, strings.TrimSpace(line))
+		}
+	}
+	return errs
+}
+
+// goGeneratedHeader is Go's generated-code convention
+// (https://go.dev/s/generatedcode), which buf's stubs follow too.
+var goGeneratedHeader = regexp.MustCompile(`(?m)^// Code generated .* DO NOT EDIT\.$`)
+
+// isGeneratedGoSource reports whether path is generated code — forge's own
+// (a forge:hash marker) or any tool's that follows Go's convention. It
+// decides which remediation the validate failure offers: edit the file, or
+// fix what it was generated from. Unreadable reads as hand-written.
+func isGeneratedGoSource(path string) bool {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return checksums.Verify(content) != checksums.NoMarker || goGeneratedHeader.Match(content)
 }
 
 // validateTestFilesTypecheck closes the hole `go build ./...` leaves:
@@ -916,12 +976,17 @@ func validateTestFilesTypecheck(projectDir string) error {
 	sort.Strings(owned)
 	output := strings.Join(owned, "\n") + "\n"
 	fmt.Fprintf(os.Stderr, "\n%s", output)
+	// Quote the first error on the ROOT CAUSE line, as goBuildValidateFailure does.
+	quoted := owned[0]
+	if more := len(owned) - 1; more > 0 {
+		quoted += fmt.Sprintf(" (+%d more typecheck error(s) in the output)", more)
+	}
 	return &validateBuildError{
 		Output: output,
 		err: cliutil.WrapUserErr("forge generate (validate generated code)",
 			"generated test files do not compile", "",
 			"a forge-generated _test.go file in this tree fails to typecheck — this is a forge codegen bug worth reporting",
-			errors.New("test-file typecheck failed")),
+			errors.New(quoted)),
 	}
 }
 
@@ -964,11 +1029,19 @@ func isForgeOwnedFile(path string) bool {
 //  2. `undefined:` against the project's own `pkg/config` package —
 //     proto/config/ likely has no annotated config fields yet.
 //
-//  3. Default fall-through — generic "ensure imports / re-run generate".
+//  3. Any other error with a coordinate — name the first one and who owns
+//     the file it cites. isGenerated(rel) answers that for a
+//     project-relative path: generated code is fixed at its inputs, a
+//     hand-written file is fixed where it stands. Guessing a remedy from
+//     the message ("ensure all referenced types are imported") is what
+//     this replaced: it was wrong for the usual case, a hand-written file
+//     calling something this generate did not emit.
+//
+//  4. No coordinate at all — generic "ensure imports / re-run generate".
 //
 // Extracted from runGoBuildValidate so unit tests can pin the hint
 // selection without spinning up a tmpdir project + a real go build.
-func goBuildValidateFixHint(errOutput string) string {
+func goBuildValidateFixHint(errOutput string, isGenerated func(rel string) bool) string {
 	if errOutput == "" {
 		return "ensure all referenced types are imported and re-run 'forge generate'"
 	}
@@ -988,6 +1061,16 @@ func goBuildValidateFixHint(errOutput string) string {
 	}
 	if strings.Contains(errOutput, "pkg/config") {
 		return "ensure proto/config/ has annotated config fields and re-run 'forge generate'"
+	}
+	if errs := compilerErrorLines(errOutput); len(errs) > 0 {
+		file := errorLineFile(errs[0])
+		if isGenerated != nil && isGenerated(file) {
+			return file + " is generated — do not edit it. Fix what it was generated from (proto, migrations, " +
+				"or the hand-written code it references) and re-run 'forge generate'; if those are correct, " +
+				"this is a forge bug worth reporting"
+		}
+		return file + " is hand-written, not generated: fix the compiler error quoted above in it, " +
+			"then re-run 'forge generate'"
 	}
 	return "ensure all referenced types are imported and re-run 'forge generate'"
 }

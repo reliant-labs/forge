@@ -48,7 +48,7 @@ func TestBuildCRUDTemplateData_AppendOnlyEntityRejectsUpdateRPC(t *testing.T) {
 		t.Fatalf("fixture must produce one matched update method, got %d", len(methods))
 	}
 
-	_, err := buildCRUDTemplateData(svc, methods, "example.com/test")
+	_, err := buildCRUDTemplateData(svc, methods, nil, "example.com/test")
 	if err == nil {
 		t.Fatal("an Update RPC against an append-only table must fail the generate; " +
 			"emitting the op would reference db.UpdatePayment, which forge does not generate — " +
@@ -77,7 +77,7 @@ func TestBuildCRUDTemplateData_AppendOnlyEntityRejectsDeleteRPC(t *testing.T) {
 		t.Fatalf("fixture must produce one matched delete method, got %d", len(methods))
 	}
 
-	_, err := buildCRUDTemplateData(svc, methods, "example.com/test")
+	_, err := buildCRUDTemplateData(svc, methods, nil, "example.com/test")
 	if err == nil {
 		t.Fatal("a Delete RPC against an append-only table must fail the generate")
 	}
@@ -107,7 +107,7 @@ func TestBuildCRUDTemplateData_AppendOnlyEntityAllowsCreateGetList(t *testing.T)
 	if len(methods) != 3 {
 		t.Fatalf("expected create/get/list to match, got %d", len(methods))
 	}
-	if _, err := buildCRUDTemplateData(svc, methods, "example.com/test"); err != nil {
+	if _, err := buildCRUDTemplateData(svc, methods, nil, "example.com/test"); err != nil {
 		t.Fatalf("append-only removes the MUTATING verbs only; create/get/list must still generate: %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestBuildCRUDTemplateData_MutableEntityKeepsUpdateRPC(t *testing.T) {
 	if len(methods) != 1 {
 		t.Fatalf("fixture must produce one matched update method, got %d", len(methods))
 	}
-	if _, err := buildCRUDTemplateData(svc, methods, "example.com/test"); err != nil {
+	if _, err := buildCRUDTemplateData(svc, methods, nil, "example.com/test"); err != nil {
 		t.Fatalf("a mutable entity's Update RPC must still generate: %v", err)
 	}
 }

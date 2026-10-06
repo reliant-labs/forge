@@ -52,6 +52,7 @@ import (
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // RolloutMode is what Apply does after the manifests land.
@@ -1984,27 +1985,9 @@ func reportsImmutableUpdate(body string) bool {
 	return strings.Contains(body, "field is immutable") || forbiddenUpdateRe.MatchString(body)
 }
 
-// recreatableKinds is the allowlist of kinds the immutable recovery may delete
-// and re-apply. Membership means: deleting the object loses no state, because
-// it owns no data and nothing is garbage-collected through it — workloads are
-// re-created from the manifest, and cluster-scoped config objects (a
-// StorageClass's bound PVs and PVCs keep their own resolved disk spec and only
-// reference the class by name) are re-created by name. A kind that holds data
-// (PersistentVolumeClaim, PersistentVolume, StatefulSet), or whose delete
-// cascades to everything inside it (Namespace, CustomResourceDefinition), is
-// deliberately absent: an immutable conflict there must fail the deploy loudly
-// rather than be "healed" by destroying a workspace's disk.
-var recreatableKinds = map[string]bool{
-	"Job":                true,
-	"Deployment":         true,
-	"DaemonSet":          true,
-	"Service":            true,
-	"StorageClass":       true,
-	"RuntimeClass":       true,
-	"PriorityClass":      true,
-	"ClusterRoleBinding": true,
-	"RoleBinding":        true,
-}
+// recreatableKinds is release.RecreatableKind: the allowlist lives in
+// pkg/release so the deploy plan names exactly the objects this recovery may
+// delete and re-apply (see that list's comment for what membership means).
 
 // immutableResources is the batch-aware extractor: it returns EVERY distinct
 // recoverable immutable-field conflict reported by a single apply, not just
@@ -2049,7 +2032,7 @@ func immutableResources(stderr, manifests string) []immutableTarget {
 			continue
 		}
 		kind, name, ok := parseInvalidResource(head)
-		if !ok || !recreatableKinds[kind] {
+		if !ok || !release.RecreatableKind(kind) {
 			continue
 		}
 		ns := namespaceForResource(manifests, kind, name)

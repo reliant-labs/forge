@@ -309,6 +309,9 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			// than leaving the reader to assume.
 			fmt.Printf("  promoted %s (promote time, NOT deploy time — that gap is what this command checks)\n", formatLedgerTime(binding.PromotedAt))
 		}
+		if line := latestApplyLine(projectDir, envName, binding.ID, time.Now()); line != "" {
+			fmt.Println(line)
+		}
 		if ledger != nil {
 			// Said up front, before any per-image line: a reader who
 			// sees DRIFT first and this last has already started

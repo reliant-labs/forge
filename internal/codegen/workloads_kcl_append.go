@@ -11,24 +11,20 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// AppendWorkloadStanza adds one workload declaration to the END of a
-// project's deploy/kcl/workloads.k and reports whether it succeeded.
+// AppendWorkloadStanza adds one workload to a project's
+// deploy/kcl/workloads.k — its declaration, and its name in the `ALL` list —
+// and reports whether it did.
 //
-// APPEND-ONLY. Existing content is never rewritten, reformatted or reordered:
-// the file is user-owned, so the only edit forge makes to it is adding a new
-// declaration after everything already there.
-//
-// The anchor is END OF FILE, and that is a direct consequence of the
-// declaration shape. Workloads are NAMED top-level bindings
-// (`billing = fw.Workload {...}`), not entries in one list, so there is no
-// closing bracket to insert before and no structure to parse: a new
-// declaration is simply valid KCL appended after the last one. That is
-// strictly safer than the list form it replaced, which had to locate exactly
-// one `]` and gave up whenever a user's edits made that ambiguous.
+// ADDITIVE ONLY. Existing content is never rewritten, reformatted or
+// reordered: the file is user-owned, so the only edits forge makes to it are
+// the new declaration (above the ALL list's comment block) and the one new
+// list entry, written in the style the list already uses. Every other byte,
+// comment and line break stays where the user left it.
 //
 // It returns applied=false, with no error and no write, when the file is
-// missing or the workload is already declared. The caller then PRINTS the
-// stanza for the user to paste.
+// missing, the workload is already declared, or the ALL list cannot be
+// located unambiguously. The caller then PRINTS the stanza for the user to
+// paste.
 func AppendWorkloadStanza(projectDir, modulePath, projectName string, c config.ComponentConfig) (applied bool, err error) {
 	path := filepath.Join(projectDir, WorkloadsKCLRelPath)
 	raw, err := os.ReadFile(path)
@@ -47,71 +43,69 @@ func AppendWorkloadStanza(projectDir, modulePath, projectName string, c config.C
 		return false, nil
 	}
 
-	ident := naming.KCLIdentifier(c.Name)
-
-	// The declaration itself goes after everything already in the file, then
-	// the `ALL` list is re-emitted with the new name appended.
-	//
-	// BOTH edits are required, and the second is why this is not a pure
-	// append: a declaration nothing references is dead code, and a workload
-	// missing from `ALL` would scaffold cleanly and then silently never
-	// deploy. If `ALL` cannot be located unambiguously the whole write is
-	// abandoned (applied=false) rather than half-applied — the caller prints
-	// the stanza and the user places it, which is the same contract the file
-	// has always had for content it cannot safely edit.
-	loc := allListLine.FindStringSubmatchIndex(content)
-	if loc == nil {
+	updated, ok := addWorkloadDeclaration(content, naming.KCLIdentifier(c.Name), WorkloadStanza(modulePath, projectName, c))
+	if !ok {
 		return false, nil
 	}
-	existing := strings.TrimSpace(content[loc[2]:loc[3]])
-	members := ident
-	if existing != "" {
-		members = existing + ", " + ident
-	}
-	withAll := content[:loc[2]] + members + content[loc[3]:]
-
-	// Insert the declaration BEFORE the comment block introducing the ALL
-	// list, so `ALL` stays the last thing in the file — it reads as the
-	// summary of everything above it, which is the only reason to put a list
-	// of names at the bottom of a file of declarations.
-	//
-	// The anchor is the start of the ALL line's own comment block: walk back
-	// over the contiguous `#` lines that document it, so the declaration
-	// lands above the prose rather than wedged between it and the list.
-	lines := strings.Split(withAll, "\n")
-	allAt := -1
-	for i, ln := range lines {
-		if strings.HasPrefix(ln, "ALL:") || strings.HasPrefix(ln, "ALL ") {
-			allAt = i
-			break
-		}
-	}
-	if allAt < 0 {
-		return false, nil
-	}
-	insertAt := allAt
-	for insertAt > 0 && strings.HasPrefix(strings.TrimSpace(lines[insertAt-1]), "#") {
-		insertAt--
-	}
-
-	stanza := strings.TrimRight(WorkloadStanza(modulePath, projectName, c), "\n")
-	out := append([]string{}, lines[:insertAt]...)
-	out = append(out, strings.Split(stanza, "\n")...)
-	out = append(out, "")
-	out = append(out, lines[insertAt:]...)
-	updated := strings.Join(out, "\n")
-
 	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// allListLine matches the `ALL: [fw.Workload] = [...]` aggregation list,
-// capturing its contents so a new name can be appended. Anchored on the
-// typed declaration rather than a bare `ALL` so the word appearing in prose
-// or a comment cannot be mistaken for it.
-var allListLine = regexp.MustCompile(`(?m)^ALL\s*:\s*\[fw\.Workload\]\s*=\s*\[([^\]]*)\]`)
+// addWorkloadDeclaration makes the two edits a new workload needs: its
+// declaration, and its identifier in the `ALL` list.
+//
+// BOTH are required: a declaration nothing references is dead code, and a
+// workload missing from `ALL` would scaffold cleanly and then silently never
+// deploy. If `ALL` cannot be located unambiguously — no list, two of them, or
+// one that is never closed — NEITHER edit is made (ok=false) rather than half
+// of them: the caller prints the stanza and the user places it, which is the
+// contract this file has always had for content forge cannot safely edit.
+//
+// The list edit touches only the new entry (appendKCLListElement), and is
+// skipped when `ALL` already names the identifier, so a workload listed ahead
+// of its declaration is not listed twice.
+func addWorkloadDeclaration(content, ident, stanza string) (string, bool) {
+	heads := allListHead.FindAllStringIndex(content, -1)
+	if len(heads) != 1 {
+		return content, false
+	}
+	allStart, open := heads[0][0], heads[0][1]-1
+	list, ok := scanKCLList(content, open)
+	if !ok {
+		return content, false
+	}
+	updated := content
+	if !kclListHasEntry(list, ident) {
+		updated, _ = appendKCLListElement(content, open, ident)
+	}
+
+	// The declaration goes ABOVE the comment block introducing the ALL list,
+	// so `ALL` stays the last thing in the file — it reads as the summary of
+	// everything above it, which is the only reason to put a list of names at
+	// the bottom of a file of declarations. Walk back over the contiguous `#`
+	// lines that document it, so the declaration lands above the prose rather
+	// than wedged between it and the list. The list edit above only changed
+	// bytes after `open`, so allStart still marks the ALL line.
+	at := allStart
+	for at > 0 {
+		prev := lineStart(updated, at-1)
+		if !strings.HasPrefix(strings.TrimSpace(updated[prev:at]), "#") {
+			break
+		}
+		at = prev
+	}
+	return updated[:at] + stanza + "\n" + updated[at:], true
+}
+
+// allListHead matches the head of the `ALL: [fw.Workload] = [` aggregation
+// list, up to and including its opening bracket. Anchored on the typed
+// declaration at the start of a line rather than a bare `ALL`, so the word
+// appearing in prose or a comment cannot be mistaken for it. The list itself
+// is read by scanKCLList, not by this pattern: a list is not a regular
+// language once comments may hold brackets.
+var allListHead = regexp.MustCompile(`(?m)^ALL\s*:\s*\[\s*fw\.Workload\s*\]\s*=\s*\[`)
 
 // workloadDeclaredIn reports whether the KCL source already declares a
 // workload called name. It matches BOTH the binding (`billing = fw.Workload`)

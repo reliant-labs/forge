@@ -76,93 +76,26 @@ func declaredWorkloadNames(src string) map[string]bool {
 	return out
 }
 
-// declaredWorkload is what one `<ident> = fw.Workload {...}` literal runs:
-// its name, the cmd of its GoBuild (empty when it builds nothing forge
-// compiles), and its args.
-type declaredWorkload struct {
-	name     string
-	buildCmd string
-	args     []string
-}
-
-var (
-	// workloadLiteral matches the opening of a top-level workload binding.
-	workloadLiteral = regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_]*\s*=\s*fw\.Workload\s*\{`)
-	// goBuildCmd captures the cmd of a GoBuild inside a workload literal.
-	goBuildCmd = regexp.MustCompile(`GoBuild\s*\{[^}]*\bcmd\s*=\s*"([^"]+)"`)
-	// argsList captures the contents of a workload's `args = [...]`.
-	argsList = regexp.MustCompile(`(?m)^\s*args\s*=\s*\[([^\]]*)\]`)
-	// kclString matches one double-quoted KCL string.
-	kclString = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
-)
-
-// declaredWorkloads parses each workload literal in a workloads.k, keyed by
-// its declared name, so the drift lint can judge a workload by what it RUNS
-// rather than by what it is called. Prose is stripped first, for the reason
-// declaredWorkloadNames gives. A literal this cannot read is simply absent —
-// its name still reaches the lint through declaredWorkloadNames and is
-// judged by name alone.
-func declaredWorkloads(src string) map[string]declaredWorkload {
-	src = codegen.StripKCLProse(src)
-	out := map[string]declaredWorkload{}
-	for _, loc := range workloadLiteral.FindAllStringIndex(src, -1) {
-		body, ok := kclBlockBody(src, loc[1])
-		if !ok {
-			continue
-		}
-		m := workloadNameInKCL.FindStringSubmatch(body)
-		if m == nil {
-			continue
-		}
-		w := declaredWorkload{name: m[1]}
-		if b := goBuildCmd.FindStringSubmatch(body); b != nil {
-			w.buildCmd = b[1]
-		}
-		if a := argsList.FindStringSubmatch(body); a != nil {
-			for _, s := range kclString.FindAllStringSubmatch(a[1], -1) {
-				w.args = append(w.args, s[1])
-			}
-		}
-		out[w.name] = w
-	}
-	return out
-}
-
-// kclBlockBody returns the text between the `{` that ends at open and its
-// matching `}`, skipping braces inside string literals.
-func kclBlockBody(src string, open int) (string, bool) {
-	depth := 1
-	inString := false
-	for i := open; i < len(src); i++ {
-		c := src[i]
-		switch {
-		case inString:
-			if c == '\\' {
-				i++
-			} else if c == '"' {
-				inString = false
-			}
-		case c == '"':
-			inString = true
-		case c == '{':
-			depth++
-		case c == '}':
-			depth--
-			if depth == 0 {
-				return src[open:i], true
-			}
-		}
-	}
-	return "", false
-}
-
 // runsBuiltinCommand reports whether a declared workload is one of the
 // project binary's OWN commands — the scaffolded `db migrate up` job, the
 // `auth idp-provision` job, an all-in-one `server` — rather than a
 // component. Such a workload is neither a component nor drift: nothing in
 // the code is missing, and nothing about it is stale.
-func runsBuiltinCommand(w declaredWorkload, projectName string) bool {
-	return codegen.ProjectBinaryRuns(projectName, w.buildCmd) && codegen.RunsBuiltinSubcommand(w.args)
+func runsBuiltinCommand(w codegen.DeclaredWorkload, projectName string) bool {
+	return codegen.ProjectBinaryRuns(projectName, w.BuildCmd) && codegen.RunsBuiltinSubcommand(w.Args)
+}
+
+// servesAnyOf reports whether w's `serves` names a component the code has. A
+// workload running several components through one subcommand is named for
+// the process (`admin-api`), not for any one component, so it matches none
+// by name — what it serves is what makes it current rather than stale.
+func servesAnyOf(w codegen.DeclaredWorkload, inCode map[string]bool) bool {
+	for name := range inCode {
+		if w.ServesComponent(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectComponentDrift compares the project's discovered components against
@@ -175,7 +108,10 @@ func runsBuiltinCommand(w declaredWorkload, projectName string) bool {
 // A declared workload is judged by what it RUNS. One that runs a built-in
 // command of the project binary (runsBuiltinCommand) matches no component by
 // design, so it is never reported as an orphan — which is what kept every
-// fresh scaffold warning about its own `migrate` job.
+// fresh scaffold warning about its own `migrate` job. Likewise a component
+// another workload runs (codegen.ServingWorkload: its `serves`, or an
+// all-in-one `server`) is not undeclared, and a workload whose `serves`
+// names a live component is not an orphan.
 func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]componentDriftFinding, error) {
 	if cfg == nil {
 		return nil, nil
@@ -190,13 +126,19 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	}
 
 	declared := declaredWorkloadNames(string(raw))
-	runs := declaredWorkloads(string(raw))
+	runs := codegen.DeclaredWorkloads(string(raw))
 
 	inCode := map[string]bool{}
 	var findings []componentDriftFinding
 	for _, c := range codegen.DiscoverProjectComponents(projectDir, cfg.Name) {
 		inCode[c.Name] = true
 		if declared[c.Name] {
+			continue
+		}
+		// Run by another workload's process — named in its `serves`, or
+		// one `server` that runs everything. Declaring it again would
+		// deploy it twice, so its absence is not drift.
+		if _, served := codegen.ServingWorkload(runs, cfg.Name, c); served {
 			continue
 		}
 		findings = append(findings, componentDriftFinding{
@@ -215,7 +157,7 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 		if inCode[name] {
 			continue
 		}
-		if w, ok := runs[name]; ok && runsBuiltinCommand(w, cfg.Name) {
+		if w, ok := runs[name]; ok && (runsBuiltinCommand(w, cfg.Name) || servesAnyOf(w, inCode)) {
 			continue
 		}
 		orphans = append(orphans, name)
@@ -241,13 +183,15 @@ func runComponentDrift(projectDir string, cfg *config.ProjectConfig) error {
 		if !f.Undeclared {
 			fmt.Printf("⚠️  %s declares %q, which no Go component matches.\n"+
 				"    Fine if it is infrastructure forge did not generate (NATS, a cache, a sidecar).\n"+
+				"    If its subcommand runs several components, list them in its `serves`.\n"+
 				"    Otherwise delete the entry — the component it named is gone.\n",
 				codegen.WorkloadsKCLRelPath, f.Name)
 			continue
 		}
 		fmt.Printf("⚠️  %s %q has no entry in %s, so no environment deploys it.\n"+
-			"    Add:\n\n%s\n",
-			f.Kind, f.Name, codegen.WorkloadsKCLRelPath, f.Stanza)
+			"    %s\n"+
+			"    Otherwise add:\n\n%s\n",
+			f.Kind, f.Name, codegen.WorkloadsKCLRelPath, codegen.ServesHint(f.Name), f.Stanza)
 	}
 	return nil
 }
@@ -268,7 +212,7 @@ func collectComponentDriftJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) 
 				Rule:     "component-drift/orphan-entry",
 				Message: fmt.Sprintf("%s declares %q, which no Go component matches",
 					codegen.WorkloadsKCLRelPath, f.Name),
-				FixHint: "expected if it is infrastructure forge did not generate; otherwise delete the entry",
+				FixHint: "expected if it is infrastructure forge did not generate; if its subcommand runs several components, list them in its `serves`; otherwise delete the entry",
 			})
 			continue
 		}
@@ -276,8 +220,8 @@ func collectComponentDriftJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) 
 			File:     codegen.WorkloadsKCLRelPath,
 			Severity: "warning",
 			Rule:     "component-drift/undeclared-component",
-			Message: fmt.Sprintf("%s %q has no entry in %s, so no environment deploys it",
-				f.Kind, f.Name, codegen.WorkloadsKCLRelPath),
+			Message: fmt.Sprintf("%s %q has no entry in %s, so no environment deploys it. %s",
+				f.Kind, f.Name, codegen.WorkloadsKCLRelPath, codegen.ServesHint(f.Name)),
 			FixHint: strings.TrimRight(f.Stanza, "\n"),
 		})
 	}

@@ -56,13 +56,7 @@ const variantConfig: Record<
 
 const icons: Record<AlertVariant, React.ReactNode> = {
   info: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -71,13 +65,7 @@ const icons: Record<AlertVariant, React.ReactNode> = {
     </svg>
   ),
   success: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -86,13 +74,7 @@ const icons: Record<AlertVariant, React.ReactNode> = {
     </svg>
   ),
   warning: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -101,13 +83,7 @@ const icons: Record<AlertVariant, React.ReactNode> = {
     </svg>
   ),
   error: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -136,21 +112,14 @@ export default function AlertBanner({
   }
 
   return (
-    <div
-      className={`rounded-lg border p-4 ${config.bg} ${config.border}`}
-      role="alert"
-    >
+    <div className={`rounded-lg border p-4 ${config.bg} ${config.border}`} role="alert">
       <div className="flex items-start gap-3">
         <div className={`flex-shrink-0 ${config.icon}`}>{icons[variant]}</div>
         <div className="flex-1 min-w-0">
-          {title ? (
-            <p className={`text-sm font-semibold ${config.title}`}>{title}</p>
-          ) : null}
+          {title ? <p className={`text-sm font-semibold ${config.title}`}>{title}</p> : null}
           {/* div, not p: a composed message may itself contain block content,
               and <p><div/></p> is invalid HTML that React hydrates wrong. */}
-          <div className={`text-sm ${config.text} ${title ? "mt-1" : ""}`}>
-            {message}
-          </div>
+          <div className={`text-sm ${config.text} ${title ? "mt-1" : ""}`}>{message}</div>
           {action && (
             <button
               onClick={action.onClick}
@@ -177,11 +146,7 @@ export default function AlertBanner({
               strokeWidth={2}
               stroke="currentColor"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 18L18 6M6 6l12 12"
-              />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         )}

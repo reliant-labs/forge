@@ -25,9 +25,7 @@ export default function HeroSection({
             {headline}
           </h1>
           {subheadline && (
-            <p className="mt-6 text-lg leading-relaxed text-ink-muted">
-              {subheadline}
-            </p>
+            <p className="mt-6 text-lg leading-relaxed text-ink-muted">{subheadline}</p>
           )}
           {(primaryCta || secondaryCta) && (
             <div className="mt-8 flex flex-wrap gap-4">
@@ -52,9 +50,7 @@ export default function HeroSection({
         </div>
 
         {/* Media area */}
-        {media && (
-          <div className="flex items-center justify-center">{media}</div>
-        )}
+        {media && <div className="flex items-center justify-center">{media}</div>}
       </div>
     </section>
   );

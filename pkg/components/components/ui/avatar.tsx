@@ -61,13 +61,7 @@ function initialsColor(name: string): string {
   return colors[hash % colors.length] ?? "bg-gray-500";
 }
 
-export default function Avatar({
-  src,
-  alt,
-  name,
-  size = "md",
-  status,
-}: AvatarProps) {
+export default function Avatar({ src, alt, name, size = "md", status }: AvatarProps) {
   const s = sizeStyles[size];
 
   return (
@@ -90,18 +84,12 @@ export default function Avatar({
         <div
           className={`${
             s.container
-          } flex items-center justify-center rounded-full text-white ${initialsColor(
-            name,
-          )}`}
+          } flex items-center justify-center rounded-full text-white ${initialsColor(name)}`}
         >
-          <span className={`font-medium leading-none ${s.text}`}>
-            {getInitials(name)}
-          </span>
+          <span className={`font-medium leading-none ${s.text}`}>{getInitials(name)}</span>
         </div>
       ) : (
-        <div
-          className={`${s.container} flex items-center justify-center rounded-full bg-border`}
-        >
+        <div className={`${s.container} flex items-center justify-center rounded-full bg-border`}>
           <svg
             className="h-1/2 w-1/2 text-ink-muted"
             fill="none"

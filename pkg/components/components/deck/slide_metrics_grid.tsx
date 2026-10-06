@@ -12,13 +12,8 @@ interface SlideMetricsGridProps {
   }>;
 }
 
-export const SlideMetricsGrid: React.FC<SlideMetricsGridProps> = ({
-  title,
-  subtitle,
-  metrics,
-}) => {
-  const colCount =
-    metrics.length <= 3 ? metrics.length : metrics.length <= 4 ? 2 : 3;
+export const SlideMetricsGrid: React.FC<SlideMetricsGridProps> = ({ title, subtitle, metrics }) => {
+  const colCount = metrics.length <= 3 ? metrics.length : metrics.length <= 4 ? 2 : 3;
 
   return (
     <div
@@ -27,9 +22,7 @@ export const SlideMetricsGrid: React.FC<SlideMetricsGridProps> = ({
     >
       {/* Header */}
       <div className="flex-shrink-0 px-16 pt-12 pb-6">
-        <h1 className="text-4xl font-bold tracking-tight text-white">
-          {title}
-        </h1>
+        <h1 className="text-4xl font-bold tracking-tight text-white">{title}</h1>
         {subtitle && <p className="mt-2 text-lg text-gray-400">{subtitle}</p>}
       </div>
 
@@ -60,13 +53,9 @@ export const SlideMetricsGrid: React.FC<SlideMetricsGridProps> = ({
                 {metric.value}
               </span>
 
-              <span className="text-base font-medium text-gray-300">
-                {metric.label}
-              </span>
+              <span className="text-base font-medium text-gray-300">{metric.label}</span>
 
-              {metric.detail && (
-                <span className="text-sm text-gray-500">{metric.detail}</span>
-              )}
+              {metric.detail && <span className="text-sm text-gray-500">{metric.detail}</span>}
             </div>
           ))}
         </div>

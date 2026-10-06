@@ -16,9 +16,7 @@ function StarRating({ rating }: { rating: number }) {
       {Array.from({ length: 5 }, (_, i) => (
         <svg
           key={i}
-          className={`h-4 w-4 ${
-            i < rating ? "text-warning" : "text-ink-subtle"
-          }`}
+          className={`h-4 w-4 ${i < rating ? "text-warning" : "text-ink-subtle"}`}
           viewBox="0 0 20 20"
           fill="currentColor"
         >
@@ -29,16 +27,11 @@ function StarRating({ rating }: { rating: number }) {
   );
 }
 
-export default function TestimonialCards({
-  testimonials,
-}: TestimonialCardsProps) {
+export default function TestimonialCards({ testimonials }: TestimonialCardsProps) {
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
       {testimonials.map((t) => (
-        <div
-          key={t.name}
-          className="flex flex-col rounded-2xl border border-border bg-surface p-6"
-        >
+        <div key={t.name} className="flex flex-col rounded-2xl border border-border bg-surface p-6">
           {t.rating != null && (
             <div className="mb-4">
               <StarRating rating={t.rating} />

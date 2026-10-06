@@ -134,9 +134,7 @@ export default function DataTable<T extends Record<string, unknown>>({
                 <th
                   key={col.key}
                   className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-ink-muted ${
-                    col.sortable
-                      ? "cursor-pointer select-none hover:text-ink-muted"
-                      : ""
+                    col.sortable ? "cursor-pointer select-none hover:text-ink-muted" : ""
                   }`}
                   style={col.width ? { width: col.width } : undefined}
                   onClick={() => col.sortable && handleSort(col.key)}
@@ -144,9 +142,7 @@ export default function DataTable<T extends Record<string, unknown>>({
                   <span className="inline-flex items-center gap-1">
                     {col.header}
                     {col.sortable && sortKey === col.key && (
-                      <span className="text-accent">
-                        {sortDir === "asc" ? "↑" : "↓"}
-                      </span>
+                      <span className="text-accent">{sortDir === "asc" ? "↑" : "↓"}</span>
                     )}
                   </span>
                 </th>
@@ -155,9 +151,7 @@ export default function DataTable<T extends Record<string, unknown>>({
           </thead>
           <tbody className="divide-y divide-border">
             {loading ? (
-              Array.from({ length: pageSize }).map((_, i) => (
-                <SkeletonRow key={i} cols={allCols} />
-              ))
+              Array.from({ length: pageSize }).map((_, i) => <SkeletonRow key={i} cols={allCols} />)
             ) : data.length === 0 ? (
               <tr>
                 <td colSpan={allCols} className="px-4 py-12 text-center">
@@ -188,9 +182,7 @@ export default function DataTable<T extends Record<string, unknown>>({
                       key={col.key}
                       className="whitespace-nowrap px-4 py-3 text-sm text-ink-muted"
                     >
-                      {col.render
-                        ? col.render(row[col.key], row)
-                        : String(row[col.key] ?? "")}
+                      {col.render ? col.render(row[col.key], row) : String(row[col.key] ?? "")}
                     </td>
                   ))}
                 </tr>

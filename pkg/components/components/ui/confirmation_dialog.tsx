@@ -102,11 +102,7 @@ export default function ConfirmationDialog({
               viewBox="0 0 24 24"
               strokeWidth={2}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d={styles.iconPath}
-              />
+              <path strokeLinecap="round" strokeLinejoin="round" d={styles.iconPath} />
             </svg>
           </div>
 

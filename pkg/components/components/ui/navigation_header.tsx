@@ -6,11 +6,7 @@ interface NavigationHeaderProps {
   cta?: { label: string; href: string };
 }
 
-export default function NavigationHeader({
-  brand,
-  links,
-  cta,
-}: NavigationHeaderProps) {
+export default function NavigationHeader({ brand, links, cta }: NavigationHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -58,11 +54,7 @@ export default function NavigationHeader({
               strokeWidth={1.5}
               stroke="currentColor"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 18L18 6M6 6l12 12"
-              />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           ) : (
             <svg

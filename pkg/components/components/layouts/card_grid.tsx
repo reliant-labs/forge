@@ -20,16 +20,9 @@ export default function CardGrid({ cards, columns = 3 }: CardGridProps) {
   return (
     <div className={`grid gap-6 ${columnClasses[columns]}`}>
       {cards.map((card, i) => (
-        <div
-          key={i}
-          className="overflow-hidden rounded-xl border border-border bg-surface"
-        >
+        <div key={i} className="overflow-hidden rounded-xl border border-border bg-surface">
           {card.image && (
-            <img
-              src={card.image}
-              alt={card.title}
-              className="h-48 w-full object-cover"
-            />
+            <img src={card.image} alt={card.title} className="h-48 w-full object-cover" />
           )}
 
           <div className="p-5">

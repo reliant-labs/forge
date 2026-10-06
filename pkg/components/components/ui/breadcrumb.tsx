@@ -40,10 +40,7 @@ export default function Breadcrumb({ items }: BreadcrumbProps) {
                   {item.label}
                 </span>
               ) : (
-                <a
-                  href={item.href}
-                  className="text-ink-muted transition hover:text-ink-muted"
-                >
+                <a href={item.href} className="text-ink-muted transition hover:text-ink-muted">
                   {item.label}
                 </a>
               )}

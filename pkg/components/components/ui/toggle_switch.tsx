@@ -9,10 +9,7 @@ interface ToggleSwitchProps {
   size?: "sm" | "md" | "lg";
 }
 
-const sizeStyles: Record<
-  string,
-  { track: string; thumb: string; translate: string }
-> = {
+const sizeStyles: Record<string, { track: string; thumb: string; translate: string }> = {
   sm: { track: "h-4 w-7", thumb: "h-3 w-3", translate: "translate-x-3" },
   md: { track: "h-5 w-9", thumb: "h-4 w-4", translate: "translate-x-4" },
   lg: { track: "h-6 w-11", thumb: "h-5 w-5", translate: "translate-x-5" },
@@ -52,12 +49,8 @@ export default function ToggleSwitch({
       </button>
       {(label || description) && (
         <div>
-          {label && (
-            <span className="text-sm font-medium text-ink">{label}</span>
-          )}
-          {description && (
-            <p className="text-sm text-ink-muted">{description}</p>
-          )}
+          {label && <span className="text-sm font-medium text-ink">{label}</span>}
+          {description && <p className="text-sm text-ink-muted">{description}</p>}
         </div>
       )}
     </label>

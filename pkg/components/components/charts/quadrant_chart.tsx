@@ -84,11 +84,7 @@ export default function QuadrantChart({
 
   return (
     <div className="inline-block" style={{ width }}>
-      {title && (
-        <h3 className="text-lg font-semibold text-on-accent mb-2 text-center">
-          {title}
-        </h3>
-      )}
+      {title && <h3 className="text-lg font-semibold text-on-accent mb-2 text-center">{title}</h3>}
       <svg
         width={width}
         height={height}
@@ -194,22 +190,10 @@ export default function QuadrantChart({
         />
 
         {/* X-axis labels */}
-        <text
-          x={plotLeft + 8}
-          y={plotBottom + 28}
-          fill="#94a3b8"
-          fontSize={12}
-          textAnchor="start"
-        >
+        <text x={plotLeft + 8} y={plotBottom + 28} fill="#94a3b8" fontSize={12} textAnchor="start">
           {xLabels[0]}
         </text>
-        <text
-          x={plotRight - 8}
-          y={plotBottom + 28}
-          fill="#94a3b8"
-          fontSize={12}
-          textAnchor="end"
-        >
+        <text x={plotRight - 8} y={plotBottom + 28} fill="#94a3b8" fontSize={12} textAnchor="end">
           {xLabels[1]}
         </text>
 

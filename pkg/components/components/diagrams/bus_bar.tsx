@@ -31,12 +31,7 @@ interface BusBarProps {
  * absolute-positioned node cards exactly. The container scales responsively via
  * a parent wrapper if needed; the internal geometry is fixed.
  */
-export default function BusBar({
-  producers,
-  consumers,
-  busLabel,
-  edges,
-}: BusBarProps) {
+export default function BusBar({ producers, consumers, busLabel, edges }: BusBarProps) {
   // single coordinate space (px) shared by the SVG viewBox and the cards
   const W = 880;
   const NODE_W = 180;
@@ -54,37 +49,24 @@ export default function BusBar({
   const H = 80 + rows * (NODE_H + ROW_GAP);
   const STACK_TOP = 60;
 
-  const prodCenter = (i: number) =>
-    STACK_TOP + i * (NODE_H + ROW_GAP) + NODE_H / 2;
-  const consCenter = (i: number) =>
-    STACK_TOP + i * (NODE_H + ROW_GAP) + NODE_H / 2;
+  const prodCenter = (i: number) => STACK_TOP + i * (NODE_H + ROW_GAP) + NODE_H / 2;
+  const consCenter = (i: number) => STACK_TOP + i * (NODE_H + ROW_GAP) + NODE_H / 2;
 
   const prodById = new Map(producers.map((n, i) => [n.id, prodCenter(i)]));
   const consById = new Map(consumers.map((n, i) => [n.id, consCenter(i)]));
 
   const renderedEdges =
-    edges ??
-    producers.flatMap((p) => consumers.map((c) => ({ from: p.id, to: c.id })));
+    edges ?? producers.flatMap((p) => consumers.map((c) => ({ from: p.id, to: c.id })));
 
   return (
-    <div
-      style={{ position: "relative", width: W, height: H }}
-      className="mx-auto text-gray-900"
-    >
+    <div style={{ position: "relative", width: W, height: H }} className="mx-auto text-gray-900">
       <svg
         viewBox={`0 0 ${W} ${H}`}
         className="absolute inset-0 h-full w-full"
         style={{ pointerEvents: "none" }}
       >
         <defs>
-          <marker
-            id="bb-arrow"
-            markerWidth="8"
-            markerHeight="8"
-            refX="7"
-            refY="4"
-            orient="auto"
-          >
+          <marker id="bb-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
             <polygon points="0 0, 8 4, 0 8" fill="#94a3b8" />
           </marker>
         </defs>
@@ -152,9 +134,7 @@ export default function BusBar({
           className="flex flex-col justify-center rounded-md border border-gray-200 bg-white px-3"
         >
           <div className="truncate text-sm font-semibold">{n.label}</div>
-          {n.sub && (
-            <div className="truncate text-xs text-gray-500">{n.sub}</div>
-          )}
+          {n.sub && <div className="truncate text-xs text-gray-500">{n.sub}</div>}
         </div>
       ))}
 
@@ -171,9 +151,7 @@ export default function BusBar({
           className="flex flex-col justify-center rounded-md border border-gray-200 bg-white px-3"
         >
           <div className="truncate text-sm font-semibold">{n.label}</div>
-          {n.sub && (
-            <div className="truncate text-xs text-gray-500">{n.sub}</div>
-          )}
+          {n.sub && <div className="truncate text-xs text-gray-500">{n.sub}</div>}
         </div>
       ))}
     </div>

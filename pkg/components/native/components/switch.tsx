@@ -16,11 +16,7 @@ import { colors } from "../tokens";
  */
 export interface SwitchProps extends RNSwitchProps {}
 
-export default function Switch({
-  trackColor,
-  thumbColor,
-  ...rest
-}: SwitchProps) {
+export default function Switch({ trackColor, thumbColor, ...rest }: SwitchProps) {
   const scheme = useColorScheme() ?? "light";
   const palette = colors[scheme];
   return (

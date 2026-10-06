@@ -45,14 +45,8 @@ export default Table;
 
 export type TableHeaderProps = React.HTMLAttributes<HTMLTableSectionElement>;
 
-export function TableHeader({
-  className,
-  children,
-  ...rest
-}: TableHeaderProps) {
-  const composed = ["bg-surface-muted", className ?? ""]
-    .filter(Boolean)
-    .join(" ");
+export function TableHeader({ className, children, ...rest }: TableHeaderProps) {
+  const composed = ["bg-surface-muted", className ?? ""].filter(Boolean).join(" ");
   return (
     <thead className={composed} {...rest}>
       {children}
@@ -63,9 +57,7 @@ export function TableHeader({
 export type TableBodyProps = React.HTMLAttributes<HTMLTableSectionElement>;
 
 export function TableBody({ className, children, ...rest }: TableBodyProps) {
-  const composed = ["divide-y divide-border", className ?? ""]
-    .filter(Boolean)
-    .join(" ");
+  const composed = ["divide-y divide-border", className ?? ""].filter(Boolean).join(" ");
   return (
     <tbody className={composed} {...rest}>
       {children}
@@ -73,8 +65,7 @@ export function TableBody({ className, children, ...rest }: TableBodyProps) {
   );
 }
 
-export interface TableRowProps
-  extends React.HTMLAttributes<HTMLTableRowElement> {
+export interface TableRowProps extends React.HTMLAttributes<HTMLTableRowElement> {
   /** Striped (alternating row) styling. Caller passes the row index. */
   striped?: boolean;
   /** Render as clickable; adds hover/cursor styling. */
@@ -118,9 +109,7 @@ export function TableRow({
               if (e.defaultPrevented) return;
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                onClick?.(
-                  e as unknown as React.MouseEvent<HTMLTableRowElement>,
-                );
+                onClick?.(e as unknown as React.MouseEvent<HTMLTableRowElement>);
               }
             },
           }
@@ -132,19 +121,12 @@ export function TableRow({
   );
 }
 
-export interface TableHeadProps
-  extends React.ThHTMLAttributes<HTMLTableCellElement> {
+export interface TableHeadProps extends React.ThHTMLAttributes<HTMLTableCellElement> {
   /** Mark the header cell as sortable; flips the cursor. */
   sortable?: boolean;
 }
 
-export function TableHead({
-  sortable,
-  className,
-  children,
-  scope,
-  ...rest
-}: TableHeadProps) {
+export function TableHead({ sortable, className, children, scope, ...rest }: TableHeadProps) {
   const composed = [
     "px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-ink-muted",
     sortable ? "cursor-pointer select-none" : "",
@@ -162,10 +144,7 @@ export function TableHead({
 export type TableCellProps = React.TdHTMLAttributes<HTMLTableCellElement>;
 
 export function TableCell({ className, children, ...rest }: TableCellProps) {
-  const composed = [
-    "whitespace-nowrap px-4 py-3 text-sm text-ink",
-    className ?? "",
-  ]
+  const composed = ["whitespace-nowrap px-4 py-3 text-sm text-ink", className ?? ""]
     .filter(Boolean)
     .join(" ");
   return (

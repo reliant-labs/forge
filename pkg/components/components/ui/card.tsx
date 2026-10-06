@@ -79,9 +79,7 @@ export default function Card({
   const composed = [
     "rounded-lg border border-border bg-surface shadow-sm",
     paddingStyles[padding],
-    interactive
-      ? "transition-shadow hover:shadow-md focus-within:shadow-md"
-      : "",
+    interactive ? "transition-shadow hover:shadow-md focus-within:shadow-md" : "",
     className ?? "",
   ]
     .filter(Boolean)
@@ -105,13 +103,7 @@ export interface CardHeaderProps {
   children?: React.ReactNode;
 }
 
-export function CardHeader({
-  title,
-  description,
-  actions,
-  className,
-  children,
-}: CardHeaderProps) {
+export function CardHeader({ title, description, actions, className, children }: CardHeaderProps) {
   const composed = [
     "flex items-start justify-between gap-3 border-b border-border pb-3 mb-3",
     className ?? "",
@@ -121,17 +113,11 @@ export function CardHeader({
   return (
     <div className={composed}>
       <div>
-        {title ? (
-          <div className="text-sm font-semibold text-ink">{title}</div>
-        ) : null}
-        {description ? (
-          <div className="mt-0.5 text-xs text-ink-muted">{description}</div>
-        ) : null}
+        {title ? <div className="text-sm font-semibold text-ink">{title}</div> : null}
+        {description ? <div className="mt-0.5 text-xs text-ink-muted">{description}</div> : null}
         {children}
       </div>
-      {actions ? (
-        <div className="flex items-center gap-2">{actions}</div>
-      ) : null}
+      {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
     </div>
   );
 }
@@ -142,9 +128,7 @@ export interface CardBodyProps {
 }
 
 export function CardBody({ className, children }: CardBodyProps) {
-  const composed = ["text-sm text-ink", className ?? ""]
-    .filter(Boolean)
-    .join(" ");
+  const composed = ["text-sm text-ink", className ?? ""].filter(Boolean).join(" ");
   return <div className={composed}>{children}</div>;
 }
 
@@ -174,12 +158,7 @@ export interface CardInsetProps extends React.HTMLAttributes<HTMLDivElement> {
   padding?: CardPadding;
 }
 
-export function CardInset({
-  padding = "sm",
-  className,
-  children,
-  ...rest
-}: CardInsetProps) {
+export function CardInset({ padding = "sm", className, children, ...rest }: CardInsetProps) {
   const composed = [
     "rounded-md border border-border/60 bg-surface-sunken",
     paddingStyles[padding],

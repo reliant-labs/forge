@@ -13,19 +13,13 @@ interface SidebarLeftProps {
   children: React.ReactNode;
 }
 
-export default function SidebarLeft({
-  navItems,
-  brand,
-  children,
-}: SidebarLeftProps) {
+export default function SidebarLeft({ navItems, brand, children }: SidebarLeftProps) {
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside className="flex w-64 flex-col border-r border-border bg-surface">
         {brand && (
-          <div className="flex h-16 shrink-0 items-center border-b border-border px-6">
-            {brand}
-          </div>
+          <div className="flex h-16 shrink-0 items-center border-b border-border px-6">{brand}</div>
         )}
 
         <nav className="flex-1 relative overflow-y-auto px-3 py-4">
@@ -40,9 +34,7 @@ export default function SidebarLeft({
                       : "text-ink-muted hover:bg-surface-muted"
                   }`}
                 >
-                  {item.icon && (
-                    <span className="h-5 w-5 shrink-0">{item.icon}</span>
-                  )}
+                  {item.icon && <span className="h-5 w-5 shrink-0">{item.icon}</span>}
                   {item.label}
                 </a>
               </li>
@@ -52,9 +44,7 @@ export default function SidebarLeft({
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 relative overflow-y-auto bg-surface-muted p-6">
-        {children}
-      </main>
+      <main className="flex-1 relative overflow-y-auto bg-surface-muted p-6">{children}</main>
     </div>
   );
 }

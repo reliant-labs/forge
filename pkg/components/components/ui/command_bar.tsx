@@ -143,9 +143,7 @@ export default function CommandBar({
         {/* Results */}
         <div ref={listRef} className="max-h-72 overflow-y-auto p-2">
           {filtered.length === 0 ? (
-            <p className="px-3 py-8 text-center text-sm text-ink-muted">
-              No results found.
-            </p>
+            <p className="px-3 py-8 text-center text-sm text-ink-muted">No results found.</p>
           ) : (
             Object.entries(grouped).map(([category, categoryItems]) => (
               <div key={category}>
@@ -177,9 +175,7 @@ export default function CommandBar({
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-medium">{item.label}</p>
                         {item.description && (
-                          <p className="truncate text-xs text-ink-muted">
-                            {item.description}
-                          </p>
+                          <p className="truncate text-xs text-ink-muted">{item.description}</p>
                         )}
                       </div>
                       {item.shortcut && (
@@ -198,21 +194,15 @@ export default function CommandBar({
         {/* Footer */}
         <div className="flex items-center gap-4 border-t border-border px-4 py-2 text-xs text-ink-subtle">
           <span className="inline-flex items-center gap-1">
-            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">
-              ↑↓
-            </kbd>
+            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">↑↓</kbd>
             navigate
           </span>
           <span className="inline-flex items-center gap-1">
-            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">
-              ↵
-            </kbd>
+            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">↵</kbd>
             select
           </span>
           <span className="inline-flex items-center gap-1">
-            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">
-              esc
-            </kbd>
+            <kbd className="rounded border border-border bg-surface-muted px-1 py-0.5">esc</kbd>
             close
           </span>
         </div>

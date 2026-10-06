@@ -25,16 +25,10 @@ import { colors, radius, spacing, textSizes } from "../tokens";
  * Pass `style` to extend; the variant defaults are inline so a single
  * prop override is enough for one-off tweaks.
  */
-export type ButtonVariant =
-  | "primary"
-  | "secondary"
-  | "outline"
-  | "ghost"
-  | "danger";
+export type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger";
 export type ButtonSize = "sm" | "md" | "lg";
 
-export interface ButtonProps
-  extends Omit<PressableProps, "children" | "style"> {
+export interface ButtonProps extends Omit<PressableProps, "children" | "style"> {
   children?: React.ReactNode;
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -90,9 +84,7 @@ export default function Button({
         />
       ) : null}
       {typeof children === "string" ? (
-        <Text style={[styles.label, sizeStyle.label, variantText, textStyle]}>
-          {children}
-        </Text>
+        <Text style={[styles.label, sizeStyle.label, variantText, textStyle]}>{children}</Text>
       ) : (
         <View style={styles.row}>{children}</View>
       )}

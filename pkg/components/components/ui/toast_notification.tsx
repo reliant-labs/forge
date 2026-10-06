@@ -53,10 +53,7 @@ interface ToastNotificationProps {
   position?: "top-right" | "top-left" | "bottom-right" | "bottom-left";
 }
 
-const variantConfig: Record<
-  ToastVariant,
-  { bg: string; icon: string; border: string }
-> = {
+const variantConfig: Record<ToastVariant, { bg: string; icon: string; border: string }> = {
   success: {
     bg: "bg-success-surface",
     icon: "text-success",
@@ -81,13 +78,7 @@ const variantConfig: Record<
 
 const icons: Record<ToastVariant, React.ReactNode> = {
   success: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -96,13 +87,7 @@ const icons: Record<ToastVariant, React.ReactNode> = {
     </svg>
   ),
   error: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -111,13 +96,7 @@ const icons: Record<ToastVariant, React.ReactNode> = {
     </svg>
   ),
   warning: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -126,13 +105,7 @@ const icons: Record<ToastVariant, React.ReactNode> = {
     </svg>
   ),
   info: (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      stroke="currentColor"
-    >
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -142,13 +115,7 @@ const icons: Record<ToastVariant, React.ReactNode> = {
   ),
 };
 
-function ToastItem({
-  toast,
-  onDismiss,
-}: {
-  toast: Toast;
-  onDismiss: (id: string) => void;
-}) {
+function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string) => void }) {
   const [visible, setVisible] = useState(false);
   const variant = toast.variant ?? "info";
   const config = variantConfig[variant];
@@ -163,9 +130,7 @@ function ToastItem({
     <div
       className={`pointer-events-auto flex w-80 items-start gap-3 rounded-lg border p-4 shadow-lg transition-all duration-300 ${
         config.bg
-      } ${config.border} ${
-        visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"
-      }`}
+      } ${config.border} ${visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"}`}
     >
       <div className={`flex-shrink-0 ${config.icon}`}>{icons[variant]}</div>
       <p className="flex-1 text-sm text-ink">{toast.message}</p>
@@ -183,21 +148,14 @@ function ToastItem({
           strokeWidth={2}
           stroke="currentColor"
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M6 18L18 6M6 6l12 12"
-          />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
     </div>
   );
 }
 
-const positionStyles: Record<
-  NonNullable<ToastNotificationProps["position"]>,
-  string
-> = {
+const positionStyles: Record<NonNullable<ToastNotificationProps["position"]>, string> = {
   "top-right": "top-4 right-4",
   "top-left": "top-4 left-4",
   "bottom-right": "bottom-4 right-4",

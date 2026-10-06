@@ -41,9 +41,7 @@ export const SlideStatHero: React.FC<SlideStatHeroProps> = ({
           {stat}
         </p>
 
-        <h2 className="max-w-3xl text-3xl font-semibold leading-snug text-white">
-          {headline}
-        </h2>
+        <h2 className="max-w-3xl text-3xl font-semibold leading-snug text-white">{headline}</h2>
 
         <div className="mt-2 flex max-w-2xl flex-col gap-3">
           {body.map((paragraph, i) => (

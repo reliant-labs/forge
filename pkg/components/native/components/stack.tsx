@@ -1,10 +1,5 @@
 import React from "react";
-import {
-  View,
-  type StyleProp,
-  type ViewProps,
-  type ViewStyle,
-} from "react-native";
+import { View, type StyleProp, type ViewProps, type ViewStyle } from "react-native";
 import { spacing } from "../tokens";
 
 /**
@@ -24,12 +19,7 @@ export type StackDirection = "row" | "column";
 export type StackGap = keyof typeof spacing;
 
 export type StackAlign = "start" | "center" | "end" | "stretch";
-export type StackJustify =
-  | "start"
-  | "center"
-  | "end"
-  | "space-between"
-  | "space-around";
+export type StackJustify = "start" | "center" | "end" | "space-between" | "space-around";
 
 export interface StackProps extends ViewProps {
   direction?: StackDirection;

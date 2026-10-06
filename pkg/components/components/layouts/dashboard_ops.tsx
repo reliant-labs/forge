@@ -29,12 +29,8 @@ export default function DashboardOps({
   return (
     <div className="flex h-screen w-full flex-col bg-surface-muted">
       <header className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-6 py-4">
-        <h1 className="text-lg font-semibold tracking-tight text-ink">
-          {title}
-        </h1>
-        {headerActions && (
-          <div className="flex items-center gap-2">{headerActions}</div>
-        )}
+        <h1 className="text-lg font-semibold tracking-tight text-ink">{title}</h1>
+        {headerActions && <div className="flex items-center gap-2">{headerActions}</div>}
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-surface-muted lg:grid-cols-[minmax(280px,1fr)_minmax(0,2fr)_minmax(280px,1fr)]">

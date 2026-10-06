@@ -10,16 +10,10 @@ import React from "react";
  * Standard <button> attributes (type, disabled, onClick, aria-*) are
  * forwarded; pass `className` to extend or override the defaults.
  */
-export type ButtonVariant =
-  | "primary"
-  | "secondary"
-  | "outline"
-  | "ghost"
-  | "danger";
+export type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger";
 export type ButtonSize = "sm" | "md" | "lg";
 
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   fullWidth?: boolean;
@@ -27,16 +21,12 @@ export interface ButtonProps
 }
 
 const variantStyles: Record<ButtonVariant, string> = {
-  primary:
-    "bg-accent text-on-accent shadow-sm hover:bg-accent-hover disabled:hover:bg-accent",
-  secondary:
-    "bg-surface-muted text-ink shadow-sm hover:bg-border disabled:hover:bg-surface-muted",
+  primary: "bg-accent text-on-accent shadow-sm hover:bg-accent-hover disabled:hover:bg-accent",
+  secondary: "bg-surface-muted text-ink shadow-sm hover:bg-border disabled:hover:bg-surface-muted",
   outline:
     "border border-border-strong bg-surface text-ink shadow-sm hover:bg-surface-muted disabled:hover:bg-surface",
-  ghost:
-    "bg-transparent text-ink hover:bg-surface-muted disabled:hover:bg-transparent",
-  danger:
-    "bg-danger text-on-danger shadow-sm hover:bg-danger-hover disabled:hover:bg-danger",
+  ghost: "bg-transparent text-ink hover:bg-surface-muted disabled:hover:bg-transparent",
+  danger: "bg-danger text-on-danger shadow-sm hover:bg-danger-hover disabled:hover:bg-danger",
 };
 
 const sizeStyles: Record<ButtonSize, string> = {
@@ -69,12 +59,7 @@ export default function Button({
     .join(" ");
 
   return (
-    <button
-      type={type ?? "button"}
-      disabled={disabled || isLoading}
-      className={composed}
-      {...rest}
-    >
+    <button type={type ?? "button"} disabled={disabled || isLoading} className={composed} {...rest}>
       {isLoading ? (
         // Reduced motion: spinners convey "busy", so they are slowed rather
         // than frozen (WCAG 2.3.3); decorative pulses are disabled outright.

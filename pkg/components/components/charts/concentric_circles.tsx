@@ -83,23 +83,9 @@ export default function ConcentricCircles({
       >
         <defs>
           {rings.map((_, i) => (
-            <radialGradient
-              key={`rg-${i}`}
-              id={`ring-grad-${i}`}
-              cx="50%"
-              cy="50%"
-              r="50%"
-            >
-              <stop
-                offset="0%"
-                stopColor={accentColor}
-                stopOpacity={opacityForRing(i) + 0.1}
-              />
-              <stop
-                offset="100%"
-                stopColor={accentColor}
-                stopOpacity={opacityForRing(i) - 0.05}
-              />
+            <radialGradient key={`rg-${i}`} id={`ring-grad-${i}`} cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor={accentColor} stopOpacity={opacityForRing(i) + 0.1} />
+              <stop offset="100%" stopColor={accentColor} stopOpacity={opacityForRing(i) - 0.05} />
             </radialGradient>
           ))}
         </defs>
@@ -158,12 +144,7 @@ export default function ConcentricCircles({
         })}
 
         {/* Innermost circle fill (solid-ish) */}
-        <circle
-          cx={cx}
-          cy={cy}
-          r={radii[n]}
-          fill={hexToRgba(accentColor, 0.55)}
-        />
+        <circle cx={cx} cy={cy} r={radii[n]} fill={hexToRgba(accentColor, 0.55)} />
       </svg>
 
       {/* Legend below the chart */}
@@ -173,10 +154,7 @@ export default function ConcentricCircles({
             <span
               className="inline-block w-3 h-3 rounded-full shrink-0"
               style={{
-                backgroundColor: hexToRgba(
-                  accentColor,
-                  opacityForRing(i) + 0.3,
-                ),
+                backgroundColor: hexToRgba(accentColor, opacityForRing(i) + 0.3),
               }}
             />
             <span className="text-on-accent font-semibold">{ring.label}</span>

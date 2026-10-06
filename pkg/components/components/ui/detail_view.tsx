@@ -34,8 +34,7 @@ const badgeColors = [
 
 const buttonStyles: Record<string, string> = {
   primary: "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500",
-  secondary:
-    "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:ring-gray-500",
+  secondary: "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:ring-gray-500",
   danger: "bg-red-600 text-white hover:bg-red-700 focus:ring-red-500",
 };
 
@@ -45,9 +44,7 @@ function FieldValue({ field }: { field: Field }) {
       return (
         <span
           className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-            badgeColors[
-              Math.abs(String(field.value).length) % badgeColors.length
-            ]
+            badgeColors[Math.abs(String(field.value).length) % badgeColors.length]
           }`}
         >
           {field.value}
@@ -71,21 +68,14 @@ function FieldValue({ field }: { field: Field }) {
   }
 }
 
-export default function DetailView({
-  title,
-  subtitle,
-  fields,
-  actions,
-}: DetailViewProps) {
+export default function DetailView({ title, subtitle, fields, actions }: DetailViewProps) {
   return (
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-          {subtitle && (
-            <p className="mt-0.5 text-sm text-gray-500">{subtitle}</p>
-          )}
+          {subtitle && <p className="mt-0.5 text-sm text-gray-500">{subtitle}</p>}
         </div>
         {actions && actions.length > 0 && (
           <div className="flex gap-2">
@@ -117,9 +107,7 @@ export default function DetailView({
             <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               {group.fields.map((field) => (
                 <div key={field.label}>
-                  <dt className="text-sm font-medium text-gray-500">
-                    {field.label}
-                  </dt>
+                  <dt className="text-sm font-medium text-gray-500">{field.label}</dt>
                   <dd className="mt-1 text-sm">
                     <FieldValue field={field} />
                   </dd>

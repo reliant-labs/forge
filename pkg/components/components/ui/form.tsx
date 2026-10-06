@@ -12,12 +12,7 @@ import React from "react";
  */
 export type FormProps = React.FormHTMLAttributes<HTMLFormElement>;
 
-export default function Form({
-  className,
-  noValidate,
-  children,
-  ...rest
-}: FormProps) {
+export default function Form({ className, noValidate, children, ...rest }: FormProps) {
   const composed = ["space-y-4", className ?? ""].filter(Boolean).join(" ");
   return (
     <form noValidate={noValidate ?? true} className={composed} {...rest}>
@@ -44,8 +39,7 @@ export interface FormFieldContextValue {
   id: string;
 }
 
-export const FormFieldContext =
-  React.createContext<FormFieldContextValue | null>(null);
+export const FormFieldContext = React.createContext<FormFieldContextValue | null>(null);
 
 /**
  * FormField — vertical-stack container for a Label + Input + optional
@@ -99,9 +93,7 @@ export interface FormErrorProps {
 
 export function FormError({ message, className }: FormErrorProps) {
   if (!message) return null;
-  const composed = ["mt-1 text-xs text-danger", className ?? ""]
-    .filter(Boolean)
-    .join(" ");
+  const composed = ["mt-1 text-xs text-danger", className ?? ""].filter(Boolean).join(" ");
   return <p className={composed}>{message}</p>;
 }
 
@@ -121,16 +113,8 @@ const alignStyles: Record<NonNullable<FormActionsProps["align"]>, string> = {
   between: "justify-between",
 };
 
-export function FormActions({
-  className,
-  align = "end",
-  children,
-}: FormActionsProps) {
-  const composed = [
-    "mt-2 flex items-center gap-2",
-    alignStyles[align],
-    className ?? "",
-  ]
+export function FormActions({ className, align = "end", children }: FormActionsProps) {
+  const composed = ["mt-2 flex items-center gap-2", alignStyles[align], className ?? ""]
     .filter(Boolean)
     .join(" ");
   return <div className={composed}>{children}</div>;

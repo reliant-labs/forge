@@ -15,11 +15,7 @@ interface SlideCardGridProps {
   }>;
 }
 
-export const SlideCardGrid: React.FC<SlideCardGridProps> = ({
-  title,
-  subtitle,
-  cards,
-}) => {
+export const SlideCardGrid: React.FC<SlideCardGridProps> = ({ title, subtitle, cards }) => {
   const colCount = cards.length <= 2 ? cards.length : cards.length <= 4 ? 2 : 3;
 
   return (
@@ -29,9 +25,7 @@ export const SlideCardGrid: React.FC<SlideCardGridProps> = ({
     >
       {/* Header */}
       <div className="flex-shrink-0 px-16 pt-12 pb-6">
-        <h1 className="text-4xl font-bold tracking-tight text-white">
-          {title}
-        </h1>
+        <h1 className="text-4xl font-bold tracking-tight text-white">{title}</h1>
         {subtitle && <p className="mt-2 text-lg text-gray-400">{subtitle}</p>}
       </div>
 
@@ -66,9 +60,7 @@ export const SlideCardGrid: React.FC<SlideCardGridProps> = ({
 
               <h3 className="text-xl font-semibold text-white">{card.title}</h3>
 
-              <p className="text-sm leading-relaxed text-gray-400">
-                {card.description}
-              </p>
+              <p className="text-sm leading-relaxed text-gray-400">{card.description}</p>
             </div>
           ))}
         </div>

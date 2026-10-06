@@ -15,8 +15,7 @@ import { FormFieldContext } from "./form";
  */
 export type InputSize = "sm" | "md" | "lg";
 
-export interface InputProps
-  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "size"> {
+export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "size"> {
   /** Visual size of the control. Defaults to "md". */
   inputSize?: InputSize;
   /** Mark the input as invalid; toggles the red focus ring. */
@@ -53,15 +52,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
     .filter(Boolean)
     .join(" ");
 
-  return (
-    <input
-      ref={ref}
-      id={resolvedId}
-      type={type ?? "text"}
-      className={composed}
-      {...rest}
-    />
-  );
+  return <input ref={ref} id={resolvedId} type={type ?? "text"} className={composed} {...rest} />;
 });
 
 export default Input;

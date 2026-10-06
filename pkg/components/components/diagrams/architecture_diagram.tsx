@@ -68,9 +68,7 @@ export default function ArchitectureDiagram({
   connections,
 }: ArchitectureDiagramProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [serviceRects, setServiceRects] = useState<Map<string, Rect>>(
-    new Map(),
-  );
+  const [serviceRects, setServiceRects] = useState<Map<string, Rect>>(new Map());
   const [containerRect, setContainerRect] = useState<Rect>({
     x: 0,
     y: 0,
@@ -90,8 +88,7 @@ export default function ArchitectureDiagram({
     });
 
     const rects = new Map<string, Rect>();
-    const elements =
-      containerRef.current.querySelectorAll<HTMLElement>("[data-service]");
+    const elements = containerRef.current.querySelectorAll<HTMLElement>("[data-service]");
     elements.forEach((el) => {
       const name = el.getAttribute("data-service");
       if (!name) return;
@@ -115,9 +112,7 @@ export default function ArchitectureDiagram({
   }, [measurePositions, groups]);
 
   if (groups.length === 0) {
-    return (
-      <div className="text-sm text-gray-400 italic">No groups provided</div>
-    );
+    return <div className="text-sm text-gray-400 italic">No groups provided</div>;
   }
 
   return (
@@ -130,8 +125,7 @@ export default function ArchitectureDiagram({
         }}
       >
         {groups.map((group, gi) => {
-          const color =
-            group.color ?? DEFAULT_COLORS[gi % DEFAULT_COLORS.length];
+          const color = group.color ?? DEFAULT_COLORS[gi % DEFAULT_COLORS.length];
           return (
             <div
               key={gi}
@@ -143,14 +137,8 @@ export default function ArchitectureDiagram({
             >
               {/* Group label */}
               <div className="flex items-center gap-2 mb-3">
-                <div
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: color }}
-                />
-                <span
-                  className="text-xs font-bold uppercase tracking-wider"
-                  style={{ color }}
-                >
+                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
+                <span className="text-xs font-bold uppercase tracking-wider" style={{ color }}>
                   {group.label}
                 </span>
               </div>
@@ -181,10 +169,7 @@ export default function ArchitectureDiagram({
 
       {/* SVG overlay for connections */}
       {serviceRects.size > 0 && connections.length > 0 && (
-        <svg
-          className="absolute inset-0 w-full h-full pointer-events-none"
-          style={{ zIndex: 10 }}
-        >
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
           <defs>
             <marker
               id="arch-arrowhead"

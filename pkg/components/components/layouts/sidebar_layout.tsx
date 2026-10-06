@@ -41,8 +41,7 @@ export default function SidebarLayout({
 }: SidebarLayoutProps) {
   const [internalCollapsed, setInternalCollapsed] = useState(false);
   const collapsed = controlledCollapsed ?? internalCollapsed;
-  const handleToggle =
-    onToggle ?? (() => setInternalCollapsed((prev) => !prev));
+  const handleToggle = onToggle ?? (() => setInternalCollapsed((prev) => !prev));
 
   const sections = new Map<string, NavItem[]>();
   for (const item of navItems) {
@@ -67,12 +66,7 @@ export default function SidebarLayout({
             className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-subtle transition hover:bg-surface-muted hover:text-ink-muted"
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            <svg
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               {collapsed ? (
                 <path
                   strokeLinecap="round"
@@ -101,9 +95,7 @@ export default function SidebarLayout({
                   {section}
                 </p>
               )}
-              {si > 0 && collapsed && (
-                <div className="mx-auto my-2 h-px w-6 bg-border" />
-              )}
+              {si > 0 && collapsed && <div className="mx-auto my-2 h-px w-6 bg-border" />}
               <ul className="space-y-1">
                 {items.map((item, i) => (
                   <li key={i}>
@@ -117,12 +109,8 @@ export default function SidebarLayout({
                       } ${collapsed ? "justify-center" : ""}`}
                       title={collapsed ? item.label : undefined}
                     >
-                      {item.icon && (
-                        <span className="h-5 w-5 shrink-0">{item.icon}</span>
-                      )}
-                      {!collapsed && (
-                        <span className="truncate">{item.label}</span>
-                      )}
+                      {item.icon && <span className="h-5 w-5 shrink-0">{item.icon}</span>}
+                      {!collapsed && <span className="truncate">{item.label}</span>}
                     </Link>
                   </li>
                 ))}
@@ -144,14 +132,8 @@ export default function SidebarLayout({
               </div>
               {!collapsed && (
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-ink">
-                    {user.name}
-                  </p>
-                  {user.email && (
-                    <p className="truncate text-xs text-ink-muted">
-                      {user.email}
-                    </p>
-                  )}
+                  <p className="truncate text-sm font-medium text-ink">{user.name}</p>
+                  {user.email && <p className="truncate text-xs text-ink-muted">{user.email}</p>}
                 </div>
               )}
             </div>

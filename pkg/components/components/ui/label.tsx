@@ -32,19 +32,12 @@ import { FormFieldContext } from "./form";
  * context shape — see `FormFieldContext` in `form.tsx`.
  */
 
-export interface LabelProps
-  extends React.LabelHTMLAttributes<HTMLLabelElement> {
+export interface LabelProps extends React.LabelHTMLAttributes<HTMLLabelElement> {
   /** When true, append a red "*" after the label text. */
   required?: boolean;
 }
 
-export default function Label({
-  required,
-  className,
-  children,
-  htmlFor,
-  ...rest
-}: LabelProps) {
+export default function Label({ required, className, children, htmlFor, ...rest }: LabelProps) {
   // Pull the FormField-minted id when the caller didn't pass htmlFor.
   // Explicit htmlFor wins so consumers can still wire to an arbitrary
   // id elsewhere on the page.

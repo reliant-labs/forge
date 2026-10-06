@@ -24,12 +24,7 @@ export interface CardProps extends ViewProps {
   style?: StyleProp<ViewStyle>;
 }
 
-export default function Card({
-  padding = "md",
-  style,
-  children,
-  ...rest
-}: CardProps) {
+export default function Card({ padding = "md", style, children, ...rest }: CardProps) {
   const scheme = useColorScheme() ?? "light";
   const palette = colors[scheme];
   return (

@@ -76,9 +76,12 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"<entity>_orm_gen.go": {}, // placeholder pattern referenced in skills
 		// The Tier-1 renames: every hash-guarded file now says _gen in its
 		// NAME, so a reader can tell it is un-editable without opening it.
-		"orm_shared_gen.go":      {},
-		"user_orm_gen.go":        {}, // concrete <entity>_orm_gen.go in skill prose
-		"things_mock_gen.go":     {}, // concrete <svc>_mock_gen.go in skill prose
+		"orm_shared_gen.go":  {},
+		"user_orm_gen.go":    {}, // concrete <entity>_orm_gen.go in skill prose
+		"things_mock_gen.go": {}, // concrete <svc>_mock_gen.go in skill prose
+		// internal/handlers/mocks/<svc>_mock_gen.go — the generated Connect
+		// service mock (codegen.GenerateMock), spelled as the placeholder.
+		"<svc>_mock_gen.go":      {},
 		"embed_gen.go":           {},
 		"config_gen.go":          {},
 		"mounts_services_gen.go": {},

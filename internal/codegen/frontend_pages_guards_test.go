@@ -197,6 +197,59 @@ func TestAttachEntityMeta_GuardOnAnotherTableIsIgnored(t *testing.T) {
 	}
 }
 
+// TestAttachEntityMeta_ReadOnlyGuardedColumnStillNamesItsRPC pins the
+// combination the write-policy decision table recommends for a lifecycle
+// column: `forge:read-only` so the API refuses a client write, plus
+// `forge:guards` so the edit page says which rpc owns it.
+//
+// The read-only filter used to drop the field from UpdateFields before the
+// guard pass looked, so the two markers together rendered NOTHING — the
+// column vanished from the edit page with no pointer to its rpc, which is
+// the discoverability failure guards exists to close. Read-only alone still
+// hides the field (nothing names an owner to point at); adding the guard is
+// what turns it into a disabled row.
+func TestAttachEntityMeta_ReadOnlyGuardedColumnStillNamesItsRPC(t *testing.T) {
+	svc := guardedInvoiceService("invoices.amount_paid_cents")
+	entityFields := svc.Schemas["billing.v1.Invoice"]
+	for i := range entityFields {
+		if entityFields[i].Name == "amount_paid_cents" {
+			entityFields[i].ReadOnly = true
+		}
+	}
+	pages := ExtractCRUDEntities(svc)
+	if len(pages) != 1 {
+		t.Fatalf("expected 1 CRUD entity, got %d", len(pages))
+	}
+	page := pages[0]
+	AttachEntityMeta(&page, guardedInvoiceEntity(), svc)
+
+	if got := updateFieldNames(page); containsName(got, "amount_paid_cents") {
+		t.Errorf("a read-only column is in the update mask: UpdateFields = %v", got)
+	}
+	if len(page.GuardedFields) != 1 || page.GuardedFields[0].ProtoName != "amount_paid_cents" ||
+		page.GuardedFields[0].GuardedBy != "RecordPayment" {
+		t.Fatalf("GuardedFields = %+v, want one disabled amount_paid_cents row naming RecordPayment", page.GuardedFields)
+	}
+	if !page.HasGuardedFields {
+		t.Error("HasGuardedFields = false; the edit template gates the guarded section on it")
+	}
+
+	// Read-only WITHOUT a guard stays hidden: there is no rpc to name.
+	plain := guardedInvoiceService("")
+	plainFields := plain.Schemas["billing.v1.Invoice"]
+	for i := range plainFields {
+		if plainFields[i].Name == "amount_paid_cents" {
+			plainFields[i].ReadOnly = true
+		}
+	}
+	plainPage := ExtractCRUDEntities(plain)[0]
+	AttachEntityMeta(&plainPage, guardedInvoiceEntity(), plain)
+	if len(plainPage.GuardedFields) != 0 || containsName(updateFieldNames(plainPage), "amount_paid_cents") {
+		t.Errorf("read-only without a guard: GuardedFields = %+v, UpdateFields = %v; want neither to carry it",
+			plainPage.GuardedFields, updateFieldNames(plainPage))
+	}
+}
+
 // TestGuardTargets pins the marker's SYNTAX against the spellings a proto
 // author actually writes: the documented trailing form, a leading full-line
 // form, extra prose after the target, and a field carrying two guards.

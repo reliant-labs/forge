@@ -68,57 +68,32 @@ func (s *Service) {{.MethodName}}(
 	return connect.NewResponse(&pb.{{.OutputType}}{}), nil
 }
 {{- else}}
-// {{.MethodName}} handles the {{.MethodName}} RPC (CRUD {{.Operation}}).
-// forge/pkg/crud does the lifecycle mechanics; entity wiring is generated
-// in handlers_crud_ops_gen.go. To customize, replace this delegation —
-// this file is yours. See the forge `auth` / `db` / `contracts` skill.
-//
+{{- /*
+  What a delegation does, and what each Auth tag means, is said ONCE in the
+  file header (crudShimHeader); ten lines of it repeated above every method
+  buried the one fact that differs between them. The Auth line still names
+  the seam on EVERY method — an author editing DeleteOrder reads DeleteOrder's
+  comment, not the header (crud_auth_honesty_test.go) — and stays readable on
+  its own, because a method appended into an older file sits under a header
+  that predates this wording.
+*/}}
+// {{.MethodName}} delegates CRUD {{.Operation}} to pkg/crud.
 {{- if .Scoped}}
-// AUTHENTICATED: this RPC's proto declares auth_required: true, so the
-// interceptor rejected any caller without a valid token before this ran.
+// Auth: SCOPED to {{.OwnerColumn}} (forge:owner) via {{.AuthSeam}}(ctx) — finish the FORGE_SCAFFOLD owner mapping below.
 {{- else if .AuthRequired}}
-// AUTHENTICATED, UNSCOPED: this RPC's proto declares auth_required: true,
-// so the interceptor rejected any caller without a valid token before this
-// ran. Nothing below reads WHO they are — call {{.AuthSeam}}(ctx) above the
-// delegation and scope the rows it touches to those claims.
+// Auth: AUTHENTICATED, UNSCOPED — nothing reads the caller; scope with {{.AuthSeam}}(ctx) (see file header).
 {{- else}}
-// PUBLIC: this RPC's proto declares auth_required: false, so the interceptor
-// lets a credential-less caller through and nothing below reads claims. If
-// that is wrong, the fix is the annotation on the rpc — not a
-// {{.AuthSeam}}(ctx) call here, which would reject callers the proto (and
-// `forge project graph`) advertise as welcome.
+// Auth: PUBLIC (auth_required: false) — no {{.AuthSeam}}(ctx) here; if that is wrong, fix the annotation.
 {{- end}}
 {{- if eq .Operation "update"}}
-//
 {{- if .UpdateMaskField}}
-// AIP-134: req.Msg.{{.UpdateMaskField}} is honored (concrete paths write
-// only named columns; empty/"*" mask is a full replace; bad paths → InvalidArgument).
+// AIP-134: req.Msg.{{.UpdateMaskField}} is honored (empty or "*" = full replace); op.ReadOnly columns are refused in it and kept on a full replace.
 {{- else}}
-// NOTE: no update_mask field → whole-row write. Add a
-// `google.protobuf.FieldMask update_mask` for AIP-134 partial updates.
+// No update_mask field, so every Update is a whole-row write (op.ReadOnly columns are still kept); add one for AIP-134 partial updates.
 {{- end}}
 {{- end}}
-{{- if .Scoped}}
-//
-// SCOPED. {{.EntityName}}'s {{.OwnerColumn}} column is declared `forge:owner`,
-// so this table's rows belong to distinct principals — and this RPC is
-// authenticated, so the rows it touches are scoped to the caller below.
-//
-// forge wrote the mechanism (claims resolved, op seam wrapped, column named)
-// but not the POLICY: how a caller's claims map onto {{.OwnerColumn}}'s values
-// is a domain decision only this app can make. The `owner` expression is where
-// that decision lives; while it still carries a FORGE_SCAFFOLD marker it is
-// forge's placeholder rather than your answer, and `forge lint` says so.
-{{- end}}
-{{- if and .FillHandlerColumns (not .Scoped)}}
-//
-// forge:fill=handler: {{range $i, $c := .FillHandlerColumns}}{{if $i}}, {{end}}{{$c}}{{end}} — NOT NULL, no DB
-// DEFAULT, and forge:read-only, so nothing else assigns them. The
-// FORGE_SCAFFOLD marker below fails `forge lint` until each is set.
-{{- else if .FillHandlerColumns}}
-//
-// forge:fill=handler: {{range $i, $c := .FillHandlerColumns}}{{if $i}}, {{end}}{{$c}}{{end}} — NOT NULL, no DB
-// DEFAULT, and forge:read-only, so nothing else assigns them either.
+{{- if .FillHandlerColumns}}
+// forge:fill=handler: {{range $i, $c := .FillHandlerColumns}}{{if $i}}, {{end}}{{$c}}{{end}} — nothing else assigns them; set each at its FORGE_SCAFFOLD marker below.
 {{- end}}
 {{- if or .FillHandlerColumns .Scoped}}
 func (s *Service) {{.MethodName}}(

@@ -107,7 +107,7 @@ each host process gets its own port from `plugin.resolve_port` in
 - **One service per proto package** — keep proto definitions focused on a single domain.
 - **Run `forge generate` after any proto or contract change** — generated code must stay in sync.
 - **Service names canonicalize** the same way worker names do: lowercase snake_case (hyphens → underscores, PascalCase boundaries split). `forge scaffold service admin-server` keeps `admin-server` as the `forge.yaml` `name:` display key, but the on-disk leaf, Go package decl, and `forge.yaml` `path:` leaf are all `admin_server` (`internal/handlers/admin_server/`, `package admin_server`, `path: internal/handlers/admin_server`). See the `workers` skill Naming section for the full rule and the migration gotcha; see `architecture` for the cross-ecosystem naming-conventions table.
-- **Service code lives under `internal/handlers/<svc>/`** — contract.go, impl, and generated handlers co-located in ONE directory. The `handlers/` role subtree is under `internal/`, not top-level; a service is app-internal, imported by nobody external.
+- **Service code lives under `internal/handlers/<svc>/`** — `service.go` (Deps/New), the rpc methods that hold its logic, and the generated CRUD ops co-located in ONE directory, with no `contract.go`. The `handlers/` role subtree is under `internal/`, not top-level; a service is app-internal, imported by nobody external.
 
 ## Serving a service = composing it (the composition root)
 

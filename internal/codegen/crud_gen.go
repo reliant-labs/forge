@@ -419,6 +419,51 @@ func parseCRUDOperation(methodName string) (operation, entityName string) {
 	return "", ""
 }
 
+// crudEntity is the frontend projections' answer to "is this rpc CRUD, and
+// on which entity?" — the hook generator's invalidation scope and the page
+// generator's entity set both ask it.
+//
+// The verb split alone is not an answer. parseCRUDOperation reads
+// `UpdateJobStatus` as (update, JobStatus) and `ListJobsByCrew` as (list,
+// JobsByCrew); taken at its word, the hooks invalidated a `jobStatus` scope no
+// query is keyed under (so the Job list the mutation changed stayed cached)
+// and the page generator birthed a `jobs-by-crews` CRUD page. The server side
+// never made that mistake: BuildSchemaEntities admits an entity only when its
+// table exists AND the service declares its wire message. The frontend cannot
+// see the table, so it applies the half it can — the declaresWireMessage gate
+// — and a custom rpc whose name merely starts with a CRUD verb stays custom on
+// both sides of the wire.
+//
+// For List, the plural is singularized first (ListJobs → Job), falling back
+// to the name as written (ListJob, or a plural inflection does not invert).
+func crudEntity(svc ServiceDef, methodName string) (operation, entity string) {
+	op, name := parseCRUDOperation(methodName)
+	if op == "" {
+		return "", ""
+	}
+	if op == "list" {
+		if singular := inflection.Singular(name); declaresEntityMessage(svc, singular) || !declaresEntityMessage(svc, name) {
+			name = singular
+		}
+	}
+	if !declaresEntityMessage(svc, name) {
+		return "", ""
+	}
+	return op, name
+}
+
+// declaresEntityMessage is declaresWireMessage restricted to evidence that can
+// actually contain an entity. The shallow Messages map holds only rpc
+// request/response types — an entity message is never one of those — so a
+// descriptor with no deep inventory (written before Schemas/SchemaFiles
+// existed) proves nothing and keeps the name-only answer.
+func declaresEntityMessage(svc ServiceDef, name string) bool {
+	if len(svc.SchemaFiles) == 0 && len(svc.Schemas) == 0 {
+		return true
+	}
+	return declaresWireMessage(svc, name)
+}
+
 // GenerateCRUDHandlers generates handlers_crud_gen.go for a service with CRUD methods.
 // It skips methods that already exist in user-owned handler files.
 //
@@ -621,10 +666,6 @@ func crudShimHeader(data CRUDTemplateData) string {
 			"their own orders\") by wrapping the generated op's Filters right here — a visible " +
 			"WHERE clause on those claims. Role checks are ordinary handler code in the same " +
 			"place. See `forge skill load auth`.",
-		"",
-		"To customize an RPC, replace its delegation with a real implementation right here. CRUD " +
-			"RPCs added later are appended to this file by `forge generate`; your existing " +
-			"content is never modified.",
 	}
 
 	// A file whose methods DO read the caller must not open with three
@@ -645,6 +686,14 @@ func crudShimHeader(data CRUDTemplateData) string {
 				"marker stands.")
 	}
 
+	paragraphs = append(paragraphs, crudShimAuthLegend(data.CRUDMethods)...)
+	paragraphs = append(paragraphs,
+		"",
+		"To customize an RPC, replace its delegation with a real implementation right here. CRUD "+
+			"RPCs added later are appended to this file by `forge generate`; your existing "+
+			"content is never modified.",
+	)
+
 	var b strings.Builder
 	for _, p := range paragraphs {
 		for _, line := range wrapCommentText(p, 72) {
@@ -660,6 +709,59 @@ func crudShimHeader(data CRUDTemplateData) string {
 		}
 	}
 	return b.String()
+}
+
+// crudShimAuthLegend explains, once, the `Auth:` tag each delegating method
+// carries (handlers_crud_shim_method.go.tmpl). The per-method line used to
+// repeat this whole explanation above every method — the same ten lines
+// five times per entity, in a file agents read constantly — which buried the
+// one fact that differs between methods.
+//
+// Only the tags present at birth are described: the header describes this
+// file, and a fully scoped file must not define an UNSCOPED case it does not
+// contain (crud_owner_scaffold_test.go). A method appended later carries a
+// tag line that reads on its own.
+func crudShimAuthLegend(methods []CRUDMethodTemplateData) []string {
+	var unscoped, public, scoped bool
+	for _, m := range methods {
+		switch {
+		case m.ShapeMismatch:
+			// Its own comment covers it: the body is a wired query, not a delegation.
+		case m.Scoped:
+			scoped = true
+		case m.AuthRequired:
+			unscoped = true
+		default:
+			public = true
+		}
+	}
+	if !unscoped && !public && !scoped {
+		return nil
+	}
+	out := []string{
+		"",
+		"EACH METHOD'S `Auth:` LINE says which case it is, read from its rpc's auth_required and " +
+			"its table's forge:owner column:",
+	}
+	if unscoped {
+		out = append(out, "",
+			"AUTHENTICATED, UNSCOPED — only a valid token reaches it, and nothing in its body "+
+				"reads who that is yet: the two paragraphs above are the to-do.")
+	}
+	if public {
+		out = append(out, "",
+			"PUBLIC — auth_required: false lets a credential-less caller through. If that is "+
+				"wrong, the fix is the annotation on the rpc, not a "+crudAuthSeam+"(ctx) call "+
+				"here, which would reject callers the proto (and `forge project graph`) advertise "+
+				"as welcome.")
+	}
+	if scoped {
+		out = append(out, "",
+			"SCOPED — the table declares a forge:owner column, so the body already resolves the "+
+				"caller and scopes the rows it touches; only its FORGE_SCAFFOLD owner mapping is "+
+				"left to you.")
+	}
+	return out
 }
 
 // wrapCommentText word-wraps one paragraph to width runes. Blank and

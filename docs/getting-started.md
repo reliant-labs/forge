@@ -308,7 +308,7 @@ There are really three categories, not two.
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | **Regenerated every run**    | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`, and `.claude/skills/**` on `--harness claude`             | Overwritten. Never edit.                  |
 | **Written once, then yours** | `internal/app/compose.go`, `internal/app/auth.go`, `db/migrations/*.sql`, `internal/db/<entity>_repo_ext.go`, `deploy/kcl/<env>/config.k` | Forge writes if absent, then leaves alone |
-| **Purely yours**             | handler bodies, `internal/<svc>/contract.go` and `service.go`, `internal/app/providers.go`, `cmd/<bin>/main.go`                           | Forge never writes these                  |
+| **Purely yours**             | handler bodies (`internal/handlers/<svc>/rpc_<name>.go`), a domain package's `internal/<name>/contract.go`, `internal/app/providers.go`, `cmd/<bin>/main.go` | Forge never writes these                  |
 
 You do not have to memorize it. Files in the first category say so in their
 own header:

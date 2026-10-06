@@ -86,6 +86,9 @@ There is no CLI field grammar — enums, `optional` (nullable), `buf.validate`
 rules, `forge:read-only` / `forge:secret` / `forge:append-only`, a same-row
 derived column (`forge:generated <sql expr>`) and foreign-key references are
 all spelled in the message. Full vocabulary: `forge project annotations`.
+Which marker keeps clients off a column your code owns (`forge:read-only`,
+`forge:computed`, `forge:generated`, `forge:guards`, `forge:immutable`): the
+decision table in `db/write-policy`.
 
 `protovalidate` vendors itself: add `import "buf/validate/validate.proto";` and
 `forge generate` pulls the protos into your `proto/` tree on the first run that
@@ -113,6 +116,14 @@ Then `forge scaffold` emits the pb-through stub (a method on `*Service`
 returning Unimplemented) in `internal/handlers/<svc>/rpc_<name>.go`.
 `forge scaffold rpc <svc> <Name>` does the same for one rpc, and prints a proto
 snippet to paste when the rpc is not in the proto yet.
+
+**What makes an rpc CRUD is its exact name.** A unary rpc named `Create<E>`,
+`Get<E>`, `Update<E>`, `Delete<E>` or `List<Es>`, where `<E>` has a table AND a
+proto message of that name, gets the CRUD wiring. Anything else is custom:
+`UpdateJobStatus`, `CreateInvoiceFromEstimate` and `ListJobsByCrew` get a stub
+and no page, and a custom mutation's hook invalidates every query on its
+service (a CRUD mutation's, only its entity's). Name rpcs for the domain; never
+rename one to dodge CRUD detection.
 
 Every rpc is closed to unauthenticated callers unless it carries
 `auth_required: false` (`proto`, `auth`).

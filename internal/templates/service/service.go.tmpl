@@ -13,8 +13,9 @@ import (
 )
 
 // Deps holds dependencies for the {{.ServiceName}} service. Composition
-// supplies Logger/Config and resolves added fields by name.
-// See the forge `api` / `services` skill.
+// (internal/app/compose.go) supplies Logger/Config and resolves added fields
+// by type. The rpc methods on *Service are where this service's logic lives;
+// see the forge `api` / `services` skill.
 type Deps struct {
 	Logger *slog.Logger
 	Config *config.Config

@@ -155,7 +155,9 @@ so a client can neither set it nor reset it by leaving it out. Your own RPCs wri
 it with `db.Update<Entity>Masked`. This is stricter than AIP-203, which asks a
 server to silently ignore output-only mask paths: a caller who names `status`
 believes it is changing status, and a 200 that changed nothing is the silent
-non-write forge refuses to ship.
+non-write forge refuses to ship. Read-only vs `forge:computed` vs
+`forge:generated` vs `forge:guards` vs `forge:immutable`, by who writes the
+value: `db/write-policy`.
 
 ```proto
 // forge:soft-delete
@@ -209,6 +211,11 @@ purpose: a field that is simply missing tells the reader nothing, while a row
 reading "changed through `RecordPayment`" points at the API that can make the
 change. Create is untouched — a guard is a rule about *transitions*, and the
 initial value is still yours to set.
+
+Guards changes only the page: a client calling `UpdateInvoice` directly can
+still write the column. When the API must refuse it too, also mark the entity
+field `// forge:read-only` — the field then still renders as the disabled row
+naming the rpc, where read-only alone would hide it (`db/write-policy`).
 
 The target is `<table>.<column>` and both halves matter. Repeat the marker, one
 per line, for an RPC that guards several columns:
@@ -289,6 +296,25 @@ regenerated every run) and scaffolds a thin delegation into the user-owned
 | `List<Entities>` | Paginated list with filters |
 | `Update<Entity>` | Update via ORM |
 | `Delete<Entity>` | Delete (or soft-delete when the table has `deleted_at`) |
+
+**The rule is exact, and it is the same on both sides of the wire.** An rpc is
+CRUD when it is unary, its name is one of those prefixes followed by an entity
+name (`List` takes the plural, or the name as written), and that entity has
+both a table in the applied schema and a proto message of that name. Every
+other rpc is custom, including ones that start with a CRUD verb:
+
+| rpc | Is it CRUD? |
+|---|---|
+| `UpdateJob`, `ListJobs` (table `jobs`, message `Job`) | yes |
+| `UpdateJobStatus` | no — `JobStatus` is an enum, not a table + message |
+| `CreateInvoiceFromEstimate`, `ListJobsByCrew` | no — no `InvoiceFromEstimate` / `JobsByCrew` entity |
+
+A custom rpc gets a pb-through stub in `rpc_<name>.go`, no scaffolded page, and
+a mutation hook that invalidates every query on its service (a CRUD mutation
+invalidates only its entity's). So name rpcs for the domain operation; renaming
+`UpdateJobStatus` to `ChangeJobStatus` buys nothing. The one real collision is
+an rpc whose remainder IS another entity's name — `UpdateJobNote` where
+`JobNote` is an entity is that entity's Update.
 
 The generated conversions map the **intersection** of wire fields and
 columns by name: a wire-only field never reaches the DB, a column-only

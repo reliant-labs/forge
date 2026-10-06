@@ -69,37 +69,57 @@ Do NOT use `{{.CLI}} project libraries` and gopls for the same question: `{{.CLI
 
 ## Architecture in one screen
 
-The two halves of every domain:
+What `{{.CLI}} scaffold service <svc>` writes, and where an rpc's logic goes:
 
 ```
-proto/services/<svc>/v1/<svc>.proto    ← API contract (annotated)
-                ↓ forge generate
+proto/services/<svc>/v1/<svc>.proto     ← API contract: messages, CRUD + custom rpcs
+                ↓ {{.CLI}} generate
 gen/services/<svc>/v1/...               ← generated stubs (never edit)
 
-internal/handlers/<svc>/                         ← THIN translation layer
-  service.go      validate, extract auth, proto↔internal, call service, map errors
-  validators.go   pure request validators
-  errors.go       domain error → connect.Code
+internal/handlers/<svc>/                ← THE SERVICE: owned + generated files, one dir
+  service.go                Deps, validateDeps, New — the *Service (yours)
+  rpc_<name>.go             one custom rpc per file: a *Service method — the logic goes HERE
+  handlers_crud.go          owned CRUD shims delegating to forge/pkg/crud (yours)
+  handlers_crud_ops_gen.go  per-entity CRUD wiring (generated)
 
-internal/<svc>/                         ← BUSINESS LOGIC
-  contract.go     Service interface + domain types
-  service.go      implementation
-  errors.go       domain-typed sentinels and error types
-  *_gen.go        mocks/middleware/tracing/metrics from forge generate
+internal/<pkg>/                         ← OPTIONAL: `{{.CLI}} scaffold package <pkg>`
+  contract.go               Service interface + Deps + New (yours)
+  service.go                implementation (yours)
+  mock_gen.go               mock of every interface in contract.go (generated)
 ```
 
-Load `architecture` for the deep version.
+There is no `contract.go` inside a handler package and no `internal/<svc>/`
+business layer behind every service: the `*Service` methods ARE the handlers,
+and they call `internal/db/` and other collaborators through `s.deps`. Load
+`architecture` for the full tree.
 
 ## Where logic goes
 
 | Concern | Lives in | See skill |
 |---------|----------|-----------|
-| Wire-format validation, auth extraction, proto↔internal conversion, error code mapping | `internal/handlers/<svc>/` | `api/handlers` |
-| Business decisions, DB calls, cross-service orchestration, transactions | `internal/<svc>/contract.go` (interface) + `service.go` (impl) | `service-layer` |
+| An rpc's logic: validation, auth checks, state transitions, DB calls | the `*Service` method in `internal/handlers/<svc>/rpc_<name>.go` (CRUD: the shim in `handlers_crud.go`) | `api` |
+| Errors crossing the rpc boundary | `return nil, svcerr.Wrap(err)` — never a per-service `connect.Code` switch (`forgeconv-no-handler-error-mapping`) | `api` |
+| Logic that deserves transport-free tests, or that a worker or another service also calls | a standalone package — `{{.CLI}} scaffold package <name>` writes `internal/<name>/contract.go`, and the handler takes it as a Deps interface | `service-layer`, `interactor` |
+| Read-check-write transactions | `s.deps.DB.RunTx(ctx, func(ctx context.Context) error { … })` | `service-layer/transactions` |
 | Wiring (constructing services, middleware chains, dep injection) | `internal/app/providers.go` (yours — what fills a Deps field); `internal/app/compose.go` (also yours; forge reconciles the component set and Deps keys) | `services` |
 | DB schema | migrations under `db/migrations/` (the source of truth — entities/ORM are projected FROM the applied schema) | `db` |
 
-If a handler grows past six steps (validate / auth / convert / call service / convert / map error), the extra logic belongs in the service. If a service grows past one domain, it should split.
+Move an rpc's logic into a package when it outgrows the method — a state
+machine several rpcs share, a calculation worth testing without a request, or
+an orchestration a worker repeats — not by default.
+
+## CRUD rpcs and custom rpcs
+
+An rpc is CRUD only when it is unary and named exactly `Create<E>`, `Get<E>`,
+`Update<E>`, `Delete<E>` or `List<Es>`, where `<E>` is an entity: a table in the
+applied schema AND a proto message of that name. Everything else is custom and
+yours — including `UpdateJobStatus`, `CreateInvoiceFromEstimate` and
+`ListJobsByCrew`, so never rename an rpc to dodge CRUD detection. A custom
+mutation's generated hook invalidates every query on its service. Depth: `proto`.
+
+Which marker for a field forge must not let clients write — `forge:read-only`,
+`forge:computed`, `forge:generated`, `forge:guards`, `forge:immutable` — is a
+decision table in `db/write-policy`.
 
 ## Package boundaries and interfaces
 
@@ -129,7 +149,7 @@ SQL is the schema language. Entities are PROJECTIONS of the applied `db/migratio
 
 - Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete, text columns ⇒ generated list search (`db` skill).
 - Access control and row scoping are app-owned handler logic — read the caller via `middleware.GetUser` and add the checks and `WHERE` filters your product needs; forge generates none of it (`auth` + `db` skills).
-- `(forge.v1.method)` may carry informational metadata (timeouts, error codes, `auth_required`); it gates nothing at runtime.
+- `auth_required` is enforced, fail-closed and per-rpc: unset or `true` needs a valid token, and `auth_required: false` publishes that one rpc (projected into `pkg/middleware/procedures_gen.go`). It decides only WHETHER a caller is signed in; what they may do is the handler logic above.
 - List request filter fields **must** be `optional` — without it, generated filters silently no-op.
 - One service per `.proto` file (`{{.CLI}} lint` rejects multi-service files; see `proto-split`).
 - Cross-service shared messages go in `proto/shared/v1/types.proto`. No service-to-service proto imports.
@@ -150,14 +170,14 @@ Forge deliberately does not guess your product's visual identity. A scaffold tha
 
 ## Critical rules
 
-1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`, and `internal/app/mounts_services_gen.go`. All overwritten by `{{.CLI}} generate`. Edit the proto / `contract.go` / config instead. `internal/app/compose.go` and `lifecycle.go` are NOT in this list: they are yours, written once and then reconciled — forge injects newly discovered components and Deps keys (and drops keys for removed Deps fields) but never touches your value expressions or construction order. `{{.CLI}} project disown internal/app/compose.go` opts out entirely.
+1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`, and `internal/app/mounts_services_gen.go`. All overwritten by `{{.CLI}} generate`. Edit the input instead: the proto, the migration, config, or a package's `contract.go` (its `mock_gen.go` follows). `internal/app/compose.go` and `lifecycle.go` are NOT in this list: they are yours, written once and then reconciled — forge injects newly discovered components and Deps keys (and drops keys for removed Deps fields) but never touches your value expressions or construction order. `{{.CLI}} project disown internal/app/compose.go` opts out entirely.
 2. **Proto is the API's canonical input** — API contracts and frontend hooks derive from proto definitions.
 3. **Migrations are the DB source of truth** — the schema comes from migrations; entities/ORM are projected from the APPLIED schema, not from proto.
 4. **Always run `{{.CLI}} lint` after `{{.CLI}} generate`.** The triple gate before you call a phase done:
    ```
    {{.CLI}} generate && {{.CLI}} lint && go build ./... && task test
    ```
-   `{{.CLI}} lint` catches contract-gaps (packages with exported methods but no `contract.go`), multi-service proto files, missing-annotation rules, and exported-vars violations. Running it at every phase is cheap; backfilling six phases later is not.
+   `{{.CLI}} lint` catches contract-gaps (an `internal/<pkg>/` with exported methods but no `contract.go` — handler and scaffolded worker packages are exempt), multi-service proto files, missing-annotation rules, and exported-vars violations. Running it at every phase is cheap; backfilling six phases later is not.
    Never pipe it through `head` — the verdict is the LAST line. `{{.CLI}} lint --quiet` prints only what failed plus that verdict (a clean run is one line). `--scope <path>` (repeatable) lints just your slice of a shared checkout; whole-project lanes are skipped and named, so run it unscoped before merging. One lane alone: `--read-only-fields`, `--computed-fields`, `--migration-safety`, … (`{{.CLI}} lint --help`).
 5. **`{{.CLI}} generate` is safe** — it never overwrites hand-written business logic (handler files, `internal/app/providers.go`, `internal/app/auth.go`, etc.). It is also safe for parallel agents in one checkout: concurrent `generate` / `scaffold` runs queue on the project's lock (`.forge/forge.lock`) rather than collide.
 6. **`task test` is the test suite** — Go plus every frontend's tests, with the database, build tags and flags already set up. There is no `{{.CLI}} test`: a second spelling could disagree with the Taskfile, so it was removed. `task test -- ./internal/foo/...` scopes to Go packages, `task test:integration` and `task test:e2e` are the tagged lanes.

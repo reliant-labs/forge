@@ -5,8 +5,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/jinzhu/inflection"
 )
 
 // FrontendHookTemplateData holds data for rendering a single service's
@@ -240,7 +238,7 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			InputType:   m.InputType,
 			OutputType:  m.OutputType,
 			IsQuery:     isQuery,
-			EntityScope: methodEntityScope(m.Name),
+			EntityScope: methodEntityScope(svc, m.Name),
 		})
 	}
 
@@ -271,18 +269,15 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 	return data
 }
 
-// methodEntityScope derives the camelCase singular entity name from a
-// CRUD-pattern RPC name: "ListTasks" → "task", "CreateTask" → "task".
-// Returns "" for non-CRUD method names — those key/invalidate at the
+// methodEntityScope derives the camelCase singular entity name from a CRUD
+// RPC: "ListTasks" → "task", "CreateTask" → "task". Returns "" for a custom
+// RPC — including one whose name merely starts with a CRUD verb, like
+// "UpdateTaskStatus" (see crudEntity) — and those key/invalidate at the
 // service scope.
-func methodEntityScope(methodName string) string {
-	op, rawEntity := parseCRUDOperation(methodName)
-	if op == "" || rawEntity == "" {
+func methodEntityScope(svc ServiceDef, methodName string) string {
+	_, entity := crudEntity(svc, methodName)
+	if entity == "" {
 		return ""
-	}
-	entity := rawEntity
-	if op == "list" {
-		entity = inflection.Singular(rawEntity)
 	}
 	return toCamelCaseFromPascal(entity)
 }

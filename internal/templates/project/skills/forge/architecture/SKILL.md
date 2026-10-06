@@ -31,7 +31,7 @@ internal/                     # the application: components, DI, data access
     handlers_crud_test.go     #     yours: CRUD lifecycle test (scaffolded once; rows from the factories)
     factories_gen_test.go     #     generated: New<Entity> / New<CreateRequest> test factories from the applied schema
     handlers_crud_ops_gen.go  #     generated: per-RPC CRUD ops + ToProto/FromProto
-  handlers/mocks/             #   generated cross-service mocks (package mocks, one <svc>_mock.go each)
+  handlers/mocks/             #   generated cross-service mocks (package mocks, one <svc>_mock_gen.go each)
   <name>/                     #   standalone domain package: contract.go (yours) + mock_gen.go
   workers/<name>/             #   workers (NOT top-level): worker.go + worker_test.go
   operators/<name>/           #   operators (NOT top-level): controller + types

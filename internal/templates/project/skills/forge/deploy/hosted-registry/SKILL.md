@@ -15,7 +15,9 @@ forge registry login <env>        # no --username, no --password-*
 
 forge resolves the same `rlat_` it reaches the control plane with — `--token`,
 then the env's declared `token_env` (default `$FORGE_CONTROL_PLANE_TOKEN`), then
-what `forge login` stored. It presents that on **stdin** as username `forge`;
+what `forge login` stored, then the credential helper `$FORGE_CREDENTIAL_HELPER`
+(Reliant's session — set for `reliant forge …` and Reliant agents' shells). It
+presents that on **stdin** as username `forge`;
 the realm authenticates on the credential alone, so the username is a label in
 a log rather than an identity.
 
@@ -84,8 +86,9 @@ in one run: ours from the control-plane credential, yours from the flags.
 forge composes the push address from the org your credential acts for, so a
 denial is never a mis-declared org. In order:
 
-1. **The credential expired or was revoked.** `forge login` again, or refresh
-   the CI secret.
+1. **The credential expired or was revoked.** Under Reliant, sign in to Reliant
+   again (`reliant auth login` / the app); standalone, `forge login` again; in
+   CI, refresh the secret.
 2. **The token holds `deploy:read` but not `deploy:write`.** A push needs both
    the org's subtree and write access; check the token's scopes with
    `forge cloud token list`.

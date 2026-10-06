@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
 // `forge registry` is what a CI job needs to work from an env's DECLARATIONS
@@ -110,7 +111,9 @@ THE PLATFORM REGISTRY NEEDS NO CREDENTIAL FROM YOU. For the host named by an
 env's forge.ControlPlane registry_host (Reliant's registry by default),
 forge presents the SAME control-plane credential it reaches the control plane
 with — ` + "`--token`" + `, then the env's declared token_env, then what ` + "`forge login`" + `
-stored. One token, so there is nothing to mint and nothing to rotate:
+stored, then the credential helper $` + cloudcred.HelperEnv + ` (a host application's
+session — Reliant sets it). One token, so there is nothing to mint and nothing
+to rotate:
 
   forge registry login prod
 

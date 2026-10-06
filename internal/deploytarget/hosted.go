@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
@@ -513,8 +514,8 @@ func checkImagePushBase(envName, base string, plan []hostedPlanItem) error {
 			return fmt.Errorf("hosted env %q resolved no image push base, so the platform would refuse every workload image "+
 				"(first: %s for %s).\n"+
 				"  forge composes the base from the org your credential acts for; it could not learn it.\n"+
-				"  fix: authenticate (`forge login`, or the env's token_env) and re-run",
-				envName, spec.Image, item.Name)
+				"  fix: authenticate (%s, or the env's token_env) and re-run",
+				envName, spec.Image, item.Name, cloud.SignInHint())
 		}
 		repo := HostedImageRepository(spec.Image)
 		if !strings.HasPrefix(repo, base+"/") {

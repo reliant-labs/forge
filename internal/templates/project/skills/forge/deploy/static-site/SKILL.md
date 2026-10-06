@@ -116,7 +116,9 @@ byte-identical sites. Recovery rolls forward to a new release; there is no
 rollback.
 
 Signed in to Reliant means signed in to the control plane: there is no second
-`forge login`. Your own hostname: load `deploy/domains`.
+`forge login`. `reliant forge …` and Reliant agents' shells set
+`$FORGE_CREDENTIAL_HELPER`, which mints forge a short-lived token from your
+Reliant session. Your own hostname: load `deploy/domains`.
 
 ## Runtime config
 

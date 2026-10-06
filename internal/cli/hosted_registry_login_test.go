@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
-	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/credentials"
 )
 
@@ -115,9 +114,9 @@ func isolatedCredentials(t *testing.T) string {
 
 // TestRegistryLogin_PlatformHostUsesTheControlPlaneCredential is the headline:
 // our host takes username `forge` and the control-plane `rlat_` on stdin, from
-// EVERY source cloud.ResolveCredential honours — including the host-app entry,
-// which is how a managed Reliant daemon's deposited token reaches a push with
-// no `forge login` and no CI secret (gap G7).
+// EVERY source cloud.ResolveCredential honours — including the credential
+// helper, which is how a Reliant session (laptop or managed daemon) reaches a
+// push with no `forge login` and no CI secret (gap G7).
 func TestRegistryLogin_PlatformHostUsesTheControlPlaneCredential(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -149,18 +148,15 @@ func TestRegistryLogin_PlatformHostUsesTheControlPlaneCredential(t *testing.T) {
 			},
 		},
 		{
-			// THE CLOUD-DAEMON PATH. A managed daemon deposits the owner's
-			// token under cloudcred.HostClientID and has no way to be handed
-			// a registry password, so this entry resolving is what makes the
-			// in-app Deploy button able to push at all.
-			name:  "a host application's deposited token (the cloud daemon)",
-			token: "rlat_fromhostapp",
-			arrange: func(t *testing.T, credPath string) {
-				if err := cloudcred.Save(credPath, "https://cp.example.com", cloudcred.Credential{
-					Token: "rlat_fromhostapp", TokenPrefix: "rlat_fromhost", Scopes: []string{"deploy:write"},
-				}); err != nil {
-					t.Fatal(err)
-				}
+			// THE HOST-SESSION PATH (Reliant, laptop or cloud daemon). The
+			// user is signed in to the host, which names a credential helper;
+			// it has no way to be handed a registry password, so the helper's
+			// token resolving here is what makes a push work with no `forge
+			// login` and no CI secret.
+			name:  "a host application's session via the credential helper",
+			token: "rlat_fromhelper",
+			arrange: func(t *testing.T, _ string) {
+				useFakeCredentialHelper(t, "rlat_fromhelper")
 			},
 		},
 	} {

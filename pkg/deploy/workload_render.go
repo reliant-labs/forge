@@ -705,11 +705,21 @@ func mainContainer(w *workload, extraEnv []corev1.EnvVar) corev1.Container {
 	return c
 }
 
-// sidecarContainer renders a sidecar with the SAME hardening as the main
-// container. The type has no securityContext field, on purpose: a sidecar
-// that could loosen it would make the main container's hardening a
-// suggestion. It shares /tmp and nothing else (v1alpha1.Container's doc).
-func sidecarContainer(sc v1alpha1.Container, podSec *v1alpha1.PodSecurity) corev1.Container {
+// LowerContainer lowers a Container to its Kubernetes form for a pod forge
+// does not render itself (a raw Deployment in Bundle.manifests): image
+// pull policy, command/args/env, ports, defaulted resources, the probes with
+// forge's timings, and restartPolicy Always for a Native sidecar. It carries
+// no securityContext and no /tmp mount, because the raw pod owns both. It is
+// the SAME lowering sidecarContainer starts from, so the two cannot drift.
+func LowerContainer(c v1alpha1.Container) corev1.Container {
+	k := lowerContainer(c)
+	if c.Native {
+		k.RestartPolicy = new(corev1.ContainerRestartPolicyAlways)
+	}
+	return k
+}
+
+func lowerContainer(sc v1alpha1.Container) corev1.Container {
 	c := corev1.Container{
 		Name:            sc.Name,
 		Image:           sc.Image,
@@ -719,12 +729,21 @@ func sidecarContainer(sc v1alpha1.Container, podSec *v1alpha1.PodSecurity) corev
 		Env:             renderEnv(sc.Env),
 		Ports:           containerPorts(sc.Ports),
 		Resources:       resourceRequirements(sc.Resources),
-		SecurityContext: containerSecurityContext(podSec),
-		VolumeMounts:    []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}},
 	}
 	probes := sc.EffectiveProbes()
 	c.ReadinessProbe, c.LivenessProbe = probePair(probes)
 	c.StartupProbe = startupProbe(probes)
+	return c
+}
+
+// sidecarContainer renders a sidecar with the SAME hardening as the main
+// container. The type has no securityContext field, on purpose: a sidecar
+// that could loosen it would make the main container's hardening a
+// suggestion. It shares /tmp and nothing else (v1alpha1.Container's doc).
+func sidecarContainer(sc v1alpha1.Container, podSec *v1alpha1.PodSecurity) corev1.Container {
+	c := lowerContainer(sc)
+	c.SecurityContext = containerSecurityContext(podSec)
+	c.VolumeMounts = []corev1.VolumeMount{{Name: v1alpha1.TmpVolumeName, MountPath: v1alpha1.TmpMountPath}}
 	return c
 }
 

@@ -118,7 +118,9 @@
     "@types/node": "^22.14.0",
     "@types/react": "^19.1.0",
     "@types/react-18": "npm:@types/react@~18.3.0",
+    "@types/react-dom": "^19.3.0",
     "react": "^19.1.0",
+    "react-dom": "^19.3.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"
   },

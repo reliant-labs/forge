@@ -83,7 +83,7 @@ func (s *svc) RecordPayment(ctx context.Context, in RecordPaymentInput) (Invoice
         if err := s.deps.Invoices.UpdateInvoiceMasked(ctx, inv, []string{"paid_cents"}); err != nil {
             return err
         }
-        out = inv
+        out = inv // generated balance_cents was scanned back by the write — no re-read
         return orm.AfterCommit(ctx, func(ctx context.Context) {
             s.deps.Events.PaymentRecorded(ctx, inv.Id) // side effect: after commit, once
         })

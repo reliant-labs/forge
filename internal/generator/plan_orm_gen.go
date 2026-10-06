@@ -712,10 +712,13 @@ func bunTag(f ormField) string {
 	// ,nullzero handles the INSERT half: Bun emits the literal DEFAULT
 	// keyword for a zero-valued nullzero field (query_insert.go's
 	// marshalsToDefault → appendStructValues), which postgres ACCEPTS for a
-	// generated column, and the same branch registers the field for
-	// RETURNING so Create reads the computed value straight back. The
-	// UPDATE half is the shared ,skipupdate below, which isGenerated now
-	// feeds alongside immutable/secret/version.
+	// generated column. The UPDATE half is the shared ,skipupdate below,
+	// which isGenerated now feeds alongside immutable/secret/version.
+	// Reading the computed value back is NOT the tag's job: pkg/crud.Repo
+	// excludes the column from the INSERT (so Bun's own DEFAULT-field
+	// RETURNING never sees it) and instead RETURNs every generated column
+	// explicitly on Create, Upsert, Update and UpdateMasked — keyed off the
+	// forge:"generated" tag structTag adds.
 	//
 	// NOT ,scanonly, which is what this used to emit. ,scanonly does not
 	// mean "read but don't write": Bun's schema/table.go early-returns

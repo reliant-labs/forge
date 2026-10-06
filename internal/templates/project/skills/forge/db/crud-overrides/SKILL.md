@@ -1,6 +1,6 @@
 ---
 name: crud-overrides
-description: Diverge from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, and the per-op seams (op.Filters, op.Fetch, op.Persist) a per-caller policy attaches to.
+description: Diverge from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, the per-op seams (op.Filters, op.Fetch, op.Persist) a per-caller policy attaches to, and what the Update op already does for read-only fields.
 ---
 
 # Diverging From Generated CRUD
@@ -120,6 +120,41 @@ carried by `ctx`, and `RunTx`'s SERIALIZABLE-plus-retry turns a concurrent
 writer into a re-run that sees the committed row. The closure may run more
 than once, so keep side effects out of it (`orm.AfterCommit`).
 `service-layer/transactions` explains why this is safe.
+
+### Read-only fields are already handled — do not overlay them
+
+The generated Update op carries the entity's `// forge:read-only` and
+`// forge:computed` columns twice, and both halves survive an override that
+wraps rather than replaces:
+
+```go
+// handlers_crud_ops_gen.go (generated)
+ReadOnly: []string{"status", "shipped_at"},       // HandleUpdate refuses a mask naming one
+Persist: ... db.UpdateOrder(ctx, s.deps.DB, entity,
+        crud.Preserve("status", "shipped_at")) ... // a full replace leaves them as stored
+```
+
+So there is no need to reload the stored row and copy the editable fields onto
+it, or to filter lifecycle paths out of the mask — the op does both, and the
+response reports the stored values (every Update reads back the columns it did
+not write). Keep an override for what is genuinely yours: a business rule, a
+cross-entity check, scoping.
+
+Two things to know when overriding:
+
+- **Replacing `op.Persist` outright** (not wrapping it) drops `crud.Preserve`
+  with it. Pass it yourself, from the op so the list cannot drift:
+  `db.UpdateOrder(ctx, s.deps.DB, e, crud.Preserve(op.ReadOnly...))`.
+- **A derived value is not written by the Update op.** Setting `row.Total` in
+  an Update `op.Entity` hook has no effect on a read-only column — that is the
+  guarantee, not a bug. Same-row derivations belong in a `GENERATED` column;
+  cross-row ones are written by the code that changes their inputs, with
+  `db.Update<Entity>Masked(ctx, s.deps.DB, e, []string{"total_cents"})`.
+
+AIP-203 asks servers to *ignore* output-only `update_mask` paths; forge refuses
+them instead, because a 200 that silently changed nothing is the failure this
+exists to prevent. An override that wants the AIP behaviour sets
+`op.ReadOnly = nil` and filters the paths in `op.PersistMasked`.
 
 ## Errors from an override must be classified
 

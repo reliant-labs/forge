@@ -202,6 +202,19 @@ type CRUDMethodTemplateData struct {
 	// concrete mask paths write only the named columns via
 	// db.Update<Entity>Masked.
 	UpdateMaskField string
+	// ReadOnlyColumns names the entity's columns whose WIRE field carries
+	// `forge:read-only` or `forge:computed` — present only on an "update"
+	// method. The generated UpdateOp carries them as op.ReadOnly (an
+	// update_mask naming one is refused) and its Persist passes them to
+	// crud.Preserve (a full replace leaves them as stored), so a client can
+	// neither set a server-owned column nor reset it by omitting it.
+	//
+	// Read from the proto on every generate, not declared in the
+	// migration: who may write a column THROUGH THE API is a fact about the
+	// API, and the storage layer's own write policy (forge:immutable,
+	// ,skipupdate) is left alone because the custom RPCs that own these
+	// columns write them through the same repository. See ReadOnlyColumns.
+	ReadOnlyColumns []string
 	CreateFields    []CreateFieldData // fields from the create request message
 	// ShapeMismatch is true when the request/response message shapes
 	// observed in svc.Messages don't line up with what the CRUD body
@@ -1207,8 +1220,10 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// masked-persistence hooks. Skip on shape mismatch — the stub
 	// branch never dereferences it.
 	updateMaskField := ""
+	var readOnlyColumns []string
 	if shapeOK && cm.Operation == "update" {
 		updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
+		readOnlyColumns = ReadOnlyColumns(cm.Entity)
 
 		// A forge:version column the wire message does not carry makes
 		// this Update un-runnable after a row's first edit: the caller
@@ -1302,6 +1317,7 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		HasTotalCount:      hasTotalCount,
 		UpdateEntityField:  updateEntityField,
 		UpdateMaskField:    updateMaskField,
+		ReadOnlyColumns:    readOnlyColumns,
 		CreateAssigns:      createAssigns,
 		ShapeMismatch:      !shapeOK,
 		MismatchReason:     shapeReason,

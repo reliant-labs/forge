@@ -622,16 +622,24 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 		return
 	}
 
-	// Update
+	// Update. The variadic crud.UpdateOption is the per-CALL write policy:
+	// the generated CRUD Update op passes crud.Preserve(<the entity's
+	// forge:read-only/forge:computed columns>) so a client cannot write
+	// them, while app code calling this with no options keeps writing every
+	// updatable column. Variadic so every existing call site still compiles.
 	fmt.Fprintf(b, "// Update%s writes the updatable columns of an existing %s by PK\n", msgName, msgName)
-	b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped).\n")
-	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s) error {\n", msgName, msgName)
-	fmt.Fprintf(b, "\treturn %s.Update(ctx, db, msg)\n", repoVar)
+	b.WriteString("// (created_at/PK/deleted_at excluded; updated_at re-stamped) and reads\n")
+	b.WriteString("// back every column it did not write, so msg holds the stored row after.\n")
+	b.WriteString("// crud.Preserve(cols...) keeps more columns out of this one write.\n")
+	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.Update(ctx, db, msg, opts...)\n", repoVar)
 	b.WriteString("}\n\n")
 
 	// UpdateMasked
 	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns (AIP-134 update_mask;\n", msgName)
-	b.WriteString("// unknown/immutable paths return *orm.UnknownFieldError).\n")
+	b.WriteString("// unknown/immutable paths return *orm.UnknownFieldError). It writes a\n")
+	b.WriteString("// forge:read-only column named here: this is how the code that owns one\n")
+	b.WriteString("// sets it, since no client Update can.\n")
 	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string) error {\n", msgName, msgName)
 	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields)\n", repoVar)
 	b.WriteString("}\n\n")

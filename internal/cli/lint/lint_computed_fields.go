@@ -121,13 +121,14 @@ func computedFieldFixHint(f computedFieldFinding) string {
 		"%s.%s is marked `%s` but no non-generated Go file assigns %s. The field is omitted "+
 			"from Create/Update (as read-only), so nothing populates it and the insert takes the "+
 			"column default — %s, with no error anywhere. "+
-			"Either derive it (override the generated op's Entity hook in "+
-			"internal/handlers/<svc>/handlers_crud.go and set row.%s before returning), or drop "+
-			"the marker to `%s` if the value is genuinely written elsewhere (a trigger, a "+
+			"Either derive it (set row.%s in the Create op's Entity hook in "+
+			"internal/handlers/<svc>/handlers_crud.go, and wherever its inputs change write it "+
+			"with db.Update<Entity>Masked naming %s — no client Update writes a computed column), "+
+			"or drop the marker to `%s` if the value is genuinely written elsewhere (a trigger, a "+
 			"GENERATED column, a service this check cannot see).",
 		f.Entity, f.Field, codegen.ProtoMarkerComputed, f.GoField,
 		shapeConsequence(protoValueShape(f.Kind, f.TypeName, f.Field)),
-		f.GoField, codegen.ProtoMarkerReadOnly)
+		f.GoField, f.Field, codegen.ProtoMarkerReadOnly)
 }
 
 // runComputedFieldsLint is the text-mode entry point.

@@ -1,6 +1,6 @@
 ---
 name: write-policy
-description: Column write policy declared in the migration that owns the column — row-ownership columns, forge:immutable against accidental full-replace overwrites, and forge:version optimistic concurrency.
+description: Column write policy declared in the migration that owns the column — row-ownership columns, forge:immutable against accidental full-replace overwrites (and how it differs from a forge:read-only wire field), and forge:version optimistic concurrency.
 ---
 
 # Column write policy
@@ -67,6 +67,32 @@ caller asserting a value on purpose.
 Reach for it on any column a full-replace Update could zero out by accident: a
 server-assigned owner id, an externally-issued identifier (a Stripe customer ID,
 an OAuth subject), an audit stamp set once at creation.
+
+### `forge:immutable` or `forge:read-only`?
+
+They answer different questions, and choosing the wrong one either leaves a
+hole or takes a write away from code that needs it.
+
+| | `forge:immutable` (column comment) | `// forge:read-only` (proto field) |
+|---|---|---|
+| Question | may ANY full replace rewrite this column? | may a CLIENT write it through the API? |
+| Client full-replace Update | leaves it as stored | leaves it as stored |
+| Client `update_mask` naming it | **writes it** | `InvalidArgument` (`unknown_field`) |
+| App code `db.Update<Entity>` | leaves it as stored | **writes it** |
+| App code `db.Update<Entity>Masked` naming it | writes it | writes it |
+
+A lifecycle column — `status`, `shipped_at`, a balance — is `forge:read-only`:
+clients must not touch it, and the RPC that owns the state machine writes it.
+`forge:immutable` alone would still let a client set it through a mask naming
+it. An owner id that nobody should ever rewrite, including your own full
+replaces, is `forge:immutable`, often with `forge:read-only` on its wire field
+as well. Both hold on every `forge generate`; `forge:read-only` needs no
+migration because it is a statement about the API, not about storage.
+
+Every Update also reads back the columns it did not write (`RETURNING`), so the
+response and the entity you hold afterwards report the stored values of an
+immutable, read-only or GENERATED column rather than the ones the request
+carried.
 
 **DB-only columns are not automatically protected.** A column with no matching
 proto field says nothing about whether it may be rewritten — an internal rating

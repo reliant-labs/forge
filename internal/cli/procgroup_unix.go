@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/procguard"
 )
 
 // startInOwnProcessGroup makes the child the leader of a new process
@@ -36,10 +38,19 @@ func startInOwnProcessGroup(cmd *exec.Cmd) {
 // a negative pid targets the group, per kill(2). Falls back to signalling
 // just pid if the group send fails (e.g. the leader already reaped). A
 // non-positive pid is a no-op so a stale 0/-1 in the state file can never
-// fan a signal out to unrelated processes.
+// fan a signal out to unrelated processes. A member of this command's own
+// lineage is refused, and a group holding one is narrowed to pid alone (see
+// procguard).
 func signalProcessGroup(pid int, sig syscall.Signal) error {
 	if pid <= 0 {
 		return nil
+	}
+	self := procguard.Self()
+	if self.Contains(pid) {
+		return &procguard.LineageError{PID: pid, Command: commandLabel(readProcArgv(pid))}
+	}
+	if self.ContainsGroup(pid) {
+		return syscall.Kill(pid, sig)
 	}
 	if err := syscall.Kill(-pid, sig); err != nil {
 		return syscall.Kill(pid, sig)
@@ -64,15 +75,35 @@ func processAlive(pid int) bool {
 // parent/child relationship is the one stable handle. Descendants are
 // collected BEFORE signalling so a dying tree's shifting ppids can't hide
 // a child.
+//
+// It is also the last line of the lineage guard (procguard): the teardown
+// planners already set aside every root that hosts this command, and this
+// refuses one that reaches here anyway, skips a group-wide signal to a group
+// this command belongs to, and never signals a lineage member found among the
+// descendants.
 func killProcessTree(pid int, sig syscall.Signal) error {
 	if pid <= 0 {
 		return nil
 	}
+	self := procguard.Self()
+	if self.Contains(pid) {
+		return &procguard.LineageError{PID: pid, Command: commandLabel(readProcArgv(pid))}
+	}
 	descendants := descendantPIDs(pid)
+	targets := make([]int, 0, len(descendants)+2)
+	if !self.ContainsGroup(pid) {
+		targets = append(targets, -pid)
+	}
+	targets = append(targets, pid)
+	for _, d := range descendants {
+		if !self.Contains(d) {
+			targets = append(targets, d)
+		}
+	}
 	var failures []error
 	// A missing group is normal after its leader exits. Permission failures
 	// are not proof of shutdown, including when a direct leader signal works.
-	for _, target := range append([]int{-pid, pid}, descendants...) {
+	for _, target := range targets {
 		if err := syscall.Kill(target, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 			failures = append(failures, fmt.Errorf("signal %s to pid/group %d: %w", sig, target, err))
 		}

@@ -166,6 +166,17 @@ authored protos, in one call.`,
 				}
 			}
 
+			// A project bridged to a local forge checkout compiles the
+			// code generate writes against that checkout: say so, in one
+			// line, when this binary was not built from it. Placed before
+			// the experimental early-returns — it is not an experimental
+			// nudge and must not be silenced as one.
+			if bridgeSkewChecked(cmd, rootCmd) {
+				if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
+					warnBridgeSkew(cmd.ErrOrStderr(), root)
+				}
+			}
+
 			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
 				return nil
 			}

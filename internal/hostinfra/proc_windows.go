@@ -37,6 +37,9 @@ func detachProcess(cmd *exec.Cmd) {
 // would hold its port against the next start. Callers still poll for exit
 // afterwards, so the control flow is identical on both platforms.
 func terminateProcess(pid int) error {
+	if err := refuseLineage(pid); err != nil {
+		return err
+	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return err

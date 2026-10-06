@@ -23,12 +23,18 @@ func detachProcess(cmd *exec.Cmd) {
 // terminateProcess asks the process to shut down cleanly (SIGTERM), giving it
 // the chance to flush and release its port before it is killed outright.
 func terminateProcess(pid int) error {
+	if err := refuseLineage(pid); err != nil {
+		return err
+	}
 	return syscall.Kill(pid, syscall.SIGTERM)
 }
 
 // killProcess terminates the process immediately (SIGKILL). Used only after a
 // graceful stop has already timed out.
 func killProcess(pid int) error {
+	if err := refuseLineage(pid); err != nil {
+		return err
+	}
 	return syscall.Kill(pid, syscall.SIGKILL)
 }
 

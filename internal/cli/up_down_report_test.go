@@ -28,9 +28,9 @@ func TestEnvDownProcessInspectionFailurePreservesRecords(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stopped, err := stopStackWithFacts(projectID, "dev", &osProcFacts{})
-	if stopped != 0 || err == nil || !strings.Contains(err.Error(), "cannot inspect") {
-		t.Fatalf("failed inspection must refuse teardown: stopped=%d err=%v", stopped, err)
+	res, err := stopStackWithFacts(projectID, "dev", &osProcFacts{})
+	if res.stopped != 0 || err == nil || !strings.Contains(err.Error(), "cannot inspect") {
+		t.Fatalf("failed inspection must refuse teardown: stopped=%d err=%v", res.stopped, err)
 	}
 	for _, p := range []string{ledger, state} {
 		b, err := os.ReadFile(p)
@@ -44,7 +44,7 @@ func TestEnvDownReportsHostInfraFailure(t *testing.T) {
 	cause := errors.New("cannot render declared infrastructure")
 	var err error
 	out := captureStdout(t, func() {
-		err = reportUpStop("dev", "/project", 0, 0, cause)
+		err = reportUpStop("dev", "/project", stackStop{}, 0, cause)
 	})
 	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "shutdown incomplete") {
 		t.Fatalf("host infrastructure error was lost: %v", err)
@@ -57,7 +57,7 @@ func TestEnvDownReportsHostInfraFailure(t *testing.T) {
 func TestEnvDownEmptyHostStackExplainsDockerScope(t *testing.T) {
 	var err error
 	out := captureStdout(t, func() {
-		err = reportUpStop("dev", "/project", 0, 0, nil)
+		err = reportUpStop("dev", "/project", stackStop{}, 0, nil)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -82,11 +82,11 @@ func TestEnvDownSignalFailurePreservesRecords(t *testing.T) {
 	if err := os.WriteFile(ledger, []byte("api\t42\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	stopped, err := completeStackStop(project, "dev", nil, []int{42}, func(pids []int) error {
+	res, err := completeStackStop(project, "dev", nil, stackStopPlan{roots: []int{42}}, func(pids []int) error {
 		return killTreesAndWaitWith(pids, func(int, syscall.Signal) error { return syscall.EPERM }, func(int) bool { return true })
 	})
-	if stopped != 0 || !errors.Is(err, syscall.EPERM) {
-		t.Fatalf("signal failure hidden: %d, %v", stopped, err)
+	if res.stopped != 0 || !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("signal failure hidden: %d, %v", res.stopped, err)
 	}
 	if _, err := os.Stat(ledger); err != nil {
 		t.Fatalf("failed signal discarded retry record: %v", err)

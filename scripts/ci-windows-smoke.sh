@@ -14,8 +14,9 @@ trap 'rm -rf "$work"' EXIT
 cd "$work"
 
 # --skip-tools: protoc plugins are not needed to scaffold or render, and
-# --service api avoids frontends (no npm).
-forge project new smoke --kind service --mod github.com/e2e/smoke --service api --skip-tools
+# --service api avoids frontends (no npm). --link-forge: the forge under test
+# is built from this checkout, so the scaffold must compile forge from it.
+forge project new smoke --kind service --mod github.com/e2e/smoke --service api --skip-tools --link-forge
 cd smoke
 forge env render dev
 

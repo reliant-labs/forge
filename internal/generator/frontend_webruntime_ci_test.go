@@ -20,9 +20,9 @@ import (
 // refactor of how the decision is reached.
 
 // TestEnsureDevWebRuntimeLink_CIWritesNothing is the regression test. Every
-// other precondition is satisfied — dev build, discoverable forge root, a real
-// web-runtime checkout, a frontend to bridge — so CI is the only reason the
-// bridge must not appear.
+// other precondition is satisfied — a Go bridge to a real web-runtime
+// checkout, a frontend to bridge — so CI is the only reason the bridge must
+// not appear.
 func TestEnsureDevWebRuntimeLink_CIWritesNothing(t *testing.T) {
 	base := t.TempDir()
 	forgeRoot := fakeForgeCheckout(t, filepath.Join(base, "forge"))
@@ -30,6 +30,7 @@ func TestEnsureDevWebRuntimeLink_CIWritesNothing(t *testing.T) {
 	buildinfo.SetCI(true) // after pinDevBuild, whose cleanup clears it
 
 	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", "")
 
 	EnsureDevWebRuntimeLink(projectDir)
@@ -54,6 +55,7 @@ func TestEnsureDevWebRuntimeLink_LocalDevLoopStillBridges(t *testing.T) {
 	pinDevBuild(t, true, forgeRoot) // pins CI off
 
 	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", "")
 
 	EnsureDevWebRuntimeLink(projectDir)
@@ -78,6 +80,7 @@ func TestEnsureDevWebRuntimeLink_ForcedOnCI(t *testing.T) {
 	t.Setenv("FORGE_DEV_WEBRUNTIME_LINK", "1")
 
 	projectDir := filepath.Join(base, "app")
+	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", "")
 
 	EnsureDevWebRuntimeLink(projectDir)

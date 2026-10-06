@@ -151,7 +151,9 @@ Lifecycle (what happens after host services + frontends start):
 
 Either way the long-running children are tracked under
 ~/.cache/forge/up/<project-id>/; stop a detached / non-TTY stack with
-` + "`forge env down <env>`" + `.
+` + "`forge env down <env>`" + `. That is safe to run from anywhere, including
+from inside the stack: it never stops the process running it or any of its
+ancestors (see ` + "`forge env down --help`" + `).
 
 ONE stack per (project, env). If this project already has a stack running
 for this env — tracked, detached, or orphaned by a crashed run — it is
@@ -159,7 +161,9 @@ STOPPED before the new one starts. It is not adopted: this invocation may
 carry different config, a different allocated port, or reinstalled deps, so
 the old process is not the process you asked for. Only processes carrying
 forge's own ownership markers for THIS project and env are ever signalled;
-a port held by anything else is an error, never a kill.
+a port held by anything else is an error, never a kill. If the running stack
+hosts this very command (you are in a shell it spawned), nothing is stopped
+and the run is refused: replacing it would end the session running you.
 
 Tokens after ` + "`--`" + ` are forwarded to each frontend's dev server
 (` + "`npm run dev -- <flags>`" + `), so a Vite/Next dev server can be told
@@ -491,6 +495,21 @@ func newEnvDownCmd() *cobra.Command {
 Only processes forge itself started — the ones carrying its ownership
 markers for the project and environment being stopped — are ever signalled.
 A process forge did not start is never touched by either form.
+
+Neither form ever stops the process running it, or any ancestor of it. The
+ownership markers are inherited by everything a forge-started process runs —
+an agent server's shells included — so ` + "`forge env down`" + ` typed inside one would
+otherwise select the very server hosting it. Before signalling anything,
+forge walks its own parent chain and leaves each ancestor (with the tree
+under it) running, saying so:
+
+  skipped pid 1234 (reliant serve --port 3090): it is an ancestor of this
+  command — stopping it would end the session running you
+
+Everything else is stopped as usual, and the command still succeeds. The
+per-environment form also leaves that environment's host infrastructure up,
+because the server it backs is still running. To stop such a stack, run the
+command from a shell outside it.
 Docker Compose containers, Kubernetes workloads/clusters, and Docker Desktop
 are not stopped by this command. The per-environment form also stops declared
 host infrastructure servers while preserving their data.
@@ -1261,10 +1280,11 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 //     all the port probe was ever for. After (1) every remaining holder is
 //     foreign by construction — a foreign process is reported, never killed.
 func upPreflight(projectID, env string, e *KCLEntities, targets []string, frontendsOn bool) error {
-	stopped, err := stopStackScoped(projectID, env, targets)
+	res, err := replaceStack(projectID, env, targets)
 	if err != nil {
 		return err
 	}
+	stopped := res.stopped
 	if stopped > 0 {
 		scopeNote := ""
 		if len(targets) > 0 {
@@ -3504,7 +3524,7 @@ func (p *procRegistry) persist() {
 	}
 	// Entries this run did NOT start, carried forward. A scoped
 	// (`--target`) run replaces only the services it names and deliberately
-	// leaves the rest of the stack running (see stopStackScoped); those
+	// leaves the rest of the stack running (see stopStackScopedWithFacts); those
 	// processes are still live and must stay in the ledger, which is what
 	// `forge env down` and `forge env ps` read to find them. Dead and
 	// same-named entries are dropped — this run's PID is the current one,
@@ -3782,9 +3802,16 @@ func runUpStop(env string) error {
 		return err
 	}
 	projectID := projectIDForDir(projectDir)
-	stopped, err := stopStack(projectID, env)
+	res, err := stopStack(projectID, env)
 	if err != nil {
 		return err
+	}
+	if len(res.skipped) > 0 {
+		// The stack hosts this command, so it is still running: its presence
+		// row stays live, and its host infrastructure stays up. Stopping the
+		// database under the server running this command ends the session
+		// as surely as signalling the server would.
+		return reportUpStop(env, projectDir, res, 0, nil)
 	}
 
 	// Mark the presence row stopped. This is the teardown report for a
@@ -3808,15 +3835,19 @@ func runUpStop(env string) error {
 	// database. All declared servers are attempted, and a failure is returned
 	// rather than reporting a successful empty teardown.
 	infraStopped, err := stopHostInfra(env)
-	return reportUpStop(env, projectDir, stopped, infraStopped, err)
+	return reportUpStop(env, projectDir, res, infraStopped, err)
 }
 
-func reportUpStop(env, projectDir string, stopped, infraStopped int, infraErr error) error {
-	if stopped == 0 {
+func reportUpStop(env, projectDir string, res stackStop, infraStopped int, infraErr error) error {
+	if res.stopped == 0 && len(res.skipped) == 0 {
 		fmt.Printf("[down] no owned Forge host processes found for env=%s in %s.\n", env, projectDir)
 	}
-	if stopped > 0 {
-		fmt.Printf("[down] signalled %d host process tree(s) for env=%s.\n", stopped, env)
+	if res.stopped > 0 {
+		fmt.Printf("[down] signalled %d host process tree(s) for env=%s.\n", res.stopped, env)
+	}
+	if len(res.skipped) > 0 {
+		fmt.Printf("[down] left %d process tree(s) and the host infrastructure for env=%s running: they host this command. "+
+			"Stop them from a shell outside that stack.\n", len(res.skipped), env)
 	}
 	if infraStopped > 0 {
 		fmt.Printf("[down] stopped %d host infrastructure server(s) for env=%s (data preserved).\n", infraStopped, env)

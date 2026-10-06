@@ -156,11 +156,13 @@ info "tempdir: ${WORK_DIR}"
 (
     cd "${WORK_DIR}"
     # --skip-tools so we don't try to `go install` codegen plugins;
-    # we only need the manifests for this smoke.
+    # we only need the manifests for this smoke. --link-forge: the binary is
+    # built from this checkout, so the scaffold compiles forge from it.
     "${FORGE_BIN}" new "${PROJECT_NAME}" \
         --mod "${MODULE_PATH}" \
         --kind service \
-        --skip-tools 2>&1
+        --skip-tools \
+        --link-forge 2>&1
 ) || fail "forge new failed — likely WIP breakage in internal/cli/new.go; let the user fix and retry"
 
 [ -d "${PROJECT_DIR}/deploy/kcl/dev" ] || fail "scaffold missing deploy/kcl/dev"

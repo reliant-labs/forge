@@ -39,6 +39,10 @@ func newNewCmd() *cobra.Command {
 		// frontends, frontends import via "@<scope>/api". Default off;
 		// must be opted in explicitly. See SKILL.md/frontend-workspaces.
 		frontendWorkspaces bool
+		// linkForge opts the new project into compiling forge from the
+		// checkout this binary was built from (a gitignored go.work `use`).
+		// See forge_bridge.go for why it is never implicit.
+		linkForge bool
 	)
 
 	cmd := &cobra.Command{
@@ -88,7 +92,18 @@ skips its own version, and lists what it kept (--force replaces them). An
 existing .gitignore is merged — forge appends only the entries it lacks,
 in a "# --- forge ---" block. A directory already inside a git repository
 (its root or any subdirectory) is left alone: no git init, no commit. A
-fresh directory outside any repository gets 'git init' + an initial commit.`,
+fresh directory outside any repository gets 'git init' + an initial commit.
+
+--link-forge bridges the new project to the forge checkout THIS binary was
+built from: a gitignored, machine-local go.work 'use', plus the npm twin for
+@reliantlabs/forge-web-runtime (.forge-link/). The project then compiles the
+library from that checkout instead of a published version — what a forge
+contributor wants, and something nobody else should get by accident, so it
+is never written unless asked for. An unreleased forge build cannot pin
+itself in go.mod, so a service scaffold from one is refused without it. Once
+bridged, generate, lint and doctor warn whenever this binary and the
+checkout stop being the same source; drop the bridge with
+'go work edit -dropuse=<checkout>'.`,
 		Args: cobra.RangeArgs(0, 1),
 		// project new owns git setup: initGitRepository activates hooks in a
 		// repository it creates, and an existing one is left alone.
@@ -104,7 +119,7 @@ fresh directory outside any repository gets 'git init' + an initial commit.`,
 				}
 				projectName = args[0]
 			}
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge))
 		},
 	}
 
@@ -123,6 +138,7 @@ fresh directory outside any repository gets 'git init' + an initial commit.`,
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
 	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks + packages/ui-web shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
+	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default; required for a service scaffold from an unreleased forge build (also: "+linkForgeEnv+"=1)")
 	_ = cmd.MarkFlagRequired("mod")
 
 	return cmd
@@ -214,12 +230,12 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 }
 
 //nolint:revive,cyclop // TODO: collapse into a runNewOptions struct; the cyclomatic complexity comes from cobra flag fan-out (resume/force/in-place/per-feature toggles) and refactoring requires a shared options type — cobra flag wiring is the only call site.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
 	}
-	if err := checkScaffoldCanResolveForge(kindNormalized); err != nil {
+	if err := checkScaffoldCanResolveForge(kindNormalized, linkForge); err != nil {
 		return err
 	}
 
@@ -325,12 +341,16 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return err
 	}
 
-	// Dev-forge bridge: when THIS forge binary is a dev build that stamped
-	// its own source root, write a gitignored go.work linking the scaffold
-	// to the local forge/pkg. Done BEFORE finalize so the bootstrap
-	// (forge generate) + go mod tidy below run under the bridge. No-op for
-	// released binaries.
-	writeDevForgeGoWork(targetPath)
+	// Local-forge bridge, only with --link-forge: a gitignored go.work
+	// linking the scaffold to the checkout this binary was built from. Done
+	// BEFORE finalize so the bootstrap (forge generate) + go mod tidy below
+	// run under the bridge, and the web-runtime twin follows it now — the
+	// frontends were generated before the bridge existed, and npm must see
+	// the twin on finalize's first install for it to take effect.
+	writeDevForgeGoWork(targetPath, linkForge)
+	if linkForge && len(frontendNames) > 0 {
+		generator.EnsureDevWebRuntimeLink(targetPath)
+	}
 
 	existingRepo := finalizeNewProject(ctx, newFinalizeInput{
 		targetPath:    targetPath,
@@ -966,39 +986,37 @@ plugins:
 const forgeModulePathForBridge = "github.com/reliant-labs/forge"
 
 // writeDevForgeGoWork bridges a freshly-scaffolded project to the LOCAL forge
-// source when the scaffolding binary is a DEV build that stamped its own
-// source root (buildinfo.DevForgeRoot, injected by the `make dev` /
-// `task install:dev` ldflag). Released binaries never reach the write path
-// (IsDevBuild() is false and DevForgeRoot is empty), so committed projects are
-// unaffected.
+// checkout this binary was built from (buildinfo.DevForgeRoot, injected by the
+// `make dev` / `task install:dev` ldflag, else recovered from the binary's
+// compiled paths) — and only when link is set, i.e. the user passed
+// --link-forge.
 //
-// Why this exists: forge/pkg is a PUBLISHED module, so a fresh scaffold pins
-// the last published tag (v0.0.x) with no replace. A dev forge, however, can
-// generate code that targets UNPUBLISHED forge/pkg APIs, so that published pin
-// won't build. The maintainer-intended fix is a gitignored go.work that
-// `use`s the local forge checkout (gen-go.mod.tmpl's own comment references
-// it). This writes it automatically so contributors skip the manual
-// `go mod edit -replace` dance.
+// Why a bridge exists at all: a fresh scaffold pins a PUBLISHED forge, but a
+// forge built from source can generate code that targets unpublished forge/pkg
+// APIs, so that pin won't build. A gitignored go.work that `use`s the checkout
+// is the fix (gen-go.mod.tmpl's own comment references it).
+//
+// Why it is never implicit: it used to be written for every dev build. A host
+// binary that embeds forge through a workspace (reliant) is a dev build too,
+// so every project it scaffolded got bridged to whatever checkout that host
+// compiled from — on a shared machine, the main checkout everyone pulls into.
+// The library under those projects then moved with every merge while the
+// binary generating their code did not, and nothing said so. The bridge is now
+// a decision the user makes, and forgecompat.InspectBridge reports whenever it
+// drifts.
 //
 // It augments the starter go.work the generator already emitted (use . + gen)
-// with `use <DevForgeRoot>/pkg`, so the project and its gen/ submodule resolve
-// github.com/reliant-labs/forge/pkg from the local tree. go.work / go.work.sum
-// are already in the scaffold's .gitignore, so the machine-local path never
-// gets committed.
-func writeDevForgeGoWork(targetPath string) {
-	if !buildinfo.IsDevBuild() {
+// with `use <root>`. go.work / go.work.sum are already in the scaffold's
+// .gitignore, so the machine-local path never gets committed.
+func writeDevForgeGoWork(targetPath string, link bool) {
+	if !link {
 		return
 	}
 	root := devForgeBridgeRoot()
 	if root == "" {
-		// Dev build whose local forge source we can neither read from an
-		// ldflag nor discover on disk (e.g. a dev binary shipped to another
-		// machine): we must NOT guess a path. Emit one hint.
-		fmt.Fprintf(os.Stderr,
-			"ℹ️  dev forge build without a discoverable source root: the scaffold pins forge %s. "+
-				"To auto-link this project against your local forge, rebuild forge with `make dev` "+
-				"(injects DevForgeRoot), or add a `use <path-to-forge>` to a local go.work yourself.\n",
-			resolveForgeVersionForHint())
+		// checkScaffoldCanResolveForge refuses --link-forge without a root
+		// before anything is written; this only guards a direct caller.
+		fmt.Fprintf(os.Stderr, "warning: --link-forge: this forge cannot locate the checkout it was built from; no bridge written\n")
 		return
 	}
 
@@ -1035,11 +1053,12 @@ func writeDevForgeGoWork(targetPath string) {
 		fmt.Fprintf(os.Stderr, "warning: could not write dev forge go.work: %v\n", err)
 		return
 	}
-	fmt.Printf("🔗 Dev forge build: wrote go.work bridging this project to %s (gitignored, machine-local)\n", root)
+	fmt.Printf("🔗 --link-forge: wrote go.work bridging this project to %s (gitignored, machine-local; undo: go work edit -dropuse=%s)\n", root, root)
 }
 
-// devForgeBridgeRoot is the local forge checkout a dev build bridges a
-// scaffold to, or "" when there is none.
+// devForgeBridgeRoot is the local forge checkout --link-forge bridges a
+// scaffold to: the checkout this binary was built from, or "" when it cannot
+// tell.
 //
 // Prefer the explicitly stamped ldflag; otherwise recover the source root
 // dynamically from this binary's own compiled file paths. The dynamic path is
@@ -1053,15 +1072,25 @@ func devForgeBridgeRoot() string {
 	return buildinfo.DiscoverDevForgeRootFromSource()
 }
 
-// checkScaffoldCanResolveForge refuses a service scaffold, BEFORE anything is
-// written, when this binary can neither pin forge in go.mod nor bridge the
-// project to forge's source with go.work. See scaffoldForgeResolution.
-func checkScaffoldCanResolveForge(kind string) error {
-	bridgeRoot := ""
-	if buildinfo.IsDevBuild() {
-		bridgeRoot = devForgeBridgeRoot()
+// checkScaffoldCanResolveForge refuses, BEFORE anything is written, a
+// --link-forge this binary cannot honour, and a service scaffold that could
+// neither pin forge in go.mod nor be bridged. See scaffoldForgeResolution.
+func checkScaffoldCanResolveForge(kind string, link bool) error {
+	root := devForgeBridgeRoot()
+	if link && root == "" {
+		return cliutil.UserErr(Name()+" project new --link-forge",
+			fmt.Sprintf("this forge (%s) cannot locate the checkout it was built from (a -trimpath build, or a "+
+				"binary copied off the machine that built it), so there is nothing to bridge to. Nothing was written",
+				buildinfo.Version()),
+			"",
+			"rebuild forge from its checkout with `task install:dev` / `make dev` (which records the checkout), "+
+				"or scaffold without --link-forge and bridge by hand: go work use <path-to-forge-checkout>")
 	}
-	return scaffoldForgeResolution(kind, buildinfo.InstallableVersion(), bridgeRoot)
+	bridgeRoot := ""
+	if link {
+		bridgeRoot = root
+	}
+	return scaffoldForgeResolution(kind, buildinfo.InstallableVersion(), bridgeRoot, root)
 }
 
 // scaffoldForgeResolution is the pure decision behind
@@ -1079,36 +1108,34 @@ func checkScaffoldCanResolveForge(kind string) error {
 // source) produced exactly that.
 //
 // Refusing up front is the honest outcome: nothing is written, and the error
-// names the two ways to get a binary that can resolve forge. CLI and library
-// kinds import no forge package, so they are unaffected.
-func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot string) error {
+// names the ways to get forge resolved. CLI and library kinds import no forge
+// package, so they are unaffected.
+//
+// linkableRoot is the checkout --link-forge WOULD bridge to ("" when this
+// binary cannot locate one); it decides which fix the refusal offers.
+func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot string) error {
 	if kind != config.ProjectKindService || pinnedVersion != "" || bridgeRoot != "" {
 		return nil
+	}
+	const retired = "Scaffolding anyway would let `go mod tidy` pick the retired " +
+		"github.com/reliant-labs/forge/pkg module and the project would fail its first generate. Nothing was written"
+	if linkableRoot != "" {
+		return cliutil.UserErr(Name()+" project new (forge version)",
+			fmt.Sprintf("this forge (%s) is an unreleased build no module proxy can serve, so go.mod cannot "+
+				"require it, and the project was not bridged to its source. %s", buildinfo.Version(), retired),
+			"",
+			fmt.Sprintf("re-run with --link-forge to bridge the project to the checkout this forge was built from "+
+				"(%s; a gitignored go.work — generate, lint and doctor then warn when the two drift apart), "+
+				"or install a published forge (`go install github.com/reliant-labs/forge/cmd/forge@<version>`)", linkableRoot))
 	}
 	return cliutil.UserErr(Name()+" project new (forge version)",
 		fmt.Sprintf("this forge (%s) cannot tell a new project where to get forge: it is not a version a "+
 			"module proxy can serve, so go.mod cannot require it, and it cannot find the forge source it "+
-			"was built from, so go.work cannot bridge to it. Scaffolding anyway would let `go mod tidy` "+
-			"pick the retired github.com/reliant-labs/forge/pkg module and the project would fail its "+
-			"first generate. Nothing was written", buildinfo.Version()),
+			"was built from, so go.work cannot bridge to it. %s", buildinfo.Version(), retired),
 		"",
 		"use a forge that can resolve itself: install a published one "+
 			"(`go install github.com/reliant-labs/forge/cmd/forge@<version>`), or, from a forge checkout, "+
-			"`task install:dev` / `make dev`, which records the checkout so new projects bridge to it")
-}
-
-// resolveForgeVersionForHint describes what the scaffold's go.mod will
-// require, for the no-DevForgeRoot hint message. Kept trivial and pure so the
-// hint never fails.
-//
-// A dev build that cannot be named by a proxy-resolvable version pins NOTHING
-// (see generator.resolveForgeVersion), so say that rather than naming a tag
-// this binary is not.
-func resolveForgeVersionForHint() string {
-	if v := buildinfo.InstallableVersion(); v != "" {
-		return v
-	}
-	return "nothing (no proxy-resolvable version for this build)"
+			"`task install:dev` / `make dev` (which records the checkout) and scaffold with --link-forge")
 }
 
 // initGitRepository initializes a git repository and makes initial commit

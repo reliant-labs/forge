@@ -124,6 +124,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared frontend and no `frontends/` directory it is a silent no-op, as the
   frontend typecheck lane already was, instead of counting as a gating linter
   that ran.
+- **Bridging a project to a local forge checkout is opt-in: `forge project new
+  --link-forge`.** It used to happen on its own for every dev build of forge —
+  including a host binary that embeds forge through a workspace (`reliant
+  forge project new`), which bridged every project it created to whatever
+  checkout that host compiled from. On a shared machine that is the main
+  checkout everyone pulls into, so the library under those projects moved with
+  each merge while the binary generating their code did not. Now nothing is
+  written unless asked for; a service scaffold from an unreleased build is
+  refused with the flag named, and `--link-forge` on a binary that cannot
+  locate its checkout is refused before anything is written.
+  `FORGE_LINK_FORGE=1` is the same opt-in for harnesses (forge's e2e corpus
+  sets it). The web-runtime twin (`.forge-link/` + root `package.json`) now
+  follows the project's go.work bridge and links that same checkout, instead
+  of being laid down by any dev build for its own checkout. **Adopting:**
+  existing bridged projects are untouched; a contributor scaffolding with a
+  dev forge adds `--link-forge`.
 
 ### Added
 
@@ -169,6 +185,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scaffold`. `forge project annotations` lists the marker and the mapping row.
   `pkg/schemadef` gains `OpenShadowAt` and `(*Shadow).TryApply` for asking
   postgres whether SQL would apply without changing the shadow.
+- **Version-skew warning for a bridged forge checkout.** When a project's
+  go.work (or a directory `replace`) bridges a local forge checkout,
+  `forge generate` and `forge lint` print one line — and `forge doctor`
+  reports a `Forge Bridge` warning — whenever the running binary was not built
+  from that checkout as it is now: a different commit, uncommitted changes on
+  either side, or (forge embedded in a host through a workspace, which records
+  no forge commit) a checkout that moved after the binary was written. The
+  line names both sides and the fix:
+  `⚠️  forge skew: reliant (built 2026-10-01 01:31) records no forge commit, and go.work bridges /src/forge, which changed after it was built (now 750833054b78) — generated code and library differ. Fix: rebuild reliant from that checkout, or unbridge: go work edit -dropuse=/src/forge`.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
   `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
   context.Context) error)` runs fn in a transaction carried by the ctx it
@@ -375,6 +400,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that file is hand-written (fix it) or generated (fix its inputs, or report
   a forge bug). A failing generated `_test.go` typecheck quotes its first
   error the same way. The revert is unchanged.
+- **`forge env down` never stops the process running it.** forge's ownership
+  markers are environment variables, inherited by everything a forge-started
+  process runs — an agent server's shells included — so `forge env down <env>`
+  or `--all` typed inside one selected the very server hosting it and ended
+  the session along with every sibling session. Every stop path (`env down`,
+  `env down --all`, the `env up` pre-flight, host-infra shutdown, `debug stop`)
+  now walks the command's own parent chain (darwin, linux, the BSDs, Windows)
+  and never signals an ancestor or the tree under it, reporting
+  `skipped pid 1234 (reliant serve …): it is an ancestor of this command —
+  stopping it would end the session running you`. Everything else is stopped;
+  the per-env form leaves that env's host infrastructure up, records stay so
+  `forge env ps` still lists the stack, and `forge env up` refuses (stopping
+  nothing) when the stack it would replace hosts it. The tree-kill primitive
+  refuses an ancestor too, and skips a group-wide signal to a process group
+  the command belongs to.
 - **ORM writes return the values the database computed.** `pkg/crud.Repo`'s
   Create, Upsert, Update and UpdateMasked now `RETURNING` every
   `GENERATED ALWAYS AS (…) STORED` column into the entity. Create and Upsert

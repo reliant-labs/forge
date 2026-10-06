@@ -56,6 +56,28 @@ export {
   type BasePathHelpers,
 } from "./basepath.js";
 
+/**
+ * Money and basis points as integers: format minor units through Intl, and
+ * parse form input back to minor units without rounding.
+ *
+ * The web counterpart of forge/pkg/money — an int64 count of the currency's
+ * minor unit plus an ISO 4217 code, exact past 2^53. Barrel-exported for the
+ * same reason as the base-path helpers: it imports nothing.
+ */
+export {
+  basisPointsToInput,
+  currencyMinorDigits,
+  formatBasisPoints,
+  formatMinorUnits,
+  minorUnitsToInput,
+  parseBasisPoints,
+  parseMinorUnits,
+  type BasisPointsOptions,
+  type MoneyOptions,
+  type ParseBasisPointsOptions,
+  type ParseMoneyOptions,
+} from "./money.js";
+
 /** W3C trace-context propagation. */
 export {
   freshTraceparent,

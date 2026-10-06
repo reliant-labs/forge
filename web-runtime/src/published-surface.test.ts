@@ -163,6 +163,29 @@ describe("the published surface", () => {
     }
   });
 
+  it("keeps the money helpers IN the barrel, free of imports", () => {
+    // The frontend skill tells pages to import these from the barrel rather
+    // than hand-roll them. money.ts imports nothing, which is what earns it a
+    // place there; an import creeping in would make every barrel consumer
+    // resolve it.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "formatMinorUnits",
+      "parseMinorUnits",
+      "minorUnitsToInput",
+      "currencyMinorDigits",
+      "formatBasisPoints",
+      "parseBasisPoints",
+      "basisPointsToInput",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    const money = readFileSync(join(pkgDir, "dist", "money.js"), "utf8");
+    expect(money).not.toMatch(/^\s*import\s/m);
+  });
+
   it("declares a React type surface that is identical on React 18 and 19", () => {
     // The peer range is the promise; this is the property that makes it true.
     expect(pkg.peerDependencies["react"]).toBe("^18.3.0 || ^19.0.0");

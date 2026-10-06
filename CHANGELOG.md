@@ -68,6 +68,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
+  barrel now exports `formatMinorUnits`, `parseMinorUnits`,
+  `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,
+  `parseBasisPoints` and `basisPointsToInput`. They are the web counterpart of
+  `pkg/money`: an amount is an integer count of minor units, as a `bigint` or
+  an integer `number`, plus an ISO 4217 code. Currency defaults to USD and
+  locale to en-US. Each currency's minor digits come from Intl (JPY 0, KWD 3),
+  and formatting stays exact past 2^53 because Intl receives a decimal string,
+  never a float. Parsing returns `null` instead of rounding or guessing. That
+  covers too many decimals, a negative without `allowNegative`, a misplaced
+  group separator (`"12,50"` in en-US), another currency's symbol, and values
+  outside int64. The input helpers round-trip through the parsers. Rate parsing
+  caps at 100% unless you pass `max`. Plain library functions: codegen does not
+  infer money from field names. A forge app (roofers) hand-wrote these, along
+  with a per-page `bpsToPercentInput`.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
   `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
   context.Context) error)` runs fn in a transaction carried by the ctx it

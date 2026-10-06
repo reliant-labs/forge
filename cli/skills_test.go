@@ -4,8 +4,11 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	internalcli "github.com/reliant-labs/forge/internal/cli"
 )
 
 // plantProjectMigrationSkill writes a project-scope skill carrying
@@ -48,6 +51,43 @@ func TestListSkillsSignatureStable(t *testing.T) {
 	var _ = ListSkills
 	var _ = LoadSkill
 	var _ = ListSkillsWithOptions
+	var _ func(string, string, RenderSkillOptions) ([]byte, error) = RenderSkill
+}
+
+// TestRenderSkillMatchesTheCLI pins what harnesses inject: RenderSkill with
+// an explicit mount name is LoadSkill's body with every `forge <cmd>`
+// rewritten to that mount, and the default name is the one this process
+// reports — the same one RenderProjectMemory renders.
+func TestRenderSkillMatchesTheCLI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	raw, err := LoadSkill("", "forge")
+	if err != nil {
+		t.Fatalf("LoadSkill: %v", err)
+	}
+	asForge, err := RenderSkill("", "forge", RenderSkillOptions{CLIName: "forge"})
+	if err != nil {
+		t.Fatalf("RenderSkill as forge: %v", err)
+	}
+	if string(asForge) != string(raw) {
+		t.Error("RenderSkill under the bare `forge` name must equal LoadSkill's body")
+	}
+
+	mounted, err := RenderSkill("", "forge/forge", RenderSkillOptions{CLIName: "reliant forge"})
+	if err != nil {
+		t.Fatalf("RenderSkill as reliant forge: %v", err)
+	}
+	if want := regexp.MustCompile(`\bforge `).ReplaceAllString(string(raw), "reliant forge "); string(mounted) != want {
+		t.Error("RenderSkill(reliant forge) is not LoadSkill's body with `forge ` rewritten to `reliant forge `")
+	}
+
+	def, err := RenderSkill("", "forge", RenderSkillOptions{})
+	if err != nil {
+		t.Fatalf("RenderSkill default: %v", err)
+	}
+	if name := internalcli.Name(); name != "forge" && !strings.Contains(string(def), name+" project new") {
+		t.Errorf("default CLIName did not rewrite to this process's name %q", name)
+	}
 }
 
 // TestListSkillsExcludesMigrationsByDefault pins the default-listing

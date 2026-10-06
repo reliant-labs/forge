@@ -236,23 +236,15 @@ func newSkillLoadCmd() *cobra.Command {
 			// Allow both "db" and "forge/db"
 			name = strings.TrimPrefix(name, "forge/")
 
-			// Resolve via the exported wrapper so the version-skew
-			// advisory (running forge vs. project forge_version pin)
-			// is included exactly as harness consumers see it.
+			// The SAME renderer harness consumers call (cli.RenderSkill),
+			// so what this prints and what a harness injects cannot drift.
 			root, _ := findProjectRoot()
-			content, scope, err := ResolveSkillContentAt(root, name)
+			content, err := RenderSkillContentAt(root, name, SkillAudienceAll, Name())
 			if err != nil {
 				return cliutil.UserErr(fmt.Sprintf("forge skill load %s", name),
 					fmt.Sprintf("skill %q not found", name),
 					"",
 					"run 'forge skill list' to see available skills, or 'forge skill search <keyword>' to find one")
-			}
-			_ = scope // available if we want to log; load is silent.
-
-			// Rewrite CLI command references if running under a different binary name.
-			cliName := Name()
-			if cliName != "forge" {
-				content = forgeCmdRE.ReplaceAll(content, []byte(cliName+"$1"))
 			}
 
 			_, err = cmd.OutOrStdout().Write(content)
@@ -475,6 +467,38 @@ func ResolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, e
 	advisory := fmt.Sprintf("Note: this guidance is from forge %s; this project pins forge %s. Prefer `forge project map --json`/`forge project audit --json` for current project facts.\n",
 		binaryVersion, projectVersion)
 	return insertAfterFrontmatter(body, []byte(advisory)), scope, nil
+}
+
+// RenderSkillContentAt returns a skill exactly as `forge skill load` prints
+// it: resolved with user > project > forge precedence, the version-skew
+// advisory inserted (ResolveSkillContentAt), filtered for audience, and every
+// bare `forge ` command reference rewritten to cliName.
+//
+// It is the ONE renderer behind both `skill load` and the public
+// cli.RenderSkill. A harness that injects a skill into an agent's context used
+// to get the raw body from cli.LoadSkill while the CLI printed a rewritten one,
+// so an agent working under `reliant forge` was handed `forge generate` — a
+// command it may not have, or worse, a different forge build than the one that
+// generated its project.
+//
+// A "forge/" prefix is accepted, matching `skill load`.
+func RenderSkillContentAt(projectRoot, skillPath string, audience SkillAudience, cliName string) ([]byte, error) {
+	content, _, err := ResolveSkillContentAt(projectRoot, strings.TrimPrefix(skillPath, "forge/"))
+	if err != nil {
+		return nil, err
+	}
+	return rewriteForgeCommands(RenderSkillForAudience(content, audience), cliName), nil
+}
+
+// rewriteForgeCommands rewrites bare `forge ` command references to cliName —
+// the command a reader types to invoke forge — so every command printed is
+// copy-pasteable under the mount that served it. "" and "forge" leave the
+// content unchanged.
+func rewriteForgeCommands(content []byte, cliName string) []byte {
+	if cliName == "" || cliName == "forge" {
+		return content
+	}
+	return forgeCmdRE.ReplaceAll(content, []byte(cliName+"$1"))
 }
 
 // forgeModulePath is forge's Go module path, used to discover the forge

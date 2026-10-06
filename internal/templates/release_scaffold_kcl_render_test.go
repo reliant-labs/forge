@@ -135,12 +135,18 @@ app_config: config_gen.AppConfig = {
 		if _, legacy := doc["manifests"]; legacy {
 			t.Fatalf("%s render has a top-level `manifests` var; output.manifests is the only stream", env)
 		}
-		manifests, ok := output["manifests"].([]any)
-		if !ok || len(manifests) == 0 {
+		// dev applies objects to a cluster forge creates; staging and prod
+		// are hosted as scaffolded, so what they render is published to the
+		// control plane — workloads and a managed database — and their
+		// manifest stream is legitimately empty.
+		if manifests, ok := output["manifests"].([]any); env == "dev" && (!ok || len(manifests) == 0) {
 			t.Fatalf("%s render produced no output.manifests:\n%s", env, out)
 		}
 		if ws, _ := output["workloads"].([]any); len(ws) == 0 {
 			t.Fatalf("%s render declares no workloads:\n%s", env, out)
+		}
+		if dbs, _ := output["databases"].([]any); env != "dev" && len(dbs) == 0 {
+			t.Fatalf("%s render declares no managed database:\n%s", env, out)
 		}
 	}
 }

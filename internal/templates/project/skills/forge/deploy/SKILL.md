@@ -68,27 +68,28 @@ its own:
 ```kcl
 # deploy/kcl/prod/main.k
 _workloads = [
-    _on_cluster(wl.migrate)
-    _on_cluster(wl.item)
+    _hosted(wl.migrate)
+    _hosted(wl.item)
 ]
 ```
 
 | Env | Binders | Notes |
 |---|---|---|
 | `dev` | `_on_host` / `_on_host_job` (services, workers, jobs), `_on_k3d` (operators, crons: a host process cannot be one) | host-run postgres (and dev IdP) via `forge.HostInfra` |
-| `staging`, `prod` | `_on_cluster`; `_hosted` ready to use | `fw.Resources` + a replica floor on cluster workloads, `network_policy = forge.NetworkPolicy {...}` opted in, `forge.ExternalSecrets` |
+| `staging`, `prod` | `_hosted`, `_hosted_frontend`; `_on_cluster`, `_on_bucket` unused | **hosted on Reliant**: a `forge.ManagedDatabase`, `forge.HostedSecrets` |
 
-Rebinding is editing one line: `_hosted(wl.item)` runs item on the control
-plane (add `control_plane = forge.ControlPlane {}` to the Bundle). `forge
-scaffold <kind>` appends the new workload's binding to every env.
+**Hosting elsewhere is a one-line rebind**: declare `_cluster` / `_bucket`
+as the env shows, then edit the line to `_on_cluster(...)` /
+`_on_bucket(...)`. An operator (hosting refuses it) is scaffolded
+`_on_cluster`. Billing, details, adopting in an older project:
+`deploy/hosting`.
 
-Add another env by deriving it — each binding is copied, and the dangerous
-per-env knobs (cluster context, platform, namespace) become REPLACE_ME
-placeholders:
+Derive another env — each binding is copied; a declared cluster's context,
+platform and namespace become REPLACE_ME placeholders:
 
 ```
 forge env new preview --from staging                        # same bindings as staging
-forge env new cloud --from prod --bind item=hosted          # item on the control plane
+forge env new cloud --from prod --bind item=cluster         # item on your cluster
 forge env new cloud --check                                 # no placeholder left, renders, admissible
 ```
 
@@ -291,8 +292,8 @@ _web = forge.Frontend {name = "web", path = "frontends/web", public_dir = "out"}
 frontends = [_web | {runtime = forge.OnBucket {bucket = "acme-prod-web"}}]
 ```
 
-`forge env new cloud --from prod --bind web=hosted` rebinds a scaffolded
-frontend's line (`_on_bucket(_web_frontend)` → `_hosted_frontend(...)`).
+`forge env new cloud --from prod --bind web=bucket` rebinds a scaffolded
+frontend's line (`_hosted_frontend(_web_frontend)` → `_on_bucket(...)`).
 `forge env deploy <env> <version> --frontends-only` ships only the bucket /
 Firebase frontends of a release that exists (a scope flag needs a version).
 

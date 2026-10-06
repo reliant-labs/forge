@@ -22,7 +22,7 @@ func renderNoFrontendEnv(t *testing.T, tmpl, env string) string {
 }
 
 // scaffoldedEnvTemplate is the template `forge project new` renders an env
-// from: dev on the host runtime, every other env on the cluster runtime.
+// from: dev on the host runtime, every other env hosted on the control plane.
 func scaffoldedEnvTemplate(env string) string {
 	if env == "dev" {
 		return "kcl/dev/main.k.tmpl"
@@ -46,16 +46,23 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 	} {
 		t.Run(tc.tmpl+"/"+tc.env, func(t *testing.T) {
 			in := renderNoFrontendEnv(t, tc.tmpl, tc.env)
-			if strings.Contains(in, "forge.Frontend") {
+			if frontendDeclaredIn(in, "web") || strings.Contains(in, "frontends = [") {
 				t.Fatalf("precondition: a no-frontend %s should declare no frontend", tc.tmpl)
 			}
 			dev := tc.env == "dev"
-			out, status := spliceFrontendIntoEnvKCL(in, "acme", tc.env, "web", dev, 0)
+			binding := frontendBindingFor(in, dev)
+			out, status := spliceFrontendIntoEnvKCL(in, "acme", tc.env, "web", binding, 0)
 			if status != frontendKCLApplied {
 				t.Fatalf("splice did not apply (status %d) — an anchor moved in %s", status, tc.tmpl)
 			}
-			if !strings.Contains(out, "frontends += [forge.Frontend {\n        name = \"web\"\n        path = \"frontends/web\"") {
-				t.Errorf("frontend entry missing:\n%s", out)
+			wantEntry := "frontends += [forge.Frontend {\n        name = \"web\"\n        path = \"frontends/web\""
+			if !dev {
+				// A hosted env binds a later frontend the way it binds the one
+				// it was born with: through its own `_hosted_frontend`.
+				wantEntry = "frontends += [_hosted_frontend(forge.Frontend {\n        name = \"web\"\n        path = \"frontends/web\""
+			}
+			if !strings.Contains(out, wantEntry) {
+				t.Errorf("frontend entry missing (want %q):\n%s", wantEntry, out)
 			}
 			wantPort := `_web_frontend_port = plugin.resolve_port("acme-` + tc.env + `-web", 3000)`
 			if dev {
@@ -68,17 +75,19 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 			} else if strings.Contains(out, "_web_frontend_port") {
 				t.Errorf("%s is not a dev env; it must not get a dev-server port", tc.env)
 			}
-			// Every frontend binds a runtime; a non-dev bucket is never guessed.
-			wantRuntime := `runtime = forge.OnBucket {bucket = "REPLACE_ME_BUCKET"}`
-			if dev {
-				wantRuntime = "runtime = forge.OnHost {}"
+			// Every frontend binds a runtime, and none is a placeholder.
+			if dev && !strings.Contains(out, "runtime = forge.OnHost {}") {
+				t.Errorf("dev: the spliced frontend binds no dev server:\n%s", out)
 			}
-			if !strings.Contains(out, wantRuntime) {
-				t.Errorf("%s: the spliced frontend binds no runtime (want %s):\n%s", tc.env, wantRuntime, out)
+			if !dev && !strings.Contains(out, "        public_dir = \"out\"\n    })]\n") {
+				t.Errorf("%s: the hosted frontend entry is not closed by its binder call:\n%s", tc.env, out)
+			}
+			if strings.Contains(out, "REPLACE_ME") {
+				t.Errorf("%s: a scaffolded frontend carries a placeholder:\n%s", tc.env, out)
 			}
 
 			// Idempotent: a second scaffold of the same name is a no-op.
-			if again, st := spliceFrontendIntoEnvKCL(out, "acme", tc.env, "web", dev, 0); st != frontendKCLAlreadyDeclared || again != out {
+			if again, st := spliceFrontendIntoEnvKCL(out, "acme", tc.env, "web", binding, 0); st != frontendKCLAlreadyDeclared || again != out {
 				t.Errorf("second splice must be a no-op, status %d", st)
 			}
 		})
@@ -89,8 +98,8 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 // second frontend is added beside the first rather than replacing it.
 func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
-	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0)
-	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", true, 0)
+	one, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", frontendOnHost, 0)
+	two, status := spliceFrontendIntoEnvKCL(one, "acme", "dev", "admin", frontendOnHost, 0)
 	if status != frontendKCLApplied {
 		t.Fatalf("second frontend not applied: %d", status)
 	}
@@ -105,7 +114,7 @@ func TestSpliceFrontendIntoEnvKCL_ComposesWithExistingFrontend(t *testing.T) {
 // the literal, with no resolve_port that could step it elsewhere.
 func TestSpliceFrontendIntoEnvKCL_PinnedPort(t *testing.T) {
 	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
-	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 4123)
+	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", frontendOnHost, 4123)
 	if status != frontendKCLApplied {
 		t.Fatalf("status %d", status)
 	}
@@ -114,9 +123,34 @@ func TestSpliceFrontendIntoEnvKCL_PinnedPort(t *testing.T) {
 	}
 }
 
+// An env scaffolded before hosting was the default declares no
+// `_hosted_frontend`: a new frontend there binds the author's own bucket, as
+// before, behind a placeholder `forge env new --check` refuses — forge never
+// binds a frontend to a control plane the env does not use.
+func TestFrontendBindingFor(t *testing.T) {
+	legacy := "_bundle = forge.Bundle {\n    project = \"acme\"\n    secret_provider = forge.ExternalSecrets {}\n}\n"
+	if got := frontendBindingFor(legacy, false); got != frontendOnBucket {
+		t.Fatalf("pre-hosting env: binding = %d, want frontendOnBucket", got)
+	}
+	out, status := spliceFrontendIntoEnvKCL(legacy, "acme", "prod", "web", frontendOnBucket, 0)
+	if status != frontendKCLApplied || !strings.Contains(out, `runtime = forge.OnBucket {bucket = "REPLACE_ME_BUCKET"}`) {
+		t.Errorf("pre-hosting env must keep the bucket binding (status %d):\n%s", status, out)
+	}
+	// A commented-out example does not make an env hosted.
+	if got := frontendBindingFor("# _hosted_frontend = lambda f: ...\n"+legacy, false); got != frontendOnBucket {
+		t.Errorf("a commented binder counted as declared: %d", got)
+	}
+	if got := frontendBindingFor(renderNoFrontendEnv(t, "kcl/cloud/main.k.tmpl", "prod"), false); got != frontendHosted {
+		t.Errorf("scaffolded cloud env: binding = %d, want frontendHosted", got)
+	}
+	if got := frontendBindingFor(renderNoFrontendEnv(t, "kcl/cloud/main.k.tmpl", "prod"), true); got != frontendOnHost {
+		t.Errorf("dev always binds the dev server: %d", got)
+	}
+}
+
 func TestSpliceFrontendIntoEnvKCL_NoAnchorLeavesFileAlone(t *testing.T) {
 	in := "output = {}\n"
-	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", true, 0)
+	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "web", frontendOnHost, 0)
 	if status != frontendKCLNoAnchor || out != in {
 		t.Fatalf("an unrecognised file must be left untouched, status %d", status)
 	}

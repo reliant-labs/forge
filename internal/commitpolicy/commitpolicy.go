@@ -21,6 +21,10 @@
 // this check existed. It runs in `forge lint` and after verify-generated's
 // regenerate, so every project that lints or runs CI is held to the policy
 // whatever its .gitignore says.
+//
+// It judges THIS project's files only. A nested tree that belongs to another
+// project — its own git repository, or a Go module outside this one's module
+// path — is skipped whole; see isForeignProject.
 package commitpolicy
 
 import (
@@ -35,6 +39,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // Rule ids, stable for `forge lint --json` consumers.
@@ -166,6 +172,7 @@ func inWorkTree(dir string) bool {
 // ones git ignores.
 func ignoredGeneratedFiles(projectDir string) ([]Violation, error) {
 	var candidates []string
+	ownModule := modulePath(projectDir)
 	err := filepath.WalkDir(projectDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if d != nil && d.IsDir() {
@@ -174,7 +181,7 @@ func ignoredGeneratedFiles(projectDir string) ([]Violation, error) {
 			return nil
 		}
 		if d.IsDir() {
-			if p != projectDir && (skipDirs[d.Name()] || IsGoBuildCacheDir(p)) {
+			if p != projectDir && (skipDirs[d.Name()] || IsGoBuildCacheDir(p) || isForeignProject(p, ownModule)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -220,6 +227,46 @@ func ignoredGeneratedFiles(projectDir string) ([]Violation, error) {
 		})
 	}
 	return out, nil
+}
+
+// isForeignProject reports whether dir is the root of ANOTHER project's tree
+// nested inside this one, whose generated files are that project's to commit
+// or ignore — not this one's. control-plane, for example, keeps a gitignored
+// checkout of the reliant module at context/ as an image build context; its
+// protobuf and sqlc stubs read as this project's ignored generated code, 199
+// violations that kept `forge lint` from ever exiting 0 there.
+//
+// The boundaries are the ones the toolchains themselves stop at:
+//
+//   - a nested git repository or worktree (`.git` as a directory or a
+//     gitdir file): the outer repository cannot commit its files at all;
+//   - a go.mod declaring a module outside ownModule: `go build ./...` from
+//     the project root never reaches it. The project's own nested modules
+//     (gen/, a frontend's boundary module) declare paths under ownModule
+//     and are still checked. With no root go.mod there is no module to
+//     compare against, and no tree is treated as foreign on this ground.
+//
+// Skipping every IGNORED path instead would be wrong: this rule exists to
+// find generated files that are ignored, so it would never fire again.
+func isForeignProject(dir, ownModule string) bool {
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+		return true
+	}
+	if ownModule == "" {
+		return false
+	}
+	mod := modulePath(dir)
+	return mod != "" && mod != ownModule && !strings.HasPrefix(mod, ownModule+"/")
+}
+
+// modulePath returns the module path declared by dir/go.mod, or "" when
+// there is no readable go.mod.
+func modulePath(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	return modfile.ModulePath(data)
 }
 
 // DeliveredRenderMarker is the phrase every harness-delivered agent skill

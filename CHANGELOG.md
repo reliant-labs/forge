@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
+  `Delete`, `HostClientID`, `Location`, `Credential`).** A host used to copy its
+  own session token into `credentials.json` under client `host-app`, and forge
+  presented it to the control plane's deploy API. That token was a permanent,
+  multi-purpose session credential (Reliant's daemon or CLI login) which mostly
+  did NOT hold deploy authority, so deploys 403'd and users ran `forge login`
+  anyway — and where it did work, the deploy API, the registry login and every
+  subprocess saw a credential that could also connect as the user's daemon.
+  forge no longer reads `host-app` entries at all; `cloudcred.RemoveLegacyHostDeposits`
+  lets a host purge what it wrote. Replaced by the credential helper below.
 - **forge no longer requires cgo.** `kcl_plugin.forge` is bridged through a
   purego callback, so `go install` works with any `CGO_ENABLED` setting,
   including Windows without a C toolchain. `env diff`'s `unsupported` status is
@@ -18,6 +28,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **New projects deploy to Reliant hosting by default.** `forge project new`
+  scaffolds `staging` and `prod` hosted on the forge control plane: every
+  service, worker and job bound `_hosted` (its image's registry host dropped,
+  since the platform pulls only from its own registry), a
+  `forge.ManagedDatabase` each workload reads through `forge.DatabaseRef`,
+  `forge.HostedSecrets`, the frontend on platform static hosting with
+  `API_URL` and `CORS_ORIGINS` wired by reference, and `control_plane =
+  forge.ControlPlane {}`. A fresh scaffold renders every env with no
+  placeholder. Before, staging and prod bound everything to a cluster the
+  author had to name (`forge env deploy prod --explain`: `REFUSE (declared
+  context not in kubeconfig)`) and the frontend to `REPLACE_ME_BUCKET`. The
+  scaffolded CI is the hosted pipeline (`release.yml`, no registry login)
+  instead of `deploy.yml`. `dev` is unchanged. Hosted workloads and the
+  managed database need billing; a static site alone is free.
+  - **Hosting elsewhere stays a one-line rebind.** Each env declares
+    `_on_cluster` and `_on_bucket` beside the hosted binders, unused, with
+    the `forge.ClusterTarget` / `forge.OnBucket` to fill shown in a comment
+    (`_cluster = None`, `_bucket = None`). A binding to either before it is
+    declared fails the render, naming the workload and the fix.
+  - **Kinds hosting refuses.** `forge scaffold operator` binds the operator
+    `_on_cluster` in every deployed env — the one binding that can run it —
+    and warns that those envs refuse to render until `_cluster` is declared
+    (or the line is dropped); a hand-declared `kind = "cron"` binds the same
+    way. forge's cron component (`forge scaffold worker --kind cron`) is a
+    worker with its own scheduler and is hosted like any worker. Every other
+    new workload binds where the env's `migrate` job runs, so an env
+    scaffolded on a cluster keeps binding there.
+    `forge scaffold frontend` binds a new frontend through a hosted env's
+    `_hosted_frontend`, and still to a bucket in an env without one.
+  - **Existing projects are not rewritten** (env files are scaffolded once).
+    To adopt hosting, add `control_plane`, `secret_provider =
+    forge.HostedSecrets {}` and a hosted `forge.ManagedDatabase` to the env's
+    Bundle, give `_hosted` the bare image and `DATABASE_URL =
+    forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
+    beside prod with `forge env new cloud --from prod --bind <name>=hosted`
+    first. The `deploy` skill has the exact edits.
 - **Concurrent `forge generate` / `forge scaffold` runs in one project now
   queue instead of failing.** Every run takes the project's lock
   (`.forge/forge.lock`). A second run prints one line,
@@ -164,6 +210,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pagination/ordering controls and message-typed fields are exempt, enums
   resolve across the proto tree, and a required parameter can say so with
   `[(buf.validate.field).required = true]` instead.
+
+- **Signed in to Reliant means signed in to the control plane — no `forge
+  login`.** forge has a credential-helper protocol (`pkg/cloudcred`, the model
+  of kubectl exec plugins and git credential helpers): when
+  `$FORGE_CREDENTIAL_HELPER` names a command, forge writes
+  `{"version":1,"endpoint":…,"scopes":[…]}` to its stdin and reads a token (or a
+  structured refusal: `no_session`, `denied`, `unavailable`) from its stdout.
+  The value is a JSON argv array, or a single executable path. Reliant sets it
+  for `reliant forge …` and for every shell its agents run, and answers with a
+  short-lived token minted from the user's Reliant session for exactly the
+  endpoint the env declares. Hosted commands (`env deploy`, `secret`,
+  `domain`, `cloud`, `release`, `env promote|verify|start|stop`, `registry
+  login`, …) resolve a credential in this order: `--token`, the env's declared
+  token variable (CI), the stored `forge login`, then the helper — and an
+  EXPIRED `forge login` falls through to the helper instead of failing. A
+  helper's token is reused within one process until a minute before it
+  expires; caching across processes is the helper's job. When the helper
+  refuses, forge prints the host's own advice (Reliant: "sign in to Reliant
+  (`reliant auth login` / the app)") and the CI variable — never `forge login`
+  — and a 401/403 on a helper-minted token says to sign in again there. Helper
+  stdout never reaches an error message or a log. `forge cloud status <env>`
+  shows the source and expiry; `forge login` notes when a helper is already
+  set. `forge login` and the token variable are unchanged for standalone forge
+  and CI.
 
 - **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
   barrel now exports `formatMinorUnits`, `parseMinorUnits`,

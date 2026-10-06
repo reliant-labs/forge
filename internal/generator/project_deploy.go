@@ -12,6 +12,11 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
+// hostedEnvNames are the deployed envs `forge project new` scaffolds, in
+// promotion order. Each is born hosted on the forge control plane
+// (deploy/kcl/cloud/main.k.tmpl).
+func hostedEnvNames() []string { return []string{"staging", "prod"} }
+
 func (g *ProjectGenerator) generateKCLDeploy() error {
 	deployDir := filepath.Join(g.Path, "deploy", "kcl")
 
@@ -52,7 +57,11 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// there is no env-level runtime (ADR 0002 §2) — and states its own
 	// values. dev renders from the local-loop template (host processes, the
 	// local k3d cluster, host-run postgres); staging and prod from the cloud
-	// template (each workload on the env's cluster, with a capacity floor).
+	// template: hosted on the forge control plane (every admissible workload
+	// OnHosted, a managed database, managed secrets, static hosting), with
+	// the binders for a cluster you operate declared beside them, unused.
+	// Each one written is recorded in g.hostedEnvs, so the CI scaffolded
+	// next is the hosted pipeline for exactly those envs.
 	//
 	// The project's binary mode does not reach these files. Every component
 	// is a subcommand of the project binary in both modes (`<bin> <name>`),
@@ -70,11 +79,11 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			break
 		}
 	}
-	for _, e := range []struct{ env, template string }{
-		{"dev", "kcl/dev/main.k.tmpl"},
-		{"staging", "kcl/cloud/main.k.tmpl"},
-		{"prod", "kcl/cloud/main.k.tmpl"},
-	} {
+	envs := []struct{ env, template string }{{codegen.DevEnvName, "kcl/dev/main.k.tmpl"}}
+	for _, env := range hostedEnvNames() {
+		envs = append(envs, struct{ env, template string }{env, "kcl/cloud/main.k.tmpl"})
+	}
+	for _, e := range envs {
 		data := templates.EnvTemplateData{
 			ProjectName:     g.Name,
 			EnvName:         e.env,
@@ -85,7 +94,6 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
-			ScaffoldImage:   codegen.ScaffoldImageRef(g.ModulePath, g.Name),
 		}
 		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {
@@ -97,6 +105,9 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		}
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write %s/main.k: %w", e.env, err)
+		}
+		if e.env != codegen.DevEnvName {
+			g.hostedEnvs = append(g.hostedEnvs, e.env)
 		}
 	}
 	ingressOn := true

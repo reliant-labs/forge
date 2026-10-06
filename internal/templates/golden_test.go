@@ -48,6 +48,16 @@ func renderCI(t *testing.T, provider, name string, data any) []byte {
 	return out
 }
 
+// renderDeployTemplate renders a deploy/ template.
+func renderDeployTemplate(t *testing.T, name string, data any) []byte {
+	t.Helper()
+	out, err := DeployTemplates().Render(name, data)
+	if err != nil {
+		t.Fatalf("DeployTemplates().Render(%q) error = %v", name, err)
+	}
+	return out
+}
+
 // renderService renders a service/ template.
 func renderService(t *testing.T, name string, data any) []byte {
 	t.Helper()
@@ -299,6 +309,28 @@ func TestGoldenSnapshots(t *testing.T) {
 			name: "e2e.yml",
 			render: func(t *testing.T) []byte {
 				return renderCI(t, "github", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true, FrontendPath: "frontends/web"})
+			},
+		},
+		// The deployed envs `forge project new` writes, hosted on the forge
+		// control plane by default. One with a frontend and services (CORS,
+		// the site binding, API_URL), one bare: the binders a frontend added
+		// later is bound through must exist in both.
+		{
+			name: "env_cloud_prod.k",
+			render: func(t *testing.T) []byte {
+				return renderDeployTemplate(t, "kcl/cloud/main.k.tmpl", EnvTemplateData{
+					ProjectName: "shop", EnvName: "prod", PrimaryWorkload: "orders", PrimaryIdent: "orders",
+					HasFrontend: true, FrontendName: "web",
+					Bindings: "    _hosted(wl.migrate)\n    _hosted(wl.orders)\n    _hosted(wl.billing)",
+				})
+			},
+		},
+		{
+			name: "env_cloud_staging_bare.k",
+			render: func(t *testing.T) []byte {
+				return renderDeployTemplate(t, "kcl/cloud/main.k.tmpl", EnvTemplateData{
+					ProjectName: "shop", EnvName: "staging", Bindings: "    _hosted(wl.migrate)",
+				})
 			},
 		},
 	}

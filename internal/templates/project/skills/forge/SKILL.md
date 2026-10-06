@@ -24,7 +24,7 @@ cd my-app
 # author each service proto: entity messages + custom rpcs (rules below)
 forge scaffold --dry-run     # print the plan
 forge scaffold               # birth entities, then generate
-forge lint
+forge lint --quiet           # only failures, then the verdict as the last line
 go build ./...
 forge env up dev             # host services + frontends, on a fresh seeded DB
 ```
@@ -275,7 +275,7 @@ interface to `struct{ ... }` and lists no methods — it cannot tell you
 | `forge env up <env>` | Build + deploy + host launch + frontend dev — reads `deploy/kcl/<env>/` |
 | `forge env deploy dev` | Deploy to local k3d (or whatever dev's KCL targets) |
 | `forge generate` | Re-project from protos + applied migrations. Safe anytime; never touches business logic |
-| `forge lint` | Go + proto + frontend linters |
+| `forge lint` | Go + proto + frontend linters. `--quiet`: only failures, verdict last. `--scope <path>`: one slice. `--<lane>` (e.g. `--read-only-fields`): one linter |
 | `forge build` | Binaries + frontends. Docker images only with `--docker` or `--push` (`forge env build <env> --push` pushes each image to the reference its own workload declares — a workload's `image` is the only place a registry is set) |
 | `task test` / `task test:e2e` | Unit + frontends / E2E (needs a stack up); `task test:all` adds integration |
 
@@ -338,3 +338,4 @@ forge skill search migration  # find one by keyword
 - Uncertain proto/migration/annotation syntax: draft it, run `forge generate`, read the error, fix. Never reverse-engineer forge's `internal/**` source.
 - One service per proto package; its owned and generated files co-locate in one `internal/handlers/<svc>/`.
 - Use `task test`, not raw `go test` — `Taskfile.yml` sets the tags, and CI runs that same target.
+- Gate with `forge lint`, and never pipe it through `head`: the verdict is the LAST line. `forge lint --quiet` prints only what failed plus the verdict. `forge lint --scope internal/handlers/<svc> --scope proto/services/<svc>` lints only your slice of a shared checkout — the whole-project lanes (frontend lint, component-drift, config-reach) are skipped and named, so run it unscoped before merging. Run one lane with its flag (`--read-only-fields`, `--computed-fields`, `--conventions`, `--migration-safety`; `forge lint --help` lists them all). An unwritten `forge:read-only` or `forge:computed` field fails lint, except while the service still holds forge's own unwired rpc stubs — then it warns `pending: implement <Rpc>`.

@@ -99,6 +99,14 @@ func isGeneratedGoPath(relPath string) bool {
 // does not parse (a hand-edit that broke the syntax) is left untouched — the
 // real compiler error surfaces at the pipeline's build/gate step, not here.
 func formatGoTree(root string) ([]string, error) {
+	return formatGoTreeFiltered(root, nil)
+}
+
+// formatGoTreeFiltered is formatGoTree restricted to the files keep accepts
+// (project-relative, slash-separated); a nil keep accepts every file. It is
+// how `forge lint --scope` auto-fixes only its own slice — a scoped run must
+// not reformat a file another agent is in the middle of editing.
+func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, error) {
 	prefix := checksums.GoImportsLocalPrefix(root)
 	var changed []string
 	for _, d := range goFormatDirs {
@@ -120,9 +128,11 @@ func formatGoTree(root string) ([]string, error) {
 			if !strings.HasSuffix(path, ".go") {
 				return nil
 			}
-			if rel, relErr := filepath.Rel(root, path); relErr == nil &&
-				isGeneratedGoPath(filepath.ToSlash(rel)) {
-				return nil
+			if rel, relErr := filepath.Rel(root, path); relErr == nil {
+				slashRel := filepath.ToSlash(rel)
+				if isGeneratedGoPath(slashRel) || (keep != nil && !keep(slashRel)) {
+					return nil
+				}
 			}
 			rel, cerr := formatGoFile(root, prefix, path)
 			if cerr != nil {

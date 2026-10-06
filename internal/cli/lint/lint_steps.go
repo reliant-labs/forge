@@ -22,9 +22,13 @@
 //   - errFormat   — how runAllLinters reports a non-nil runText error to
 //                   stderr (kept byte-identical to the old inline Fprintf)
 //   - collect     — the JSON-shaped collector (findings + per-step gated)
+//   - scope       — how the lane honours `forge lint --scope` (by file, by
+//                   Go package, or not at all for a whole-project lane);
+//                   see lint_structured.go
 //
-// The ordered table is then rendered two ways by thin drivers:
-// runAllLinters (text) and collectAllLintersJSON (JSON). The output of
+// The ordered table is then rendered by thin drivers: runAllLinters (text)
+// and collectLintOutcomes (the structured engine behind --json, --quiet and
+// --scope). The output of
 // BOTH formats is byte-identical to the pre-refactor code; TestLintHelpSurface
 // and the lint_json tests are the guardrail.
 //
@@ -66,6 +70,10 @@ type lintRunCtx struct {
 	paths         []string
 	cfg           *config.ProjectConfig
 	cwd           string
+	// scope is `forge lint --scope`; nil is the whole project. Only the
+	// structured drivers (collectLintOutcomes) read it — see
+	// lint_structured.go.
+	scope *lintScope
 }
 
 // linterStep is one entry in the ordered `forge lint` pipeline. See the
@@ -73,6 +81,10 @@ type lintRunCtx struct {
 type linterStep struct {
 	name  string
 	gates bool
+	// scope declares how the lane honours `forge lint --scope`
+	// (scopeByFile / scopeByPackages / scopeWholeProject). Required: the
+	// zero value is invalid, so a new lane must decide.
+	scope scopeMode
 
 	// shouldRun reports whether the step executes. When it returns
 	// run=false with a non-empty skipMsg, text mode prints "⚠️  "+skipMsg
@@ -109,6 +121,9 @@ func lintPipeline() []linterStep {
 		{
 			name:  "golangci-lint",
 			gates: true,
+			// Takes package arguments, so --scope narrows what it RUNS on
+			// (the slow lane), not just what it reports.
+			scope: scopeByPackages,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if _, err := exec.LookPath("golangci-lint"); err != nil {
 					return false, "golangci-lint not found on PATH — skipping"
@@ -120,7 +135,7 @@ func lintPipeline() []linterStep {
 			},
 			errFormat: "❌ golangci-lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				fs, g := collectGolangciLintJSON(rc.ctx, rc.paths)
+				fs, g := collectGolangciLintJSON(rc.ctx, rc.paths, rc.fix)
 				return fs, g, nil
 			},
 		},
@@ -145,6 +160,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "typed-config guardrail",
 			gates: false,
+			scope: scopeByPackages,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cfg == nil || rc.cfg.Config.EffectiveEnforceTypedAccess() != config.EnforceTypedAccessWarn {
 					return false, ""
@@ -165,6 +181,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "contract linter",
 			gates: true,
+			scope: scopeByPackages,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cfg != nil && !rc.cfg.Features.ContractsEnabled() {
 					return false, "contracts feature disabled — skipping contract linter"
@@ -187,6 +204,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "buf lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if _, err := exec.LookPath("buf"); err != nil {
 					return false, "buf not found on PATH — skipping buf lint"
@@ -208,9 +226,23 @@ func lintPipeline() []linterStep {
 		{
 			name:  "frontend lint",
 			gates: true,
+			// The frontend's own `npm run lint` over the whole frontend: its
+			// output is eslint's grouped report, not file:line findings, so
+			// nothing can attribute it to a slice.
+			scope: scopeWholeProject,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.skipFrontends {
 					return false, "--skip-frontends — skipping frontend lint"
+				}
+				// No declared frontend and no frontends/ directory: a silent
+				// no-op, as the typecheck lane below already treats it. It
+				// used to "run" over nothing and count as a gating linter that
+				// passed, and a --scope run named it as a lane left unchecked
+				// on a project that has no frontend at all. A DECLARED
+				// frontend whose directory is missing still runs, so it is
+				// reported as could-not-run rather than vanishing.
+				if len(frontendDirsForLint()) == 0 {
+					return false, ""
 				}
 				return true, ""
 			},
@@ -239,6 +271,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "frontend typecheck",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.skipFrontends {
 					return false, "--skip-frontends — skipping frontend typecheck"
@@ -274,6 +307,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "migration safety lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cfg != nil && !rc.cfg.Features.MigrationsEnabled() {
 					return false, "migrations feature disabled — skipping migration safety lint"
@@ -294,6 +328,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "forge convention lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				// Also runs for a frontend-only project: the forge-owned
 				// dotenv rule (collectConventionFindings) needs to see a
@@ -321,6 +356,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "scaffold ownership lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return true, ""
 			},
@@ -343,6 +379,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "generated-file drift lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				// Ownership state is project-scoped: outside a forge project
 				// there is nothing forge claims to own. Silent skip.
@@ -368,6 +405,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "test convention lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if dirExists("internal/handlers") || dirExists("frontends") {
 					return true, ""
@@ -387,6 +425,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "banner lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if dirExists(filepath.Join("internal", "templates")) ||
 					dirExists(filepath.Join("internal", "packs")) {
@@ -409,6 +448,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "optional-deps-guard lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				// All component trees (handlers/workers/operators + internal
 				// packages) now live under internal/, so a single check covers
@@ -433,6 +473,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "config-deps lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				// All component trees (handlers/workers/operators + internal
 				// packages) now live under internal/, so a single check covers
@@ -460,6 +501,9 @@ func lintPipeline() []linterStep {
 		{
 			name:  "component-drift lint",
 			gates: false,
+			// Compares the code's components against deploy/kcl/workloads.k:
+			// a fact about the two trees together, not about any one file.
+			scope: scopeWholeProject,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cwd == "" || rc.cfg == nil {
 					return false, ""
@@ -486,6 +530,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "hosted-image-base lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cwd == "" {
 					return false, ""
@@ -508,6 +553,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "pdb-blocks-drain lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
 			},
@@ -524,6 +570,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "column-markers lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if dirExists(migrationsDirFor(rc.cfg)) {
 					return true, ""
@@ -548,6 +595,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "shellbuild-tokens lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				// No env KCL means no ShellBuild to check.
 				return dirExists(deployKCLDirDefault), ""
@@ -569,6 +617,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "proto-markers lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				// No proto tree at all (CLI / library projects) → silent
 				// skip, matching the column check's missing-migrations arm.
@@ -597,6 +646,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "create-nullability lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault), ""
 			},
@@ -613,22 +663,29 @@ func lintPipeline() []linterStep {
 		// DECLARED obligation that something derives the value. Nothing
 		// forge generates does, so an unmet obligation means the insert
 		// takes the column default: $0.00 money with no error anywhere,
-		// found only by a human reading a screen. Warnings only — the fix
-		// is app logic the author has to write, and a project mid-migration
-		// (marker added before the hook) should still be able to lint.
+		// found only by a human reading a screen.
+		//
+		// GATES, at least as hard as its read-only twin: computed is the
+		// stronger promise ("my app derives this"). It used to warn on the
+		// theory that a marker added before its hook is a legitimate
+		// intermediate state; the deterministic form of that state —
+		// forge's own unwired stubs still in the service — is pending-stub
+		// mode, which holds the finding at warning and names the stubs
+		// (lint_pending_stubs.go). Everything else fails.
 		{
 			name:  "computed-fields lint",
-			gates: false,
+			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault) && rc.cwd != "", ""
 			},
 			runText: func(rc *lintRunCtx) error {
 				return runComputedFieldsLint(rc.cwd)
 			},
-			errFormat: "⚠️  computed-fields lint: %v\n",
+			errFormat: "❌ computed-fields lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectComputedFieldsJSON(rc.cwd)
-				return fs, false, err
+				return fs, anyErrorFinding(fs), err
 			},
 		},
 
@@ -642,16 +699,16 @@ func lintPipeline() []linterStep {
 		// stay quiet on GENERATED columns, managed timestamps, and real
 		// defaults.
 		//
-		// GATES, unlike its computed-field twin, and the asymmetry is the
-		// point. forge:computed declares an obligation the author has not
-		// met YET — a project mid-migration (marker added before the hook)
-		// is a legitimate intermediate state, so warning is right there.
-		// forge:read-only plus an unwritten column is not an intermediate
-		// state; it is a shipped defect whose ONLY symptom is a human
-		// reading $0.00 on a screen. A warning inside a hundred-line lint
-		// run is very close to the "no log line anywhere" the rule exists
-		// to fix, and the audited run caught its two only because someone
-		// was deliberately looking for them.
+		// GATES, like its computed-field twin. An unwritten read-only
+		// column is a shipped defect whose ONLY symptom is a human reading
+		// $0.00 on a screen. A warning inside a hundred-line lint run is
+		// very close to the "no log line anywhere" the rule exists to fix,
+		// and the audited run caught its two only because someone was
+		// deliberately looking for them. The one exception is pending-stub
+		// mode: right after `forge scaffold` the rpc that will write the
+		// column is still forge's own unwired stub, so the finding is a
+		// warning naming those stubs until they are implemented
+		// (lint_pending_stubs.go).
 		//
 		// Gating is defensible because every exclusion is pinned by a test
 		// (GENERATED, managed timestamps, real defaults, NOT NULL-without-
@@ -662,6 +719,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "read-only-fields lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault) && rc.cwd != "", ""
 			},
@@ -671,7 +729,7 @@ func lintPipeline() []linterStep {
 			errFormat: "❌ read-only-fields lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectReadOnlyFieldsJSON(rc.cwd, migrationsDirFor(rc.cfg))
-				return fs, len(fs) > 0, err
+				return fs, anyErrorFinding(fs), err
 			},
 		},
 
@@ -698,6 +756,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "crud-fixtures lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
@@ -734,6 +793,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "fixture-drift lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
@@ -770,6 +830,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "time-bucketing lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
@@ -796,6 +857,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "guarded-fields lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return dirExists(protoDirDefault) && rc.cwd != "", ""
 			},
@@ -820,6 +882,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "enforce-component-observe lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				// off → silent skip (no message), like the typed-config guard's
 				// non-warn skip.
@@ -847,6 +910,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "no-dotenv lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},
@@ -869,6 +933,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "commit-policy lint",
 			gates: true,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "" && fileExists("forge.yaml"), ""
 			},
@@ -886,6 +951,7 @@ func lintPipeline() []linterStep {
 		{
 			name:  "check-workarounds lint",
 			gates: false,
+			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				return rc.cwd != "", ""
 			},

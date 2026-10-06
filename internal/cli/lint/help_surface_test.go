@@ -126,6 +126,10 @@ func TestLintHelpSurface(t *testing.T) {
 		// Visible for the same reason: it is a continuous rule about the
 		// user's own protos, and the only place the failure surfaces.
 		"proto-options",
+		// Visible because the people who need it most are agents that gate
+		// phases on lint and keep their context small: they piped full
+		// output through `head` and lost the verdict at the bottom.
+		"quiet",
 		// The computed-fields twin for the marker where the failure is
 		// SILENT rather than merely unreported. forge:read-only strips a
 		// field from every write envelope and promises nothing in return,
@@ -134,6 +138,10 @@ func TestLintHelpSurface(t *testing.T) {
 		// obligation anyone could check. Visible for the same reason:
 		// a human reading $0.00 on a screen is otherwise the only detector.
 		"read-only-fields",
+		// User surface: an agent sharing a checkout with others needs to
+		// lint ITS slice without another agent's half-written file
+		// failing the run.
+		"scope",
 		// User surface, not maintainer: it is the answer to "how do I lint
 		// the backend without paying for the Node toolchain", and it mirrors
 		// the frontend-skipping vocabulary `forge build` already uses.

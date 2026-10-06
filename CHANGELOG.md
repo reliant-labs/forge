@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uses `entrypoint` and works under air's PowerShell on Windows.
 - **`task db:restore` shows pg_restore's warnings.** The `grep -v` filter that
   hid them is gone, because `grep` does not exist on Windows.
+- **An unwritten `forge:computed` field fails `forge lint`, like an unwritten
+  `forge:read-only` one.** It used to only warn while read-only failed —
+  backwards, since computed is the stronger promise ("my app derives this").
+  `computed-fields lint` now gates; `--computed-fields --json` reports
+  `ok: false`.
+- **Pending-stub mode for both unwritten-column rules.** Right after
+  `forge scaffold`, the rpc that will write a read-only/computed column is
+  still forge's own `// forge:gen unwired-stub` placeholder, and failing the
+  gate on forge's fresh output taught agents to ignore the rule. While the
+  declaring service's handler package still holds those stubs, the finding is
+  a warning naming them — `pending: implement ChangeJobStatus, ScheduleJob` —
+  and once none remain it is an error again. Deterministic: the service comes
+  from the entity's proto directory and the handler package from the same
+  resolver `forge generate` uses; forge does not guess which rpc writes which
+  column.
+- **A failing `forge lint` names the failed linters on its last line**
+  (`forge lint: 2 gating linter(s) failed: computed-fields lint,
+  read-only-fields lint`), instead of "one or more linters reported errors".
+  The verdict is the last line in every mode.
+- **`frontend lint` no longer "passes" on a project with no frontend.** With no
+  declared frontend and no `frontends/` directory it is a silent no-op, as the
+  frontend typecheck lane already was, instead of counting as a gating linter
+  that ran.
 
 ### Added
 
@@ -76,6 +99,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`crud.UpdateOp.ReadOnly`**: the columns `HandleUpdate` refuses in a client
   `update_mask`. Generated from the entity's `forge:read-only` /
   `forge:computed` fields.
+- **`forge lint --quiet` (`-q`).** Prints only what failed — a one-line summary
+  per failing linter, its error findings with fix hints, and the verdict as
+  the last line; a clean run is one line. Auto-fix still applies, so the
+  verdict matches the default run. Combines with any targeted flag
+  (`forge lint --read-only-fields --quiet`), with `--scope` and with
+  `--gate-json`. Agents were piping full lint through `head` and losing the
+  result.
+- **`forge lint --scope <path>`** (repeatable or comma-separated). Reports only
+  findings in files under the given project-relative paths, so an agent
+  sharing a checkout can lint its slice. golangci-lint, the typed-config
+  guardrail and the contract linter run on the scope's Go packages only;
+  file-anchored linters run project-wide and report what is under the scope
+  (a finding with no file is never hidden); the whole-project linters —
+  frontend lint, component-drift and `--config-reach` — cannot be scoped, are
+  skipped, and are named in the verdict ("run an unscoped `forge lint` before
+  merging"). Auto-fix touches only files under the scope. Works with `--json`
+  and `--quiet`; refused with positional package paths and with `--gate-json`
+  (a gate records whole-project evidence). Every pipeline lane must declare
+  its scope mode, pinned by a test.
 - **Windows support.** Native windows/amd64 and windows/arm64, no C toolchain:
   - process lifecycle (tree kill, liveness, parent/port/start-time lookup,
     reading another process's argv and environment for stale-stack reclaim);
@@ -155,6 +197,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column a mask did not name, rather than whatever the request carried. Before,
   a full replace that correctly left `status` alone still answered with the
   reset `status` the client sent.
+- **A freshly scaffolded project no longer warns `gen-missing-source` on
+  forge's own files.** Three emitters hand-wrote a header that stopped at the
+  forge-owned banner: the ORM projection (`internal/db/<entity>_orm_gen.go`),
+  the service mocks (`internal/handlers/mocks/<svc>_mock_gen.go`) and
+  `db/embed_gen.go`. Each now stamps a `// Source:` line naming what it is
+  derived from. Nothing held emitters to the rule `forge lint` holds every
+  `_gen` file to, so `internal/tierguard` now runs that exact rule
+  (`scaffolds.LintGeneratedHeader`) over every Tier-1 file in its rendered
+  fixtures. Existing projects pick the lines up on the next `forge generate`;
+  the finding on a forge-generated file now says that, instead of telling the
+  user to edit a file marked DO NOT EDIT.
+- **`forge lint --read-only-fields --json` and `--guarded-fields --json` run
+  their one lane.** Both were missing from the targeted JSON table and fell
+  through to the whole suite.
+- **`forge lint --conventions` reports proto paths from the project root**
+  (`proto/services/x/v1/x.proto`, not `services/x/v1/x.proto`), so they are
+  openable and `--scope` can match them.
 - **forge only kills processes it can prove are its own.** On every OS, a pid
   read from a pidfile (embedded postgres, the host zitadel, a recorded dlv)
   is killed only if its executable matches and it started no later than the

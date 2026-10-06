@@ -68,9 +68,21 @@
 // never fire at all. Tests are excluded for the same reason — a factory
 // setting the field proves nothing about production.
 //
-// Severity is warning. The finding is high-confidence, but the fix is app
-// logic only the author can write, and a project mid-migration (marker added
-// before the hook) would otherwise be unable to run lint at all.
+// ── Severity: this rule GATES, at least as hard as read-only ──────────────
+//
+// It used to warn while its read-only twin failed, on the theory that a
+// marker added before its hook is a legitimate intermediate state. That was
+// backwards. `forge:computed` is the STRONGER promise — "my app derives this
+// value" — so an unmet one is at least as much a shipped defect as an
+// unwritten read-only column, and the dogfood run that found the asymmetry
+// had a computed money column at $0.00 behind a warning nobody read.
+//
+// The intermediate state that argument was protecting is real, but it has a
+// deterministic shape: forge has just scaffolded the service and the rpc
+// that will derive the value is still forge's own `forge:gen unwired-stub`
+// placeholder. Pending-stub mode (lint_pending_stubs.go) holds the finding
+// at warning exactly while those placeholders remain, naming them; anything
+// else is an error.
 
 package lint
 
@@ -111,6 +123,9 @@ type computedFieldFinding struct {
 	// clause needs the shape of the empty value, not the DDL spelling.
 	Kind     string
 	TypeName string
+	// Pending holds the finding at warning while the declaring service
+	// still carries forge-scaffolded unwired stubs (lint_pending_stubs.go).
+	Pending pendingStubs
 }
 
 // computedFieldFixHint renders the remediation. It states both legitimate
@@ -131,30 +146,48 @@ func computedFieldFixHint(f computedFieldFinding) string {
 		f.GoField, f.Field, codegen.ProtoMarkerReadOnly)
 }
 
-// runComputedFieldsLint is the text-mode entry point.
+// runComputedFieldsLint is the text-mode entry point. It returns a gating
+// error when any finding is not held by pending-stub mode.
 func runComputedFieldsLint(projectDir string) error {
 	fmt.Println("Running computed-fields lint...")
 	findings, err := collectComputedFieldFindings(projectDir)
 	if err != nil {
 		return err
 	}
-	formatComputedFields(os.Stdout, findings)
+	if gating := formatComputedFields(os.Stdout, findings); gating > 0 {
+		return fmt.Errorf("%d computed field(s) that nothing populates", gating)
+	}
 	return nil
 }
 
-// formatComputedFields writes the human report.
-func formatComputedFields(w io.Writer, findings []computedFieldFinding) {
+// formatComputedFields writes the human report and returns how many
+// findings gate.
+func formatComputedFields(w io.Writer, findings []computedFieldFinding) int {
 	if len(findings) == 0 {
 		_, _ = fmt.Fprintln(w, "  computed-fields clean — every forge:computed field is written by app code")
-		return
+		return 0
 	}
+	rows := make([]unwrittenFindingText, 0, len(findings))
 	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [forgeconv-computed-field-unwritten] %s:%d\n", f.File, f.Line)
-		_, _ = fmt.Fprintf(w, "      → %s\n", computedFieldFixHint(f))
+		rows = append(rows, unwrittenFindingText{
+			Rule: computedFieldRuleID, File: f.File, Line: f.Line,
+			Hint: computedFieldFixHint(f), Pending: f.Pending,
+		})
 	}
+	gating := formatUnwrittenFindings(w, rows)
 	_, _ = fmt.Fprintf(w, "\n%d computed field(s) that nothing populates.\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
+	if gating > 0 {
+		_, _ = fmt.Fprintln(w, "forge:computed promises your app derives the value, so an unmet one FAILS the build "+
+			"— derive it, or drop the marker to forge:read-only if something this check cannot see writes it.")
+	} else {
+		_, _ = fmt.Fprintln(w, "(warning only while forge-scaffolded stubs remain in the service — "+
+			"implement them and an unwritten field fails the build)")
+	}
+	return gating
 }
+
+// computedFieldRuleID is the rule id both report formats use.
+const computedFieldRuleID = "forgeconv-computed-field-unwritten"
 
 // collectComputedFieldFindings is the shared engine behind text mode and
 // `forge lint --json`. A project with no proto tree yields nothing.
@@ -174,6 +207,7 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 	type computedField struct {
 		entity, field, goField, file, kind, typeName string
 		line                                         int
+		pending                                      pendingStubs
 	}
 	var declared []computedField
 	for _, dir := range dirs {
@@ -181,8 +215,17 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 		if scanErr != nil {
 			continue // buf lint / generate report a malformed proto far better
 		}
+		var pending pendingStubs
+		resolved := false
 		for _, msg := range scan.Messages {
 			for _, name := range computedFieldNames(msg) {
+				// Resolved once per directory, and only once a field
+				// needs it: the handler-package read is wasted on the
+				// common project that declares no computed field.
+				if !resolved {
+					pending = pendingStubsForScan(projectDir, scan)
+					resolved = true
+				}
 				kind, typeName := protoFieldType(msg, name)
 				declared = append(declared, computedField{
 					entity:   msg.Name,
@@ -192,6 +235,7 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 					line:     fieldLineIn(msg, name),
 					kind:     kind,
 					typeName: typeName,
+					pending:  pending,
 				})
 			}
 		}
@@ -216,7 +260,7 @@ func collectComputedFieldFindings(projectDir string) ([]computedFieldFinding, er
 			// the reader's editor and differs between machines.
 			File: relToProject(projectDir, d.file), Line: d.line,
 			Entity: d.entity, Field: d.field, GoField: d.goField,
-			Kind: d.kind, TypeName: d.typeName,
+			Kind: d.kind, TypeName: d.typeName, Pending: d.pending,
 		})
 	}
 	sort.Slice(findings, func(i, j int) bool {

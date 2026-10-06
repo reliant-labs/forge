@@ -56,7 +56,7 @@ func TestGolangciLanesQueueForTheMachineLock(t *testing.T) {
 	})
 	t.Run("json gate", func(t *testing.T) {
 		fakeGolangciLint(t, contendedUnlessSerialStub)
-		fs, gated := collectGolangciLintJSON(context.Background(), []string{"./..."})
+		fs, gated := collectGolangciLintJSON(context.Background(), []string{"./..."}, false)
 		if gated || len(fs) != 0 {
 			t.Fatalf("--json golangci-lint gated on a contended lock: gated=%v findings=%+v", gated, fs)
 		}

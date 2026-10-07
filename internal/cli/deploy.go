@@ -377,7 +377,7 @@ type promoteCmdFlags struct {
 	// skipHubCheck records a hub-converged env's promotion even when the
 	// hub reports its reconciler failing (refuseUnreadyHub).
 	skipHubCheck bool
-	// liveDiff prints the release bundle's server-side diff against each
+	// liveDiff prints the release bundle's client-side diff against each
 	// live cluster with the plan (printPlanLiveDiff).
 	liveDiff bool
 
@@ -429,7 +429,7 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 	flags.BoolVar(&f.skipHubCheck, "skip-hub-check", false,
 		"Record a hub-converged env's promotion even when its control plane's hub reports the reconciler failing. Without it, such a deploy is refused before anything is recorded")
 	flags.BoolVar(&f.liveDiff, "live-diff", false,
-		"Print the release bundle's server-side diff against each live cluster with the plan (kubectl diff --server-side; writes nothing). What a reviewer reads before --approve")
+		"Print the release bundle's diff against each live cluster with the plan (client-side kubectl diff; writes nothing; does not show fields the bundle stops setting). What a reviewer reads before --approve")
 	flags.BoolVar(&f.rerecordBundle, "rerecord-bundle", false,
 		"Replace the release's recorded bundle with this checkout's render. Without it, a render whose objects differ from the bundle recorded for the release is refused: a release's bundle is what a reviewer approved and what deploys")
 

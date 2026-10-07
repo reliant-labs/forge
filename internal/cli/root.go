@@ -194,7 +194,6 @@ authored protos, in one call.`,
 	// make and git.
 	rootCmd.PersistentFlags().StringVarP(&projectDir, "project-dir", "C", "", "resolve the project from this directory instead of the current one")
 
-
 	// Add all commands
 	// `forge start` prints the greenfield brief. It is a top-level verb
 	// rather than a flag on `skill load` because it must be reachable from

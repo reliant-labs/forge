@@ -13,9 +13,9 @@ import (
 )
 
 // `forge release bundle <env> <version>` pulls exactly the bundle the release
-// recorded, unpacks it, and with --live-diff runs the server-side diff the
-// 2026-10-07 review ran by hand — one kubectl diff per cluster, reporting every
-// object that would change. It writes nothing to any cluster.
+// recorded, unpacks it, and with --live-diff runs one client-side kubectl diff
+// per cluster, reporting every object that would change. It writes nothing to
+// any cluster.
 func TestReleaseBundle_PullsTheRecordedBundleAndDiffsItLive(t *testing.T) {
 	dir := newLedgerTestProject(t, "bundle-pull")
 	stubEnvShape(t, "bundle-pull")
@@ -30,14 +30,14 @@ func TestReleaseBundle_PullsTheRecordedBundleAndDiffsItLive(t *testing.T) {
 
 	type call struct{ context, dir string }
 	var calls []call
-	prev := kubectlServerSideDiff
-	kubectlServerSideDiff = func(_ context.Context, kubeContext, path string) (string, int, error) {
+	prev := kubectlLiveDiff
+	kubectlLiveDiff = func(_ context.Context, kubeContext, path string) (string, int, error) {
 		calls = append(calls, call{kubeContext, path})
 		return "diff -u -N /tmp/LIVE-1/apps.v1.Deployment.app.api /tmp/MERGED-2/apps.v1.Deployment.app.api\n" +
 			"--- /tmp/LIVE-1/apps.v1.Deployment.app.api\n+++ /tmp/MERGED-2/apps.v1.Deployment.app.api\n" +
 			"-  replicas: 1\n+  replicas: 2\n", 1, nil
 	}
-	t.Cleanup(func() { kubectlServerSideDiff = prev })
+	t.Cleanup(func() { kubectlLiveDiff = prev })
 
 	out := t.TempDir()
 	var buf bytes.Buffer
@@ -68,6 +68,48 @@ func TestReleaseBundle_PullsTheRecordedBundleAndDiffsItLive(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), shortDigest(written.Digest)) {
 		t.Errorf("by digest:\n%s", buf.String())
+	}
+}
+
+// The live diff runs against prod and is documented as writing nothing, so it
+// is a CLIENT-side `kubectl diff` and nothing else. --server-side makes it a
+// server-side apply request, which is how field ownership is taken, and
+// --force-conflicts takes it from every other manager: a read-only prod diff
+// never carries either (the owner's standing rule since 2026-09-30). This
+// drives the real exec through a kubectl stand-in that records its argv, so
+// the seam cannot be the thing that looks right.
+func TestLiveDiff_IsAClientSideKubectlDiff(t *testing.T) {
+	requirePOSIXFake(t, "kubectl")
+	bin := t.TempDir()
+	argvFile := filepath.Join(bin, "argv")
+	stub := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argvFile + "'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "manifests", "prod-ctx"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	diffs, err := liveDiffBundle(context.Background(), dir,
+		[]release.BundleClusterTree{{Cluster: "prod-ctx", Path: "manifests/prod-ctx"}})
+	if err != nil {
+		t.Fatalf("live diff: %v (%+v)", err, diffs)
+	}
+	raw, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatalf("kubectl was never run: %v", err)
+	}
+	argv := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	for _, a := range argv {
+		if strings.HasPrefix(a, "--server-side") || strings.HasPrefix(a, "--force-conflicts") || strings.HasPrefix(a, "--field-manager") {
+			t.Errorf("the live diff passes %s: it must be a client-side kubectl diff (argv %q)", a, argv)
+		}
+	}
+	want := []string{"--context", "prod-ctx", "diff", "-R", "-f", filepath.Join(dir, "manifests", "prod-ctx")}
+	if strings.Join(argv, " ") != strings.Join(want, " ") {
+		t.Errorf("kubectl argv = %q\nwant          %q", argv, want)
 	}
 }
 

@@ -5,9 +5,16 @@ package cli
 //
 // WHY THIS EXISTS. A bundle is the record of what an env runs, and under Flux
 // it is exactly what gets applied. Reviewing one used to need a scratch Go test
-// calling bundle.Fetch + bundle.Unpack, and the 2026-10-07 prod review then ran
-// `kubectl diff --server-side --force-conflicts --field-manager=forge -R` by
-// hand against each cluster. Both are this command now.
+// calling bundle.Fetch + bundle.Unpack, and a kubectl diff by hand against each
+// cluster. Both are this command now.
+//
+// The live diff is CLIENT-side `kubectl diff` and only that. The server-side
+// form is a server-side APPLY request — the operation that takes field
+// ownership — and --force-conflicts takes it from every other manager. A
+// command documented as writing nothing never issues one against a live
+// cluster, dry run or not: that is the owner's standing rule for read-only
+// prod diffs since 2026-09-30, and TestLiveDiff_IsAClientSideKubectlDiff pins
+// the argv.
 
 import (
 	"bytes"
@@ -47,14 +54,20 @@ deploy would ship:
   <dir>/manifests/<cluster>/…   the rendered objects, one file each
   <dir>/bundle.json             the bundle document: release, pins, provenance, shape
 
---live-diff runs a server-side dry-run diff of every cluster's manifests
-against that cluster, the same check a careful reviewer runs by hand:
+--live-diff runs a client-side kubectl diff of every cluster's manifests
+against that cluster:
 
-  kubectl --context <cluster> diff --server-side --force-conflicts --field-manager=forge -R -f <dir>/manifests/<cluster>
+  kubectl --context <cluster> diff -R -f <dir>/manifests/<cluster>
 
-It writes nothing to any cluster. Each cluster's diff goes to
+It writes nothing to any cluster, and it is deliberately NOT the server-side
+form: --server-side is a server-side apply request, which takes field
+ownership, so a read-only diff never sends one. Each cluster's diff goes to
 <dir>/diff/<cluster>.diff and the summary names every object that would
-change.`,
+change.
+
+What a client-side diff cannot show: a field the bundle STOPS setting. forge
+applies server-side, which removes such a field; a client-side diff has no
+record of what forge set before, so it reports added and changed fields only.`,
 		Example: `  forge release bundle prod 20261007.102305-f63c36382f4a
   forge release bundle prod 20261007.102305-f63c36382f4a --live-diff
   forge release bundle prod sha256:4645278bf09a… --dir /tmp/prod-bundle --json`,
@@ -67,7 +80,7 @@ change.`,
 		},
 	}
 	cmd.Flags().StringVar(&dir, "dir", "", "Where to unpack it (default .forge/bundles/<env>/<version or digest>)")
-	cmd.Flags().BoolVar(&liveDiff, "live-diff", false, "Also diff every cluster's manifests against that live cluster (server-side dry run; writes nothing)")
+	cmd.Flags().BoolVar(&liveDiff, "live-diff", false, "Also diff every cluster's manifests against that live cluster (client-side kubectl diff; writes nothing; does not show fields the bundle stops setting)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit the result as JSON")
 	return cmd
 }
@@ -162,7 +175,8 @@ func renderReleaseBundle(out io.Writer, doc releaseBundleDocument) {
 
 // renderLiveDiff prints the per-cluster summary of a live diff.
 func renderLiveDiff(out io.Writer, diffs []clusterLiveDiff) {
-	fmt.Fprintln(out, "Live diff (server-side dry run; nothing was written)")
+	fmt.Fprintln(out, "Live diff (client-side kubectl diff; nothing was written)")
+	fmt.Fprintln(out, "  added and changed fields only: a field the bundle stops setting is not shown, though the apply removes it")
 	for _, d := range diffs {
 		switch {
 		case d.Error != "":
@@ -253,7 +267,7 @@ func unpackBundleInto(f bundle.Fetched, dir string) error {
 	return os.WriteFile(filepath.Join(dir, "bundle.json"), append(docJSON, '\n'), 0o644)
 }
 
-// clusterLiveDiff is one cluster's server-side diff of a bundle.
+// clusterLiveDiff is one cluster's client-side diff of a bundle.
 type clusterLiveDiff struct {
 	Cluster  string   `json:"cluster"`
 	Changed  []string `json:"changed"`
@@ -261,12 +275,13 @@ type clusterLiveDiff struct {
 	Error    string   `json:"error,omitempty"`
 }
 
-// kubectlServerSideDiff runs one cluster's diff. kubectl diff exits 0 for no
-// differences, 1 for differences, and >1 for an error. A seam so a test
-// states what a cluster answers; the package's tests never reach kubectl.
-var kubectlServerSideDiff = func(ctx context.Context, kubeContext, dir string) (string, int, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeContext, "diff",
-		"--server-side", "--force-conflicts", "--field-manager=forge", "-R", "-f", dir)
+// kubectlLiveDiff runs one cluster's client-side diff: no --server-side, no
+// --force-conflicts, no --field-manager (see the file comment). kubectl diff
+// exits 0 for no differences, 1 for differences, and >1 for an error. A seam
+// so a test states what a cluster answers; the package's tests never reach
+// kubectl.
+var kubectlLiveDiff = func(ctx context.Context, kubeContext, dir string) (string, int, error) {
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeContext, "diff", "-R", "-f", dir)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -300,7 +315,7 @@ func liveDiffBundle(ctx context.Context, dir string, clusters []release.BundleCl
 			continue // the unclustered tree: nothing applies it
 		}
 		d := clusterLiveDiff{Cluster: c.Cluster, Changed: []string{}}
-		text, _, err := kubectlServerSideDiff(ctx, c.Cluster, filepath.Join(dir, filepath.FromSlash(c.Path)))
+		text, _, err := kubectlLiveDiff(ctx, c.Cluster, filepath.Join(dir, filepath.FromSlash(c.Path)))
 		if err != nil {
 			d.Error = oneLine(err.Error(), 300)
 			failed = append(failed, c.Cluster)
@@ -326,7 +341,7 @@ func liveDiffBundle(ctx context.Context, dir string, clusters []release.BundleCl
 }
 
 // printPlanLiveDiff is `forge env deploy <env> <v> --live-diff`: the release's
-// bundle, diffed server-side against each live cluster, printed with the plan
+// bundle, diffed client-side against each live cluster, printed with the plan
 // so a reviewer sees what applying it changes BEFORE approving it. It is
 // information, not a gate: a diff that cannot run is said, and the deploy's
 // own gates decide.

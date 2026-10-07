@@ -339,10 +339,12 @@ type CIWorkflowData struct {
 	HasKCL    bool // validate KCL manifests
 	HasDocker bool // emit docker-build job (project has a Dockerfile)
 	// VerifyGenerated controls whether the verify-generated job is emitted.
-	// Service projects always emit it (forge regenerates handlers/middleware
-	// and we want CI to flag drift). CLI/library projects have very little
-	// generated output worth verifying, so the job is suppressed.
 	VerifyGenerated bool
+	// RunsBufGenerate is true when `forge generate` runs `buf generate` on
+	// this project. verify-generated reruns generate, so it installs buf
+	// exactly then. The mapper sets it from the generate pipeline's own
+	// gate condition, whatever the project kind.
+	RunsBufGenerate bool
 
 	// Environments (for KCL validation)
 	Environments []string

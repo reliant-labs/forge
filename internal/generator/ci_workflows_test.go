@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	yaml "gopkg.in/yaml.v3"
+
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -87,6 +89,100 @@ func TestCIWorkflows_CLIGetsTheBuildableSubset(t *testing.T) {
 	if !ci.VerifyGenerated {
 		t.Fatal("verify-generated applies to every kind: contract mocks drift in CLIs too")
 	}
+}
+
+// verify-generated reruns `forge generate`, which runs `buf generate` whenever
+// the codegen feature is on, and codegen derives from .proto files existing,
+// not from the project being a service. So the job needs buf on every project
+// with protos. It used to install buf only for services, so a CLI with protos
+// got a job that died on `exec: "buf": executable file not found`.
+func TestCIWorkflows_VerifyGeneratedInstallsBufWhereGenerateRunsIt(t *testing.T) {
+	cases := []struct {
+		name     string
+		tree     map[string]string
+		wantKind string
+		wantBuf  bool
+	}{
+		{"cli with protos", map[string]string{
+			"cmd/tool/main.go":         "package main\n\nfunc main() {}\n",
+			"proto/tool/v1/tool.proto": "syntax = \"proto3\";\n",
+		}, config.ProjectKindCLI, true},
+		{"cli without protos", map[string]string{
+			"cmd/tool/main.go": "package main\n\nfunc main() {}\n",
+		}, config.ProjectKindCLI, false},
+		{"service", map[string]string{
+			"internal/handlers/.keep":           "",
+			"proto/services/demo/v1/demo.proto": "syntax = \"proto3\";\n",
+		}, config.ProjectKindService, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.tree["forge.yaml"] = "name: demo\nmodule_path: github.com/example/demo\n"
+			for rel, body := range tc.tree {
+				p := filepath.Join(root, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := config.LoadProjectDir(root)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if cfg.Kind != tc.wantKind {
+				t.Fatalf("tree derived kind %q, want %q", cfg.Kind, tc.wantKind)
+			}
+
+			installs, version := verifyGeneratedBuf(t, CIWorkflows(root, cfg, nil))
+			switch {
+			case installs != tc.wantBuf:
+				t.Errorf("verify-generated installs buf = %v, want %v (features.codegen = %v)",
+					installs, tc.wantBuf, cfg.Features.CodegenEnabled())
+			case installs && version != "1.50.0":
+				t.Errorf("verify-generated installs buf %q, want the pinned \"1.50.0\": it regenerates "+
+					"the tree and demands identical bytes, so buf must not move under it", version)
+			}
+		})
+	}
+}
+
+// verifyGeneratedBuf renders ci.yml from files and reports whether its
+// verify-generated job installs buf, and the version it pins.
+func verifyGeneratedBuf(t *testing.T, files []CIWorkflowFile) (installs bool, version string) {
+	t.Helper()
+	data, ok := ciFile(files, ".github/workflows/ci.yml").(templates.CIWorkflowData)
+	if !ok {
+		t.Fatalf("no ci.yml in %+v", files)
+	}
+	out, err := templates.CITemplates("github").Render("ci.yml.tmpl", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Uses string         `yaml:"uses"`
+				With map[string]any `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(out, &workflow); err != nil {
+		t.Fatalf("rendered ci.yml is not YAML: %v\n%s", err, out)
+	}
+	job, ok := workflow.Jobs["verify-generated"]
+	if !ok {
+		t.Fatalf("rendered ci.yml has no verify-generated job:\n%s", out)
+	}
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "bufbuild/buf-setup-action@") {
+			v, _ := step.With["version"].(string)
+			return true, v
+		}
+	}
+	return false, ""
 }
 
 // A CLI never gets a deploy workflow: there is no image and nothing deployed.

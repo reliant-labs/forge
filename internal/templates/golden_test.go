@@ -272,6 +272,7 @@ func TestGoldenSnapshots(t *testing.T) {
 					HasKCL:              true,
 					HasDocker:           true,
 					VerifyGenerated:     true,
+					RunsBufGenerate:     true,
 					Environments:        []string{"dev", "staging", "prod"},
 					Module:              "github.com/example/demo",
 					FrontendName:        "web",

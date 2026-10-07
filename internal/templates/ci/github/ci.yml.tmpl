@@ -197,9 +197,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-{{- if .HasServices}}
+{{- if .RunsBufGenerate}}
+      # `forge generate` runs `buf generate` whenever the project has protos,
+      # service or not. Pinned, not left to the action's default, because
+      # this job demands byte-identical output and buf must not move under
+      # it. 1.50.0 is buf-setup-action@v1's default, so it is what an
+      # unpinned install resolves to. Bump it deliberately.
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.50.0"
+          # Authenticated, so the release download is not anonymously
+          # rate-limited.
+          github_token: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
 {{- end}}
       - name: Install forge
 {{- template "install-forge" .}}

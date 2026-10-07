@@ -85,6 +85,15 @@ func withKCLFixture(t *testing.T, contract string) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", path)
+	// Run from a project of the test's own. From the package dir the command
+	// walks up to FORGE's forge.yaml and asks git about forge's checkout
+	// (worktree, branch), state a cached result cannot see change.
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "forge.yaml"),
+		[]byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+	t.Chdir(project)
 }
 
 // runEnvConfig executes the command and returns stdout.

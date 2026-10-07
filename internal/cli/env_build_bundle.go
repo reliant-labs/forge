@@ -682,9 +682,13 @@ func (in bundleBuildInputs) errWriter() io.Writer {
 
 type hostedPinReleaseKey struct{}
 
-// withHostedPinRelease says which release a bundle's hosted records are pinned
-// to. Without it they follow the env's CURRENT promotion, which on a first
-// deploy does not exist yet — the release the bundle names is the only pin.
+// withHostedPinRelease says which release a deploy NAMES — the one it is about
+// to record, which outranks the env's CURRENT promotion wherever the deploy
+// reads "its release" before the promotion is written: the bundle's hosted
+// records, the image pins (resolveDeployDigests), and the stale-image guard's
+// anchor (resolveFreshnessAnchor). Without it they follow the current
+// promotion, which on a first deploy does not exist yet, and on every later
+// one is the release being replaced.
 func withHostedPinRelease(ctx context.Context, version string) context.Context {
 	if version == "" {
 		return ctx

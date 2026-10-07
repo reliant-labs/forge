@@ -2669,9 +2669,9 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 		// commit than the one this env is supposed to be running. Deploying
 		// it would silently ship code the user already moved past — a
 		// real-money footgun on prod. The comparison is anchored to the
-		// bound RELEASE's commit when the env has one, and to git HEAD
-		// otherwise (see resolveFreshnessAnchor); envName is what selects
-		// between them. Refuse by default and point at the two escape
+		// commit of the RELEASE this deploy names, else of the release the
+		// env is bound to, else git HEAD (see resolveFreshnessAnchor).
+		// Refuse by default and point at the two escape
 		// hatches (rebuild, or --tag to deploy the recorded tag anyway).
 		if serr := checkBuildStateFreshness(ctx, projectDir, envName, key, st); serr != nil {
 			return "", "", "", serr
@@ -3159,6 +3159,19 @@ func (a freshnessAnchor) remedy(envName string) string {
 // A release-anchored comparison needs no git at all: it is ledger-vs-ledger,
 // so it stays correct in a dirty tree, in CI, and on a detached checkout.
 //
+// A RELEASE THE DEPLOY NAMES OUTRANKS THE BINDING. `forge env deploy <env>
+// <version>` preflights the release before it records the promotion
+// (preflightBeforeRecord), so while this runs the binding still names the
+// release the env runs NOW — the one being replaced. Anchoring on it measured
+// every new release's build against the old release's commit and refused
+// every forward deploy. The named release is the one that ships, so its
+// commit is the anchor, the same layering resolveDeployDigests gives its
+// pins. Such a deploy never consults the binding here, and when the named
+// release cannot anchor it stands down rather than falling back to the
+// binding (the release being replaced) or to HEAD (the false refusal above).
+// A deploy that names no release re-applies the bound one and is measured
+// against it, as before.
+//
 // AN UNREADABLE LEDGER IS AN ERROR, NEVER "no anchor". There are two reasons
 // this function can decline to enforce, and they are not the same fact:
 //
@@ -3182,6 +3195,9 @@ func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (fr
 		return freshnessAnchor{}, false, fmt.Errorf(
 			"cannot check whether this build is stale for env %q: its release ledger could not be opened: %w", envName, err)
 	}
+	if named := hostedPinReleaseFrom(ctx); named != "" {
+		return releaseFreshnessAnchor(ctx, ledger, envName, named)
+	}
 	binding, bound, err := ledger.Bindings.Current(ctx, envName)
 	if err != nil {
 		return freshnessAnchor{}, false, fmt.Errorf(
@@ -3189,20 +3205,7 @@ func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (fr
 			envName, ledger.Bindings.Location(), err)
 	}
 	if bound && binding.Release != "" {
-		rel, rerr := ledger.Releases.Get(ctx, binding.Release)
-		if rerr != nil {
-			return freshnessAnchor{}, false, fmt.Errorf(
-				"cannot check whether this build is stale for env %q: reading release %s from %s failed: %w",
-				envName, binding.Release, ledger.Releases.Location(), rerr)
-		}
-		// A release this ledger does not hold, or one carrying no commit,
-		// is an honest stand-down rather than a failure: the read
-		// SUCCEEDED and the answer is that there is no anchor. Falling
-		// back to HEAD here is precisely the false refusal above.
-		if rel == nil || rel.Git.Commit == "" {
-			return freshnessAnchor{}, false, nil
-		}
-		return freshnessAnchor{Commit: rel.Git.Commit, Release: binding.Release}, true, nil
+		return releaseFreshnessAnchor(ctx, ledger, envName, binding.Release)
 	}
 	head, clean, ok := gitHEADAndClean(ctx, projectDir)
 	if !ok || !clean {
@@ -3211,13 +3214,33 @@ func resolveFreshnessAnchor(ctx context.Context, projectDir, envName string) (fr
 	return freshnessAnchor{Commit: head}, true, nil
 }
 
+// releaseFreshnessAnchor is the anchor a release supplies: the commit its
+// images were recorded as built from.
+func releaseFreshnessAnchor(ctx context.Context, ledger envLedger, envName, version string) (freshnessAnchor, bool, error) {
+	rel, err := ledger.Releases.Get(ctx, version)
+	if err != nil {
+		return freshnessAnchor{}, false, fmt.Errorf(
+			"cannot check whether this build is stale for env %q: reading release %s from %s failed: %w",
+			envName, version, ledger.Releases.Location(), err)
+	}
+	// A release this ledger does not hold, or one carrying no commit, is an
+	// honest stand-down rather than a failure: the read SUCCEEDED and the
+	// answer is that there is no anchor. Falling back to HEAD here is
+	// precisely the false refusal resolveFreshnessAnchor exists to remove.
+	if rel == nil || rel.Git.Commit == "" {
+		return freshnessAnchor{}, false, nil
+	}
+	return freshnessAnchor{Commit: rel.Git.Commit, Release: version}, true, nil
+}
+
 // checkBuildStateFreshness refuses to deploy a build whose recorded source
 // commit does not match the commit this env is supposed to be running, so
 // `forge env deploy` never silently ships a stale image after a fresh
 // commit/push (fr-02d44d2b03).
 //
 // What "supposed to be running" means is resolveFreshnessAnchor's job: the
-// bound release's commit for a release-bound env, otherwise git HEAD.
+// commit of the release the deploy names, else of the release the env is
+// bound to, otherwise git HEAD.
 //
 // The check fires ONLY when both hold, to keep it a precise footgun-guard
 // rather than a nag:
@@ -3293,12 +3316,19 @@ func checkBuildStateFreshness(ctx context.Context, projectDir, envName, stateKey
 //     someone's local iteration. A CLEAN `default` build could genuinely be
 //     the thing that ships, so it keeps refusing.
 //
+// "Release-bound" includes a deploy that NAMES a release: it ships that
+// release, and its preflight runs before the binding is written — an env's
+// first release deploy has no binding yet (see resolveFreshnessAnchor).
+//
 // Best-effort by construction: it returns false unless it can positively
 // justify standing down, so it never widens a refusal — only withdraws one
 // that rests on a record which cannot be what ships.
 func buildStateIsForeignToEnv(ctx context.Context, projectDir, envName, stateKey string, st *BuildState) bool {
 	if st == nil || stateKey != "default" || !st.Dirty {
 		return false
+	}
+	if hostedPinReleaseFrom(ctx) != "" {
+		return true
 	}
 	bindings, err := bindingStoreFor(ctx, projectDir, envName)
 	if err != nil {

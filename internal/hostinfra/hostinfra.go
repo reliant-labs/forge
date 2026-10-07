@@ -68,6 +68,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -320,17 +321,7 @@ func postgresConfig(spec Spec, dataDir string) embeddedpostgres.Config {
 		// silently wipe the developer's database on every `forge env up`.
 		DataPath(filepath.Join(dataDir, "data")).
 		RuntimePath(filepath.Join(dataDir, "runtime")).
-		// mmap-backed shared memory instead of System V. The sysv default
-		// exhausts the kernel's SHMMNI limit on macOS ("could not create
-		// shared memory segment: No space left on device") once a few
-		// instances accumulate, and a developer machine running several
-		// stacks is exactly where they accumulate.
-		StartParameters(map[string]string{
-			"shared_buffers":             "64MB",
-			"max_connections":            "100",
-			"dynamic_shared_memory_type": "mmap",
-			"shared_memory_type":         "mmap",
-		}).
+		StartParameters(postgresStartParameters(runtime.GOOS)).
 		// Generous because the FIRST run extracts the postgres archive before
 		// it can start anything. Later runs take a second or two.
 		StartTimeout(90 * time.Second)
@@ -343,6 +334,32 @@ func postgresConfig(spec Spec, dataDir string) embeddedpostgres.Config {
 		cfg = cfg.Version(embeddedpostgres.PostgresVersion(spec.Version))
 	}
 	return cfg
+}
+
+// postgresStartParameters is a dev server's postgresql.conf overrides for a
+// host running goos.
+//
+// On POSIX: mmap-backed shared memory instead of System V. The sysv default
+// exhausts the kernel's SHMMNI limit on macOS ("could not create shared
+// memory segment: No space left on device") once a few instances accumulate,
+// and a developer machine running several stacks is exactly where they
+// accumulate.
+//
+// On Windows: no shared-memory override. Its postgres build implements one
+// type per setting, "windows", and refuses to start on anything else
+// ("invalid value for parameter dynamic_shared_memory_type: mmap") — so
+// carrying the POSIX fix across made every `forge env up` postgres fail to
+// boot there. Windows has no SHMMNI table for the default to exhaust.
+func postgresStartParameters(goos string) map[string]string {
+	params := map[string]string{
+		"shared_buffers":  "64MB",
+		"max_connections": "100",
+	}
+	if goos != "windows" {
+		params["dynamic_shared_memory_type"] = "mmap"
+		params["shared_memory_type"] = "mmap"
+	}
+	return params
 }
 
 // Stop shuts the instance down cleanly and leaves the DATA in place.

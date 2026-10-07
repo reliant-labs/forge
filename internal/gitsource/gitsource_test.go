@@ -74,6 +74,11 @@ func TestValidate_RejectsMalformed(t *testing.T) {
 		{"bad ref", Source{Repo: "github.com/org/app", Ref: "--upload-pack=evil"}, "not a valid git ref"},
 		{"escaping subdir", Source{Repo: "github.com/org/app", Ref: "v1", Subdir: "../etc"}, "must be a relative path"},
 		{"absolute subdir", Source{Repo: "github.com/org/app", Ref: "v1", Subdir: "/etc"}, "must be a relative path"},
+		// The same verdict on every host: a Windows spelling is not a loophole on
+		// POSIX, and a POSIX one is not a loophole on Windows.
+		{"drive-letter subdir", Source{Repo: "github.com/org/app", Ref: "v1", Subdir: `C:\etc`}, "must be a relative path"},
+		{"backslash-rooted subdir", Source{Repo: "github.com/org/app", Ref: "v1", Subdir: `\etc`}, "must be a relative path"},
+		{"backslash-escaping subdir", Source{Repo: "github.com/org/app", Ref: "v1", Subdir: `..\etc`}, "must be a relative path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

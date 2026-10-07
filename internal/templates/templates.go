@@ -257,7 +257,12 @@ func RenderFromFS(fsys fs.FS, basePath, name string, data interface{}) ([]byte, 
 
 // listTemplates walks the embedded template FS and returns template names under root.
 // If recursive is true, it walks subdirectories. Otherwise, only lists direct children.
+//
+// root may be spelled with the host separator, as Get's name may: an embed.FS
+// path is always slash-separated, so a filepath.Join-built root named no
+// directory on Windows.
 func listTemplates(root string, recursive bool) ([]string, error) {
+	root = filepath.ToSlash(root)
 	entries, err := templateFS.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("read template dir %s: %w", root, err)

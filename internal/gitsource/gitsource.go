@@ -66,6 +66,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -137,13 +138,31 @@ func (s Source) Validate() error {
 	if !refRE.MatchString(s.Ref) {
 		return fmt.Errorf("source.ref %q is not a valid git ref (letters, digits, and . _ / + - only)", s.Ref)
 	}
-	if s.Subdir != "" {
-		clean := filepath.ToSlash(filepath.Clean(s.Subdir))
-		if filepath.IsAbs(s.Subdir) || clean == ".." || strings.HasPrefix(clean, "../") {
-			return fmt.Errorf("source.subdir %q must be a relative path inside the repository", s.Subdir)
-		}
+	if s.Subdir != "" && !isRepoRelative(s.Subdir) {
+		return fmt.Errorf("source.subdir %q must be a relative path inside the repository", s.Subdir)
 	}
 	return nil
+}
+
+// isRepoRelative reports whether subdir names a directory inside the
+// repository, judged the SAME way on every OS.
+//
+// subdir is a path within a git tree — slash-separated, like every path git
+// records — not a host path, and the same forge.yaml is validated on every
+// developer's machine. filepath.IsAbs made the verdict depend on the host:
+// "/etc" passed on Windows (rooted, but no volume, so not "absolute"), and
+// `C:\x` passed everywhere else. So a backslash is read as the separator it
+// is on Windows, and a leading separator, a drive letter, or a ".." that
+// escapes the tree is refused on every host.
+func isRepoRelative(subdir string) bool {
+	clean := path.Clean(strings.ReplaceAll(subdir, `\`, "/"))
+	if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
+		return false
+	}
+	if len(clean) >= 2 && clean[1] == ':' {
+		return false // C:, C:/x, C:x — a drive, not a directory in the repo
+	}
+	return true
 }
 
 // isURLRepo reports whether the repo is already an explicit clone URL

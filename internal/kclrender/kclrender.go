@@ -261,7 +261,7 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 			defer restore()
 		}
 		return c.Run(
-			client.WithRunSourceUrl(source),
+			client.WithRunSourceUrl(kpmSourceURL(source)),
 			client.WithWorkDir(workDir),
 			client.WithArguments(withKubeconfigDArg(withDevStackDArgs(dArgs))),
 			client.WithExternalPkgs([]string{forgeArg}),
@@ -302,6 +302,21 @@ func absPaths(workDir, source string) (string, string, error) {
 		return "", "", fmt.Errorf("resolve render source %q: %w", source, err)
 	}
 	return absWork, absSource, nil
+}
+
+// kpmSourceURL is source in the form kpm's WithRunSourceUrl parses.
+//
+// kpm does not take a filesystem path; it takes a URL (it also accepts git://,
+// oci:// and registry sources) and re-serializes it with url.URL.String before
+// using the path. A backslash is not a URL path character, so a native Windows
+// path does not survive that round trip: a relative `deploy\kcl\prod` came
+// back `deploy%5Ckcl%5Cprod`, which names no file, and every render failed
+// with "Cannot find the kcl file". Since absPaths the source is absolute, and
+// forward slashes keep it a plain path through that round trip too (`C:/a/b`
+// parses as scheme `c`, path `/a/b`, and prints back as `c:/a/b`). Windows
+// accepts forward slashes in every file API. A no-op on POSIX.
+func kpmSourceURL(source string) string {
+	return filepath.ToSlash(source)
 }
 
 // chdir moves the process to dir and returns a func restoring the previous

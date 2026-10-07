@@ -166,7 +166,10 @@ func ScanProjectGoExports(projectRoot string) map[string][]SymbolLocation {
 		if relErr != nil {
 			rel = path
 		}
-		loc := SymbolLocation{Pkg: pkg, RelPath: rel}
+		// Slash-separated, like every other project-relative identity forge
+		// reports (see slashKey): this lands in user-facing warnings beside
+		// marker paths, and must not read cmd\x.go on Windows next to them.
+		loc := SymbolLocation{Pkg: pkg, RelPath: filepath.ToSlash(rel)}
 		for _, n := range names {
 			out[n] = append(out[n], loc)
 		}

@@ -33,7 +33,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -585,7 +587,19 @@ func upDeployNamespace(entities *KCLEntities, store metaReader, env string) stri
 // proxyPreflightTimeout bounds the proxy reachability probe. A local proxy
 // answers a TCP connect in microseconds; anything past this is unusable for a
 // dev loop either way.
-var proxyPreflightTimeout = 2 * time.Second
+//
+// Except that the probe must also outlast a REFUSAL, and Windows does not
+// refuse quickly: a connect to a closed loopback port is retried on the RST
+// (TcpMaxConnectRetransmissions) and only fails after ~2s. At a 2s budget
+// the dead proxy raced the deadline, read as "slow", and was let through.
+var proxyPreflightTimeout = proxyPreflightTimeoutFor(runtime.GOOS)
+
+func proxyPreflightTimeoutFor(goos string) time.Duration {
+	if goos == "windows" {
+		return 5 * time.Second
+	}
+	return 2 * time.Second
+}
 
 // preflightProxyReachable fails fast when the environment names an HTTP proxy
 // that nothing is listening on.
@@ -803,7 +817,7 @@ func preflightProxyReachable(ctx context.Context, env []string) error {
 		_ = conn.Close()
 		return nil
 	}
-	if !errors.Is(err, syscall.ECONNREFUSED) {
+	if !isConnRefused(err) {
 		return nil // slow/unresolvable — let the real calls report it
 	}
 	return fmt.Errorf(
@@ -2068,7 +2082,7 @@ func rowStatus(r upServiceRow, notReadyLabel string, showOwner bool) string {
 // a `grep`/`tail` will find.
 func summaryLogPath(env, name string) string {
 	safe := strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), ":", "_")
-	return filepath.Join(upLogDir(env), safe+".log")
+	return path.Join(upLogDir(env), safe+".log")
 }
 
 // portConflict names a service/frontend the current `forge env up` would
@@ -3315,9 +3329,11 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	// this exact path, and rotated siblings are named for storage's
 	// rotatedLog expiry. See up_logrotate.go.
 	var sink io.Writer
+	var logFile *rotatingLogWriter
 	if logPath, perr := upLogPath(p.env, name); perr == nil {
 		if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o755); mkErr == nil {
 			if rw, ferr := newRotatingLogWriter(logPath, upLogRotateBytes()); ferr == nil {
+				logFile = rw
 				sink = &lockedWriter{w: rw}
 			} else {
 				fmt.Printf("[up] %s: warning: cannot open log file %s: %v\n", name, logPath, ferr)
@@ -3327,6 +3343,9 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 
 	startInOwnProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return fmt.Errorf("start %s: %w", name, err)
 	}
 	var streams sync.WaitGroup
@@ -3334,7 +3353,16 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	go func() { defer streams.Done(); streamUpOutput(prefix, stdout, sink) }()
 	go func() { defer streams.Done(); streamUpOutput(prefix, stderr, sink) }()
 	mp := &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid}
-	mp.observeExit(func() { streams.Wait() })
+	mp.observeExit(func() {
+		streams.Wait()
+		// Both streams are at EOF, so nothing writes the tee again: close it.
+		// It used to stay open for the rest of forge's life — one leaked
+		// handle per child, and on Windows an open handle pins the file, so
+		// an exited process's log could be neither rotated nor removed.
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+	})
 
 	p.mu.Lock()
 	p.processes = append(p.processes, mp)
@@ -3805,6 +3833,11 @@ func upLogPath(env, name string) (string, error) {
 
 // upLogDir returns the directory upLogPath writes into, for the summary's
 // "grep here" pointer.
+//
+// Display only, so slash-separated on every OS: every caller appends its own
+// "/" (or "/<name>.log"), and filepath.Join made that print as
+// .forge\logs\dev/ on Windows. The pointer is for `tail`/`grep`, which take
+// forward slashes there too.
 func upLogDir(env string) string {
-	return filepath.Join(".forge", "logs", env)
+	return path.Join(".forge", "logs", env)
 }

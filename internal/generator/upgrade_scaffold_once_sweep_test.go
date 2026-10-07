@@ -24,6 +24,7 @@
 package generator
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -73,7 +74,9 @@ func TestScaffoldOnceCmdTreeFilesAreExcludedFromStaleSweep(t *testing.T) {
 		if !strings.Contains(string(body), scaffoldOnceBanner) {
 			continue // Tier-1: written every run, so the sweep sees it.
 		}
-		required = append(required, cmdTreePath("", file))
+		// Slash form: UpgradeManagedPaths is keyed like the ownership keys it
+		// is compared against, while cmdTreePath joins natively.
+		required = append(required, filepath.ToSlash(cmdTreePath("", file)))
 	}
 
 	// Fail loudly on an empty derived set. If the banner text is ever

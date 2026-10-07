@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/format"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -81,7 +82,7 @@ func ForceAll() ForceSelection { return ForceSelection{all: true} }
 func ForcePaths(paths ...string) ForceSelection {
 	sel := ForceSelection{paths: make(map[string]bool, len(paths))}
 	for _, p := range paths {
-		sel.paths[filepath.Clean(p)] = true
+		sel.paths[forceKey(p)] = true
 	}
 	return sel
 }
@@ -91,7 +92,7 @@ func (f ForceSelection) Allows(relPath string) bool {
 	if f.all {
 		return true
 	}
-	return f.paths[filepath.Clean(relPath)]
+	return f.paths[forceKey(relPath)]
 }
 
 // Names reports whether relPath was named EXPLICITLY — the whole-project
@@ -102,7 +103,13 @@ func (f ForceSelection) Allows(relPath string) bool {
 // "overwrite everything you have edited" cannot be a statement about them:
 // a flag that names nothing carries no intent about a file forge already
 // handed over. Naming the path is the intent.
-func (f ForceSelection) Names(relPath string) bool { return f.paths[filepath.Clean(relPath)] }
+func (f ForceSelection) Names(relPath string) bool { return f.paths[forceKey(relPath)] }
+
+// forceKey is the comparable form of a project-relative path: cleaned and
+// slash-separated, the form destPath takes. The user's argument may arrive
+// either way on Windows (`forge project upgrade --force cmd\x\cmd\root.go`),
+// and both spellings must name the same file.
+func forceKey(relPath string) string { return path.Clean(filepath.ToSlash(relPath)) }
 
 // Any reports whether the selection can overwrite anything at all.
 func (f ForceSelection) Any() bool { return f.all || len(f.paths) > 0 }
@@ -420,6 +427,11 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 // `forked: true` in checksums.json, which silenced the warnings but
 // also disconnected the files from the upgrade pipeline. The right
 // fix is for the stale-sweep to know about the upgrade-managed set.
+//
+// Keys are slash-separated, the form of every ownership key the sweep
+// compares them to (checksums.ScanMarkers). destPath is a native path —
+// cmdTreePath joins with filepath — so on Windows the unnormalized set
+// never matched and the sweep flagged these files as stale again.
 func UpgradeManagedPaths() map[string]bool {
 	out := map[string]bool{}
 	for _, kind := range []string{
@@ -432,7 +444,7 @@ func UpgradeManagedPaths() map[string]bool {
 			config.ProjectBinaryShared,
 		} {
 			for _, f := range managedFilesForKindBinary(kind, binary, "") {
-				out[f.destPath] = true
+				out[filepath.ToSlash(f.destPath)] = true
 			}
 		}
 	}
@@ -560,7 +572,7 @@ func Tier2ManagedPaths() map[string]bool {
 		} {
 			for _, f := range managedFilesForKindBinary(kind, binary, "") {
 				if f.tier == Tier2 {
-					out[f.destPath] = true
+					out[filepath.ToSlash(f.destPath)] = true
 				}
 			}
 		}
@@ -1013,7 +1025,7 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 		missing, local := managedLineDelta(existing, expected)
 		matchesKnownRender := checksums.Verify(existing) == checksums.Pristine
 		if !checksums.Stampable(f.destPath) && cs != nil {
-			recorded, tracked := cs.Unstampable[f.destPath]
+			recorded, tracked := cs.Unstampable[filepath.ToSlash(f.destPath)]
 			matchesKnownRender = tracked && checksums.BodyHash(existing) == recorded
 		}
 
@@ -1083,7 +1095,7 @@ func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) e
 		if cs.Unstampable == nil {
 			cs.Unstampable = map[string]string{}
 		}
-		cs.Unstampable[relPath] = checksums.BodyHash(content)
+		cs.Unstampable[filepath.ToSlash(relPath)] = checksums.BodyHash(content)
 	}
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {

@@ -374,6 +374,9 @@ type promoteCmdFlags struct {
 	// checkout renders different objects than the one recorded (see
 	// release_bundle_of_record.go). Off, such a render is refused.
 	rerecordBundle bool
+	// skipHubCheck records a hub-converged env's promotion even when the
+	// hub reports its reconciler failing (refuseUnreadyHub).
+	skipHubCheck bool
 	// liveDiff prints the release bundle's server-side diff against each
 	// live cluster with the plan (printPlanLiveDiff).
 	liveDiff bool
@@ -423,6 +426,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 	flags.StringSliceVar(&f.acknowledgeDestructive, "acknowledge-destructive", nil,
 		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
+	flags.BoolVar(&f.skipHubCheck, "skip-hub-check", false,
+		"Record a hub-converged env's promotion even when its control plane's hub reports the reconciler failing. Without it, such a deploy is refused before anything is recorded")
 	flags.BoolVar(&f.liveDiff, "live-diff", false,
 		"Print the release bundle's server-side diff against each live cluster with the plan (kubectl diff --server-side; writes nothing). What a reviewer reads before --approve")
 	flags.BoolVar(&f.rerecordBundle, "rerecord-bundle", false,
@@ -663,11 +668,12 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 			AcknowledgedFindings: p.acknowledgeDestructive,
 		},
 		Follow: &promoteFollowOptions{
-			NoWait:   p.noWait,
-			Wait:     p.wait,
-			jsonOut:  f.jsonOut,
-			Timeout:  p.timeout,
-			FailFast: p.failFast,
+			NoWait:       p.noWait,
+			Wait:         p.wait,
+			jsonOut:      f.jsonOut,
+			Timeout:      p.timeout,
+			FailFast:     p.failFast,
+			skipHubCheck: p.skipHubCheck,
 			clientDeploy: deployOptions{
 				imageTag:      f.tag,
 				dryRun:        f.dryRun,
@@ -759,6 +765,19 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 	}
 	cfg := store.Config()
 
+	// THE APPLY PATH FIRST: which machinery ships this env is the
+	// question an operator is usually asking, and the guard below answers
+	// a narrower one. Said from the same ledger the deploy reads.
+	applyPath := ""
+	if ledger, lerr := ledgerFor(ctx, projectDirForKCL(), envName); lerr == nil {
+		reconciled, _ := fluxReconciledEnv(ctx, envName, ledger)
+		applyPath = deployApplyPath(ledger, reconciled)
+		report.setApplyPath(applyPath)
+		if !report.Enabled() {
+			fmt.Printf("forge env deploy %s — apply path: %s\n", envName, applyPath)
+		}
+	}
+
 	// A hosted env's "declared context" is its control plane's endpoint:
 	// there is no kubectl context to guard.
 	if decl, derr := controlPlaneDeclaration(ctx, envName); derr == nil && decl != nil {
@@ -775,7 +794,15 @@ func runDeployExplain(ctx context.Context, envName string, report *deployReport)
 			report.finish(nil, 0)
 			return report.emit()
 		}
-		fmt.Printf("forge env deploy %s — hosted\n  control plane: %s\n  verdict: ALLOW (no kubectl context is used; the control plane owns the cluster)\n", envName, ep.URL)
+		// A control plane is declared, but that alone does not mean no
+		// kubectl context is used: a MIXED env applies its cluster half
+		// from here. Say which, rather than "the control plane owns the
+		// cluster" for an env it does not.
+		verdict := "ALLOW (no kubectl context is used; the control plane applies everything)"
+		if strings.HasPrefix(applyPath, "mixed") {
+			verdict = "ALLOW for the hosted half; the cluster half is applied FROM THIS MACHINE with the env's declared kubectl contexts"
+		}
+		fmt.Printf("forge env deploy %s — control plane\n  control plane: %s\n  verdict: %s\n", envName, ep.URL, verdict)
 		return nil
 	}
 

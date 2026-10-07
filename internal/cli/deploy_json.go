@@ -789,6 +789,9 @@ type deployJSONReport struct {
 	// Mode is what was performed. Read this FIRST: it is the authoritative
 	// answer to whether anything was written.
 	Mode deployJSONMode `json:"mode"`
+	// ApplyPath names which machinery ships this env (deployApplyPath):
+	// client apply, mixed, hosted, hub converge or flux. Set by --explain.
+	ApplyPath string `json:"apply_path,omitempty"`
 
 	// Guard is the declared-context decision. A consumer deciding whether a
 	// deploy is POSSIBLE reads guard.verdict — not ok, which reports whether
@@ -876,6 +879,15 @@ func newDeployReport(envName string, enabled bool) *deployReport {
 func (r *deployReport) Enabled() bool { return r != nil }
 
 // setMode records what this invocation is doing.
+func (r *deployReport) setApplyPath(path string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doc.ApplyPath = path
+}
+
 func (r *deployReport) setMode(m deployJSONMode) {
 	if r == nil {
 		return

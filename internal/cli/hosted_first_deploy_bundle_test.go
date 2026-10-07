@@ -127,3 +127,35 @@ func TestHostedDeployPlansAgainstTheBundleJustRecorded(t *testing.T) {
 	wantFields(t, fake.body(t, procGetBundle), map[string]any{"digest": digest})
 	wantFields(t, fake.body(t, procPlanDeploy), map[string]any{"bundleId": "bnd_1"})
 }
+
+// A bundle in the MACHINE ledger says nothing about a hosted env: it was
+// rendered at cut time, usually under a different declaration, so its digest
+// is not the control plane's. ensureHostedReleaseBundle used to treat it as
+// "already recorded" and skip, so the plan looked up a digest the control
+// plane had never seen and the first hosted deploy of the release was blind.
+func TestEnsureHostedReleaseBundleWritesEvenWhenTheMachineLedgerHoldsOne(t *testing.T) {
+	e, _ := loadContract(t, "hosted")
+	dir := t.TempDir()
+	cutHostedFixtureRelease(t, dir, e, "v0.1.0")
+	ledger := testLedger(t, dir)
+	ledger.Hosted = true
+	if _, _, err := testRecordStore(t, dir).RecordBundle(context.Background(), release.BundleRecord{
+		Env: "prod", Release: "v0.1.0", Digest: sha("machine-only-bundle"),
+		Reference: "ghcr.io/acme/b@" + sha("machine-only-bundle"), ConfigDigest: sha("cfg"), Shape: testShape(),
+	}, testBundleBlobs()); err != nil {
+		t.Fatalf("seed the machine ledger's bundle: %v", err)
+	}
+
+	calls := 0
+	prev := writeBundlesFn
+	writeBundlesFn = func(context.Context, string, []string, bundleBuildInputs) ([]bundleWriteOutcome, error) {
+		calls++
+		return nil, nil
+	}
+	t.Cleanup(func() { writeBundlesFn = prev })
+
+	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v0.1.0", ledger, io.Discard)
+	if calls != 1 {
+		t.Fatalf("writeBundles calls = %d; a machine-ledger bundle must not stand in for the control plane's, want 1", calls)
+	}
+}

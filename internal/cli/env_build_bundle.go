@@ -621,9 +621,17 @@ func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version str
 	if !ledger.Hosted || version == "" {
 		return
 	}
-	if digest, err := bundleDigestForRelease(ctx, projectDir, env, version, ledger); err != nil || digest != "" {
-		return
-	}
+	// THE MACHINE LEDGER IS NOT EVIDENCE ABOUT A HOSTED ENV. A bundle row
+	// there says "this machine rendered one", usually at cut time under a
+	// different declaration (a direct-apply KCL, before the env declared its
+	// control plane), so its digest is not the one the control plane holds.
+	// Treating it as "already recorded" skipped the record, and the plan then
+	// looked up a digest the control plane had never seen: "no recorded
+	// bundle ... no deploy plan could be computed", on exactly the first
+	// hosted deploy of a release that has a local bundle. Writing is
+	// idempotent — a bundle is content-addressed, a re-push of existing
+	// blobs is a no-op and a re-record of the same digest returns the row —
+	// so the cost of not trusting the local row is one render.
 	rel, err := ledger.Releases.Get(ctx, version)
 	if err != nil || rel == nil {
 		return

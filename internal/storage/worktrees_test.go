@@ -426,7 +426,10 @@ func TestWorktreeRecheckCatchesUseAfterBatchClassification(t *testing.T) {
 	ageDir(t, worktree)
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "count")
-	script := "#!/bin/sh\nif [ -e '" + counter + "' ]; then printf 'p4242\\nfcwd\\nn" + resolved(t, worktree) + "\\n'; else : > '" + counter + "'; printf 'p1\\nf3\\nn/nonexistent/x\\n'; fi\n"
+	// After the batch snapshot a process "starts using" the worktree, which by
+	// then may sit at its quarantine path, so report every sibling of either name.
+	parent := filepath.Dir(resolved(t, worktree))
+	script := "#!/bin/sh\nif [ -e '" + counter + "' ]; then printf 'p4242\\n'; for d in '" + parent + "'/feature '" + parent + "'/.forge-reclaim-*; do [ -d \"$d\" ] && printf 'fcwd\\nn%s\\n' \"$d\"; done; else : > '" + counter + "'; printf 'p1\\nf3\\nn/nonexistent/x\\n'; fi\n"
 	if err := os.WriteFile(filepath.Join(dir, "lsof"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -440,5 +443,143 @@ func TestWorktreeRecheckCatchesUseAfterBatchClassification(t *testing.T) {
 	}
 	if len(report.Removed) != 0 {
 		t.Fatalf("removed %v", report.Removed)
+	}
+}
+
+// Commits made on a detached HEAD, or only in a worktree's reflog, are
+// unreachable once the worktree is removed.
+func TestWorktreeHoldsUnreachableCommits(t *testing.T) {
+	t.Run("detached HEAD commit", func(t *testing.T) {
+		repo, worktree := gitRepoWithWorktree(t)
+		runGit(t, worktree, "checkout", "-q", "--detach")
+		if err := os.WriteFile(filepath.Join(worktree, "w.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, worktree, "add", "w.txt")
+		runGit(t, worktree, "commit", "-q", "-m", "detached work")
+		runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+		ageDir(t, worktree)
+		fakeLsof(t, unrelatedOpenFile, "exit 0")
+		report := reapOnce(t, Runner{}, repo, true)
+		if got := heldReason(report, worktree); got != HoldOrphans {
+			t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldOrphans, report.Held)
+		}
+		if _, err := os.Stat(worktree); err != nil {
+			t.Fatal("worktree with orphaned commits was removed")
+		}
+	})
+	t.Run("commit only in the reflog", func(t *testing.T) {
+		repo, worktree := gitRepoWithWorktree(t)
+		if err := os.WriteFile(filepath.Join(worktree, "w.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, worktree, "add", "w.txt")
+		runGit(t, worktree, "commit", "-q", "-m", "work")
+		runGit(t, worktree, "reset", "-q", "--hard", "HEAD~1") // the commit survives only in the reflog
+		runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+		ageDir(t, worktree)
+		fakeLsof(t, unrelatedOpenFile, "exit 0")
+		report := reapOnce(t, Runner{}, repo, true)
+		if got := heldReason(report, worktree); got != HoldOrphans {
+			t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldOrphans, report.Held)
+		}
+	})
+	t.Run("per-worktree ref", func(t *testing.T) {
+		repo, worktree := gitRepoWithWorktree(t)
+		if err := os.WriteFile(filepath.Join(worktree, "w.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, worktree, "add", "w.txt")
+		runGit(t, worktree, "commit", "-q", "-m", "work")
+		runGit(t, worktree, "update-ref", "refs/bisect/bad", "HEAD")
+		runGit(t, worktree, "reset", "-q", "--hard", "HEAD~1")
+		runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+		ageDir(t, worktree)
+		fakeLsof(t, unrelatedOpenFile, "exit 0")
+		report := reapOnce(t, Runner{}, repo, false)
+		if got := heldReason(report, worktree); got != HoldOrphans {
+			t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldOrphans, report.Held)
+		}
+	})
+}
+
+// A file written into the worktree after the batch classification, while the
+// worktree is quarantined, must keep the worktree.
+func TestWorktreeQuarantineCatchesWriteDuringWindow(t *testing.T) {
+	repo, worktree := gitRepoWithWorktree(t)
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+	ageDir(t, worktree)
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	r := Runner{}
+	r.afterQuarantine = func(original, quarantined string) {
+		if _, err := os.Stat(original); err == nil {
+			t.Errorf("the original path still exists during quarantine")
+		}
+		// The late writer: path-based writers of the original path get ENOENT,
+		// so the only way to land is writing into the quarantined dir.
+		if err := os.WriteFile(filepath.Join(quarantined, ".env"), []byte("secret"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	report := reapOnce(t, r, repo, true)
+	got, err := os.ReadFile(filepath.Join(worktree, ".env"))
+	if err != nil || string(got) != "secret" {
+		t.Fatalf("late-written .env was lost or the worktree not restored (err %v, held %+v)", err, report.Held)
+	}
+	if h := heldReason(report, worktree); h != HoldData {
+		t.Fatalf("held reason = %q, want %q", h, HoldData)
+	}
+	if len(report.Removed) != 0 {
+		t.Fatalf("removed %v", report.Removed)
+	}
+}
+
+func TestWorktreeQuarantineLeftoverIsReportedAndNeverDeleted(t *testing.T) {
+	repo, worktree := gitRepoWithWorktree(t)
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+	ageDir(t, worktree)
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	r := Runner{}
+	r.afterQuarantine = func(original, quarantined string) {
+		_ = os.WriteFile(filepath.Join(quarantined, ".env"), []byte("secret"), 0o600)
+		// Something now occupies the original path, so the move back fails.
+		_ = os.MkdirAll(original, 0o700)
+		_ = os.WriteFile(filepath.Join(original, "squatter"), nil, 0o600)
+	}
+	report := reapOnce(t, r, repo, true)
+	var held *WorktreeHold
+	for i := range report.Held {
+		if report.Held[i].Reason == HoldQuarantined {
+			held = &report.Held[i]
+		}
+	}
+	if held == nil {
+		t.Fatalf("expected a quarantined hold, got %+v", report.Held)
+	}
+	if !strings.Contains(held.Detail, quarantinePrefix) {
+		t.Fatalf("detail does not name the quarantine path: %q", held.Detail)
+	}
+	entries, _ := filepath.Glob(filepath.Join(filepath.Dir(worktree), quarantinePrefix+"*", ".env"))
+	if len(entries) != 1 {
+		t.Fatal("the quarantined worktree's data was deleted")
+	}
+	// A later pass lists the leftover rather than ignoring it.
+	report = reapOnce(t, Runner{}, repo, false)
+	found := false
+	for _, h := range report.Held {
+		if h.Reason == HoldQuarantined {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a later pass does not report the quarantine leftover: %+v", report.Held)
+	}
+}
+
+func TestRebuildableDefaultsIncludeLanguageCaches(t *testing.T) {
+	for _, p := range []string{"target/", ".venv/", "venv/", ".pytest_cache/", ".mypy_cache/", ".ruff_cache/", ".gradle/", "svc/target/"} {
+		if !rebuildablePath(p, DefaultWorktreeRebuildable()) {
+			t.Errorf("%s should be rebuildable by default", p)
+		}
 	}
 }

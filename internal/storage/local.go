@@ -41,6 +41,10 @@ type Runner struct {
 	// unbounded.
 	Ctx context.Context
 
+	// afterQuarantine is a test seam run between the quarantine move and the
+	// final classification, where a concurrent writer would land.
+	afterQuarantine func(original, quarantined string)
+
 	// Go-cache layer roots (gocache.go). Empty means the real machine
 	// location in production and is REFUSED under `go test`.
 	GoCacheRoot       string // shared GOCACHE

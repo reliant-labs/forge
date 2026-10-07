@@ -242,9 +242,24 @@ A non-main worktree is **removable** only if all hold:
   `.gocache`, `*.tsbuildinfo`, `kcl.mod.lock`, `go.work`, `.forge/logs`, …).
   `data/`, `.env*`, `.forge/hostinfra/`, `*.db`, `*.sqlite` and `secrets/` are
   never rebuildable, even if a policy lists them;
+- no hidden edits: no `--skip-worktree` / `--assume-unchanged` entries
+  (`hidden-changes`), which status and `git worktree remove` cannot see;
+- no nested repository: no `.git` at any depth but the worktree's own
+  (`nested-repository`), since it would be deleted with its commits;
+- no orphaned commits: every commit in the worktree's reflog, per-worktree refs
+  (`refs/worktree/*`, `refs/bisect/*`) and detached HEAD is reachable from a
+  branch, remote or tag (`unreachable-commits`), because `git worktree remove`
+  discards the reflog and gc then deletes them;
 - pushed: HEAD is reachable from a remote-tracking ref, or is an ancestor of
   `origin/HEAD` (else `origin/main`). A squash-merged branch whose remote branch
   was deleted is therefore held, deliberately.
+
+Removal goes through a quarantine move: the worktree is `git worktree move`d to
+a `.forge-reclaim-<name>-<ts>` sibling (a path-based writer then gets ENOENT),
+fully re-classified there with a fresh in-use check, and only then removed. If
+anything changed it is moved back and kept. If the move back fails it stays in
+quarantine, is never deleted, and `forge storage status` lists it as
+`quarantined`; move it back with `git worktree move`.
 
 Removal is `git worktree remove` without `--force`; if git refuses the tree is
 kept and reported. Branches are never deleted, and `git worktree prune` drops

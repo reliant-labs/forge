@@ -618,3 +618,55 @@ func TestResolveReleaseDigests_PackageOnlyReleaseSaysSo(t *testing.T) {
 		t.Errorf("error must not blame variant mode for a package-only release, got: %v", err)
 	}
 }
+
+// TestResolveDeployDigests_NamedReleaseWinsOverThePromotedOne: `forge env deploy
+// <env> <version>` records the bundle BEFORE it moves the binding. The bundle's
+// images must come from the release NAMED on the command line, not from the
+// release the env is currently promoted to — otherwise a release that moves
+// images yields a bundle of the previous images, the plan says "3 changed"
+// while the bundle it planned carries the old digests, and applying it binds the
+// ledger to a release whose code never runs.
+func TestResolveDeployDigests_NamedReleaseWinsOverThePromotedOne(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// prod is promoted to v1.4.0 (control-plane = sha(a)).
+	if err := testCutRelease(t, dir, rel("v1.4.0", "2026-01-01T00:00:00Z", "", false, map[string]string{"control-plane": sha("a")})); err != nil {
+		t.Fatalf("cut v1.4.0: %v", err)
+	}
+	if _, err := testBindings(t, dir).Append(ctx, release.Promotion{
+		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote,
+		Resolved: map[string]string{"control-plane": sha("a")},
+	}, appendGuard{}); err != nil {
+		t.Fatalf("promote v1.4.0: %v", err)
+	}
+	// v1.5.0 is cut but NOT promoted, and moves the image to sha(c).
+	if err := testCutRelease(t, dir, rel("v1.5.0", "2026-01-02T00:00:00Z", "", false, map[string]string{"control-plane": sha("c")})); err != nil {
+		t.Fatalf("cut v1.5.0: %v", err)
+	}
+
+	// Without a named release: the promoted one, unchanged behaviour.
+	got, bound, err := resolveDeployDigests(ctx, dir, "prod", false, testBindings(t, dir), testReleases(t, dir))
+	if err != nil || bound != "v1.4.0" || got["control-plane"] != sha("a") {
+		t.Fatalf("no named release: bound=%q control-plane=%q err=%v, want v1.4.0/%s", bound, got["control-plane"], err, sha("a"))
+	}
+
+	// With v1.5.0 named: ITS pins.
+	named := withHostedPinRelease(ctx, "v1.5.0")
+	got, bound, err = resolveDeployDigests(named, dir, "prod", false, testBindings(t, dir), testReleases(t, dir))
+	if err != nil {
+		t.Fatalf("resolve with v1.5.0 named: %v", err)
+	}
+	if bound != "v1.5.0" {
+		t.Errorf("bound release = %q, want the NAMED v1.5.0", bound)
+	}
+	if got["control-plane"] != sha("c") {
+		t.Errorf("control-plane = %q, want v1.5.0's %q: the bundle would ship the promoted-from release's image", got["control-plane"], sha("c"))
+	}
+
+	// A named release the ledger does not hold is an error, never a silent
+	// fall-through to the promoted release's pins.
+	if _, _, err := resolveDeployDigests(withHostedPinRelease(ctx, "v9.9.9"), dir, "prod", false, testBindings(t, dir), testReleases(t, dir)); err == nil {
+		t.Error("an unknown named release fell through to the promoted release's pins")
+	}
+}

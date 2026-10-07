@@ -28,6 +28,7 @@ import (
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/kcl"
 	"github.com/reliant-labs/forge/pkg/deploystate"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // deployCmdLong is `forge env deploy`'s help text, hoisted out of the command
@@ -2956,6 +2957,25 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 	if berr != nil {
 		return nil, "", fmt.Errorf("read the promotion ledger for %q (%s): %w", envName, bindings.Location(), berr)
 	}
+	// A release NAMED by the caller wins over the one the env is currently
+	// promoted to. `forge env deploy <env> <version>` records the bundle BEFORE
+	// it moves the binding, so without this the bundle of a release that moves
+	// images was rendered from the PREVIOUS release's pins: the plan said
+	// "3 images changed" while the bundle it planned carried the old digests,
+	// and applying it would have bound the ledger to a release whose code never
+	// ran. Reading the release's own pins here is the same layering a bound
+	// promotion gets, applied to the version the deploy is about to bind.
+	if named := hostedPinReleaseFrom(ctx); named != "" {
+		rel, rerr := releases.Get(ctx, named)
+		if rerr != nil {
+			return nil, "", fmt.Errorf("read release %q (%s) to pin its images: %w", named, releases.Location(), rerr)
+		}
+		if rel == nil {
+			return nil, "", fmt.Errorf("release %q is not in %s, so there are no pins to render its bundle from", named, releases.Location())
+		}
+		binding = release.Promotion{Release: named, Resolved: releasePinsByRepository(*rel)}
+		bound = true
+	}
 	if !bound {
 		return base, "", nil
 	}
@@ -2983,6 +3003,13 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		overrideTaggedKeys(base, image, digest)
 	}
 	return base, binding.Release, nil
+}
+
+// releasePinsByRepository is a release's shared digests keyed the way a
+// promotion records them (the artifact's repository, registry host included),
+// so a named release layers over the build state exactly like a bound one.
+func releasePinsByRepository(rel release.Release) map[string]string {
+	return rel.SharedDigests()
 }
 
 // shortDigest trims a canonical `sha256:<64 hex>` to a human-comparable head.

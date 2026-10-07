@@ -140,6 +140,24 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "Azure's Entra ID tenant, which a Trusted Signing credential belongs to",
+				Reason: "Azure Trusted Signing authenticates as an Entra ID service principal, identified by " +
+					"a tenant id (the Azure directory) and a client id. The desktop-release proposal names " +
+					"that credential's fields: `tenant_id` on its AzureTrustedSigning schema, the `<tenant>` " +
+					"placeholder in its example, and the \"Azure tenant id\" in its list of release secrets.\n" +
+					"This is Microsoft's tenancy, not forge's: an identifier the author supplies for their own " +
+					"signing account. forge ships no tenant column, header, context key or helper on the " +
+					"strength of it. Scoped to the `tenant_id` / `tenant id` spellings and the `<tenant>` " +
+					"placeholder in that one file, so the removed annotation (`tenant: true`), a `TenantID` " +
+					"field or an `X-Tenant-Id` header there still fails; TestTenancyAzureAllowanceStaysNarrow " +
+					"pins both sides. When the AzureTrustedSigning schema lands in code, add that file to " +
+					"Paths rather than widening the Token.",
+				Token: regexp.MustCompile(`(?i)\btenant[_ ]id\b|<tenant>`),
+				Paths: []string{
+					"docs/proposals/desktop-release-target.md",
+				},
+			},
+			{
 				Name: "prose teaching that forge has no tenancy",
 				Reason: "The db/write-policy skill's \"If rows belong to someone, that is a column\" section and " +
 					"seedplan's diamond-disambiguation comment both name tenancy in order to say " +
@@ -2296,6 +2314,81 @@ func pathSuffixes(rel string) []string {
 		}
 	}
 	return out
+}
+
+// TestTenancyAzureAllowanceStaysNarrow pins the tenancy entry's Azure carve-out
+// from both sides, on synthetic lines. The Azure Trusted Signing lines in the
+// desktop-release proposal must pass. Every shape the removed feature shipped
+// in must still fail, both in that same file and elsewhere. The tree-wide scan
+// cannot prove the second half: main has no straggler for it to catch, so a
+// carve-out that swallowed the removed annotation would leave it green.
+func TestTenancyAzureAllowanceStaysNarrow(t *testing.T) {
+	rm := removalNamed(t, "tenancy")
+	allowances := append(append([]allowance{}, commonAllowances...), rm.Allowances...)
+	const proposal = "docs/proposals/desktop-release-target.md"
+
+	cases := []struct {
+		name    string
+		path    string
+		line    string
+		wantHit bool
+	}{
+		// Azure's tenant, verbatim from the proposal: excused.
+		{"Azure tenant id in the release-secrets list", proposal,
+			"  tenant id and client id, the four Trusted Signing", false},
+		{"the AzureTrustedSigning schema field", proposal,
+			"    tenant_id: str", false},
+		{"the AzureTrustedSigning example", proposal,
+			`signing = forge.AzureTrustedSigning {endpoint = "<endpoint>", tenant_id = "<tenant>", client_id = "<client>"}`, false},
+
+		// The removed annotation (FieldOptions.tenant, deleted in #94), in
+		// the forms it shipped in. Each must fail.
+		{"the annotation on a proto field", "proto/services/users/v1/users.proto",
+			`string org_id = 2 [(forge.v1.field) = { tenant: true, ref: "orgs.id" }];`, true},
+		{"the annotation on a tenant_id field, inside the proposal", proposal,
+			`string tenant_id = 2 [(forge.v1.field) = { tenant: true }];`, true},
+		{"the option's definition in forge.proto", "proto/forge/v1/forge.proto",
+			"  bool tenant = 2;", true},
+		{"the annotation taught by a shipped skill", "internal/templates/project/skills/forge/proto/SKILL.md",
+			"- Always annotate the tenant column (`tenant: true`).", true},
+
+		// The rest of the removed feature, inside the proposal. The
+		// carve-out excuses spans, not the file.
+		{"a tenant context key", proposal, "TenantID string", true},
+		{"a tenant header", proposal, "X-Tenant-Id: acme", true},
+		{"the generated CRUD tenant hook", proposal, "Tenant: middleware.RequireTenantID,", true},
+
+		// Azure's spelling outside the proposal is not excused.
+		{"the Azure field in a file the carve-out does not name", "kcl/lib/desktop.k",
+			"    tenant_id: str", true},
+	}
+
+	root := repoRoot(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hits := matchLine(root, tc.line, rm, allowances, tc.path)
+			switch {
+			case tc.wantHit && len(hits) == 0:
+				t.Errorf("%s: %q passed the tenancy guard; it is a reference to the removed feature "+
+					"and must fail. An allowance has grown wide enough to excuse it.", tc.path, tc.line)
+			case !tc.wantHit && len(hits) > 0:
+				t.Errorf("%s: %q failed the tenancy guard (matched %q via `%s`); it is Azure's "+
+					"Entra ID tenant, not forge tenancy, and must pass.", tc.path, tc.line, hits[0].text, hits[0].pattern)
+			}
+		})
+	}
+}
+
+// removalNamed returns the table entry called name.
+func removalNamed(t *testing.T, name string) removal {
+	t.Helper()
+	for _, rm := range removals {
+		if rm.Name == name {
+			return rm
+		}
+	}
+	t.Fatalf("no removal named %q in the table", name)
+	return removal{}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -377,6 +377,31 @@ jobs:
         # release, so no change to a template or an emitter could ever go
         # green until after it shipped. Build from the working tree instead.
         run: go install ./cmd/forge
+      # verify-generated runs `forge generate`, whose "buf generate (Go
+      # stubs)" step regenerates pkg/forgepb from proto/forge/v1/forge.proto
+      # (buf.gen.yaml). Without buf on PATH the job dies with
+      # `exec: "buf": executable file not found` before checking anything.
+      #
+      # Pinned rather than left to the action's default so the version is
+      # visible here and cannot move under a byte-identical check. 1.50.0 is
+      # the version every other buf install in these workflows resolves to
+      # (buf-setup-action@v1's default); Taskfile.yml and the Makefile pin
+      # none. Bump them together.
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.50.0"
+          # Authenticated for the rate limit; see the same step in `test`.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      # buf.gen.yaml runs protoc-gen-go as a `local:` plugin, and generate
+      # formats its Go output with goimports. `forge tools install` puts both
+      # on PATH at the versions go.mod resolves, the versions the committed
+      # files were generated with (protoc-gen-go writes its own version into
+      # pkg/forgepb/forge.pb.go's header). --force: a runner image's own copy
+      # must not stand in for go.mod's version. Same step as the scaffolded
+      # verify-generated job (internal/templates/ci/github/ci.yml.tmpl).
+      - name: Install codegen tools
+        run: forge tools install --force
       - name: Verify generated code
         run: forge ci verify-generated
 

@@ -106,6 +106,9 @@ func retiredPromotion(env, version, id string) release.Promotion {
 //
 // Mutation: delete the checkLedgerImported call in ledgerFor and this fails.
 func TestRefusesWhenCheckoutHoldsAnUnimportedLedger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "cp-like")
 	writeRetiredLedger(t, dir, "prod", []release.Promotion{
 		retiredPromotion("prod", "v1.5.18", "p-1"),
@@ -148,6 +151,9 @@ func TestRefusesWhenCheckoutHoldsAnUnimportedLedger(t *testing.T) {
 // promotion's id. An import that minted fresh ids would leave every record
 // looking absent and the refusal would never clear.
 func TestRefusalGoesQuietAfterImport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "imported-project")
 	promotions := []release.Promotion{
 		retiredPromotion("prod", "v1.5.18", "p-1"),
@@ -200,6 +206,9 @@ func TestRefusalGoesQuietAfterImport(t *testing.T) {
 // TestPartialImportReportsOnlyTheRemainder: a resumed or re-run import must
 // converge rather than refuse forever, so the count shrinks as records land.
 func TestPartialImportReportsOnlyTheRemainder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "partial-project")
 	promotions := []release.Promotion{
 		retiredPromotion("prod", "v1.0.0", "p-1"),
@@ -241,6 +250,9 @@ func TestPartialImportReportsOnlyTheRemainder(t *testing.T) {
 // Mutation: count every checkout release (not just the ones this env's
 // promotions bind) and the dev-k8s half fails.
 func TestRefusalIsScopedToTheEnvsOwnHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newLedgerTestProject(t, "cp-ci-like")
 	writeRetiredLedger(t, dir, "prod", []release.Promotion{
 		retiredPromotion("prod", "v1.6.0", "p-1"),

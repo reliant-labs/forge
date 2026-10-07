@@ -80,6 +80,9 @@ func TestEvalResolvesTheForgeModuleFromTheBinary(t *testing.T) {
 // a nested path, a list index, a whole sub-object, and a list — which is the
 // case kcl's own -S gets wrong by emitting one YAML document per element.
 func TestEvalSelects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	dir := project(t, map[string]string{
 		"deploy/kcl/kcl.mod": kclMod,
 		"deploy/kcl/lib/pool.k": `import forge
@@ -218,6 +221,9 @@ func TestEvalResolvesRelativeImportsFromASubdirectoryCwd(t *testing.T) {
 
 // TestEvalPassesOptions: a -D binding reaches the file's option() call.
 func TestEvalPassesOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	dir := project(t, map[string]string{
 		"deploy/kcl/kcl.mod":   kclMod,
 		"deploy/kcl/lib/opt.k": "import forge\n\ntier = option(\"tier\", type=\"str\", default=\"free\")\n_p = forge.Bundle is not None\n",

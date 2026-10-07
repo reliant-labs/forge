@@ -35,6 +35,9 @@ import (
 // behaviour) — the full-ceiling render fails, and the empty-registry render
 // creates blocks.json.
 func TestEnvRender_LocalEnvFromNewWorktreeClaimsNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 
 	for _, tc := range []struct {
@@ -84,6 +87,9 @@ func TestEnvRender_LocalEnvFromNewWorktreeClaimsNothing(t *testing.T) {
 // Mutation that fails it: make inspectBlockAllocator return base
 // unconditionally.
 func TestEnvRender_ExistingBlockStillResolves(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 	resetDevStackGlobals(t)
 	primary, worktree := portblockRepo(t)
@@ -114,6 +120,9 @@ func TestEnvRender_ExistingBlockStillResolves(t *testing.T) {
 // Mutation that fails it: drop the activateDevStack call from env config — the
 // worktree's block is ignored and WEB_PORT reads 3000.
 func TestEnvConfig_RendersThisWorktreesStackWithoutClaiming(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 
 	for _, tc := range []struct {
@@ -155,6 +164,9 @@ func TestEnvConfig_RendersThisWorktreesStackWithoutClaiming(t *testing.T) {
 // path keeps claiming. Otherwise `forge env up` from a new worktree would run
 // on base ports and collide with the primary's stack.
 func TestLaunchStillClaimsPastTheInspectPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 	resetDevStackGlobals(t)
 	primary, worktree := portblockRepo(t)

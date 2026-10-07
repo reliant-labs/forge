@@ -66,6 +66,9 @@ func TestStopActionFor(t *testing.T) {
 //
 // Skips when dlv is not installed (CI images without delve) or on non-unix.
 func TestAttachStopLeavesTargetAlive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("attach/signal model is unix-only")
 	}

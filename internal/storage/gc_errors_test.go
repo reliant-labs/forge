@@ -74,6 +74,9 @@ func TestLogsContinuePastAnUnreadableProject(t *testing.T) {
 // returned from GC immediately, so the temp sweep, source eviction and every
 // Docker layer never ran — the whole schedule disabled by one entry.
 func TestGCRunsEveryLayerPastABadProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	bad := unreadableLogsProject(t)
 	tempRoot := t.TempDir()
 	tempEntry := writeTempEntry(t, tempRoot, "go-link-h2", 48*time.Hour)
@@ -114,6 +117,9 @@ func TestGCRunsEveryLayerPastABadProject(t *testing.T) {
 // TestNonDisruptiveGCRunsEveryLayerPastABadProject: the same, for the pass
 // `forge env up` runs.
 func TestNonDisruptiveGCRunsEveryLayerPastABadProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	bad := unreadableLogsProject(t)
 	tempRoot := t.TempDir()
 	tempEntry := writeTempEntry(t, tempRoot, "go-link-h2", 48*time.Hour)

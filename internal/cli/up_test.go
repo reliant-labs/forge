@@ -756,6 +756,9 @@ func TestRenderUpSummary(t *testing.T) {
 // asserts BOTH frontends appear (never collapsed). Covers the text table
 // and the --json contract.
 func TestRunUpServices_EndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	// A real listener on a free port so the probe reports the host service up.
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {

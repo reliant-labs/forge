@@ -152,6 +152,9 @@ func TestCompose_OwnContainersAndUnreadableOwnerProceed(t *testing.T) {
 // state the incident left behind) converges back to the primary: proceed,
 // because the declared owner IS the primary and this run is driving from it.
 func TestCompose_SharedStackReclaimsFromALinkedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}

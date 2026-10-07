@@ -83,6 +83,9 @@ var quarantine = []quarantined{
 
 // TestNoVacuousTests is the repository-wide guard.
 func TestNoVacuousTests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("parses every test file in the forge repository; runs in task test")
+	}
 	findings := scanRepo(t)
 
 	q := map[string]bool{}
@@ -303,6 +306,9 @@ func scanPlanted(t *testing.T) []Finding {
 // consults exec.LookPath and answers a bool IS a capability probe, whatever it
 // is called, and must be listed.
 func TestCapabilityProbeSetIsComplete(t *testing.T) {
+	if testing.Short() {
+		t.Skip("parses every test file in the forge repository; runs in task test")
+	}
 	got, err := LookPathProbeFuncs(repoRoot(t))
 	if err != nil {
 		t.Fatalf("scan for probe helpers: %v", err)

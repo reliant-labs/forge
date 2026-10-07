@@ -37,6 +37,9 @@ func TestSourcesRefusesTheRealCacheUnderTest(t *testing.T) {
 // TestSourcesReclaimsWithinAnExplicitRoot is the positive path: given a
 // root, the layer evicts through it and reports what it did.
 func TestSourcesReclaimsWithinAnExplicitRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	fakeLsof(t, unrelatedOpenFile, "exit 0")
 	root := filepath.Join(t.TempDir(), "sources")
 	for name, age := range map[string]time.Duration{
@@ -86,6 +89,9 @@ func TestSourcesReclaimsWithinAnExplicitRoot(t *testing.T) {
 // the default MaxAge alone would retain it on age, and the default KeepPerSlug
 // alone would retain it on rank.
 func TestSourcesAppliesThePolicyBudgets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	fakeLsof(t, unrelatedOpenFile, "exit 0")
 	root := filepath.Join(t.TempDir(), "sources")
 	stale := filepath.Join(root, "app-bbbbbbbbbbbb")
@@ -164,6 +170,9 @@ func TestSourcesSurvivesAnUnparseableUnusedWindow(t *testing.T) {
 // TestGCRunsTheSourceLayer pins the wiring: the layer has to be reachable
 // from GC, or none of the above ever runs in production.
 func TestGCRunsTheSourceLayer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	fakeLsof(t, unrelatedOpenFile, "exit 0")
 	root := filepath.Join(t.TempDir(), "sources")
 	// Three entries of one repo: the default keep floor is 2, so a single

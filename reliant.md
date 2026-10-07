@@ -138,13 +138,26 @@ boundary rather than the behaviour.
 
 Run the cheapest tier that answers your question. Wall-clock budgets are enforced conventions, not aspirations — if you add a test that breaks a budget, gate it.
 
-1. **Inner loop — every edit:** `go test -short ./...` (`task test:short`). Whole repo in **<60s** (typically ~10s warm). Default for agents iterating on a change.
-2. **Package-targeted — before committing:** `go test ./internal/<pkg>/`. Full mode for the package you touched. `internal/cli` takes ~80s in full mode because the `TestRunAddFrontend_*` tests run a real `npm install`; everything else is seconds.
-3. **Full gate — once per round / CI:** `go test -race -count=1 ./...` plus the e2e corpus: `go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/`. The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so the gate's wall-clock is roughly the slowest fixture, not the sum.
+**Testing while iterating: run the fast tier, scoped to what you touched.**
+Most of an agent's test time was measured as compile/link plus defeated
+caching, not test bodies — so the inner loop is scoped and cached, and the
+full lane runs once, at the end.
+
+1. **Inner loop — every edit:** `task test:short -- ./internal/<pkg>/...`, naming only the packages you touched. It is `go test -short`, cached, with no `-race`. A re-run after an edit recompiles and re-runs only what the edit invalidated; everything else is a cache hit. Unscoped (`task test:short`) it is the whole repo.
+2. **Package-targeted — before committing:** `task test -- ./internal/<pkg>/...`. Full mode (no `-short`, with `-race`) for the packages you touched, so the gated slow tests run too.
+3. **Full gate — once, at the end / CI:** `task test` (`go test -race -count=1 ./...`) plus the e2e corpus: `go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/`. The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so the gate's wall-clock is roughly the slowest fixture, not the sum. Do not run this after every edit.
+
+How to run them:
+
+- **Do not add `-count=1` or `-race` to inner-loop runs.** Both defeat Go's test cache, which keys on the test binary, flags, env vars and the files a test reads — it is correct for hermetic tests. `-count=1` belongs to CI and the full lane.
+- **Never set a private `GOCACHE`** (or `GOMODCACHE`). A cold private cache turns every run into a full rebuild.
+- **Anything expected to take more than ~2 minutes goes `run_in_background` + `shell_wait`**, never a long foreground call: the full lane, `internal/cli` or `internal/tierguard` in full mode, the e2e corpus.
 
 Rules that keep the tiers honest:
 
-- Any test that takes **>2s** (subprocess spawns, network, real scaffolds, `go build`/`go mod tidy`, `npm install`) must be skipped or have its slow side-effect bypassed under `testing.Short()`, with the slow path still exercised in full mode and CI. Never weaken an assertion to get under the budget — gate, don't gut.
+- Any test that takes **>2s** (subprocess spawns, git repos, network, real scaffolds, KCL renders, `go build`/`go list`/`go mod tidy`, `npm install`) must be skipped or have its slow side-effect bypassed under `testing.Short()` — `if testing.Short() { t.Skip("<why it is slow>; runs in task test") }` — with the slow path still exercised in full mode and CI. Never weaken an assertion to get under the budget — gate, don't gut. A test that is slow because its fixture waits on something it never needed to (a fake CLI that sleeps, a real `gcloud` call) is a fixture bug: fix the fixture instead of gating.
+- **A test that runs under `-short` must be cache-sound.** Go's test cache keys only on what the test PROCESS opens or stats inside the module. Repo files read by a CHILD process (`go build`/`go list` over repo packages, `git` against the checkout, `kcl`/`node`/`bash` over files on disk) or by the native KCL runtime are invisible to it, so the cached run replays a stale PASS after an edit that breaks the test. Such a test either skips under `testing.Short()` or opens/stats those inputs itself (a `filepath.WalkDir` + `os.Stat` over the tree is enough — verified). Inputs that are `go:embed`ded into the test binary, or written by the test into `t.TempDir()`, are already covered.
+- A package that exceeds `task test:short`'s 60s timeout has grown a slow test. Find it with `go test -short -count=1 -json ./internal/<pkg>/` and gate it; do not raise the timeout.
 - e2e tests that boot servers must allocate ports with `freePortE2E(t)` (`internal/cli/scaffold_e2e_test.go`) — never hard-code a port; the corpus runs in parallel.
 - e2e tests must keep all state inside their own `t.TempDir()` project; no `t.Setenv`/`t.Chdir` in parallel tests (Go panics on the combo).
 - CI runs the full non-short suite with `-race`; `-short` is a local/agent convention only.

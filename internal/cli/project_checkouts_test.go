@@ -128,6 +128,9 @@ func remoteEntry(doc checkoutsDoc) (checkoutDoc, bool) {
 // The §8.1 shape: the remote main plus every worktree, each with the fields
 // the picker needs.
 func TestProjectCheckouts_ListsMainAndEveryWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 
 	doc, err := listCheckouts(context.Background(), fx.primary, false)
@@ -189,6 +192,9 @@ func TestProjectCheckouts_ListsMainAndEveryWorktree(t *testing.T) {
 // checkout reported clean whose render is not reproducible is the mismatch
 // the flag exists to prevent.
 func TestProjectCheckouts_DirtyCoversEditsAndUntrackedFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 
 	doc, err := listCheckouts(context.Background(), fx.primary, false)
@@ -219,6 +225,9 @@ func TestProjectCheckouts_DirtyCoversEditsAndUntrackedFiles(t *testing.T) {
 // first, and transposing them would tell a user their branch is behind when
 // it is ahead.
 func TestProjectCheckouts_CountsAheadAndBehindAgainstRemoteMain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 
 	doc, err := listCheckouts(context.Background(), fx.primary, false)
@@ -298,6 +307,9 @@ func TestProjectCheckouts_OmitsAheadBehindWhenMainIsUnknown(t *testing.T) {
 // basename — which a user recognises, where a sha does not. The sha is in
 // Head for whoever needs it.
 func TestProjectCheckouts_DetachedHeadIsLabelledByDirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 	head := strings.TrimSpace(gitOutput(t, fx.primary, "rev-parse", "HEAD"))
 	detached := filepath.Join(filepath.Dir(fx.primary), "wt-detached")
@@ -323,6 +335,9 @@ func TestProjectCheckouts_DetachedHeadIsLabelledByDirectory(t *testing.T) {
 // so hashing every worktree would make the picker unusable to answer a
 // question nobody has asked yet.
 func TestProjectCheckouts_NoTreeHashByDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 
 	doc, err := listCheckouts(context.Background(), fx.primary, false)
@@ -339,6 +354,9 @@ func TestProjectCheckouts_NoTreeHashByDefault(t *testing.T) {
 // --tree hashes exactly ONE checkout — the selected one — because that is
 // the only one whose cache key is about to be needed.
 func TestProjectCheckouts_TreeHashesOnlyTheSelectedCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 
 	doc, err := listCheckouts(context.Background(), fx.clean, true)
@@ -366,6 +384,9 @@ func TestProjectCheckouts_TreeHashesOnlyTheSelectedCheckout(t *testing.T) {
 // comparison — macOS's /var → /private/var symlink makes the naive
 // comparison fail on exactly the machines this runs on.
 func TestProjectCheckouts_MarksTheSelectedCheckoutAcrossSymlinks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 
 	for _, where := range []struct {
@@ -417,6 +438,9 @@ func TestProjectCheckouts_RefusesANonGitDirectory(t *testing.T) {
 // port block its stack actually holds (§7.4). It is the same key `forge env
 // devstack key` prints, derived from the path with no git call.
 func TestProjectCheckouts_CarriesTheDevstackKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 
 	doc, err := listCheckouts(context.Background(), fx.primary, false)
@@ -440,6 +464,9 @@ func TestProjectCheckouts_CarriesTheDevstackKey(t *testing.T) {
 // The command's own --json output is the daemon's contract, so it is driven
 // end to end rather than only through listCheckouts.
 func TestProjectCheckouts_CommandJSONIsTheDocument(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	fx := newCheckoutsFixture(t)
 	if err := cmdutil.SetProjectDir(fx.primary); err != nil {
 		t.Fatalf("pin the project dir: %v", err)

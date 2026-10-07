@@ -177,6 +177,9 @@ func TestHostInfraObserve_PortDriftIsReported(t *testing.T) {
 // probe reports this healthy and tells the developer their database is
 // up, while forge has never written a byte to the thing answering.
 func TestHostInfraObserve_ForeignPortIsDegradedNotHealthy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out a real probe timeout against a foreign listener; runs in task test")
+	}
 	// A real listener, so the probe genuinely finds the port occupied.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -94,6 +94,9 @@ func methodsByName(t *testing.T, stub DepsAutoStub) map[string]InterfaceMethod {
 // and a test that never overrides the field would assert against a check
 // that was switched off.
 func TestComputeAutoStubs_ErrorOnlyMethodFailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := quotaStubFixture(t)
 
 	stubs, unresolved := computeAutoStubs(handlerDir, "")
@@ -126,6 +129,9 @@ func TestComputeAutoStubs_ErrorOnlyMethodFailsClosed(t *testing.T) {
 // rule is structural, not a name heuristic. `Close() error` is not a gate
 // method and still returns only error — a stub cannot know it succeeded.
 func TestComputeAutoStubs_ErrorOnlyAppliesToEveryErrorOnlyMethod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := quotaStubFixture(t)
 
 	stubs, _ := computeAutoStubs(handlerDir, "")
@@ -152,6 +158,9 @@ func TestComputeAutoStubs_ErrorOnlyAppliesToEveryErrorOnlyMethod(t *testing.T) {
 // all, which is what makes nil there an unearned success rather than an
 // empty one.
 func TestComputeAutoStubs_ValuePlusErrorKeepsZeroValues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := quotaStubFixture(t)
 
 	stubs, _ := computeAutoStubs(handlerDir, "")
@@ -180,6 +189,9 @@ func TestComputeAutoStubs_ValuePlusErrorKeepsZeroValues(t *testing.T) {
 // as it does in a scaffolded project, where the template imports
 // pkg/testkit unconditionally.
 func TestComputeAutoStubs_FailClosedStubCompiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	forgeRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("resolve forge root: %v", err)

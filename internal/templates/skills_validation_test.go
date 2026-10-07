@@ -601,6 +601,9 @@ func placeholder(s string) bool { return strings.ContainsAny(s, "<{*") }
 var bareHandlerGenRE = regexp.MustCompile(`(?:^|[^/\w-])(handlers[a-z0-9_]*_gen(?:_test)?\.go)`)
 
 func TestSkillsPathReferencesExist(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scans every shipped skill against a scaffolded project; runs in task test")
+	}
 	skills := shippedSkills(t)
 	allow := allowlist(t)
 	tree := scaffoldTree(t)

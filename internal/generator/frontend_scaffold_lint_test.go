@@ -71,6 +71,9 @@ func scaffoldForFrontendLint(t *testing.T, name, frontend, kind string) (root, f
 }
 
 func TestScaffoldedFrontend_PassesProcessEnvLint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	for _, tc := range []struct {
 		name string
 		kind string

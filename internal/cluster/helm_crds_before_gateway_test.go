@@ -71,6 +71,9 @@ spec: {}`
 // step would trade a stale-schema failure for a race, so this test pins the
 // ordering rather than leaving it to be rediscovered in CI.
 func TestApplyRendered_ChartCRDsEstablishBeforeTheGatewayThatUsesThem(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	// applyRendered applies the platform charts FIRST and then the env

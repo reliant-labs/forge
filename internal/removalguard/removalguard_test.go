@@ -2108,6 +2108,9 @@ const maxFileSize = 4 << 20
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestRemovedFeaturesLeaveNoReferences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scans every file in the forge repository; runs in task test")
+	}
 	root := repoRoot(t)
 
 	// Match each file against every removal on a worker pool.
@@ -2375,6 +2378,9 @@ func TestScanSurfaceReachesEveryForgeSurface(t *testing.T) {
 // naming the exact construct they broke, instead of the guard quietly
 // "passing" after the construct was deleted.
 func TestLegitimateLookalikesAreStillPresent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scans every file in the forge repository; runs in task test")
+	}
 	// Each entry is a construct forge legitimately keeps. The guard above must
 	// stay green while these are present.
 	lookalikes := []struct {

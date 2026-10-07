@@ -53,6 +53,9 @@ func newFrontendDir(t *testing.T, lockfile string) string {
 }
 
 func TestBuildFrontendInstallsMissingNodeModules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	cases := []struct {
 		lockfile, manager string
 		want              []string
@@ -87,6 +90,9 @@ func TestBuildFrontendInstallsMissingNodeModules(t *testing.T) {
 }
 
 func TestBuildFrontendUsesLockfileManagerOverDevRunner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	logPath := fakePackageManager(t, "pnpm")
 	dir := newFrontendDir(t, "pnpm-lock.yaml")
 	fe := config.FrontendConfig{Name: "web"}.WithDir(dir) // dev_runner unset → npm

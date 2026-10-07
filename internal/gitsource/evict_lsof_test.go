@@ -51,6 +51,9 @@ func staleSourceEntry(t *testing.T, root, name string, age time.Duration) string
 // failure returned "cannot tell" and evicted on recency alone. Now every
 // failure to get a complete snapshot retains every candidate.
 func TestEvictDefaultProbeFailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	for _, tc := range []struct{ name, tail string }{
 		{"killed mid-listing", "kill -9 $$"},
 		{"unexpected exit status", "exit 2"},

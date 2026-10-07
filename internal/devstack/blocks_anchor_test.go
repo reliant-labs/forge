@@ -27,6 +27,9 @@ import (
 // allocated from one worktree must be VISIBLE from another worktree of the
 // same repo, because they contend for the same machine-wide ports.
 func TestRegistryIsSharedAcrossLinkedWorktrees(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)
@@ -81,6 +84,9 @@ func TestRegistryIsSharedAcrossLinkedWorktrees(t *testing.T) {
 // new worktree is refused only when the machine is GENUINELY full — and, the
 // half that actually bit, is NOT refused when it is not.
 func TestCeilingCountsBlocksFromAnotherWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)

@@ -63,6 +63,9 @@ func TestPrimaryCheckoutOnNamedBranchWorktreeEmpty(t *testing.T) {
 // (NOT the primary) sets option("worktree") to the worktree dir basename —
 // the multi-worktree workflow. The SAME repo's primary stays "".
 func TestLinkedWorktreeResolvesFromDirBasename(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)

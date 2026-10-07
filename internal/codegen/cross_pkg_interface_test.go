@@ -92,6 +92,9 @@ type Deps struct {
 // typed `repo.Repository` resolves to the right interface, with all
 // three methods and their fully qualified parameter / result types.
 func TestResolveCrossPkgInterface_HappyPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := writeTestModule(t, nil)
 
 	res, ok := ResolveCrossPkgInterface(handlerDir, "repo", "Repository")
@@ -152,6 +155,9 @@ func TestResolveCrossPkgInterface_HappyPath(t *testing.T) {
 // types-package method-set walk picks up methods on embedded interfaces
 // without recursing manually — Go's types package flattens for us.
 func TestResolveCrossPkgInterface_EmbeddedInterface(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": `package repo
 
@@ -261,6 +267,9 @@ type Deps struct {
 // of computeAutoStubs produces a DepsAutoStub with CrossPackage=true,
 // the right InterfaceQualified, and a non-empty ExtraImports set.
 func TestComputeAutoStubs_CrossPackage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := writeTestModule(t, nil)
 
 	stubs, unresolved := computeAutoStubs(handlerDir, "billing")
@@ -352,6 +361,9 @@ type Deps struct {
 //   - the auto-stub default-assignment line exists inside NewTestBilling
 //   - the stub struct itself + at least one method are emitted
 func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := writeTestModule(t, nil)
 	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(handlerDir))) // <root>/internal/handlers/billing -> <root>
 

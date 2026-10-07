@@ -107,7 +107,10 @@ const (
 //   - wait answers as `outcome` dictates. WaitJobCompleteTimeout races a
 //     condition=complete watcher against a condition=failed one, so the
 //     losing watcher blocks until it is cancelled — exactly as kubectl does.
-//     A timeout exits 1 with kubectl's own message on both.
+//     A timeout exits 1 with kubectl's own message on both. A CRD
+//     condition=Established wait succeeds at once: nothing races it, so
+//     sending it down the blocking path made it sit out the full `sleep 30`
+//     and then "succeed" anyway — the same verdict, 30s later.
 //   - get deployments lists `deployments` (the rollout wait's enumeration).
 //   - everything else (rollout status, logs, describe) exits 0.
 //
@@ -134,6 +137,7 @@ case " $* " in
       timeout) echo "error: timed out waiting for the condition on jobs/x" >&2; exit 1 ;;
     esac
     case " $* " in
+      *'--for=condition=Established'*) exit 0 ;;
       *'--for=condition=complete'*) [ "$FAKE_JOB_OUTCOME" = complete ] && exit 0 ;;
       *'--for=condition=failed'*) [ "$FAKE_JOB_OUTCOME" = failed ] && exit 0 ;;
     esac
@@ -234,6 +238,9 @@ var gatedKinds = []string{"Deployment", "StatefulSet", "CronJob"}
 // apply and is sent before the Job completes. Also fails if an absent
 // deploy-phase annotation defaults to post-rollout: migrateJob carries none.
 func TestApply_PreRolloutJobCompletesBeforeAnyWorkloadIsApplied(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	calls := fakeGateKubectl(t, jobCompletes, "admin-server")
 
 	if err := applyRendered(context.Background(), gateOpts(RolloutWait), gateStream); err != nil {
@@ -292,6 +299,9 @@ func TestApply_PreRolloutJobCompletesBeforeAnyWorkloadIsApplied(t *testing.T) {
 // Mutation that fails it: ignore applyPreRolloutGate's error (fall through to
 // the workload apply) — the Deployment, StatefulSet and CronJob are applied.
 func TestApply_FailedPreRolloutJobAppliesNoWorkload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	calls := fakeGateKubectl(t, jobFails, "admin-server")
 
 	err := applyRendered(context.Background(), gateOpts(RolloutWait), gateStream)
@@ -308,6 +318,9 @@ func TestApply_FailedPreRolloutJobAppliesNoWorkload(t *testing.T) {
 //
 // Mutation that fails it: treat a gate timeout as non-fatal.
 func TestApply_TimedOutPreRolloutJobAppliesNoWorkload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	calls := fakeGateKubectl(t, jobTimesOut, "admin-server")
 
 	err := applyRendered(context.Background(), gateOpts(RolloutWait), gateStream)
@@ -324,6 +337,9 @@ func TestApply_TimedOutPreRolloutJobAppliesNoWorkload(t *testing.T) {
 //
 // Mutation that fails it: enforce the gate only in RolloutWait mode.
 func TestApply_PreRolloutGateHoldsUnderRolloutSkip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	for _, mode := range []RolloutMode{RolloutSkip, RolloutWarn} {
 		t.Run(string(mode), func(t *testing.T) {
 			calls := fakeGateKubectl(t, jobFails, "admin-server")
@@ -341,6 +357,9 @@ func TestApply_PreRolloutGateHoldsUnderRolloutSkip(t *testing.T) {
 //
 // Mutation that fails it: ignore the annotation (every Job pre-rollout).
 func TestApply_PostRolloutJobIsNotAGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	calls := fakeGateKubectl(t, jobCompletes, "admin-server")
 	provision := strings.Replace(migrateJob, "  name: app-migrate-abc123\n",
 		"  name: app-provision-def456\n  annotations:\n    "+DeployPhaseAnnotation+": "+DeployPhasePostRollout+"\n", 1)
@@ -402,6 +421,9 @@ func TestApply_UnknownDeployPhaseIsRefusedBeforeAnyApply(t *testing.T) {
 // Mutation that fails it: split the workloads from the support objects even
 // when no pre-rollout Job exists.
 func TestApply_StreamWithoutAJobIsUnchanged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	calls := fakeGateKubectl(t, jobCompletes, "admin-server")
 	stream := strings.Join([]string{
 		`apiVersion: v1

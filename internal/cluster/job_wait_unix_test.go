@@ -30,6 +30,9 @@ import (
 // Mutation that fails it: return the verdict without waiting for the other
 // watcher (the pre-fix code).
 func TestWaitJobCompleteTimeout_ReapsTheLosingWatcher(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a racing pair of fake kubectl watchers through shell subprocesses; runs in task test")
+	}
 	requirePOSIXFake(t, "kubectl")
 	dir := t.TempDir()
 	pids := filepath.Join(dir, "pids")

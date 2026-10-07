@@ -63,6 +63,9 @@ func repo(t *testing.T, onMain, onBranch []string) (repoRoot, migDir string) {
 // branch must not raise it, or the lint would consider the branch's own files
 // pre-existing and never flag them.
 func TestMergeBaseMaxIsTheStateTheBranchWasCutFrom(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repoRoot, migDir := repo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},
@@ -81,6 +84,9 @@ func TestMergeBaseMaxIsTheStateTheBranchWasCutFrom(t *testing.T) {
 // main after this branch was cut is just as merged, and renaming it is just
 // as wrong.
 func TestDefaultBranchVersionsSeesCommitsMadeAfterTheBranchWasCut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repoRoot, migDir := repo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},
@@ -149,6 +155,9 @@ func TestEveryLookupReportsUnknownOutsideAGitRepository(t *testing.T) {
 // stop checking rather than an error. Nothing failed loudly; the guarantee
 // just quietly stopped holding.
 func TestLookupsWorkWithARelativeMigrationsDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repoRoot, _ := repo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},
@@ -243,6 +252,9 @@ func TestMoveRenamesAnUntrackedFile(t *testing.T) {
 // shell and failed on `git push`, with a finding about a file the author had
 // not touched. So the lookups scrub the inherited git env.
 func TestLookupsIgnoreAnInheritedGitEnvironment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repoRoot, migDir := repo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},

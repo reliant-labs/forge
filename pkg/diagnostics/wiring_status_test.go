@@ -36,6 +36,9 @@ const diagnosticsPkg = "github.com/reliant-labs/forge/pkg/diagnostics"
 // TestDiagnosticsHasNoProducerAndSaysSo asserts the doc's status section
 // agrees with the import graph.
 func TestDiagnosticsHasNoProducerAndSaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads every package in the forge module to find importers; runs in task test")
+	}
 	repoRoot := findRepoRoot(t)
 
 	importers := packagesImporting(t, repoRoot, diagnosticsPkg)

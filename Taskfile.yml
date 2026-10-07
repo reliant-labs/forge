@@ -109,11 +109,36 @@ tasks:
       # into every generated binary went untested whenever someone forgot.)
 
   test:short:
-    # THIS REPO ONLY: the inner-loop tier from reliant.md. Not in the
-    # template because the tiering convention is forge's own.
-    desc: "Inner-loop tests: whole repo in seconds (skips/bypasses >2s tests; see reliant.md Testing tiers)"
+    # The inner-loop tier from reliant.md "Testing tiers": run it after each
+    # edit, scoped to what you touched (`task test:short -- ./internal/foo/...`),
+    # and run `task test` once at the end. Same shape as the `test:short` the
+    # scaffold templates ship to every forge project.
+    #
+    # NO `-count=1`, on purpose. Go's test cache keys on the test binary, the
+    # flags, and every env var and file the test reads, so a cached result is
+    # correct for a hermetic test — and re-running only what changed is the
+    # single biggest saving in the loop (most agent test time was measured as
+    # compile/link plus defeated caching, not test bodies). Nothing under
+    # -short needs a fresh run: tests that touch out-of-process state (a
+    # database, the network, docker) are behind the `integration`/`e2e` build
+    # tags or skip under testing.Short().
+    #
+    # The cache is only as sound as that hermeticity, and it has one blind
+    # spot: it tracks files THIS test process opens or stats, inside the
+    # module. Anything a CHILD process (go build, git, kcl, node, bash) or the
+    # native KCL runtime reads from the repo is invisible to it, so a cached
+    # PASS can outlive the edit that breaks it. Such a test must skip under
+    # -short, or open/stat those inputs itself so the cache keys on them.
+    #
+    # NO `-race` either: it builds everything under a separate cache key and
+    # slows execution several-fold. `task test` and CI keep `-race -count=1`.
+    #
+    # The 60s timeout is the budget, not a guess: any test over ~2s under
+    # -short is gated with `if testing.Short() { t.Skip(...) }` (see
+    # reliant.md), so a package that blows it has a new slow test to gate.
+    desc: "Inner-loop Go tests: -short, cached, no race. Scope it: task test:short -- ./internal/foo/..."
     cmds:
-      - go test -short -count=1 -timeout 60s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+      - go test -short -timeout 60s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
 
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)

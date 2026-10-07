@@ -100,6 +100,9 @@ func runInPlace(t *testing.T, dir, kind string, force bool) {
 }
 
 func TestRunNewInPlace_ExistingRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds projects into real git repositories; runs in task test")
+	}
 	isolateGit(t)
 
 	for _, tc := range []struct {

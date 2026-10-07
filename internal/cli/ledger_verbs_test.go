@@ -52,6 +52,9 @@ func runLedgerVerb(t *testing.T, dir string, newCmd func() *cobra.Command, args 
 // key order or dropped an optional field, and the whole point of this
 // verification is that an operator can run `diff` and believe the result.
 func TestLedgerExport_RoundTripsThePromotionLinesByteForByte(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real git project for the ledger; runs in task test")
+	}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	promotions := []release.Promotion{
 		importablePromotion("id-a", "prod", "v1.0.0", base),

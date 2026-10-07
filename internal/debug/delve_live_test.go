@@ -108,6 +108,9 @@ func startLiveDebugger(t *testing.T) (*DelveDebugger, string) {
 // reports the right function. Both a user function and a stdlib function are
 // exercised — Delve's location parser handles both.
 func TestLive_FunctionBreakpointByName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
 	d, _ := startLiveDebugger(t)
 
 	bp, err := d.SetFunctionBreakpoint("main.compute", "")
@@ -138,6 +141,9 @@ func TestLive_FunctionBreakpointByName(t *testing.T) {
 // TestLive_Stepping covers bug #2: after hitting a function breakpoint, the
 // step commands advance the current line, and locals/eval observe real values.
 func TestLive_Stepping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
 	d, source := startLiveDebugger(t)
 
 	if _, err := d.SetFunctionBreakpoint("main.compute", ""); err != nil {
@@ -207,6 +213,9 @@ func TestLive_Stepping(t *testing.T) {
 // goroutine are live), then RESUME it into a running state and list while it
 // runs — the exact scenario that previously hung/failed.
 func TestLive_GoroutinesOnRunningTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
 	d, _ := startLiveDebugger(t)
 
 	bp, err := d.SetFunctionBreakpoint("main.compute", "")

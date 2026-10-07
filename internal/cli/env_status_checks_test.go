@@ -157,6 +157,9 @@ func TestScaffoldPprofDefaultResolvesThroughEnvStatus(t *testing.T) {
 // port and the DATABASE_URL), so the contract being unparseable is the whole
 // value of the flag.
 func TestEnvStatusJSONIsParseable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)

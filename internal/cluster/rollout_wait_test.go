@@ -113,6 +113,9 @@ var twoClusterStreams = map[string]string{
 // cluster's manifests and asks it nothing about readiness, so a deploy can
 // apply every cluster before the first wait.
 func TestWaitRollouts_EveryClusterIsAppliedBeforeAnyWait(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeMultiClusterKubectl(t)
 	pending := applyTwoClusters(t, RolloutPolicy{Timeout: waitTimeout}, twoClusterStreams)
 	for _, c := range readCalls() {
@@ -139,6 +142,9 @@ func TestWaitRollouts_EveryClusterIsAppliedBeforeAnyWait(t *testing.T) {
 // default policy a failure on one cluster does not stop the wait on another,
 // and the verdict names each cluster and each resource.
 func TestWaitRollouts_FailuresOnEveryClusterAreReportedTogether(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	fakeMultiClusterKubectl(t, "k3d-alpha/bridge", "k3d-beta/proxy")
 	pending := applyTwoClusters(t, RolloutPolicy{Timeout: waitTimeout}, twoClusterStreams)
 	err := WaitRollouts(context.Background(), pending...)
@@ -160,6 +166,9 @@ func TestWaitRollouts_FailuresOnEveryClusterAreReportedTogether(t *testing.T) {
 // clusters fails, the verdict is that cluster's error, labelled — not an
 // aggregate of one.
 func TestWaitRollouts_OneFailingClusterKeepsItsOwnError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	fakeMultiClusterKubectl(t, "k3d-beta/proxy")
 	pending := applyTwoClusters(t, RolloutPolicy{Timeout: waitTimeout}, twoClusterStreams)
 	err := WaitRollouts(context.Background(), pending...)
@@ -172,6 +181,9 @@ func TestWaitRollouts_OneFailingClusterKeepsItsOwnError(t *testing.T) {
 // TestWaitRollouts_WarnReportsAndSucceeds: RolloutWarn tolerates a failed
 // rollout on any cluster, as it does on one.
 func TestWaitRollouts_WarnReportsAndSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	fakeMultiClusterKubectl(t, "k3d-alpha/bridge", "k3d-beta/proxy")
 	pending := applyTwoClusters(t, RolloutPolicy{Mode: RolloutWarn, Timeout: waitTimeout}, twoClusterStreams)
 	if err := WaitRollouts(context.Background(), pending...); err != nil {
@@ -183,6 +195,9 @@ func TestWaitRollouts_WarnReportsAndSucceeds(t *testing.T) {
 // the first failure anywhere; the other cluster's Deployments are never
 // awaited.
 func TestWaitRollouts_FailFastStopsAcrossClusters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeMultiClusterKubectl(t, "k3d-alpha/api")
 	pending := applyTwoClusters(t, RolloutPolicy{FailFast: true, Timeout: waitTimeout}, twoClusterStreams)
 	err := WaitRollouts(context.Background(), pending...)
@@ -200,6 +215,9 @@ func TestWaitRollouts_FailFastStopsAcrossClusters(t *testing.T) {
 // every cluster, so the resource it names first is awaited first even when it
 // runs on the cluster dispatched last.
 func TestWaitRollouts_OrderSpansClusters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeMultiClusterKubectl(t)
 	pending := applyTwoClusters(t, RolloutPolicy{Order: []string{"proxy", "bridge"}, Timeout: waitTimeout}, twoClusterStreams)
 	if err := WaitRollouts(context.Background(), pending...); err != nil {

@@ -25,6 +25,9 @@ import (
 // css_health that is actually ON must produce that skip. Before the fix the
 // scan arm produced nothing at all.
 func TestCollectFrontendLintJSONCSSHealthIndependentOfInventorySource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	const cssHealthSkipPhrase = "css_health enabled but no npm lint:styles script"
 
 	// A Node frontend with a lint script but NO lint:styles, and a

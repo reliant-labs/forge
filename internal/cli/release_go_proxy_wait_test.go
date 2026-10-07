@@ -139,6 +139,9 @@ func runWaitForGoProxy(t *testing.T, base, maxSeconds, firstDelay, maxDelay stri
 // milliseconds. The rest of this file asserts that waiting first turns it
 // green.
 func TestWaitForGoProxy_RaceUnwaitedResolutionFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script through real retry/backoff delays; runs in task test")
+	}
 	// Ingestion completes on the 4th probe; the unwaited job only ever makes
 	// the 1st. (Real numbers: ~6 minutes vs. an immediate request.)
 	ip := newIngestingProxy(t, 4, 1)
@@ -194,6 +197,9 @@ func TestWaitForGoProxy_ServedImmediatelyIsFast(t *testing.T) {
 // observed six-minute propagation. The fixture refuses until the 8th probe,
 // which is far past what a naive "retry a couple of times" loop would make.
 func TestWaitForGoProxy_KeepsWaitingForSlowIngestion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script through real retry/backoff delays; runs in task test")
+	}
 	ip := newIngestingProxy(t, 8, 1)
 	out, err := runWaitForGoProxy(t, ip.url, "60", "1", "1", "--tag-pushed")
 	if err != nil {
@@ -210,6 +216,9 @@ func TestWaitForGoProxy_KeepsWaitingForSlowIngestion(t *testing.T) {
 // shaped error that reads as a security problem — sending whoever sees it to
 // look in entirely the wrong place. So proxy-only must not count as success.
 func TestWaitForGoProxy_WaitsForTheChecksumDatabaseToo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script through real retry/backoff delays; runs in task test")
+	}
 	ip := newIngestingProxy(t, 1, 5)
 	out, err := runWaitForGoProxy(t, ip.url, "60", "1", "1", "--tag-pushed")
 	if err != nil {
@@ -248,6 +257,9 @@ func TestWaitForGoProxy_SkipSumdbStopsAtTheProxy(t *testing.T) {
 // The error text has to say so, because "my release is failing" plus an
 // ambiguous message is precisely the situation in which someone re-cuts.
 func TestWaitForGoProxy_TimeoutSaysTaggedButNotIngested(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script through real retry/backoff delays; runs in task test")
+	}
 	ip := newIngestingProxy(t, 0, 0) // never ingests
 	out, err := runWaitForGoProxy(t, ip.url, "2", "1", "1", "--tag-pushed")
 	if err == nil {
@@ -266,6 +278,9 @@ func TestWaitForGoProxy_TimeoutSaysTaggedButNotIngested(t *testing.T) {
 // landed is a real problem, and reporting it as mere propagation delay would
 // hide it.
 func TestWaitForGoProxy_TimeoutWithoutTagPushedIsTheGraverCase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script through real retry/backoff delays; runs in task test")
+	}
 	ip := newIngestingProxy(t, 0, 0)
 	out, err := runWaitForGoProxy(t, ip.url, "2", "1", "1")
 	if err == nil {
@@ -284,6 +299,9 @@ func TestWaitForGoProxy_TimeoutWithoutTagPushedIsTheGraverCase(t *testing.T) {
 // cannot be reached is not the same fact as "the proxy says no such version",
 // and it must not be reported as a successful ingestion.
 func TestWaitForGoProxy_UnreachableEndpointIsNotMistakenForUningested(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script through real retry/backoff delays; runs in task test")
+	}
 	// A closed port: curl fails to connect rather than returning a status.
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	dead := srv.URL

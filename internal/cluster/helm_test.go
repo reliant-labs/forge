@@ -437,6 +437,9 @@ func fakeKubectlLog(t *testing.T) string {
 // subsequent `forge env deploy` (the app) finds the CRDs present. Asserts the
 // kubectl invocation order: apply (CRD) → wait Established → apply (rest).
 func TestApplyCRDsThenRest_OrdersCRDsBeforeRest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	logPath := fakeKubectlLog(t)
 
 	extraCRDs := `apiVersion: apiextensions.k8s.io/v1
@@ -505,6 +508,9 @@ spec: {}`
 // the chart's Deployments to be Available before applying the riding
 // manifests (the cert-manager webhook gate). Asserts the kubectl invocation.
 func TestWaitChartDeploymentsAvailable_Command(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	logPath := fakeKubectlLog(t)
 	if err := waitChartDeploymentsAvailable(context.Background(), "k3d-test", "cert-manager", 30*time.Second); err != nil {
 		t.Fatalf("waitChartDeploymentsAvailable: %v", err)
@@ -521,6 +527,9 @@ func TestWaitChartDeploymentsAvailable_Command(t *testing.T) {
 // TestApplyRidingManifestsWithRetry_SucceedsFirstTry confirms the retry
 // wrapper passes through on a clean apply (fake kubectl exits 0).
 func TestApplyRidingManifestsWithRetry_SucceedsFirstTry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	logPath := fakeKubectlLog(t)
 	manifests := `apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -540,6 +549,9 @@ spec: {}`
 // stream with no CRDs (and no forge-supplied CRDs) does a plain apply with
 // no Established wait — byte-identical to a normal apply.
 func TestApplyCRDsThenRest_NoCRDsSingleApply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	logPath := fakeKubectlLog(t)
 
 	rest := `apiVersion: apps/v1

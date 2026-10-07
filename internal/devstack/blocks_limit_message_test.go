@@ -32,6 +32,9 @@ import (
 // control-plane registry shape and pins that the message tells the reader
 // which holders prune can actually reclaim.
 func TestCeilingMessageDistinguishesStacksFromPortBlockKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 8)
 

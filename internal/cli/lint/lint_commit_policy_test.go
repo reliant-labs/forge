@@ -14,6 +14,9 @@ import (
 // while `forge ci verify-generated` stayed green — and must name the file and
 // the fix, in text and JSON.
 func TestCommitPolicyStep_GatesOnIgnoredGeneratedCode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git against a real repository; runs in task test")
+	}
 	step := findStep(t, "commit-policy lint")
 	if !step.gates {
 		t.Fatal("commit-policy lint must gate: an ignored generated file breaks every fresh clone")

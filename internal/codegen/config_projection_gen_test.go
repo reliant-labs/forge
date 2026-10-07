@@ -273,6 +273,9 @@ func forgeKCLModuleRoot(t *testing.T) string {
 // env. Absent == default is lossless because the loader resolves a missing env
 // var to the same default.
 func TestGenerateConfigProjectionKCL_OptionalInlineOmittedAtDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH")
 	}

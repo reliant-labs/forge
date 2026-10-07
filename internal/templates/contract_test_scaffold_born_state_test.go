@@ -88,6 +88,9 @@ func (s *service) Count(ctx context.Context) (int, error) {
 const caseTableAnchor = "cases := []tdd.ContractCase{"
 
 func TestBornContractTestSurvivesDepValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go test on a scaffolded module; runs in task test")
+	}
 	t.Parallel()
 
 	rendered, err := InternalPkgTemplates().Render("contract_test.go.tmpl", map[string]string{

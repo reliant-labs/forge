@@ -38,6 +38,9 @@ func wtLayout(t *testing.T, primary, container, repo, branch string) string {
 
 // TestNestedWorktreesGetDistinctKeys is the regression lock for the collision.
 func TestNestedWorktreesGetDistinctKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)
@@ -66,6 +69,9 @@ func TestNestedWorktreesGetDistinctKeys(t *testing.T) {
 // `iss` claim, so re-deriving a working key to a new string would move a
 // running stack's ports.
 func TestUniqueBasenameKeyIsUnchanged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)
@@ -82,6 +88,9 @@ func TestUniqueBasenameKeyIsUnchanged(t *testing.T) {
 // shared, the key still has to separate — git's per-worktree admin name is
 // unique by construction, so it is the last resort.
 func TestCollidingContainersFallBackToUniqueKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)
@@ -99,6 +108,9 @@ func TestCollidingContainersFallBackToUniqueKey(t *testing.T) {
 // TestDistinctKeysYieldDistinctBlocks ties the key fix back to the thing it
 // exists to protect: distinct keys must claim distinct port blocks.
 func TestDistinctKeysYieldDistinctBlocks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)

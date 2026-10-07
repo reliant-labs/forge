@@ -35,6 +35,9 @@ func gitInit(t *testing.T) string {
 }
 
 func TestCaptureProvenance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := gitInit(t)
 	ctx := context.Background()
 	opts := CaptureOptions{ForgeVersion: "v0.1.44", WorktreeKey: "", Host: "h1"}

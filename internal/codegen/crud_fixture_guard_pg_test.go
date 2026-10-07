@@ -83,6 +83,9 @@ func tableNamed(t *testing.T, tables []schemadef.Table, name string) schemadef.T
 // moves with it, and a guard that disagreed with the INSERT it exists to
 // predict would fail here.
 func TestFixtureGuard_AcceptsWhatPostgresAccepts_RejectsWhatItRejects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs a live Postgres; runs in task test")
+	}
 	tables, shadow := applyGuardSchema(t, guardSchema)
 	orders := tableNamed(t, tables, "orders")
 	ctx := context.Background()

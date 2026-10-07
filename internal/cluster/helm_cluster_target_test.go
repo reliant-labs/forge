@@ -104,6 +104,9 @@ spec: {}`
 // into. A deploy that applied to cp-daemon and waited on control-plane would
 // report success for a chart whose CRDs the target cluster does not serve.
 func TestApplyRenderedCharts_ChartClusterRetargetsEveryKubectlCall(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	// Exactly what the CLI builds for a re-targeted CNPG: the env's primary
@@ -192,6 +195,9 @@ metadata:
 // declare no cluster, and their argv must be identical to before the field
 // existed — every call against the env's primary context.
 func TestApplyRenderedCharts_NoChartClusterUsesTheEnvContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	charts := []renderedChart{{
@@ -220,6 +226,9 @@ func TestApplyRenderedCharts_NoChartClusterUsesTheEnvContext(t *testing.T) {
 // loop (rather than per chart) would send both to the same place and still
 // pass the two single-chart tests above.
 func TestApplyRenderedCharts_PerChartContextsDoNotBleed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	charts := []renderedChart{

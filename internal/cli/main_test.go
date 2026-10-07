@@ -46,6 +46,13 @@ func TestMain(m *testing.M) {
 	orgResolver = func(context.Context, string, *cloud.Declaration) (string, error) {
 		return defaultTestOrg, nil
 	}
+	// Nor does any test reach GKE. The real describe shells out to `gcloud`
+	// with the developer's own credentials: on a machine with gcloud
+	// installed, a GKE-context test sat in a live API call (~10s each) whose
+	// answer depended on that account, and on CI it fails fast. "Not
+	// readable" is the CI answer, so it is the hermetic default; a test that
+	// wants a describe sets one (cluster_connect_test.go).
+	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) { return gkeDescription{}, false }
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)

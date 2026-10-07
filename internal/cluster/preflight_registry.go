@@ -42,10 +42,14 @@ type RegistryImageChecker struct {
 	// DockerConfigDir, when set, reads credentials from <dir>/config.json
 	// instead of the ambient docker config.
 	DockerConfigDir string
-	// Client is the HTTP client under the auth layer. Nil is oras's retrying
-	// client, which already backs off on 429 and 5xx before answering.
-	Client *http.Client
 }
+
+// registryHTTPClient is the HTTP client under the auth layer: oras's retrying
+// client, which already backs off on 429 and 5xx before answering. A package
+// seam rather than a field, because production has exactly one value for it;
+// a test swaps it for a client that does not spend seconds backing off from
+// the failures it serves on purpose.
+var registryHTTPClient = retry.DefaultClient
 
 // WithDockerConfigDir returns a copy that authenticates with the credentials
 // in dir/config.json — the cluster's pull creds. Implements
@@ -78,11 +82,7 @@ func (c RegistryImageChecker) ImageExists(ctx context.Context, ref string) (bool
 	if err != nil {
 		return false, fmt.Errorf("%w: read docker credentials: %v", ErrImageCheckInconclusive, err)
 	}
-	client := c.Client
-	if client == nil {
-		client = retry.DefaultClient
-	}
-	repo.Client = &auth.Client{Client: client, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
+	repo.Client = &auth.Client{Client: registryHTTPClient, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
 
 	_, err = repo.Resolve(ctx, reference)
 	return registryVerdict(host, err)

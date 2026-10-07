@@ -606,6 +606,13 @@ scaffold`. `forge project annotations` lists the marker and the mapping row.
 
 ### Fixed
 
+- **`schemadef.OpenShadowAt` returns no shadow when it fails.** It used to
+  return the live scratch database beside a migration-replay error, so the
+  only correct call shape was `defer shadow.Close()` BEFORE checking `err` —
+  and a caller writing the ordinary err-check-first form leaked the database.
+  It now drops what it opened and returns `nil, err`: check `err`, then defer
+  `Close`. (`Close` stays nil-safe, so existing callers keep working.)
+
 - **A service, entity, field or RPC whose name has a digit in it now builds —
   forge spells every identifier it shares with buf's generators by THEIR
   casing rules.** protoc-gen-go camel-cases a proto name word by word and

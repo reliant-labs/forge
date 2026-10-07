@@ -190,6 +190,55 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 	return out
 }
 
+// harvestedBuildCommits is every distinct commit the env's AGGREGATE build
+// state records, sorted. Empty when no state names one (an older forge wrote
+// none). Per-service external-build states carry no commit; they are built in
+// the same invocation as the aggregate, so its commit is the build's.
+//
+// Same lookup order as harvestReleaseArtifacts, so "the commit these artifacts
+// were built from" comes from the same source as "these artifacts".
+func harvestedBuildCommits(projectDir, envName string) []string {
+	seen := map[string]bool{}
+	for _, key := range buildStateLookupEnvs(envName) {
+		if st, err := ReadBuildState(projectDir, key); err == nil && st != nil && st.Commit != "" {
+			seen[st.Commit] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for c := range seen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkCutMatchesBuild refuses to seal a release over a build the checkout no
+// longer matches.
+//
+// A --no-build cut harvests digests an earlier build produced, but stamps the
+// release's provenance from the CHECKOUT it runs in. When those are different
+// commits the release is immutable and WRONG: it claims code the images were
+// never built from, and the deploy's freshness check (rightly) refuses it later
+// — after the hosted ledger already holds the bad record, which cannot be
+// amended. Refusing here costs nothing; the remedy is to run the cut from the
+// commit that was built, or to rebuild.
+func checkCutMatchesBuild(version, headCommit string, buildCommits []string) error {
+	if headCommit == "" || len(buildCommits) == 0 {
+		return nil
+	}
+	for _, c := range buildCommits {
+		if c != headCommit {
+			return fmt.Errorf("--release %s: the build state was built from %s but this checkout is at %s.\n"+
+				"  A release is sealed with the checkout's commit, so cutting it here would record code the images\n"+
+				"  were never built from — and a release cannot be amended afterwards.\n"+
+				"  fix: run the cut from a checkout of %s (the commit that was built), or rebuild from this one:\n"+
+				"       forge env build <env> --release %s --push",
+				version, shortSHA(c), shortSHA(headCommit), shortSHA(c), version)
+		}
+	}
+	return nil
+}
+
 func envNameOr(env string) string {
 	if env == "" {
 		return "<env>"

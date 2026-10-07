@@ -383,13 +383,10 @@ func removeTreeCtx(ctx context.Context, path string) error {
 }
 
 func (r Runner) goCacheOpenPaths(ctx context.Context) (openfiles.Snapshot, error) {
-	if r.OpenPaths != nil {
-		return r.OpenPaths(ctx)
-	}
-	if testing.Testing() {
+	if r.OpenPaths == nil && r.openShared == nil && testing.Testing() {
 		return openfiles.Snapshot{}, fmt.Errorf("storage.Runner.OpenPaths is unset under test")
 	}
-	return openfiles.Take(ctx)
+	return r.openSnapshot(ctx)
 }
 
 // processEnvText returns the arguments and environment of every process of

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,36 @@ type GCResult struct {
 	FailedLayers []string `json:"failed_layers,omitempty"`
 	// Error is the combined error text, for a human reading the record.
 	Error string `json:"error,omitempty"`
+	// CutOffLayers names each layer that ran out of its time slice (or the
+	// pass out of its budget) after doing what it could. That is not a
+	// failure: the layer reclaimed what it reached and resumes next pass. A
+	// pass whose only problems are cut-offs is OK.
+	CutOffLayers []string `json:"cut_off_layers,omitempty"`
+}
+
+// CutOffError marks a layer that stopped at its deadline having made whatever
+// progress it could. NewGCResult records it as a cut-off, not a failure.
+type CutOffError struct{ Err error }
+
+func (e *CutOffError) Error() string { return "cut off: " + e.Err.Error() }
+func (e *CutOffError) Unwrap() error { return e.Err }
+
+// onlyContextErrors reports whether every leaf of err is a deadline or
+// cancellation, i.e. the layer ended because it ran out of time and for no
+// other reason. A real error joined with a deadline is still a failure.
+func onlyContextErrors(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, inner := range joined.Unwrap() {
+			if !onlyContextErrors(inner) {
+				return false
+			}
+		}
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // LayerError attributes a failure to the maintenance layer it came from, so a
@@ -60,8 +91,9 @@ func NewGCResult(at time.Time, err error) GCResult {
 	if err == nil {
 		return r
 	}
-	r.Error = err.Error()
 	seen := map[string]bool{}
+	cut := map[string]bool{}
+	failed := false
 	var walk func(error)
 	walk = func(e error) {
 		if e == nil {
@@ -76,19 +108,51 @@ func NewGCResult(at time.Time, err error) GCResult {
 			return
 		}
 		var layer *LayerError
-		if errors.As(e, &layer) && layer != nil && !seen[layer.Layer] {
-			seen[layer.Layer] = true
-			r.FailedLayers = append(r.FailedLayers, layer.Layer)
+		if errors.As(e, &layer) && layer != nil {
+			var co *CutOffError
+			if errors.As(layer.Err, &co) {
+				if !cut[layer.Layer] {
+					cut[layer.Layer] = true
+					r.CutOffLayers = append(r.CutOffLayers, layer.Layer)
+				}
+				return
+			}
+			failed = true
+			if !seen[layer.Layer] {
+				seen[layer.Layer] = true
+				r.FailedLayers = append(r.FailedLayers, layer.Layer)
+			}
+			return
 		}
+		failed = true
+		if onlyContextErrors(e) { // the pass itself ran out of budget between layers
+			failed = false
+			if !cut["pass budget"] {
+				cut["pass budget"] = true
+				r.CutOffLayers = append(r.CutOffLayers, "pass budget")
+			}
+			return
+		}
+		r.Error += e.Error() + "\n"
 	}
 	walk(err)
 	sort.Strings(r.FailedLayers)
+	sort.Strings(r.CutOffLayers)
+	r.OK = !failed
+	if failed {
+		r.Error = strings.TrimSpace(err.Error())
+	} else {
+		r.Error = ""
+	}
 	return r
 }
 
 // Summary is one line naming what failed, for `env up` and `doctor`.
 func (r GCResult) Summary() string {
 	if r.OK {
+		if len(r.CutOffLayers) > 0 {
+			return "succeeded (cut off, resumes next pass: " + strings.Join(r.CutOffLayers, ", ") + ")"
+		}
 		return "succeeded"
 	}
 	if len(r.FailedLayers) > 0 {
@@ -200,4 +264,14 @@ func readRecord(path string) (GCResult, bool) {
 		return GCResult{}, false
 	}
 	return r, true
+}
+
+// RealFailure returns err only when the pass really failed. A pass whose every
+// layer finished or was cut off after making progress is a success, so the
+// command that ran it (and the scheduler watching its exit status) sees nil.
+func RealFailure(err error) error {
+	if err == nil || NewGCResult(time.Time{}, err).OK {
+		return nil
+	}
+	return err
 }

@@ -68,6 +68,10 @@ func (r Runner) Sources(apply bool) error {
 		maxAge = 0
 	}
 	policy := gitsource.EvictPolicy{MaxAge: maxAge, KeepPerSlug: r.Policy.SourceCacheKeep, Ctx: r.hostCtx()}
+	if r.openShared != nil || r.OpenPaths != nil {
+		ctx := r.hostCtx()
+		policy.InUse = r.sharedInUse(ctx)
+	}
 	got, err := gitsource.Evict(root, time.Now(), policy, apply, r.Out)
 	if err != nil {
 		return err

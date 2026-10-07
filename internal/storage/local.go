@@ -56,6 +56,10 @@ type Runner struct {
 	// REFUSED under test when unset.
 	ProcessEnv func(context.Context) (string, error)
 	OpenPaths  func(context.Context) (openfiles.Snapshot, error)
+
+	// Per-pass state, set by beginPass (passctx.go).
+	passTotal  time.Duration
+	openShared *sharedOpen
 }
 
 // hostCtx is the context the host layers run under.
@@ -243,7 +247,7 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 			}
 		}
 	}
-	r.Ctx = ctx
+	r = r.beginPass(ctx)
 	failures = append(failures, r.hostLayers(apply)...)
 	if err := r.Local(ctx); err != nil {
 		return errors.Join(append(failures, layerErr("docker", err))...)
@@ -276,22 +280,28 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 // error per failed layer.
 func (r Runner) hostLayers(apply bool) []error {
 	var failures []error
-	if err := r.Logs(apply); err != nil {
-		failures = append(failures, layerErr("logs", err))
+	add := func(err error) {
+		if err != nil {
+			failures = append(failures, err)
+		}
 	}
-	if err := r.GoCaches(apply); err != nil {
-		failures = append(failures, layerErr("go caches", err))
-	}
-	if err := r.TempSweep(apply); err != nil {
-		failures = append(failures, layerErr("temp sweep", err))
-	}
-	if err := r.Sources(apply); err != nil {
-		failures = append(failures, layerErr("source cache", err))
-	}
-	if err := r.worktreeLayer(apply); err != nil {
-		failures = append(failures, layerErr("worktrees", err))
-	}
+	add(r.runLayer("logs", shareLogs, func(s Runner) error { return s.Logs(apply) }))
+	add(r.goCacheLayer(apply))
+	add(r.runLayer("temp sweep", shareTemp, func(s Runner) error { return s.TempSweep(apply) }))
+	add(r.runLayer("source cache", shareSources, func(s Runner) error { return s.Sources(apply) }))
+	add(r.runLayer("worktrees", shareLast, func(s Runner) error { return s.worktreeLayer(apply) }))
 	return failures
+}
+
+// goCacheLayer runs the Go caches in their slice. GoCaches reports each of its
+// own steps as a layer, so its result is returned as is, not wrapped again.
+func (r Runner) goCacheLayer(apply bool) error {
+	if err := r.hostCtx().Err(); err != nil {
+		return layerErr("go caches", &CutOffError{Err: err})
+	}
+	sub, done := r.slice(shareGoCaches)
+	defer done()
+	return sub.GoCaches(apply)
 }
 
 // NodeConfigPath is stable across command exits; k3d bind mounts must never

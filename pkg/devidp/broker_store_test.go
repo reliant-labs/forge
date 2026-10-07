@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -179,7 +180,9 @@ IDP_BROKER_TOKEN:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// POSIX mode bits only: Windows reports 0666 for any writable file and
+	// protects it with the directory's ACL instead.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("a credential store must be 0600, got %v", info.Mode().Perm())
 	}
 }

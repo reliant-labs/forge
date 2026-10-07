@@ -19,6 +19,9 @@ an indication that a volume is safe to remove.
 | Cross-repo source cache (`<UserCacheDir>/forge/sources`) | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`)                                                                                      |
 | Temp scratch (`$TMPDIR`)                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
 | Host images tagged for a dead local registry             | Untag `localhost:<port>`, `registry.localhost:<port>` and `k3d-*:<port>` images when no running registry backs that alias and no container (running or stopped) uses the image            |
+| Shared Go build cache (`go env GOCACHE`) and golangci-lint cache | Remove entries unused for 48h (`go_cache_unused`), then oldest-first toward 60 GiB (`go_cache_gib`); never an entry touched in the last 2h; top-level files are never touched |
+| goimports/gopls module index (`<UserCacheDir>/goimports`) | Keep the generation each `index-name-*` link names, anything touched in the last 24h; remove older generations |
+| Orphaned private Go caches (`.gocache-*`, `*-gocache`, `$WORKTREE/.gocache`, `/tmp/scratchpad/gocache*`) | Remove a recognised build/module cache idle 24h that no live process environment names and no process holds open; never the shared cache |
 | Worktrees                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removal needs `worktree_reap` (see Worktrees)                                                                  |
 | Database/PVC/workspace volumes                           | Never removed by storage GC                                                                                                                                                                          |
 
@@ -29,6 +32,27 @@ Docker Desktop exposes to Linux. Build checks also cover output paths, the OS
 temporary directory, and explicitly configured `GOTMPDIR`, `GOCACHE` and
 `GOMODCACHE` paths. Add a custom Docker data disk or cache mount configured
 through a tool-specific config file to `host_paths`.
+
+## Go caches
+
+Do not set a private `GOCACHE`/`GOMODCACHE` per task and do not run `go clean
+-cache` or `go clean -modcache`. Without `-trimpath` Go keys every main-module
+package by its absolute directory, so each worktree builds its own copy of the
+shared cache; a private cache per task is a cold 5-14 GB copy nobody reuses, and
+`go clean -cache` under running builds produces `link: cannot open file
+…/go-build/…-d`. Age-based trim is the safe mechanism: Go bumps an entry's mtime
+on use once it is an hour stale, so an entry older than 2h is not in use by a
+live build. The installed schedule (`forge storage install`) runs the bounded
+non-disruptive pass (`forge storage auto-gc`) HOURLY, because agent load adds
+~40 GB/h of cache entries and a daily trim cannot hold a 60 GiB budget; the
+full pass, with registry downtime, stays daily at 03:30. Both take the
+maintenance lock, so they never overlap. `forge env up` additionally starts
+auto-gc at most once per 24h. `forge storage gc`/`auto-gc` apply it; `forge storage status` reports the shared cache
+size. Orphan reaping fails closed: if the process list or the open-file listing
+cannot be read, private caches are kept. The detached auto-gc pass has a 15
+minute budget so a first trim of a very large cache can make progress; a pass
+cut off by the deadline stops cleanly and resumes next time. Dry-run
+(`forge storage gc`) prints each candidate and its bytes.
 
 Direct Go, frontend, shell and Docker build lanes recheck capacity before starting.
 `forge env up` checks before startup and host launches. `forge storage check

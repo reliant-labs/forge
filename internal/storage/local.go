@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/openfiles"
 )
 
 // Runner executes maintenance using injectable process operations.
@@ -38,6 +40,18 @@ type Runner struct {
 	// and its walk over entries, not only its docker calls. Nil means
 	// unbounded.
 	Ctx context.Context
+
+	// Go-cache layer roots (gocache.go). Empty means the real machine
+	// location in production and is REFUSED under `go test`.
+	GoCacheRoot       string // shared GOCACHE
+	GoModCacheRoot    string // shared GOMODCACHE
+	GolangciCacheRoot string
+	GoimportsRoot     string
+	// ProcessEnv returns the text of every live process's environment; an error
+	// makes the orphan layer skip. OpenPaths is the lsof snapshot. Both are
+	// REFUSED under test when unset.
+	ProcessEnv func(context.Context) (string, error)
+	OpenPaths  func(context.Context) (openfiles.Snapshot, error)
 }
 
 // hostCtx is the context the host layers run under.
@@ -136,6 +150,7 @@ func (r Runner) Status(ctx context.Context) error {
 		return err
 	}
 	r.print("%s\n", b)
+	r.goCacheStatus(ctx)
 	for _, builder := range r.Policy.Builders {
 		b, err = r.builderUsage(ctx, builder)
 		if err != nil {
@@ -262,6 +277,9 @@ func (r Runner) hostLayers(apply bool) []error {
 	}
 	if err := r.TempSweep(apply); err != nil {
 		failures = append(failures, layerErr("temp sweep", err))
+	}
+	if err := r.GoCaches(apply); err != nil {
+		failures = append(failures, layerErr("go caches", err))
 	}
 	if err := r.Sources(apply); err != nil {
 		failures = append(failures, layerErr("source cache", err))

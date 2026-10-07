@@ -34,7 +34,13 @@ import (
 //     headers (the browser will block the response).
 //
 // Vary: Origin is always set so intermediate caches key on the Origin.
-func CORSMiddleware(allowOrigins []string, allowCredentials bool) func(http.Handler) http.Handler {
+//
+// The allowed request headers and the exposed response headers default to
+// what Connect, forge's frontend runtime and tracing need
+// (DefaultCORSAllowHeaders, DefaultCORSExposeHeaders). A project whose client
+// sends or reads more extends them with WithAllowHeaders / WithExposeHeaders —
+// see CORSOption for why that has to be the middleware's job.
+func CORSMiddleware(allowOrigins []string, allowCredentials bool, opts ...CORSOption) func(http.Handler) http.Handler {
 	// Belt-and-suspenders: the scaffolded config.Validate rejects this
 	// combination at startup, but if a caller constructs the middleware
 	// directly (e.g. in a test) we must still refuse to produce a
@@ -43,6 +49,7 @@ func CORSMiddleware(allowOrigins []string, allowCredentials bool) func(http.Hand
 		panic("middleware: CORS wildcard origin ('*') is incompatible with allowCredentials=true")
 	}
 	wildcard := containsWildcard(allowOrigins)
+	h := corsHeadersOf(opts)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,10 +80,10 @@ func CORSMiddleware(allowOrigins []string, allowCredentials bool) func(http.Hand
 			// without it in Expose-Headers the browser hides the header and
 			// the typed-error runtime reads null on every cross-origin
 			// response.
-			w.Header().Set("Access-Control-Expose-Headers", "Connect-Protocol-Version, "+svcerr.ReasonHeader)
+			w.Header().Set("Access-Control-Expose-Headers", h.expose)
 
 			if r.Method == http.MethodOptions {
-				writePreflightHeaders(w)
+				writePreflightHeaders(w, h.allow)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -105,7 +112,13 @@ func CORSMiddleware(allowOrigins []string, allowCredentials bool) func(http.Hand
 // It MUST NOT be wired outside development. Reflecting every origin (especially
 // with credentials) is exactly the footgun CORSMiddleware guards against for
 // real deployments.
-func DevCORSMiddleware(allowCredentials bool) func(http.Handler) http.Handler {
+//
+// It takes the same header options as CORSMiddleware and applies them the same
+// way. Reflecting whatever headers a dev request asks for would make dev pass
+// a header that production then refuses — the exact gap that let a web client
+// header take a deployed app down — so dev and production allow one list.
+func DevCORSMiddleware(allowCredentials bool, opts ...CORSOption) func(http.Handler) http.Handler {
+	h := corsHeadersOf(opts)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
@@ -127,10 +140,10 @@ func DevCORSMiddleware(allowCredentials bool) func(http.Handler) http.Handler {
 			// Same expose-header contract as CORSMiddleware so the generated
 			// frontend's typed-error runtime can read x-forge-error-reason
 			// cross-origin.
-			w.Header().Set("Access-Control-Expose-Headers", "Connect-Protocol-Version, "+svcerr.ReasonHeader)
+			w.Header().Set("Access-Control-Expose-Headers", h.expose)
 
 			if r.Method == http.MethodOptions {
-				writePreflightHeaders(w)
+				writePreflightHeaders(w, h.allow)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -167,9 +180,89 @@ func resolveAllowedOrigin(origin string, allowOrigins []string, wildcard bool) (
 // writePreflightHeaders sets the response headers required for a CORS
 // preflight (OPTIONS) reply and writes the 204 status. Kept separate from
 // the main handler so the simple-request path stays easy to audit.
-func writePreflightHeaders(w http.ResponseWriter) {
+func writePreflightHeaders(w http.ResponseWriter, allowHeaders string) {
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Authorization, Traceparent, Tracestate, X-Request-Id")
+	w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// DefaultCORSAllowHeaders are the request headers every forge server admits
+// cross-origin: Connect's protocol headers, the bearer token, and the trace
+// context and request id the generated clients attach.
+var DefaultCORSAllowHeaders = []string{
+	"Content-Type", "Connect-Protocol-Version", "Connect-Timeout-Ms",
+	"Authorization", "Traceparent", "Tracestate", "X-Request-Id",
+}
+
+// DefaultCORSExposeHeaders are the response headers every forge server lets a
+// cross-origin client read: Connect's protocol version and the forge
+// error-reason header the generated frontend runtime keys typed errors on.
+var DefaultCORSExposeHeaders = []string{"Connect-Protocol-Version", svcerr.ReasonHeader}
+
+// CORSOption extends a CORS policy beyond the defaults.
+//
+// WHY THE MIDDLEWARE HAS TO OFFER THIS. The preflight is answered HERE, before
+// any of the project's own middleware runs, so a project could not add a
+// header to it from the outside: a web client header that is not on the list
+// makes the browser refuse every RPC, and the only remedy was to stop sending
+// the header. A project declares its extra headers instead (the scaffolded
+// cors_allow_headers / cors_expose_headers config), and the defaults stay.
+type CORSOption func(*corsHeaderLists)
+
+type corsHeaderLists struct{ allow, expose []string }
+
+// WithAllowHeaders admits more request headers in the preflight.
+func WithAllowHeaders(headers ...string) CORSOption {
+	return func(l *corsHeaderLists) { l.allow = append(l.allow, headers...) }
+}
+
+// WithExposeHeaders lets a cross-origin client read more response headers.
+func WithExposeHeaders(headers ...string) CORSOption {
+	return func(l *corsHeaderLists) { l.expose = append(l.expose, headers...) }
+}
+
+// HeaderList splits a comma-separated header list (a config value) into
+// names, dropping blanks. For WithAllowHeaders / WithExposeHeaders.
+func HeaderList(csv string) []string {
+	var out []string
+	for _, h := range strings.Split(csv, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// corsHeaders is a policy's header lists, rendered once.
+type corsHeaders struct{ allow, expose string }
+
+func corsHeadersOf(opts []CORSOption) corsHeaders {
+	l := corsHeaderLists{
+		allow:  append([]string(nil), DefaultCORSAllowHeaders...),
+		expose: append([]string(nil), DefaultCORSExposeHeaders...),
+	}
+	for _, o := range opts {
+		if o != nil {
+			o(&l)
+		}
+	}
+	return corsHeaders{allow: joinHeaders(l.allow), expose: joinHeaders(l.expose)}
+}
+
+// joinHeaders renders a header list, dropping case-insensitive duplicates and
+// keeping first-seen order (and spelling).
+func joinHeaders(headers []string) string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(headers))
+	for _, h := range headers {
+		h = strings.TrimSpace(h)
+		k := strings.ToLower(h)
+		if h == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, h)
+	}
+	return strings.Join(out, ", ")
 }

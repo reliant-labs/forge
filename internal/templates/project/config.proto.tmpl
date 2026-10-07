@@ -102,6 +102,18 @@ message AppConfig {
     description: "Set Access-Control-Allow-Credentials: true on CORS responses. MUST NOT be combined with a wildcard origin ('*') — that combination is spec-invalid and config.Validate rejects it at startup (via the CORS role annotations, not field names)."
   }];
 
+  string cors_allow_headers = 38 [(forge.v1.config) = {
+    env_var: "CORS_ALLOW_HEADERS"
+    flag: "cors-allow-headers"
+    description: "Comma-separated request headers a browser client may send cross-origin, ADDED to forge's defaults (Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Authorization, Traceparent, Tracestate, X-Request-Id). The CORS preflight is answered before any other middleware runs, so a header the web client attaches that is not listed here makes the browser refuse every RPC. Applies in development too, so dev refuses what production would."
+  }];
+
+  string cors_expose_headers = 39 [(forge.v1.config) = {
+    env_var: "CORS_EXPOSE_HEADERS"
+    flag: "cors-expose-headers"
+    description: "Comma-separated response headers a browser client may READ cross-origin, ADDED to forge's defaults (Connect-Protocol-Version, x-forge-error-reason). A header the client reads that is not exposed is hidden by the browser, and the code keyed on it silently never runs."
+  }];
+
   string tls_cert_path = 16 [(forge.v1.config) = {
     env_var: "TLS_CERT_PATH"
     flag: "tls-cert-path"

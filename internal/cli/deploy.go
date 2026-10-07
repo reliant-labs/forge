@@ -3825,12 +3825,15 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 	}
 
 	opts := cluster.PreflightOpts{
-		Manifests:    manifests,
-		Namespace:    in.namespace,
-		Images:       cluster.DockerImageChecker{},
-		ImageArch:    cluster.DockerImageArchChecker{},
-		TargetArch:   in.targetArch,
-		SkipImageRef: cluster.LocalImageRef,
+		Manifests: manifests,
+		Namespace: in.namespace,
+		Images:    cluster.RegistryImageChecker{},
+		ImageArch: cluster.DockerImageArchChecker{},
+		// One recheck for a miss or an inconclusive lookup, a moment apart:
+		// a registry having a bad minute answers wrongly in bursts.
+		ImageRecheckDelay: 2 * time.Second,
+		TargetArch:        in.targetArch,
+		SkipImageRef:      cluster.LocalImageRef,
 		// Render-time secret back-propagation supply. Set UNCONDITIONALLY (not
 		// gated behind the remote-cluster block below): the back-propagation
 		// gate is a pure, no-cluster check that runs on every deploy — incl.
@@ -3880,6 +3883,11 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		// TRUE verdict. Gated to remote clusters (same as the Secret check) —
 		// local k3d images are skipped via LocalImageRef anyway.
 		opts.PullCreds = cluster.KubectlPullCredsResolver{}
+		// An image this cluster is already RUNNING is not "missing",
+		// whatever the registry answers this minute: a would-be block on it
+		// becomes a warning naming both facts. Listed only when an image
+		// would otherwise block.
+		opts.RunningImages = cluster.KubectlRunningImages{}
 	}
 
 	// DECLARED external Secret prerequisites are checked on every cluster that

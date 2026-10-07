@@ -22,6 +22,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // generateMu protects the generation pipeline from concurrent runs.
@@ -818,6 +819,9 @@ func runGoBuildValidate(projectDir string) error {
 	// dropped in its root.
 	validateCmd := exec.Command("go", "build", "-o", os.DevNull, "./...")
 	validateCmd.Dir = projectDir
+	// Never the caller's -mod=mod: a validate build that may edit go.sum
+	// makes generate's output depend on who ran it (see goexec.Env).
+	validateCmd.Env = goexec.Env()
 	var buildStderr strings.Builder
 	validateCmd.Stdout = os.Stdout
 	validateCmd.Stderr = io.MultiWriter(os.Stderr, &buildStderr)
@@ -943,6 +947,7 @@ func validateTestFilesTypecheck(projectDir string) error {
 			packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports |
 			packages.NeedSyntax,
 		Dir:   projectDir,
+		Env:   goexec.Env(),
 		Tests: true,
 	}
 	pkgs, err := packages.Load(cfg, "./...")

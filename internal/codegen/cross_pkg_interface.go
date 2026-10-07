@@ -33,6 +33,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // CrossPkgInterfaceResult bundles everything the auto-stub emitter
@@ -104,6 +106,7 @@ func ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName string) (CrossPkgIn
 		Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo |
 			packages.NeedDeps | packages.NeedImports | packages.NeedSyntax,
 		Dir: handlerDir,
+		Env: goexec.Env(),
 	}
 	pkgs, err := packages.Load(cfg, importPath)
 	if err != nil || len(pkgs) == 0 {

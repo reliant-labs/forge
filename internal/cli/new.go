@@ -15,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -1275,6 +1276,7 @@ func runGoModTidy(ctx context.Context, path string) error {
 	default:
 		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 		cmd.Dir = path
+		cmd.Env = goexec.Env()
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -1291,6 +1293,7 @@ func runGoModTidy(ctx context.Context, path string) error {
 	}
 	cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 	cmd.Dir = genDir
+	cmd.Env = goexec.Env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

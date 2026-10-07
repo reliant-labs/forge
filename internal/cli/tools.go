@@ -82,7 +82,8 @@ func resolveToolVersion(ctx context.Context, projectDir string, t protoTool, ove
 	cmd.Dir = projectDir
 	// The module graph CI sees: a developer's go.work may bridge a local
 	// checkout, which is not what the committed stubs were built against.
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	// Under a caller's -mod=mod this `go list -m` would also write go.sum.
+	cmd.Env = goexec.Env("GOWORK=off")
 	out, err := cmd.Output()
 	if v := strings.TrimSpace(string(out)); err == nil && v != "" {
 		return v
@@ -268,7 +269,9 @@ func runToolsInstall(ctx context.Context, version string, force bool) error {
 
 		spec := t.Module + "@" + resolveToolVersion(ctx, ".", t, version)
 		fmt.Printf("📦 Installing %-26s (go install %s)\n", t.Binary, spec)
-		out, err := goexec.Graceful(exec.CommandContext(ctx, "go", "install", spec)).CombinedOutput()
+		installCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "install", spec))
+		installCmd.Env = goexec.Env()
+		out, err := installCmd.CombinedOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ❌ go install %s failed: %v\n", spec, err)
 			if len(out) > 0 {

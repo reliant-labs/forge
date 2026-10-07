@@ -2037,7 +2037,7 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
 	// CGO_ENABLED=0 is forge's pure-Go contract; a GoBuild.env entry can
 	// override it (and any other build-time var) since it's appended last.
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	cmd.Env = goexec.Env("CGO_ENABLED=0")
 	if arch != "" {
 		cmd.Env = append(cmd.Env, "GOOS="+targetOS, "GOARCH="+arch)
 	} else if targetOS != "" {
@@ -2869,7 +2869,7 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
 	}
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
-	env := append(os.Environ(), "CGO_ENABLED=0")
+	env := goexec.Env("CGO_ENABLED=0")
 	if v.GOOS != "" {
 		env = append(env, "GOOS="+v.GOOS)
 	}

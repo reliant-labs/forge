@@ -51,6 +51,7 @@ import (
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/projectstore"
@@ -751,6 +752,7 @@ func preflightGoModulesTidy(ctx context.Context, e *KCLEntities, projectDir stri
 		probeCtx, cancel := context.WithTimeout(ctx, goModTidyTimeout)
 		cmd := exec.CommandContext(probeCtx, "go", "mod", "tidy", "-diff")
 		cmd.Dir = dir
+		cmd.Env = goexec.Env()
 		out, err := cmd.CombinedOutput()
 		// Read the deadline state BEFORE cancelling. cancel() sets Err() to
 		// context.Canceled, so checking it afterwards is true for EVERY probe

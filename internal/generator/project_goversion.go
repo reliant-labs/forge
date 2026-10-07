@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 const defaultGoVersion = "1.27.0"
@@ -14,7 +16,9 @@ const defaultGoVersion = "1.27.0"
 // (for example, "1.26.1"). It trusts the installed toolchain and only falls
 // back to defaultGoVersion when the local version cannot be detected.
 func detectGoVersion() string {
-	out, err := exec.Command("go", "env", "GOVERSION").Output()
+	cmd := exec.Command("go", "env", "GOVERSION")
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
 	if err != nil {
 		return defaultGoVersion
 	}

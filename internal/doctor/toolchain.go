@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // CheckCovdata verifies that `go tool covdata` is available in the
@@ -40,6 +42,7 @@ import (
 // decided on the output sentinel, not the exit code.
 func CheckCovdata(ctx context.Context, _ *Environment) CheckResult {
 	cmd := exec.CommandContext(ctx, "go", "tool", "covdata")
+	cmd.Env = goexec.Env()
 	out, err := cmd.CombinedOutput()
 	body := string(out)
 	// covdata printing its own usage banner IS the proof it exists,

@@ -1,4 +1,7 @@
-// Package goexec makes a cancelled `go` subprocess clean up after itself.
+// Package goexec configures the `go` subprocesses forge runs on its own
+// behalf. Graceful makes a cancelled one clean up after itself; Env keeps a
+// caller's GOFLAGS=-mod=mod from letting one rewrite go.mod and go.sum (see
+// env.go).
 //
 // # The leak
 //
@@ -35,7 +38,7 @@
 // motivated it. A process with no cleanup to do gains nothing and loses
 // up to WaitDelay of shutdown latency, so do not reach for it by reflex.
 //
-//forge:exclude-contract: a two-field configuration applied to a caller-owned exec.Cmd; there is no component to bind and no I/O client to fake
+//forge:exclude-contract: pure configuration of a caller-owned exec.Cmd and its environment; there is no component to bind and no I/O client to fake
 package goexec
 
 import (

@@ -100,6 +100,9 @@ func TestDeriveGitVersion_TaggedSortsBetweenReleases(t *testing.T) {
 // remote. Every scaffold-and-build job failed with "invalid version: unknown
 // revision".
 func TestDeriveGitVersion_IsNeverInstallable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	for name, tag := range map[string]string{"tagged": "v0.1.15", "untagged": ""} {
 		t.Run(name, func(t *testing.T) {
 			got := deriveGitVersion(fixtureRepo(t, tag))

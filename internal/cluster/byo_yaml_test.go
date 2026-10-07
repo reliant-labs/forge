@@ -125,6 +125,9 @@ func TestGenerated_FailuresNameTheGenerator(t *testing.T) {
 }
 
 func TestBundledChart_ObjectsJoinTheStream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and drives a fake helm through shell subprocesses; runs in task test")
+	}
 	fakeHelm(t, byoDeployment)
 	raw := byoOutput(t, map[string]any{"bundled_charts": []any{map[string]any{
 		"name": "shop", "chart": "shop", "repo": "https://charts.example", "version": "1.2.3", "namespace": "acme",

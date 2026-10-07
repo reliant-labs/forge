@@ -203,15 +203,25 @@ func TestRunDevClusterUp_EnsuresStandaloneRegistry(t *testing.T) {
 	}
 	cleanupK3dCreateToolsFn = func(_ context.Context, _ string) error { return nil }
 	mergeK3dKubeconfigFn = func(_ context.Context, _ string) error { return nil }
+	// The real pin runs `kubectl config use-context` against the
+	// developer's kubeconfig — shared with every process on the machine —
+	// so it is recorded here rather than run. This used to be left to
+	// the real kubectl with its error ignored, which switched the host's
+	// context to k3d-control-plane on every run of this test.
+	origPin := pinKubectlContextFn
+	t.Cleanup(func() { pinKubectlContextFn = origPin })
+	pinKubectlContextFn = func(_ context.Context, clusterName string) error {
+		calls = append(calls, "pin:"+clusterName)
+		return nil
+	}
 
-	// pinKubectlContext shells out to kubectl, which a unit test must not
-	// depend on; it runs after both calls under test, so an error there
-	// does not invalidate the ordering assertion below.
+	// What follows the pin (mkcert provisioning) is out of scope here.
 	_ = runDevClusterUp(t.Context(), configPath, false)
 
-	if len(calls) < 2 || calls[0] != "registry:k3d-control-plane-registry" || calls[1] != "cluster-create" {
-		t.Fatalf("call order was %v; want the standalone registry ensured BEFORE cluster create "+
-			"([registry:k3d-control-plane-registry cluster-create])", calls)
+	want := []string{"registry:k3d-control-plane-registry", "cluster-create", "pin:control-plane"}
+	if len(calls) < len(want) || calls[0] != want[0] || calls[1] != want[1] || calls[2] != want[2] {
+		t.Fatalf("call order was %v; want the standalone registry ensured BEFORE cluster create, "+
+			"and the context pinned after it (%v)", calls, want)
 	}
 }
 

@@ -106,6 +106,9 @@ func TestPruneReclaimsDerivedKeyWhenWorktreeGone(t *testing.T) {
 // and it is the one worth being strict about: reclaiming moves ports, so a key
 // whose worktree still exists must survive every prune, forever.
 func TestPruneNeverReclaimsDerivedKeyWhileWorktreeLives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -147,6 +150,9 @@ func TestPruneNeverReclaimsDerivedKeyWhileWorktreeLives(t *testing.T) {
 // same-prefixed worktree has just been deleted, which is precisely the
 // situation a name-parsing implementation would get wrong.
 func TestPruneNeverReclaimsStandaloneKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -247,6 +253,9 @@ func TestLegacyEntryWithoutOriginIsNeverReclaimed(t *testing.T) {
 // with its index unchanged throughout, since a block that moved would defeat
 // the point of migrating in place.
 func TestLegacyEntryLearnsOriginOnNextRenderThenPrunes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -289,6 +298,9 @@ func TestLegacyEntryLearnsOriginOnNextRenderThenPrunes(t *testing.T) {
 // first attribution was wrong and must be dropped rather than left to strand a
 // port when that worktree goes away.
 func TestSharedKeyLosesOriginWhenAnotherWorktreeAllocatesIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -335,6 +347,9 @@ func TestSharedKeyLosesOriginWhenAnotherWorktreeAllocatesIt(t *testing.T) {
 // its origin the first time `forge generate` touched it, silently re-creating
 // the leak.
 func TestUnarmedRenderNeverStripsOrigin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -369,6 +384,9 @@ func TestUnarmedRenderNeverStripsOrigin(t *testing.T) {
 // leaves the three leaked ones; after it, four — enough to get back under the
 // 8-block ceiling that was blocking `forge env render prod`.
 func TestPruneControlPlaneRegistryShape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)

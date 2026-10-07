@@ -178,6 +178,9 @@ func writeForgeModuleProxy(t *testing.T) string {
 // forge — exactly the drift the script exists to prevent (#273's first CI
 // run). A failed resolution must fail the step and install nothing.
 func TestCIWorkflows_InstallForgeScriptResolvesFromProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the install script with a real go toolchain against a local module proxy; runs in task test")
+	}
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Fatal("go not on PATH")

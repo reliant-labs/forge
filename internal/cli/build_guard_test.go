@@ -62,6 +62,9 @@ func TestAssertLinuxELFBinary_RejectsDarwinHostBuild(t *testing.T) {
 // and FAILS for a mismatched arch (arm64 binary, amd64-targeted image — the
 // other half of the `exec format error` class).
 func TestAssertLinuxELFBinary_AcceptsCorrectLinuxArch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	dir := t.TempDir()
 	for _, arch := range []string{"amd64", "arm64"} {
 		bin := filepath.Join(dir, "control-plane-"+arch)

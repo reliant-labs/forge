@@ -30,6 +30,9 @@ import (
 // testdata is skipped because fixtures there are inputs to formatters and
 // linters under test; some are deliberately unformatted.
 func TestTrackedGoFilesAreGofmtClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scans every file in the forge repository; runs in task test")
+	}
 	t.Parallel()
 	root := repoRoot(t)
 

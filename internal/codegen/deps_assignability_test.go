@@ -305,6 +305,9 @@ type App struct {
 // interface. types.Implements must hold because both sides (and the
 // context.Context in the method signature) come from one universe.
 func TestDepsAssignability_CrossPackageAdapterImplementsWorkerInterface(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "go.mod"), `module example.com/proj
 

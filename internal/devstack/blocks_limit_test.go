@@ -29,6 +29,9 @@ func setMaxStacksLimit(t *testing.T, n int) {
 // blocks 0..7 are legal (8 stacks total, counting the default). The 7th
 // NAMED key (block 7, the 8th stack overall) must still succeed.
 func TestAllocateBlockAllowsUpToCeiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 8)
 
@@ -51,6 +54,9 @@ func TestAllocateBlockAllowsUpToCeiling(t *testing.T) {
 // ceiling), must be refused rather than silently handed a block the
 // project's cluster config never pre-mapped.
 func TestAllocateBlockRefusesPastCeiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 8)
 
@@ -126,6 +132,9 @@ func TestAllocatePortAvoidingForeignRefusesPastCeiling(t *testing.T) {
 // registered redirect URIs, so an already-issued key has to resolve forever,
 // independent of whatever the ceiling is set to later.
 func TestExistingBlockPastCeilingStillResolves(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	dir := t.TempDir()
 
 	// Allocate with NO ceiling armed — the key lands on block 9, e.g. a
@@ -199,6 +208,9 @@ func TestDefaultKeyNeverBlockedByCeiling(t *testing.T) {
 // `forge ci`) must keep allocating without limit — the ceiling is opt-in via
 // forge.yaml, not a default this package imposes on every consumer.
 func TestUnarmedCeilingPreservesTodaysBehavior(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 0) // explicit unarmed, matching the true zero value
 

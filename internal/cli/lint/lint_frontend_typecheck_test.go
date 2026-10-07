@@ -382,6 +382,9 @@ func TestFrontendTypecheck_DepsPresentButNoCompiler(t *testing.T) {
 // `typecheck` npm script used to get a nag and no check; now forge resolves
 // the compiler and runs it.
 func TestFrontendTypecheck_NoTypecheckScriptStillChecks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	root := t.TempDir()
 	writeFrontend(t, root, frontendFixture{
 		name:      "web",
@@ -420,6 +423,9 @@ func TestFrontendTypecheck_NonTypeScriptFrontendIsSilent(t *testing.T) {
 // including the `warn` spelling and its `warning` alias (a legal alias that a
 // prior fix restored — it must not regress).
 func TestFrontendTypecheck_SeverityDial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	for _, tc := range []struct {
 		severity  string
 		wantGates bool
@@ -547,6 +553,9 @@ func TestFrontendTypecheckTargets_ResolvesFromProject(t *testing.T) {
 // be reported in declaration order regardless of which compiler finishes
 // first, or the report is not diffable.
 func TestFrontendTypecheck_MultipleFrontendsRunConcurrentlyInOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	root := t.TempDir()
 	// "slow" sleeps so it finishes LAST in wall-clock but must still be
 	// reported FIRST (declaration order).
@@ -600,6 +609,9 @@ func TestFrontendTypecheck_MultipleFrontendsRunConcurrentlyInOrder(t *testing.T)
 // The barrier has no such assumption. It cannot pass while serialized and
 // cannot fail while concurrent, at any machine speed.
 func TestFrontendTypecheck_RunsFrontendsConcurrently(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	const frontends = 4 // == frontendTypecheckConcurrency, so all may run at once
 
 	root := t.TempDir()
@@ -689,6 +701,9 @@ func TestResolveLocalTSC_WalksToWorkspaceRootButNotAbove(t *testing.T) {
 // same table, so a divergence in verdict is a bug the step-table refactor
 // exists to prevent.
 func TestFrontendTypecheck_TextModeMirrorsJSONVerdict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	for _, tc := range []struct {
 		name      string
 		fixture   frontendFixture

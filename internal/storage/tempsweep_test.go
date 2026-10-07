@@ -305,6 +305,9 @@ func TestTempSweepRefusesTheRealTempDirUnderTest(t *testing.T) {
 // sitting in an unscoped root must survive, because GC must never have been
 // given a root it can delete from.
 func TestGCDoesNotSweepTheRealTempDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs every GC layer, including the Docker daemon probes; runs in task test")
+	}
 	// Stand in for the real $TMPDIR: an entry that satisfies every sweep
 	// condition (allowlisted prefix, 48h idle, not open, no git metadata).
 	standIn := t.TempDir()
@@ -618,6 +621,9 @@ func TestTempSweepRetainsEntriesHeldOpenThroughASymlinkedRoot(t *testing.T) {
 // part of the machine. The old reader accepted any output that parsed into a
 // path, so the processes lsof never reached were treated as holding nothing.
 func TestTempSweepRefusesAPartialLsofListing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	for _, tc := range []struct{ name, tail string }{
 		{"killed mid-listing", "kill -9 $$"},
 		{"unexpected exit status", "exit 2"},

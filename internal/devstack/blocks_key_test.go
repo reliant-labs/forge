@@ -72,6 +72,9 @@ func TestAllocatePortAvoidingForeignRejectsEmptyInterpolationKey(t *testing.T) {
 // is actually malformed. The default stack and every key forge derives from
 // git must keep working untouched — this guard has no business moving a port.
 func TestAllocateBlockAcceptsCanonicalKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	for _, key := range []string{"", "wt-a", "prod", "prod-wt-a", "feature-123"} {
 		dir := t.TempDir()
 		if _, err := AllocatePort(dir, 3000, key); err != nil {

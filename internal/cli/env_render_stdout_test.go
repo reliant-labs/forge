@@ -127,6 +127,9 @@ func runRenderCapturingProcessStdout(t *testing.T, dir, env string, args ...stri
 // Mutation that fails it: remove the os.Stdout divert in runEnvRender — the
 // Note lands on stdout above the first document.
 func TestEnvRender_StdoutIsOnlyManifests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 	dir := writeRenderStdoutProject(t)
 

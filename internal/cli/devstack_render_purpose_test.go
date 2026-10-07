@@ -168,6 +168,9 @@ func resetDevStackGlobals(t *testing.T) {
 // in activateDevStack (the pre-fix behavior) — the full-ceiling case fails the
 // render, and the other two create or rewrite blocks.json.
 func TestEnvRender_CloudEnvClaimsNoPortBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 
 	cases := []struct {
@@ -280,6 +283,9 @@ func readRegistryKeys(t *testing.T, primary string) map[string]bool {
 // disarm the allocator for renderDeclaration unconditionally) — deploy's port
 // drops back to the base and stops agreeing with up's.
 func TestLocalEnvStillClaimsItsPortBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 
 	for _, purpose := range []struct {
@@ -309,6 +315,9 @@ func TestLocalEnvStillClaimsItsPortBlock(t *testing.T) {
 // env legitimately needs a local port: `forge env up prod --target reliant-web`
 // runs prod's SPA on a local dev server, and it must not land on dev's :3000.
 func TestLaunchingCloudEnvLocallyStillClaimsABlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 	resetDevStackGlobals(t)
 	primary, worktree := portblockRepo(t)

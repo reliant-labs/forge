@@ -48,6 +48,9 @@ CREATE TABLE line_items (
 // property: the SQL BuildPlan renders for a schema carrying generated columns
 // is executed by the database that defines them, and it is accepted.
 func TestSeedSQLOverGeneratedColumnsIsAcceptedByPostgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs a live Postgres; runs in task test")
+	}
 	db, cleanup, err := pgtest.New()
 	if err != nil {
 		t.Fatalf("pgtest.New: %v", err)

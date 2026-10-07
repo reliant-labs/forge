@@ -52,6 +52,9 @@ func requireNPM(t *testing.T) {
 // it is the "sha512-" hash, which exists nowhere in package.json and can only
 // come from npm packing the real bytes, that pins the derivation.
 func TestHarvestNPMArtifacts_RecordsNameVersionAndIntegrity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	requireNPM(t)
 	dir := t.TempDir()
 	pkgDir := filepath.Join(dir, "web-runtime")
@@ -85,6 +88,9 @@ func TestHarvestNPMArtifacts_RecordsNameVersionAndIntegrity(t *testing.T) {
 // Without this, a harvest that returned any constant "sha512-…" string would
 // satisfy the shape assertion above while recording an unverifiable lie.
 func TestHarvestNPMArtifacts_IntegrityTracksContent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	requireNPM(t)
 
 	pack := func(t *testing.T, body string) string {

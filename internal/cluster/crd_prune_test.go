@@ -96,6 +96,9 @@ func deletes(calls []string) []string {
 //   - no custom resource of it exists anywhere (deleting a CRD deletes every
 //     instance cluster-wide; another env on the same cluster may still use it).
 func TestPruneCRDs_DeletesOnlyOwnedUnrenderedUnused(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	calls := fakeCRDKubectl(t,
 		[]string{"widgets.acme.dev", "gadgets.acme.dev", "sprockets.acme.dev"},
 		map[string]bool{"sprockets.acme.dev": true},
@@ -159,6 +162,9 @@ func TestCRDOwner(t *testing.T) {
 // this owner's CRDs, and a --target apply (a SUBSET of the env) never does —
 // a CRD missing from a subset proves nothing.
 func TestApply_PrunesCRDsOnlyOnAFullApply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	stream := crdOwnedStream
 	opts := gateOpts(RolloutSkip)
 	opts.Project, opts.Env, opts.PruneCRDs = "acme", "dev", true

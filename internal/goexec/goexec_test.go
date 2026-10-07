@@ -82,6 +82,9 @@ func itoa(n int) string {
 // If this test ever starts failing, the Go runtime changed its default
 // cancellation and Graceful's call sites deserve a second look.
 func TestPlainCommandContextSIGKILLsAndOrphansScratch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out real process/probe timeouts; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX signals and sh are not available on Windows")
 	}

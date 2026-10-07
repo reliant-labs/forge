@@ -19,10 +19,19 @@ import (
 // release pipeline rather than with forge. The cost of the bug was paid three
 // times — once per release-candidate round trip through CI.
 //
-// A compile is the cheapest possible check for this class of defect, so it
-// runs on every `go test`, in SHORT mode too: a `go build` for another GOOS
-// needs no toolchain beyond the one already present, and it fails with the
-// exact undefined symbol.
+// A compile is the cheapest possible check for this class of defect: a
+// `go build` for another GOOS needs no toolchain beyond the one already
+// present, and it fails with the exact undefined symbol. It runs in `task test`
+// and CI, but NOT under -short, for two reasons:
+//
+//   - Its inputs are invisible to Go's test cache. The build reads every
+//     package in the module from a `go build` SUBPROCESS, and the cache only
+//     tracks what the test process itself opens — this package imports
+//     nothing from forge, so its test binary never changes either. Under the
+//     cached inner loop (`task test:short`, no -count=1) an edit that breaks
+//     the windows build would replay the previous PASS. A guard that can be
+//     stale is worse than one that runs at the end, where -count=1 forces it.
+//   - It is two whole-module builds: 30-50s cold, measured on a loaded host.
 //
 // Windows is the target that matters here because it is the one whose syscall
 // surface genuinely differs. darwin/linux are covered by everyone's normal
@@ -34,6 +43,9 @@ import (
 // with. Widening it surfaced one package that cannot pass and cannot be
 // fixed here; see crossPlatformExempt.
 func TestCrossPlatformBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cross-compiles the whole module for windows in a go build subprocess the test cache cannot see; runs in task test")
+	}
 	t.Parallel()
 
 	for _, target := range []struct{ goos, goarch string }{

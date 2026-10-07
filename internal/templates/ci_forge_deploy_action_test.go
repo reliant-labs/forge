@@ -154,6 +154,9 @@ func TestForgeDeployAction_DeployByVersion(t *testing.T) {
 // document carries no recorded id, so the gate step below is skipped rather
 // than attaching evidence to a promotion that was never written.
 func TestForgeDeployAction_DeployFromIsRefusedWithExit3(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the deploy action's bash steps as subprocesses; runs in task test")
+	}
 	t.Parallel()
 	step := forgeDeploySteps(t)["deploy"]
 	code, argv, ghOut := runActionStep(t, step, map[string]string{
@@ -185,6 +188,9 @@ func TestForgeDeployAction_DeployFromIsRefusedWithExit3(t *testing.T) {
 // The exit codes are the ADR's, and `gate record --from` maps them to statuses:
 // 1 failed; 2/3/4/5/8 error; 6 skipped. Nothing here folds 8 or 6 into a failure.
 func TestForgeDeployAction_FailedWaitStillPublishesThePromotionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the deploy action's bash steps as subprocesses; runs in task test")
+	}
 	t.Parallel()
 	step := forgeDeploySteps(t)["deploy"]
 	for _, tc := range []struct {

@@ -224,6 +224,9 @@ func TestProjectScaffold_DryRunPlansEverythingAndWritesNothing(t *testing.T) {
 }
 
 func TestProjectScaffold_BigFixtureBirthsEverythingThenNoOps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	dir := setupProjectScaffoldFixture(t)
 	protoPath := filepath.Join(dir, "proto", "services", "tasks", "v1", "tasks.proto")
 

@@ -39,6 +39,9 @@ import (
 //     Deployment it produces carries the same probes;
 //   - host: the argv is derived from build + args, never re-stated.
 func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 	dir := scaffoldWorkloadModelProject(t)
 

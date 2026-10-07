@@ -62,6 +62,9 @@ func readLog(t *testing.T, path string) string {
 // A fresh worktree has no node_modules. The eslint lane must install and then
 // run — not report "could not run", which reads as a green.
 func TestLintFrontendDirInstallsMissingDepsThenRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	calls := fakeNPM(t, 0)
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 
@@ -77,6 +80,9 @@ func TestLintFrontendDirInstallsMissingDepsThenRuns(t *testing.T) {
 // If the install itself fails, the lane fails loudly: neither a pass nor the
 // soft "unavailable" classification.
 func TestLintFrontendDirFailsLoudlyWhenInstallFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	fakeNPM(t, 1)
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 
@@ -94,6 +100,9 @@ func TestLintFrontendDirFailsLoudlyWhenInstallFails(t *testing.T) {
 }
 
 func TestTypecheckFrontendInstallsMissingDeps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns package-manager / frontend toolchain subprocesses; runs in task test")
+	}
 	calls := fakeNPM(t, 0)
 	dir := freshFrontend(t, `{"scripts":{"typecheck":"tsc --noEmit"}}`)
 

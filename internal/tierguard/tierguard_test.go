@@ -97,6 +97,12 @@ var (
 // section), and is used only to decide the REMEDY for a constant file.
 func renders(t *testing.T) (inputs []*renderResult, identity *renderResult) {
 	t.Helper()
+	// Every test in this package that needs a render comes through here, so
+	// this is the one gate: the renders are four whole forge projects (project
+	// new, generate, buf, sqlc, go mod tidy) and cost minutes, not seconds.
+	if testing.Short() {
+		t.Skip("renders four full forge projects in child processes (minutes); runs in task test")
+	}
 	renderOnce.Do(func() {
 		// Not t.TempDir: the trees outlive the first test that asks for
 		// them. TestMain removes the shared directory after all tests finish.

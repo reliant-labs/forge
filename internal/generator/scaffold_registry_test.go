@@ -20,6 +20,9 @@ import (
 // checked for is gone from both schemas, so asserting it would now demand a
 // line that cannot compile.
 func TestScaffoldDeclaresTheRegistryOnEachWorkloadImage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	imageLine := regexp.MustCompile(`(?m)^\s*image = "([^"]+)"$`)
 	envRegistryLine := regexp.MustCompile(`(?m)^\s*registry = "`)
 

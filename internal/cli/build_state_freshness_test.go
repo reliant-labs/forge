@@ -75,6 +75,9 @@ func gitCommitEmpty(t *testing.T, dir, msg string) {
 // guard: build state records commit C, HEAD has moved to C', the tree is
 // clean — deploy must REFUSE rather than silently ship the old image.
 func TestResolveDeployImageTag_StaleCommitRefuses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -109,6 +112,9 @@ func TestResolveDeployImageTag_StaleCommitRefuses(t *testing.T) {
 // than from the commit matching. That shape cannot occur in production,
 // where a nameless project is refused outright.
 func TestResolveDeployImageTag_FreshCommitAllows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	head := gitHeadSHA(t, dir)
@@ -135,6 +141,9 @@ func TestResolveDeployImageTag_FreshCommitAllows(t *testing.T) {
 // bypasses build-state entirely, so the staleness guard never runs. This
 // is the documented override for "I really do want to ship this tag."
 func TestResolveDeployImageTag_StaleButFlagOverrides(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -162,6 +171,9 @@ func TestResolveDeployImageTag_StaleButFlagOverrides(t *testing.T) {
 // project the guard would stand down for an unrelated reason it must now
 // report as an error instead.
 func TestResolveDeployImageTag_DirtyTrackedFileSkipsFreshnessCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -188,6 +200,9 @@ func TestResolveDeployImageTag_DirtyTrackedFileSkipsFreshnessCheck(t *testing.T)
 // doesn't move HEAD. A stale build with only untracked clutter present
 // still refuses.
 func TestResolveDeployImageTag_UntrackedFileDoesNotMaskStaleness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -258,6 +273,9 @@ func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 //
 // The images match the release's recorded commit, so this MUST be allowed.
 func TestResolveDeployImageTag_ReleaseCommitAllowsHEADAhead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 
@@ -291,6 +309,9 @@ func TestResolveDeployImageTag_ReleaseCommitAllowsHEADAhead(t *testing.T) {
 // release it claims to be is genuinely stale and must still refuse — even
 // though (unlike the case above) nothing about HEAD is involved.
 func TestResolveDeployImageTag_ReleaseCommitStillRefusesOlderImage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 
@@ -330,6 +351,9 @@ func TestResolveDeployImageTag_ReleaseCommitStillRefusesOlderImage(t *testing.T)
 // correct in a dirty tree — where the HEAD-anchored path deliberately
 // stands down. A stale image is caught even mid-edit.
 func TestResolveDeployImageTag_ReleaseAnchorIgnoresDirtyTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	olderCommit := gitHeadSHA(t, dir)
@@ -359,6 +383,9 @@ func TestResolveDeployImageTag_ReleaseAnchorIgnoresDirtyTree(t *testing.T) {
 // build can be measured against — and falling back to HEAD is exactly the
 // false refusal this fix removes — so the guard stands down.
 func TestResolveDeployImageTag_ReleaseWithoutCommitSkipsCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -395,6 +422,9 @@ func TestResolveDeployImageTag_ReleaseWithoutCommitSkipsCheck(t *testing.T) {
 // A release is cut from a clean checkout, so a dirty build is by construction
 // not the artifact a release-bound env ships.
 func TestResolveDeployImageTag_DirtyDefaultRecordDoesNotBlockReleaseDeploy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)
@@ -485,6 +515,9 @@ func TestResolveDeployImageTag_DirtyPerEnvRecordStillRefuses(t *testing.T) {
 // binding keeps the original HEAD-anchored behaviour, and its message names
 // HEAD as what it compared against.
 func TestResolveDeployImageTag_UnboundEnvStillUsesHEAD(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)

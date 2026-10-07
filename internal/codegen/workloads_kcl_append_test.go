@@ -234,7 +234,7 @@ func TestAppendWorkloadStanza_ResultEvaluates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, _ := appendInto(t, workloadsPrefix+allListComment+tc.list, overviewAdmin)
 			dir := t.TempDir()
-			mod := "[package]\nname = \"appendcheck\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + filepath.Join(forgeRepoRoot(t), "kcl") + "\" }\n"
+			mod := "[package]\nname = \"appendcheck\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\nforge = { path = \"" + forgeKCLModuleDir(t) + "\" }\n"
 			for f, c := range map[string]string{"kcl.mod": mod, "main.k": got} {
 				if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {
 					t.Fatal(err)

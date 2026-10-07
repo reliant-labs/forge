@@ -56,6 +56,9 @@ func introspectDDL(t *testing.T, ddl string) []schemadef.Table {
 // meaningful: a reader that invented members would satisfy the count assertion
 // and fail the INSERT.
 func TestNumericCheckPool_MembersAreRecoveredAndAccepted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs a live Postgres; runs in task test")
+	}
 	tables := introspectDDL(t, numericPoolDDL)
 	pools := PoolsFromTables(tables)
 
@@ -161,6 +164,9 @@ func columnOf(t *testing.T, tables []schemadef.Table, table, column string) sche
 // Before the fix the seeder emitted the type-blind row counter into `level`
 // and the whole transaction aborted.
 func TestNumericCheckPool_SeededRowsInsert(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs a live Postgres; runs in task test")
+	}
 	tables := introspectDDL(t, numericPoolDDL)
 	plan, err := BuildPlan(tables, PoolsFromTables(tables), Config{Rows: 4})
 	if err != nil {

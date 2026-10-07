@@ -34,6 +34,9 @@ import (
 // TestRunResolvesFileReadAgainstWorkDirNotTheCallerCwd renders the same
 // project from two different process cwds and requires the same answer.
 func TestRunInWorkDirResolvesFileReadAgainstWorkDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
 	dir := t.TempDir()
 	for rel, body := range map[string]string{

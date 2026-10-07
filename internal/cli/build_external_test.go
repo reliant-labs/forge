@@ -201,6 +201,9 @@ func TestExternalBuildServices_FiltersShellBuilds(t *testing.T) {
 // against a real `sh -c true` shell. CI runners always have /bin/sh,
 // and `true` is a fast deterministic no-op that exits 0.
 func TestBuildExternalServices_WritesStateAndReturnsResults(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs shell build commands as subprocesses; runs in task test")
+	}
 	projDir := t.TempDir()
 	services := []WorkloadEntity{
 		shellSvc("edge", "localhost:5051/edge-img", "true", "", nil), // cwd empty so no mkdir

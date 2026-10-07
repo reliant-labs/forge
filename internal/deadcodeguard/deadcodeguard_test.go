@@ -222,6 +222,12 @@ func TestQuarantineIsTight(t *testing.T) {
 // scanRepo runs the guard over forge itself, once per test process.
 func scanRepo(t *testing.T) []Finding {
 	t.Helper()
+	// The one gate for every test that judges the real tree: the scan
+	// type-checks the whole forge module and is shared through a sync.Once,
+	// so gating any single caller only moves the cost to the next one.
+	if testing.Short() {
+		t.Skip("type-checks the whole forge module with go/packages; runs in task test")
+	}
 	repoScanOnce.Do(func() {
 		repoFindings, repoScanErr = Scan(repoRoot(t), ForgeInternalPrefix)
 	})
@@ -252,6 +258,9 @@ var (
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestRulesFireOnPlantedDefects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks the testdata fixture module with go/packages; runs in task test")
+	}
 	_, self, _, _ := runtime.Caller(0)
 	fixture := filepath.Join(filepath.Dir(self), "testdata", "fixture")
 
@@ -299,6 +308,9 @@ func TestRulesFireOnPlantedDefects(t *testing.T) {
 // than relying on the set comparison above) means a future widening of a rule
 // fails with the name of the construct it broke.
 func TestExemptionsAreLoadBearing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks the testdata fixture module with go/packages; runs in task test")
+	}
 	_, self, _, _ := runtime.Caller(0)
 	fixture := filepath.Join(filepath.Dir(self), "testdata", "fixture")
 	got, err := ScanStandalone(fixture, "deadcodeguardfixture/internal/")

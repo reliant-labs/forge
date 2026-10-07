@@ -72,6 +72,9 @@ func infoJSON(version, hash string) string {
 // pkg/v0.1.12 scenario reproduced: the version resolves on the proxy, but at
 // a commit other than the one about to be tagged.
 func TestReleaseForgeScript_RefusesVersionPublishedAtDifferentCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	// Both modules are covered independently: a half-finished earlier release
 	// can burn either one alone, and either is fatal.
 	for _, mod := range []string{
@@ -206,6 +209,9 @@ func TestReleaseForgeScript_UnexpectedProxyStatusIsFatal(t *testing.T) {
 // and that it announces itself loudly, since taking it means accepting the
 // risk the gate exists to remove.
 func TestReleaseForgeScript_SkipProxyCheckBypassesGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repo := newForgeFixtureRepo(t)
 	// A proxy that would refuse if consulted; --skip-proxy-check must mean it
 	// is never consulted at all.

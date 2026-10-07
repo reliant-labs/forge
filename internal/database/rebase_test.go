@@ -98,6 +98,9 @@ func versionOf(t *testing.T, name string) uint64 {
 // across the rename. A rebase that renamed the migration as well as its
 // version would read as a new, unreviewed file.
 func TestRebasePreservesTheStemAndOrdersAfterTheMax(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repoRoot, migDir := gitRepo(t,
 		[]string{"20260301000000_add_accounts.up.sql"},
 		[]string{"20260101120000_add_users.up.sql"},
@@ -158,6 +161,9 @@ func TestRebasePreservesTheStemAndOrdersAfterTheMax(t *testing.T) {
 // BELOW the mark: a rebase that renames the file and fixes nothing, which is
 // the worst outcome because it looks like it worked.
 func TestRebaseOrdersAfterAMergedVersionMissingFromTheDirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	const squashedAway = "21000101000000_add_accounts.up.sql"
 
 	repoRoot, migDir := gitRepo(t,
@@ -204,6 +210,9 @@ func TestRebaseOrdersAfterAMergedVersionMissingFromTheDirectory(t *testing.T) {
 //
 // So this must refuse, and refuse before touching anything.
 func TestRebaseRefusesAnAlreadyMergedMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	_, migDir := gitRepo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},
@@ -250,6 +259,9 @@ func TestRebaseRefusesAnAlreadyMergedMigration(t *testing.T) {
 // duplicate version, for a file that was safe to rename all along. The lint
 // named this command and this command refused.
 func TestRebaseFixesASameVersionDifferentFileCollision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	const contested = "20260101120000"
 
 	_, migDir := gitRepo(t,
@@ -298,6 +310,9 @@ func TestRebaseFixesASameVersionDifferentFileCollision(t *testing.T) {
 // This is the guard on the fix above — a version-only check was too broad, a
 // check that stopped refusing would be catastrophic.
 func TestRebaseStillRefusesTheSameFileOnTheDefaultBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	_, migDir := gitRepo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},
@@ -325,6 +340,9 @@ func TestRebaseStillRefusesTheSameFileOnTheDefaultBranch(t *testing.T) {
 // have here: the guarantee silently stops holding, and the command reports
 // success.
 func TestRefusalHoldsWithARelativeMigrationsDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repoRoot, _ := gitRepo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},
@@ -351,6 +369,9 @@ func TestRefusalHoldsWithARelativeMigrationsDir(t *testing.T) {
 // applied in sequence — a table then its index, a column then its backfill —
 // so a rebase that reordered them would produce a schema that fails to apply.
 func TestRebasePreservesRelativeOrderOfABatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	_, migDir := gitRepo(t,
 		[]string{"20260301000000_add_accounts.up.sql"},
 		[]string{

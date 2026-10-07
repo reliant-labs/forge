@@ -249,6 +249,9 @@ func TestBuildTag_NoFlagUsesPinThenEnvTag(t *testing.T) {
 // pin and the env tag, and the ledger records the digest of exactly the ref
 // each build pushed under it.
 func TestBuildTag_ReleaseWinsAndReachesTheLedger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake docker and registry through shell subprocesses; runs in task test")
+	}
 	dir := useTestLedger(t, planProject(t, tagPrecedenceFixture))
 	fakeRegistry(t)
 	fakeDocker(t)

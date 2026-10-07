@@ -57,6 +57,9 @@ output = forge.render(forge.Bundle {
 // the SAME render forge runs, then the SAME dispatchers `forge build` runs,
 // and the ref each build writes must equal the rendered spec.image.
 func TestPinnedImageBuildPushesTheRenderedRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and runs shell build commands as subprocesses; runs in task test")
+	}
 	out := renderKCLProject(t, writeKCLProject(t, pinnedBuildBundle), `image_tag="abc1234-dirty"`)
 	ents, err := parseKCLEntities(out)
 	if err != nil {

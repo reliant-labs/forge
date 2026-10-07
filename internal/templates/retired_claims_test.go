@@ -206,6 +206,9 @@ func shippedGuidance(t *testing.T) []guidanceFile {
 
 // TestShippedGuidanceMakesNoRetiredClaim is the ratchet.
 func TestShippedGuidanceMakesNoRetiredClaim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scans every shipped skill against a scaffolded project; runs in task test")
+	}
 	t.Parallel()
 
 	files := shippedGuidance(t)

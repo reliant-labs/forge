@@ -27,6 +27,9 @@ import (
 // project-root-relative path resolves, and it resolves from a subdirectory cwd
 // too — the caller's location changes nothing.
 func TestEvalReadsFilesRelativeToTheProjectRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	dir := project(t, map[string]string{
 		"deploy/kcl/kcl.mod": kclMod,
 		// The shape control-plane's lib/barman_plugin.k has: a nested library

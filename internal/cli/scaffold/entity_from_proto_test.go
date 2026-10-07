@@ -232,6 +232,9 @@ func TestAddEntityFromProto_FlagAndArgRefusals(t *testing.T) {
 }
 
 func TestAddEntityFromProto_AppliedTableRefuses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	dir := setupEntityFromProtoProject(t)
 	writeFixtureFile(t, dir, filepath.Join("db", "migrations", "00001_create_invoices.up.sql"),
 		"CREATE TABLE invoices (id TEXT PRIMARY KEY);\n")

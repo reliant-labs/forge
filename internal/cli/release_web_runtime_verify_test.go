@@ -114,6 +114,9 @@ func TestVerifyNPMPublished_ServedImmediatelyPasses(t *testing.T) {
 // there was no 8th probe — the script gave up at six and failed a release
 // that had in fact published. This asserts the version is still found.
 func TestVerifyNPMPublished_KeepsWaitingPastTheOld60sCeiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script through real retry/backoff delays; runs in task test")
+	}
 	// A window wide enough for many probes, with the backoff pinned to 1s
 	// so the test costs seconds rather than minutes. The point is the
 	// NUMBER of attempts the loop is willing to make, not the wall-clock:

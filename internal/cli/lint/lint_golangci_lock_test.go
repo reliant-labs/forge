@@ -35,6 +35,9 @@ echo "The command is terminated due to an error: parallel golangci-lint is runni
 exit 3`
 
 func TestGolangciLanesQueueForTheMachineLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake golangci-lint through shell subprocesses; runs in task test")
+	}
 	t.Run("text gate", func(t *testing.T) {
 		fakeGolangciLint(t, contendedUnlessSerialStub)
 		if err := runGolangciLint(context.Background(), false, []string{"./..."}); err != nil {

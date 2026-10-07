@@ -19,6 +19,9 @@ import (
 // control-plane, which was carrying 28 concrete-typed Deps fields at
 // the time. Restore any such gate and this test fails.
 func TestLintDepsAreInterfaces_FiresOnUnmarkedPackage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads fixture packages via go/packages; runs in task test")
+	}
 	t.Parallel()
 	root := filepath.Join("testdata", "deps_concrete")
 

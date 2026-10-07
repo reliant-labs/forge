@@ -204,6 +204,9 @@ func TestSignatures_AnswerTheQuestionsTheWaveAsked(t *testing.T) {
 // This covers EVERY package, not a chosen few, so a new forge/pkg package
 // or a new exported func in an old one is caught with no edit here.
 func TestSignatures_CoverEveryExportedSymbol(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go doc over every forge/pkg package; runs in task test")
+	}
 	t.Parallel()
 	pkgDir := repoPkgDir(t)
 	pkgs, err := readForgePkgPackages(pkgDir)

@@ -143,6 +143,9 @@ func auditSubjects(t *testing.T) []auditSubject {
 
 // TestEveryRegisteredProviderObservesOrDeclares is the audit.
 func TestEveryRegisteredProviderObservesOrDeclares(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs Observe on every registered deploy provider, which probes real host tools; runs in task test")
+	}
 	reg := NewRegistry()
 	for _, subject := range auditSubjects(t) {
 		t.Run(subject.id, func(t *testing.T) {

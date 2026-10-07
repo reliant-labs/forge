@@ -33,6 +33,9 @@ import (
 // promotion log does not decode must fail loudly rather than report "nothing
 // to compare".
 func TestResolveFreshnessAnchor_UnreadableLedgerIsAnError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := newGitRepo(t)
 	gitignoreForgeState(t, dir)
 	bindEnvToRelease(t, dir, "prod", "v1.4.0", gitHeadSHA(t, dir))
@@ -53,6 +56,9 @@ func TestResolveFreshnessAnchor_UnreadableLedgerIsAnError(t *testing.T) {
 // defect at the call site, which is where it mattered: a recorded build and
 // an unreadable ledger used to deploy.
 func TestResolveDeployImageTag_UnreadableLedgerRefusesTheDeploy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	head := gitHeadSHA(t, dir)
@@ -78,6 +84,9 @@ func TestResolveDeployImageTag_UnreadableLedgerRefusesTheDeploy(t *testing.T) {
 // one — turning it into an error would refuse every deploy from a working
 // tree with an edit in it.
 func TestResolveFreshnessAnchor_UnboundDirtyTreeStandsDownWithoutError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	// Dirty a TRACKED file: the tree now has no single HEAD the build can
@@ -101,6 +110,9 @@ func TestResolveFreshnessAnchor_UnboundDirtyTreeStandsDownWithoutError(t *testin
 // stand-down, not a failure, and the distinction is the whole point of the
 // change.
 func TestResolveFreshnessAnchor_ReleaseWithoutCommitStandsDownWithoutError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	bindEnvToRelease(t, dir, "prod", "v1.4.0", "")
@@ -118,6 +130,9 @@ func TestResolveFreshnessAnchor_ReleaseWithoutCommitStandsDownWithoutError(t *te
 // make the ordinary path error: a readable ledger with a bound release still
 // returns that release's commit as the anchor.
 func TestResolveFreshnessAnchor_BoundReleaseStillAnchors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	dir := useTestLedger(t, newGitRepo(t))
 	gitignoreForgeState(t, dir)
 	builtCommit := gitHeadSHA(t, dir)

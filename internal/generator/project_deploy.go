@@ -77,6 +77,15 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		envs = append(envs, struct{ env, template string }{env, "kcl/cloud/main.k.tmpl"})
 	}
 	for _, e := range envs {
+		// The dev env runs the dev IdP when there is a frontend, and its
+		// idp-provision job stores the login broker's token in the env's
+		// secret store. The API is the one workload that brokers sign-in,
+		// so it is the one that names the token; without it the server
+		// boots with no broker and /auth/login is a 404.
+		var apiSecrets []string
+		if e.env == codegen.DevEnvName && hasFrontend {
+			apiSecrets = append(apiSecrets, codegen.LoginBrokerTokenEnv)
+		}
 		data := templates.EnvTemplateData{
 			ProjectName: g.Name,
 			EnvName:     e.env,
@@ -89,7 +98,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
-			APIWorkload:     codegen.APIWorkloadStanza(g.ModulePath, g.Name),
+			APIWorkload:     codegen.APIWorkloadStanza(g.ModulePath, g.Name, apiSecrets...),
 		}
 		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {

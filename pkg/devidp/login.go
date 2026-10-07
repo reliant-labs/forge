@@ -427,20 +427,35 @@ type BrokerCredential struct {
 // re-run against an existing account cannot recover the previous token and
 // mints a NEW one instead. The old token stays valid until it expires or is
 // removed — so callers should provision once and persist the result, rather
-// than calling this on every boot.
+// than calling this on every boot. ProvisionLoginBroker is that caller: it
+// keeps a stored token the issuer still accepts and mints only when it must.
 func (c *Client) EnsureLoginBroker(ctx context.Context, username string) (BrokerCredential, error) {
-	if strings.TrimSpace(username) == "" {
-		return BrokerCredential{}, fmt.Errorf("a username is required for the login broker account")
-	}
-
-	userID, err := c.ensureMachineUser(ctx, username)
+	userID, err := c.ensureLoginBrokerAccount(ctx, username)
 	if err != nil {
 		return BrokerCredential{}, err
 	}
-	if err := c.EnsureLoginClientRole(ctx, userID); err != nil {
-		return BrokerCredential{}, err
-	}
+	return c.mintBrokerToken(ctx, username, userID)
+}
 
+// ensureLoginBrokerAccount converges the broker's machine user and its
+// login-client role, and returns the user id. Both steps read before they
+// write, so this half of provisioning is idempotent; only the token is not.
+func (c *Client) ensureLoginBrokerAccount(ctx context.Context, username string) (string, error) {
+	if strings.TrimSpace(username) == "" {
+		return "", fmt.Errorf("a username is required for the login broker account")
+	}
+	userID, err := c.ensureMachineUser(ctx, username)
+	if err != nil {
+		return "", err
+	}
+	if err := c.EnsureLoginClientRole(ctx, userID); err != nil {
+		return "", err
+	}
+	return userID, nil
+}
+
+// mintBrokerToken issues a new personal access token for the broker account.
+func (c *Client) mintBrokerToken(ctx context.Context, username, userID string) (BrokerCredential, error) {
 	body, err := c.postJSON(ctx, "/management/v1/users/"+url.PathEscape(userID)+"/pats", map[string]any{})
 	if err != nil {
 		return BrokerCredential{}, fmt.Errorf("mint a token for %q: %w", username, err)

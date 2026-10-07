@@ -22,7 +22,7 @@
 // were identical in every project, so they are library code wearing your
 // package's name.
 //
-// This file wires the POLICY: the two things projects actually customize.
+// This file wires the POLICY: the three things projects actually customize.
 //
 //  1. Token validator  — passed EXPLICITLY into NewAuthInterceptor via
 //     AuthDeps.Validate (no package-global slot). The OWNED composition
@@ -30,6 +30,8 @@
 //     generated cmd serve.go threads it in.
 //  2. Identity enricher — enrichClaims (hydrate roles/org/flags onto
 //     validated claims before handlers see them).
+//  3. Credential channel — credentialFrom (a Bearer header, else the native
+//     sign-in session cookie).
 //
 // The allow-list is NOT a hook here: which RPCs are callable without
 // credentials is declared per-rpc in the proto (auth_required: false) and
@@ -38,6 +40,8 @@ package middleware
 
 import (
 	"context"
+	"net/http"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -139,30 +143,40 @@ func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 
 // ─── Policy hook 3: where the credential is read from ────────────────
 //
-// By default the interceptor reads "Authorization: Bearer <token>". That is
-// the right default and most services never change it.
+// SessionCookieName is the cookie native sign-in keeps the session in.
+// internal/app/login_broker.go SETS it (HttpOnly, on /auth/login) and this
+// file READS it, so it is declared once, here, and the broker names it.
+const SessionCookieName = "{{.Name}}_session"
+
+// credentialFrom reads the caller's raw token: an "Authorization: Bearer"
+// header when one is presented — another service, a CLI, a test — and
+// otherwise the native sign-in session cookie the browser carries.
 //
-// Change it when your session does not live in that header — the common case
-// being a browser app whose session is an HttpOnly cookie. There the token is
-// deliberately unreadable to scripts (which is what stops an XSS from
-// stealing it), so no client code CAN attach an Authorization header, and
-// every RPC 401s with "missing Authorization header" even though a valid
-// credential was sent on every request. Set authn.Policy.ExtractToken and
-// point it at the channel your app actually uses:
+// The cookie is the browser's ONLY channel. It is HttpOnly, so no script can
+// read it (which is what stops an XSS from stealing it) and therefore no
+// client code CAN attach an Authorization header. Reading the header alone
+// made every RPC 401 with "missing Authorization header" right after a
+// successful sign-in, with a valid credential on every request.
 //
-//	ExtractToken: func(h http.Header) string {
-//	    c, err := (&http.Request{Header: h}).Cookie("my_session")
-//	    if err != nil {
-//	        return ""
-//	    }
-//	    return c.Value  // the RAW token — no "Bearer " prefix
-//	},
+// It is not a CSRF opening: the cookie is SameSite=Lax, so a cross-site page
+// cannot make the browser send it on a fetch, and a Connect call needs a
+// Content-Type an HTML form cannot produce.
 //
 // Return "" for "no credential presented"; it is treated exactly like a
 // missing Authorization header. This changes only WHERE the token is read —
-// it still goes through the same validator, so a custom channel cannot
-// weaken authentication.
-//
+// it still goes through the same validator, so a channel cannot weaken
+// authentication. Point it somewhere else if your session lives elsewhere.
+func credentialFrom(h http.Header) string {
+	if bearer, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer "); ok {
+		return strings.TrimSpace(bearer)
+	}
+	cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
 // ─── Interceptor construction ────────────────────────────────────────
 
 // NewAuthInterceptor resolves this file's policy into the forge authn
@@ -188,5 +202,6 @@ func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
 		Validate:            deps.Validate,
 		Unauthenticated:     UnauthenticatedProcedures,
 		Enrich:              enrichClaims,
+		ExtractToken:        credentialFrom,
 	})
 }

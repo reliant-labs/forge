@@ -141,22 +141,26 @@ func TestDevStack_PostgresRunsOnTheHostByDefault(t *testing.T) {
 
 // TestDevStack_ObservabilityIsOptIn pins the lgtm/alloy decision: an LGTM
 // stack is ~1 GB resident, which is the wrong default on the small machines
-// host-native infra exists to serve. It must stay defined in compose (so it
-// is two lines to enable) but absent from what dev actually runs.
+// host-native infra exists to serve. It stays defined in compose and declared
+// in dev/main.k behind ONE switch that defaults off — the switch also wires
+// the OTLP port and endpoint, which a bare "add the workload" opt-in left out
+// (TestDevObservabilityOptInDeliversTelemetry renders both states). Alloy,
+// which mounts the Docker socket, stays a commented line.
 func TestDevStack_ObservabilityIsOptIn(t *testing.T) {
 	for _, tmpl := range []string{"kcl/dev/main.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
-			for _, svc := range []string{"lgtm", "alloy"} {
-				live := regexp.MustCompile(`(?m)^[^#\n]*name\s*=\s*"` + svc + `"`)
-				if live.MatchString(src) {
-					t.Errorf("%s is in the dev env's live service list — an LGTM stack is ~1 GB "+
-						"resident and should be opt-in on the machines this default is for", svc)
-				}
-				if !strings.Contains(src, `name = "`+svc+`"`) {
-					t.Errorf("%s is not even mentioned in the dev env — it should remain a "+
-						"commented, copy-pasteable opt-in rather than something a user has to invent", svc)
-				}
+			if !regexp.MustCompile(`(?m)^_observability = False$`).MatchString(src) {
+				t.Errorf("dev/main.k must declare the observability switch, defaulting off")
+			}
+			if !regexp.MustCompile(`(?s)_telemetry_workloads = \[fw\.Workload \{\s*name = "lgtm".*\}\] if _observability else \[\]`).MatchString(src) {
+				t.Errorf("the lgtm workload must be declared, and gated on _observability")
+			}
+			if regexp.MustCompile(`(?m)^[^#\n]*name\s*=\s*"alloy"`).MatchString(src) {
+				t.Errorf("alloy is live in the dev env — it mounts the Docker socket and must stay a commented opt-in")
+			}
+			if !strings.Contains(src, `name = "alloy"`) {
+				t.Errorf("alloy is not even mentioned in the dev env — it should remain a commented, copy-pasteable opt-in")
 			}
 		})
 	}

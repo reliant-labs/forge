@@ -405,20 +405,29 @@ services:
   #          Loki (logs), Pyroscope (continuous profiling), and an
   #          OpenTelemetry Collector.
   #
-  # The app pushes traces via OTLP gRPC to lgtm:4317 on the docker network.
-  # Only Grafana UI is exposed to the host (dynamic port).
+  # The `app` container above pushes OTLP to lgtm:4317 on the docker network.
+  # The dev loop's API is a HOST process, not on that network, so OTLP gRPC
+  # is also published — on loopback, at the port deploy/kcl/dev/main.k
+  # declares and hands compose as OTLP_GRPC_PORT, the same number the API's
+  # OTEL_EXPORTER_OTLP_ENDPOINT is built from. Grafana takes a dynamic port.
   lgtm:
     image: grafana/otel-lgtm:latest
     restart: unless-stopped
     ports:
       - "0:3000"    # Grafana UI (dynamic host port)
+      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"    # OTLP gRPC, for host processes
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
     volumes:
       - lgtm_data:/data
       - ./deploy/observability/grafana/dashboards:/grafana/dashboards
-      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning/dashboards
+      # This image runs Grafana from /otel-lgtm/grafana on its default config,
+      # so dashboard providers are read from conf/provisioning/dashboards
+      # beneath it — /etc/grafana/provisioning is never read, and a mount
+      # there loads nothing. One FILE, beside the image's own providers
+      # rather than mounted over them.
+      - ./deploy/observability/grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/forge.yaml:ro
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/ready"]
       interval: 5s

@@ -440,3 +440,27 @@ func TestRunHostJobs_DeadlineFailureStopsTheGatedJobs(t *testing.T) {
 		t.Fatal("a job gated by the timed-out job ran anyway")
 	}
 }
+
+// The `forge env up` summary lists every host process's log under
+// .forge/logs/<env>/, jobs included. Jobs printed to the terminal only, so
+// the summary pointed at migrate.log / idp-provision.log files that did not
+// exist. The output must reach both.
+func TestRunOneHostJob_OutputLandsInTheLogTheSummaryNames(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: logs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(projectDir) // projectDirForKCL resolves from the working directory
+
+	if err := runOneHostJob(context.Background(), nil, job("migrate", []string{"sh", "-c", "echo migrations applied"}), nil, "dev"); err != nil {
+		t.Fatalf("job failed: %v", err)
+	}
+	logPath := filepath.Join(projectDir, summaryLogPath("dev", "migrate"))
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("the summary names %s, which the job never wrote: %v", summaryLogPath("dev", "migrate"), err)
+	}
+	if !strings.Contains(string(got), "migrations applied") {
+		t.Fatalf("job log does not hold the job's output:\n%s", got)
+	}
+}

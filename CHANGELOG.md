@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fresh scaffold signs in.** The README's first sixty seconds ended at a
+  sign-in page nobody could pass, for two reasons.
+
+  - `auth idp-provision` printed the login broker's token to the terminal
+    ("shown ONCE") instead of storing it, minted a new one on every
+    `forge env up`, and the dev `_api` named only `DATABASE_URL` in
+    `config_secrets` — so even a token stored by hand never reached the server,
+    and `/auth/login` was a 404. The job now keeps the token in the env's secret
+    store (`secrets/dev.yaml`, as `IDP_BROKER_TOKEN`; the dev env hands it the
+    path as `IDP_BROKER_TOKEN_STORE`), reuses it while the issuer still accepts
+    it (`devidp.ProvisionLoginBroker`, `devidp.SecretFile`), and never prints
+    it. The dev `_api` names it, and `forge env up` re-reads the store after its
+    jobs, so the first run's API already has it.
+  - After sign-in every RPC answered 401 "missing Authorization header". The
+    session is an HttpOnly cookie, but the Next.js transport did not send
+    credentials cross-origin, and the scaffolded auth interceptor read only the
+    `Authorization` header. The transport is built on `fetchWithSession`, as the
+    Vite one already was, and `pkg/middleware/middleware.go`'s `credentialFrom`
+    reads a Bearer header, else the session cookie. `SessionCookieName` is
+    declared there and `internal/app/login_broker.go` sets the cookie under it.
+
+  Existing projects own every file involved, so apply it by hand: add
+  `"IDP_BROKER_TOKEN"` to `_api`'s `config_secrets` and
+  `IDP_BROKER_TOKEN_STORE = "secrets/dev.yaml"` to the idp-provision env in
+  `deploy/kcl/dev/main.k`; re-scaffold `cmd/<bin>/cmd/auth.go` and
+  `pkg/middleware/middleware.go` (delete, then `forge project rescaffold <path>`)
+  or port the changes; and give each real transport in
+  `frontends/<name>/src/lib/connect.ts` a fetch that sets
+  `credentials: "include"`.
+
+- **The observability opt-in delivers data.** Following the comment in
+  `deploy/kcl/dev/main.k` ran Grafana with nothing reaching it: the host-run API
+  had no OTLP endpoint and compose published no OTLP port. The forge dashboards
+  never loaded either (`grafana/otel-lgtm` reads providers from
+  `/otel-lgtm/grafana/conf/provisioning`, not `/etc/grafana/provisioning`), and
+  their panels queried `rpc_server_duration_milliseconds`, which otelconnect
+  v0.10 no longer emits. Now one switch, `_observability = True`, runs `lgtm`,
+  publishes OTLP on a loopback port the env declares, and points every host
+  process at it. The overview dashboard queries
+  `rpc_server_call_duration_seconds` (by `rpc_method` and
+  `rpc_response_status_code`) and the database pool, and its test derives the
+  series names from otelconnect itself. `forge env up` and `forge env status`
+  list what compose services publish, Grafana included.
+- **`forge env status` no longer passes on what it cannot see.** Prometheus
+  reported "✓ 1 targets up" when the only target was the lgtm image scraping
+  itself; it now passes only on series carrying the app's `job`. pprof read
+  whichever process held the machine-wide 127.0.0.1:6060 and reported its
+  profiles as the app's; each dev host process now gets its own `PPROF_ADDR`,
+  and the check warns when `/debug/pprof/cmdline` names another process.
+- **`forge env up` output.** initdb's and pg_ctl's transcript (absolute paths,
+  a `pg_ctl … start` hint) goes to `.forge/hostinfra/postgres/postgres.log`.
+  Host jobs write the `.forge/logs/<env>/<job>.log` the summary lists. A compose
+  service is converged once per run, not three times. Entity birth no longer
+  announces a "(+down)" migration it does not write, and prints the migration
+  project-relative. The compose check's hint is `forge env up <env>`, not
+  `docker compose up -d`.
 - **One unusable currency no longer takes a generated page down.** The list and
   detail pages format money in each row's own `currency`, and
   `Intl.NumberFormat` throws a `RangeError` for anything that is not an ISO 4217

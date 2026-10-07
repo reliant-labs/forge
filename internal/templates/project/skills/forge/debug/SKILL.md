@@ -183,15 +183,15 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 
 ## Observability (Grafana LGTM)
 
-`docker-compose` runs a Grafana LGTM stack with traces, metrics, logs, and continuous profiling.
+With `_observability = True` in `deploy/kcl/dev/main.k`, `forge env up dev` runs a Grafana LGTM stack (the `lgtm` compose service) with traces, metrics, logs, and continuous profiling. It is off by default; see the `observability` skill.
 
-- **Grafana UI:** http://localhost:3000 (no login needed — anonymous admin)
+- **Grafana UI:** the URL `forge env up dev` / `forge env status dev` lists under **Compose services** (`lgtm :3000`; the host port is dynamic). No login — anonymous admin.
 - **Traces:** Grafana → Explore → Tempo. Find slow requests, trace cross-service calls.
-- **Metrics:** Grafana → Explore → Prometheus. Query `rpc_server_duration_milliseconds` (the otelconnect RPC edge histogram) etc.
+- **Metrics:** Grafana → Explore → Prometheus. Query `rpc_server_call_duration_seconds` (the otelconnect RPC edge histogram; labels `rpc_method`, `rpc_response_status_code`) etc.
 - **Logs:** Grafana → Explore → Loki. Search structured logs.
 - **Profiles:** Grafana → Explore → Pyroscope. CPU, heap, goroutine, mutex profiles from the app's pprof endpoint.
 
-The app auto-connects: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` pushes traces and metrics.
+The same switch points the host processes at it: their `OTEL_EXPORTER_OTLP_ENDPOINT` is the loopback OTLP port the compose service publishes (`_otlp_port` in `dev/main.k`), which pushes traces and metrics.
 
 **pprof is always on.** It binds its own listener, separate from the app port, defaulting to `127.0.0.1:6060` — live in every environment and routable from none (no k8s Service, no route, no published port). You never have to redeploy to start profiling:
 

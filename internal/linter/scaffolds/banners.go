@@ -459,7 +459,7 @@ func isKnownTier2(rel, noTmpl string) bool {
 func isKnownTier3(rel, noTmpl string) bool {
 	// Project-level user-owned skeletons.
 	switch noTmpl {
-	case "providers.go", "app-auth.go", "tools.go", "config.proto",
+	case "providers.go", "app-auth.go", "middleware.go", "tools.go", "config.proto",
 		"example.proto", "user-example.proto",
 		"docker-compose.yml":
 		return true
@@ -476,11 +476,11 @@ func isKnownTier3(rel, noTmpl string) bool {
 			return true
 		}
 	}
-	// (The thin auth-policy pair — project/middleware.go +
-	// middleware_test.go — is plain .go, not .tmpl, so the banner walk
-	// never reaches it; mechanisms live in forge/pkg/{authn,middleware}.
-	// The owned auth-setup scaffold — project/app-auth.go.tmpl →
-	// internal/app/auth.go — is listed in the project-level switch above.)
+	// (The thin auth-policy pair: project/middleware.go.tmpl is rendered —
+	// it declares the project-scoped session cookie name — and is user-owned
+	// from birth, so it is listed with app-auth.go in isKnownTier3;
+	// middleware_test.go stays plain .go, which the banner walk never
+	// reaches. Mechanisms live in forge/pkg/{authn,middleware}.)
 	// Worker scaffolds (worker.go.tmpl / worker_test.go.tmpl + cron variants).
 	if strings.Contains(rel, "internal/templates/worker/") ||
 		strings.Contains(rel, "internal/templates/worker-cron/") {

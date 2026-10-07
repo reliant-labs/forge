@@ -917,6 +917,12 @@ type deployOptions struct {
 	// explicit deploy applies everything the env declares.
 	skipClusterApply bool
 
+	// infraConverged, when true, leaves the off-cluster INFRA groups (host
+	// infra, compose) alone: `forge env up` converged them in its infra
+	// pre-warm moments earlier in the same run. `forge env deploy` never
+	// sets it.
+	infraConverged bool
+
 	// purpose is why this deploy renders the env. `forge env deploy` leaves
 	// the zero value (renderDeclaration): its render claims a local port
 	// block only when the env runs on this machine. `forge env up`'s deploy
@@ -1231,10 +1237,17 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		}
 		groups = targetedK8sGroups(cluster.SelectManifestsByGroup(full, targets), topology, groups, fullEntities)
 	}
+	if opts.infraConverged {
+		groups = withoutInfraGroups(groups)
+	}
 	if opts.skipClusterApply {
 		groups, topology = withoutClusterGroups(groups), withoutClusterGroups(topology)
 		if len(groups) == 0 && len(hostedGroups) == 0 {
-			fmt.Println("Nothing to deploy outside a cluster.")
+			if opts.infraConverged {
+				fmt.Println("Infrastructure already converged this run; nothing else to deploy outside a cluster.")
+			} else {
+				fmt.Println("Nothing to deploy outside a cluster.")
+			}
 			return nil
 		}
 	}
@@ -1819,6 +1832,19 @@ func envRunsProjectImageOnCluster(e *KCLEntities) bool {
 		}
 	}
 	return false
+}
+
+// withoutInfraGroups drops the groups prewarmInfra converges (host infra and
+// compose) — the providers `forge env up` brings up before anything dials
+// them. See deployOptions.infraConverged.
+func withoutInfraGroups(groups []deploytarget.ServiceGroup) []deploytarget.ServiceGroup {
+	out := make([]deploytarget.ServiceGroup, 0, len(groups))
+	for _, g := range groups {
+		if g.ProviderID != "host-infra" && g.ProviderID != "compose" {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // withoutClusterGroups drops every k8s-cluster group, keeping the groups a

@@ -304,6 +304,42 @@ func TestCredentialsGoToTheAppsOwnAPI(t *testing.T) {
 	}
 }
 
+// TestRPCTransportCarriesTheSessionCookie is the other half of the test
+// above: signing in is useless if the RPCs that follow do not carry the
+// session. Each real-backend Connect transport must be built on a fetch that
+// sends credentials. The Next.js tree used the browser default
+// ("same-origin"), so in the dev loop — API on its own port — every RPC after
+// a successful sign-in went out without the cookie and answered 401.
+func TestRPCTransportCarriesTheSessionCookie(t *testing.T) {
+	t.Parallel()
+
+	const rel = "src/lib/connect.ts"
+	for _, kind := range browserKinds {
+		tree := authTreeFor(t, kind)
+		tmplPath, ok := tree[rel]
+		if !ok {
+			t.Fatalf("%s: no %s in the composed tree", kind, rel)
+		}
+		src := stripCommentsKeepingStrings(renderFrontend(t, tmplPath, kind))
+
+		transports := regexp.MustCompile(`createConnectTransport\(\{`).FindAllStringIndex(src, -1)
+		if len(transports) == 0 {
+			t.Fatalf("%s: %s builds no Connect transport — this guard has gone blind:\n%s", kind, rel, src)
+		}
+		for _, loc := range transports {
+			body := src[loc[1]:]
+			body = body[:strings.Index(body, "})")]
+			if !strings.Contains(body, "fetch: fetchWithSession") {
+				t.Errorf("%s: a transport in %s is not built on fetchWithSession, so its RPCs drop the session cookie cross-origin:\n%s",
+					kind, rel, body)
+			}
+		}
+		if !regexp.MustCompile(`fetchWithSession[^=]*=[^;]*credentials:\s*"include"`).MatchString(src) {
+			t.Errorf("%s: %s has no fetchWithSession that sends credentials: \"include\"", kind, rel)
+		}
+	}
+}
+
 // TestTheSessionTokenIsUnreachableFromScript pins the property the whole
 // design exists for.
 //

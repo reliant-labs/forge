@@ -95,10 +95,41 @@ func CheckPprof(ctx context.Context, env *Environment) CheckResult {
 	}
 	sort.Strings(parts)
 
+	if owner := pprofOwnerMismatch(ctx, client, addr, env.ProjectName); owner != "" {
+		return CheckResult{
+			Status: StatusWarn,
+			Message: fmt.Sprintf("the pprof listener on %s belongs to another process (%s), not %s — "+
+				"this app's own listener did not bind; give it a free PPROF_ADDR", addr, owner, env.ProjectName),
+		}
+	}
+
 	return CheckResult{
 		Status:  StatusPass,
 		Message: strings.Join(parts, " "),
 	}
+}
+
+// pprofOwnerMismatch returns the command line of the process answering pprof
+// at addr when it is evidently NOT this project's binary, and "" otherwise.
+//
+// A loopback pprof port is machine-wide. When the app loses the bind (it
+// logs "pprof listener unavailable" and carries on), whatever process holds
+// the port still answers /debug/pprof/, and the check reported that process's
+// profiles as the app's. /debug/pprof/cmdline names the responder. An
+// unreadable answer is not evidence of a mismatch, so it reports nothing.
+func pprofOwnerMismatch(ctx context.Context, client *http.Client, addr, project string) string {
+	if project == "" {
+		return ""
+	}
+	cmdline, err := httpGetBody(ctx, client, fmt.Sprintf("http://%s/debug/pprof/cmdline", addr))
+	if err != nil || strings.TrimSpace(cmdline) == "" {
+		return ""
+	}
+	args := strings.Fields(strings.ReplaceAll(cmdline, "\x00", " "))
+	if len(args) == 0 || strings.Contains(strings.Join(args, " "), project) {
+		return ""
+	}
+	return args[0]
 }
 
 // httpGetBody performs a GET request and returns the response body as a string.

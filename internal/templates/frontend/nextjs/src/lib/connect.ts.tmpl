@@ -26,7 +26,7 @@ import type { DescService } from "@bufbuild/protobuf";
 function apiBaseUrl(): string {
   return loadConfig().API_URL || DEV_API_URL;
 }
-{{else}}
+{{- else}}
 // The API URL is read from the NEXT_PUBLIC_API_URL environment variable.
 // In development it falls back to DEV_API_URL — regenerated on every
 // `forge generate` from the proto descriptor + the canonical dev port, so
@@ -34,24 +34,31 @@ function apiBaseUrl(): string {
 function apiBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_URL ?? DEV_API_URL;
 }
-{{end}}
+{{- end}}
 
-// Module-level token getter, wired up by AuthTokenBridge in providers.tsx.
-let _getToken: () => Promise<string | null> = async () => null;
+// The forge frontend runtime owns the interceptor stack: brand headers, W3C
+// traceparent propagation (so backend spans join the same trace — always on,
+// no collector required), typed error normalization, and transient-retry
+// with backoff. It ships as @reliantlabs/forge-web-runtime.
+//
+// NO TOKEN GETTER, and nothing here sets an Authorization header. Sign-in is
+// native: the browser POSTs credentials to this app's own API, the server
+// runs the whole OIDC flow, and the session comes back as an HttpOnly
+// cookie. This bundle cannot read that cookie — a token no script can reach
+// is a token an XSS cannot steal — so there is no token to attach. The
+// cookie travels on the fetch below instead. See src/lib/auth/native-login.ts.
+const interceptors = buildRuntimeInterceptors({});
 
-export function setAuthTokenGetter(fn: () => Promise<string | null>) {
-  _getToken = fn;
-}
-
-// The forge frontend runtime owns the interceptor stack: auth-token attach,
-// brand headers, W3C traceparent propagation (so backend spans join
-// the same trace — always on, no collector required), typed error
-// normalization, and transient-retry with backoff. It ships as
-// @reliantlabs/forge-web-runtime. The token getter resolves the CURRENT token on
-// every call — the bridge above swaps it after login.
-const interceptors = buildRuntimeInterceptors({
-  getToken: () => _getToken(),
-});
+// Send the session cookie with every RPC.
+//
+// "include", not the browser's "same-origin" default: in the dev loop the
+// API binds its own port, so every RPC is cross-origin and the default
+// silently DROPS the cookie — the calls go out unauthenticated, the backend
+// answers 401, and nothing in the console explains why. The server pairs
+// this with cors_allow_credentials. native-login.ts makes the identical
+// choice for the same reason.
+const fetchWithSession: typeof globalThis.fetch = (input, init) =>
+  fetch(input, { ...init, credentials: "include" });
 
 function buildTransport(): Transport {
   // MOCK_API has three modes:
@@ -100,6 +107,7 @@ function buildTransport(): Transport {
     const real = createConnectTransport({
       baseUrl,
       interceptors,
+      fetch: fetchWithSession,
     });
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createMockTransport } = require("@/lib/mock-transport_gen");
@@ -109,6 +117,7 @@ function buildTransport(): Transport {
   return createConnectTransport({
     baseUrl,
     interceptors,
+    fetch: fetchWithSession,
   });
 }
 

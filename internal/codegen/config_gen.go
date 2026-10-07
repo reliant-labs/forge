@@ -884,6 +884,22 @@ func DefaultConfigMessages() []ConfigMessage {
 					Description: "PostgreSQL connection string",
 				},
 				{
+					Name:      "idp_broker_token",
+					GoName:    "IdpBrokerToken",
+					GoType:    "string",
+					ProtoType: "string",
+					EnvVar:    "IDP_BROKER_TOKEN",
+					Flag:      "idp-broker-token",
+					// Mirrors the scaffolded proto too, for the same reason as
+					// database_url: the dev env with a frontend names it in the
+					// API's config_secrets (the login broker's token, which the
+					// idp-provision job stores), and config_secrets may only name
+					// a sensitive field. A fallback set without it could not
+					// render that env at all.
+					Sensitive:   true,
+					Description: "The login broker's service-account token (native sign-in). SENSITIVE.",
+				},
+				{
 					Name:        "cors_origins",
 					GoName:      "CorsOrigins",
 					GoType:      "string",

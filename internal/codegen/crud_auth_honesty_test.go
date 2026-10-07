@@ -293,7 +293,11 @@ func requireScaffoldedAuthSeam(t *testing.T) {
 	var sawPackage bool
 	fset := token.NewFileSet()
 	for _, name := range names {
-		if !strings.HasSuffix(name, ".go") {
+		// pkg/middleware/middleware.go is RENDERED (middleware.go.tmpl: it
+		// names the project's session cookie), so .go.tmpl is in scope. A
+		// template whose actions are not valid Go fails to parse and is
+		// skipped below, exactly as a non-Go file would be.
+		if !strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, ".go.tmpl") {
 			continue
 		}
 		data, err := templates.ProjectTemplates().Get(name)

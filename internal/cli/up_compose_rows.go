@@ -1,0 +1,123 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"sort"
+	"strings"
+	"time"
+)
+
+// composePublisher is one published port of a running compose service, as
+// `docker compose ps --format json` reports it.
+type composePublisher struct {
+	URL           string `json:"URL"`
+	TargetPort    int    `json:"TargetPort"`
+	PublishedPort int    `json:"PublishedPort"`
+	Protocol      string `json:"Protocol"`
+}
+
+// composePublishersFunc returns what one compose service publishes to this
+// machine. A seam so the row assembly is testable without docker.
+type composePublishersFunc func(ctx context.Context, projectDir, file, service string) ([]composePublisher, error)
+
+// composeRows lists, for the env-up summary, every port this env's compose
+// workloads publish to the host — above all Grafana, when the observability
+// opt-in runs lgtm. The README promises "turn on observability and the table
+// includes Grafana too"; the table listed host processes and frontends only,
+// and Grafana's port is DYNAMIC (published as `0:3000`), so nothing on screen
+// said where it was.
+//
+// Read from docker at print time, because a dynamic port exists only once
+// the container does. Best-effort like the rest of the box: a service docker
+// cannot describe contributes no row rather than failing the summary.
+func composeRows(ctx context.Context, e *KCLEntities, projectDir string, targets []string, publishers composePublishersFunc) []upServiceRow {
+	if e == nil || publishers == nil {
+		return nil
+	}
+	var rows []upServiceRow
+	for _, w := range e.WorkloadsOn(RuntimeCompose) {
+		if !inTargetSet(targets, w.Name) || w.Runtime.Compose == nil {
+			continue
+		}
+		service := w.Runtime.Compose.Service
+		if service == "" {
+			service = w.Name
+		}
+		pubs, err := publishers(ctx, projectDir, w.Runtime.Compose.File, service)
+		if err != nil {
+			continue
+		}
+		sort.Slice(pubs, func(i, j int) bool { return pubs[i].TargetPort < pubs[j].TargetPort })
+		seen := map[int]bool{}
+		for _, p := range pubs {
+			// IPv4 and IPv6 bindings of one mapping are reported separately.
+			if p.PublishedPort <= 0 || seen[p.PublishedPort] || (p.Protocol != "" && p.Protocol != "tcp") {
+				continue
+			}
+			seen[p.PublishedPort] = true
+			host := "localhost"
+			if strings.HasPrefix(p.URL, "127.0.0.1") {
+				host = "127.0.0.1"
+			}
+			rows = append(rows, upServiceRow{
+				Name: fmt.Sprintf("%s :%d", w.Name, p.TargetPort),
+				Kind: "compose",
+				Port: p.PublishedPort,
+				URL:  fmt.Sprintf("http://%s:%d", host, p.PublishedPort),
+				Log:  "docker compose logs " + service,
+			})
+		}
+	}
+	return rows
+}
+
+// dockerComposePublishers asks docker what a running compose service
+// publishes. It never starts anything.
+func dockerComposePublishers(ctx context.Context, projectDir, file, service string) ([]composePublisher, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	args := []string{"compose"}
+	if file != "" {
+		args = append(args, "-f", file)
+	}
+	args = append(args, "ps", "--format", "json", service)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Dir = projectDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var pubs []composePublisher
+	// One JSON object per line (compose v2.21+), or one JSON array (older).
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		type psEntry struct {
+			Service    string             `json:"Service"`
+			Publishers []composePublisher `json:"Publishers"`
+		}
+		var entries []psEntry
+		if strings.HasPrefix(line, "[") {
+			if err := json.Unmarshal([]byte(line), &entries); err != nil {
+				return nil, err
+			}
+		} else {
+			var one psEntry
+			if err := json.Unmarshal([]byte(line), &one); err != nil {
+				return nil, err
+			}
+			entries = append(entries, one)
+		}
+		for _, e := range entries {
+			if e.Service == service {
+				pubs = append(pubs, e.Publishers...)
+			}
+		}
+	}
+	return pubs, nil
+}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -51,7 +52,16 @@ func doGet(ctx context.Context, rawURL string) ([]byte, error) {
 	return body, nil
 }
 
-// CheckPrometheus verifies Prometheus is scraping targets and receiving app metrics.
+// CheckPrometheus verifies Prometheus is reachable AND holds this app's
+// metrics.
+//
+// Reachable is not the question. The bundled lgtm image scrapes its own
+// collector, so `up` always has a target — the check used to report
+// "✓ 1 targets up" on a stack where the app exported nothing at all, which is
+// a green on exactly the property it exists to verify. It passes only when
+// Prometheus has series stamped with the app's service name (job=<project>,
+// what the collector derives from the OTLP resource's service.name — the
+// same name the Tempo check searches for).
 func CheckPrometheus(ctx context.Context, env *Environment) CheckResult {
 	addr, skip := grafanaAddr(env)
 	if skip != nil {
@@ -60,58 +70,86 @@ func CheckPrometheus(ctx context.Context, env *Environment) CheckResult {
 
 	base := "http://" + addr + "/api/datasources/proxy/uid/prometheus/api/v1/query"
 
-	// Query "up" targets.
-	upURL := base + "?query=up"
-	body, err := doGet(ctx, upURL)
+	upBody, err := doGet(ctx, base+"?query=up")
 	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "Prometheus query failed: " + err.Error(), Evidence: string(body)}
+		return CheckResult{Status: StatusFail, Message: "Prometheus query failed: " + err.Error(), Evidence: string(upBody)}
 	}
-
-	var upResp struct {
-		Status string `json:"status"`
-		Data   struct {
-			ResultType string `json:"resultType"`
-			Result     []struct {
-				Metric map[string]interface{} `json:"metric"`
-				Value  []interface{}          `json:"value"`
-			} `json:"result"`
-		} `json:"data"`
+	up, err := parsePromVector(upBody)
+	if err != nil {
+		return CheckResult{Status: StatusFail, Message: "failed to parse Prometheus response: " + err.Error(), Evidence: string(upBody)}
 	}
-	if err := json.Unmarshal(body, &upResp); err != nil {
-		return CheckResult{Status: StatusFail, Message: "failed to parse Prometheus response", Evidence: string(body)}
-	}
-	if upResp.Status != "success" {
-		return CheckResult{Status: StatusFail, Message: "Prometheus returned status: " + upResp.Status, Evidence: string(body)}
-	}
-
-	upCount := len(upResp.Data.Result)
-	if upCount == 0 {
+	if len(up) == 0 {
 		return CheckResult{Status: StatusFail, Message: "no targets reporting up"}
 	}
 
-	// Query go_goroutines to verify app metrics.
-	goroutinesURL := base + "?query=go_goroutines"
-	goroutineBody, err := doGet(ctx, goroutinesURL)
-	goroutineMsg := ""
-	if err == nil {
-		var grResp struct {
-			Data struct {
-				Result []struct {
-					Value []interface{} `json:"value"`
-				} `json:"result"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(goroutineBody, &grResp) == nil && len(grResp.Data.Result) > 0 {
-			if vals := grResp.Data.Result[0].Value; len(vals) >= 2 {
-				goroutineMsg = fmt.Sprintf(", go_goroutines=%s", vals[1])
-			}
+	appQuery := fmt.Sprintf(`count by (__name__) ({job=%q})`, env.ProjectName)
+	appBody, err := doGet(ctx, base+"?query="+url.QueryEscape(appQuery))
+	if err != nil {
+		return CheckResult{Status: StatusUnknown, Message: "Prometheus is up, but the query for this app's metrics failed: " + err.Error(), Evidence: string(appBody)}
+	}
+	series, err := parsePromVector(appBody)
+	if err != nil {
+		return CheckResult{Status: StatusUnknown, Message: "Prometheus is up, but its answer about this app's metrics could not be read: " + err.Error(), Evidence: string(appBody)}
+	}
+	return prometheusAppVerdict(env.ProjectName, len(up), series)
+}
+
+// prometheusAppVerdict turns "which metric names carry job=<project>" into
+// the check's result. Split from the HTTP so the verdict is testable alone.
+func prometheusAppVerdict(project string, upTargets int, series []promSample) CheckResult {
+	if len(series) == 0 {
+		return CheckResult{
+			Status: StatusWarn,
+			Message: fmt.Sprintf("Prometheus is up (%d scrape target(s)) but holds no metrics from %s — nothing is exporting to it; "+
+				"check the app's OTEL_EXPORTER_OTLP_ENDPOINT (metrics are pushed about once a minute)", upTargets, project),
 		}
 	}
-
+	names := make([]string, 0, len(series))
+	for _, s := range series {
+		if n, _ := s.Metric["__name__"].(string); n != "" {
+			names = append(names, n)
+		}
+	}
+	// The RPC histogram first: it is the series that says requests are
+	// being measured, rather than that a connection pool exists.
+	sort.Slice(names, func(i, j int) bool {
+		ri, rj := strings.HasPrefix(names[i], "rpc_"), strings.HasPrefix(names[j], "rpc_")
+		if ri != rj {
+			return ri
+		}
+		return names[i] < names[j]
+	})
+	shown := names
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
 	return CheckResult{
 		Status:  StatusPass,
-		Message: fmt.Sprintf("%d targets up%s", upCount, goroutineMsg),
+		Message: fmt.Sprintf("%d metric(s) from %s (%s)", len(series), project, strings.Join(shown, ", ")),
 	}
+}
+
+// promSample is one element of a Prometheus instant-vector result.
+type promSample struct {
+	Metric map[string]interface{} `json:"metric"`
+	Value  []interface{}          `json:"value"`
+}
+
+// parsePromVector decodes a Prometheus instant-query response.
+func parsePromVector(body []byte) ([]promSample, error) {
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []promSample `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Status != "success" {
+		return nil, fmt.Errorf("status %q", resp.Status)
+	}
+	return resp.Data.Result, nil
 }
 
 // CheckTempo verifies traces are being ingested into Tempo.

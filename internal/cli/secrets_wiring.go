@@ -84,6 +84,27 @@ func secretProviderFromEntities(e *KCLEntities, projectDir string) (secrets.Prov
 	return secrets.NewProvider(cfg)
 }
 
+// reloadSecretsAfterJobs re-reads a FILE secret store once the host jobs have
+// run, and returns the provider the host services should start with.
+//
+// A job is allowed to publish into the store — idp-provision keeps the login
+// broker's token there — and `forge env up` read the store before any job
+// ran. Without the re-read, the value a job just wrote reaches the services
+// only on the NEXT run, which on a fresh project means a first `forge env up`
+// whose sign-in does not work. Other providers (external, hosted, none) are
+// not files a job can write, and a pulled hosted store was fetched for this
+// run on purpose, so they are returned unchanged.
+func reloadSecretsAfterJobs(prov secrets.Provider, e *KCLEntities, projectDir string) (secrets.Provider, error) {
+	if prov == nil || prov.Kind() != "file" || e == nil || e.SecretProvider == nil || e.SecretProvider.Type != "file" {
+		return prov, nil
+	}
+	reloaded, err := secretProviderFromEntities(e, projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("secret provider: re-read after jobs: %w", err)
+	}
+	return reloaded, nil
+}
+
 // noteSecretLayering prints, on STDERR, where a linked worktree's secret
 // values came from when any were inherited from the primary checkout.
 //

@@ -39,6 +39,11 @@ What you get is an **`Identity`**: `{ authenticated, email?, name?, subject? }`.
 
 `credentials: "include"` on every auth `fetch` is load-bearing and easy to lose. In the dev loop the API is on its own port, so every auth call is cross-origin, and under the default (`"same-origin"`) the browser **silently drops the `Set-Cookie`**: login returns 200, the identity comes back, and the user stays signed out with nothing in the console to explain it. The server pairs it with `cors_allow_credentials`.
 
+The same holds for every RPC after sign-in, on both sides:
+
+- **The transport** (`src/lib/connect.ts`) builds every real Connect transport on `fetchWithSession`, a fetch that sends credentials. Without it the session cookie never reaches the API cross-origin.
+- **The server's auth interceptor** (`pkg/middleware/middleware.go`, `credentialFrom`) reads an `Authorization: Bearer` header when one is sent — a service, a CLI, a test — and otherwise the session cookie, `SessionCookieName`. That constant is declared there and `internal/app/login_broker.go` sets the cookie under it, so the name the broker writes and the name the interceptor reads are one value. An interceptor that read only the header answered every RPC after a successful sign-in with 401 "missing Authorization header".
+
 ## Why this rather than the browser-side PKCE flow it replaced
 
 Four reasons, each of which was a real limit of the old design:

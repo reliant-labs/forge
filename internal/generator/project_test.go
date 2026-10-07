@@ -257,6 +257,16 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	if !strings.Contains(thinMiddleware, "forge/pkg/authn") {
 		t.Fatalf("middleware/middleware.go should delegate to forge/pkg/authn, got:\n%s", thinMiddleware)
 	}
+	// It is RENDERED: it names the project's native sign-in cookie, which the
+	// interceptor reads and internal/app/login_broker.go sets. An unrendered
+	// copy compiles — the template action sits inside a string — and then
+	// reads a cookie no browser ever has.
+	if strings.Contains(thinMiddleware, "{{") {
+		t.Fatalf("middleware/middleware.go was written unrendered:\n%s", thinMiddleware)
+	}
+	if want := `const SessionCookieName = "` + filepath.Base(root) + `_session"`; !strings.Contains(thinMiddleware, want) {
+		t.Fatalf("middleware/middleware.go must declare %s, got:\n%s", want, thinMiddleware)
+	}
 	for _, retired := range []string{"logging.go", "recovery.go", "cors.go"} {
 		if _, err := os.Stat(filepath.Join(root, "pkg", "middleware", retired)); !os.IsNotExist(err) {
 			t.Fatalf("pkg/middleware/%s should no longer be scaffolded (library-fied), err=%v", retired, err)

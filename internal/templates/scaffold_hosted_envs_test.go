@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -15,7 +16,8 @@ import (
 
 // hostedConfigGenStub is the pipeline-generated config projection a fresh
 // scaffold's envs import, in the exact shape codegen.GenerateConfigKCL emits
-// (see TestScaffoldedIngressEvaluates): a sensitive DATABASE_URL reaches only
+// (see TestScaffoldedIngressEvaluates): a sensitive DATABASE_URL (and, in a
+// dev env with a frontend, the login broker's IDP_BROKER_TOKEN) reaches only
 // the workloads that list it in `config_secrets`.
 const hostedConfigGenStub = `import forge
 
@@ -26,12 +28,14 @@ schema ConfigSecretRef:
 schema AppConfig:
     port: int = 8080
     database_url: ConfigSecretRef = ConfigSecretRef { name = "app-secrets", key = "database_url" }
+    idp_broker_token: ConfigSecretRef = ConfigSecretRef { name = "app-secrets", key = "idp_broker_token" }
 
-APP_CONFIG_SENSITIVE_ENV: [str] = ["DATABASE_URL"]
+APP_CONFIG_SENSITIVE_ENV: [str] = ["DATABASE_URL", "IDP_BROKER_TOKEN"]
 
 appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {
     _sensitive: {str: forge.SecretRef} = {
         "DATABASE_URL" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = "DATABASE_URL"}
+        "IDP_BROKER_TOKEN" = forge.SecretRef {name = c.idp_broker_token.name, key = c.idp_broker_token.key, store_key = "IDP_BROKER_TOKEN"}
     }
     assert all _n in config_secrets { _n in _sensitive }, "unknown config_secrets name"
     {
@@ -381,5 +385,134 @@ func TestScaffoldedClusterBinderRefusesUntilDeclared(t *testing.T) {
 		if runtimeType(wm) != want {
 			t.Errorf("workload %v runs on %q, want %s", wm["name"], runtimeType(wm), want)
 		}
+	}
+}
+
+// devWorkloadJSON renders the dev env and returns each workload, keyed by
+// name, as its JSON text — enough to ask what a workload's env carries
+// without pinning the render contract's exact nesting.
+func devWorkloadJSON(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := renderEnvOutput(t, root, "dev")
+	workloads, _ := out["workloads"].([]any)
+	byName := map[string]string{}
+	for _, w := range workloads {
+		m, _ := w.(map[string]any)
+		name, _ := m["name"].(string)
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byName[name] = string(raw)
+	}
+	return byName
+}
+
+// TestDevSignInReachesTheAPI pins the two halves of the dev login broker's
+// credential to one store. idp-provision mints the broker's token; the API
+// is the one process that brokers sign-in. Before, the job printed the token
+// to the terminal and the API's config_secrets named only DATABASE_URL, so
+// even a token stored by hand never reached it: /auth/login was a 404 and the
+// README's first sixty seconds ended at a sign-in page nobody could pass.
+func TestDevSignInReachesTheAPI(t *testing.T) {
+	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
+	w := devWorkloadJSON(t, root)
+
+	api, ok := w["api"]
+	if !ok {
+		t.Fatalf("dev renders no api workload: %v", w)
+	}
+	if !strings.Contains(api, `"IDP_BROKER_TOKEN"`) {
+		t.Errorf("the dev API is not handed IDP_BROKER_TOKEN, so native sign-in never mounts:\n%s", api)
+	}
+	job, ok := w["idp-provision"]
+	if !ok {
+		t.Fatalf("dev renders no idp-provision job: %v", w)
+	}
+	if !strings.Contains(job, `"IDP_BROKER_TOKEN_STORE"`) || !strings.Contains(job, `"secrets/dev.yaml"`) {
+		t.Errorf("idp-provision is not told to keep the token in the env's secret store (secrets/dev.yaml):\n%s", job)
+	}
+
+	// A project with no frontend runs no dev IdP; its API has no broker.
+	bare := devWorkloadJSON(t, scaffoldForRender(t, "shop", []string{"orders"}, ""))
+	if strings.Contains(bare["api"], "IDP_BROKER_TOKEN") {
+		t.Errorf("an API with no sign-in to broker was handed the broker token:\n%s", bare["api"])
+	}
+}
+
+// TestDevObservabilityOptInDeliversTelemetry pins the dev observability
+// opt-in to the three things that must agree for any data to arrive: the
+// lgtm compose service runs, it publishes OTLP on the port the env declares,
+// and the API exports to that same port. The opt-in used to be "add the lgtm
+// workload" alone: Grafana came up, the host-run API had an empty
+// OTEL_EXPORTER_OTLP_ENDPOINT and compose published no OTLP port, so nothing
+// ever reached it.
+func TestDevObservabilityOptInDeliversTelemetry(t *testing.T) {
+	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
+
+	// Off by default: no stack, and no endpoint aimed at one.
+	off := devWorkloadJSON(t, root)
+	if _, ok := off["lgtm"]; ok {
+		t.Errorf("a fresh dev env runs lgtm without being asked")
+	}
+	if strings.Contains(off["api"], `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http`) {
+		t.Errorf("observability is off, but the API exports to a collector:\n%s", off["api"])
+	}
+
+	mainK := filepath.Join(root, "deploy/kcl/dev/main.k")
+	raw, err := os.ReadFile(mainK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := strings.Replace(string(raw), "_observability = False", "_observability = True", 1)
+	if on == string(raw) {
+		t.Fatalf("dev/main.k has no `_observability = False` switch:\n%s", raw)
+	}
+	if err := os.WriteFile(mainK, []byte(on), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := devWorkloadJSON(t, root)
+
+	lgtm, ok := w["lgtm"]
+	if !ok {
+		t.Fatalf("observability on, but dev runs no lgtm workload: %v", w)
+	}
+	port := regexp.MustCompile(`"OTLP_GRPC_PORT":"(\d+)"`).FindStringSubmatch(lgtm)
+	if port == nil {
+		t.Fatalf("lgtm is not handed OTLP_GRPC_PORT to publish:\n%s", lgtm)
+	}
+	if want := `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http://localhost:` + port[1] + `"`; !strings.Contains(w["api"], want) {
+		t.Errorf("the API does not export to the port lgtm publishes (%s):\n%s", want, w["api"])
+	}
+
+	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"`,
+		// grafana/otel-lgtm reads providers from here, not /etc/grafana.
+		":/otel-lgtm/grafana/conf/provisioning/dashboards/forge.yaml:ro",
+	} {
+		if !strings.Contains(string(compose), want) {
+			t.Errorf("docker-compose.yml lgtm service is missing %s", want)
+		}
+	}
+	if strings.Contains(string(compose), ":/etc/grafana/provisioning") {
+		t.Errorf("docker-compose.yml still mounts provisioning where grafana/otel-lgtm never reads it")
+	}
+}
+
+// Every long-running host process gets its own pprof port. On the config
+// default (127.0.0.1:6060) the second process on a machine loses the bind,
+// and `forge env status` probed whichever process held it and reported THAT
+// process's profiles as this app's.
+func TestDevHostProcessesGetTheirOwnPprofPort(t *testing.T) {
+	w := devWorkloadJSON(t, scaffoldForRender(t, "shop", []string{"orders"}, "web"))
+	if !regexp.MustCompile(`"name":"PPROF_ADDR","value":"127\.0\.0\.1:\d+"`).MatchString(w["api"]) {
+		t.Errorf("the dev API is not given its own loopback PPROF_ADDR:\n%s", w["api"])
+	}
+	if strings.Contains(w["migrate"], "PPROF_ADDR") {
+		t.Errorf("a one-shot job was handed a pprof listener:\n%s", w["migrate"])
 	}
 }

@@ -1322,7 +1322,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\bIndexDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06fields\x18\x02 \x03(\tR\x06fields\x12\x16\n" +
-	"\x06unique\x18\x03 \x01(\bR\x06unique\"\x9b\x02\n" +
+	"\x06unique\x18\x03 \x01(\bR\x06unique\"\x95\x02\n" +
 	"\fFieldOptions\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\bR\x02pk\x12'\n" +
 	"\x05store\x18\x03 \x01(\x0e2\x11.forge.v1.StoreAsR\x05store\x12\x10\n" +
@@ -1333,7 +1333,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x04skip\x18\b \x01(\bR\x04skip\x125\n" +
 	"\bvalidate\x18\t \x01(\v2\x19.forge.v1.ValidationRulesR\bvalidate\x12\x1c\n" +
 	"\timmutable\x18\n" +
-	" \x01(\bR\timmutableJ\x04\b\x02\x10\x03\"\x80\x02\n" +
+	" \x01(\bR\timmutable\"\x80\x02\n" +
 	"\x0fValidationRules\x12\x1a\n" +
 	"\brequired\x18\x01 \x01(\bR\brequired\x12\x1d\n" +
 	"\n" +
@@ -1345,7 +1345,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x03min\x18\x06 \x01(\x01R\x03min\x12\x10\n" +
 	"\x03max\x18\a \x01(\x01R\x03max\x12%\n" +
 	"\x0eallowed_values\x18\b \x03(\tR\rallowedValues\x12\x16\n" +
-	"\x06custom\x18\t \x01(\tR\x06custom\"\xf1\x01\n" +
+	"\x06custom\x18\t \x01(\tR\x06custom\"\xeb\x01\n" +
 	"\x0eServiceOptions\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -1354,11 +1354,11 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"visibility\x18\x04 \x01(\x0e2\x1b.forge.v1.ServiceVisibilityR\n" +
 	"visibility\x12\"\n" +
 	"\fdependencies\x18\x05 \x03(\tR\fdependencies\x12(\n" +
-	"\x04auth\x18\x06 \x01(\v2\x14.forge.v1.AuthConfigR\x04authJ\x04\b\a\x10\b\"V\n" +
+	"\x04auth\x18\x06 \x01(\v2\x14.forge.v1.AuthConfigR\x04auth\"V\n" +
 	"\n" +
 	"AuthConfig\x12#\n" +
 	"\rauth_required\x18\x01 \x01(\bR\fauthRequired\x12#\n" +
-	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xf3\x01\n" +
+	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xe1\x01\n" +
 	"\rMethodOptions\x12(\n" +
 	"\rauth_required\x18\x01 \x01(\bH\x00R\fauthRequired\x88\x01\x01\x12\x1e\n" +
 	"\n" +
@@ -1367,8 +1367,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
 	"\x06errors\x18\x06 \x03(\tR\x06errorsB\x10\n" +
-	"\x0e_auth_requiredJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
-	"\"\xd0\x02\n" +
+	"\x0e_auth_required\"\xd0\x02\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +
 	"\x04flag\x18\x02 \x01(\tR\x04flag\x12#\n" +

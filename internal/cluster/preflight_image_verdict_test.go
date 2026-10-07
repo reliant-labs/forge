@@ -132,7 +132,11 @@ func TestRegistryImageChecker_VerdictIsTheStatusCode(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg, "config.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	checker := RegistryImageChecker{DockerConfigDir: cfg, Client: &http.Client{}}
+	// No backoff: the 500 and the 429 are served on purpose.
+	previous := registryHTTPClient
+	registryHTTPClient = &http.Client{}
+	t.Cleanup(func() { registryHTTPClient = previous })
+	checker := RegistryImageChecker{DockerConfigDir: cfg}
 
 	cases := []struct {
 		repo    string

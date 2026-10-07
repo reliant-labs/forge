@@ -483,10 +483,17 @@ repos:
       - id: go-imports
         exclude: (^|/)testdata/|(^|/)gen/|_gen(_test)?\.go$
 
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.1.0
+  # prettier is a LOCAL hook pinned to the exact release your frontends'
+  # package.json pins, so the hook and ` + "`npm run format`" + ` never disagree about the
+  # same file. Bump both together.
+  - repo: local
     hooks:
       - id: prettier
+        name: prettier
+        entry: prettier --write --ignore-unknown
+        language: node
+        additional_dependencies: ["prettier@` + templates.PrettierVersion + `"]
+        types: [text]
         # Restrict to frontend + docs so prettier does not fight gofmt or
         # golangci-lint on Go files.
         #

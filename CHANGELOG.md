@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One prettier release formats a scaffolded project, everywhere.** Frontends
+  now pin `prettier` exactly (`3.5.3`, was the range `^3.5.0`), and the
+  scaffolded `.pre-commit-config.yaml` runs that same release as a local hook
+  instead of `pre-commit/mirrors-prettier` (archived at `v3.1.0`). The two
+  disagreed about the component library forge installs, so a fresh project's
+  hook rewrote files its own `npm run format` had just written, and the range
+  drifted to whatever `npm install` resolved. Existing projects: replace the
+  mirrors-prettier repo in `.pre-commit-config.yaml` with a `repo: local`
+  hook (`language: node`, `entry: prettier --write --ignore-unknown`,
+  `additional_dependencies: ["prettier@3.5.3"]`), and pin
+  `"prettier": "3.5.3"` in each frontend's `package.json`.
+
 - **Skills and project memory now lead with shipping.** The start-here `forge`
   skill gains a "Ship it" section (hosting is the default, `forge env deploy`,
   the free static tier, queued-on-billing exit 7, no `forge login` under
@@ -50,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workers (`server` mounts every service and supervises every worker). This
   is what the docs already said — "one binary serves every service on one
   mux", "Go services (hot reload)" — and what `.air.toml` (`entrypoint =
-  ["./tmp/<p>", "server"]`) and `task dev` already ran; `forge env up dev`
+["./tmp/<p>", "server"]`) and `task dev` already ran; `forge env up dev`
   did neither. `_on_host` now runs `server` under air (anything else still
   `go run`), so a .go edit rebuilds and restarts the API; air must be
   installed (`go install github.com/air-verse/air@latest`, which `forge
-  doctor` already required), and `forge env up` refuses to start without it,
+doctor` already required), and `forge env up` refuses to start without it,
   naming the workload and the `runner = "go-run"` way out, instead of failing
   in the host phase on `exec: "air": executable file not found`. It no longer
   prints "the workload's args [server] are not passed" when the air config's
@@ -72,10 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `forge.ManagedDatabase` each workload reads through `forge.DatabaseRef`,
   `forge.HostedSecrets`, the frontend on platform static hosting with
   `API_URL` and `CORS_ORIGINS` wired by reference, and `control_plane =
-  forge.ControlPlane {}`. A fresh scaffold renders every env with no
+forge.ControlPlane {}`. A fresh scaffold renders every env with no
   placeholder. Before, staging and prod bound everything to a cluster the
   author had to name (`forge env deploy prod --explain`: `REFUSE (declared
-  context not in kubeconfig)`) and the frontend to `REPLACE_ME_BUCKET`. The
+context not in kubeconfig)`) and the frontend to `REPLACE_ME_BUCKET`. The
   scaffolded CI is the hosted pipeline (`release.yml`, no registry login)
   instead of `deploy.yml`. `dev` is unchanged. Hosted workloads and the
   managed database need billing; a static site alone is free.
@@ -121,9 +133,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `_hosted_frontend`, and still to a bucket in an env without one.
   - **Existing projects are not rewritten** (env files are scaffolded once).
     To adopt hosting, add `control_plane`, `secret_provider =
-    forge.HostedSecrets {}` and a hosted `forge.ManagedDatabase` to the env's
+forge.HostedSecrets {}` and a hosted `forge.ManagedDatabase` to the env's
     Bundle, give `_hosted` the bare image and `DATABASE_URL =
-    forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
+forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
     beside prod with `forge env new cloud --from prod --bind <name>=hosted`
     first. The `deploy` skill has the exact edits. A project scaffolded
     between the hosting default and the one-workload API binds each service
@@ -172,7 +184,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `migrations/v0.1.44` playbook to any project with a `[id]` route. The
     playbook covers rescaffolding untouched pages, moving edited ones, and
     switching `output:` with `forge project upgrade --force next.config.ts
-    Dockerfile`.
+Dockerfile`.
   - `forge lint --guarded-fields` reads the new `<slug>/edit/page.tsx` as
     well as the old `[id]/edit` path. The stale-route report recognizes both
     page shapes.
@@ -226,7 +238,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frozen against the birth schema. Editing the birth migration afterwards —
   the db skill's own advice: a `GENERATED` column, a one-way status `CHECK` —
   broke it (`cannot insert a non-DEFAULT value into column …`, `violates check
-  constraint …`). It now calls `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
+constraint …`). It now calls `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
   rendered into the forge-owned `factories_gen_test.go` from the applied schema
   on every `forge generate`: it seeds the FK parents and returns a request the
   current constraints accept (enums the column DEFAULT supplies, nullable
@@ -293,16 +305,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column.
 - **A failing `forge lint` names the failed linters on its last line**
   (`forge lint: 2 gating linter(s) failed: computed-fields lint,
-  read-only-fields lint`), instead of "one or more linters reported errors".
+read-only-fields lint`), instead of "one or more linters reported errors".
   The verdict is the last line in every mode.
 - **`frontend lint` no longer "passes" on a project with no frontend.** With no
   declared frontend and no `frontends/` directory it is a silent no-op, as the
   frontend typecheck lane already was, instead of counting as a gating linter
   that ran.
 - **Bridging a project to a local forge checkout is opt-in: `forge project new
-  --link-forge`.** It used to happen on its own for every dev build of forge —
+--link-forge`.** It used to happen on its own for every dev build of forge —
   including a host binary that embeds forge through a workspace (`reliant
-  forge project new`), which bridged every project it created to whatever
+forge project new`), which bridged every project it created to whatever
   checkout that host compiled from. On a shared machine that is the main
   checkout everyone pulls into, so the library under those projects moved with
   each merge while the binary generating their code did not. Now nothing is
@@ -341,7 +353,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[(buf.validate.field).required = true]` instead.
 
 - **Signed in to Reliant means signed in to the control plane — no `forge
-  login`.** forge has a credential-helper protocol (`pkg/cloudcred`, the model
+login`.** forge has a credential-helper protocol (`pkg/cloudcred`, the model
   of kubectl exec plugins and git credential helpers): when
   `$FORGE_CREDENTIAL_HELPER` names a command, forge writes
   `{"version":1,"endpoint":…,"scopes":[…]}` to its stdin and reads a token (or a
@@ -351,7 +363,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   short-lived token minted from the user's Reliant session for exactly the
   endpoint the env declares. Hosted commands (`env deploy`, `secret`,
   `domain`, `cloud`, `release`, `env promote|verify|start|stop`, `registry
-  login`, …) resolve a credential in this order: `--token`, the env's declared
+login`, …) resolve a credential in this order: `--token`, the env's declared
   token variable (CI), the stored `forge login`, then the helper — and an
   EXPIRED `forge login` falls through to the helper instead of failing. A
   helper's token is reused within one process until a minute before it
@@ -369,6 +381,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   export: forge.yaml declares `output: static` for it, or any env binds it to
   `forge.OnHosted`, `forge.OnBucket` or `forge.OnFirebase` (learned from each
   env's real render, not a text scan). It reports with file:line and a fix:
+
   - **errors**, which `next build` refuses for an export: a dynamic segment
     (`[x]`, `[...x]`, `[[...x]]`) with no `generateStaticParams`, a GET route
     handler not declared `force-static`, `'use server'`, `next/headers`,
@@ -432,9 +445,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migration was hand-edited straight after every birth (`line_total_cents`,
   `tax_cents`, `balance_cents` in the roofers run). Write the expression on the
   field instead: `int64 line_total_cents = 9; // forge:generated
-  round(quantity * unit_price_cents)::BIGINT`. The rest of the comment line is
+round(quantity * unit_price_cents)::BIGINT`. The rest of the comment line is
   copied verbatim into `<col> <type> NOT NULL GENERATED ALWAYS AS (<expr>)
-  STORED`. NOT NULL follows the presence rule every born column follows:
+STORED`. NOT NULL follows the presence rule every born column follows:
   dropped for an `optional` field and for a Timestamp, so an expression that
   yields NULL for a plain field fails the write rather than storing a value
   the wire cannot carry. There is no DEFAULT; an enum keeps its CHECK and
@@ -449,8 +462,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   markers on one field, or a repeated/map/oneof/JSONB field. Supported fields
   are single-valued scalars, enums and Timestamps. The descriptor carries the
   expression too (`SchemaFieldDef.Generated`), so `forge scaffold entity
-  --from-proto <svc>.<Message>` births the same column as bare `forge
-  scaffold`. `forge project annotations` lists the marker and the mapping row.
+--from-proto <svc>.<Message>` births the same column as bare `forge
+scaffold`. `forge project annotations` lists the marker and the mapping row.
   `pkg/schemadef` gains `OpenShadowAt` and `(*Shadow).TryApply` for asking
   postgres whether SQL would apply without changing the shadow.
 - **Version-skew warning for a bridged forge checkout.** When a project's
@@ -503,7 +516,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `forge db reset` (DROP DATABASE) keeps the strict check.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
   `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
-  context.Context) error)` runs fn in a transaction carried by the ctx it
+context.Context) error)` runs fn in a transaction carried by the ctx it
   receives. Every query made with that ctx against the same database joins it:
   generated delegates (`db.GetJobByID(ctx, s.deps.DB, id)`), stores,
   `pkg/crud.Repo`, `db.Bun()` builders and raw `Exec`/`Query`/`QueryRow`, with
@@ -645,7 +658,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that; a name only one module supplies keeps its own, so files without a
   clash are byte-identical. `mock-transport_gen.ts` also imported an entity's
   fixture module once per service that lists the entity (`import * as
-  thingsMocks` three times for a `ListThings` in three services); it is now
+thingsMocks` three times for a `ListThings` in three services); it is now
   imported once and every service's dispatch row is seeded from it.
 
 - **A component named like an identifier `compose.go` itself uses no longer
@@ -655,8 +668,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`fmt`, `slog`, `time`, `db`, `ctrl`, …) and package `app`'s own
   declarations — so `forge project new x --service c` failed its first
   generate with `c.New undefined (type *Components has no field or method
-  New)`, and `fmt`, `slog`, `err`, `infra` failed the same way (`fmt
-  redeclared in this block`). Such a component is now imported as
+New)`, and `fmt`, `slog`, `err`, `infra` failed the same way (`fmt
+redeclared in this block`). Such a component is now imported as
   `<role><Name>` (`svcC`, `wkrFmt`), the form two components that share a
   package name already get; every other keeps its package name, so no
   `compose.go` that compiled before changes. The set of names in use is not a
@@ -666,7 +679,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestGenerateCompose_EveryTemplateIdentifierAsAComponentName` sweep builds a
   project with one service — and one worker — per such name. `main` is
   refused up front by `forge project new --service`, `forge scaffold
-  service|worker|operator|library`: Go cannot import package main, so the
+service|worker|operator|library`: Go cannot import package main, so the
   project could never build.
 
 - **`forge project rescaffold` re-creates the hosted CI pipeline again.**
@@ -683,13 +696,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render — still wrote a `deploy.yml` beside `release.yml` and a
   `build-images.yml` for cluster envs. Rescaffold now writes the env config
   modules first when an env does not render (the new `forge generate --steps
-  env-config` preset), never hands its answer to the pipeline, and names an
+env-config` preset), never hands its answer to the pipeline, and names an
   env that still fails to render (`forge env render <env>`) instead of
   calling it unhosted. `TestRescaffold_EveryScaffoldedFileIsReemittable` had
   been failing on main since #518.
 
 - **`forge project new` no longer warns `frontend config: could not read
-  deploy/kcl/dev/config.k` — and no longer writes the dev `config.js` from
+deploy/kcl/dev/config.k` — and no longer writes the dev `config.js` from
   proto defaults.** It scaffolds into `<--path>/<name>`, a relative path, and
   generates from there; the frontend-config probe at
   `shop/deploy/kcl/dev/zz_forge_frontend_config_probe_<pid>.k` was handed to
@@ -704,7 +717,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a work-dir-relative source pass an absolute one.
 - **A freshly scaffolded operator renders.** `forge scaffold operator`
   declares the workload before its first CRD (`crds = []`; `forge scaffold
-  crd` is the next step), and the workload schema required at least one CRD
+crd` is the next step), and the workload schema required at least one CRD
   of every operator — so every env, dev included, failed to render with a
   schema error naming neither the operator nor the fix. An operator may now
   list none: one that owns no CRD yet, or reconciles built-in kinds only
@@ -762,6 +775,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change through `forge project upgrade`'s advisory lane.
 - **Fixture Lists answer like the backend's generated List.**
   `@reliantlabs/forge-web-runtime/mock-transport` now:
+
   - filters by equality on every `optional` List request field that is set
     and names an entity field (enums compare by value; implicit-presence
     fields never filter, matching the generated `Filters` closure);
@@ -778,6 +792,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comes from the Connect method descriptor, so `mock-transport_gen.ts` is
   unchanged. Custom (non-CRUD) RPCs are still answered only by scenario
   handlers.
+
 - **Born List requests filter by `optional` fields too.** Quintet completion
   gave a List facet to every bool, enum and `<stem>_id` reference except an
   `optional` one, so the nullable reference was the one FK a born list could
@@ -794,6 +809,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Generated create/edit forms and list filters follow the field's declared
   rules.** Four defects from the roofers run, in both the Next.js and Vite
   page templates:
+
   - A field is required only when a rule says so: protovalidate
     `required = true`, `string.min_len >= 1`, or a non-optional foreign key
     (born `NOT NULL REFERENCES` with no DEFAULT). Every other `NOT NULL`
@@ -817,6 +833,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Scaffolded pages are yours, so existing projects keep their pages. Delete
   a page and run `forge project rescaffold <path>` to pick up the new form.
+
 - **A CRUD op no longer disappears when its shim moves out of
   `handlers_crud.go`.** Generate decided which `crud<Rpc>Op`s to emit by
   file: a method declared anywhere except `handlers_crud.go` counted as
@@ -836,7 +853,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like one in any other file — no op, no op validation.
 - **A failed validate build names the error on its ROOT CAUSE line.** The
   line read `go build failed: exit status 1. Fix: ensure all referenced types
-  are imported` whatever the error was. It now quotes the first compiler
+are imported` whatever the error was. It now quotes the first compiler
   error (`file:line:col: message`, plus a count of the rest) and says whether
   that file is hand-written (fix it) or generated (fix its inputs, or report
   a forge bug). A failing generated `_test.go` typecheck quotes its first
@@ -850,7 +867,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now walks the command's own parent chain (darwin, linux, the BSDs, Windows)
   and never signals an ancestor or the tree under it, reporting
   `skipped pid 1234 (reliant serve …): it is an ancestor of this command —
-  stopping it would end the session running you`. Everything else is stopped;
+stopping it would end the session running you`. Everything else is stopped;
   the per-env form leaves that env's host infrastructure up, records stay so
   `forge env ps` still lists the stack, and `forge env up` refuses (stopping
   nothing) when the stack it would replace hosts it. The tree-kill primitive
@@ -901,7 +918,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migrations directory, a relative `--dir` and the seed overlays against the
   project root. A missing migrations directory is an error naming the path.
 - **Seeding nothing is an error when there was something to seed.** `seed
-  apply`/`seed reset`/`db reset` fail when the database has tables the
+apply`/`seed reset`/`db reset` fail when the database has tables the
   migrations read do not define (the wrong `-C`/`--dir`), when
   `database.seed.tables` names no real table, or when the plan inserted nothing
   into tables that are still empty. `database.seed.tables: []`, an

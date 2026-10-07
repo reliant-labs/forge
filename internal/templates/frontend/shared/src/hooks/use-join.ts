@@ -132,9 +132,8 @@ export function joinOneToMany<P, C, K, O>(
 // Combine a fixed set of query results into one tristate resource
 // ---------------------------------------------------------------------------
 
-type ExtractQueryData<T> = T extends UseQueryResult<infer D, unknown>
-  ? D
-  : never;
+type ExtractQueryData<T> =
+  T extends UseQueryResult<infer D, unknown> ? D : never;
 
 // Maps a tuple of UseQueryResult into the tuple of their data types.
 type CombinedData<T extends readonly UseQueryResult<unknown, unknown>[]> = {

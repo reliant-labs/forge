@@ -64,6 +64,9 @@ func TestNamedKeyIgnoresPreMappedPorts(t *testing.T) {
 // registry, so a key's port does not depend on which ports happened to answer
 // at that moment. Two runs with opposite probe results must agree.
 func TestNamedKeyBlockIsDeterministicNotProbed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	setMaxStacksLimit(t, 8)
 	setActiveWorktree(t, "wt-a")
 

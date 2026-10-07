@@ -40,6 +40,9 @@ import (
 // A `strings.Contains` assertion cannot see any of this, because the
 // defect is in where the expression RESOLVES, not in how it is spelled.
 func TestNextJSConfig_TracingRootNeverWritesIntoNodeModules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates the Next.js config under node; runs in task test")
+	}
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not on PATH — skipping tracing-root evaluation")

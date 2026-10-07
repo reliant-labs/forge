@@ -10,6 +10,9 @@ import (
 )
 
 func TestLintMigrationsDirDetectsUnsafeAddNotNullColumn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	dir := writeMigration(t, "0001_add_name.up.sql", `ALTER TABLE users ADD COLUMN name text NOT NULL;`)
 
 	result, err := LintMigrationsDir(dir, DefaultConfig())
@@ -60,6 +63,9 @@ func TestLintMigrationsDirDetectsDestructiveOperations(t *testing.T) {
 // anywhere in the migration silences the destructive-change rule for that
 // file alone. There is no forge.yaml allowlist and no second spelling.
 func TestLintMigrationsDirHonorsPerFileAllowDestructivePragma(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	cases := []struct {
 		name    string
 		content string
@@ -96,6 +102,9 @@ func TestLintMigrationsDirHonorsPerFileAllowDestructivePragma(t *testing.T) {
 // alias and is gone, so a migration still carrying it is flagged again rather
 // than silently exempt.
 func TestLintMigrationsDirDroppedDestructiveAliasNoLongerSilences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	dir := writeMigration(t, "0001_drop.up.sql",
 		"-- forge-safety: allow-destructive — legacy table rename\nDROP TABLE legacy;")
 	result, err := LintMigrationsDir(dir, DefaultConfig())
@@ -151,6 +160,9 @@ func TestLintMigrationsDirDetectsVolatileDefault(t *testing.T) {
 // identical) value to every pre-existing row at backfill time, which is
 // the correctness trap the rule exists to flag.
 func TestLintMigrationsDirDetectsVolatileDefaultVariants(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	for _, expr := range []string{
 		"now()",
 		"NOW ()",
@@ -181,6 +193,9 @@ func TestLintMigrationsDirDetectsVolatileDefaultVariants(t *testing.T) {
 // of the rule: a constant DEFAULT is safe on a populated table and must
 // not be flagged, or the rule would be noise on ordinary migrations.
 func TestLintMigrationsDirAllowsDeterministicDefaults(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	for _, expr := range []string{"0", "false", "'unknown'", "'2020-01-01'::timestamptz"} {
 		t.Run(expr, func(t *testing.T) {
 			dir := writeMigration(t, "0001_add_col.up.sql",
@@ -292,6 +307,9 @@ func TestLintMigrationsDirFlagsEmptyDownFile(t *testing.T) {
 // Goose one-file migrations: a Down section with SQL is a down migration; a
 // Down marker with nothing (or only directives/comments) under it is not.
 func TestLintMigrationsDirGooseDownSection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	cases := map[string]struct {
 		body string
 		want bool

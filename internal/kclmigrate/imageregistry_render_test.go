@@ -154,6 +154,9 @@ func renderEnv(t *testing.T, root, env string) (map[string]any, error) {
 // migration rewrites it, and the result renders — with the references the
 // migration wrote reaching the rendered spec.
 func TestMigratedHoundersShapeRenders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	root := writeProject(t, houndersPreMigration)
 
 	// BEFORE: the tree cannot be evaluated at all. `registry` is not a field

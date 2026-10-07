@@ -180,6 +180,9 @@ func TestExtractZitadel_ReportsAnArchiveWithNoBinary(t *testing.T) {
 // way therefore condemns a perfectly good binary, and does it at the point
 // where the only symptom is "the IdP will not start".
 func TestVerifyZitadelBinary_RejectsAWrongVersion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs stand-in zitadel binaries as shell subprocesses; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script stand-in is POSIX-only")
 	}

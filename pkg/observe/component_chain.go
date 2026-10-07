@@ -4,8 +4,9 @@
 // (Chain / DefaultMiddlewares in middleware.go). Those interceptors wrap
 // every RPC at the transport boundary; a ComponentChain wraps every method
 // of an internal component (a contract.go Service) at the in-process call
-// boundary — one span and metric per method call, every failure logged and
-// successes sampled — without the method's body knowing anything about it.
+// boundary — one span, one metric sample and one log record per method call
+// (successes sampled only when sampling is turned on; see log_policy.go) —
+// without the method's body knowing anything about it.
 //
 // A forge-generated decorator (middleware_gen.go) routes each interface
 // method through the chain with a single line:
@@ -19,8 +20,8 @@
 // The chain itself is assembled in the OWNED per-package seam
 // observe_chain.go (newObserveChain) from the middlewares below plus any the
 // user adds. The generated decorator is uniform: it never names a middleware
-// or bakes a parameter (log level, sampling) — those live in the owned seam
-// and in forge.yaml. Middleware selection and configuration is a runtime /
+// or bakes a parameter (log level, sampling) — those live in the owned seam,
+// in forge.yaml, and in the process environment (SuccessSampleWindowEnv). Middleware selection and configuration is a runtime /
 // composition concern, exactly like the Connect chain.
 package observe
 
@@ -202,22 +203,25 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 // the duration as an attribute.
 //
 //   - Every FAILED call is written at slog.LevelError, with the error.
-//   - SUCCESSFUL calls are written at level — which the owned seam wires
+//   - Every SUCCESSFUL call is written at level — which the owned seam wires
 //     from forge.yaml's observability.log_level (default Debug: quiet under a
-//     production Info handler) — and SAMPLED per method: the first, then at
-//     most one per DefaultSuccessSampleWindow, carrying `suppressed`, the
-//     successes of that method since the previous record that were not
-//     written. A success at or above DefaultSlowThreshold is always written,
-//     with slow=true.
+//     production Info handler) — unless success sampling is on. Sampling is
+//     opt-in, exactly as at the RPC edge: SuccessSampleWindowEnv turns it on
+//     for the process, WithSuccessSampling for this layer (code wins).
+//     Sampled, a method's first success is written, then at most one per
+//     window, carrying `suppressed`, the successes of that method since the
+//     previous record that were not written. A success at or above
+//     DefaultSlowThreshold is always written, with slow=true.
 //
-// Sampling is what keeps this layer readable at DEBUG: one method on a 10s
-// work loop used to be two thirds of a dev stack's log. See log_policy.go.
+// Sampling is what keeps this layer readable at DEBUG when a method runs on
+// a tight loop: one method on a 10s work loop was two thirds of a dev
+// stack's log. See log_policy.go.
 //
-// opts are the RPC edge's: WithSuccessSampling (0 restores one record per
-// success), WithSlowThreshold, and WithSuccessLevel keyed by the
-// "<pkg>.<Method>" operation name. nil logger falls back to slog.Default.
+// opts are the RPC edge's: WithSuccessSampling, WithSlowThreshold, and
+// WithSuccessLevel keyed by the "<pkg>.<Method>" operation name. nil logger
+// falls back to slog.Default.
 func LogMiddleware(logger *slog.Logger, level slog.Level, opts ...LogOption) ComponentMiddleware {
-	return &logMiddleware{logger: logger, policy: newLogPolicy(level, opts)}
+	return &logMiddleware{logger: logger, policy: newLogPolicy(level, logger, opts)}
 }
 
 type logMiddleware struct {

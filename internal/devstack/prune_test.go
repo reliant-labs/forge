@@ -69,6 +69,9 @@ func sortedKeys(pruned []PrunedBlock) []string {
 // from disk (its dir deleted, without `git worktree remove`, so git reports
 // it "prunable") has its stack key reclaimed.
 func TestPruneReclaimsDeadWorktreeStackKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -104,6 +107,9 @@ func TestPruneReclaimsDeadWorktreeStackKey(t *testing.T) {
 // prod's reliant-web dev-server port) is not tied to any worktree, so it must
 // survive a prune even though nothing on disk backs it either.
 func TestPruneNeverReclaimsPlainPortBlockKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -156,6 +162,9 @@ func TestPruneNeverTouchesDefaultKey(t *testing.T) {
 // never reclaimed, whether or not the process still has it recorded as the
 // active worktree.
 func TestPruneKeepsLiveWorktreeKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -182,6 +191,9 @@ func TestPruneKeepsLiveWorktreeKey(t *testing.T) {
 // one registry to prove Prune sorts them correctly against each other, not
 // just in isolation.
 func TestPruneMixedRegistryOnlyReclaimsDead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -231,6 +243,9 @@ func TestPruneMixedRegistryOnlyReclaimsDead(t *testing.T) {
 // leaves the registry untouched — a second dry-run (or a real run) sees the
 // identical state.
 func TestPruneDryRunChangesNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)

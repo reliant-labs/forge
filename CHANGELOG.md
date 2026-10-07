@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unknown key in the per-machine `storage.json` no longer fails unrelated
+  commands.** `storage.Load` decoded with `DisallowUnknownFields`, so a file
+  written by another forge version (e.g. `go_cache_unused`, a live key added in
+  #537 and unknown to older binaries) made `forge build` and friends abort with
+  `storage policy: json: unknown field`. Unknown keys are now ignored with a
+  one-line warning naming them; strictness stays with forge.yaml.
+
 - **A fresh scaffold signs in.** The README's first sixty seconds ended at a
   sign-in page nobody could pass, for two reasons.
 
@@ -84,6 +91,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every successful call is logged again by default; sampling is a
+  per-environment setting.** `observe.LoggingInterceptor` (`rpc completed`)
+  and `observe.LogMiddleware` (component calls) sampled successes out of the
+  box — one per procedure per minute. They now write every success unless the
+  process sets `LOG_SUCCESS_SAMPLE_WINDOW` (a Go duration, e.g. `1m`), which
+  turns the same per-procedure sampling on for every layer that sets no
+  window in code. `observe.WithSuccessSampling(d)` still sets one layer's
+  window and wins over the variable. Failures and successes over 1s are
+  always logged. The scaffolded `proto/config/v1/config.proto` declares it as
+  `log_success_sample_window` (env-only, default `0s`), so a deployment sets
+  it per env in `deploy/kcl/<env>/config.k`; existing projects need no code
+  change — add the field to AppConfig for the typed KCL key, or set the
+  variable on the workload's env. `observe.DefaultSuccessSampleWindow` is
+  removed (there is no default window).
 - **One prettier release formats a scaffolded project, everywhere.** Frontends
   now pin `prettier` exactly (`3.5.3`, was the range `^3.5.0`), and the
   scaffolded `.pre-commit-config.yaml` runs that same release as a local hook

@@ -39,6 +39,9 @@ printf '{"items":[{"spec":{"containers":[{"image":"localhost:5051/app:live"}]}}]
 // 4 failed with "PARSE FAIL … head: Warning: v1 ComponentStatus is
 // deprecated".
 func TestProtectedSetScanIgnoresKubectlWarnings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	fakeKubectl(t)
 	refs, err := (Runner{}).clusterReferences(context.Background(), "k3d-test")
 	if err != nil {

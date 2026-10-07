@@ -91,6 +91,9 @@ func rescaffoldFileExists(root, rel string) bool {
 // command that brings it back, and that command must reproduce the scaffold's
 // bytes exactly.
 func TestRescaffold_DeletedWorkflowComesBackByteIdentical(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root, cfg := scaffoldForRescaffold(t, nil)
 	const rel = ".github/workflows/ci.yml"
 	born := readRescaffoldFile(t, root, rel)
@@ -137,6 +140,9 @@ func TestRescaffold_DeletedWorkflowComesBackByteIdentical(t *testing.T) {
 // had to copy from a throwaway scaffold: nothing but `forge project new` ever
 // wrote them. The devcontainer and bootstrap script are the same class.
 func TestRescaffold_ReemitsFilesOnlyProjectNewWrites(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	// A service scaffold carries the generated e2e/ suite, which is what
 	// makes e2e.yml part of the project (see generator.CIWorkflows).
 	root, cfg := scaffoldForRescaffold(t, func(g *generator.ProjectGenerator) { g.ServiceName = "item" })
@@ -177,6 +183,9 @@ func TestRescaffold_ReemitsFilesOnlyProjectNewWrites(t *testing.T) {
 // no e2e suite has no e2e.yml, and rescaffold must not smuggle one in from a
 // scaffold-time render — it must say why there is nothing to re-create.
 func TestRescaffold_WorkflowTheProjectDoesNotHave(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root, cfg := scaffoldForRescaffold(t, nil)
 	const rel = ".github/workflows/e2e.yml"
 	if rescaffoldFileExists(root, rel) {
@@ -248,6 +257,9 @@ func TestRescaffold_ServiceProtoNamesScaffoldService(t *testing.T) {
 // project has no release.yml ... declares none". It must write the modules
 // and look again.
 func TestRescaffold_HostedPipelineComesBackBeforeTheFirstGenerate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root, cfg := scaffoldForRescaffold(t, nil)
 	if rescaffoldFileExists(root, "deploy/kcl/config_gen.k") {
 		t.Fatal("precondition: the bare scaffold has no env config modules yet")
@@ -283,6 +295,9 @@ func TestRescaffold_HostedPipelineComesBackBeforeTheFirstGenerate(t *testing.T) 
 // order: the env config modules, then the CI step. No envConfig hook, so
 // the only thing that can make the CI step see the modules is a fresh render.
 func TestRescaffold_PipelineCIStepRendersTheTreeThePipelineLeaves(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root, cfg := scaffoldForRescaffold(t, nil)
 	const rel = ".github/workflows/build-images.yml"
 	born := readRescaffoldFile(t, root, rel)
@@ -314,6 +329,9 @@ func TestRescaffold_PipelineCIStepRendersTheTreeThePipelineLeaves(t *testing.T) 
 // the project has a file hinges on it, the refusal must say so and name the
 // way to see why — not claim the project declares no hosted env.
 func TestRescaffold_UnrenderableEnvIsNotReportedAsUnhosted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root, cfg := scaffoldForRescaffold(t, nil)
 	// A project generate HAS run on, so the env config step cannot be
 	// what is missing: the envs themselves are broken.

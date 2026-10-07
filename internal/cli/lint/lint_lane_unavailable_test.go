@@ -68,6 +68,9 @@ func testRunCtx(t *testing.T, strict bool) *lintRunCtx {
 // lane used to `return nil` here, which is the driver's word for "I ran and
 // found nothing" — the single line that made the whole silent pass possible.
 func TestTypedAccessGuardAdvisoryReportsUnavailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake golangci-lint through shell subprocesses; runs in task test")
+	}
 	fakeGolangciLint(t, contendedLockStub)
 
 	err := runTypedAccessGuardAdvisory(context.Background(), []string{"./..."})
@@ -95,6 +98,9 @@ func TestTypedAccessGuardAdvisoryReportsUnavailable(t *testing.T) {
 // guardrail that actually ran must still return nil, or the new sentinel
 // would turn every clean run into a warning.
 func TestTypedAccessGuardAdvisoryPassesWhenItRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake golangci-lint through shell subprocesses; runs in task test")
+	}
 	fakeGolangciLint(t, `echo "0 issues."; exit 0`)
 
 	if err := runTypedAccessGuardAdvisory(context.Background(), []string{"./..."}); err != nil {
@@ -164,6 +170,9 @@ func TestLintVerdictNothingRanNamesUnavailable(t *testing.T) {
 // warning severity, so a consumer could only tell them apart by parsing
 // English out of the message.
 func TestTypedAccessGuardJSONDistinguishesRanFromDidNotRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake golangci-lint through shell subprocesses; runs in task test")
+	}
 	t.Run("could not run", func(t *testing.T) {
 		fakeGolangciLint(t, contendedLockStub)
 

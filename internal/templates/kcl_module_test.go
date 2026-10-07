@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -85,7 +86,7 @@ func kclTestModuleCache(t *testing.T) {
 }
 
 // kclModuleRoot resolves the absolute path to the kcl/ module directory at
-// the repo root.
+// the repo root, after reading every file under it as a test input.
 func kclModuleRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -95,12 +96,36 @@ func kclModuleRoot(t *testing.T) string {
 	root := wd
 	for range []int{1, 2, 3} {
 		if _, err := os.Stat(filepath.Join(root, "kcl", "kcl.mod")); err == nil {
-			return filepath.Join(root, "kcl")
+			dir := filepath.Join(root, "kcl")
+			readInputTree(t, dir)
+			return dir
 		}
 		root = filepath.Dir(root)
 	}
 	t.Fatalf("could not locate kcl/ module root from cwd %s", wd)
 	return ""
+}
+
+// readInputTree reads every file under dir from THIS process, so go test's
+// cache keys the result on them.
+//
+// The cache records only what the test process itself opens or stats. A
+// render reads its sources natively, outside Go's os package, so a file only
+// the render touches — kcl/example is not go:embed'd — is invisible to it,
+// and a cached ok survives an edit that breaks the render. Reading the tree
+// here is what makes those files inputs.
+func readInputTree(t *testing.T, dir string) {
+	t.Helper()
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		_, err = os.ReadFile(path)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("read %s as test input: %v", dir, err)
+	}
 }
 
 // requireKCLRender registers the kcl_plugin.forge namespace for this test
@@ -280,6 +305,9 @@ func assertRefusal(t *testing.T, label string, err error, out []byte, expects []
 // its `# kcl-args` sets with every assert_* true, and — when it declares
 // `# reject-args` — is refused under those.
 func TestKCLModule_PositiveAssertions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates every KCL module fixture; runs in task test")
+	}
 	t.Parallel()
 	requireKCLRender(t)
 	dir, names := fixtures(t, "positive")
@@ -313,6 +341,9 @@ func TestKCLModule_PositiveAssertions(t *testing.T) {
 // TestKCLModule_NegativeChecks: every negative_*.k is refused by a forge
 // rule whose message names every `# expect:` substring.
 func TestKCLModule_NegativeChecks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates every KCL module fixture; runs in task test")
+	}
 	t.Parallel()
 	requireKCLRender(t)
 	dir, names := fixtures(t, "negative_")
@@ -337,6 +368,9 @@ func TestKCLModule_NegativeChecks(t *testing.T) {
 // name the member and the schema. This is how a hosted-facing schema refuses
 // configuration it must not honour — by not declaring it.
 func TestKCLModule_ClosedSchemas(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates every KCL module fixture; runs in task test")
+	}
 	t.Parallel()
 	requireKCLRender(t)
 	dir, names := fixtures(t, "closedschema_")
@@ -368,6 +402,9 @@ func TestKCLModule_ClosedSchemas(t *testing.T) {
 // and an expect substring that appears only in the ECHOED SOURCE must not
 // satisfy it.
 func TestKCLModule_HarnessRefusesVacuousNegatives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	t.Parallel()
 	requireKCLRender(t)
 	dir := t.TempDir()
@@ -409,7 +446,9 @@ func TestKCLModule_HarnessRefusesVacuousNegatives(t *testing.T) {
 // KCL leg of that triple: the render must REPRODUCE each golden.
 func renderContractDir(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(filepath.Dir(kclModuleRoot(t)), "internal", "cli", "testdata", "render_contract")
+	dir := filepath.Join(filepath.Dir(kclModuleRoot(t)), "internal", "cli", "testdata", "render_contract")
+	readInputTree(t, dir)
+	return dir
 }
 
 // renderContractUpdateEnv regenerates the goldens from the fixtures instead
@@ -421,6 +460,9 @@ const renderContractUpdateEnv = "FORGE_UPDATE_GOLDEN"
 // TestKCLModule_RenderContract renders each render_contract/<case>.k and
 // requires the rendered document to equal <case>.json.
 func TestKCLModule_RenderContract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates every KCL module fixture; runs in task test")
+	}
 	t.Parallel()
 	requireKCLRender(t)
 	dir := renderContractDir(t)

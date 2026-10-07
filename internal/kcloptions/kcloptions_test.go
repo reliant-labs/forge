@@ -40,6 +40,9 @@ func writeEnvProject(t *testing.T, envName, mainK string) string {
 // The headline case: an env that imports the forge module (so resolution is
 // required) and declares one option with full metadata.
 func TestDiscoverFindsDeclaredOption(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	root := writeEnvProject(t, "dev", `import forge
 
 _host_runner = option("host_runner", type="str", default="air", help="Host launch runner")
@@ -79,6 +82,9 @@ out = {runner = _host_runner, env = _env}
 // forge's own options must never surface as the project's — they are bound by
 // forge and are not the caller's to set.
 func TestDiscoverSubtractsReservedOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	root := writeEnvProject(t, "dev", `import forge
 
 _env = forge.env()
@@ -107,6 +113,9 @@ out = {a = _env, b = _ns, c = _tag, d = _digests}
 // `option("registry")` in its own main.k has written an ordinary project
 // option, which Discover must list like any other.
 func TestDiscoverTreatsAProjectRegistryOptionAsTheProjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	if _, reserved := Reserved["registry"]; reserved {
 		t.Fatal(`"registry" is in Reserved — forge does not derive or bind a registry, so the name is the project's`)
 	}

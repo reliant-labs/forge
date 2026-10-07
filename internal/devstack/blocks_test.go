@@ -83,6 +83,9 @@ func TestNextFreeBlockFillsGaps(t *testing.T) {
 // same block. The file lock serializes the read-modify-write so every key
 // gets a unique slot. Run with -race.
 func TestConcurrentAllocateNoDuplicateBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	dir := t.TempDir()
 	const n = 16
 	var wg sync.WaitGroup
@@ -118,6 +121,9 @@ func TestConcurrentAllocateNoDuplicateBlock(t *testing.T) {
 // TestConcurrentSameKeyOneBlock: many goroutines allocating the SAME key all
 // land on one block — no churn, no duplicates.
 func TestConcurrentSameKeyOneBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	dir := t.TempDir()
 	const n = 16
 	var wg sync.WaitGroup
@@ -150,6 +156,9 @@ func keyFor(i int) string {
 // adopt an identity provider it did not start, so the second project on a
 // machine could not bring up sign-in at all.
 func TestAllocatePortAvoidingForeign(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates against a real registry, resolving the worktree via git each time; runs in task test")
+	}
 	t.Run("takes the base port when it is free", func(t *testing.T) {
 		dir := t.TempDir()
 		got, err := AllocatePortAvoidingForeign(dir, 8080, "", func(int) bool { return true })

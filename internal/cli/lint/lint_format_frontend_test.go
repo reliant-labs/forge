@@ -30,6 +30,9 @@ import (
 // *_gen.* modules, src/gen/, banner-marked generated files, a pristine
 // scaffold-until-touched file, and everything outside src/.
 func TestFormatFrontendTrees_FormatsOwnedSourcesOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake prettier through shell subprocesses; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("stub prettier is a POSIX shell script")
 	}
@@ -114,6 +117,9 @@ func TestFormatFrontendTrees_FormatsOwnedSourcesOnly(t *testing.T) {
 // Once the user edits a scaffold-until-touched file it is theirs, and the
 // formatter treats it like any other owned file.
 func TestFormatFrontendTrees_EditedScaffoldIsOwned(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake prettier through shell subprocesses; runs in task test")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("stub prettier is a POSIX shell script")
 	}

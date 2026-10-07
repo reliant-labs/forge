@@ -62,6 +62,9 @@ func renderAs(t *testing.T, projectDir, env string, sequence func(ctx context.Co
 }
 
 func TestGeneratedFilesAreWrittenOnlyByCommandsThatLaunch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 
 	type command struct {
@@ -139,6 +142,9 @@ func TestCIValidateKCLLeavesGeneratedFilesAlone(t *testing.T) {
 // asks "what would this env do", so a generated file it did NOT write is
 // named, rather than silently absent.
 func TestEnvRenderReportsTheWriteItDeclined(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
 	kclplugin.Register()
 	resetDevStackGlobals(t)
 	dir := t.TempDir()

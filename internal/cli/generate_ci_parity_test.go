@@ -24,6 +24,9 @@ import (
 // runs the generate-side CI step over the reloaded forge.yaml, and demands
 // byte-identical files — the same set, the same bytes.
 func TestCIWorkflows_NewAndGenerateRenderIdentically(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	cases := []struct {
 		name  string
 		shape func(g *generator.ProjectGenerator)

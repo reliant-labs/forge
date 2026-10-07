@@ -280,6 +280,9 @@ func (f *fakeProcFacts) argv(int) ([]string, bool) {
 // "one stack per (project, env)" rule the reclaim exists to enforce, and
 // leaving it would put two copies of one service on the same port.
 func TestUpPreflight_ScopedTargetLeavesOtherServicesRunning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns and stops real processes; runs in task test")
+	}
 	requireProcInspection(t)
 	dir, projectID, env := testStack(t)
 

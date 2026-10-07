@@ -24,6 +24,9 @@ import (
 //     forge bug visible in its own test's workaround, and it is gone — a shell
 //     variable is now just a shell variable.
 func TestShellBuild_CwdAndVerbatimCmd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs shell build commands as subprocesses; runs in task test")
+	}
 	projDir := t.TempDir()
 	// A relative script path under the project root — resolving it from
 	// the project root is the whole point of the cwd contract.
@@ -108,6 +111,9 @@ func TestShellBuild_DeclaredEnvResolvesInTheShell(t *testing.T) {
 // the unified dispatcher: no relative paths, nothing pushed — so the digest
 // lookup finds nothing and the build is a harmless success.
 func TestShellBuild_NoopTrue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs shell build commands as subprocesses; runs in task test")
+	}
 	projDir := t.TempDir()
 	svcs := []WorkloadEntity{shellSvc("reliant-noop", "reliant", "true  # built upstream; nothing to do here", "", nil)}
 	results := buildExternalServices(context.Background(), svcs,

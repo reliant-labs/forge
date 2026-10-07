@@ -10,6 +10,7 @@
     },
     "clusters": [],
     "config_maps": [],
+    "connected_clusters": null,
     "databases": [
       {
         "cluster": "k3d-acme",

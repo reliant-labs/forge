@@ -97,6 +97,9 @@ type KCLEntities struct {
 	// KubeconfigSecrets are cross-cluster kubeconfigs forge mints fresh
 	// each up (at the cluster→deploy boundary) and applies as k8s Secrets.
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
+	// ConnectedClusters binds a kubectl context to its connected cluster once,
+	// at cluster level; every group placed on that context inherits it.
+	ConnectedClusters map[string]string `json:"connected_clusters,omitempty"`
 
 	// Workloads is every runnable thing in the env, of every kind and
 	// every runtime, in declaration order. See WorkloadEntity.
@@ -1092,6 +1095,7 @@ type kclRenderRaw struct {
 	Clusters          []ClusterEntity          `json:"clusters,omitempty"`
 	ClusterTarget     *ClusterTargetEntity     `json:"cluster_target,omitempty"`
 	KubeconfigSecrets []KubeconfigSecretEntity `json:"kubeconfig_secrets,omitempty"`
+	ConnectedClusters map[string]string        `json:"connected_clusters,omitempty"`
 	Workloads         []kclWorkloadRaw         `json:"workloads,omitempty"`
 	Infra             []HostInfraEntity        `json:"infra,omitempty"`
 	Frontends         []FrontendEntity         `json:"frontends,omitempty"`
@@ -1371,6 +1375,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Clusters:             raw.Clusters,
 		ClusterTarget:        raw.ClusterTarget,
 		KubeconfigSecrets:    raw.KubeconfigSecrets,
+		ConnectedClusters:    raw.ConnectedClusters,
 		Infra:                raw.Infra,
 		Frontends:            raw.Frontends,
 		Gateways:             raw.Gateways,

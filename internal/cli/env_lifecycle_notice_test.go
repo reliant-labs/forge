@@ -23,6 +23,9 @@ import (
 // noise on every inner-loop deploy and people learn to ignore it before it
 // ever means anything.
 func TestApplyDeployGroupsLifecycleNotice(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	ctx := context.Background()
 	dir := workloadURLProject(t, "dev", crossClusterBundle)
 	entities, err := RenderKCL(ctx, dir, "dev")

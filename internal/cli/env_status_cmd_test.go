@@ -516,6 +516,10 @@ func TestEnvStatusJSON_CarriesTheF0Envelope(t *testing.T) {
 // top-level value is the only check that actually catches this, since
 // Unmarshal on the concatenation would stop happily after the first.
 func TestEnvStatusJSON_EmitsExactlyOneDocument(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
+	stubNoDockerDaemon(t) // the runtime half's compose check asks docker
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
 		[]byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
@@ -650,6 +654,10 @@ func TestEnvStatus_AllEnvsCarriesHostedRolloutPhase(t *testing.T) {
 // The release half owns the exit code, and these are different questions: an
 // env can be perfectly bound and have nothing running locally.
 func TestEnvStatus_RuntimeHalfNeverFailsTheCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
+	stubNoDockerDaemon(t) // the runtime half's compose check asks docker
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
 		t.Fatal(err)

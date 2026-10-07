@@ -223,6 +223,9 @@ func renderCalls(calls []kubectlCall) string {
 // it. The Deployment assertion is the one that maps directly to the observed
 // symptom (`kubectl get deploy -A` showed source-controller in `default`).
 func TestApplyCRDsThenRest_ThreadsChartNamespaceToEveryApplyPass(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	if err := applyCRDsThenRest(context.Background(), "k3d-test", "flux-system", "", fluxShapedRender); err != nil {
@@ -315,6 +318,9 @@ func TestKubectlApplyArgs_NamespaceFlag(t *testing.T) {
 // derived from a static kind list anyway — a chart's own CRDs define new
 // cluster-scoped kinds (GatewayClass, XMesh), which forge cannot know.
 func TestKubectlApplyNamespaced_ClusterScopedObjectsKeepNoNamespace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	if err := applyCRDsThenRest(context.Background(), "k3d-test", "flux-system", "", fluxShapedRender); err != nil {
@@ -353,6 +359,9 @@ func TestKubectlApplyNamespaced_ClusterScopedObjectsKeepNoNamespace(t *testing.T
 // deploy for the objects applied alongside it. Such docs are applied in their
 // own pass with no flag.
 func TestKubectlApplyNamespaced_ObjectDeclaringOwnNamespaceKeepsIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	const manifests = `apiVersion: v1
@@ -452,6 +461,9 @@ metadata:
 // the non-chart callers: forge's own KCL-rendered manifests stamp
 // metadata.namespace themselves, so their applies must carry no `-n` at all.
 func TestApplyCRDsThenRest_NoNamespacePassesNoFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	const rest = `apiVersion: apps/v1
@@ -486,6 +498,9 @@ spec: {}`
 // asserts the namespace arrives at the real kubectl argv. It is the one that
 // goes red when the wiring is cut.
 func TestApplyRenderedCharts_ReadsNamespaceFromTheChartSpec(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	// Exactly what renderSelectedCharts produces for the flux chart: the
@@ -530,6 +545,9 @@ func TestApplyRenderedCharts_ReadsNamespaceFromTheChartSpec(t *testing.T) {
 // applyRidingManifestsWithRetry, a DIFFERENT call site, which must be scoped
 // the same way.
 func TestApplyRenderedCharts_RidingManifestsGetTheChartNamespace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 
 	charts := []renderedChart{{

@@ -73,11 +73,31 @@ func clusterBindingsOf(e *KCLEntities) []clusterBinding {
 	if e == nil {
 		return nil
 	}
-	byContext := map[string]string{}
+	byContext, _ := declaredBindings(e)
+	out := make([]clusterBinding, 0, len(byContext))
+	for context, names := range byContext {
+		out = append(out, clusterBinding{Cluster: context, ConnectedCluster: names[0]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Cluster < out[j].Cluster })
+	return out
+}
+
+// declaredBindings merges every place an env names a connected cluster for a
+// context: the primary target, each cluster workload's runtime, and the
+// cluster-level ConnectedClusters map (which is how a cluster reached only by
+// raw groups — Manifests, HelmChart, Generated — is bound, once). The result
+// maps context -> distinct names, sorted; more than one name for a context is
+// drift, returned as the second value for the refusal to report.
+func declaredBindings(e *KCLEntities) (map[string][]string, []string) {
+	seen := map[string]map[string]bool{}
 	note := func(context, connected string) {
-		if context != "" && connected != "" {
-			byContext[context] = connected
+		if context == "" || connected == "" {
+			return
 		}
+		if seen[context] == nil {
+			seen[context] = map[string]bool{}
+		}
+		seen[context][connected] = true
 	}
 	note(e.ClusterTarget.field("cluster"), connectedClusterOf(e.ClusterTarget))
 	for _, w := range e.Workloads {
@@ -85,12 +105,24 @@ func clusterBindingsOf(e *KCLEntities) []clusterBinding {
 			note(w.Runtime.Cluster.Cluster, w.Runtime.Cluster.ConnectedCluster)
 		}
 	}
-	out := make([]clusterBinding, 0, len(byContext))
-	for context, connected := range byContext {
-		out = append(out, clusterBinding{Cluster: context, ConnectedCluster: connected})
+	for context, connected := range e.ConnectedClusters {
+		note(context, connected)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Cluster < out[j].Cluster })
-	return out
+	out := make(map[string][]string, len(seen))
+	var conflicts []string
+	for context, set := range seen {
+		names := make([]string, 0, len(set))
+		for n := range set {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		out[context] = names
+		if len(names) > 1 {
+			conflicts = append(conflicts, fmt.Sprintf("%q is bound to %s", context, strings.Join(quoteEach(names), " and ")))
+		}
+	}
+	sort.Strings(conflicts)
+	return out, conflicts
 }
 
 // clusterBinding is one rendered cluster and the connected cluster it maps
@@ -128,37 +160,39 @@ func refuseUnboundClusterTargets(envName string, e *KCLEntities) error {
 	if e == nil || e.ControlPlane == nil {
 		return nil
 	}
-	// bound is every context some target ties to a connected cluster; required
-	// is every context the env renders a tree for or places something on.
-	bound := map[string]bool{}
+	// bound is every context some declaration ties to a connected cluster;
+	// required is every context the env renders a tree for or places
+	// something on.
+	bound, conflicts := declaredBindings(e)
+	if len(conflicts) > 0 {
+		return fmt.Errorf("env %q binds one cluster to different connected clusters: %s.\n"+
+			"fix: declare each cluster's connected cluster once (Bundle.connected_clusters)",
+			envName, strings.Join(conflicts, "; "))
+	}
 	required := map[string]bool{}
-	note := func(context, connected string) {
-		if context == "" {
-			return
-		}
-		required[context] = true
-		if connected != "" {
-			bound[context] = true
+	note := func(context string) {
+		if context != "" {
+			required[context] = true
 		}
 	}
-	note(e.ClusterTarget.field("cluster"), connectedClusterOf(e.ClusterTarget))
+	note(e.ClusterTarget.field("cluster"))
 	for _, w := range e.Workloads {
 		if w.Runtime.Type == RuntimeCluster && w.Runtime.Cluster != nil {
-			note(w.Runtime.Cluster.Cluster, w.Runtime.Cluster.ConnectedCluster)
+			note(w.Runtime.Cluster.Cluster)
 		}
 	}
 	for _, m := range e.ManifestClusters {
-		note(m.Cluster, "")
+		note(m.Cluster)
 	}
 	for _, h := range e.HelmCharts {
-		note(h.Cluster, "")
+		note(h.Cluster)
 	}
 	for _, r := range e.RenderedSecrets {
-		note(r.Cluster, "")
+		note(r.Cluster)
 	}
 	unbound := map[string]bool{}
 	for context := range required {
-		if !bound[context] && !isForgeManagedContext(context) {
+		if len(bound[context]) == 0 && !isForgeManagedContext(context) {
 			unbound[context] = true
 		}
 	}
@@ -178,8 +212,10 @@ func refuseUnboundClusterTargets(envName string, e *KCLEntities) error {
 		"fix: register the cluster once, then name it in the target:\n\n"+
 		"    forge cluster connect <name> --context %s --env %s\n\n"+
 		"    forge.ClusterTarget {\n        cluster = %q\n        namespace = \"...\"\n        connected_cluster = \"<name>\"\n    }\n\n"+
+		"or, for a cluster only raw groups (Manifests/HelmChart/Generated) reach, once at cluster level:\n\n"+
+		"    connected_clusters = {%q: \"<name>\"}    # on the Bundle\n\n"+
 		"(a k3d cluster needs none of this — forge applies to it directly)",
-		envName, strings.Join(quoteEach(contexts), ", "), contexts[0], envName, contexts[0])
+		envName, strings.Join(quoteEach(contexts), ", "), contexts[0], envName, contexts[0], contexts[0])
 }
 
 // isForgeManagedContext reports whether a context is a local cluster forge

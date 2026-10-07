@@ -183,6 +183,9 @@ func plantRetiredLedger(t *testing.T, dir string, promotions []release.Promotion
 // quiet. This asserts both halves: the ids are in the store, and the refusal
 // has stopped firing.
 func TestLedgerImport_PreservesPromotionIDsAndClearsTheRefusal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real git project for the ledger; runs in task test")
+	}
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	promotions := []release.Promotion{
 		importablePromotion("20260901T120000Z-aaaa", "prod", "v1.0.0", base),
@@ -311,6 +314,9 @@ func TestLedgerImport_RecordsPromotionsInPromotedAtOrder(t *testing.T) {
 // repaired, so the second run must be a visible no-op rather than a silent
 // one: the plan reports what is already held.
 func TestLedgerImport_AppliedTwiceCreatesOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real git project for the ledger; runs in task test")
+	}
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t,
@@ -564,6 +570,9 @@ func TestLedgerImport_RefusesNoSourceAndBothSources(t *testing.T) {
 // machine ledger, and its lines ARE the payload — the two stores serialize
 // the same canonical JSON, so nothing is translated.
 func TestLedgerImport_FromFileLedger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git projects for the ledger; runs in task test")
+	}
 	// A source ledger, built by the store itself so the files are exactly
 	// what a real machine ledger holds.
 	sourceProject := newImportProject(t, "source-project")

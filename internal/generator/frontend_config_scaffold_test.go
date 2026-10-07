@@ -40,6 +40,9 @@ var frontendConfigMessageRE = regexp.MustCompile(
 // scaffolded WITH a frontend must declare that frontend's config message,
 // carrying the annotation that activates the three projections.
 func TestScaffold_FrontendGetsAnnotatedConfigMessage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := scaffoldWithFrontend(t, "cfgapp", "web")
 
 	proto, path := readFrontendConfigProto(t, root, "web")

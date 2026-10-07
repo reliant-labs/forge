@@ -1323,6 +1323,9 @@ func TestGenerateCompose_DropKeepsEmbeddedDepsKey(t *testing.T) {
 // in between. The sandbox module has no external requires, so the build needs
 // nothing from the network.
 func TestGenerateCompose_RemovedDepsFieldStillCompiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	dir := t.TempDir()
 	write := func(rel, body string) {
 		t.Helper()

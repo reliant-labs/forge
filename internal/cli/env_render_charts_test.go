@@ -118,6 +118,9 @@ output = forge.render(_bundle)
 //
 // Mutation that fails it: drop the renderEnvCharts call in renderEnvTo.
 func TestEnvRender_IncludesHelmChartObjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and drives a fake helm through shell subprocesses; runs in task test")
+	}
 	kclplugin.Register()
 	helmLog := fakeHelmOnPath(t)
 	dir := writeChartRenderProject(t)
@@ -175,6 +178,9 @@ func TestEnvRender_IncludesHelmChartObjects(t *testing.T) {
 // hatch, and a render that silently dropped the charts would recreate the
 // defect. The summary must name what was left out, and helm must not run.
 func TestEnvRender_NoChartsSaysWhatItLeftOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and drives a fake helm through shell subprocesses; runs in task test")
+	}
 	kclplugin.Register()
 	helmLog := fakeHelmOnPath(t)
 	dir := writeChartRenderProject(t)
@@ -198,6 +204,9 @@ func TestEnvRender_NoChartsSaysWhatItLeftOut(t *testing.T) {
 // selection rule to charts too — a service target renders no chart, a chart
 // target renders only that chart.
 func TestEnvRender_TargetSelectsOnlyThatChart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and drives a fake helm through shell subprocesses; runs in task test")
+	}
 	kclplugin.Register()
 	fakeHelmOnPath(t)
 	dir := writeChartRenderProject(t)

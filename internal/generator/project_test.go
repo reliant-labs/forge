@@ -286,6 +286,9 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 }
 
 func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := filepath.Join(t.TempDir(), "cli-only")
 	gen := NewProjectGenerator("cli-only", root, "example.com/cli-only")
 	// No ServiceName set — zero-service CLI-only project
@@ -860,6 +863,9 @@ func TestProjectGeneratorHarnessCopilot(t *testing.T) {
 }
 
 func TestProjectGeneratorHarnessCodex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := filepath.Join(t.TempDir(), "codex-app")
 	gen := NewProjectGenerator("codex-app", root, "example.com/codex-app")
 	gen.Harness = HarnessCodex
@@ -1027,6 +1033,9 @@ func TestProjectGeneratorIsIdempotentForforgeOwnedFiles(t *testing.T) {
 // --- Feature flag gating tests ---
 
 func TestFeatureFlag_MigrationsDisabled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := filepath.Join(t.TempDir(), "no-migrations")
 	gen := NewProjectGenerator("no-migrations", root, "example.com/no-migrations")
 	gen.ServiceName = "api"
@@ -1098,6 +1107,9 @@ func serveCallees(t *testing.T, src string) map[string]bool {
 }
 
 func TestFeatureFlag_CodegenDisabled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := filepath.Join(t.TempDir(), "no-codegen")
 	gen := NewProjectGenerator("no-codegen", root, "example.com/no-codegen")
 	// No ServiceName — setting one would create proto/services/<svc>/v1

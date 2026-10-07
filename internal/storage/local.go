@@ -279,11 +279,11 @@ func (r Runner) hostLayers(apply bool) []error {
 	if err := r.Logs(apply); err != nil {
 		failures = append(failures, layerErr("logs", err))
 	}
-	if err := r.TempSweep(apply); err != nil {
-		failures = append(failures, layerErr("temp sweep", err))
-	}
 	if err := r.GoCaches(apply); err != nil {
 		failures = append(failures, layerErr("go caches", err))
+	}
+	if err := r.TempSweep(apply); err != nil {
+		failures = append(failures, layerErr("temp sweep", err))
 	}
 	if err := r.Sources(apply); err != nil {
 		failures = append(failures, layerErr("source cache", err))

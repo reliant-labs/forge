@@ -479,7 +479,8 @@ func printProjectScaffoldSummary(s *sweepSummary, dryRun bool) {
 	case len(s.EntitiesBirthed) > 0:
 		fmt.Println()
 		fmt.Println("  Next: fill in the pb-through handler stubs (each returns an honest")
-		fmt.Println("  Unimplemented sentinel), then `go test ./...` — everything is yours.")
+		fmt.Println("  Unimplemented sentinel) — everything is yours. Iterate with")
+		fmt.Println("  `task test:short -- ./internal/handlers/...`; run `task test` before you finish.")
 	case s.nothingHappened():
 		fmt.Println("  ✅ nothing was missing — clean no-op")
 	case len(s.Refused) > 0 || len(s.Failed) > 0:

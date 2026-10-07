@@ -52,8 +52,8 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -67,7 +67,7 @@ jobs:
       # in all but name. Its own action caches the analyzer results; this
       # caches the Go build artifacts underneath them.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
@@ -125,8 +125,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -142,7 +142,7 @@ jobs:
       # from the non-race ones every other job produces. It is the job
       # that benefits most from a warm GOCACHE.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-test-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
@@ -187,8 +187,8 @@ jobs:
     name: Test (guards)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -198,7 +198,7 @@ jobs:
       # Its own key: this job builds WITHOUT -race, a different artifact set
       # from `test`'s, so sharing a key would have each job evict the other's.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
@@ -251,8 +251,8 @@ jobs:
         # itself must not depend on bash.
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -266,7 +266,7 @@ jobs:
         id: gocache
         run: echo "dir=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
@@ -312,8 +312,8 @@ jobs:
     needs: [lint, test, test-guards]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -324,7 +324,7 @@ jobs:
             go.sum
             pkg/go.sum
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # -trimpath below is part of the cache identity: artifacts built
           # with it do not match ones built without, so this job keeps its
@@ -346,8 +346,8 @@ jobs:
     name: Verify Generated Code
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -363,7 +363,7 @@ jobs:
       # the next run, instead of three jobs each compiling forge from
       # cold in parallel.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
@@ -384,8 +384,8 @@ jobs:
     name: Validate KCL
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -398,7 +398,7 @@ jobs:
       # Shares the tools scope with verify-generated and vuln-scan — same
       # `go install ./cmd/forge`, same flags, same artifacts.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
@@ -438,8 +438,8 @@ jobs:
     needs: [lint, test, test-guards]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -451,7 +451,7 @@ jobs:
             pkg/go.sum
       # Shares the tools scope with verify-generated and validate-kcl.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
@@ -483,8 +483,8 @@ jobs:
     name: License Compliance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -499,7 +499,7 @@ jobs:
       # Its own scope: it is the only job that builds go-licenses, and it
       # never builds ./cmd/forge.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}

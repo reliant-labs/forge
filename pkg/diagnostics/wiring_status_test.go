@@ -36,6 +36,9 @@ const diagnosticsPkg = "github.com/reliant-labs/forge/pkg/diagnostics"
 // TestDiagnosticsHasNoProducerAndSaysSo asserts the doc's status section
 // agrees with the import graph.
 func TestDiagnosticsHasNoProducerAndSaysSo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads every package in the forge module to find importers; runs in task test")
+	}
 	repoRoot := findRepoRoot(t)
 
 	importers := packagesImporting(t, repoRoot, diagnosticsPkg)
@@ -69,6 +72,12 @@ func TestDiagnosticsHasNoProducerAndSaysSo(t *testing.T) {
 // Bootstrap call site. Each is asserted against the filesystem/import graph
 // rather than against a remembered string.
 func TestDiagnosticsDocClaimsNoGeneratedRegistrationFile(t *testing.T) {
+	if testing.Short() {
+		// The answer depends on every file `git grep` can see, and a child
+		// process's reads are not inputs to go test's cache: a cached ok would
+		// survive a new producer appearing anywhere in the checkout.
+		t.Skip("greps the whole checkout via git, which the test cache cannot track; runs in task test")
+	}
 	repoRoot := findRepoRoot(t)
 	doc := readDocGo(t)
 

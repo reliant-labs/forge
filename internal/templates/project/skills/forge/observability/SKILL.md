@@ -122,18 +122,19 @@ Forge instruments three boundaries, so a request is observable end to end:
 1. **The RPC edge** — every Connect handler runs the interceptor chain built by
    `observe.Chain(observe.Deps{…})` in `cmd/<bin>/cmd/serve.go` (recovery →
    request-id → logging → tracing → metrics, then auth → audit → rate-limit,
-   with otelconnect). One span and one metric sample per RPC. The log is
-   every failure (`rpc failed`) plus a per-procedure SAMPLE of successes
-   (`rpc completed`): the first, then at most one a minute carrying
-   `suppressed=<n>` (the successes since the last record), and every success
-   over 1s with `slow=true`. Tune it through `observe.Deps.LogOptions` —
+   with otelconnect). One span, one metric sample and one log record per RPC:
+   `rpc failed` for every failure, `rpc completed` for every success, and
+   `slow=true` on any success over 1s. Success logging can be SAMPLED — see
+   [Success-log sampling](#success-log-sampling) below. Tune the layer
+   through `observe.Deps.LogOptions` —
    `observe.WithSuccessLevel(<svc>connect.<Svc><Method>Procedure, slog.LevelDebug)`
-   silences one poll, `observe.WithSuccessSampling(0)` restores one record per
-   success, `observe.WithSlowThreshold(d)` moves the slow line.
+   silences one poll, `observe.WithSuccessSampling(d)` fixes this layer's
+   sampling window, `observe.WithSlowThreshold(d)` moves the slow line.
 2. **The in-process component boundary** — every internal component→component
-   method call (a `contract.go` `Service`) gets one span and metric, a log of
-   every failure and a sample of successes, plus panic-recovery. This is the layer detailed below — the in-process twin of the
-   edge chain.
+   method call (a `contract.go` `Service`) gets one span, one metric sample
+   and one log record (every failure, every success unless sampling is on),
+   plus panic-recovery. This is the layer detailed below — the in-process
+   twin of the edge chain.
 3. **The ORM** — `pkg/orm` registers the bun `bunotel` query hook, so every DB
    query becomes a child span.
 
@@ -166,7 +167,7 @@ func newObserveChain() *observe.ComponentChain {
         observe.RecoverMiddleware(logger),                      // panic -> error, logged with stack
         observe.TraceMiddleware(otel.Tracer(scope)),            // one span "<pkg>.<Method>" per call
         observe.MetricsMiddleware(otel.Meter(scope), "<pkg>"),  // <pkg>.calls / .errors / .duration
-        observe.LogMiddleware(logger, slog.LevelDebug),         // every failure; successes sampled
+        observe.LogMiddleware(logger, slog.LevelDebug),         // every failure; every success (or a sample)
     )
 }
 ```
@@ -184,18 +185,61 @@ always safe. This file is THE extension point:
   default is seeded from `observability.log_level` in forge.yaml (`debug` |
   `info` | `warn` | `error`; default `debug`, so success stays quiet under a
   production Info handler).
-- **Tune success sampling** — successes are sampled per method, exactly like
-  `rpc completed` at the edge: the first, then at most one a minute carrying
-  `suppressed=<n>`, plus every call over 1s with `slow=true`. Trailing options
-  on `observe.LogMiddleware` change that:
+- **Tune success logging** — every success is logged unless the process
+  turns sampling on (see [Success-log sampling](#success-log-sampling)); a
+  call over 1s is always logged with `slow=true`. Trailing options on
+  `observe.LogMiddleware` change that for this package:
   `observe.WithSuccessLevel("<pkg>.<Method>", slog.LevelInfo)` for one method,
-  `observe.WithSuccessSampling(0)` to log every success,
+  `observe.WithSuccessSampling(d)` to fix this package's window whatever the
+  environment says (`0` = every success),
   `observe.WithSlowThreshold(d)` to move the slow line.
 
 The chain captures only method identity, duration, and error status — never
 arguments or results. It records `<pkg>.calls` / `<pkg>.errors` /
 `<pkg>.duration` (each tagged `method="<pkg>.<Method>"`) and one span named
 `<pkg>.<Method>` per call.
+
+### Success-log sampling
+
+Every successful call is logged by default — at the RPC edge and at every
+component boundary. That is what you want in dev, and in any process whose
+traffic you can afford to read. Where an access log's volume (which is the
+traffic's volume) outgrows its value — a frontend polling three RPCs every
+couple of seconds wrote 47k `rpc completed` lines in twelve hours of one dev
+stack — turn on sampling for that deployment:
+
+```kcl
+# deploy/kcl/<env>/config.k
+app_config: config_gen.AppConfig = {
+    log_success_sample_window = "1m"
+}
+```
+
+`log_success_sample_window` is declared in `proto/config/v1/config.proto`
+(scaffolded; add it to an older project's AppConfig the same way), and the
+generated `config_gen.k` projects it onto the workload as
+`LOG_SUCCESS_SAMPLE_WINDOW`. For a workload whose env is written by hand,
+set that variable directly. forge's `observe` package reads it from the
+process environment when it builds each logging layer, so it reaches
+`serve.go`'s chain and every `observe_chain.go` seam with no code change.
+
+Sampled, each RPC procedure (and each component method) logs its first
+success, then at most one per window carrying `suppressed=<n>` — the
+successes that record stands for, so the rate survives in the log. Volume is
+bounded by the number of procedures, not by traffic. Never sampled, at any
+setting: failures (every one, with its error) and successes slower than 1s
+(`slow=true`).
+
+Which window a layer uses:
+
+1. `observe.WithSuccessSampling(d)` passed in code (`Deps.LogOptions`, or a
+   trailing `observe.LogMiddleware` option) — wins, for that one layer;
+2. otherwise `LOG_SUCCESS_SAMPLE_WINDOW` from the environment;
+3. otherwise none — every success is logged.
+
+`0` (or a negative window) logs every success at either level. A value that
+is not a Go duration is reported once as a WARN and logs every success: a
+typo costs volume, never the records that show the process working.
 
 ### Opting in and out
 

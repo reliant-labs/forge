@@ -26,7 +26,9 @@ type DefaultMiddlewareDeps struct {
 
 	// LogOptions tune how LoggingInterceptor logs successful RPCs
 	// (sampling window, slow threshold, per-procedure level). nil keeps
-	// the defaults. Failures are always logged in full.
+	// the defaults: every success logged, unless SuccessSampleWindowEnv
+	// turns sampling on for the process. A WithSuccessSampling here wins
+	// over that variable. Failures are always logged in full.
 	LogOptions []LogOption
 
 	// Extras are appended to the canonical chain in the order supplied
@@ -54,8 +56,9 @@ type DefaultMiddlewareDeps struct {
 //     request ID. Trusts an inbound RequestIDHeader when present,
 //     mints a fresh ID otherwise.
 //
-//  3. LoggingInterceptor   — logs every failed RPC and a per-procedure
-//     sample of successful ones (see LoggingInterceptor). Sits before
+//  3. LoggingInterceptor   — logs every failed RPC and every successful
+//     one, or a per-procedure sample of the successes when sampling is
+//     turned on (see LoggingInterceptor). Sits before
 //     tracing/metrics so its timing reflects ALL inner cost (including
 //     the OTel work itself). Logging is cheap; the placement is about
 //     "this is what the user paid".
@@ -146,7 +149,9 @@ type Deps struct {
 
 	// LogOptions tune how LoggingInterceptor logs successful RPCs
 	// (sampling window, slow threshold, per-procedure level). nil keeps
-	// the defaults. Failures are always logged in full.
+	// the defaults: every success logged, unless SuccessSampleWindowEnv
+	// turns sampling on for the process. A WithSuccessSampling here wins
+	// over that variable. Failures are always logged in full.
 	LogOptions []LogOption
 
 	// Auth is the project's authentication interceptor — the value
@@ -191,7 +196,8 @@ type Deps struct {
 //
 //  1. RecoveryInterceptor   — outermost; observes panics from everything.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
-//  3. LoggingInterceptor   — every failure, sampled successes.
+//  3. LoggingInterceptor   — every failure; every success, or a sample
+//     of them when sampling is turned on.
 //  4. TracingInterceptor   — one OTel span per RPC.
 //  5. MetricsInterceptor   — calls/errors/duration.
 //  6. Auth                 — authenticate (when non-nil). Inner to

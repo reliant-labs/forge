@@ -327,6 +327,9 @@ const scaffoldOnceBanner = "yours: scaffolded once"
 // banner-carrying template with a fresh emitter is caught rather than
 // silently uncovered.
 func TestScaffoldOnceBannerFilesAreLedgerGated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scans every template and generator source in the repository; runs in task test")
+	}
 	bannered := bannerCarryingTemplates(t)
 	if len(bannered) == 0 {
 		t.Fatalf("derived banner-carrying template set is EMPTY — the walk over "+

@@ -150,6 +150,9 @@ func typeCheckStub(t *testing.T, handlerDir string, res CrossPkgInterfaceResult,
 // TestResolveCrossPkgInterface_NamedTypeResultsCompile is the direct
 // reproduction of the docvault3 failure and its whole family.
 func TestResolveCrossPkgInterface_NamedTypeResultsCompile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := namedTypeFixture(t)
 
 	res, ok := ResolveCrossPkgInterface(handlerDir, "orgpolicy", "Service")
@@ -164,6 +167,9 @@ func TestResolveCrossPkgInterface_NamedTypeResultsCompile(t *testing.T) {
 // rather than only reporting a type error. `orgpolicy.Role{}` is invalid
 // for `type Role string` however the rest of the file looks.
 func TestResolveCrossPkgInterface_NamedScalarDoesNotUseCompositeLiteral(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := namedTypeFixture(t)
 
 	res, ok := ResolveCrossPkgInterface(handlerDir, "orgpolicy", "Service")
@@ -199,6 +205,9 @@ func TestResolveCrossPkgInterface_NamedScalarDoesNotUseCompositeLiteral(t *testi
 // multi-return construction: two results that both need a declared
 // zero must not collide on one name.
 func TestResolveCrossPkgInterface_MultiNamedResultsAreDistinct(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := namedTypeFixture(t)
 
 	res, ok := ResolveCrossPkgInterface(handlerDir, "orgpolicy", "Service")
@@ -224,6 +233,9 @@ func TestResolveCrossPkgInterface_MultiNamedResultsAreDistinct(t *testing.T) {
 // locally-declared half of the generator, which renders from the AST
 // and shares the same zero-value emitter.
 func TestParseLocalInterfaces_NamedTypeResultsCompile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks or builds fixture modules via the go toolchain; runs in task test")
+	}
 	handlerDir := writeStubFixtureModule(t, "internal/handlers/orgs", map[string]string{
 		"internal/handlers/orgs/service.go": `package orgs
 

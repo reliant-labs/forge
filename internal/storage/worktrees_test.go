@@ -76,6 +76,9 @@ func ageDir(t *testing.T, dir string) {
 // Real git throughout: what is being pinned is git's behaviour, which a faked
 // `git status` would only restate.
 func TestWorktreesRetainIgnoredAndUntrackedData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	for _, tc := range []struct {
 		name  string
 		files []string
@@ -115,6 +118,9 @@ func TestWorktreesRetainIgnoredAndUntrackedData(t *testing.T) {
 // TestWorktreesRemoveATrulyCleanWorktree is the positive control for the test
 // above: without it, a Worktrees that never removed anything would pass.
 func TestWorktreesRemoveATrulyCleanWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repo, worktree := gitRepoWithWorktree(t)
 	ageDir(t, worktree)
 	fakeLsof(t, unrelatedOpenFile, "exit 0")
@@ -133,6 +139,9 @@ func TestWorktreesRemoveATrulyCleanWorktree(t *testing.T) {
 // path (macOS: /private/var/... for /var/...), so this also pins that the
 // comparison is made on canonical paths.
 func TestWorktreesRetainAWorktreeAProcessIsUsing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	for _, tc := range []struct{ name, record string }{
 		{"process cwd inside the worktree", "fcwd\nn%s/sub\n"},
 		{"process cwd is the worktree", "fcwd\nn%s\n"},
@@ -156,6 +165,9 @@ func TestWorktreesRetainAWorktreeAProcessIsUsing(t *testing.T) {
 // TestWorktreesRefuseWhenUseCannotBeDetermined: with no evidence about which
 // worktrees are in use, removal must not proceed on age alone.
 func TestWorktreesRefuseWhenUseCannotBeDetermined(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repo, worktree := gitRepoWithWorktree(t)
 	ageDir(t, worktree)
 	fakeLsof(t, "", "exit 2")
@@ -199,6 +211,9 @@ func heldReason(report WorktreeReport, path string) string {
 }
 
 func TestWorktreeAllowsRebuildableIgnoredAndHoldsTheRest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	for _, tc := range []struct {
 		name, file, want string
 	}{
@@ -231,6 +246,9 @@ func TestWorktreeAllowsRebuildableIgnoredAndHoldsTheRest(t *testing.T) {
 }
 
 func TestWorktreeHoldsLockedRecentAndUnpushed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	t.Run("locked", func(t *testing.T) {
 		repo, worktree := gitRepoWithWorktree(t)
 		runGit(t, repo, "worktree", "lock", worktree)
@@ -275,6 +293,9 @@ func TestWorktreeHoldsLockedRecentAndUnpushed(t *testing.T) {
 }
 
 func TestWorktreePushedToRemoteBranchIsRemovable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repo, worktree := gitRepoWithWorktree(t)
 	if err := os.WriteFile(filepath.Join(worktree, "new.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -299,6 +320,9 @@ func TestWorktreePushedToRemoteBranchIsRemovable(t *testing.T) {
 }
 
 func TestWorktreeLayerPreviewsUnlessPolicyOptsIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	for _, reap := range []bool{false, true} {
 		repo, worktree := gitRepoWithWorktree(t)
 		runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
@@ -344,6 +368,9 @@ func TestConvergeRecordsRepos(t *testing.T) {
 // The scan must not reset the idle clock it measures: a stale stat cache makes
 // plain `git status` rewrite the index.
 func TestWorktreeScanDoesNotTouchIndex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repo, worktree := gitRepoWithWorktree(t)
 	readme := filepath.Join(worktree, ".gitignore")
 	content, err := os.ReadFile(readme)
@@ -372,6 +399,9 @@ func TestWorktreeScanDoesNotTouchIndex(t *testing.T) {
 }
 
 func TestWorktreeHoldsHiddenChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	for _, flag := range []string{"--skip-worktree", "--assume-unchanged"} {
 		t.Run(flag, func(t *testing.T) {
 			repo, worktree := gitRepoWithWorktree(t)
@@ -393,6 +423,9 @@ func TestWorktreeHoldsHiddenChanges(t *testing.T) {
 }
 
 func TestWorktreeHoldsNestedRepositories(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	for _, tc := range []struct{ name, dir string }{
 		{"inside allowlisted node_modules", "node_modules/pkg/.git"},
 		{"inside allowlisted bin, deep", "bin/a/b/c/.git"},
@@ -422,6 +455,9 @@ func TestWorktreeHoldsNestedRepositories(t *testing.T) {
 // removal must stop the removal. The fake lsof reports nothing on its first
 // run and the worktree on every later run.
 func TestWorktreeRecheckCatchesUseAfterBatchClassification(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	repo, worktree := gitRepoWithWorktree(t)
 	ageDir(t, worktree)
 	dir := t.TempDir()

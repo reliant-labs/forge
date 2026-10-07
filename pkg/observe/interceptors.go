@@ -51,22 +51,24 @@ func RequestIDFromContext(ctx context.Context) string {
 //
 //   - Every FAILED call is written — "rpc failed" / "stream failed" — at the
 //     level LevelForError chooses, with the error and its cause.
-//   - SUCCESSFUL calls — "rpc completed" / "stream completed", at INFO — are
-//     sampled per procedure: the first is written, then at most one per
-//     DefaultSuccessSampleWindow, carrying `suppressed`, the number of
-//     successes of that procedure since the previous record that were not
-//     written. A unary success at or above DefaultSlowThreshold is always
-//     written, with slow=true. See log_policy.go for why this is sampling
-//     and not a lower level.
+//   - Every SUCCESSFUL call is written — "rpc completed" / "stream
+//     completed", at INFO — unless success sampling is on. Sampling is
+//     opt-in: SuccessSampleWindowEnv turns it on for the process, and
+//     WithSuccessSampling for this layer (code wins). Sampled, a procedure's
+//     first success is written, then at most one per window, carrying
+//     `suppressed`, the successes of that procedure since the previous
+//     record that were not written. A unary success at or above
+//     DefaultSlowThreshold is always written, with slow=true. See
+//     log_policy.go.
 //
-// opts tune the success half: WithSuccessSampling (0 restores one record
-// per success), WithSlowThreshold, and WithSuccessLevel for one procedure.
-// Through Chain / DefaultMiddlewares they are passed as Deps.LogOptions.
+// opts tune the success half: WithSuccessSampling, WithSlowThreshold, and
+// WithSuccessLevel for one procedure. Through Chain / DefaultMiddlewares
+// they are passed as Deps.LogOptions.
 func LoggingInterceptor(logger *slog.Logger, opts ...LogOption) connect.Interceptor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &loggingInterceptor{logger: logger, policy: newLogPolicy(slog.LevelInfo, opts)}
+	return &loggingInterceptor{logger: logger, policy: newLogPolicy(slog.LevelInfo, logger, opts)}
 }
 
 type loggingInterceptor struct {

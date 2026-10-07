@@ -75,6 +75,9 @@ ALTER TABLE estimates ALTER COLUMN total_cents SET NOT NULL;
 // leave the multi-line and quoted-identifier spellings still trapped, which is
 // the same dead end with extra steps.
 func TestGeneratedColumnExemptionSpellingVariants(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	cases := []struct {
 		name    string
 		content string
@@ -292,6 +295,9 @@ func TestPrimaryRemediationRefusesToPickForAMixedBatch(t *testing.T) {
 // the only escape from a false positive was editing forge.yaml — which is the
 // escape hatch that turned out to disable the whole check (see N4).
 func TestAllowUnsafeNotNullPragmaSilencesBothRules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	cases := []struct {
 		name    string
 		content string
@@ -353,6 +359,9 @@ func TestAllowUnsafeNotNullPragmaDoesNotSilenceOtherRules(t *testing.T) {
 // two pragmas must stay distinct, or the older one silently inherits the new
 // one's power in every migration that already carries it.
 func TestDestructivePragmaDoesNotSilenceUnsafeNotNull(t *testing.T) {
+	if testing.Short() {
+		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+	}
 	dir := writeMigration(t, "0001_destructive_pragma.up.sql",
 		"-- forge:allow-destructive\nALTER TABLE users ADD COLUMN name text NOT NULL;")
 

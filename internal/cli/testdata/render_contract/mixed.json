@@ -10,6 +10,7 @@
     },
     "clusters": [],
     "config_maps": [],
+    "connected_clusters": null,
     "control_plane": {
       "endpoint": "http://127.0.0.1:8090",
       "registry_host": "registry.reliantapi.com",

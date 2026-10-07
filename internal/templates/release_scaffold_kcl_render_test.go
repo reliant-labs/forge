@@ -34,6 +34,9 @@ import (
 // NOT parallel: buildinfo is process-global, and the test asserts the
 // offline claim by breaking git for its own duration.
 func TestReleaseBuildScaffoldResolvesAndRenders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	// Build the project the way a released forge binary does.
 	buildinfo.SetDevBuild(false)
 	defer buildinfo.ClearDevBuild()

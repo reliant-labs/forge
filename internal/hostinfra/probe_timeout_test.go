@@ -72,6 +72,9 @@ func silentListener(t *testing.T) int {
 // timeout, which is what the bug did to `forge env up`. The explicit
 // deadline below is what turns that hang into a named failure.
 func TestIdentifyHolder_IsBoundedAgainstANonPostgresListener(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out real process/probe timeouts; runs in task test")
+	}
 	port := silentListener(t)
 	spec := Spec{
 		Name: "postgres", Engine: EnginePostgres, Port: port,

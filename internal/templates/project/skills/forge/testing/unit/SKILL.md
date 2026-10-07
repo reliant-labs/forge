@@ -12,10 +12,15 @@ Unit tests are **hermetic**: no network, no database, no filesystem. They test a
 ## Running
 
 ```bash
-task test                  # all unit tests
-task test -- ./internal/handlers/<name>/...      # unit tests for one service
+task test:short -- ./internal/handlers/<name>/...  # inner loop: after each edit
+task test                  # all unit tests + frontends, race on: before you finish
+task test -- ./internal/handlers/<name>/...      # full lane for one service
 task test -- -v ./...                    # verbose output for debugging
 ```
+
+Iterate on `task test:short`, scoped to what you touched: it is `-short`,
+cached, and race-free, so an unchanged package costs nothing. Don't add
+`-count=1` or `-race` to it — those belong to `task test` and CI.
 
 ## Test Naming Convention
 

@@ -104,6 +104,9 @@ func renderEnvOutput(t *testing.T, root, env string) map[string]any {
 // Asserted on the RENDER, because that is what every forge command reads; a
 // string match on the template would pass a file that does not evaluate.
 func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	for _, tc := range []struct {
 		name     string
 		services []string
@@ -218,6 +221,9 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 // render: the referenced workload runs `server`, and no other hosted service
 // exists for the browser to miss.
 func TestHostedFrontendReachesEveryService(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := scaffoldForRender(t, "shop", []string{"alpha", "beta", "gamma"}, "web")
 	for _, env := range []string{"staging", "prod"} {
 		out := renderEnvOutput(t, root, env)
@@ -282,6 +288,9 @@ func TestHostedFrontendReachesEveryService(t *testing.T) {
 // the fresh declaration failed the render of EVERY env, dev included, with a
 // schema error naming neither the operator nor the next step.
 func TestFreshOperatorRendersUntilOnlyTheClusterIsMissing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "")
 	op := config.ComponentConfig{Name: "reaper", Kind: config.ComponentKindOperator, Group: "shop.io", Version: "v1alpha1"}
 	workloads := filepath.Join(root, codegen.WorkloadsKCLRelPath)
@@ -346,6 +355,9 @@ func runtimeType(entity map[string]any) string {
 // workload and the fix, rather than render an env that deploys nowhere.
 // Declaring `_cluster` is the whole fix: the env then renders, mixed.
 func TestScaffoldedClusterBinderRefusesUntilDeclared(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "")
 	path := filepath.Join(root, "deploy/kcl/prod/main.k")
 	raw, err := os.ReadFile(path)

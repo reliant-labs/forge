@@ -233,6 +233,9 @@ func TestErrStackHostsThisCommand(t *testing.T) {
 // Before the guard, the stopper selected its own parent as a stack root and
 // SIGTERMed it.
 func TestEnvDown_RealProcess_NeverStopsItsOwnParent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns and kills real process trees; runs in task test")
+	}
 	requireProcInspection(t)
 	dir, projectID, env := testStack(t)
 

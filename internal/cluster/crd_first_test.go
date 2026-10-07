@@ -59,6 +59,9 @@ func crdFirstOpts() ApplyOpts {
 // On the pre-fix apply there is no Established wait at all and the CRD rides
 // the same apply as the Widget that instantiates it.
 func TestApplyRendered_CRDsEstablishBeforeAnythingThatUsesThem(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 	if err := applyRendered(context.Background(), crdFirstOpts(), operatorStream); err != nil {
 		t.Fatalf("applyRendered: %v", err)
@@ -96,6 +99,9 @@ func TestApplyRendered_CRDsEstablishBeforeAnythingThatUsesThem(t *testing.T) {
 // applied exactly as before — no early batch, no Established wait, the
 // Namespace in the config pass.
 func TestApplyRendered_NoCRDKeepsTheHistoricalPasses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	readCalls := fakeKubectlRecorder(t)
 	stream := strings.Replace(operatorStream, `apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

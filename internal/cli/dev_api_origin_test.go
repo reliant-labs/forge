@@ -31,6 +31,9 @@ import (
 // binary's `server` — every service on one Connect mux — with no other host
 // service beside it that the frontend could never call.
 func TestDevFrontendReachesEveryService(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
 	kclplugin.Register()
 	dir := t.TempDir()
 	g := generator.NewProjectGenerator("acme", dir, "example.com/acme")

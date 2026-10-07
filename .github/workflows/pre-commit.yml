@@ -21,11 +21,11 @@ jobs:
     name: pre-commit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -46,7 +46,7 @@ jobs:
       # "goimports not installed or available in the PATH" when it is absent
       # — the runner image does not ship one, and setup-go does not add it.
       - name: Restore Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}

@@ -9,6 +9,9 @@ import (
 )
 
 func TestAnalyzer_Good(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.Analyzer, "good")
 }
@@ -85,6 +88,9 @@ func TestRequireContract_NotInternal(t *testing.T) {
 // A rule whose only repair is "add an interface nobody consumes" trains
 // people to add exclusions, so the conventions are skipped instead.
 func TestRequireContract_StdlibConventionMethodsOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requirestringer")
 }
@@ -97,6 +103,9 @@ func TestRequireContract_StdlibConventionMethodsOnly(t *testing.T) {
 // skip packages whose name ends with `_test`. See friction item
 // contractlint-flags-external-test-packages.
 func TestRequireContract_ExternalTestPackageSkipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requireexttest")
 }
@@ -145,6 +154,9 @@ func TestAnalyzer_GeneratedMethodsExempt(t *testing.T) {
 // which teaches users on day one that forge's own lint is noise. Zero
 // findings expected.
 func TestRequireContract_WorkerPackageSkipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/workers/share_expiry")
 }
@@ -174,11 +186,17 @@ func TestRequireContract_CompositionSeamSkipped(t *testing.T) {
 // ExportedVarsAnalyzer tests
 
 func TestExportedVars_Good(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsok")
 }
 
 func TestExportedVars_Bad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsbad")
 }
@@ -195,6 +213,9 @@ func TestExportedVars_Bad(t *testing.T) {
 // dep line) — every one a fixed vocabulary or precompiled pattern that is
 // already documented as the single source of truth for several callers.
 func TestExportedVars_ImmutableDataAndRegexps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsimmutable")
 }
@@ -215,6 +236,9 @@ func TestExportedVars_ImmutableDataAndRegexps(t *testing.T) {
 // reported, so following forge's guidance failed forge's lint. Only
 // pkg/svcerr itself passed, by using the two spellings the whitelist knew.
 func TestExportedVars_SentinelShapes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varssentinelshapes")
 }
@@ -241,6 +265,9 @@ func TestExportedVars_GeneratedFilesExempt(t *testing.T) {
 // package requires it). The analyzer must exempt them — see scaffold-1 in
 // PACK_AUDIT.md for the pristine-scaffold breakage that motivated this.
 func TestExportedVars_EmbedTargetsExempt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsembed")
 }

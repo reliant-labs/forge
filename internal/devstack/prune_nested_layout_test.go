@@ -41,6 +41,9 @@ func nestedWorktree(t *testing.T, primary, container, repo, branch string) strin
 // TestPruneNeverReclaimsLiveStackInNestedLayout is the regression lock: two
 // live worktrees sharing a basename must BOTH survive a prune.
 func TestPruneNeverReclaimsLiveStackInNestedLayout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -78,6 +81,9 @@ func TestPruneNeverReclaimsLiveStackInNestedLayout(t *testing.T) {
 // nested worktree that is genuinely deleted is still reclaimed, so making the
 // live set correct did not simply disable pruning for this layout.
 func TestPruneStillReclaimsDeadNestedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -129,6 +135,9 @@ func TestPruneStillReclaimsDeadNestedWorktree(t *testing.T) {
 // Deleting one worktree must never make a DIFFERENT, untouched worktree's block
 // reclaimable.
 func TestLiveWorktreeKeyStableWhenCollidingSiblingDeleted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -171,6 +180,9 @@ func TestLiveWorktreeKeyStableWhenCollidingSiblingDeleted(t *testing.T) {
 // derivations of one key drifting apart is the actual defect, so this is the
 // assertion that would catch it returning in any form.
 func TestLiveWorktreeKeysMatchesAllocatorDerivation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)

@@ -170,15 +170,44 @@ waitFor(func() bool { return result.IsComplete() }, timeout: 5s, poll: 100ms)
 
 ## Phase 4: Test Tooling
 
-Create tools that make testing easier. Write to `.reliant/tools/` or the project's scripts directory.
+### Run the cheapest tier that answers the question
+
+Most of an edit loop's test time goes to compiling, linking, and re-running
+tests whose result is already known — not to test bodies. Keep two tiers and
+use the right one:
+
+- **Inner loop, after each edit:** fast tests only, scoped to the packages you
+  touched, with the runner's cache on. In Go that is
+  `go test -short ./internal/<pkg>/...` with no `-count=1` and no `-race`.
+  Go's test cache keys on the test binary, its flags, and the files and env
+  vars the test reads, so a cached pass is a real pass for a hermetic test;
+  `-count=1` throws that away, and `-race` rebuilds everything under a
+  separate cache key and runs 2-10x slower. Never point the build cache at a
+  private directory — a cold cache recompiles the world.
+- **Full gate, once before you finish (and in CI):** the whole suite with
+  `-race -count=1`, plus the tagged integration and e2e lanes.
+- **Keep the fast tier fast.** A test that takes more than ~2s gets
+  `if testing.Short() { t.Skip("<why>") }`, or has its slow side-effect
+  bypassed under `-short`, and its slow path still runs in the full gate. Gate
+  it, don't gut it: never weaken an assertion to get under the budget.
+- A run expected to take more than ~2 minutes goes in the background; never
+  block on a long foreground call.
+
+<!-- @forge-only:start -->
+In a forge project both tiers are Taskfile targets:
+`task test:short -- ./internal/<pkg>/...` is the inner loop, and `task test`
+is the full lane CI runs.
+<!-- @forge-only:end -->
 
 ### Useful Test Scripts
 
-**Run specific test suites:**
+Create tools that make testing easier. Write to `.reliant/tools/` or the project's scripts directory.
+
+**Run the inner-loop tier (pass the packages you touched):**
 ```bash
 #!/bin/bash
 # .reliant/tools/test-unit.sh
-go test -short ./...
+go test -short "${@:-./...}"
 ```
 
 **Run with coverage:**
@@ -267,6 +296,7 @@ When reviewing code or planning tests, provide a structured test plan:
 - Over-mock (test realistic scenarios)
 - Ignore existing test utilities
 - Write tests without understanding the code
+- Run the full suite with `-count=1` / `-race` after every edit — that is the full gate's job, not the inner loop's
 
 ## Test Quality Checklist
 - [ ] Tests actually test the right thing (not just coverage theater)

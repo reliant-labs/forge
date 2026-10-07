@@ -120,6 +120,9 @@ var scopeProdSecrets = []ExternalSecretEntity{
 // in place could not deploy. On 2e7b0186 this fails with the daemon cluster
 // named in each finding.
 func TestPreflightChecksSecretsOnlyWhereConsumed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
+	}
 	gets := scopeFakeKubectl(t, scopePrimary) // every Secret exists on the primary only
 	in, report := scopeProdInput(t, "", scopeProdSecrets...)
 

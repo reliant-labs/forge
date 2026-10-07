@@ -85,6 +85,9 @@ func TestTakeParsesACompleteListing(t *testing.T) {
 // TestTakeAcceptsLsofsRoutineExitOne: lsof exits 1 whenever some process's
 // files were inaccessible, which on a developer machine is normal.
 func TestTakeAcceptsLsofsRoutineExitOne(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	dir := t.TempDir()
 	fakeLsof(t, "p1\nf3\nn"+dir+"/open\n", "exit 1")
 	snap, err := Take(context.Background())
@@ -100,6 +103,9 @@ func TestTakeAcceptsLsofsRoutineExitOne(t *testing.T) {
 // error, never a smaller snapshot. A partial listing says nothing about the
 // processes lsof never reached.
 func TestTakeFailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake lsof through shell subprocesses; runs in task test")
+	}
 	partial := "p1\nf3\nn/nonexistent/forge-openfiles-test/open\n"
 	for _, tc := range []struct{ name, records, tail string }{
 		{"killed mid-listing", partial, "kill -9 $$"},

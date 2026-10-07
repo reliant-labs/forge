@@ -38,6 +38,9 @@ func TestSharedProjectDirIsThePrimaryFromALinkedWorktree(t *testing.T) {
 // of the primary, not to the primary's repo root — that is where its compose
 // file and its generated config live.
 func TestSharedProjectDirKeepsTheProjectsOffsetInTheRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)

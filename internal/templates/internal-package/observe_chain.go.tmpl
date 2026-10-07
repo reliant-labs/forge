@@ -25,17 +25,20 @@ import (
 //   - drop a layer you don't want (delete its line — nil is also dropped);
 //   - change the success log level (the observe.LogMiddleware argument), or
 //     tune success logging with trailing options: one method's level
-//     (observe.WithSuccessLevel("{{.Name}}.Method", slog.LevelInfo)), the
-//     sampling window (observe.WithSuccessSampling(0) logs every success),
-//     the slow line (observe.WithSlowThreshold).
+//     (observe.WithSuccessLevel("{{.Name}}.Method", slog.LevelInfo)), a
+//     sampling window for this package alone (observe.WithSuccessSampling,
+//     which overrides LOG_SUCCESS_SAMPLE_WINDOW), the slow line
+//     (observe.WithSlowThreshold).
 //
 // Middlewares run OUTER→INNER in the order listed: recovery wraps everything
 // (a component panic becomes an error, never a crash), then one OTel span per
 // call, then call/error/duration metrics, then the log: every failure at
-// Error; successes at the level below — quiet under a production Info
-// handler — and sampled per method (the first, then at most one a minute
-// with suppressed=<n>, plus any call over 1s with slow=true), so a method on
-// a polling loop cannot flood a Debug log.
+// Error; every success at the level below — quiet under a production Info
+// handler. When the process environment sets LOG_SUCCESS_SAMPLE_WINDOW (a
+// Go duration, declared in proto/config and set per env in
+// deploy/kcl/<env>/config.k), successes are sampled per method instead: the
+// first, then at most one per window with suppressed=<n>. Any call over 1s
+// is always written, with slow=true.
 //
 // To opt the package OUT, put `// forge:no-observe` on the package clause (or
 // on a single Service method to skip just that one). The opt-out wins over

@@ -88,8 +88,24 @@ func (r Result) FormatText() string {
 		fmt.Fprintf(&b, "✅ migration safety: %s clean, no warnings\n", plural(len(r.Scanned), "migration file"))
 		return b.String()
 	}
-	fmt.Fprintf(&b, "%s across %s\n", plural(len(r.Findings), "finding"), plural(len(r.Scanned), "migration file"))
+	checked := ""
+	if len(r.Scanned) > 0 {
+		checked = fmt.Sprintf(" (%s checked)", plural(len(r.Scanned), "migration file"))
+	}
+	fmt.Fprintf(&b, "%s in %s%s\n", plural(len(r.Findings), "finding"), plural(r.filesWithFindings(), "migration file"), checked)
 	return b.String()
+}
+
+// filesWithFindings counts the distinct files the findings are in. The
+// verdict used to put the finding count beside the number of files SCANNED
+// ("2 findings across 2 migration files"), which read as one finding per file
+// when both were in the same one.
+func (r Result) filesWithFindings() int {
+	files := map[string]bool{}
+	for _, finding := range r.Findings {
+		files[finding.File] = true
+	}
+	return len(files)
 }
 
 // plural renders "1 thing" / "3 things" so counts read naturally in the
@@ -309,12 +325,21 @@ type statement struct {
 	Line int
 }
 
+// splitStatements splits content on `;` and records the line each
+// statement's TEXT starts on — the line a finding should point at.
+//
+// A part begins right after the previous `;`, so it usually opens with that
+// line's newline and any blank or comment lines (comments are already blanked
+// to newlines). Counting from the part's first byte put every finding on the
+// line of the PREVIOUS statement's semicolon — and a migration's first
+// statement, under the header `forge db migration new` writes, on line 1.
 func splitStatements(content string) []statement {
 	parts := statementSplitRe.Split(content, -1)
 	statements := make([]statement, 0, len(parts))
 	line := 1
 	for _, part := range parts {
-		statements = append(statements, statement{Text: part, Line: line})
+		lead := part[:len(part)-len(strings.TrimLeft(part, " \t\r\n"))]
+		statements = append(statements, statement{Text: part, Line: line + strings.Count(lead, "\n")})
 		line += strings.Count(part, "\n")
 	}
 	return statements

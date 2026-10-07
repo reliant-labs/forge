@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `formatMoneyInterval` now render such a value as the plain amount beside the
   raw code. Existing projects: copy `formatMinorUnits` and the three helpers
   from a fresh scaffold's `src/lib/format-utils.ts`.
+- **Migration-safety findings point at the statement.** Each statement's line
+  was counted from the previous semicolon, so the first statement under the
+  header `forge db migration new` writes was reported at `:1`, and every later
+  one at the line before it. The verdict also put the finding count beside the
+  number of files scanned ("2 findings across 2 migration files" for two
+  findings in one file); it now says "2 findings in 1 migration file (2
+  migration files checked)".
 
 ### Changed
 

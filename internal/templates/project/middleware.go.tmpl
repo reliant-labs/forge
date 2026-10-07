@@ -142,7 +142,7 @@ func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 }
 
 // ─── Policy hook 3: where the credential is read from ────────────────
-//
+
 // SessionCookieName is the cookie native sign-in keeps the session in.
 // internal/app/login_broker.go SETS it (HttpOnly, on /auth/login) and this
 // file READS it, so it is declared once, here, and the broker names it.

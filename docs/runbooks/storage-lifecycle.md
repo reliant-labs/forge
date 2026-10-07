@@ -18,6 +18,7 @@ an indication that a volume is safe to remove.
 | Rotated Forge logs                                       | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment                                                                                                                |
 | Cross-repo source cache (`<UserCacheDir>/forge/sources`) | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`)                                                                                      |
 | Temp scratch (`$TMPDIR`)                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
+| Host images tagged for a dead local registry             | Untag `localhost:<port>`, `registry.localhost:<port>` and `k3d-*:<port>` images when no running registry backs that alias and no container (running or stopped) uses the image            |
 | Worktrees                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removal needs `worktree_reap` (see Worktrees)                                                                  |
 | Database/PVC/workspace volumes                           | Never removed by storage GC                                                                                                                                                                          |
 
@@ -68,7 +69,10 @@ both of these hold: its context is missing from kubeconfig, and docker shows no
 container (running or stopped) labelled with it. A context that exists but is
 unreachable, or a cluster whose nodes are only stopped, stays registered, and
 registry cleanup keeps refusing on it. If either source cannot be read, nothing
-is pruned. A preview reports the pruning but does not write it.
+is pruned. A registry entry is dropped when `docker ps -a` cleanly reports that
+its container no longer exists (an e2e cluster's registry dies with the
+cluster); an unreadable answer keeps it. A preview reports the pruning but does
+not write it.
 
 At the end of a successful `forge env up`, if the opportunistic pass has not
 been attempted in 24 hours, forge starts the non-disruptive layers in the
@@ -134,6 +138,31 @@ is protected exactly like a Deployment's); only Secrets, Events and aggregated
 metrics are skipped. Failure to list any resource prevents deletion. Only
 explicitly registered repositories are eligible. Stable aliases (`dev`, `e2e`,
 `main`, `latest`, `stable`, exact semver) are retained.
+
+### Registries created before `--delete-enabled`
+
+A registry created before forge passed `--delete-enabled` to k3d refuses
+manifest DELETE, so retention could never reclaim anything from it. `forge
+storage gc` detects this (no `storage.delete.enabled` in its `config.yml`, no
+`REGISTRY_STORAGE_DELETE_ENABLED`) and, inside the maintenance window it
+already takes for offline GC, rewrites `config.yml` in the stopped container
+(`docker cp`). The outage therefore happens once, not on every pass. After the
+restart forge sends a DELETE for a manifest that cannot exist and requires a
+404 rather than 405. It is idempotent: a delete-enabled registry is never
+touched, and a preview only announces that the migration would run. The edit
+lives in the container's writable layer, so it survives restarts but not a
+`k3d registry delete`; recreate through forge, which enables delete. If the
+edit fails the pass still reclaims through its own delete-enabled helper and
+the next pass retries. The volume, labels and networks are never touched.
+
+### Stale host images
+
+Images tagged for a local registry that no longer exists (for example
+`localhost:5061/workspace-base`) are untagged by both the full and the
+non-disruptive passes; `forge storage gc --dry-run` lists them. A `localhost`
+or `registry.localhost` alias is live while a running container publishes that
+host port or a registered running registry owns the alias; a `k3d-<name>` alias
+is live while that container runs. An image any container still uses is kept.
 
 Untagged manifests are reclaimed by forge's own graph walk, never by
 distribution's `--delete-untagged` (unsafe with image indexes on 2.x). An

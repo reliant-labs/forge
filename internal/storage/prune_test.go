@@ -199,6 +199,9 @@ func TestGCPrunesBeforeTheRegistryLayer(t *testing.T) {
 			if strings.HasPrefix(joined, "buildx inspect") {
 				return []byte(buildxInspectText("default", "docker-container", "unix:///var/run/docker.sock")), nil
 			}
+			if strings.HasPrefix(joined, "ps --format") || joined == "ps -aq" || strings.HasPrefix(joined, "image ls") {
+				return nil, nil
+			}
 			return clusterWorld{contexts: []string{"k3d-other"}}.command(ctx, name, args...)
 		},
 	}
@@ -208,5 +211,53 @@ func TestGCPrunesBeforeTheRegistryLayer(t *testing.T) {
 	}
 	if gone["scanned"] {
 		t.Fatal("GC scanned a pruned context")
+	}
+}
+
+// TestPruneDropsRegistriesWhoseContainerIsGone: an e2e cluster's registry dies
+// with the cluster but stayed in the policy, and `docker inspect` of each one
+// failed every pass — 24 failures on the machine this was found on. Only a
+// clean, empty `docker ps -a` answer drops one; an unreadable answer keeps it.
+func TestPruneDropsRegistriesWhoseContainerIsGone(t *testing.T) {
+	p := DefaultPolicy()
+	p.Clusters = []string{"k3d-live"}
+	p.Registries = []Registry{
+		{Container: "k3d-live-registry", Repositories: []string{"app"}, Aliases: []string{"localhost:1"}, Contexts: []string{"k3d-live"}},
+		{Container: "k3d-stopped-registry", Repositories: []string{"app"}, Aliases: []string{"localhost:2"}, Contexts: []string{"k3d-live"}},
+		{Container: "k3d-dead-registry", Repositories: []string{"app"}, Aliases: []string{"localhost:3"}, Contexts: []string{"k3d-live"}},
+	}
+	listing := func(dockerErr error) func(context.Context, string, ...string) ([]byte, error) {
+		return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			if name == "docker" && strings.HasPrefix(joined, "ps -aq --filter name=^/") {
+				if dockerErr != nil {
+					return nil, dockerErr
+				}
+				if strings.Contains(joined, "dead") {
+					return nil, nil
+				}
+				return []byte("abc123\n"), nil
+			}
+			return clusterWorld{contexts: []string{"k3d-live"}}.command(ctx, name, args...)
+		}
+	}
+	got, changed := (Runner{Policy: p, Command: listing(nil)}).pruned(context.Background())
+	if !changed || len(got.Registries) != 2 || got.Registries[0].Container != "k3d-live-registry" || got.Registries[1].Container != "k3d-stopped-registry" {
+		t.Fatalf("registries = %+v", got.Registries)
+	}
+	got, _ = (Runner{Policy: p, Command: listing(fmt.Errorf("daemon down"))}).pruned(context.Background())
+	if len(got.Registries) != 3 {
+		t.Fatalf("dropped a registry on an unreadable docker answer: %+v", got.Registries)
+	}
+}
+
+// TestRegistryGCSkipsARegistryWhoseContainerIsGone: a registered registry that
+// vanished between the prune and the pass must not fail the pass.
+func TestRegistryGCSkipsARegistryWhoseContainerIsGone(t *testing.T) {
+	r := Runner{Policy: DefaultPolicy(), Command: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("docker %v: exit status 1: Error: No such object: k3d-x-registry", args)
+	}}
+	if err := r.RegistryGC(context.Background(), Registry{Container: "k3d-x-registry", Repositories: []string{"app"}, Contexts: []string{"k3d-x"}}, true); err != nil {
+		t.Fatalf("a vanished registry failed the pass: %v", err)
 	}
 }

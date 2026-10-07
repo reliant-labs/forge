@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -46,7 +47,17 @@ type fakeRegistryHost struct {
 	startDoesNotRun bool
 
 	tags, revisions string
+	// config is the registry's config.yml; the default already enables delete,
+	// as a registry created with k3d --delete-enabled does.
+	config string
+	// cpFails makes `docker cp` fail.
+	cpFails bool
 }
+
+const (
+	configDeleteOn  = "version: 0.1\nstorage:\n  filesystem:\n    rootdirectory: /var/lib/registry\n  delete:\n    enabled: true\n"
+	configDeleteOff = "version: 0.1\nstorage:\n  cache:\n    blobdescriptor: inmemory\n  filesystem:\n    rootdirectory: /var/lib/registry\nhttp:\n  addr: :5000\n"
+)
 
 func newFakeRegistryHost(t *testing.T) *fakeRegistryHost {
 	t.Helper()
@@ -79,6 +90,7 @@ func newFakeRegistryHost(t *testing.T) *fakeRegistryHost {
 		failNth: map[string]map[int]bool{}, seen: map[string]int{}, failAlways: map[string]bool{},
 	}
 	const prefix = "/var/lib/registry/docker/registry/v2/repositories/app/_manifests/"
+	f.config = configDeleteOn
 	f.tags = fmt.Sprintf("%d\t%stags/dev/current/link\t%s\n", now.Unix(), prefix, live)
 	old := now.Add(-30 * 24 * time.Hour).Unix()
 	f.revisions = fmt.Sprintf("%d\t%srevisions/sha256/%s/link\t%s\n%d\t%srevisions/sha256/%s/link\t%s\n",
@@ -129,6 +141,17 @@ func (f *fakeRegistryHost) command(_ context.Context, name string, args ...strin
 			return []byte(target + "-id\n"), nil
 		}
 		return nil, nil
+	case args[0] == "exec" && strings.HasSuffix(joined, "cat "+registryConfigPath):
+		return []byte(f.config), nil
+	case args[0] == "cp" && strings.HasPrefix(args[1], f.registry+":"):
+		return nil, os.WriteFile(args[2], []byte(f.config), 0o644)
+	case args[0] == "cp" && strings.HasSuffix(args[2], f.registry+":"+registryConfigPath):
+		if f.cpFails {
+			return nil, fmt.Errorf("injected cp failure")
+		}
+		b, err := os.ReadFile(args[1])
+		f.config = string(b)
+		return b[:0], err
 	case args[0] == "exec" && strings.Contains(joined, "_manifests/tags/"):
 		return []byte(f.tags), nil
 	case args[0] == "exec" && strings.Contains(joined, "_manifests/revisions/"):
@@ -375,5 +398,88 @@ func TestRegistryStoppedByAHumanIsLeftAlone(t *testing.T) {
 	}
 	if f.isRunning(f.registry) || f.called("start ") != 0 {
 		t.Fatalf("restarted a registry forge did not stop:\n%s", out.String())
+	}
+}
+
+// TestRegistryGCMigratesAnOldRegistryToDeleteEnabledOnce: a registry created
+// before forge passed --delete-enabled to k3d gets storage.delete.enabled
+// written into its config.yml inside the maintenance window it already takes,
+// and is verified delete-capable after the restart.
+func TestRegistryGCMigratesAnOldRegistryToDeleteEnabledOnce(t *testing.T) {
+	f := newFakeRegistryHost(t)
+	f.config = configDeleteOff
+	r := gcRunner(t, f)
+	var out strings.Builder
+	r.Out = &out
+	if err := r.RegistryGC(context.Background(), f.reg(), true); err != nil {
+		t.Fatalf("RegistryGC: %v\n%s", err, out.String())
+	}
+	if on, err := configDeleteEnabled([]byte(f.config)); err != nil || !on {
+		t.Fatalf("config.yml not migrated: enabled=%v err=%v\n%s", on, err, f.config)
+	}
+	if !strings.Contains(f.config, "rootdirectory: /var/lib/registry") || !strings.Contains(f.config, "addr: :5000") {
+		t.Fatalf("migration dropped unrelated config:\n%s", f.config)
+	}
+	if !strings.Contains(out.String(), "manifest delete enabled and verified") {
+		t.Fatalf("migration not reported:\n%s", out.String())
+	}
+	if !f.isRunning(f.registry) {
+		t.Fatal("registry not restarted")
+	}
+	// Idempotent: a migrated registry is not touched again.
+	before := f.called("cp ")
+	if err := r.RegistryGC(context.Background(), f.reg(), true); err != nil {
+		t.Fatal(err)
+	}
+	if f.called("cp ") != before {
+		t.Fatal("an already delete-enabled registry was rewritten")
+	}
+}
+
+// TestRegistryGCPreviewReportsMigrationWithoutTouchingTheRegistry: dry runs
+// say the migration would happen and change nothing.
+func TestRegistryGCPreviewReportsMigrationWithoutTouchingTheRegistry(t *testing.T) {
+	f := newFakeRegistryHost(t)
+	f.config = configDeleteOff
+	r := gcRunner(t, f)
+	var out strings.Builder
+	r.Out = &out
+	if err := r.RegistryGC(context.Background(), f.reg(), false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "manifest delete is not enabled") {
+		t.Fatalf("preview did not announce the migration:\n%s", out.String())
+	}
+	if f.config != configDeleteOff || f.called("cp ") != 0 || f.called("stop ") != 0 {
+		t.Fatal("preview modified the registry")
+	}
+}
+
+// TestRegistryGCStillReclaimsWhenTheConfigEditFails: the edit is best effort;
+// the helper deletes through its own environment, and the registry comes back.
+func TestRegistryGCStillReclaimsWhenTheConfigEditFails(t *testing.T) {
+	f := newFakeRegistryHost(t)
+	f.config = configDeleteOff
+	f.cpFails = true
+	r := gcRunner(t, f)
+	var out strings.Builder
+	r.Out = &out
+	if err := r.RegistryGC(context.Background(), f.reg(), true); err != nil {
+		t.Fatalf("RegistryGC: %v", err)
+	}
+	if !f.isRunning(f.registry) || len(f.runs()) != 2 {
+		t.Fatal("pass did not complete after the config edit failed")
+	}
+	if !strings.Contains(out.String(), "could not enable manifest delete") {
+		t.Fatalf("failure not reported:\n%s", out.String())
+	}
+}
+
+func TestConfigDeleteEnabledParsing(t *testing.T) {
+	for config, want := range map[string]bool{configDeleteOn: true, configDeleteOff: false, "storage:\n  delete:\n    enabled: false\n": false} {
+		got, err := configDeleteEnabled([]byte(config))
+		if err != nil || got != want {
+			t.Errorf("configDeleteEnabled(%q) = %v, %v; want %v", config, got, err, want)
+		}
 	}
 }

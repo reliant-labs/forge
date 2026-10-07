@@ -229,6 +229,9 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 	if err := r.Local(ctx); err != nil {
 		return errors.Join(append(failures, layerErr("docker", err))...)
 	}
+	if err := r.LocalImages(ctx, apply); err != nil {
+		failures = append(failures, layerErr("local-registry images", err))
+	}
 	for _, builder := range r.Policy.Builders {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, layerErr("builder "+builder, err))...)
@@ -272,6 +275,9 @@ func (r Runner) hostLayers(apply bool) []error {
 // NodeConfigPath is stable across command exits; k3d bind mounts must never
 // refer to a temporary file removed at the end of cluster creation.
 func NodeConfigPath(policyPath string, p Policy) (string, error) {
+	if err := guardMachinePolicy(policyPath); err != nil {
+		return "", err
+	}
 	path := filepath.Join(filepath.Dir(policyPath), "kubelet-storage.conf")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return "", err

@@ -244,6 +244,11 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if dockerErr != nil {
 		failures = append(failures, layerErr("docker", dockerErr))
 	}
+	if dockerErr == nil {
+		if err := r.LocalImages(ctx, apply); err != nil {
+			failures = append(failures, layerErr("local-registry images", err))
+		}
+	}
 	for _, builder := range r.Policy.Builders {
 		if dockerErr != nil {
 			break

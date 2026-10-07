@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Tag is a registry alias and its last push timestamp.
@@ -233,6 +235,7 @@ type containerInfo struct {
 	} `json:"State"`
 	Config struct {
 		Cmd []string `json:"Cmd"`
+		Env []string `json:"Env"`
 	} `json:"Config"`
 	Mounts          []containerMount `json:"Mounts"`
 	NetworkSettings struct {
@@ -729,6 +732,10 @@ func (r Runner) registryServing(ctx context.Context, container string) error {
 func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err error) {
 	info, err := r.inspect(ctx, reg.Container)
 	if err != nil {
+		if strings.Contains(err.Error(), "No such object") {
+			r.print("registry %s no longer exists; skipping\n", reg.Container)
+			return nil
+		}
 		return err
 	}
 	helper, gc := reg.Container+"-forge-retention", reg.Container+"-forge-gc"
@@ -775,8 +782,18 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 		return err
 	}
 	plan, err := r.registryPlan(ctx, reg, reg.Container, base)
-	if err != nil || !apply || len(plan) == 0 {
+	if err != nil {
 		return err
+	}
+	needsDelete, err := r.registryNeedsDelete(ctx, reg.Container, info)
+	if err != nil {
+		return err
+	}
+	if needsDelete && len(plan) > 0 {
+		r.print("registry %s: manifest delete is not enabled (it predates k3d --delete-enabled); %s will enable it in config.yml inside the maintenance window, once\n", reg.Container, applyVerb(apply))
+	}
+	if !apply || len(plan) == 0 {
+		return nil
 	}
 	for _, name := range []string{helper, gc} {
 		b, err = r.docker(ctx, "ps", "-aq", "--filter", "name=^/"+name+"$")
@@ -793,13 +810,32 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	// Registered before the stop, so it runs whatever happens next — a failed
 	// stop, a failed helper, a cancelled context. Only a dead process skips
 	// it, and the marker written above covers that.
+	migrated := false
 	defer func() {
 		if restoreErr := r.restoreRegistry(reg.Container, gc, helper); restoreErr != nil {
 			err = errors.Join(err, restoreErr)
+			return
+		}
+		if migrated {
+			if verifyErr := r.verifyRegistryDelete(context.Background(), reg.Container, reg.Repositories[0]); verifyErr != nil {
+				err = errors.Join(err, verifyErr)
+				return
+			}
+			r.print("registry %s: manifest delete enabled and verified\n", reg.Container)
 		}
 	}()
 	if _, err = r.docker(ctx, "stop", "--time", "30", reg.Container); err != nil {
 		return err
+	}
+	if needsDelete {
+		// A failure here must not strand the pass: the helper below deletes
+		// through its own delete-enabled environment, so this pass still
+		// reclaims, and the next one retries the migration.
+		if err := r.enableRegistryDelete(ctx, reg.Container); err != nil {
+			r.print("registry %s: could not enable manifest delete in config.yml (%v); retention still runs this pass\n", reg.Container, err)
+		} else {
+			migrated = true
+		}
 	}
 	// Never --volumes-from with --rm: see maintenanceMounts.
 	helperArgs := append([]string{"run", "-d", "--rm", "--pull=never", "--name", helper}, mounts...)
@@ -845,6 +881,110 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	b, err = r.docker(ctx, gcArgs...)
 	r.print("%s\n", b)
 	return err
+}
+
+func applyVerb(apply bool) string {
+	if apply {
+		return "this pass"
+	}
+	return "an apply"
+}
+
+const registryConfigPath = "/etc/docker/registry/config.yml"
+
+// registryNeedsDelete reports whether a running registry refuses manifest
+// deletes: neither its config.yml nor its environment enables them. A
+// registry created before forge passed --delete-enabled to k3d is in this
+// state, and until it is migrated retention can only restart the container
+// behind a delete-enabled config on every pass.
+func (r Runner) registryNeedsDelete(ctx context.Context, container string, info containerInfo) (bool, error) {
+	for _, e := range info.Config.Env {
+		if strings.EqualFold(e, "REGISTRY_STORAGE_DELETE_ENABLED=true") {
+			return false, nil
+		}
+	}
+	b, err := r.docker(ctx, "exec", container, "cat", registryConfigPath)
+	if err != nil {
+		return false, err
+	}
+	enabled, err := configDeleteEnabled(b)
+	return !enabled, err
+}
+
+func configDeleteEnabled(config []byte) (bool, error) {
+	var doc map[string]any
+	if err := yaml.Unmarshal(config, &doc); err != nil {
+		return false, fmt.Errorf("parse registry config: %w", err)
+	}
+	storage, _ := doc["storage"].(map[string]any)
+	del, _ := storage["delete"].(map[string]any)
+	enabled, _ := del["enabled"].(bool)
+	return enabled, nil
+}
+
+// withDeleteEnabled returns config with storage.delete.enabled set to true and
+// everything else preserved (comments aside).
+func withDeleteEnabled(config []byte) ([]byte, error) {
+	var doc map[string]any
+	if err := yaml.Unmarshal(config, &doc); err != nil {
+		return nil, fmt.Errorf("parse registry config: %w", err)
+	}
+	if doc == nil {
+		return nil, fmt.Errorf("registry config is empty")
+	}
+	storage, ok := doc["storage"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("registry config has no storage section")
+	}
+	storage["delete"] = map[string]any{"enabled": true}
+	return yaml.Marshal(doc)
+}
+
+// enableRegistryDelete rewrites config.yml inside the STOPPED registry
+// container, so the edit rides the restart that maintenance performs anyway.
+// It lives in the container's writable layer: it survives restarts and Docker
+// Desktop upgrades, and a recreate takes it back to whatever k3d was told —
+// which forge now tells to enable delete. Recreating instead was rejected: an
+// anonymous data volume dies with a `k3d registry delete`, and the container
+// id, labels and network aliases clusters resolve through would all be rebuilt.
+func (r Runner) enableRegistryDelete(ctx context.Context, container string) error {
+	dir, err := os.MkdirTemp("", "forge-registry-config-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	file := filepath.Join(dir, "config.yml")
+	if _, err := r.docker(ctx, "cp", container+":"+registryConfigPath, file); err != nil {
+		return err
+	}
+	current, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	next, err := withDeleteEnabled(current)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(file, next, 0o644); err != nil {
+		return err
+	}
+	_, err = r.docker(ctx, "cp", file, container+":"+registryConfigPath)
+	return err
+}
+
+// verifyRegistryDelete asks the running registry to delete a manifest that
+// cannot exist. A delete-enabled distribution answers 404 (unknown manifest);
+// one that refuses the verb answers 405. It deletes nothing either way.
+func (r Runner) verifyRegistryDelete(ctx context.Context, container, repository string) error {
+	base, err := r.endpoint(ctx, container)
+	if err != nil {
+		return err
+	}
+	_, err = registryRequest(ctx, base, "/v2/"+repository+"/manifests/sha256:"+strings.Repeat("0", 64), http.MethodDelete)
+	if err == nil || strings.Contains(err.Error(), "HTTP 404") || strings.Contains(err.Error(), "HTTP 202") {
+		return nil
+	}
+	return fmt.Errorf("registry %s still refuses manifest delete after migration: %w", container, err)
 }
 
 func (r Runner) containerReferences(ctx context.Context) ([]string, error) {

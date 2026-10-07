@@ -2,44 +2,64 @@
 # This CI workflow is a starting point you own — add jobs, secrets, and steps freely.
 # Deleting it sticks (.forge/scaffolded.json); `forge project rescaffold <path>` re-creates it.
 # Source: internal/templates/ci/github/dependabot.yml.tmpl.
+#
+# Every Dependabot PR runs the project's whole CI, so one PR per dependency
+# multiplies that cost (and each rebase re-runs it). Each ecosystem below is
+# grouped: one PR per ecosystem per week. Go and npm groups take minor and patch
+# updates only, so a rare major bump stays its own PR and cannot block the batch.
 version: 2
 updates:
-  - package-ecosystem: gomod
-    directory: /
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
-
   # The generated protobuf module lives under /gen with its own go.mod.
   - package-ecosystem: gomod
-    directory: /gen
+    directories:
+      - /
+      - /gen
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # forge_version in forge.yaml must move with this require, and a hop can
+      # carry migrations that only `forge project upgrade` runs.
+      - dependency-name: github.com/reliant-labs/forge
 {{- if .FrontendName}}
-
-  # Frontend workspace may vendor Go tooling in the future (dev-only).
-  - package-ecosystem: gomod
-    directory: /frontends/{{.FrontendName}}
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
 
   - package-ecosystem: npm
     directory: /frontends/{{.FrontendName}}
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 2
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 {{- end}}
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
+    groups:
+      docker:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
+    groups:
+      github-actions:
+        patterns:
+          - "*"

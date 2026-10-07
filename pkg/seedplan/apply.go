@@ -143,7 +143,7 @@ func Status(ctx context.Context, db *sql.DB, plan *Plan) ([]TableStatus, error) 
 	var out []TableStatus
 	for _, tp := range plan.tables {
 		var n int64
-		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+quoteIdent(tp.table.Name)).Scan(&n); err != nil {
+		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+QualifiedTable(tp.table)).Scan(&n); err != nil {
 			return nil, fmt.Errorf("count %s: %w", tp.table.Name, err)
 		}
 		out = append(out, TableStatus{Table: tp.table.Name, Count: n, Expected: tp.n})
@@ -157,7 +157,7 @@ func Status(ctx context.Context, db *sql.DB, plan *Plan) ([]TableStatus, error) 
 func AllSeedableTablesEmpty(ctx context.Context, db *sql.DB, plan *Plan) (bool, error) {
 	for _, tp := range plan.tables {
 		var n int64
-		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+quoteIdent(tp.table.Name)).Scan(&n); err != nil {
+		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+QualifiedTable(tp.table)).Scan(&n); err != nil {
 			return false, fmt.Errorf("count %s: %w", tp.table.Name, err)
 		}
 		if n > 0 {
@@ -187,7 +187,7 @@ func Reset(ctx context.Context, db *sql.DB, plan *Plan) (*Result, error) {
 	}
 	idents := make([]string, len(plan.tables))
 	for i, tp := range plan.tables {
-		idents[i] = quoteIdent(tp.table.Name)
+		idents[i] = QualifiedTable(tp.table)
 	}
 	stmt := "TRUNCATE " + strings.Join(idents, ", ") + " RESTART IDENTITY CASCADE"
 	if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -202,6 +202,12 @@ func Reset(ctx context.Context, db *sql.DB, plan *Plan) (*Result, error) {
 var (
 	checkAnyRE     = regexp.MustCompile(`=\s*ANY`)
 	checkLiteralRE = regexp.MustCompile(`'((?:[^']|'')*)'`)
+	// checkEqLiteralRE matches a CHECK that is nothing but `col = 'literal'`
+	// — what a one-member vocabulary normalizes to, since postgres only
+	// spells a vocabulary `= ANY (ARRAY[...])` when it has more than one
+	// member. Anchored on both ends so a conjunction or a function call
+	// around the comparison is not mistaken for a pool.
+	checkEqLiteralRE = regexp.MustCompile(`^\s*CHECK\s*\(+\s*"?[A-Za-z_][A-Za-z0-9_]*"?\s*=\s*'((?:[^']|'')*)'(?:::[a-z][a-z0-9_ ]*)?\s*\)+\s*$`)
 	// checkArrayBodyRE isolates the member list of the canonical
 	// `= ANY (ARRAY[...])` form so members are read from the array itself
 	// and never from the rest of the expression.
@@ -234,6 +240,9 @@ var (
 // the column's own type (poolLiteral emits it bare for a numeric column, so
 // the value reaches SQL as a number rather than a quoted string).
 func poolFromCheckDef(def string) []string {
+	if m := checkEqLiteralRE.FindStringSubmatch(def); m != nil {
+		return []string{strings.ReplaceAll(m[1], "''", "'")}
+	}
 	if !checkAnyRE.MatchString(def) {
 		return nil
 	}

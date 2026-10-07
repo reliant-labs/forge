@@ -1039,3 +1039,127 @@ func TestCRUDTestFixtures_SuggestedFKsOrderAndResolveParentRows(t *testing.T) {
 		t.Errorf("prescriptions rows must reference the seeded patients id %q:\n%s", patientID, sql)
 	}
 }
+
+// TestCreateRequestFactory_ParentsInNonPublicSchema_PG pins the control-plane
+// regression: every table lives in a named schema (`controlplane.users`), so
+// the baked parent INSERT must address it as `"controlplane"."brands"`. A bare
+// `"brands"` fails with `relation does not exist`, the factory becomes a
+// t.Fatalf, and `forge generate` warns on every run. Boots embedded postgres;
+// skipped under -short.
+func TestCreateRequestFactory_ParentsInNonPublicSchema_PG(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots real postgres; skipped under -short")
+	}
+	projectDir := t.TempDir()
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	migration := `
+CREATE SCHEMA tenant;
+CREATE TABLE tenant.brands (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE tenant.products (
+    id TEXT PRIMARY KEY,
+    region TEXT NOT NULL,
+    contact_email TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL,
+    brand_id TEXT NOT NULL REFERENCES tenant.brands(id),
+    sku TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    price_cents BIGINT NOT NULL
+);
+`
+	if err := os.WriteFile(filepath.Join(migDir, "00001_init.up.sql"), []byte(migration), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, methods := productSvcAndMethods()
+
+	fx, err := loadCRUDTestFixtures(projectDir, methods)
+	if err != nil || fx == nil {
+		t.Fatalf("loadCRUDTestFixtures: fx=%v err=%v", fx, err)
+	}
+	defer fx.close()
+	specs := buildCreateRequestSpecs(context.Background(), svc, methods, fx)
+	if len(specs) != 1 {
+		t.Fatalf("expected one create-request spec, got %d", len(specs))
+	}
+	if specs[0].failure != "" {
+		t.Fatalf("parents in a non-public schema must seed, got: %s", specs[0].failure)
+	}
+	if !strings.Contains(specs[0].parentSQL, `INSERT INTO "tenant"."brands"`) {
+		t.Errorf("parent INSERT must be schema-qualified:\n%s", specs[0].parentSQL)
+	}
+}
+
+// TestCreateRequestFactory_UnplaceableParentExplainsWhy_PG pins the message
+// for a parent row forge genuinely cannot build: two unions over the same
+// columns are refused, the minimal row takes the DEFAULT kind, and postgres
+// rejects it. The failure must name the parent table's constraints that forge
+// could not place and the two remedies that work, not just echo the SQLSTATE.
+// Boots embedded postgres; skipped under -short.
+func TestCreateRequestFactory_UnplaceableParentExplainsWhy_PG(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots real postgres; skipped under -short")
+	}
+	projectDir := t.TempDir()
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	migration := `
+CREATE TABLE brands (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'a' CHECK (kind IN ('a', 'b')),
+    tag TEXT,
+    note TEXT,
+    CONSTRAINT brands_tag_union CHECK ((kind = 'a' AND tag IS NOT NULL) OR (kind = 'b' AND tag IS NULL)),
+    CONSTRAINT brands_note_union CHECK ((kind = 'a' AND note IS NULL) OR (kind = 'b' AND note IS NOT NULL))
+);
+CREATE TABLE unrelated (
+    id TEXT PRIMARY KEY,
+    lo BIGINT,
+    hi BIGINT,
+    CONSTRAINT unrelated_pair CHECK ((lo IS NULL) = (hi IS NULL))
+);
+CREATE TABLE products (
+    id TEXT PRIMARY KEY,
+    region TEXT NOT NULL,
+    contact_email TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL,
+    brand_id TEXT NOT NULL REFERENCES brands(id),
+    sku TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    price_cents BIGINT NOT NULL
+);
+`
+	if err := os.WriteFile(filepath.Join(migDir, "00001_init.up.sql"), []byte(migration), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, methods := productSvcAndMethods()
+	fx, err := loadCRUDTestFixtures(projectDir, methods)
+	if err != nil || fx == nil {
+		t.Fatalf("loadCRUDTestFixtures: fx=%v err=%v", fx, err)
+	}
+	defer fx.close()
+	specs := buildCreateRequestSpecs(context.Background(), svc, methods, fx)
+	if len(specs) != 1 {
+		t.Fatalf("expected one create-request spec, got %d", len(specs))
+	}
+	failure := specs[0].failure
+	if failure == "" {
+		t.Skip("forge placed both unions; this schema no longer exercises the unplaceable path")
+	}
+	for _, want := range []string{"brands_tag_union", "brands_note_union", "forge project disown", "vocab.yaml"} {
+		if !strings.Contains(failure, want) {
+			t.Errorf("failure must mention %q:\n%s", want, failure)
+		}
+	}
+	if strings.Contains(failure, "unrelated_pair") {
+		t.Errorf("failure must not list constraints of tables that did not fail:\n%s", failure)
+	}
+}

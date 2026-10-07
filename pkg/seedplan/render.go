@@ -16,6 +16,18 @@ func quoteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
+// QualifiedTable is the SQL spelling of a table's name: schema-qualified when
+// the table lives outside `public`, bare otherwise. A seed statement that names
+// only the table fails with `relation "users" does not exist` against a project
+// whose tables are `controlplane.users`, because the connection's search_path
+// is not the project's.
+func QualifiedTable(t schemadef.Table) string {
+	if t.Schema == "" || t.Schema == "public" {
+		return quoteIdent(t.Name)
+	}
+	return quoteIdent(t.Schema) + "." + quoteIdent(t.Name)
+}
+
 // colPlan finds the planned column for a table.column, if seedable.
 func (p *Plan) colPlan(table, column string) (tablePlan, columnPlan, bool) {
 	for _, tp := range p.tables {
@@ -455,7 +467,7 @@ func (p *Plan) statement(tp tablePlan) string {
 		// cannot be empty, so each row is its own DEFAULT VALUES insert.
 		var b strings.Builder
 		for i := 0; i < tp.n; i++ {
-			fmt.Fprintf(&b, "INSERT INTO %s DEFAULT VALUES;\n", quoteIdent(tp.table.Name))
+			fmt.Fprintf(&b, "INSERT INTO %s DEFAULT VALUES;\n", QualifiedTable(tp.table))
 		}
 		return b.String()
 	}
@@ -464,7 +476,7 @@ func (p *Plan) statement(tp tablePlan) string {
 	for i, cp := range written {
 		cols[i] = quoteIdent(cp.col.Name)
 	}
-	fmt.Fprintf(&b, "INSERT INTO %s (%s) VALUES\n", quoteIdent(tp.table.Name), strings.Join(cols, ", "))
+	fmt.Fprintf(&b, "INSERT INTO %s (%s) VALUES\n", QualifiedTable(tp.table), strings.Join(cols, ", "))
 	for i := 0; i < tp.n; i++ {
 		vals := make([]string, len(written))
 		for j, cp := range written {

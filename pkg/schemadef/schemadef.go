@@ -68,7 +68,12 @@ import (
 
 // Table is one introspected table of the applied schema.
 type Table struct {
-	Name    string
+	Name string
+	// Schema is the postgres schema the table lives in ("public",
+	// "controlplane", …). Tables are still keyed by Name; Schema exists so SQL
+	// forge emits against the shadow can address the table when its schema is
+	// not on the connection's search_path.
+	Schema  string
 	Columns []Column
 	// Comment is the table's catalog comment (COMMENT ON TABLE), "" when
 	// none. It is where a TABLE-level `forge:*` declaration lives, the twin
@@ -1065,7 +1070,7 @@ func introspect(db Queryer) ([]Table, error) {
 }
 
 func introspectTable(ctx context.Context, db Queryer, schema, name string) (Table, error) {
-	t := Table{Name: name}
+	t := Table{Name: name, Schema: schema}
 
 	// The TABLE's own catalog comment, where a table-level `forge:*`
 	// declaration lives (TableMarkerAppendOnly). Read by regclass for the

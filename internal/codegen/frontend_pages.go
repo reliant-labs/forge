@@ -697,10 +697,11 @@ func resolveFormEnum(svc ServiceDef, entityName, enumFQ string) (formEnumMeta, b
 	// gives it meaning by — never by its name. A descriptor that predates
 	// EnumNumbers carries names only; proto3 requires the first declared
 	// value to be the zero, so position 0 is then exact.
+	// numbers is parallel to valueNames when the descriptor carried every
+	// value's number; without them, proto3's rule that the zero value comes
+	// first identifies it.
 	numbers := svc.EnumNumbers[enumFQ]
-	if len(numbers) != len(valueNames) {
-		numbers = nil
-	}
+	numbered := len(numbers) == len(valueNames)
 	prefix := protobufESEnumSharedPrefix(shortName, valueNames)
 	for i, v := range valueNames {
 		member := v
@@ -708,7 +709,7 @@ func resolveFormEnum(svc ServiceDef, entityName, enumFQ string) (formEnumMeta, b
 			member = v[len(prefix):]
 		}
 		ref := tsType + "." + member
-		if (numbers == nil && i == 0) || (numbers != nil && numbers[i] == 0) {
+		if (numbered && numbers[i] == 0) || (!numbered && i == 0) {
 			if meta.ZeroRef == "" {
 				meta.ZeroRef = ref
 			}

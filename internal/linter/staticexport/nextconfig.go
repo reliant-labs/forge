@@ -140,7 +140,7 @@ func (c *checker) checkConfigRoutes() {
 			continue
 		}
 		c.add(RuleConfigRoutes, finding.SeverityWarning, c.rel(cfg.rel), cfg.lineAt(loc[0]),
-			fmt.Sprintf("next.config `%s` is not gated to development: a static host applies no %s, so every path it maps works under `next dev` and 404s (or loses its headers) in production — the export only warns", key, key),
+			fmt.Sprintf("next.config %#q is not gated to development: a static host applies no %s, so every path it maps works under `next dev` and 404s (or loses its headers) in production — the export only warns", key, key),
 			fmt.Sprintf("serve it from the backend or your CDN instead, or make the dev-only intent explicit: `...(process.env.NODE_ENV === \"development\" ? { async %s() { … } } : {})`", key))
 	}
 }

@@ -57,13 +57,14 @@ func AppendWorkloadStanza(projectDir, modulePath, projectName string, c config.C
 type CRDListEdit int
 
 const (
-	// CRDListAdded: the kind was appended.
+	// CRDListAdded means the kind was appended.
 	CRDListAdded CRDListEdit = iota
-	// CRDListAlreadyListed: the list already names the kind; nothing written.
+	// CRDListAlreadyListed means the list already names the kind; nothing
+	// was written.
 	CRDListAlreadyListed
-	// CRDListNotEditable: no workloads.k, no workload of that name, or no
-	// `crds = [...]` in it forge can edit unambiguously. Nothing written; the
-	// caller prints the edit.
+	// CRDListNotEditable means there is no workloads.k, no workload of that
+	// name, or no `crds = [...]` in it forge can edit unambiguously. Nothing
+	// was written; the caller prints the edit.
 	CRDListNotEditable
 )
 
@@ -100,7 +101,7 @@ func AppendOperatorCRD(projectDir, workloadName, kind string) (CRDListEdit, erro
 		if !ok {
 			continue
 		}
-		if m := workloadNameField.FindStringSubmatch(StripKCLProse(body)); m == nil || m[1] != workloadName {
+		if m := workloadNameField.FindStringSubmatch(StripKCLProse(body)); len(m) < 2 || m[1] != workloadName {
 			continue
 		}
 		fields := crdsField.FindAllStringIndex(body, -1)

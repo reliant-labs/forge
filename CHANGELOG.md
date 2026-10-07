@@ -237,8 +237,9 @@ Dockerfile`.
   embed a literal `INSERT` seed block and literal create-request values,
   frozen against the birth schema. Editing the birth migration afterwards —
   the db skill's own advice: a `GENERATED` column, a one-way status `CHECK` —
-  broke it (`cannot insert a non-DEFAULT value into column …`, `violates check
-constraint …`). It now calls `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
+  broke it (`cannot insert a non-DEFAULT value into column …`,
+  `violates check constraint …`). It now calls
+  `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
   rendered into the forge-owned `factories_gen_test.go` from the applied schema
   on every `forge generate`: it seeds the FK parents and returns a request the
   current constraints accept (enums the column DEFAULT supplies, nullable
@@ -304,8 +305,8 @@ constraint …`). It now calls `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
   resolver `forge generate` uses; forge does not guess which rpc writes which
   column.
 - **A failing `forge lint` names the failed linters on its last line**
-  (`forge lint: 2 gating linter(s) failed: computed-fields lint,
-read-only-fields lint`), instead of "one or more linters reported errors".
+  (`forge lint: 2 gating linter(s) failed: computed-fields lint, read-only-fields lint`),
+  instead of "one or more linters reported errors".
   The verdict is the last line in every mode.
 - **`frontend lint` no longer "passes" on a project with no frontend.** With no
   declared frontend and no `frontends/` directory it is a silent no-op, as the
@@ -515,9 +516,10 @@ scaffold`. `forge project annotations` lists the marker and the mapping row.
   be dev either way. An ambient `$DATABASE_URL` gets no relaxation, and
   `forge db reset` (DROP DATABASE) keeps the strict check.
 - **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
-  `RunTxWithOptions` and `AfterCommit`.** `s.deps.DB.RunTx(ctx, func(ctx
-context.Context) error)` runs fn in a transaction carried by the ctx it
-  receives. Every query made with that ctx against the same database joins it:
+  `RunTxWithOptions` and `AfterCommit`.**
+  `s.deps.DB.RunTx(ctx, func(ctx context.Context) error)` runs fn in a
+  transaction carried by the ctx it receives. Every query made with that ctx
+  against the same database joins it:
   generated delegates (`db.GetJobByID(ctx, s.deps.DB, id)`), stores,
   `pkg/crud.Repo`, `db.Bun()` builders and raw `Exec`/`Query`/`QueryRow`, with
   no handle threaded through signatures. It is SERIALIZABLE by default and
@@ -603,6 +605,13 @@ context.Context) error)` runs fn in a transaction carried by the ctx it
   renders.
 
 ### Fixed
+
+- **`schemadef.OpenShadowAt` returns no shadow when it fails.** It used to
+  return the live scratch database beside a migration-replay error, so the
+  only correct call shape was `defer shadow.Close()` BEFORE checking `err` —
+  and a caller writing the ordinary err-check-first form leaked the database.
+  It now drops what it opened and returns `nil, err`: check `err`, then defer
+  `Close`. (`Close` stays nil-safe, so existing callers keep working.)
 
 - **A service, entity, field or RPC whose name has a digit in it now builds —
   forge spells every identifier it shares with buf's generators by THEIR

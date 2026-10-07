@@ -5,15 +5,17 @@
 #   scripts/ci-test-packages.sh guards   exactly the guards
 #   scripts/ci-test-packages.sh check    prove the two sets partition `go list ./...`
 #
-# WHY TWO JOBS. internal/tierguard renders four whole forge projects and
-# internal/removalguard regex-scans every file in the repository. They are the
-# two slowest packages in the suite by a wide margin (~700s and ~980s under
-# -race, against ~410s for the next one) and the two largest in memory. Run
-# inside `go test -race ./...` they co-resided with a hundred other test
-# binaries on one 16 GB runner, and the Test job was OOM-killed roughly one run
-# in three ("The runner has received a shutdown signal", exit 143). In their
-# own job their peak never meets the rest of the suite's — bounded by the job
-# boundary, not by the luck of go test's package scheduling.
+# WHY TWO JOBS. internal/tierguard renders four whole forge projects,
+# internal/removalguard regex-scans every file in the repository, and
+# internal/deadcodeguard type-checks the whole program — every dependency
+# included — once per target OS. They are the slowest and the largest packages
+# in the suite. Run inside `go test -race ./...` they co-resided with a hundred
+# other test binaries on one 16 GB runner, and the Test job was OOM-killed ("The
+# runner has received a shutdown signal", exit 143): roughly one run in three
+# for tierguard and removalguard until #304 moved them here, and most runs for
+# deadcodeguard once its scan grew to three OS loads (#469; ~23 GB RSS under
+# -race). In their own job their peak never meets the rest of the suite's —
+# bounded by the job boundary, not by the luck of go test's package scheduling.
 #
 # WHY THIS SCRIPT. A package list typed into two workflow steps can drift: add
 # a guard to one list and forget the other, and it runs twice or — worse — not
@@ -27,6 +29,7 @@ set -euo pipefail
 
 # The guard packages. Import paths, one per line.
 guards=(
+  github.com/reliant-labs/forge/internal/deadcodeguard
   github.com/reliant-labs/forge/internal/removalguard
   github.com/reliant-labs/forge/internal/tierguard
 )

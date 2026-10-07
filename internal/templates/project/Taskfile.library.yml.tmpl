@@ -43,7 +43,10 @@ tasks:
     # most of what an edit loop spends. It drops -race because the race
     # detector rebuilds every package under its own cache key and slows tests
     # 2-10x; `task test` and CI keep both. A test that needs more than 60s
-    # under -short wants an `if testing.Short() { t.Skip() }` gate.
+    # under -short wants an `if testing.Short() { t.Skip() }` gate. The cache
+    # sees only what the test process itself reads: a test that execs a child
+    # process which reads repo files must read those inputs itself or skip
+    # under -short, or this tier can report a stale pass.
     desc: "Inner-loop Go tests: -short, cached, no race. Scope it: task test:short -- ./internal/foo/..."
     cmds:
       - go test -short -timeout 60s {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}

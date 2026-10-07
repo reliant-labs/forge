@@ -117,6 +117,10 @@ tasks:
     #                 unchanged packages is most of what an edit loop spends.
     #                 Tests that read shared outside state (a running stack)
     #                 live behind the `integration` / `e2e` tags instead.
+    #                 The cache sees only what the TEST PROCESS reads: a test
+    #                 that execs a child (forge, kcl, go build, npm, git) which
+    #                 reads repo files must read those inputs itself or skip
+    #                 under -short, or this tier can report a stale pass.
     #   no -race      the race detector rebuilds every package under its own
     #                 cache key and slows tests 2-10x; `task test` and CI
     #                 keep it on.

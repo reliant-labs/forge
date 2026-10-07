@@ -1,6 +1,9 @@
 package templates
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -154,5 +157,81 @@ func TestMemoryTemplateTeachesShortTier(t *testing.T) {
 		if _, ok := tasks[m[1]]; !ok {
 			t.Errorf("reliant.md.tmpl tells agents to run `task %s`, which the scaffolded Taskfile.yml does not define", m[1])
 		}
+	}
+}
+
+// execsWithoutShortGate reports whether a scaffolded test template would
+// compile into the cached `test:short` lane (no integration/e2e/ignore build
+// tag) while exec'ing a child process with no testing.Short() gate.
+//
+// Go's test cache keys only on the files and env vars the TEST PROCESS reads.
+// A child (forge, kcl, go build, npm, git) that reads repo files is invisible
+// to it, so editing those files leaves a cached `ok` standing over a test
+// that would now fail.
+func execsWithoutShortGate(src string) bool {
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//go:build") {
+			for _, tag := range []string{"integration", "e2e", "ignore"} {
+				if strings.Contains(line, tag) {
+					return false
+				}
+			}
+		}
+	}
+	return strings.Contains(src, `"os/exec"`) && !strings.Contains(src, "testing.Short()")
+}
+
+func TestExecsWithoutShortGateDetector(t *testing.T) {
+	t.Parallel()
+	const execImport = "import \"os/exec\"\n"
+	for _, tc := range []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{"untagged exec", "package x\n" + execImport, true},
+		{"e2e-tagged exec", "//go:build e2e\n\npackage x\n" + execImport, false},
+		{"integration-tagged exec", "//go:build integration\n\npackage x\n" + execImport, false},
+		{"short-gated exec", "package x\n" + execImport + "func T(t *testing.T) { if testing.Short() { t.Skip() } }\n", false},
+		{"no exec", "package x\nimport \"os\"\n", false},
+	} {
+		if got := execsWithoutShortGate(tc.src); got != tc.want {
+			t.Errorf("%s: execsWithoutShortGate = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestScaffoldedTestsAreCacheCorrect: every test template forge scaffolds
+// that lands in the cached `test:short` lane reads its inputs in-process
+// (the born CRUD tests read db/migrations with os.ReadFile, or go:embed),
+// so a cached pass is a real pass. One that execs a child must be tagged out
+// of the lane or gated on testing.Short().
+func TestScaffoldedTestsAreCacheCorrect(t *testing.T) {
+	t.Parallel()
+	var checked int
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") || !strings.Contains(d.Name(), "_test") {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		checked++
+		if execsWithoutShortGate(string(src)) {
+			t.Errorf("%s execs a child process in the untagged lane with no testing.Short() gate — "+
+				"the cached `task test:short` can report a stale pass when the files that child reads change. "+
+				"Read the inputs in the test process, tag it integration/e2e, or skip under -short.", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk templates: %v", err)
+	}
+	if checked == 0 {
+		t.Fatal("found no scaffolded test templates — the walk has drifted from the template layout")
 	}
 }

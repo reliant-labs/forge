@@ -116,6 +116,12 @@ reads, so a cached pass is a real pass for a test that builds its own state
 package under its own cache key and runs 2-10x slower. Do not add either flag
 to an inner-loop run, and never set a private `GOCACHE`.
 
+The cache keys only on what the TEST PROCESS reads. A test that execs a child
+process which reads repo files (`forge`, `kcl`, `go build`, `npm`, `git`, a
+migration CLI) must either read those inputs itself or skip under `-short`, or
+the cached tier can report a stale pass. The scaffolded CRUD tests are safe:
+they read `db/migrations` with `os.ReadFile` (or `go:embed`) in-process.
+
 Keep the tier fast: a test that takes more than ~2s gets
 `if testing.Short() { t.Skip("<why>") }` (or bypasses its slow side-effect
 under `-short`), and its slow path still runs in `task test`. Gate it, don't

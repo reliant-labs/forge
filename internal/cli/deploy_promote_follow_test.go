@@ -636,3 +636,46 @@ func TestValidatePromoteFollow(t *testing.T) {
 		})
 	}
 }
+
+// A hosted-ledger env whose clusters are all hub-converged applies nothing
+// from here and publishes nothing: the control plane's reconciler owns it.
+// The wait still runs on the promotion that was written.
+func TestDeployRelease_HubConvergedEnvDoesNoClientApply(t *testing.T) {
+	var wait capturedWait
+	var apply capturedClientDeploy
+	wait.install(t)
+	apply.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	if _, err := runHostedPromote(t, store, "v2", promoteOptions{
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, HubConverged: true},
+		Follow: waitByDefault(),
+	}); err != nil {
+		t.Fatalf("hub-converged deploy: %v", err)
+	}
+	if len(apply.calls) != 0 {
+		t.Fatalf("a hub-converged env ran the client-side apply %d time(s), want 0", len(apply.calls))
+	}
+	if len(wait.calls) != 1 {
+		t.Fatalf("waited %d time(s), want 1", len(wait.calls))
+	}
+}
+
+func TestEnvConvergedByHub(t *testing.T) {
+	bound := map[string]string{"gke_prod": "prod-control-plane"}
+	cases := []struct {
+		name string
+		e    *KCLEntities
+		want bool
+	}{
+		{"nil", nil, false},
+		{"bound clusters only", &KCLEntities{ConnectedClusters: bound}, true},
+		{"no bound cluster", &KCLEntities{}, false},
+		{"hosted database", &KCLEntities{ConnectedClusters: bound, Databases: []DatabaseEntity{{Name: "d", Runtime: RuntimeHosted}}}, false},
+	}
+	for _, c := range cases {
+		if got := envConvergedByHub(c.e); got != c.want {
+			t.Errorf("%s: envConvergedByHub = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

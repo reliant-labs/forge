@@ -217,6 +217,13 @@ type envLedger struct {
 	// binding and apply nothing. Mixed is the fact nothing else implies,
 	// and the zero value is right for both other shapes.
 	Mixed bool
+	// HubConverged reports a HOSTED-ledger env that declares no hosted tiers
+	// and whose every cluster is bound to a connected cluster: the control
+	// plane's reconciler converges its recorded bundle onto those clusters,
+	// so recording the promotion plus bundle is the whole job. forge applies
+	// nothing from here (a second authority would fight the hub's Flux) and
+	// has no hosted workloads to publish. Implies !Mixed.
+	HubConverged bool
 }
 
 // appliesLocally reports whether any part of the env is applied FROM THIS
@@ -224,6 +231,9 @@ type envLedger struct {
 // this command does not apply the binding it just wrote, nothing ever will. A
 // hosted env is only when it is Mixed.
 func (l envLedger) appliesLocally() bool { return !l.Hosted || l.Mixed }
+
+// hubConverged reports whether the hub, not this machine, applies the env.
+func (l envLedger) hubConverged() bool { return l.Hosted && l.HubConverged }
 
 // ─── Selection ───────────────────────────────────────────────────────────────
 
@@ -303,7 +313,8 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	// workloads the control plane does not run. Both facts come from the
 	// same render, so they are resolved together here rather than being
 	// re-derived later from a second render that could disagree.
-	l.Mixed = envAppliesLocally(entities)
+	l.HubConverged = envConvergedByHub(entities)
+	l.Mixed = envAppliesLocally(entities) && !l.HubConverged
 	return l, nil
 }
 

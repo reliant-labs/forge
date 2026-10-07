@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // promoteFollowOptions is what happens AFTER the ledger write: the apply, and
@@ -189,7 +190,7 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	// (the Promote response's holds) — so this is known with no extra call,
 	// before anything waits. See deploy_queued.go.
 	held := recordedHolds(ledger, plan)
-	if ledger.appliesLocally() {
+	if ledger.appliesLocally() && !ledger.hubConverged() {
 		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
 		err := applySelfManaged(ctx, env, ledger.Hosted, o)
 		finish(err)
@@ -207,6 +208,9 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	}
 	if !ledger.Hosted {
 		return nil
+	}
+	if ledger.hubConverged() {
+		return followHubConverged(ctx, env, plan, held, o)
 	}
 	// A PURE HOSTED env still needs its client-side PUBLISH — and ONLY a
 	// pure one. A MIXED env's publish already happened: appliesLocally is
@@ -415,5 +419,27 @@ func followFluxReconciled(ctx context.Context, env string, entities *KCLEntities
 		Timeout: o.Timeout,
 		DryRun:  o.clientDeploy.dryRun,
 		jsonOut: o.jsonOut,
+	})
+}
+
+// followHubConverged is the arm for an env whose bundle the control plane's
+// reconciler applies onto connected clusters. Recording the promotion and its
+// bundle was the job; forge neither applies nor publishes, and the "no
+// published workloads" refusal does not apply because such an env never has
+// any. It waits on the convergence the control plane reports.
+func followHubConverged(ctx context.Context, env string, plan promotePlan, held []deploytarget.HostedHold, o promoteFollowOptions) error {
+	if len(held) > 0 || o.NoWait {
+		o.notice("\nRecorded. %s is converged onto its connected clusters by the hub; gate on it with: forge env status %s --wait\n", env, env)
+		return nil
+	}
+	promotionID := ""
+	if plan.Recorded != nil {
+		promotionID = plan.Recorded.ID
+	}
+	return runPromoteWait(ctx, env, envWaitOptions{
+		PromotionID: promotionID,
+		Timeout:     o.Timeout,
+		FailFast:    o.FailFast,
+		StopOnHold:  !o.Wait,
 	})
 }

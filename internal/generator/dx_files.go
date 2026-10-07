@@ -1413,7 +1413,8 @@ const seedVocabTemplate = `# db/seeds/vocab.yaml — domain vocabulary for ` + "
 #
 #   * A 3-char currency column (` + "`CHECK (char_length(currency) = 3)`" + `) synthesizes
 #     as "sa5" — a valid length, and a currency code nothing recognises.
-#     Intl.NumberFormat THROWS on it in the generated frontend. Pin it:
+#     The generated pages can only print it as a bare amount beside the raw
+#     code, not as money. Pin it:
 #     ` + "`products.currency: [USD]`" + `.
 #   * A column you MEANT to be unique but did not declare UNIQUE will repeat.
 #     The seeder draws without replacement only for a real UNIQUE constraint —

@@ -177,6 +177,24 @@ describe("formatValue for a bytes column", () => {
   });
 });
 
+describe("formatMoneyCents with a row's currency", () => {
+  // The generated pages pass each row's own currency column. Intl throws on
+  // a code that is not ISO 4217 (an empty string, a typo, a seeded
+  // `sample_currency_3`), and a throw in a table cell blanked the whole page.
+  it("renders an unusable code as the amount beside the raw value", () => {
+    expect(() => formatMoneyCents(1899n, "sample_currency_3")).not.toThrow();
+    expect(formatMoneyCents(1899n, "sample_currency_3")).toContain(
+      "sample_currency_3",
+    );
+    expect(formatMoneyCents(1899n, "")).toContain("18.99");
+    expect(formatMoneyCents(1899n, null)).toContain("18.99");
+  });
+
+  it("still formats a real code as currency", () => {
+    expect(formatMoneyCents(1899n, "USD")).toBe("$18.99");
+  });
+});
+
 describe("formatMoneyWhole", () => {
   // The whole point of the second spelling: no cents on a headline figure.
   it("drops the cents that formatMoneyCents keeps", () => {

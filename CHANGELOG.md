@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **One unusable currency no longer takes a generated page down.** The list and
+  detail pages format money in each row's own `currency`, and
+  `Intl.NumberFormat` throws a `RangeError` for anything that is not an ISO 4217
+  code — an empty string, a typo, or the dev seed's `sample_currency_<n>` — so
+  the whole Orders page fell to "Something went wrong" on the first
+  `forge env up`. `formatMoneyCents`, `formatMoneyWhole` and
+  `formatMoneyInterval` now render such a value as the plain amount beside the
+  raw code. Existing projects: copy `formatMinorUnits` and the three helpers
+  from a fresh scaffold's `src/lib/format-utils.ts`.
+
 ### Changed
 
 - **One prettier release formats a scaffolded project, everywhere.** Frontends

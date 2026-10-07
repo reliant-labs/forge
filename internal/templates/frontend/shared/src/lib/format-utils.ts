@@ -531,20 +531,61 @@ export function enumOptions(
 }
 
 /**
+ * formatMinorUnits is where every money helper meets Intl, and the one place
+ * that may not throw.
+ *
+ * The currency usually comes from the ROW (a sibling `currency` column), so it
+ * is data, not a constant — and Intl.NumberFormat throws a RangeError for a
+ * code that is not a well-formed ISO 4217 code: an empty string, a typo, a
+ * seeded `sample_currency_3`. A throw inside a table cell takes the whole page
+ * down to its error boundary, so one bad row used to blank the entire list.
+ * An unusable code renders the plain amount beside the raw value instead
+ * ("0.18 sample_currency_3"), which keeps the page up and shows exactly what
+ * the row holds.
+ */
+function formatMinorUnits(
+  cents: number,
+  currency: string | null | undefined,
+  wholeUnits: boolean,
+): string {
+  const amount = cents / 100;
+  const digits = wholeUnits ? { maximumFractionDigits: 0 } : {};
+  const code = (currency ?? "").trim();
+  if (code !== "") {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: code,
+        ...digits,
+      }).format(amount);
+    } catch {
+      // Not a well-formed currency code — fall through to the plain amount.
+    }
+  }
+  const plain = new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: wholeUnits ? 0 : 2,
+    maximumFractionDigits: wholeUnits ? 0 : 2,
+  }).format(amount);
+  return code === "" ? plain : `${plain} ${code}`;
+}
+
+/**
  * formatMoneyCents renders an integer minor-unit amount (cents) as
  * currency. Money is stored as integer cents (proto int64 → bigint at
  * runtime) to avoid binary-float rounding; the generator emits this for
  * columns whose proto field name ends in `_cents`/`Cents`. Defaults to USD
- * — pass a currency code (or edit the call site) for other currencies.
+ * — pass a currency code (or edit the call site) for other currencies. A
+ * code Intl cannot format renders as the plain amount and the raw code,
+ * never a thrown error (see formatMinorUnits).
  */
-export function formatMoneyCents(value: unknown, currency = "USD"): string {
+export function formatMoneyCents(
+  value: unknown,
+  currency: string | null | undefined = "USD",
+): string {
   if (value === null || value === undefined || value === "") return "—";
   const cents = typeof value === "bigint" ? Number(value) : Number(value);
   if (Number.isNaN(cents)) return String(value);
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-  }).format(cents / 100);
+  return formatMinorUnits(cents, currency, false);
 }
 
 /**
@@ -598,7 +639,7 @@ export function intervalSuffix(interval: string | null | undefined): string {
 export function formatMoneyInterval(
   value: unknown,
   interval: string | null | undefined,
-  currency = "USD",
+  currency: string | null | undefined = "USD",
 ): string {
   const amount = formatMoneyCents(value, currency);
   // formatMoneyCents renders "—" for an unset amount; never tack a recurrence
@@ -616,15 +657,14 @@ export function formatMoneyInterval(
  * Use {@link formatMoneyCents} anywhere the exact amount is the point — an
  * invoice line, a payment, a balance.
  */
-export function formatMoneyWhole(value: unknown, currency = "USD"): string {
+export function formatMoneyWhole(
+  value: unknown,
+  currency: string | null | undefined = "USD",
+): string {
   if (value === null || value === undefined || value === "") return "—";
   const cents = typeof value === "bigint" ? Number(value) : Number(value);
   if (Number.isNaN(cents)) return String(value);
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(cents / 100);
+  return formatMinorUnits(cents, currency, true);
 }
 
 /**

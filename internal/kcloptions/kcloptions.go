@@ -218,6 +218,7 @@ func externalPkgs(kclDir string) ([]*gpyrpc.ExternalPkg, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kpm client: %w", err)
 	}
+	c.SetLogWriter(os.Stderr) // kpm defaults to stdout; stdout carries values
 	depMap, err := c.ResolveDepsIntoMap(kp)
 	if err != nil {
 		return nil, fmt.Errorf("resolve kcl deps for %s: %w", modRoot, err)

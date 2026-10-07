@@ -245,6 +245,11 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("kpm client: %w", err)
 	}
+	// kpm's client writes its own progress ("cloning ...", "downloading ...",
+	// "waiting for package-cache lock...") to os.Stdout by default;
+	// WithLogger below only redirects the KCL runtime. Stdout carries the
+	// rendered value, so route kpm's chatter to stderr.
+	c.SetLogWriter(os.Stderr)
 	// Serialized: concurrent evaluations in one process corrupt each other's
 	// refusals (a refused render can come back as success, or carrying
 	// another render's message). See kclplugin.Serialized.

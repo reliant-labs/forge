@@ -336,13 +336,9 @@ func planLedgerImport(ctx context.Context, projectDir string, src ledgerSource) 
 		if err != nil {
 			return plan, fmt.Errorf("read what %s already holds: %w", target.Location, err)
 		}
-		for _, r := range src.Releases {
-			if _, ok := held.ReleaseVersions[r.Release.Version]; ok {
-				target.AlreadyHeldReleases++
-				continue
-			}
-			target.Releases = append(target.Releases, r)
-		}
+		releases, alreadyHeld := releasesToSend(src, target.Envs, held)
+		target.AlreadyHeldReleases += alreadyHeld
+		target.Releases = append(target.Releases, releases...)
 		for _, env := range target.Envs {
 			sourceIDs := map[string]struct{}{}
 			for _, p := range src.Promotions[env] {
@@ -377,6 +373,37 @@ func planLedgerImport(ctx context.Context, projectDir string, src ledgerSource) 
 	}
 	sort.Strings(plan.Conflicts)
 	return plan, nil
+}
+
+// releasesToSend is the releases the payload carries to one ledger, and how
+// many the ledger already held.
+//
+// A held release is subtracted EXCEPT when a promotion this import still has
+// to bring names it. The hosted ImportLedger resolves a promotion's release
+// from the SAME request, so omitting a release the control plane already holds
+// (a deploy's bundle step records its release there first) made the promotion
+// fail with "names release X, which this import does not include". Re-sending
+// it is idempotent: the store finds the existing row and checks the artifacts
+// agree.
+func releasesToSend(src ledgerSource, envs []string, held ledgerHeld) (send []sourceRelease, alreadyHeld int) {
+	named := map[string]bool{}
+	for _, env := range envs {
+		for _, p := range src.Promotions[env] {
+			if _, ok := held.PromotionIDs[env][p.Promotion.ID]; !ok {
+				named[p.Promotion.Release] = true
+			}
+		}
+	}
+	for _, r := range src.Releases {
+		if _, ok := held.ReleaseVersions[r.Release.Version]; ok {
+			alreadyHeld++
+			if !named[r.Release.Version] {
+				continue
+			}
+		}
+		send = append(send, r)
+	}
+	return send, alreadyHeld
 }
 
 // shortIDs trims promotion ids for an error message, keeping at most three

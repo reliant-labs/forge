@@ -70,12 +70,17 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 	if !hasFrontends {
 		frontends = nil
 	}
-	// Services — and so buf, proto-breaking and the Docker image — are what
-	// a service-kind project with codegen on is made of. Deliberately not
-	// "a proto declares a service": the default scaffold has none yet, and
-	// `forge generate` still runs `buf generate` over proto/config, so a
-	// verify-generated job without buf could not reproduce the tree.
+	// Services — and so buf lint and proto-breaking — are what a
+	// service-kind project with codegen on is made of. Deliberately not "a
+	// proto declares a service": the default scaffold has none yet.
 	hasServices := isService && cfg.Features.CodegenEnabled()
+	// `forge generate` runs `buf generate` whenever codegen is on — the gate
+	// of internal/cli's "buf generate (Go stubs)" step — whatever the kind:
+	// codegen derives from .proto files existing. verify-generated reruns
+	// generate, so it needs buf exactly then; a CLI with protos is not a
+	// service but still runs buf. TestCIVerifyGeneratedInstallsBufExactlyWhenGenerateRunsIt
+	// (internal/cli) holds this to the step's real gate.
+	runsBufGenerate := cfg.Features.CodegenEnabled()
 
 	lint := cfg.CI.Lint
 	lintDefault := lint == (config.CILintConfig{})
@@ -184,6 +189,7 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 		// verify-generated applies to every kind: contract-driven mocks
 		// (mock_gen.go) drift silently in CLI and library projects too.
 		VerifyGenerated: true,
+		RunsBufGenerate: runsBufGenerate,
 
 		Module:       cfg.ModulePath,
 		FrontendName: firstFrontendName,

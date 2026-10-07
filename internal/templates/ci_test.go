@@ -33,6 +33,7 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 		HasKCL:              true,
 		HasDocker:           true,
 		VerifyGenerated:     true,
+		RunsBufGenerate:     true,
 		Environments:        []string{"dev", "staging", "prod"},
 	}
 

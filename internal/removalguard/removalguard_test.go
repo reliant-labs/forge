@@ -2,8 +2,11 @@ package removalguard
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -2053,6 +2056,10 @@ type finding struct {
 // the guard in generated noise. Note what is NOT here: skills, docs, kcl,
 // proto, internal/templates and dotfiles are all scanned, because that is
 // exactly where the misses happened.
+//
+// These apply on top of git's file list (scannedFiles), which already drops
+// every gitignored entry. They still matter for TRACKED files: .forge/ holds
+// forge's committed state files, which are machine-written, not a surface.
 var skipDirs = map[string]bool{
 	".git":         true, // VCS internals
 	"node_modules": true, // npm dependency tree (vendored third-party code)
@@ -2130,6 +2137,36 @@ func TestRemovedFeaturesLeaveNoReferences(t *testing.T) {
 		t.Skip("scans every file in the forge repository; runs in task test")
 	}
 	root := repoRoot(t)
+	byFeature := survivingReferences(t, root)
+
+	for _, rm := range removals {
+		hits := byFeature[rm.Name]
+		if len(hits) == 0 {
+			continue
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d surviving reference(s) to the removed %q feature.\n", len(hits), rm.Name)
+		fmt.Fprintf(&b, "\n  %s\n", rm.Why)
+		b.WriteString("\nSurviving references:\n")
+		for _, h := range hits {
+			fmt.Fprintf(&b, "  %s:%d: matched %q via pattern `%s`\n", h.path, h.line, h.text, h.pattern)
+			if h.note != "" {
+				fmt.Fprintf(&b, "      %s\n", h.note)
+			}
+			fmt.Fprintf(&b, "      | %s\n", truncate(h.snippet, 160))
+		}
+		b.WriteString("\nDelete the reference. If it is a legitimate look-alike and not a\n")
+		b.WriteString("straggler, add a narrow allowance (with its reason) to the\n")
+		b.WriteString(`"` + rm.Name + `" entry in internal/removalguard/removalguard_test.go.` + "\n")
+		b.WriteString("Do NOT widen a pattern to make this green.\n")
+		t.Errorf("%s", b.String())
+	}
+}
+
+// survivingReferences scans every file under root that the guard reads and
+// returns the unexcused hits, keyed by removal name, in sorted file order.
+func survivingReferences(t *testing.T, root string) map[string][]finding {
+	t.Helper()
 
 	// Match each file against every removal on a worker pool.
 	//
@@ -2200,28 +2237,68 @@ func TestRemovedFeaturesLeaveNoReferences(t *testing.T) {
 			byFeature[name] = append(byFeature[name], hits...)
 		}
 	}
+	return byFeature
+}
 
-	for _, rm := range removals {
-		hits := byFeature[rm.Name]
-		if len(hits) == 0 {
-			continue
+// TestGuardScansOnlyWhatGitWouldCommit runs the guard over a scratch
+// repository holding the same removed reference in three files. The gitignored
+// one must pass: .claude/skills/ is where `forge generate` renders every skill,
+// and the guard used to fail there after any local generate. The tracked one
+// and the untracked-but-not-ignored one must both still fail. Skipping
+// everything outside the index would hide a straggler until its first commit.
+func TestGuardScansOnlyWhatGitWouldCommit(t *testing.T) {
+	// A developer's global excludes or config must not decide what this
+	// test's repository ignores.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
-		var b strings.Builder
-		fmt.Fprintf(&b, "%d surviving reference(s) to the removed %q feature.\n", len(hits), rm.Name)
-		fmt.Fprintf(&b, "\n  %s\n", rm.Why)
-		b.WriteString("\nSurviving references:\n")
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The removed tenancy annotation (#94), as a proto field option.
+	const ref = "string org_id = 2 [(forge.v1.field) = { tenant: true }];\n"
+	const (
+		ignored   = ".claude/skills/deploy-flux/SKILL.md"
+		tracked   = "docs/tracked.md"
+		untracked = "docs/untracked.md"
+	)
+	git("init", "-q")
+	write(".gitignore", ".claude/\n")
+	write(ignored, ref)
+	write(tracked, ref)
+	write(untracked, ref)
+	git("add", ".gitignore", tracked)
+
+	hit := map[string]bool{}
+	for _, hits := range survivingReferences(t, root) {
 		for _, h := range hits {
-			fmt.Fprintf(&b, "  %s:%d: matched %q via pattern `%s`\n", h.path, h.line, h.text, h.pattern)
-			if h.note != "" {
-				fmt.Fprintf(&b, "      %s\n", h.note)
-			}
-			fmt.Fprintf(&b, "      | %s\n", truncate(h.snippet, 160))
+			hit[h.path] = true
 		}
-		b.WriteString("\nDelete the reference. If it is a legitimate look-alike and not a\n")
-		b.WriteString("straggler, add a narrow allowance (with its reason) to the\n")
-		b.WriteString(`"` + rm.Name + `" entry in internal/removalguard/removalguard_test.go.` + "\n")
-		b.WriteString("Do NOT widen a pattern to make this green.\n")
-		t.Errorf("%s", b.String())
+	}
+	if hit[ignored] {
+		t.Errorf("%s is gitignored, yet the guard reported it. Rendered output that git "+
+			"will never commit is not a surface forge ships.", ignored)
+	}
+	for _, rel := range []string{tracked, untracked} {
+		if !hit[rel] {
+			t.Errorf("%s carries a removed reference and git would commit it, yet the guard "+
+				"passed it. The scan has stopped reading files it must read.", rel)
+		}
 	}
 }
 
@@ -2577,48 +2654,12 @@ func ascendToRoot(dir string) (string, error) {
 	}
 }
 
-// forEachScannedFile walks the whole repository and calls fn with each
-// scannable file's repo-relative slash path and contents, in a stable order.
+// forEachScannedFile calls fn with each scannable file's repo-relative slash
+// path and contents, in a stable order.
 func forEachScannedFile(t *testing.T, root string, fn func(rel string, content []byte)) {
 	t.Helper()
 
-	var files []string
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil {
-			return relErr
-		}
-		rel = filepath.ToSlash(rel)
-		if d.IsDir() {
-			// A Go build cache is not source. Its entries are verbatim
-			// copies of compiler input, so a cached `rbac.pb.go` reads as a
-			// live reference to a removed feature. Keyed on Go's own
-			// sentinel because GOCACHE is configurable — agents here point
-			// it at $WORKTREE/.gocache, but the name is a convention.
-			if rel != "." && (skipDirs[d.Name()] || commitpolicy.IsGoBuildCacheDir(p)) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if skipScannedFile(d.Name()) || skipExts[strings.ToLower(filepath.Ext(p))] {
-			return nil
-		}
-		if info, statErr := d.Info(); statErr == nil && info.Size() > maxFileSize {
-			return nil
-		}
-		files = append(files, rel)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
-	}
-	sort.Strings(files)
+	files := scannedFiles(t, root)
 
 	// Read the files concurrently. The scan is thousands of files against
 	// every removal pattern, and under `-race` (which is how CI runs the
@@ -2652,6 +2693,96 @@ func forEachScannedFile(t *testing.T, root string, fn func(rel string, content [
 		}
 		fn(rel, content)
 	}
+}
+
+// scannedFiles lists the files the guard reads, as sorted repo-relative slash
+// paths: every file git would commit under root (tracked, plus untracked but
+// not ignored), minus the skip lists.
+//
+// The list comes from git rather than a directory walk so that gitignored,
+// per-developer output stays out of the scan. `forge generate` renders every
+// shipped skill into .claude/skills/, which is gitignored. A walk read those
+// rendered copies, e.g. .claude/skills/deploy-flux/SKILL.md, as surviving
+// references, while the allowances name only the template sources they were
+// rendered from. So the guard failed after any local generate and passed in
+// CI, which has no .claude/. A walk learns ignored directories one at a time
+// (skipDirs grew .forge, .scratch and .kilo that way); git already knows
+// every one. An untracked file that is NOT ignored is still scanned, because
+// it is one `git add` away from shipping.
+func scannedFiles(t *testing.T, root string) []string {
+	t.Helper()
+
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").Output()
+	if err != nil {
+		var stderr []byte
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr = exitErr.Stderr
+		}
+		t.Fatalf("git ls-files in %s: %v\n%s\nThe guard scans exactly the files git would commit, so it needs a git checkout.",
+			root, err, bytes.TrimSpace(stderr))
+	}
+
+	// A Go build cache is not source. Its entries are verbatim copies of
+	// compiler input, so a cached `rbac.pb.go` reads as a live reference to
+	// a removed feature. Keyed on Go's own sentinel because GOCACHE is
+	// configurable and a project-local one is not guaranteed to be ignored:
+	// agents here point it at $WORKTREE/.gocache, but the name is a
+	// convention. Memoized per directory, since every file's ancestors are
+	// checked.
+	isCache := map[string]bool{}
+	inGoBuildCache := func(rel string) bool {
+		for dir := path.Dir(rel); dir != "."; dir = path.Dir(dir) {
+			cache, seen := isCache[dir]
+			if !seen {
+				cache = commitpolicy.IsGoBuildCacheDir(filepath.Join(root, filepath.FromSlash(dir)))
+				isCache[dir] = cache
+			}
+			if cache {
+				return true
+			}
+		}
+		return false
+	}
+	inSkippedDir := func(rel string) bool {
+		for _, part := range strings.Split(path.Dir(rel), "/") {
+			if skipDirs[part] {
+				return true
+			}
+		}
+		return false
+	}
+
+	seen := map[string]bool{}
+	var files []string
+	for _, rel := range strings.Split(string(out), "\x00") {
+		// An unmerged path is listed once per stage, and an untracked
+		// nested repository as a single "dir/" entry; Lstat below drops
+		// the directory.
+		if rel == "" || seen[rel] {
+			continue
+		}
+		seen[rel] = true
+		if inSkippedDir(rel) || skipScannedFile(path.Base(rel)) || skipExts[strings.ToLower(path.Ext(rel))] {
+			continue
+		}
+		info, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+		if statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				continue // tracked, but deleted in the working tree
+			}
+			t.Fatalf("stat %s: %v", rel, statErr)
+		}
+		if !info.Mode().IsRegular() || info.Size() > maxFileSize {
+			continue
+		}
+		if inGoBuildCache(rel) {
+			continue
+		}
+		files = append(files, rel)
+	}
+	sort.Strings(files)
+	return files
 }
 
 // forEachIndex calls fn(i) for every i in [0, n) on a FIXED pool of

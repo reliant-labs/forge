@@ -718,6 +718,36 @@ func e2eToolsRequired() bool {
 	return os.Getenv("CI") != ""
 }
 
+// requireDockerDaemon is requireTool for the docker DAEMON. A docker CLI on
+// PATH says nothing about whether an engine answers it — Docker Desktop
+// stopped, a socket that moved — and a test that only looked up the binary
+// then failed deep inside `k3d cluster create` with a message about networks.
+// Same contract as requireTool: a named skip on a laptop, a hard failure
+// under CI (or FORGE_E2E_REQUIRE_TOOLS=1), where a dead daemon is a
+// provisioning bug rather than a property of the machine.
+//
+// The probe is `docker version`, NOT `docker info --format`: with no daemon,
+// `docker info --format '{{.ServerVersion}}'` prints the error, an empty
+// version, and EXITS 0 (docker CLI 29). An empty server version is treated
+// as no daemon too.
+func requireDockerDaemon(t *testing.T) {
+	t.Helper()
+	requireTool(t, "docker")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
+	if err == nil && strings.TrimSpace(string(out)) != "" {
+		return
+	}
+	if !e2eToolsRequired() {
+		t.Skipf("no docker daemon answers (`docker version`: %v) — skipped locally. This is a HARD FAILURE in CI; "+
+			"run with FORGE_E2E_REQUIRE_TOOLS=1 to reproduce that here.\n%s", err, out)
+	}
+	t.Fatalf("no docker daemon answers (`docker version`: %v)\n%s\n"+
+		"This run is under CI (or FORGE_E2E_REQUIRE_TOOLS is set): start the daemon in the job that runs "+
+		"`go test -tags e2e`; skipping here would report green for a check that never ran.", err, out)
+}
+
 // waitForServer polls a URL until it gets a 200 or the timeout expires.
 func waitForServer(t *testing.T, url string, timeout time.Duration) bool {
 	t.Helper()

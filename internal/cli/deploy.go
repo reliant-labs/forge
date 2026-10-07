@@ -957,6 +957,14 @@ type deployOptions struct {
 	// knowingly accept the risk.
 	skipPreflight bool
 
+	// preflightOnly stops the deploy right after its deployability
+	// preflight: render the env, resolve its live target, check images,
+	// Secrets and served kinds — and return, applying nothing. It is how
+	// `forge env deploy <env> <version>` runs the preflight BEFORE it
+	// records the promotion (see preflightBeforeRecord). Always paired with
+	// dryRun, so nothing on the way to the preflight writes either.
+	preflightOnly bool
+
 	// noDigest, when true, forces deploy to reference the mutable :tag even
 	// when the build state captured an immutable content-addressed digest.
 	// By default (false) forge prefers the digest — pinning the manifest to
@@ -1304,6 +1312,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		targets: targets, imageDigests: imageDigests, report: report,
 	}, hasK8sServices, opts.skipPreflight); err != nil {
 		return err
+	}
+	if opts.preflightOnly {
+		return nil
 	}
 
 	// k8s Secret projection: for a dotenv secret_provider, render the

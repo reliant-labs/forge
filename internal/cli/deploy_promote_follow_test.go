@@ -48,6 +48,10 @@ type capturedClientDeploy struct {
 	calls []deployOptions
 	env   []string
 	err   error
+	// preflights are the PRE-WRITE preflight runs (preflightOnly), kept
+	// apart from calls so "the apply ran once" still counts applies.
+	preflights   []deployOptions
+	preflightErr error
 }
 
 // promoteClientDeployStubbed records that SOME stub owns the client-side
@@ -62,6 +66,10 @@ func (c *capturedClientDeploy) install(t *testing.T) {
 	promoteClientDeployStubbed = true
 	t.Cleanup(func() { promoteClientDeployStubbed = false })
 	runPromoteClientDeploy = func(_ context.Context, env string, opts deployOptions) error {
+		if opts.preflightOnly {
+			c.preflights = append(c.preflights, opts)
+			return c.preflightErr
+		}
 		c.env = append(c.env, env)
 		c.calls = append(c.calls, opts)
 		return c.err

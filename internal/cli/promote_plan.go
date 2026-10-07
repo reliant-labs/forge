@@ -401,6 +401,18 @@ type promotePlanBinding struct {
 	ReleaseCreatedAt string `json:"release_created_at,omitempty"`
 	// Note explains a state that would otherwise look like missing data.
 	Note string `json:"note,omitempty"`
+	// NotApplied is true when the ledger records that this binding's apply
+	// FAILED: the env is bound to Release, but the target was never moved
+	// to it. A plan that diffed against the binding alone would call a
+	// re-deploy of the same release a no-op while it rolls every workload.
+	NotApplied bool `json:"not_applied,omitempty"`
+	// ApplyError is what the failed apply said.
+	ApplyError string `json:"apply_error,omitempty"`
+	// LiveRelease is, for a NotApplied binding, the newest earlier
+	// promotion whose apply did not fail — the ledger's answer to "what is
+	// actually running". The image diff is computed against it. Empty when
+	// the ledger cannot say.
+	LiveRelease string `json:"live_release,omitempty"`
 }
 
 // promotePlanTarget describes the release being promoted TO.
@@ -770,13 +782,37 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		plan.Current.Note = fmt.Sprintf("never promoted — no release is bound to %s, so this is its first promote", opts.Env)
 	}
 
-	plan.Images = classifyPromoteImages(prev.Resolved, resolved)
+	// The image baseline is what is RUNNING, as far as the ledger can say:
+	// the binding, unless the binding's own apply is recorded as failed —
+	// then the newest earlier promotion that did apply.
+	baseline := prev.Resolved
+	if hadPrev {
+		if applied := applyOf(projectDir, opts.Env, prev); applied.Failed {
+			plan.Current.NotApplied = true
+			plan.Current.ApplyError = applied.Summary
+			if live, ok := lastAppliedPromotion(ctx, bindings, projectDir, opts.Env, prev.ID); ok {
+				plan.Current.LiveRelease = live.Release
+				baseline = live.Resolved
+			} else {
+				baseline = nil
+			}
+		}
+	}
+	plan.Images = classifyPromoteImages(baseline, resolved)
 	plan.Tally = tallyPromoteImages(plan.Images)
 	plan.Changed = plan.Tally.Changed > 0 || plan.Tally.Added > 0 || plan.Tally.Removed > 0 ||
-		!hadPrev || prev.Release != opts.Version
+		!hadPrev || prev.Release != opts.Version || plan.Current.NotApplied
 
 	plan.Direction, plan.ReleasesBetween, plan.DirectionDetail =
 		promoteDirectionFor(releases, hadPrev, prev.Release, opts.Version)
+	if plan.Current.NotApplied {
+		live := "an earlier release the ledger cannot name"
+		if plan.Current.LiveRelease != "" {
+			live = plan.Current.LiveRelease
+		}
+		plan.DirectionDetail += fmt.Sprintf(" — but %s's apply FAILED, so %s still runs %s; the images below are live → target",
+			prev.Release, opts.Env, live)
+	}
 
 	plan.Commits = computePromoteCommitRange(ctx, git, projectDir, promoteRangeInput{
 		HadPrev:      hadPrev,
@@ -1147,7 +1183,12 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		fmt.Fprintf(out, "RECORDED BUT NOT APPLIED: env %q is now bound to release %s in the ledger, but applying it FAILED — nothing shipped, and %s is not running.\n",
 			plan.Env, plan.Target.Release, plan.Target.Release)
 		fmt.Fprintf(out, "  apply error: %s\n", oneLine(plan.FollowError, 400))
-		fmt.Fprintf(out, "  Re-run `forge env deploy %s %s` to apply it again (the same release is not refused).\n", plan.Env, plan.Target.Release)
+		// NOT "re-run the same command": the binding moved, so the plan
+		// (and its digest) moved with it, and an --approve of the old one
+		// is refused as plan_stale. A fresh plan also shows the image diff
+		// from what is actually running, which the old one could not.
+		fmt.Fprintf(out, "  Re-plan and re-approve: `forge env deploy %s %s --plan-only`, then deploy with the --approve digest it prints.\n",
+			plan.Env, plan.Target.Release)
 	case plan.Applied:
 		if plan.Current.Bound && plan.Current.Release != plan.Target.Release {
 			fmt.Fprintf(out, "Promoted env %q: %s → %s\n", plan.Env, plan.Current.Release, plan.Target.Release)
@@ -1160,6 +1201,14 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 
 	if plan.Current.Bound {
 		fmt.Fprintf(out, "  current   %s (promoted %s, promotion %s)\n", plan.Current.Release, plan.Current.PromotedAt, plan.Current.PromotionID)
+		if plan.Current.NotApplied {
+			live := "(the ledger cannot say)"
+			if plan.Current.LiveRelease != "" {
+				live = plan.Current.LiveRelease
+			}
+			fmt.Fprintf(out, "  NOT APPLIED  %s is bound but its apply FAILED (%s); live runs %s\n",
+				plan.Current.Release, oneLine(plan.Current.ApplyError, 200), live)
+		}
 	} else {
 		fmt.Fprintf(out, "  current   (never promoted)\n")
 	}
@@ -1206,7 +1255,13 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	renderCapacitySection(out, plan.Capacity)
 
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "Images (%d unchanged, %d changed, %d added, %d removed)\n",
+	from := ""
+	if plan.Current.NotApplied {
+		// Said in the header, because the default reading of this block is
+		// "binding → target", and here that would understate the change.
+		from = fmt.Sprintf("live %s → target ", emptyAs(plan.Current.LiveRelease, "(unknown)"))
+	}
+	fmt.Fprintf(out, "Images %s(%d unchanged, %d changed, %d added, %d removed)\n", from,
 		plan.Tally.Unchanged, plan.Tally.Changed, plan.Tally.Added, plan.Tally.Removed)
 	for _, img := range plan.Images {
 		fmt.Fprintf(out, "  %-10s %-22s", img.Change, img.Image)

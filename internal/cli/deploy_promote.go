@@ -220,6 +220,17 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		plan.Expected = guard.ExpectedCurrentID
 	}
 
+	// THE CLUSTER PREFLIGHT IS PART OF THE PLAN. It runs before the
+	// approval gate and the write — for --plan / --plan-only too, since it
+	// only reads — so a release the live target cannot run is refused with
+	// nothing recorded, and a reviewer sees that refusal instead of
+	// approving a plan that cannot ship. See preflightBeforeRecord.
+	if opts.Follow != nil {
+		if err := preflightBeforeRecord(ctx, env, version, ledger, *opts.Follow); err != nil {
+			return err
+		}
+	}
+
 	// THE CONFIRMATION GATE (O-13). The plan is printed and approved before
 	// anything is written — see deploy_confirm.go for why the review had to
 	// move in front of the write rather than beside it.

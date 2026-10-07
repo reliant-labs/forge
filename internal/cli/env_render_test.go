@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -628,6 +629,8 @@ func TestEnvRenderCommandSurface(t *testing.T) {
 	}
 	assertStringSlicesEqual(t, "env render visible flags", visibleFlagNames(cmd), []string{
 		"cluster",
+		// Per-cluster (and per-kind) object counts on stdout.
+		"count",
 		"fail-on-write",
 		"kind",
 		"list",
@@ -643,5 +646,33 @@ func TestEnvRenderCommandSurface(t *testing.T) {
 	})
 	if err := cmd.Args(cmd, []string{"dev", "extra"}); err == nil {
 		t.Error("render takes exactly one environment")
+	}
+}
+
+// --count answers "how many objects does each cluster get" on stdout, where
+// a script can read it, instead of `forge env shape --json | jq`.
+func TestEnvRenderCountPerCluster(t *testing.T) {
+	objects, clusters := attributeFixture(t, twoClusterContract, twoClusterManifests)
+	var out bytes.Buffer
+	if err := writeRenderedCounts(&out, clusters, objects); err != nil {
+		t.Fatalf("writeRenderedCounts: %v", err)
+	}
+	perCluster := map[string]int{}
+	for _, o := range objects {
+		for _, c := range o.Clusters {
+			perCluster[c]++
+		}
+	}
+	got := out.String()
+	for _, c := range clusters {
+		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(c) + `\s+` + strconv.Itoa(perCluster[c]) + `\s`).MatchString(got) {
+			t.Errorf("no row %q with %d object(s):\n%s", c, perCluster[c], got)
+		}
+	}
+	if !regexp.MustCompile(`(?m)^TOTAL\s+` + strconv.Itoa(len(objects)) + `\s`).MatchString(got) {
+		t.Errorf("no TOTAL row of %d:\n%s", len(objects), got)
+	}
+	if !strings.Contains(got, "Deployment=") {
+		t.Errorf("no per-kind breakdown:\n%s", got)
 	}
 }

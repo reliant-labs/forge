@@ -1056,18 +1056,18 @@ func TestCreateRequestFactory_ParentsInNonPublicSchema_PG(t *testing.T) {
 		t.Fatal(err)
 	}
 	migration := `
-CREATE SCHEMA tenant;
-CREATE TABLE tenant.brands (
+CREATE SCHEMA controlplane;
+CREATE TABLE controlplane.brands (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL
 );
-CREATE TABLE tenant.products (
+CREATE TABLE controlplane.products (
     id TEXT PRIMARY KEY,
     region TEXT NOT NULL,
     contact_email TEXT NOT NULL,
     currency TEXT NOT NULL,
     status TEXT NOT NULL,
-    brand_id TEXT NOT NULL REFERENCES tenant.brands(id),
+    brand_id TEXT NOT NULL REFERENCES controlplane.brands(id),
     sku TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     price_cents BIGINT NOT NULL
@@ -1090,7 +1090,7 @@ CREATE TABLE tenant.products (
 	if specs[0].failure != "" {
 		t.Fatalf("parents in a non-public schema must seed, got: %s", specs[0].failure)
 	}
-	if !strings.Contains(specs[0].parentSQL, `INSERT INTO "tenant"."brands"`) {
+	if !strings.Contains(specs[0].parentSQL, `INSERT INTO "controlplane"."brands"`) {
 		t.Errorf("parent INSERT must be schema-qualified:\n%s", specs[0].parentSQL)
 	}
 }

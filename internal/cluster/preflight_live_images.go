@@ -110,8 +110,8 @@ func normalizeImageRef(ref string) string {
 	if strings.HasPrefix(ref, "@") {
 		return ref
 	}
-	reg, repo, tag, digest := splitImageRef(ref)
-	out := reg + "/" + repo
+	host, repo, tag, digest := splitImageRef(ref)
+	out := host + "/" + repo
 	if tag != "" {
 		out += ":" + tag
 	}
@@ -124,9 +124,9 @@ func normalizeImageRef(ref string) string {
 	return out
 }
 
-// splitImageRef splits an image ref into registry, repository, tag and
-// digest, applying Docker Hub's defaults (docker.io, library/).
-func splitImageRef(ref string) (registry, repository, tag, digest string) {
+// splitImageRef splits an image ref into its registry host, repository, tag
+// and digest, applying Docker Hub's defaults (docker.io, library/).
+func splitImageRef(ref string) (host, repository, tag, digest string) {
 	name := ref
 	if before, after, ok := strings.Cut(name, "@"); ok {
 		name, digest = before, after
@@ -137,18 +137,21 @@ func splitImageRef(ref string) (registry, repository, tag, digest string) {
 	}
 	first, rest, hasSlash := strings.Cut(name, "/")
 	if hasSlash && (strings.ContainsAny(first, ".:") || first == "localhost") {
-		registry, repository = first, rest
+		host, repository = first, rest
 	} else {
-		registry, repository = "docker.io", name
+		host, repository = dockerHub, name
 	}
-	if registry == "index.docker.io" || registry == "registry-1.docker.io" {
-		registry = "docker.io"
+	if host == "index.docker.io" || host == "registry-1.docker.io" {
+		host = dockerHub
 	}
-	if registry == "docker.io" && !strings.Contains(repository, "/") {
+	if host == dockerHub && !strings.Contains(repository, "/") {
 		repository = "library/" + repository
 	}
-	return registry, repository, tag, digest
+	return host, repository, tag, digest
 }
+
+// dockerHub is the registry an image ref names when it names none.
+const dockerHub = "docker.io"
 
 // liveImages answers "is the live target running this image?" for one
 // preflight run. The cluster is asked at most once, and only when an image is

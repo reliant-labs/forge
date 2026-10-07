@@ -99,7 +99,7 @@ func TestBuildStorageEnforcesOnCIWhenAsked(t *testing.T) {
 // waved through on the strength of being on a runner.
 func TestBuildStorageRefusesUnreadableDiskOnCI(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "storage.json")
-	if err := os.WriteFile(path, []byte(`{"registry_kepp":2}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"registry_keep":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("FORGE_STORAGE_POLICY", path)

@@ -132,11 +132,20 @@ type bundleBuildInputs struct {
 	// the env's ledger is: a registry reference to bytes nobody pushed
 	// would be a record of a deploy that cannot be performed.
 	Pushed bool
-	// Now is the bundle's creation time. The caller's, because
-	// bundle.Build never reads a clock — its digest must depend on the
-	// render and nothing else, and every env in one --bundle-envs pass
-	// shares one timestamp.
+	// Now is the bundle's creation time for an UNRELEASED bundle only. The
+	// caller's, because bundle.Build never reads a clock.
+	//
+	// A RELEASED bundle does not use it: its creation time is the RELEASE's
+	// (ReleasedAt), so the digest is a function of the render and the release
+	// and nothing that varies between runs. Using a wall clock here made every
+	// plan-only run of one render a new digest, a new registry push and a new
+	// ledger row, and left "the bundle that was planned" a different object
+	// from "the bundle that was promoted".
 	Now time.Time
+	// ReleasedAt is when Release was cut. Resolved by writeEnvBundle from the
+	// env's ledger when the caller does not state it; the release's own
+	// timestamp is the only creation time that is the same on every run.
+	ReleasedAt time.Time
 	// errOut is where warnings go. nil means stderr.
 	errOut io.Writer
 }
@@ -146,6 +155,10 @@ type bundleBuildInputs struct {
 func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildInputs) (bundleWriteOutcome, error) {
 	if in.Now.IsZero() {
 		return bundleWriteOutcome{}, fmt.Errorf("%w: a bundle's creation time is the caller's", release.ErrInvalid)
+	}
+	createdAt, err := bundleCreatedAt(ctx, projectDir, env, in)
+	if err != nil {
+		return bundleWriteOutcome{}, err
 	}
 
 	// The SAME projection `forge env shape` prints and F-DECL records. One
@@ -195,7 +208,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Pins:       in.Pins,
 		Provenance: doc.Provenance,
 		Shape:      bundleShapeInputOf(doc),
-		CreatedAt:  in.Now,
+		CreatedAt:  createdAt,
 	})
 	if err != nil {
 		return bundleWriteOutcome{}, err
@@ -231,7 +244,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Digest: built.Digest, Reference: placed.Reference,
 		ConfigDigest: built.Doc.ConfigDigest,
 		Shape:        doc.Shape, Provenance: doc.Provenance,
-		Run: in.Run, CreatedAt: in.Now,
+		Run: in.Run, CreatedAt: createdAt,
 	}
 	blobs := bundleBlobs{
 		Repository: placed.repository,
@@ -239,6 +252,35 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Config:     built.ConfigBlob(),
 	}
 	return recordWrittenBundle(ctx, projectDir, env, ledger, record, blobs, placed, in)
+}
+
+// bundleCreatedAt is the creation time sealed into a bundle: the RELEASE's, so
+// the same render of the same release is the same bytes on every run. An
+// unreleased bundle has no release to borrow a time from and keeps the caller's
+// clock; that is the only case where two runs may differ, and it is also the
+// case nobody promotes or plans against.
+func bundleCreatedAt(ctx context.Context, projectDir, env string, in bundleBuildInputs) (time.Time, error) {
+	if in.Release == "" {
+		return in.Now, nil
+	}
+	if !in.ReleasedAt.IsZero() {
+		return in.ReleasedAt.UTC(), nil
+	}
+	ledger, err := ledgerFor(ctx, projectDir, env)
+	if err != nil {
+		if declarationUndeliverable(err) {
+			return in.Now, nil
+		}
+		return time.Time{}, fmt.Errorf("resolve release %s's timestamp: %w", in.Release, err)
+	}
+	rel, err := ledger.Releases.Get(ctx, in.Release)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read release %s to date its bundle: %w", in.Release, err)
+	}
+	if rel == nil || rel.CreatedAt.IsZero() {
+		return in.Now, nil
+	}
+	return rel.CreatedAt.UTC(), nil
 }
 
 // bundleShapeInputOf re-states the declaration half of the projection for

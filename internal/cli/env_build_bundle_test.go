@@ -722,3 +722,39 @@ func mustLocalLayout(t *testing.T, dir string) *bundle.LocalLayout {
 	}
 	return layout
 }
+
+// TestEnvBuildBundle_ReleasedBundleDoesNotDependOnTheWallClock: a plan-only run
+// seals a bundle too, and used to stamp it with time.Now, so two runs of one
+// render of one release were two digests — two registry pushes, two ledger rows,
+// and a promoted bundle that was never the planned one. A released bundle's
+// creation time is the RELEASE's.
+func TestEnvBuildBundle_ReleasedBundleDoesNotDependOnTheWallClock(t *testing.T) {
+	dir := newLedgerTestProject(t, "bundle-clock-project")
+	stubEnvShape(t, "bundle-clock-project")
+	cutAt := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	if err := testCutRelease(t, dir, rel("v1.4.0", cutAt.Format(time.RFC3339), "", false, map[string]string{"api": sha("1")})); err != nil {
+		t.Fatalf("cut: %v", err)
+	}
+
+	run := func(now time.Time) bundleWriteOutcome {
+		t.Helper()
+		got, err := writeEnvBundles(context.Background(), dir, []string{"prod"},
+			bundleBuildInputs{Release: "v1.4.0", Now: now, errOut: io.Discard})
+		if err != nil {
+			t.Fatalf("writeEnvBundles at %s: %v", now, err)
+		}
+		return got[0]
+	}
+	first := run(time.Date(2026, 10, 7, 6, 0, 0, 0, time.UTC))
+	second := run(time.Date(2026, 10, 7, 6, 45, 12, 0, time.UTC))
+
+	if first.Digest != second.Digest {
+		t.Fatalf("one render of one release must be one digest regardless of when it runs: %s then %s", first.Digest, second.Digest)
+	}
+	if second.Created {
+		t.Error("the second run recorded a new row for the same digest")
+	}
+	if n := len(mustBundles(t, dir, "prod")); n != 1 {
+		t.Errorf("two runs at different times left %d bundle rows, want 1", n)
+	}
+}

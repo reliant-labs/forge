@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -232,6 +234,13 @@ func flowSmokeEnv(t *testing.T) {
 			if err != nil {
 				return
 			}
+			// READ THE REQUEST FIRST. Answering on accept raced the
+			// client's write: when the response landed before the request
+			// went out, net/http reported "Unsolicited response received on
+			// idle HTTP channel" and failed the probe as port-unreachable —
+			// a flake that only showed under load (seen in a full -race run
+			// of the package on a busy machine).
+			_, _ = http.ReadRequest(bufio.NewReader(c))
 			_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
 			_ = c.Close()
 		}

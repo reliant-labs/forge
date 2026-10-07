@@ -173,6 +173,9 @@ plugins:
 				"(continuing would emit hooks and mocks importing _pb modules that do not exist)",
 				fe.Name, feDir)
 		}
+		if err := ensureTSPluginMatchesLock(fe.Name, projectDir, feDir, pluginRel); err != nil {
+			return err
+		}
 		// Point THIS RUN at wherever the plugin actually is, by handing buf
 		// the retargeted template as inline data. The committed buf.gen.yaml
 		// is never rewritten: the right path depends on the generating
@@ -305,6 +308,13 @@ plugins:
 				"TypeScript stubs can be generated — run `npm install` (or `pnpm install`) at the "+
 				"project root and re-run generate (continuing would emit hooks and mocks importing "+
 				"_pb modules that do not exist); looked in %s", pluginPath)
+		}
+	}
+
+	if usesLocalTSPlugin(bufGenPath) {
+		rel := "./" + filepath.ToSlash(filepath.Join(feDir, "node_modules", ".bin", "protoc-gen-es"))
+		if err := ensureTSPluginMatchesLock(pluginFrontend.Name, projectDir, feDir, rel); err != nil {
+			return err
 		}
 	}
 

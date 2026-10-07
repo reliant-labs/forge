@@ -89,14 +89,15 @@ func WithOrderBy(clause string, order Order) QueryOption {
 	}
 }
 
-// WithLimit sets the LIMIT.
+// WithLimit sets the LIMIT. The option keeps an int parameter (what callers
+// and generated code pass); bun >= 1.3 takes int64, so convert at the call.
 func WithLimit(limit int) QueryOption {
-	return func(q *bun.SelectQuery) { q.Limit(limit) }
+	return func(q *bun.SelectQuery) { q.Limit(int64(limit)) }
 }
 
 // WithOffset sets the OFFSET.
 func WithOffset(offset int) QueryOption {
-	return func(q *bun.SelectQuery) { q.Offset(offset) }
+	return func(q *bun.SelectQuery) { q.Offset(int64(offset)) }
 }
 
 // ValidateOrderBy validates a comma-separated ORDER BY clause against a

@@ -51,7 +51,7 @@ func newTxTestClient(t *testing.T) *Client {
 // countNotes counts committed rows as an OUTSIDE observer: a fresh
 // background context, so it reads through the pool and sees only what has
 // been committed.
-func countNotes(t *testing.T, c *Client) int {
+func countNotes(t *testing.T, c *Client) int64 {
 	t.Helper()
 	n, err := c.Bun().NewSelect().Model((*txNote)(nil)).Count(context.Background())
 	if err != nil {

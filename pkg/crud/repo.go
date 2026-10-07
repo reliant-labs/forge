@@ -855,7 +855,7 @@ func (r *Repo[M]) List(ctx context.Context, db orm.Context, opts ...orm.QueryOpt
 	// Applied first so a caller-supplied WithLimit (last-wins in Bun) takes
 	// precedence — the RPC path always supplies one, so its behavior is
 	// unchanged; only limit-less direct callers get the safety cap.
-	q.Limit(defaultListLimit)
+	q.Limit(int64(defaultListLimit))
 	for _, opt := range opts {
 		opt(q)
 	}

@@ -229,6 +229,13 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		if err := preflightBeforeRecord(ctx, env, version, ledger, *opts.Follow); err != nil {
 			return err
 		}
+		// The converger's half of the same question, for an env the hub
+		// applies: can anything apply this at all? See deploy_hub_ready.go.
+		if !opts.Follow.skipHubCheck {
+			if err := refuseUnreadyHub(ctx, env, ledger, plan.Current.Bound, *opts.Follow); err != nil {
+				return err
+			}
+		}
 	}
 
 	// THE CONFIRMATION GATE (O-13). The plan is printed and approved before

@@ -91,6 +91,10 @@ type promoteFollowOptions struct {
 	// fields and leaves this zero.
 	clientDeploy deployOptions
 
+	// skipHubCheck records a hub-converged env's promotion even when the
+	// hub reports its reconciler failing (--skip-hub-check).
+	skipHubCheck bool
+
 	// jsonOut mirrors the command's --json. The follow stage's progress
 	// notices are for a HUMAN, so under --json they must go to stderr:
 	// `--json` promises stdout carries exactly one JSON document, and a

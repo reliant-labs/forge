@@ -77,6 +77,11 @@ type fakeDeployService struct {
 	// promotion id → gates, in the order they were recorded (F4, §3.3).
 	gates map[string][]wireGate
 
+	// convergences is env id → the hub's reconcile observations, newest
+	// first, as ListConvergences returns them. Nil answers Unimplemented,
+	// like a control plane that predates the observer.
+	convergences map[string][]map[string]any
+
 	// queueOn, when set, makes every promotion this fake appends QUEUED:
 	// accepted and recorded, with these holds in the Promote response —
 	// what a control plane does for a deploy that needs billing the org
@@ -514,6 +519,20 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			next = out[len(out)-1].ID
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"promotions": out, "nextBeforePromotionId": next})
+
+	case "/controlplane.v1.DeployService/ListConvergences":
+		if f.convergences == nil {
+			// A control plane without the observer: the readers degrade
+			// (the rollout wait judges workloads directly; the hub check
+			// says it could not look).
+			connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)
+			return
+		}
+		rows := f.convergences[str("environmentId")]
+		if rows == nil {
+			rows = []map[string]any{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"convergences": rows})
 
 	default:
 		connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)

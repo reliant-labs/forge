@@ -370,6 +370,10 @@ type promoteCmdFlags struct {
 	// findings accepted, which --yes deliberately does not cover.
 	approve                string
 	acknowledgeDestructive []string
+	// rerecordBundle replaces a release's bundle of record when this
+	// checkout renders different objects than the one recorded (see
+	// release_bundle_of_record.go). Off, such a render is refused.
+	rerecordBundle bool
 
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
@@ -416,6 +420,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 	flags.StringSliceVar(&f.acknowledgeDestructive, "acknowledge-destructive", nil,
 		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
+	flags.BoolVar(&f.rerecordBundle, "rerecord-bundle", false,
+		"Replace the release's recorded bundle with this checkout's render. Without it, a render whose objects differ from the bundle recorded for the release is refused: a release's bundle is what a reviewer approved and what deploys")
 
 	// Anti-stomp. Every release deploy compare-and-sets against the plan's
 	// read; these replace that value, they do not enable it.
@@ -622,7 +628,9 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 			return err
 		}
 	}
-	ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut))
+	if err := ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, p.rerecordBundle, progressWriter(f.jsonOut)); err != nil {
+		return err
+	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
 		Ledger:        ledger,
 		Capacity:      capacity,

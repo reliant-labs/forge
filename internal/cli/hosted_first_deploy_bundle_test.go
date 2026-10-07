@@ -71,12 +71,12 @@ func TestEnsureHostedReleaseBundleWritesWhenMissing(t *testing.T) {
 	}
 	t.Cleanup(func() { writeBundlesFn = prev })
 
-	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v0.1.0", ledger, io.Discard)
+	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v0.1.0", ledger, false, io.Discard)
 	if len(got) != 1 || got[0].Release != "v0.1.0" || len(got[0].Pins.Images) == 0 {
 		t.Fatalf("writeBundles calls = %+v; want one for v0.1.0 carrying the release's pins", got)
 	}
 
-	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v9", ledger, io.Discard)
+	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v9", ledger, false, io.Discard)
 	if len(got) != 1 {
 		t.Fatalf("an uncut release must not write a bundle; calls = %d", len(got))
 	}
@@ -116,7 +116,7 @@ func TestHostedDeployPlansAgainstTheBundleJustRecorded(t *testing.T) {
 	}
 	t.Cleanup(func() { hostedRecordStoreForDeploy, writeBundlesFn = prevStore, prevWrite })
 
-	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v1.4.0", ledger, io.Discard)
+	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v1.4.0", ledger, false, io.Discard)
 	got := planForDeploy(context.Background(), dir, "prod", "v1.4.0", ledger, io.Discard)
 	if got == nil {
 		t.Fatal("no plan computed for a hosted deploy whose bundle was just recorded")
@@ -154,7 +154,7 @@ func TestEnsureHostedReleaseBundleWritesEvenWhenTheMachineLedgerHoldsOne(t *test
 	}
 	t.Cleanup(func() { writeBundlesFn = prev })
 
-	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v0.1.0", ledger, io.Discard)
+	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v0.1.0", ledger, false, io.Discard)
 	if calls != 1 {
 		t.Fatalf("writeBundles calls = %d; a machine-ledger bundle must not stand in for the control plane's, want 1", calls)
 	}

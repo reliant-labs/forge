@@ -21,16 +21,33 @@ import (
 
 // log_sampling_test.go — an access log's volume is the traffic's volume.
 //
-// The logging interceptor wrote one INFO "rpc completed" record per
-// successful RPC. A frontend polling three RPCs every couple of seconds
-// turned that into 47k lines in twelve hours of one dev stack — 92% of the
-// API server's INFO output — and buried every line that said anything.
-// Successes are now sampled per procedure; failures and slow calls never are.
+// The logging interceptor writes one INFO "rpc completed" record per
+// successful RPC by default. A frontend polling three RPCs every couple of
+// seconds turns that into 47k lines in twelve hours of one dev stack, so a
+// deployment can turn success SAMPLING on; when it does, successes are
+// sampled per procedure and failures and slow calls never are. These tests
+// pin the sampling mechanism with the window set in code; what the default
+// is, and how the environment sets it, is log_sampling_config_test.go.
 
 const (
 	pollProcedure  = "/observe.test.v1.PollService/Poll"
 	otherProcedure = "/observe.test.v1.PollService/Other"
 )
+
+// testWindow is the window the sampling tests opt into. Set in code, it also
+// wins over any LOG_SUCCESS_SAMPLE_WINDOW in the shell running the tests.
+const testWindow = time.Minute
+
+// envSays is a withGetenv seam whose environment holds only
+// SuccessSampleWindowEnv=value.
+func envSays(value string) LogOption {
+	return withGetenv(func(key string) string {
+		if key == SuccessSampleWindowEnv {
+			return value
+		}
+		return ""
+	})
+}
 
 // fakeClock is a manually advanced time source shared by the policy and the
 // test handler, so a test can make a call "slow" or step past the sampling
@@ -105,14 +122,15 @@ func jsonLogger(buf *bytes.Buffer, level slog.Level) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: level}))
 }
 
-// TestLoggingInterceptor_RepeatedSuccessesAreSampled is the incident: a
-// polled procedure, called far more often than anyone reads its log line,
-// must not write one INFO record per call. Built with the zero-option
-// constructor every existing chain uses, so the default is what is tested.
+// TestLoggingInterceptor_RepeatedSuccessesAreSampled is the incident, with
+// sampling on: a polled procedure, called far more often than anyone reads
+// its log line, must not write one INFO record per call.
 func TestLoggingInterceptor_RepeatedSuccessesAreSampled(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	call := rpcEdge(t, []connect.Interceptor{LoggingInterceptor(jsonLogger(&buf, slog.LevelDebug))}, nil)
+	call := rpcEdge(t, []connect.Interceptor{
+		LoggingInterceptor(jsonLogger(&buf, slog.LevelDebug), WithSuccessSampling(testWindow)),
+	}, nil)
 
 	for range 200 {
 		call(pollProcedure)
@@ -136,7 +154,7 @@ func TestLoggingInterceptor_SampledRecordCountsSuppressedCalls(t *testing.T) {
 	var buf bytes.Buffer
 	clock := newFakeClock()
 	call := rpcEdge(t, []connect.Interceptor{
-		LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), withClock(clock.Now)),
+		LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), withClock(clock.Now), WithSuccessSampling(testWindow)),
 	}, nil)
 
 	call(pollProcedure) // first success of a procedure: always written
@@ -144,7 +162,7 @@ func TestLoggingInterceptor_SampledRecordCountsSuppressedCalls(t *testing.T) {
 		call(pollProcedure)
 	}
 	call(otherProcedure) // sampling is per procedure, not global
-	clock.Advance(DefaultSuccessSampleWindow)
+	clock.Advance(testWindow)
 	call(pollProcedure)
 
 	var poll []map[string]any
@@ -173,7 +191,7 @@ func TestLoggingInterceptor_SampledRecordCountsSuppressedCalls(t *testing.T) {
 func TestLoggingInterceptor_FailuresAreNeverSampled(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	call := rpcEdge(t, []connect.Interceptor{LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo))},
+	call := rpcEdge(t, []connect.Interceptor{LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), WithSuccessSampling(testWindow))},
 		func(string) error { return svcerr.Wrap(svcerr.NotFound("item")) })
 
 	for range 20 {
@@ -205,6 +223,7 @@ func TestLoggingInterceptor_SlowSuccessIsAlwaysLogged(t *testing.T) {
 	call := rpcEdge(t, []connect.Interceptor{
 		LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo),
 			withClock(clock.Now),
+			WithSuccessSampling(testWindow),
 			WithSuccessLevel(otherProcedure, slog.LevelDebug)),
 	}, func(string) error {
 		if slow.Load() {
@@ -252,13 +271,14 @@ func TestLoggingInterceptor_SuccessLevelOverride(t *testing.T) {
 	}
 }
 
-// TestLoggingInterceptor_SamplingCanBeDisabled: WithSuccessSampling(0) is the
-// way back to one record per success, in the original shape.
+// TestLoggingInterceptor_SamplingCanBeDisabled: WithSuccessSampling(0) keeps
+// one record per success, in the unsampled shape, even where the
+// environment turns sampling on.
 func TestLoggingInterceptor_SamplingCanBeDisabled(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	call := rpcEdge(t, []connect.Interceptor{
-		LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), WithSuccessSampling(0)),
+		LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), envSays("1h"), WithSuccessSampling(0)),
 	}, nil)
 
 	for range 5 {
@@ -275,15 +295,18 @@ func TestLoggingInterceptor_SamplingCanBeDisabled(t *testing.T) {
 }
 
 // TestChain_PassesLogOptions: apps build the interceptor through Chain or
-// DefaultMiddlewares, so the seam must reach it from there.
+// DefaultMiddlewares, so the seam must reach it from there. The option
+// turns sampling ON — the opposite of the default — so it is visible only if
+// it arrived.
 func TestChain_PassesLogOptions(t *testing.T) {
 	t.Parallel()
+	opts := []LogOption{envSays(""), WithSuccessSampling(testWindow)}
 	for name, build := range map[string]func(*slog.Logger) []connect.Interceptor{
 		"Chain": func(l *slog.Logger) []connect.Interceptor {
-			return Chain(Deps{Logger: l, LogOptions: []LogOption{WithSuccessSampling(0)}})
+			return Chain(Deps{Logger: l, LogOptions: opts})
 		},
 		"DefaultMiddlewares": func(l *slog.Logger) []connect.Interceptor {
-			return DefaultMiddlewares(DefaultMiddlewareDeps{Logger: l, LogOptions: []LogOption{WithSuccessSampling(0)}})
+			return DefaultMiddlewares(DefaultMiddlewareDeps{Logger: l, LogOptions: opts})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -293,8 +316,8 @@ func TestChain_PassesLogOptions(t *testing.T) {
 			for range 3 {
 				call(pollProcedure)
 			}
-			if got := len(records(t, &buf, "rpc completed")); got != 3 {
-				t.Fatalf("LogOptions did not reach the logging interceptor: %d records, want 3", got)
+			if got := len(records(t, &buf, "rpc completed")); got != 1 {
+				t.Fatalf("LogOptions did not reach the logging interceptor: %d records, want 1", got)
 			}
 		})
 	}
@@ -307,7 +330,7 @@ func TestLoggingInterceptor_StreamCompletionsAreSampled(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	clock := newFakeClock()
-	icep := LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), withClock(clock.Now))
+	icep := LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), withClock(clock.Now), WithSuccessSampling(testWindow))
 	wrapped := icep.WrapStreamingHandler(func(context.Context, connect.StreamingHandlerConn) error {
 		clock.Advance(time.Hour) // a long session is not "slow"
 		return nil
@@ -335,7 +358,7 @@ func TestLoggingInterceptor_StreamCompletionsAreSampled(t *testing.T) {
 	// The third session's record opened a window at its END; step past it so
 	// the reconnect burst starts a fresh one.
 	buf.Reset()
-	clock.Advance(DefaultSuccessSampleWindow)
+	clock.Advance(testWindow)
 	quick := icep.WrapStreamingHandler(func(context.Context, connect.StreamingHandlerConn) error { return nil })
 	for range 10 {
 		_ = quick(context.Background(), conn)
@@ -351,7 +374,7 @@ func TestLoggingInterceptor_StreamCompletionsAreSampled(t *testing.T) {
 func TestSuccessSampler_ConcurrentAccounting(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	p := newLogPolicy(slog.LevelInfo, []LogOption{withClock(clock.Now)})
+	p := newLogPolicy(slog.LevelInfo, nil, []LogOption{withClock(clock.Now), WithSuccessSampling(testWindow)})
 
 	const workers, perWorker = 16, 250
 	var emitted atomic.Int64
@@ -372,10 +395,66 @@ func TestSuccessSampler_ConcurrentAccounting(t *testing.T) {
 		t.Fatalf("one window admitted %d records, want 1", emitted.Load())
 	}
 
-	clock.Advance(DefaultSuccessSampleWindow)
+	clock.Advance(testWindow)
 	suppressed, ok := p.admit(pollProcedure)
 	if !ok || suppressed != workers*perWorker-1 {
 		t.Fatalf("next window = (%d, %v), want (%d, true)", suppressed, ok, workers*perWorker-1)
+	}
+}
+
+// TestSuccessSampling_WindowResolution pins where a layer's window comes
+// from: a window set in code, else SuccessSampleWindowEnv, else none.
+func TestSuccessSampling_WindowResolution(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		opts []LogOption
+		want time.Duration
+	}{
+		{name: "nothing set", opts: []LogOption{envSays("")}, want: 0},
+		{name: "env blank", opts: []LogOption{envSays("   ")}, want: 0},
+		{name: "env duration", opts: []LogOption{envSays(" 2m ")}, want: 2 * time.Minute},
+		{name: "env zero", opts: []LogOption{envSays("0")}, want: 0},
+		{name: "env negative", opts: []LogOption{envSays("-1m")}, want: -time.Minute},
+		{name: "code beats env", opts: []LogOption{envSays("2m"), WithSuccessSampling(0)}, want: 0},
+		{name: "code beats env, either order", opts: []LogOption{WithSuccessSampling(time.Hour), envSays("0")}, want: time.Hour},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := newLogPolicy(slog.LevelInfo, nil, c.opts).window; got != c.want {
+				t.Fatalf("window = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestSuccessSampling_InvalidEnvLogsEverySuccessAndWarnsOnce: a value that
+// does not parse must never cost the records that show the process working,
+// and must be said out loud — once per process, not once per layer.
+func TestSuccessSampling_InvalidEnvLogsEverySuccessAndWarnsOnce(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := jsonLogger(&buf, slog.LevelInfo)
+	// Unique to this test: the report is once per distinct value per process.
+	invalid := envSays("every minute (" + t.Name() + ")")
+
+	icep := LoggingInterceptor(logger, invalid)
+	_ = LogMiddleware(logger, slog.LevelDebug, invalid) // a second layer, same process
+	call := rpcEdge(t, []connect.Interceptor{icep}, nil)
+	for range 3 {
+		call(pollProcedure)
+	}
+
+	if got := len(records(t, &buf, "rpc completed")); got != 3 {
+		t.Fatalf("an unparseable window must log every success: %d records, want 3", got)
+	}
+	warns := records(t, &buf, "observe: ignoring invalid "+SuccessSampleWindowEnv+"; every successful call will be logged")
+	if len(warns) != 1 {
+		t.Fatalf("want exactly one warning naming the bad value, got %d:\n%s", len(warns), buf.String())
+	}
+	if warns[0]["level"] != "WARN" || warns[0]["value"] != "every minute ("+t.Name()+")" {
+		t.Errorf("warning must be a WARN carrying the value: %v", warns[0])
 	}
 }
 

@@ -88,6 +88,12 @@ func TestGolangciExclusionPathsAreAnchored(t *testing.T) {
 // unmistakable: a quarter of the repo stopped being linted. Measure the
 // effect.
 func TestGolangciExclusionsLeaveMostOfTheRepoLinted(t *testing.T) {
+	if testing.Short() {
+		// The denominator is every tracked .go file, listed by a child `git
+		// ls-files`. Its reads are not inputs to go test's cache, so a cached
+		// ok would survive files being added or removed anywhere in the repo.
+		t.Skip("counts the checkout's files via git, which the test cache cannot track; runs in task test")
+	}
 	t.Parallel()
 
 	// Anchored exclusions remove 3.3% (39/1177). The cap sits well above that

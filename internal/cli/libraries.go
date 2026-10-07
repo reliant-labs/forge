@@ -38,6 +38,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // forgePkgModule is the IMPORT PATH PREFIX of forge's public runtime
@@ -267,6 +269,7 @@ func projectRootDir() (string, error) {
 // be a second answer that can disagree with the build.
 func resolveForgePkgDir(ctx context.Context) (dir, version string, err error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}\t{{.Version}}", forgeModulePath)
+	cmd.Env = goexec.Env()
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, runErr := cmd.Output()
@@ -353,7 +356,9 @@ func detectLibraryDivergence(ctx context.Context, resolvedDir string) *LibraryDi
 
 // goEnv runs `go env <name>` and returns its trimmed value.
 func goEnv(ctx context.Context, name string) (string, error) {
-	out, err := exec.CommandContext(ctx, "go", "env", name).Output()
+	cmd := exec.CommandContext(ctx, "go", "env", name)
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
@@ -373,7 +378,7 @@ func goEnv(ctx context.Context, name string) (string, error) {
 // this checkout would show.
 func forgePkgVersionInGoMod(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", forgeModulePath)
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = goexec.Env("GOWORK=off")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

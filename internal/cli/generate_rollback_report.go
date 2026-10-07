@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Root-cause attribution for the failed-generate report.
@@ -115,6 +117,7 @@ func goBuildRestoredTree(projectDir string) rollbackConsistency {
 	// project (see runGoBuildValidate).
 	cmd := exec.Command("go", "build", "-o", os.DevNull, "./...")
 	cmd.Dir = projectDir
+	cmd.Env = goexec.Env()
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return rollbackConsistency{Checked: true, Builds: true}

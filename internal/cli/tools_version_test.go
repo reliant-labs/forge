@@ -22,7 +22,6 @@ func TestResolveToolVersion_FromGoMod(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("GOFLAGS", "-mod=mod")
 	t.Setenv("GOPROXY", "off")
 	ctx := context.Background()
 

@@ -367,8 +367,13 @@ func parseMigrationFrontmatter(content []byte) migrationMeta {
 		v = strings.TrimSpace(v)
 		// Strip surrounding quotes — some authors quote values with
 		// special chars in YAML; we don't need a full YAML parser to
-		// handle the common case.
-		v = strings.Trim(v, `"'`)
+		// handle the common case. Only a MATCHED pair is a YAML quote: a
+		// detection script that ends in a quoted argument (`... "$f"`)
+		// must keep its closing quote, or the shell rejects the script
+		// and the migration silently matches nothing.
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		}
 		switch k {
 		case "name":
 			m.Title = v

@@ -222,7 +222,7 @@ func goListPackageName(ctx context.Context, t goBuildTarget) (string, error) {
 	}
 	args = append(args, t.cmd)
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	cmd.Env = goexec.Env("CGO_ENABLED=0")
 	if t.goos != "" {
 		cmd.Env = append(cmd.Env, "GOOS="+t.goos)
 	}

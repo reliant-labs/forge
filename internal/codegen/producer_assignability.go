@@ -56,6 +56,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // AmbiguousProvider records a Deps field whose interface type is satisfied by
@@ -207,6 +209,7 @@ func loadProducerUniverse(projectDir string, comps []BuildComponent) *producerUn
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes |
 			packages.NeedDeps | packages.NeedImports,
 		Dir: absProject,
+		Env: goexec.Env(),
 	}
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil || len(pkgs) == 0 {

@@ -37,6 +37,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   original error plus why elevation did not help (an older control plane, or a
   role without the permission).
 
+- **Dependabot no longer bumps code generators it cannot regenerate for.**
+  protoc-gen-es writes its version into every `*_pb.ts`, and protoc-gen-go
+  (installed by `forge tools install` at go.mod's `google.golang.org/protobuf`)
+  into every `*.pb.go`. Dependabot edits the lockfile or go.mod but never runs
+  `forge generate`, so each such bump failed Verify Generated Code by
+  construction; control-plane #645 was one, merged red. The scaffolded
+  `.github/dependabot.yml` now ignores `@bufbuild/protoc-gen-es` and its exact
+  peer `@bufbuild/protobuf` in the npm entry, and `google.golang.org/protobuf`
+  in the gomod entry when the project runs protoc-gen-go. The file is yours
+  once scaffolded, so existing projects get it from the v0.1.44 migration
+  (`forge project upgrade list`). A migration detection script that ended in a
+  quoted argument (`"$f"`) also had its closing quote stripped by the
+  frontmatter parser and silently matched nothing; only a matched pair of
+  quotes is stripped now.
+
+- **`forge generate` no longer rewrites go.sum under a caller's
+  `GOFLAGS=-mod=mod`.** Its `go` subprocesses inherited the caller's GOFLAGS,
+  and the goimports pass over generated code runs `go list -m -e -json ...`,
+  which under `-mod=mod` records a checksum for every module in the graph: 356
+  go.sum lines on control-plane that a CI regenerate never produces. Every `go`
+  subprocess forge runs on its own behalf — and goimports — now gets its
+  environment from `goexec.Env`, which drops `-mod=mod` from the inherited
+  GOFLAGS and keeps everything else (`-tags`, `-trimpath`, `-mod=vendor`, …).
+  Env that forge or a project's declared build config sets explicitly is still
+  honoured. A test pins that no new call site inherits the environment
+  unscrubbed.
+
 - **An unknown key in the per-machine `storage.json` no longer fails unrelated
   commands.** `storage.Load` decoded with `DisallowUnknownFields`, so a file
   written by another forge version (e.g. `go_cache_unused`, a live key added in

@@ -44,6 +44,8 @@ import (
 	"sync"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // InfraField is one exported field on the owned *Infra struct, parsed from
@@ -298,6 +300,7 @@ func (m *InfraAssignabilityMatcher) loadUniverseLocked(roleRoot, pkgDir string) 
 			packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports |
 			packages.NeedSyntax,
 		Dir: absProject,
+		Env: goexec.Env(),
 	}
 	appPattern := "./" + path.Join("internal", "app")
 	compPattern := "./" + path.Join(filepath.ToSlash(roleRoot), filepath.ToSlash(pkgDir))

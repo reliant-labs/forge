@@ -151,6 +151,17 @@ detection: 'grep -q "^dev_target:" forge.yaml'
 	}
 }
 
+// An unquoted detection that ENDS in a quoted shell argument keeps its
+// closing quote. Stripping quote characters from each end independently cut
+// `"$f"` to `"$f`, the shell rejected the script, and the migration matched
+// no project at all — with nothing reported, since detection is silent.
+func TestParseMigrationFrontmatter_KeepsAnUnpairedTrailingQuote(t *testing.T) {
+	body := []byte("---\nversion: v0.5.0\ndetection: f=forge.yaml; grep -q x \"$f\"\n---\n")
+	if got, want := parseMigrationFrontmatter(body).Detection, `f=forge.yaml; grep -q x "$f"`; got != want {
+		t.Errorf("Detection = %q, want %q", got, want)
+	}
+}
+
 // TestParseMigrationFrontmatter_NoFrontmatter returns an empty meta
 // rather than panicking on bodies without a leading "---\n".
 func TestParseMigrationFrontmatter_NoFrontmatter(t *testing.T) {

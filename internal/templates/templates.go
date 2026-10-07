@@ -546,6 +546,17 @@ type NavPageData struct {
 	ComponentIdent string
 }
 
+// DependabotData renders ci/github/dependabot.yml.tmpl.
+type DependabotData struct {
+	// FrontendName is the first frontend's name. Empty emits no npm entry.
+	FrontendName string
+	// RunsProtocGenGo is true when `forge generate` runs protoc-gen-go —
+	// a service-kind project with codegen on. Only then does a
+	// google.golang.org/protobuf bump change generated output, so only
+	// then is it kept out of Dependabot.
+	RunsProtocGenGo bool
+}
+
 // NavHookImport is one merged import statement the dashboard template
 // emits for list hooks: all hook symbols whose generated hooks file is
 // the same module. Pre-grouped in Go so two entities served by one

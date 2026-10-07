@@ -42,11 +42,13 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/tools/go/packages"
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/controller-tools/pkg/crd"
 	"sigs.k8s.io/controller-tools/pkg/loader"
 	"sigs.k8s.io/controller-tools/pkg/markers"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -86,7 +88,7 @@ func LoadTierSchemas(forgeRoot string) (*TierSchemas, error) {
 	}
 	defer restore()
 
-	pkgs, err := loader.LoadRoots(TierSpecPackage)
+	pkgs, err := loader.LoadRootsWithConfig(&packages.Config{Env: goexec.Env()}, TierSpecPackage)
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", TierSpecPackage, err)
 	}

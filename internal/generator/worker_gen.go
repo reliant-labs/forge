@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -121,6 +122,7 @@ func ensureModuleRequirement(root, modPath, version string) error {
 
 	cmd := exec.Command("go", "get", modPath+"@"+version)
 	cmd.Dir = root
+	cmd.Env = goexec.Env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

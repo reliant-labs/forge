@@ -143,6 +143,7 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 
 	fmt.Printf("Building %s with debug flags...\n", buildPath)
 	buildCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-o", outputBinary, buildPath))
+	buildCmd.Env = goexec.Env()
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {

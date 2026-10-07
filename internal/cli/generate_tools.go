@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // devWorkspaceBridgesExternalModule reports whether the project's go.work
@@ -100,7 +101,7 @@ type goOffWorkspaceRunner func(dir string, args ...string) ([]byte, error)
 func runGoOffWorkspace(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = goexec.Env("GOWORK=off")
 	return cmd.CombinedOutput()
 }
 
@@ -290,6 +291,7 @@ func runGoModTidyGen(projectDir string) error {
 	fmt.Println("🔨 Running go mod tidy in gen/...")
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = genDir
+	cmd.Env = goexec.Env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -317,6 +319,7 @@ func runGoModTidyRoot(projectDir string) error {
 	fmt.Println("🔨 Running go mod tidy in project root...")
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = projectDir
+	cmd.Env = goexec.Env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -368,6 +371,9 @@ func runGoimportsOnGenerated(projectDir, modulePath string) error {
 		args := append([]string{"-local", modulePath, "-w"}, targets[start:end]...)
 		cmd := exec.Command(goimportsPath, args...)
 		cmd.Dir = projectDir
+		// goimports resolves imports by running `go list` itself, so it
+		// gets the same scrubbed GOFLAGS as forge's own go calls.
+		cmd.Env = goexec.Env()
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {

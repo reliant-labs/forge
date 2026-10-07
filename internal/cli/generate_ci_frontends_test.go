@@ -89,7 +89,7 @@ func TestDiscoverCIFrontends_DerivedFromKCLWithNoForgeYAMLKey(t *testing.T) {
 		t.Fatalf("ci.yml frontends = %+v, want one entry at frontends/internal-console", ci.Frontends)
 	}
 
-	dep := files[".github/dependabot.yml"].(struct{ FrontendName string })
+	dep := files[".github/dependabot.yml"].(templates.DependabotData)
 	if dep.FrontendName != "internal-console" {
 		t.Fatalf("dependabot FrontendName = %q, want internal-console", dep.FrontendName)
 	}

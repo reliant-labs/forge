@@ -38,6 +38,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // ModulePath is the module a project requires to get forge's runtime
@@ -170,6 +171,7 @@ func ResolveProjectForge(projectDir string) (version string, local, ok bool) {
 		"-f", "{{.Version}}|{{with .Replace}}{{.Version}}|{{.Path}}{{end}}",
 		ModulePath)
 	cmd.Dir = projectDir
+	cmd.Env = goexec.Env()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false, false

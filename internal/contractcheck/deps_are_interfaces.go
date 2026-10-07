@@ -84,6 +84,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
@@ -1416,7 +1417,7 @@ func (l *depsLinter) externalPackageDir(importPath string) string {
 
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-f", "{{.Dir}}", "--", importPath)
 	cmd.Dir = l.rootDir
-	cmd.Env = append(os.Environ(), "GOPROXY=off")
+	cmd.Env = goexec.Env("GOPROXY=off")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

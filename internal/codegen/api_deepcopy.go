@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"sort"
 
+	"golang.org/x/tools/go/packages"
 	"sigs.k8s.io/controller-tools/pkg/deepcopy"
 	"sigs.k8s.io/controller-tools/pkg/genall"
 	"sigs.k8s.io/controller-tools/pkg/loader"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // DeepCopyFile is the file controller-tools' object generator owns in each
@@ -80,7 +83,9 @@ func GenerateAPIDeepCopy(projectDir string) ([]string, error) {
 	defer back()
 
 	var gen genall.Generator = deepcopy.Generator{}
-	rt, err := genall.Generators{&gen}.ForRoots("./" + CRDAPIDir + "/...")
+	// WithConfig only to scrub the go list env: ForRoots' own empty config
+	// would hand go/packages the caller's GOFLAGS=-mod=mod (goexec.Env).
+	rt, err := genall.Generators{&gen}.ForRootsWithConfig(&packages.Config{Env: goexec.Env()}, "./"+CRDAPIDir+"/...")
 	if err != nil {
 		restore()
 		return nil, fmt.Errorf("load api packages: %w", err)

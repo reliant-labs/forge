@@ -88,6 +88,8 @@ import (
 	"sync"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // MatchKind classifies the result of one Deps-field → AppExtras-field
@@ -394,6 +396,7 @@ func (m *DepsAssignabilityMatcher) loadUniverseLocked(roleRoot, pkgDir string) *
 			packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports |
 			packages.NeedSyntax,
 		Dir: absProject,
+		Env: goexec.Env(),
 	}
 	appPattern := "./" + path.Join("pkg", "app")
 	compPattern := "./" + path.Join(filepath.ToSlash(roleRoot), filepath.ToSlash(pkgDir))

@@ -22,7 +22,7 @@ without forge ever touching your additions.
 | `.github/workflows/deploy.yml` | Tier-1 | Per-environment `forge env build <env> --push` + `forge env deploy <env> --yes`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded) |
 | `.github/workflows/e2e.yml` | Tier-1 | E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime |
 | `.github/workflows/pre-commit.yml` | Tier-2 | Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after) |
-| `.github/dependabot.yml` | Tier-1 | Weekly bumps for `gomod` (root + `/gen` + each frontend), `npm` (frontend), `docker`, and `github-actions` |
+| `.github/dependabot.yml` | Tier-2 | Grouped weekly bumps for `gomod` (root + `/gen`), `npm` (first frontend), `docker`, and `github-actions`. Ignores forge and the code generators that stamp their version into generated files — `@bufbuild/protoc-gen-es` with its exact peer `@bufbuild/protobuf`, and `google.golang.org/protobuf` (protoc-gen-go) — because Dependabot cannot regenerate, so their bumps fail `forge ci verify-generated` every time. Bump those by hand with a `forge generate` (written once at scaffold; yours to edit after) |
 | `.github/CODEOWNERS` | Tier-2 | Starter ownership rules (one-shot scaffold; yours to edit after) |
 | `.github/pull_request_template.md` | Tier-1 | Standard PR template |
 

@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Rule names, used as the first column of every Finding and as the stable key
@@ -161,6 +163,7 @@ func loadForScan(root string, extraEnv []string) ([]*packages.Package, error) {
 			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps |
 			packages.NeedImports,
 		Dir: root,
+		Env: goexec.Env(),
 		// Tests must be loaded: "written only by tests" is half the
 		// phantom-field verdict, and a scan that cannot see test files
 		// would report a legitimately test-driven field identically to

@@ -24,9 +24,12 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/tools/go/packages"
 	"sigs.k8s.io/controller-tools/pkg/crd"
 	"sigs.k8s.io/controller-tools/pkg/genall"
 	"sigs.k8s.io/controller-tools/pkg/markers"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // ControllerToolsVersion is the controller-tools release whose schema
@@ -182,7 +185,9 @@ func loadCRDDocs(sources []string) ([]CRDDoc, error) {
 	}
 
 	var asGen genall.Generator = gen
-	roots, err := genall.Generators{&asGen}.ForRoots(sources...)
+	// WithConfig only to scrub the go list env: ForRoots' own empty config
+	// would hand go/packages the caller's GOFLAGS=-mod=mod (goexec.Env).
+	roots, err := genall.Generators{&asGen}.ForRootsWithConfig(&packages.Config{Env: goexec.Env()}, sources...)
 	if err != nil {
 		return nil, fmt.Errorf("load api packages: %w", err)
 	}

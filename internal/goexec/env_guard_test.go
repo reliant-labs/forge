@@ -73,7 +73,12 @@ func TestGoToolchainCallsUseEnv(t *testing.T) {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			starts, usesEnv := scanToolchainUse(fn.Body)
+			starts, usesEnv, configless := scanToolchainUse(fn.Body)
+			for _, pos := range configless {
+				p := fset.Position(pos)
+				offenders = append(offenders, rel+":"+strconv.Itoa(p.Line)+" in "+fn.Name.Name+
+					"() — a controller-tools load with no packages.Config, so it can never carry goexec.Env; use the *WithConfig form")
+			}
 			if len(starts) == 0 {
 				continue
 			}
@@ -118,11 +123,21 @@ func TestGoToolchainCallsUseEnv(t *testing.T) {
 // scanToolchainUse reports where body starts the go toolchain and whether it
 // calls goexec.Env anywhere (closures included — a command built in one
 // often gets its Env in the enclosing function).
-func scanToolchainUse(body *ast.BlockStmt) (starts []token.Pos, usesEnv bool) {
+//
+// configless are controller-tools loads made through the convenience forms
+// (genall.Generators.ForRoots, loader.LoadRoots). They build an empty
+// packages.Config internally, so go/packages execs `go list` with the
+// process environment and no call site can scrub it. They were found the
+// hard way: an end-to-end run of `forge generate` on control-plane under
+// GOFLAGS=-mod=mod showed the CRD and deepcopy loads still receiving it.
+func scanToolchainUse(body *ast.BlockStmt) (starts []token.Pos, usesEnv bool, configless []token.Pos) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.CallExpr:
 			pkg, name := selectorOf(n.Fun)
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "ForRoots" || sel.Sel.Name == "LoadRoots") {
+				configless = append(configless, n.Pos())
+			}
 			switch {
 			case pkg == "goexec" && name == "Env":
 				usesEnv = true
@@ -142,7 +157,7 @@ func scanToolchainUse(body *ast.BlockStmt) (starts []token.Pos, usesEnv bool) {
 		}
 		return true
 	})
-	return starts, usesEnv
+	return starts, usesEnv, configless
 }
 
 func selectorOf(e ast.Expr) (pkg, name string) {

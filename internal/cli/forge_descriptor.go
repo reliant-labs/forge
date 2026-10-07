@@ -201,7 +201,9 @@ func MergeDescriptorFragments(descriptorOut string) error {
 		return err
 	}
 	outPath := filepath.Join(descriptorOut, "forge_descriptor.json")
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
+	// A text file ends in a newline; without one every end-of-file fixer
+	// rewrites the generated file and the next generate rewrites it back.
+	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write forge_descriptor.json: %w", err)
 	}
 

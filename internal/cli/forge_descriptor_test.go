@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/compiler/protogen"
@@ -121,6 +122,12 @@ func TestMergeDescriptorFragments_CombinesAllFragments(t *testing.T) {
 	var got ForgeDescriptor
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("parse merged descriptor: %v", err)
+	}
+	// A text file ends in a newline. Without one, every end-of-file fixer
+	// (forge's own pre-commit hook included) rewrites the generated file,
+	// and the next generate rewrites it back.
+	if !strings.HasSuffix(string(out), "}\n") {
+		t.Errorf("forge_descriptor.json does not end in a newline: %q", out[max(0, len(out)-20):])
 	}
 
 	if len(got.Services) != 2 || got.Services[0].Name != "AdminServerService" || got.Services[1].Name != "WorkspaceService" {

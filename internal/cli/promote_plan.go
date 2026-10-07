@@ -1171,7 +1171,9 @@ func computePromoteCommitRange(ctx context.Context, git promoteGitReader, dir st
 // not drive) the write — so the heading states which of those happened before
 // anything else, rather than leaving a reader to infer it from the absence of
 // a success line.
-func renderPromotePlanText(out io.Writer, plan promotePlan) {
+// renderPromotePlanHeadline prints the plan's first line: what happened, or
+// what would.
+func renderPromotePlanHeadline(out io.Writer, plan promotePlan) {
 	switch {
 	case plan.Refusal != nil:
 		// The plan below is what the write WOULD have done. Said first,
@@ -1198,6 +1200,10 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	default:
 		fmt.Fprintf(out, "PLAN (dry run — nothing was written): promote env %q → release %s\n", plan.Env, plan.Target.Release)
 	}
+}
+
+func renderPromotePlanText(out io.Writer, plan promotePlan) {
+	renderPromotePlanHeadline(out, plan)
 
 	if plan.Current.Bound {
 		fmt.Fprintf(out, "  current   %s (promoted %s, promotion %s)\n", plan.Current.Release, plan.Current.PromotedAt, plan.Current.PromotionID)

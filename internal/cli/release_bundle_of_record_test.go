@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"oras.land/oras-go/v2/content/memory"
+
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/pkg/release"
-	"oras.land/oras-go/v2/content/memory"
 )
 
 // stubEnvShapeStream is stubEnvShape over a stated render, so a test can make

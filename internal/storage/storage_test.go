@@ -80,11 +80,28 @@ func TestPolicyFileWithoutSourceCacheKeysGetsDefaults(t *testing.T) {
 	}
 }
 
-func TestUnknownPolicyFieldRejected(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "policy.json")
-	_ = os.WriteFile(path, []byte(`{"registry_kepp":2}`), 0600)
-	if _, err := Load(path); err == nil {
-		t.Fatal("misspelled destructive policy accepted")
+// A storage.json written by a different forge version (or carrying a retired
+// or misspelled key) must not fail unrelated commands: it loads, the known
+// keys are honoured, and the unknown one is named in a warning.
+func TestUnknownPolicyFieldToleratedWithWarning(t *testing.T) {
+	var warned strings.Builder
+	prev := PolicyWarnings
+	PolicyWarnings = &warned
+	t.Cleanup(func() { PolicyWarnings = prev })
+	path := filepath.Join(t.TempDir(), "storage.json")
+	doc := `{"registry_keep":3,"go_cache_unused":"48h","go_cache_gib":60,"from_the_future":true}`
+	if err := os.WriteFile(path, []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("storage.json with unknown key must load: %v", err)
+	}
+	if p.RegistryKeep != 3 {
+		t.Fatalf("known key lost: registry_keep = %d", p.RegistryKeep)
+	}
+	if !strings.Contains(warned.String(), "from_the_future") || strings.Contains(warned.String(), "go_cache_unused") {
+		t.Fatalf("warning should name only the unknown key, got %q", warned.String())
 	}
 }
 

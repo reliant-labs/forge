@@ -8,9 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -91,7 +95,7 @@ func DefaultPath() (string, error) {
 	return filepath.Join(dir, "forge", "storage.json"), nil
 }
 
-// Load overlays a strict JSON document on the default policy.
+// Load overlays a JSON document on the default policy, tolerating unknown keys.
 func Load(path string) (Policy, error) {
 	p := DefaultPolicy()
 	b, err := os.ReadFile(path)
@@ -101,12 +105,46 @@ func Load(path string) (Policy, error) {
 	if err != nil {
 		return p, err
 	}
-	d := json.NewDecoder(strings.NewReader(string(b)))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&p); err != nil {
+	if err := json.Unmarshal(b, &p); err != nil {
 		return p, fmt.Errorf("storage policy: %w", err)
 	}
+	warnUnknownPolicyKeys(path, b)
 	return p, p.Validate()
+}
+
+// PolicyWarnings receives the notice that storage.json holds keys this build
+// does not know (written by a newer or older forge, or misspelled). Per-machine
+// state is shared across forge versions, so an unknown key must never fail an
+// unrelated command; strictness belongs to forge.yaml. Unknown keys fall back to
+// defaults here and are dropped on the next Save. Warned once per path.
+var PolicyWarnings io.Writer = os.Stderr
+
+var warnedPolicyPaths sync.Map
+
+func warnUnknownPolicyKeys(path string, doc []byte) {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(doc, &raw) != nil {
+		return
+	}
+	known := map[string]bool{}
+	t := reflect.TypeOf(Policy{})
+	for i := 0; i < t.NumField(); i++ {
+		known[strings.Split(t.Field(i).Tag.Get("json"), ",")[0]] = true
+	}
+	var unknown []string
+	for k := range raw {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return
+	}
+	if _, seen := warnedPolicyPaths.LoadOrStore(path, true); seen {
+		return
+	}
+	sort.Strings(unknown)
+	fmt.Fprintf(PolicyWarnings, "warning: %s has keys this forge does not recognise (%s); ignoring them (written by a different forge version, or misspelled?)\n", path, strings.Join(unknown, ", "))
 }
 
 // Validate rejects unbounded budgets and unscoped registry targets.

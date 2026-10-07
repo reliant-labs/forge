@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unknown key in the per-machine `storage.json` no longer fails unrelated
+  commands.** `storage.Load` decoded with `DisallowUnknownFields`, so a file
+  written by another forge version (e.g. `go_cache_unused`, a live key added in
+  #537 and unknown to older binaries) made `forge build` and friends abort with
+  `storage policy: json: unknown field`. Unknown keys are now ignored with a
+  one-line warning naming them; strictness stays with forge.yaml.
+
 - **A fresh scaffold signs in.** The README's first sixty seconds ended at a
   sign-in page nobody could pass, for two reasons.
 

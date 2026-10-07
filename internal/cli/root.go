@@ -168,7 +168,11 @@ authored protos, in one call.`,
 				}
 			}
 
-			return nil
+			// Is this the forge the project pins? Warned for every
+			// project command; refused for the ones that build, release
+			// or deploy. See forge_pin_skew.go.
+			allow, _ := cmd.Flags().GetBool(allowVersionSkewFlag)
+			return checkForgePinSkew(cmd, rootCmd, cmd.ErrOrStderr(), allow)
 		},
 	}
 
@@ -189,6 +193,7 @@ authored protos, in one call.`,
 	// process-global and unsafe under concurrency. Short form -C matches
 	// make and git.
 	rootCmd.PersistentFlags().StringVarP(&projectDir, "project-dir", "C", "", "resolve the project from this directory instead of the current one")
+
 
 	// Add all commands
 	// `forge start` prints the greenfield brief. It is a top-level verb
@@ -293,6 +298,7 @@ authored protos, in one call.`,
 		}
 	}
 
+	registerVersionSkewFlags(rootCmd)
 	return rootCmd
 }
 

@@ -248,6 +248,21 @@ func TestResolveDeployImageTag_NoCommitSkipsFreshnessCheck(t *testing.T) {
 // `forge env deploy` pair leaves behind.
 func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 	t.Helper()
+	cutReleaseAt(t, dir, version, builtCommit)
+	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
+		Env: envName, Release: version, Kind: release.KindPromote,
+		Resolved: map[string]string{"app": sha("a")},
+	}, appendGuard{}); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+}
+
+// cutReleaseAt records a release whose images were built from builtCommit,
+// WITHOUT promoting any env to it — the state `forge env deploy <env>
+// <version>` sees while it plans and preflights, before the promotion is
+// written.
+func cutReleaseAt(t *testing.T, dir, version, builtCommit string) {
+	t.Helper()
 	if err := testCutRelease(t, dir, release.Release{
 		Version: version,
 		Git:     release.Git{Commit: builtCommit, Tag: version},
@@ -256,12 +271,6 @@ func bindEnvToRelease(t *testing.T, dir, envName, version, builtCommit string) {
 		},
 	}); err != nil {
 		t.Fatalf("write release: %v", err)
-	}
-	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
-		Env: envName, Release: version, Kind: release.KindPromote,
-		Resolved: map[string]string{"app": sha("a")},
-	}, appendGuard{}); err != nil {
-		t.Fatalf("promote: %v", err)
 	}
 }
 

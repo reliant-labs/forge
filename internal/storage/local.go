@@ -200,8 +200,27 @@ func (r Runner) clusterStatus(ctx context.Context, cluster string) error {
 	return nil
 }
 
-// WithLock serializes policy updates and maintenance on this machine.
+// LockWaitPoll is how often WithLockWait retries a held lock.
+var LockWaitPoll = 200 * time.Millisecond
+
+// WithLock serializes policy updates and maintenance on this machine. It does
+// not wait: a held lock is an immediate error, which is right for a pass that
+// would only duplicate the holder's work.
 func WithLock(policyPath string, fn func() error) error {
+	return withLock(policyPath, 0, fn)
+}
+
+// WithLockWait is WithLock for a caller that must not be turned away by
+// maintenance. It retries a held lock until wait elapses, then fails with the
+// same "already running" error. The bound is the point: an unbounded wait would
+// let a wedged maintenance pass hang a release cut forever, and no wait at all
+// failed a cut — after a six-minute build — because a background pass happened
+// to hold a lock for the few milliseconds the cut needs.
+func WithLockWait(policyPath string, wait time.Duration, fn func() error) error {
+	return withLock(policyPath, wait, fn)
+}
+
+func withLock(policyPath string, wait time.Duration, fn func() error) error {
 	// Refused before the mkdir: the lock file would otherwise be created
 	// beside the real machine policy even when every write inside is refused.
 	if err := guardMachinePolicy(policyPath); err != nil {
@@ -215,8 +234,16 @@ func WithLock(policyPath string, fn func() error) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	if err := lock(f); err != nil {
-		return fmt.Errorf("storage maintenance is already running: %w", err)
+	deadline := time.Now().Add(wait)
+	for {
+		err := lock(f)
+		if err == nil {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("storage maintenance is already running: %w", err)
+		}
+		time.Sleep(LockWaitPoll)
 	}
 	return fn()
 }

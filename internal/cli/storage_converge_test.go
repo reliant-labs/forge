@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/storage"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // stubConvergeStorage captures the facts a touch point derived instead of
@@ -444,5 +445,53 @@ func TestOpportunisticGC_SilentWithoutRegistries(t *testing.T) {
 	maybeOpportunisticGC(t.Context(), &out)
 	if out.Len() != 0 {
 		t.Fatalf("notice printed with no registries registered:\n%s", out.String())
+	}
+}
+
+// A release cut must not fail because a maintenance pass holds the policy lock
+// for a moment. This failed a real prod cut AFTER a six-minute build
+// ("storage maintenance is already running"). The cut waits, bounded, and the
+// pin still lands before the ledger entry is published.
+func TestPinStorageRelease_WaitsForARunningMaintenancePass(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+	p := storage.DefaultPolicy()
+	p.Registries = []storage.Registry{{Container: "k3d-registry", Repositories: []string{"app"}, Aliases: []string{"k3d-registry:5000"}, Contexts: []string{"k3d-demo"}}}
+	if err := storage.Save(path, p); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	t.Setenv("FORGE_STORAGE_POLICY", path)
+
+	prevPoll, prevWait := storage.LockWaitPoll, releasePinLockWait
+	storage.LockWaitPoll, releasePinLockWait = 10*time.Millisecond, 5*time.Second
+	t.Cleanup(func() { storage.LockWaitPoll, releasePinLockWait = prevPoll, prevWait })
+
+	held, free := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- storage.WithLock(path, func() error { close(held); <-free; return nil })
+	}()
+	<-held
+	go func() { time.Sleep(100 * time.Millisecond); close(free) }()
+
+	digest := "sha256:" + strings.Repeat("a", 64)
+	err := pinStorageRelease(release.Release{Version: "v1", Artifacts: map[string]release.Artifact{
+		"app": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: digest}},
+	}})
+	if err != nil {
+		t.Fatalf("the cut was refused because maintenance held the lock briefly: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	got, err := storage.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := false
+	for _, pin := range got.Pins {
+		pinned = pinned || pin == digest
+	}
+	if !pinned {
+		t.Errorf("the release's digest was not pinned after waiting: pins = %v", got.Pins)
 	}
 }

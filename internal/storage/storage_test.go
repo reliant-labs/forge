@@ -259,3 +259,68 @@ func TestKubeletDurationNormalization(t *testing.T) {
 		t.Fatal("incorrect kubelet duration comparison")
 	}
 }
+
+// A release cut must not be turned away because a maintenance pass holds the
+// lock for a moment. WithLockWait retries a held lock and runs once it frees.
+func TestWithLockWaitRunsOnceTheHolderReleases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	prev := LockWaitPoll
+	LockWaitPoll = 10 * time.Millisecond
+	t.Cleanup(func() { LockWaitPoll = prev })
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- WithLock(path, func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+
+	// The holder lets go after the waiter has started waiting.
+	go func() { time.Sleep(80 * time.Millisecond); close(release) }()
+
+	ran := false
+	start := time.Now()
+	if err := WithLockWait(path, 5*time.Second, func() error { ran = true; return nil }); err != nil {
+		t.Fatalf("a bounded wait for a lock that frees in 80ms failed: %v", err)
+	}
+	if !ran {
+		t.Fatal("the waiter never ran")
+	}
+	if time.Since(start) < 50*time.Millisecond {
+		t.Errorf("the waiter ran after %v, before the holder released: it did not wait", time.Since(start))
+	}
+	if err := <-holderDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The wait is BOUNDED: a wedged maintenance pass must not hang a cut forever.
+func TestWithLockWaitGivesUpAfterItsBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	prev := LockWaitPoll
+	LockWaitPoll = 10 * time.Millisecond
+	t.Cleanup(func() { LockWaitPoll = prev })
+
+	err := WithLock(path, func() error {
+		start := time.Now()
+		werr := WithLockWait(path, 120*time.Millisecond, func() error {
+			t.Fatal("ran while the lock was held")
+			return nil
+		})
+		if werr == nil || !strings.Contains(werr.Error(), "already running") {
+			t.Fatalf("want the 'already running' error after the bound, got %v", werr)
+		}
+		if d := time.Since(start); d < 100*time.Millisecond || d > 3*time.Second {
+			t.Errorf("gave up after %v, want about the 120ms bound", d)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

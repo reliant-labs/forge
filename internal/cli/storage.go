@@ -366,14 +366,21 @@ func declaredRegistryContainer(clusters []ClusterEntity) string {
 	return ""
 }
 
-// Pin before publishing the ledger entry. If maintenance owns the lock, cutting
-// the release fails rather than racing deletion. Failed cuts can leave safe pins.
+// releasePinLockWait bounds how long a release cut waits for a running
+// maintenance pass. Pinning is milliseconds of work, so any real wait is a pass
+// that is mid-flight; waiting keeps the guarantee (pins land BEFORE maintenance
+// can delete) without failing a cut that already paid for its build.
+var releasePinLockWait = 5 * time.Minute
+
+// Pin before publishing the ledger entry. If maintenance owns the lock, the
+// cut WAITS (bounded) rather than racing deletion or failing instantly. Failed
+// cuts can leave safe pins.
 func pinStorageRelease(rel release.Release) error {
 	path, err := storage.DefaultPath()
 	if err != nil {
 		return err
 	}
-	err = storage.WithLock(path, func() error {
+	err = storage.WithLockWait(path, releasePinLockWait, func() error {
 		p, err := storage.Load(path)
 		if err != nil {
 			return err

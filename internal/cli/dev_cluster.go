@@ -285,6 +285,17 @@ func listK3dClusters(ctx context.Context) ([]k3dClusterListEntry, error) {
 	return entries, nil
 }
 
+// The two host-state shell-outs every `forge cluster` path funnels through,
+// seamed so no test reads the machine's real k3d clusters or rewrites the
+// developer's kubeconfig. That kubeconfig is shared with every other process
+// on the box: a unit test that ran a real `kubectl config use-context`
+// switched it out from under them. main_test.go installs hermetic defaults;
+// a test that wants a cluster list or observes the pin sets its own.
+var (
+	listK3dClustersFn   = listK3dClusters
+	pinKubectlContextFn = pinKubectlContext
+)
+
 // fullyRunning reports whether every k3d server and agent is running. Older
 // k3d versions may omit the total-count fields; in that case, at least one
 // running server is the strongest available signal and preserves backwards
@@ -305,7 +316,7 @@ func (e k3dClusterListEntry) fullyRunning() bool {
 // lookupK3dClusterRuntimeState returns both presence and liveness from one
 // `k3d cluster list` snapshot. A stopped cluster exists but is not running.
 func lookupK3dClusterRuntimeState(ctx context.Context, name string) (k3dClusterRuntimeState, error) {
-	entries, err := listK3dClusters(ctx)
+	entries, err := listK3dClustersFn(ctx)
 	if err != nil {
 		return k3dClusterRuntimeState{}, err
 	}
@@ -564,7 +575,7 @@ func resumeExistingDevCluster(ctx context.Context, clusterName string, state k3d
 			return err
 		}
 	}
-	if err := pinKubectlContext(ctx, clusterName); err != nil {
+	if err := pinKubectlContextFn(ctx, clusterName); err != nil {
 		return err
 	}
 	if wait {
@@ -648,7 +659,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		}
 	}
 
-	if err := pinKubectlContext(ctx, clusterName); err != nil {
+	if err := pinKubectlContextFn(ctx, clusterName); err != nil {
 		return err
 	}
 
@@ -954,7 +965,7 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 	}
 
 	if !dryRun {
-		if err := pinKubectlContext(ctx, clusterName); err != nil {
+		if err := pinKubectlContextFn(ctx, clusterName); err != nil {
 			return err
 		}
 	}

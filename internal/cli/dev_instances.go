@@ -47,7 +47,7 @@ type devInstance struct {
 }
 
 func runDevInstances(ctx context.Context, jsonOut bool) error {
-	clusters, err := listK3dClusters(ctx)
+	clusters, err := listK3dClustersFn(ctx)
 	if err != nil {
 		return err
 	}

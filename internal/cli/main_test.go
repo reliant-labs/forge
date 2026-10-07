@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -53,6 +55,23 @@ func TestMain(m *testing.M) {
 	// readable" is the CI answer, so it is the hermetic default; a test that
 	// wants a describe sets one (cluster_connect_test.go).
 	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) { return gkeDescription{}, false }
+	// Nor does any test touch the host's k3d, kubectl, or docker. These
+	// were real shell-outs from -short unit tests, and this box is shared:
+	// `forge cluster up`'s test ran `kubectl config use-context
+	// k3d-control-plane` against the developer's own kubeconfig, switching
+	// the context under every other process using it; another read the
+	// host's live `k3d cluster list`; three asked a remote registry for a
+	// digest via `docker buildx imagetools`. Each default below is the
+	// answer a clean CI host gives — no clusters, the pin is a no-op, no
+	// registry, no buildx. A test that needs a different answer sets one,
+	// and hermetic_host_test.go fails the suite if any of these binaries
+	// is reached again.
+	listK3dClustersFn = func(context.Context) ([]k3dClusterListEntry, error) { return nil, nil }
+	pinKubectlContextFn = func(context.Context, string) error { return nil }
+	imagetoolsInspect = func(context.Context, string, string) ([]byte, error) {
+		return nil, errors.New("unit tests do not query a container registry")
+	}
+	buildxAvailable = func(context.Context) bool { return false }
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)
@@ -81,7 +100,20 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	checkHostTools := func() error { return nil }
+	if hostToolTripwireSetup != nil {
+		check, err := hostToolTripwireSetup()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cli: install the host-tool tripwire: %v\n", err)
+			os.Exit(1)
+		}
+		checkHostTools = check
+	}
 	code := m.Run()
+	if err := checkHostTools(); err != nil {
+		fmt.Fprintf(os.Stderr, "cli: %v\n", err)
+		code = 1
+	}
 	// Remove the process-wide fixtures the e2e lane builds. They are shared
 	// across tests through a sync.Once (see buildforgeBinary), so no single
 	// test can own their lifetime and only the process can delete them.
@@ -97,6 +129,35 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(code)
+}
+
+// hostToolTripwireSetup is installed by hermetic_host_test.go, which only the
+// default build compiles: the e2e and integration lanes use real clusters on
+// purpose. It lives here, untagged, for the same reason registerSharedTempDir
+// does — this package has exactly one TestMain.
+var hostToolTripwireSetup func() (check func() error, err error)
+
+// stubHostTool puts a stand-in for a host binary at the front of PATH for one
+// test, for code paths that shell out with no seam of their own (a library
+// this package calls, such as doctor's `docker compose ps`). script is the
+// stand-in's body after the shebang. Uses t.Setenv, so not for parallel tests.
+func stubHostTool(t *testing.T, name, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("host-tool stand-ins are shell scripts")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatalf("write %s stand-in: %v", name, err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// stubNoDockerDaemon answers every docker call the way a host with no running
+// daemon does — the CI answer, and the one these tests assert against.
+func stubNoDockerDaemon(t *testing.T) {
+	t.Helper()
+	stubHostTool(t, "docker", "echo 'Cannot connect to the Docker daemon (forge unit-test stand-in)' >&2\nexit 1\n")
 }
 
 var sharedTemp struct {

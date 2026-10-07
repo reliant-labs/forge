@@ -70,14 +70,15 @@ func newTestRemovedCmd() *cobra.Command {
 					"so forge no longer ships a second spelling of it that could disagree",
 				"Taskfile.yml",
 				"run `"+replacement+"` instead.\n"+
-					"  task test                        unit + every frontend's tests\n"+
-					"  task test -- ./internal/foo/...   only those Go packages (skips the frontend lane)\n"+
-					"  task test -- -v ./...            pass any `go test` flags\n"+
-					"  task test:integration            the `integration`-tagged lane\n"+
-					"  task test:e2e                    the end-to-end lane\n"+
-					"  task test:all                    unit + frontend + integration\n"+
-					"  task coverage                    coverage.out + coverage.html\n"+
-					"  forge project migrate tdd        the handler-test codemod (was `forge test migrate-tdd`)")
+					"  task test:short -- ./internal/foo/...  the inner loop: -short, cached, no race\n"+
+					"  task test                              unit + every frontend's tests\n"+
+					"  task test -- ./internal/foo/...        only those Go packages (skips the frontend lane)\n"+
+					"  task test -- -v ./...                  pass any `go test` flags\n"+
+					"  task test:integration                  the `integration`-tagged lane\n"+
+					"  task test:e2e                          the end-to-end lane\n"+
+					"  task test:all                          unit + frontend + integration\n"+
+					"  task coverage                          coverage.out + coverage.html\n"+
+					"  forge project migrate tdd              the handler-test codemod (was `forge test migrate-tdd`)")
 		},
 	}
 	return cmd

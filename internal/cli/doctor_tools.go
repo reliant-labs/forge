@@ -242,10 +242,10 @@ func allToolChecks() []toolCheck {
 		},
 		{
 			// task runs the project's Taskfile.yml, which is where the test
-			// suite is DEFINED — `task test` is what the local edit loop and
-			// the generated CI test job both run. That makes it a real
-			// prerequisite, not a convenience: without it there is no way to
-			// run the project's tests as the project defines them.
+			// suite is DEFINED — `task test:short` is the local edit loop and
+			// `task test` is what the generated CI test job runs. That makes
+			// it a real prerequisite, not a convenience: without it there is
+			// no way to run the project's tests as the project defines them.
 			//
 			// requiredAlways because every project kind (service / cli /
 			// library) is scaffolded with a Taskfile. The cloud workspace
@@ -253,7 +253,7 @@ func allToolChecks() []toolCheck {
 			// docker/Dockerfile.workspace-base, TASK_VERSION) — this check is
 			// what makes that image's tool manifest verifiable from forge.
 			Name:        "task",
-			Description: "Task — runs the project's Taskfile.yml (`task test` is the test suite)",
+			Description: "Task — runs the project's Taskfile.yml (`task test` is the test suite, `task test:short` the inner loop)",
 			Required:    requiredAlways,
 			VersionArgs: []string{"--version"},
 			// Windows has no rm/mkdir/cp/mv; scaffolded Taskfiles rely on

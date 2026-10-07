@@ -412,6 +412,14 @@ func TestSweepSummaryVerdictMatchesItsEvidence(t *testing.T) {
 			want:    "Next: fill in the pb-through handler stubs",
 			notWant: "clean no-op",
 		},
+		{
+			// The inner loop is the cached, -short Taskfile tier — not a raw
+			// whole-module `go test` that bypasses the Taskfile.
+			name:    "a birth points at the inner-loop test tier",
+			summary: sweepSummary{EntitiesBirthed: []string{"pkg.A → a"}},
+			want:    "`task test:short -- ./internal/handlers/...`",
+			notWant: "`go test ./...`",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := tc.summary

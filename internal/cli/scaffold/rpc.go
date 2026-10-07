@@ -229,7 +229,8 @@ func runRPC(f *factory.Factory, svc, rpcName string, mode rpcStreamMode) error {
 		fmt.Println("  1. Fill in the handler body — the pb-through stub returns")
 		fmt.Println("     Unimplemented (or, for an entity-backed RPC, delegates to the")
 		fmt.Println("     generated CRUD ops) until you do.")
-		fmt.Println("  2. `go test ./...`.")
+		fmt.Printf("  2. Iterate with `task test:short -- ./internal/handlers/%s/...`;\n", hc.ImportLeaf)
+		fmt.Println("     run `task test` before you finish.")
 		return nil
 	}
 

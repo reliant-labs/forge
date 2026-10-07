@@ -121,3 +121,60 @@ func (r Runner) Loud() bool {
 	r2.applyDefaults()
 	return r2.Flags.Verbose != nil && *r2.Flags.Verbose
 }
+
+// ── Look-alike: a value-typed cache, mutated only in place ───────────────────
+//
+// The real cloud.Client.elevated shape. Nothing assigns `cached` wholesale: its
+// zero value is ready to use, the mutex is locked through it and the map is
+// filled through it. Every one of those is a WRITE of `cached`.
+//
+// It was reported anyway, because a use was deduplicated by its file offset
+// alone. `c.cached.mu` and `c.cached` start at the same offset (the `c`), so
+// whichever selector was recorded first swallowed the other: the write of
+// `entries` hid the write of `cached`, and the read left over was all the
+// guard saw.
+type entryCache struct {
+	mu      sync.Mutex
+	entries map[string]string
+}
+
+type Client struct {
+	// OK: written through `c.cached.entries = …` and mutated by mu.Lock().
+	cached entryCache
+}
+
+// Lookup is the only production code that touches cached.
+func (c *Client) Lookup(key string) string {
+	c.cached.mu.Lock()
+	defer c.cached.mu.Unlock()
+	if c.cached.entries == nil {
+		c.cached.entries = map[string]string{}
+	}
+	if v, ok := c.cached.entries[key]; ok {
+		return v
+	}
+	c.cached.entries[key] = key
+	return key
+}
+
+// ── Planted: a field read only THROUGH a chain, written nowhere ──────────────
+//
+// The same offset collision in the other direction. `o.Inner.Value` records the
+// read of Value and then dropped the read of Inner as a duplicate, so a field
+// whose every read goes through a subfield was never seen read at all — a
+// phantom the rule could not report.
+type Leaf struct {
+	// OK: written by NewLeaf's keyed literal.
+	Value string
+}
+
+// NewLeaf writes Value.
+func NewLeaf(v string) Leaf { return Leaf{Value: v} }
+
+type Outer struct {
+	// WANT phantom-field: read below through .Value, written nowhere.
+	Inner Leaf
+}
+
+// Show reads Inner — and only through its subfield.
+func (o Outer) Show() string { return o.Inner.Value }

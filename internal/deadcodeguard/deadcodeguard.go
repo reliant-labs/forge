@@ -218,9 +218,9 @@ type scan struct {
 	judge     string
 	generated map[string]bool
 	fields    map[fieldKey]*fieldFacts
-	// counted dedupes a use by file+offset. With Tests:true a package is
-	// type-checked more than once (p, p [p.test]); without this, every use
-	// in a non-test file of a tested package is counted twice.
+	// counted dedupes a use by field+file+offset. With Tests:true a package
+	// is type-checked more than once (p, p [p.test]); without this, every
+	// use in a non-test file of a tested package is counted twice.
 	counted map[string]bool
 }
 
@@ -360,7 +360,13 @@ func (s *scan) record(k fieldKey, pos token.Position, isTest, write bool) {
 	if !strings.HasPrefix(k.pkg, s.judge) {
 		return
 	}
-	id := fmt.Sprintf("%s:%d:%v", pos.Filename, pos.Offset, write)
+	// The FIELD is part of the identity, not just the site. Every selector
+	// in a chain starts at the same offset — `c.cache.mu` and `c.cache` both
+	// begin at the `c` — so a site-only key let whichever field was recorded
+	// first swallow the others. That hid real writes (cloud.Client.elevated
+	// was reported phantom because its write through `.entries` was dropped)
+	// and real reads (a field read only through a subfield was never seen).
+	id := fmt.Sprintf("%s|%s:%d:%v", k, pos.Filename, pos.Offset, write)
 	if s.counted[id] {
 		return
 	}
@@ -610,8 +616,11 @@ func writtenExprs(f *ast.File, info *types.Info) map[ast.Expr]bool {
 			if sig == nil || sig.Recv() == nil {
 				return true
 			}
+			// `c.cache.mu.Lock()` mutates mu in place, and with it the
+			// cache that holds it: mark the whole chain, as an assignment
+			// through it would.
 			if _, isPtr := sig.Recv().Type().(*types.Pointer); isPtr {
-				out[s.X] = true
+				markWriteChain(s.X, out)
 			}
 		}
 		return true

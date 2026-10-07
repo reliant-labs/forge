@@ -276,6 +276,7 @@ func TestRulesFireOnPlantedDefects(t *testing.T) {
 		"noop-func|deadcodeguardfixture/internal/perplatform.probe",
 		"phantom-field|deadcodeguardfixture/internal/phantom.Component.Ports",
 		"phantom-field|deadcodeguardfixture/internal/phantom.Component.Schedule",
+		"phantom-field|deadcodeguardfixture/internal/phantom.Outer.Inner",
 	}
 	var gotKeys []string
 	for _, f := range got {
@@ -332,6 +333,9 @@ func TestExemptionsAreLoadBearing(t *testing.T) {
 		{"deadcodeguardfixture/internal/phantom.Seams.mu", "mu.Lock() has a pointer receiver: it mutates, it does not read"},
 		{"deadcodeguardfixture/internal/phantom.Seams.Positional", "written by an UNKEYED composite literal"},
 		{"deadcodeguardfixture/internal/phantom.Seams.guarded", "written by the same unkeyed literal"},
+		{"deadcodeguardfixture/internal/phantom.Client.cached", "a value-typed cache is written through its subfields and its mutex"},
+		{"deadcodeguardfixture/internal/phantom.Runner.Flags", "written through a subfield (`r.Flags.Verbose = …`)"},
+		{"deadcodeguardfixture/internal/phantom.Leaf.Value", "written by NewLeaf's keyed literal"},
 		{"deadcodeguardfixture/internal/phantom.Cross.CrossWritten", "written from another package — only a whole-program scan sees it"},
 		{"deadcodeguardfixture/internal/phantom.Emitted.Hook", "declared in a generated file; the emitter re-creates it every run"},
 		{"deadcodeguardfixture/internal/phantom.EmittedNoop", "a generated no-op is the emitter's shape, not a human's claim"},

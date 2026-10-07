@@ -162,7 +162,11 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		if builder := spec.BuildEnv["BUILDX_BUILDER"]; builder != "" {
 			registerDockerBuilderStorage(ctx, builder)
 		}
-		fmt.Printf("[build] %s: ShellBuild (tag %s)\n", svc.Name, svcTag)
+		// The checkout the command is about to run in, captured BEFORE it
+		// runs: what the command was handed, not whatever it leaves behind
+		// (build outputs a sibling's .gitignore misses would read as dirty).
+		source := captureShellSource(ctx, svc.Name, cwd, projectDir)
+		fmt.Printf("[build] %s: ShellBuild (tag %s)%s\n", svc.Name, svcTag, describeShellSource(source))
 		res := runner.Build(ctx, spec)
 
 		// Skip-with-warn: the runner returns Skipped=true when the
@@ -226,6 +230,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 			PushedAt:  nowRFC3339(),
 			Digest:    digest,
 			Platforms: platforms,
+			Source:    source,
 		}
 		if werr := buildtarget.WriteState(projectDir, opts.env, state); werr != nil {
 			fmt.Printf("[build] %s: warning: failed to write build-state file: %v\n", svc.Name, werr)

@@ -183,6 +183,28 @@ Both are the same resolver applied at a different call site, but each has
 its own consumers to thread and its own tests to write. They were left out
 rather than half-done.
 
+### Until then: a release holds a sibling checkout to its pin
+
+A `ShellBuild` whose `cwd` is a sibling checkout still builds whatever that
+checkout holds. So a release refuses to cut while it is not at the commit
+the project pins:
+
+- every `ShellBuild` records the checkout it ran in (HEAD, dirty flag,
+  origin, module) in `.forge/state/build-<env>-<service>.json`, and a
+  release carries it per artifact as `built_from`;
+- `forge env build <env> --release <v>` (and `--plan`, and a deploy that
+  re-uses a release) refuses BEFORE building when a sibling checkout is
+  dirty, or its HEAD is not the commit pinned by the project's `go.mod`
+  require of the module the checkout declares, or by a `forge.GitSource`
+  naming its repository;
+- `--release --no-build` applies the same rule to the checkout the earlier
+  build RECORDED.
+
+The refusal names the checkout, every pin, and the `git -C <dir> checkout
+--detach <commit>` that fixes it. A sibling nothing pins is noted, not
+refused. The project's own checkout is the release's own provenance and is
+not judged here.
+
 ## Compatibility
 
 This is purely additive. A project that declares no `source:` anywhere

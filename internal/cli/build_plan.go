@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -190,6 +191,12 @@ func planBuild(ctx context.Context, in planInputs) buildPlanReport {
 
 	if opts.release != "" {
 		report.releaseArtifacts, report.releaseErr = planReleaseCoverage(in, report)
+		// The release build's other preflight: a ShellBuild checkout that is
+		// not at the commit the project pins, or is dirty. The same check,
+		// so a plan refuses exactly what the cut would.
+		if err := preflightReleaseSources(ctx, in.projectDir, in.entities, opts); err != nil {
+			report.releaseErr = errors.Join(report.releaseErr, err)
+		}
 	}
 	return report
 }

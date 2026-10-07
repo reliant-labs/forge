@@ -672,7 +672,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if opts.plan {
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
-	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+	if err := preflightRealBuild(ctx, entities, opts); err != nil {
 		return err
 	}
 	registerBuildStorage(ctx, projectDirForKCL(), entities, push)
@@ -848,6 +848,18 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
 	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
 	return nil
+}
+
+// preflightRealBuild is everything a real (non-plan) build refuses on before
+// it writes or builds anything: the storage it would fill, and — for a
+// release — a ShellBuild checkout that is not at the commit the project pins
+// (preflightReleaseSources). Refusing the release HERE rather than at the cut
+// is what keeps a refused release from pushing images under its version.
+func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOptions) error {
+	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+		return err
+	}
+	return preflightReleaseSources(ctx, projectDirForKCL(), entities, opts)
 }
 
 // printBuildHeader prints the block runBuild opens with: what is being built,
@@ -1675,6 +1687,12 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 
 	prov := captureBuildProvenance(ctx, projectDir)
 	if err := checkCutMatchesBuild(version, prov.Commit, harvestedBuildCommits(projectDir, env)); err != nil {
+		return releaseCutOutcome{}, err
+	}
+	// Every sibling checkout a ShellBuild ran in must have been AT the
+	// commit this checkout pins, and clean. Checked against what the build
+	// state RECORDS, so a --no-build cut is held to it too.
+	if err := checkRecordedReleaseSources(ctx, projectDir, env, version, entities); err != nil {
 		return releaseCutOutcome{}, err
 	}
 	// The CI run that cut this release: the join key that ties it to the

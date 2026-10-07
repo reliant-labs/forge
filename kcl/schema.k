@@ -2385,6 +2385,12 @@ schema ShellBuild(Build):
         content-addressed digest (best-effort) and writes the build-state
         file so a subsequent `forge env deploy <env>` pins the same
         tag/digest, exactly as the project docker build does.
+      * source — the git checkout `cwd` is in (HEAD, dirty flag) is
+        recorded with that state and in the release. A RELEASE refuses a
+        checkout outside this project that is dirty, or whose HEAD is not
+        the commit the project pins for it: the go.mod require of the
+        module the checkout declares, or a `GitSource` naming its repo.
+        Check the sibling out at its pin before `--release`.
 
     Forge once substituted a fixed ${IMAGE}/${TAG}/${REGISTRY}/
     ${TARGETARCH}/… vocabulary into `cmd`. It no longer does, and a

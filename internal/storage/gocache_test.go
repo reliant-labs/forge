@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -81,26 +83,6 @@ func TestSharedGoCacheAgeAndFloor(t *testing.T) {
 	}
 	if exists(old) || !exists(mid) || !exists(fresh) || !exists(trim) || !exists(junk) {
 		t.Fatalf("old=%v mid=%v fresh=%v trim=%v junk=%v", exists(old), exists(mid), exists(fresh), exists(trim), exists(junk))
-	}
-}
-
-func TestSelectGoCacheVictimsBudgetRespectsFloor(t *testing.T) {
-	now := time.Now()
-	e := func(age time.Duration, size int64) goCacheEntry {
-		return goCacheEntry{size: size, mtime: now.Add(-age)}
-	}
-	entries := []goCacheEntry{e(10*time.Hour, 100), e(5*time.Hour, 100), e(3*time.Hour, 100), e(time.Hour, 100), e(time.Minute, 100)}
-	v, _, _, over := selectGoCacheVictims(entries, now, 48*time.Hour, 100, true)
-	// total 500, budget 100: only the three entries older than 2h are eligible.
-	if len(v) != 3 || over != 3 {
-		t.Fatalf("victims=%d over=%d", len(v), over)
-	}
-	if !v[0].mtime.Before(v[1].mtime) {
-		t.Fatal("must be oldest first")
-	}
-	// An incomplete scan never budget-trims.
-	if v, _, _, _ = selectGoCacheVictims(entries, now, 48*time.Hour, 100, false); len(v) != 0 {
-		t.Fatalf("incomplete scan trimmed %d", len(v))
 	}
 }
 
@@ -356,5 +338,169 @@ func TestOrphanedGoCachesStopsAtDeadline(t *testing.T) {
 	_ = f.r.OrphanedGoCaches(true)
 	if !exists(f.orphan) {
 		t.Fatal("removed after the deadline")
+	}
+}
+
+// fillShards writes n entries per shard across `shards` shard dirs, each aged
+// `age`, and returns the root.
+func fillShards(t *testing.T, root string, shards, perShard int, age func(shard, i int) time.Duration) {
+	t.Helper()
+	makeBuildCache(t, root)
+	for s := 0; s < shards; s++ {
+		for i := 0; i < perShard; i++ {
+			putEntry(t, root, fmt.Sprintf("%02x", s), fmt.Sprintf("%063x%d-a", s*1000+i, i%10), 100, age(s, i))
+		}
+	}
+}
+
+func TestGoCacheCutoffNeverBelowFloor(t *testing.T) {
+	now := time.Now()
+	mk := func(ages ...time.Duration) goCacheSample {
+		var s goCacheSample
+		s.shards = 1
+		for _, a := range ages {
+			s.bytes += 100
+			s.entries = append(s.entries, goCacheEntry{size: 100, mtime: now.Add(-a)})
+		}
+		sort.Slice(s.entries, func(i, j int) bool { return s.entries[i].mtime.Before(s.entries[j].mtime) })
+		return s
+	}
+	// Way over budget, but every sampled entry is 1h old (inside the floor):
+	// the cutoff must still be no newer than now-2h.
+	c, _ := goCacheCutoff(mk(time.Hour, time.Hour, time.Hour), 1, now, 48*time.Hour, 1)
+	if c.After(now.Add(-goCacheFloor)) {
+		t.Fatalf("cutoff %v is inside the 2h floor", now.Sub(c))
+	}
+	// A tiny unused window is clamped to the floor too.
+	c, _ = goCacheCutoff(mk(5*time.Hour), 1, now, time.Minute, 1<<40)
+	if c.After(now.Add(-goCacheFloor)) {
+		t.Fatalf("age cutoff %v is inside the floor", now.Sub(c))
+	}
+	// Under budget: only the age rule applies.
+	c, est := goCacheCutoff(mk(3*time.Hour, 60*time.Hour), 1, now, 48*time.Hour, 1<<40)
+	if est != 200 || now.Sub(c) < 47*time.Hour {
+		t.Fatalf("under budget must use the age rule: est=%d cutoff age=%v", est, now.Sub(c))
+	}
+	// Over budget: the cutoff reaches into entries younger than the age rule.
+	c, _ = goCacheCutoff(mk(3*time.Hour, 5*time.Hour, 10*time.Hour), 1, now, 48*time.Hour, 100)
+	if now.Sub(c) > 6*time.Hour || now.Sub(c) < goCacheFloor {
+		t.Fatalf("budget cutoff age %v out of range", now.Sub(c))
+	}
+}
+
+// A deadline that hits mid-pass must still have deleted the old entries of the
+// shards it covered. Before streaming, the pass held every victim in memory
+// until a complete scan finished, so a cut-off pass deleted nothing.
+func TestGoCacheCutOffPassStillFreesCoveredShards(t *testing.T) {
+	root := t.TempDir()
+	fillShards(t, root, 64, 20, func(int, int) time.Duration { return 100 * time.Hour })
+	shards, _ := goCacheShardList(root)
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel as soon as the first deletions have happened.
+	go func() {
+		for {
+			if countEntries(root) < 64*20 {
+				cancel()
+				return
+			}
+			time.Sleep(time.Microsecond)
+		}
+	}()
+	pass := streamTrimGoCache(ctx, root, shards, 0, time.Now().Add(-goCacheFloor), true)
+	if pass.removed == 0 || countEntries(root) >= 64*20 {
+		t.Fatalf("cut-off pass freed nothing: %+v", pass)
+	}
+	if pass.removed != 64*20-countEntries(root) {
+		t.Fatalf("accounting mismatch: removed=%d remaining=%d", pass.removed, countEntries(root))
+	}
+}
+
+func countEntries(root string) int {
+	n := 0
+	subs, _ := os.ReadDir(root)
+	for _, s := range subs {
+		if s.IsDir() {
+			f, _ := os.ReadDir(filepath.Join(root, s.Name()))
+			n += len(f)
+		}
+	}
+	return n
+}
+
+func TestGoCacheCursorAdvancesAcrossPasses(t *testing.T) {
+	root := t.TempDir()
+	fillShards(t, root, 8, 4, func(int, int) time.Duration { return 100 * time.Hour })
+	policy := filepath.Join(t.TempDir(), "storage.json")
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.PolicyPath = policy
+	r.GoCacheRoot = root
+	if r.loadGoCacheCursor("shared go build cache") != 0 {
+		t.Fatal("cursor must start at 0")
+	}
+	// A pass cut off after covering shards 0..2 resumes at 3.
+	r.saveGoCacheCursor("shared go build cache", 3)
+	if got := r.loadGoCacheCursor("shared go build cache"); got != 3 {
+		t.Fatalf("cursor = %d", got)
+	}
+	if got := r.loadGoCacheCursor("golangci-lint cache"); got != 0 {
+		t.Fatalf("cursors must be per cache, got %d", got)
+	}
+	// A completed apply pass over 8 shards from 3 wraps the cursor back to 3.
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.loadGoCacheCursor("shared go build cache"); got != 3 {
+		t.Fatalf("full rotation should return to 3, got %d", got)
+	}
+	// Dry-run never moves the cursor.
+	r.saveGoCacheCursor("shared go build cache", 5)
+	_ = r.SharedGoCache(false)
+	if got := r.loadGoCacheCursor("shared go build cache"); got != 5 {
+		t.Fatalf("dry-run moved the cursor to %d", got)
+	}
+}
+
+func TestGoCachePartialPassIsNotAFailure(t *testing.T) {
+	root := t.TempDir()
+	fillShards(t, root, 32, 10, func(int, int) time.Duration { return 100 * time.Hour })
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.GolangciCacheRoot = t.TempDir()
+	r.GoimportsRoot = t.TempDir()
+	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.FromPaths(nil), nil }
+	r.ProcessEnv = func(context.Context) (string, error) { return "x", nil }
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	time.Sleep(5 * time.Millisecond) // deadline already passed
+	r.Ctx = ctx
+	if err := r.GoCaches(true); err != nil {
+		t.Fatalf("a cut-off pass must not be an error: %v", err)
+	}
+	// And a live pass over a real cache that finishes reports no error and says so.
+	r.Ctx = context.Background()
+	out.Reset()
+	if err := r.GoCaches(true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "(finished)") || countEntries(root) != 0 {
+		t.Fatalf("expected a finished pass:\n%s", out.String())
+	}
+}
+
+func TestGoCacheTrimHonoursBudgetViaSample(t *testing.T) {
+	root := t.TempDir()
+	// 64 shards x 10 entries x 100B = 64000B, ages spread 3h..~200h by index.
+	fillShards(t, root, 64, 10, func(s, i int) time.Duration { return time.Duration(3+i*20) * time.Hour })
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.GoCacheGiB = 1 // budget is huge vs 64KB: only the 48h age rule applies
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEntries(root); got != 64*3 { // ages 3h, 23h, 43h kept; 63h+ removed
+		t.Fatalf("age rule: %d entries left, want %d\n%s", got, 64*3, out.String())
 	}
 }

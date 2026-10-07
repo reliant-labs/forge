@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/templates"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // The two pre-commit files forge scaffolds are themselves checked by the

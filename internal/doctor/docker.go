@@ -90,8 +90,8 @@ func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 			Status:  StatusFail,
 			Message: "Docker Compose is not running",
 			Evidence: fmt.Sprintf(
-				"Failed to run 'docker compose ps': %v\nHint: run 'docker compose up -d' in %s",
-				err, env.ProjectDir,
+				"Failed to run 'docker compose ps' in %s: %v\nHint: is Docker running? %s",
+				env.ProjectDir, err, composeStartHint(env.Env),
 			),
 		}
 	}
@@ -103,7 +103,7 @@ func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 		// and the message says how to change it.
 		return CheckResult{
 			Status:   StatusSkip,
-			Message:  "compose infra declared but not running — start it with `docker compose up -d`",
+			Message:  "compose infra declared but not running — " + composeStartHint(env.Env),
 			Evidence: fmt.Sprintf("'docker compose ps' returned empty output in %s", env.ProjectDir),
 		}
 	}
@@ -193,4 +193,17 @@ func discoverPort(ctx context.Context, projectDir, service string, port int) str
 		return ""
 	}
 	return strings.TrimSpace(stdout.String())
+}
+
+// composeStartHint says how compose services come up in a forge project:
+// through the environment that binds them, never a bare `docker compose up`.
+// That bypass started EVERY service in the file — including ones the env
+// deliberately leaves off, like the ~1 GB observability stack — with none of
+// the env-declared values (`forge.OnCompose.env`: ports, the OTLP port) the
+// file interpolates, so what it brought up was not what the env declares.
+func composeStartHint(env string) string {
+	if env == "" {
+		env = "<env>"
+	}
+	return fmt.Sprintf("`forge env up %s` starts the compose services that environment binds (forge.OnCompose)", env)
 }

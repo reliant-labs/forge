@@ -40,6 +40,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -66,16 +67,17 @@ func newAuthCmd(deps Deps) *cobra.Command {
 
 func newIDPProvisionCmd() *cobra.Command {
 	var (
-		base           string
-		host           string
-		patPath        string
-		browserOrigin  string
-		frontendOrigin string
-		basePath       string
-		configMapName  string
-		kclFilePath    string
-		loginURI       string
-		timeout        time.Duration
+		base             string
+		host             string
+		patPath          string
+		browserOrigin    string
+		frontendOrigin   string
+		basePath         string
+		configMapName    string
+		kclFilePath      string
+		loginURI         string
+		brokerTokenStore string
+		timeout          time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -121,23 +123,10 @@ identity and changes nothing. That is what lets this run on every deploy.`,
 			// cannot have. Provision it only when that flow is actually
 			// requested — an app using the issuer's login pages should not
 			// be handed a privileged token it has no use for.
-			//
-			// PRINTED, NOT PUBLISHED. Zitadel returns a personal access
-			// token exactly once and never again, so this cannot be made
-			// idempotent the way the identity above is: a re-run mints a
-			// NEW token rather than recovering the old one. Publishing it
-			// into the identity file would therefore rewrite a live
-			// credential on every deploy. It goes to stdout, once, for an
-			// operator to put in their secret store.
 			if loginURI != "" {
-				cred, err := client.EnsureLoginBroker(ctx, "{{.Name}}-login-broker")
-				if err != nil {
-					return fmt.Errorf("idp-provision: provision the login broker: %w", err)
+				if err := provisionLoginBroker(ctx, cmd.OutOrStdout(), client, brokerTokenStore); err != nil {
+					return err
 				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"idp-provision: login broker ready (user %s)\n"+
-						"  set idp_broker_token to this value — it is shown ONCE and cannot be retrieved again:\n"+
-						"  %s\n", cred.UserID, cred.Token)
 			}
 
 			var publisher devidp.Publisher
@@ -181,6 +170,8 @@ identity and changes nothing. That is what lets this run on every deploy.`,
 		"committed KCL file this job publishes into, on a compose/dev target")
 	cmd.Flags().StringVar(&loginURI, "login-uri", envOrIDP("IDP_LOGIN_URI", ""),
 		"the app's OWN sign-in route; set it to run the API-only sign-in flow (the issuer redirects into this app instead of showing its own login pages) and to provision the login-broker credential. Empty keeps the issuer-hosted pages")
+	cmd.Flags().StringVar(&brokerTokenStore, "broker-token-store", envOrIDP("IDP_BROKER_TOKEN_STORE", ""),
+		"the environment's FileSecrets store (deploy/kcl/<env>/main.k's secret_provider path) to keep the login-broker token in, as "+devidp.BrokerTokenKey+"; a token stored there that the issuer still accepts is reused. Empty prints a newly minted token instead, for an operator to store")
 	cmd.Flags().DurationVar(&timeout, "timeout", 3*time.Minute, "overall timeout (a first boot waits on the IdP's own initialization)")
 
 	config.RegisterFlags(cmd)
@@ -196,6 +187,55 @@ func envOrIDP(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// provisionLoginBroker converges the login broker's account and makes its
+// token available to the server.
+//
+// STORED, NOT PRINTED, when the environment names a store. Zitadel shows a
+// personal access token once, so the token cannot be republished the way
+// the identity above is. It goes into the environment's FileSecrets store
+// (secrets/<env>.yaml) under IDP_BROKER_TOKEN, which the API declares in its
+// config_secrets — the same path every other dev credential takes. The next
+// run reuses it while the issuer still accepts it, so `forge env up` is a
+// no-op here rather than a new credential per run, and the value never
+// reaches a terminal or a log.
+//
+// With no store (a job that publishes to a ConfigMap, say), a newly minted
+// token is printed once for an operator to store, as before.
+func provisionLoginBroker(ctx context.Context, out io.Writer, client *devidp.Client, storePath string) error {
+	const account = "{{.Name}}-login-broker"
+	if storePath == "" {
+		cred, err := client.EnsureLoginBroker(ctx, account)
+		if err != nil {
+			return fmt.Errorf("idp-provision: provision the login broker: %w", err)
+		}
+		_, _ = fmt.Fprintf(out,
+			"idp-provision: login broker ready (user %s)\n"+
+				"  set %s to this value — it is shown ONCE and cannot be retrieved again:\n"+
+				"  %s\n", cred.UserID, devidp.BrokerTokenKey, cred.Token)
+		return nil
+	}
+
+	store := devidp.SecretFile{Path: storePath}
+	stored, err := store.Get(devidp.BrokerTokenKey)
+	if err != nil {
+		return fmt.Errorf("idp-provision: read the login broker token from %s: %w", storePath, err)
+	}
+	cred, minted, err := client.ProvisionLoginBroker(ctx, account, stored)
+	if err != nil {
+		return fmt.Errorf("idp-provision: provision the login broker: %w", err)
+	}
+	if !minted {
+		_, _ = fmt.Fprintf(out, "idp-provision: login broker ready (user %s; token in %s)\n", cred.UserID, storePath)
+		return nil
+	}
+	if err := store.Set(devidp.BrokerTokenKey, cred.Token); err != nil {
+		return fmt.Errorf("idp-provision: store the login broker token in %s: %w", storePath, err)
+	}
+	_, _ = fmt.Fprintf(out, "idp-provision: login broker ready (user %s; new token stored in %s as %s)\n",
+		cred.UserID, storePath, devidp.BrokerTokenKey)
+	return nil
 }
 
 // readIDPPAT reads the service account token idp-steps.yaml's declarative

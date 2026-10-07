@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -114,5 +115,30 @@ func TestClaimsReExportsReachTheLibraryStash(t *testing.T) {
 	}
 	if user.UserID != "u-1" {
 		t.Fatalf("GetUser returned %q, want %q", user.UserID, "u-1")
+	}
+}
+
+// Native sign-in keeps the session in an HttpOnly cookie, so the browser has
+// no other way to present it. Reading only the Authorization header 401'd
+// every RPC right after a successful sign-in. A Bearer header still wins:
+// a service or a test that sends one means that credential.
+func TestCredentialFrom_ReadsBearerThenTheSessionCookie(t *testing.T) {
+	t.Parallel()
+	cookie := (&http.Cookie{Name: SessionCookieName, Value: "from-cookie"}).String()
+
+	cases := []struct {
+		name   string
+		header http.Header
+		want   string
+	}{
+		{"session cookie only", http.Header{"Cookie": {cookie}}, "from-cookie"},
+		{"bearer wins over the cookie", http.Header{"Authorization": {"Bearer from-header"}, "Cookie": {cookie}}, "from-header"},
+		{"another app's cookie is not a credential", http.Header{"Cookie": {"other_session=x"}}, ""},
+		{"nothing presented", http.Header{}, ""},
+	}
+	for _, tc := range cases {
+		if got := credentialFrom(tc.header); got != tc.want {
+			t.Errorf("%s: credentialFrom = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

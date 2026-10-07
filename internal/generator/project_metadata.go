@@ -172,12 +172,16 @@ func (g *ProjectGenerator) generateExamplesReadme() error {
 // generated wiring — so there is no role_resolver.go or access-control
 // scaffold.
 func (g *ProjectGenerator) generatePkgMiddleware() error {
+	// middleware.go is RENDERED: it declares the native sign-in session
+	// cookie's project-scoped name (SessionCookieName), which the broker in
+	// internal/app sets and the interceptor here reads.
 	middlewareFiles := []struct {
 		templateName string
 		destName     string
+		templated    bool
 	}{
-		{"middleware.go", "middleware.go"},
-		{"middleware_test.go", "middleware_test.go"},
+		{"middleware.go.tmpl", "middleware.go", true},
+		{"middleware_test.go", "middleware_test.go", false},
 	}
 
 	for _, f := range middlewareFiles {
@@ -185,7 +189,13 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 		if _, err := os.Stat(destPath); err == nil {
 			continue // user-owned — never clobber an existing copy
 		}
-		content, err := templates.ProjectTemplates().Get(f.templateName)
+		var content []byte
+		var err error
+		if f.templated {
+			content, err = templates.ProjectTemplates().Render(f.templateName, g.forScaffold())
+		} else {
+			content, err = templates.ProjectTemplates().Get(f.templateName)
+		}
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f.templateName, err)
 		}

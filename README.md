@@ -70,10 +70,20 @@ forge env up dev
 
 That last command brings up Postgres, runs your migrations, and starts your
 services and frontends. You get back a table of URLs and a log file for each
-process. Once you add tables, a fresh database is **seeded with realistic,
-foreign-key-coherent data introspected from your own schema**, so the app boots
-alive instead of booting empty. Turn on observability and the table includes
-Grafana too.
+process. With a frontend (`forge project new my-app --frontend web`) it also
+brings up a local identity provider, so the app's own sign-in page works on the
+first run.
+
+Once you add tables (a `// forge:entity` message and `forge scaffold`), a fresh
+database is **seeded with foreign-key-coherent rows that satisfy every
+constraint your schema declares**, so the app boots alive instead of booting
+empty. Text forge cannot derive from the schema reads as `sample_<column>_<n>`
+until you name your domain's words in `db/seeds/vocab.yaml`
+(`orders.currency: [USD, EUR]`, `orders.customer_email: {type: email}`); from
+then on the rows read like your product.
+
+Set `_observability = True` in `deploy/kcl/dev/main.k` and the table includes
+Grafana too, with dashboards over the app's own traces and metrics.
 
 No signup, no external accounts, no cloud project, no cluster.
 
@@ -182,7 +192,7 @@ has a command instead of a wiki page.
   foreground process.
 
 The pitch in one line: a new engineer, or a new agent, gets the whole system
-running with realistic data and end-to-end tracing before lunch on day one.
+running against seeded data, with end-to-end tracing, before lunch on day one.
 
 ---
 

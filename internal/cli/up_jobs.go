@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -383,6 +385,19 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// The job's output ALSO goes to its log under .forge/logs/<env>/, the
+	// file the `forge env up` summary lists for it beside every other host
+	// process's. Jobs used to print to the terminal only, so the summary
+	// pointed at migrate.log and idp-provision.log files that never existed.
+	if env != "" {
+		if logFile, lerr := openJobLog(env, j.Name); lerr == nil {
+			defer func() { _ = logFile.Close() }()
+			cmd.Stdout = io.MultiWriter(os.Stdout, logFile)
+			cmd.Stderr = io.MultiWriter(os.Stderr, logFile)
+		} else {
+			fmt.Printf("[up] job %s: %v (its output goes to the terminal only)\n", j.Name, lerr)
+		}
+	}
 
 	// Same env composition host services get: projectConfig → secrets →
 	// the job's own env_vars → os.Environ() wins last. A job that
@@ -455,4 +470,18 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 				"  fix the job (or its configuration) and re-run; forge will not start a dependent against a world the job was supposed to prepare",
 			j.Name, elapsed, err, gated)
 	}
+}
+
+// openJobLog truncates and opens a job's log at the path the summary prints
+// for it (summaryLogPath / upLogPath): one run's output per file, like a
+// one-shot's — a re-run replaces it rather than appending to the last.
+func openJobLog(env, name string) (*os.File, error) {
+	path, err := upLogPath(env, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create log dir: %w", err)
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) // #nosec G304 -- path derived from the project's own log dir
 }

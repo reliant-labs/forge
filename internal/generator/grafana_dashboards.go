@@ -53,28 +53,30 @@ func GenerateGrafanaDashboards(projectName, projectDir string) error {
 }
 
 // overviewDashboardJSON is the Grafana dashboard JSON for application overview
-// metrics: request rate, error rate, latency percentiles, per-procedure
-// breakdown, and Go runtime stats.
+// metrics: request rate, error rate, latency percentiles, the per-procedure
+// and per-error-code breakdowns, and the database row beneath them.
 //
-// METRIC SOURCE (verified against the runtime, 2026-07): the RED panels
-// query the otelconnect SERVER interceptor's instruments — the only RPC
-// metrics the scaffolded runtime emits. cmd-tree-serve wires
-// otelconnect.NewInterceptor() into the chain (observe.Chain receives no
-// Meter, so observe.MetricsInterceptor is a pass-through), and otelconnect
-// v0.7.x emits `rpc.server.duration` as an Int64Histogram in MILLISECONDS
-// with attributes rpc.system ("connect_rpc" | "grpc" | "grpc_web"),
-// rpc.service, rpc.method, and a per-protocol status attribute:
-//   - connect_rpc: rpc.connect_rpc.error_code (string, ERRORS ONLY;
-//     successes carry no code attribute)
-//   - grpc / grpc_web: rpc.grpc.status_code / rpc.grpc_web.status_code
-//     (int, ALWAYS present; 0 = success)
+// METRIC SOURCE (verified against a running scaffold's OTLP export,
+// 2026-10): the RED panels query the otelconnect SERVER interceptor's
+// instruments — the only RPC metrics the scaffolded runtime emits.
+// otelconnect v0.10 follows the current RPC semantic conventions: one
+// `rpc.server.call.duration` histogram in SECONDS, with `rpc.method` (the
+// full "pkg.Service/Method") and `rpc.response.status_code` ("OK", or the
+// upper-case Connect code — "NOT_FOUND", "UNAUTHENTICATED" — on an error).
+// The lgtm collector writes it to Prometheus as
+// `rpc_server_call_duration_seconds_{bucket,sum,count}` with underscored
+// labels, and stamps job=<service.name> (the generated ServiceName constant,
+// i.e. the project name).
 //
-// Both ingestion paths (OTLP push -> lgtm collector -> Prometheus, and the
-// /metrics Prometheus-exporter scrape) translate that to
-// `rpc_server_duration_milliseconds_{bucket,sum,count}` with underscored
-// labels; the OTLP path stamps job=<service.name> (the generated
-// ServiceName constant = the project name). The previous queries hit
-// `http_server_request_duration_seconds`, which nothing emits.
+// That replaced v0.7's `rpc.server.duration` in milliseconds, which these
+// panels queried after the bump — so every panel was empty while the app
+// was exporting. TestGenerateGrafanaDashboards_ValidJSONAndRealSeries pins
+// the names.
+//
+// The bottom row is the database pool and query timing (`go_sql_*`, from
+// the instrumented sql driver), which the runtime does emit. It replaced a
+// Go-runtime row (go_goroutines, go_memstats_*, go_gc_*) that nothing in the
+// OTLP export produces.
 var overviewDashboardJSON = `{
   "uid": "forge-overview",
   "title": "Forge — Application Overview",
@@ -115,7 +117,7 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum(rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
+          "expr": "sum(rate(rpc_server_call_duration_seconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
           "legendFormat": "req/s",
           "refId": "A"
         }
@@ -138,7 +140,7 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "1 - (sum(rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_connect_rpc_error_code=\"\",rpc_grpc_status_code=~\"0|\",rpc_grpc_web_status_code=~\"0|\"}[5m])) / sum(rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\"}[5m])))",
+          "expr": "sum(rate(rpc_server_call_duration_seconds_count{job=\"{{PROJECT_NAME}}\",rpc_response_status_code!=\"OK\"}[5m])) / sum(rate(rpc_server_call_duration_seconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
           "legendFormat": "error %",
           "refId": "A"
         }
@@ -151,7 +153,7 @@ var overviewDashboardJSON = `{
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "unit": "s",
           "color": { "mode": "palette-classic" }
         },
         "overrides": []
@@ -159,17 +161,17 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(rpc_server_duration_milliseconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(rpc_server_call_duration_seconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(rpc_server_duration_milliseconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(rpc_server_call_duration_seconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(rpc_server_duration_milliseconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(rpc_server_call_duration_seconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -190,14 +192,14 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum by (rpc_service, rpc_method) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
-          "legendFormat": "{{ rpc_service }}/{{ rpc_method }}",
+          "expr": "sum by (rpc_method) (rate(rpc_server_call_duration_seconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
+          "legendFormat": "{{ rpc_method }}",
           "refId": "A"
         }
       ]
     },
     {
-      "title": "Top Errors by Code",
+      "title": "Errors by Code",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
@@ -211,87 +213,77 @@ var overviewDashboardJSON = `{
       "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum by (rpc_connect_rpc_error_code) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_connect_rpc_error_code!=\"\"}[5m]))",
-          "legendFormat": "connect {{ rpc_connect_rpc_error_code }}",
+          "expr": "sum by (rpc_response_status_code) (rate(rpc_server_call_duration_seconds_count{job=\"{{PROJECT_NAME}}\",rpc_response_status_code!=\"OK\"}[5m]))",
+          "legendFormat": "{{ rpc_response_status_code }}",
           "refId": "A"
-        },
-        {
-          "expr": "sum by (rpc_grpc_status_code) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_grpc_status_code!~\"0|\"}[5m]))",
-          "legendFormat": "grpc {{ rpc_grpc_status_code }}",
-          "refId": "B"
-        },
-        {
-          "expr": "sum by (rpc_grpc_web_status_code) (rate(rpc_server_duration_milliseconds_count{job=\"{{PROJECT_NAME}}\",rpc_grpc_web_status_code!~\"0|\"}[5m]))",
-          "legendFormat": "grpc-web {{ rpc_grpc_web_status_code }}",
-          "refId": "C"
         }
       ]
     },
     {
-      "title": "Goroutines",
+      "title": "Database Queries by Operation",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "color": { "mode": "fixed", "fixedColor": "blue" }
+          "unit": "reqps",
+          "color": { "mode": "palette-classic" }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "single" } },
+      "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "go_goroutines{job=\"{{PROJECT_NAME}}\"}",
-          "legendFormat": "goroutines",
+          "expr": "sum by (db_operation, db_sql_table) (rate(go_sql_query_timing_milliseconds_count{job=\"{{PROJECT_NAME}}\"}[5m]))",
+          "legendFormat": "{{ db_operation }} {{ db_sql_table }}",
           "refId": "A"
         }
       ]
     },
     {
-      "title": "Heap Usage",
+      "title": "Database Query Latency (p95)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
+          "unit": "ms",
           "color": { "mode": "fixed", "fixedColor": "orange" }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "single" } },
+      "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "go_memstats_heap_inuse_bytes{job=\"{{PROJECT_NAME}}\"}",
-          "legendFormat": "heap in-use",
+          "expr": "histogram_quantile(0.95, sum(rate(go_sql_query_timing_milliseconds_bucket{job=\"{{PROJECT_NAME}}\"}[5m])) by (le))",
+          "legendFormat": "p95",
           "refId": "A"
-        },
-        {
-          "expr": "go_memstats_heap_alloc_bytes{job=\"{{PROJECT_NAME}}\"}",
-          "legendFormat": "heap alloc",
-          "refId": "B"
         }
       ]
     },
     {
-      "title": "GC Pause Duration",
+      "title": "Database Connections",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "color": { "mode": "fixed", "fixedColor": "purple" }
+          "unit": "short",
+          "color": { "mode": "palette-classic" }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "single" } },
+      "options": { "legend": { "displayMode": "list" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "rate(go_gc_duration_seconds_sum{job=\"{{PROJECT_NAME}}\"}[5m])",
-          "legendFormat": "gc pause rate",
+          "expr": "sum(go_sql_connections_in_use{job=\"{{PROJECT_NAME}}\"})",
+          "legendFormat": "in use",
           "refId": "A"
+        },
+        {
+          "expr": "sum(go_sql_connections_idle{job=\"{{PROJECT_NAME}}\"})",
+          "legendFormat": "idle",
+          "refId": "B"
         }
       ]
     }

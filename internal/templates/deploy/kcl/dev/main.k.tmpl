@@ -74,6 +74,15 @@ _postgres_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-postgres", 5
 _port_of = lambda name: str -> int {
     plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-api" if name == "{{.PrimaryWorkload}}" else "{{.ProjectName}}-{{.EnvName}}-" + name, 8085)
 }
+
+# The loopback pprof side-listener of each long-running host process. The
+# config default (127.0.0.1:6060) is one port for every process on the
+# machine: the second one to start loses it, and `forge env status` then
+# probes whichever process DID bind it and reports that process's profiles
+# as this app's. Each process gets its own, by the same rule as its PORT.
+_pprof_port_of = lambda name: str -> int {
+    plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-pprof-" + name, 6060)
+}
 {{- if .HasFrontend}}
 
 # The dev IdP cannot float: Zitadel derives the `iss` of every token it
@@ -93,6 +102,30 @@ _frontend_origin = "http://localhost:${_frontend_port}"
 # The dev database's connection string, composed from the port declared
 # above rather than written out a second time.
 _database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.ProjectName}}?sslmode=disable"
+
+# This env's SECRET VALUES: the gitignored `secrets/{{.EnvName}}.yaml`, a flat
+# map of env-var name to value. A value reaches only a workload that names it
+# (`config_secrets`, or a forge.SecretRef in its env). Populate it with
+# `forge secret set --env {{.EnvName}} <KEY>` (value on stdin).
+_secret_store = forge.FileSecrets {path = "secrets/{{.EnvName}}.yaml"}
+
+# ── OBSERVABILITY — OPT-IN ─────────────────────────────────────────────────
+# True runs docker-compose.yml's `lgtm` (Grafana, Prometheus, Tempo, Loki,
+# Pyroscope and an OTLP collector) beside the stack, and points every host
+# process's OTLP export at it; `forge env up` then lists Grafana with the
+# other URLs, and the forge dashboards are provisioned in it. Off by default:
+# an LGTM stack is ~1 GB resident to look at a service in your terminal.
+#
+# One switch, because three things must agree: the compose service has to
+# RUN, it has to PUBLISH its OTLP port to this machine (the API is a host
+# process, not on the compose network), and every process has to EXPORT to
+# that port. The opt-in used to be "add the lgtm workload" alone, which ran
+# Grafana with nothing reaching it.
+_observability = False
+
+# The collector's OTLP gRPC port on loopback: compose publishes it
+# (OTLP_GRPC_PORT, below) and the processes export to it, from this one value.
+_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp", 4317) if _observability else 0
 
 # ---------------------------------------------------------------------------
 # Each workload's env here.
@@ -115,7 +148,11 @@ _env = lambda w: fw.Workload -> {str:} {
         OTEL_SERVICE_NAME = w.name
         DATABASE_URL = _database_url
     }
-    _port = {PORT = str(_port_of(w.name))} if w.kind in _LONG_RUNNING else {}
+    _port = {
+        PORT = str(_port_of(w.name))
+        PPROF_ADDR = "127.0.0.1:${_pprof_port_of(w.name)}"
+    } if w.kind in _LONG_RUNNING else {}
+    _telemetry = {OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:${_otlp_port}"} if _observability else {}
 {{- if .HasFrontend}}
     # NATIVE SIGN-IN's redirect URI, and where the server reaches the issuer.
     # Composed from the origins above, which this file owns.
@@ -131,10 +168,14 @@ _env = lambda w: fw.Workload -> {str:} {
         IDP_BROWSER_ORIGIN = _idp_origin
         FRONTEND_ORIGIN_GLOB = _frontend_origin
         IDP_LOGIN_URI = _frontend_origin + "/auth/sign-in"
+        # Where the job keeps the login broker's token: this env's secret
+        # store, as IDP_BROKER_TOKEN, which `_api` lists in its
+        # config_secrets. Reused while the issuer accepts it; never printed.
+        IDP_BROKER_TOKEN_STORE = _secret_store.path
     } if w.name == "idp-provision" else {}
-    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _sign_in | _idp_job
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _telemetry | _sign_in | _idp_job
 {{- else}}
-    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _telemetry
 {{- end}}
 }
 
@@ -227,6 +268,20 @@ _workloads = [
 {{.Bindings}}
 ]
 
+# The observability stack, when `_observability` (above) is on: compose
+# owns the container, and this hands it the OTLP port to publish.
+#
+# `alloy` (also in docker-compose.yml) is a further opt-in: it scrapes the
+# containers on the compose network and ingests their Docker logs, mounting
+# the Docker socket to do it — so on a shared machine it reads EVERY
+# container's logs, not just this project's. Add
+# `fw.Workload {name = "alloy", runtime = forge.OnCompose {service = "alloy"}}`
+# here to run it.
+_telemetry_workloads = [fw.Workload {
+    name = "lgtm"
+    runtime = forge.OnCompose {service = "lgtm", env = {"OTLP_GRPC_PORT" = str(_otlp_port)}}
+}] if _observability else []
+
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"
     # WHO APPLIES this env: forge, directly. This is YOUR machine's cluster
@@ -245,7 +300,7 @@ _bundle = forge.Bundle {
     lifecycle = "local"
     # Where the env's support objects (Namespace, gateways, routes) land.
     cluster_target = _k3d
-    workloads = _workloads
+    workloads = _workloads + _telemetry_workloads
     # ── THIS ENVIRONMENT'S INFRASTRUCTURE ─────────────────────────────────
     #
     # The servers the app DIALS but does not build, as HOST PROCESSES: forge
@@ -279,15 +334,6 @@ _bundle = forge.Bundle {
         }
 {{- end}}
     ]
-    # ── OBSERVABILITY — OPT-IN ───────────────────────────────────────────
-    #
-    # docker-compose.yml also defines `lgtm` (Grafana + Loki + Tempo + Mimir)
-    # and `alloy`. They are not run by default: an LGTM stack is ~1 GB
-    # resident to look at a service running in your terminal. To add them,
-    # append to `_workloads`:
-    #
-    #     fw.Workload {name = "lgtm", runtime = forge.OnCompose {service = "lgtm"}}
-    #     fw.Workload {name = "alloy", runtime = forge.OnCompose {service = "alloy"}}
 {{- if .HasFrontend}}
     # The frontend's dev server (forge.OnHost — the same runtime a workload
     # binds), with its port declared above so everything that must agree on
@@ -299,11 +345,8 @@ _bundle = forge.Bundle {
         runtime = forge.OnHost {}
     }]
 {{- end}}
-    # SECRET VALUES for this env: the gitignored `secrets/{{.EnvName}}.yaml`, a
-    # flat map of env-var name to value. A value reaches only a workload that
-    # names it (`config_secrets`, or a forge.SecretRef in its env). Populate
-    # it with `forge secret set --env {{.EnvName}} <KEY>` (value on stdin).
-    secret_provider = forge.FileSecrets {path = "secrets/{{.EnvName}}.yaml"}
+    # SECRET VALUES for this env — `_secret_store`, declared above.
+    secret_provider = _secret_store
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
     http_routes = ing.HTTP_ROUTES

@@ -278,11 +278,25 @@ func startPostgres(ctx context.Context, projectDir string, spec Spec) error {
 		return fmt.Errorf("host-infra %s: create data dir: %w", spec.Name, err)
 	}
 
+	// initdb's and pg_ctl's own output goes to a log beside the data, the way
+	// the IdP's does (zitadel.log). Left on the library's default — stdout —
+	// a first `forge env up` printed initdb's whole transcript into the
+	// terminal: absolute paths, the locale banner, and a "you can now start
+	// the database server using: pg_ctl … start" hint telling the reader to
+	// do by hand what forge had just done for them.
+	logPath := filepath.Join(dataDir, "postgres.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) // #nosec G304 -- path derived from the project's own data dir
+	if err != nil {
+		return fmt.Errorf("host-infra %s: open log: %w", spec.Name, err)
+	}
+	defer func() { _ = logFile.Close() }()
+
 	// pgtest.StartEmbedded fetches a cold cache's binary with retry and
 	// reports a failed download as one, rather than as the library's
 	// "no version found matching X" (pkg/pgtest/fetch.go).
-	if _, err := pgtest.StartEmbedded(postgresConfig(spec, dataDir)); err != nil {
-		return fmt.Errorf("host-infra %s: start postgres on :%d: %w", spec.Name, spec.Port, err)
+	if _, err := pgtest.StartEmbedded(postgresConfig(spec, dataDir).Logger(logFile)); err != nil {
+		return fmt.Errorf("host-infra %s: start postgres on :%d: %w (initdb/pg_ctl output: %s)",
+			spec.Name, spec.Port, err, shortPath(projectDir, logPath))
 	}
 
 	// The server now OUTLIVES this process by design (see the package doc):

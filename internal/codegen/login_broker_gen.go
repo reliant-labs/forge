@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -16,7 +17,18 @@ type LoginBrokerTemplateData struct {
 	// Name is the project's binary name, used in the error message that
 	// tells an operator which command provisions the broker credential.
 	Name string
+	// MiddlewareDeclaresSessionCookie reports whether the project's OWN
+	// pkg/middleware/middleware.go declares SessionCookieName — the one
+	// name the broker sets and the auth interceptor reads. Every project
+	// scaffolded since the interceptor learned the cookie does; an older
+	// one keeps a local constant so this file still compiles against the
+	// middleware it actually has.
+	MiddlewareDeclaresSessionCookie bool
 }
+
+// middlewareSessionCookieDecl matches the constant the scaffolded
+// pkg/middleware/middleware.go declares.
+var middlewareSessionCookieDecl = regexp.MustCompile(`(?m)^const SessionCookieName\b`)
 
 // GenerateLoginBroker scaffolds internal/app/login_broker.go ONCE — the
 // OWNED server half of the API-only sign-in flow, which lets an app render
@@ -52,9 +64,11 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return fmt.Errorf("create internal/app dir: %w", err)
 	}
+	mw, _ := os.ReadFile(filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 	content, err := templates.ProjectTemplates().Render("app-login-broker.go.tmpl", LoginBrokerTemplateData{
-		Module: modulePath,
-		Name:   projectName,
+		Module:                          modulePath,
+		Name:                            projectName,
+		MiddlewareDeclaresSessionCookie: middlewareSessionCookieDecl.Match(mw),
 	})
 	if err != nil {
 		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

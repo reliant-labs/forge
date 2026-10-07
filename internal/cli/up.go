@@ -407,7 +407,13 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		// lines below, as the "Cluster Workloads" runtime check with its own
 		// -v evidence. Repeating it inside the box would be two renderings
 		// of one fact that can drift apart.
-		renderUpSummary(os.Stdout, env, rows, "down", true, nil, nil)
+		//
+		// The compose rows (Grafana, when observability is on) are added
+		// for display only: the runtime checks below resolve their targets
+		// from the host rows, and a container is not a forge-owned process.
+		compose := composeRows(ctx, entities, read.projectDir, nil, dockerComposePublishers)
+		probeRowsListening(compose, portInUse)
+		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, nil, nil)
 	}
 	// Custom domains, for a hosted env that declares any. Printed here
 	// rather than folded into a runtime check because it is not a
@@ -1012,9 +1018,10 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// `forge env deploy` invocations still error — see requireFeature
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
+	infraConverged := false
 	if err := upBuildDeployPhases(ctx, upClusterInput{
 		store: store, cfg: cfg, entities: entities, projectDir: projectDir,
-		opts: opts,
+		opts: opts, infraConverged: &infraConverged,
 	}); err != nil {
 		return err
 	}
@@ -1073,6 +1080,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err := upHostPhase(ctx, hostPhase{
 		cfg: cfg, entities: entities, prov: prov, opts: opts,
 		projectDir: projectDir, detach: detach, procs: procs,
+		infraConverged: infraConverged,
 	}); err != nil {
 		return err
 	}
@@ -1225,6 +1233,9 @@ type hostPhase struct {
 	projectDir string
 	detach     bool
 	procs      *procRegistry
+	// infraConverged: this run's infra pre-warm already converged the
+	// env's infrastructure (see upClusterInput.infraConverged).
+	infraConverged bool
 }
 
 // upHostPhase runs phase 3 of `forge env up`: converge the host world, then
@@ -1264,8 +1275,14 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// project may legitimately run its infra out of band, and the
 		// readiness gate below is the authoritative check on whether the
 		// stack actually came up.
-		if err := prewarmInfra(ctx, opts.env, entities); err != nil {
-			fmt.Printf("[up] infra: %v (continuing; host services may fail to connect)\n", err)
+		//
+		// When the pre-warm DID run and converge this run, it is not run a
+		// third time (after the deploy phase): nothing between there and
+		// here changes the infrastructure.
+		if !p.infraConverged {
+			if err := prewarmInfra(ctx, opts.env, entities); err != nil {
+				fmt.Printf("[up] infra: %v (continuing; host services may fail to connect)\n", err)
+			}
 		}
 		// Ensure the dev database the host services are about to dial EXISTS
 		// before they boot — the runtime counterpart to the generate-time
@@ -1296,6 +1313,17 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		if err := runHostJobs(ctx, cfg, entities, p.prov.All(), opts.env); err != nil {
 			return err
 		}
+		// Re-read the secret store for the same reason the config below is
+		// re-read: a job may have PUBLISHED into it. idp-provision stores
+		// the login broker's token there (IDP_BROKER_TOKEN), and the store
+		// was read before it ran — so on a fresh project the API would
+		// start without the token it was just given, and native sign-in
+		// would 404 until a second `forge env up`.
+		prov, err := reloadSecretsAfterJobs(p.prov, entities, p.projectDir)
+		if err != nil {
+			return err
+		}
+		p.prov = prov
 		// Re-read what those jobs PUBLISHED into the environment's config.
 		//
 		// idp-provision registers the browser application and writes the
@@ -1421,6 +1449,12 @@ type upClusterInput struct {
 	entities   *KCLEntities
 	projectDir string
 	opts       upOptions
+	// infraConverged is set true when this run's infra pre-warm converged
+	// every off-cluster infra group (host infra, compose). The deploy phase
+	// and the host phase then leave those groups alone instead of converging
+	// them again: one `forge env up` used to `docker compose pull` + `up` an
+	// opted-in lgtm three times.
+	infraConverged *bool
 }
 
 // upBuildDeployPhases runs the build/infra/deploy side of `forge env up`.
@@ -1521,10 +1555,16 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	// compose infra, so join the pre-warm before deploying. Joining here
 	// (rather than letting the deploy phase's own compose-up race the
 	// goroutine) also keeps a single docker-compose writer at a time.
+	converged := false
 	if infraWarm != nil {
 		if err := <-infraWarm; err != nil {
 			fmt.Printf("[up] infra pre-warm: %v (deploy phase will retry)\n", err)
+		} else {
+			converged = true
 		}
+	}
+	if in.infraConverged != nil {
+		*in.infraConverged = converged
 	}
 	if required.deploy && !opts.noDeploy {
 		if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
@@ -1556,6 +1596,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 			if err := reconcileCluster(ctx, opts.env, deployOptions{
 				skipFrontend: true, skipClusterApply: !required.cluster,
 				targets: opts.targets, purpose: renderToLaunch,
+				infraConverged: converged,
 			}); err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
@@ -1880,6 +1921,9 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 // exit code used to keep.
 func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary) {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
+	compose := composeRows(context.Background(), e, projectDirForKCL(), targets, dockerComposePublishers)
+	probeRowsListening(compose, portInUse)
+	rows = append(rows, compose...)
 	if len(rows) == 0 && cluster == nil {
 		return
 	}
@@ -2026,6 +2070,7 @@ func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel
 	}
 	printGroup("Host services", "host")
 	printGroup("Frontends", "frontend")
+	printGroup("Compose services", "compose")
 	renderClusterWorkloads(w, bar, env, cluster)
 	fmt.Fprintf(w, "%s\n", bar)
 	fmt.Fprintf(w, "%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))

@@ -126,7 +126,11 @@ func RunsInServer(kind string) bool {
 // WorkloadStanza gives every component of that binary — the image, the build,
 // the `http` port, the credential the DI graph reads — with `server` as the
 // subcommand, so `_api` and the services it runs cannot disagree about them.
-func APIWorkloadStanza(modulePath, projectName string) string {
+//
+// extraSecrets are credentials THIS env hands the API beyond the database —
+// the dev env's login-broker token, which only an env running the dev IdP
+// has. They are an env fact, not a workload fact, so the caller passes them.
+func APIWorkloadStanza(modulePath, projectName string, extraSecrets ...string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s = fw.Workload {\n", APIWorkloadIdent)
 	fmt.Fprintf(&b, "    name = %q\n", APIWorkloadName)
@@ -135,10 +139,15 @@ func APIWorkloadStanza(modulePath, projectName string) string {
 	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
 	fmt.Fprintf(&b, "    args = %s\n", kclStringList([]string{ServerSubcommand}))
 	fmt.Fprintf(&b, "    ports = [fw.Port {name = \"http\", port = %d, expose = True}]\n", config.DefaultServePort)
-	b.WriteString("    config_secrets = [\"DATABASE_URL\"]\n")
+	fmt.Fprintf(&b, "    config_secrets = %s\n", kclStringList(append([]string{"DATABASE_URL"}, extraSecrets...)))
 	b.WriteString("}")
 	return b.String()
 }
+
+// LoginBrokerTokenEnv is the env var the scaffolded server reads the login
+// broker's token from (the `idp_broker_token` config field), and the key the
+// idp-provision job stores it under (devidp.BrokerTokenKey).
+const LoginBrokerTokenEnv = "IDP_BROKER_TOKEN"
 
 // workloadLiteralIdent is workloadLiteral with the declared identifier
 // captured.

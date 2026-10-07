@@ -389,7 +389,7 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// pkg/middleware/*.go copies; those files are user-owned and
 		// simply stop being managed here. Adopting the library
 		// (pkg/authn, pkg/middleware, pkg/observe) is a hand-migration.
-		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "middleware.go.tmpl", destPath: "pkg/middleware/middleware.go", templated: true, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 
 		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point the

@@ -269,7 +269,7 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 			birthsWrote = true
 			summary.EntitiesBirthed = append(summary.EntitiesBirthed, rep.Message+" → "+rep.Table)
 			summary.TodoFields += rep.TodoFields
-			fmt.Printf("     ✅ %s (+down)\n", rep.UpPath)
+			fmt.Println(birthMigrationLine(root, rep.UpPath))
 			switch {
 			case rep.ManagedFieldsErr != nil:
 				line := fmt.Sprintf("%s managed fields — %v", m.Name, rep.ManagedFieldsErr)
@@ -512,4 +512,17 @@ func pluralY(n int) string {
 		return "y"
 	}
 	return "ies"
+}
+
+// birthMigrationLine is the progress line for the migration an entity birth
+// wrote: the file, project-relative. It used to end "(+down)", announcing a
+// down migration nothing writes — forge rolls forward only — and print the
+// absolute path, which put the machine's directory layout into every
+// transcript of the README's first sixty seconds.
+func birthMigrationLine(root, upPath string) string {
+	shown := upPath
+	if rel, err := filepath.Rel(root, upPath); err == nil && !strings.HasPrefix(rel, "..") {
+		shown = filepath.ToSlash(rel)
+	}
+	return "     ✅ " + shown
 }

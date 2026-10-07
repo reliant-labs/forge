@@ -2627,9 +2627,10 @@ func SelectManifestsByGroup(manifests string, targets []string) string {
 //     namespace (a workload can't apply into a missing namespace), and the
 //     namespace is genuinely env-wide, so it is replicated to every group.
 //   - a == "" (any other unlabeled doc — an env-level resource the user
-//     did NOT attribute to a cluster, e.g. a ConfigMap left on the global
-//     bundle rather than an infra service) → KEEP. The deploy layer never
-//     PICKS a cluster for an unattributed resource; it replicates the
+//     did NOT attribute to a cluster, e.g. a RuntimeClass, which forge.render
+//     leaves unstamped because every cluster running the class needs it) →
+//     KEEP. The deploy layer never PICKS a cluster for an unattributed
+//     resource; it replicates the
 //     genuinely-shared ones rather than guess a primary. To pin such a
 //     resource to ONE cluster, declare it on an image-less infra service's
 //     `manifests` so it carries that service's app label and routes via

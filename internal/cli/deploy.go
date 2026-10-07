@@ -374,6 +374,9 @@ type promoteCmdFlags struct {
 	// checkout renders different objects than the one recorded (see
 	// release_bundle_of_record.go). Off, such a render is refused.
 	rerecordBundle bool
+	// liveDiff prints the release bundle's server-side diff against each
+	// live cluster with the plan (printPlanLiveDiff).
+	liveDiff bool
 
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
@@ -420,6 +423,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 	flags.StringSliceVar(&f.acknowledgeDestructive, "acknowledge-destructive", nil,
 		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
+	flags.BoolVar(&f.liveDiff, "live-diff", false,
+		"Print the release bundle's server-side diff against each live cluster with the plan (kubectl diff --server-side; writes nothing). What a reviewer reads before --approve")
 	flags.BoolVar(&f.rerecordBundle, "rerecord-bundle", false,
 		"Replace the release's recorded bundle with this checkout's render. Without it, a render whose objects differ from the bundle recorded for the release is refused: a release's bundle is what a reviewer approved and what deploys")
 
@@ -631,6 +636,9 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if err := ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, p.rerecordBundle, progressWriter(f.jsonOut)); err != nil {
 		return err
 	}
+	if p.liveDiff && p.version != "" {
+		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
+	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
 		Ledger:        ledger,
 		Capacity:      capacity,
@@ -711,6 +719,12 @@ func refusePromoteFlagsWithoutRelease(f promoteCmdFlags) error {
 	}
 	if len(f.gates) > 0 {
 		set = append(set, "--gate")
+	}
+	if f.liveDiff {
+		set = append(set, "--live-diff")
+	}
+	if f.rerecordBundle {
+		set = append(set, "--rerecord-bundle")
 	}
 	if len(set) == 0 {
 		return nil

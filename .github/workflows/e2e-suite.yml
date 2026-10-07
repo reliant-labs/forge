@@ -78,8 +78,8 @@ jobs:
     name: compile (-tags e2e)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -124,9 +124,9 @@ jobs:
       # installs that satisfy it.
       FORGE_E2E_REQUIRE_TOOLS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -142,7 +142,7 @@ jobs:
       # quiet skip. The set is enumerated from requireTool call sites plus
       # every exec.LookPath under internal/cli/*_e2e_test.go.
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -204,7 +204,7 @@ jobs:
       # fixture-corpus.yml: setup-node's `cache: npm` keys on a checked-in
       # lockfile and every lockfile here is generated at test time, so key
       # on the template that decides the dependency set instead.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.npm
           key: e2e-npm-${{ runner.os }}-${{ hashFiles('internal/templates/frontend/nextjs/package.json.tmpl') }}
@@ -215,7 +215,7 @@ jobs:
       # on first use into the user cache dir; caching it saves that on
       # every subsequent run and removes a network dependency from the
       # critical path.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/forge/embedded-postgres
           key: e2e-embedded-postgres-${{ runner.os }}-${{ hashFiles('pkg/go.sum') }}
@@ -364,7 +364,7 @@ jobs:
 
       - name: Upload shard results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-shard-${{ matrix.shard }}
           path: |
@@ -376,7 +376,7 @@ jobs:
 
       - name: Upload generated trees on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-shard-${{ matrix.shard }}-trees
           path: /tmp/TestE2E*
@@ -415,7 +415,7 @@ jobs:
       FORGE_E2E_MAX_SKIPS: "16"
       EXPECTED_SHARDS: "4"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: e2e-shard-*
           path: shards

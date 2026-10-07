@@ -25,9 +25,9 @@ jobs:
       # Set once so every step uses the same workspace path.
       E2E_DIR: ${{ github.workspace }}/e2e-workspace
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -38,7 +38,7 @@ jobs:
             go.sum
             pkg/go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
 
@@ -248,7 +248,7 @@ jobs:
 
       - name: Upload generated tree on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-scaffold-tree
           path: ${{ env.E2E_DIR }}

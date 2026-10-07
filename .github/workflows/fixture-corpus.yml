@@ -38,12 +38,12 @@ jobs:
     name: scaffold → generate → build → boot
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # setup-go caches GOMODCACHE + GOCACHE keyed on go.sum. The
       # fixture projects' module downloads and build artifacts land in
       # the same caches, so runs after the first are warm.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -66,7 +66,7 @@ jobs:
       # `next build`). The fixture skips its npm phase with a logged
       # reason when npm is absent — CI must NOT take that branch, so
       # provision Node explicitly instead of relying on the runner image.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -76,7 +76,7 @@ jobs:
       # generated at test time. Key on the Next.js frontend package.json
       # template instead — the dependency set the scaffolded project
       # installs only changes when that template changes.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.npm
           key: corpus-npm-${{ runner.os }}-${{ hashFiles('internal/templates/frontend/nextjs/package.json.tmpl') }}
@@ -100,7 +100,7 @@ jobs:
 
       - name: Upload fixture trees on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fixture-corpus-trees
           path: /tmp/TestE2EFixtureCorpus*

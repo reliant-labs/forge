@@ -20,7 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hook (`language: node`, `entry: prettier --write --ignore-unknown`,
   `additional_dependencies: ["prettier@3.5.3"]`), and pin
   `"prettier": "3.5.3"` in each frontend's `package.json`.
-
 - **Skills and project memory now lead with shipping.** The start-here `forge`
   skill gains a "Ship it" section (hosting is the default, `forge env deploy`,
   the free static tier, queued-on-billing exit 7, no `forge login` under
@@ -612,7 +611,11 @@ scaffold`. `forge project annotations` lists the marker and the mapping row.
   and a caller writing the ordinary err-check-first form leaked the database.
   It now drops what it opened and returns `nil, err`: check `err`, then defer
   `Close`. (`Close` stays nil-safe, so existing callers keep working.)
-
+- **A pre-rollout Job wait no longer leaves a `kubectl wait` running after it
+  returns.** The wait races a `condition=complete` watcher against a
+  `condition=failed` one and answers with the first; the loser was only
+  signalled, so it could outlive the deploy step that started it. It is now
+  killed and reaped before the verdict is returned.
 - **A service, entity, field or RPC whose name has a digit in it now builds —
   forge spells every identifier it shares with buf's generators by THEIR
   casing rules.** protoc-gen-go camel-cases a proto name word by word and

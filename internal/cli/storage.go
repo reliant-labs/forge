@@ -65,12 +65,12 @@ var fullGCFn = func(ctx context.Context, r storage.Runner, apply bool) error { r
 func runFullGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply bool) error {
 	err := fullGCFn(ctx, maintenanceRunner(p, path, out), apply)
 	if !apply {
-		return err
+		return storage.RealFailure(err)
 	}
 	if recErr := storage.RecordFullGC(path, storage.NewGCResult(time.Now(), err)); recErr != nil && err == nil {
 		return fmt.Errorf("record storage GC result: %w", recErr)
 	}
-	return err
+	return storage.RealFailure(err)
 }
 
 func newStorageCmd() *cobra.Command {

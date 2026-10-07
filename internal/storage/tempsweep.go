@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -140,7 +141,7 @@ func (r Runner) TempSweep(apply bool) error {
 		root:      resolved,
 		now:       time.Now(),
 		maxAge:    tempSweepAge,
-		openPaths: func() (openfiles.Snapshot, error) { return openfiles.Take(ctx) },
+		openPaths: func() (openfiles.Snapshot, error) { return r.openSnapshot(ctx) },
 		print:     r.print,
 	}
 	return s.run(apply)
@@ -171,7 +172,11 @@ func (s tempSweep) run(apply bool) error {
 
 	// Collect the name-matched set first, so lsof is only paid for when there
 	// is something it could protect.
-	var named []string
+	type namedEntry struct {
+		name  string
+		mtime time.Time
+	}
+	var named []namedEntry
 	for _, entry := range entries {
 		// A symlink at the top level is never followed and never removed:
 		// its target is outside the root this sweep is scoped to.
@@ -181,7 +186,11 @@ func (s tempSweep) run(apply bool) error {
 		if !tempSweepAllowed(entry.Name()) && !orphanedGoTestTempDir(s.root, entry) {
 			continue
 		}
-		named = append(named, entry.Name())
+		var mtime time.Time
+		if info, err := entry.Info(); err == nil {
+			mtime = info.ModTime()
+		}
+		named = append(named, namedEntry{entry.Name(), mtime})
 	}
 	if len(named) == 0 {
 		return nil
@@ -189,7 +198,11 @@ func (s tempSweep) run(apply bool) error {
 
 	open, err := s.openPaths()
 	if ctxErr := s.done(); ctxErr != nil {
-		return fmt.Errorf("temp sweep stopped before removing anything: %w", ctxErr)
+		// The deadline hit while waiting for the snapshot: nothing could be
+		// shown safe to remove yet. That is a cut-off, not a failure; the
+		// next pass resumes, and the snapshot is started with the pass so it
+		// is usually ready by now.
+		return &CutOffError{Err: fmt.Errorf("temp sweep: no open-files snapshot before the deadline, nothing removed: %w", ctxErr)}
 	}
 	if err != nil {
 		// Fail closed. Age alone cannot tell an abandoned entry from one a
@@ -199,19 +212,32 @@ func (s tempSweep) run(apply bool) error {
 		return nil
 	}
 
-	var candidates []tempCandidate
+	// Oldest first, each removed as soon as it qualifies: a cut-off keeps what
+	// it already reclaimed. Entry mtime is the ordering hint only; whether an
+	// entry is idle is decided by the newest mtime INSIDE it, measured below.
+	sort.SliceStable(named, func(i, j int) bool { return named[i].mtime.Before(named[j].mtime) })
+	var total int64
+	var removed, reached, qualified int
 	var skippedOpen, skippedYoung, skippedGit int
-	for _, name := range named {
+	var cut error
+	for _, n := range named {
 		if err := s.done(); err != nil {
-			return fmt.Errorf("temp sweep stopped before removing anything: %w", err)
+			cut = err
+			break
 		}
-		path := filepath.Join(s.root, name)
+		reached++
+		path := filepath.Join(s.root, n.name)
 		if open.Holds(path) {
 			skippedOpen++
 			continue
 		}
-		size, newest, hasGit, walkErr := s.measure(path, name)
+		size, newest, hasGit, walkErr := s.measure(path, n.name)
 		if walkErr != nil {
+			if s.done() != nil {
+				cut = s.done()
+				reached--
+				break
+			}
 			continue
 		}
 		if hasGit {
@@ -222,35 +248,31 @@ func (s tempSweep) run(apply bool) error {
 			skippedYoung++
 			continue
 		}
-		candidates = append(candidates, tempCandidate{path: path, size: size, newest: newest})
-	}
-
-	var total int64
-	var removed int
-	for _, c := range candidates {
-		if err := s.done(); err != nil {
-			return fmt.Errorf("temp sweep stopped after %d of %d entries: %w", removed, len(candidates), err)
-		}
-		s.print("temp sweep: %s (%d bytes, idle %s)\n", c.path, c.size, s.now.Sub(c.newest).Round(time.Hour))
+		qualified++
+		s.print("temp sweep: %s (%d bytes, idle %s)\n", path, size, s.now.Sub(newest).Round(time.Hour))
 		if !apply {
-			total += c.size
+			total += size
 			continue
 		}
-		if err := removeWritable(c.path); err != nil {
-			s.print("temp sweep: could not remove %s: %v\n", c.path, err)
+		if err := removeWritable(path); err != nil {
+			s.print("temp sweep: could not remove %s: %v\n", path, err)
 			continue
 		}
-		total += c.size
+		total += size
 		removed++
 	}
-	if len(candidates) > 0 || skippedOpen > 0 || skippedYoung > 0 || skippedGit > 0 {
+	if qualified > 0 || skippedOpen > 0 || skippedYoung > 0 || skippedGit > 0 {
 		verb := "reclaimable"
 		if apply {
 			verb = "reclaimed"
 		}
 		s.print("temp sweep: %d entries %s (%.2f GiB); retained %d in use, %d recent, %d with git metadata\n",
-			map[bool]int{true: removed, false: len(candidates)}[apply], verb,
+			map[bool]int{true: removed, false: qualified}[apply], verb,
 			float64(total)/float64(GiB), skippedOpen, skippedYoung, skippedGit)
+	}
+	if cut != nil {
+		s.print("temp sweep: cut off after %d/%d candidates\n", reached, len(named))
+		return &CutOffError{Err: fmt.Errorf("temp sweep cut off after %d/%d candidates: %w", reached, len(named), cut)}
 	}
 	return nil
 }

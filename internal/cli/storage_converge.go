@@ -219,10 +219,14 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 		// daemon, a vanished builder) does not retry on every `forge env
 		// up`. It is recorded as what it was, in this pass's own record and
 		// nowhere else.
-		if err := storage.RecordAutoGC(path, storage.NewGCResult(time.Now(), gcErr)); err != nil && gcErr == nil {
+		result := storage.NewGCResult(time.Now(), gcErr)
+		if err := storage.RecordAutoGC(path, result); err != nil && gcErr == nil {
 			return err
 		}
-		return gcErr
+		if len(result.CutOffLayers) > 0 {
+			fmt.Fprintf(out, "storage auto-gc: %s\n", result.Summary())
+		}
+		return storage.RealFailure(gcErr)
 	})
 }
 

@@ -223,7 +223,7 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 	var failures []error
 	wd, _ := os.Getwd()
 	self := openfiles.FromPaths([]string{wd})
-	var inUse lazyOpenFiles
+	inUse := lazyOpenFiles{take: r.openSnapshot}
 	seenCommon := map[string]bool{}
 
 	for _, repo := range o.repos {
@@ -480,6 +480,8 @@ func (r Runner) recheckWorktree(ctx context.Context, repo string, e worktreeEntr
 	if fresh == nil || fresh.head == "" {
 		return HoldUnchecked, "no longer registered"
 	}
+	// A fresh snapshot on purpose: this re-check exists to catch what changed
+	// since the pass's snapshot, so it must not reuse it.
 	var fresher lazyOpenFiles
 	reason, detail, skip := r.classifyWorktree(ctx, *fresh, base, idle, self, func(p string) (bool, error) { return fresher.holds(ctx, p) })
 	if skip {
@@ -545,11 +547,17 @@ func nestedRepositories(ctx context.Context, worktree string) ([]string, error) 
 type lazyOpenFiles struct {
 	snap *openfiles.Snapshot
 	err  error
+	// take supplies the snapshot; the pass's shared one in a GC pass.
+	take func(context.Context) (openfiles.Snapshot, error)
 }
 
 func (l *lazyOpenFiles) holds(ctx context.Context, path string) (bool, error) {
 	if l.snap == nil && l.err == nil {
-		s, err := openfiles.Take(ctx)
+		take := l.take
+		if take == nil {
+			take = openfiles.Take
+		}
+		s, err := take(ctx)
 		if err != nil {
 			l.err = fmt.Errorf("refusing worktree cleanup: cannot determine which worktrees are in use: %w", err)
 		} else {

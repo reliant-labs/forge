@@ -233,67 +233,41 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
-	r.Ctx = ctx
+	r = r.beginPass(ctx)
 	var failures []error
-	if err := r.Logs(apply); err != nil {
-		failures = append(failures, layerErr("logs", err))
+	add := func(err error) {
+		if err != nil {
+			failures = append(failures, err)
+		}
 	}
+	add(r.runLayer("logs", shareLogs, func(s Runner) error { return s.Logs(apply) }))
 	// Go caches FIRST after the cheap log expiry: the shared build cache grows
 	// ~40 GB/h under agent load and is the layer that decides whether the disk
-	// fills, so no slower layer may starve it of the pass budget. Age-trimmed,
-	// never younger than a 2h floor; a cut-off pass still keeps what it freed.
-	if err := r.GoCaches(apply); err != nil {
-		failures = append(failures, layerErr("go caches", err))
-	}
-	// A nonlocal Docker endpoint ends only the Docker layer; the temp sweep
-	// and source eviction below never touch Docker.
-	dockerErr := r.Local(ctx)
-	if dockerErr != nil {
-		failures = append(failures, layerErr("docker", dockerErr))
-	}
+	// fills. Every layer below runs in its own slice of the pass budget (see
+	// passctx.go), so none starves another, and a layer cut off by its slice
+	// is recorded as cut off, not failed.
+	add(r.goCacheLayer(apply))
+	// A nonlocal Docker endpoint ends only the Docker layer; the layers below
+	// never touch Docker.
+	dockerErr := r.runLayer("docker", shareDocker, func(s Runner) error { return s.Local(ctx) })
+	add(dockerErr)
 	if dockerErr == nil {
-		if err := r.LocalImages(ctx, apply); err != nil {
-			failures = append(failures, layerErr("local-registry images", err))
+		add(r.runLayer("local-registry images", shareDocker, func(s Runner) error { return s.LocalImages(s.hostCtx(), apply) }))
+		for _, builder := range r.Policy.Builders {
+			add(r.runLayer("builder "+builder, shareDocker, func(s Runner) error { return s.builderGC(s.hostCtx(), builder, apply) }))
 		}
-	}
-	for _, builder := range r.Policy.Builders {
-		if dockerErr != nil {
-			break
-		}
-		if err := ctx.Err(); err != nil {
-			return errors.Join(append(failures, err)...)
-		}
-		if err := r.builderGC(ctx, builder, apply); err != nil {
-			failures = append(failures, layerErr("builder "+builder, err))
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return errors.Join(append(failures, err)...)
 	}
 	// The temp sweep touches only $TMPDIR scratch under a fixed allowlist of
 	// known-dead prefixes, so it is safe alongside a running stack.
-	if err := r.TempSweep(apply); err != nil {
-		failures = append(failures, layerErr("temp sweep", err))
-	}
-	if err := ctx.Err(); err != nil {
-		return errors.Join(append(failures, err)...)
-	}
-	// Source eviction belongs here for the same reason the temp sweep does,
-	// and it is the layer with the most to reclaim: 9.2 GB of one repository
-	// on the machine this was written for. It cannot interrupt a running
-	// stack. Resolve touches an entry's metadata on every cache HIT, so
-	// anything a build is using now is minutes old and cannot be in a set
-	// whose youngest member is SourceCacheUnused (14 days) stale; the
-	// per-repository keep floor retains an idle project's current pin
-	// regardless of age; and an entry a live process holds open is detected
-	// and retained. The worst case for being wrong is one re-clone of a
-	// re-fetchable pin, which is the same cost shape as a pruned build cache
-	// — not the offline registry or the restarted kubelet this pass excludes.
-	if err := r.Sources(apply); err != nil {
-		failures = append(failures, layerErr("source cache", err))
-	}
-	if err := r.worktreeLayer(apply); err != nil {
-		failures = append(failures, layerErr("worktrees", err))
-	}
+	add(r.runLayer("temp sweep", shareTemp, func(s Runner) error { return s.TempSweep(apply) }))
+	// Source eviction cannot interrupt a running stack. Resolve touches an
+	// entry's metadata on every cache HIT, so anything a build is using now is
+	// minutes old and cannot be in a set whose youngest member is
+	// SourceCacheUnused (14 days) stale; the per-repository keep floor retains
+	// an idle project's current pin; and an entry a live process holds open is
+	// detected and retained. The worst case for being wrong is one re-clone of
+	// a re-fetchable pin, the same cost shape as a pruned build cache.
+	add(r.runLayer("source cache", shareSources, func(s Runner) error { return s.Sources(apply) }))
+	add(r.runLayer("worktrees", shareLast, func(s Runner) error { return s.worktreeLayer(apply) }))
 	return errors.Join(failures...)
 }

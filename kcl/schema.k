@@ -3524,6 +3524,15 @@ schema Bundle:
     # ConfigMaps, gateways and routes, rendered Secrets, RuntimeClasses)
     # land. Unset: the target of the first cluster-bound workload.
     cluster_target?: ClusterTarget
+    # CONNECTED CLUSTERS by kubectl context: `{"<context>": "<name forge
+    # cluster connect registered>"}`. The CLUSTER-LEVEL binding — declare it
+    # once per cluster and every group placed there (forge.Manifests,
+    # HelmChart, Generated, and any group kind added later) inherits it, so
+    # a cluster that only raw groups reach (no workload, no ClusterTarget)
+    # is still bound and the declarations cannot drift apart. A context
+    # bound here AND by a ClusterTarget/runtime to a different name is
+    # refused at render. Same k3d exemption as ClusterTarget.connected_cluster.
+    connected_clusters: {str: str} = {}
     # The image tag every forge-built cluster image carries (a per-image
     # digest from `-D image_digests` wins over it). Default: the
     # `-D image_tag=` binding forge passes on every render, else the per-env

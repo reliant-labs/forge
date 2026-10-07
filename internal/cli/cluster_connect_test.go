@@ -691,3 +691,41 @@ func TestRefuseUnboundClusterTargets_EveryRenderedCluster(t *testing.T) {
 		t.Errorf("helm-placed cluster not named: %v", err)
 	}
 }
+
+// prod-daemon's shape: a second cluster placed ONLY by several forge.Manifests
+// groups (no workload, no ClusterTarget). One cluster-level binding in
+// ConnectedClusters must bind every group on it; without it the render is
+// refused, and the binding list the control plane receives must carry it.
+func TestConnectedClustersBindEveryGroupOnACluster(t *testing.T) {
+	cp := &ControlPlaneEntity{Endpoint: "https://cp.example"}
+	e := &KCLEntities{
+		ControlPlane:  cp,
+		ClusterTarget: &ClusterTargetEntity{Cluster: "gke_a_b_prod", ConnectedCluster: "prod-control-plane"},
+		ManifestClusters: []ManifestClusterEntity{
+			{Cluster: "gke_a_b_prod"}, {Cluster: "gke_a_b_daemon"}, {Cluster: "gke_a_b_daemon"}, {Cluster: "gke_a_b_daemon"},
+		},
+		HelmCharts: []HelmChartEntity{{Cluster: "gke_a_b_daemon"}},
+	}
+	if err := refuseUnboundClusterTargets("prod", e); err == nil {
+		t.Fatal("precondition: an unbound manifests-only cluster must be refused")
+	}
+
+	e.ConnectedClusters = map[string]string{"gke_a_b_daemon": "prod-daemon"}
+	if err := refuseUnboundClusterTargets("prod", e); err != nil {
+		t.Fatalf("a cluster bound once at cluster level was refused: %v", err)
+	}
+	got := clusterBindingsOf(e)
+	want := []clusterBinding{
+		{Cluster: "gke_a_b_daemon", ConnectedCluster: "prod-daemon"},
+		{Cluster: "gke_a_b_prod", ConnectedCluster: "prod-control-plane"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("bindings = %+v, want %+v", got, want)
+	}
+
+	// Two declarations that disagree for one context are drift, not a merge.
+	e.ConnectedClusters["gke_a_b_prod"] = "someone-else"
+	if err := refuseUnboundClusterTargets("prod", e); err == nil || !strings.Contains(err.Error(), "someone-else") {
+		t.Fatalf("conflicting bindings accepted: %v", err)
+	}
+}

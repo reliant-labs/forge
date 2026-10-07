@@ -26,6 +26,11 @@ import (
 	"github.com/reliant-labs/forge/internal/doctor"
 )
 
+// doctorCompose is how the runtime checks reach `docker compose`. A seam so the
+// package's tests never ask the host's docker about the developer's own compose
+// stacks; TestMain installs the answer a host with no daemon gives.
+var doctorCompose doctor.ComposeRunner = doctor.DockerCompose
+
 // envStatusCheckTimeout bounds the whole runtime-check phase. `env status`
 // is a snapshot command a human waits on, so the probes get a short leash;
 // an unreachable backend surfaces as a failed check, not a hung terminal.
@@ -102,7 +107,7 @@ func runEnvRuntimeChecks(ctx context.Context, projectName, projectDir, env strin
 	ctx, cancel := context.WithTimeout(ctx, envStatusCheckTimeout)
 	defer cancel()
 
-	d := doctor.New(doctor.Deps{})
+	d := doctor.New(doctor.Deps{Compose: doctorCompose})
 	report, err := d.RunRuntime(ctx, doctor.RuntimeInput{
 		ProjectName: projectName,
 		ProjectDir:  projectDir,

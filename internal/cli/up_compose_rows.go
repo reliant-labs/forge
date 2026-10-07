@@ -74,6 +74,11 @@ func composeRows(ctx context.Context, e *KCLEntities, projectDir string, targets
 	return rows
 }
 
+// composePublishersFn is the publishers source the env-up summary and
+// `forge env status` read. A seam so the package's tests never ask the host's
+// docker; TestMain installs the answer a host with no daemon gives.
+var composePublishersFn composePublishersFunc = dockerComposePublishers
+
 // dockerComposePublishers asks docker what a running compose service
 // publishes. It never starts anything.
 func dockerComposePublishers(ctx context.Context, projectDir, file, service string) ([]composePublisher, error) {

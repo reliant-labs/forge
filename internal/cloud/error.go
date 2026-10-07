@@ -234,7 +234,7 @@ func detailSuffix(detail string) string {
 	return "\n  server said: " + detail
 }
 
-var missingScopeRe = regexp.MustCompile(`\b([a-z]+:(?:read|write))\b scope`)
+var missingScopeRe = regexp.MustCompile(`\b([a-z]+:(?:read|write|manage))\b scope`)
 
 // authFix is the remedy for a rejected credential. When the server names a
 // missing scope the generic "log in again" is wrong advice on its own — a

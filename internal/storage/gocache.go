@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -53,26 +54,49 @@ func (e goCacheEntry) path(root string) string { return filepath.Join(root, e.su
 
 // GoCaches trims every Go-toolchain cache. Dry-run unless apply is set.
 // Layers run independently; one failure does not stop the rest.
+//
+// The shared build cache is the layer that matters most and it grows ~40 GB/h
+// under agent load, so it runs FIRST and each step gets a guaranteed slice of
+// what remains: a slow step cannot starve the next. A step cut off by its
+// slice has still reclaimed what it covered (see trimGoBuildCache); that is a
+// partial success, never a failure. Only real errors are returned.
 func (r Runner) GoCaches(apply bool) error {
+	parent := r.hostCtx()
 	var failures []error
 	steps := []struct {
 		name string
-		run  func(bool) error
+		frac float64 // share of the time still left in the slice
+		run  func(Runner, bool) error
 	}{
-		{"orphaned private caches", r.OrphanedGoCaches},
-		{"shared build cache", r.SharedGoCache},
-		{"golangci-lint cache", r.GolangciLintCache},
-		{"goimports index", r.GoimportsIndex},
+		{"shared build cache", 0.6, Runner.SharedGoCache},
+		{"golangci-lint cache", 0.5, Runner.GolangciLintCache},
+		{"orphaned private caches", 0.5, Runner.OrphanedGoCaches},
+		{"goimports index", 1, Runner.GoimportsIndex},
 	}
 	for _, step := range steps {
-		if err := r.hostCtx().Err(); err != nil {
-			return errors.Join(append(failures, err)...)
+		if parent.Err() != nil {
+			break
 		}
-		if err := step.run(apply); err != nil {
+		ctx, cancel := sliceContext(parent, step.frac)
+		sub := r
+		sub.Ctx = ctx
+		err := step.run(sub, apply)
+		cancel()
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			failures = append(failures, layerErr("go caches: "+step.name, err))
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// sliceContext bounds a step to frac of the time its parent has left. A parent
+// without a deadline is passed through.
+func sliceContext(parent context.Context, frac float64) (context.Context, context.CancelFunc) {
+	deadline, ok := parent.Deadline()
+	if !ok || frac >= 1 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, time.Duration(float64(time.Until(deadline))*frac))
 }
 
 func refuseUnderTest(field string) error {
@@ -153,6 +177,163 @@ func hasCacheSentinel(root string) bool {
 	return string(buf[:n]) == goBuildCacheSentinelPrefix
 }
 
+const (
+	goCacheShards     = 256
+	goCacheSampleSize = 16
+)
+
+// goCachePass is what one trim pass did. It is reported, never an error: a pass
+// cut off by its deadline that freed space is a partial success.
+type goCachePass struct {
+	shardsTotal, shardsCovered int
+	removed                    int
+	freed                      uint64
+	estTotal                   uint64 // estimated cache size before the pass
+	finished                   bool
+	samples                    []string
+}
+
+type goCacheSample struct {
+	bytes   uint64
+	shards  int
+	entries []goCacheEntry // sampled entries older than the floor, oldest first
+}
+
+// goCacheShardList returns the cache's shard directories, sorted.
+func goCacheShardList(root string) ([]string, error) {
+	subs, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	var shards []string
+	for _, sub := range subs {
+		if sub.IsDir() && len(sub.Name()) == 2 { // README, trim.txt and the rest are never touched
+			shards = append(shards, sub.Name())
+		}
+	}
+	sort.Strings(shards)
+	return shards, nil
+}
+
+// readGoCacheShard lists one shard's entries. Only stats; never opens a file.
+func readGoCacheShard(root, shard string) []goCacheEntry {
+	files, err := os.ReadDir(filepath.Join(root, shard))
+	if err != nil {
+		return nil
+	}
+	out := make([]goCacheEntry, 0, len(files))
+	for _, f := range files {
+		if !goCacheEntryName.MatchString(f.Name()) {
+			continue
+		}
+		info, err := f.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		out = append(out, goCacheEntry{shard, f.Name(), info.Size(), info.ModTime()})
+	}
+	return out
+}
+
+// sampleGoCache reads a bounded, evenly spaced subset of shards (starting at
+// offset so successive passes sample different ones). Entry hashes are uniform,
+// so a shard is a fair 1/256 slice of both size and age distribution.
+func sampleGoCache(ctx context.Context, root string, shards []string, offset int, now time.Time) goCacheSample {
+	n := goCacheSampleSize
+	if n > len(shards) {
+		n = len(shards)
+	}
+	var out goCacheSample
+	floor := now.Add(-goCacheFloor)
+	for i := 0; i < n && ctx.Err() == nil; i++ {
+		shard := shards[(offset+i*len(shards)/n)%len(shards)]
+		out.shards++
+		for _, e := range readGoCacheShard(root, shard) {
+			out.bytes += uint64(e.size)
+			if e.mtime.Before(floor) {
+				out.entries = append(out.entries, e)
+			}
+		}
+	}
+	sort.Slice(out.entries, func(i, j int) bool { return out.entries[i].mtime.Before(out.entries[j].mtime) })
+	return out
+}
+
+// goCacheCutoff picks the mtime below which entries are deleted: the older of
+// "unused longer than the age rule" and "what must go to fit the budget",
+// whichever deletes more, and NEVER newer than the safety floor. No global
+// sort and no complete scan: the budget cutoff is read off the sample's mtime
+// distribution scaled to the whole cache.
+func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time.Duration, budget uint64) (cutoff time.Time, estTotal uint64) {
+	floorCut := now.Add(-goCacheFloor)
+	cutoff = now.Add(-unused)
+	if cutoff.After(floorCut) {
+		cutoff = floorCut
+	}
+	if sample.shards == 0 {
+		return cutoff, 0
+	}
+	scale := float64(nShards) / float64(sample.shards)
+	estTotal = uint64(float64(sample.bytes) * scale)
+	if estTotal <= budget {
+		return cutoff, estTotal
+	}
+	need := float64(estTotal-budget) / scale // bytes to drop from the sample
+	var acc float64
+	budgetCut := floorCut // the sample cannot cover the excess: take everything past the floor
+	for _, e := range sample.entries {
+		acc += float64(e.size)
+		if acc >= need {
+			budgetCut = e.mtime.Add(time.Second) // include this entry itself
+			break
+		}
+	}
+	if budgetCut.After(floorCut) {
+		budgetCut = floorCut
+	}
+	if budgetCut.After(cutoff) {
+		cutoff = budgetCut
+	}
+	return cutoff, estTotal
+}
+
+// cursorFile persists, per cache, the shard the next pass starts at.
+func (r Runner) goCacheCursorPath() string {
+	if r.PolicyPath == "" || guardMachinePolicy(r.PolicyPath) != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(r.PolicyPath), "go-cache-cursor.json")
+}
+
+func (r Runner) loadGoCacheCursor(label string) int {
+	path := r.goCacheCursorPath()
+	if path == "" {
+		return int(time.Now().Unix()/3600) * 37 // no persistence: rotate by the hour
+	}
+	var m map[string]int
+	if b, err := os.ReadFile(path); err == nil && json.Unmarshal(b, &m) == nil {
+		return m[label]
+	}
+	return 0
+}
+
+func (r Runner) saveGoCacheCursor(label string, next int) {
+	path := r.goCacheCursorPath()
+	if path == "" {
+		return
+	}
+	m := map[string]int{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	m[label] = next
+	b, _ := json.Marshal(m)
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
+
 func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	if _, err := os.Stat(root); err != nil {
 		return nil // absent: nothing to trim
@@ -165,148 +346,49 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	if err != nil {
 		return fmt.Errorf("go_cache_unused: %w", err)
 	}
-	if unused < goCacheFloor {
-		unused = goCacheFloor
-	}
-	ctx := r.hostCtx()
-	entries, complete, err := scanGoCache(ctx, root)
+	shards, err := goCacheShardList(root)
 	if err != nil {
 		return err
 	}
-	victims, total, reclaim, over := selectGoCacheVictims(entries, time.Now(), unused, r.Policy.GoCacheGiB*GiB, complete)
-	r.print("%s %s: %.1f GiB in %d entries; %d unused over %s (%.1f GiB)", label, root,
-		float64(total)/float64(GiB), len(entries), len(victims)-over, unused, float64(reclaim-overBytes(victims, over))/float64(GiB))
-	if over > 0 {
-		r.print(", plus %d oldest to fit the %d GiB budget (%.1f GiB)", over, r.Policy.GoCacheGiB, float64(overBytes(victims, over))/float64(GiB))
-	}
-	if !complete {
-		r.print(" [scan cut off by deadline; budget trim skipped]")
-	}
-	r.print("\n")
-	// Per-entry lines would be millions; show the oldest few with their bytes.
-	for i, e := range victims {
-		if i == 5 {
-			r.print("  … %d more entries\n", len(victims)-5)
-			break
-		}
-		r.print("  %s %s (%d bytes)\n", verb(apply), e.path(root), e.size)
-	}
-	if !apply || len(victims) == 0 {
+	if len(shards) == 0 {
 		return nil
 	}
-	removed, freed := removeGoCacheEntries(ctx, root, victims)
-	r.print("%s: removed %d entries, %.1f GiB", label, removed, float64(freed)/float64(GiB))
-	if removed < len(victims) {
-		r.print(" (stopped early; remaining entries are retained for the next pass)")
+	ctx := r.hostCtx()
+	now := time.Now()
+	start := r.loadGoCacheCursor(label) % len(shards)
+	sample := sampleGoCache(ctx, root, shards, start, now)
+	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, r.Policy.GoCacheGiB*GiB)
+
+	pass := streamTrimGoCache(ctx, root, shards, start, cutoff, apply)
+	pass.estTotal = estTotal
+	if apply {
+		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}
-	r.print("\n")
+
+	r.print("%s %s: ~%.1f GiB estimated (budget %d GiB); deleting entries last used before %s (age rule %s, floor %s)\n",
+		label, root, float64(estTotal)/float64(GiB), r.Policy.GoCacheGiB, cutoff.Format(time.RFC3339), unused, goCacheFloor)
+	for _, p := range pass.samples {
+		r.print("  %s %s\n", verb(apply), p)
+	}
+	status := "finished"
+	if !pass.finished {
+		status = fmt.Sprintf("cut off after %d/%d shards; next pass resumes at shard %02x", pass.shardsCovered, pass.shardsTotal, shards[(start+pass.shardsCovered)%len(shards)])
+	}
+	r.print("%s: %s %d entries, %.1f GiB (%s)\n", label, map[bool]string{true: "removed", false: "would remove"}[apply], pass.removed, float64(pass.freed)/float64(GiB), status)
 	return nil
 }
 
-func verb(apply bool) string {
-	if apply {
-		return "remove"
-	}
-	return "would remove"
-}
-
-func overBytes(victims []goCacheEntry, over int) uint64 {
-	var n uint64
-	for _, e := range victims[len(victims)-over:] {
-		n += uint64(e.size)
-	}
-	return n
-}
-
-// scanGoCache lists every cache entry, one worker per fan-out slot across the
-// 256 shard directories. complete is false when ctx ended first.
-func scanGoCache(ctx context.Context, root string) (entries []goCacheEntry, complete bool, err error) {
-	subs, err := os.ReadDir(root)
-	if err != nil {
-		return nil, false, err
-	}
+// streamTrimGoCache walks the shards in rotated order from start, deleting
+// entries older than cutoff as it meets them, so every shard finished has
+// already reclaimed its space when a deadline cuts the pass off. Shards are
+// worked in parallel; shardsCovered counts the contiguous prefix completed, the
+// only part the next pass may skip.
+func streamTrimGoCache(ctx context.Context, root string, shards []string, start int, cutoff time.Time, apply bool) goCachePass {
+	n := len(shards)
+	pass := goCachePass{shardsTotal: n}
+	done := make([]bool, n)
 	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var cut atomic.Bool
-	work := make(chan string)
-	for w := 0; w < goCacheWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for sub := range work {
-				files, err := os.ReadDir(filepath.Join(root, sub))
-				if err != nil {
-					continue
-				}
-				var local []goCacheEntry
-				for _, f := range files {
-					if !goCacheEntryName.MatchString(f.Name()) {
-						continue
-					}
-					info, err := f.Info()
-					if err != nil || !info.Mode().IsRegular() {
-						continue
-					}
-					local = append(local, goCacheEntry{sub, f.Name(), info.Size(), info.ModTime()})
-				}
-				mu.Lock()
-				entries = append(entries, local...)
-				mu.Unlock()
-			}
-		}()
-	}
-	for _, sub := range subs {
-		if ctx.Err() != nil {
-			cut.Store(true)
-			break
-		}
-		if !sub.IsDir() || len(sub.Name()) != 2 {
-			continue // README, trim.txt, testexpire.txt and anything else: never touched
-		}
-		work <- sub.Name()
-	}
-	close(work)
-	wg.Wait()
-	return entries, !cut.Load() && ctx.Err() == nil, nil
-}
-
-// selectGoCacheVictims returns the entries to delete, oldest first. over is
-// how many trailing victims were chosen only to fit the budget.
-func selectGoCacheVictims(entries []goCacheEntry, now time.Time, unused time.Duration, budget uint64, complete bool) (victims []goCacheEntry, total, reclaim uint64, over int) {
-	cutoff := now.Add(-unused)
-	floor := now.Add(-goCacheFloor)
-	var young []goCacheEntry
-	for _, e := range entries {
-		total += uint64(e.size)
-		if e.mtime.Before(cutoff) {
-			victims = append(victims, e)
-			reclaim += uint64(e.size)
-		} else if e.mtime.Before(floor) {
-			young = append(young, e)
-		}
-	}
-	byAge := func(s []goCacheEntry) {
-		sort.Slice(s, func(i, j int) bool { return s[i].mtime.Before(s[j].mtime) })
-	}
-	byAge(victims)
-	if complete && total-reclaim > budget {
-		byAge(young)
-		for _, e := range young {
-			if total-reclaim <= budget {
-				break
-			}
-			victims = append(victims, e)
-			reclaim += uint64(e.size)
-			over++
-		}
-	}
-	return victims, total, reclaim, over
-}
-
-// removeGoCacheEntries unlinks victims in order across a worker pool and
-// stops cleanly when ctx ends.
-func removeGoCacheEntries(ctx context.Context, root string, victims []goCacheEntry) (removed int, freed uint64) {
-	var next, nRemoved, nFreed atomic.Int64
+	var next, removed, freed atomic.Int64
 	var wg sync.WaitGroup
 	for w := 0; w < goCacheWorkers; w++ {
 		wg.Add(1)
@@ -314,19 +396,54 @@ func removeGoCacheEntries(ctx context.Context, root string, victims []goCacheEnt
 			defer wg.Done()
 			for ctx.Err() == nil {
 				i := int(next.Add(1)) - 1
-				if i >= len(victims) {
+				if i >= n {
 					return
 				}
-				err := os.Remove(victims[i].path(root))
-				if err == nil || errors.Is(err, fs.ErrNotExist) {
-					nRemoved.Add(1)
-					nFreed.Add(victims[i].size)
+				shard := shards[(start+i)%n]
+				complete := true
+				for _, e := range readGoCacheShard(root, shard) {
+					if !e.mtime.Before(cutoff) {
+						continue
+					}
+					if ctx.Err() != nil {
+						complete = false
+						break
+					}
+					if apply {
+						if err := os.Remove(e.path(root)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+							continue
+						}
+					}
+					removed.Add(1)
+					freed.Add(e.size)
+					mu.Lock()
+					if len(pass.samples) < 5 {
+						pass.samples = append(pass.samples, fmt.Sprintf("%s (%d bytes)", e.path(root), e.size))
+					}
+					mu.Unlock()
+				}
+				if complete {
+					mu.Lock()
+					done[i] = true
+					mu.Unlock()
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	return int(nRemoved.Load()), uint64(nFreed.Load())
+	for pass.shardsCovered < n && done[pass.shardsCovered] {
+		pass.shardsCovered++
+	}
+	pass.finished = pass.shardsCovered == n
+	pass.removed, pass.freed = int(removed.Load()), uint64(freed.Load())
+	return pass
+}
+
+func verb(apply bool) string {
+	if apply {
+		return "remove"
+	}
+	return "would remove"
 }
 
 // ---- goimports module index -------------------------------------------------
@@ -425,21 +542,24 @@ func (r Runner) GoimportsIndex(apply bool) error {
 	return nil
 }
 
-// goCacheStatus reports the Go caches' sizes. Read-only; skipped under test
-// unless roots are injected.
+// goCacheStatus reports the shared cache's estimated size from a sample of
+// shards (a full scan of a million-entry cache is minutes under load).
 func (r Runner) goCacheStatus(ctx context.Context) {
 	root, _, err := r.goEnv(ctx)
 	if err != nil {
 		return
 	}
-	if entries, _, err := scanGoCache(ctx, root); err == nil {
-		var total uint64
-		for _, e := range entries {
-			total += uint64(e.size)
-		}
-		r.print("go build cache %s: %.1f GiB in %d entries (budget %d GiB, unused %s)\n", root,
-			float64(total)/float64(GiB), len(entries), r.Policy.GoCacheGiB, r.Policy.GoCacheUnused)
+	shards, err := goCacheShardList(root)
+	if err != nil || len(shards) == 0 {
+		return
 	}
+	sample := sampleGoCache(ctx, root, shards, 0, time.Now())
+	if sample.shards == 0 {
+		return
+	}
+	est := float64(sample.bytes) * float64(len(shards)) / float64(sample.shards)
+	r.print("go build cache %s: ~%.1f GiB estimated from %d/%d shards (budget %d GiB, unused %s)\n", root,
+		est/float64(GiB), sample.shards, len(shards), r.Policy.GoCacheGiB, r.Policy.GoCacheUnused)
 }
 
 // ProductionGoCacheRoots resolves the machine's Go-toolchain cache locations

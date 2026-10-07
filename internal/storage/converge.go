@@ -238,6 +238,13 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if err := r.Logs(apply); err != nil {
 		failures = append(failures, layerErr("logs", err))
 	}
+	// Go caches FIRST after the cheap log expiry: the shared build cache grows
+	// ~40 GB/h under agent load and is the layer that decides whether the disk
+	// fills, so no slower layer may starve it of the pass budget. Age-trimmed,
+	// never younger than a 2h floor; a cut-off pass still keeps what it freed.
+	if err := r.GoCaches(apply); err != nil {
+		failures = append(failures, layerErr("go caches", err))
+	}
 	// A nonlocal Docker endpoint ends only the Docker layer; the temp sweep
 	// and source eviction below never touch Docker.
 	dockerErr := r.Local(ctx)
@@ -267,14 +274,6 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	// known-dead prefixes, so it is safe alongside a running stack.
 	if err := r.TempSweep(apply); err != nil {
 		failures = append(failures, layerErr("temp sweep", err))
-	}
-	if err := ctx.Err(); err != nil {
-		return errors.Join(append(failures, err)...)
-	}
-	// Go caches: age-trimmed, never younger than a 2h floor, orphaned private
-	// caches only when no process or open file references them.
-	if err := r.GoCaches(apply); err != nil {
-		failures = append(failures, layerErr("go caches", err))
 	}
 	if err := ctx.Err(); err != nil {
 		return errors.Join(append(failures, err)...)

@@ -44,7 +44,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -192,8 +194,10 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	held := recordedHolds(ledger, plan)
 	if ledger.appliesLocally() && !ledger.hubConverged() {
 		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
+		started := time.Now()
 		err := applySelfManaged(ctx, env, ledger.Hosted, o)
 		finish(err)
+		recordApplyOutcome(ctx, env, plan, ledger, started, err, o)
 		if err != nil {
 			// A MIXED env's hosted half is published inside this apply, and
 			// its provider reports a queued promotion the same way.
@@ -335,6 +339,78 @@ func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFoll
 		o.notice("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
 	}
 	return runPromoteClientDeploy(ctx, env, opts)
+}
+
+// preflightBeforeRecord runs the deployability preflight for the release this
+// deploy is about to record, BEFORE the promotion is written.
+//
+// WHY BEFORE. The preflight used to run inside the apply, which runs after the
+// compare-and-set write. On 2026-10-07 it blocked prod's release on an image it
+// misjudged as missing — and by then the binding had already moved, so the
+// ledger said prod ran a release that never shipped, and the re-run the error
+// suggested was refused as plan_stale because the failed run had changed the
+// plan itself. A check that can refuse a deploy belongs with the plan, where a
+// refusal writes nothing.
+//
+// It runs for exactly the envs whose follow-through applies from this machine
+// (applySelfManaged's shapes), because that is where this preflight lives: an
+// env the control plane or a Flux converges is not applied by forge, so there
+// is no client-side apply for it to gate.
+//
+// It renders the TARGET release's pins (withHostedPinRelease), not the
+// binding's: the binding still names the CURRENT release at this point, and a
+// preflight of that would check the images that are already running.
+func preflightBeforeRecord(ctx context.Context, env, version string, ledger envLedger, o promoteFollowOptions) error {
+	if !ledger.appliesLocally() || ledger.hubConverged() || o.clientDeploy.skipPreflight {
+		return nil
+	}
+	if reconciled, _ := fluxReconciledEnv(ctx, env, ledger); reconciled {
+		return nil
+	}
+	opts := o.clientDeploy
+	opts.dryRun = true
+	opts.preflightOnly = true
+	o.notice("\nPreflight: checking %s's live target for %s's images, Secrets and resource kinds — before anything is recorded\n", env, version)
+	// The render on the way to the preflight prints a deploy's worth of
+	// progress (a dry-run banner, the release it pins) that describes a
+	// deploy which is not happening. Only the preflight's own advisory
+	// lines are worth showing; a refusal carries its whole report.
+	out, err := captureProcessStdout(func() error {
+		return runPromoteClientDeploy(withHostedPinRelease(ctx, version), env, opts)
+	})
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "preflight:") {
+			o.notice("  %s\n", line)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("%w\n\nNOTHING WAS RECORDED: env %q's binding did not move. Fix the gaps above and re-run "+
+			"this same command", err, env)
+	}
+	return nil
+}
+
+// captureProcessStdout runs fn with os.Stdout redirected into a buffer and
+// returns what was written. Subprocesses started inside fn with the process's
+// stdout inherit the redirect too.
+func captureProcessStdout(fn func() error) (string, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", fn()
+	}
+	real := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	ferr := fn()
+	os.Stdout = real
+	_ = w.Close()
+	out := <-done
+	_ = r.Close()
+	return out, ferr
 }
 
 // waitBudget is the wait's whole budget as a person reads it.

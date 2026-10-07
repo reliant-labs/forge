@@ -91,6 +91,11 @@ func renderEnvHistory(out io.Writer, doc envHistoryDocument) {
 
 func evidenceLabel(e envHistoryEntry) string {
 	var parts []string
+	// First, because it changes what the row means: this release was
+	// recorded but never reached the target.
+	if g, ok := latestApplyGate(e.Promotion); ok && g.Status == release.GateStatusFailed {
+		parts = append(parts, "NOT APPLIED")
+	}
 	if s := e.Gates; s != nil {
 		parts = append(parts, fmt.Sprintf("%d passed", s.Passed))
 		if s.Failed > 0 {

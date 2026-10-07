@@ -307,6 +307,11 @@ type topologyEnv struct {
 	// "progressing", "degraded", "unknown" … Hosted envs only; absent when
 	// the env keeps a file ledger or the read failed (Note says which).
 	RolloutPhase string `json:"rollout_phase,omitempty"`
+	// NotApplied is true when the ledger records that the current
+	// binding's apply FAILED: Release is what the env is bound to, NOT what
+	// it runs. ApplyError is what the apply said.
+	NotApplied bool   `json:"not_applied,omitempty"`
+	ApplyError string `json:"apply_error,omitempty"`
 }
 
 // topologyTally counts image cells by state across every environment, so a
@@ -647,6 +652,9 @@ func buildTopologyEnvRow(
 	row.PromotionID = binding.ID
 	row.FromEnv = binding.FromEnv
 	row.GatesSummary = summarizeGates(binding.Gates, binding.RecordedGates)
+	if applied := applyOf(projectDir, envName, binding); applied.Failed {
+		row.NotApplied, row.ApplyError = true, applied.Summary
+	}
 	if ledger.Hosted {
 		read := opts.Rollouts
 		if read == nil {
@@ -956,6 +964,11 @@ func renderEnvTopologyText(report envTopologyReport) {
 				}
 			}
 			fmt.Println(line)
+			if env.NotApplied {
+				// Directly under the release it qualifies: a reader who
+				// stops at "release" must not walk away believing it runs.
+				fmt.Printf("  NOT APPLIED  bound to %s, but its apply FAILED: %s\n", env.Release, oneLine(env.ApplyError, 200))
+			}
 			// promoted_at is the single most misread field in the
 			// ledger, so the label says what it means instead of
 			// leaving the reader to assume it is a deploy time.

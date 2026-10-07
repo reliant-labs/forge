@@ -155,7 +155,7 @@ Forge emits `deploy/kcl/<env>/` (KCL-based manifests, one dir per environment: `
 forge generate          # idempotent on a healthy project
 forge lint              # contract + db + general lints
 forge build             # binaries + frontends + Docker images
-task test              # unit + integration
+task test              # unit + frontends (`task test:all` adds integration)
 task test:e2e          # full-stack (requires `forge env up dev` in another shell)
 forge env deploy dev        # local k3d
 ```

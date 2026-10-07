@@ -82,6 +82,7 @@ so these are the same commands the generated CI workflow runs. (There is no
 disagree with this one.)
 
 ```bash
+task test:short -- ./internal/<pkg>/...    # inner loop: -short, cached, no race
 task test                                  # unit + every frontend's tests
 task test:integration                      # the `integration`-tagged lane
 task test:e2e                              # the e2e lane
@@ -100,9 +101,25 @@ task test -- -run TestCreate ./internal/handlers/users/...
 task test GOTESTRACE=                      # without the race detector
 ```
 
-The race detector is ON by default. `Taskfile.yml` is yours — edit it when the
-project needs different flags, and every caller (you, CI, agents) picks the
-change up at once.
+The race detector is ON by default in `task test`. `Taskfile.yml` is yours —
+edit it when the project needs different flags, and every caller (you, CI,
+agents) picks the change up at once.
+
+### Two tiers: iterate on `test:short`, finish on `test`
+
+While iterating, run `task test:short` scoped to the packages you touched,
+after each edit; run `task test` once before you finish. The fast tier is
+Go-only, `-short`, and deliberately has no `-count=1` and no `-race`: Go's test
+cache keys on the test binary, its flags, and the files and env vars the test
+reads, so a cached pass is a real pass for a test that builds its own state
+(`t.TempDir()`, a fresh `testkit` database), while `-race` rebuilds every
+package under its own cache key and runs 2-10x slower. Do not add either flag
+to an inner-loop run, and never set a private `GOCACHE`.
+
+Keep the tier fast: a test that takes more than ~2s gets
+`if testing.Short() { t.Skip("<why>") }` (or bypasses its slow side-effect
+under `-short`), and its slow path still runs in `task test`. Gate it, don't
+gut it — never weaken an assertion to fit the 60s per-package timeout.
 
 ## Don't hand-roll what forge already provides
 
@@ -120,7 +137,7 @@ Forge enforces the "isolate heavy tests" discipline via Go build tags. Anything 
 - `*_integration_test.go` with `//go:build integration` — DB-bound tests.
 - `*_e2e_test.go` with `//go:build e2e` — full-stack flows.
 
-Default `task test` runs the fast lane only — untagged Go tests plus each
+Default `task test` runs the untagged lane only — untagged Go tests plus each
 frontend's `npm test` — under `-timeout 120s` per package. The tagged lanes are
 physically excluded from it (a build tag that is not set means those files are
 never compiled, not skipped at runtime), so they cost nothing until you ask for

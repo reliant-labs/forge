@@ -125,13 +125,13 @@ func (r Runner) runLayer(name string, share float64, fn func(Runner) error) erro
 	}
 	sub, done := r.slice(share)
 	defer done()
-	return cutOrFail(name, fn(sub), sub.Ctx)
+	return cutOrFail(sub.Ctx, name, fn(sub))
 }
 
 // cutOrFail wraps err as layer name's outcome. When the layer's slice expired
 // the error is a cut-off: a command killed by the deadline does not wrap
 // context.DeadlineExceeded, so expiry itself is the signal, not the error text.
-func cutOrFail(name string, err error, slice context.Context) error {
+func cutOrFail(slice context.Context, name string, err error) error {
 	if err == nil {
 		return nil
 	}

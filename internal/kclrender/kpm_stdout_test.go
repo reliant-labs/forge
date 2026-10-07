@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gofrs/flock"
+
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/kclvendor"
 )

@@ -188,7 +188,6 @@ type goCachePass struct {
 	shardsTotal, shardsCovered int
 	removed                    int
 	freed                      uint64
-	estTotal                   uint64 // estimated cache size before the pass
 	finished                   bool
 	samples                    []string
 }
@@ -360,7 +359,6 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, r.Policy.GoCacheGiB*GiB)
 
 	pass := streamTrimGoCache(ctx, root, shards, start, cutoff, apply)
-	pass.estTotal = estTotal
 	if apply {
 		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}

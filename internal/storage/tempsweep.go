@@ -147,12 +147,6 @@ func (r Runner) TempSweep(apply bool) error {
 	return s.run(apply)
 }
 
-type tempCandidate struct {
-	path   string
-	size   int64
-	newest time.Time
-}
-
 // done reports the sweep's deadline or cancellation, if it has passed. A
 // sweep cut off by it stops where it is: everything not yet removed is
 // retained, and the caller learns the pass did not finish.

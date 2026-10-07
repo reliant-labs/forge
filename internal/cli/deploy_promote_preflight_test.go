@@ -9,7 +9,7 @@ import (
 
 // errPreflightMissingImage is the refusal the 2026-10-07 prod release got.
 var errPreflightMissingImage = errors.New("deploy preflight failed — the live target is missing dependencies the rendered manifests require:\n\n" +
-	"  Images not found:\n    - temporalio/auto-setup:1.26.2\n\nNothing was applied.")
+	"  Images not found:\n    - temporalio/auto-setup:1.26.2\n\nNothing was applied")
 
 // A deploy whose preflight refuses the release records NOTHING. On
 // 2026-10-07 the preflight ran inside the apply, after the compare-and-set

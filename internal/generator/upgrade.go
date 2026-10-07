@@ -431,9 +431,13 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 // Keys are slash-separated, the form of every ownership key the sweep
 // compares them to (checksums.ScanMarkers). destPath is a native path —
 // cmdTreePath joins with filepath — so on Windows the unnormalized set
-// never matched and the sweep flagged these files as stale again.
+// never matched and the sweep flagged these files as stale again. Every
+// key goes through add, so the extra list below cannot skip the
+// normalization: it once did, and on Windows the sweep marked the
+// scaffold-once cmd/cmd/*.go files stale and --force-cleanup deleted them.
 func UpgradeManagedPaths() map[string]bool {
 	out := map[string]bool{}
+	add := func(p string) { out[filepath.ToSlash(p)] = true }
 	for _, kind := range []string{
 		config.ProjectKindService,
 		config.ProjectKindCLI,
@@ -444,7 +448,7 @@ func UpgradeManagedPaths() map[string]bool {
 			config.ProjectBinaryShared,
 		} {
 			for _, f := range managedFilesForKindBinary(kind, binary, "") {
-				out[filepath.ToSlash(f.destPath)] = true
+				add(f.destPath)
 			}
 		}
 	}
@@ -497,7 +501,7 @@ func UpgradeManagedPaths() map[string]bool {
 		// root from every upgraded project.
 		cmdTreePath("", "root.go"),
 	} {
-		out[p] = true
+		add(p)
 	}
 	return out
 }

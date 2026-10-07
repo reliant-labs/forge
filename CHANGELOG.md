@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One prettier release formats a scaffolded project, everywhere.** Frontends
+  now pin `prettier` exactly (`3.5.3`, was the range `^3.5.0`), and the
+  scaffolded `.pre-commit-config.yaml` runs that same release as a local hook
+  instead of `pre-commit/mirrors-prettier` (archived at `v3.1.0`). The two
+  disagreed about the component library forge installs, so a fresh project's
+  hook rewrote files its own `npm run format` had just written, and the range
+  drifted to whatever `npm install` resolved. Existing projects: replace the
+  mirrors-prettier repo in `.pre-commit-config.yaml` with a `repo: local`
+  hook (`language: node`, `entry: prettier --write --ignore-unknown`,
+  `additional_dependencies: ["prettier@3.5.3"]`), and pin
+  `"prettier": "3.5.3"` in each frontend's `package.json`.
+
 - **Skills and project memory now lead with shipping.** The start-here `forge`
   skill gains a "Ship it" section (hosting is the default, `forge env deploy`,
   the free static tier, queued-on-billing exit 7, no `forge login` under

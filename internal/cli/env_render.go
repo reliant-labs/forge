@@ -124,6 +124,7 @@ func newEnvRenderCmd() *cobra.Command {
 		nameFilter   string
 		targets      []string
 		list         bool
+		count        bool
 		noDigest     bool
 		failOnWrite  bool
 		noWriteCheck bool
@@ -171,6 +172,7 @@ is usable as a CI gate.
 Examples:
   ` + Name() + ` env render dev                              # every object, cluster-annotated
   ` + Name() + ` env render dev --list                       # one line per object (kind/name/cluster)
+  ` + Name() + ` env render prod --count                     # objects per cluster, and per kind on each
   ` + Name() + ` env render dev --cluster k3d-cp-daemon      # only what that cluster receives
   ` + Name() + ` env render prod --kind Deployment,Job       # only those kinds
   ` + Name() + ` env render prod --target workspace-proxy    # only that app's objects
@@ -186,6 +188,7 @@ Examples:
 				name:         nameFilter,
 				targets:      targets,
 				list:         list,
+				count:        count,
 				noDigest:     noDigest,
 				failOnWrite:  failOnWrite,
 				noWriteCheck: noWriteCheck,
@@ -200,6 +203,7 @@ Examples:
 	cmd.Flags().StringVar(&nameFilter, "name", "", "Print only objects with this metadata.name")
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Print only the named application's objects (the app.kubernetes.io/name group forge env deploy --target selects; repeatable)")
 	cmd.Flags().BoolVar(&list, "list", false, "Print one line per object (cluster, kind, namespace, name) instead of the YAML stream")
+	cmd.Flags().BoolVar(&count, "count", false, "Print how many objects land on each cluster (and per kind on each), instead of the YAML stream")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Render image references as the mutable :tag even when a build state captured an immutable digest (matches forge env deploy --no-digest)")
 	cmd.Flags().BoolVar(&failOnWrite, "fail-on-write", false, "Exit non-zero if any file in the project changed while rendering (the render is not guaranteed side-effect-free — see the command description)")
 	cmd.Flags().BoolVar(&noWriteCheck, "no-write-check", false, "Skip the before/after scan that detects files the render wrote")
@@ -218,6 +222,7 @@ type envRenderOptions struct {
 	name         string
 	targets      []string
 	list         bool
+	count        bool
 	noDigest     bool
 	failOnWrite  bool
 	noWriteCheck bool
@@ -423,7 +428,11 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		fmt.Fprintf(errOut, "no objects matched (environment %q rendered %d)\n", envName, totalRendered)
 	}
 
-	if opts.list {
+	if opts.count {
+		if werr := writeRenderedCounts(out, clusters, objects); werr != nil {
+			return werr
+		}
+	} else if opts.list {
 		if werr := writeRenderedTable(out, objects); werr != nil {
 			return werr
 		}
@@ -689,6 +698,64 @@ func writeRenderedTable(w io.Writer, objects []renderedObject) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 			describeClusters(o.Clusters), orDash(o.Kind), orDash(o.Namespace), orDash(o.Name), app)
 	}
+	return tw.Flush()
+}
+
+// writeRenderedCounts is --count: per cluster, how many objects land there
+// and how many of each kind — ON STDOUT, so it pipes. The stderr summary has
+// had per-cluster totals all along, but stderr is the channel a script throws
+// away, and "how many objects does prod-daemon get" was being answered with
+// `forge env shape --json | jq`.
+//
+// An object that lands on several clusters is counted on each, and the TOTAL
+// line counts it once, so the column sums can exceed it — said on the line.
+func writeRenderedCounts(w io.Writer, clusters []string, objects []renderedObject) error {
+	type tally struct {
+		total int
+		kinds map[string]int
+	}
+	by := map[string]*tally{}
+	get := func(c string) *tally {
+		if by[c] == nil {
+			by[c] = &tally{kinds: map[string]int{}}
+		}
+		return by[c]
+	}
+	order := append([]string(nil), clusters...)
+	for _, o := range objects {
+		cs := o.Clusters
+		if len(cs) == 0 {
+			cs = []string{""}
+		}
+		for _, c := range cs {
+			if _, seen := by[c]; !seen && !containsString(order, c) {
+				order = append(order, c)
+			}
+			t := get(c)
+			t.total++
+			t.kinds[orDash(o.Kind)]++
+		}
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "CLUSTER\tOBJECTS\tBY KIND")
+	for _, c := range order {
+		t := get(c)
+		kinds := make([]string, 0, len(t.kinds))
+		for k := range t.kinds {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		parts := make([]string, 0, len(kinds))
+		for _, k := range kinds {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, t.kinds[k]))
+		}
+		name := c
+		if name == "" {
+			name = "(no cluster)"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\n", name, t.total, strings.Join(parts, " "))
+	}
+	fmt.Fprintf(tw, "TOTAL\t%d\t(an object on several clusters is counted once here, and on each above)\n", len(objects))
 	return tw.Flush()
 }
 

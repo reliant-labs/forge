@@ -30,6 +30,10 @@ const (
 	HoldUnchecked = "could not be checked"
 	HoldHidden    = "hidden-changes"
 	HoldNested    = "nested-repository"
+	HoldOrphans   = "unreachable-commits"
+	// HoldQuarantined is a worktree a previous pass moved aside and could not
+	// move back. It is still a valid worktree and is never deleted by forge.
+	HoldQuarantined = "quarantined"
 )
 
 // defaultWorktreeRebuildable lists ignored paths that a build recreates.
@@ -45,6 +49,7 @@ var defaultWorktreeRebuildable = []string{
 	"kcl.mod.lock", "go.work", "go.work.sum",
 	".forge/generating-build", ".forge/forge.lock", ".forge/render",
 	".forge/logs", ".forge/workspace-base.tag",
+	"target", ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".gradle",
 }
 
 // worktreeNeverRebuildable are paths that hold application data. They are
@@ -254,6 +259,12 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 			if index == 0 || e.bare || e.head == "" || e.prunable {
 				continue
 			}
+			if strings.HasPrefix(filepath.Base(e.path), quarantinePrefix) {
+				detail := "left by an interrupted cleanup; move it back with `git worktree move`"
+				report.Held = append(report.Held, WorktreeHold{Path: e.path, Repo: repo, Reason: HoldQuarantined, Detail: detail})
+				r.print("keep worktree %s: %s (%s)\n", e.path, HoldQuarantined, detail)
+				continue
+			}
 			reason, detail, skip := r.classifyWorktree(ctx, e, base, o.idle, self, func(p string) (bool, error) { return inUse.holds(ctx, p) })
 			if skip {
 				continue
@@ -268,21 +279,15 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 				r.print("removable worktree: %s (%s)\n", e.path, e.head)
 				continue
 			}
-			// The batch classification can be minutes old (lsof, walks of
-			// other trees). Re-run the whole decision for this one worktree
-			// with a fresh in-use snapshot immediately before removing.
-			reason, detail = r.recheckWorktree(ctx, repo, e, base, o.idle, self)
-			if reason != "" {
+			// The batch classification can be minutes old, and anything that
+			// writes between a re-check and a remove would be deleted. So the
+			// worktree is moved aside first (a path-based writer then gets
+			// ENOENT), re-classified at the new path, and only then removed.
+			reason, detail, removed := r.reclaimWorktree(ctx, repo, e, base, o.idle, self)
+			if !removed {
 				report.Removable = report.Removable[:len(report.Removable)-1]
 				report.Held = append(report.Held, WorktreeHold{Path: e.path, Repo: repo, Reason: reason, Detail: detail})
 				r.print("keep worktree %s: %s%s\n", e.path, reason, suffix(detail))
-				continue
-			}
-			// No --force: git refuses what it considers unsafe.
-			if _, err := r.command(ctx, "git", "-C", repo, "worktree", "remove", e.path); err != nil {
-				report.Removable = report.Removable[:len(report.Removable)-1]
-				report.Held = append(report.Held, WorktreeHold{Path: e.path, Repo: repo, Reason: HoldRefused, Detail: err.Error()})
-				r.print("keep worktree %s: %s%s\n", e.path, HoldRefused, suffix(err.Error()))
 				continue
 			}
 			report.Removed = append(report.Removed, e.path)
@@ -340,6 +345,15 @@ func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, base stri
 	if len(nested) > 0 {
 		return HoldNested, strings.Join(nested, ", "), false
 	}
+	// Commits only this worktree can reach (its reflog, per-worktree refs,
+	// detached HEAD) are garbage-collected once the worktree is removed.
+	orphaned, err := r.unreachableTips(ctx, e)
+	if err != nil {
+		return HoldUnchecked, err.Error(), false
+	}
+	if orphaned {
+		return HoldOrphans, "commits reachable only from this worktree's reflog, refs or detached HEAD", false
+	}
 	if !r.pushed(ctx, e.path, e.head, base) {
 		return HoldUnpushed, "", false
 	}
@@ -352,6 +366,101 @@ func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, base stri
 	}
 	return "", "", false
 }
+
+const quarantinePrefix = ".forge-reclaim-"
+
+// reclaimWorktree removes a worktree through a quarantine move. removed is
+// false when it was kept, with the reason; the worktree is then back at its
+// original path, or — if the move back failed — left in quarantine, still a
+// valid worktree and never deleted.
+func (r Runner) reclaimWorktree(ctx context.Context, repo string, e worktreeEntry, base string, idle time.Duration, self openfiles.Snapshot) (reason, detail string, removed bool) {
+	// The move rewrites the worktree's .git file and admin gitdir, which would
+	// read as fresh activity, so idleness is judged here, on the original path,
+	// and not again after the move.
+	if info, err := os.Stat(e.path); err != nil {
+		return HoldUnchecked, "disappeared during cleanup", false
+	} else if since := time.Since(worktreeActivity(e.path, info)); since < idle {
+		return HoldActive, fmt.Sprintf("touched %s ago", since.Round(time.Minute)), false
+	}
+	q := filepath.Join(filepath.Dir(e.path), fmt.Sprintf("%s%s-%d", quarantinePrefix, filepath.Base(e.path), time.Now().Unix()))
+	if _, err := os.Lstat(q); err == nil {
+		return HoldRefused, q + " already exists", false
+	}
+	if _, err := r.command(ctx, "git", "-C", repo, "worktree", "move", e.path, q); err != nil {
+		return HoldRefused, err.Error(), false
+	}
+	if r.afterQuarantine != nil {
+		r.afterQuarantine(e.path, q)
+	}
+	moved := e
+	moved.path = q
+	reason, detail = r.recheckWorktree(ctx, repo, moved, base, 0, self)
+	if reason == "" {
+		// No --force: git refuses what it considers unsafe.
+		if _, err := r.command(ctx, "git", "-C", repo, "worktree", "remove", q); err == nil {
+			return "", "", true
+		} else {
+			reason, detail = HoldRefused, err.Error()
+		}
+	}
+	// git moves a worktree INTO an existing destination directory, like mv,
+	// which would nest it instead of failing; so an occupied path is a failure.
+	var moveErr error
+	if _, statErr := os.Lstat(e.path); statErr == nil {
+		moveErr = fmt.Errorf("%s exists again", e.path)
+	} else {
+		_, moveErr = r.command(ctx, "git", "-C", repo, "worktree", "move", q, e.path)
+	}
+	if err := moveErr; err != nil {
+		r.print("WARNING: worktree %s could not be moved back from quarantine %s: %v (it is still a valid worktree; nothing was deleted)\n", e.path, q, err)
+		return HoldQuarantined, fmt.Sprintf("left at %s (%v); was kept because: %s", q, err, reason), false
+	}
+	return reason, detail, false
+}
+
+// maxOrphanTips bounds the argv handed to git; a worktree with more distinct
+// commits in its reflog than this is held rather than guessed at.
+const maxOrphanTips = 4000
+
+// unreachableTips reports whether any commit this worktree alone can reach is
+// absent from every branch, remote-tracking ref and tag.
+func (r Runner) unreachableTips(ctx context.Context, e worktreeEntry) (bool, error) {
+	tips := map[string]bool{e.head: true}
+	if admin := worktreeAdminDir(e.path); admin != "" {
+		if data, err := os.ReadFile(filepath.Join(admin, "logs", "HEAD")); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				// "<old-sha> <new-sha> <ident>\t<message>": the new-sha is the tip.
+				if fields := strings.Fields(line); len(fields) >= 2 && !isZeroSHA(fields[1]) {
+					tips[fields[1]] = true
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	b, err := r.readGit(ctx, e.path, "for-each-ref", "--format=%(objectname)", "refs/worktree", "refs/bisect")
+	if err != nil {
+		return false, err
+	}
+	for _, sha := range strings.Fields(string(b)) {
+		tips[sha] = true
+	}
+	if len(tips) > maxOrphanTips {
+		return false, fmt.Errorf("worktree reflog names more than %d distinct commits; cannot check for orphans", maxOrphanTips)
+	}
+	args := []string{"rev-list", "--max-count=1", "--missing=allow-any"}
+	for sha := range tips {
+		args = append(args, sha)
+	}
+	args = append(args, "--not", "--branches", "--remotes", "--tags")
+	out, err := r.readGit(ctx, e.path, args...)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func isZeroSHA(sha string) bool { return strings.Trim(sha, "0") == "" }
 
 // recheckWorktree re-reads the worktree's registration and re-runs the full
 // classification with a fresh lsof snapshot. Any failure to re-check holds.

@@ -154,6 +154,7 @@ authored protos, in one call.`,
 			if !hookActivationSkipped(cmd) {
 				if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
 					ensureGitHooksActivated(root)
+					ensureGeneratedMergeDriver(root)
 				}
 			}
 
@@ -200,6 +201,9 @@ authored protos, in one call.`,
 	// the ONE surface an agent that has never seen forge already reads —
 	// the `forge --help` command list.
 	rootCmd.AddCommand(newStartCmd())
+	// The git merge driver forge configures for its generated files
+	// (merge_generated.go). Hidden: git runs it, people do not.
+	rootCmd.AddCommand(newMergeGeneratedCmd())
 	// `forge env up` was REMOVED. It was a thin alias over the same runUp that
 	// `forge env up <env>` calls, and its one distinct feature — forwarding
 	// tokens after `--` to the frontend dev servers — moved onto `env up`

@@ -370,3 +370,75 @@ func TestWorktreeScanDoesNotTouchIndex(t *testing.T) {
 		t.Fatalf("scan rewrote the worktree index: %v -> %v", before.ModTime(), after.ModTime())
 	}
 }
+
+func TestWorktreeHoldsHiddenChanges(t *testing.T) {
+	for _, flag := range []string{"--skip-worktree", "--assume-unchanged"} {
+		t.Run(flag, func(t *testing.T) {
+			repo, worktree := gitRepoWithWorktree(t)
+			runGit(t, worktree, "update-index", flag, ".gitignore")
+			if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte("data/\n.env\nmy secret edit\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ageDir(t, worktree)
+			fakeLsof(t, unrelatedOpenFile, "exit 0")
+			report := reapOnce(t, Runner{}, repo, true)
+			if got := heldReason(report, worktree); got != HoldHidden {
+				t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldHidden, report.Held)
+			}
+			if _, err := os.Stat(worktree); err != nil {
+				t.Fatal("worktree with hidden edits was removed")
+			}
+		})
+	}
+}
+
+func TestWorktreeHoldsNestedRepositories(t *testing.T) {
+	for _, tc := range []struct{ name, dir string }{
+		{"inside allowlisted node_modules", "node_modules/pkg/.git"},
+		{"inside allowlisted bin, deep", "bin/a/b/c/.git"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, worktree := gitRepoWithWorktree(t)
+			if err := os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte("node_modules/\nbin/\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(worktree, tc.dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			ageDir(t, worktree)
+			fakeLsof(t, unrelatedOpenFile, "exit 0")
+			report := reapOnce(t, Runner{}, repo, true)
+			if got := heldReason(report, worktree); got != HoldNested {
+				t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldNested, report.Held)
+			}
+			if _, err := os.Stat(worktree); err != nil {
+				t.Fatal("worktree holding a nested repository was removed")
+			}
+		})
+	}
+}
+
+// A process that starts using the worktree AFTER the batch snapshot but before
+// removal must stop the removal. The fake lsof reports nothing on its first
+// run and the worktree on every later run.
+func TestWorktreeRecheckCatchesUseAfterBatchClassification(t *testing.T) {
+	repo, worktree := gitRepoWithWorktree(t)
+	ageDir(t, worktree)
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "count")
+	script := "#!/bin/sh\nif [ -e '" + counter + "' ]; then printf 'p4242\\nfcwd\\nn" + resolved(t, worktree) + "\\n'; else : > '" + counter + "'; printf 'p1\\nf3\\nn/nonexistent/x\\n'; fi\n"
+	if err := os.WriteFile(filepath.Join(dir, "lsof"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	report := reapOnce(t, Runner{}, repo, true)
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("worktree removed although a process started using it after the batch snapshot (held %+v)", report.Held)
+	}
+	if got := heldReason(report, worktree); got != HoldInUse {
+		t.Fatalf("held reason = %q, want %q", got, HoldInUse)
+	}
+	if len(report.Removed) != 0 {
+		t.Fatalf("removed %v", report.Removed)
+	}
+}

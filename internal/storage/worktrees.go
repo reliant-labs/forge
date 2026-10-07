@@ -28,6 +28,8 @@ const (
 	HoldUnpushed  = "unpushed"
 	HoldRefused   = "git refused removal"
 	HoldUnchecked = "could not be checked"
+	HoldHidden    = "hidden-changes"
+	HoldNested    = "nested-repository"
 )
 
 // defaultWorktreeRebuildable lists ignored paths that a build recreates.
@@ -249,57 +251,16 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 			base = r.defaultBase(ctx, repo)
 		}
 		for index, e := range parseWorktrees(string(b)) {
-			if index == 0 || e.bare || e.head == "" {
+			if index == 0 || e.bare || e.head == "" || e.prunable {
 				continue
 			}
-			hold := func(reason, detail string) {
+			reason, detail, skip := r.classifyWorktree(ctx, e, base, o.idle, self, func(p string) (bool, error) { return inUse.holds(ctx, p) })
+			if skip {
+				continue
+			}
+			if reason != "" {
 				report.Held = append(report.Held, WorktreeHold{Path: e.path, Repo: repo, Reason: reason, Detail: detail})
 				r.print("keep worktree %s: %s%s\n", e.path, reason, suffix(detail))
-			}
-			if e.locked {
-				hold(HoldLocked, "")
-				continue
-			}
-			if e.prunable {
-				continue
-			}
-			info, err := os.Stat(e.path)
-			if err != nil {
-				continue
-			}
-			if self.Holds(e.path) {
-				hold(HoldInUse, "this process's working directory")
-				continue
-			}
-			if idle := time.Since(worktreeActivity(e.path, info)); idle < o.idle {
-				hold(HoldActive, fmt.Sprintf("touched %s ago", idle.Round(time.Minute)))
-				continue
-			}
-			b, err := r.readGit(ctx, e.path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=normal")
-			if err != nil {
-				hold(HoldUnchecked, err.Error())
-				continue
-			}
-			dirty, data := r.classifyStatus(e.path, string(b))
-			if dirty {
-				hold(HoldDirty, "")
-				continue
-			}
-			if len(data) > 0 {
-				hold(HoldData, strings.Join(data, ", "))
-				continue
-			}
-			if !r.pushed(ctx, e.path, e.head, base) {
-				hold(HoldUnpushed, "")
-				continue
-			}
-			held, err := inUse.holds(ctx, e.path)
-			if err != nil {
-				hold(HoldUnchecked, "in-use state unknown")
-				continue
-			}
-			if held {
-				hold(HoldInUse, "a running process uses it")
 				continue
 			}
 			report.Removable = append(report.Removable, e.path)
@@ -307,10 +268,21 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 				r.print("removable worktree: %s (%s)\n", e.path, e.head)
 				continue
 			}
+			// The batch classification can be minutes old (lsof, walks of
+			// other trees). Re-run the whole decision for this one worktree
+			// with a fresh in-use snapshot immediately before removing.
+			reason, detail = r.recheckWorktree(ctx, repo, e, base, o.idle, self)
+			if reason != "" {
+				report.Removable = report.Removable[:len(report.Removable)-1]
+				report.Held = append(report.Held, WorktreeHold{Path: e.path, Repo: repo, Reason: reason, Detail: detail})
+				r.print("keep worktree %s: %s%s\n", e.path, reason, suffix(detail))
+				continue
+			}
 			// No --force: git refuses what it considers unsafe.
 			if _, err := r.command(ctx, "git", "-C", repo, "worktree", "remove", e.path); err != nil {
 				report.Removable = report.Removable[:len(report.Removable)-1]
-				hold(HoldRefused, err.Error())
+				report.Held = append(report.Held, WorktreeHold{Path: e.path, Repo: repo, Reason: HoldRefused, Detail: err.Error()})
+				r.print("keep worktree %s: %s%s\n", e.path, HoldRefused, suffix(err.Error()))
 				continue
 			}
 			report.Removed = append(report.Removed, e.path)
@@ -321,6 +293,139 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 		failures = append(failures, inUse.err)
 	}
 	return report, errors.Join(failures...)
+}
+
+// classifyWorktree decides one linked worktree: "" reason means removable.
+// skip means it is not a candidate at all (gone from disk).
+func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, base string, idle time.Duration, self openfiles.Snapshot, holds func(path string) (bool, error)) (reason, detail string, skip bool) {
+	if e.locked {
+		return HoldLocked, "", false
+	}
+	info, err := os.Stat(e.path)
+	if err != nil {
+		return "", "", true
+	}
+	if self.Holds(e.path) {
+		return HoldInUse, "this process's working directory", false
+	}
+	if since := time.Since(worktreeActivity(e.path, info)); since < idle {
+		return HoldActive, fmt.Sprintf("touched %s ago", since.Round(time.Minute)), false
+	}
+	b, err := r.readGit(ctx, e.path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=normal")
+	if err != nil {
+		return HoldUnchecked, err.Error(), false
+	}
+	dirty, data := r.classifyStatus(e.path, string(b))
+	if dirty {
+		return HoldDirty, "", false
+	}
+	if len(data) > 0 {
+		return HoldData, strings.Join(data, ", "), false
+	}
+	// Edits to skip-worktree / assume-unchanged files are invisible to status
+	// and to `git worktree remove`'s own check.
+	b, err = r.readGit(ctx, e.path, "ls-files", "-v", "-z")
+	if err != nil {
+		return HoldUnchecked, err.Error(), false
+	}
+	if hidden := hiddenChanges(string(b)); len(hidden) > 0 {
+		return HoldHidden, strings.Join(hidden, ", "), false
+	}
+	// A nested repository inside an allowlisted ignored dir (node_modules/…)
+	// is deleted with its unpushed commits.
+	nested, err := nestedRepositories(ctx, e.path)
+	if err != nil {
+		return HoldUnchecked, err.Error(), false
+	}
+	if len(nested) > 0 {
+		return HoldNested, strings.Join(nested, ", "), false
+	}
+	if !r.pushed(ctx, e.path, e.head, base) {
+		return HoldUnpushed, "", false
+	}
+	held, err := holds(e.path)
+	if err != nil {
+		return HoldUnchecked, "in-use state unknown", false
+	}
+	if held {
+		return HoldInUse, "a running process uses it", false
+	}
+	return "", "", false
+}
+
+// recheckWorktree re-reads the worktree's registration and re-runs the full
+// classification with a fresh lsof snapshot. Any failure to re-check holds.
+func (r Runner) recheckWorktree(ctx context.Context, repo string, e worktreeEntry, base string, idle time.Duration, self openfiles.Snapshot) (string, string) {
+	b, err := r.readGit(ctx, repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return HoldUnchecked, err.Error()
+	}
+	var fresh *worktreeEntry
+	for _, cur := range parseWorktrees(string(b)) {
+		if cur.path == e.path {
+			c := cur
+			fresh = &c
+			break
+		}
+	}
+	if fresh == nil || fresh.head == "" {
+		return HoldUnchecked, "no longer registered"
+	}
+	var fresher lazyOpenFiles
+	reason, detail, skip := r.classifyWorktree(ctx, *fresh, base, idle, self, func(p string) (bool, error) { return fresher.holds(ctx, p) })
+	if skip {
+		return HoldUnchecked, "disappeared during cleanup"
+	}
+	return reason, detail
+}
+
+// hiddenChanges lists files git was told to ignore changes to. -v tags: H
+// tracked, S skip-worktree, lowercase = assume-unchanged (or both).
+func hiddenChanges(lsFiles string) []string {
+	var out []string
+	for _, entry := range strings.Split(lsFiles, "\x00") {
+		if len(entry) < 3 {
+			continue
+		}
+		if tag := entry[0]; tag == 'S' || (tag >= 'a' && tag <= 'z') {
+			out = append(out, entry[2:])
+		}
+	}
+	return out
+}
+
+// maxNestedWalkEntries bounds the walk; a tree too large to inspect is held.
+const maxNestedWalkEntries = 1_000_000
+
+// nestedRepositories finds a `.git` entry anywhere under the worktree other
+// than its own top-level one, including inside allowlisted ignored dirs.
+// Submodules have one too, and are held with everything else (safe direction).
+func nestedRepositories(ctx context.Context, worktree string) ([]string, error) {
+	var found []string
+	seen := 0
+	err := filepath.WalkDir(worktree, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if seen++; seen%4096 == 0 {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
+		}
+		if seen > maxNestedWalkEntries {
+			return fmt.Errorf("worktree has more than %d entries; cannot check for nested repositories", maxNestedWalkEntries)
+		}
+		if d.Name() != ".git" || p == filepath.Join(worktree, ".git") {
+			return nil
+		}
+		rel, _ := filepath.Rel(worktree, p)
+		found = append(found, rel)
+		if d.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return found, err
 }
 
 // lazyOpenFiles answers "does a running process use this path?" from one

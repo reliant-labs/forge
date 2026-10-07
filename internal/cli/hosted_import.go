@@ -301,6 +301,13 @@ func importPromotionRows(in []importPromotion) ([]map[string]any, error) {
 			"releaseVersion": p.Promotion.Release,
 			"promotedAt":     p.PromotedAt.UTC().Format(time.RFC3339Nano),
 		}
+		// THE FILE'S ID, PRESERVED. The control plane refuses a promotion
+		// without it: forge's "N promotions never imported" check compares
+		// these ids against the hosted ones, so a minted id would make the
+		// imported history look un-imported forever.
+		if p.Promotion.ID != "" {
+			row["id"] = p.Promotion.ID
+		}
 		if len(p.Promotion.Resolved) > 0 {
 			row["resolvedArtifacts"] = p.Promotion.Resolved
 		}

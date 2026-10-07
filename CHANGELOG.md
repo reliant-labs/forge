@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A narrow stored credential elevates on demand instead of dead-ending.**
+  `forge cluster connect` and `forge domain ls` answered a signed-in org owner
+  with 403 `does not carry the cluster:manage / domain:read scope`, and the
+  hint ("re-run `forge login`") minted the same narrow token again. When a
+  call made with a `forge login` credential or a credential-helper token is
+  refused for a missing scope, forge now calls the control plane's
+  `AccessTokenService/ExchangeToken` for exactly that scope and retries once.
+  The control plane re-reads the user's role at that moment, so the stored
+  credential never has to carry `cluster:manage`. The elevated token lives in
+  memory for the process and is never written to the credentials file; `--token`
+  and the token env var are never elevated. A refusal is shown with the
+  original error plus why elevation did not help (an older control plane, or a
+  role without the permission).
+
 - **An unknown key in the per-machine `storage.json` no longer fails unrelated
   commands.** `storage.Load` decoded with `DisallowUnknownFields`, so a file
   written by another forge version (e.g. `go_cache_unused`, a live key added in

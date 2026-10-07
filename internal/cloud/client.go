@@ -34,6 +34,11 @@ type Client struct {
 	Endpoint   Endpoint
 	Credential Credential
 	HTTP       *http.Client
+
+	// elevated holds tokens obtained by ExchangeToken, keyed by the scope that
+	// was missing. In memory only: they live at most an hour and are never
+	// written to the credentials file.
+	elevated elevationCache
 }
 
 // NewClient builds a Client with a bounded default timeout. A deploy CLI
@@ -57,6 +62,20 @@ func NewClient(ep Endpoint, cred Credential) *Client {
 // on those fields — never on the message text, which is display copy the
 // server is free to improve.
 func (c *Client) Call(ctx context.Context, procedure string, req, out any) error {
+	err := c.call(ctx, procedure, req, out, c.Credential.Token)
+	scope, ok := c.elevationScope(err)
+	if !ok {
+		return err
+	}
+	token, elevErr := c.elevatedToken(ctx, scope)
+	if elevErr != nil {
+		return annotateElevation(err, scope, elevErr)
+	}
+	return c.call(ctx, procedure, req, out, token)
+}
+
+// call is one HTTP round trip with an explicit bearer.
+func (c *Client) call(ctx context.Context, procedure string, req, out any, token string) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", procedure, err)
@@ -72,7 +91,7 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 	// it, does not validate a prefix, and does not decode it — the issuer
 	// owns its format, and a forge-side assumption about it would break
 	// the day that format changed.
-	httpReq.Header.Set("Authorization", "Bearer "+c.Credential.Token)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := c.httpClient().Do(httpReq)
 	if err != nil {

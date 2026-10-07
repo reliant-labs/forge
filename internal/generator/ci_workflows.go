@@ -248,7 +248,10 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 	if ci.LintBufBreaking {
 		files = append(files, CIWorkflowFile{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", ci})
 	}
-	files = append(files, CIWorkflowFile{"dependabot.yml.tmpl", ".github/dependabot.yml", struct{ FrontendName string }{firstFrontendName}})
+	files = append(files, CIWorkflowFile{"dependabot.yml.tmpl", ".github/dependabot.yml", templates.DependabotData{
+		FrontendName:    firstFrontendName,
+		RunsProtocGenGo: hasServices,
+	}})
 	return files
 }
 

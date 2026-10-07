@@ -327,6 +327,10 @@ type runtimeStatusRead struct {
 	resolved                *resolvedEnvState
 	headCommit              time.Time
 	target                  doctor.RuntimeTarget
+	// remote is true when nothing the env declares runs on this machine:
+	// rows are then its DEPLOYED frontends, probed at their deployed URLs,
+	// and nothing local was probed (env_status_deployed.go).
+	remote bool
 }
 
 // readRuntimeStatus renders the env, overlays the live ports, probes them and
@@ -337,11 +341,27 @@ func readRuntimeStatus(ctx context.Context, env string) (runtimeStatusRead, erro
 		return runtimeStatusRead{}, err
 	}
 	projectDir := projectDirForKCL()
-	_, restore := activateDevStack(ctx, projectDir, env, renderToLaunch, inspectBlocks)
+	// renderDeclaration, not renderToLaunch: status launches nothing, and
+	// for an env that runs nowhere on this machine the declaration purpose
+	// is what keeps the render from previewing (or reading) a port block
+	// the env has no business with. For an env that does run here it reads
+	// the block it holds, exactly as before.
+	_, restore := activateDevStack(ctx, projectDir, env, renderDeclaration, inspectBlocks)
 	entities, err := RenderKCL(ctx, projectDir, env)
 	restore() // revert resolve_port bytes; a status render must not drift ports
 	if err != nil {
 		return runtimeStatusRead{}, fmt.Errorf("render KCL: %w", err)
+	}
+	if !entitiesTargetThisMachine(entities) {
+		// A cloud env: nothing local to probe, and a localhost port says
+		// nothing about it. See env_status_deployed.go.
+		rows := deployedFrontendRows(entities)
+		probeDeployedRows(ctx, rows)
+		return runtimeStatusRead{
+			projectName: store.Meta().Name, projectDir: projectDir,
+			entities: entities, rows: rows, remote: true,
+			target: runtimeTargetFor(entities, nil),
+		}, nil
 	}
 
 	// Honor the frontend feature gate so a frontends-off project's report
@@ -397,9 +417,12 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		return err
 	}
 	rows, entities := read.rows, read.entities
-	if len(rows) == 0 {
+	switch {
+	case read.remote:
+		renderDeployedFrontends(os.Stdout, env, rows)
+	case len(rows) == 0:
 		fmt.Printf("[up] no host services or frontends declared in deploy/kcl/%s/\n", env)
-	} else {
+	default:
 		// notReadyLabel "down": unlike the immediate post-launch summary (where a
 		// not-yet-listening port means "still booting"), this snapshot runs long
 		// after start, so a dead port is genuinely down.

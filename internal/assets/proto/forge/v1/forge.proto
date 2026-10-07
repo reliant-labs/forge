@@ -105,9 +105,6 @@ message FieldOptions {
   // Mark this field as the primary key.
   bool pk = 1;
 
-  // Field number 2 is reserved (a removed annotation); never reuse it.
-  reserved 2;
-
   // How to store complex or non-scalar types in the database.
   StoreAs store = 3;
 
@@ -210,9 +207,6 @@ message ServiceOptions {
 
   // Authentication configuration for the service.
   AuthConfig auth = 6;
-
-  // Field number 7 is reserved (a removed annotation); never reuse it.
-  reserved 7;
 }
 
 // ServiceVisibility determines how a service is exposed.
@@ -273,10 +267,6 @@ message MethodOptions {
   // The list is informational at runtime today; future work may enforce
   // that handlers can only return declared codes.
   repeated string errors = 6;
-
-  // Field numbers 7, 8 and 9 are reserved (removed annotations); never
-  // reuse them.
-  reserved 7, 8, 9;
 }
 
 // =============================================================================

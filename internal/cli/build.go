@@ -1674,6 +1674,9 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	}
 
 	prov := captureBuildProvenance(ctx, projectDir)
+	if err := checkCutMatchesBuild(version, prov.Commit, harvestedBuildCommits(projectDir, env)); err != nil {
+		return releaseCutOutcome{}, err
+	}
 	// The CI run that cut this release: the join key that ties it to the
 	// promotions and gates from the same run (§3.A). Defaulted from the
 	// CI environment, so every step of one pipeline carries the same

@@ -795,14 +795,8 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	if !apply || len(plan) == 0 {
 		return nil
 	}
-	for _, name := range []string{helper, gc} {
-		b, err = r.docker(ctx, "ps", "-aq", "--filter", "name=^/"+name+"$")
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(string(b)) != "" {
-			return fmt.Errorf("stale maintenance container %s: inspect before retrying", name)
-		}
+	if err := r.refuseStaleMaintenance(ctx, helper, gc); err != nil {
+		return err
 	}
 	if err := r.markRegistryStopped(reg.Container); err != nil {
 		return err
@@ -837,26 +831,7 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 			migrated = true
 		}
 	}
-	// Never --volumes-from with --rm: see maintenanceMounts.
-	helperArgs := append([]string{"run", "-d", "--rm", "--pull=never", "--name", helper}, mounts...)
-	helperArgs = append(helperArgs, "-p", "127.0.0.1::5000", "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", info.Image)
-	if _, err = r.docker(ctx, helperArgs...); err != nil {
-		return err
-	}
-	base, err = r.endpoint(ctx, helper)
-	if err != nil {
-		return err
-	}
-	for attempt := 0; attempt < 30; attempt++ {
-		if _, err = registryRequest(ctx, base, "/v2/", http.MethodGet); err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
+	base, err = r.startRetentionHelper(ctx, helper, mounts, info.Image)
 	if err != nil {
 		return err
 	}
@@ -881,6 +856,49 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	b, err = r.docker(ctx, gcArgs...)
 	r.print("%s\n", b)
 	return err
+}
+
+// refuseStaleMaintenance fails when a maintenance container from an earlier
+// pass still exists: it may hold the registry's volume, and its state is the
+// evidence of what went wrong, so it is left for a human to inspect.
+func (r Runner) refuseStaleMaintenance(ctx context.Context, names ...string) error {
+	for _, name := range names {
+		b, err := r.docker(ctx, "ps", "-aq", "--filter", "name=^/"+name+"$")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(b)) != "" {
+			return fmt.Errorf("stale maintenance container %s: inspect before retrying", name)
+		}
+	}
+	return nil
+}
+
+// startRetentionHelper runs the delete-enabled registry the retention pass
+// talks to, on the stopped registry's own storage, and returns its endpoint
+// once it answers /v2/ (30 one-second attempts; the last error otherwise).
+func (r Runner) startRetentionHelper(ctx context.Context, helper string, mounts []string, image string) (string, error) {
+	// Never --volumes-from with --rm: see maintenanceMounts.
+	args := append([]string{"run", "-d", "--rm", "--pull=never", "--name", helper}, mounts...)
+	args = append(args, "-p", "127.0.0.1::5000", "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", image)
+	if _, err := r.docker(ctx, args...); err != nil {
+		return "", err
+	}
+	base, err := r.endpoint(ctx, helper)
+	if err != nil {
+		return "", err
+	}
+	for attempt := 0; attempt < 30; attempt++ {
+		if _, err = registryRequest(ctx, base, "/v2/", http.MethodGet); err == nil {
+			return base, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return "", err
 }
 
 func applyVerb(apply bool) string {

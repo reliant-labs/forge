@@ -216,8 +216,7 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 	var failures []error
 	wd, _ := os.Getwd()
 	self := openfiles.FromPaths([]string{wd})
-	var snap *openfiles.Snapshot
-	var snapErr error
+	var inUse lazyOpenFiles
 	seenCommon := map[string]bool{}
 
 	for _, repo := range o.repos {
@@ -294,21 +293,12 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 				hold(HoldUnpushed, "")
 				continue
 			}
-			// lsof costs seconds, so it is taken once and only when a
-			// worktree has otherwise earned removal.
-			if snap == nil && snapErr == nil {
-				s, err := openfiles.Take(ctx)
-				if err != nil {
-					snapErr = fmt.Errorf("refusing worktree cleanup: cannot determine which worktrees are in use: %w", err)
-				} else {
-					snap = &s
-				}
-			}
-			if snapErr != nil {
+			held, err := inUse.holds(ctx, e.path)
+			if err != nil {
 				hold(HoldUnchecked, "in-use state unknown")
 				continue
 			}
-			if snap.Holds(e.path) {
+			if held {
 				hold(HoldInUse, "a running process uses it")
 				continue
 			}
@@ -327,10 +317,35 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 			r.print("removed worktree: %s (%s)\n", e.path, e.head)
 		}
 	}
-	if snapErr != nil {
-		failures = append(failures, snapErr)
+	if inUse.err != nil {
+		failures = append(failures, inUse.err)
 	}
 	return report, errors.Join(failures...)
+}
+
+// lazyOpenFiles answers "does a running process use this path?" from one
+// open-files snapshot. lsof costs seconds, so the snapshot is taken on the
+// first question — only once a worktree has otherwise earned removal — and
+// never again; a failure to take it is kept, so every later question gets the
+// same answer and the caller reports it once.
+type lazyOpenFiles struct {
+	snap *openfiles.Snapshot
+	err  error
+}
+
+func (l *lazyOpenFiles) holds(ctx context.Context, path string) (bool, error) {
+	if l.snap == nil && l.err == nil {
+		s, err := openfiles.Take(ctx)
+		if err != nil {
+			l.err = fmt.Errorf("refusing worktree cleanup: cannot determine which worktrees are in use: %w", err)
+		} else {
+			l.snap = &s
+		}
+	}
+	if l.err != nil {
+		return false, l.err
+	}
+	return l.snap.Holds(path), nil
 }
 
 func suffix(detail string) string {

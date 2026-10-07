@@ -76,6 +76,9 @@ type Deps struct {
 	// path does. See [DeployShaper]. Nil leaves every environment judged as
 	// a kubectl-applied render.
 	DeployShaper DeployShaper
+	// Compose answers every `docker compose` question the env-runtime
+	// checks ask. Nil is the host's docker ([DockerCompose]).
+	Compose ComposeRunner
 }
 
 // DeployShaper answers, for one environment's raw KCL render, how
@@ -289,6 +292,7 @@ func runtimeSignals() map[string][]namedCheck {
 func (s *svc) RunFiltered(ctx context.Context, projectName, projectDir, signal string) (Report, error) {
 	d := newDoctor(projectName, projectDir)
 	d.env.DeployShaper = s.deps.DeployShaper
+	d.env.Compose = s.deps.Compose
 	switch signal {
 	case "":
 		for _, c := range projectChecks() {
@@ -322,6 +326,7 @@ func (s *svc) RunRuntime(ctx context.Context, in RuntimeInput) (Report, error) {
 	d := newDoctor(in.ProjectName, in.ProjectDir)
 	d.env.Env = in.Env
 	d.env.Target = in.Target
+	d.env.Compose = s.deps.Compose
 	// Seed the resolved addresses BEFORE the compose check runs, under the
 	// same keys the app checks read. A project running host-mode has no
 	// "app" container for compose to discover; a project running under

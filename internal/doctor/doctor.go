@@ -109,6 +109,10 @@ type Environment struct {
 	// kubectl-applied render.
 	DeployShaper DeployShaper
 
+	// Compose runs every `docker compose` question the checks ask (see
+	// [ComposeRunner]). Nil is the host's docker.
+	Compose ComposeRunner
+
 	mu    sync.RWMutex
 	Ports map[string]string // "app:8080" -> "0.0.0.0:55010"
 

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 
@@ -72,6 +71,18 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("unit tests do not query a container registry")
 	}
 	buildxAvailable = func(context.Context) bool { return false }
+	// Nor does any test ask the host's docker about compose. `forge env
+	// status` / `env up`'s summary run doctor's runtime checks and list
+	// compose publishers; on this box that read the developer's own compose
+	// stacks, and the tripwire failed the whole package on
+	// TestRunUpServices_EndToEnd although every test passed. The answer is
+	// a host with no docker daemon.
+	doctorCompose = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("Cannot connect to the Docker daemon (forge unit-test stand-in)")
+	}
+	composePublishersFn = func(context.Context, string, string, string) ([]composePublisher, error) {
+		return nil, errors.New("Cannot connect to the Docker daemon (forge unit-test stand-in)")
+	}
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)
@@ -136,29 +147,6 @@ func TestMain(m *testing.M) {
 // purpose. It lives here, untagged, for the same reason registerSharedTempDir
 // does — this package has exactly one TestMain.
 var hostToolTripwireSetup func() (check func() error, err error)
-
-// stubHostTool puts a stand-in for a host binary at the front of PATH for one
-// test, for code paths that shell out with no seam of their own (a library
-// this package calls, such as doctor's `docker compose ps`). script is the
-// stand-in's body after the shebang. Uses t.Setenv, so not for parallel tests.
-func stubHostTool(t *testing.T, name, script string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("host-tool stand-ins are shell scripts")
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
-		t.Fatalf("write %s stand-in: %v", name, err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-// stubNoDockerDaemon answers every docker call the way a host with no running
-// daemon does — the CI answer, and the one these tests assert against.
-func stubNoDockerDaemon(t *testing.T) {
-	t.Helper()
-	stubHostTool(t, "docker", "echo 'Cannot connect to the Docker daemon (forge unit-test stand-in)' >&2\nexit 1\n")
-}
 
 var sharedTemp struct {
 	sync.Mutex

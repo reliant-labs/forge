@@ -1,12 +1,10 @@
 package doctor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -82,9 +80,7 @@ func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 	}
 
 	// Run docker compose ps --format json in the project directory.
-	cmd := exec.CommandContext(ctx, "docker", "compose", "ps", "--format", "json")
-	cmd.Dir = env.ProjectDir
-	out, err := cmd.Output()
+	out, err := env.compose(ctx, "ps", "--format", "json")
 	if err != nil {
 		return CheckResult{
 			Status:  StatusFail,
@@ -156,7 +152,7 @@ func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 
 	// Discover ports.
 	for _, pq := range defaultPortQueries {
-		addr := discoverPort(ctx, env.ProjectDir, pq.service, pq.port)
+		addr := discoverPort(ctx, env, pq.service, pq.port)
 		if addr != "" {
 			env.SetPort(pq.service, pq.port, addr)
 		}
@@ -183,16 +179,12 @@ func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 
 // discoverPort runs `docker compose port <service> <port>` and returns the
 // host address (e.g. "0.0.0.0:55010") or "" if the service/port is not available.
-func discoverPort(ctx context.Context, projectDir, service string, port int) string {
-	cmd := exec.CommandContext(ctx, "docker", "compose", "port", service, fmt.Sprintf("%d", port))
-	cmd.Dir = projectDir
-
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+func discoverPort(ctx context.Context, env *Environment, service string, port int) string {
+	out, err := env.compose(ctx, "port", service, fmt.Sprintf("%d", port))
+	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(stdout.String())
+	return strings.TrimSpace(string(out))
 }
 
 // composeStartHint says how compose services come up in a forge project:

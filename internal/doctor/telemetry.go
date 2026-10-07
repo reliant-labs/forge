@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -272,25 +271,21 @@ func CheckPyroscope(ctx context.Context, env *Environment) CheckResult {
 	}
 
 	// Fallback: check Pyroscope health via docker exec (use curl, not wget).
-	readyCmd := exec.CommandContext(ctx, "docker", "compose", "exec", "-w", "/", "lgtm",
+	readyOut, err := env.compose(ctx, "exec", "-w", "/", "lgtm",
 		"curl", "-sf", "http://localhost:4040/ready")
-	readyCmd.Dir = env.ProjectDir
-	readyOut, err := readyCmd.CombinedOutput()
 	if err != nil {
 		return CheckResult{
 			Status:   StatusFail,
 			Message:  "Pyroscope not reachable",
-			Evidence: strings.TrimSpace(string(readyOut)),
+			Evidence: strings.TrimSpace(string(readyOut) + "\n" + err.Error()),
 		}
 	}
 
 	// Pyroscope is healthy — query via gRPC-web endpoint for label values.
-	labelsCmd := exec.CommandContext(ctx, "docker", "compose", "exec", "-w", "/", "lgtm",
+	labelsOut, err := env.compose(ctx, "exec", "-w", "/", "lgtm",
 		"curl", "-sf", "http://localhost:4040/querier.v1.QuerierService/LabelValues",
 		"-H", "Content-Type: application/json",
 		"-d", `{"name":"__service_name__"}`)
-	labelsCmd.Dir = env.ProjectDir
-	labelsOut, err := labelsCmd.CombinedOutput()
 	if err != nil {
 		return CheckResult{
 			Status:  StatusWarn,

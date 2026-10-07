@@ -412,7 +412,7 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		// The compose rows (Grafana, when observability is on) are added
 		// for display only: the runtime checks below resolve their targets
 		// from the host rows, and a container is not a forge-owned process.
-		compose := composeRows(ctx, entities, read.projectDir, nil, dockerComposePublishers)
+		compose := composeRows(ctx, entities, read.projectDir, nil, composePublishersFn)
 		probeRowsListening(compose, portInUse)
 		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, nil, nil)
 	}
@@ -1923,7 +1923,7 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 // exit code used to keep.
 func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary) {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
-	compose := composeRows(context.Background(), e, projectDirForKCL(), targets, dockerComposePublishers)
+	compose := composeRows(context.Background(), e, projectDirForKCL(), targets, composePublishersFn)
 	probeRowsListening(compose, portInUse)
 	rows = append(rows, compose...)
 	if len(rows) == 0 && cluster == nil {

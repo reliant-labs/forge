@@ -519,7 +519,6 @@ func TestEnvStatusJSON_EmitsExactlyOneDocument(t *testing.T) {
 	if testing.Short() {
 		t.Skip("evaluates KCL; runs in task test")
 	}
-	stubNoDockerDaemon(t) // the runtime half's compose check asks docker
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
 		[]byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
@@ -657,7 +656,6 @@ func TestEnvStatus_RuntimeHalfNeverFailsTheCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("evaluates KCL; runs in task test")
 	}
-	stubNoDockerDaemon(t) // the runtime half's compose check asks docker
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
 		t.Fatal(err)

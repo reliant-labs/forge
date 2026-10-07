@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +15,17 @@ import (
 // CheckDelve verifies that the Delve debugger is reachable inside the
 // app-debug container and its JSON-RPC API responds.
 func CheckDelve(ctx context.Context, env *Environment) CheckResult {
+	// Delve runs in the compose `app-debug` service. A project that declares
+	// no compose file has no such service, so there is nothing to ask docker
+	// — and asking anyway reported THIS machine's compose state for every
+	// host-only project's `forge env status`.
+	if !hasComposeFile(env.ProjectDir) {
+		return CheckResult{
+			Status:  StatusSkip,
+			Message: "no compose file — Delve runs in the compose app-debug service",
+		}
+	}
+
 	var evidence []string
 
 	// Check for an existing debug session file.
@@ -25,9 +35,7 @@ func CheckDelve(ctx context.Context, env *Environment) CheckResult {
 	}
 
 	// 1. Check whether app-debug service is running.
-	psCmd := exec.CommandContext(ctx, "docker", "compose", "ps", "--format", "json")
-	psCmd.Dir = env.ProjectDir
-	psOut, err := psCmd.Output()
+	psOut, err := env.compose(ctx, "ps", "--format", "json")
 	if err != nil {
 		return CheckResult{
 			Status:   StatusFail,
@@ -45,9 +53,7 @@ func CheckDelve(ctx context.Context, env *Environment) CheckResult {
 	}
 
 	// 2. Discover the Delve host port.
-	portCmd := exec.CommandContext(ctx, "docker", "compose", "port", "app-debug", "2345")
-	portCmd.Dir = env.ProjectDir
-	portOut, err := portCmd.Output()
+	portOut, err := env.compose(ctx, "port", "app-debug", "2345")
 	if err != nil {
 		return CheckResult{
 			Status:   StatusFail,

@@ -132,6 +132,10 @@ type bundleBuildInputs struct {
 	// the env's ledger is: a registry reference to bytes nobody pushed
 	// would be a record of a deploy that cannot be performed.
 	Pushed bool
+	// Rerecord replaces a release's bundle of record even when this render's
+	// objects differ from it. Off — the default — such a render is refused,
+	// and a render whose objects match reuses the recorded bundle verbatim.
+	Rerecord bool
 	// Now is the bundle's creation time for an UNRELEASED bundle only. The
 	// caller's, because bundle.Build never reads a clock.
 	//
@@ -230,6 +234,45 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{}, err
 	}
 
+	// ONE BUNDLE PER (ENV, RELEASE). See release_bundle_of_record.go.
+	if in.Release != "" && !in.Rerecord {
+		prior, found, ferr := findReleaseBundle(ctx, projectDir, env, in.Release, ledger, in)
+		switch {
+		case ferr != nil:
+			fmt.Fprintf(in.errWriter(),
+				"[bundle] Note: release %s's recorded bundle for env %s could not be looked up (%v); this render is written unchecked.\n",
+				in.Release, env, ferr)
+		case found:
+			rendered := built.Doc.Shape.Objects
+			if prior.fromLedgerRow {
+				rendered = doc.Shape.Objects
+			}
+			if changes := diffBundleObjects(prior.Objects, rendered); len(changes) > 0 {
+				return bundleWriteOutcome{}, errReleaseBundleDiffers(env, in.Release, prior, changes)
+			}
+			// The same objects: reuse the release's bundle, its digest
+			// and its record, rather than write a second one that differs
+			// only in who rendered it.
+			reused := placedBundle{bundleWriteOutcome: bundleWriteOutcome{
+				Env: env, Digest: prior.Digest, Reference: prior.Reference,
+				Pushed: prior.Pushed, Recorded: true, Objects: len(prior.Objects),
+			}, repository: prior.blobs.Repository}
+			if len(prior.blobs.Manifest) == 0 {
+				return reused.bundleWriteOutcome, nil
+			}
+			// A hosted bundle is re-sent as ITS OWN bytes: RecordBundle is
+			// idempotent on (env, digest), and the server derives the
+			// record from what it verifies, so the record is the
+			// release's bundle whichever forge sends it.
+			return recordWrittenBundle(ctx, projectDir, env, ledger,
+				// Shape carries the env's kind, which the control plane
+				// needs to ensure the env; the rest of the record is the
+				// server's decode of the bytes.
+				release.BundleRecord{Env: env, Release: in.Release, Digest: prior.Digest, Reference: prior.Reference, Shape: doc.Shape},
+				prior.blobs, reused, in)
+		}
+	}
+
 	placed, err := placeBundleBytes(ctx, projectDir, env, built, ledger, in)
 	if err != nil {
 		return bundleWriteOutcome{}, err
@@ -248,7 +291,11 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Manifest:   built.Manifest,
 		Config:     built.ConfigBlob(),
 	}
-	return recordWrittenBundle(ctx, projectDir, env, ledger, record, blobs, placed, in)
+	out, err := recordWrittenBundle(ctx, projectDir, env, ledger, record, blobs, placed, in)
+	if err == nil && in.Release != "" && out.Recorded && placed.repository != "" {
+		tagReleaseBundle(ctx, placed.repository, built.Manifest, in.Release, in)
+	}
+	return out, err
 }
 
 // bundleCreatedAt is the creation time sealed into a bundle: the RELEASE's, so
@@ -653,9 +700,9 @@ func hostedPinReleaseFrom(ctx context.Context) string {
 // ensureHostedReleaseBundle writes and records the env's bundle for a named
 // release when none is recorded, so a deploy of that release has a bundle (and
 // so a plan digest) to promote against.
-func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version string, ledger envLedger, errOut io.Writer) {
+func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version string, ledger envLedger, rerecord bool, errOut io.Writer) error {
 	if !ledger.Hosted || version == "" {
-		return
+		return nil
 	}
 	// THE MACHINE LEDGER IS NOT EVIDENCE ABOUT A HOSTED ENV. A bundle row
 	// there says "this machine rendered one", usually at cut time under a
@@ -670,20 +717,28 @@ func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version str
 	// so the cost of not trusting the local row is one render.
 	rel, err := ledger.Releases.Get(ctx, version)
 	if err != nil || rel == nil {
-		return
+		return nil
 	}
 	pins := release.BundlePins{Images: rel.SharedDigests()}
 	if sources := rel.Sources(); len(sources) > 0 {
 		pins.Sources = sources
 	}
 	out, err := writeBundlesFn(ctx, projectDir, []string{env}, bundleBuildInputs{
-		Release: version, Pins: pins, Pushed: true,
+		Release: version, Pins: pins, Pushed: true, Rerecord: rerecord,
 		Now: time.Now().UTC().Truncate(time.Second), errOut: errOut,
 	})
 	if err != nil {
+		// A render that differs from the release's recorded bundle is
+		// a REFUSAL, not a warning: deploying past it would apply bytes
+		// nobody reviewed under a release that names other bytes.
+		var differs *releaseBundleDiffersError
+		if errors.As(err, &differs) {
+			return err
+		}
 		fmt.Fprintf(errOut, "[bundle] Warning: env %s's bundle for %s could not be written: %v\n", env, version, err)
-		return
+		return nil
 	}
 	printBundleWrites(errOut, out)
 	noteRecordedBundles(version, out)
+	return nil
 }

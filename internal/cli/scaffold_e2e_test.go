@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -780,6 +781,36 @@ func assertPathNotExistsE2E(t *testing.T, path string) {
 	if _, err := os.Stat(path); err == nil {
 		t.Fatalf("expected path %s to NOT exist", path)
 	}
+}
+
+// containsTSE2E reports whether a scaffolded TS/TSX source contains the code
+// in needle, ignoring layout.
+//
+// Since #496 a page is handed to the frontend's OWN prettier at birth, so
+// its line breaks, indentation, JSX brace padding and trailing commas are
+// whatever the project's prettier version and config decide — not what the
+// template wrote. An assertion on the template's exact bytes then fails on a
+// correct page (`defaultValue={ X }` is born `defaultValue={X}`), and a
+// NEGATIVE assertion silently stops checking anything, because the bytes it
+// forbids can no longer occur in any spelling it would recognise.
+//
+// So both sides are compared with every whitespace character removed and
+// every trailing comma (a `,` directly before `)`, `]` or `}`) dropped —
+// exactly the freedom prettier takes with TS/TSX that cannot change what the
+// code means. Every token, operator, bracket and literal still has to match.
+//
+// A comma that ENDS the needle is dropped too: `status: item.status,` names
+// one object member, and in the page that member may be the last one, whose
+// comma is a trailing comma the haystack side just lost.
+func containsTSE2E(haystack, needle string) bool {
+	return strings.Contains(normalizeTSE2E(haystack), strings.TrimRight(normalizeTSE2E(needle), ","))
+}
+
+var trailingCommaE2E = regexp.MustCompile(`,([)\]}])`)
+
+func normalizeTSE2E(s string) string {
+	s = strings.Join(strings.Fields(s), "")
+	return trailingCommaE2E.ReplaceAllString(s, "$1")
 }
 
 // readFileE2E reads a file and fails the test on error.

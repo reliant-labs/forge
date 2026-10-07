@@ -5,7 +5,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -113,14 +112,16 @@ enum BrandStatus {
 		// the empty string is a value, not a validation error.
 		"tagline: z.string(),",
 	} {
-		if !strings.Contains(create, want) {
+		// Layout-insensitive: the page is born through the project's own
+		// prettier (#496), which owns its line breaks and brace padding.
+		if !containsTSE2E(create, want) {
 			t.Errorf("born create page missing %q:\n%s", want, create)
 		}
 	}
-	if strings.Contains(create, "status: z.string()") {
+	if containsTSE2E(create, "status: z.string()") {
 		t.Errorf("born create page types the enum as z.string() — guaranteed MessageInit type error at mutate():\n%s", create)
 	}
-	if strings.Contains(create, "BrandStatus.UNSPECIFIED }>") {
+	if containsTSE2E(create, "<option value={ BrandStatus.UNSPECIFIED }>") {
 		t.Errorf("born create page offers the UNSPECIFIED zero value as a choice:\n%s", create)
 	}
 
@@ -140,14 +141,16 @@ enum BrandStatus {
 		"<select",
 		`updateMask: { paths: ["name", "tagline", "priority", "status"] },`,
 	} {
-		if !strings.Contains(edit, want) {
+		if !containsTSE2E(edit, want) {
 			t.Errorf("born edit page missing %q (the empty-edit-form bug births `z.object({})` here):\n%s", want, edit)
 		}
 	}
-	if strings.Contains(edit, "const schema = z.object({\n});") {
+	// Any spelling of an empty schema — the template emits `z.object({})`
+	// since #496, and `z.object({\n})` before it.
+	if containsTSE2E(edit, "const schema = z.object({});") {
 		t.Errorf("born edit page has an EMPTY form schema:\n%s", edit)
 	}
-	if strings.Contains(edit, "BrandStatus.UNSPECIFIED }>") {
+	if containsTSE2E(edit, "<option value={ BrandStatus.UNSPECIFIED }>") {
 		t.Errorf("born edit page offers the UNSPECIFIED zero value as a choice:\n%s", edit)
 	}
 

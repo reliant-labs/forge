@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestE2EScaffoldFrontendRuntime is the gate on how a generated frontend
@@ -213,7 +214,39 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	runCmdTimeout(t, webDir, 5*time.Minute, "npm", "run", "build")
 	runCmdTimeout(t, webDir, 2*time.Minute, "npx", "--no-install", "tsc", "--noEmit")
 
-	assertRuntimePeersDedupedE2E(t, webDir, shadowed)
+	assertRuntimePeersDedupedE2E(t, nextProdDistDirE2E(t, projectDir, "web"), shadowed)
+}
+
+// nextProdDistDirE2E is where `next build` writes its intermediates —
+// including `trace` — for the named frontend, which depends on the
+// next.config.ts branch its `output:` scaffolded.
+//
+//   - standalone/server fence production builds into .next-prod, so a build
+//     cannot clobber a live `next dev` in .next.
+//   - static (the scaffold default since #522) has NO fence: Next treats a
+//     custom distDir as the export destination, so the export keeps out/ and
+//     the intermediates stay in .next.
+//
+// The answer comes from forge.yaml rather than a probe of both directories,
+// so a trace left in the other one can never stand in for this build's.
+func nextProdDistDirE2E(t *testing.T, projectDir, frontend string) string {
+	t.Helper()
+	cfg, err := config.LoadProjectDir(projectDir)
+	if err != nil {
+		t.Fatalf("load forge.yaml: %v", err)
+	}
+	for _, fe := range cfg.Frontends {
+		if fe.Name != frontend {
+			continue
+		}
+		dist := ".next-prod"
+		if fe.EffectiveOutput() == config.FrontendOutputStatic {
+			dist = ".next"
+		}
+		return filepath.Join(projectDir, "frontends", frontend, dist)
+	}
+	t.Fatalf("forge.yaml declares no frontend %q", frontend)
+	return ""
 }
 
 // assertRuntimePeersDedupedE2E is the gate that a type-level or build-level
@@ -237,14 +270,14 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 // fix in place the shadow copy is still sitting on the filesystem path; what
 // changed is that the bundler no longer resolves through it.)
 //
-// The signal is `.next-prod/trace`, the file-level record `next build` writes
+// The signal is `<distDir>/trace`, the file-level record `next build` writes
 // of everything it touched. It names absolute paths, so "did the bundler read
 // a module out of the linked package's own node_modules" is a substring
 // question.
-func assertRuntimePeersDedupedE2E(t *testing.T, webDir, runtimeDir string) {
+func assertRuntimePeersDedupedE2E(t *testing.T, distDir, runtimeDir string) {
 	t.Helper()
 
-	tracePath := filepath.Join(webDir, ".next-prod", "trace")
+	tracePath := filepath.Join(distDir, "trace")
 	body, err := os.ReadFile(tracePath)
 	if err != nil {
 		t.Fatalf("no build trace at %s, so the single-copy gate could not run "+
@@ -295,7 +328,7 @@ func assertRuntimePeersDedupedE2E(t *testing.T, webDir, runtimeDir string) {
 		"instead of this app's — every one of them is in the bundle twice, with two sets of "+
 		"classes and module state: %s\n"+
 		"next.config.ts must redirect the linked runtime's bare imports at %s/node_modules.",
-		len(dupes), strings.Join(dupes, ", "), webDir)
+		len(dupes), strings.Join(dupes, ", "), filepath.Dir(distDir))
 }
 
 // shadowedPackagesE2E returns the distinct package names the trace resolved

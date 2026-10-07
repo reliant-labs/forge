@@ -5,7 +5,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -64,6 +63,10 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 
 	// ── GREEN: the page consumes the runtime container + tristate adapter,
 	//    passes every filter server-side, and walks the cursor. ──
+	//
+	// Every content check here is layout-insensitive (containsTSE2E): the
+	// pages are born through the project's own prettier (#496), which owns
+	// their line breaks, brace padding and trailing commas.
 	for _, want := range []string{
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
 		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
@@ -84,7 +87,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`hasNextPage={Boolean(nextToken)}`,
 		`resource.data.totalCount`,
 	} {
-		if !strings.Contains(list, want) {
+		if !containsTSE2E(list, want) {
 			t.Errorf("generated list page missing %q:\n%s", want, list)
 		}
 	}
@@ -95,7 +98,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		"pageSize: 200",
 		".filter((item)",
 	} {
-		if strings.Contains(list, bad) {
+		if containsTSE2E(list, bad) {
 			t.Errorf("generated list page STILL has the client-side/compute defect %q:\n%s", bad, list)
 		}
 	}
@@ -113,11 +116,11 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		// useSearchParams() outside a Suspense boundary fails `next build`.
 		`<Suspense fallback={<SkeletonLoader variant="table-row" count={5} />}>`,
 	} {
-		if !strings.Contains(list, want) {
+		if !containsTSE2E(list, want) {
 			t.Errorf("generated list page missing URL-filter wiring %q:\n%s", want, list)
 		}
 	}
-	if strings.Contains(list, `const [search, setSearch] = useState("")`) {
+	if containsTSE2E(list, `const [search, setSearch] = useState("")`) {
 		t.Errorf("list page still holds its filters in useState — deep links stay dead:\n%s", list)
 	}
 
@@ -125,7 +128,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 	createPath := filepath.Join(appDir, "orders", "new", "page.tsx")
 	assertPathExistsE2E(t, createPath)
 	create := readFileE2E(t, createPath)
-	if strings.Contains(create, `{...register("customerId")}`) {
+	if containsTSE2E(create, `{...register("customerId")}`) {
 		t.Errorf("create form still renders a raw text input for a foreign key:\n%s", create)
 	}
 	for _, want := range []string{
@@ -134,7 +137,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`itemsOf={(res) => res.customers}`,
 		`optionLabel={(item) => String(item.name)}`,
 	} {
-		if !strings.Contains(create, want) {
+		if !containsTSE2E(create, want) {
 			t.Errorf("create page missing %q:\n%s", want, create)
 		}
 	}
@@ -147,7 +150,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`useGet={ useGetCustomer }`,
 		`nameOf={(res) => res.customer?.name}`,
 	} {
-		if !strings.Contains(edit, want) {
+		if !containsTSE2E(edit, want) {
 			t.Errorf("edit page missing the server-loaded FK label resolver %q:\n%s", want, edit)
 		}
 	}
@@ -155,10 +158,10 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 	detailPath := filepath.Join(appDir, "orders", "view", "page.tsx")
 	assertPathExistsE2E(t, detailPath)
 	detail := readFileE2E(t, detailPath)
-	if strings.Contains(detail, "formatValue(item.customerId)") {
+	if containsTSE2E(detail, "formatValue(item.customerId)") {
 		t.Errorf("detail page still prints the raw foreign-key id:\n%s", detail)
 	}
-	if !strings.Contains(detail, `id={item.customerId}`) {
+	if !containsTSE2E(detail, `id={item.customerId}`) {
 		t.Errorf("detail page must resolve the foreign key through <EntityName>:\n%s", detail)
 	}
 

@@ -118,8 +118,21 @@ func featureReason(cfg *config.ProjectConfig, name config.FeatureName, on bool) 
 	kind := cfg.EffectiveKind()
 	service := kind == config.ProjectKindService
 	switch name {
-	case config.FeatureCodegen, config.FeatureObservability, config.FeatureHotReload, config.FeatureDeploy:
-		return fmt.Sprintf("(kind: %s)", kind)
+	case config.FeatureCodegen:
+		if on {
+			return "(.proto files exist)"
+		}
+		return "(no .proto files)"
+	case config.FeatureObservability, config.FeatureHotReload:
+		if on {
+			return "(server sources exist)"
+		}
+		return "(no pkg/app, internal/handlers or proto/services)"
+	case config.FeatureDeploy:
+		if on {
+			return "(deploy/kcl exists)"
+		}
+		return "(no deploy/kcl)"
 	case config.FeatureCI, config.FeatureBuild:
 		return fmt.Sprintf("(kind: %s)", kind)
 	case config.FeatureContracts:

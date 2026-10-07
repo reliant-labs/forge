@@ -76,21 +76,21 @@ type featureRequirement struct {
 // validator (validateFeatureGraph) rather than this map.
 var featureDeps = map[FeatureName][]featureRequirement{
 	FeatureFrontend: {
-		{Feature: FeatureCodegen, fix: "codegen derives from the project being a service; a frontend needs it"},
+		{Feature: FeatureCodegen, fix: "codegen derives from .proto files existing; a frontend needs it"},
 	},
 	FeatureORM: {
-		{Feature: FeatureCodegen, fix: "codegen derives from the project being a service; the ORM needs it"},
+		{Feature: FeatureCodegen, fix: "codegen derives from .proto files existing; the ORM needs it"},
 		{Shape: hasDatabaseDriver, label: "a database driver", fix: "add db/migrations — the ORM projects the applied schema"},
 	},
 	FeatureMigrations: {
-		{Feature: FeatureCodegen, fix: "codegen derives from the project being a service; migrations need it"},
+		{Feature: FeatureCodegen, fix: "codegen derives from .proto files existing; migrations need it"},
 		{Shape: hasDatabaseDriver, label: "a database driver", fix: "add db/migrations"},
 	},
 	FeatureDeploy: {
 		{Feature: FeatureBuild, fix: "build derives from the project not being a library; deploy needs it"},
 	},
 	FeatureIngress: {
-		{Feature: FeatureDeploy, fix: "deploy derives from the project being a service; ingress is a deploy-time overlay"},
+		{Feature: FeatureDeploy, fix: "deploy derives from deploy/kcl existing; ingress is a deploy-time overlay"},
 	},
 }
 

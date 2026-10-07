@@ -149,12 +149,12 @@ func hasOperatorPackage(projectDir string) bool {
 }
 
 // DeriveDatabase fills the database driver and migrations directory from the
-// tree: a service project with db/migrations uses postgres and that
-// directory; anything else has no database. There is no setting to write —
+// tree: a project with db/migrations uses postgres and that directory;
+// anything else has no database. There is no setting to write —
 // the directory IS the declaration, the same way the schema is (the
 // migrations are the source of truth for it).
 func DeriveDatabase(c *ProjectConfig) {
-	if c.IsServiceKind() && c.projectDir != "" && dirExists(filepath.Join(c.projectDir, DefaultMigrationsDir)) {
+	if c.projectDir != "" && dirExists(filepath.Join(c.projectDir, DefaultMigrationsDir)) {
 		c.Database.Driver = "postgres"
 		c.Database.MigrationsDir = DefaultMigrationsDir
 		return
@@ -174,35 +174,38 @@ func DeriveFrontendWorkspaces(c *ProjectConfig) {
 }
 
 // DeriveFeatureDefaults computes the enabled/disabled state of every feature
-// from what exists in the repo. The rules:
+// from what exists in the repo. Each feature is decided by ITS OWN evidence,
+// not by the project kind: a deploy-only project (deploy/kcl, no protos, no
+// server) is a service-kind project that must get deploy and nothing else.
 //
-//	codegen       ⇔ kind == service
+//	codegen       ⇔ .proto files exist (proto/ or a buf.yaml module)
 //	orm           ⇔ a database AND codegen AND no //forge:no-orm marker in internal/db
 //	migrations    ⇔ a database AND codegen
 //	ci            ⇔ kind != library
 //	build         ⇔ kind != library
 //	contracts     ⇔ always on (contract.go works for every kind)
 //	frontend      ⇔ a frontend exists (frontends/ or KCL) AND codegen
-//	observability ⇔ kind == service
-//	hot_reload    ⇔ kind == service
-//	deploy        ⇔ kind == service
+//	observability ⇔ server sources exist (pkg/app, internal/handlers, proto/services)
+//	hot_reload    ⇔ server sources exist
+//	deploy        ⇔ deploy/kcl exists
 //	ingress       ⇔ deploy AND deploy/kcl declares a forge.Gateway
-//	operators     ⇔ kind == service AND internal/operators holds an operator
+//	operators     ⇔ internal/operators holds an operator
 //
-// "a database" means db/migrations exists (DeriveDatabase). deploy derives
-// from kind, NOT from a deploy/kcl probe: the scaffold ships deploy/kcl for
-// every service, so kind==service is the honest proxy, and the per-env
-// deploy steps are already a no-op when no env directories exist.
+// "a database" means db/migrations exists (DeriveDatabase).
+//
+// With no on-disk project to read (a hand-built config in a test), there is
+// no evidence to consult and the kind stands in: a service is assumed to have
+// protos, a server and a deploy tree.
 //
 // The set is dependency-consistent by construction (see feature_graph.go):
 // every dependent is gated on the EFFECTIVE value of what it requires, so a
 // derived set can never trip the graph validator.
 func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
-	isService := c.IsServiceKind()
 	isLibrary := c.IsLibraryKind()
-	hasDB := isService && c.Database.Driver != "" && c.Database.Driver != "none"
-	codegen := isService
-	deploy := isService
+	hasDB := c.Database.Driver != "" && c.Database.Driver != "none"
+	codegen := c.hasProtos()
+	server := c.hasServerSources()
+	deploy := c.hasDeployTree()
 	return map[FeatureName]bool{
 		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir),
 		FeatureCodegen:       codegen,
@@ -211,11 +214,11 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 		FeatureBuild:         !isLibrary,
 		FeatureContracts:     true,
 		FeatureFrontend:      len(c.Frontends) > 0 && codegen,
-		FeatureObservability: isService,
-		FeatureHotReload:     isService,
+		FeatureObservability: server,
+		FeatureHotReload:     server,
 		FeatureDeploy:        deploy,
 		FeatureIngress:       deploy && declaresGateway(c.projectDir),
-		FeatureOperators:     isService && hasOperatorPackage(c.projectDir),
+		FeatureOperators:     hasOperatorPackage(c.projectDir),
 	}
 }
 
@@ -235,6 +238,7 @@ type sectionDefaultsSet struct {
 
 func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 	isService := c.IsServiceKind()
+	hasProtos := c.hasProtos()
 	hasFrontend := len(c.Frontends) > 0
 	t := true
 	d := sectionDefaultsSet{
@@ -242,8 +246,8 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 			Provider: "github",
 			Lint: CILintConfig{
 				Golangci:        true,
-				Buf:             isService,
-				BufBreaking:     isService,
+				Buf:             hasProtos,
+				BufBreaking:     hasProtos,
 				Frontend:        hasFrontend,
 				MigrationSafety: isService,
 			},

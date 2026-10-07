@@ -172,7 +172,7 @@ func TestRunDevClusterUp_EnsuresStandaloneRegistry(t *testing.T) {
 		"name: testproj\nmodule_path: example.com/testproj\n"), 0o644); err != nil {
 		t.Fatalf("write temp forge.yaml: %v", err)
 	}
-	markServiceProject(t, dir) // deploy derives on for a service
+	markDeployProject(t, dir) // deploy derives from deploy/kcl existing
 	t.Chdir(dir)
 
 	configPath := dir + "/k3d.yaml"

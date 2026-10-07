@@ -71,11 +71,15 @@ func TestLoadResolvesInventoryWithMarkerGate(t *testing.T) {
 func TestLoadDerivedInventoryEnablesFrontendFeature(t *testing.T) {
 	root := writeSeamProject(t, "name: demo\nmodule_path: github.com/example/demo\n")
 	mkSeamFrontendDir(t, root, "console", "next.config.ts")
-	// features.frontend also requires codegen, which derives from the
-	// project being SERVICE-shaped. control-plane is; give the fixture the
-	// same shape so this test measures the inventory, not the kind.
-	if err := os.MkdirAll(filepath.Join(root, "internal", "handlers"), 0o755); err != nil {
-		t.Fatalf("mkdir handlers: %v", err)
+	// features.frontend also requires codegen, which derives from .proto
+	// files existing. control-plane has them; give the fixture one so this
+	// test measures the inventory, not the codegen evidence.
+	protoDir := filepath.Join(root, "proto", "services", "demo", "v1")
+	if err := os.MkdirAll(protoDir, 0o755); err != nil {
+		t.Fatalf("mkdir proto: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(protoDir, "demo.proto"), []byte("syntax = \"proto3\";\n"), 0o644); err != nil {
+		t.Fatalf("write proto: %v", err)
 	}
 
 	cfg, err := LoadProjectDir(root)

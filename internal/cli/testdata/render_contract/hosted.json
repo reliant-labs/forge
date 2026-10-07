@@ -2,6 +2,7 @@
   "output": {
     "clusters": [],
     "config_maps": [],
+    "connected_clusters": null,
     "control_plane": {
       "endpoint": "https://admin.reliantapi.com",
       "registry_host": "registry.reliantapi.com",

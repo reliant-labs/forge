@@ -2,6 +2,7 @@
   "output": {
     "clusters": [],
     "config_maps": [],
+    "connected_clusters": null,
     "databases": [],
     "env": "dev",
     "frontends": [

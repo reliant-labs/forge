@@ -14,7 +14,7 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
     lifecycle                 WHO APPLIES this env: "local" | "ephemeral",
                               or null for a real env reconciled from a
                               bundle. Never a refusal here — see Bundle
-    clusters, cluster_target, kubeconfig_secrets
+    clusters, cluster_target, kubeconfig_secrets, connected_clusters
     network_policy            the env NetworkPolicy bundle's inputs, or null
     workloads[]               EVERY workload, of every runtime:
         {name, kind, image, build, runtime, spec}
@@ -816,6 +816,7 @@ render = lambda bundle: Bundle -> any {
         if _pt:
             "cluster_target": _render_cluster_target(_pt)
         "kubeconfig_secrets": [_render_kubeconfig_secret(k) for k in bundle.kubeconfig_secrets]
+        "connected_clusters": bundle.connected_clusters if bundle.connected_clusters else None
         "network_policy": {
             "egress_ports": bundle.network_policy.egress_ports
             "telemetry_namespace": bundle.network_policy.telemetry_namespace

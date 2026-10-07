@@ -218,6 +218,18 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 		Logger:      logger,
 {{- if or (index .ConfigFields "CorsOrigins") (index .ConfigFields "Environment")}}
 		CORSMiddleware: func(origins []string, allowCredentials bool) func(http.Handler) http.Handler {
+			// The project's own request/response headers, on top of
+			// forge's defaults. The preflight is answered by the CORS
+			// layer itself, so a header a browser client sends has to be
+			// declared HERE (cors_allow_headers), or every RPC is refused.
+			corsOpts := []fmw.CORSOption{
+{{- if index .ConfigFields "CorsAllowHeaders"}}
+				fmw.WithAllowHeaders(fmw.HeaderList(cfg.CorsAllowHeaders)...),
+{{- end}}
+{{- if index .ConfigFields "CorsExposeHeaders"}}
+				fmw.WithExposeHeaders(fmw.HeaderList(cfg.CorsExposeHeaders)...),
+{{- end}}
+			}
 {{- if index .ConfigFields "Environment"}}
 			// DEV ONLY: reflect ANY request Origin, so this product's own
 			// browser frontend works cross-origin without hand-curating
@@ -227,10 +239,10 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 			// literal "*". NEVER outside dev: a deployed environment with
 			// no origins gets no CORS layer at all.
 			if cfg.Environment == serverkit.EnvDevelopment {
-				return fmw.DevCORSMiddleware(allowCredentials)
+				return fmw.DevCORSMiddleware(allowCredentials, corsOpts...)
 			}
 {{- end}}
-			return fmw.CORSMiddleware(origins, allowCredentials)
+			return fmw.CORSMiddleware(origins, allowCredentials, corsOpts...)
 		},
 {{- end}}
 {{- if index .ConfigFields "SecurityHeadersEnabled"}}

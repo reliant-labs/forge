@@ -133,12 +133,17 @@ tasks:
     # NO `-race` either: it builds everything under a separate cache key and
     # slows execution several-fold. `task test` and CI keep `-race -count=1`.
     #
-    # The 60s timeout is the budget, not a guess: any test over ~2s under
-    # -short is gated with `if testing.Short() { t.Skip(...) }` (see
-    # reliant.md), so a package that blows it has a new slow test to gate.
+    # The timeout is a HANG detector, not the speed budget. Speed comes from
+    # scoping and the cache; the per-test budget (~2s under -short, else gate
+    # it with `if testing.Short() { t.Skip(...) }`, see reliant.md) is
+    # enforced by review, not by this flag. -timeout is per test BINARY, and
+    # on a loaded shared box ./internal/cli alone — the most-run package —
+    # measured 192-263s under -short, so a 60s value panicked with a
+    # goroutine dump on a healthy run and taught agents to abandon the tier.
+    # 300s still catches a genuine deadlock in one package within minutes.
     desc: "Inner-loop Go tests: -short, cached, no race. Scope it: task test:short -- ./internal/foo/..."
     cmds:
-      - go test -short -timeout 60s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+      - go test -short -timeout 300s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
 
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)

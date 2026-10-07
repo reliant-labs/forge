@@ -156,7 +156,8 @@ func bakeVerifiedEntityFactory(ctx context.Context, fx *crudTestFixtures, root s
 			return full, true
 		}
 	}
-	minimal.failure = minimalErr.Error()
+	fx.ensurePlan(root)
+	minimal.failure = minimalErr.Error() + fx.unplacedConstraintNote(root, minimalErr.Error())
 	return minimal, true
 }
 
@@ -202,7 +203,7 @@ func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEnt
 
 	rootStmt := ""
 	var parentStmts []string
-	rootPrefix := "INSERT INTO " + pgQuoteIdent(root) + " ("
+	rootPrefix := "INSERT INTO " + seedplan.QualifiedTable(byName[root]) + " ("
 	for _, stmt := range plan.Statements() {
 		if strings.HasPrefix(stmt, rootPrefix) {
 			rootStmt = stmt
@@ -329,12 +330,6 @@ func hasTagOption(parts []string, opt string) bool {
 func isStringFieldType(expr ast.Expr) bool {
 	id, ok := expr.(*ast.Ident)
 	return ok && id.Name == "string"
-}
-
-// pgQuoteIdent mirrors seeddata's identifier quoting (postgres double-quotes)
-// so the emitted root-statement prefix matches what the seed planner rendered.
-func pgQuoteIdent(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
 // renderEntityFactoryFile renders one handler package's forge-owned

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Request factories seed parents in non-`public` schemas, and say why when they
+  cannot.** `forge generate` warned `relation "users" does not exist` for every
+  create-request factory in a project whose tables live in a named schema
+  (`controlplane.users`): the baked parent `INSERT`s named only the bare table,
+  so the shadow connection never found it, and the factory became a `t.Fatalf`.
+  `schemadef.Table` now carries its `Schema`, and the seed planner renders
+  `"controlplane"."users"` for any table outside `public`. A one-member
+  vocabulary (`CHECK (provider = 'byo')`, which postgres stores as a plain
+  equality rather than an `= ANY` list) is also read as a pool, so such a column
+  no longer gets a value its CHECK rejects. When a parent row still cannot be
+  built, the warning now names the parent table's multi-column constraints forge
+  could not place and the two remedies that work (restate the constraint, or
+  `forge project disown` the factory) instead of echoing a bare SQLSTATE.
+
 - **A narrow stored credential elevates on demand instead of dead-ending.**
   `forge cluster connect` and `forge domain ls` answered a signed-in org owner
   with 403 `does not carry the cluster:manage / domain:read scope`, and the

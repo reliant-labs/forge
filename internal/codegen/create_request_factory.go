@@ -192,7 +192,7 @@ func verifyCreateRequest(ctx context.Context, fix *crudTestFixtures, table, pare
 		return ""
 	}
 	if err := execRolledBack(ctx, fix.shadow.DB(), sqlStep{query: parentSQL}); err != nil {
-		return fmt.Sprintf("seeding the foreign-key parents failed: %v", err)
+		return fmt.Sprintf("seeding the foreign-key parents failed: %v%s", err, fix.unplacedConstraintNote(table, err.Error()))
 	}
 	t, ok := fix.tables[table]
 	if !ok {

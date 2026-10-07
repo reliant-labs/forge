@@ -135,17 +135,14 @@ type bundleBuildInputs struct {
 	// Now is the bundle's creation time for an UNRELEASED bundle only. The
 	// caller's, because bundle.Build never reads a clock.
 	//
-	// A RELEASED bundle does not use it: its creation time is the RELEASE's
-	// (ReleasedAt), so the digest is a function of the render and the release
-	// and nothing that varies between runs. Using a wall clock here made every
-	// plan-only run of one render a new digest, a new registry push and a new
-	// ledger row, and left "the bundle that was planned" a different object
-	// from "the bundle that was promoted".
+	// A RELEASED bundle does not use it: its creation time is the RELEASE's,
+	// read from the env's ledger (bundleCreatedAt), so the digest is a
+	// function of the render and the release and nothing that varies between
+	// runs. Using a wall clock here made every plan-only run of one render a
+	// new digest, a new registry push and a new ledger row, and left "the
+	// bundle that was planned" a different object from "the bundle that was
+	// promoted".
 	Now time.Time
-	// ReleasedAt is when Release was cut. Resolved by writeEnvBundle from the
-	// env's ledger when the caller does not state it; the release's own
-	// timestamp is the only creation time that is the same on every run.
-	ReleasedAt time.Time
 	// errOut is where warnings go. nil means stderr.
 	errOut io.Writer
 }
@@ -262,9 +259,6 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 func bundleCreatedAt(ctx context.Context, projectDir, env string, in bundleBuildInputs) (time.Time, error) {
 	if in.Release == "" {
 		return in.Now, nil
-	}
-	if !in.ReleasedAt.IsZero() {
-		return in.ReleasedAt.UTC(), nil
 	}
 	ledger, err := ledgerFor(ctx, projectDir, env)
 	if err != nil {

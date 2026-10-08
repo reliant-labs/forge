@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -347,7 +348,14 @@ func runGoModTidyRoot(projectDir string) error {
 // through the checksums chokepoint, including the in-place reconcilers that
 // splice into compose.go / lifecycle.go.
 func runGoimportsOnGenerated(projectDir, modulePath string) error {
-	goimportsPath, err := exec.LookPath("goimports")
+	pinned, err := ensureCodegenTools(context.Background(), projectDir)
+	if err != nil {
+		return err
+	}
+	goimportsPath, ok := pinned.Path("goimports")
+	if !ok {
+		goimportsPath, err = exec.LookPath("goimports")
+	}
 	if err != nil {
 		fmt.Println("  ⚠️  goimports not found — skipping import formatting")
 		fmt.Println("     Install with: go install golang.org/x/tools/cmd/goimports@latest")

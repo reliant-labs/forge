@@ -38,6 +38,8 @@ const frontendTSPluginRange = "^2.5.0"
 //   - internal/cli/generate_buf.go writeDefaultBufGenYaml (runtime fallback)
 //   - internal/templates/project/Taskfile.yml.tmpl (preflight checks)
 //   - scripts/bootstrap.sh (devcontainer bootstrap)
+//   - internal/cli/generate_toolpins.go (generate pins each tool to the
+//     version resolveToolVersion reports, installing into a forge cache)
 var requiredProtoTools = []protoTool{
 	{
 		Binary:        "protoc-gen-go",

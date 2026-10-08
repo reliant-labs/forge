@@ -76,6 +76,9 @@ plugins:
 
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
+	if err := withPinnedTools(cmd, projectDir); err != nil {
+		return err
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

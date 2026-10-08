@@ -31,6 +31,9 @@ func runBufGenerateGo(projectDir string) error {
 	fmt.Println("🔨 Running buf generate (Go stubs)...")
 	cmd := exec.Command("buf", "generate")
 	cmd.Dir = projectDir
+	if err := withPinnedTools(cmd, projectDir); err != nil {
+		return err
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

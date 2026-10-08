@@ -140,15 +140,26 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 	// collapse onto one entry, and a prod promotion would read a digest that
 	// only ever existed in the dev registry. The host in the key keeps them
 	// distinct.
-	add := func(repository, digest string, platforms []string) {
+	//
+	// builtFrom is the checkout a ShellBuild ran in, when its state recorded
+	// one: the release keeps it beside the digest (minus the local path), so
+	// "which commit of the sibling is in this image" is answerable from the
+	// ledger alone.
+	add := func(repository, digest string, platforms []string, builtFrom *release.BuildSource) {
 		if repository == "" || digest == "" {
 			return
+		}
+		// Several services share one image (three run `reliant`); a state
+		// that recorded no checkout must not erase one that did.
+		if prev, ok := out[repository]; ok && builtFrom == nil && prev.Digests[release.SharedVariant] == digest {
+			builtFrom = prev.BuiltFrom
 		}
 		out[repository] = release.Artifact{
 			Kind:      release.KindOCI,
 			Mode:      release.ModeShared,
 			Digests:   map[string]string{release.SharedVariant: digest},
 			Platforms: platforms,
+			BuiltFrom: builtFrom,
 		}
 	}
 
@@ -159,7 +170,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 		if err != nil || st == nil {
 			continue
 		}
-		add(st.Image, st.Digest, st.Platforms)
+		add(st.Image, st.Digest, st.Platforms, nil)
 	}
 
 	// Per-service external-build states: build-<env>-<service>.json. Glob the
@@ -183,7 +194,7 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 			if err != nil || st == nil {
 				continue
 			}
-			add(st.Image, st.Digest, st.Platforms)
+			add(st.Image, st.Digest, st.Platforms, st.Source.ForRelease())
 		}
 	}
 

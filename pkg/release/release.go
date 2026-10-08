@@ -178,6 +178,28 @@ type Artifact struct {
 	// URI locates the artifact when name+version does not (a download URL,
 	// a non-default registry, or the registry an image was pushed to).
 	URI string `json:"uri,omitempty"`
+	// BuiltFrom is the git checkout the artifact's build command ran in, when
+	// that is a checkout forge can name — a ShellBuild's cwd. Informational
+	// provenance like Platforms, and NOT part of the identity: the digest
+	// names the bytes, this says where they were built.
+	BuiltFrom *BuildSource `json:"built_from,omitempty"`
+}
+
+// BuildSource is the checkout an artifact was built in: its repository, HEAD
+// and dirty flag at build time. Like [Provenance.Dirty] it is a claim the
+// building machine makes, recorded as evidence.
+//
+// It is distinct from [Source], which PINS a source-mode artifact (the commit
+// IS its identity). A BuildSource rides beside an image's digest and explains
+// it; changing it does not change what the release ships.
+type BuildSource struct {
+	// Repo is the canonical remote ("github.com/org/repo"); "" when the
+	// checkout had none.
+	Repo string `json:"repo,omitempty"`
+	// Commit is HEAD, full hex.
+	Commit string `json:"commit"`
+	// Dirty: the checkout had uncommitted changes when the build started.
+	Dirty bool `json:"dirty,omitempty"`
 }
 
 // Validate enforces the per-kind addressing rules. name is used only in the
@@ -250,6 +272,14 @@ func (a Artifact) Validate(name string) error {
 	if a.Mode == ModeSource && a.Kind != KindGit {
 		return bad("mode source is only for kind git")
 	}
+	if a.BuiltFrom != nil {
+		if a.Kind == KindGit {
+			return bad("a git artifact's commit is its source pin; it carries no built_from")
+		}
+		if !ValidObjectID(a.BuiltFrom.Commit) {
+			return bad("built_from commit %q is not a full git object id", a.BuiltFrom.Commit)
+		}
+	}
 	return nil
 }
 
@@ -264,9 +294,10 @@ func (a Artifact) SharedDigest() (string, bool) {
 	return d, ok && d != ""
 }
 
-// sameIdentity compares the fields that name the bytes. Platforms is
-// informational and deliberately excluded: re-stating a release with a
-// different platform list has not claimed different bytes.
+// sameIdentity compares the fields that name the bytes. Platforms and
+// BuiltFrom are informational and deliberately excluded: re-stating a release
+// with a different platform list, or the same digests built in another
+// checkout, has not claimed different bytes.
 func (a Artifact) sameIdentity(b Artifact) bool {
 	if a.Kind != b.Kind || a.Mode != b.Mode || a.Version != b.Version ||
 		a.Integrity != b.Integrity || a.URI != b.URI {

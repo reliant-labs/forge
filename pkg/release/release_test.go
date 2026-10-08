@@ -162,6 +162,45 @@ func TestPromotionKind_LegacyRollbackReadsAsPromote(t *testing.T) {
 	}
 }
 
+// BuiltFrom is where an image was built, not what it is: it must name a real
+// commit, a source-pinned artifact cannot carry one, and two releases with the
+// same digests are the same release whichever checkout built them.
+func TestArtifact_BuiltFrom(t *testing.T) {
+	commit := strings.Repeat("ab", 20)
+	built := image(digest("a"))
+	built.BuiltFrom = &BuildSource{Repo: "github.com/acme/sib", Commit: commit}
+	if err := built.Validate("sib"); err != nil {
+		t.Fatalf("an image with a full-commit built_from is valid: %v", err)
+	}
+
+	short := built
+	short.BuiltFrom = &BuildSource{Commit: commit[:12]}
+	if err := short.Validate("sib"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("an abbreviated built_from commit must be refused, got %v", err)
+	}
+
+	git := Artifact{Kind: KindGit, Mode: ModeSource, Source: &Source{Repo: "r", Ref: "v1", Commit: commit},
+		BuiltFrom: &BuildSource{Commit: commit}}
+	if err := git.Validate("web"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a git artifact's commit is its pin; built_from must be refused, got %v", err)
+	}
+
+	a := Release{Version: "v1", Artifacts: map[string]Artifact{"sib": built}}
+	b := Release{Version: "v1", Artifacts: map[string]Artifact{"sib": image(digest("a"))}}
+	if err := CheckRecut(a, b); err != nil {
+		t.Errorf("same digests, different built_from: an idempotent re-cut, got %v", err)
+	}
+
+	raw, err := json.Marshal(built)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Artifact
+	if err := json.Unmarshal(raw, &back); err != nil || back.BuiltFrom == nil || *back.BuiltFrom != *built.BuiltFrom {
+		t.Errorf("built_from must round-trip through the ledger's JSON: %s → %+v, %v", raw, back.BuiltFrom, err)
+	}
+}
+
 func TestPromotion_Validate(t *testing.T) {
 	good := Promotion{Env: "prod", Release: "v1", Kind: KindPromote, Resolved: map[string]string{"api": digest("a")}}
 	if err := good.Validate(); err != nil {

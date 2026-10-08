@@ -83,6 +83,13 @@ type wireSource struct {
 	Commit string `json:"commit,omitempty"`
 }
 
+// wireBuildSource is release.BuildSource: the checkout an image was built in.
+type wireBuildSource struct {
+	Repo   string `json:"repo,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	Dirty  bool   `json:"dirty,omitempty"`
+}
+
 // wireArtifact is one DeployArtifact: exactly one per (name, variant).
 type wireArtifact struct {
 	Name      string      `json:"name"`
@@ -95,6 +102,11 @@ type wireArtifact struct {
 	Mode      string      `json:"mode"`
 	Variant   string      `json:"variant"`
 	Source    *wireSource `json:"source,omitempty"`
+	// BuiltFrom is sent ahead of the control plane storing it: a server
+	// whose DeployArtifact has no built_from field discards it (Connect's
+	// JSON codec ignores unknown fields), and one that has it records it —
+	// so this side needs no change when the server gains it.
+	BuiltFrom *wireBuildSource `json:"builtFrom,omitempty"`
 }
 
 type wireRelease struct {
@@ -537,6 +549,10 @@ func releaseToWire(r release.Release) []wireArtifact {
 			s := wireSource(*a.Source)
 			base.Source = &s
 		}
+		if a.BuiltFrom != nil {
+			b := wireBuildSource(*a.BuiltFrom)
+			base.BuiltFrom = &b
+		}
 		if len(a.Digests) == 0 {
 			base.Variant = release.SharedVariant
 			out = append(out, base)
@@ -579,6 +595,10 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 			if row.Source != nil {
 				s := release.Source(*row.Source)
 				a.Source = &s
+			}
+			if row.BuiltFrom != nil {
+				b := release.BuildSource(*row.BuiltFrom)
+				a.BuiltFrom = &b
 			}
 		}
 		if row.Digest != "" {

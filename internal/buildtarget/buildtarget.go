@@ -335,6 +335,11 @@ type State struct {
 	// Platforms is the OS/arch set the pushed manifest advertises, captured
 	// alongside Digest. Informational; empty when the lookup failed.
 	Platforms []string `json:"platforms,omitempty"`
+	// Source is the git checkout the ShellBuild's command ran in — its HEAD
+	// and dirty flag when the command started. Nil when the cwd is not a git
+	// checkout, and on state an older forge wrote. A release cut from this
+	// state checks it against the commit the project pins (see Source).
+	Source *Source `json:"source,omitempty"`
 }
 
 // statePath returns the absolute path to the per-service build-state

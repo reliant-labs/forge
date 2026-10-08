@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A release refuses a sibling checkout that is not at the commit the
+  project pins.** A `ShellBuild` with `cwd = "../reliant"` built whatever that
+  checkout had on disk, so a release could record a days-old sibling image
+  while `go.mod` pinned a newer commit (prod release 20261007.165315). Every
+  `ShellBuild` now records the checkout it ran in — HEAD, dirty flag, origin,
+  module — in its build state, and a release carries it per artifact as
+  `built_from`. `forge env build <env> --release` (also `--plan`, `--no-build`
+  and a deploy that re-uses a release) refuses when an external checkout is
+  dirty or not at the commit its `go.mod` require or `forge.GitSource` ref
+  pins, before anything is built, and prints the `git -C <dir> checkout
+  --detach <commit>` that fixes it.
+
 - **Request factories seed parents in non-`public` schemas, and say why when they
   cannot.** `forge generate` warned `relation "users" does not exist` for every
   create-request factory in a project whose tables live in a named schema

@@ -17,7 +17,7 @@ const modLineOut = `/x/protoc-gen-go: go1.24.0
 
 const depLineOut = `/x/protoc-gen-go: go1.24.0
 	path	google.golang.org/protobuf/cmd/protoc-gen-go
-	mod	github.com/reliant-labs/reliant	(devel)	
+	mod	github.com/reliant-labs/reliant	(devel)
 	dep	google.golang.org/protobuf	v1.36.12	h1:def=
 	dep	golang.org/x/tools	v0.30.0	h1:ghi=
 `

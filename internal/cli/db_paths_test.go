@@ -29,8 +29,12 @@ func TestResolveMigrationsDir_AnchorsAtTheProjectRoot(t *testing.T) {
 	if got, want := resolveMigrationsDir("sql/migrations"), filepath.Join(proj, "sql", "migrations"); got != want {
 		t.Errorf("relative --dir = %q, want %q (project-relative, not CWD-relative)", got, want)
 	}
-	if got := resolveMigrationsDir("/abs/migrations"); got != "/abs/migrations" {
-		t.Errorf("absolute --dir = %q, want it untouched", got)
+	// Absolute for THIS platform: "/abs/migrations" has no volume, so on
+	// Windows it is not absolute (filepath.IsAbs) and rightly resolves
+	// against the project like any other relative path.
+	abs := filepath.Join(t.TempDir(), "abs", "migrations")
+	if got := resolveMigrationsDir(abs); got != abs {
+		t.Errorf("absolute --dir = %q, want it untouched (%q)", got, abs)
 	}
 	migDir := resolveMigrationsDir("")
 	if got, want := resolveMigrationFileArg(migDir, "20260101000000_x.up.sql"), filepath.Join(migDir, "20260101000000_x.up.sql"); got != want {

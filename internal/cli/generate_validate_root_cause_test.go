@@ -60,7 +60,9 @@ func TestRunGoBuildValidate_RootCauseQuotesFirstCompilerError(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"internal/handlers/invoices/invoice_ops.go:4:11: s.crudCreatePaymentOp undefined",
+		// Verbatim, so in the compiler's own spelling: go build prints the
+		// path with the platform separator (internal\handlers\... on Windows).
+		filepath.FromSlash("internal/handlers/invoices/invoice_ops.go") + ":4:11: s.crudCreatePaymentOp undefined",
 		"invoice_ops.go is hand-written",
 	} {
 		if !strings.Contains(rootCause, want) {

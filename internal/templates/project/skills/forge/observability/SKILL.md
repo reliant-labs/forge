@@ -1,364 +1,73 @@
 ---
 name: observability
-description: Observability — forge env status runtime checks, Grafana dashboards, querying logs/traces/metrics.
+description: Local ClickStack and Pyroscope observability for Forge projects.
 ---
 
 # Observability
 
-Every Forge project ships a full observability stack for the dev loop — Grafana LGTM (Grafana, Prometheus, Tempo, Loki, Pyroscope and an OTLP collector) as the `lgtm` service in `docker-compose.yml`. No external services needed.
+Fresh Forge service projects enable local observability by default. The generated dev
+KCL declaration projects application OTLP to the official, pinned ClickStack collector.
+The local Compose stack runs ClickHouse, MongoDB, HyperDX, the official ClickStack
+collector, Pyroscope, and profile-only Grafana Alloy.
 
-It is **opt-in**, because it is ~1 GB resident. One switch in `deploy/kcl/dev/main.k` turns it on:
+Applications know only `OTEL_EXPORTER_OTLP_ENDPOINT`; they do not know ClickHouse,
+HyperDX, MongoDB, or Pyroscope. Do not replace `clickhouse/clickstack-otel-collector`
+with vanilla `otelcol-contrib`: its HyperDX exporter owns the supported ClickHouse
+schemas. Alloy must collect only pprof profiles. It must not scrape Docker logs or
+remote-write metrics, which would duplicate ClickStack signals.
+
+The generated declaration is policy rather than a product-mode enum:
 
 ```kcl
-_observability = True
+_observability = {
+    enabled = True
+    endpoint = "auto" # or an explicit custom OTLP endpoint
+    profiles = {provider = "pyroscope"}
+}
 ```
 
-That one value does the three things that must agree for any data to arrive: it runs the `lgtm` compose service, has compose publish its OTLP gRPC port on loopback (`_otlp_port`, handed to compose as `OTLP_GRPC_PORT`), and points every host process's `OTEL_EXPORTER_OTLP_ENDPOINT` at that port. Run `forge env up dev` and the summary lists Grafana under **Compose services**, with the forge dashboards provisioned in its **Forge** folder.
+`endpoint="auto"` starts the local stack and projects its loopback collector endpoint.
+An explicit endpoint is the custom-OTLP escape hatch and starts no local backend.
+Browser replay SDK adoption is intentionally deferred: this declaration is the safe
+runtime configuration seam, but Forge does not claim replay works yet.
 
-`alloy` (also in the compose file) is a separate opt-in: it scrapes the containers on the compose network and ingests their Docker logs, mounting the Docker socket to do it — on a shared machine that is every container's logs, not just yours. The dev loop's own API runs on the host, so its logs are in `.forge/logs/dev/`, not Loki, unless you ship them.
-
-## forge env status — the runtime checks
-
-Verify the entire observability pipeline is working:
+## Runtime validation
 
 ```bash
-forge env status dev                    # Table + every runtime check
-forge env status dev --signal traces    # Check only traces
-forge env status dev --signal metrics   # Check only Prometheus
-forge env status dev --signal logs      # Check only Loki
-forge env status dev --signal profiles  # Check only profiling
-forge env status dev --signal app       # Check only /healthz + /readyz
-forge env status dev --json             # Machine-readable output
-forge env status dev --verbose          # Show evidence for passing checks
+forge env status dev --signal traces
+forge env status dev --signal metrics
+forge env status dev --signal logs
+forge env status dev --signal profiles
+forge env status dev --json --verbose
 ```
 
-Checks: compose infra running, app health endpoint, pprof endpoint (and that
-the process answering it IS the app), Prometheus holding the app's own metrics,
-Tempo traces ingested, Loki log streams present, Pyroscope profiles available,
-Delve.
+Logs, traces, and metrics checks query ClickHouse tables written by the collector;
+profiles checks Pyroscope. They report `UNDETERMINED` when a required endpoint cannot
+be discovered and warn when the stack is healthy but no app signal arrived.
 
-The Prometheus check passes only on series stamped with the app's service name
-(`job=<project>`). "Prometheus is up" is not the question: the bundled image
-scrapes its own collector, so `up` always has a target, and the check used to
-pass on a stack that received nothing from the app.
+HyperDX is an operator UI with a dynamic Compose port. Its dashboard and alert APIs
+are not a stable Forge contract, so phase 1 does not provision dashboards through an
+unproven API. Existing backend-neutral Grafana dashboard definitions remain generated
+inputs for a future Pyroscope/Grafana projection, not a ClickStack deployment feature.
 
-**These live on `forge env status`, not `forge doctor`.** They all need an
-ADDRESS, and only `forge env status <env>` resolves one — it renders the same
-KCL `forge env up` does and overlays the ports the live stack actually bound.
-`forge doctor` had to guess (it assumed :8080), so on a project serving on
-another port it printed a gray dash indistinguishable from "not applicable".
-`forge doctor` now answers only "is this PROJECT well-formed" and takes no
-`--env`.
+## Pins and footprint
 
-A check that cannot obtain the facts it needs reports **UNDETERMINED** (`?`),
-never a pass and never a skip. Three outcomes, not two.
+All Compose images use semantic tags plus immutable index digests. HyperDX and its
+collector are `2.40.0`; ClickHouse is `26.1-alpine`; MongoDB is `8.0.14-noble`;
+Pyroscope is `1.14.0`; Alloy is `v1.10.2`. The collector source is
+`hyperdxio/hyperdx@0846f3b2a9d320f83c35fdb36651a67be477f8e4` under
+`docker/otel-collector/` and `packages/otel-collector/` (MIT); verify its platform
+manifest when changing architecture.
 
-Run it after `forge env up dev` to verify the pipeline is healthy before
-investigating issues.
+Expect roughly 2–3 GiB resident memory plus persistent ClickHouse, MongoDB, and
+Pyroscope volumes in an idle local stack. MongoDB 5.0 from the upstream ClickStack
+Compose is EOL and is not production-suitable; Forge uses MongoDB 8.0.14 locally.
+A pinned HyperDX/Mongo compatibility test is required before either version changes.
 
-**The runtime checks verify the telemetry pipeline, NOT app-flow correctness.** They (like `forge env smoke`) are green when containers, endpoints, and signal ingestion are healthy — they can be green while the actual app flow is broken (e.g. a cross-cluster dial failing). To prove an app-flow invariant holds, use a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `task test:e2e`. They tell you observability works; they do not certify the app does.
+## Upgrade
 
-## Accessing Grafana
-
-Grafana's port is dynamically assigned. `forge env up dev` and
-`forge env status dev` list it under **Compose services** (`lgtm :3000`).
-
-Three dashboards are auto-provisioned, in the **Forge** folder:
-- **Application Overview** — request rate, error rate, latency percentiles,
-  requests by procedure, errors by code, and database query rate, latency and
-  connections
-- **Traces** — trace search, span rate and latency, from Tempo
-- **Logs** — log volume by level, errors and audit events, from Loki (empty
-  unless something ships logs there; see `alloy` above)
-
-They are files in `deploy/observability/grafana/dashboards/`, regenerated by
-`forge generate`; the provider that loads them is
-`deploy/observability/grafana/provisioning/dashboards.yaml`, mounted where the
-`grafana/otel-lgtm` image reads providers
-(`/otel-lgtm/grafana/conf/provisioning/dashboards/`).
-
-## Querying Logs (Loki)
-
-In Grafana → Explore → Loki, use LogQL:
-
-```
-{container=~".*app.*"} | json | level="error"
-{container=~".*app.*"} | json | procedure="/services.users.v1.UsersService/Create"
-{container=~".*app.*"} | json | trace_id="abc123"
-```
-
-Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`). Emit the same attribute keys from your own log sites so dashboards stay queryable.
-
-## Querying Traces (Tempo)
-
-In Grafana → Explore → Tempo, search by:
-- Service name (matches your project name)
-- Trace ID (from log lines — click a `trace_id` value to jump to the trace)
-- Duration range
-- Status code
-
-Trace IDs are automatically injected into every log line, connecting logs to traces.
-
-## Querying Metrics (Prometheus)
-
-In Grafana → Explore → Prometheus, use PromQL. The RPC edge is measured by
-the otelconnect server interceptor: `rpc_server_call_duration_seconds`
-(histogram, labels `rpc_method` — the full `pkg.Service/Method` — and
-`rpc_response_status_code`, `OK` or the upper-case Connect code such as
-`NOT_FOUND`). Every series the app exports carries `job="<project>"`:
-
-```
-sum by (rpc_method) (rate(rpc_server_call_duration_seconds_count{job="<project>"}[5m]))   # request rate per RPC
-rate(rpc_server_call_duration_seconds_count{rpc_response_status_code!="OK"}[5m])          # errors
-go_sql_connections_in_use{job="<project>"}                                                # DB pool
-rate(go_sql_query_timing_milliseconds_count[5m])                                          # DB queries by operation/table
-<pkg>_calls / <pkg>_errors / <pkg>_duration          # per-package in-process method metrics (component chain)
-```
-
-## In-process component observability (the middleware chain)
-
-Forge instruments three boundaries, so a request is observable end to end:
-
-1. **The RPC edge** — every Connect handler runs the interceptor chain built by
-   `observe.Chain(observe.Deps{…})` in `cmd/<bin>/cmd/serve.go` (recovery →
-   request-id → logging → tracing → metrics, then auth → audit → rate-limit,
-   with otelconnect). One span, one metric sample and one log record per RPC:
-   `rpc failed` for every failure, `rpc completed` for every success, and
-   `slow=true` on any success over 1s. Success logging can be SAMPLED — see
-   [Success-log sampling](#success-log-sampling) below. Tune the layer
-   through `observe.Deps.LogOptions` —
-   `observe.WithSuccessLevel(<svc>connect.<Svc><Method>Procedure, slog.LevelDebug)`
-   silences one poll, `observe.WithSuccessSampling(d)` fixes this layer's
-   sampling window, `observe.WithSlowThreshold(d)` moves the slow line.
-2. **The in-process component boundary** — every internal component→component
-   method call (a `contract.go` `Service`) gets one span, one metric sample
-   and one log record (every failure, every success unless sampling is on),
-   plus panic-recovery. This is the layer detailed below — the in-process
-   twin of the edge chain.
-3. **The ORM** — `pkg/orm` registers the bun `bunotel` query hook, so every DB
-   query becomes a child span.
-
-The middle layer used to be dark. forge **no longer** scaffolds a hand-written
-`observe.go` / `NewObserved` decorator that you extend by hand. Instead it
-generates a slim per-method decorator — `middleware_gen.go` (forge-owned,
-`// Code generated by forge. DO NOT EDIT.`, regenerated from the `Service`
-interface on every `forge generate` and hash-tracked exactly like its sibling
-`mock_gen.go`). Each generated wrapper method is a one-liner routing the inner
-call through a `*observe.ComponentChain` (via `chain.Around` for the
-`(T, error)` shape, `chain.Run` for the rest), so adding a method to the
-interface regenerates the wrapper — there is nothing to maintain by hand. The
-exported constructor is `New<Concrete>WithForgeMiddleware(inner Service)
-Service`, named after the constructor's concrete return type: the canonical
-`func New() Service { return &service{} }` yields `NewServiceWithForgeMiddleware`,
-and the composition site emits `pkg.NewServiceWithForgeMiddleware(pkg.New(...))`
-around your untouched `New`.
-
-### The owned seam: `observe_chain.go`
-
-You never touch the generated decorator. The chain it routes through is
-assembled in an OWNED, scaffold-once file next to `contract.go`:
-
-```go
-// observe_chain.go — yours: scaffolded once, never overwritten by forge.
-func newObserveChain() *observe.ComponentChain {
-    scope := "<module>/internal/<pkg>"
-    logger := slog.Default()
-    return observe.NewComponentChain(
-        observe.RecoverMiddleware(logger),                      // panic -> error, logged with stack
-        observe.TraceMiddleware(otel.Tracer(scope)),            // one span "<pkg>.<Method>" per call
-        observe.MetricsMiddleware(otel.Meter(scope), "<pkg>"),  // <pkg>.calls / .errors / .duration
-        observe.LogMiddleware(logger, slog.LevelDebug),         // every failure; every success (or a sample)
-    )
-}
-```
-
-Middlewares run outer→inner in the order listed; each is nil-safe (no configured
-tracer/meter degrades to pass-through), so a decorator wired in a test harness is
-always safe. This file is THE extension point:
-
-- **Add a layer** — implement `observe.ComponentMiddleware`
-  (`WrapComponent(ctx, method, next) error`) and append it (an in-process
-  timeout or rate-limit layer, say).
-- **Drop a layer** — delete its line (a nil entry is dropped too).
-- **Change the success-log level** — the `observe.LogMiddleware` argument.
-  Failures always log at Error; successes log at this level. The scaffolded
-  default is seeded from `observability.log_level` in forge.yaml (`debug` |
-  `info` | `warn` | `error`; default `debug`, so success stays quiet under a
-  production Info handler).
-- **Tune success logging** — every success is logged (see
-  [Success-log sampling](#success-log-sampling)); a call over 1s is always
-  logged with `slow=true`. Trailing options on `observe.LogMiddleware` change
-  that for this package:
-  `observe.WithSuccessLevel("<pkg>.<Method>", slog.LevelInfo)` for one method,
-  `observe.WithSuccessSampling(d)` to sample this package's successes
-  (`0` = every success),
-  `observe.WithSlowThreshold(d)` to move the slow line.
-
-The chain captures only method identity, duration, and error status — never
-arguments or results. It records `<pkg>.calls` / `<pkg>.errors` /
-`<pkg>.duration` (each tagged `method="<pkg>.<Method>"`) and one span named
-`<pkg>.<Method>` per call.
-
-### Success-log sampling
-
-Every successful call is logged by default — at the RPC edge and at every
-component boundary. That is what you want in dev, and in any process whose
-traffic you can afford to read. Where an access log's volume (which is the
-traffic's volume) outgrows its value — a frontend polling three RPCs every
-couple of seconds wrote 47k `rpc completed` lines in twelve hours of one dev
-stack — turn on sampling for that deployment:
-
-```kcl
-# deploy/kcl/<env>/config.k
-app_config: config_gen.AppConfig = {
-    log_success_sample_window = "1m"
-}
-```
-
-`log_success_sample_window` is declared in `proto/config/v1/config.proto`,
-so the config loader types and validates it, and it can come from any source
-the loader reads (`--log-success-sample-window`, `LOG_SUCCESS_SAMPLE_WINDOW`,
-a `--config` file). The scaffolded `serve.go` passes the loaded value to the
-RPC edge's logging interceptor:
-
-```go
-chainDeps := observe.Deps{
-    // ...
-    LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())},
-}
-```
-
-forge's `observe` package reads no environment — the window is only ever
-the one its caller passed. So an older project adopts it by adding the field
-to its AppConfig and that one `LogOptions` line to its owned `serve.go`; a
-server that is not forge-scaffolded passes `observe.WithSuccessSampling` in
-`DefaultMiddlewareDeps.LogOptions` from its own config.
-
-Sampled, each RPC procedure logs its first success, then at most one per
-window carrying `suppressed=<n>` — the successes that record stands for, so
-the rate survives in the log. Volume is bounded by the number of procedures,
-not by traffic. Never sampled, at any setting: failures (every one, with its
-error) and successes slower than 1s (`slow=true`).
-
-Component-call logs (`observe_chain.go`) default to DEBUG, so a production
-INFO handler already drops their successes. To sample one package's anyway,
-append `observe.WithSuccessSampling(d)` to its `observe.LogMiddleware`.
-
-`0` (or a negative window) logs every success. When a layer is given more
-than one `WithSuccessSampling`, the last one wins.
-
-### Opting in and out
-
-- **Opt in** — `// forge:constructor` on the `func New` doc comment. Scaffolds
-  stamp it by default, so a new component is born instrumented. (Presence of the
-  owned `observe_chain.go` seam also opts a package in, for backward
-  compatibility.)
-- **Opt a package out** — `// forge:no-observe` on the constructor (or the
-  package / contract-interface doc). No decorator is generated and the
-  composition site falls back to the unwrapped `pkg.New(...)`.
-- **Opt ONE method out** — `// forge:no-observe` on that interface method's doc
-  comment. The decorator still satisfies the interface, but that method
-  delegates straight to the inner impl, around the chain.
-- **Handler packages are never wrapped** — they return a concrete `*Service`
-  and otelconnect already owns the RPC edge; wrapping would change the
-  `Components` field type.
-
-### The forcing function: `enforce-component-observe`
-
-A wired component (a `Service` interface + a `New(Deps) Service` constructor)
-that makes NO observability decision — neither marker — is flagged by the
-`enforce-component-observe` lint: one aggregated ERROR naming every undecided
-component with an I/O-aware suggestion (deps that touch a DB/adapter/client/HTTP
-type are nudged toward `// forge:constructor`; a pure-compute component toward
-`// forge:no-observe`). Kill-switch: `config.enforce_component_observe: off` in
-forge.yaml (the sibling of `config.enforce_typed_access`).
-
-For a one-off child span or metric at a single call site (rather than a whole
-decorator), `observe.LogCall` / `observe.TraceCall` / `observe.NewCallMetrics`
-remain available.
-
-## Audit log (recipe)
-
-Every RPC already produces a structured audit record: the scaffold wires
-`fmw.AuditInterceptor(logger, middleware.ClaimsFromContext)` into the `Audit`
-field of `observe.Chain(observe.Deps{…})` in the generated `cmd serve.go`. That
-is slog-only — the record goes to your logs (queryable in Loki) with
-`log_type=audit`, message `audit.event`.
-
-For a **queryable, DB-persisted** audit trail (a compliance record you can page
-through, plus an admin `ListAuditEvents` RPC), there is **no pack to install**.
-The mechanical write-side is the versioned `forge/pkg/audit` library; the
-app-specific read-side (the table + the RPC) is code you own.
-
-1. **Own the `audit_log` table** with the normal entity flow — no bespoke
-   migration path:
-
-   ```bash
-   # declare `// forge:entity message AuditEvent` in the service proto, then:
-   forge scaffold
-   ```
-
-   Then edit the birth migration so the table matches what the library
-   store reads/writes (see `audit.Entry`): `id`, `timestamp`, `user_id`,
-   `email`, `procedure`, `peer_address`, `duration_ms`, `status`, `error_code`,
-   `error_message`, `metadata` (JSONB), `created_at`. Index `user_id`,
-   `procedure`, and `timestamp` for the query filters.
-
-2. **Wire the DB-backed interceptor** from the library — one line. Construct
-   the store and swap the base `Audit` field in `cmd serve.go`'s
-   `observe.Deps`:
-
-   ```go
-   import "github.com/reliant-labs/forge/pkg/audit"
-
-   store := audit.NewDBAuditStore(db)
-   chainDeps := observe.Deps{
-       // ...recovery/logging/tracing/metrics/auth/ratelimit as scaffolded...
-       Audit: audit.Interceptor(logger, middleware.ClaimsFromContext, store),
-   }
-   ```
-
-   `audit.Interceptor` logs to slog exactly as the base interceptor does AND
-   persists each event to the store off the request path (fire-and-forget, so
-   audit writes never add latency). A nil store falls back to slog-only. It is a
-   thin convenience over `fmw.AuditInterceptorWithSink(logger, claimsFrom, sink)`
-   — reach for that plus `audit.Sink(store, logger)` if you already hold a
-   custom sink.
-
-3. **Own the read-side `ListAuditEvents` RPC.** Add a proto service + handler
-   the normal way (`proto/audit/v1/…` + a handler package), and back the
-   handler with the SAME store so reads see the writes:
-
-   ```go
-   entries, err := store.Query(ctx, audit.Filter{
-       UserID: req.Msg.GetUserId(),  // filters are AND-combined
-       Since:  req.Msg.GetSince().AsTime(),
-       Limit:  int(req.Msg.GetLimit()), // <= 0 ⇒ default 100
-   })
-   ```
-
-   Audit logs enumerate who did what, so scope the read handler (restrict a
-   non-admin caller to their own `user_id` via `middleware.ClaimsFromContext`)
-   — an unscoped handler is a cross-user enumeration hole.
-
-## Outbound instrumentation
-
-- **Plain HTTP downstreams**: pass `infra.DefaultClient()` (providers.go) as
-  the adapter's `Deps.HTTPClient` — a fresh client over the shared
-  otelhttp-instrumented transport (client spans + W3C propagation + 30s
-  timeout). The compose site wires any `HTTPClient *http.Client` Deps field
-  to it automatically. If your providers.go predates `DefaultClient`, add the
-  method + the `httpBase = otelhttp.NewTransport(http.DefaultTransport)`
-  line from a fresh scaffold.
-- **Connect clients** (a service split out of the binary): build the stack
-  with `observe.NewClientStack` (forge/pkg/observe) — otelconnect client
-  interceptor, request-ID forwarding, timeout — then
-  `genconnect.NewXClient(stack.HTTPClient, baseURL, stack.ClientOptions...)`.
-
-## Rules
-
-- Run `forge env status dev` after `forge env up dev` to verify observability before investigating issues.
-- Grafana port is dynamically assigned — use `docker compose ps` or `forge env status dev -v` to find it.
-- The `alloy-config.alloy` and dashboard files are regenerated by `forge generate` — do not hand-edit.
-- Use the `logevents.go` helpers for structured log events — do not create ad-hoc attribute keys.
-- Trace IDs propagate automatically via OpenTelemetry context — no manual instrumentation needed.
+Projects containing legacy `_observability = True|False` retain a scaffold-once KCL
+file. Replace that boolean with the declaration above, then run
+`forge generate && forge env render dev`. Do not retain `lgtm` wiring: it points the
+application at an obsolete backend. See `docs/proposals/observability.md` for why
+profiles and Sentry remain parallel and why the official collector stays.

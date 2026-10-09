@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Local service scaffolds now use pinned ClickStack telemetry by default.** The generated dev stack runs ClickHouse, HyperDX, the official ClickStack collector, MongoDB 8.0, Pyroscope, and profile-only Alloy. Logs, traces, and metrics use OTLP through the ClickStack collector; profiles remain on Pyroscope. Legacy `_observability = True|False` projects must replace it with the generated typed declaration via `forge upgrade` before they render dev again. MongoDB 5.0 from upstream's historical Compose is EOL and is not used or production-suitable.
+
 ### Fixed
 
 - **`internal/pkgguard` catches every reference to a forbidden environment

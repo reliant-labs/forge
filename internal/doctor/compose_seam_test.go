@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -59,12 +60,17 @@ func TestComposeChecks_AskTheInjectedRunner(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var asked []string
+	var (
+		asked   []string
+		askedMu sync.Mutex
+	)
 	runner := func(_ context.Context, projectDir string, args ...string) ([]byte, error) {
 		if projectDir != dir {
 			t.Errorf("runner got project dir %q, want %q", projectDir, dir)
 		}
+		askedMu.Lock()
 		asked = append(asked, strings.Join(args, " "))
+		askedMu.Unlock()
 		if args[0] == "ps" {
 			return []byte(`{"Service":"postgres","State":"running","Health":"healthy"}` + "\n"), nil
 		}
@@ -86,8 +92,11 @@ func TestComposeChecks_AskTheInjectedRunner(t *testing.T) {
 	if compose == nil || compose.Status != StatusPass {
 		t.Fatalf("compose check through the injected runner: %+v, want pass", compose)
 	}
-	if len(asked) == 0 || asked[0] != "ps --format json" {
-		t.Errorf("runner calls: %q, want the first to be `ps --format json`", asked)
+	askedMu.Lock()
+	askedCopy := append([]string(nil), asked...)
+	askedMu.Unlock()
+	if len(askedCopy) == 0 || askedCopy[0] != "ps --format json" {
+		t.Errorf("runner calls: %q, want the first to be `ps --format json`", askedCopy)
 	}
 	if got := calls(); got != "" {
 		t.Errorf("an injected runner must be the only way to docker; the host's was asked:\n%s", got)

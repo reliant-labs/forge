@@ -109,23 +109,31 @@ _database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.Pro
 # `forge secret set --env {{.EnvName}} <KEY>` (value on stdin).
 _secret_store = forge.FileSecrets {path = "secrets/{{.EnvName}}.yaml"}
 
-# ── OBSERVABILITY — OPT-IN ─────────────────────────────────────────────────
-# True runs docker-compose.yml's `lgtm` (Grafana, Prometheus, Tempo, Loki,
-# Pyroscope and an OTLP collector) beside the stack, and points every host
-# process's OTLP export at it; `forge env up` then lists Grafana with the
-# other URLs, and the forge dashboards are provisioned in it. Off by default:
-# an LGTM stack is ~1 GB resident to look at a service in your terminal.
+# ── OBSERVABILITY ──────────────────────────────────────────────────────────
+# This typed declaration is policy, not a product-mode enum. Fresh projects
+# enable the local official ClickStack stack by default: ClickHouse, HyperDX,
+# Mongo and ClickStack's collector receive OTLP; Alloy sends profiles only to
+# a separate Pyroscope backend. Expected local footprint is roughly 2-3 GiB
+# RAM plus ClickHouse/Mongo/Pyroscope volumes; set enabled=False to opt out.
 #
-# One switch, because three things must agree: the compose service has to
-# RUN, it has to PUBLISH its OTLP port to this machine (the API is a host
-# process, not on the compose network), and every process has to EXPORT to
-# that port. The opt-in used to be "add the lgtm workload" alone, which ran
-# Grafana with nothing reaching it.
-_observability = False
+# endpoint=auto preserves the app boundary. Change it to an explicit OTLP
+# endpoint for a custom collector without asking application code to know the
+# backend. Browser replay SDK adoption is deliberately deferred to Reliant;
+# this declaration is the generated configuration seam.
+_observability = {
+    enabled = True
+    endpoint = "auto"
+    profiles = {provider = "pyroscope"}
+}
 
-# The collector's OTLP gRPC port on loopback: compose publishes it
-# (OTLP_GRPC_PORT, below) and the processes export to it, from this one value.
-_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp", 4317) if _observability else 0
+# `_observability = True|False` was the pre-ClickStack shape. Existing projects
+# must run `forge upgrade`: the upgrader emits this declaration or stops with
+# an actionable migration error, rather than silently retaining LGTM wiring.
+_observability_enabled = _observability.enabled
+
+# The official collector's OTLP gRPC port on loopback. One source of truth for
+# compose publication and host-process export.
+_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp", 4317) if _observability_enabled and _observability.endpoint == "auto" else 0
 
 # ---------------------------------------------------------------------------
 # Each workload's env here.
@@ -152,7 +160,7 @@ _env = lambda w: fw.Workload -> {str:} {
         PORT = str(_port_of(w.name))
         PPROF_ADDR = "127.0.0.1:${_pprof_port_of(w.name)}"
     } if w.kind in _LONG_RUNNING else {}
-    _telemetry = {OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:${_otlp_port}"} if _observability else {}
+    _telemetry = {OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:${_otlp_port}"} if _observability_enabled and _observability.endpoint == "auto" else {OTEL_EXPORTER_OTLP_ENDPOINT = _observability.endpoint} if _observability_enabled else {}
 {{- if .HasFrontend}}
     # NATIVE SIGN-IN's redirect URI, and where the server reaches the issuer.
     # Composed from the origins above, which this file owns.
@@ -268,19 +276,17 @@ _workloads = [
 {{.Bindings}}
 ]
 
-# The observability stack, when `_observability` (above) is on: compose
-# owns the container, and this hands it the OTLP port to publish.
-#
-# `alloy` (also in docker-compose.yml) is a further opt-in: it scrapes the
-# containers on the compose network and ingests their Docker logs, mounting
-# the Docker socket to do it — so on a shared machine it reads EVERY
-# container's logs, not just this project's. Add
-# `fw.Workload {name = "alloy", runtime = forge.OnCompose {service = "alloy"}}`
-# here to run it.
-_telemetry_workloads = [fw.Workload {
-    name = "lgtm"
-    runtime = forge.OnCompose {service = "lgtm", env = {"OTLP_GRPC_PORT" = str(_otlp_port)}}
-}] if _observability else []
+# Local ClickStack + Pyroscope. The collector is the stable OTLP boundary;
+# Alloy is profile-only, has no Docker socket, and cannot duplicate logs or
+# metrics. The custom-endpoint escape hatch starts no backend services.
+_telemetry_workloads = [
+    fw.Workload {name = "clickhouse", runtime = forge.OnCompose {service = "clickhouse"}},
+    fw.Workload {name = "mongo", runtime = forge.OnCompose {service = "mongo"}},
+    fw.Workload {name = "hyperdx", runtime = forge.OnCompose {service = "hyperdx"}},
+    fw.Workload {name = "otel-collector", runtime = forge.OnCompose {service = "otel-collector", env = {"OTLP_GRPC_PORT" = str(_otlp_port)}}},
+    fw.Workload {name = "pyroscope", runtime = forge.OnCompose {service = "pyroscope"}},
+    fw.Workload {name = "alloy", runtime = forge.OnCompose {service = "alloy"}},
+] if _observability_enabled and _observability.endpoint == "auto" else []
 
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"

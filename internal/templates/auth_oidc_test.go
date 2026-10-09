@@ -189,7 +189,7 @@ func TestDevCompose_NoAggregator(t *testing.T) {
 // loop.
 func TestDevCompose_DeclaredInfraIsWaitable(t *testing.T) {
 	cf := renderCompose(t)
-	for _, name := range []string{"postgres", "lgtm", "idp"} {
+	for _, name := range []string{"postgres", "otel-collector", "idp"} {
 		svc, ok := cf.Services[name]
 		if !ok {
 			t.Errorf("%s is not defined, but deploy/kcl/dev/main.k names it as a compose service", name)

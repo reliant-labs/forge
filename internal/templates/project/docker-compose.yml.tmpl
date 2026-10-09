@@ -47,7 +47,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_SERVICE_NAME: {{.ProjectName}}
       ENVIRONMENT: development
       LOG_LEVEL: debug
@@ -105,7 +105,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      lgtm:
+      otel-collector:
         condition: service_started
 {{- if .HasFrontend}}
       # required: false is LOAD-BEARING, not politeness. It is what lets
@@ -134,7 +134,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_SERVICE_NAME: {{.ProjectName}}
       ENVIRONMENT: development
     ports:
@@ -147,7 +147,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      lgtm:
+      otel-collector:
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
@@ -378,62 +378,110 @@ services:
       - {{.ProjectName}}-net
 {{- end}}
 
-  # Grafana Alloy — single collector for metrics, logs, and profiles.
-  # Scrapes app services on the docker network and forwards to the LGTM stack.
-  #
-  # No healthcheck, deliberately: nothing waits on Alloy being READY. It is
-  # a collector — the app does not dial it, and telemetry dropped in the
-  # first seconds of a dev session costs nothing. `docker compose up --wait`
-  # treats a service with no healthcheck as ready once it is running, so
-  # naming it in dev/main.k gets it started without gating anything on it.
-  # Give it a `healthcheck:` here if you ever do need to wait on it.
-  alloy:
-    image: grafana/alloy:latest
+  # Official ClickStack collector. Do not replace it with otelcol-contrib:
+  # ClickStack's collector owns the HyperDX-compatible ClickHouse schemas.
+  # Pin source: HyperDX 2.40.0 / hyperdxio/hyperdx@0846f3b2a9d320f83c35fdb36651a67be477f8e4,
+  # docker/otel-collector + packages/otel-collector (MIT). The pinned index
+  # digest is below; verify the amd64 manifest sha256:fcf8dc7e2f79a99833adfd54cafacfd7857a42d3c12039cbc57a454a70960bf7 before platform changes.
+  otel-collector:
+    image: clickhouse/clickstack-otel-collector:2.40.0@sha256:0e7dc29f8f6074afd106b96d53e5b98f1150e8882d926a20c03c6f680bd929ec
     restart: unless-stopped
-    volumes:
-      - ./deploy/alloy-config.alloy:/etc/alloy/config.alloy:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    command: ["run", "/etc/alloy/config.alloy"]
+    environment:
+      CLICKHOUSE_ENDPOINT: "tcp://clickhouse:9000?dial_timeout=10s"
+      HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE: default
+      HYPERDX_LOG_LEVEL: info
+      OPAMP_SERVER_URL: "http://hyperdx:4320"
+      HYPERDX_OTEL_EXPORTER_CREATE_LEGACY_SCHEMA: "true"
+    ports:
+      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"
     depends_on:
-      lgtm:
-        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     networks:
       - {{.ProjectName}}-net
 
-  # Grafana LGTM — all-in-one observability backend.
-  # Bundles: Grafana (dashboards), Prometheus (metrics), Tempo (traces),
-  #          Loki (logs), Pyroscope (continuous profiling), and an
-  #          OpenTelemetry Collector.
-  #
-  # The `app` container above pushes OTLP to lgtm:4317 on the docker network.
-  # The dev loop's API is a HOST process, not on that network, so OTLP gRPC
-  # is also published — on loopback, at the port deploy/kcl/dev/main.k
-  # declares and hands compose as OTLP_GRPC_PORT, the same number the API's
-  # OTEL_EXPORTER_OTLP_ENDPOINT is built from. Grafana takes a dynamic port.
-  lgtm:
-    image: grafana/otel-lgtm:latest
+  # ClickStack storage. Pin source: ClickHouse/clickstack main (2026-10-08).
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.1-alpine@sha256:369bd68942569e0effdf0aa68b4f844a74d97b73e281cf8012ce90e9865cc411
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "0:8123" # status checks query the official storage directly
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    networks:
+      - {{.ProjectName}}-net
+
+  # HyperDX needs Mongo for application state. MongoDB 5.0 in official
+  # ClickStack 2.19.0 Compose is EOL and is not production-suitable. Local
+  # Forge uses this pinned supported Mongo 8.0 image; the ClickStack upstream
+  # does not publish a compatibility matrix, so TestClickStackMongoCompatibility
+  # is the required follow-up gate before upgrading HyperDX or Mongo.
+  mongo:
+    image: mongo:8.0.14-noble@sha256:877fa303326645cd0e50a3833fce2f3c03d6eb4aac82c97a02e98879f51126d3
+    restart: unless-stopped
+    volumes:
+      - hyperdx_mongo_data:/data/db
+    networks:
+      - {{.ProjectName}}-net
+
+  # HyperDX UI/API. Pin source: HyperDX CODE_VERSION=2.40.0. The UI gets a
+  # dynamic host port; this is an operator UI,
+  # not an application dependency or generated dashboard API contract.
+  hyperdx:
+    image: docker.hyperdx.io/hyperdx/hyperdx:2.40.0@sha256:2fcba6813f5c935f6a3e04123ffe62ab3baf0c1cd53f279b1ec9e300343ddf60
     restart: unless-stopped
     ports:
-      - "0:3000"    # Grafana UI (dynamic host port)
-      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"    # OTLP gRPC, for host processes
+      - "0:8080"
     environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      FRONTEND_URL: http://localhost:8080
+      HYPERDX_API_KEY: local-forge-development-key
+      HYPERDX_API_PORT: 8000
+      HYPERDX_APP_PORT: 8080
+      HYPERDX_APP_URL: http://localhost
+      HYPERDX_LOG_LEVEL: info
+      MINER_API_URL: "http://miner:5123"
+      MONGO_URI: "mongodb://mongo:27017/hyperdx"
+      SERVER_URL: http://127.0.0.1:8000
+      OPAMP_PORT: 4320
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTEL_SERVICE_NAME: hdx-oss-app
+      DEFAULT_CONNECTIONS: '[{"name":"Local ClickHouse","host":"http://clickhouse:8123","username":"default","password":""}]'
+    depends_on:
+      clickhouse:
+        condition: service_started
+      mongo:
+        condition: service_started
+    networks:
+      - {{.ProjectName}}-net
+
+  # Profiles are intentionally separate: ClickStack does not provide a proven
+  # profiles backend. Alloy sends only pprof profiles to this pinned backend.
+  pyroscope:
+    image: grafana/pyroscope:1.14.0@sha256:0f63959ffcf217e7046d8f7a3d20cf6909f2924f885fc2f0eec58f87f9acf749
+    restart: unless-stopped
+    command: ["-target=all"]
     volumes:
-      - lgtm_data:/data
-      - ./deploy/observability/grafana/dashboards:/grafana/dashboards
-      # This image runs Grafana from /otel-lgtm/grafana on its default config,
-      # so dashboard providers are read from conf/provisioning/dashboards
-      # beneath it — /etc/grafana/provisioning is never read, and a mount
-      # there loads nothing. One FILE, beside the image's own providers
-      # rather than mounted over them.
-      - ./deploy/observability/grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/forge.yaml:ro
-    healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/ready"]
-      interval: 5s
-      timeout: 1s
-      retries: 30
-      start_period: 30s
+      - pyroscope_data:/var/lib/pyroscope
+    networks:
+      - {{.ProjectName}}-net
+
+  alloy:
+    image: grafana/alloy:v1.10.2@sha256:bcf27f18c4402869af112fb39e35e1db3804a404686f4caa20bdf77814219223
+    restart: unless-stopped
+    volumes:
+      - ./deploy/alloy-config.alloy:/etc/alloy/config.alloy:ro
+    command: ["run", "/etc/alloy/config.alloy"]
+    depends_on:
+      pyroscope:
+        condition: service_started
     networks:
       - {{.ProjectName}}-net
 
@@ -441,7 +489,10 @@ volumes:
   postgres_data:
   go_mod_cache:
   go_build_cache:
-  lgtm_data:
+  clickhouse_data:
+  clickhouse_logs:
+  hyperdx_mongo_data:
+  pyroscope_data:
 {{- if .HasFrontend}}
   idp_db_data:
 {{- end}}

@@ -504,6 +504,10 @@ func describeRepo(src *buildtarget.Source) string {
 
 // gitDirArg is how a fix command names dir: relative to where forge was run
 // when that is shorter, so `git -C ../reliant …` can be pasted as printed.
+//
+// Forward slashes on every OS. git accepts them on Windows, and in every
+// shell there, whereas `..\reliant` needs quoting in a POSIX shell and the
+// quoting that works in one Windows shell does not work in another.
 func gitDirArg(dir string) string {
 	out := dir
 	if wd, err := os.Getwd(); err == nil {
@@ -514,6 +518,7 @@ func gitDirArg(dir string) string {
 			out = rel
 		}
 	}
+	out = filepath.ToSlash(out)
 	if strings.ContainsAny(out, " \t'\"$`\\") {
 		return "'" + strings.ReplaceAll(out, "'", `'\''`) + "'"
 	}

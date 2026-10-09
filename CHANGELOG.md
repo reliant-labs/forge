@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `built_from`. `forge env build <env> --release` (also `--plan`, `--no-build`
   and a deploy that re-uses a release) refuses when an external checkout is
   dirty or not at the commit its `go.mod` require or `forge.GitSource` ref
-  pins, before anything is built, and prints the `git -C <dir> checkout
-  --detach <commit>` that fixes it.
+  pins, before anything is built, and prints the fix:
+  `git -C <dir> checkout --detach <commit>`.
 
 - **Request factories seed parents in non-`public` schemas, and say why when they
   cannot.** `forge generate` warned `relation "users" does not exist` for every

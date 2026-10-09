@@ -270,8 +270,8 @@ func modulePath(dir string) string {
 }
 
 // DeliveredRenderMarker is the phrase every harness-delivered agent skill
-// carries in its banner (see internal/cli skillGeneratedBanner, which
-// renders it from this constant so the two cannot drift).
+// carries in its banner (rendered by older forge versions, which
+// are swept on generate).
 //
 // A delivered skill is NOT project-generated code: it is a render of the
 // skill catalog embedded in the forge binary, stamped with the rendering

@@ -137,7 +137,6 @@ func newSkillCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newSkillListCmd())
 	cmd.AddCommand(newSkillLoadCmd())
-	cmd.AddCommand(newSkillWriteCmd())
 	cmd.AddCommand(newSkillSearchCmd())
 	return cmdutil.StrictGroup(cmd)
 }

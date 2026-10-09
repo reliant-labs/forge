@@ -27,22 +27,12 @@ import (
 	"testing"
 )
 
-// The agent-memory files forge writes at project birth. There are TWO
-// templates, not one, and the distinction is easy to get wrong:
-//
-//   - reliant.md.tmpl is the TOP-LEVEL memory file, written to CLAUDE.md /
-//     AGENTS.md / .cursorrules / .github/copilot-instructions.md — and
-//     SKIPPED entirely for `--harness=reliant`, which is the default.
-//   - reliant-reliant.md.tmpl is written to .reliant/reliant.md on EVERY
-//     scaffold regardless of harness.
-//
-// So a note added only to the first one is absent from a default
-// `forge project new`, which is the exact hole this file exists to close —
-// and the hole it originally shipped with. Both are guarded.
-const (
-	memoryTemplate        = "reliant.md.tmpl"
-	reliantMemoryTemplate = "reliant-reliant.md.tmpl"
-)
+// The agent-memory template forge ships is reliant.md.tmpl. For
+// `--harness=reliant` (the default) Reliant renders it in-memory at session
+// start (forgecli.RenderProjectMemory) and no file is written; for the other
+// harnesses it is written to CLAUDE.md / AGENTS.md / .cursorrules /
+// .github/copilot-instructions.md. Either way it is the one memory channel.
+const memoryTemplate = "reliant.md.tmpl"
 
 // starterCodeSources are the places the note must appear, and the reason
 // each one matters. A reader arrives at exactly one of them depending on
@@ -54,12 +44,6 @@ func starterCodeSources() []struct{ path, why string } {
 			why: "the top-level agent-memory file (CLAUDE.md / AGENTS.md / .cursorrules), auto-loaded into " +
 				"every session. `forge project new` also prints this guidance, but agents habitually " +
 				"redirect that stdout to /dev/null — this file is the channel that survives",
-		},
-		{
-			path: reliantMemoryTemplate,
-			why: "the .reliant/reliant.md memory file, which is written on EVERY scaffold including the " +
-				"default --harness=reliant (where the top-level file above is deliberately skipped). " +
-				"A note only in reliant.md.tmpl is invisible to a plain `forge project new`",
 		},
 		{
 			path: "skills/forge/SKILL.md",

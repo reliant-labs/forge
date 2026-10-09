@@ -166,7 +166,7 @@ func tier1ExtensionPointHint(relPath string) string {
 			"hand-written pages and components alongside them are yours and are never overwritten"
 	}
 	if strings.HasPrefix(rel, ".claude/skills/") || strings.HasPrefix(rel, "deploy/") {
-		return "edit the upstream source instead — skills ship from forge and deploy manifests are rendered from forge.yaml + KCL"
+		return "edit the upstream source instead — forge no longer delivers skills (a leftover copy is retired on generate) and deploy manifests are rendered from forge.yaml + KCL"
 	}
 
 	// ── Anything else ─────────────────────────────────────────────────

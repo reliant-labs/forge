@@ -348,10 +348,9 @@ set — check there before hand-rolling.
 
 ## Skills come from the binary
 
-`forge skill load <name>` always matches the forge you are running. Anything on
-disk — `.claude/skills/`, a harness-preloaded copy — is a render from whenever
-`forge generate` last ran here, and can be older. **When they disagree,
-`forge skill load` wins.**
+`forge skill load <name>` always matches the forge you are running. Forge never
+writes skill files into a project. Non-reliant harnesses: add your own skill
+that tells the agent to run `forge skill search <query>` / `forge skill load <name>`.
 
 ```bash
 forge skill list              # the catalog: every skill, scope, one-line description

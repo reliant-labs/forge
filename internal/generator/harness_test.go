@@ -51,24 +51,3 @@ func TestHarnessMemoryFilePath(t *testing.T) {
 		})
 	}
 }
-
-func TestHarnessSkillsDir(t *testing.T) {
-	tests := []struct {
-		harness Harness
-		want    string
-	}{
-		{HarnessClaude, ".claude/skills"},
-		{HarnessReliant, ""},
-		{HarnessCursor, ""},
-		{HarnessCopilot, ""},
-		{HarnessCodex, ""},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.harness), func(t *testing.T) {
-			got := tt.harness.SkillsDir()
-			if got != tt.want {
-				t.Fatalf("Harness(%q).SkillsDir() = %q, want %q", tt.harness, got, tt.want)
-			}
-		})
-	}
-}

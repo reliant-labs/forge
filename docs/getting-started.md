@@ -41,11 +41,11 @@ configure, Forge derives from the shape of the project — the database, CI,
 lint, contracts and the feature set are all inferred. You add a key only to
 _override_ a default.
 
-**Your project already knows its own conventions.** A `.claude/skills/`
-directory was written with 81 skills covering architecture, proto, db, api,
-testing, deploy and more. If you work with an LLM agent, it now has the same
-playbook you do. (The authoritative copy lives in the binary — see
-[Working with an agent](#7-working-with-an-agent).)
+**Your project already knows its own conventions.** The forge binary
+ships ~80 skills covering architecture, proto, db, api, testing, deploy and
+more (`forge skill list`). Reliant reads them automatically; other agents can
+be told to run `forge skill search <query>`. Nothing is written into your tree
+— see [Working with an agent](#7-working-with-an-agent).
 
 ## 2. Add a service
 
@@ -306,7 +306,7 @@ There are really three categories, not two.
 
 | Category                     | Examples                                                                                                                                                     | Behavior                                  |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
-| **Regenerated every run**    | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`, and `.claude/skills/**` on `--harness claude`                                | Overwritten. Never edit.                  |
+| **Regenerated every run**    | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`                                                                                | Overwritten. Never edit.                  |
 | **Written once, then yours** | `internal/app/compose.go`, `internal/app/auth.go`, `db/migrations/*.sql`, `internal/db/<entity>_repo_ext.go`, `deploy/kcl/<env>/config.k`                    | Forge writes if absent, then leaves alone |
 | **Purely yours**             | handler bodies (`internal/handlers/<svc>/rpc_<name>.go`), a domain package's `internal/<name>/contract.go`, `internal/app/providers.go`, `cmd/<bin>/main.go` | Forge never writes these                  |
 

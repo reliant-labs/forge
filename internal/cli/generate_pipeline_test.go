@@ -102,7 +102,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"entity-aware seed data",
 		"frontend mocks + transport",
 		"repoint renamed *_gen frontend imports",
-		"agent skills (.claude/skills)",
+		"retire delivered agent skills",
 		"go mod tidy (root)",
 		"goimports on generated Go",
 		"cleanup stale codegen",

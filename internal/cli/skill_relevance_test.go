@@ -193,21 +193,3 @@ func TestMigrationSkillStillLoadableByPath(t *testing.T) {
 		t.Error("loaded migration skill body looks wrong")
 	}
 }
-
-// TestWriteSkillsSkipsMigrationsByDefault verifies bulk export honors the
-// relevance gate and the opt-in restores it.
-func TestWriteSkillsSkipsMigrationsByDefault(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := WriteSkills(dir, SkillWriteStyleForge, SkillAudienceAll); err != nil {
-		t.Fatalf("WriteSkills: %v", err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read export dir: %v", err)
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "migrations-") {
-			t.Errorf("default WriteSkills exported a migration skill: %s", e.Name())
-		}
-	}
-}

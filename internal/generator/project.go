@@ -44,7 +44,7 @@ type ProjectGenerator struct {
 	FrontendWorkspaces bool
 	GoVersionOverride  string                // if set, use this Go version instead of detecting
 	Features           config.FeaturesConfig // feature flags for generation
-	Harness            Harness               // AI harness (default: reliant) — controls memory file path and skill emission
+	Harness            Harness               // AI harness (default: reliant) — controls memory file path
 	// BuildVersionVar mirrors forge.yaml build.version_var: an additional
 	// `-ldflags -X` target the Dockerfile stamps with the build version.
 	// Empty at scaffold time (a fresh forge.yaml has no build: block), so

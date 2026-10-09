@@ -24,7 +24,7 @@ import (
 //     .reliant/project.json, .reliant/README.md.
 //
 //   - User-owned (written only if absent, never touched if present):
-//     <memory-file>, .reliant/reliant.md, .mcp.json, .mcp.json.example.
+//     <memory-file>, .mcp.json, .mcp.json.example.
 //
 // Skills and conventions are served via `forge skill list/load` from embedded
 // templates — no files are written to disk for them.
@@ -46,12 +46,6 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 		Name string
 		CLI  string
 	}{Name: g.Name, CLI: cliName()}
-
-	// User-owned .reliant/reliant.md — project memory file. Write only if absent.
-	// This is always generated regardless of --harness (forge's own memory).
-	if err := writeIfAbsent(filepath.Join(reliantDir, "reliant.md"), "reliant-reliant.md.tmpl", templateData); err != nil {
-		return fmt.Errorf("failed to write .reliant/reliant.md: %w", err)
-	}
 
 	// User-owned top-level memory file — path depends on --harness.
 	// Skipped for the reliant harness: reliant loads the framework

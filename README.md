@@ -534,9 +534,10 @@ forge skill search <term>   # find one by keyword
 ```
 
 Skills are embedded **in the binary**, so `forge skill load` always matches the
-Forge you are running. A copy on disk (`.claude/skills/`, a harness preload) is
-a render from whenever `forge generate` last ran. When they disagree,
-`forge skill load` wins.
+Forge you are running. Forge never writes skill files into your project.
+Reliant reads them from the binary automatically; for any other harness
+(claude, cursor, copilot, codex), write your own skill or instruction telling
+the agent to run `forge skill search <query>` and `forge skill load <name>`.
 
 `reliant.md` at the repo root captures the critical rules and testing tiers in
 brief.

@@ -17,11 +17,13 @@ package cli
 //
 // So, in order:
 //
-//  1. BUILD at the current checkout, by exactly `forge env build`'s path —
-//     images, static artifacts, and F-DECL's shape recording — and PUSH.
-//  2. CUT a release under the auto-version rule, reusing one whose provenance
-//     tree matches this checkout (deploy_autoversion.go), so a retried deploy
-//     never cuts twice.
+//  1. CHOOSE: reuse a release whose recorded provenance matches this checkout
+//     and which still covers the env (deploy_autoversion.go) — then nothing
+//     is built or cut, so a retried deploy never builds or cuts twice.
+//     Otherwise:
+//  2. BUILD at the current checkout, by exactly `forge env build`'s path —
+//     images, static artifacts, and F-DECL's shape recording — PUSH, and CUT
+//     a release under the auto-version rule.
 //  3. PLAN with the existing promote-plan machinery, and print it.
 //  4. CONFIRM (deploy_confirm.go) — nothing is written until somebody says yes.
 //  5. PROMOTE, apply and wait, by the same path `forge env deploy <env> <v>`
@@ -111,6 +113,22 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 	// stranding the publish on a spelling this change removes.
 	p := f.promote
 	p.version = cut.Version
+	if cut.Reused {
+		// A reused release was built by no step of THIS deploy, so it gets
+		// what `forge env deploy <env> <version>` gives an existing release:
+		// the hosted platform guard, and a bundle sealed over the release's
+		// OWN pins. For a hosted ledger ensureHostedReleaseBundle below
+		// writes it; any other ledger is written here, because no build
+		// wrote it on the way.
+		if err := checkReleaseHostedPlatforms(ctx, progressWriter(f.jsonOut), projectDir, envName, cut.Version, ledger.Releases); err != nil {
+			return err
+		}
+		if !ledger.Hosted {
+			if err := writeReleaseBundle(ctx, projectDir, envName, cut.Version, ledger, p.rerecordBundle, progressWriter(f.jsonOut)); err != nil {
+				return err
+			}
+		}
+	}
 	if err := ensureHostedReleaseBundle(ctx, projectDir, envName, cut.Version, ledger, p.rerecordBundle, progressWriter(f.jsonOut)); err != nil {
 		return err
 	}
@@ -164,39 +182,32 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 // deployCutResult is the release a no-version deploy will promote.
 type deployCutResult struct {
 	Version string
-	// Reused is true when an existing release's provenance tree matched
-	// this checkout, so nothing was cut.
+	// Reused is true when an existing release's recorded provenance matched
+	// this checkout and it still covers the env, so nothing was built or
+	// cut.
 	Reused bool
 }
 
-// buildAndCutForDeploy runs the build-and-cut half: resolve the provenance,
-// reuse or name a version, build and push by `forge env build`'s own path,
-// then cut.
+// buildAndCutForDeploy runs the choose-build-cut half: decide from the
+// checkout's provenance whether a release already holds it, and when none
+// does, build and push by `forge env build`'s own path and cut.
 //
-// THE REUSE LOOKUP HAPPENS BEFORE THE BUILD, and the build still runs. Those
-// are two different questions: the lookup decides whether a new VERSION is
-// needed, while the build decides whether the images are present and pushed.
-// Skipping the build on a reuse would be wrong — the registry may have
-// expired the images under a retention window, the local state may be from a
-// different checkout — and the build is content-addressed anyway, so a
-// re-push of identical bytes is a no-op that resolves the same digests.
+// A REUSED RELEASE IS NOT REBUILT. chooseDeployRelease asks the registry for
+// every image the release pins, which answers "are the bytes still there"
+// without producing new ones; a rebuild would (see its comment — 2026-10-09,
+// prod). The choice is printed first, either way.
 func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f deployCmdFlags, ledger envLedger) (deployCutResult, error) {
-	prov := deployProvenance(ctx, projectDir)
-
-	reusable, lookupErr := reusableReleaseForTree(ctx, ledger.Releases, prov.Tree)
-	if lookupErr != nil {
-		// Not fatal: "we could not look" means "cut a new one", and
-		// failing a deploy because a list call hiccuped would turn an
-		// optimisation into an outage.
-		fmt.Printf("[deploy] Note: could not check for an existing release of this tree (%v); cutting a new version\n", lookupErr)
-	}
-
-	version := autoVersionFor(prov, time.Now())
-	reused := false
-	if reusable != nil {
-		version = reusable.Version
-		reused = true
-		printAutoVersionReuse(*reusable)
+	choice := chooseDeployRelease(ctx, deployReuseQuery{
+		ProjectDir:    projectDir,
+		Env:           envName,
+		Provenance:    captureReleaseProvenance(ctx, projectDir),
+		RenderOptions: f.renderOptions,
+		Releases:      ledger.Releases,
+		Now:           time.Now(),
+	})
+	choice.announce(os.Stdout, envName)
+	if choice.Reuse != nil {
+		return deployCutResult{Version: choice.Reuse.Version, Reused: true}, nil
 	}
 
 	// The BUILD, by `forge env build <env> --release <version>`'s own path:
@@ -230,41 +241,16 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		pushIfDeclared: true,
 		// The deploy ran the capacity pre-flight before it got here.
 		capacityChecked: true,
-		release:         version,
+		release:         choice.Version,
 		targetArch:      f.targetArch,
 		targets:         f.targets,
 		run:             f.promote.run,
 	}
-	if reused {
-		// A reused version must not be RE-CUT with a different artifact
-		// set: the ledger would refuse it as a conflict, which is correct
-		// but reads as a failure of the deploy rather than of the re-cut.
-		// The build still runs and still pushes; only the cut is skipped.
-		opts.release = ""
-		// The bundle still names the version being deployed. Only the
-		// CUT is skipped; a bundle sealed with release "" would be an
-		// unreleased bundle, and step 2 of the deploy could not then
-		// resolve the bundle for (env, version).
-		//
-		// pushIfDeclared above already covers the push, so nothing is
-		// re-stated here: main's shape pushes what the env declares and
-		// lets an env with nothing to push reach the cut.
-		opts.bundleRelease = version
-	}
 	if err := runDeployBuild(ctx, opts); err != nil {
 		return deployCutResult{}, fmt.Errorf("build env %s for deploy: %w", envName, err)
 	}
-	if reused {
-		return deployCutResult{Version: version, Reused: true}, nil
-	}
-	return deployCutResult{Version: version}, nil
+	return deployCutResult{Version: choice.Version}, nil
 }
-
-// deployProvenance is captureBuildProvenance, as a var for the same reason
-// runDeployBuild is one: a test's t.TempDir() is not a git repository, so the
-// real capture reports no tree — and "no tree" is F-16's never-reuse path,
-// which is the opposite of what a reuse test needs to exercise.
-var deployProvenance = captureBuildProvenance
 
 // runDeployBuild is runBuild, as a var so a test can state the build's
 // outcome instead of needing a toolchain, a registry and a docker daemon.

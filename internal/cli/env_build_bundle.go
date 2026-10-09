@@ -732,6 +732,20 @@ func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version str
 	// idempotent — a bundle is content-addressed, a re-push of existing
 	// blobs is a no-op and a re-record of the same digest returns the row —
 	// so the cost of not trusting the local row is one render.
+	return writeReleaseBundle(ctx, projectDir, env, version, ledger, rerecord, errOut)
+}
+
+// writeReleaseBundle renders env's bundle pinned to the digests and sources
+// release version RECORDS — not to whatever this machine last built — and
+// writes and records it where env's ledger says. Idempotent: a release whose
+// bundle of record matches this render reuses that bundle.
+//
+// Its callers are the two deploys that build nothing: a named version
+// (through ensureHostedReleaseBundle) and a no-version deploy that reuses an
+// existing release (deploy_all.go). Both must seal the bundle over the
+// release's pins, because the build state on this machine may belong to a
+// different build entirely.
+func writeReleaseBundle(ctx context.Context, projectDir, env, version string, ledger envLedger, rerecord bool, errOut io.Writer) error {
 	rel, err := ledger.Releases.Get(ctx, version)
 	if err != nil || rel == nil {
 		return nil

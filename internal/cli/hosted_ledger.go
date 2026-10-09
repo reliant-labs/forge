@@ -120,6 +120,18 @@ type wireRelease struct {
 	CreatedAt       time.Time      `json:"createdAt"`
 	// Run is the CI run that cut this release (DeployRelease.run, tag 9).
 	Run *wireRun `json:"run,omitempty"`
+	// Provenance is DeployRelease.provenance (tag 10): the tree hash, forge
+	// version and checkout the release was cut from — what Cut sent, stored
+	// and returned by the control plane.
+	//
+	// READ BACK, NOT ONLY WRITTEN. A no-version `forge env deploy` reuses a
+	// release whose provenance matches the checkout (chooseDeployRelease),
+	// and it finds that release through List. Before this field existed
+	// every release read from a control plane came back with no provenance,
+	// so the lookup never matched: on 2026-10-09 a deploy of prod, in the
+	// same clean checkout `forge env build prod --release` had cut from
+	// minutes earlier, rebuilt every image and named a new release.
+	Provenance *wireProvenance `json:"provenance,omitempty"`
 }
 
 // wireRun is controlplane.v1.DeployRun: the id that joins a release, its
@@ -584,6 +596,15 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 		CreatedBy: w.CreatedByUserID,
 		Artifacts: map[string]release.Artifact{},
 		Run:       runFromWire(w.Run),
+	}
+	// A provenance that does not validate is DROPPED, not fatal. The control
+	// plane validates provenance with forge's own rule before storing it, so
+	// this is unreachable in practice — but List feeds every promote's
+	// direction logic, and one malformed historical row must not make the
+	// whole ledger unreadable. A release with no provenance is simply never
+	// matched for reuse, which is the safe reading of "not known".
+	if prov, err := provenanceFromWire(w.Provenance); err == nil {
+		r.Provenance = prov
 	}
 	for _, row := range w.Artifacts {
 		a, seen := r.Artifacts[row.Name]

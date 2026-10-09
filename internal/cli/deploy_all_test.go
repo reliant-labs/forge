@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -46,30 +47,54 @@ func deployAllProject(t *testing.T) string {
 // reuse tests exercise.
 var deployTestTree = strings.Repeat("a", 40)
 
+// deployTestForge is the forge these tests' checkout is built by.
+const deployTestForge = "v0.1.44-0.20261009203931-bc24a9963fd6"
+
+// deployTestImage is the one image env prod declares, keyed — as every image
+// forge builds is — by its full repository.
+const deployTestImage = "registry.test/acme/api"
+
+// deployTestEnvRender is env prod's render: one cluster workload whose image
+// forge builds.
+const deployTestEnvRender = `{"output":{"workloads":[{"name":"api","kind":"service","image":"` + deployTestImage + `",` +
+	`"build":{"type":"go","cmd":"./cmd/api"},"runtime":{"type":"cluster","cluster":"k3d-dev","namespace":"dev"},"spec":{"kind":"service"}}]}}`
+
+// deployTestProvenance is the checkout these tests deploy: clean, hashed, and
+// built by deployTestForge.
+func deployTestProvenance() release.Provenance {
+	return release.Provenance{Commit: strings.Repeat("c", 40), Tree: deployTestTree, ForgeVersion: deployTestForge}
+}
+
+// stubDeployCheckout states what a no-version deploy reads from the world
+// before it builds: the checkout's provenance, the env's render, and a
+// registry. The registry serves every image; a test about an expired one
+// overrides releaseImageResolves after this.
+func stubDeployCheckout(t *testing.T, prov release.Provenance, render string) {
+	t.Helper()
+	prevProv, prevResolves := captureReleaseProvenance, releaseImageResolves
+	captureReleaseProvenance = func(context.Context, string) release.Provenance { return prov }
+	releaseImageResolves = func(context.Context, string) (bool, error) { return true, nil }
+	t.Cleanup(func() { captureReleaseProvenance, releaseImageResolves = prevProv, prevResolves })
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, render))
+}
+
 // stubDeployBuild replaces the build with a recorder that cuts the release
-// the deploy asked for, exactly as the real `--release` build does, and
-// states the checkout's provenance. It returns a pointer to the call log.
+// the deploy asked for, recording the checkout's provenance through the same
+// seam the real cut does (captureReleaseProvenance). It returns a pointer to
+// the call log.
 func stubDeployBuild(t *testing.T, dir string, artifacts map[string]string) *[]buildOptions {
 	t.Helper()
-	prevProv := deployProvenance
-	deployProvenance = func(context.Context, string) release.Provenance {
-		return release.Provenance{Commit: strings.Repeat("c", 40), Tree: deployTestTree}
-	}
-	t.Cleanup(func() { deployProvenance = prevProv })
+	stubDeployCheckout(t, deployTestProvenance(), deployTestEnvRender)
 	var calls []buildOptions
 	prev := runDeployBuild
-	runDeployBuild = func(_ context.Context, opts buildOptions) error {
+	runDeployBuild = func(ctx context.Context, opts buildOptions) error {
 		calls = append(calls, opts)
 		if opts.release == "" {
-			// A reused version: the build still runs and still pushes,
-			// but nothing is cut. Mirrors the real path.
+			t.Errorf("the deploy's build was asked to cut nothing; a no-version deploy builds only to cut")
 			return nil
 		}
 		rel := ociRelease(opts.release, artifacts)
-		rel.Provenance = &release.Provenance{
-			Commit: strings.Repeat("c", 40),
-			Tree:   deployTestTree,
-		}
+		rel.SetProvenance(captureReleaseProvenance(ctx, dir))
 		if _, err := testStore(t, dir).CutRelease(rel); err != nil {
 			t.Fatalf("stub build: cut %s: %v", opts.release, err)
 		}
@@ -146,26 +171,30 @@ func TestDeployNoVersion_BuildsCutsThenPromotes(t *testing.T) {
 }
 
 // TestDeployNoVersion_RetryOfTheSameTreeReusesTheRelease: a second deploy of
-// an unchanged checkout cuts NOTHING.
+// an unchanged checkout cuts NOTHING and builds NOTHING.
 //
-// Without this, every retry — a declined confirmation, a failed rollout, a CI
-// re-run — names a new version for bytes that already have one, and the
-// ledger fills with near-duplicates distinguished only by the minute they
-// were named.
+// Without the reuse, every retry — a declined confirmation, a failed rollout,
+// a CI re-run — names a new version for bytes that already have one. Without
+// skipping the build, every retry pushes NEW bytes: a build is not
+// reproducible byte for byte, and on 2026-10-09 a rebuild of an unchanged
+// prod checkout produced a reliant image with a different digest.
 func TestDeployNoVersion_RetryOfTheSameTreeReusesTheRelease(t *testing.T) {
 	if testing.Short() {
 		t.Skip("drives the deploy path end to end; skipped in -short")
 	}
 	dir := deployAllProject(t)
 	t.Chdir(dir)
-	calls := stubDeployBuild(t, dir, map[string]string{"api": sha("1")})
+	calls := stubDeployBuild(t, dir, map[string]string{deployTestImage: sha("1")})
 	ledger := testLedger(t, dir)
 
 	first, err := buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
 	if err != nil {
 		t.Fatalf("first deploy: %v", err)
 	}
-	second, err := buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
+	var second deployCutResult
+	out := captureStdout(t, func() {
+		second, err = buildAndCutForDeploy(context.Background(), dir, "prod", deployCmdFlags{}, ledger)
+	})
 	if err != nil {
 		t.Fatalf("second deploy: %v", err)
 	}
@@ -176,15 +205,11 @@ func TestDeployNoVersion_RetryOfTheSameTreeReusesTheRelease(t *testing.T) {
 	if !second.Reused {
 		t.Error("the retry did not report the release as reused")
 	}
-	// The build still RAN (the registry may have expired the images, and a
-	// re-push of identical bytes is a content-addressed no-op), but it was
-	// asked to cut nothing.
-	if len(*calls) != 2 {
-		t.Fatalf("build ran %d times, want twice — the retry still builds", len(*calls))
+	if len(*calls) != 1 {
+		t.Fatalf("build ran %d times, want once — a reused release is not rebuilt", len(*calls))
 	}
-	if (*calls)[1].release != "" {
-		t.Errorf("the retry asked the build to cut %q; a reused version must not be re-cut",
-			(*calls)[1].release)
+	if want := "[deploy] reusing release " + first.Version + " (cut at "; !strings.Contains(out, want) {
+		t.Errorf("the retry did not say up front which release it reuses (want %q):\n%s", want, out)
 	}
 	// Exactly one release exists.
 	all, err := ledger.Releases.List(context.Background())
@@ -193,6 +218,171 @@ func TestDeployNoVersion_RetryOfTheSameTreeReusesTheRelease(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Errorf("%d releases in the ledger, want 1", len(all))
+	}
+}
+
+// chooseAt is the instant the choice tests deploy at.
+var chooseAt = time.Date(2026, 10, 9, 21, 34, 18, 0, time.UTC)
+
+// cutTestRelease records version over images, with prov, in dir's machine
+// ledger — what `forge env build prod --release <version>` leaves behind.
+func cutTestRelease(t *testing.T, dir, version string, prov release.Provenance, images map[string]string) {
+	t.Helper()
+	rel := ociRelease(version, images)
+	rel.SetProvenance(prov)
+	if err := testCutRelease(t, dir, rel); err != nil {
+		t.Fatalf("cut %s: %v", version, err)
+	}
+}
+
+// chooseFor is the choice a no-version deploy of env prod makes for prov.
+func chooseFor(t *testing.T, dir string, prov release.Provenance, renderOptions ...string) deployReleaseChoice {
+	t.Helper()
+	return chooseDeployRelease(context.Background(), deployReuseQuery{
+		ProjectDir: dir, Env: "prod", Provenance: prov, RenderOptions: renderOptions,
+		Releases: testLedger(t, dir).Releases, Now: chooseAt,
+	})
+}
+
+// The match is on what a release RECORDS, never on its name: a release a
+// script cut as `<date>-<commit>` is found by its tree, its forge and its
+// coverage of the env — the 2026-10-09 prod shape.
+func TestChooseDeployRelease_ReusesAReleaseOfThisCheckoutWhateverItIsNamed(t *testing.T) {
+	dir := deployAllProject(t)
+	stubDeployCheckout(t, deployTestProvenance(), deployTestEnvRender)
+	cutTestRelease(t, dir, "20261009.205925-d29da50b", deployTestProvenance(), map[string]string{deployTestImage: sha("1")})
+
+	var asked []string
+	releaseImageResolves = func(_ context.Context, ref string) (bool, error) {
+		asked = append(asked, ref)
+		return true, nil
+	}
+	got := chooseFor(t, dir, deployTestProvenance())
+	if got.Reuse == nil || got.Reuse.Version != "20261009.205925-d29da50b" {
+		t.Fatalf("choice = %+v, want reuse of 20261009.205925-d29da50b", got)
+	}
+	// Its image was asked of the registry BY DIGEST, at the repository it
+	// was pushed to.
+	if want := deployTestImage + "@" + sha("1"); len(asked) != 1 || asked[0] != want {
+		t.Errorf("registry was asked %v, want exactly [%s]", asked, want)
+	}
+}
+
+// Each of these must CUT a new release, and say why. The checkout always
+// holds a release cut by `forge env build --release` for deployTestTree; each
+// case changes one thing about the checkout, the env or the world.
+func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
+	cleanDifferentTree := deployTestProvenance()
+	cleanDifferentTree.Tree = strings.Repeat("d", 40)
+	dirtyEdit := cleanDifferentTree
+	dirtyEdit.Dirty = true
+	dirtySameTree := deployTestProvenance()
+	dirtySameTree.Dirty = true
+	otherForge := deployTestProvenance()
+	otherForge.ForgeVersion = "v0.1.45"
+	unhashed := deployTestProvenance()
+	unhashed.Tree = ""
+	cutFromDirty := deployTestProvenance()
+	cutFromDirty.Dirty = true
+
+	twoImages := `{"output":{"workloads":[` +
+		`{"name":"api","kind":"service","image":"` + deployTestImage + `","build":{"type":"go","cmd":"./cmd/api"},"runtime":{"type":"cluster","cluster":"k3d-dev","namespace":"dev"},"spec":{"kind":"service"}},` +
+		`{"name":"worker","kind":"service","image":"registry.test/acme/worker","build":{"type":"go","cmd":"./cmd/worker"},"runtime":{"type":"cluster","cluster":"k3d-dev","namespace":"dev"},"spec":{"kind":"service"}}]}}`
+	bareImage := strings.ReplaceAll(deployTestEnvRender, deployTestImage, "api")
+
+	cases := []struct {
+		name          string
+		checkout      release.Provenance
+		recorded      release.Provenance // the existing release's provenance
+		images        map[string]string  // the existing release's images
+		render        string
+		renderOptions []string
+		resolves      func(string) (bool, error)
+		want          []string // in the reason
+	}{
+		{
+			name: "the tree was edited after the cut (dirty)", checkout: dirtyEdit,
+			want: []string{"uncommitted changes"},
+		},
+		{
+			name: "the same tree, but the checkout reports itself dirty", checkout: dirtySameTree,
+			want: []string{"uncommitted changes"},
+		},
+		{
+			name: "a commit after the cut (clean, another tree)", checkout: cleanDifferentTree,
+			want: []string{"no release in", "records this checkout's tree (dddddddddddd)"},
+		},
+		{
+			name: "a different forge version", checkout: otherForge,
+			want: []string{"built by forge " + deployTestForge, "this is forge v0.1.45"},
+		},
+		{
+			name: "the env now declares an artifact the release lacks", render: twoImages,
+			want: []string{"does not cover everything env prod declares", "registry.test/acme/worker (image, used by worker)"},
+		},
+		{
+			name: "an image the release pins has expired from its registry",
+			resolves: func(string) (bool, error) {
+				return false, errors.New("registry.test answered HTTP 404 for the manifest")
+			},
+			want: []string{"pins " + deployTestImage + "@" + sha("1"), "could not be confirmed in its registry", "HTTP 404"},
+		},
+		{
+			name: "a release that records no registry for its image", render: bareImage, images: map[string]string{"api": sha("1")},
+			want: []string{"pins api", "records no registry"},
+		},
+		{
+			name: "a release cut from a dirty checkout", recorded: cutFromDirty,
+			want: []string{"cut from a checkout with uncommitted changes"},
+		},
+		{
+			name: "render options were passed", renderOptions: []string{"region=eu"},
+			want: []string{"render options (-D)"},
+		},
+		{
+			name: "the tree could not be hashed", checkout: unhashed,
+			want: []string{"could not be hashed"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := deployAllProject(t)
+			if tc.checkout == (release.Provenance{}) {
+				tc.checkout = deployTestProvenance()
+			}
+			if tc.recorded == (release.Provenance{}) {
+				tc.recorded = deployTestProvenance()
+			}
+			if tc.images == nil {
+				tc.images = map[string]string{deployTestImage: sha("1")}
+			}
+			if tc.render == "" {
+				tc.render = deployTestEnvRender
+			}
+			stubDeployCheckout(t, tc.checkout, tc.render)
+			if tc.resolves != nil {
+				releaseImageResolves = func(_ context.Context, ref string) (bool, error) { return tc.resolves(ref) }
+			}
+			cutTestRelease(t, dir, "20261009.205925-d29da50b", tc.recorded, tc.images)
+
+			got := chooseFor(t, dir, tc.checkout, tc.renderOptions...)
+			if got.Reuse != nil {
+				t.Fatalf("reused %s; want a new cut", got.Reuse.Version)
+			}
+			if want := autoVersionFor(tc.checkout, chooseAt); got.Version != want {
+				t.Errorf("version = %q, want the auto version %q", got.Version, want)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(got.Reason, w) {
+					t.Errorf("reason is missing %q:\n%s", w, got.Reason)
+				}
+			}
+			var announced bytes.Buffer
+			got.announce(&announced, "prod")
+			if want := "[deploy] cutting new release " + got.Version + " because "; !strings.HasPrefix(announced.String(), want) {
+				t.Errorf("announcement = %q, want it to start %q", announced.String(), want)
+			}
+		})
 	}
 }
 
@@ -207,7 +397,7 @@ func TestAutoVersion(t *testing.T) {
 		t.Errorf("tree version = %q, want %q", got, want)
 	}
 	// F-16: an unhashed tree falls back to the commit. The name still means
-	// something, and reusableReleaseForTree refuses to reuse it.
+	// something, and chooseDeployRelease refuses to reuse it.
 	if got, want := autoVersionFor(release.Provenance{Commit: commit}, at),
 		"20261002.170405-"+strings.Repeat("c", 12); got != want {
 		t.Errorf("commit fallback = %q, want %q", got, want)
@@ -222,49 +412,6 @@ func TestAutoVersion(t *testing.T) {
 	zone := time.FixedZone("UTC+9", 9*3600)
 	if got := autoVersionFor(release.Provenance{Tree: tree}, at.In(zone)); !strings.HasPrefix(got, "20261002.170405") {
 		t.Errorf("version %q is not UTC-normalized", got)
-	}
-}
-
-// An UNHASHED tree is never reused (F-16): forge does not know what the
-// content was, so two builds sharing a commit may differ. Reusing on the
-// commit would pin a release to bytes it was not cut from.
-func TestReusableReleaseForTree_UnhashedTreeIsNeverReused(t *testing.T) {
-	dir := t.TempDir()
-	store := testReleases(t, dir)
-	rel := ociRelease("v1", map[string]string{"api": sha("1")})
-	rel.Provenance = &release.Provenance{Commit: strings.Repeat("c", 40)} // no Tree
-	if err := testCutRelease(t, dir, rel); err != nil {
-		t.Fatal(err)
-	}
-	// An empty tree finds nothing, even though a release with the same
-	// (empty) tree is sitting in the ledger.
-	got, err := reusableReleaseForTree(context.Background(), store, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != nil {
-		t.Errorf("an unhashed tree reused release %s", got.Version)
-	}
-}
-
-// A HASHED tree finds its release, whatever the version is called — including
-// a hand-named one, so `forge env deploy <env>` after `forge env build <env>
-// --release v1.4.0` deploys v1.4.0 rather than cutting a duplicate.
-func TestReusableReleaseForTree_FindsAHandNamedRelease(t *testing.T) {
-	dir := t.TempDir()
-	store := testReleases(t, dir)
-	tree := strings.Repeat("b", 40)
-	rel := ociRelease("v1.4.0", map[string]string{"api": sha("1")})
-	rel.Provenance = &release.Provenance{Commit: strings.Repeat("c", 40), Tree: tree}
-	if err := testCutRelease(t, dir, rel); err != nil {
-		t.Fatal(err)
-	}
-	got, err := reusableReleaseForTree(context.Background(), store, tree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got == nil || got.Version != "v1.4.0" {
-		t.Fatalf("got %v, want the hand-named v1.4.0", got)
 	}
 }
 

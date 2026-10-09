@@ -179,18 +179,18 @@ func trackSideEffects(t *testing.T) *[]string {
 	t.Helper()
 	var fired []string
 	boom := errors.New("side-effect seam reached")
-	prevBuild, prevStorage, prevBundles, prevProv := runDeployBuild, checkBuildStorageFn, writeBundlesFn, deployProvenance
+	prevBuild, prevStorage, prevBundles, prevProv := runDeployBuild, checkBuildStorageFn, writeBundlesFn, captureReleaseProvenance
 	runDeployBuild = func(context.Context, buildOptions) error { fired = append(fired, "build"); return boom }
 	checkBuildStorageFn = func(string) error { fired = append(fired, "build-start"); return boom }
 	writeBundlesFn = func(context.Context, string, []string, bundleBuildInputs) ([]bundleWriteOutcome, error) {
 		fired = append(fired, "record-bundle")
 		return nil, boom
 	}
-	deployProvenance = func(context.Context, string) release.Provenance {
+	captureReleaseProvenance = func(context.Context, string) release.Provenance {
 		return release.Provenance{Commit: strings.Repeat("c", 40), Tree: strings.Repeat("a", 40)}
 	}
 	t.Cleanup(func() {
-		runDeployBuild, checkBuildStorageFn, writeBundlesFn, deployProvenance = prevBuild, prevStorage, prevBundles, prevProv
+		runDeployBuild, checkBuildStorageFn, writeBundlesFn, captureReleaseProvenance = prevBuild, prevStorage, prevBundles, prevProv
 	})
 	return &fired
 }

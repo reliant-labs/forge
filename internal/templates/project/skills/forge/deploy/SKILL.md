@@ -206,9 +206,13 @@ forge env deploy prod v1.7.1 --target item   # one workload of a release that ex
 **Two forms, and the difference is whether you name a version.** With NO
 version, deploy does all the deployment bits: it builds the env's artifacts at
 the current checkout exactly as `forge env build` does, pushes them, cuts a
-release named `<YYYYMMDD>.<HHMMSS>-<tree12>` for this tree (reusing one whose
-provenance tree already matches, so a retry never cuts twice), records the
-shape, plans, confirms, then promotes and waits. Naming a version builds
+release named `<YYYYMMDD>.<HHMMSS>-<tree12>` for this tree, records the shape,
+plans, confirms, then promotes and waits. If a release already holds this
+checkout — whatever it is named, including one `forge env build --release` cut
+— it is deployed and NOTHING is built: it must record this clean tree and this
+forge version, cover every artifact the env declares, and still resolve every
+image it pins. The first line says which: `reusing release <v>` or
+`cutting new release <v> because …`. Naming a version builds
 nothing — it deploys a release that is already cut, which is also how you make
 a spec-change deploy: name the version the env already runs. A version nobody
 cut errors with `forge env deploy <env>` as the fix, never `--no-build`.

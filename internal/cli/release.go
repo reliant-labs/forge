@@ -371,6 +371,31 @@ func addFrontendSourceArtifactsWith(ctx context.Context, resolver pinResolver, e
 // declaring a new service or frontend puts it in the release automatically and
 // a hand-maintained enumeration cannot fall behind the declaration.
 func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.Artifact, opts buildOptions) error {
+	missing := releaseCoverageGaps(entities, artifacts, opts.env)
+	if len(missing) == 0 {
+		return nil
+	}
+
+	envName := opts.env
+	if envName == "" {
+		envName = "<env>"
+	}
+	return fmt.Errorf("--release %s: the release does not cover everything %s declares.\n"+
+		"  Missing from the ledger:\n    %s\n"+
+		"  These are declared in deploy/kcl/%s/main.k but no digest or commit was captured for them,\n"+
+		"  so promoting this release would deploy them from a mutable tag (or leave them on whatever the\n"+
+		"  previous binding pinned) while every other artifact advanced — one version, two releases.\n"+
+		"  Build the full set (drop --target, and pass --push so images are digest-addressable),\n"+
+		"  or remove what the environment no longer ships",
+		opts.release, envName, strings.Join(missing, "\n    "), envName)
+}
+
+// releaseCoverageGaps is every artifact the rendered env declares that
+// artifacts does not hold, one line each, sorted. It is the completeness rule
+// itself, shared by the cut (checkReleaseCoversEnv, which refuses) and by a
+// no-version deploy deciding whether an existing release can be reused
+// (chooseDeployRelease, which cuts a new one instead).
+func releaseCoverageGaps(entities *KCLEntities, artifacts map[string]release.Artifact, env string) []string {
 	if entities == nil {
 		// No render (no --env) means nothing to compare against. --release
 		// requires an env argument, so this is unreachable in practice; a
@@ -430,7 +455,7 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 			// declared reference here would look up an entry the push never
 			// wrote and refuse a complete build.
 			if _, ok := artifacts[hostedStaticDestinationForDecl(entities, imageRepository(fe.Image))]; !ok {
-				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge env build %s --push)", fe.Name, envNameOr(opts.env)))
+				missing = append(missing, fmt.Sprintf("%s (hosted static site: forge env build %s --push)", fe.Name, envNameOr(env)))
 			}
 			continue
 		}
@@ -442,23 +467,8 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 			missing = append(missing, fmt.Sprintf("%s (frontend)", fe.Name))
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
 	sort.Strings(missing)
-
-	envName := opts.env
-	if envName == "" {
-		envName = "<env>"
-	}
-	return fmt.Errorf("--release %s: the release does not cover everything %s declares.\n"+
-		"  Missing from the ledger:\n    %s\n"+
-		"  These are declared in deploy/kcl/%s/main.k but no digest or commit was captured for them,\n"+
-		"  so promoting this release would deploy them from a mutable tag (or leave them on whatever the\n"+
-		"  previous binding pinned) while every other artifact advanced — one version, two releases.\n"+
-		"  Build the full set (drop --target, and pass --push so images are digest-addressable),\n"+
-		"  or remove what the environment no longer ships",
-		opts.release, envName, strings.Join(missing, "\n    "), envName)
+	return missing
 }
 
 // countOCIArtifacts returns how many of a release's artifacts are container

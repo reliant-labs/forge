@@ -9,6 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -80,6 +81,16 @@ type Reconciler[T client.Object] struct {
 	// invokes FinalizeFunc on deletion before removing the
 	// finalizer.
 	Finalizer string
+
+	// TransientGrace is how long one object may keep failing with transient
+	// errors (see IsTransient) before Run reports them. During this grace the
+	// object is requeued with exponential backoff; once exceeded, the error is
+	// returned to controller-runtime so its rate limiter and error reporting
+	// take over. Zero uses DefaultTransientGrace. Negative disables the grace.
+	TransientGrace time.Duration
+
+	streaks *streakSet
+	now     func() time.Time
 }
 
 // Run is the entry-point invoked by per-CRD shims. The shim's
@@ -110,13 +121,16 @@ func (r *Reconciler[T]) Run(
 ) (Result, error) {
 	logger := r.logger().With("name", req.Name, "namespace", req.Namespace)
 	start := time.Now()
+	key := req.NamespacedName
+	var none T
 
 	// 1. Fetch.
-	if err := r.Client.Get(ctx, req.NamespacedName, blank); err != nil {
+	if err := r.Client.Get(ctx, key, blank); err != nil {
 		if errors.IsNotFound(err) {
+			r.transientStreaks().clear(key)
 			return Done(), nil
 		}
-		return Done(), fmt.Errorf("fetch object: %w", err)
+		return r.settle(ctx, logger, key, none, Done(), fmt.Errorf("fetch object: %w", err), "")
 	}
 
 	// 2. Deletion path.
@@ -124,22 +138,20 @@ func (r *Reconciler[T]) Run(
 		if r.Finalizer != "" && controllerutil.ContainsFinalizer(blank, r.Finalizer) {
 			if finalize != nil {
 				if err := finalize(ctx, blank); err != nil {
-					logger.Error("finalize failed", "error", err)
-					return Done(), err
+					return r.settle(ctx, logger, key, blank, Done(), err, "finalize failed")
 				}
 			}
 			controllerutil.RemoveFinalizer(blank, r.Finalizer)
 			if err := r.Client.Update(ctx, blank); err != nil {
-				// Another worker may have removed the object (or its finalizer)
-				// between our fetch and update. Both outcomes mean there is
-				// nothing left for this reconciler to do.
 				if errors.IsNotFound(err) {
+					r.transientStreaks().clear(key)
 					return Done(), nil
 				}
-				return Done(), fmt.Errorf("removing finalizer: %w", err)
+				return r.settle(ctx, logger, key, blank, Done(), fmt.Errorf("removing finalizer: %w", err), "")
 			}
 			r.recordEvent(blank, "Finalized", "object cleaned up")
 		}
+		r.transientStreaks().clear(key)
 		return Done(), nil
 	}
 
@@ -147,14 +159,15 @@ func (r *Reconciler[T]) Run(
 	if r.Finalizer != "" && !controllerutil.ContainsFinalizer(blank, r.Finalizer) {
 		controllerutil.AddFinalizer(blank, r.Finalizer)
 		if err := r.Client.Update(ctx, blank); err != nil {
-			return Done(), fmt.Errorf("adding finalizer: %w", err)
+			return r.settle(ctx, logger, key, blank, Done(), fmt.Errorf("adding finalizer: %w", err), "")
 		}
 		// Re-fetch after Update to avoid stale resourceVersion.
-		if err := r.Client.Get(ctx, req.NamespacedName, blank); err != nil {
+		if err := r.Client.Get(ctx, key, blank); err != nil {
 			if errors.IsNotFound(err) {
+				r.transientStreaks().clear(key)
 				return Done(), nil
 			}
-			return Done(), fmt.Errorf("re-fetch after finalizer: %w", err)
+			return r.settle(ctx, logger, key, none, Done(), fmt.Errorf("re-fetch after finalizer: %w", err), "")
 		}
 	}
 
@@ -163,21 +176,71 @@ func (r *Reconciler[T]) Run(
 	result, err := reconcile(ctx, blank)
 	dur := time.Since(start)
 	if err != nil {
-		if errors.IsConflict(err) || errors.IsNotFound(err) {
-			// These are normal optimistic-concurrency races: another
-			// reconciler changed or removed the object. Keep returning the
-			// error so controller-runtime retries, but do not page/error-track
-			// expected contention as an operator failure.
-			logger.Warn("reconcile retryable failure", "duration", dur, "error", err)
-		} else {
-			logger.Error("reconcile failed", "duration", dur, "error", err)
-		}
-		r.recordEvent(blank, "ReconcileFailed", err.Error())
-		return result, err
+		return r.settle(ctx, logger.With("duration", dur), key, blank, result, err, "reconcile failed")
 	}
+	r.transientStreaks().clear(key)
 	logger.Info("reconciled", "duration", dur)
 	r.recordEvent(blank, "Reconciled", fmt.Sprintf("reconciled in %s", dur))
 	return result, nil
+}
+
+// settle turns a transient blip into a bounded, exponentially backed-off
+// requeue. Once its grace expires, it returns the error so controller-runtime
+// rate-limits and reports the persistent outage normally.
+func (r *Reconciler[T]) settle(
+	ctx context.Context, logger *slog.Logger, key types.NamespacedName, obj T,
+	result Result, err error, failedMessage string,
+) (Result, error) {
+	streaks := r.transientStreaks()
+	if r.TransientGrace < 0 || !IsTransient(err) {
+		streaks.clear(key)
+		if failedMessage != "" {
+			logger.Error(failedMessage, "error", err)
+		}
+		r.recordEvent(obj, "ReconcileFailed", err.Error())
+		return result, err
+	}
+
+	grace := r.TransientGrace
+	if grace == 0 {
+		grace = DefaultTransientGrace
+	}
+	attempts, since := streaks.record(key, r.clock())
+	if since >= grace {
+		if failedMessage == "" {
+			failedMessage = "reconcile failed"
+		}
+		logger.Error(failedMessage+": transient error persisted past grace", "error", err,
+			"transient_for", since, "attempts", attempts, "grace", grace)
+		r.recordEvent(obj, "ReconcileFailed", err.Error())
+		return result, err
+	}
+
+	level := slog.LevelWarn
+	if errors.IsConflict(err) {
+		level = slog.LevelDebug
+	}
+	delay := transientBackoff.Next(attempts - 1)
+	logger.Log(ctx, level, "reconcile hit transient error; requeueing", "error", err,
+		"attempts", attempts, "transient_for", since, "retry_in", delay)
+	r.recordEvent(obj, "ReconcileRetrying", err.Error())
+	return Requeue(delay), nil
+}
+
+func (r *Reconciler[T]) transientStreaks() *streakSet {
+	streakSetInit.Lock()
+	defer streakSetInit.Unlock()
+	if r.streaks == nil {
+		r.streaks = &streakSet{streaks: map[types.NamespacedName]streak{}}
+	}
+	return r.streaks
+}
+
+func (r *Reconciler[T]) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 // SetupOptions configures how Reconciler[T] is wired into a manager.

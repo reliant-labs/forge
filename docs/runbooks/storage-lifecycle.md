@@ -22,7 +22,8 @@ an indication that a volume is safe to remove.
 | Shared Go build cache (`go env GOCACHE`) and golangci-lint cache                                         | Remove entries unused for 48h (`go_cache_unused`), then oldest-first toward 60 GiB (`go_cache_gib`); never an entry touched in the last 2h; top-level files are never touched                        |
 | goimports/gopls module index (`<UserCacheDir>/goimports`)                                                | Keep the generation each `index-name-*` link names, anything touched in the last 24h; remove older generations                                                                                       |
 | Orphaned private Go caches (`.gocache-*`, `*-gocache`, `$WORKTREE/.gocache`, `/tmp/scratchpad/gocache*`) | Remove a recognised build/module cache idle 24h that no live process environment names and no process holds open; never the shared cache                                                             |
-| Worktrees                                                                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removal needs `worktree_reap` (see Worktrees)                                                                       |
+| Worktrees                                                                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removed only by an explicit `forge storage gc --apply` under `worktree_reap` (see Worktrees)                        |
+| Every unlink a pass makes                                                                                | At most 50,000 per pass (`max_deletes_per_pass`), paced to 1,000/s (`delete_rate_per_sec`); the pass backs off at the first EMFILE/ENFILE/ENOTCONN/EIO (see Bounded deletion)                        |
 | Database/PVC/workspace volumes                                                                           | Never removed by storage GC                                                                                                                                                                          |
 
 The cache and log budgets are targets: recent/in-use cache and the diagnostic
@@ -53,6 +54,42 @@ cannot be read, private caches are kept. The detached auto-gc pass has a 15
 minute budget so a first trim of a very large cache can make progress; a pass
 cut off by the deadline stops cleanly and resumes next time. Dry-run
 (`forge storage gc`) prints each candidate and its bytes.
+
+## Bounded deletion
+
+On 2026-10-09 one `forge storage gc --apply` unlinked 175,324 Go build cache
+entries (53.6 GiB) in about 30 seconds on a kata-containers workspace whose home
+volume is served over virtiofs, while builds were running. The host's virtiofsd
+ran out of file descriptors, the guest saw EMFILE, and the volume was detached
+from the container seconds later. The trim had kept unlinking through the
+EMFILEs. So every unlink a pass makes — the Go build cache, golangci-lint,
+goimports, orphaned private caches, the temp sweep, the source cache and rotated
+logs — goes through one per-pass governor:
+
+- **Capped.** One pass unlinks at most `max_deletes_per_pass` entries (default
+  50,000) across every layer. The Go caches may spend at most 80% of it (the
+  shared build cache 60%), so the temp sweep and source cache always have some.
+  What is left is retained, and the next pass continues where this one stopped:
+  a budget is reached over several passes, never in one burst. A capped layer is
+  recorded as cut off, which is not a failure. Raise the cap on a machine whose
+  caches grow faster than the hourly pass can trim.
+- **Paced.** Unlinks are granted in batches of 200, and a batch may not finish
+  faster than `delete_rate_per_sec` allows (default 1,000/s). Unlinks are
+  serial across workers.
+- **Backed off.** The first EMFILE, ENFILE, ENOTCONN or EIO, from an unlink or
+  from the reads that precede one, stops the pass. Nothing more is unlinked, the
+  layers after it (Docker included) do not start, and the rest is retained. The
+  pass prints `storage maintenance BACKED OFF: …` and records the layers in
+  `backed_off_layers`. It is not a failure, so the command exits 0 and nothing
+  is tempted to retry at once; the next scheduled or automatic pass resumes.
+
+A tree stopped partway keeps the marker that identifies it (an orphaned build
+cache's `README`, a module cache's `cache/`), so the next pass still recognises
+it. A source-cache clone is renamed to `.forge-evicting-<name>-<ts>` before its
+tree is deleted, so a build never resolves a half-deleted pin, and the next
+pass finishes the leftover. Inside a pass, removing a worktree is charged
+against the same budget (git makes those unlinks, so they are not paced); a
+worktree that does not fit is held as `deferred`.
 
 Direct Go, frontend, shell and Docker build lanes recheck capacity before starting.
 `forge env up` checks before startup and host launches. `forge storage check
@@ -100,13 +137,13 @@ not write it.
 
 At the end of a successful `forge env up`, if the opportunistic pass has not
 been attempted in 24 hours, forge starts the non-disruptive layers in the
-background and returns immediately: rotated logs, builder cache, the temp sweep
-and the source cache. The pass runs as a detached `forge storage auto-gc`
-process. Its log is `logs/auto-gc.log`, next to the policy. The whole pass,
-including each layer's `lsof` snapshot and its walk over entries, is bounded at
-2 minutes. A layer cut off by that limit removes nothing further, and the rest is
-picked up by the next pass. It never runs registry GC or restarts nodes from
-that path. Set `FORGE_STORAGE_AUTO=0` to turn it off. It records each attempt,
+background and returns immediately: rotated logs, the Go caches, builder cache,
+the temp sweep and the source cache. The pass runs as a detached `forge storage
+auto-gc` process. Its log is `logs/auto-gc.log`, next to the policy. The whole
+pass, including each layer's `lsof` snapshot and its walk over entries, is
+bounded at 15 minutes. A layer cut off by that limit removes nothing further,
+and the rest is picked up by the next pass. It never runs registry GC, restarts
+nodes or touches worktrees from that path. Set `FORGE_STORAGE_AUTO=0` to turn it off. It records each attempt,
 failures included, in `last-auto-gc.json` next to the policy. That record is only
 a rate limit: a machine where the pass cannot succeed is not retried on every
 `up`.
@@ -232,8 +269,19 @@ A non-main worktree is **removable** only if all hold:
 
 - not `locked` (the ownership contract: an owner that wants its worktrees left
   alone runs `git worktree lock`) and not prunable;
+- plainly a linked worktree of the repository (`not a linked worktree`
+  otherwise): not the main checkout, not a directory containing it or the home
+  directory, and its `.git` is a gitdir file naming one of the repository's
+  `worktrees/` admin directories — a stale registration whose directory now
+  holds a clone of its own is held;
+- not under Reliant's worktree root, `~/.reliant/worktrees` (or
+  `$RELIANT_USER_CONFIG_DIR/worktrees`), unless the policy sets
+  `"worktree_reap_reliant_managed": true` (`managed by reliant`). Reliant knows
+  which chat each of those is bound to and reclaims them itself;
 - idle at least 24h: the newest of the directory mtime and the admin
-  directory's `index`, `HEAD` and `logs/HEAD` (activity, not commit age);
+  directory's `index`, `HEAD` and `logs/HEAD` (activity, not commit age), AND
+  nothing anywhere in the tree modified within 24h — a build writing an
+  ignored `node_modules` or `bin/` changes neither the admin files nor status;
 - not in use: one `lsof` snapshot covers all candidates and the layer **fails
   closed** if it cannot be taken; forge's own working directory is also kept;
 - `git status --porcelain --untracked-files=normal` is empty;
@@ -254,7 +302,8 @@ A non-main worktree is **removable** only if all hold:
   `origin/HEAD` (else `origin/main`). A squash-merged branch whose remote branch
   was deleted is therefore held, deliberately.
 
-Removal goes through a quarantine move: the worktree is `git worktree move`d to
+Each removal first prints `removing worktree <canonical path> (repository …,
+HEAD …)`, then goes through a quarantine move: the worktree is `git worktree move`d to
 a `.forge-reclaim-<name>-<ts>` sibling (a path-based writer then gets ENOENT),
 fully re-classified there with a fresh in-use check, and only then removed. If
 anything changed it is moved back and kept. If the move back fails it stays in
@@ -262,18 +311,29 @@ quarantine, is never deleted, and `forge storage status` lists it as
 `quarantined`; move it back with `git worktree move`.
 
 Removal is `git worktree remove` without `--force`; if git refuses the tree is
-kept and reported. Branches are never deleted, and `git worktree prune` drops
-only registrations whose directory is gone.
+kept and reported. Branches are never deleted, and `git worktree prune
+--expire 24h` drops only registrations whose directory is gone and whose admin
+index has been untouched for a day (a worktree on a briefly unmounted volume is
+not pruned while in use).
 
-The layer is part of `forge storage gc` and the background auto-gc, but it only
-**previews** until the policy sets `"worktree_reap": true`. `forge storage
-status` lists held worktrees by reason (locked, recently active, in use, dirty,
-unrecognized ignored data, unpushed) so a person can act on what the reaper
-will not touch. The explicit command runs the same classifier over one repo:
+**Only an explicit `forge storage gc --apply` removes worktrees**, and only when
+the policy sets `"worktree_reap": true`. Every pass nobody invoked — the
+background auto-gc `forge env up` starts, the hourly and daily installed jobs
+(the daily one runs `gc --apply --scheduled`), and `forge storage daemon` —
+never removes one: an agent between two commands holds no process in its
+worktree and may not write to it for hours, so to an automatic pass it looks
+exactly like an abandoned one. The auto-gc pass has no worktree layer at all;
+the scheduled full pass previews. Without `lsof` (common in containers) the
+in-use check is unavailable and nothing is removed. `forge storage status`
+lists held worktrees by reason (locked, recently active, in use, dirty,
+unrecognized ignored data, unpushed, not a linked worktree, managed by
+reliant) so a person can act on what the reaper will not touch. The explicit
+per-repository command runs the same classifier and needs no policy:
 
 ```sh
 forge storage worktrees --repo /path/to/repo            # preview
 forge storage worktrees --repo /path/to/repo --apply
+forge storage worktrees --repo /path/to/repo --apply --reliant-managed   # include ~/.reliant/worktrees
 ```
 
 ## Recovery and rollout

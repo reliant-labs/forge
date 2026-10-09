@@ -41,6 +41,11 @@ type GCResult struct {
 	// failure: the layer reclaimed what it reached and resumes next pass. A
 	// pass whose only problems are cut-offs is OK.
 	CutOffLayers []string `json:"cut_off_layers,omitempty"`
+	// BackedOffLayers names each layer that stopped, or never started,
+	// because the filesystem reported distress (EMFILE, ENFILE, ENOTCONN,
+	// EIO). Like a cut-off it retained the rest for the next pass and is not
+	// a failure, but it says the MACHINE is unwell, so it is reported apart.
+	BackedOffLayers []string `json:"backed_off_layers,omitempty"`
 }
 
 // CutOffError marks a layer that stopped at its deadline having made whatever
@@ -93,6 +98,7 @@ func NewGCResult(at time.Time, err error) GCResult {
 	}
 	seen := map[string]bool{}
 	cut := map[string]bool{}
+	backed := map[string]bool{}
 	failed := false
 	var walk func(error)
 	walk = func(e error) {
@@ -109,6 +115,14 @@ func NewGCResult(at time.Time, err error) GCResult {
 		}
 		var layer *LayerError
 		if errors.As(e, &layer) && layer != nil {
+			var bo *BackedOffError
+			if errors.As(layer.Err, &bo) {
+				if !backed[layer.Layer] {
+					backed[layer.Layer] = true
+					r.BackedOffLayers = append(r.BackedOffLayers, layer.Layer)
+				}
+				return
+			}
 			var co *CutOffError
 			if errors.As(layer.Err, &co) {
 				if !cut[layer.Layer] {
@@ -121,6 +135,13 @@ func NewGCResult(at time.Time, err error) GCResult {
 			if !seen[layer.Layer] {
 				seen[layer.Layer] = true
 				r.FailedLayers = append(r.FailedLayers, layer.Layer)
+			}
+			return
+		}
+		if bo := (*BackedOffError)(nil); errors.As(e, &bo) {
+			if !backed["pass"] {
+				backed["pass"] = true
+				r.BackedOffLayers = append(r.BackedOffLayers, "pass")
 			}
 			return
 		}
@@ -138,6 +159,7 @@ func NewGCResult(at time.Time, err error) GCResult {
 	walk(err)
 	sort.Strings(r.FailedLayers)
 	sort.Strings(r.CutOffLayers)
+	sort.Strings(r.BackedOffLayers)
 	r.OK = !failed
 	if failed {
 		r.Error = strings.TrimSpace(err.Error())
@@ -150,6 +172,9 @@ func NewGCResult(at time.Time, err error) GCResult {
 // Summary is one line naming what failed, for `env up` and `doctor`.
 func (r GCResult) Summary() string {
 	if r.OK {
+		if len(r.BackedOffLayers) > 0 {
+			return "backed off on filesystem distress, the rest retained for the next pass (" + strings.Join(r.BackedOffLayers, ", ") + ")"
+		}
 		if len(r.CutOffLayers) > 0 {
 			return "succeeded (cut off, resumes next pass: " + strings.Join(r.CutOffLayers, ", ") + ")"
 		}

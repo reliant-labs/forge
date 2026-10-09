@@ -29,16 +29,16 @@ func TestTempSweepCutOffStillRemovesWhatItReached(t *testing.T) {
 	var out strings.Builder
 	s := newTempSweep(t, root, nil, nil, &out)
 	s.ctx = ctx
-	removedLines := 0
-	s.print = func(format string, args ...any) {
-		line := fmt.Sprintf(format, args...)
-		out.WriteString(line)
-		if strings.Contains(line, "(") && strings.Contains(line, "idle") {
-			if removedLines++; removedLines == 1 {
-				cancel() // the deadline lands right after the first candidate qualifies
-			}
+	s.print = func(format string, args ...any) { out.WriteString(fmt.Sprintf(format, args...)) }
+	// The deadline lands right after the first candidate is removed. (Every
+	// unlink checks the deadline, so a deadline inside an entry stops there.)
+	s.del = unpacedDeleter(func(p string) error {
+		err := os.Remove(p)
+		if p == oldest {
+			cancel()
 		}
-	}
+		return err
+	})
 	err := s.run(true)
 
 	var cut *CutOffError

@@ -219,8 +219,8 @@ func sorted(xs []string) []string {
 }
 
 // NonDisruptiveGC runs only the layers that cannot interrupt anything a
-// developer is currently using: expiring rotated logs, evicting unused builder
-// cache, and the temp sweep.
+// developer is currently using: expiring rotated logs, trimming the Go caches,
+// evicting unused builder cache, the temp sweep and the source cache.
 //
 // Registry GC and node reconfiguration are deliberately NOT here. Registry
 // cleanup takes the registry offline for the duration (pushes and pulls fail),
@@ -228,12 +228,21 @@ func sorted(xs []string) []string {
 // 03:30 pass and unacceptable as a side effect of `forge env up`, which is
 // typically the command that is about to push to that registry.
 //
-// As in GC, each layer's failure is recorded and the rest still run.
+// Worktrees are not here either, not even as a preview. This pass runs behind
+// the user's back — at the end of `forge env up`, and hourly from the
+// installed schedule — and nothing it can observe tells an abandoned worktree
+// from one an agent is between two commands in: no process holds it open, and
+// its files can sit untouched for a day while the agent reads. Removing one is
+// a decision only an explicit `forge storage gc --apply` may take.
+//
+// As in GC, each layer's failure is recorded and the rest still run — unless
+// the filesystem reported distress, which stops the pass (deletes.go).
 func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	if err := r.Policy.Validate(); err != nil {
 		return err
 	}
 	r = r.beginPass(ctx)
+	defer r.endPass()
 	var failures []error
 	add := func(err error) {
 		if err != nil {
@@ -268,6 +277,5 @@ func (r Runner) NonDisruptiveGC(ctx context.Context, apply bool) error {
 	// detected and retained. The worst case for being wrong is one re-clone of
 	// a re-fetchable pin, the same cost shape as a pruned build cache.
 	add(r.runLayer("source cache", shareSources, func(s Runner) error { return s.Sources(apply) }))
-	add(r.runLayer("worktrees", shareLast, func(s Runner) error { return s.worktreeLayer(apply) }))
 	return errors.Join(failures...)
 }

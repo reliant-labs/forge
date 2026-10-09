@@ -111,8 +111,7 @@ func installStorageSchedule(ctx context.Context, out io.Writer, path string, p s
 		}
 		return err
 	}
-	args := append([]string{executable}, tokens[1:]...)
-	args = append(args, "storage", "gc", "--policy", path, "--apply")
+	args := dailyStorageArgs(executable, tokens[1:], path)
 	// The hourly job is the bounded, non-disruptive pass (`auto-gc`): Go build
 	// cache growth under agent load (~40 GB/h) outruns a once-a-day trim. It
 	// takes the same maintenance lock as the daily full pass, so they never
@@ -143,6 +142,14 @@ func installStorageSchedule(ctx context.Context, out io.Writer, path string, p s
 
 	fmt.Fprintf(out, "Installed daily storage maintenance at 03:30 and an hourly bounded cache pass using %s; policy %s. Registry cleanup (daily only) briefly interrupts pulls/pushes.\n", executable, path)
 	return nil
+}
+
+// dailyStorageArgs is the daily job's argv: the full pass, applied, marked
+// --scheduled so it never removes worktrees. A timer firing at 03:30 is not
+// someone deciding that an idle-looking worktree is abandoned.
+func dailyStorageArgs(executable string, prefix []string, policyPath string) []string {
+	args := append([]string{executable}, prefix...)
+	return append(args, "storage", "gc", "--policy", policyPath, "--apply", "--scheduled")
 }
 
 // schedule is one installed job: launchd label / systemd unit stem plus when it fires.

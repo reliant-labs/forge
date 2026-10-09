@@ -98,12 +98,10 @@ func newReleaseSourceCheck(projectDir, env, version string, recorded bool, entit
 
 // preflightReleaseSources is the guard before a release-bound build: every
 // external ShellBuild checkout, as it is now. A no-op unless the build's
-// output is sealed under a release version — a cut (--release), or a deploy
-// that re-uses an existing release and seals this build's bundle under it.
-// The second is the same exposure without a cut: the bundle names the
-// release and pins whatever this build pushed.
+// output is sealed under a release version (--release). A no-version deploy
+// that reuses an existing release builds nothing, so it never reaches here.
 func preflightReleaseSources(ctx context.Context, projectDir string, entities *KCLEntities, opts buildOptions) error {
-	version := opts.bundleReleaseVersion()
+	version := opts.release
 	if version == "" || entities == nil {
 		return nil
 	}

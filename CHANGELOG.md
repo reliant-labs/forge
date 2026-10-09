@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A no-version `forge env deploy` reuses the release already cut for the
+  checkout, and builds nothing.** On 2026-10-09 `forge env build prod --release
+  20261009.205925-d29da50b` cut prod's release from a clean checkout. A
+  `forge env deploy prod` in the same unchanged checkout then rebuilt every
+  image (the reliant image came out with a different digest) and named a new
+  release. The control plane had stored the cut's tree hash, but the hosted
+  ledger dropped `provenance` when it read releases back, so no release ever
+  matched. Reads now decode it. A release is reused when it records this
+  checkout's clean tree and this forge version, covers every artifact the env
+  declares (each source-pinned frontend at today's resolved commit included),
+  and every image it pins still resolves in its registry. Its name does not
+  matter. A reused release is deployed as `forge env deploy <env> <version>`
+  would deploy it, with no build. The deploy first prints
+  `reusing release <v> (cut at …)` or `cutting new release <v> because …`. A
+  dirty checkout, another forge version, a `-D` option, a missing artifact, or
+  an expired image each cut a new release. The cut and the deploy capture
+  provenance through one function.
+
 - **Storage maintenance unlinks are capped, paced, and back off on filesystem
   distress.** On 2026-10-09 one `forge storage gc --apply` unlinked 175,324 Go
   build cache entries in ~30s on a virtiofs-backed workspace volume while

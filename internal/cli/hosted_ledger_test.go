@@ -278,10 +278,16 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Version   string         `json:"version"`
 			Artifacts []wireArtifact `json:"artifacts"`
 			GitCommit string         `json:"gitCommit"`
+			// The real server stores the cut's provenance and returns it
+			// on every read of the release (DeployRelease.provenance);
+			// a fake that dropped it would hide a client that never
+			// reads it back.
+			Provenance *wireProvenance `json:"provenance"`
 		}
 		_ = json.Unmarshal(raw, &req)
 		want := wireRelease{ID: "rel-" + req.Version, Version: req.Version, GitCommit: req.GitCommit,
-			Artifacts: req.Artifacts, CreatedAt: time.Date(2026, 9, 23, 0, len(f.releases), 0, 0, time.UTC)}
+			Artifacts: req.Artifacts, Provenance: req.Provenance,
+			CreatedAt: time.Date(2026, 9, 23, 0, len(f.releases), 0, 0, time.UTC)}
 		wantRel, err := releaseFromWire(want)
 		if err != nil {
 			connectErr(w, http.StatusBadRequest, "invalid_argument", err.Error())
@@ -603,6 +609,62 @@ func newHostedTestStore(t *testing.T, fake *fakeDeployService) (*hostedStore, *h
 	ep := cloud.Endpoint{Env: "prod", URL: srv.URL, TokenEnv: "T"}
 	l := hostedLedger(cloud.NewClient(ep, cloud.Credential{Token: "rlat_test"}), srv.URL, "acme", deploytarget.HostedEnvPersistent)
 	return l.Bindings.(*hostedStore), srv
+}
+
+// A release's provenance survives the round trip: what Cut sends, List and
+// Get read back. Before they did, every release from a control plane came
+// back with none, and a no-version deploy could never find the release cut
+// for its own checkout (2026-10-09, prod).
+func TestHostedStore_ReleaseProvenanceRoundTrips(t *testing.T) {
+	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})
+	store, _ := newHostedTestStore(t, fake)
+	ctx := context.Background()
+
+	cut := ociRelease("20261009.205925-d29da50b", map[string]string{"registry.test/acme/api": sha("1")})
+	cut.SetProvenance(release.Provenance{
+		Repo: "github.com/reliant-labs/control-plane", Commit: strings.Repeat("d", 40),
+		Tree: strings.Repeat("4", 40), ForgeVersion: "v0.1.44-0.20261009203931-bc24a9963fd6",
+		Worktree: release.Worktree{Key: "cp-release-20261009", Host: "dcf965e3b8e09c77"},
+	})
+	if _, err := store.Cut(ctx, cut); err != nil {
+		t.Fatalf("cut: %v", err)
+	}
+
+	listed, err := store.List(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("List = %d release(s), err %v; want 1", len(listed), err)
+	}
+	got, err := store.Get(ctx, cut.Version)
+	if err != nil || got == nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for how, rel := range map[string]release.Release{"List": listed[0], "Get": *got} {
+		if rel.Provenance == nil {
+			t.Fatalf("%s returned no provenance; the cut sent %+v", how, *cut.Provenance)
+		}
+		if *rel.Provenance != *cut.Provenance {
+			t.Errorf("%s provenance = %+v, want what the cut sent %+v", how, *rel.Provenance, *cut.Provenance)
+		}
+	}
+}
+
+// A provenance the control plane returns that fails forge's own validation is
+// DROPPED from that release, not fatal to the read: List feeds every
+// promote's direction logic, and one bad historical row must not make the
+// ledger unreadable. A release without provenance is simply never reused.
+func TestReleaseFromWire_DropsAMalformedProvenance(t *testing.T) {
+	r, err := releaseFromWire(wireRelease{
+		Version: "v1",
+		Artifacts: []wireArtifact{{Name: "registry.test/acme/api", Kind: "oci", Mode: "shared",
+			Variant: release.SharedVariant, Digest: sha("1")}},
+		Provenance: &wireProvenance{Commit: strings.Repeat("c", 40), Tree: "not-a-tree"},
+	})
+	if err != nil {
+		t.Fatalf("a malformed provenance failed the read: %v", err)
+	}
+	if r.Provenance != nil {
+		t.Errorf("a provenance that does not validate was kept: %+v", *r.Provenance)
+	}
 }
 
 // The hosted store against an httptest Connect server: cut, promote, retry,

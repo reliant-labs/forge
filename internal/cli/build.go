@@ -134,21 +134,6 @@ type buildOptions struct {
 	// have moved. Naming them here binds every env's manifests to the same
 	// release and the same source.
 	bundleEnvs string
-
-	// bundleRelease overrides the version a bundle NAMES, when it differs
-	// from the version this build CUTS.
-	//
-	// They differ in exactly one case, and it is a real one: the no-version
-	// `forge env deploy` reuses an existing release whose provenance tree
-	// matches this checkout, so it blanks `release` to skip a re-cut the
-	// ledger would refuse as a conflict — while the bundle must still pin
-	// the version being deployed. Without this the reused path would seal
-	// an UNRELEASED bundle (release ""), and the deploy would then be
-	// unable to find the bundle for (env, version) it just wrote.
-	//
-	// Empty means "the version this build cut" (release), which is the
-	// answer for every other caller.
-	bundleRelease string
 	// gateJSON is a FILE path: write this build's result as a gate
 	// document, for `forge gate record` / `forge env deploy --gate`. Not
 	// a stdout mode — the build log and the exit code are unchanged.
@@ -1544,23 +1529,15 @@ func writeBuildBundle(ctx context.Context, opts buildOptions) error {
 	// resolveDeployImageDigests reads at deploy time, so the bundle pins
 	// what the release pins.
 	written, err := writeBundlesFn(ctx, projectDir, parseBundleEnvs(opts.bundleEnvs, opts.env), bundleBuildInputs{
-		Release: opts.bundleReleaseVersion(),
+		Release: opts.release,
 		Pins:    buildBundlePins(projectDir, opts.env),
 		Run:     run,
 		Pushed:  opts.push || opts.pushIfDeclared,
 		Now:     time.Now().UTC().Truncate(time.Second),
 	})
 	printBundleWrites(os.Stdout, written)
-	noteRecordedBundles(opts.bundleReleaseVersion(), written)
+	noteRecordedBundles(opts.release, written)
 	return err
-}
-
-// bundleReleaseVersion is the version this build's bundle names.
-func (o buildOptions) bundleReleaseVersion() string {
-	if o.bundleRelease != "" {
-		return o.bundleRelease
-	}
-	return o.release
 }
 
 // buildBundlePins projects the build's captured artifacts into the pin set a
@@ -1685,7 +1662,12 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		return releaseCutOutcome{}, err
 	}
 
-	prov := captureBuildProvenance(ctx, projectDir)
+	// captureReleaseProvenance, the SAME capture a no-version deploy matches
+	// on (chooseDeployRelease): a release cut here by `forge env build
+	// --release` and one cut by `forge env deploy` record provenance through
+	// one function over one directory, so the deploy that follows either
+	// finds it.
+	prov := captureReleaseProvenance(ctx, projectDir)
 	if err := checkCutMatchesBuild(version, prov.Commit, harvestedBuildCommits(projectDir, env)); err != nil {
 		return releaseCutOutcome{}, err
 	}

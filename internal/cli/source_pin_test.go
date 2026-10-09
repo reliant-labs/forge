@@ -164,11 +164,9 @@ func TestGitSourcePins(t *testing.T) {
 	}
 }
 
-// The preflight fires for every build sealed under a release version: a cut
-// (--release), and a deploy that RE-USES an existing release — that path
-// clears opts.release (no re-cut) but still rebuilds and seals the bundle
-// under the version, so an off-pin sibling would ship under it all the same.
-// A plain build is not a release and is never refused.
+// The preflight fires for every build sealed under a release version (a cut,
+// --release). A deploy that reuses an existing release builds nothing, so it
+// has no build to guard. A plain build is not a release and is never refused.
 func TestPreflightReleaseSources_EveryReleaseBoundBuild(t *testing.T) {
 	root := t.TempDir()
 	sib := filepath.Join(root, "sib")
@@ -187,13 +185,8 @@ func TestPreflightReleaseSources_EveryReleaseBoundBuild(t *testing.T) {
 	}}}
 	ctx := context.Background()
 
-	for name, opts := range map[string]buildOptions{
-		"cut":            {env: "prod", release: "v1"},
-		"deploy re-uses": {env: "prod", bundleRelease: "v1"},
-	} {
-		if err := preflightReleaseSources(ctx, project, ents, opts); err == nil || !strings.Contains(err.Error(), "0123456789ab") {
-			t.Errorf("%s: an off-pin sibling must be refused, got %v", name, err)
-		}
+	if err := preflightReleaseSources(ctx, project, ents, buildOptions{env: "prod", release: "v1"}); err == nil || !strings.Contains(err.Error(), "0123456789ab") {
+		t.Errorf("cut: an off-pin sibling must be refused, got %v", err)
 	}
 	if err := preflightReleaseSources(ctx, project, ents, buildOptions{env: "prod", push: true}); err != nil {
 		t.Errorf("a push is not a release and must not be refused: %v", err)

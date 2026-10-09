@@ -382,6 +382,7 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 		LogFormat: cfg.LogFormat,
 {{- end}}
 {{- if index .ConfigFields "Environment"}}
+		// Environment drives deployment.environment.name on every OTel resource.
 		Environment: cfg.Environment,
 {{- end}}
 {{- if index .ConfigFields "AutoMigrate"}}

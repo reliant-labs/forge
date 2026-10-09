@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OpenTelemetry resources now identify the typed deployment environment.**
+  `observe.Config.DeploymentEnvironment`, projected by `serverkit.Config.Environment`,
+  emits `deployment.environment.name` alongside service name, version, and instance
+  identity when non-empty. Forge never relies on `OTEL_RESOURCE_ATTRIBUTES` for this
+  identity, so fresh generated apps consistently report their configured dev, staging,
+  or production environment.
+
 ### Fixed
 
 - **`FORGE_LEDGER=machine` keeps a run off a declared control plane.**

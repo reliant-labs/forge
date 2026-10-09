@@ -149,6 +149,10 @@ In Grafana → Explore → Tempo, search by:
 
 Trace IDs are automatically injected into every log line, connecting logs to traces.
 
+## Resource identity
+
+Forge reports every service's typed `Environment` configuration as the OpenTelemetry resource attribute `deployment.environment.name` (for example, `dev`, `staging`, or `prod`). It is emitted alongside `service.name`, `service.version` when available, and `service.instance.id`. `forge/pkg/observe` never reads `OTEL_RESOURCE_ATTRIBUTES`; applications pass identity explicitly through `serverkit.Config`, which fresh generated servers project from `AppConfig.Environment`.
+
 ## Querying Metrics (Prometheus)
 
 In Grafana → Explore → Prometheus, use PromQL. The RPC edge is measured by

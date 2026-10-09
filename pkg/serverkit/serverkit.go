@@ -382,8 +382,9 @@ type Config struct {
 	// anything else (including "" and "json") emits JSON.
 	LogFormat string
 
-	// Environment is the deployment environment string. When equal to
-	// EnvDevelopment Run emits a loud warning about permissive defaults,
+	// Environment is the typed deployment environment. Run reports a non-empty
+	// value on OpenTelemetry resources as deployment.environment.name. When equal
+	// to EnvDevelopment Run emits a loud warning about permissive defaults,
 	// suppresses HSTS, and enforces CORS even with an empty CORSOrigins
 	// (see CORSEnabled). Every other value — including "" — is treated as
 	// a deployed environment: closed by default.

@@ -83,7 +83,7 @@ func (s *Source) ResolveCommit(ctx context.Context, rev string) (string, error) 
 // from PATH, or a status that failed — which a caller guarding a release must
 // not mistake for "nothing to check".
 func CaptureSource(ctx context.Context, dir, projectDir string) (*Source, error) {
-	top, err := gitLine(ctx, dir, "rev-parse", "--show-toplevel")
+	top, err := gitToplevel(ctx, dir)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, fmt.Errorf("capture the source checkout of %s: %w", dir, err)
@@ -106,10 +106,30 @@ func CaptureSource(ctx context.Context, dir, projectDir string) (*Source, error)
 		src.Repo = release.CanonicalRepo(url)
 	}
 	src.Module, src.ModuleDir = nearestModule(dir, top)
-	if projectTop, err := gitLine(ctx, projectDir, "rev-parse", "--show-toplevel"); err == nil {
+	if projectTop, err := gitToplevel(ctx, projectDir); err == nil {
 		src.Project = projectTop == top
 	}
 	return src, nil
+}
+
+// gitToplevel is the top-level directory of the checkout dir is in, as an
+// OS-native, symlink-resolved path.
+//
+// git prints it with forward slashes on every OS (`C:/Users/…` on Windows),
+// which is neither the spelling every other path forge handles uses nor one
+// that compares equal to them. Normalizing here, at the one place a path
+// enters from git, keeps Source.Dir comparable with the cwd it came from and
+// printable in the refusal's fix command.
+func gitToplevel(ctx context.Context, dir string) (string, error) {
+	top, err := gitLine(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	top = filepath.Clean(filepath.FromSlash(top))
+	if real, err := filepath.EvalSymlinks(top); err == nil {
+		top = real
+	}
+	return top, nil
 }
 
 // nearestModule returns the module path declared by the go.mod nearest dir,

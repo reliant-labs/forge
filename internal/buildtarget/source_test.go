@@ -70,6 +70,8 @@ func TestCaptureSource_SiblingCheckout(t *testing.T) {
 	if err != nil || src == nil {
 		t.Fatalf("CaptureSource: %+v, %v", src, err)
 	}
+	// Dir is the OS-native, symlink-resolved path — the spelling every other
+	// path forge holds uses — not git's forward-slash `C:/Users/…` form.
 	real, _ := filepath.EvalSymlinks(sib)
 	// No scheme, no credential, no ".git"; the path keeps its case.
 	want := Source{Dir: real, Repo: "github.com/Example/sib", Module: "example.com/sib/tool", ModuleDir: "tool", Commit: head}

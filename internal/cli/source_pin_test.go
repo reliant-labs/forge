@@ -228,8 +228,31 @@ func TestHostedWireCarriesBuiltFrom(t *testing.T) {
 	}
 }
 
+// The fix command names the checkout relative to where forge runs, with
+// forward slashes on every OS, so it pastes into any shell as printed.
+func TestGitDirArg(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "acme")
+	sib := filepath.Join(root, "sib")
+	for _, d := range []string{project, sib} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(project)
+	real, err := filepath.EvalSymlinks(sib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitDirArg(real); got != "../sib" {
+		t.Errorf("gitDirArg(%s) = %q, want ../sib", real, got)
+	}
+}
+
 func TestCwdOutsideProject(t *testing.T) {
-	project := filepath.Join(string(filepath.Separator), "w", "acme")
+	// A real absolute path on this OS: `/w/acme` has no volume on Windows,
+	// so it is not absolute there and joins under the project instead.
+	project := filepath.Join(t.TempDir(), "acme")
 	for cwd, want := range map[string]bool{
 		"":                                false,
 		".":                               false,

@@ -259,8 +259,7 @@ func isSkippedTemplate(noTmpl string) bool {
 		"air.toml",
 		"air-debug.toml",
 		"next.config.ts",
-		"reliant.md",
-		"reliant-reliant.md":
+		"reliant.md":
 		return true
 	}
 	return false

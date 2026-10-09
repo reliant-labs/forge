@@ -60,21 +60,6 @@ func (h Harness) MemoryFilePath() string {
 	}
 }
 
-// SkillsDir returns the project-root-relative directory where forge
-// skills should be written on `forge project new` for this harness, or "" when
-// the harness has no native skills concept. Reliant returns "" because
-// the reliant CLI auto-discovers forge skills via the project's
-// forge.yaml (no on-disk emission needed); copilot/codex return ""
-// because they have no native skills mechanism.
-func (h Harness) SkillsDir() string {
-	switch h {
-	case HarnessClaude:
-		return ".claude/skills"
-	default:
-		return ""
-	}
-}
-
 // ParseHarness validates and normalises a user-supplied string.
 func ParseHarness(s string) (Harness, error) {
 	switch Harness(s) {

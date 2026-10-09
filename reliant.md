@@ -1,9 +1,10 @@
-<!-- forge:version=1 -->
-
-# forge
-
-This is a **Forge** project managed by the `forge` CLI.
-
+<!--
+  forge repo notes. Reliant injects forge's live framework guide
+  (internal/templates/project/reliant.md.tmpl — architecture, critical rules,
+  package-boundary idioms, testing basics) ahead of this file because this repo
+  has a forge.yaml, so none of that belongs here. Keep this file to what is true
+  of working ON forge itself.
+-->
 ## ⛔ You are running INSIDE forge — do not kill it
 
 The agent session reading this is itself hosted by a forge process. Commands
@@ -65,105 +66,36 @@ Read this before proposing a design. It rules out whole categories of answer:
   generated file has an owned seam beside it, and no convenience is implemented
   as a wall.
 
-## Skills
+## Package boundaries: the worked example in this repo
 
-Run `forge skill list` to discover available playbooks, and `forge skill load <name>` to read one. Available skills:
-
-- **forge** — start here: greenfield sequence, project conventions
-- **services** — adding and editing services
-- **api** — Connect RPC API patterns
-- **db** — database, ORM, and migrations
-- **frontend** — Next.js frontend overview
-- **frontend/state** — state management (React Query, Zustand, URL)
-- **frontend/patterns** — UI component patterns
-- **proto** — protobuf schema conventions
-- **architecture** — system architecture and layout
-- **workers** — background job workers
-- **auth** — authentication
-- **testing** — testing overview
-- **testing/unit** — unit test patterns
-- **testing/integration** — integration test patterns
-- **testing/e2e** — end-to-end test patterns
-- **debug** — debugging overview
-- **debug/investigate** — investigation techniques
-- **debug/isolate** — isolating failures
-- **debug/reproduce** — reproducing bugs
-- **deploy** — deployment and releases
-- **observability** — logging, tracing, and metrics
-
-## Critical Rules
-
-1. **Never edit generated code** — `gen/` and `*_gen.go` files are overwritten by `forge generate`. Make changes in proto files instead.
-2. **Proto is the canonical input** — all API contracts, ORM models, and frontend hooks derive from proto definitions.
-3. **`forge generate` is safe** — it never overwrites hand-written business logic (handler files, `pkg/app/setup.go`, etc.).
-4. **Migrations are the DB source of truth** — the database schema comes from migrations, not proto. Proto drives the ORM layer above them.
-5. **Use `task test`** — not raw `go test`. The project's `Taskfile.yml` sets the correct build tags, timeouts, and frontend lane, and it is what CI runs. (There is no `forge test`.)
-
-## Package boundaries and interfaces
-
-**Package A must be ignorant of package B's internals.** A concept that leaks
-across a package boundary — through a func, a param, a type or a return value —
-is the defect. This is the rule most often broken by a well-intentioned
-"let's share this".
-
-Three idioms that keep it true:
-
-1. **Declare interfaces where they are CONSUMED, not where they are
-   implemented.** Do not export an interface from the implementing package and
-   make callers depend on it. If package X needs "something that can list Y",
-   X declares that one-method interface locally. **WET over DRY is fine here** —
-   two small local declarations beat one shared exported one.
-2. **The larger the interface, the weaker the abstraction.** Prefer thin. A
-   1–2 method interface is strong; a six-method one is a concrete type in
-   disguise and will leak. Reaching for a third method is the signal to ask
-   whether you are modelling the consumer's need or the implementation.
-3. **Accept interfaces, return structs.** Take the narrow interface you need
-   (flexible); return concrete types (explicit). Returning an interface hides
-   what the caller actually got.
-
-**An interface with ONE implementation and no substitution point is
-indirection, not abstraction.** Prefer a concrete type with methods. Go is not
-Java: `Kind() string` that every caller switches on has relocated a switch, not
-removed it.
-
-Worked example in this repo: `templates.Render` serves eleven unrelated
-template categories. It knows only the one-method `selfDefaulting` interface,
-declared at the consumer — not any payload's shape. An earlier version
-type-asserted one concrete struct and reached into another domain's package,
-which made the shared renderer the obvious place for every domain to
-special-case. See `internal/templates/self_defaulting_test.go`, which pins the
-boundary rather than the behaviour.
+The framework guide's package-boundary idioms apply here first. Concretely:
+`templates.Render` serves eleven unrelated template categories. It knows only
+the one-method `selfDefaulting` interface, declared at the consumer — not any
+payload's shape. An earlier version type-asserted one concrete struct and
+reached into another domain's package, which made the shared renderer the
+obvious place for every domain to special-case. See
+`internal/templates/self_defaulting_test.go`, which pins the boundary rather
+than the behaviour. A reach for a third interface method is the signal to ask
+whether you are modelling the consumer's need or the implementation.
 
 ## Testing tiers
 
-Run the cheapest tier that answers your question. Wall-clock budgets are enforced conventions, not aspirations — if you add a test that breaks a budget, gate it.
+Run the cheapest tier that answers your question. Wall-clock budgets are
+enforced conventions — if you add a test that breaks a budget, gate it. Most of
+an agent's test time was measured as compile/link plus defeated caching, not
+test bodies.
 
-**Testing while iterating: run the fast tier, scoped to what you touched.**
-Most of an agent's test time was measured as compile/link plus defeated
-caching, not test bodies — so the inner loop is scoped and cached, and the
-full lane runs once, at the end.
-
-1. **Inner loop — every edit:** `task test:short -- ./internal/<pkg>/...`, naming only the packages you touched. It is `go test -short`, cached, with no `-race`. A re-run after an edit recompiles and re-runs only what the edit invalidated; everything else is a cache hit. Unscoped (`task test:short`) it is the whole repo.
+1. **Inner loop — every edit:** `task test:short -- ./internal/<pkg>/...`, naming only the packages you touched (`go test -short`, cached, no `-race`).
 2. **Package-targeted — before committing:** `task test -- ./internal/<pkg>/...`. Full mode (no `-short`, with `-race`) for the packages you touched, so the gated slow tests run too.
-3. **Full gate — once, at the end / CI:** `task test` (`go test -race -count=1 ./...`) plus the e2e corpus: `go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/`. The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so the gate's wall-clock is roughly the slowest fixture, not the sum. Do not run this after every edit.
-
-How to run them:
-
-- **Do not add `-count=1` or `-race` to inner-loop runs.** Both defeat Go's test cache, which keys on the test binary, flags, env vars and the files a test reads — it is correct for hermetic tests. `-count=1` belongs to CI and the full lane.
-- **Never set a private `GOCACHE`** (or `GOMODCACHE`). A cold private cache turns every run into a full rebuild.
-- **Anything expected to take more than ~2 minutes goes `run_in_background` + `shell_wait`**, never a long foreground call: the full lane, `internal/cli` or `internal/tierguard` in full mode, the e2e corpus.
+3. **Full gate — once, at the end / CI:** `task test` (`go test -race -count=1 ./...`) plus the e2e corpus: `go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/`. The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so wall-clock is roughly the slowest fixture. Run it in the background: the full lane, `internal/cli` / `internal/tierguard` in full mode, and the e2e corpus all exceed ~2 minutes.
 
 Rules that keep the tiers honest:
 
-- Any test that takes **>2s** (subprocess spawns, git repos, network, real scaffolds, KCL renders, `go build`/`go list`/`go mod tidy`, `npm install`) must be skipped or have its slow side-effect bypassed under `testing.Short()` — `if testing.Short() { t.Skip("<why it is slow>; runs in task test") }` — with the slow path still exercised in full mode and CI. Never weaken an assertion to get under the budget — gate, don't gut. A test that is slow because its fixture waits on something it never needed to (a fake CLI that sleeps, a real `gcloud` call) is a fixture bug: fix the fixture instead of gating.
+- Any test that takes **>2s** (subprocess spawns, git repos, network, real scaffolds, KCL renders, `go build`/`go list`/`go mod tidy`, `npm install`) must be skipped or have its slow side-effect bypassed under `testing.Short()` — `if testing.Short() { t.Skip("<why it is slow>; runs in task test") }` — with the slow path still exercised in full mode and CI. Never weaken an assertion — gate, don't gut. A test that is slow because its fixture waits on something it never needed to (a fake CLI that sleeps, a real `gcloud` call) is a fixture bug: fix the fixture instead of gating.
 - **A test that runs under `-short` must be cache-sound.** Go's test cache keys only on what the test PROCESS opens or stats inside the module. Repo files read by a CHILD process (`go build`/`go list` over repo packages, `git` against the checkout, `kcl`/`node`/`bash` over files on disk) or by the native KCL runtime are invisible to it, so the cached run replays a stale PASS after an edit that breaks the test. Such a test either skips under `testing.Short()` or opens/stats those inputs itself (a `filepath.WalkDir` + `os.Stat` over the tree is enough — verified). Inputs that are `go:embed`ded into the test binary, or written by the test into `t.TempDir()`, are already covered.
 - A package that exceeds `task test:short`'s 60s timeout has grown a slow test. Find it with `go test -short -count=1 -json ./internal/<pkg>/` and gate it; do not raise the timeout.
 - e2e tests that boot servers must allocate ports with `freePortE2E(t)` (`internal/cli/scaffold_e2e_test.go`) — never hard-code a port; the corpus runs in parallel.
 - e2e tests must keep all state inside their own `t.TempDir()` project; no `t.Setenv`/`t.Chdir` in parallel tests (Go panics on the combo).
-- CI runs the full non-short suite with `-race`; `-short` is a local/agent convention only.
+- Never set a private `GOMODCACHE` either; CI runs the full non-short suite with `-race`, and `-short` is a local/agent convention only.
 
 See the comment block at the top of `internal/cli/fixture_corpus_e2e_test.go` for the same tiers from the e2e corpus's point of view.
-
-## Project Notes
-
-<!-- Add project-specific context, conventions, and open questions here. -->

@@ -6,15 +6,14 @@ Each skill has a path-based name derived from its directory (`db`, `frontend/sta
 
 ## Where the bytes live, and which copy is authoritative
 
-Three distinct places, and confusing them is how a reader ends up following an older vintage:
+Two places. Forge never writes skills into a project; a leftover `.claude/skills/` render from an older forge is removed on the next `forge generate`:
 
 | | Path | Who writes it |
 |---|---|---|
 | **Source** | `internal/templates/project/skills/{forge,general}/**/SKILL.md` (this tree) | you, in the forge repo — `//go:embed`ed into the binary |
-| **Delivered render** | `<project>/.claude/skills/<flat-name>/SKILL.md` | `forge generate`, every run (Tier-1). Hierarchy flattens with `-`: `frontend/state` → `frontend-state`. Migration skills are NOT delivered |
 | **Project / user skills** | `<project>/.forge/skills/**`, `~/.forge/skills/**` | you. Precedence on a path collision: forge-shipped < project < user-global |
 
-`forge skill load <name>` prints from the binary — that is the authoritative copy, and it carries no banner or preamble. The delivered render is what a harness preloads; it is only as current as the last `forge generate` in that checkout, which is why every rendered skill's preamble points back at `forge skill load`.
+`forge skill load <name>` prints from the binary — that is the authoritative copy, and it carries no banner or preamble. Non-reliant harnesses: add your own skill telling the agent to run `forge skill search <query>` / `forge skill load <name>`.
 
 ## Structure
 

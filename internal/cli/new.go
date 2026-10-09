@@ -134,7 +134,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, frontend, observability, hot_reload. Not persisted: features derive from the tree that gets written.")
-	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; only claude also receives on-disk skills. reliant (default): reliant.md — skills are read from the forge binary (`forge skill load <name>`) and discovered via forge.yaml, so NO skill files are written. claude: CLAUDE.md + .claude/skills/ (regenerated every `forge generate`). cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as `harness:` in forge.yaml and honored by every later generate")
+	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for. Each writes a memory file; Forge never writes skill files for any harness. reliant (default): reliant.md — skills are read from the forge binary (`forge skill search|load`) and discovered via forge.yaml. claude: CLAUDE.md. For non-reliant harnesses, add your own skill telling the agent to run `forge skill search <query>`. cursor: .cursorrules. copilot: .github/copilot-instructions.md. codex: AGENTS.md. Recorded as `harness:` in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
@@ -493,7 +493,7 @@ type scaffoldFilesInput struct {
 }
 
 // writeScaffoldFiles renders every scaffold file — the project generator,
-// harness skills, services and frontends beyond the first, and the
+// services and frontends beyond the first, and the
 // --buf-plugins=remote switch — and lands them in the target directory.
 //
 // A fresh project is rendered straight into its (new, empty) directory. An
@@ -522,7 +522,6 @@ func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
 	if err := gen.Generate(); err != nil {
 		return inPlaceMergeResult{}, fmt.Errorf("failed to generate project: %w", err)
 	}
-	emitHarnessSkills(gen, root)
 
 	// Services beyond the first get the handler/proto skeleton only — that
 	// is the whole job in both binary modes, since forge derives the service
@@ -614,31 +613,6 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 		return nil, err
 	}
 	return gen, nil
-}
-
-// emitHarnessSkills writes forge skills to disk for harnesses that have a
-// native skills concept (e.g. claude → .claude/skills/). Reliant/copilot/codex
-// skip this (no native skills mechanism, or auto-discovery via forge.yaml).
-// Skill-write failures are warned, not fatal.
-func emitHarnessSkills(gen *generator.ProjectGenerator, targetPath string) {
-	dir := gen.Harness.SkillsDir()
-	if dir == "" {
-		return
-	}
-	style, ok := skillStyleForHarness(gen.Harness)
-	if !ok {
-		return
-	}
-	skillsDir := filepath.Join(targetPath, dir)
-	// SkillAudienceAll: a new forge project always has forge.yaml, so the
-	// harness gets both general methodology and framework skills with full
-	// bodies (no @forge-only stripping).
-	n, err := WriteSkills(skillsDir, style, SkillAudienceAll)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to write forge skills to %s: %v\n", skillsDir, err)
-	} else {
-		fmt.Printf("📚 Wrote %d forge skills to %s\n", n, dir)
-	}
 }
 
 // generateAdditionalServices scaffolds every service beyond the first: the

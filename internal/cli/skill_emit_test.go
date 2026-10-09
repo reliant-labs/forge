@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -37,40 +35,6 @@ func TestParseFrontmatter_EmitDefaultsToEmpty(t *testing.T) {
 	got := parseFrontmatter(body)
 	if got.Emit != "" {
 		t.Errorf("expected empty Emit when frontmatter omits the field, got %q", got.Emit)
-	}
-}
-
-// TestEmitMatchesAudience covers every (emit, audience) combination
-// including the empty-emit-defaults-to-forge back-compat rule.
-func TestEmitMatchesAudience(t *testing.T) {
-	cases := []struct {
-		emit     SkillEmit
-		audience SkillAudience
-		want     bool
-	}{
-		// All audience: every skill passes regardless of emit.
-		{SkillEmitForge, SkillAudienceAll, true},
-		{SkillEmitGeneral, SkillAudienceAll, true},
-		{SkillEmitBoth, SkillAudienceAll, true},
-		{"", SkillAudienceAll, true},
-
-		// General audience: only general + both pass.
-		{SkillEmitGeneral, SkillAudienceGeneral, true},
-		{SkillEmitBoth, SkillAudienceGeneral, true},
-		{SkillEmitForge, SkillAudienceGeneral, false},
-		{"", SkillAudienceGeneral, false}, // empty defaults to forge → drop for general
-
-		// Forge audience: only forge + both pass.
-		{SkillEmitForge, SkillAudienceForge, true},
-		{SkillEmitBoth, SkillAudienceForge, true},
-		{SkillEmitGeneral, SkillAudienceForge, false},
-		{"", SkillAudienceForge, true}, // empty defaults to forge → keep for forge
-	}
-	for _, tc := range cases {
-		got := emitMatchesAudience(tc.emit, tc.audience)
-		if got != tc.want {
-			t.Errorf("emit=%q audience=%q: got %v want %v", tc.emit, tc.audience, got, tc.want)
-		}
 	}
 }
 
@@ -168,53 +132,4 @@ func TestRenderSkillForAudience_MultipleBlocks(t *testing.T) {
 			t.Errorf("expected %q retained, got:\n%s", keep, out)
 		}
 	}
-}
-
-// TestWriteSkills_GeneralAudience drives the full pipeline through the
-// embedded templates: only emit:general|both skills survive the filter,
-// and @forge-only blocks are stripped from the bodies that do.
-//
-// debug/SKILL.md ships with emit: both and a @forge-only "Forge-Specific
-// Debug Tools" section — so it's the canonical witness for both the
-// filter and the renderer.
-func TestWriteSkills_GeneralAudience(t *testing.T) {
-	dir := t.TempDir()
-	n, err := WriteSkills(dir, SkillWriteStyleClaude, SkillAudienceGeneral)
-	if err != nil {
-		t.Fatalf("WriteSkills: %v", err)
-	}
-	if n == 0 {
-		t.Fatal("expected at least one general-audience skill (debug)")
-	}
-
-	// Spot-check debug — it must survive the filter, and the
-	// @forge-only block must be stripped.
-	body, err := readSkillFile(dir, "debug")
-	if err != nil {
-		t.Fatalf("read debug: %v", err)
-	}
-	s := string(body)
-	if strings.Contains(s, "@forge-only") {
-		t.Errorf("debug skill still has @forge-only markers after general render:\n%s", s)
-	}
-	if strings.Contains(s, "Forge-Specific Debug Tools") {
-		t.Errorf("debug skill still contains forge-only section after general render:\n%s", s)
-	}
-	if !strings.Contains(s, "Triage First") {
-		t.Errorf("debug skill missing methodology body:\n%s", s)
-	}
-
-	// At least one emit:forge (or emit-unset) skill must NOT have been
-	// written — e.g. proto is unambiguously framework-only. If proto
-	// ever moves to emit:general this assertion needs to follow.
-	if _, err := readSkillFile(dir, "proto"); err == nil {
-		t.Errorf("emit:forge skill 'proto' should not be written for general audience")
-	}
-}
-
-// readSkillFile is a tiny helper to read the SKILL.md a claude-style
-// WriteSkills wrote for the given skill path.
-func readSkillFile(dir, skillPath string) ([]byte, error) {
-	flat := strings.ReplaceAll(skillPath, "/", "-")
-	return os.ReadFile(filepath.Join(dir, flat, "SKILL.md"))
 }

@@ -110,17 +110,9 @@ type ProjectConfig struct {
 	// Harness records which AI harness this project was scaffolded for
 	// (`forge project new --harness`). It is the ONLY durable record of that
 	// choice: the flag is read once at scaffold time, and without it on disk
-	// every later `forge generate` has to guess. The skills emitter reads it
-	// to decide whether to deliver on-disk SKILL.md files at all — `claude`
-	// gets .claude/skills/, and the default `reliant` (whose CLI discovers
-	// forge's skills through this same forge.yaml, and whose `forge skill
-	// load <name>` prints them from the binary) gets nothing written.
-	//
-	// Empty means UNSET, not reliant. The two are deliberately distinguished:
-	// a project scaffolded before this field existed may hold delivered
-	// skills that its harness depends on, so absence is read as "leave what
-	// is already there alone" rather than as the default. See
-	// harnessSkillsDirFor in internal/cli/generate_skills.go.
+	// every later `forge generate` has to guess. It selects the memory file
+	// (reliant.md, CLAUDE.md, ...). Forge never writes skill files for any
+	// harness. Empty means reliant.
 	Harness string `yaml:"harness,omitempty"`
 	// NOTE: there is intentionally NO project-level `hot_reload:` field.
 	// The single hot-reload switch is `features.hot_reload`, which the dev

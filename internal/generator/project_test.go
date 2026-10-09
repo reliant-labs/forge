@@ -746,15 +746,9 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 		t.Fatalf("top-level reliant.md should NOT exist for --harness=reliant (the framework content is injected in-memory by reliant); found one at %s", stubPath)
 	}
 
-	// The user-owned .reliant/reliant.md project memory file is still written.
-	reliantMemoryPath := filepath.Join(root, ".reliant", "reliant.md")
-	assertPathExists(t, reliantMemoryPath)
-	reliantMemory := readFile(t, reliantMemoryPath)
-	if !strings.Contains(reliantMemory, "# memory-app") {
-		t.Fatalf("expected .reliant/reliant.md to contain project name heading, got:\n%s", reliantMemory)
-	}
-	if !strings.Contains(reliantMemory, "has not launched yet") {
-		t.Fatalf("expected .reliant/reliant.md to contain launch notice, got:\n%s", reliantMemory)
+	// .reliant/reliant.md is no longer generated (nothing reads it).
+	if _, err := os.Stat(filepath.Join(root, ".reliant", "reliant.md")); err == nil {
+		t.Fatal(".reliant/reliant.md should not be generated")
 	}
 
 	// reliant-forge.md must NOT exist (conventions now served via CLI).
@@ -812,9 +806,6 @@ func TestProjectGeneratorHarnessClaude(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
 		t.Fatal("reliant.md should not exist when --harness=claude")
 	}
-
-	// .reliant/reliant.md (internal) should still exist.
-	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
 func TestProjectGeneratorHarnessCursor(t *testing.T) {
@@ -835,8 +826,6 @@ func TestProjectGeneratorHarnessCursor(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
 		t.Fatal("reliant.md should not exist when --harness=cursor")
 	}
-
-	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
 func TestProjectGeneratorHarnessCopilot(t *testing.T) {
@@ -858,8 +847,6 @@ func TestProjectGeneratorHarnessCopilot(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
 		t.Fatal("reliant.md should not exist when --harness=copilot")
 	}
-
-	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
 func TestProjectGeneratorHarnessCodex(t *testing.T) {
@@ -883,8 +870,6 @@ func TestProjectGeneratorHarnessCodex(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
 		t.Fatal("reliant.md should not exist when --harness=codex")
 	}
-
-	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
 func TestProjectGeneratorPreservesExistingMemoryFileNonReliant(t *testing.T) {

@@ -22,6 +22,28 @@ import (
 	"github.com/reliant-labs/forge/pkg/observe"
 )
 
+// newHTTPServer builds the serving http.Server around the routed handler: the
+// h2c upgrade, the write-stall guard, and the connection timeouts.
+//
+// There is deliberately NO WriteTimeout. It is a deadline on the whole
+// response, so it cuts every long-lived response at the same mark — SSE,
+// Connect and gRPC server streams, reverse-proxied LLM completions, and
+// websockets. Slow-read protection instead belongs to WriteStallGuard, which
+// bounds a write that cannot complete without capping a response that takes a
+// long time.
+func newHTTPServer(cfg Config, routed http.Handler) *http.Server {
+	// The guard sits inside h2c so it wraps the real writer on both protocols.
+	handler := WriteStallGuard(routed, cfg.WriteStallTimeout)
+	return &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           h2c.NewHandler(handler, &http2.Server{}),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+}
+
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
 // error. It takes an ALREADY-COMPOSED Server (handler with services
 // mounted, selected workers/operators, an OnShutdown closure) and owns
@@ -178,19 +200,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 	top.Handle("/", handler)
 
-	finalHandler := h2c.NewHandler(top, &http2.Server{})
-
-	httpSrv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           finalHandler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		// Cap request header size. Go's default is 1 MiB; we set it
-		// explicitly so the limit is obvious and easy to tune.
-		MaxHeaderBytes: 1 << 20,
-	}
+	httpSrv := newHTTPServer(cfg, top)
 
 	// Graceful shutdown: serverkit owns the signal context. The caller-
 	// supplied ctx governed composition (mount, migrate, OTel setup)

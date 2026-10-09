@@ -345,9 +345,11 @@ func runClusterDisconnect(ctx context.Context, name, kubeContext, envName, token
 
 	if strings.TrimSpace(kubeContext) == "" {
 		fmt.Fprintf(out, "\nNo --context given, so nothing was deleted in the cluster. To clean up:\n\n"+
-			"    kubectl --context <ctx> delete clusterrole,clusterrolebinding %s\n"+
+			"    kubectl --context <ctx> delete clusterrolebinding %s %s\n"+
+			"    kubectl --context <ctx> delete clusterrole %s\n"+
 			"    kubectl --context <ctx> delete namespace %s\n",
-			connectBootstrapName(name), connectTokenNamespace)
+			connectDeployBindingName(name), connectBootstrapName(name), connectBootstrapName(name),
+			connectTokenNamespace)
 		return nil
 	}
 	rbac := connectRBAC{
@@ -368,6 +370,7 @@ func runClusterDisconnect(ctx context.Context, name, kubeContext, envName, token
 func deleteConnectObjects(ctx context.Context, kctx string, rbac connectRBAC, out io.Writer) error {
 	name := connectBootstrapName(rbac.ClusterName)
 	for _, target := range []struct{ args []string }{
+		{[]string{"delete", "clusterrolebinding", connectDeployBindingName(rbac.ClusterName), "--ignore-not-found"}},
 		{[]string{"delete", "clusterrolebinding", name, "--ignore-not-found"}},
 		{[]string{"delete", "clusterrole", name, "--ignore-not-found"}},
 		{[]string{"delete", "secret", rbac.tokenSecretName(), "-n", rbac.TokenNamespace, "--ignore-not-found"}},

@@ -1,21 +1,23 @@
 ---
 name: cluster-connect
-description: Connect a Kubernetes cluster you operate to the control plane so environments can deploy into it — the two auth modes, the one-time IAM grant, the token fallback, disconnect, and the KCL binding.
+description: Connect a Kubernetes cluster you operate to the control plane so environments can deploy into it — the one auth (a scoped ServiceAccount token on every cluster), the two identities and the grant forge applies, choosing the address the platform dials, disconnect, and the KCL binding.
 ---
 
 # Connecting a cluster you operate
 
 `forge cluster connect` registers a cluster **by address**. Nothing is
-installed in it beyond the RBAC the platform's apply needs, nothing about the
-cluster changes, and the cluster keeps existing after you disconnect.
+installed in it beyond a ServiceAccount, its token and the RBAC the platform's
+apply needs, nothing about the cluster changes, and the cluster keeps existing
+after you disconnect.
 
 ```bash
 forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
 ```
 
-forge reads the API server address and CA from your kubectl context, tells the
-control plane, applies the in-cluster grant through that same context, and
-prints the one-time cloud IAM grant you run yourself.
+forge reads the API server address and CA from your kubectl context, applies
+the in-cluster grant through that same context, mints a ServiceAccount token
+there, and uploads it to the control plane **write-only**. There is no cloud
+IAM step and no second command.
 
 **Declarative and idempotent by name.** Re-running `connect` with the same name
 UPDATES the cluster rather than colliding, so fixing a rotated endpoint is the
@@ -25,76 +27,56 @@ same command again, and the command is safe to put in a script.
 `forge.ControlPlane` declaration. Your organization comes from the credential
 and is never sent.
 
-## Two auth modes, which are the two ends of a trade-off
+## One auth, on every cluster
 
-| `--auth` | What authenticates | When |
-|---|---|---|
-| `gcp` | The hub's own GCP identity, through Flux `kubeConfig.configMapRef`. **No secret crosses the boundary.** | GKE |
-| `token` | An RBAC-scoped ServiceAccount token forge mints in your cluster. | **Any** Kubernetes cluster |
+GKE, EKS, AKS, VKE, k3s, bare metal: every cluster connects the same way, with
+a ServiceAccount token forge mints in it. There is no `--auth` flag. One
+mechanism means the platform protects every customer — and itself, since the
+control plane's own clusters connect exactly like yours — with the same code.
 
-`--auth auto` (the default) picks `gcp` for a `gke_<project>_<location>_<cluster>`
-context and `token` for everything else.
+The cost is a bearer token at rest on the platform, and it is bounded twice:
+by the RBAC below, and by `disconnect`, which revokes it.
 
-**The token path is a real answer, not a degraded one.** It is how a cluster
-with no cloud identity to trust — Vultr VKE, bare metal, k3s — becomes a target
-at all, and **EKS and AKS clusters work through it today**. It is strictly
-worse than workload identity in one specific way (a replayable bearer token
-exists at rest), and that cost is bounded by the RBAC forge applies and by
-`disconnect` revoking it.
+## Which address the platform dials
 
-There is deliberately no `aws` or `azure` mode. Flux supports both providers
-and the control plane reserves the enum tags, but neither path is built or
-tested — and an untested path that *looks* supported is worse than an absent
-one: it gets chosen, fails inside a cloud client, and reports a problem with
-your cluster.
+The address registered is **your context's own `server`**. The platform dials
+it from a pod in its own cluster, so pick the context whose server that pod
+can reach:
 
-## The one-time grant: two identities, and the half people miss
+| Your cluster | Context to connect through |
+|---|---|
+| Public API endpoint | the one `get-credentials` writes by default |
+| GKE private endpoint, platform on the same VPC | `gcloud container clusters get-credentials <c> --internal-ip` |
+| Anything else | a context whose `server` is the reachable address |
 
-This is the part most likely to be misread. Getting it half right produces a
-cluster that connects fine and refuses every apply.
+A kubeconfig's credential — on GKE an `exec` plugin that runs on your machine —
+is never read. Only the address and the CA are.
 
-1. **The connect identity** authenticates the TLS connection to your API
-   server. On `gcp` that is the hub's GCP service account, which the connect
-   response hands back (`HubIdentity`) because it is a fact about the platform
-   you have no way to know.
-2. **The impersonated identity** authorizes the apply once connected. The hub's
-   kustomize-controller runs with `--default-service-account=reliant-deploy-tenant`,
-   so Flux impersonates
-   `system:serviceaccount:flux-<org>:reliant-deploy-tenant` on **your** cluster
-   — a namespace that does not exist there and does not need to.
+## What forge grants, and the two identities
 
-So **granting the hub's cloud identity read access is not sufficient.** forge
-applies the in-cluster half for you: a ClusterRole/ClusterRoleBinding
-(`forge-connect-<name>`) carrying the bootstrap writes the platform makes
-(Namespace, ServiceAccount, Role, RoleBinding) plus permission to impersonate
-exactly that one username, pinned by `resourceNames`.
+Two identities are in play, and the grant is wrong without either.
 
-The cloud half forge **cannot** do — it is an IAM write in your project, with
-credentials forge does not hold — so it prints it:
+1. **The connect identity** — `forge-system/forge-connect`, the ServiceAccount
+   forge mints. It authenticates the TLS connection, and that is all it can
+   do: its ClusterRole carries one rule, `impersonate` on the ServiceAccount
+   named `reliant-deploy-tenant`.
+2. **The impersonated identity** — the one every apply runs as. The
+   platform's kustomize-controller runs with
+   `--default-service-account=reliant-deploy-tenant`, so Flux impersonates
+   `system:serviceaccount:flux-<your org>:reliant-deploy-tenant` on **your**
+   cluster — a namespace that does not exist there and does not need to.
+
+forge applies, server-side, through your context:
 
 ```
-gcloud projects add-iam-policy-binding acme \
-  --member=serviceAccount:control-plane@acme.iam.gserviceaccount.com \
-  --role=roles/container.clusterViewer
+Namespace          forge-system
+ServiceAccount     forge-system/forge-connect
+Secret             forge-system/forge-connect-token   (kubernetes.io/service-account-token)
+ClusterRole        forge-connect-<name>          impersonate serviceaccounts/reliant-deploy-tenant
+ClusterRoleBinding forge-connect-<name>          -> forge-system/forge-connect
 ```
 
-A control plane with no GCP identity (normal in dev) makes forge say so rather
-than print a grant with a blank principal in it, which is how someone runs a
-binding that silently grants nothing. Use `--auth token` against a dev cluster.
-
-On the `token` path there is **no cloud grant at all**: forge applied the RBAC
-and minted the credential.
-
-## The token, and why it is a Secret rather than a TokenRequest
-
-forge creates, server-side-applied in your cluster:
-
-```
-Namespace       forge-system
-ServiceAccount  forge-system/forge-connect
-Secret          forge-system/forge-connect-token   (kubernetes.io/service-account-token)
-ClusterRole     forge-connect-<name>  + its ClusterRoleBinding
-```
+### The token, and why it is a Secret rather than a TokenRequest
 
 The token is **sent write-only and never printed** — not in the summary, not on
 failure, not in `--dry-run`. The control plane has no field to return it in.
@@ -171,6 +153,6 @@ forge cluster connect prod-us --context gke_acme_us-central1_prod --dry-run
 |---|---|
 | `whose host is a loopback or bind address` | The hub dials from a **pod**, where `127.0.0.1` is that pod. The deploy would fail as "connection refused" against a healthy cluster. Connect by an address reachable from outside the cluster. |
 | `https only` | Any other scheme carries the credential in clear text. |
-| `carries no certificate authority` | (token path; on gcp the CA comes from GKE's describe) forge will not connect a cluster whose API server it cannot verify, and never falls back to skipping verification. Re-run your provider's `get-credentials`. |
-| `--auth gcp needs a GKE context` | Workload identity is GKE-only here. Use `--auth token`. |
+| `carries no certificate authority` | forge will not connect a cluster whose API server it cannot verify, and never falls back to skipping verification. Re-run your provider's `get-credentials`. |
+| `unknown flag: --auth` | There is one auth now; drop the flag. |
 | `resolve the credential's organization` | forge asks the control plane which org your credential acts for — it composes the hub namespace in the impersonated username, so the RBAC would be wrong without it (in the quiet way, authorizing a user that never appears). Authenticate (signed in to Reliant: nothing to do — `reliant forge` / an agent shell uses your session; standalone: `forge login`; CI: the env's `token_env`) and re-run; the token needs `deploy:read`. |

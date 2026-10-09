@@ -121,7 +121,11 @@ func TestBootstrapManifests_TokenMintsTheCredential(t *testing.T) {
 		"kubernetes.io/service-account.name: forge-connect",
 		// The binding's subject is the minted SA, not a User.
 		"kind: ServiceAccount\n  name: forge-connect\n  namespace: forge-system",
-		`resourceNames: ["system:serviceaccount:flux-acme:reliant-deploy-tenant"]`,
+		// Impersonation of the one deploy name, and that identity, pinned to
+		// this org's hub namespace, bound to the whole cluster.
+		`resourceNames: ["reliant-deploy-tenant"]`,
+		"name: forge-connect-vke-prod-deploy",
+		"kind: ServiceAccount\n  name: reliant-deploy-tenant\n  namespace: flux-acme",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the token bootstrap omits %q:\n%s", want, got)
@@ -137,8 +141,8 @@ func TestBootstrapManifests_LabelsEverythingForgeCreates(t *testing.T) {
 		TokenNamespace: connectTokenNamespace, TokenServiceAccount: connectTokenServiceAccount,
 	}.bootstrapManifests()
 	docs := strings.Split(got, "\n---\n")
-	if len(docs) != 5 {
-		t.Fatalf("got %d objects, want 5 (Namespace, SA, Secret, ClusterRole, ClusterRoleBinding)", len(docs))
+	if len(docs) != 6 {
+		t.Fatalf("got %d objects, want 6 (Namespace, SA, Secret, ClusterRole, two ClusterRoleBindings)", len(docs))
 	}
 	for _, doc := range docs {
 		if !strings.Contains(doc, forgeManagedLabelKey+": "+forgeManagedLabelValue) {

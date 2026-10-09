@@ -22,20 +22,23 @@ package cli
 //     target cluster authenticates is `system:serviceaccount:flux-<org>:reliant-deploy-tenant`
 //     — a namespace that does not exist in the target and does not need to.
 //
-// SO THE CONNECT IDENTITY NEEDS TWO THINGS, and the grant is wrong without
-// either of them:
+// SO forge GRANTS EACH IDENTITY EXACTLY ONE THING:
 //
-//   - the bootstrap writes: the control plane creates the destination
-//     Namespace, the deploy ServiceAccount and its Role/RoleBinding in the
-//     target itself, through this credential;
-//   - impersonate, on the deploy username above. Without it the connection
-//     succeeds and every apply is Forbidden on a user nobody bound.
+//   - the connect identity may IMPERSONATE the deploy ServiceAccount name, and
+//     nothing else. It cannot read a Secret or create a Namespace in its own
+//     right, so a leaked connect token is worth no more than the identity it
+//     can become;
+//   - the impersonated identity — this org's, pinned by namespace — gets the
+//     WHOLE CLUSTER (cluster-admin). That is what the owner connected the
+//     cluster for: a self-managed env's bundle carries CRDs, ClusterRoles,
+//     webhooks and Namespaces, and an apply that may only write some of its
+//     own objects is a deploy that fails halfway. It gives nothing on any
+//     other cluster: the binding lives here, and a subject names one org.
 //
-// The alternative — asking the owner to pre-create a namespace literally named
-// `flux-<org>` with an SA and RBAC inside it — leaks the hub's internal naming
-// into a customer's cluster as a hard requirement, and is a multi-object manual
-// step. forge applies the cluster-scoped half instead, and the control plane
-// creates the rest with the credential this grant authorizes.
+// Both are cluster-scoped objects on the target, bound to a username whose
+// namespace (`flux-<org>`) does not exist there. That is deliberate: asking the
+// owner to pre-create a namespace literally named after the hub's internals
+// would leak them into a customer's cluster as a hard requirement.
 
 import (
 	"fmt"
@@ -135,11 +138,21 @@ func (r connectRBAC) bootstrapManifests() string {
 	}
 
 	add("apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: " + name + "\n" +
-		labels + connectBootstrapRules(r.Org))
+		labels + connectBootstrapRules())
 	add("apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: " + name + "\n" +
 		labels +
 		"roleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: " + name + "\n" +
 		r.subjectYAML())
+	// THE WHOLE CLUSTER, TO THIS ORG'S PINNED IDENTITY. The subject is the
+	// ServiceAccount the hub's Flux impersonates for this org; RBAC matches
+	// a ServiceAccount subject on the username alone, so the namespace not
+	// existing here is fine. Another org's deploy identity is a different
+	// namespace, so it matches nothing.
+	add("apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: " +
+		connectDeployBindingName(r.ClusterName) + "\n" + labels +
+		"roleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: cluster-admin\n" +
+		"subjects:\n- kind: ServiceAccount\n  name: " + hubDeployServiceAccount +
+		"\n  namespace: " + hubNamespacePrefix + r.Org + "\n")
 	return strings.Join(docs, "\n---\n") + "\n"
 }
 
@@ -150,45 +163,38 @@ func (r connectRBAC) subjectYAML() string {
 		"\n  namespace: " + r.TokenNamespace + "\n"
 }
 
-// connectBootstrapRules is the narrowest rule set that lets the control plane
-// deploy into this cluster. Every rule is here because something concrete
-// fails without it.
-func connectBootstrapRules(org string) string {
+// connectBootstrapRules is the connect identity's whole authority: become the
+// deploy identity, and nothing else.
+//
+// THE serviceaccounts RESOURCE, NOT users. The deploy username is
+// ServiceAccount-shaped, and the API server's impersonation filter checks an
+// impersonated `system:serviceaccount:<ns>:<name>` as the `serviceaccounts`
+// resource named <name> in <ns>. A `users` rule naming that username is never
+// consulted — it used to be here and granted nothing.
+//
+// resourceNames pins the name; a ClusterRole cannot pin the namespace, so the
+// connect identity may become ANY namespace's `reliant-deploy-tenant` on this
+// cluster. That reaches no further than this cluster's own grants: the only
+// deploy identity with authority here is the one a connect bound, and an org
+// can bind one only on a cluster it already administers.
+func connectBootstrapRules() string {
 	return `rules:
-# The destination Namespace per environment. The control plane creates it in
-# the target itself, through this credential, exactly as it does for a cluster
-# we operate.
-- apiGroups: [""]
-  resources: ["namespaces"]
-  verbs: ["get", "list", "watch", "create", "patch", "update"]
-# The deploy ServiceAccount the apply is impersonated as, created in the
-# destination namespace alongside its Role and RoleBinding.
-- apiGroups: [""]
-  resources: ["serviceaccounts"]
-  verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
-# The deploy Role and RoleBinding. The bind and escalate verbs are REQUIRED
-# and are not a widening: Kubernetes refuses to let a principal create a Role carrying
-# rules it does not itself hold, so without them the control plane cannot
-# create the deploy Role at all — the apply fails with a privilege-escalation
-# denial that reads like a bug somewhere else. These two verbs are the
-# documented way to delegate that, and they are scoped to this one API group.
-- apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["roles", "rolebindings"]
-  verbs: ["get", "list", "watch", "create", "patch", "update", "delete", "bind", "escalate"]
-# IMPERSONATE, ON EXACTLY ONE USERNAME. This is the rule whose absence makes a
-# perfectly connected cluster refuse every apply: Flux presents the deploy
-# username, not this identity, so a connection with no impersonate grant is
-# authenticated and unauthorized. resourceNames pins it to the single username
-# the hub can ever present, so this grants nothing else.
+# IMPERSONATE, ON EXACTLY ONE NAME. Flux presents the deploy username, not
+# this identity, so a connection with no impersonate grant is authenticated
+# and unauthorized.
 - apiGroups: [""]
   resources: ["serviceaccounts"]
   verbs: ["impersonate"]
   resourceNames: ["` + hubDeployServiceAccount + `"]
-- apiGroups: [""]
-  resources: ["users"]
-  verbs: ["impersonate"]
-  resourceNames: ["` + hubDeployUsername(org) + `"]
 `
+}
+
+// connectDeployBindingName is the ClusterRoleBinding granting this connection's
+// org the whole cluster. Per connected-cluster name for the reason
+// connectBootstrapName is: two orgs connecting one physical cluster must not
+// rewrite each other's subject.
+func connectDeployBindingName(clusterName string) string {
+	return connectBootstrapName(clusterName) + "-deploy"
 }
 
 // writeGrantSummary says what was granted and that nothing is owed. There is

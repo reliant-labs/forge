@@ -78,9 +78,12 @@ assert_env_config_map = _env["MODE"].configMapRef == {name = "app-config", key =
 assert_env_field_ref = _env["POD_IP"].fieldRef == {fieldPath = "status.podIP"}
 # An empty string is a real value (a disable sentinel), not "unset".
 assert_env_empty_value = _env["EMPTY"].value == ""
+# forge derives the telemetry identity from the workload rather than a shared
+# config default. It is added after author-declared environment entries.
+assert_derived_otel_service_name = _env["OTEL_SERVICE_NAME"].value == "workspace-proxy"
 # Exactly one channel per entry.
 assert_one_channel_each = all e in _s.env {
     len([k for k in ["value", "secretRef", "configMapRef", "fieldRef", "managedSecret", "databaseRef", "workloadURL"] if k in e]) == 1
 }
 # Env order is the author's order (k8s $(VAR) expansion depends on it).
-assert_env_order = [e.name for e in _s.env] == ["LOG_LEVEL", "DATABASE_URL", "SENTRY_DSN", "MODE", "POD_IP", "EMPTY"]
+assert_env_order = [e.name for e in _s.env] == ["LOG_LEVEL", "DATABASE_URL", "SENTRY_DSN", "MODE", "POD_IP", "EMPTY", "OTEL_SERVICE_NAME"]

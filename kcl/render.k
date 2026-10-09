@@ -303,6 +303,26 @@ _env_var = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any 
 }
 
 # ---------------------------------------------------------------------------
+# Derived environment.
+#
+# OTEL_SERVICE_NAME identifies the process producing telemetry, so it is a
+# workload fact rather than a project-wide config value. Supply the workload
+# name when the author did not set it; an explicit value (including an empty
+# one) remains the author's override.
+# ---------------------------------------------------------------------------
+
+_RUNS_A_PROCESS = ["host", "cluster", "hosted"]
+
+_derived_env = lambda w: any, rt: any -> {str:str} {
+    _env = w.env if w.env else {}
+    {OTEL_SERVICE_NAME = w.name} if rt.type in _RUNS_A_PROCESS and w.kind != "tool" and "OTEL_SERVICE_NAME" not in _env else {}
+}
+
+_effective_env = lambda w: any, rt: any -> {str:} {
+    (w.env if w.env else {}) | _derived_env(w, rt)
+}
+
+# ---------------------------------------------------------------------------
 # forge.WorkloadURL resolution (lib/workload_url.k has the order).
 # ---------------------------------------------------------------------------
 
@@ -424,6 +444,7 @@ _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
 
 # The spec, as the generated tiers.Workload. `rt` is the resolved runtime.
 _spec = lambda w: any, rt: any, bundle: Bundle -> any {
+    _env = _effective_env(w, rt)
     _TWorkload {
         kind = w.kind
         image = _spec_image(w, rt, bundle) or "-"
@@ -432,7 +453,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         replicas = w.replicas
         if w.resources:
             resources = w.resources
-        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env] if w.env else Undefined
+        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in _env] if _env else Undefined
         ports = w.ports
         probes = _default_probes(w)
         storageGiB = w.storageGiB

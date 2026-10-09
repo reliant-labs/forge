@@ -23,6 +23,7 @@ output = forge.render(forge.Bundle {
             RUNTIME_CLASS_NAME = ""
             LOG_LEVEL = "info"
             DB_PASSWORD = forge.SecretRef {name = "app-secrets", key = "DB_PASSWORD"}
+            OTEL_SERVICE_NAME = "custom-api"
         }
         runtime = forge.OnCluster {target = _target}
     }]
@@ -31,11 +32,13 @@ output = forge.render(forge.Bundle {
 _spec_env = output.workloads[0].spec.env
 _rec_env = [m for m in output.manifests if m.kind == "Workload"][0].spec.env
 
-assert_env_count = len(_spec_env) == 3
+# An explicit OTEL_SERVICE_NAME remains an author override.
+assert_env_count = len(_spec_env) == 4
 assert_empty_name = _spec_env[0].name == "RUNTIME_CLASS_NAME"
 assert_empty_value_present = "value" in _spec_env[0]
 assert_empty_value_is_empty_string = _spec_env[0].value == ""
 assert_populated_value = _spec_env[1].value == "info"
 assert_secret_has_no_value = "value" not in _spec_env[2]
+assert_explicit_otel_service_name = _spec_env[3].name == "OTEL_SERVICE_NAME" and _spec_env[3].value == "custom-api"
 # The record carries the same "" — Go renders it as `value: ""`.
 assert_record_empty_value = "value" in _rec_env[0] and _rec_env[0].value == ""

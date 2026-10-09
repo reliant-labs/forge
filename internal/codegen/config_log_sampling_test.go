@@ -1,13 +1,15 @@
 package codegen
 
 import (
+	"go/ast"
+	"go/printer"
+	"go/token"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // The success-log sampling wire has TWO ends and they have to agree.
@@ -16,17 +18,20 @@ import (
 //     log_success_sample_window. It is what types the value, validates it at
 //     startup, and generates the KCL schema + env projection a deployment
 //     sets it through (deploy/kcl/<env>/config.k).
-//   - forge/pkg/observe reads the variable that projection writes,
-//     observe.SuccessSampleWindowEnv, when it builds a logging layer — the
-//     only channel that reaches an app's owned serve.go and observe_chain.go
-//     seams without editing them.
+//   - the scaffolded serve.go hands the LOADED value to the RPC edge's
+//     logging layer, as observe.WithSuccessSampling in observe.Deps'
+//     LogOptions. forge/pkg/observe reads no environment, so this is the
+//     only way the setting reaches it.
 //
-// A drift between the two names is silent: the field validates, the
-// manifest carries the variable, and nothing reads it. So they are pinned
-// together here, along with the two properties the declaration promises:
-// the default logs every success, and there is no flag (observe never
-// sees one, so a flag would be a setting that does nothing).
-func TestScaffoldLogSuccessSampleWindowMatchesObserve(t *testing.T) {
+// A break between the two is silent: the field validates, the manifest
+// carries the variable, and nothing reads it. So both ends are pinned here.
+
+// TestScaffoldLogSuccessSampleWindowDeclaration: the declaration types the
+// window, defaults to logging every success, and — because the loaded value
+// is the one observe uses — accepts every source the loader reads, a flag
+// included.
+func TestScaffoldLogSuccessSampleWindowDeclaration(t *testing.T) {
+	t.Parallel()
 	out, err := templates.ProjectTemplates().Render("config.proto.tmpl", struct{ Module string }{Module: "example.com/proj"})
 	if err != nil {
 		t.Fatalf("render config.proto.tmpl: %v", err)
@@ -44,13 +49,14 @@ func TestScaffoldLogSuccessSampleWindowMatchesObserve(t *testing.T) {
 	}
 	block := rest[:end]
 
-	if want := `env_var: "` + observe.SuccessSampleWindowEnv + `"`; !strings.Contains(block, want) {
-		t.Fatalf("log_success_sample_window is not bound to %s, the variable forge/pkg/observe reads:\n%s",
-			observe.SuccessSampleWindowEnv, block)
+	if !strings.Contains(block, `env_var: "LOG_SUCCESS_SAMPLE_WINDOW"`) {
+		t.Errorf("log_success_sample_window is not projected onto LOG_SUCCESS_SAMPLE_WINDOW, the "+
+			"variable config_gen.k writes per environment:\n%s", block)
 	}
-	if strings.Contains(block, "flag:") {
-		t.Errorf("log_success_sample_window declares a flag, but observe reads only the environment — "+
-			"`--flag` would load into the config and change nothing:\n%s", block)
+	if !strings.Contains(block, `flag: "log-success-sample-window"`) {
+		t.Errorf("log_success_sample_window declares no flag. serve.go passes the LOADED value to "+
+			"observe, so every source the loader reads must work — a --config file and a flag "+
+			"included:\n%s", block)
 	}
 
 	m := regexp.MustCompile(`default_value:\s*"([^"]*)"`).FindStringSubmatch(block)
@@ -65,4 +71,68 @@ func TestScaffoldLogSuccessSampleWindowMatchesObserve(t *testing.T) {
 		t.Errorf("default_value %q samples successes; the default must log every success "+
 			"(sampling is a per-environment opt-in)", m[1])
 	}
+}
+
+// TestServeScaffoldPassesSuccessSampleWindow: when the config declares the
+// field, serve.go's observe.Deps literal carries
+// LogOptions: observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration()).
+// When it does not, the scaffold names no such field — a reference to it
+// would not compile.
+//
+// It reads the PARSED scaffold: the option is found as the LogOptions key of
+// the observe.Deps literal, the only position observe.Chain reads it from,
+// so a mention in a comment or a dead assignment cannot satisfy it.
+func TestServeScaffoldPassesSuccessSampleWindow(t *testing.T) {
+	t.Parallel()
+	const want = "[]observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())}"
+
+	got, found := chainLogOptions(t, parseServeScaffold(t, "LogSuccessSampleWindow"))
+	if !found {
+		t.Fatalf("serve.go's observe.Deps sets no LogOptions although the config declares " +
+			"log_success_sample_window — the window a deployment configured never reaches the " +
+			"logging interceptor, and every success is logged whatever config.k says")
+	}
+	if got != want {
+		t.Fatalf("observe.Deps.LogOptions = %s, want %s", got, want)
+	}
+
+	if got, found := chainLogOptions(t, parseServeScaffold(t)); found {
+		t.Fatalf("with no log_success_sample_window in the config, serve.go must not reference "+
+			"it, but observe.Deps.LogOptions = %s", got)
+	}
+}
+
+// chainLogOptions returns the source of the LogOptions value in the
+// scaffold's observe.Deps literal, and whether it is set at all.
+func chainLogOptions(t *testing.T, file *ast.File) (string, bool) {
+	t.Helper()
+	var literals int
+	var value string
+	var found bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok || !isQualifiedType(lit.Type, "observe", "Deps") {
+			return true
+		}
+		literals++
+		for _, elt := range lit.Elts {
+			kv, isKV := elt.(*ast.KeyValueExpr)
+			if !isKV {
+				continue
+			}
+			if key, isIdent := kv.Key.(*ast.Ident); isIdent && key.Name == "LogOptions" {
+				var b strings.Builder
+				if err := printer.Fprint(&b, token.NewFileSet(), kv.Value); err != nil {
+					t.Fatalf("print LogOptions: %v", err)
+				}
+				value, found = b.String(), true
+			}
+		}
+		return true
+	})
+	if literals != 1 {
+		t.Fatalf("rendered serve.go builds %d observe.Deps literals, want exactly 1 — the "+
+			"interceptor chain this guard inspects", literals)
+	}
+	return value, found
 }

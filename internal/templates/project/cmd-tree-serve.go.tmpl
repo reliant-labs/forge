@@ -171,6 +171,12 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
 		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(cfg.RateLimitRps), Burst: int(cfg.RateLimitBurst)}, middleware.ClaimsFromContext),
 {{- end}}
+{{- if index .ConfigFields "LogSuccessSampleWindow"}}
+		// Success-log sampling, from the typed config (0s, the default, logs
+		// every successful RPC). observe reads no environment: this line is
+		// how log_success_sample_window reaches the logging interceptor.
+		LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())},
+{{- end}}
 	}
 	// protovalidate rejects requests whose buf.validate field rules fail
 	// with CodeInvalidArgument BEFORE the handler runs. Appended LAST, so it

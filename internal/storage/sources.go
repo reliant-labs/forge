@@ -67,13 +67,26 @@ func (r Runner) Sources(apply bool) error {
 	if parseErr != nil {
 		maxAge = 0
 	}
-	policy := gitsource.EvictPolicy{MaxAge: maxAge, KeepPerSlug: r.Policy.SourceCacheKeep, Ctx: r.hostCtx()}
+	ctx := r.hostCtx()
+	del := r.deletes()
+	policy := gitsource.EvictPolicy{
+		MaxAge: maxAge, KeepPerSlug: r.Policy.SourceCacheKeep, Ctx: ctx,
+		// A clone is a whole tree — an installed node_modules can be 100k
+		// files — so it is unlinked through the pass's governor like every
+		// other cache, not by an unpaced RemoveAll.
+		RemoveTree: func(path string) error { return del.removeTree(ctx, path) },
+	}
 	if r.openShared != nil || r.OpenPaths != nil {
-		ctx := r.hostCtx()
 		policy.InUse = r.sharedInUse(ctx)
 	}
 	got, err := gitsource.Evict(root, time.Now(), policy, apply, r.Out)
 	if err != nil {
+		if fsDistress(err) {
+			err = del.observe(root, err) // a rename or read, not one of del's own unlinks
+		}
+		if stopsPass(err) {
+			r.print("source cache: stopped (%v)\n", err)
+		}
 		return err
 	}
 	if len(got.Removed) > 0 {

@@ -33,6 +33,10 @@ const (
 	shareLast     = 1.0
 )
 
+// shareGoCacheDeletes is the most of a pass's delete budget the Go caches may
+// spend, so the temp sweep and the source cache always have some left.
+const shareGoCacheDeletes = 0.8
+
 // sharedOpen takes the pass's open-files snapshot once.
 type sharedOpen struct {
 	once sync.Once
@@ -92,7 +96,17 @@ func (r Runner) beginPass(ctx context.Context) Runner {
 	if !testing.Testing() || r.OpenPaths != nil {
 		r.openShared.start()
 	}
+	r.governor = newDeleter(r.Policy, r.removeFn, r.sleepFn)
 	return r
+}
+
+// endPass says, once, that the pass backed off. It is the line an agent
+// reading the output must not miss: re-running at once is the hammering the
+// back-off exists to stop.
+func (r Runner) endPass() {
+	if b := r.backedOffErr(); b != nil {
+		r.print("storage maintenance BACKED OFF: %v. The filesystem is in distress; do not re-run now. The next scheduled or automatic pass resumes where this one stopped.\n", b)
+	}
 }
 
 // slice returns a runner whose Ctx is share of the pass budget, never past the
@@ -122,6 +136,12 @@ func (r Runner) slice(share float64) (Runner, context.CancelFunc) {
 func (r Runner) runLayer(name string, share float64, fn func(Runner) error) error {
 	if err := r.hostCtx().Err(); err != nil {
 		return layerErr(name, &CutOffError{Err: err})
+	}
+	// After a back-off nothing more runs: every layer touches the filesystem
+	// or forks a process, and either adds to the distress.
+	if err := r.backedOffErr(); err != nil {
+		r.print("%s: skipped, the pass backed off\n", name)
+		return layerErr(name, err)
 	}
 	sub, done := r.slice(share)
 	defer done()

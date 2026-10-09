@@ -41,9 +41,23 @@ type Runner struct {
 	// unbounded.
 	Ctx context.Context
 
+	// ReapWorktrees marks the one pass allowed to remove worktrees: an
+	// explicit `forge storage gc --apply`, and even then only under the
+	// policy's worktree_reap. Every automatic pass leaves it false: the
+	// background auto-gc, the installed schedule and `forge storage daemon`.
+	// An agent between two commands holds no process in its worktree, so to
+	// a pass nobody invoked it looks exactly like an abandoned one.
+	ReapWorktrees bool
+
 	// afterQuarantine is a test seam run between the quarantine move and the
 	// final classification, where a concurrent writer would land.
 	afterQuarantine func(original, quarantined string)
+
+	// removeFn and sleepFn are test seams for the deletion governor
+	// (deletes.go): the unlink itself, and the pacing pause. Nil means
+	// os.Remove and a real timer.
+	removeFn func(string) error
+	sleepFn  func(context.Context, time.Duration) error
 
 	// Go-cache layer roots (gocache.go). Empty means the real machine
 	// location in production and is REFUSED under `go test`.
@@ -60,6 +74,7 @@ type Runner struct {
 	// Per-pass state, set by beginPass (passctx.go).
 	passTotal  time.Duration
 	openShared *sharedOpen
+	governor   deleter
 }
 
 // hostCtx is the context the host layers run under.
@@ -275,7 +290,12 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 		}
 	}
 	r = r.beginPass(ctx)
+	defer r.endPass()
 	failures = append(failures, r.hostLayers(apply)...)
+	if err := r.backedOffErr(); err != nil {
+		r.print("docker layers: skipped, the pass backed off\n")
+		return errors.Join(append(failures, layerErr("docker", err))...)
+	}
 	if err := r.Local(ctx); err != nil {
 		return errors.Join(append(failures, layerErr("docker", err))...)
 	}
@@ -298,13 +318,14 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 			failures = append(failures, layerErr("registry "+registry.Container, err))
 		}
 	}
-	r.print("persistent volumes, running containers and application data are retained; worktrees are reclaimed only under the worktree_reap policy\n")
+	r.print("persistent volumes, running containers and application data are retained; worktrees are reclaimed only by an explicit `forge storage gc --apply` under the worktree_reap policy\n")
 	return errors.Join(failures...)
 }
 
 // hostLayers runs the layers that reclaim from the host filesystem — rotated
-// logs, the temp sweep, the source cache — each independently, returning one
-// error per failed layer.
+// logs, the Go caches, the temp sweep, the source cache, worktrees — each
+// independently, returning one error per failed layer. They share the pass's
+// delete budget in this order, the Go caches taking at most their share.
 func (r Runner) hostLayers(apply bool) []error {
 	var failures []error
 	add := func(err error) {
@@ -326,8 +347,13 @@ func (r Runner) goCacheLayer(apply bool) error {
 	if err := r.hostCtx().Err(); err != nil {
 		return layerErr("go caches", &CutOffError{Err: err})
 	}
+	if err := r.backedOffErr(); err != nil {
+		r.print("go caches: skipped, the pass backed off\n")
+		return layerErr("go caches", err)
+	}
 	sub, done := r.slice(shareGoCaches)
 	defer done()
+	sub.governor = sub.deletes().share(shareGoCacheDeletes)
 	return sub.GoCaches(apply)
 }
 

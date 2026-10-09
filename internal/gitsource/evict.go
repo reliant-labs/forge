@@ -119,6 +119,26 @@ type EvictPolicy struct {
 	// which stop at the deadline with everything not yet removed retained.
 	// Nil means unbounded.
 	Ctx context.Context
+
+	// RemoveTree deletes one evicted entry's tree. Machine maintenance passes
+	// its paced, capped deleter, which may stop partway through a tree; that
+	// is safe because the entry is renamed out of the cache first (see
+	// evictingPrefix) and a later Evict finishes the leftover. Nil means an
+	// unpaced removal of the whole tree.
+	RemoveTree func(path string) error
+}
+
+// evictingPrefix names an entry being evicted. The entry is renamed to it
+// before its tree is deleted, so Resolve can never see a half-deleted clone
+// under the cache key, and a removal stopped partway (a delete cap, a
+// back-off, a crash) leaves a name every later Evict recognises and finishes.
+const evictingPrefix = ".forge-evicting-"
+
+func (p EvictPolicy) removeTree(path string) error {
+	if p.RemoveTree != nil {
+		return p.RemoveTree(path)
+	}
+	return removeAllWritable(path)
 }
 
 func (p EvictPolicy) ctx() context.Context {
@@ -193,9 +213,14 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		lastUse time.Time
 	}
 	var usable []candidate
+	var leftovers []string
 
 	for _, de := range dirEntries {
 		if !de.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(de.Name(), evictingPrefix) {
+			leftovers = append(leftovers, de.Name())
 			continue
 		}
 		entry := filepath.Join(root, de.Name())
@@ -236,6 +261,10 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 	}
 	sort.Slice(doomed, func(i, j int) bool { return doomed[i].name < doomed[j].name })
 
+	if err := finishInterruptedEvictions(root, leftovers, policy, apply, out); err != nil {
+		return result, err
+	}
+
 	inUse := policy.InUse
 	if inUse == nil && len(doomed) > 0 {
 		snap, err := openfiles.Take(policy.ctx())
@@ -267,7 +296,12 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		size := treeSize(entry)
 		printf(out, "evict source cache %s (%d bytes, unused %s)\n", entry, size, now.Sub(c.lastUse).Round(time.Hour))
 		if apply {
-			if err := removeAllWritable(entry); err != nil {
+			trash := filepath.Join(root, fmt.Sprintf("%s%s-%d", evictingPrefix, c.name, now.UnixNano()))
+			if err := os.Rename(entry, trash); err != nil {
+				return result, fmt.Errorf("evict source cache %s: %w", entry, err)
+			}
+			if err := policy.removeTree(trash); err != nil {
+				result.Removed = append(result.Removed, c.name) // out of the cache; the leftover is finished next pass
 				return result, fmt.Errorf("evict source cache %s: %w", entry, err)
 			}
 		}
@@ -275,6 +309,26 @@ func Evict(root string, now time.Time, policy EvictPolicy, apply bool, out io.Wr
 		result.Bytes += size
 	}
 	return result, nil
+}
+
+// finishInterruptedEvictions deletes what earlier evictions renamed out of the
+// cache and did not finish. Their decision was already made and their names
+// are no cache key, so nothing can be using them by name.
+func finishInterruptedEvictions(root string, leftovers []string, policy EvictPolicy, apply bool, out io.Writer) error {
+	sort.Strings(leftovers)
+	for _, name := range leftovers {
+		if err := policy.ctx().Err(); err != nil {
+			return fmt.Errorf("source cache eviction stopped before finishing interrupted evictions: %w", err)
+		}
+		trash := filepath.Join(root, name)
+		printf(out, "finish interrupted eviction %s\n", trash)
+		if apply {
+			if err := policy.removeTree(trash); err != nil {
+				return fmt.Errorf("finish interrupted eviction %s: %w", trash, err)
+			}
+		}
+	}
+	return nil
 }
 
 // entrySlug recovers the repository part of a CacheKey ("<slug>-<12 hex>").

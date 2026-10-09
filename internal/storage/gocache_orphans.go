@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -237,6 +236,11 @@ func (r Runner) OrphanedGoCaches(apply bool) error {
 		}
 		idle, err := c.measure(ctx, now, orphanIdle)
 		if err != nil {
+			if fsDistress(err) {
+				err = r.deletes().observe(c.path, err)
+				r.print("orphaned go caches: stopped at %s (%v)\n", c.path, err)
+				return err
+			}
 			break
 		}
 		if !idle {
@@ -267,12 +271,24 @@ func (r Runner) OrphanedGoCaches(apply bool) error {
 	for _, root := range r.orphanScanRoots(ctx) {
 		scanRoots[root] = true
 	}
+	del := r.deletes()
 	var freed int64
 	for _, c := range reap {
 		if ctx.Err() != nil {
 			break
 		}
-		if err := removeTreeCtx(ctx, c.path); err != nil {
+		// The marker that makes this a recognised cache goes last, so a
+		// cache the pass stops partway through is still found next pass.
+		marker := "README"
+		if c.kind == "mod" {
+			marker = "cache"
+		}
+		if err := del.removeTree(ctx, c.path, marker); err != nil {
+			if stopsPass(err) {
+				r.print("  stopped in %s (%v); it and the rest are retained for the next pass\n", c.path, err)
+				r.print("orphaned go caches: freed %.1f GiB\n", float64(freed)/float64(GiB))
+				return err
+			}
 			r.print("  keep %s: %v\n", c.path, err)
 			continue
 		}
@@ -280,7 +296,7 @@ func (r Runner) OrphanedGoCaches(apply bool) error {
 		r.print("  removed %s\n", c.path)
 		// A `.gocache-x/{build,mod}` holder is removed once it is empty.
 		if parent := filepath.Dir(c.path); !scanRoots[parent] && !scanRoots[filepath.Dir(c.real)] && strings.Contains(strings.ToLower(filepath.Base(parent)), "gocache") {
-			if os.Remove(parent) == nil {
+			if entries, err := os.ReadDir(parent); err == nil && len(entries) == 0 && del.unlink(ctx, parent) == nil {
 				r.print("  removed empty %s\n", parent)
 			}
 		}
@@ -311,75 +327,6 @@ func overlapsAny(path string, protected []string) bool {
 		}
 	}
 	return false
-}
-
-// removeTreeCtx removes path (making module-cache files writable first),
-// working through the top two directory levels in parallel and stopping when
-// ctx ends. A partly removed tree is left as is; it stays eligible next pass.
-func removeTreeCtx(ctx context.Context, path string) error {
-	var units []string
-	var tops []string
-	top, err := os.ReadDir(path)
-	if err != nil {
-		return err
-	}
-	_ = os.Chmod(path, 0o700)
-	for _, t := range top {
-		tp := filepath.Join(path, t.Name())
-		if t.IsDir() {
-			_ = os.Chmod(tp, 0o700)
-			tops = append(tops, tp)
-			subs, err := os.ReadDir(tp)
-			if err != nil {
-				units = append(units, tp)
-				continue
-			}
-			for _, s := range subs {
-				units = append(units, filepath.Join(tp, s.Name()))
-			}
-		} else {
-			units = append(units, tp)
-		}
-	}
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-	next := make(chan string)
-	for w := 0; w < goCacheWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for u := range next {
-				if err := removeWritable(u); err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
-				}
-			}
-		}()
-	}
-	for _, u := range units {
-		if ctx.Err() != nil {
-			break
-		}
-		next <- u
-	}
-	close(next)
-	wg.Wait()
-	if firstErr != nil {
-		return firstErr
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	for _, t := range tops {
-		if err := os.Remove(t); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return os.Remove(path)
 }
 
 func (r Runner) goCacheOpenPaths(ctx context.Context) (openfiles.Snapshot, error) {

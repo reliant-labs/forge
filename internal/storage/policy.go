@@ -66,8 +66,23 @@ type Policy struct {
 	// WorktreeRebuildable replaces the built-in allowlist of ignored paths a
 	// removable worktree may contain. Nil means the defaults.
 	WorktreeRebuildable []string `json:"worktree_rebuildable,omitempty"`
-	// WorktreeReap lets GC --apply remove worktrees. Off, the layer only reports.
+	// WorktreeReap lets an explicit `forge storage gc --apply` remove
+	// worktrees. Off, the layer only reports. No automatic pass ever removes
+	// one, whatever this says (Runner.ReapWorktrees).
 	WorktreeReap bool `json:"worktree_reap,omitempty"`
+	// WorktreeReapReliantManaged extends worktree_reap to worktrees under
+	// Reliant's worktree root (~/.reliant/worktrees). Reliant owns those: it
+	// knows which chat each one is bound to, and reclaims them itself. Off,
+	// they are held like a locked worktree.
+	WorktreeReapReliantManaged bool `json:"worktree_reap_reliant_managed,omitempty"`
+
+	// MaxDeletesPerPass bounds how many filesystem entries one maintenance
+	// pass may unlink, across every layer. What is left is retained and the
+	// next pass continues, so a budget is reached over several passes rather
+	// than by one burst of six-figure unlinks. Zero means the default.
+	MaxDeletesPerPass int `json:"max_deletes_per_pass"`
+	// DeleteRatePerSec paces those unlinks. Zero means the default.
+	DeleteRatePerSec int `json:"delete_rate_per_sec"`
 }
 
 // Registry explicitly identifies a local registry and all of its consumers.
@@ -80,7 +95,8 @@ type Registry struct {
 
 // DefaultPolicy returns conservative local development budgets.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"}}
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, ImageUnused: "168h", SourceCacheUnused: "336h", SourceCacheKeep: 2, RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
+		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec}
 }
 
 // DefaultPath resolves the machine policy location.
@@ -154,6 +170,9 @@ func (p Policy) Validate() error {
 	}
 	if p.SourceCacheKeep < 1 {
 		return fmt.Errorf("storage: source_cache_keep must retain at least one clone per repository, got %d", p.SourceCacheKeep)
+	}
+	if p.MaxDeletesPerPass < 0 || p.DeleteRatePerSec < 0 {
+		return fmt.Errorf("storage: max_deletes_per_pass and delete_rate_per_sec must be positive (0 means the default), got %d and %d", p.MaxDeletesPerPass, p.DeleteRatePerSec)
 	}
 	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.GoCacheUnused} {
 		d, err := time.ParseDuration(v)

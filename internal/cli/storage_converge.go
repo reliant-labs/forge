@@ -223,7 +223,7 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 		if err := storage.RecordAutoGC(path, result); err != nil && gcErr == nil {
 			return err
 		}
-		if len(result.CutOffLayers) > 0 {
+		if len(result.CutOffLayers) > 0 || len(result.BackedOffLayers) > 0 {
 			fmt.Fprintf(out, "storage auto-gc: %s\n", result.Summary())
 		}
 		return storage.RealFailure(gcErr)

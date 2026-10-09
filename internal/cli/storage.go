@@ -62,8 +62,14 @@ var fullGCFn = func(ctx context.Context, r storage.Runner, apply bool) error { r
 // evidence registry retention is running, so it is written for a failure too:
 // `forge doctor` and `forge env up` read it to say so. A preview changes
 // nothing and records nothing. The caller holds the maintenance lock.
-func runFullGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply bool) error {
-	err := fullGCFn(ctx, maintenanceRunner(p, path, out), apply)
+//
+// explicit is true only for a `forge storage gc` a person or agent ran: it is
+// the one pass that may remove worktrees (under the worktree_reap policy).
+// The installed schedule and `forge storage daemon` pass false.
+func runFullGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply, explicit bool) error {
+	r := maintenanceRunner(p, path, out)
+	r.ReapWorktrees = explicit
+	err := fullGCFn(ctx, r, apply)
 	if !apply {
 		return storage.RealFailure(err)
 	}
@@ -120,7 +126,7 @@ func newStorageCmd() *cobra.Command {
 		enc.SetIndent("", "  ")
 		return enc.Encode(p)
 	}})
-	var apply, dryRun bool
+	var apply, dryRun, scheduled bool
 	gc := &cobra.Command{Use: "gc", Args: cobra.NoArgs, Short: "Preview cleanup; --apply deletes only eligible cache and registry versions", RunE: func(cmd *cobra.Command, _ []string) error {
 		p, path, err := load()
 		if err != nil {
@@ -129,11 +135,13 @@ func newStorageCmd() *cobra.Command {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return storage.WithLock(path, func() error {
-			return runFullGC(ctx, p, path, cmd.OutOrStdout(), apply)
+			return runFullGC(ctx, p, path, cmd.OutOrStdout(), apply, !scheduled)
 		})
 	}}
 	gc.Flags().BoolVar(&apply, "apply", false, "execute the cleanup plan")
 	gc.Flags().BoolVar(&dryRun, "dry-run", false, "preview only (the default)")
+	gc.Flags().BoolVar(&scheduled, "scheduled", false, "run as the installed maintenance schedule: never removes worktrees")
+	_ = gc.Flags().MarkHidden("scheduled")
 	gc.MarkFlagsMutuallyExclusive("apply", "dry-run")
 	group.AddCommand(gc)
 	var interval time.Duration
@@ -148,8 +156,10 @@ func newStorageCmd() *cobra.Command {
 		for {
 			p, path, err := load()
 			if err == nil {
+				// A periodic pass is not an explicit one: it never removes
+				// worktrees.
 				err = storage.WithLock(path, func() error {
-					return runFullGC(ctx, p, path, cmd.OutOrStdout(), true)
+					return runFullGC(ctx, p, path, cmd.OutOrStdout(), true, false)
 				})
 			}
 			if err != nil {
@@ -224,14 +234,15 @@ func newStorageCmd() *cobra.Command {
 func newStorageWorktreesCmd() *cobra.Command {
 	var repo, base string
 	var worktreeAge time.Duration
-	var remove bool
+	var remove, reliantManaged bool
 	trees := &cobra.Command{Use: "worktrees", Args: cobra.NoArgs, Short: "Preview idle, clean, pushed worktrees of a repo; --apply removes them", RunE: func(cmd *cobra.Command, _ []string) error {
-		return (storage.Runner{Out: cmd.OutOrStdout()}).Worktrees(cmd.Context(), repo, base, worktreeAge, remove)
+		return (storage.Runner{Out: cmd.OutOrStdout()}).Worktrees(cmd.Context(), repo, base, worktreeAge, remove, reliantManaged)
 	}}
 	trees.Flags().StringVar(&repo, "repo", ".", "repository whose worktrees to inspect")
 	trees.Flags().StringVar(&base, "base", "", "integration branch for the pushed test (default: origin/HEAD, else origin/main)")
 	trees.Flags().DurationVar(&worktreeAge, "idle", 24*time.Hour, "minimum time since any activity in the worktree (at least 24h)")
 	trees.Flags().BoolVar(&remove, "apply", false, "remove removable worktrees without forcing or deleting branches")
+	trees.Flags().BoolVar(&reliantManaged, "reliant-managed", false, "also consider worktrees under Reliant's worktree root (~/.reliant/worktrees), which Reliant otherwise reclaims itself")
 	return trees
 }
 

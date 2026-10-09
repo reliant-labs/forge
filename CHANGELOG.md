@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Storage maintenance unlinks are capped, paced, and back off on filesystem
+  distress.** On 2026-10-09 one `forge storage gc --apply` unlinked 175,324 Go
+  build cache entries in ~30s on a virtiofs-backed workspace volume while
+  builds ran; the host's virtiofsd ran out of descriptors, the guest saw
+  EMFILE, and the volume was detached seconds later. The trim skipped each
+  failed unlink and tried the next. Every unlink a pass makes (Go build cache,
+  golangci-lint, goimports, orphaned private caches, temp sweep, source cache,
+  rotated logs) now goes through one governor: at most `max_deletes_per_pass`
+  (default 50,000) per pass, paced to `delete_rate_per_sec` (default 1,000),
+  and the first EMFILE/ENFILE/ENOTCONN/EIO stops the pass, retaining the rest.
+  A backed-off pass prints `BACKED OFF`, records `backed_off_layers`, and exits
+  0 so nothing retries it at once. A source clone is renamed out of its cache
+  key before deletion, so a stopped eviction never leaves a half-deleted pin.
+
+- **No automatic storage pass removes a worktree.** The background auto-gc
+  (`forge env up`, the hourly job) ran the worktree layer, so a policy with
+  `worktree_reap` let it remove any worktree that looked idle, clean and
+  pushed, which is what a worktree an agent is between commands in looks like.
+  Only an explicit `forge storage gc --apply` removes worktrees now; the daily
+  job runs `gc --apply --scheduled` and previews. Explicit removal also refuses
+  the main checkout, anything containing it or the home directory, a path whose
+  `.git` is not a gitdir file of the repository, worktrees under Reliant's
+  `~/.reliant/worktrees` (unless `worktree_reap_reliant_managed`), and any tree
+  with an entry modified in the last 24h; it prints each canonical target
+  before removing it, and `git worktree prune` only expires registrations idle
+  for the same 24h.
+
 - **`internal/pkgguard` catches every reference to a forbidden environment
   read, not only calls.** It inspected call expressions alone, so
   `getenv: os.Getenv` — a function value stored for a later call — passed it

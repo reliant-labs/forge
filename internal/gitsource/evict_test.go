@@ -2,6 +2,7 @@ package gitsource
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -260,6 +261,44 @@ func TestEvictRemovesReadOnlyTrees(t *testing.T) {
 	}
 	if _, err := os.Stat(entry); err == nil {
 		t.Fatal("a read-only tree survived eviction")
+	}
+}
+
+// TestEvictStoppedPartwayLeavesNoHalfEntryAndIsFinished: the caller's
+// RemoveTree may stop partway (machine maintenance caps and paces its
+// unlinks). The entry is renamed out of its cache key first, so Resolve never
+// finds a half-deleted clone, and the next Evict finishes the leftover.
+func TestEvictStoppedPartwayLeavesNoHalfEntryAndIsFinished(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	root := filepath.Join(t.TempDir(), "sources")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedEntry(t, root, "app-aaaaaaaaaaaa", now)
+	doomed := seedEntry(t, root, "app-bbbbbbbbbbbb", now.Add(-90*24*time.Hour))
+
+	stopped := errors.New("delete cap reached")
+	policy := EvictPolicy{KeepPerSlug: 1, InUse: neverInUse, RemoveTree: func(string) error { return stopped }}
+	if _, err := Evict(root, now, policy, true, nil); !errors.Is(err, stopped) {
+		t.Fatalf("the stop must reach the caller, got %v", err)
+	}
+	if _, err := os.Stat(doomed); err == nil {
+		t.Fatal("a half-evicted entry is still under its cache key")
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(root, evictingPrefix+"*"))
+	if len(leftovers) != 1 {
+		t.Fatalf("want one leftover, got %v", leftovers)
+	}
+
+	got, err := Evict(root, now, EvictPolicy{KeepPerSlug: 1, InUse: neverInUse}, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(leftovers[0]); err == nil {
+		t.Fatal("the next Evict did not finish the interrupted eviction")
+	}
+	if got.Kept != 1 {
+		t.Fatalf("the leftover was counted as a kept entry: %+v", got)
 	}
 }
 

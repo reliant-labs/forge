@@ -26,6 +26,12 @@ func (r Runner) Logs(apply bool) error {
 			return errors.Join(append(failures, err)...)
 		}
 		if err := r.projectLogs(project, apply); err != nil {
+			if fsDistress(err) {
+				err = r.deletes().observe(project, err)
+			}
+			if stopsPass(err) {
+				return errors.Join(append(failures, err)...)
+			}
 			failures = append(failures, fmt.Errorf("project %s: %w", project, err))
 		}
 	}
@@ -43,6 +49,7 @@ func (r Runner) projectLogs(project string, apply bool) error {
 		return err
 	}
 	var failures []error
+	del := r.deletes()
 	for _, dir := range dirs {
 		if !dir.IsDir() {
 			continue
@@ -97,7 +104,10 @@ func (r Runner) projectLogs(project string, apply bool) error {
 				return errors.Join(append(failures, err)...)
 			}
 			if apply {
-				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				if err := del.unlink(r.hostCtx(), path); err != nil {
+					if stopsPass(err) {
+						return errors.Join(append(failures, err)...)
+					}
 					failures = append(failures, fmt.Errorf("remove rotated log: %w", err))
 					continue
 				}

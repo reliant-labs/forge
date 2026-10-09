@@ -251,8 +251,8 @@ func TestTempSweepRemovesReadOnlyTree(t *testing.T) {
 	}
 
 	// Assert the PREMISE on a throwaway copy rather than trusting the comment:
-	// a plain RemoveAll must fail on this shape, which is why removeWritable
-	// exists. It runs against its own tree because a partial RemoveAll bumps
+	// a plain RemoveAll must fail on this shape, which is why removeTree
+	// makes each directory writable before emptying it. It runs against its own tree because a partial RemoveAll bumps
 	// the ancestors' mtimes, which would make the real candidate look recent.
 	premise, _ := writeModCacheTree(t.TempDir(), "premise")
 	if err := os.RemoveAll(premise); err == nil {

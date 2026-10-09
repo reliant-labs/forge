@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -34,6 +35,17 @@ const (
 	// HoldQuarantined is a worktree a previous pass moved aside and could not
 	// move back. It is still a valid worktree and is never deleted by forge.
 	HoldQuarantined = "quarantined"
+	// HoldNotLinked is anything that is not plainly a linked worktree of the
+	// repository: its main checkout, a directory containing it or the home
+	// directory, or a path whose .git is not a gitdir file naming one of the
+	// repository's worktrees (a stale registration now holding a clone).
+	HoldNotLinked = "not a linked worktree"
+	// HoldManaged is a worktree under Reliant's worktree root. Reliant knows
+	// which chat each is bound to and reclaims them itself.
+	HoldManaged = "managed by reliant"
+	// HoldDeferred is a worktree whose removal would overrun what is left of
+	// the pass's delete budget; a later pass takes it.
+	HoldDeferred = "deferred"
 )
 
 // defaultWorktreeRebuildable lists ignored paths that a build recreates.
@@ -92,30 +104,38 @@ type reapOptions struct {
 	base  string
 	idle  time.Duration
 	apply bool
+	// reliantManaged includes worktrees under Reliant's worktree root.
+	reliantManaged bool
 }
 
 // Worktrees is the explicit `forge storage worktrees` entry point. It runs the
-// same classifier the GC layer does, over one repository.
-func (r Runner) Worktrees(ctx context.Context, repo, base string, idle time.Duration, apply bool) error {
+// same classifier the GC layer does, over one repository. reliantManaged
+// includes worktrees under Reliant's worktree root, which are otherwise held.
+func (r Runner) Worktrees(ctx context.Context, repo, base string, idle time.Duration, apply, reliantManaged bool) error {
 	if idle < minWorktreeIdle {
 		return fmt.Errorf("worktree idle time must be at least %s", minWorktreeIdle)
 	}
-	_, err := r.reapWorktrees(ctx, reapOptions{repos: []string{repo}, base: base, idle: idle, apply: apply})
+	_, err := r.reapWorktrees(ctx, reapOptions{repos: []string{repo}, base: base, idle: idle, apply: apply, reliantManaged: reliantManaged})
 	return err
 }
 
-// worktreeLayer is the GC layer. It only removes when the policy opts in
+// worktreeLayer is the GC layer. It removes only in an explicit `forge
+// storage gc --apply` (Runner.ReapWorktrees) under a policy that opts in
 // (worktree_reap); otherwise it previews, whatever apply says.
 func (r Runner) worktreeLayer(apply bool) error {
 	repos := r.worktreeRepos()
 	if len(repos) == 0 {
 		return nil
 	}
-	remove := apply && r.Policy.WorktreeReap
-	if apply && !remove {
-		r.print("worktrees: preview only (set \"worktree_reap\": true in the storage policy to remove)\n")
+	remove := apply && r.ReapWorktrees && r.Policy.WorktreeReap
+	switch {
+	case !apply || remove:
+	case !r.Policy.WorktreeReap:
+		r.print("worktrees: preview only (set \"worktree_reap\": true in the storage policy, then run `forge storage gc --apply`, to remove)\n")
+	default:
+		r.print("worktrees: preview only (scheduled and automatic passes never remove worktrees; an explicit `forge storage gc --apply` does)\n")
 	}
-	_, err := r.reapWorktrees(r.hostCtx(), reapOptions{repos: repos, idle: minWorktreeIdle, apply: remove})
+	_, err := r.reapWorktrees(r.hostCtx(), reapOptions{repos: repos, idle: minWorktreeIdle, apply: remove, reliantManaged: r.Policy.WorktreeReapReliantManaged})
 	return err
 }
 
@@ -128,7 +148,7 @@ func (r Runner) PrintHeldWorktrees(ctx context.Context) error {
 	}
 	quiet := r
 	quiet.Out = nil
-	report, err := quiet.reapWorktrees(ctx, reapOptions{repos: repos, idle: minWorktreeIdle})
+	report, err := quiet.reapWorktrees(ctx, reapOptions{repos: repos, idle: minWorktreeIdle, reliantManaged: r.Policy.WorktreeReapReliantManaged})
 	reasons := make([]string, 0)
 	counts := report.HeldByReason()
 	for reason := range counts {
@@ -225,23 +245,34 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 	self := openfiles.FromPaths([]string{wd})
 	inUse := lazyOpenFiles{take: r.openSnapshot}
 	seenCommon := map[string]bool{}
+	var managed []string
+	if !o.reliantManaged {
+		managed = reliantWorktreeRoots()
+	}
 
 	for _, repo := range o.repos {
 		if err := ctx.Err(); err != nil {
 			return report, errors.Join(append(failures, err)...)
 		}
 		// One repository may be reached through several registered paths (a
-		// project and its worktrees); classify its worktrees once.
+		// project and its worktrees); classify its worktrees once. A common
+		// dir that cannot be read leaves rules.common empty, which holds
+		// every worktree of the repository as not provably linked.
+		var common string
 		if b, err := r.readGit(ctx, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
-			common := strings.TrimSpace(string(b))
+			common = canonicalPath(strings.TrimSpace(string(b)))
 			if seenCommon[common] {
 				continue
 			}
 			seenCommon[common] = true
 		}
 		if o.apply {
-			// Only drops registrations whose directory is already gone.
-			if _, err := r.command(ctx, "git", "-C", repo, "worktree", "prune"); err != nil {
+			// Drops only registrations whose directory is gone AND whose
+			// admin index has been untouched for the idle floor: a worktree
+			// on a volume that is briefly unmounted is not pruned while it is
+			// in use, which would orphan its reflog and detached HEAD.
+			expire := fmt.Sprintf("%d.seconds.ago", int(o.idle.Seconds()))
+			if _, err := r.command(ctx, "git", "-C", repo, "worktree", "prune", "--expire", expire); err != nil {
 				failures = append(failures, fmt.Errorf("worktree prune %s: %w", repo, err))
 				continue
 			}
@@ -255,7 +286,12 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 		if base == "" {
 			base = r.defaultBase(ctx, repo)
 		}
-		for index, e := range parseWorktrees(string(b)) {
+		entries := parseWorktrees(string(b))
+		rules := worktreeRules{base: base, idle: o.idle, common: common, managed: managed, self: self}
+		if len(entries) > 0 {
+			rules.main = canonicalPath(entries[0].path)
+		}
+		for index, e := range entries {
 			if index == 0 || e.bare || e.head == "" || e.prunable {
 				continue
 			}
@@ -265,7 +301,7 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 				r.print("keep worktree %s: %s (%s)\n", e.path, HoldQuarantined, detail)
 				continue
 			}
-			reason, detail, skip := r.classifyWorktree(ctx, e, base, o.idle, self, func(p string) (bool, error) { return inUse.holds(ctx, p) })
+			reason, detail, skip := r.classifyWorktree(ctx, e, rules, func(p string) (bool, error) { return inUse.holds(ctx, p) })
 			if skip {
 				continue
 			}
@@ -279,11 +315,14 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 				r.print("removable worktree: %s (%s)\n", e.path, e.head)
 				continue
 			}
+			// Named before anything is touched, by its canonical path, so the
+			// output says exactly what a removal is about to delete.
+			r.print("removing worktree %s (repository %s, HEAD %s)\n", canonicalPath(e.path), repo, e.head)
 			// The batch classification can be minutes old, and anything that
 			// writes between a re-check and a remove would be deleted. So the
 			// worktree is moved aside first (a path-based writer then gets
 			// ENOENT), re-classified at the new path, and only then removed.
-			reason, detail, removed := r.reclaimWorktree(ctx, repo, e, base, o.idle, self)
+			reason, detail, removed := r.reclaimWorktree(ctx, repo, e, rules)
 			if !removed {
 				report.Removable = report.Removable[:len(report.Removable)-1]
 				report.Held = append(report.Held, WorktreeHold{Path: e.path, Repo: repo, Reason: reason, Detail: detail})
@@ -300,9 +339,97 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 	return report, errors.Join(failures...)
 }
 
+// worktreeRules is what decides a worktree beyond its own entry. The batch
+// classification and the re-check before removal share it.
+type worktreeRules struct {
+	base string
+	// idle is the activity floor. Zero skips the activity checks: that is the
+	// re-check after the quarantine move, which itself rewrites the
+	// worktree's .git file and admin directory (activity was judged on the
+	// original path, just before the move).
+	idle time.Duration
+	// common is the repository's git common dir, canonical. A linked
+	// worktree's .git file names <common>/worktrees/<id>.
+	common string
+	// main is the repository's main checkout, canonical.
+	main string
+	// managed are canonical roots another tool owns its worktrees under.
+	managed []string
+	self    openfiles.Snapshot
+}
+
+// refuse holds what is not plainly a linked worktree this reaper may judge:
+// the main checkout, a directory containing it or the home directory,
+// anything whose .git is not a gitdir FILE naming one of this repository's
+// worktree admin directories, and anything under a managed root. These are
+// identity checks, so they come before any question of age or cleanliness.
+func (rules worktreeRules) refuse(path string) (reason, detail string) {
+	canonical := canonicalPath(path)
+	if rules.main != "" && (canonical == rules.main || within(canonical, rules.main)) {
+		return HoldNotLinked, "it is, or contains, the repository's main checkout"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if h := canonicalPath(home); canonical == h || within(canonical, h) {
+			return HoldNotLinked, "it is, or contains, the home directory"
+		}
+	}
+	info, err := os.Lstat(filepath.Join(path, ".git"))
+	switch {
+	case err != nil:
+		return HoldNotLinked, "it has no .git file"
+	case info.IsDir():
+		return HoldNotLinked, ".git is a directory: a checkout of its own, not a linked worktree"
+	case !info.Mode().IsRegular():
+		return HoldNotLinked, ".git is not a regular file"
+	}
+	admin := worktreeAdminDir(path)
+	if admin == "" || rules.common == "" || canonicalPath(filepath.Dir(admin)) != filepath.Join(rules.common, "worktrees") {
+		return HoldNotLinked, fmt.Sprintf(".git names %q, not a worktree of this repository", admin)
+	}
+	for _, root := range rules.managed {
+		if canonical == root || within(root, canonical) {
+			return HoldManaged, fmt.Sprintf("under %s; Reliant reclaims its own worktrees (\"worktree_reap_reliant_managed\": true includes them)", root)
+		}
+	}
+	return "", ""
+}
+
+// within reports whether child lies strictly inside parent. Both canonical.
+func within(parent, child string) bool {
+	return strings.HasPrefix(child, strings.TrimSuffix(parent, string(filepath.Separator))+string(filepath.Separator))
+}
+
+// canonicalPath is path made absolute with every symlink resolved, which is
+// how git reports worktrees and how lsof reports open files. A path that does
+// not resolve (it is gone) is only cleaned.
+func canonicalPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return filepath.Clean(path)
+}
+
+// reliantWorktreeRoots is where Reliant creates worktrees: <config>/worktrees,
+// where <config> is $RELIANT_USER_CONFIG_DIR, else ~/.reliant. Both roots are
+// held when the variable is set: the process that created a worktree may not
+// have seen the same environment as this one.
+func reliantWorktreeRoots() []string {
+	var roots []string
+	if dir := os.Getenv("RELIANT_USER_CONFIG_DIR"); dir != "" {
+		roots = append(roots, canonicalPath(filepath.Join(dir, "worktrees")))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		roots = append(roots, canonicalPath(filepath.Join(home, ".reliant", "worktrees")))
+	}
+	return roots
+}
+
 // classifyWorktree decides one linked worktree: "" reason means removable.
 // skip means it is not a candidate at all (gone from disk).
-func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, base string, idle time.Duration, self openfiles.Snapshot, holds func(path string) (bool, error)) (reason, detail string, skip bool) {
+func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, rules worktreeRules, holds func(path string) (bool, error)) (reason, detail string, skip bool) {
 	if e.locked {
 		return HoldLocked, "", false
 	}
@@ -310,11 +437,16 @@ func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, base stri
 	if err != nil {
 		return "", "", true
 	}
-	if self.Holds(e.path) {
+	if reason, detail := rules.refuse(e.path); reason != "" {
+		return reason, detail, false
+	}
+	if rules.self.Holds(e.path) {
 		return HoldInUse, "this process's working directory", false
 	}
-	if since := time.Since(worktreeActivity(e.path, info)); since < idle {
-		return HoldActive, fmt.Sprintf("touched %s ago", since.Round(time.Minute)), false
+	if rules.idle > 0 {
+		if since := time.Since(worktreeActivity(e.path, info)); since < rules.idle {
+			return HoldActive, fmt.Sprintf("touched %s ago", since.Round(time.Minute)), false
+		}
 	}
 	b, err := r.readGit(ctx, e.path, "status", "--porcelain", "-z", "--ignored", "--untracked-files=normal")
 	if err != nil {
@@ -336,14 +468,20 @@ func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, base stri
 	if hidden := hiddenChanges(string(b)); len(hidden) > 0 {
 		return HoldHidden, strings.Join(hidden, ", "), false
 	}
-	// A nested repository inside an allowlisted ignored dir (node_modules/…)
-	// is deleted with its unpushed commits.
-	nested, err := nestedRepositories(ctx, e.path)
+	// One walk of the whole tree. Anything in it modified within the idle
+	// floor is activity — a build writing node_modules or bin/ leaves the
+	// git admin files and a clean status alone. And a nested repository
+	// inside an allowlisted ignored dir (node_modules/…) would be deleted
+	// with its unpushed commits.
+	scan, err := scanTree(ctx, e.path, activityCutoff(rules.idle))
 	if err != nil {
 		return HoldUnchecked, err.Error(), false
 	}
-	if len(nested) > 0 {
-		return HoldNested, strings.Join(nested, ", "), false
+	if scan.recent != "" {
+		return HoldActive, fmt.Sprintf("%s modified %s ago", scan.recent, scan.age.Round(time.Minute)), false
+	}
+	if len(scan.nested) > 0 {
+		return HoldNested, strings.Join(scan.nested, ", "), false
 	}
 	// Commits only this worktree can reach (its reflog, per-worktree refs,
 	// detached HEAD) are garbage-collected once the worktree is removed.
@@ -354,7 +492,7 @@ func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, base stri
 	if orphaned {
 		return HoldOrphans, "commits reachable only from this worktree's reflog, refs or detached HEAD", false
 	}
-	if !r.pushed(ctx, e.path, e.head, base) {
+	if !r.pushed(ctx, e.path, e.head, rules.base) {
 		return HoldUnpushed, "", false
 	}
 	held, err := holds(e.path)
@@ -373,14 +511,34 @@ const quarantinePrefix = ".forge-reclaim-"
 // false when it was kept, with the reason; the worktree is then back at its
 // original path, or — if the move back failed — left in quarantine, still a
 // valid worktree and never deleted.
-func (r Runner) reclaimWorktree(ctx context.Context, repo string, e worktreeEntry, base string, idle time.Duration, self openfiles.Snapshot) (reason, detail string, removed bool) {
+func (r Runner) reclaimWorktree(ctx context.Context, repo string, e worktreeEntry, rules worktreeRules) (reason, detail string, removed bool) {
 	// The move rewrites the worktree's .git file and admin gitdir, which would
 	// read as fresh activity, so idleness is judged here, on the original path,
 	// and not again after the move.
-	if info, err := os.Stat(e.path); err != nil {
+	info, err := os.Stat(e.path)
+	if err != nil {
 		return HoldUnchecked, "disappeared during cleanup", false
-	} else if since := time.Since(worktreeActivity(e.path, info)); since < idle {
+	}
+	if since := time.Since(worktreeActivity(e.path, info)); since < rules.idle {
 		return HoldActive, fmt.Sprintf("touched %s ago", since.Round(time.Minute)), false
+	}
+	scan, err := scanTree(ctx, e.path, activityCutoff(rules.idle))
+	if err != nil {
+		return HoldUnchecked, err.Error(), false
+	}
+	if scan.recent != "" {
+		return HoldActive, fmt.Sprintf("%s modified %s ago", scan.recent, scan.age.Round(time.Minute)), false
+	}
+	// Inside a maintenance pass, git's unlinks count against the pass's
+	// delete budget like forge's own; a worktree that does not fit waits.
+	if r.governor.pass != nil {
+		if err := r.governor.reserve(scan.entries); err != nil {
+			var backoff *BackedOffError
+			if errors.As(err, &backoff) {
+				return HoldUnchecked, err.Error(), false
+			}
+			return HoldDeferred, err.Error(), false
+		}
 	}
 	q := filepath.Join(filepath.Dir(e.path), fmt.Sprintf("%s%s-%d", quarantinePrefix, filepath.Base(e.path), time.Now().Unix()))
 	if _, err := os.Lstat(q); err == nil {
@@ -394,7 +552,9 @@ func (r Runner) reclaimWorktree(ctx context.Context, repo string, e worktreeEntr
 	}
 	moved := e
 	moved.path = q
-	reason, detail = r.recheckWorktree(ctx, repo, moved, base, 0, self)
+	recheck := rules
+	recheck.idle = 0
+	reason, detail = r.recheckWorktree(ctx, repo, moved, recheck)
 	if reason == "" {
 		// No --force: git refuses what it considers unsafe.
 		if _, err := r.command(ctx, "git", "-C", repo, "worktree", "remove", q); err == nil {
@@ -464,7 +624,7 @@ func isZeroSHA(sha string) bool { return strings.Trim(sha, "0") == "" }
 
 // recheckWorktree re-reads the worktree's registration and re-runs the full
 // classification with a fresh lsof snapshot. Any failure to re-check holds.
-func (r Runner) recheckWorktree(ctx context.Context, repo string, e worktreeEntry, base string, idle time.Duration, self openfiles.Snapshot) (string, string) {
+func (r Runner) recheckWorktree(ctx context.Context, repo string, e worktreeEntry, rules worktreeRules) (string, string) {
 	b, err := r.readGit(ctx, repo, "worktree", "list", "--porcelain")
 	if err != nil {
 		return HoldUnchecked, err.Error()
@@ -483,7 +643,7 @@ func (r Runner) recheckWorktree(ctx context.Context, repo string, e worktreeEntr
 	// A fresh snapshot on purpose: this re-check exists to catch what changed
 	// since the pass's snapshot, so it must not reuse it.
 	var fresher lazyOpenFiles
-	reason, detail, skip := r.classifyWorktree(ctx, *fresh, base, idle, self, func(p string) (bool, error) { return fresher.holds(ctx, p) })
+	reason, detail, skip := r.classifyWorktree(ctx, *fresh, rules, func(p string) (bool, error) { return fresher.holds(ctx, p) })
 	if skip {
 		return HoldUnchecked, "disappeared during cleanup"
 	}
@@ -508,35 +668,73 @@ func hiddenChanges(lsFiles string) []string {
 // maxNestedWalkEntries bounds the walk; a tree too large to inspect is held.
 const maxNestedWalkEntries = 1_000_000
 
-// nestedRepositories finds a `.git` entry anywhere under the worktree other
-// than its own top-level one, including inside allowlisted ignored dirs.
-// Submodules have one too, and are held with everything else (safe direction).
-func nestedRepositories(ctx context.Context, worktree string) ([]string, error) {
-	var found []string
-	seen := 0
+// activityCutoff is the modification time a worktree's contents must be older
+// than; zero (no activity check) when idle is zero.
+func activityCutoff(idle time.Duration) time.Time {
+	if idle <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(-idle)
+}
+
+// treeScan is one walk of a worktree.
+type treeScan struct {
+	// nested lists every `.git` under the worktree other than its own.
+	nested []string
+	// recent is an entry modified after the cutoff (relative), and age how
+	// long ago; the walk stops at the first one.
+	recent string
+	age    time.Duration
+	// entries counts what the walk visited: what removing the tree unlinks.
+	entries int
+}
+
+// scanTree walks the whole worktree, including allowlisted ignored dirs. It
+// finds nested repositories (a submodule has a `.git` too, and is held with
+// everything else — the safe direction) and, when cutoff is set, the first
+// entry modified after it. The root directory and its .git file are left to
+// worktreeActivity: a quarantine move rewrites both. An entry that vanishes
+// mid-walk is activity too — something is deleting in there.
+func scanTree(ctx context.Context, worktree string, cutoff time.Time) (treeScan, error) {
+	var scan treeScan
+	gitFile := filepath.Join(worktree, ".git")
+	rel := func(p string) string { r, _ := filepath.Rel(worktree, p); return r }
 	err := filepath.WalkDir(worktree, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if seen++; seen%4096 == 0 {
+		if scan.entries++; scan.entries%4096 == 0 {
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
 			}
 		}
-		if seen > maxNestedWalkEntries {
-			return fmt.Errorf("worktree has more than %d entries; cannot check for nested repositories", maxNestedWalkEntries)
+		if scan.entries > maxNestedWalkEntries {
+			return fmt.Errorf("worktree has more than %d entries; cannot check it", maxNestedWalkEntries)
 		}
-		if d.Name() != ".git" || p == filepath.Join(worktree, ".git") {
+		if !cutoff.IsZero() && p != worktree && p != gitFile {
+			info, err := d.Info()
+			if errors.Is(err, fs.ErrNotExist) {
+				scan.recent = rel(p) + " (removed during the scan)"
+				return filepath.SkipAll
+			}
+			if err != nil {
+				return err
+			}
+			if info.ModTime().After(cutoff) {
+				scan.recent, scan.age = rel(p), time.Since(info.ModTime())
+				return filepath.SkipAll
+			}
+		}
+		if d.Name() != ".git" || p == gitFile {
 			return nil
 		}
-		rel, _ := filepath.Rel(worktree, p)
-		found = append(found, rel)
+		scan.nested = append(scan.nested, rel(p))
 		if d.IsDir() {
 			return filepath.SkipDir
 		}
 		return nil
 	})
-	return found, err
+	return scan, err
 }
 
 // lazyOpenFiles answers "does a running process use this path?" from one

@@ -2,12 +2,15 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/openfiles"
 )
 
 // gitRepoWithWorktree builds a real repository whose only commit is 60 days
@@ -52,11 +55,21 @@ func gitRepoWithWorktree(t *testing.T) (repo, worktree string) {
 	return repo, worktree
 }
 
-// ageDir backdates a directory so the worktree's own mtime is not what keeps it.
+// ageDir backdates a worktree — every entry in it, since anything modified
+// recently is activity — so its mtimes are not what keeps it.
 func ageDir(t *testing.T, dir string) {
 	t.Helper()
 	stamp := time.Now().Add(-60 * 24 * time.Hour)
-	if err := os.Chtimes(dir, stamp, stamp); err != nil {
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		return os.Chtimes(p, stamp, stamp)
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Activity includes the worktree's git admin files, fresh from `worktree add`.
@@ -103,7 +116,7 @@ func TestWorktreesRetainIgnoredAndUntrackedData(t *testing.T) {
 
 			var out strings.Builder
 			r := Runner{Out: &out}
-			if err := r.Worktrees(context.Background(), repo, "main", 24*time.Hour, true); err != nil {
+			if err := r.Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false); err != nil {
 				t.Fatalf("Worktrees: %v\n%s", err, out.String())
 			}
 			for _, rel := range tc.files {
@@ -125,11 +138,17 @@ func TestWorktreesRemoveATrulyCleanWorktree(t *testing.T) {
 	ageDir(t, worktree)
 	fakeLsof(t, unrelatedOpenFile, "exit 0")
 	var out strings.Builder
-	if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true); err != nil {
+	if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false); err != nil {
 		t.Fatalf("Worktrees: %v\n%s", err, out.String())
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Fatalf("a clean, merged, idle worktree was not removed (%v)\n%s", err, out.String())
+	}
+	// The canonical target is named BEFORE anything is removed.
+	announce := strings.Index(out.String(), "removing worktree "+resolved(t, filepath.Dir(worktree))+string(filepath.Separator)+filepath.Base(worktree))
+	done := strings.Index(out.String(), "removed worktree")
+	if announce < 0 || done < announce {
+		t.Fatalf("the canonical target was not printed before removal:\n%s", out.String())
 	}
 }
 
@@ -152,7 +171,7 @@ func TestWorktreesRetainAWorktreeAProcessIsUsing(t *testing.T) {
 			ageDir(t, worktree)
 			fakeLsof(t, "p4242\n"+strings.ReplaceAll(tc.record, "%s", resolved(t, worktree)), "exit 0")
 			var out strings.Builder
-			if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true); err != nil {
+			if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false); err != nil {
 				t.Fatalf("Worktrees: %v\n%s", err, out.String())
 			}
 			if _, err := os.Stat(worktree); err != nil {
@@ -172,7 +191,7 @@ func TestWorktreesRefuseWhenUseCannotBeDetermined(t *testing.T) {
 	ageDir(t, worktree)
 	fakeLsof(t, "", "exit 2")
 	var out strings.Builder
-	err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true)
+	err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false)
 	if _, statErr := os.Stat(worktree); statErr != nil {
 		t.Fatalf("removed a worktree with no in-use evidence (%v)\n%s", statErr, out.String())
 	}
@@ -319,24 +338,237 @@ func TestWorktreePushedToRemoteBranchIsRemovable(t *testing.T) {
 	}
 }
 
-func TestWorktreeLayerPreviewsUnlessPolicyOptsIn(t *testing.T) {
+// The GC layer removes only when BOTH hold: the policy opts in (worktree_reap)
+// and the pass is an explicit `forge storage gc --apply` (ReapWorktrees). The
+// installed schedule and `storage daemon` run the same layer with
+// ReapWorktrees false.
+func TestWorktreeLayerRemovesOnlyInAnExplicitOptedInPass(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories and worktrees; runs in task test")
 	}
-	for _, reap := range []bool{false, true} {
+	for _, tc := range []struct{ policy, explicit, wantGone bool }{
+		{false, false, false},
+		{false, true, false},
+		{true, false, false},
+		{true, true, true},
+	} {
 		repo, worktree := gitRepoWithWorktree(t)
 		runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
 		ageDir(t, worktree)
 		fakeLsof(t, unrelatedOpenFile, "exit 0")
-		r := Runner{Policy: Policy{Repos: []string{repo}, WorktreeReap: reap}}
+		var out strings.Builder
+		r := Runner{Policy: Policy{Repos: []string{repo}, WorktreeReap: tc.policy}, ReapWorktrees: tc.explicit, Out: &out}
 		r.Ctx = context.Background()
 		if err := r.worktreeLayer(true); err != nil {
 			t.Fatal(err)
 		}
 		_, err := os.Stat(worktree)
-		if gone := os.IsNotExist(err); gone != reap {
-			t.Fatalf("worktree_reap=%v but removed=%v", reap, gone)
+		if gone := os.IsNotExist(err); gone != tc.wantGone {
+			t.Fatalf("worktree_reap=%v explicit=%v: removed=%v, want %v\n%s", tc.policy, tc.explicit, gone, tc.wantGone, out.String())
 		}
+	}
+}
+
+// TestAutomaticGCNeverReapsAWorktree is the 2026-10-09 regression. The
+// non-disruptive pass — started in the background by `forge env up` and
+// hourly by the installed schedule — ran the worktree layer, so on a machine
+// whose policy opted in to worktree_reap it removed any worktree that looked
+// idle, clean and pushed. An agent between two commands holds no process in
+// its worktree and need not have written to it for a day, so that is exactly
+// how a worktree in use looks. No automatic pass may remove one.
+func TestAutomaticGCNeverReapsAWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	repo, worktree := gitRepoWithWorktree(t)
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main") // pushed
+	ageDir(t, worktree)                                               // stale-looking
+	fakeLsof(t, unrelatedOpenFile, "exit 0")                          // nothing holds it open
+	p := DefaultPolicy()
+	p.Builders = nil
+	p.Repos = []string{repo}
+	p.WorktreeReap = true // even where the policy opts in to reaping
+	var out strings.Builder
+	r := Runner{
+		Policy: p, Out: &out,
+		OpenPaths: func(context.Context) (openfiles.Snapshot, error) {
+			return openfiles.FromPaths([]string{"/nonexistent/forge-storage-test/unrelated"}), nil
+		},
+		Command: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "docker" {
+				return nil, errors.New("no docker in this test")
+			}
+			return Exec(ctx, name, args...)
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_ = r.NonDisruptiveGC(ctx, true)
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("the automatic pass removed a clean, pushed, idle-looking worktree (%v)\n%s", err, out.String())
+	}
+}
+
+// Explicit reaping refuses anything that is not plainly a linked worktree of
+// the repository, whatever else is true of it.
+func TestWorktreeRulesRefuseCheckoutsAndHome(t *testing.T) {
+	root := resolved(t, t.TempDir())
+	main := filepath.Join(root, "repo")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	rules := worktreeRules{main: main, common: filepath.Join(main, ".git")}
+	for _, tc := range []struct{ name, path string }{
+		{"the main checkout", main},
+		{"a directory containing the main checkout", root},
+		{"the home directory", home},
+		{"a directory containing the home directory", filepath.Dir(canonicalPath(home))},
+		{"a path with no .git file", filepath.Join(root, "elsewhere")},
+	} {
+		if reason, _ := rules.refuse(tc.path); reason != HoldNotLinked {
+			t.Errorf("%s (%s): reason %q, want %q", tc.name, tc.path, reason, HoldNotLinked)
+		}
+	}
+}
+
+// A registration whose directory now holds a checkout of its own (its .git is
+// a directory) is held, not judged by that other repository's status.
+func TestWorktreeHoldsADirectoryThatIsItsOwnCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	repo, worktree := gitRepoWithWorktree(t)
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+	if err := os.Remove(filepath.Join(worktree, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, worktree, "init", "-q", "-b", "main")
+	ageDir(t, worktree)
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	report := reapOnce(t, Runner{}, repo, true)
+	if got := heldReason(report, worktree); got != HoldNotLinked {
+		t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldNotLinked, report.Held)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, ".gitignore")); err != nil {
+		t.Fatal("a directory holding its own checkout was removed")
+	}
+}
+
+// Worktrees under Reliant's root are Reliant's to reclaim: it knows which chat
+// each is bound to. Held unless the caller opts in.
+func TestWorktreeUnderReliantRootIsHeldUnlessOptedIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	for _, optIn := range []bool{false, true} {
+		repo, worktree := gitRepoWithWorktree(t)
+		runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+		config := t.TempDir()
+		t.Setenv("RELIANT_USER_CONFIG_DIR", config)
+		managed := filepath.Join(config, "worktrees", "repo-id", "feature")
+		if err := os.MkdirAll(filepath.Dir(managed), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, repo, "worktree", "move", worktree, managed)
+		ageDir(t, managed)
+		fakeLsof(t, unrelatedOpenFile, "exit 0")
+		report, err := (Runner{}).reapWorktrees(context.Background(), reapOptions{repos: []string{repo}, base: "main", idle: 24 * time.Hour, apply: true, reliantManaged: optIn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, statErr := os.Stat(managed)
+		gone := os.IsNotExist(statErr)
+		if gone != optIn {
+			t.Fatalf("reliantManaged=%v: removed=%v (held %+v)", optIn, gone, report.Held)
+		}
+		if !optIn {
+			if got := heldReason(report, managed); got != HoldManaged {
+				t.Fatalf("held reason = %q, want %q", got, HoldManaged)
+			}
+		}
+	}
+}
+
+// Activity anywhere in the tree holds the worktree: a build writing an
+// ignored, rebuildable dir changes neither the git admin files nor status.
+func TestWorktreeHeldWhenAnythingInsideWasModifiedRecently(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	repo, worktree := gitRepoWithWorktree(t)
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+	if err := os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte("node_modules/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	built := filepath.Join(worktree, "web", "node_modules", "pkg", "index.js")
+	if err := os.MkdirAll(filepath.Dir(built), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(built, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ageDir(t, worktree)
+	now := time.Now()
+	if err := os.Chtimes(built, now, now); err != nil { // the build just wrote it
+		t.Fatal(err)
+	}
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	report := reapOnce(t, Runner{}, repo, true)
+	if got := heldReason(report, worktree); got != HoldActive {
+		t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldActive, report.Held)
+	}
+	if _, err := os.Stat(built); err != nil {
+		t.Fatal("a worktree written to moments ago was removed")
+	}
+}
+
+// No lsof at all is the cloud-workspace case (the 2026-10-09 machine had
+// none): the in-use check is unavailable, so nothing is removed.
+func TestWorktreesRetainWhenLsofIsMissing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo, worktree := gitRepoWithWorktree(t)
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+	ageDir(t, worktree)
+	bin := t.TempDir()
+	if err := os.Symlink(gitPath, filepath.Join(bin, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin) // git, and no lsof
+	var out strings.Builder
+	err = (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false)
+	if _, statErr := os.Stat(worktree); statErr != nil {
+		t.Fatalf("removed a worktree with no lsof to check it (%v)\n%s", statErr, out.String())
+	}
+	if err == nil || !strings.Contains(err.Error(), "lsof") {
+		t.Fatalf("the missing in-use check must be reported: %v\n%s", err, out.String())
+	}
+}
+
+// Inside a pass, git's unlinks count against the delete budget: a worktree
+// that would overrun what is left waits for a later pass.
+func TestWorktreeRemovalIsChargedToThePassBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	repo, worktree := gitRepoWithWorktree(t)
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+	ageDir(t, worktree)
+	fakeLsof(t, unrelatedOpenFile, "exit 0")
+	r := Runner{Policy: Policy{MaxDeletesPerPass: 1}}
+	r = r.beginPass(context.Background())
+	report := reapOnce(t, r, repo, true)
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatal("a worktree larger than the pass's remaining delete budget was removed")
+	}
+	if got := heldReason(report, worktree); got != HoldDeferred {
+		t.Fatalf("held reason = %q, want %q (held %+v)", got, HoldDeferred, report.Held)
 	}
 }
 

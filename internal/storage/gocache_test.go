@@ -406,7 +406,7 @@ func TestGoCacheCutOffPassStillFreesCoveredShards(t *testing.T) {
 			time.Sleep(time.Microsecond)
 		}
 	}()
-	pass := streamTrimGoCache(ctx, root, shards, 0, time.Now().Add(-goCacheFloor), true)
+	pass := streamTrimGoCache(ctx, root, shards, 0, time.Now().Add(-goCacheFloor), true, unpacedDeleter(nil))
 	if pass.removed == 0 || countEntries(root) >= 64*20 {
 		t.Fatalf("cut-off pass freed nothing: %+v", pass)
 	}

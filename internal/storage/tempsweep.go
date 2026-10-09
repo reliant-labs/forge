@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -59,6 +60,9 @@ type tempSweep struct {
 	// tests need neither a real lsof nor a real open file.
 	openPaths func() (openfiles.Snapshot, error)
 	print     func(string, ...any)
+	// del paces, caps and backs off the removals (deletes.go). The zero
+	// value is filled from the default policy.
+	del deleter
 }
 
 // tempSweepPrefixes is the allowlist. Each entry is scratch that its producer
@@ -143,6 +147,7 @@ func (r Runner) TempSweep(apply bool) error {
 		maxAge:    tempSweepAge,
 		openPaths: func() (openfiles.Snapshot, error) { return r.openSnapshot(ctx) },
 		print:     r.print,
+		del:       r.deletes(),
 	}
 	return s.run(apply)
 }
@@ -213,7 +218,7 @@ func (s tempSweep) run(apply bool) error {
 	var total int64
 	var removed, reached, qualified int
 	var skippedOpen, skippedYoung, skippedGit int
-	var cut error
+	var cut, stop error
 	for _, n := range named {
 		if err := s.done(); err != nil {
 			cut = err
@@ -232,6 +237,11 @@ func (s tempSweep) run(apply bool) error {
 				reached--
 				break
 			}
+			if fsDistress(walkErr) && s.del.pass != nil {
+				stop = s.del.observe(path, walkErr)
+				s.print("temp sweep: stopped at %s (%v)\n", path, stop)
+				break
+			}
 			continue
 		}
 		if hasGit {
@@ -248,12 +258,15 @@ func (s tempSweep) run(apply bool) error {
 			total += size
 			continue
 		}
-		if err := removeWritable(path); err != nil {
-			s.print("temp sweep: could not remove %s: %v\n", path, err)
-			continue
+		ok, err := s.remove(path)
+		if err != nil {
+			stop = err
+			break
 		}
-		total += size
-		removed++
+		if ok {
+			total += size
+			removed++
+		}
 	}
 	if qualified > 0 || skippedOpen > 0 || skippedYoung > 0 || skippedGit > 0 {
 		verb := "reclaimable"
@@ -264,11 +277,39 @@ func (s tempSweep) run(apply bool) error {
 			map[bool]int{true: removed, false: qualified}[apply], verb,
 			float64(total)/float64(GiB), skippedOpen, skippedYoung, skippedGit)
 	}
+	if stop != nil {
+		return stop
+	}
 	if cut != nil {
 		s.print("temp sweep: cut off after %d/%d candidates\n", reached, len(named))
 		return &CutOffError{Err: fmt.Errorf("temp sweep cut off after %d/%d candidates: %w", reached, len(named), cut)}
 	}
 	return nil
+}
+
+// remove deletes one qualified entry through the governor. A non-nil error is
+// the delete cap or a back-off, which stops the sweep: this entry may be
+// partly removed and the rest are untouched, all retained for the next pass.
+// Any other failure costs only this entry (ok false).
+func (s tempSweep) remove(path string) (ok bool, stop error) {
+	del := s.del
+	if del.pass == nil {
+		del = newDeleter(DefaultPolicy(), nil, nil)
+	}
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	err := del.removeTree(ctx, path)
+	if err == nil {
+		return true, nil
+	}
+	if stopsPass(err) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		s.print("temp sweep: stopped at %s (%v)\n", path, err)
+		return false, err
+	}
+	s.print("temp sweep: could not remove %s: %v\n", path, err)
+	return false, nil
 }
 
 // measure walks one candidate, returning its total size, the newest mtime
@@ -409,24 +450,4 @@ func orphanedGoTestTempDir(root string, entry fs.DirEntry) bool {
 		}
 	}
 	return true
-}
-
-// removeWritable makes a tree writable, then removes it.
-//
-// The chmod pass is required, not defensive: a leaked forge fixture contains a
-// Go module cache, whose files and directories are mode 0444/0555 by design,
-// and RemoveAll cannot unlink a child of a directory it cannot write.
-func removeWritable(path string) error {
-	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // best effort; RemoveAll reports what actually fails
-		}
-		if d.IsDir() {
-			_ = os.Chmod(p, 0o700)
-		} else if d.Type().IsRegular() {
-			_ = os.Chmod(p, 0o600)
-		}
-		return nil
-	})
-	return os.RemoveAll(path)
 }

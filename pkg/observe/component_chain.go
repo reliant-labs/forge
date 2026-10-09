@@ -20,8 +20,8 @@
 // The chain itself is assembled in the OWNED per-package seam
 // observe_chain.go (newObserveChain) from the middlewares below plus any the
 // user adds. The generated decorator is uniform: it never names a middleware
-// or bakes a parameter (log level, sampling) — those live in the owned seam,
-// in forge.yaml, and in the process environment (SuccessSampleWindowEnv). Middleware selection and configuration is a runtime /
+// or bakes a parameter (log level, sampling) — those live in the owned seam
+// and in forge.yaml. Middleware selection and configuration is a runtime /
 // composition concern, exactly like the Connect chain.
 package observe
 
@@ -206,12 +206,11 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 //   - Every SUCCESSFUL call is written at level — which the owned seam wires
 //     from forge.yaml's observability.log_level (default Debug: quiet under a
 //     production Info handler) — unless success sampling is on. Sampling is
-//     opt-in, exactly as at the RPC edge: SuccessSampleWindowEnv turns it on
-//     for the process, WithSuccessSampling for this layer (code wins).
-//     Sampled, a method's first success is written, then at most one per
-//     window, carrying `suppressed`, the successes of that method since the
-//     previous record that were not written. A success at or above
-//     DefaultSlowThreshold is always written, with slow=true.
+//     opt-in, exactly as at the RPC edge: WithSuccessSampling turns it on
+//     for this layer. Sampled, a method's first success is written, then at
+//     most one per window, carrying `suppressed`, the successes of that
+//     method since the previous record that were not written. A success at
+//     or above DefaultSlowThreshold is always written, with slow=true.
 //
 // Sampling is what keeps this layer readable at DEBUG when a method runs on
 // a tight loop: one method on a 10s work loop was two thirds of a dev
@@ -221,7 +220,7 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 // WithSuccessLevel keyed by the "<pkg>.<Method>" operation name. nil logger
 // falls back to slog.Default.
 func LogMiddleware(logger *slog.Logger, level slog.Level, opts ...LogOption) ComponentMiddleware {
-	return &logMiddleware{logger: logger, policy: newLogPolicy(level, logger, opts)}
+	return &logMiddleware{logger: logger, policy: newLogPolicy(level, opts)}
 }
 
 type logMiddleware struct {

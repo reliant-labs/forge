@@ -26,28 +26,16 @@ import (
 // seconds turns that into 47k lines in twelve hours of one dev stack, so a
 // deployment can turn success SAMPLING on; when it does, successes are
 // sampled per procedure and failures and slow calls never are. These tests
-// pin the sampling mechanism with the window set in code; what the default
-// is, and how the environment sets it, is log_sampling_config_test.go.
+// pin the sampling mechanism; what the default is, and that only the
+// caller's option sets the window, is log_sampling_config_test.go.
 
 const (
 	pollProcedure  = "/observe.test.v1.PollService/Poll"
 	otherProcedure = "/observe.test.v1.PollService/Other"
 )
 
-// testWindow is the window the sampling tests opt into. Set in code, it also
-// wins over any LOG_SUCCESS_SAMPLE_WINDOW in the shell running the tests.
+// testWindow is the window the sampling tests opt into.
 const testWindow = time.Minute
-
-// envSays is a withGetenv seam whose environment holds only
-// SuccessSampleWindowEnv=value.
-func envSays(value string) LogOption {
-	return withGetenv(func(key string) string {
-		if key == SuccessSampleWindowEnv {
-			return value
-		}
-		return ""
-	})
-}
 
 // fakeClock is a manually advanced time source shared by the policy and the
 // test handler, so a test can make a call "slow" or step past the sampling
@@ -272,13 +260,13 @@ func TestLoggingInterceptor_SuccessLevelOverride(t *testing.T) {
 }
 
 // TestLoggingInterceptor_SamplingCanBeDisabled: WithSuccessSampling(0) keeps
-// one record per success, in the unsampled shape, even where the
-// environment turns sampling on.
+// one record per success, in the unsampled shape, even after an earlier
+// option turned sampling on — the last option wins, as for every LogOption.
 func TestLoggingInterceptor_SamplingCanBeDisabled(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	call := rpcEdge(t, []connect.Interceptor{
-		LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), envSays("1h"), WithSuccessSampling(0)),
+		LoggingInterceptor(jsonLogger(&buf, slog.LevelInfo), WithSuccessSampling(time.Hour), WithSuccessSampling(0)),
 	}, nil)
 
 	for range 5 {
@@ -300,7 +288,7 @@ func TestLoggingInterceptor_SamplingCanBeDisabled(t *testing.T) {
 // it arrived.
 func TestChain_PassesLogOptions(t *testing.T) {
 	t.Parallel()
-	opts := []LogOption{envSays(""), WithSuccessSampling(testWindow)}
+	opts := []LogOption{WithSuccessSampling(testWindow)}
 	for name, build := range map[string]func(*slog.Logger) []connect.Interceptor{
 		"Chain": func(l *slog.Logger) []connect.Interceptor {
 			return Chain(Deps{Logger: l, LogOptions: opts})
@@ -374,7 +362,7 @@ func TestLoggingInterceptor_StreamCompletionsAreSampled(t *testing.T) {
 func TestSuccessSampler_ConcurrentAccounting(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock()
-	p := newLogPolicy(slog.LevelInfo, nil, []LogOption{withClock(clock.Now), WithSuccessSampling(testWindow)})
+	p := newLogPolicy(slog.LevelInfo, []LogOption{withClock(clock.Now), WithSuccessSampling(testWindow)})
 
 	const workers, perWorker = 16, 250
 	var emitted atomic.Int64
@@ -403,7 +391,8 @@ func TestSuccessSampler_ConcurrentAccounting(t *testing.T) {
 }
 
 // TestSuccessSampling_WindowResolution pins where a layer's window comes
-// from: a window set in code, else SuccessSampleWindowEnv, else none.
+// from: the options its caller passed — the last WithSuccessSampling wins —
+// else none.
 func TestSuccessSampling_WindowResolution(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -411,50 +400,20 @@ func TestSuccessSampling_WindowResolution(t *testing.T) {
 		opts []LogOption
 		want time.Duration
 	}{
-		{name: "nothing set", opts: []LogOption{envSays("")}, want: 0},
-		{name: "env blank", opts: []LogOption{envSays("   ")}, want: 0},
-		{name: "env duration", opts: []LogOption{envSays(" 2m ")}, want: 2 * time.Minute},
-		{name: "env zero", opts: []LogOption{envSays("0")}, want: 0},
-		{name: "env negative", opts: []LogOption{envSays("-1m")}, want: -time.Minute},
-		{name: "code beats env", opts: []LogOption{envSays("2m"), WithSuccessSampling(0)}, want: 0},
-		{name: "code beats env, either order", opts: []LogOption{WithSuccessSampling(time.Hour), envSays("0")}, want: time.Hour},
+		{name: "nothing set", want: 0},
+		{name: "window", opts: []LogOption{WithSuccessSampling(2 * time.Minute)}, want: 2 * time.Minute},
+		{name: "zero", opts: []LogOption{WithSuccessSampling(0)}, want: 0},
+		{name: "negative", opts: []LogOption{WithSuccessSampling(-time.Minute)}, want: -time.Minute},
+		{name: "last option wins", opts: []LogOption{WithSuccessSampling(time.Hour), WithSuccessSampling(0)}, want: 0},
+		{name: "nil options are skipped", opts: []LogOption{nil, WithSuccessSampling(time.Hour), nil}, want: time.Hour},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			if got := newLogPolicy(slog.LevelInfo, nil, c.opts).window; got != c.want {
+			if got := newLogPolicy(slog.LevelInfo, c.opts).window; got != c.want {
 				t.Fatalf("window = %v, want %v", got, c.want)
 			}
 		})
-	}
-}
-
-// TestSuccessSampling_InvalidEnvLogsEverySuccessAndWarnsOnce: a value that
-// does not parse must never cost the records that show the process working,
-// and must be said out loud — once per process, not once per layer.
-func TestSuccessSampling_InvalidEnvLogsEverySuccessAndWarnsOnce(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
-	logger := jsonLogger(&buf, slog.LevelInfo)
-	// Unique to this test: the report is once per distinct value per process.
-	invalid := envSays("every minute (" + t.Name() + ")")
-
-	icep := LoggingInterceptor(logger, invalid)
-	_ = LogMiddleware(logger, slog.LevelDebug, invalid) // a second layer, same process
-	call := rpcEdge(t, []connect.Interceptor{icep}, nil)
-	for range 3 {
-		call(pollProcedure)
-	}
-
-	if got := len(records(t, &buf, "rpc completed")); got != 3 {
-		t.Fatalf("an unparseable window must log every success: %d records, want 3", got)
-	}
-	warns := records(t, &buf, "observe: ignoring invalid "+SuccessSampleWindowEnv+"; every successful call will be logged")
-	if len(warns) != 1 {
-		t.Fatalf("want exactly one warning naming the bad value, got %d:\n%s", len(warns), buf.String())
-	}
-	if warns[0]["level"] != "WARN" || warns[0]["value"] != "every minute ("+t.Name()+")" {
-		t.Errorf("warning must be a WARN carrying the value: %v", warns[0])
 	}
 }
 

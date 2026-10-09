@@ -52,14 +52,12 @@ func RequestIDFromContext(ctx context.Context) string {
 //   - Every FAILED call is written — "rpc failed" / "stream failed" — at the
 //     level LevelForError chooses, with the error and its cause.
 //   - Every SUCCESSFUL call is written — "rpc completed" / "stream
-//     completed", at INFO — unless success sampling is on. Sampling is
-//     opt-in: SuccessSampleWindowEnv turns it on for the process, and
-//     WithSuccessSampling for this layer (code wins). Sampled, a procedure's
-//     first success is written, then at most one per window, carrying
-//     `suppressed`, the successes of that procedure since the previous
-//     record that were not written. A unary success at or above
-//     DefaultSlowThreshold is always written, with slow=true. See
-//     log_policy.go.
+//     completed", at INFO — unless WithSuccessSampling turns success
+//     sampling on for this layer. Sampled, a procedure's first success is
+//     written, then at most one per window, carrying `suppressed`, the
+//     successes of that procedure since the previous record that were not
+//     written. A unary success at or above DefaultSlowThreshold is always
+//     written, with slow=true. See log_policy.go.
 //
 // opts tune the success half: WithSuccessSampling, WithSlowThreshold, and
 // WithSuccessLevel for one procedure. Through Chain / DefaultMiddlewares
@@ -68,7 +66,7 @@ func LoggingInterceptor(logger *slog.Logger, opts ...LogOption) connect.Intercep
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &loggingInterceptor{logger: logger, policy: newLogPolicy(slog.LevelInfo, logger, opts)}
+	return &loggingInterceptor{logger: logger, policy: newLogPolicy(slog.LevelInfo, opts)}
 }
 
 type loggingInterceptor struct {

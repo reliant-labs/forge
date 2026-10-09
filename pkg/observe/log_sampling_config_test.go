@@ -17,17 +17,15 @@ import (
 //
 // Sampling successful-call logs used to be the default, at both logging
 // layers. The decision since: make it configurable, default to logging
-// every success (particularly in dev), and let a deployment lower it. These
-// tests pin that through the constructors apps actually call — none of
-// which sets a window in code — so what they observe is what an app that
-// configures nothing, or configures only its environment, gets:
+// every success (particularly in dev), and let a deployment lower it through
+// its typed config, which the app passes as WithSuccessSampling. These tests
+// pin that through the constructors apps actually call, so what they observe
+// is what an app that configures nothing, or passes its config's window,
+// gets:
 //
 //   - observe.DefaultMiddlewares — reliant's server;
 //   - observe.Chain — the scaffolded cmd serve.go;
 //   - observe.LogMiddleware — every package's scaffolded observe_chain.go.
-//
-// They read the REAL process environment (t.Setenv), so they cannot run in
-// parallel; the per-layer seam tests in log_sampling_test.go use withGetenv.
 
 type callOutcome int
 
@@ -133,10 +131,10 @@ func logged(t *testing.T, buf *bytes.Buffer, l loggingLayer) (successes, failure
 // TestSuccessLogging_DefaultLogsEverySuccess: an app that configures
 // nothing gets one record per successful call, in the unsampled shape.
 func TestSuccessLogging_DefaultLogsEverySuccess(t *testing.T) {
-	// Hermetic: whatever the developer's shell exports, this is "unset".
-	t.Setenv(SuccessSampleWindowEnv, "")
+	t.Parallel()
 	for _, l := range loggingLayers {
 		t.Run(l.name, func(t *testing.T) {
+			t.Parallel()
 			var buf bytes.Buffer
 			call := l.build(t, &buf, newFakeClock())
 
@@ -158,16 +156,18 @@ func TestSuccessLogging_DefaultLogsEverySuccess(t *testing.T) {
 	}
 }
 
-// TestSuccessLogging_EnvWindowApplies: LOG_SUCCESS_SAMPLE_WINDOW turns
-// sampling on for every layer that sets nothing in code, with ITS window —
-// here 5m, so a call one minute in is still suppressed.
-func TestSuccessLogging_EnvWindowApplies(t *testing.T) {
-	t.Setenv(SuccessSampleWindowEnv, "5m")
+// TestSuccessLogging_ConfiguredWindowApplies: the window an app passes —
+// its typed config's log_success_sample_window, in a scaffolded serve.go —
+// turns sampling on with THAT window, here 5m, so a call one minute in is
+// still suppressed.
+func TestSuccessLogging_ConfiguredWindowApplies(t *testing.T) {
+	t.Parallel()
 	for _, l := range loggingLayers {
 		t.Run(l.name, func(t *testing.T) {
+			t.Parallel()
 			var buf bytes.Buffer
 			clock := newFakeClock()
-			call := l.build(t, &buf, clock)
+			call := l.build(t, &buf, clock, WithSuccessSampling(5*time.Minute))
 
 			for range 10 {
 				call(outcomeSuccess)
@@ -197,28 +197,26 @@ func TestSuccessLogging_EnvWindowApplies(t *testing.T) {
 }
 
 // TestSuccessLogging_FailuresAndSlowCallsAlwaysLogged: whatever the setting
-// — default, environment, code, or a value that does not parse — every
-// failure and every slow success is written. Only plain successes follow
-// the setting.
+// — none, zero, negative or a window — every failure and every slow success
+// is written. Only plain successes follow the setting.
 func TestSuccessLogging_FailuresAndSlowCallsAlwaysLogged(t *testing.T) {
+	t.Parallel()
 	settings := []struct {
 		name    string
-		env     string
 		opts    []LogOption
 		sampled bool // whether plain successes are sampled under this setting
 	}{
-		{name: "not configured", env: ""},
-		{name: "env 0", env: "0"},
-		{name: "env 1h", env: "1h", sampled: true},
-		{name: "env unparseable", env: "every minute"},
-		{name: "code 1h", opts: []LogOption{WithSuccessSampling(time.Hour)}, sampled: true},
-		{name: "code 0 over env 1h", env: "1h", opts: []LogOption{WithSuccessSampling(0)}},
+		{name: "not configured"},
+		{name: "window 0", opts: []LogOption{WithSuccessSampling(0)}},
+		{name: "window negative", opts: []LogOption{WithSuccessSampling(-time.Minute)}},
+		{name: "window 1h", opts: []LogOption{WithSuccessSampling(time.Hour)}, sampled: true},
 	}
 	for _, s := range settings {
 		t.Run(s.name, func(t *testing.T) {
-			t.Setenv(SuccessSampleWindowEnv, s.env)
+			t.Parallel()
 			for _, l := range loggingLayers {
 				t.Run(l.name, func(t *testing.T) {
+					t.Parallel()
 					var buf bytes.Buffer
 					call := l.build(t, &buf, newFakeClock(), s.opts...)
 
@@ -257,23 +255,26 @@ func TestSuccessLogging_FailuresAndSlowCallsAlwaysLogged(t *testing.T) {
 	}
 }
 
-// TestSuccessLogging_CodeWinsOverEnv: a window set in code is a decision
-// about that layer, and the deployment's variable does not overturn it — in
-// either direction.
-func TestSuccessLogging_CodeWinsOverEnv(t *testing.T) {
+// TestSuccessLogging_WindowComesOnlyFromTheOption: a logging layer's window
+// is what its caller passed, and nothing else. A process environment that
+// names the variable #555 used to read changes nothing — in either
+// direction — so the same binary behaves the same on every machine, and the
+// value an app validated in its typed config is the value in effect.
+//
+// The variable is named literally: the library no longer exports it.
+func TestSuccessLogging_WindowComesOnlyFromTheOption(t *testing.T) {
+	t.Setenv("LOG_SUCCESS_SAMPLE_WINDOW", "1h")
 	cases := []struct {
 		name string
-		env  string
 		opts []LogOption
 		want int // records for 5 successes
 	}{
-		{name: "env samples, code logs every success", env: "1h", opts: []LogOption{WithSuccessSampling(0)}, want: 5},
-		{name: "env logs every success, code samples", env: "0", opts: []LogOption{WithSuccessSampling(time.Hour)}, want: 1},
-		{name: "env samples, code silent", env: "1h", want: 1},
+		{name: "no option: every success, whatever the environment says", want: 5},
+		{name: "option 0: every success", opts: []LogOption{WithSuccessSampling(0)}, want: 5},
+		{name: "option 1h: sampled", opts: []LogOption{WithSuccessSampling(time.Hour)}, want: 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv(SuccessSampleWindowEnv, c.env)
 			for _, l := range loggingLayers {
 				t.Run(l.name, func(t *testing.T) {
 					var buf bytes.Buffer

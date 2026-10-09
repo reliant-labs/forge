@@ -22,36 +22,23 @@
 // the users, and a probabilistic rate can hide a rarely-called name
 // entirely.
 //
-// # Where the window comes from — precedence
+// # Where the window comes from
 //
-//  1. CODE: WithSuccessSampling(window), passed to LoggingInterceptor /
-//     LogMiddleware directly or through Deps.LogOptions /
-//     DefaultMiddlewareDeps.LogOptions. It wins, for the layer it is passed
-//     to: a window set in code is a deliberate decision about one layer (a
-//     test, an audit-relevant seam that must keep every record), and a
-//     process-wide deploy setting must not silently overturn it. The same
-//     rule OpenTelemetry applies to its OTEL_* variables.
-//  2. CONFIG: the SuccessSampleWindowEnv environment variable, a Go duration
-//     ("1m"). It is the process-wide default for every layer that sets no
-//     window in code. A forge app declares it in proto/config, sets it per
-//     environment in deploy/kcl/<env>/config.k, and the generated
-//     config_gen.k projects it onto the workload's env.
-//  3. NOTHING SET: no sampling — every success is written.
+// Only from the caller: WithSuccessSampling(window), passed to
+// LoggingInterceptor / LogMiddleware directly or through Deps.LogOptions /
+// DefaultMiddlewareDeps.LogOptions. Nothing set means no sampling — every
+// success is written. A window of zero or less means the same.
 //
-// A window of zero or less, at any level, means "write every success".
-//
-// # Why this one setting is read from the environment
-//
-// forge/pkg otherwise never reads the ambient environment: a library changes
-// behaviour through its arguments, and the app owns where they come from.
-// This is the deliberate exception, because the call sites that build these
-// layers are OWNED code that forge never regenerates — the cmd's serve.go
-// (Chain / DefaultMiddlewares), every package's observe_chain.go seam
-// (LogMiddleware), and servers that are not forge-scaffolded at all. An
-// argument would reach none of them without editing each one; the
-// environment reaches all of them, so a deploy can turn sampling on or off
-// for a whole process without a code change. It is read once, when a layer
-// is built.
+// The library never consults the process environment for it. A value read
+// from the ambient environment appears in no config proto, no KCL env block
+// and no typed config object, so nothing the app can read explains why the
+// same binary logs differently on two machines (pkg/.golangci.yml forbids
+// it). A forge app declares log_success_sample_window in proto/config, sets
+// it per environment in deploy/kcl/<env>/config.k, and its scaffolded
+// serve.go passes the loaded value to Chain as LogOptions — so the value the
+// config loader validated is the value in effect. A package's
+// observe_chain.go seam opts its component layer in the same way, with a
+// trailing WithSuccessSampling on LogMiddleware.
 //
 // # Never sampled
 //
@@ -67,28 +54,15 @@ package observe
 import (
 	"context"
 	"log/slog"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const (
-	// SuccessSampleWindowEnv names the environment variable that turns on
-	// success sampling for every logging layer in the process that sets no
-	// window in code (see WithSuccessSampling). Its value is a Go duration —
-	// at most one success record per call name per window, e.g. "1m".
-	// Unset, empty, zero or negative writes every success. An unparseable
-	// value is reported once, as a WARN, and also writes every success: a
-	// typo costs log volume, never the records that show a process working.
-	SuccessSampleWindowEnv = "LOG_SUCCESS_SAMPLE_WINDOW"
-
-	// DefaultSlowThreshold is the duration at which a successful call is
-	// written regardless of sampling. Interactive calls finish well under
-	// it; one that does not is exactly the outlier a sample would hide.
-	DefaultSlowThreshold = time.Second
-)
+// DefaultSlowThreshold is the duration at which a successful call is
+// written regardless of sampling. Interactive calls finish well under it;
+// one that does not is exactly the outlier a sample would hide.
+const DefaultSlowThreshold = time.Second
 
 // LogOption tunes how a logging layer — LoggingInterceptor at the RPC edge,
 // LogMiddleware at the in-process component boundary — logs SUCCESSFUL
@@ -97,14 +71,13 @@ type LogOption func(*logPolicy)
 
 // WithSuccessSampling sets the sampling window for one layer: at most one
 // success record per call name per window, carrying `suppressed`. A window
-// of zero or less writes every success.
+// of zero or less — or no WithSuccessSampling at all — writes every success.
 //
-// It overrides SuccessSampleWindowEnv for the layer it is passed to — set
-// it only where that layer must not follow the deployment's setting.
-// Without it, the layer takes its window from the environment, and with no
-// environment value it writes every success.
+// It is the only way a layer samples. A forge app passes its typed config's
+// log_success_sample_window here (the scaffolded serve.go does, through
+// Deps.LogOptions), so a deployment sets the window in its config.
 func WithSuccessSampling(window time.Duration) LogOption {
-	return func(p *logPolicy) { p.window, p.windowSet = window, true }
+	return func(p *logPolicy) { p.window = window }
 }
 
 // WithSlowThreshold sets the duration at or above which a successful call is
@@ -139,73 +112,32 @@ func withClock(now func() time.Time) LogOption {
 	return func(p *logPolicy) { p.now = now }
 }
 
-// withGetenv replaces the environment lookup the window is resolved through.
-// Test seam: it lets a parallel test set the "environment" of one layer.
-func withGetenv(getenv func(string) string) LogOption {
-	return func(p *logPolicy) { p.getenv = getenv }
-}
-
 // logPolicy decides which successful calls are written, at what level, and
 // with which explanatory attribute. Configured once at construction, then
 // read concurrently; only the per-name sample slots mutate, atomically.
 type logPolicy struct {
-	level     slog.Level            // success level when no per-name override exists
-	window    time.Duration         // sampling window; <= 0 writes every success
-	windowSet bool                  // window came from code, so the environment is not consulted
-	slow      time.Duration         // slow threshold; <= 0 disables the rule
-	levels    map[string]slog.Level // per-name success levels; read-only after construction
-	now       func() time.Time
-	getenv    func(string) string
+	level  slog.Level            // success level when no per-name override exists
+	window time.Duration         // sampling window; <= 0 writes every success
+	slow   time.Duration         // slow threshold; <= 0 disables the rule
+	levels map[string]slog.Level // per-name success levels; read-only after construction
+	now    func() time.Time
 
 	slots sync.Map // name -> *sampleSlot
 }
 
-// newLogPolicy builds a layer's policy: the code options first, then — only
-// when they set no window — the window from SuccessSampleWindowEnv. logger
-// receives the warning for an unparseable value; nil means slog.Default.
-func newLogPolicy(level slog.Level, logger *slog.Logger, opts []LogOption) *logPolicy {
+// newLogPolicy builds a layer's policy from the options its caller passed.
+func newLogPolicy(level slog.Level, opts []LogOption) *logPolicy {
 	p := &logPolicy{
-		level:  level,
-		slow:   DefaultSlowThreshold,
-		now:    time.Now,
-		getenv: os.Getenv,
+		level: level,
+		slow:  DefaultSlowThreshold,
+		now:   time.Now,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(p)
 		}
 	}
-	if !p.windowSet {
-		p.window = sampleWindowFromEnv(p.getenv, logger)
-	}
 	return p
-}
-
-// warnedSampleWindows holds each unparseable SuccessSampleWindowEnv value
-// already reported, so a process that builds a dozen logging layers warns
-// once rather than a dozen times.
-var warnedSampleWindows sync.Map
-
-// sampleWindowFromEnv resolves SuccessSampleWindowEnv to a window. Unset or
-// empty is no sampling; so is an unparseable value, which is reported.
-func sampleWindowFromEnv(getenv func(string) string, logger *slog.Logger) time.Duration {
-	raw := strings.TrimSpace(getenv(SuccessSampleWindowEnv))
-	if raw == "" {
-		return 0
-	}
-	window, err := time.ParseDuration(raw)
-	if err != nil {
-		if _, reported := warnedSampleWindows.LoadOrStore(raw, struct{}{}); !reported {
-			if logger == nil {
-				logger = slog.Default()
-			}
-			logger.Warn("observe: ignoring invalid "+SuccessSampleWindowEnv+"; every successful call will be logged",
-				slog.String("value", raw), slog.String("want", "a Go duration such as 1m, or 0 to log every success"),
-				slog.Any("error", err))
-		}
-		return 0
-	}
-	return window
 }
 
 // success decides how a successful call named name, which took elapsed, is

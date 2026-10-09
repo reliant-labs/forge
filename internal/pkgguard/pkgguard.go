@@ -50,16 +50,18 @@ type ForbidigoPolicy struct {
 	Exempt []*regexp.Regexp
 }
 
-// Finding is one forbidden call: where it is and what it called.
+// Finding is one forbidden reference: where it is and what it named.
 type Finding struct {
 	// Path is module-relative and slash-separated, matching what
 	// golangci-lint prints when run inside the module.
 	Path string
 	Line int
-	Call string
+	// Ref is the reference in canonical form — "os.Getenv" — whatever the
+	// file imported the package as.
+	Ref string
 }
 
-func (f Finding) String() string { return fmt.Sprintf("%s:%d: %s", f.Path, f.Line, f.Call) }
+func (f Finding) String() string { return fmt.Sprintf("%s:%d: %s", f.Path, f.Line, f.Ref) }
 
 // yamlConfig is the subset of a golangci-lint v2 config this guard reads.
 type yamlConfig struct {
@@ -139,10 +141,15 @@ var skipDirs = map[string]bool{
 	"bin": true, "tmp": true, "dist": true,
 }
 
-// Scan walks the module rooted at root and returns every call matching
+// Scan walks the module rooted at root and returns every REFERENCE matching
 // policy.Forbid outside an exempt path, plus the number of Go files it
 // actually parsed. A caller that gets files == 0 has a broken walk, not a
 // clean module — the assertion is only as real as the set it inspected.
+//
+// A reference, not only a call: `getenv: os.Getenv` stores the function and
+// reads the environment later, through a field, at a call site that names
+// no package at all. That is the shape that reached main in #555 — forbidigo
+// flagged the line, and a call-only scan passed it.
 func Scan(root string, policy ForbidigoPolicy) (findings []Finding, files int, err error) {
 	fset := token.NewFileSet()
 	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -171,27 +178,18 @@ func Scan(root string, policy ForbidigoPolicy) (findings []Finding, files int, e
 		if perr != nil {
 			return fmt.Errorf("parse %s: %w", rel, perr)
 		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			name := renderCallee(call.Fun)
-			if name == "" {
-				return true
-			}
+		for _, r := range references(file) {
 			for _, re := range policy.Forbid {
-				if re.MatchString(name) {
+				if re.MatchString(r.name) {
 					findings = append(findings, Finding{
 						Path: rel,
-						Line: fset.Position(call.Lparen).Line,
-						Call: name,
+						Line: fset.Position(r.pos).Line,
+						Ref:  r.name,
 					})
 					break
 				}
 			}
-			return true
-		})
+		}
 		return nil
 	})
 	if walkErr != nil {
@@ -206,18 +204,80 @@ func Scan(root string, policy ForbidigoPolicy) (findings []Finding, files int, e
 	return findings, files, nil
 }
 
-// renderCallee renders `pkg.Func` for a qualified call and "" for anything
-// else — the same shape forbidigo matches its patterns against. Only
-// package-qualified calls can be a direct environment read; a method call on
-// a value (x.Getenv()) is not what the patterns describe.
-func renderCallee(fn ast.Expr) string {
-	sel, ok := fn.(*ast.SelectorExpr)
-	if !ok {
-		return ""
+// reference is one package-level name a file uses, in canonical
+// "<package>.<Name>" form.
+type reference struct {
+	name string
+	pos  token.Pos
+}
+
+// references returns every use in file of a name from an imported package,
+// rendered as "<package>.<Name>" — the form forbidigo matches its patterns
+// against when it knows the types (pkg.Name() + "." + field) — however the
+// file spells it:
+//
+//   - a qualified use, `os.Getenv`, whether called or passed as a value;
+//   - an aliased import, `goos.Getenv`, reported as os.Getenv;
+//   - a dot import's bare `Getenv`, reported as os.Getenv.
+//
+// It works from the file's own import table and the parser's identifier
+// resolution, without type-checking, so it cannot be fooled by a name and
+// does not need the module to build: a qualifier the file declared itself
+// (a local or parameter named os) is not the package, and a selector's
+// right-hand side, a struct field, a composite-literal key and a method name
+// are names, not references.
+func references(file *ast.File) []reference {
+	qualified := map[string]string{} // local qualifier -> package name
+	var dotted []string              // package names imported with "."
+	for _, imp := range file.Imports {
+		path := strings.Trim(imp.Path.Value, "`\"")
+		pkg := path[strings.LastIndex(path, "/")+1:]
+		switch {
+		case imp.Name == nil:
+			qualified[pkg] = pkg
+		case imp.Name.Name == ".":
+			dotted = append(dotted, pkg)
+		case imp.Name.Name != "_":
+			qualified[imp.Name.Name] = pkg
+		}
 	}
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return ""
-	}
-	return ident.Name + "." + sel.Sel.Name
+
+	// Identifiers that are names rather than uses. ast.Inspect visits a
+	// parent before its children, so each is recorded before it is reached.
+	names := map[*ast.Ident]bool{file.Name: true}
+	var refs []reference
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.ImportSpec:
+			return false
+		case *ast.FuncDecl:
+			names[n.Name] = true // a method name is not resolved, so mark it
+		case *ast.CompositeLit:
+			for _, elt := range n.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					if key, isIdent := kv.Key.(*ast.Ident); isIdent {
+						names[key] = true
+					}
+				}
+			}
+		case *ast.SelectorExpr:
+			names[n.Sel] = true
+			if x, ok := n.X.(*ast.Ident); ok && x.Obj == nil {
+				if pkg, imported := qualified[x.Name]; imported {
+					refs = append(refs, reference{name: pkg + "." + n.Sel.Name, pos: n.Pos()})
+				}
+			}
+		case *ast.Ident:
+			// Only a dot import makes a bare identifier a package's name,
+			// and only when nothing in the file declared it (Obj == nil).
+			if names[n] || n.Obj != nil {
+				return true
+			}
+			for _, pkg := range dotted {
+				refs = append(refs, reference{name: pkg + "." + n.Name, pos: n.Pos()})
+			}
+		}
+		return true
+	})
+	return refs
 }

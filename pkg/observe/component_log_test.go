@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 )
 
 // component_log_test.go — the in-process twin of log_sampling_test.go.
@@ -110,14 +111,14 @@ func TestLogMiddleware_SlowSuccessIsAlwaysLogged(t *testing.T) {
 }
 
 // TestLogMiddleware_Overrides: the seam's options reach the middleware —
-// sampling off in code keeps one record per call even where the environment
-// turns it on, and one method can be raised above the seam's level.
+// sampling off in code keeps one record per call even after an earlier
+// option turned it on, and one method can be raised above the seam's level.
 func TestLogMiddleware_Overrides(t *testing.T) {
 	t.Parallel()
-	t.Run("sampling off in code beats the environment", func(t *testing.T) {
+	t.Run("the last sampling option wins", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
-		runComponent(t, LogMiddleware(jsonLogger(&buf, slog.LevelDebug), slog.LevelDebug, envSays("1h"), WithSuccessSampling(0)),
+		runComponent(t, LogMiddleware(jsonLogger(&buf, slog.LevelDebug), slog.LevelDebug, WithSuccessSampling(time.Hour), WithSuccessSampling(0)),
 			loopMethod, 4, ok)
 		if got := records(t, &buf, loopMethod); len(got) != 4 {
 			t.Fatalf("want 4 records with sampling off, got %d", len(got))

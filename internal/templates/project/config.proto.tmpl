@@ -156,23 +156,23 @@ message AppConfig {
   }];
 
   // Success-log sampling, OFF by default: every successful RPC writes an
-  // "rpc completed" record and every successful component call its own
-  // record. Lower it per environment in deploy/kcl/<env>/config.k
-  // (log_success_sample_window = "1m") where an access log's volume — which
-  // is the traffic's volume — outgrows its value. Failures and calls slower
-  // than 1s are always logged, whatever this says.
+  // "rpc completed" record. Lower it per environment in
+  // deploy/kcl/<env>/config.k (log_success_sample_window = "1m") where an
+  // access log's volume — which is the traffic's volume — outgrows its
+  // value. Failures and calls slower than 1s are always logged, whatever
+  // this says.
   //
-  // ENV-ONLY, deliberately no flag: forge's observe package reads
-  // LOG_SUCCESS_SAMPLE_WINDOW from the process environment when it builds a
-  // logging layer, which is how the setting reaches serve.go's interceptor
-  // chain AND every package's observe_chain.go without either being edited.
-  // Declaring it here is what types it, validates it at startup, and
-  // projects it onto each workload's env. A --config file value for it is
-  // loaded but not seen by observe; set it in config.k / the env.
+  // serve.go passes the loaded value to the RPC edge's logging interceptor
+  // (observe.WithSuccessSampling in observe.Deps' LogOptions), so every
+  // source the loader reads applies: flag, env, --config file, default.
+  // forge's observe package reads no environment of its own. Component-call
+  // logs (each package's observe_chain.go) log at DEBUG and do not follow
+  // this field; sample one with a trailing observe.WithSuccessSampling there.
   google.protobuf.Duration log_success_sample_window = 37 [(forge.v1.config) = {
     env_var: "LOG_SUCCESS_SAMPLE_WINDOW"
+    flag: "log-success-sample-window"
     default_value: "0s"
-    description: "Success-log sampling window (Go duration). 0s, the default, logs every successful call. A positive window logs at most one success per RPC procedure (and per component method) per window — the first, then one carrying suppressed=<n>, the successes it stands for — so volume is bounded by the number of procedures, not by traffic. Failures and successes slower than 1s are always logged. Read from the environment by forge's observe package; a window set in code (observe.WithSuccessSampling) overrides it for that one logging layer."
+    description: "Success-log sampling window for RPCs (Go duration). 0s, the default, logs every successful RPC. A positive window logs at most one success per RPC procedure per window — the first, then one carrying suppressed=<n>, the successes it stands for — so volume is bounded by the number of procedures, not by traffic. Failures and successes slower than 1s are always logged. serve.go passes it to the logging interceptor as observe.WithSuccessSampling."
   }];
 
   bool auto_migrate = 5 [(forge.v1.config) = {

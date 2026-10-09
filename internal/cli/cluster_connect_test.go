@@ -11,83 +11,6 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
-// The auto-detect table. `auto` is the flag's default, so this is what the
-// overwhelming majority of invocations resolve through.
-func TestResolveAuth(t *testing.T) {
-	for _, tc := range []struct {
-		name, flag, kctx, want string
-		wantErr                string
-	}{
-		{name: "auto picks gcp for a GKE context", flag: "auto", kctx: "gke_acme_us-central1_prod", want: authGCP},
-		{name: "empty flag behaves as auto", flag: "", kctx: "gke_acme_us-central1_prod", want: authGCP},
-		{name: "auto picks token for VKE", flag: "auto", kctx: "vke-prod", want: authToken},
-		// EKS and AKS resolve to token, which is the whole reason no aws or
-		// azure value exists: these clusters are targets today.
-		{name: "auto picks token for an EKS ARN context", flag: "auto",
-			kctx: "arn:aws:eks:us-east-1:123456789012:cluster/prod", want: authToken},
-		{name: "auto picks token for an AKS context", flag: "auto", kctx: "aks-prod", want: authToken},
-		{name: "auto picks token for k3d", flag: "auto", kctx: "k3d-demo", want: authToken},
-		{name: "explicit token always wins", flag: "token", kctx: "gke_acme_us-central1_prod", want: authToken},
-		{name: "explicit gcp on a GKE context", flag: "gcp", kctx: "gke_acme_us-central1_prod", want: authGCP},
-
-		{name: "explicit gcp on a non-GKE context is refused", flag: "gcp", kctx: "vke-prod",
-			wantErr: "not one"},
-		// The two dropped clouds must not be silently accepted: a value that
-		// looks supported and is not is the failure this refusal prevents.
-		{name: "aws is not a value", flag: "aws", kctx: "whatever", wantErr: "not a known value"},
-		{name: "azure is not a value", flag: "azure", kctx: "whatever", wantErr: "not a known value"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveAuth(tc.flag, tc.kctx)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("resolveAuth(%q, %q) error = %v, want one containing %q",
-						tc.flag, tc.kctx, err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("resolveAuth(%q, %q): %v", tc.flag, tc.kctx, err)
-			}
-			if got != tc.want {
-				t.Errorf("resolveAuth(%q, %q) = %q, want %q", tc.flag, tc.kctx, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestParseGKEContext(t *testing.T) {
-	for _, tc := range []struct {
-		kctx     string
-		ok       bool
-		resource string
-	}{
-		{kctx: "gke_acme-prod_us-central1_prod", ok: true,
-			resource: "projects/acme-prod/locations/us-central1/clusters/prod"},
-		{kctx: "gke_p_us-central1-a_zonal", ok: true,
-			resource: "projects/p/locations/us-central1-a/clusters/zonal"},
-		// Not GKE contexts. The five-field case is the one worth pinning: a
-		// project id, a location and an RFC-1123 name all forbid '_', so this
-		// is something else whose shape must not be guessed at.
-		{kctx: "gke_acme_us-central1_prod_extra"},
-		{kctx: "gke_acme_us-central1"},
-		{kctx: "gke__us-central1_prod"},
-		{kctx: "vke-prod"},
-		{kctx: "k3d-demo"},
-		{kctx: ""},
-	} {
-		t.Run(tc.kctx, func(t *testing.T) {
-			got, ok := parseGKEContext(tc.kctx)
-			if ok != tc.ok {
-				t.Fatalf("parseGKEContext(%q) ok = %v, want %v", tc.kctx, ok, tc.ok)
-			}
-			if ok && got.CloudCluster() != tc.resource {
-				t.Errorf("CloudCluster() = %q, want %q", got.CloudCluster(), tc.resource)
-			}
-		})
-	}
-}
-
 // The addresses that fail AGAINST A HEALTHY CLUSTER. The hub dials from a pod,
 // where a loopback host is the pod — so these produce "connection refused"
 // against a target that is fine, which is why they are refused up front.
@@ -127,97 +50,26 @@ func TestReadConnectTarget_RefusesAMissingCA(t *testing.T) {
 	kubeconfigClusterOf = func(string) (string, string, error) {
 		return "https://34.1.2.3", "", nil
 	}
-	_, err := readConnectTarget("gke_acme_us-central1_prod", "auto")
+	_, err := readConnectTarget("gke_acme_us-central1_prod")
 	if err == nil || !strings.Contains(err.Error(), "cannot verify") {
 		t.Fatalf("error = %v, want one about not being able to verify the API server", err)
 	}
 }
 
-func TestReadConnectTarget_GKECarriesTheCloudResource(t *testing.T) {
+// The address registered is the context's own server, for every kind of
+// cluster: the operator chooses what the hub dials by choosing the context.
+func TestReadConnectTarget_RegistersTheContextsOwnServer(t *testing.T) {
 	restore := kubeconfigClusterOf
 	defer func() { kubeconfigClusterOf = restore }()
 	kubeconfigClusterOf = func(string) (string, string, error) {
-		return "https://34.1.2.3", "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----", nil
+		return "https://172.16.0.34", "ca", nil
 	}
-	got, err := readConnectTarget("gke_acme_us-central1_prod", "auto")
+	got, err := readConnectTarget("gke_acme_us-central1_prod")
 	if err != nil {
 		t.Fatalf("readConnectTarget: %v", err)
 	}
-	if got.Auth != authGCP {
-		t.Errorf("Auth = %q, want %q", got.Auth, authGCP)
-	}
-	if want := "projects/acme/locations/us-central1/clusters/prod"; got.CloudCluster != want {
-		t.Errorf("CloudCluster = %q, want %q", got.CloudCluster, want)
-	}
-}
-
-func TestReadConnectTarget_GKEPrivateEndpoint(t *testing.T) {
-	restoreKC, restoreD := kubeconfigClusterOf, gkeDescribeOf
-	defer func() { kubeconfigClusterOf, gkeDescribeOf = restoreKC, restoreD }()
-	kubeconfigClusterOf = func(string) (string, string, error) { return "https://34.42.58.220", "ca", nil }
-
-	cases := []struct {
-		name, auth, private, want string
-	}{
-		{"private present", "auto", "172.16.0.34", "https://172.16.0.34"},
-		{"private absent", "auto", "", "https://34.42.58.220"},
-		{"token path ignores it", "token", "172.16.0.34", "https://34.42.58.220"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gkeDescribeOf = func(gkeContext) (gkeDescription, bool) {
-				return gkeDescription{Endpoint: "34.42.58.220", PrivateEndpoint: tc.private, CAPEM: "gke-ca"}, true
-			}
-			got, err := readConnectTarget("gke_acme_us-central1_prod", tc.auth)
-			if err != nil {
-				t.Fatalf("readConnectTarget: %v", err)
-			}
-			if got.Address != tc.want {
-				t.Errorf("Address = %q, want %q", got.Address, tc.want)
-			}
-		})
-	}
-}
-
-func TestReadConnectTarget_GKEDescribeSuppliesAddressAndCA(t *testing.T) {
-	restoreKC, restoreD := kubeconfigClusterOf, gkeDescribeOf
-	defer func() { kubeconfigClusterOf, gkeDescribeOf = restoreKC, restoreD }()
-	// DNS-endpoint context: public cert, so no certificate-authority-data.
-	kubeconfigClusterOf = func(string) (string, string, error) { return "https://gke-abc.us-central1.gke.goog", "", nil }
-	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) {
-		return gkeDescription{Endpoint: "34.1.2.3", PrivateEndpoint: "172.16.0.2", CAPEM: "gke-ca"}, true
-	}
-	got, err := readConnectTarget("gke_acme_us-central1_prod", "gcp")
-	if err != nil {
-		t.Fatalf("readConnectTarget: %v", err)
-	}
-	if got.Address != "https://172.16.0.2" || got.CAPEM != "gke-ca" {
-		t.Errorf("Address, CAPEM = %q, %q; want the private endpoint and GKE's CA", got.Address, got.CAPEM)
-	}
-
-	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) {
-		return gkeDescription{Endpoint: "34.1.2.3"}, true
-	}
-	if _, err := readConnectTarget("gke_acme_us-central1_prod", "gcp"); err == nil {
-		t.Fatal("want a refusal when GKE's describe has no CA")
-	}
-}
-
-// The token auth must NOT carry cloudCluster: the control plane REFUSES it
-// there, because a cloud resource name on a credential path means the caller
-// misunderstands which credential is in play.
-func TestReadConnectTarget_TokenCarriesNoCloudResource(t *testing.T) {
-	restore := kubeconfigClusterOf
-	defer func() { kubeconfigClusterOf = restore }()
-	kubeconfigClusterOf = func(string) (string, string, error) {
-		return "https://34.1.2.3", "ca", nil
-	}
-	got, err := readConnectTarget("gke_acme_us-central1_prod", "token")
-	if err != nil {
-		t.Fatalf("readConnectTarget: %v", err)
-	}
-	if got.CloudCluster != "" {
-		t.Errorf("CloudCluster = %q, want empty on the token auth", got.CloudCluster)
+	if got.Address != "https://172.16.0.34" || got.CAPEM != "ca" || got.Context != "gke_acme_us-central1_prod" {
+		t.Errorf("target = %+v, want the context's server and CA", got)
 	}
 }
 
@@ -228,28 +80,9 @@ func TestReadConnectTarget_TokenCarriesNoCloudResource(t *testing.T) {
 // connect appears to succeed and stores nothing — which is why this asserts
 // on the exact keys rather than on a round trip.
 
-func TestConnectRequestWire_GCP(t *testing.T) {
-	calls := recordConnect(t, "gke_acme_us-central1_prod", "auto")
-	got := calls[procConnectCluster]
-	for key, want := range map[string]any{
-		"name":         "prod-us",
-		"auth":         "CLUSTER_AUTH_WORKLOAD_IDENTITY_GCP",
-		"address":      "https://34.1.2.3",
-		"caPem":        "ca-bundle",
-		"cloudCluster": "projects/acme/locations/us-central1/clusters/prod",
-	} {
-		if got[key] != want {
-			t.Errorf("request[%q] = %v, want %v", key, got[key], want)
-		}
-	}
-	if _, ok := got["token"]; ok {
-		t.Error("the gcp request carries a token; the control plane refuses one there")
-	}
-}
-
 func TestConnectRequestWire_TokenIsWriteOnlyAndNeverPrinted(t *testing.T) {
 	var out strings.Builder
-	calls := recordConnectTo(t, &out, "vke-prod", "auto")
+	calls := recordConnectTo(t, &out, "vke-prod")
 	got := calls[procConnectCluster]
 	if got["auth"] != "CLUSTER_AUTH_SERVICE_ACCOUNT_TOKEN" {
 		t.Errorf("auth = %v, want the ServiceAccount token auth", got["auth"])
@@ -268,91 +101,10 @@ func TestConnectRequestWire_TokenIsWriteOnlyAndNeverPrinted(t *testing.T) {
 	}
 }
 
-// ── The printed grant ───────────────────────────────────────────────────────
-
-func TestGrantNamesTheHubIdentityAndTheImpersonatedUser(t *testing.T) {
-	var out strings.Builder
-	writeGrantInstructions(&out, connectRBAC{
-		ClusterName: "prod-us",
-		KubeContext: "gke_acme_us-central1_prod",
-		Auth:        authGCP,
-		Org:         "acme",
-	}, gkeContext{Project: "acme", Location: "us-central1", Cluster: "prod"},
-		"control-plane@acme.iam.gserviceaccount.com")
-
-	got := out.String()
-	for _, want := range []string{
-		"gcloud projects add-iam-policy-binding acme",
-		"--member=serviceAccount:control-plane@acme.iam.gserviceaccount.com",
-		"--role=roles/container.clusterViewer",
-		// THE HALF PEOPLE MISS. Granting the hub's cloud identity read
-		// access is not sufficient: Flux presents the impersonated deploy
-		// username, so a grant that omits it leaves every apply Forbidden on
-		// a user nobody bound.
-		"system:serviceaccount:flux-acme:reliant-deploy-tenant",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the printed grant omits %q:\n%s", want, got)
-		}
-	}
-}
-
-// An empty HubIdentity is the NORMAL state in dev. Printing a gcloud command
-// with a blank principal in it is how someone runs a grant that binds nothing.
-func TestGrantRefusesToPrintABlankPrincipal(t *testing.T) {
-	var out strings.Builder
-	writeGrantInstructions(&out, connectRBAC{ClusterName: "c", Auth: authGCP, Org: "acme"}, gkeContext{}, "")
-	got := out.String()
-	if strings.Contains(got, "gcloud") {
-		t.Errorf("printed a gcloud grant with no principal:\n%s", got)
-	}
-	if !strings.Contains(got, "no GCP identity") {
-		t.Errorf("did not say the deployment has no GCP identity:\n%s", got)
-	}
-}
-
-// ── The RBAC forge applies ──────────────────────────────────────────────────
-
-func TestBootstrapManifests_GCPBindsTheHubUserAndImpersonation(t *testing.T) {
-	got := connectRBAC{
-		ClusterName: "prod-us",
-		KubeContext: "gke_acme_us-central1_prod",
-		Auth:        authGCP,
-		Org:         "acme",
-		HubGSA:      "control-plane@acme.iam.gserviceaccount.com",
-	}.bootstrapManifests()
-
-	for _, want := range []string{
-		"kind: ClusterRole",
-		"name: forge-connect-prod-us",
-		// A GCP service account is authenticated by email, as a User.
-		"kind: User",
-		"name: control-plane@acme.iam.gserviceaccount.com",
-		// The impersonation grant, pinned to the one username the hub can
-		// ever present.
-		`verbs: ["impersonate"]`,
-		`resourceNames: ["system:serviceaccount:flux-acme:reliant-deploy-tenant"]`,
-		// The bootstrap writes the control plane makes through this
-		// credential.
-		`resources: ["namespaces"]`,
-		`resources: ["roles", "rolebindings"]`,
-		"escalate",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the gcp bootstrap omits %q:\n%s", want, got)
-		}
-	}
-	// No ServiceAccount is minted on the gcp path: there is no token.
-	if strings.Contains(got, "kind: ServiceAccount\n") {
-		t.Errorf("the gcp bootstrap mints a ServiceAccount, which only the token auth needs:\n%s", got)
-	}
-}
-
 func TestBootstrapManifests_TokenMintsTheCredential(t *testing.T) {
 	got := connectRBAC{
 		ClusterName:         "vke-prod",
 		KubeContext:         "vke-prod",
-		Auth:                authToken,
 		Org:                 "acme",
 		TokenNamespace:      connectTokenNamespace,
 		TokenServiceAccount: connectTokenServiceAccount,
@@ -381,7 +133,7 @@ func TestBootstrapManifests_TokenMintsTheCredential(t *testing.T) {
 // disconnect's cleanup safe to run by name.
 func TestBootstrapManifests_LabelsEverythingForgeCreates(t *testing.T) {
 	got := connectRBAC{
-		ClusterName: "c", Auth: authToken, Org: "o",
+		ClusterName: "c", Org: "o",
 		TokenNamespace: connectTokenNamespace, TokenServiceAccount: connectTokenServiceAccount,
 	}.bootstrapManifests()
 	docs := strings.Split(got, "\n---\n")
@@ -617,7 +369,6 @@ func (f *fakeConnectCaller) Call(_ context.Context, procedure string, req, out a
 		if r, ok := out.(*wireConnectClusterResponse); ok {
 			name, _ := f.requests[procedure]["name"].(string)
 			r.Cluster = wireConnectedCluster{ID: "cl_new", Name: name}
-			r.HubIdentity = wireHubIdentity{GCPServiceAccount: "control-plane@acme.iam.gserviceaccount.com"}
 		}
 	default:
 		// Every other procedure decodes an empty object, which is what the
@@ -628,15 +379,9 @@ func (f *fakeConnectCaller) Call(_ context.Context, procedure string, req, out a
 	return nil
 }
 
-func recordConnect(t *testing.T, kctx, auth string) map[string]map[string]any {
-	t.Helper()
-	var discard strings.Builder
-	return recordConnectTo(t, &discard, kctx, auth)
-}
-
 // recordConnectTo drives the real runClusterConnect against a fake control
 // plane and a fake cluster, and returns what it sent.
-func recordConnectTo(t *testing.T, out *strings.Builder, kctx, auth string) map[string]map[string]any {
+func recordConnectTo(t *testing.T, out *strings.Builder, kctx string) map[string]map[string]any {
 	t.Helper()
 
 	restoreKube := kubeconfigClusterOf
@@ -663,7 +408,7 @@ func recordConnectTo(t *testing.T, out *strings.Builder, kctx, auth string) map[
 	}
 
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: kctx, Auth: auth, Env: "prod", Out: out,
+		Name: "prod-us", KubeContext: kctx, Env: "prod", Out: out,
 	}); err != nil {
 		t.Fatalf("runClusterConnect: %v", err)
 	}

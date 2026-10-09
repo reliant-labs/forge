@@ -54,10 +54,7 @@ const (
 type wireConnectedCluster struct {
 	ID      string `json:"id,omitempty"`
 	Name    string `json:"name,omitempty"`
-	Auth    string `json:"auth,omitempty"`
 	Address string `json:"address,omitempty"`
-	// CloudCluster is set iff auth is a workload-identity auth.
-	CloudCluster string `json:"cloudCluster,omitempty"`
 	// Connection is the ClusterConnection value name.
 	Connection string `json:"connection,omitempty"`
 	// EnvironmentIDs are the live environments targeting this cluster. A
@@ -65,21 +62,13 @@ type wireConnectedCluster struct {
 	EnvironmentIDs []string `json:"environmentIds,omitempty"`
 }
 
-// wireHubIdentity is the principal the CONTROL PLANE acts as — the half a
-// caller cannot derive, and the reason the connect response is read at all.
-type wireHubIdentity struct {
-	GCPServiceAccount string `json:"gcpServiceAccount,omitempty"`
-}
-
 type wireConnectClusterResponse struct {
-	Cluster     wireConnectedCluster `json:"cluster"`
-	HubIdentity wireHubIdentity      `json:"hubIdentity"`
+	Cluster wireConnectedCluster `json:"cluster"`
 }
 
 func newClusterConnectCmd() *cobra.Command {
 	var (
 		kubeContext string
-		authFlag    string
 		envName     string
 		token       string
 		dryRun      bool
@@ -89,28 +78,19 @@ func newClusterConnectCmd() *cobra.Command {
 		Short: "Register a Kubernetes cluster the control plane may deploy into",
 		Long: `Register a cluster you operate, by address, so environments can target it.
 
-Nothing is installed in your cluster beyond the RBAC the platform's apply
-needs, and nothing about the cluster changes. forge reads the API server
-address and CA from your kubectl context, tells the control plane, and applies
-the in-cluster grant.
+Nothing is installed in your cluster beyond a ServiceAccount, its token and
+the RBAC the platform's apply needs. forge reads the API server address and CA
+from your kubectl context, applies that grant through it, and uploads the
+token to the control plane write-only. It is never printed.
 
   forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
-  forge cluster connect vke-prod --context vke-prod --auth token --env prod
+  forge cluster connect vke-prod --context vke-prod --env prod
   forge cluster disconnect prod-us --env prod
 
-AUTH — two values, the two ends of a real trade-off rather than two clouds:
-
-  gcp     GKE workload identity. The hub presents its OWN GCP identity and no
-          secret ever crosses the boundary. forge prints the one-time IAM
-          grant you run; it cannot run it for you.
-  token   A scoped ServiceAccount token forge mints in your cluster. Works on
-          ANY Kubernetes cluster — EKS, AKS, VKE, k3s, bare metal — and needs
-          no cloud identity. Strictly worse (a bearer token at rest), bounded
-          by the RBAC forge applies, and revoked by disconnect.
-
---auth auto (the default) picks gcp for a GKE context and token for anything
-else. The token path is a real answer, not a fallback: it is how a cluster
-with no cloud identity to trust becomes a target at all.
+ONE MECHANISM ON EVERY CLUSTER — GKE, EKS, AKS, VKE, k3s, bare metal. The
+address registered is the context's own server, so pick the context whose
+server the platform can reach (for a GKE private endpoint: a context written by
+"gcloud container clusters get-credentials --internal-ip").
 
 Re-running connect UPDATES the cluster of that name, so fixing an endpoint is
 the same command again. --env names WHICH control plane to talk to, from that
@@ -120,7 +100,6 @@ env's forge.ControlPlane declaration.`,
 			return runClusterConnect(cmd.Context(), clusterConnectOptions{
 				Name:        args[0],
 				KubeContext: kubeContext,
-				Auth:        authFlag,
 				Env:         envName,
 				Token:       token,
 				DryRun:      dryRun,
@@ -129,7 +108,6 @@ env's forge.ControlPlane declaration.`,
 		},
 	}
 	cmd.Flags().StringVar(&kubeContext, "context", "", "kubectl context addressing the cluster (required)")
-	cmd.Flags().StringVar(&authFlag, "auth", "auto", "How the hub authenticates: auto, gcp or token")
 	cmd.Flags().StringVar(&envName, "env", "", "Environment whose control plane to talk to (required)")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be sent and applied, and contact nothing")
@@ -174,7 +152,6 @@ deregisters the cluster and tells you which objects to delete by hand.`,
 type clusterConnectOptions struct {
 	Name        string
 	KubeContext string
-	Auth        string
 	Env         string
 	Token       string
 	DryRun      bool
@@ -207,13 +184,9 @@ var clusterConnectClient = func(ctx context.Context, envName, token string) (clo
 
 func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	name := strings.TrimSpace(opts.Name)
-	target, err := readConnectTarget(opts.KubeContext, opts.Auth)
+	target, err := readConnectTarget(opts.KubeContext)
 	if err != nil {
 		return err
-	}
-	gke, _ := parseGKEContext(target.Context)
-	if target.AddressNote != "" {
-		fmt.Fprintf(opts.Out, "registering %s: %s\n", target.Address, target.AddressNote)
 	}
 
 	if opts.DryRun {
@@ -222,8 +195,6 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 		return writeConnectDryRun(opts.Out, name, target, connectRBAC{
 			ClusterName:         name,
 			KubeContext:         target.Context,
-			Auth:                target.Auth,
-			HubGSA:              "<the control plane's GCP service account>",
 			Org:                 "<the env's organization>",
 			TokenNamespace:      connectTokenNamespace,
 			TokenServiceAccount: connectTokenServiceAccount,
@@ -237,58 +208,37 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	rbac := connectRBAC{
 		ClusterName:         name,
 		KubeContext:         target.Context,
-		Auth:                target.Auth,
 		Org:                 org,
 		TokenNamespace:      connectTokenNamespace,
 		TokenServiceAccount: connectTokenServiceAccount,
 	}
 
-	// ORDER DEPENDS ON THE AUTH.
-	//
-	// token: the in-cluster write comes first, because the token does not
-	// exist until the SA and its Secret do, so there is nothing to send before it.
-	//
-	// gcp: registration comes first, because the ClusterRoleBinding's subject
-	// is the hub's GSA email and the control plane's response is the only
-	// place it is reported. Applying earlier rendered `name: ` — a binding
-	// that authorizes nobody, with an apply that still "succeeded".
-	applyBootstrap := func() error {
-		fmt.Fprintf(opts.Out, "applying bootstrap RBAC to %s (server-side, field manager forge)\n", target.Context)
-		if err := connectApply(ctx, target.Context, rbac.bootstrapManifests()); err != nil {
-			return fmt.Errorf("apply bootstrap RBAC to context %q: %w\n"+
-				"This needs cluster-admin on the target. It is a one-time bootstrap: it grants the "+
-				"platform the permissions its deploys need, which no deploy can grant itself", target.Context, err)
-		}
-		return nil
-	}
-	if target.Auth == authToken {
-		if err := applyBootstrap(); err != nil {
-			return err
-		}
+	// THE IN-CLUSTER WRITE COMES FIRST, because the token does not exist
+	// until the ServiceAccount and its Secret do, so there is nothing to
+	// send before it.
+	fmt.Fprintf(opts.Out, "applying bootstrap RBAC to %s (server-side, field manager forge)\n", target.Context)
+	if err := connectApply(ctx, target.Context, rbac.bootstrapManifests()); err != nil {
+		return fmt.Errorf("apply bootstrap RBAC to context %q: %w\n"+
+			"This needs cluster-admin on the target. It is a one-time bootstrap: it grants the "+
+			"platform the permissions its deploys need, which no deploy can grant itself", target.Context, err)
 	}
 
+	// Read AFTER the apply, because the token controller populates the
+	// Secret asynchronously — a read immediately after creation finds it
+	// empty, which is the flake that gets diagnosed as "just run it again".
+	token, err := connectReadToken(ctx, target.Context, rbac)
+	if err != nil {
+		return err
+	}
 	req := map[string]any{
 		"name":    name,
-		"auth":    target.Auth,
+		"auth":    authToken,
 		"address": target.Address,
 		"caPem":   target.CAPEM,
-	}
-	if target.Auth == authGCP {
-		req["cloudCluster"] = target.CloudCluster
-	}
-	if target.Auth == authToken {
-		// Read AFTER the apply, because the token controller populates the
-		// Secret asynchronously — a read immediately after creation finds it
-		// empty, which is the flake that gets diagnosed as "just run it
-		// again".
-		token, err := connectReadToken(ctx, target.Context, rbac)
-		if err != nil {
-			return err
-		}
 		// WRITE-ONLY, and never printed: not in a summary, not in a debug
 		// line, not on failure. The control plane has no field to return it
 		// in either.
-		req["token"] = token
+		"token": token,
 	}
 
 	var resp wireConnectClusterResponse
@@ -299,19 +249,8 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 		return fmt.Errorf("connect cluster %q: the control plane returned no cluster id", name)
 	}
 
-	if target.Auth == authGCP {
-		rbac.HubGSA = resp.HubIdentity.GCPServiceAccount
-		// No GSA means no principal to bind (dev control planes have none);
-		// writeGrantInstructions below says so rather than binding nobody.
-		if strings.TrimSpace(rbac.HubGSA) != "" {
-			if err := applyBootstrap(); err != nil {
-				return err
-			}
-		}
-	}
-
 	writeConnectSummary(opts.Out, resp.Cluster, target)
-	writeGrantInstructions(opts.Out, rbac, gke, resp.HubIdentity.GCPServiceAccount)
+	writeGrantSummary(opts.Out, rbac)
 	fmt.Fprintf(opts.Out, "\nPoint an environment at it in deploy/kcl/<env>/main.k:\n\n"+
 		"    forge.ClusterTarget {\n        cluster = %q\n        namespace = \"...\"\n        connected_cluster = %q\n    }\n",
 		target.Context, name)
@@ -323,37 +262,20 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 func writeConnectSummary(out io.Writer, c wireConnectedCluster, target connectTarget) {
 	fmt.Fprintf(out, "\nconnected %s\n", c.Name)
 	fmt.Fprintf(out, "  id        %s\n", c.ID)
-	fmt.Fprintf(out, "  auth      %s\n", connectAuthLabel(target.Auth))
+	fmt.Fprintf(out, "  auth      %s\n", connectAuthLabel)
 	fmt.Fprintf(out, "  address   %s\n", c.Address)
-	if c.CloudCluster != "" {
-		fmt.Fprintf(out, "  cloud     %s\n", c.CloudCluster)
-	}
 	fmt.Fprintf(out, "  context   %s\n", target.Context)
 }
 
-// connectAuthLabel renders an auth value in forge's lower-case vocabulary.
-func connectAuthLabel(wire string) string {
-	switch wire {
-	case authGCP:
-		return "gcp (GKE workload identity — no secret crosses the boundary)"
-	case authToken:
-		return "token (scoped ServiceAccount token, minted in your cluster)"
-	default:
-		return "unknown"
-	}
-}
+// connectAuthLabel is how the one auth reads in forge's vocabulary.
+const connectAuthLabel = "token (scoped ServiceAccount token, minted in your cluster)"
 
 func writeConnectDryRun(out io.Writer, name string, target connectTarget, rbac connectRBAC) error {
 	fmt.Fprintf(out, "[dry-run] would connect %q\n", name)
-	fmt.Fprintf(out, "  auth         %s\n", connectAuthLabel(target.Auth))
+	fmt.Fprintf(out, "  auth         %s\n", connectAuthLabel)
 	fmt.Fprintf(out, "  address      %s\n", target.Address)
-	if target.CloudCluster != "" {
-		fmt.Fprintf(out, "  cloudCluster %s\n", target.CloudCluster)
-	}
 	fmt.Fprintf(out, "  caPem        %d bytes, read from context %s\n", len(target.CAPEM), target.Context)
-	if target.Auth == authToken {
-		fmt.Fprintf(out, "  token        minted on apply, sent write-only, never printed\n")
-	}
+	fmt.Fprintf(out, "  token        minted on apply, sent write-only, never printed\n")
 	fmt.Fprintf(out, "\n[dry-run] would apply to %s:\n\n", target.Context)
 	for _, line := range strings.Split(strings.TrimRight(rbac.bootstrapManifests(), "\n"), "\n") {
 		fmt.Fprintf(out, "    %s\n", line)

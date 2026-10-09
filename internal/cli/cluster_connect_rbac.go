@@ -1,7 +1,7 @@
 package cli
 
 // The objects forge converges IN THE TARGET CLUSTER so the hub's apply can
-// work, and the one-time cloud IAM grant only the owner can run.
+// work.
 //
 // ── TWO IDENTITIES ARE IN PLAY, AND THEY ARE NOT THE SAME ONE ───────────────
 //
@@ -10,10 +10,8 @@ package cli
 // authenticated and still Forbidden.
 //
 //  1. THE CONNECT IDENTITY authenticates the TLS connection to the target's
-//     API server. For the gcp auth that is the hub's own GCP service account
-//     (HubIdentity.gcpServiceAccount) — GKE authenticates a GSA by its email
-//     as the RBAC username. For the token auth it is the ServiceAccount forge
-//     mints below, and the token is that SA's.
+//     API server. It is the ServiceAccount forge mints below, and the token
+//     the control plane holds is that SA's.
 //
 //  2. THE IMPERSONATED IDENTITY authorizes the apply once connected, and it is
 //     NOT skippable. The hub's kustomize-controller runs with
@@ -24,11 +22,9 @@ package cli
 //     target cluster authenticates is `system:serviceaccount:flux-<org>:reliant-deploy-tenant`
 //     — a namespace that does not exist in the target and does not need to.
 //
-// SO THE CONNECT IDENTITY NEEDS THREE THINGS, and the grant is wrong without
-// any one of them:
+// SO THE CONNECT IDENTITY NEEDS TWO THINGS, and the grant is wrong without
+// either of them:
 //
-//   - reach: for gcp, `roles/container.clusterViewer` on the project, which is
-//     what lets the hub resolve the cluster and exchange a token for it;
 //   - the bootstrap writes: the control plane creates the destination
 //     Namespace, the deploy ServiceAccount and its Role/RoleBinding in the
 //     target itself, through this credential;
@@ -88,16 +84,10 @@ type connectRBAC struct {
 	// plane and the KCL binding address, the context is how the owner's
 	// machine reaches the cluster, and they are routinely different.
 	KubeContext string
-	// HubGSA is the hub's GCP service account email, bound as a User on the
-	// gcp auth. Reported by the control plane at registration, so it is empty
-	// until then; the token auth binds the minted ServiceAccount instead.
-	HubGSA string
-	// Auth selects whether the binding subject is HubGSA or the minted SA.
-	Auth string
 	// Org is the control plane organization, for the impersonated username.
 	Org string
-	// TokenNamespace / TokenServiceAccount name the SA forge mints on the
-	// token auth. Empty on gcp.
+	// TokenNamespace / TokenServiceAccount name the SA forge mints: the
+	// connect identity.
 	TokenNamespace      string
 	TokenServiceAccount string
 }
@@ -121,7 +111,7 @@ func (r connectRBAC) bootstrapManifests() string {
 		"    forge.dev/connected-cluster: " + r.ClusterName + "\n"
 	name := connectBootstrapName(r.ClusterName)
 
-	if r.Auth == authToken {
+	{
 		// The credential itself: a namespace, a ServiceAccount, and a
 		// long-lived token Secret.
 		//
@@ -153,16 +143,11 @@ func (r connectRBAC) bootstrapManifests() string {
 	return strings.Join(docs, "\n---\n") + "\n"
 }
 
-// subjectYAML renders the connect identity as an RBAC subject. A GCP service
-// account is a User (GKE authenticates it by email); a minted token is its
-// ServiceAccount.
+// subjectYAML renders the connect identity — the minted ServiceAccount — as
+// an RBAC subject.
 func (r connectRBAC) subjectYAML() string {
-	if r.Auth == authToken {
-		return "subjects:\n- kind: ServiceAccount\n  name: " + r.TokenServiceAccount +
-			"\n  namespace: " + r.TokenNamespace + "\n"
-	}
-	return "subjects:\n- kind: User\n  name: " + r.HubGSA +
-		"\n  apiGroup: rbac.authorization.k8s.io\n"
+	return "subjects:\n- kind: ServiceAccount\n  name: " + r.TokenServiceAccount +
+		"\n  namespace: " + r.TokenNamespace + "\n"
 }
 
 // connectBootstrapRules is the narrowest rule set that lets the control plane
@@ -206,49 +191,15 @@ func connectBootstrapRules(org string) string {
 `
 }
 
-// writeGrantInstructions prints the one-time grant the OWNER runs, and it is
-// the whole point of the response carrying HubIdentity.
-//
-// forge cannot perform this itself: the gcp half is an IAM write in the
-// owner's project, against credentials forge does not have and should not ask
-// for. So the command's real output is this text — it is the answer, not a
-// footnote under a status line.
-func writeGrantInstructions(out io.Writer, r connectRBAC, gke gkeContext, hubGSA string) {
-	if r.Auth != authGCP {
-		// The token path needs no cloud grant: forge already applied the
-		// RBAC and sent the token. Say so, rather than printing nothing and
-		// leaving the reader wondering what they owe.
-		fmt.Fprintf(out, "\nNo cloud IAM grant is needed: this cluster authenticates with the scoped\n"+
-			"ServiceAccount token forge just minted, and forge applied its RBAC through\n"+
-			"context %q. The token was sent write-only and is never printed or stored locally.\n", r.KubeContext)
-		return
-	}
-	if strings.TrimSpace(hubGSA) == "" {
-		// EMPTY IS THE NORMAL STATE IN DEV, where the control plane has no
-		// cloud identity. Saying so is correct; printing a gcloud command
-		// with a blank principal in it is how someone runs a grant that
-		// silently binds nothing.
-		fmt.Fprintf(out, "\n⚠ This control plane reports no GCP identity, so there is no principal to grant.\n"+
-			"  The cluster is registered, but the hub cannot authenticate to it until the\n"+
-			"  deployment has a GCP service account. A dev control plane normally has none —\n"+
-			"  use --auth token against a dev cluster.\n")
-		return
-	}
-	fmt.Fprintf(out, `
-Run this ONCE, as an owner of project %s. forge cannot: it is an IAM write in
-your project, with credentials forge does not hold.
-
-  gcloud projects add-iam-policy-binding %s \
-    --member=serviceAccount:%s \
-    --role=roles/container.clusterViewer
-
-That is the whole cloud half. forge already applied the in-cluster half through
-context %s: ClusterRole %s, bound to %s,
-carrying the bootstrap writes the platform needs plus permission to impersonate
-%s.
-That impersonation is the grant people miss: it is the username Flux presents
-when it applies, so without it the cluster connects and every apply is Forbidden.
-`,
-		gke.Project, gke.Project, hubGSA, r.KubeContext, connectBootstrapName(r.ClusterName), hubGSA,
+// writeGrantSummary says what was granted and that nothing is owed. There is
+// no cloud half: forge applied the RBAC and sent the token, so a reader who
+// expects a one-time IAM step learns there is none rather than wondering what
+// they missed.
+func writeGrantSummary(out io.Writer, r connectRBAC) {
+	fmt.Fprintf(out, "\nNothing else to run: forge applied ClusterRole %s through context %q,\n"+
+		"bound to %s/%s, whose token the control plane now holds. The token was\n"+
+		"sent write-only and is never printed or stored locally. Flux applies as\n"+
+		"%s.\n",
+		connectBootstrapName(r.ClusterName), r.KubeContext, r.TokenNamespace, r.TokenServiceAccount,
 		hubDeployUsername(r.Org))
 }

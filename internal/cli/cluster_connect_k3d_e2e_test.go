@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// TestClusterConnect_TokenAgainstARealCluster drives `connect --auth token`
+// TestClusterConnect_TokenAgainstARealCluster drives `connect`
 // and `disconnect` against a REAL throwaway k3d cluster and a fake control
 // plane: the ServiceAccount, its token Secret and the RBAC are created for
 // real, the minted token is read back from the cluster and sent write-only, and
@@ -82,7 +82,7 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 
 	var out strings.Builder
 	if err := runClusterConnect(ctx, clusterConnectOptions{
-		Name: "e2e", KubeContext: kctx, Auth: "token", Env: "prod", Out: &out,
+		Name: "e2e", KubeContext: kctx, Env: "prod", Out: &out,
 	}); err != nil {
 		t.Fatalf("connect: %v\n%s", err, out.String())
 	}

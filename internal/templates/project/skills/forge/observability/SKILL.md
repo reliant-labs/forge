@@ -185,13 +185,13 @@ always safe. This file is THE extension point:
   default is seeded from `observability.log_level` in forge.yaml (`debug` |
   `info` | `warn` | `error`; default `debug`, so success stays quiet under a
   production Info handler).
-- **Tune success logging** — every success is logged unless the process
-  turns sampling on (see [Success-log sampling](#success-log-sampling)); a
-  call over 1s is always logged with `slow=true`. Trailing options on
-  `observe.LogMiddleware` change that for this package:
+- **Tune success logging** — every success is logged (see
+  [Success-log sampling](#success-log-sampling)); a call over 1s is always
+  logged with `slow=true`. Trailing options on `observe.LogMiddleware` change
+  that for this package:
   `observe.WithSuccessLevel("<pkg>.<Method>", slog.LevelInfo)` for one method,
-  `observe.WithSuccessSampling(d)` to fix this package's window whatever the
-  environment says (`0` = every success),
+  `observe.WithSuccessSampling(d)` to sample this package's successes
+  (`0` = every success),
   `observe.WithSlowThreshold(d)` to move the slow line.
 
 The chain captures only method identity, duration, and error status — never
@@ -215,31 +215,37 @@ app_config: config_gen.AppConfig = {
 }
 ```
 
-`log_success_sample_window` is declared in `proto/config/v1/config.proto`
-(scaffolded; add it to an older project's AppConfig the same way), and the
-generated `config_gen.k` projects it onto the workload as
-`LOG_SUCCESS_SAMPLE_WINDOW`. For a workload whose env is written by hand,
-set that variable directly. forge's `observe` package reads it from the
-process environment when it builds each logging layer, so it reaches
-`serve.go`'s chain and every `observe_chain.go` seam with no code change.
+`log_success_sample_window` is declared in `proto/config/v1/config.proto`,
+so the config loader types and validates it, and it can come from any source
+the loader reads (`--log-success-sample-window`, `LOG_SUCCESS_SAMPLE_WINDOW`,
+a `--config` file). The scaffolded `serve.go` passes the loaded value to the
+RPC edge's logging interceptor:
 
-Sampled, each RPC procedure (and each component method) logs its first
-success, then at most one per window carrying `suppressed=<n>` — the
-successes that record stands for, so the rate survives in the log. Volume is
-bounded by the number of procedures, not by traffic. Never sampled, at any
-setting: failures (every one, with its error) and successes slower than 1s
-(`slow=true`).
+```go
+chainDeps := observe.Deps{
+    // ...
+    LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())},
+}
+```
 
-Which window a layer uses:
+forge's `observe` package reads no environment — the window is only ever
+the one its caller passed. So an older project adopts it by adding the field
+to its AppConfig and that one `LogOptions` line to its owned `serve.go`; a
+server that is not forge-scaffolded passes `observe.WithSuccessSampling` in
+`DefaultMiddlewareDeps.LogOptions` from its own config.
 
-1. `observe.WithSuccessSampling(d)` passed in code (`Deps.LogOptions`, or a
-   trailing `observe.LogMiddleware` option) — wins, for that one layer;
-2. otherwise `LOG_SUCCESS_SAMPLE_WINDOW` from the environment;
-3. otherwise none — every success is logged.
+Sampled, each RPC procedure logs its first success, then at most one per
+window carrying `suppressed=<n>` — the successes that record stands for, so
+the rate survives in the log. Volume is bounded by the number of procedures,
+not by traffic. Never sampled, at any setting: failures (every one, with its
+error) and successes slower than 1s (`slow=true`).
 
-`0` (or a negative window) logs every success at either level. A value that
-is not a Go duration is reported once as a WARN and logs every success: a
-typo costs volume, never the records that show the process working.
+Component-call logs (`observe_chain.go`) default to DEBUG, so a production
+INFO handler already drops their successes. To sample one package's anyway,
+append `observe.WithSuccessSampling(d)` to its `observe.LogMiddleware`.
+
+`0` (or a negative window) logs every success. When a layer is given more
+than one `WithSuccessSampling`, the last one wins.
 
 ### Opting in and out
 

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`internal/pkgguard` catches every reference to a forbidden environment
+  read, not only calls.** It inspected call expressions alone, so
+  `getenv: os.Getenv` — a function value stored for a later call — passed it
+  while forbidigo failed `Lint (forge/pkg)` on the same line. It now resolves
+  each file's imports and reports any `os.Getenv` / `os.LookupEnv` /
+  `os.Environ` reference, including through an aliased or dot import.
+
 - **A release refuses a sibling checkout that is not at the commit the
   project pins.** A `ShellBuild` with `cwd = "../reliant"` built whatever that
   checkout had on disk, so a release could record a days-old sibling image
@@ -159,19 +166,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Every successful call is logged again by default; sampling is a
-  per-environment setting.** `observe.LoggingInterceptor` (`rpc completed`)
-  and `observe.LogMiddleware` (component calls) sampled successes out of the
-  box — one per procedure per minute. They now write every success unless the
-  process sets `LOG_SUCCESS_SAMPLE_WINDOW` (a Go duration, e.g. `1m`), which
-  turns the same per-procedure sampling on for every layer that sets no
-  window in code. `observe.WithSuccessSampling(d)` still sets one layer's
-  window and wins over the variable. Failures and successes over 1s are
-  always logged. The scaffolded `proto/config/v1/config.proto` declares it as
-  `log_success_sample_window` (env-only, default `0s`), so a deployment sets
-  it per env in `deploy/kcl/<env>/config.k`; existing projects need no code
-  change — add the field to AppConfig for the typed KCL key, or set the
-  variable on the workload's env. `observe.DefaultSuccessSampleWindow` is
-  removed (there is no default window).
+  per-environment setting in typed config.** `observe.LoggingInterceptor`
+  (`rpc completed`) and `observe.LogMiddleware` (component calls) sampled
+  successes out of the box — one per procedure per minute. They now write
+  every success unless their caller passes `observe.WithSuccessSampling(d)`.
+  Failures and successes over 1s are always logged. The scaffolded
+  `proto/config/v1/config.proto` declares `log_success_sample_window`
+  (default `0s`; env `LOG_SUCCESS_SAMPLE_WINDOW`, flag
+  `--log-success-sample-window`), so a deployment sets it per env in
+  `deploy/kcl/<env>/config.k`, and the scaffolded `serve.go` passes the
+  loaded value to `observe.Chain` as `LogOptions`. `forge/pkg/observe` reads
+  no environment: an existing project adds the field to its AppConfig and
+  `LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())}`
+  to the `observe.Deps` in its owned `serve.go`.
+  `observe.DefaultSuccessSampleWindow` is removed (there is no default
+  window).
 - **One prettier release formats a scaffolded project, everywhere.** Frontends
   now pin `prettier` exactly (`3.5.3`, was the range `^3.5.0`), and the
   scaffolded `.pre-commit-config.yaml` runs that same release as a local hook

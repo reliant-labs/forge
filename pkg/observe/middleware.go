@@ -26,9 +26,9 @@ type DefaultMiddlewareDeps struct {
 
 	// LogOptions tune how LoggingInterceptor logs successful RPCs
 	// (sampling window, slow threshold, per-procedure level). nil keeps
-	// the defaults: every success logged, unless SuccessSampleWindowEnv
-	// turns sampling on for the process. A WithSuccessSampling here wins
-	// over that variable. Failures are always logged in full.
+	// the defaults: every success logged. WithSuccessSampling here is the
+	// only thing that samples them — pass it the app's typed config value.
+	// Failures are always logged in full.
 	LogOptions []LogOption
 
 	// Extras are appended to the canonical chain in the order supplied
@@ -149,9 +149,9 @@ type Deps struct {
 
 	// LogOptions tune how LoggingInterceptor logs successful RPCs
 	// (sampling window, slow threshold, per-procedure level). nil keeps
-	// the defaults: every success logged, unless SuccessSampleWindowEnv
-	// turns sampling on for the process. A WithSuccessSampling here wins
-	// over that variable. Failures are always logged in full.
+	// the defaults: every success logged. WithSuccessSampling here is the
+	// only thing that samples them — pass it the app's typed config value.
+	// Failures are always logged in full.
 	LogOptions []LogOption
 
 	// Auth is the project's authentication interceptor — the value

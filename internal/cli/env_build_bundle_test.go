@@ -707,6 +707,12 @@ func TestEnvBuildBundle_AFailedPushFallsBackLocallyAndDoesNotFailTheBuild(t *tes
 	if !strings.Contains(warnings.String(), "could not be pushed") {
 		t.Errorf("the degradation must be reported, not silent; warnings were %q", warnings.String())
 	}
+	if !strings.Contains(warnings.String(), "not recorded") {
+		t.Errorf("a hosted ledger must not receive a local-layout bundle; warnings were %q", warnings.String())
+	}
+	if written[0].Recorded {
+		t.Error("a hosted bundle that was not pushed must not be recorded")
+	}
 	// And the bytes really are local, so a deploy can still fetch them.
 	if _, ferr := bundle.Fetch(context.Background(), mustLocalLayout(t, dir), written[0].Digest); ferr != nil {
 		t.Errorf("the locally-written bundle must be fetchable: %v", ferr)

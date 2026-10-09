@@ -279,6 +279,19 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	}
 	placed.Objects = len(doc.Shape.Objects)
 
+	// A hosted bundle record must name the repository that holds the exact
+	// manifest/config bytes the server verifies. If a platform-registry push
+	// was unavailable, do not send a local-layout record to the hosted ledger:
+	// it cannot be resolved by the control plane and it has no admissible
+	// repository to validate.
+	if ledger.Hosted && placed.repository == "" {
+		fmt.Fprintf(in.errWriter(),
+			"[bundle] Warning: env %s's bundle %s was written locally but not recorded because it was not pushed to the hosted registry.\n"+
+				"[bundle]   The build continues; re-run after platform registry access is restored.\n",
+			env, shortDigest(placed.Digest))
+		return placed.bundleWriteOutcome, nil
+	}
+
 	record := release.BundleRecord{
 		Env: env, Release: in.Release,
 		Digest: built.Digest, Reference: placed.Reference,

@@ -170,8 +170,8 @@ type RuntimeTarget struct {
 // machineLocalChecks are the runtime checks whose only subject is the
 // developer's machine. See RuntimeTarget.RemoteOnly.
 var machineLocalChecks = map[string]bool{
-	composeCheckName: true, "App Health": true, "pprof": true, "Profiles (Pyro)": true,
-	"Prometheus": true, "Traces (Tempo)": true, "Logs (Loki)": true, "Delve": true,
+	composeCheckName: true, "App Health": true, "pprof": true, "Profiles (Pyroscope)": true,
+	"Metrics (ClickStack)": true, "Traces (ClickStack)": true, "Logs (ClickStack)": true, "Delve": true,
 }
 
 // RuntimeInput carries everything RunRuntime needs. Env is reported in
@@ -259,10 +259,10 @@ func runtimeSignals() map[string][]namedCheck {
 		{"App Health", CheckAppHealth},
 		{clusterWorkloadsCheckName, CheckClusterWorkloads},
 	}
-	profiles := []namedCheck{{"pprof", CheckPprof}, {"Profiles (Pyro)", CheckPyroscope}}
-	metrics := []namedCheck{{"Prometheus", CheckPrometheus}}
-	traces := []namedCheck{{"Traces (Tempo)", CheckTempo}}
-	logs := []namedCheck{{"Logs (Loki)", CheckLoki}}
+	profiles := []namedCheck{{"pprof", CheckPprof}, {"Profiles (Pyroscope)", CheckPyroscope}}
+	metrics := []namedCheck{{"Metrics (ClickStack)", CheckPrometheus}}
+	traces := []namedCheck{{"Traces (ClickStack)", CheckTempo}}
+	logs := []namedCheck{{"Logs (ClickStack)", CheckLoki}}
 	delve := []namedCheck{{"Delve", CheckDelve}}
 
 	all := []namedCheck{{composeCheckName, CheckDocker}}

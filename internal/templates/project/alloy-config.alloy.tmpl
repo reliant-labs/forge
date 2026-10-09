@@ -2,57 +2,14 @@
 // forge-owned: regenerated every run — do not edit (forge project disown to take ownership)
 // Source: internal/templates/project/alloy-config.alloy.tmpl (driven by forge.yaml services list).
 //
-// Grafana Alloy — single collector for metrics, logs, and profiles.
-// Scrapes all services on the docker network and forwards to the LGTM stack.
-// forge generate updates the targets list when services are added/removed.
-
-// ── Metrics: scrape /metrics from app services ──
-prometheus.scrape "apps" {
-  targets = [
-{{- range .Services}}
-    {"__address__" = "{{.Name}}:{{.Port}}", "service_name" = "{{.Name}}"},
-{{- end}}
-  ]
-  scrape_interval = "30s"
-  scrape_timeout  = "10s"
-  forward_to      = [prometheus.remote_write.lgtm.receiver]
-}
-
-prometheus.remote_write "lgtm" {
-  endpoint {
-    url = "http://lgtm:9090/api/v1/write"
-  }
-}
-
-// ── Logs: collect Docker container logs ──
-discovery.docker "containers" {
-  host = "unix:///var/run/docker.sock"
-}
-
-discovery.relabel "docker_logs" {
-  targets = discovery.docker.containers.targets
-
-  rule {
-    source_labels = ["__meta_docker_container_name"]
-    target_label  = "container"
-  }
-  rule {
-    source_labels = ["__meta_docker_container_name"]
-    target_label  = "service_name"
-  }
-}
-
-loki.source.docker "containers" {
-  host       = "unix:///var/run/docker.sock"
-  targets    = discovery.relabel.docker_logs.output
-  forward_to = [loki.write.lgtm.receiver]
-}
-
-loki.write "lgtm" {
-  endpoint {
-    url = "http://lgtm:3100/loki/api/v1/push"
-  }
-}
+// Grafana Alloy is deliberately PROFILE-ONLY. Logs, traces, and metrics go
+// directly to the official ClickStack collector via OTLP; do not add Docker log
+// discovery or Prometheus remote_write here, or every signal will be duplicated.
+// Forge updates the profile target list when services are added or removed.
+//
+// Pinned by docker-compose.yml: grafana/alloy:v1.10.2, writing to the separate
+// Pyroscope backend grafana/pyroscope:1.14.0. Review these pins with ClickStack
+// upgrades; they are not part of the HyperDX distribution.
 
 // ── Profiles: scrape /debug/pprof from app services ──
 pyroscope.scrape "apps" {
@@ -61,7 +18,7 @@ pyroscope.scrape "apps" {
   ]
   scrape_interval = "30s"
   scrape_timeout  = "10s"
-  forward_to = [pyroscope.write.lgtm.receiver]
+  forward_to = [pyroscope.write.local.receiver]
 
   profiling_config {
     profile.process_cpu { enabled = true }
@@ -72,8 +29,8 @@ pyroscope.scrape "apps" {
   }
 }
 
-pyroscope.write "lgtm" {
+pyroscope.write "local" {
   endpoint {
-    url = "http://lgtm:4040"
+    url = "http://pyroscope:4040"
   }
 }

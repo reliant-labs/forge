@@ -452,49 +452,28 @@ func TestDevSignInReachesTheAPI(t *testing.T) {
 	}
 }
 
-// TestDevObservabilityOptInDeliversTelemetry pins the dev observability
-// opt-in to the three things that must agree for any data to arrive: the
-// lgtm compose service runs, it publishes OTLP on the port the env declares,
-// and the API exports to that same port. The opt-in used to be "add the lgtm
-// workload" alone: Grafana came up, the host-run API had an empty
-// OTEL_EXPORTER_OTLP_ENDPOINT and compose published no OTLP port, so nothing
-// ever reached it.
-func TestDevObservabilityOptInDeliversTelemetry(t *testing.T) {
+// TestDevClickStackDefaultDeliversTelemetry pins the default local stack and
+// its stable app boundary: host workloads export to the same OTLP port that
+// the official ClickStack collector publishes.
+func TestDevClickStackDefaultDeliversTelemetry(t *testing.T) {
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
+	workloads := devWorkloadJSON(t, root)
 
-	// Off by default: no stack, and no endpoint aimed at one.
-	off := devWorkloadJSON(t, root)
-	if _, ok := off["lgtm"]; ok {
-		t.Errorf("a fresh dev env runs lgtm without being asked")
-	}
-	if strings.Contains(off["api"], `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http`) {
-		t.Errorf("observability is off, but the API exports to a collector:\n%s", off["api"])
-	}
-
-	mainK := filepath.Join(root, "deploy/kcl/dev/main.k")
-	raw, err := os.ReadFile(mainK)
-	if err != nil {
-		t.Fatal(err)
-	}
-	on := strings.Replace(string(raw), "_observability = False", "_observability = True", 1)
-	if on == string(raw) {
-		t.Fatalf("dev/main.k has no `_observability = False` switch:\n%s", raw)
-	}
-	if err := os.WriteFile(mainK, []byte(on), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	w := devWorkloadJSON(t, root)
-
-	lgtm, ok := w["lgtm"]
+	collector, ok := workloads["otel-collector"]
 	if !ok {
-		t.Fatalf("observability on, but dev runs no lgtm workload: %v", w)
+		t.Fatalf("fresh dev env runs no official collector: %v", workloads)
 	}
-	port := regexp.MustCompile(`"OTLP_GRPC_PORT":"(\d+)"`).FindStringSubmatch(lgtm)
+	port := regexp.MustCompile(`"OTLP_GRPC_PORT":"(\d+)"`).FindStringSubmatch(collector)
 	if port == nil {
-		t.Fatalf("lgtm is not handed OTLP_GRPC_PORT to publish:\n%s", lgtm)
+		t.Fatalf("collector is not handed OTLP_GRPC_PORT:\n%s", collector)
 	}
-	if want := `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http://localhost:` + port[1] + `"`; !strings.Contains(w["api"], want) {
-		t.Errorf("the API does not export to the port lgtm publishes (%s):\n%s", want, w["api"])
+	if want := `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http://localhost:` + port[1] + `"`; !strings.Contains(workloads["api"], want) {
+		t.Errorf("API does not export to the collector's published port (%s):\n%s", want, workloads["api"])
+	}
+	for _, service := range []string{"clickhouse", "mongo", "hyperdx", "pyroscope", "alloy"} {
+		if _, ok := workloads[service]; !ok {
+			t.Errorf("fresh dev env is missing %s: %v", service, workloads)
+		}
 	}
 
 	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.yml"))
@@ -503,15 +482,16 @@ func TestDevObservabilityOptInDeliversTelemetry(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"`,
-		// grafana/otel-lgtm reads providers from here, not /etc/grafana.
-		":/otel-lgtm/grafana/conf/provisioning/dashboards/forge.yaml:ro",
+		`clickhouse/clickstack-otel-collector:2.40.0@sha256:`,
+		`docker.hyperdx.io/hyperdx/hyperdx:2.40.0@sha256:`,
+		`mongo:8.0.14-noble@sha256:`,
 	} {
 		if !strings.Contains(string(compose), want) {
-			t.Errorf("docker-compose.yml lgtm service is missing %s", want)
+			t.Errorf("docker-compose.yml is missing pinned ClickStack configuration %s", want)
 		}
 	}
-	if strings.Contains(string(compose), ":/etc/grafana/provisioning") {
-		t.Errorf("docker-compose.yml still mounts provisioning where grafana/otel-lgtm never reads it")
+	if strings.Contains(string(compose), "lgtm") || strings.Contains(string(compose), "/var/run/docker.sock") {
+		t.Error("ClickStack stack retains LGTM or duplicate-signal Docker log collection")
 	}
 }
 

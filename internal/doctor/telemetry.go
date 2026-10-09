@@ -15,19 +15,43 @@ import (
 
 var httpClient = &http.Client{Timeout: 5 * time.Second}
 
-// grafanaAddr returns the Grafana host address, or an UNDETERMINED result
-// when the compose check could not publish one. Undetermined, not skip: the
-// telemetry backends ship in the bundled lgtm container, so a missing port
-// means forge could not look — not that the question does not apply.
-func grafanaAddr(env *Environment) (string, *CheckResult) {
-	addr, ok := env.GetPort("lgtm", 3000)
+// clickhouseAddr returns a direct ClickHouse HTTP endpoint. The official
+// ClickStack collector writes the schemas queried below, so status does not
+// rely on an unversioned HyperDX query API.
+func clickhouseAddr(env *Environment) (string, *CheckResult) {
+	addr, ok := env.GetPort("clickhouse", 8123)
 	if !ok {
-		return "", &CheckResult{
-			Status:  StatusUnknown,
-			Message: "Grafana port not published by the compose stack — could not query this signal",
-		}
+		return "", &CheckResult{Status: StatusUnknown, Message: "ClickHouse HTTP port not published by the compose stack — could not query this signal"}
 	}
 	return addr, nil
+}
+
+func clickhouseQuery(ctx context.Context, addr, query string) ([]byte, error) {
+	return doGet(ctx, "http://"+addr+"/?query="+url.QueryEscape(query+" FORMAT JSON"))
+}
+
+func clickhouseCount(ctx context.Context, env *Environment, table, service string) (int, []byte, *CheckResult) {
+	addr, result := clickhouseAddr(env)
+	if result != nil {
+		return 0, nil, result
+	}
+	body, err := clickhouseQuery(ctx, addr, fmt.Sprintf("SELECT count() AS count FROM default.%s WHERE ServiceName = %q", table, service))
+	if err != nil {
+		return 0, body, &CheckResult{Status: StatusFail, Message: "ClickHouse query failed: " + err.Error(), Evidence: string(body)}
+	}
+	var response struct {
+		Data []struct {
+			Count int `json:"count"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil || len(response.Data) != 1 {
+		message := "failed to parse ClickHouse response"
+		if err != nil {
+			message += ": " + err.Error()
+		}
+		return 0, body, &CheckResult{Status: StatusUnknown, Message: message, Evidence: string(body)}
+	}
+	return response.Data[0].Count, body, nil
 }
 
 // doGet performs a GET request and returns the body bytes.
@@ -51,46 +75,19 @@ func doGet(ctx context.Context, rawURL string) ([]byte, error) {
 	return body, nil
 }
 
-// CheckPrometheus verifies Prometheus is reachable AND holds this app's
-// metrics.
-//
-// Reachable is not the question. The bundled lgtm image scrapes its own
-// collector, so `up` always has a target — the check used to report
-// "✓ 1 targets up" on a stack where the app exported nothing at all, which is
-// a green on exactly the property it exists to verify. It passes only when
-// Prometheus has series stamped with the app's service name (job=<project>,
-// what the collector derives from the OTLP resource's service.name — the
-// same name the Tempo check searches for).
+// CheckPrometheus retains its public name for callers, but now verifies that
+// the official ClickStack collector wrote this app's metric points to
+// ClickHouse. It deliberately queries storage directly instead of inventing a
+// dependency on HyperDX's unversioned search API.
 func CheckPrometheus(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
+	count, _, result := clickhouseCount(ctx, env, "otel_metrics_sum", env.ProjectName)
+	if result != nil {
+		return *result
 	}
-
-	base := "http://" + addr + "/api/datasources/proxy/uid/prometheus/api/v1/query"
-
-	upBody, err := doGet(ctx, base+"?query=up")
-	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "Prometheus query failed: " + err.Error(), Evidence: string(upBody)}
+	if count == 0 {
+		return CheckResult{Status: StatusWarn, Message: "ClickStack has no metric points from " + env.ProjectName + " yet"}
 	}
-	up, err := parsePromVector(upBody)
-	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "failed to parse Prometheus response: " + err.Error(), Evidence: string(upBody)}
-	}
-	if len(up) == 0 {
-		return CheckResult{Status: StatusFail, Message: "no targets reporting up"}
-	}
-
-	appQuery := fmt.Sprintf(`count by (__name__) ({job=%q})`, env.ProjectName)
-	appBody, err := doGet(ctx, base+"?query="+url.QueryEscape(appQuery))
-	if err != nil {
-		return CheckResult{Status: StatusUnknown, Message: "Prometheus is up, but the query for this app's metrics failed: " + err.Error(), Evidence: string(appBody)}
-	}
-	series, err := parsePromVector(appBody)
-	if err != nil {
-		return CheckResult{Status: StatusUnknown, Message: "Prometheus is up, but its answer about this app's metrics could not be read: " + err.Error(), Evidence: string(appBody)}
-	}
-	return prometheusAppVerdict(env.ProjectName, len(up), series)
+	return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d ClickStack metric point(s) from %s", count, env.ProjectName)}
 }
 
 // prometheusAppVerdict turns "which metric names carry job=<project>" into
@@ -151,148 +148,42 @@ func parsePromVector(body []byte) ([]promSample, error) {
 	return resp.Data.Result, nil
 }
 
-// CheckTempo verifies traces are being ingested into Tempo.
+// CheckTempo retains its public name and verifies ClickStack trace ingestion.
 func CheckTempo(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
+	count, _, result := clickhouseCount(ctx, env, "otel_traces", env.ProjectName)
+	if result != nil {
+		return *result
 	}
-
-	searchURL := fmt.Sprintf("http://%s/api/datasources/proxy/uid/tempo/api/search?tags=%s&limit=5",
-		addr, url.QueryEscape("service.name="+env.ProjectName))
-
-	body, err := doGet(ctx, searchURL)
-	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "Tempo query failed: " + err.Error(), Evidence: string(body)}
+	if count == 0 {
+		return CheckResult{Status: StatusWarn, Message: "ClickStack has no traces from " + env.ProjectName + " yet"}
 	}
-
-	var tempoResp struct {
-		Traces []struct {
-			TraceID         string `json:"traceID"`
-			RootServiceName string `json:"rootServiceName"`
-			RootTraceName   string `json:"rootTraceName"`
-		} `json:"traces"`
-		Metrics struct {
-			InspectedTraces int `json:"inspectedTraces"`
-		} `json:"metrics"`
-	}
-	if err := json.Unmarshal(body, &tempoResp); err != nil {
-		return CheckResult{Status: StatusFail, Message: "failed to parse Tempo response", Evidence: string(body)}
-	}
-
-	totalTraces := tempoResp.Metrics.InspectedTraces
-	if len(tempoResp.Traces) == 0 {
-		return CheckResult{
-			Status:  StatusWarn,
-			Message: "no traces found (send some requests to generate traces)",
-		}
-	}
-
-	// Collect root trace names for the summary.
-	var names []string
-	for _, t := range tempoResp.Traces {
-		if t.RootTraceName != "" {
-			names = append(names, t.RootTraceName)
-		}
-	}
-	namesSummary := ""
-	if len(names) > 0 {
-		namesSummary = " (" + strings.Join(names, ", ") + ")"
-	}
-
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d traces found%s", totalTraces, namesSummary),
-	}
+	return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d ClickStack trace(s) from %s", count, env.ProjectName)}
 }
 
-// CheckLoki verifies logs are being ingested into Loki.
+// CheckLoki retains its public name and verifies ClickStack log ingestion.
 func CheckLoki(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
+	count, _, result := clickhouseCount(ctx, env, "otel_logs", env.ProjectName)
+	if result != nil {
+		return *result
 	}
-
-	params := url.Values{}
-	params.Set("query", `{container=~".*app.*"}`)
-	params.Set("limit", "5")
-	lokiURL := fmt.Sprintf("http://%s/api/datasources/proxy/uid/loki/loki/api/v1/query_range?%s", addr, params.Encode())
-
-	body, err := doGet(ctx, lokiURL)
-	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "Loki query failed: " + err.Error(), Evidence: string(body)}
+	if count == 0 {
+		return CheckResult{Status: StatusWarn, Message: "ClickStack has no logs from " + env.ProjectName + " yet"}
 	}
-
-	var lokiResp struct {
-		Status string `json:"status"`
-		Data   struct {
-			ResultType string `json:"resultType"`
-			Result     []struct {
-				Stream map[string]interface{} `json:"stream"`
-				Values [][]string             `json:"values"`
-			} `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &lokiResp); err != nil {
-		return CheckResult{Status: StatusFail, Message: "failed to parse Loki response", Evidence: string(body)}
-	}
-
-	streamCount := len(lokiResp.Data.Result)
-	if streamCount == 0 {
-		return CheckResult{
-			Status:  StatusWarn,
-			Message: "no log streams found (app may not have produced logs yet)",
-		}
-	}
-
-	var totalLines int
-	for _, s := range lokiResp.Data.Result {
-		totalLines += len(s.Values)
-	}
-
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d log streams, %d lines", streamCount, totalLines),
-	}
+	return CheckResult{Status: StatusPass, Message: fmt.Sprintf("%d ClickStack log record(s) from %s", count, env.ProjectName)}
 }
 
 // CheckPyroscope verifies continuous profiling is working.
 func CheckPyroscope(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
-	}
-
-	// Try via Grafana datasource proxy first.
-	profileURL := fmt.Sprintf("http://%s/api/datasources/proxy/uid/pyroscope/api/v1/profileTypes", addr)
-	body, err := doGet(ctx, profileURL)
-	if err == nil {
-		return parsePyroscopeProfileTypes(body, env.ProjectName)
-	}
-
-	// Fallback: check Pyroscope health via docker exec (use curl, not wget).
-	readyOut, err := env.compose(ctx, "exec", "-w", "/", "lgtm",
-		"curl", "-sf", "http://localhost:4040/ready")
+	// Pyroscope remains separate from ClickStack. Query it inside its compose
+	// network because local dev does not publish a profile endpoint to the host.
+	readyOut, err := env.compose(ctx, "exec", "-w", "/", "pyroscope", "wget", "-qO-", "http://localhost:4040/ready")
 	if err != nil {
-		return CheckResult{
-			Status:   StatusFail,
-			Message:  "Pyroscope not reachable",
-			Evidence: strings.TrimSpace(string(readyOut) + "\n" + err.Error()),
-		}
+		return CheckResult{Status: StatusFail, Message: "Pyroscope not reachable", Evidence: strings.TrimSpace(string(readyOut) + "\n" + err.Error())}
 	}
-
-	// Pyroscope is healthy — query via gRPC-web endpoint for label values.
-	labelsOut, err := env.compose(ctx, "exec", "-w", "/", "lgtm",
-		"curl", "-sf", "http://localhost:4040/querier.v1.QuerierService/LabelValues",
-		"-H", "Content-Type: application/json",
-		"-d", `{"name":"__service_name__"}`)
+	labelsOut, err := env.compose(ctx, "exec", "-w", "/", "pyroscope", "wget", "-qO-", "http://localhost:4040/querier.v1.QuerierService/LabelValues", "--header=Content-Type: application/json", "--post-data={\"name\":\"__service_name__\"}")
 	if err != nil {
-		return CheckResult{
-			Status:  StatusWarn,
-			Message: "Pyroscope is healthy but could not query labels",
-		}
+		return CheckResult{Status: StatusWarn, Message: "Pyroscope is healthy but could not query labels", Evidence: string(labelsOut)}
 	}
-
 	return parsePyroscopeLabels(labelsOut, env.ProjectName)
 }
 

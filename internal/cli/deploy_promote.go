@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os/user"
 
+	"github.com/reliant-labs/forge/pkg/deploystate"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -220,21 +221,14 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		plan.Expected = guard.ExpectedCurrentID
 	}
 
-	// THE CLUSTER PREFLIGHT IS PART OF THE PLAN. It runs before the
-	// approval gate and the write — for --plan / --plan-only too, since it
-	// only reads — so a release the live target cannot run is refused with
-	// nothing recorded, and a reviewer sees that refusal instead of
-	// approving a plan that cannot ship. See preflightBeforeRecord.
+	// THE PREFLIGHT IS PART OF THE PLAN. It runs before the approval gate
+	// and the write — for --plan / --plan-only too, since it only reads — so
+	// a release that cannot ship is refused with nothing recorded, and a
+	// reviewer sees that refusal instead of approving a plan that cannot
+	// ship. See preflightFollow.
 	if opts.Follow != nil {
-		if err := preflightBeforeRecord(ctx, env, version, ledger, *opts.Follow); err != nil {
+		if err := preflightFollow(ctx, env, version, projectDir, ledger, &plan, opts); err != nil {
 			return err
-		}
-		// The converger's half of the same question, for an env the hub
-		// applies: can anything apply this at all? See deploy_hub_ready.go.
-		if !opts.Follow.skipHubCheck {
-			if err := refuseUnreadyHub(ctx, env, ledger, plan.Current.Bound, *opts.Follow); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -320,10 +314,13 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		if writeErr == nil && opts.Follow != nil {
 			follow := *opts.Follow
 			follow.projectDir = projectDir
+			// Every stage the follow-through ships is recorded here, so
+			// the report below can say what is live — above all when the
+			// deploy fails after some of it already is.
+			shipped := &shipLog{}
+			follow.clientDeploy.shipped = shipped
 			writeErr = followPromote(ctx, env, plan, ledger, follow)
-			if writeErr != nil {
-				plan.FollowError = writeErr.Error()
-			}
+			plan.recordFollow(shipped, writeErr)
 		}
 	}
 	// A refused write still renders: the plan is what the write WOULD have
@@ -362,6 +359,44 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	renderPromotePlanText(progressWriter(opts.JSON), plan)
 	return writeErr
+}
+
+// preflightFollow runs every refusal the follow-through would otherwise meet
+// AFTER the promotion is recorded but that depends on nothing the apply does.
+// A refusal here writes nothing and ships nothing; the same refusal from the
+// apply arrives with the binding moved and — on an env with several targets —
+// with some of them already changed.
+//
+// Cheapest first. The convergence verdict is the declaration plus one read; the
+// pin is one file; the cluster preflight renders the env and probes the live
+// target; the hub check reads the hub's reconciler.
+func preflightFollow(ctx context.Context, env, version, projectDir string, ledger envLedger, plan *promotePlan, opts promoteOptions) error {
+	follow := *opts.Follow
+	// What the env's control plane will converge of this deploy. See
+	// deploy_promote_unpublished.go.
+	converges, err := hostedConvergencePreflight(ctx, env, ledger, follow)
+	plan.Converges = converges
+	if err != nil {
+		return err
+	}
+	// A PINNED env refuses the apply. --plan is exempt for the same reason
+	// the apply's own gate exempts a dry run: a reviewer reading what WOULD
+	// ship during a freeze is who the freeze is for.
+	if !opts.DryRun && ledger.appliesLocally() && !ledger.hubConverged() {
+		policyStore := deploystate.NewLocal(projectDir)
+		if err := gateDeployOnPolicy(ctx, policyStore, env, policyStore.PolicyPath(env)); err != nil {
+			return fmt.Errorf("%w\n\nNOTHING WAS RECORDED: env %q's binding did not move", err, env)
+		}
+	}
+	if err := preflightBeforeRecord(ctx, env, version, ledger, follow); err != nil {
+		return err
+	}
+	// The converger's half of the same question, for an env the hub
+	// applies: can anything apply this at all? See deploy_hub_ready.go.
+	if follow.skipHubCheck {
+		return nil
+	}
+	return refuseUnreadyHub(ctx, env, ledger, plan.Current.Bound, follow)
 }
 
 // resolveReleaseLedger is how `forge env deploy` answers both halves of "where

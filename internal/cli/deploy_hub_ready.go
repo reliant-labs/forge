@@ -132,6 +132,8 @@ func deployApplyPath(ledger envLedger, fluxReconciled bool) string {
 	switch {
 	case ledger.hubConverged():
 		return "hub converge — forge records the promotion and bundle; the control plane's reconciler applies it to the connected clusters; nothing is applied from this machine"
+	case ledger.ledgerOnly():
+		return "ledger only — forge applies the whole env FROM THIS MACHINE (kubectl, server-side apply); the control plane only records the promotion and converges nothing, because the env binds no hosted tier"
 	case ledger.Hosted && ledger.Mixed:
 		return "mixed — forge applies the cluster/compose/frontend half FROM THIS MACHINE (kubectl, server-side apply), and the control plane converges the hosted half"
 	case ledger.Hosted:

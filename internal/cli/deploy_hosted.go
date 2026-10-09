@@ -61,7 +61,9 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 		return true, err
 	}
 	_, hostedGroups := splitHostedGroups(groups)
-	return true, runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
+	return true, opts.shipLog().run(hostedStageLabels(hostedGroups), func() error {
+		return runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
+	})
 }
 
 // deployDeclarationFor is the declaration a hosted deploy carries on its

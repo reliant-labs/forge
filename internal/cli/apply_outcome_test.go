@@ -118,7 +118,7 @@ func TestDeployRelease_HostedApplyVerdictIsRecordedOnThePromotion(t *testing.T) 
 			useGateBackend(t, gateBackend{hosted: true, store: gstore, bindings: store})
 
 			_, _ = runHostedPromote(t, store, "v2", promoteOptions{
-				Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true},
+				Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true, HostedTiers: []hostedTier{{Name: "api", Kind: hostedTierWorkload}}},
 				Follow: waitByDefault(),
 			})
 			cur, _, _ := store.Current(context.Background(), "prod")

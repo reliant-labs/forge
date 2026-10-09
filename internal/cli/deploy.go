@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1045,6 +1046,13 @@ type deployOptions struct {
 	// what happened instead of a second opinion about it.
 	report *deployReport
 
+	// shipped, when non-nil, records each side-effecting stage this deploy
+	// reaches — the cluster apply, the control-plane publish, each frontend
+	// host — and whether it completed, so a deploy that fails part-way
+	// reports what is already live (deploy_ship_log.go). Nil-safe like
+	// report; a dry run records nothing.
+	shipped *shipLog
+
 	// directApplyAllowed is the env's DECLARED apply path, resolved from
 	// Bundle.lifecycle once the render is in hand (DirectApplyAllowed).
 	// False means this env is a real one: it is meant to be reconciled
@@ -1370,60 +1378,75 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return err
 	}
 	if opts.preflightOnly {
-		return nil
-	}
-
-	// k8s Secret projection: for a dotenv secret_provider, render the
-	// declared cluster secret refs into plaintext Secret manifests and
-	// apply them BEFORE the Deployments roll out (so each Deployment's
-	// secretKeyRef resolves on first schedule).
-	if !opts.skipClusterApply {
-		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
-			return err
+		// The frontend half's own refusals, which otherwise fire only AFTER
+		// the cluster apply above has shipped — see preflightFrontendDeploys.
+		if opts.skipFrontend {
+			return nil
 		}
+		return preflightFrontendDeploys(ctx, entities, projectDir)
 	}
 
-	// Minted kubeconfig Secrets, BEFORE the workloads that mount them roll
-	// out. `env up` mints at the cluster→deploy boundary, which covers dev
-	// and e2e; a cloud env is deployed with `env deploy` against clusters
-	// that already exist and never runs that phase, so the mint has to
-	// happen here too or a cloud consumer's Secret is simply never created.
-	//
-	// Only the MINTING declarations run here: a k3d in-network mint
-	// resolves a docker container address, which is meaningless on the
-	// deploy path and stays owned by `env up`.
-	if !opts.skipClusterApply {
-		if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
-			return fmt.Errorf("kubeconfig secrets: %w", err)
+	// Everything from here on changes a live target. Each stage is recorded
+	// as it completes (or fails part-way), so a deploy that stops halfway
+	// says what already shipped. See deploy_ship_log.go.
+	ship := opts.shipLog()
+	applyErr := ship.run(applyStageLabels(groups, hasK8sServices && !opts.skipClusterApply, deployContext, namespace), func() error {
+		// k8s Secret projection: for a dotenv secret_provider, render the
+		// declared cluster secret refs into plaintext Secret manifests and
+		// apply them BEFORE the Deployments roll out (so each Deployment's
+		// secretKeyRef resolves on first schedule).
+		if !opts.skipClusterApply {
+			if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
+				return err
+			}
 		}
-	}
 
-	// When no K8sCluster groups are present, the rendered set carries
-	// only external / compose / host / build-only — nothing to apply
-	// via the cluster pipeline. Skip the check above (no namespace)
-	// and let dispatchDeployGroups handle the per-provider paths or
-	// no-op trivially.
-	// A frontend-only env (e.g. just a Firebase Hosting frontend, no
-	// services / operators / cronjobs) has nothing for the cluster
-	// pipeline to apply. Skip the empty-groups cluster.Apply below so
-	// such projects don't need kubectl configured at all — the frontend
-	// dispatch further down does the real work.
-	if err := applyDeployGroups(ctx, deployApplyInput{
-		groups: groups, topology: topology, topologyEntities: fullEntities,
-		entities: entities, hasK8sServices: hasK8sServices,
-		mainK: mainK, imageTag: imageTag, imageDigests: imageDigests,
-		namespace: namespace, envName: envName, deployContext: deployContext,
-		envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
-		targets: targets, helmSpecs: helmSpecs,
-		rollout: opts.rollout, report: report,
-		directApplyAllowed: opts.directApplyAllowed,
-	}); err != nil {
-		return err
+		// Minted kubeconfig Secrets, BEFORE the workloads that mount them
+		// roll out. `env up` mints at the cluster→deploy boundary, which
+		// covers dev and e2e; a cloud env is deployed with `env deploy`
+		// against clusters that already exist and never runs that phase, so
+		// the mint has to happen here too or a cloud consumer's Secret is
+		// simply never created.
+		//
+		// Only the MINTING declarations run here: a k3d in-network mint
+		// resolves a docker container address, which is meaningless on the
+		// deploy path and stays owned by `env up`.
+		if !opts.skipClusterApply {
+			if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
+				return fmt.Errorf("kubeconfig secrets: %w", err)
+			}
+		}
+
+		// When no K8sCluster groups are present, the rendered set carries
+		// only external / compose / host / build-only — nothing to apply
+		// via the cluster pipeline. Skip the check above (no namespace)
+		// and let dispatchDeployGroups handle the per-provider paths or
+		// no-op trivially.
+		// A frontend-only env (e.g. just a Firebase Hosting frontend, no
+		// services / operators / cronjobs) has nothing for the cluster
+		// pipeline to apply. Skip the empty-groups cluster.Apply below so
+		// such projects don't need kubectl configured at all — the frontend
+		// dispatch further down does the real work.
+		return applyDeployGroups(ctx, deployApplyInput{
+			groups: groups, topology: topology, topologyEntities: fullEntities,
+			entities: entities, hasK8sServices: hasK8sServices,
+			mainK: mainK, imageTag: imageTag, imageDigests: imageDigests,
+			namespace: namespace, envName: envName, deployContext: deployContext,
+			envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
+			targets: targets, helmSpecs: helmSpecs,
+			rollout: opts.rollout, report: report,
+			directApplyAllowed: opts.directApplyAllowed,
+		})
+	})
+	if applyErr != nil {
+		return applyErr
 	}
 	// The hosted part, AFTER the local apply: a hosted workload may
 	// reference a cluster workload's URL, never the reverse.
 	if len(hostedGroups) > 0 {
-		if err := runHostedDeploy(ctx, envName, entities, hostedGroups, opts); err != nil {
+		if err := ship.run(hostedStageLabels(hostedGroups), func() error {
+			return runHostedDeploy(ctx, envName, entities, hostedGroups, opts)
+		}); err != nil {
 			return err
 		}
 	}
@@ -1443,7 +1466,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if err := dispatchFrontendsOrSkip(ctx, deployFrontendInput{
 		cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
 		envCfgKV: envCfgKV, targets: targets, dryRun: dryRun,
-		skipFrontend: opts.skipFrontend,
+		skipFrontend: opts.skipFrontend, shipped: ship,
 	}); err != nil {
 		return err
 	}
@@ -1514,6 +1537,8 @@ type deployFrontendInput struct {
 	targets      []string
 	dryRun       bool
 	skipFrontend bool
+	// shipped records each frontend host the dispatch reaches (nil-safe).
+	shipped *shipLog
 }
 
 // dispatchFrontendsOrSkip ships every frontend declaring a first-class deploy
@@ -1543,7 +1568,7 @@ func dispatchFrontendsOrSkip(ctx context.Context, in deployFrontendInput) error 
 	// (Vercel, a separate pipeline) is legitimate, and erroring would break
 	// correctly-configured users to fix a reporting gap.
 	warnUndeployedFrontends(os.Stdout, in.cfg, in.entities, in.envName, in.targets)
-	return dispatchFrontendDeploys(ctx, in.entities, in.projectDir, in.envName, in.envCfgKV, in.dryRun)
+	return dispatchFrontendDeploys(ctx, in.entities, in.projectDir, in.envName, in.envCfgKV, in.dryRun, in.shipped)
 }
 
 // recordDeployInvocation stamps the facts that are known from the FLAGS ALONE,
@@ -2151,7 +2176,7 @@ func warnUndeployedFrontends(w io.Writer, cfg *config.ProjectConfig, entities *K
 // env_vars so an explicit env_var wins, and is only injected when the env
 // var name was actually declared on the frontend (we don't leak the whole
 // env config into the JS build).
-func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir, envName string, envCfgKV map[string]string, dryRun bool) error {
+func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir, envName string, envCfgKV map[string]string, dryRun bool, ship *shipLog) error {
 	if entities == nil {
 		return nil
 	}
@@ -2267,7 +2292,74 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			DryRun:      dryRun,
 		})
 	}
-	return dispatchDeployGroups(ctx, registry, groups)
+	// One host at a time, so each is recorded as shipped (or not) on its
+	// own: a Firebase site that went live stays reported as live when the
+	// object-storage upload after it fails.
+	if dryRun {
+		ship = nil
+	}
+	for _, g := range groups {
+		if err := ship.run([]string{deploytarget.FormatGroupSummary(g)}, func() error {
+			return dispatchDeployGroups(ctx, registry, []deploytarget.ServiceGroup{g})
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// preflightFrontendDeploys runs the frontend dispatch's own refusals for the
+// frontends this deploy ships — the mock-API gate, the forge-owned dotenv gate,
+// and the host's CLI being installed — WITHOUT building or shipping anything.
+//
+// WHY IN THE PREFLIGHT. The frontend dispatch runs LAST, after the cluster
+// apply and the control-plane publish. A frontend refusal discovered there
+// arrives with the promotion recorded and the cluster already on the new
+// release: on 2026-10-09 prod's cluster rolled to a release whose Firebase
+// half then failed on `exec: "firebase": executable file not found in $PATH`,
+// and the ledger called the whole apply FAILED. Each of these checks depends on
+// nothing the apply does, so each refuses before the promotion is written.
+func preflightFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir string) error {
+	if entities == nil {
+		return nil
+	}
+	ships := func(f FrontendEntity) bool {
+		switch f.Runtime.Type {
+		case FrontendRuntimeBuildOnly, FrontendRuntimeFirebase, FrontendRuntimeBucket:
+			return true
+		}
+		return false
+	}
+	if !slices.ContainsFunc(entities.Frontends, ships) {
+		return nil
+	}
+	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
+		return err
+	}
+	var dirs, firebase []string
+	for _, f := range entities.Frontends {
+		if !ships(f) {
+			continue
+		}
+		if err := checkDeployableFrontendMock(f); err != nil {
+			return err
+		}
+		dirs = append(dirs, f.Path)
+		if f.Runtime.Type == FrontendRuntimeFirebase {
+			firebase = append(firebase, f.Name)
+		}
+	}
+	if err := gateFrontendEnvFiles(projectDir, dirs); err != nil {
+		return err
+	}
+	if len(firebase) > 0 {
+		if _, err := exec.LookPath(deploytarget.FirebaseCLI); err != nil {
+			return fmt.Errorf("frontend(s) %s ship to Firebase Hosting, which runs the `%s` CLI, and it is not "+
+				"installed here (%v).\n  Install it (npm install -g firebase-tools), or ship everything else with "+
+				"--skip-frontend", strings.Join(firebase, ", "), deploytarget.FirebaseCLI, err)
+		}
+	}
+	return nil
 }
 
 // hasShippableFrontend reports whether any rendered frontend is bound to a

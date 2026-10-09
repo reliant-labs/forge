@@ -243,6 +243,17 @@ missing rather than using the current one), after a live preflight that
 every referenced Secret key and image exists. Hosted workloads publish to
 the env's control plane, admitted there under the Restricted profile.
 
+Every refusal that does not depend on the apply runs in that preflight,
+BEFORE the promotion is recorded and before anything ships: the Secret/image
+check, a pinned env, a frontend that cannot ship (mock build, a forge-owned
+dotenv, no `firebase` CLI installed), and what the control plane will converge.
+The plan's `converges` line says the last one: `nothing` for an env that
+declares `forge.ControlPlane` but binds no tier to it (forge's own apply is
+the whole deploy), or its hosted tiers, naming any this deploy publishes for
+the first time or leaves unpublished. If a deploy still fails part-way, its
+report lists each stage that shipped (`shipped …` / `PARTLY …`); it never
+claims nothing shipped once a cluster or frontend host has changed.
+
 ### Migrations run BEFORE the rollout
 
 A standalone `kind = "job"` workload is **pre-rollout by default**: `forge env

@@ -130,6 +130,12 @@ func (r *Reconciler[T]) Run(
 			}
 			controllerutil.RemoveFinalizer(blank, r.Finalizer)
 			if err := r.Client.Update(ctx, blank); err != nil {
+				// Another worker may have removed the object (or its finalizer)
+				// between our fetch and update. Both outcomes mean there is
+				// nothing left for this reconciler to do.
+				if errors.IsNotFound(err) {
+					return Done(), nil
+				}
 				return Done(), fmt.Errorf("removing finalizer: %w", err)
 			}
 			r.recordEvent(blank, "Finalized", "object cleaned up")
@@ -157,7 +163,15 @@ func (r *Reconciler[T]) Run(
 	result, err := reconcile(ctx, blank)
 	dur := time.Since(start)
 	if err != nil {
-		logger.Error("reconcile failed", "duration", dur, "error", err)
+		if errors.IsConflict(err) || errors.IsNotFound(err) {
+			// These are normal optimistic-concurrency races: another
+			// reconciler changed or removed the object. Keep returning the
+			// error so controller-runtime retries, but do not page/error-track
+			// expected contention as an operator failure.
+			logger.Warn("reconcile retryable failure", "duration", dur, "error", err)
+		} else {
+			logger.Error("reconcile failed", "duration", dur, "error", err)
+		}
 		r.recordEvent(blank, "ReconcileFailed", err.Error())
 		return result, err
 	}

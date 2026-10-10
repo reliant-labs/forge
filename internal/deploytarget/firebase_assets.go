@@ -213,7 +213,7 @@ func planAssetCarry(prev *assetManifest, built map[string]string, assetRel strin
 // with whatever it answers any missing path — 404, or (behind a catch-all
 // SPA rewrite) index.html with a 200. Both mean "no manifest", which is why
 // anything that is not this schema's JSON is read as absent.
-func (p FirebaseProvider) readAssetManifest(ctx context.Context, client *http.Client, plan assetRetentionPlan) (*assetManifest, string) {
+func (p FirebaseProvider) readAssetManifest(ctx context.Context, client HTTPDoer, plan assetRetentionPlan) (*assetManifest, string) {
 	target := plan.manifestURL()
 	// The manifest is no-cache, and a deploy purges Firebase's CDN, but a
 	// query the CDN has never seen makes "read the live release" literal.
@@ -222,10 +222,8 @@ func (p FirebaseProvider) readAssetManifest(ctx context.Context, client *http.Cl
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Sprintf("could not read %s (%v)", target, ctx.Err())
-			case <-time.After(p.retryDelay() * time.Duration(attempt)):
+			if err := p.sleep(ctx, time.Second*time.Duration(attempt)); err != nil {
+				return nil, fmt.Sprintf("could not read %s (%v)", target, err)
 			}
 		}
 		body, status, contentType, err := httpGet(ctx, client, fetchURL, 16<<20)
@@ -261,7 +259,7 @@ type carryFailure struct {
 // fetchCarriedAssets downloads each carried asset from the live site into
 // the staging tree, verifying its bytes against the manifest's sha256. It
 // returns the assets actually written and why the others were not.
-func (p FirebaseProvider) fetchCarriedAssets(ctx context.Context, client *http.Client, stagingDir, siteURL string, carry map[string]assetRecord) (map[string]assetRecord, []carryFailure) {
+func (p FirebaseProvider) fetchCarriedAssets(ctx context.Context, client HTTPDoer, stagingDir, siteURL string, carry map[string]assetRecord) (map[string]assetRecord, []carryFailure) {
 	rels := make([]string, 0, len(carry))
 	for rel := range carry {
 		rels = append(rels, rel)
@@ -296,15 +294,13 @@ func (p FirebaseProvider) fetchCarriedAssets(ctx context.Context, client *http.C
 	return ok, failures
 }
 
-func (p FirebaseProvider) fetchCarriedAsset(ctx context.Context, client *http.Client, stagingDir, siteURL, rel, wantSHA string) error {
+func (p FirebaseProvider) fetchCarriedAsset(ctx context.Context, client HTTPDoer, stagingDir, siteURL, rel, wantSHA string) error {
 	target := siteURL + "/" + escapeSitePath(rel)
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(p.retryDelay()):
+			if err := p.sleep(ctx, time.Second); err != nil {
+				return err
 			}
 		}
 		body, status, _, err := httpGet(ctx, client, target, maxCarriedAssetBytes)
@@ -427,7 +423,7 @@ func escapeSitePath(rel string) string {
 
 // httpGet GETs target and returns at most limit bytes of its body. A body
 // longer than limit is an error, never a silently truncated file.
-func httpGet(ctx context.Context, client *http.Client, target string, limit int64) ([]byte, int, string, error) {
+func httpGet(ctx context.Context, client HTTPDoer, target string, limit int64) ([]byte, int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, 0, "", err
@@ -451,18 +447,25 @@ func httpGet(ctx context.Context, client *http.Client, target string, limit int6
 	return body, resp.StatusCode, resp.Header.Get("Content-Type"), nil
 }
 
-func (p FirebaseProvider) httpClient() *http.Client {
+func (p FirebaseProvider) httpClient() HTTPDoer {
 	if p.HTTPClient != nil {
 		return p.HTTPClient
 	}
 	return &http.Client{Timeout: 2 * time.Minute}
 }
 
-func (p FirebaseProvider) retryDelay() time.Duration {
-	if p.RetryDelay > 0 {
-		return p.RetryDelay
+func (p FirebaseProvider) sleep(ctx context.Context, d time.Duration) error {
+	if p.Sleep != nil {
+		return p.Sleep(ctx, d)
 	}
-	return time.Second
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func (p FirebaseProvider) siteURL(site string) string {

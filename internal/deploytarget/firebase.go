@@ -63,18 +63,23 @@ type FirebaseProvider struct {
 	StagingRoot string
 
 	// HTTPClient reads the live release (its asset manifest and the
-	// assets retention carries forward). Nil means a client with a
-	// two-minute timeout.
-	HTTPClient *http.Client
+	// assets retention carries forward). Nil means an *http.Client with
+	// a two-minute timeout.
+	HTTPClient HTTPDoer
 
 	// SiteURL maps a Firebase Hosting site id to the origin its live
 	// release is read from. Nil means https://<site>.web.app, the origin
 	// every site answers on. Tests point it at an httptest server.
 	SiteURL func(site string) string
 
-	// RetryDelay is the backoff between attempts to read the live
-	// release. Zero means one second.
-	RetryDelay time.Duration
+	// Sleep waits between attempts to read the live release, returning
+	// early with ctx's error. Nil means a real, context-aware sleep.
+	Sleep func(ctx context.Context, d time.Duration) error
+}
+
+// HTTPDoer is the one method retention needs from an HTTP client.
+type HTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
 }
 
 // FirebaseFrontend is one frontend the Firebase provider should deploy.

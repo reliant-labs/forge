@@ -188,7 +188,7 @@ func newFirebaseSite(t *testing.T, keep int) *firebaseSite {
 			StagingRoot: filepath.Join(t.TempDir(), "public"),
 			HTTPClient:  srv.Client(),
 			SiteURL:     func(string) string { return srv.URL },
-			RetryDelay:  time.Millisecond,
+			Sleep:       func(context.Context, time.Duration) error { return nil },
 		},
 		fe: FirebaseFrontend{
 			Name: "reliant-web", Path: "web",

@@ -2017,11 +2017,10 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	} else {
 		// Version stamp first; the KCL ldflags follow so a project that
 		// wants to override main.version (e.g. -X main.version=<tag>) wins
-		// on the same -X key. This is the replacement for the deleted
-		// forge.yaml build.version_var: a project stamps an extra target by
-		// adding a `-X pkg.Var=...` entry to GoBuild.ldflags in KCL.
-		ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s -X main.date=%s",
-			versionInfo.version, versionInfo.commit, versionInfo.date)
+		// on the same -X key. The stamp covers main AND the scaffold's
+		// cobra-tree package (versionStampPackages), so a server binary's
+		// `version` and its error-report release are the build's, not "dev".
+		ldflags := "-s -w " + versionStampLdflags(buildModulePath(), t.cmd, versionInfo)
 		if len(t.ldflags) > 0 {
 			ldflags += " " + strings.Join(t.ldflags, " ")
 		}

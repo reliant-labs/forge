@@ -83,6 +83,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0 so nothing retries it at once. A source clone is renamed out of its cache
   key before deletion, so a stopped eviction never leaves a half-deleted pin.
 
+- **`forge build` stamps the scaffold's version package.** The server
+  scaffold keeps `version`/`commit`/`date` in `<module>/cmd/<name>/cmd`, but
+  `forge build` stamped only `main.*`, so every such binary reported version
+  `dev`, and its error reports were filed under `<app>@dev` (control-plane's
+  prod Sentry events arrived as `control-plane@dev`). Both packages are stamped
+  now. The linker ignores a `-X` for a package the binary does not link, so a
+  project that keeps its vars in `main` is unaffected, and a KCL
+  `GoBuild.ldflags` entry still wins on the same key.
+
 - **No automatic storage pass removes a worktree.** The background auto-gc
   (`forge env up`, the hourly job) ran the worktree layer, so a policy with
   `worktree_reap` let it remove any worktree that looked idle, clean and

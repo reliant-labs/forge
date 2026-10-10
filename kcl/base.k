@@ -116,6 +116,12 @@ OTEL_ENV: [EnvVar] = [
         name = "OTEL_EXPORTER_OTLP_ENDPOINT"
         value = "http://otel-collector.observability:4317"
     }
+    # 4317 is OTLP/gRPC. The runtime's default protocol is http/protobuf
+    # (:4318), so a gRPC endpoint must say so or export fails silently.
+    EnvVar {
+        name = "OTEL_EXPORTER_OTLP_PROTOCOL"
+        value = "grpc"
+    }
     EnvVar {
         name = "OTEL_TRACES_SAMPLER"
         value = "parentbased_traceidratio"

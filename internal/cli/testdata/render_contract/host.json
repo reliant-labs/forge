@@ -111,6 +111,14 @@
             {
               "name": "WEB_URL",
               "value": "http://localhost:3000"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "api"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "",
@@ -176,6 +184,14 @@
             {
               "name": "DATABASE_URL",
               "value": "postgres://postgres:postgres@localhost:5433/acme"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "migrate"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "",

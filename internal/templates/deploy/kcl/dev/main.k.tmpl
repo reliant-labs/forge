@@ -144,8 +144,8 @@ _LONG_RUNNING = ["service", "worker", "operator"]
 #      store at scaffold time names whatever port was free THEN, and a stale
 #      port is exactly what connects an app to another project's database.
 #
-# OTEL_SERVICE_NAME is derived by forge.render from the workload name unless
-# the workload explicitly sets it.
+# OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES are derived by forge.render
+# (service name, forge env, project, release) unless the workload sets them.
 _env = lambda w: fw.Workload -> {str:} {
     _machine = {
         DATABASE_URL = _database_url
@@ -154,7 +154,13 @@ _env = lambda w: fw.Workload -> {str:} {
         PORT = str(_port_of(w.name))
         PPROF_ADDR = "127.0.0.1:${_pprof_port_of(w.name)}"
     } if w.kind in _LONG_RUNNING else {}
-    _telemetry = {OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:${_otlp_port}"} if _observability else {}
+    # The lgtm collector's published port is OTLP/gRPC; the runtime defaults to
+    # http/protobuf, so the protocol is stated (unless the workload sets it).
+    _telemetry = {
+        OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:${_otlp_port}"
+        if "OTEL_EXPORTER_OTLP_PROTOCOL" not in w.env:
+            OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+    } if _observability else {}
 {{- if .HasFrontend}}
     # NATIVE SIGN-IN's redirect URI, and where the server reaches the issuer.
     # Composed from the origins above, which this file owns.

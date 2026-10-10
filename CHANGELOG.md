@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Every workload on every runtime gets its OTel identity from `forge.render`.**
+  `OTEL_SERVICE_NAME` is the workload's `service_name`, else its declared
+  `name`. `OTEL_RESOURCE_ATTRIBUTES` is
+  `deployment.environment.name=<env>,service.namespace=<project>,service.version=<release>`.
+  `service.version` appears only when a release names one
+  (`Bundle.release`, or the `release_version` option `forge env build/deploy`
+  bind) and is otherwise omitted. Host, compose, cluster and hosted
+  workloads all get it; a compose service carries it in its runtime `env`. A
+  value the workload's own env sets always wins and is never merged into.
+  The new optional `Workload.service_name` is the identity that survives
+  rebinding a workload under another `name`. The cloud and dev env templates no
+  longer inject `OTEL_SERVICE_NAME` themselves.
+
 ### Fixed
 
 - **`FORGE_LEDGER=machine` keeps a run off a declared control plane.**

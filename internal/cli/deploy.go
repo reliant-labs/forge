@@ -22,6 +22,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/projectstore"
@@ -1182,6 +1183,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if err != nil {
 		return err
 	}
+	// The release this env is promoted to is the version its pods report, so a
+	// plain redeploy renders the same OTEL_RESOURCE_ATTRIBUTES as the deploy
+	// that promoted it instead of dropping service.version and rolling pods.
+	ctx = kclrender.WithRelease(ctx, tagRes.boundRelease)
 	imageTag := tagRes.imageTag
 	plainTag := tagRes.plainTag
 	imageDigests := tagRes.imageDigests

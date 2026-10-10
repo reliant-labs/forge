@@ -11,6 +11,7 @@
 package kclrender
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,6 +60,28 @@ func forgeModuleArg(workDir string) (string, error) {
 		return "", fmt.Errorf("materialize the forge KCL module: %w", err)
 	}
 	return arg, nil
+}
+
+type releaseKey struct{}
+
+// WithRelease says which release version this render is for. It surfaces in
+// KCL as option("release_version") and from there as `service.version` in each
+// workload's OTEL_RESOURCE_ATTRIBUTES. Empty leaves the render unbound, which
+// omits the attribute: forge reports a version only when it knows one.
+func WithRelease(ctx context.Context, version string) context.Context {
+	if version == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, releaseKey{}, version)
+}
+
+// ReleaseDArgs is the `-D release_version=<quoted>` binding for ctx's release,
+// or nil. Quoted so an all-digit version stays a str (see image_tag).
+func ReleaseDArgs(ctx context.Context) []string {
+	if v, _ := ctx.Value(releaseKey{}).(string); v != "" {
+		return []string{"release_version=" + strconv.Quote(v)}
+	}
+	return nil
 }
 
 // withKubeconfigDArg appends `kubeconfig=<quoted path>` — the machine's

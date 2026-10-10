@@ -234,6 +234,16 @@ func mapRepoErr(op, entity string, err error) error {
 				ReasonInvalidFormat)
 		}
 	}
+	// A repository closure is an override seam like Entity and Pack, and an
+	// application's own verdict from it — svcerr.PermissionDenied from an
+	// owner-scoped Persist — passes through with its code AND message. So
+	// does a context cancellation: a client that went away is not a server
+	// fault. Both used to reach the fallback below, where the code survived
+	// only because svcerr classified a WithCause by its cause (a leak, since
+	// closed) and the message never did.
+	if svcerr.IsClassified(err) {
+		return passClassified(err)
+	}
 	return clientErr(svcerr.WithCause(
 		svcerr.Internal(fmt.Sprintf("%s %s failed", op, entity)), err), ReasonInternal)
 }
@@ -306,11 +316,7 @@ func mapFilterErr(err error) error {
 // original retained as a server-side cause.
 func mapClosureErr(err error, safeMsg string) error {
 	if svcerr.IsClassified(err) {
-		ce := svcerr.ToConnect(err)
-		if ce.Meta().Get(svcerr.ReasonHeader) == "" {
-			ce.Meta().Set(svcerr.ReasonHeader, ReasonInternal)
-		}
-		return ce
+		return passClassified(err)
 	}
 	// Handed to clientErr UNWRAPPED. Pre-building a *connect.Error here made
 	// svcerr.ToConnect find one already present and pass its message straight
@@ -319,6 +325,17 @@ func mapClosureErr(err error, safeMsg string) error {
 	// clientSafe, which substitutes InternalMessage on the wire and keeps the
 	// original reachable as a cause for the logging interceptor.
 	return clientErr(svcerr.WithCause(svcerr.Internal(safeMsg), err), ReasonInternal)
+}
+
+// passClassified maps an error the application already classified
+// (svcerr.IsClassified) with its own code and message, stamping ReasonInternal
+// only when it carries no reason of its own, so the vocabulary stays total.
+func passClassified(err error) error {
+	ce := svcerr.ToConnect(err)
+	if ce.Meta().Get(svcerr.ReasonHeader) == "" {
+		ce.Meta().Set(svcerr.ReasonHeader, ReasonInternal)
+	}
+	return ce
 }
 
 // pgFailure is the part of a postgres error the APPLICATION authored: the

@@ -73,6 +73,17 @@ To keep a useful client message **and** the diagnostic, use `svcerr.WithCause` �
 return nil, svcerr.Wrap(svcerr.WithCause(svcerr.Internal("create thing failed"), err))
 ```
 
+**The outer error decides everything the client reads; the cause decides nothing.** Code, message, `x-forge-error-reason` and `svcerr.Classify` all come from the first argument — even when the cause is another svcerr kind, carries its own `WithReason`/`WithClass`, or is a `*connect.Error` from a downstream call. That last case is the one to remember: wrapping a dependency's error is how you keep its `not_found "row 42 on shard db-7.internal"` off your wire, so wrap it in the verdict YOU want the caller to see:
+
+```go
+if err := s.deps.Billing.Charge(ctx, req); err != nil {
+    // client reads internal "charge failed"; the log keeps billing's own error
+    return nil, svcerr.Wrap(svcerr.WithCause(svcerr.Internal("charge failed"), err))
+}
+```
+
+To forward a dependency's verdict on purpose, return it (or `svcerr.Wrap` it) directly instead. Server-side the cause stays reachable — `svcerr.Cause(err)`, and `errors.Is`/`errors.As` (so the `svcerr.Is*` predicates too) — except that `errors.As` never yields a `*connect.Error` from a cause. To ask what the client will be told, use `svcerr.Code(err)`, not `svcerr.IsNotFound(err)`. The one thing a cause informs is cancellation: a `context.Canceled` cause still classifies as `ClassCanceled`, so a client disconnect never pages.
+
 Redaction applies only to that fallback: codes you choose (`InvalidArgument`, `NotFound`, …) keep the message you gave them, because it is part of your API. So never put a driver error inside one — `svcerr.InvalidArgument(err.Error())` opts out of every protection above.
 
 `forge lint --conventions` warns (`forgeconv-no-handler-error-mapping`) on a re-rolled per-service mapper.

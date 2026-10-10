@@ -71,6 +71,22 @@
 // accumulated string client-visible, which published request ids, internal
 // hostnames and, measured, a DSN with a password to an unauthenticated
 // caller. Prose meant for a client goes in the constructor's argument.
+//
+// # What a cause decides: nothing the client sees
+//
+// [WithCause] attaches a server-only cause to an error. The OUTER error
+// decides everything the client reads — the code, the message, the
+// [ReasonHeader] reason — and everything [Classify] derives from those. The
+// cause decides none of it, whatever it is: a driver error, another svcerr
+// kind, or a *connect.Error a downstream service returned. It reaches the
+// log through [Cause] and stays reachable server-side through errors.Is and
+// errors.As (and so the Is* predicates, which ask what an error CARRIES),
+// with one exception: errors.As never finds a *connect.Error behind a cause,
+// because that is how connect-go itself finds the verdict it publishes.
+//
+// The question "what will the client be told?" is [Code], not an Is*
+// predicate: IsNotFound(WithCause(Internal("x"), NotFound("row"))) is true,
+// and the client reads internal "x".
 package svcerr
 
 import (
@@ -332,6 +348,8 @@ func wrapped(sentinel error, detail string) error {
 //   - An already-Connect error (anything that errors.As-matches
 //     *connect.Error) is returned as-is so handlers can construct
 //     specific errors and still funnel them through the same helper.
+//     A *connect.Error behind a [WithCause] cause is NOT one: the outer
+//     error classifies, and the cause stays server-side.
 //   - A wrapped sentinel from this package maps to the matching
 //     connect.Code; the original error is preserved as the cause so
 //     errors.Is keeps working downstream.
@@ -349,8 +367,8 @@ func ToConnect(err error) *connect.Error {
 	if err == nil {
 		return nil
 	}
-	var ce *connect.Error
-	if !errors.As(err, &ce) {
+	ce, ok := visibleAs[*connect.Error](err)
+	if !ok {
 		ce = connect.NewError(codeFor(err), clientSafe(err))
 	}
 	// A reason code annotated via WithReason rides through to the client
@@ -398,18 +416,57 @@ func Wrap(err error) error {
 const InternalMessage = "internal server error"
 
 // redactedError separates what the CLIENT may read from what the SERVER
-// needs to keep. Error — and therefore connect.Error.Message — returns
-// only msg; cause holds the detail, reachable via [Cause]; chain is what
-// errors.Is / errors.As traverse, so sentinel checks and driver-error
-// type assertions keep working all the way up the stack.
+// needs to keep.
+//
+//   - Error — and therefore connect.Error.Message — returns only msg.
+//   - Unwrap returns err, the error the client is CLASSIFIED by: the code,
+//     the message, the reason header and the class are all read down this
+//     chain (see visible.go).
+//   - cause is the server-only detail. It is reachable through [Cause], and
+//     through errors.Is / errors.As via the Is and As methods below — but
+//     never through Unwrap, so nothing walking the chain to decide what the
+//     client is told can land on it.
+//
+// When ToConnect redacts an unrecognised error, the detail withheld IS err —
+// its text is the thing being kept off the wire — and cause is nil.
 type redactedError struct {
 	msg   string
+	err   error
 	cause error
-	chain error
 }
 
 func (e *redactedError) Error() string { return e.msg }
-func (e *redactedError) Unwrap() error { return e.chain }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// Is lets errors.Is reach the cause, so a server-side sentinel check keeps
+// working through WithCause.
+func (e *redactedError) Is(target error) bool {
+	return e.cause != nil && errors.Is(e.cause, target)
+}
+
+// As lets errors.As reach the cause (`var pgErr *pgconn.PgError` still
+// matches) — for every type but *connect.Error. That one is withheld because
+// errors.As is exactly how connect-go maps a handler's returned error to the
+// response: a handler that returned a WithCause value without svcerr.Wrap
+// would otherwise publish a downstream service's code and message verbatim.
+// Server code that wants the downstream verdict reads it from [Cause].
+func (e *redactedError) As(target any) bool {
+	if e.cause == nil {
+		return false
+	}
+	if _, ok := target.(**connect.Error); ok {
+		return false
+	}
+	return errors.As(e.cause, target)
+}
+
+// withheld is what the client was not shown.
+func (e *redactedError) withheld() error {
+	if e.cause != nil {
+		return e.cause
+	}
+	return e.err
+}
 
 // WithCause returns an error that shows err's message to the client
 // while carrying cause for the server's eyes only.
@@ -422,10 +479,19 @@ func (e *redactedError) Unwrap() error { return e.chain }
 //	return svcerr.Wrap(svcerr.WithCause(
 //	    svcerr.Internal(fmt.Sprintf("%s %s failed", op, entity)), dbErr))
 //
-// The result keeps err's sentinel (so the Connect code is unchanged) and
-// keeps cause errors.As-able (so `var pgErr *pgconn.PgError` still
-// matches), but cause NEVER contributes to Error(), which is what stops
-// it reaching the wire. Retrieve it with [Cause].
+// err decides everything the client reads: the Connect code, the message,
+// the [ReasonHeader] reason, and the [Class] observability derives from
+// them. cause decides none of it — not when it is another svcerr kind, not
+// when it carries its own reason or WithClass marker, and not when it is a
+// *connect.Error from a downstream call, whose code and message describe
+// the DEPENDENCY's failure and routinely name internal hosts. The one thing a
+// cause informs is cancellation: a request whose context was canceled is
+// [ClassCanceled] however it was labelled (see [Classify]).
+//
+// cause stays reachable for the server: through [Cause] for the log, and
+// through errors.Is / errors.As (so `var pgErr *pgconn.PgError` still
+// matches) — except that errors.As never yields a *connect.Error from it,
+// because connect-go publishes whatever errors.As finds there.
 func WithCause(err, cause error) error {
 	if err == nil {
 		return nil
@@ -433,7 +499,7 @@ func WithCause(err, cause error) error {
 	if cause == nil {
 		return err
 	}
-	return &redactedError{msg: err.Error(), cause: cause, chain: errors.Join(err, cause)}
+	return &redactedError{msg: err.Error(), err: err, cause: cause}
 }
 
 // Cause returns the server-only detail withheld from the client, or nil
@@ -446,7 +512,7 @@ func WithCause(err, cause error) error {
 func Cause(err error) error {
 	var re *redactedError
 	if errors.As(err, &re) {
-		return re.cause
+		return re.withheld()
 	}
 	return nil
 }
@@ -470,19 +536,18 @@ func Cause(err error) error {
 // there is no detail.
 //
 // The corollary for callers: prose meant for a client goes in the
-// constructor's argument. Nothing outside it crosses.
+// constructor's argument. Nothing outside it crosses — and nothing behind a
+// WithCause cause, which is read only through the client view.
 func clientMessage(err error) (string, bool) {
 	// An explicit WithMessage override wins over everything below it. It
 	// MUST be checked first: the error it wraps is usually a constructor
 	// result, so the detailError branch would otherwise match the inner
 	// error and publish the composed text the override exists to replace
 	// ("that coupon code isn't valid" losing to "coupon not found").
-	var me *messageError
-	if errors.As(err, &me) {
+	if me, ok := visibleAs[*messageError](err); ok {
 		return me.msg, true
 	}
-	var de *detailError
-	if errors.As(err, &de) {
+	if de, ok := visibleAs[*detailError](err); ok {
 		return de.detail, true
 	}
 	if _, sentinel, recognised := codeForRecognized(err); recognised {
@@ -498,25 +563,25 @@ func clientMessage(err error) (string, bool) {
 func clientSafe(err error) error {
 	msg, ok := clientMessage(err)
 	if !ok {
-		return &redactedError{msg: InternalMessage, cause: err, chain: err}
+		return &redactedError{msg: InternalMessage, err: err}
 	}
 	if msg == err.Error() {
 		return err // nothing was wrapped around it: the error IS the message
 	}
-	return &redactedError{msg: msg, cause: err, chain: err}
+	return &redactedError{msg: msg, err: err}
 }
 
-// Code returns the connect.Code that ToConnect would assign to err.
-// Returns CodeUnknown if err is nil OR if err carries no recognised
-// sentinel — this matches Connect's own CodeOf semantics so callers can
-// substitute svcerr.Code for connect.CodeOf when they want sentinel
-// awareness in addition to *connect.Error inspection.
+// Code returns the connect.Code that ToConnect would assign to err — the
+// code the client is told. An error nothing recognises is CodeInternal, as
+// ToConnect sends it; a nil err is CodeUnknown, matching connect.CodeOf.
+//
+// Like ToConnect it reads only the outer error of a [WithCause]: a kind or a
+// *connect.Error in the cause does not change it.
 func Code(err error) connect.Code {
 	if err == nil {
 		return connect.CodeUnknown
 	}
-	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if ce, ok := visibleAs[*connect.Error](err); ok {
 		return ce.Code()
 	}
 	return codeFor(err)
@@ -541,56 +606,59 @@ func codeFor(err error) connect.Code {
 // an SDK, or the standard library, its text was written by neither the
 // application nor forge, and CodeInternal is a guess rather than a
 // decision. Only that branch gets redacted; see clientSafe.
+//
+// It reads the client view (visibleIs): a sentinel behind a WithCause cause
+// is the server's business and recognises nothing here.
 func codeForRecognized(err error) (connect.Code, error, bool) {
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, ErrCanceled):
+	case visibleIs(err, context.Canceled), visibleIs(err, ErrCanceled):
 		return connect.CodeCanceled, ErrCanceled, true
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrDeadlineExceeded):
+	case visibleIs(err, context.DeadlineExceeded), visibleIs(err, ErrDeadlineExceeded):
 		return connect.CodeDeadlineExceeded, ErrDeadlineExceeded, true
-	case errors.Is(err, ErrInvalidArgument):
+	case visibleIs(err, ErrInvalidArgument):
 		return connect.CodeInvalidArgument, ErrInvalidArgument, true
-	case errors.Is(err, ErrNotFound):
+	case visibleIs(err, ErrNotFound):
 		return connect.CodeNotFound, ErrNotFound, true
-	case errors.Is(err, ErrAlreadyExists):
+	case visibleIs(err, ErrAlreadyExists):
 		return connect.CodeAlreadyExists, ErrAlreadyExists, true
-	case errors.Is(err, ErrPermissionDenied):
+	case visibleIs(err, ErrPermissionDenied):
 		return connect.CodePermissionDenied, ErrPermissionDenied, true
 	// ErrPlanLimit MUST be checked before ErrResourceExhausted because
 	// constructors share the same Connect code; matching the broader
 	// sentinel first would shadow the more specific one.
-	case errors.Is(err, ErrPlanLimit):
+	case visibleIs(err, ErrPlanLimit):
 		return connect.CodeResourceExhausted, ErrPlanLimit, true
-	case errors.Is(err, ErrResourceExhausted):
+	case visibleIs(err, ErrResourceExhausted):
 		return connect.CodeResourceExhausted, ErrResourceExhausted, true
 	// Same shadowing rule: ErrInsufficientBalance and ErrExpired share
 	// FailedPrecondition with the canonical sentinel; check them first.
-	case errors.Is(err, ErrInsufficientBalance):
+	case visibleIs(err, ErrInsufficientBalance):
 		return connect.CodeFailedPrecondition, ErrInsufficientBalance, true
-	case errors.Is(err, ErrExpired):
+	case visibleIs(err, ErrExpired):
 		return connect.CodeFailedPrecondition, ErrExpired, true
-	case errors.Is(err, ErrFailedPrecondition):
+	case visibleIs(err, ErrFailedPrecondition):
 		return connect.CodeFailedPrecondition, ErrFailedPrecondition, true
-	case errors.Is(err, ErrAborted):
+	case visibleIs(err, ErrAborted):
 		return connect.CodeAborted, ErrAborted, true
-	case errors.Is(err, ErrOutOfRange):
+	case visibleIs(err, ErrOutOfRange):
 		return connect.CodeOutOfRange, ErrOutOfRange, true
 	// ErrScaffoldStub shares Unimplemented's wire code, so it is checked
 	// first for the same reason ErrPlanLimit precedes ErrResourceExhausted:
 	// the sentinels are distinct values and matching the broader one first
 	// would shadow the specific one.
-	case errors.Is(err, ErrScaffoldStub):
+	case visibleIs(err, ErrScaffoldStub):
 		return connect.CodeUnimplemented, ErrScaffoldStub, true
-	case errors.Is(err, ErrUnimplemented):
+	case visibleIs(err, ErrUnimplemented):
 		return connect.CodeUnimplemented, ErrUnimplemented, true
-	case errors.Is(err, ErrInternal):
+	case visibleIs(err, ErrInternal):
 		return connect.CodeInternal, ErrInternal, true
-	case errors.Is(err, ErrUnavailable):
+	case visibleIs(err, ErrUnavailable):
 		return connect.CodeUnavailable, ErrUnavailable, true
-	case errors.Is(err, ErrDataLoss):
+	case visibleIs(err, ErrDataLoss):
 		return connect.CodeDataLoss, ErrDataLoss, true
-	case errors.Is(err, ErrUnauthenticated):
+	case visibleIs(err, ErrUnauthenticated):
 		return connect.CodeUnauthenticated, ErrUnauthenticated, true
-	case errors.Is(err, ErrUnknown):
+	case visibleIs(err, ErrUnknown):
 		return connect.CodeUnknown, ErrUnknown, true
 	default:
 		return connect.CodeInternal, nil, false
@@ -672,12 +740,15 @@ func IsExpired(err error) bool { return errors.Is(err, ErrExpired) }
 // discards a decision. Without this predicate the only cheap test is
 // `errors.As(&connect.Error{})`, which sees the first kind and misses the
 // second, silently turning a caller's 400 into a 500.
+//
+// The verdict must be the outer error's: a classified [WithCause] cause does
+// not classify an unclassified error, because a caller that passes a
+// classified error through verbatim would forward the cause's verdict.
 func IsClassified(err error) bool {
 	if err == nil {
 		return false
 	}
-	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if _, ok := visibleAs[*connect.Error](err); ok {
 		return true
 	}
 	_, _, recognised := codeForRecognized(err)
@@ -844,10 +915,10 @@ func WithReason(err error, code string) error {
 
 // reasonOf returns the nearest reason code annotated on err's chain, if
 // any. Additional wrapping (fmt.Errorf("...: %w", err)) around a
-// WithReason error is transparent because errors.As walks Unwrap.
+// WithReason error is transparent because the walk follows Unwrap. A reason
+// behind a WithCause cause is not err's reason and is not returned.
 func reasonOf(err error) (string, bool) {
-	var re *reasonError
-	if errors.As(err, &re) {
+	if re, ok := visibleAs[*reasonError](err); ok {
 		return re.code, true
 	}
 	return "", false

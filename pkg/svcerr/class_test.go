@@ -171,12 +171,14 @@ func (e *usageLimitErr) ErrorClass() svcerr.Class { return e.class }
 func TestClassify_TypedErrorDeclaresItsClass(t *testing.T) {
 	t.Parallel()
 	declared := &usageLimitErr{class: svcerr.ClassUser}
+	// Outside a WithCause, not behind one: a class declared on a CAUSE does
+	// not count (TestWithCause_OuterClassifies).
 	for name, err := range map[string]error{
 		"bare":                     declared,
 		"wrapped":                  fmt.Errorf("stream: %w", declared),
 		"under an internal code":   connect.NewError(connect.CodeInternal, fmt.Errorf("call llm: %w", declared)),
 		"joined with a raw error":  errors.Join(errors.New("cleanup failed too"), declared),
-		"behind a redacting cause": svcerr.WithCause(svcerr.FailedPrecondition("usage limit"), declared),
+		"outside a redacted cause": svcerr.WithCause(declared, errors.New("provider said 429")),
 	} {
 		if got := svcerr.Classify(err); got != svcerr.ClassUser {
 			t.Errorf("%s: Classify = %v, want user", name, got)

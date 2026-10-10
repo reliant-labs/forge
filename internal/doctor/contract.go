@@ -25,7 +25,7 @@
 // The package wraps two surfaces:
 //
 //   - Free Check* functions (CheckDocker, CheckAppHealth, CheckPprof,
-//     CheckPrometheus, CheckTempo, CheckLoki, CheckPyroscope, CheckDelve,
+//     CheckMetrics, CheckTraces, CheckLogs, CheckDelve,
 //     plus the deployability set) are individual probes. They are exposed
 //     at package level so callers can build their own check sets, and they
 //     are the primary unit of test coverage.
@@ -159,7 +159,7 @@ type RuntimeTarget struct {
 	// declares no host service and no compose infra — every workload lands
 	// on a cluster or a hosted control plane (a GKE prod, a hosted env).
 	// The checks that probe the developer's machine (compose, app health,
-	// pprof, the local Grafana stack, Delve) then have no subject: running
+	// pprof, the local ClickStack, Delve) then have no subject: running
 	// them anyway reported THIS machine's dev compose stack as the env's
 	// infra ("9/9 healthy" under prod) and told the reader to `forge env up`
 	// an env nobody runs locally. They SKIP, naming why; the cluster check
@@ -170,8 +170,8 @@ type RuntimeTarget struct {
 // machineLocalChecks are the runtime checks whose only subject is the
 // developer's machine. See RuntimeTarget.RemoteOnly.
 var machineLocalChecks = map[string]bool{
-	composeCheckName: true, "App Health": true, "pprof": true, "Profiles (Pyro)": true,
-	"Prometheus": true, "Traces (Tempo)": true, "Logs (Loki)": true, "Delve": true,
+	composeCheckName: true, "App Health": true, "pprof": true,
+	"Metrics (ClickStack)": true, "Traces (ClickStack)": true, "Logs (ClickStack)": true, "Delve": true,
 }
 
 // RuntimeInput carries everything RunRuntime needs. Env is reported in
@@ -259,10 +259,10 @@ func runtimeSignals() map[string][]namedCheck {
 		{"App Health", CheckAppHealth},
 		{clusterWorkloadsCheckName, CheckClusterWorkloads},
 	}
-	profiles := []namedCheck{{"pprof", CheckPprof}, {"Profiles (Pyro)", CheckPyroscope}}
-	metrics := []namedCheck{{"Prometheus", CheckPrometheus}}
-	traces := []namedCheck{{"Traces (Tempo)", CheckTempo}}
-	logs := []namedCheck{{"Logs (Loki)", CheckLoki}}
+	profiles := []namedCheck{{"pprof", CheckPprof}}
+	metrics := []namedCheck{{"Metrics (ClickStack)", CheckMetrics}}
+	traces := []namedCheck{{"Traces (ClickStack)", CheckTraces}}
+	logs := []namedCheck{{"Logs (ClickStack)", CheckLogs}}
 	delve := []namedCheck{{"Delve", CheckDelve}}
 
 	all := []namedCheck{{composeCheckName, CheckDocker}}
@@ -274,7 +274,7 @@ func runtimeSignals() map[string][]namedCheck {
 	all = append(all, delve...)
 
 	// Every filtered arm keeps the compose check: it is what discovers the
-	// Grafana/Delve container ports the rest read.
+	// app/Delve container ports the rest read.
 	withCompose := func(checks []namedCheck) []namedCheck {
 		return append([]namedCheck{{composeCheckName, CheckDocker}}, checks...)
 	}

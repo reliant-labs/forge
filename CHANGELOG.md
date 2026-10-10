@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **ClickStack is the local observability stack, and it is ON by default.**
+  `forge env up` now runs ONE container, HyperDX's no-auth *local mode* image
+  (ClickHouse, the HyperDX UI and an OTLP collector), in place of the opt-in
+  Grafana LGTM stack. Host processes are handed
+  `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` unless the shell, `config.k` or a
+  workload's `env` already sets them, so traces and metrics reach HyperDX with
+  nothing to register and no key to copy. The collector tails the per-service
+  files `forge env up` already writes under `.forge/logs/<env>/`, parsing the
+  JSON lines the runtime emits (`trace_id`/`span_id` become the log's trace
+  link), and that is the one local log path. Every port is published on
+  `127.0.0.1`; ClickHouse is not published, and its passwordless `default` user
+  is replaced by a dev-only credential. State persists in named volumes. The
+  HyperDX sources (Logs, Traces, Metrics) are pre-created, and HyperDX dashboard
+  JSON dropped into `deploy/observability/dashboards/` is loaded within seconds
+  by HyperDX's file provisioner. Turn it all off with `_observability = False` in
+  `deploy/kcl/dev/main.k`. `forge env status` now reads traces, metrics (gauge,
+  sum and histogram) and logs back from ClickHouse, by service name.
+
+  Gone with it: the `lgtm` and `alloy` compose services,
+  `deploy/alloy-config.alloy`, the generated Grafana dashboards under
+  `deploy/observability/grafana/`, and the Grafana MCP example. Profiles are not
+  collected locally yet. An existing project keeps its own `docker-compose.yml`
+  and `deploy/kcl/dev/main.k` (both are yours); load `migrations/v0.1.45` to move
+  it over.
+
 ### Fixed
 
 - **`FORGE_LEDGER=machine` keeps a run off a declared control plane.**

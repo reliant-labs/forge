@@ -432,7 +432,7 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		// -v evidence. Repeating it inside the box would be two renderings
 		// of one fact that can drift apart.
 		//
-		// The compose rows (Grafana, when observability is on) are added
+		// The compose rows (HyperDX, when observability is on) are added
 		// for display only: the runtime checks below resolve their targets
 		// from the host rows, and a container is not a forge-owned process.
 		compose := composeRows(ctx, entities, read.projectDir, nil, composePublishersFn)
@@ -1477,8 +1477,8 @@ type upClusterInput struct {
 	// infraConverged is set true when this run's infra pre-warm converged
 	// every off-cluster infra group (host infra, compose). The deploy phase
 	// and the host phase then leave those groups alone instead of converging
-	// them again: one `forge env up` used to `docker compose pull` + `up` an
-	// opted-in lgtm three times.
+	// them again: one `forge env up` used to `docker compose pull` + `up` the
+	// clickstack service three times.
 	infraConverged *bool
 }
 
@@ -2762,6 +2762,9 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		return fmt.Errorf("group infrastructure services: %w", err)
 	}
 	projectDir := projectDirForKCL()
+	if err := ensureClickstackLogDir(projectDir, entities); err != nil {
+		return fmt.Errorf("create .forge/logs for the clickstack log mount: %w", err)
+	}
 	// APPLICATION providers are deliberately absent from this map —
 	// k8s-cluster, external, firebase and static-site are all things the
 	// dev loop deploys later (or not at all), not servers it must dial
@@ -2848,6 +2851,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 	// external/none. buildHostServiceCmd layers this map (or the legacy
 	// per-service secrets_file fallback) onto each service's env.
 	secretsLayer := prov.All()
+	otlpDefaults := clickstackHostOTLPEnv(e)
 	failures := 0
 	for _, w := range e.WorkloadsOn(RuntimeHost) {
 		if !w.LongRunning() {
@@ -2869,6 +2873,9 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 			failures++
 			continue
 		}
+		// Traces and metrics reach the local ClickStack with nothing to
+		// configure: the standard OTLP variables, unless already set.
+		cmd.Env = withDefaultEnv(cmd.Env, otlpDefaults)
 		if err := procs.start(name, cmd, background); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++

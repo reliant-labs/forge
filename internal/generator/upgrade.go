@@ -176,7 +176,7 @@ func cfgIsService(cfg *config.ProjectConfig) bool {
 func enabledForService(cfg *config.ProjectConfig) bool { return cfgIsService(cfg) }
 
 // enabledForObservability gates a file on the project being service-kind
-// AND having observability enabled (e.g. deploy/alloy-config.alloy).
+// AND having observability enabled (e.g. deploy/observability/otel-collector.yaml).
 func enabledForObservability(cfg *config.ProjectConfig) bool {
 	return cfgIsService(cfg) && cfg != nil && cfg.Features.ObservabilityEnabled()
 }
@@ -398,9 +398,12 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// upgrade` CREATES it and never stomps an edited copy.
 		{templateName: "cmd-tree-commands.go.tmpl", destPath: cmdTreePath(binName, "commands.go"), templated: true, tier: Tier2, enabledFor: enabledForService},
 
-		// Alloy config — Tier 1 since it's fully derived from forge.yaml
-		// services. Gated on service-kind AND observability being enabled.
-		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1, enabledFor: enabledForObservability},
+		// Local observability. Both are Tier 2: constant text the user is
+		// expected to edit (add a log pipeline, tune the collector), not a
+		// function of anything they declare. Gated on service-kind AND
+		// observability being enabled.
+		{templateName: "otel-collector.yaml.tmpl", destPath: "deploy/observability/otel-collector.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability},
+		{templateName: "dashboards-README.md.tmpl", destPath: "deploy/observability/dashboards/README.md", templated: true, tier: Tier2, enabledFor: enabledForObservability},
 	}
 }
 
@@ -601,12 +604,6 @@ func Tier2ManagedPaths() map[string]bool {
 		out[p] = true
 	}
 	return out
-}
-
-// ServiceInfo holds the name and port of a service for template rendering.
-type ServiceInfo struct {
-	Name string
-	Port int
 }
 
 // buildTemplateData constructs the upgrade-lane render payload from a

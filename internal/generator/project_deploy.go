@@ -342,27 +342,27 @@ func (g *ProjectGenerator) generateDevConfig() error {
 	return os.WriteFile(destPath, content, 0644)
 }
 
-func (g *ProjectGenerator) generateAlloyConfig() error {
-	port := g.ServicePort
-	if port == 0 {
-		port = 8080
+// generateObservability writes the local ClickStack's two owned inputs: the
+// collector pipeline file the compose service mounts, and the dashboard
+// provisioner directory it watches.
+func (g *ProjectGenerator) generateObservability() error {
+	for _, f := range []struct{ tmpl, dest string }{
+		{"otel-collector.yaml.tmpl", filepath.Join("deploy", "observability", "otel-collector.yaml")},
+		{"dashboards-README.md.tmpl", filepath.Join("deploy", "observability", "dashboards", "README.md")},
+	} {
+		content, err := templates.ProjectTemplates().Render(f.tmpl, struct{}{})
+		if err != nil {
+			return fmt.Errorf("render %s: %w", f.dest, err)
+		}
+		destPath := filepath.Join(g.Path, f.dest)
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			return err
+		}
 	}
-	data := struct {
-		ProjectName string
-		Services    []ServiceInfo
-	}{
-		ProjectName: g.Name,
-		Services:    []ServiceInfo{{Name: "app", Port: port}},
-	}
-	content, err := templates.ProjectTemplates().Render("alloy-config.alloy.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render alloy-config.alloy: %w", err)
-	}
-	destPath := filepath.Join(g.Path, "deploy", "alloy-config.alloy")
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(destPath, content, 0644)
+	return nil
 }
 
 func (g *ProjectGenerator) generateDockerCompose() error {

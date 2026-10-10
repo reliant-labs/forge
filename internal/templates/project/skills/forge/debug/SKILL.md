@@ -181,17 +181,17 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 - `investigate` — hypothesis formation and code tracing.
 - `multi-cluster-e2e` — a workload stuck `Pending` / not-ready, or a flow that fails only in a k3d multi-cluster e2e env: read the pod status before the network, hold the pod up on failure, and the nested-cluster image-pull / host-gateway-DNS / path-MTU gotchas.
 
-## Observability (Grafana LGTM)
+## Observability (ClickStack)
 
-With `_observability = True` in `deploy/kcl/dev/main.k`, `forge env up dev` runs a Grafana LGTM stack (the `lgtm` compose service) with traces, metrics, logs, and continuous profiling. It is off by default; see the `observability` skill.
+`forge env up dev` runs ClickStack (the `clickstack` compose service: ClickHouse, the HyperDX UI and an OTLP collector) with traces, metrics and logs. It is on by default and off with `_observability = False` in `deploy/kcl/dev/main.k`; see the `observability` skill.
 
-- **Grafana UI:** the URL `forge env up dev` / `forge env status dev` lists under **Compose services** (`lgtm :3000`; the host port is dynamic). No login — anonymous admin.
-- **Traces:** Grafana → Explore → Tempo. Find slow requests, trace cross-service calls.
-- **Metrics:** Grafana → Explore → Prometheus. Query `rpc_server_call_duration_seconds` (the otelconnect RPC edge histogram; labels `rpc_method`, `rpc_response_status_code`) etc.
-- **Logs:** Grafana → Explore → Loki. Search structured logs.
-- **Profiles:** Grafana → Explore → Pyroscope. CPU, heap, goroutine, mutex profiles from the app's pprof endpoint.
+- **HyperDX UI:** the URL `forge env up dev` / `forge env status dev` lists under **Compose services**. No login.
+- **Traces:** HyperDX → Search → Traces. Find slow requests, trace cross-service calls.
+- **Metrics:** HyperDX → Search → Metrics. Query `rpc.server.call.duration` (the otelconnect RPC edge histogram; attributes `rpc.method`, `rpc.response.status_code`) etc.
+- **Logs:** HyperDX → Search → Logs. The collector tails `.forge/logs/<env>/*.log`, so a host process's logs are here and in the file; a log with a `TraceId` links to its trace.
+- **Profiles:** not collected locally yet. Use pprof below.
 
-The same switch points the host processes at it: their `OTEL_EXPORTER_OTLP_ENDPOINT` is the loopback OTLP port the compose service publishes (`_otlp_port` in `dev/main.k`), which pushes traces and metrics.
+Host processes are pointed at it by `forge env up`, which sets `OTEL_EXPORTER_OTLP_ENDPOINT` to the loopback OTLP/HTTP port the compose service publishes (`_otlp_http_port` in `dev/main.k`) and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, unless you set them yourself.
 
 **pprof is always on.** It binds its own listener, separate from the app port, defaulting to `127.0.0.1:6060` — live in every environment and routable from none (no k8s Service, no route, no published port). You never have to redeploy to start profiling:
 
@@ -205,7 +205,6 @@ kubectl port-forward <pod> 6060:6060                    # in a cluster, then the
 
 Reach for the heap profile the moment a process is being OOMKilled: the cgroup's `memory.stat` tells you HOW MUCH it holds and never WHAT, and the answer only exists while the process is still alive.
 
-Change the address with `PPROF_ADDR` / `--pprof-addr`; the scaffolded `docker-compose.yml` sets `0.0.0.0:6060` so Alloy can scrape it for Pyroscope across the compose network. Set it to `""` to switch pprof off.
+Change the address with `PPROF_ADDR` / `--pprof-addr`; the scaffolded `docker-compose.yml` sets `0.0.0.0:6060` for the container's own network namespace (nothing publishes it). Set it to `""` to switch pprof off.
 
-For LLM-driven observability, enable the Grafana MCP server from `.mcp.json.example` — it lets agents query Prometheus, Loki, Tempo, and dashboards directly.
 <!-- @forge-only:end -->

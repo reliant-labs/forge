@@ -38,7 +38,7 @@ func TestProjectChecksCarryNoRuntimeChecks(t *testing.T) {
 	// The runtime set must actually contain the checks that moved.
 	for _, want := range []string{
 		composeCheckName, "App Health", "pprof",
-		"Prometheus", "Traces (Tempo)", "Logs (Loki)", "Profiles (Pyro)", "Delve",
+		"Metrics (ClickStack)", "Traces (ClickStack)", "Logs (ClickStack)", "Delve",
 	} {
 		if !runtimeNames[want] {
 			t.Errorf("runtime check set is missing %q", want)

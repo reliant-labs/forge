@@ -440,7 +440,6 @@ func generateSteps() []GenStep {
 		// emitter is a function of what is on disk, and a project with no
 		// api/ directory — most of them — does nothing here.
 		{Name: "CRD KCL manifests (api/ Go types)", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepCRDKCL, Tag: "deploy"},
-		{Name: "Grafana dashboards", Gate: and(feature(config.FeaturesConfig.ObservabilityEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.observability=false", Run: stepGrafanaDashboards, Tag: "deploy"},
 		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasDBOrServices), GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
@@ -695,7 +694,6 @@ var templatesOnlyStepAllow = map[string]bool{
 	// exists, which infra regen provides.
 	"cmd command groups (services/workers/operators)": true,
 	"per-env deploy config":                           true,
-	"Grafana dashboards":                              true,
 	"frontend mocks + transport":                      true,
 }
 
@@ -2351,14 +2349,6 @@ func collectDevGatewayListeners(ctx *pipelineContext) ([]codegen.K3dListener, er
 		}
 	}
 	return out, nil
-}
-
-// stepGrafanaDashboards — was Step 8d-i.
-// Emits Grafana dashboard JSON. Non-fatal: dashboards are operator
-// candy, not a build-blocker.
-func stepGrafanaDashboards(ctx *pipelineContext) error {
-	return ctx.warnOrFail("Grafana dashboard generation",
-		generator.GenerateGrafanaDashboards(ctx.Cfg.Name, ctx.AbsPath))
 }
 
 // stepEntitySeeds — was Step 8d-ii.

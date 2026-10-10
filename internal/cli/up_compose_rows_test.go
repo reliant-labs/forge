@@ -9,45 +9,44 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
-// The README: "turn on observability and the table includes Grafana too".
-// The table listed host processes and frontends only, and Grafana's port is
-// dynamic, so with the opt-in on nothing on screen said where Grafana was.
+// The summary must say where the HyperDX UI and the OTLP ports are: their host
+// ports are declared in KCL but a bare ":8080" does not say which is the UI.
 func TestUpSummaryListsWhatComposeWorkloadsPublish(t *testing.T) {
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHost}},
-		{Name: "lgtm", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "lgtm"}}},
+		{Name: "clickstack", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "clickstack"}}},
 	}}
 	asked := ""
 	fake := func(_ context.Context, _, _, service string) ([]composePublisher, error) {
 		asked = service
 		return []composePublisher{
 			{URL: "127.0.0.1", TargetPort: 4317, PublishedPort: 44317, Protocol: "tcp"},
-			{URL: "0.0.0.0", TargetPort: 3000, PublishedPort: 56966, Protocol: "tcp"},
-			{URL: "::", TargetPort: 3000, PublishedPort: 56966, Protocol: "tcp"}, // the IPv6 twin
+			{URL: "127.0.0.1", TargetPort: 8080, PublishedPort: 18180, Protocol: "tcp"},
+			{URL: "::", TargetPort: 8080, PublishedPort: 18180, Protocol: "tcp"}, // the IPv6 twin
 		}, nil
 	}
 
 	rows := composeRows(context.Background(), e, t.TempDir(), nil, fake)
-	if asked != "lgtm" {
-		t.Fatalf("asked docker about %q, want the compose service lgtm", asked)
+	if asked != "clickstack" {
+		t.Fatalf("asked docker about %q, want the compose service clickstack", asked)
 	}
 	if len(rows) != 2 {
 		t.Fatalf("want one row per published port (IPv4/IPv6 twins folded), got %+v", rows)
 	}
-	if rows[0].URL != "http://localhost:56966" || rows[0].Name != "lgtm :3000" {
-		t.Errorf("Grafana row = %+v", rows[0])
+	if rows[0].Name != "OTLP/gRPC" || rows[1].URL != "http://127.0.0.1:18180" || rows[1].Name != "HyperDX UI" {
+		t.Errorf("rows = %+v", rows)
 	}
 
 	var out bytes.Buffer
 	renderUpSummary(&out, "dev", rows, "starting", false, nil, nil)
-	for _, want := range []string{"Compose services", "lgtm :3000", "http://localhost:56966", "docker compose logs lgtm"} {
+	for _, want := range []string{"Compose services", "HyperDX UI", "http://127.0.0.1:18180", "docker compose logs clickstack"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("summary is missing %q:\n%s", want, out.String())
 		}
 	}
 }
 
-// One `forge env up` converged an opted-in lgtm three times — the infra
+// One `forge env up` converged the clickstack service three times — the infra
 // pre-warm, the deploy phase, then the host phase's own pre-warm — pulling
 // the image each time. Once the pre-warm has converged the infra, the deploy
 // phase leaves those groups alone; cluster groups still deploy.

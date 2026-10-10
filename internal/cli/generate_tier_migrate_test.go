@@ -160,7 +160,6 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		"cmd/main.go",
 		"internal/cli/db.go",
 		"internal/cli/version.go",
-		"deploy/alloy-config.alloy",
 	} {
 		if set[reject] {
 			t.Errorf("Tier2ManagedPaths() must not contain %q (Tier-1 / generate-owned)", reject)

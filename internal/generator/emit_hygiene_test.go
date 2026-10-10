@@ -37,25 +37,21 @@ func assertFormatterClean(t *testing.T, name string, content []byte) {
 	}
 }
 
-func TestGrafanaDashboardsAreFormatterClean(t *testing.T) {
+func TestObservabilityFilesAreFormatterClean(t *testing.T) {
 	dir := t.TempDir()
-	if err := GenerateGrafanaDashboards("demo", dir); err != nil {
-		t.Fatalf("GenerateGrafanaDashboards: %v", err)
+	g := &ProjectGenerator{Name: "demo", Path: dir, ModulePath: "github.com/example/demo"}
+	if err := g.generateObservability(); err != nil {
+		t.Fatalf("generateObservability: %v", err)
 	}
-	dashDir := filepath.Join(dir, "deploy", "observability", "grafana", "dashboards")
-	entries, err := os.ReadDir(dashDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) == 0 {
-		t.Fatal("no dashboards written")
-	}
-	for _, e := range entries {
-		b, err := os.ReadFile(filepath.Join(dashDir, e.Name()))
+	for _, rel := range []string{
+		"deploy/observability/otel-collector.yaml",
+		"deploy/observability/dashboards/README.md",
+	} {
+		b, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertFormatterClean(t, e.Name(), b)
+		assertFormatterClean(t, rel, b)
 	}
 }
 

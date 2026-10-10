@@ -161,7 +161,7 @@ func composeLaunchSites(t *testing.T, root string) []devLaunchSite {
 	var sites []devLaunchSite
 	for svcName, svc := range compose.Services {
 		if svc.Build == nil {
-			continue // an infra image (postgres, lgtm), not this app
+			continue // an infra image (postgres, clickstack), not this app
 		}
 		sites = append(sites, devLaunchSite{
 			artifact: "docker-compose.yml",

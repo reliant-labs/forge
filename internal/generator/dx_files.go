@@ -416,7 +416,7 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 //
 // TestForgeGeneratedPathPattern matches it against every forge-owned file in
 // a real scaffold, so a new generated path that escapes it fails there.
-const forgeGeneratedPathPattern = `(^|/)gen/|_gen(_test)?(\.test)?\.[A-Za-z0-9]+$|^\.forge-kcl/|^deploy/observability/grafana/|^deploy/alloy-config\.alloy$|(^|/)public/config\.js$|(^|/)src/hooks/index\.ts$`
+const forgeGeneratedPathPattern = `(^|/)gen/|_gen(_test)?(\.test)?\.[A-Za-z0-9]+$|^\.forge-kcl/|(^|/)public/config\.js$|(^|/)src/hooks/index\.ts$`
 
 // generatePreCommitConfig writes .pre-commit-config.yaml. Hooks are
 // chosen to match the existing CI surface (gofmt/govet/goimports via
@@ -440,7 +440,6 @@ func (g *ProjectGenerator) generatePreCommitConfig() error {
 #   (^|/)gen/                     generated Go + TS stubs
 #   _gen(_test)?(\.test)?\.<ext>   *_gen.go, *_gen_test.go, *_gen.ts, *_gen.test.ts, *_gen.k
 #   ^\.forge-kcl/                 the KCL module forge materializes locally
-#   ^deploy/observability/grafana/, ^deploy/alloy-config\.alloy$
 #   (^|/)public/config\.js$       a frontend's rendered runtime config
 #   (^|/)src/hooks/index\.ts$     the generated hooks barrel
 # A file you take over with ` + "`forge project disown`" + ` is yours: drop it from

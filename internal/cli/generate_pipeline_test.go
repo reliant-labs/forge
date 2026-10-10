@@ -98,7 +98,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		// Gated on features.deploy — absent from a project that declares no
 		// CRDs, present here because the guard drives the full plan.
 		"CRD KCL manifests (api/ Go types)",
-		"Grafana dashboards",
 		"entity-aware seed data",
 		"frontend mocks + transport",
 		"repoint renamed *_gen frontend imports",

@@ -452,49 +452,28 @@ func TestDevSignInReachesTheAPI(t *testing.T) {
 	}
 }
 
-// TestDevObservabilityOptInDeliversTelemetry pins the dev observability
-// opt-in to the three things that must agree for any data to arrive: the
-// lgtm compose service runs, it publishes OTLP on the port the env declares,
-// and the API exports to that same port. The opt-in used to be "add the lgtm
-// workload" alone: Grafana came up, the host-run API had an empty
-// OTEL_EXPORTER_OTLP_ENDPOINT and compose published no OTLP port, so nothing
-// ever reached it.
-func TestDevObservabilityOptInDeliversTelemetry(t *testing.T) {
+// TestDevObservabilityIsOnByDefaultAndDeliversTelemetry pins the three things
+// that must agree for any data to arrive from a FRESH project with no edits:
+// the clickstack compose service runs, it is handed the ports to publish, and
+// the compose file publishes exactly those variables on loopback. The endpoint
+// host processes export to is `forge env up`'s job (clickstackHostOTLPEnv),
+// which reads the same port from this workload; the env must not also bake a
+// second copy into the process env, or the two could disagree.
+func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
-
-	// Off by default: no stack, and no endpoint aimed at one.
-	off := devWorkloadJSON(t, root)
-	if _, ok := off["lgtm"]; ok {
-		t.Errorf("a fresh dev env runs lgtm without being asked")
-	}
-	if strings.Contains(off["api"], `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http`) {
-		t.Errorf("observability is off, but the API exports to a collector:\n%s", off["api"])
-	}
-
-	mainK := filepath.Join(root, "deploy/kcl/dev/main.k")
-	raw, err := os.ReadFile(mainK)
-	if err != nil {
-		t.Fatal(err)
-	}
-	on := strings.Replace(string(raw), "_observability = False", "_observability = True", 1)
-	if on == string(raw) {
-		t.Fatalf("dev/main.k has no `_observability = False` switch:\n%s", raw)
-	}
-	if err := os.WriteFile(mainK, []byte(on), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	w := devWorkloadJSON(t, root)
 
-	lgtm, ok := w["lgtm"]
+	stack, ok := w["clickstack"]
 	if !ok {
-		t.Fatalf("observability on, but dev runs no lgtm workload: %v", w)
+		t.Fatalf("a fresh dev env does not run clickstack: %v", w)
 	}
-	port := regexp.MustCompile(`"OTLP_GRPC_PORT":"(\d+)"`).FindStringSubmatch(lgtm)
-	if port == nil {
-		t.Fatalf("lgtm is not handed OTLP_GRPC_PORT to publish:\n%s", lgtm)
+	for _, v := range []string{"CLICKSTACK_OTLP_HTTP_PORT", "CLICKSTACK_OTLP_GRPC_PORT", "CLICKSTACK_UI_PORT"} {
+		if !regexp.MustCompile(`"` + v + `":"[1-9]\d*"`).MatchString(stack) {
+			t.Errorf("clickstack is not handed a real %s to publish:\n%s", v, stack)
+		}
 	}
-	if want := `"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http://localhost:` + port[1] + `"`; !strings.Contains(w["api"], want) {
-		t.Errorf("the API does not export to the port lgtm publishes (%s):\n%s", want, w["api"])
+	if strings.Contains(w["api"], `"OTEL_EXPORTER_OTLP_ENDPOINT"`) {
+		t.Errorf("the API env carries its own OTLP endpoint; forge env up owns it:\n%s", w["api"])
 	}
 
 	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.yml"))
@@ -502,16 +481,30 @@ func TestDevObservabilityOptInDeliversTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`"127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"`,
-		// grafana/otel-lgtm reads providers from here, not /etc/grafana.
-		":/otel-lgtm/grafana/conf/provisioning/dashboards/forge.yaml:ro",
+		`"127.0.0.1:${CLICKSTACK_OTLP_HTTP_PORT:-4318}:4318"`,
+		`"127.0.0.1:${CLICKSTACK_OTLP_GRPC_PORT:-4317}:4317"`,
+		`"127.0.0.1:${CLICKSTACK_UI_PORT:-8180}:8080"`,
 	} {
 		if !strings.Contains(string(compose), want) {
-			t.Errorf("docker-compose.yml lgtm service is missing %s", want)
+			t.Errorf("docker-compose.yml clickstack service is missing %s", want)
 		}
 	}
-	if strings.Contains(string(compose), ":/etc/grafana/provisioning") {
-		t.Errorf("docker-compose.yml still mounts provisioning where grafana/otel-lgtm never reads it")
+
+	// The switch turns everything off together.
+	mainK := filepath.Join(root, "deploy/kcl/dev/main.k")
+	raw, err := os.ReadFile(mainK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := strings.Replace(string(raw), "_observability = True", "_observability = False", 1)
+	if off == string(raw) {
+		t.Fatalf("dev/main.k has no `_observability = True` switch:\n%s", raw)
+	}
+	if err := os.WriteFile(mainK, []byte(off), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := devWorkloadJSON(t, root)["clickstack"]; ok {
+		t.Errorf("_observability = False still runs clickstack")
 	}
 }
 

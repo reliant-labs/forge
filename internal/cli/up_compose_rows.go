@@ -24,11 +24,9 @@ type composePublisher struct {
 type composePublishersFunc func(ctx context.Context, projectDir, file, service string) ([]composePublisher, error)
 
 // composeRows lists, for the env-up summary, every port this env's compose
-// workloads publish to the host — above all Grafana, when the observability
-// opt-in runs lgtm. The README promises "turn on observability and the table
-// includes Grafana too"; the table listed host processes and frontends only,
-// and Grafana's port is DYNAMIC (published as `0:3000`), so nothing on screen
-// said where it was.
+// workloads publish to the host — above all the HyperDX UI and OTLP ports of
+// the local ClickStack. Published ports can be dynamic, so nothing on screen
+// otherwise says where a compose service is.
 //
 // Read from docker at print time, because a dynamic port exists only once
 // the container does. Best-effort like the rest of the box: a service docker
@@ -62,8 +60,12 @@ func composeRows(ctx context.Context, e *KCLEntities, projectDir string, targets
 			if strings.HasPrefix(p.URL, "127.0.0.1") {
 				host = "127.0.0.1"
 			}
+			label := fmt.Sprintf("%s :%d", w.Name, p.TargetPort)
+			if l, ok := clickstackRowLabel(service, p.TargetPort); ok {
+				label = l
+			}
 			rows = append(rows, upServiceRow{
-				Name: fmt.Sprintf("%s :%d", w.Name, p.TargetPort),
+				Name: label,
 				Kind: "compose",
 				Port: p.PublishedPort,
 				URL:  fmt.Sprintf("http://%s:%d", host, p.PublishedPort),

@@ -415,17 +415,9 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 		writeManagedRender(t, dir, f.destPath, content, true)
 	}
 
-	// Modify a Tier-1 file and a Tier-2 file (user edits: markers gone).
-	//
-	// deploy/alloy-config.alloy is the Tier-1 exemplar because it is the only
-	// one upgrade still manages: the whole command tree became scaffold-once,
-	// and forge does not rewrite those at all, with or without --force. The
-	// property under test is unchanged — --force overwrites a hand-edited
-	// Tier-1 file — only the file that can stand for it has moved.
-	modifiedPath := filepath.Join(dir, "deploy/alloy-config.alloy")
-	if err := os.WriteFile(modifiedPath, []byte("// user modified\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	// Modify a Tier-2 file (a user edit: markers gone). No managed file is
+	// Tier-1 any more — the command tree became scaffold-once and the last
+	// Tier-1 entry, the Alloy config, was retired with the LGTM stack.
 	modifiedTier2 := filepath.Join(dir, "Dockerfile")
 	if err := os.WriteFile(modifiedTier2, []byte("# user modified\nFROM golang:1.23\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -438,22 +430,15 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "deploy/alloy-config.alloy" || r.Path == "Dockerfile" {
+		if r.Path == "Dockerfile" {
 			if r.Status != UpgradeUpdated {
 				t.Errorf("%s: status = %q, want %q with --force", r.Path, r.Status, UpgradeUpdated)
 			}
 		}
 	}
 
-	// Verify the files were actually overwritten.
-	content, err := os.ReadFile(modifiedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) == "// user modified\n" {
-		t.Error("deploy/alloy-config.alloy was not overwritten by --force")
-	}
-	content, err = os.ReadFile(modifiedTier2)
+	// Verify the file was actually overwritten.
+	content, err := os.ReadFile(modifiedTier2)
 	if err != nil {
 		t.Fatal(err)
 	}

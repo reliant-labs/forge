@@ -1,21 +1,24 @@
 ---
 name: observability
-description: Observability — forge env status runtime checks, Grafana dashboards, querying logs/traces/metrics.
+description: Observability — the local ClickStack (HyperDX) that forge env up runs by default, forge env status runtime checks, querying logs/traces/metrics, dashboards.
 ---
 
 # Observability
 
-Every Forge project ships a full observability stack for the dev loop — Grafana LGTM (Grafana, Prometheus, Tempo, Loki, Pyroscope and an OTLP collector) as the `lgtm` service in `docker-compose.yml`. No external services needed.
+Every Forge project ships a full observability stack for the dev loop: **ClickStack** (ClickHouse, the HyperDX UI and an OTLP collector) as the `clickstack` service in `docker-compose.yml`. Nothing to register, no key to copy. It is **on by default**: `forge env up dev` starts it, and the summary lists the **HyperDX UI** under **Compose services**.
 
-It is **opt-in**, because it is ~1 GB resident. One switch in `deploy/kcl/dev/main.k` turns it on:
+It is one container (HyperDX's own no-auth *local mode* image), about 0.8 GB resident. Every port is published on `127.0.0.1` only; ClickHouse is not published at all and runs behind a generated dev-only user rather than the passwordless `default`.
 
-```kcl
-_observability = True
-```
+## How the data gets there
 
-That one value does the three things that must agree for any data to arrive: it runs the `lgtm` compose service, has compose publish its OTLP gRPC port on loopback (`_otlp_port`, handed to compose as `OTLP_GRPC_PORT`), and points every host process's `OTEL_EXPORTER_OTLP_ENDPOINT` at that port. Run `forge env up dev` and the summary lists Grafana under **Compose services**, with the forge dashboards provisioned in its **Forge** folder.
+| Signal | Path |
+|---|---|
+| Traces, metrics | Host processes started by `forge env up` get `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and push OTLP/HTTP to the collector. Compose services use `http://otel-collector:4318`. The app never learns the backend: it reads the standard variables and nothing else. |
+| Logs | The collector tails `.forge/logs/<env>/<service>.log` — the files `forge env up` already tees every host process into — parsing the JSON lines the runtime writes. `service.name` is the file name (the workload name), `trace_id` / `span_id` become the log's trace link. This is the **one** local log path; the runtime does not also export logs over OTLP, so nothing is duplicated. The pipeline is `deploy/observability/otel-collector.yaml` — yours to edit. |
 
-`alloy` (also in the compose file) is a separate opt-in: it scrapes the containers on the compose network and ingests their Docker logs, mounting the Docker socket to do it — on a shared machine that is every container's logs, not just yours. The dev loop's own API runs on the host, so its logs are in `.forge/logs/dev/`, not Loki, unless you ship them.
+A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge env up` fills `OTEL_EXPORTER_OTLP_ENDPOINT` / `_PROTOCOL` only when unset or empty.
+
+**To turn it off**, set `_observability = False` in `deploy/kcl/dev/main.k`: no container starts and no endpoint is exported. Trace context still propagates. Profiles are not collected locally yet.
 
 ## forge env status — the runtime checks
 
@@ -24,23 +27,21 @@ Verify the entire observability pipeline is working:
 ```bash
 forge env status dev                    # Table + every runtime check
 forge env status dev --signal traces    # Check only traces
-forge env status dev --signal metrics   # Check only Prometheus
-forge env status dev --signal logs      # Check only Loki
-forge env status dev --signal profiles  # Check only profiling
+forge env status dev --signal metrics   # Check only metrics
+forge env status dev --signal logs      # Check only logs
+forge env status dev --signal profiles  # Check only pprof
 forge env status dev --signal app       # Check only /healthz + /readyz
 forge env status dev --json             # Machine-readable output
 forge env status dev --verbose          # Show evidence for passing checks
 ```
 
-Checks: compose infra running, app health endpoint, pprof endpoint (and that
-the process answering it IS the app), Prometheus holding the app's own metrics,
-Tempo traces ingested, Loki log streams present, Pyroscope profiles available,
-Delve.
+Checks: compose infra, app health, pprof (and that the process answering it IS
+the app), traces, metrics (gauge, sum and histogram) and logs from the last 15
+minutes in ClickHouse, each naming the services that sent them, and Delve.
 
-The Prometheus check passes only on series stamped with the app's service name
-(`job=<project>`). "Prometheus is up" is not the question: the bundled image
-scrapes its own collector, so `up` always has a target, and the check used to
-pass on a stack that received nothing from the app.
+They read ClickHouse itself (`docker compose exec` into `clickstack`, with its
+own credentials), so a pass means rows are in the store, not that a UI answers.
+With ClickStack off they SKIP and say so.
 
 **These live on `forge env status`, not `forge doctor`.** They all need an
 ADDRESS, and only `forge env status <env>` resolves one — it renders the same
@@ -58,36 +59,32 @@ investigating issues.
 
 **The runtime checks verify the telemetry pipeline, NOT app-flow correctness.** They (like `forge env smoke`) are green when containers, endpoints, and signal ingestion are healthy — they can be green while the actual app flow is broken (e.g. a cross-cluster dial failing). To prove an app-flow invariant holds, use a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `task test:e2e`. They tell you observability works; they do not certify the app does.
 
-## Accessing Grafana
+## Accessing HyperDX
 
-Grafana's port is dynamically assigned. `forge env up dev` and
-`forge env status dev` list it under **Compose services** (`lgtm :3000`).
+`forge env up dev` and `forge env status dev` list the **HyperDX UI** URL under **Compose services** (its port is declared once in `deploy/kcl/dev/main.k`, `_hyperdx_port`, default 8180). There is no sign-in. Three sources are pre-created — **Logs**, **Traces**, **Metrics** — so search works on first open.
 
-Three dashboards are auto-provisioned, in the **Forge** folder:
-- **Application Overview** — request rate, error rate, latency percentiles,
-  requests by procedure, errors by code, and database query rate, latency and
-  connections
-- **Traces** — trace search, span rate and latency, from Tempo
-- **Logs** — log volume by level, errors and audit events, from Loki (empty
-  unless something ships logs there; see `alloy` above)
+### Dashboards
 
-They are files in `deploy/observability/grafana/dashboards/`, regenerated by
-`forge generate`; the provider that loads them is
-`deploy/observability/grafana/provisioning/dashboards.yaml`, mounted where the
-`grafana/otel-lgtm` image reads providers
-(`/otel-lgtm/grafana/conf/provisioning/dashboards/`).
+HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. The directory is yours; forge scaffolds it empty.
 
-## Querying Logs (Loki)
+## Querying Logs
 
-In Grafana → Explore → Loki, use LogQL:
+In HyperDX → Search → Logs, filter on the service (the workload name), severity, or any attribute the log line carried:
 
 ```
-{container=~".*app.*"} | json | level="error"
-{container=~".*app.*"} | json | procedure="/services.users.v1.UsersService/Create"
-{container=~".*app.*"} | json | trace_id="abc123"
+ServiceName:api SeverityText:error
+ServiceName:api LogAttributes.procedure:"/services.users.v1.UsersService/Create"
+TraceId:abc123
 ```
 
-Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`, `error_class`). Emit the same attribute keys from your own log sites so dashboards stay queryable.
+Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`, `error_class`). Emit the same attribute keys from your own log sites so dashboards stay queryable. A line that is not JSON (air's rebuild output, a panic) is kept as plain text under the same service.
+
+Or ask ClickHouse directly:
+
+```bash
+docker compose exec clickstack sh -c 'clickhouse-client -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
+  -q "SELECT Timestamp, ServiceName, SeverityText, Body FROM default.otel_logs ORDER BY Timestamp DESC LIMIT 20"'
+```
 
 ## Error levels: who has to act
 
@@ -139,31 +136,19 @@ application error that crossed a serialization boundary — is taught with
 `observe.WithErrorClassifier(func(error) svcerr.Class)` (return
 `svcerr.ClassNone` for "no opinion").
 
-## Querying Traces (Tempo)
+## Querying Traces
 
-In Grafana → Explore → Tempo, search by:
-- Service name (matches your project name)
-- Trace ID (from log lines — click a `trace_id` value to jump to the trace)
+In HyperDX → Search → Traces, filter by:
+- Service name (the workload name)
+- Trace ID (from log lines — a log with a `TraceId` links to its trace)
 - Duration range
 - Status code
 
 Trace IDs are automatically injected into every log line, connecting logs to traces.
 
-## Querying Metrics (Prometheus)
+## Querying Metrics
 
-In Grafana → Explore → Prometheus, use PromQL. The RPC edge is measured by
-the otelconnect server interceptor: `rpc_server_call_duration_seconds`
-(histogram, labels `rpc_method` — the full `pkg.Service/Method` — and
-`rpc_response_status_code`, `OK` or the upper-case Connect code such as
-`NOT_FOUND`). Every series the app exports carries `job="<project>"`:
-
-```
-sum by (rpc_method) (rate(rpc_server_call_duration_seconds_count{job="<project>"}[5m]))   # request rate per RPC
-rate(rpc_server_call_duration_seconds_count{rpc_response_status_code!="OK"}[5m])          # errors
-go_sql_connections_in_use{job="<project>"}                                                # DB pool
-rate(go_sql_query_timing_milliseconds_count[5m])                                          # DB queries by operation/table
-<pkg>_calls / <pkg>_errors / <pkg>_duration          # per-package in-process method metrics (component chain)
-```
+In HyperDX → Search → Metrics (or a chart tile), pick the metric by name. The RPC edge is measured by the otelconnect server interceptor: `rpc.server.call.duration` (histogram, attributes `rpc.method` — the full `pkg.Service/Method` — and `rpc.response.status_code`, `OK` or the upper-case Connect code such as `NOT_FOUND`). Other series the app exports: `db.sql.*` / `go.sql.*` for the DB pool and queries, and `<pkg>_calls` / `<pkg>_errors` / `<pkg>_duration` for the per-package in-process method metrics (component chain). Every series carries `ServiceName`.
 
 ## In-process component observability (the middleware chain)
 
@@ -351,7 +336,7 @@ remain available.
 Every RPC already produces a structured audit record: the scaffold wires
 `fmw.AuditInterceptor(logger, middleware.ClaimsFromContext)` into the `Audit`
 field of `observe.Chain(observe.Deps{…})` in the generated `cmd serve.go`. That
-is slog-only — the record goes to your logs (queryable in Loki) with
+is slog-only — the record goes to your logs (queryable in HyperDX) with
 `log_type=audit`, message `audit.event`.
 
 For a **queryable, DB-persisted** audit trail (a compliance record you can page
@@ -427,7 +412,7 @@ app-specific read-side (the table + the RPC) is code you own.
 ## Rules
 
 - Run `forge env status dev` after `forge env up dev` to verify observability before investigating issues.
-- Grafana port is dynamically assigned — use `docker compose ps` or `forge env status dev -v` to find it.
-- The `alloy-config.alloy` and dashboard files are regenerated by `forge generate` — do not hand-edit.
+- The HyperDX port is declared in `deploy/kcl/dev/main.k` and listed by `forge env up dev` / `forge env status dev`.
+- `deploy/observability/otel-collector.yaml` and `deploy/observability/dashboards/` are yours: forge scaffolds them once and never rewrites them.
 - Use the `logevents.go` helpers for structured log events — do not create ad-hoc attribute keys.
 - Trace IDs propagate automatically via OpenTelemetry context — no manual instrumentation needed.

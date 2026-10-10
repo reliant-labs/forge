@@ -47,7 +47,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_SERVICE_NAME: {{.ProjectName}}
       ENVIRONMENT: development
       LOG_LEVEL: debug
@@ -55,8 +56,8 @@ services:
       AUTO_MIGRATE: "true"
       # pprof is on by default and bound to LOOPBACK by the config
       # default (127.0.0.1:6060). Loopback inside a container is the
-      # container's own netns, so nothing outside it — not the `alloy`
-      # profile scrape below, not a published port — can reach it. This
+      # container's own netns, so nothing outside it — no scraper, no
+      # published port — can reach it. This
       # is the deliberate container-boundary override, and it is safe
       # because it is confined to this compose network: no port for it
       # is published to the host, and the k8s manifests give it no
@@ -105,7 +106,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      lgtm:
+      clickstack:
         condition: service_started
 {{- if .HasFrontend}}
       # required: false is LOAD-BEARING, not politeness. It is what lets
@@ -134,7 +135,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_SERVICE_NAME: {{.ProjectName}}
       ENVIRONMENT: development
     ports:
@@ -147,7 +149,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      lgtm:
+      clickstack:
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
@@ -378,70 +380,132 @@ services:
       - {{.ProjectName}}-net
 {{- end}}
 
-  # Grafana Alloy — single collector for metrics, logs, and profiles.
-  # Scrapes app services on the docker network and forwards to the LGTM stack.
+  # ClickStack — the local observability backend, ON by default.
   #
-  # No healthcheck, deliberately: nothing waits on Alloy being READY. It is
-  # a collector — the app does not dial it, and telemetry dropped in the
-  # first seconds of a dev session costs nothing. `docker compose up --wait`
-  # treats a service with no healthcheck as ready once it is running, so
-  # naming it in dev/main.k gets it started without gating anything on it.
-  # Give it a `healthcheck:` here if you ever do need to wait on it.
-  alloy:
-    image: grafana/alloy:latest
-    restart: unless-stopped
-    volumes:
-      - ./deploy/alloy-config.alloy:/etc/alloy/config.alloy:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    command: ["run", "/etc/alloy/config.alloy"]
-    depends_on:
-      lgtm:
-        condition: service_healthy
-    networks:
-      - {{.ProjectName}}-net
-
-  # Grafana LGTM — all-in-one observability backend.
-  # Bundles: Grafana (dashboards), Prometheus (metrics), Tempo (traces),
-  #          Loki (logs), Pyroscope (continuous profiling), and an
-  #          OpenTelemetry Collector.
+  # ONE container, HyperDX's own "local mode" image (clickhouse/clickstack-local):
+  # ClickHouse + MongoDB + the HyperDX UI/API + the ClickStack OTel collector.
+  # Local mode is HyperDX's documented no-auth build, so there is nothing to
+  # register and no ingestion key to copy: the collector opens its OTLP
+  # receivers at boot and accepts traces, metrics and logs from any caller that
+  # can reach the port. That is safe here only because every port below is
+  # published on LOOPBACK. The separate-container topology (OpAMP-managed
+  # collector + team API keys) opens no OTLP port until someone registers in the
+  # UI, and then demands a key apps cannot send — do not reintroduce it.
   #
-  # The `app` container above pushes OTLP to lgtm:4317 on the docker network.
-  # The dev loop's API is a HOST process, not on that network, so OTLP gRPC
-  # is also published — on loopback, at the port deploy/kcl/dev/main.k
-  # declares and hands compose as OTLP_GRPC_PORT, the same number the API's
-  # OTEL_EXPORTER_OTLP_ENDPOINT is built from. Grafana takes a dynamic port.
-  lgtm:
-    image: grafana/otel-lgtm:latest
+  # Three signals, one path each:
+  #   traces + metrics  host processes push OTLP/HTTP to 127.0.0.1:4318 (`forge
+  #                     env up` exports OTEL_EXPORTER_OTLP_ENDPOINT to them);
+  #                     compose services push to http://otel-collector:4318.
+  #   logs              the collector tails .forge/logs/<env>/<service>.log —
+  #                     the files `forge env up` already tees every host
+  #                     process into — and parses the JSON lines the runtime
+  #                     writes. See deploy/observability/otel-collector.yaml.
+  #
+  # ClickHouse is NOT published: it listens only inside this container, behind
+  # the user below (the passwordless `default` user is removed). Query it with
+  #   docker compose exec clickstack sh -c 'clickhouse-client -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD"'
+  #
+  # To turn it off: `_observability = False` in deploy/kcl/dev/main.k.
+  #
+  # Ports are declared once in deploy/kcl/dev/main.k and handed to compose as
+  # CLICKSTACK_*_PORT; the defaults only serve a bare `docker compose up`.
+  clickstack:
+    image: clickhouse/clickstack-local:2.40.0@sha256:4690fbfc2f25e2366ca496aabf4ee9e14d6cacb42119b84888b182495e6a5b74
     restart: unless-stopped
+    # tini as PID 1: the dashboard-provisioner loop below is a background child
+    # of the image's entrypoint and would otherwise be reparented to a shell.
+    init: true
     ports:
-      - "0:3000"    # Grafana UI (dynamic host port)
-      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"    # OTLP gRPC, for host processes
+      - "127.0.0.1:${CLICKSTACK_UI_PORT:-8180}:8080"      # HyperDX UI + API
+      - "127.0.0.1:${CLICKSTACK_OTLP_HTTP_PORT:-4318}:4318" # OTLP/HTTP, for host processes
+      - "127.0.0.1:${CLICKSTACK_OTLP_GRPC_PORT:-4317}:4317" # OTLP/gRPC, for host processes
     environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      FRONTEND_URL: http://localhost:${CLICKSTACK_UI_PORT:-8180}
+      # Dev-only credentials, never published. Setting a user removes the
+      # image's passwordless `default`; the collector and HyperDX both read
+      # these from the container env.
+      CLICKHOUSE_USER: forge
+      CLICKHOUSE_PASSWORD: ${CLICKSTACK_CLICKHOUSE_PASSWORD:-forge-dev-only}
+      DEFAULT_CONNECTIONS: '[{"name":"Local ClickHouse","host":"http://localhost:8123","username":"forge","password":"${CLICKSTACK_CLICKHOUSE_PASSWORD:-forge-dev-only}"}]'
+      USAGE_STATS_ENABLED: "false"
+      # YOUR collector pipelines, merged over ClickStack's: the filelog log path.
+      CUSTOM_OTELCOL_CONFIG_FILE: /etc/otelcol-contrib/forge.config.yaml
+      # Where the dashboard provisioner reads HyperDX v2 dashboard JSON (below).
+      DASHBOARD_PROVISIONER_DIR: /etc/forge/dashboards
+    # Local mode starts neither the dashboard provisioner nor a Team document
+    # for it to attach to. This wrapper adds both: once the API is up it loads
+    # every *.json in the provisioner dir, and again whenever the set of files
+    # changes, so dropping a dashboard in needs no restart. (`$$` is compose's
+    # escape for a literal `$`.)
+    entrypoint:
+      - sh
+      - -c
+      - |
+        (
+          until curl -fs http://localhost:8000/health >/dev/null 2>&1; do sleep 3; done
+          last=
+          while :; do
+            # The image starts the collector once, with no retry. On a starved
+            # machine its OpAMP supervisor can miss its bootstrap window and
+            # exit ("failed to start supervisor"), leaving a healthy UI and
+            # nothing listening on 4317/4318. Start it again, with the
+            # environment the image gave the rest of the stack.
+            if ! pgrep -x opampsupervisor >/dev/null; then
+              echo "[forge] the ClickStack collector is not running; starting it again"
+              xargs -0 -a /proc/$$(pgrep -f '^node ./node_modules/.bin/concurrently' | head -1)/environ \
+                sh -c 'exec env "$$@" /otel-entrypoint.sh /usr/local/bin/opampsupervisor' sh >/proc/1/fd/1 2>&1 &
+              sleep 20
+            fi
+            now=$$(cd "$$DASHBOARD_PROVISIONER_DIR" && cksum *.json 2>/dev/null)
+            if [ "$$now" != "$$last" ]; then
+              mongo --quiet hyperdx --eval 'db.teams.updateOne({_id: ObjectId("5f6c6f63616c5f7465616d5f")}, {$$setOnInsert: {name: "Local App Team", collectorAuthenticationEnforced: false}}, {upsert: true})' >/dev/null
+              (cd /app && MONGO_URI=mongodb://db:27017/hyperdx IS_LOCAL_APP_MODE='DANGEROUSLY_is_local_app_mode💀' HYPERDX_IMAGE=all-in-one-noauth RUN_SCHEDULED_TASKS_EXTERNALLY=true DASHBOARD_PROVISIONER_TEAM_ID=5f6c6f63616c5f7465616d5f ./packages/api/bin/hyperdx task provision-dashboards) >/proc/1/fd/1 2>&1 && last="$$now"
+            fi
+            sleep 15
+          done
+        ) &
+        exec sh /etc/local/entry.sh
     volumes:
-      - lgtm_data:/data
-      - ./deploy/observability/grafana/dashboards:/grafana/dashboards
-      # This image runs Grafana from /otel-lgtm/grafana on its default config,
-      # so dashboard providers are read from conf/provisioning/dashboards
-      # beneath it — /etc/grafana/provisioning is never read, and a mount
-      # there loads nothing. One FILE, beside the image's own providers
-      # rather than mounted over them.
-      - ./deploy/observability/grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/forge.yaml:ro
+      - clickstack_clickhouse:/var/lib/clickhouse
+      - clickstack_mongo:/data/db
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/forge.config.yaml:ro
+      - ./.forge/logs:/var/log/forge:ro
+      - ./deploy/observability/dashboards:/etc/forge/dashboards:ro
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/ready"]
+      # Ready means the thing #603 never had: the UI answers AND the collector
+      # is actually accepting OTLP (it opens its receivers only once HyperDX
+      # has handed it config, a moment after the UI is up).
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fs http://localhost:8080/api/health >/dev/null &&
+          curl -fs -X POST -H 'Content-Type: application/json' -d '{}' http://localhost:4318/v1/traces >/dev/null
       interval: 5s
-      timeout: 1s
-      retries: 30
-      start_period: 30s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
     networks:
-      - {{.ProjectName}}-net
+      {{.ProjectName}}-net:
+        # What compose services (and the `app` service above) export to.
+        aliases:
+          - otel-collector
+
+  # ── SEAM: profiles (not wired) ─────────────────────────────────────────────
+  # The collector inside `clickstack` is ClickStack's build of contrib v0.155,
+  # which receives profiles but cannot WRITE them. ClickHouse here is 26.8, past
+  # the 26.2 that contrib's clickhouse exporter needs for profiles. So profiles
+  # arrive as a SECOND collector, contrib >= 0.162 with the
+  # `service.profilesSupport` feature gate, as its own compose service named
+  # `otel-profiles`, exporting to ClickHouse at tcp://clickstack:9000 (reachable
+  # on this network; user/password are the clickstack service's CLICKHOUSE_*).
+  # Nothing replaces the collector above and apps keep one endpoint.
 
 volumes:
   postgres_data:
   go_mod_cache:
   go_build_cache:
-  lgtm_data:
+  clickstack_clickhouse:
+  clickstack_mongo:
 {{- if .HasFrontend}}
   idp_db_data:
 {{- end}}

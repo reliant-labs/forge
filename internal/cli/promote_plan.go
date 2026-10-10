@@ -490,12 +490,36 @@ type promotePlan struct {
 	// pipeline. False with ok:true and exit_code 0 is the approval-declined
 	// / --plan-only shape; false with exit_code 5 is plan_unconfirmed.
 	Confirmed bool `json:"confirmed"`
-	// ShipsNothing is always TRUE, and it is in the contract on purpose.
-	// Promote writes a pointer; not one byte reaches any cluster until
-	// `forge env deploy` runs. `forge env status` exists precisely because
-	// that gap used to be invisible, so the plan states it rather than
-	// relying on the reader to know it.
+	// ShipsNothing is TRUE for the promote itself, and it is in the
+	// contract on purpose: the ledger write is a pointer, and not one byte
+	// reaches any target because of it. `forge env status` exists precisely
+	// because that gap used to be invisible, so the plan states it rather
+	// than relying on the reader to know it.
+	//
+	// It turns FALSE only when this command's own follow-through (the
+	// deploy verb's apply) shipped something — then Shipped / PartlyShipped
+	// say what. A document claiming "ships nothing" after a cluster rolled
+	// and a frontend went live is the lie it exists to prevent.
 	ShipsNothing bool `json:"ships_nothing"`
+	// Shipped is each stage the deploy's follow-through shipped to a live
+	// target — a cluster apply, a control-plane publish, a frontend host —
+	// in order. PartlyShipped is each stage that STARTED and then failed:
+	// some of its change may be live, so it is never reported as nothing.
+	// Both absent when nothing reached a target, and on a promote with no
+	// follow-through.
+	Shipped       []string `json:"shipped,omitempty"`
+	PartlyShipped []string `json:"partly_shipped,omitempty"`
+	// Converges is what the env's control plane will converge of this
+	// deploy, decided before anything is written
+	// (hostedConvergencePreflight): nothing, for an env that binds no tier
+	// to it; otherwise its hosted tiers, which of them this deploy publishes
+	// for the first time, and any it leaves unpublished. Nil for an env
+	// with no control-plane ledger.
+	Converges *promotePlanConverges `json:"converges,omitempty"`
+	// followed is set once the deploy verb's follow-through ran, which is
+	// what decides whether the footer reports what shipped or names the
+	// deploy that will ship it.
+	followed bool
 	// NextStep is the command that actually ships these digests.
 	NextStep string `json:"next_step"`
 	// Note is the human phrasing of ShipsNothing.
@@ -1181,9 +1205,20 @@ func renderPromotePlanHeadline(out io.Writer, plan promotePlan) {
 		// this whole path exists to prevent.
 		fmt.Fprintf(out, "REFUSED (%s — nothing was written): promote env %q → release %s\n",
 			plan.Refusal.Reason, plan.Env, plan.Target.Release)
-	case plan.Applied && plan.FollowError != "":
-		fmt.Fprintf(out, "RECORDED BUT NOT APPLIED: env %q is now bound to release %s in the ledger, but applying it FAILED — nothing shipped, and %s is not running.\n",
+	case plan.Applied && plan.FollowError != "" && plan.shippedAnything():
+		// The deploy failed AFTER part of it went live. Saying "nothing
+		// shipped" here is the claim an operator acts on — they re-run, or
+		// they roll back a frontend they believe never left — so the stages
+		// that did ship are listed before the error.
+		fmt.Fprintf(out, "RECORDED AND PARTLY SHIPPED: env %q is now bound to release %s, and the deploy FAILED after part of it reached a live target — %s is running only where listed here.\n",
 			plan.Env, plan.Target.Release, plan.Target.Release)
+		renderShippedStages(out, plan)
+		fmt.Fprintf(out, "  error     %s\n", oneLine(plan.FollowError, 400))
+		fmt.Fprintf(out, "  Re-plan and re-approve: `forge env deploy %s %s --plan-only`, then deploy with the --approve digest it prints.\n",
+			plan.Env, plan.Target.Release)
+	case plan.Applied && plan.FollowError != "":
+		fmt.Fprintf(out, "RECORDED BUT NOT APPLIED: env %q is now bound to release %s in the ledger, but the deploy FAILED before this command shipped anything to a live target.\n",
+			plan.Env, plan.Target.Release)
 		fmt.Fprintf(out, "  apply error: %s\n", oneLine(plan.FollowError, 400))
 		// NOT "re-run the same command": the binding moved, so the plan
 		// (and its digest) moved with it, and an --approve of the old one
@@ -1257,6 +1292,7 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		// refused, which a reader skimming "note" lines would skip.
 		fmt.Fprintf(out, "  WARNING   %s\n", plan.SourceNote)
 	}
+	renderConvergesSection(out, plan.Converges)
 
 	renderCapacitySection(out, plan.Capacity)
 
@@ -1309,18 +1345,70 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	}
 
 	fmt.Fprintln(out)
+	renderPromotePlanFooter(out, plan)
+}
+
+// renderPromotePlanFooter prints where the binding lives and what reached a
+// live target — stated on every invocation, applied or not. Promote's own
+// effect is a pointer move, and the gap between "promoted" and "running" is
+// the thing `forge env status` had to be written to expose.
+func renderPromotePlanFooter(out io.Writer, plan promotePlan) {
 	fmt.Fprintf(out, "  Binding:  %s\n", plan.Ledger)
-	// Stated on every invocation, applied or not. Promote's effect is a
-	// pointer move, and the gap between "promoted" and "running" is the
-	// thing `forge env status` had to be written to expose.
 	switch {
 	case plan.Refusal != nil:
 		fmt.Fprintf(out, "  NOTHING WRITTEN: the ledger refused this promote (%s). %s\n", plan.Refusal.Reason, refusalHint(plan.Refusal.Reason))
+	case plan.Applied && plan.followed:
+		// The deploy verb's follow-through ran, so the footer reports what
+		// it shipped — not "ships nothing until the deploy below", which
+		// after an apply is false, and whose suggested command would build
+		// and cut a NEW release (O-15).
+		switch {
+		case plan.FollowError != "" && plan.shippedAnything():
+			// Listed in the headline, beside the error.
+		case plan.shippedAnything():
+			renderShippedStages(out, plan)
+		case plan.FollowError != "":
+			fmt.Fprintf(out, "  Shipped:  nothing — the deploy failed before reaching a live target.\n")
+		default:
+			fmt.Fprintf(out, "  Shipped:  nothing from this machine — %s's control plane applies it.\n", plan.Env)
+		}
 	case plan.Applied:
 		fmt.Fprintf(out, "  SHIPS NOTHING: the binding moved; no image reaches %s until you run the deploy below.\n", plan.Env)
 	default:
 		fmt.Fprintf(out, "  NOTHING WRITTEN: re-run without --plan to record this binding. Even then, no image ships until the deploy below.\n")
 	}
-	fmt.Fprintf(out, "  Deploy:   forge env deploy %s\n", plan.Env)
+	if !plan.followed {
+		fmt.Fprintf(out, "  Deploy:   forge env deploy %s\n", plan.Env)
+	}
 	fmt.Fprintf(out, "  Verify:   forge env status %s\n", plan.Env)
+}
+
+// renderShippedStages lists what the deploy's follow-through shipped, one stage
+// per line, and the stages that failed part-way.
+func renderShippedStages(out io.Writer, plan promotePlan) {
+	for _, s := range plan.Shipped {
+		fmt.Fprintf(out, "  shipped   %s\n", s)
+	}
+	for _, s := range plan.PartlyShipped {
+		fmt.Fprintf(out, "  PARTLY    %s — failed part-way; some of it may be live\n", s)
+	}
+}
+
+// shippedAnything reports whether the follow-through reached a live target.
+func (p promotePlan) shippedAnything() bool {
+	return len(p.Shipped) > 0 || len(p.PartlyShipped) > 0
+}
+
+// recordFollow folds the deploy's follow-through into the plan: what it
+// shipped and the error it ended on. ShipsNothing turns false the moment a
+// stage reached a live target, because from then on it is not true.
+func (p *promotePlan) recordFollow(shipped *shipLog, err error) {
+	p.followed = true
+	p.Shipped, p.PartlyShipped = shipped.Shipped(), shipped.Partial()
+	if p.shippedAnything() {
+		p.ShipsNothing = false
+	}
+	if err != nil {
+		p.FollowError = err.Error()
+	}
 }

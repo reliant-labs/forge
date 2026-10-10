@@ -76,7 +76,8 @@ func TestDeployApplyPath(t *testing.T) {
 		want   string
 	}{
 		{envLedger{Hosted: true, HubConverged: true}, false, "hub converge"},
-		{envLedger{Hosted: true, Mixed: true}, false, "mixed"},
+		{envLedger{Hosted: true, Mixed: true, HostedTiers: []hostedTier{{Name: "api", Kind: hostedTierWorkload}}}, false, "mixed"},
+		{envLedger{Hosted: true, Mixed: true}, false, "ledger only"},
 		{envLedger{Hosted: true}, false, "hosted"},
 		{envLedger{}, true, "flux"},
 		{envLedger{}, false, "client apply"},

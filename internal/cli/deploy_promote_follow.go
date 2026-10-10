@@ -27,6 +27,11 @@ package cli
 //     server-computed rollout to poll, and `forge env status --wait` says so
 //     rather than timing out.
 //
+// A control-plane LEDGER does not by itself mean the control plane converges
+// anything: an env that declares forge.ControlPlane but binds no tier to it
+// (control-plane's own prod) is applied entirely from here, exactly like a
+// self-managed one. followPromote's table below has that row.
+//
 // Both reach "the release is live or this command is red", which is the
 // property a caller can rely on. Which machinery got there is an
 // implementation detail of where the env is run.
@@ -157,6 +162,9 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 //	                            plane computes.
 //	MIXED        (Hosted+Mixed) BOTH. Apply the cluster/compose/infra half from
 //	                            here, then wait on the hosted half.
+//	LEDGER-ONLY  (Mixed, no     apply from here, and that is all: the control
+//	              HostedTiers)  plane records the promotion and converges
+//	                            nothing, so there is no hosted half to wait on.
 //
 // The mixed row is why "hosted" alone cannot decide this. A control plane
 // converges only what it hosts, so an env with cluster workloads beside its
@@ -199,9 +207,13 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if ledger.appliesLocally() && !ledger.hubConverged() {
 		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
 		started := time.Now()
-		err := applySelfManaged(ctx, env, ledger.Hosted, o)
-		finish(err)
-		recordApplyOutcome(ctx, env, plan, ledger, started, err, o)
+		err := applySelfManaged(ctx, env, ledger, o)
+		// The LEDGER's account of a failed apply names what it shipped
+		// first: "failed" alone reads as "the previous release still runs",
+		// which is false once a cluster has rolled.
+		evidence := o.clientDeploy.shipped.annotate(err)
+		finish(evidence)
+		recordApplyOutcome(ctx, env, plan, ledger, started, evidence, o)
 		if err != nil {
 			// A MIXED env's hosted half is published inside this apply, and
 			// its provider reports a queued promotion the same way.
@@ -219,6 +231,17 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	}
 	if ledger.hubConverged() {
 		return followHubConverged(ctx, env, plan, held, o)
+	}
+	// A LEDGER-ONLY env (Mixed, no hosted tier) is done: the apply above WAS
+	// the deploy, and its own rollout wait was the health gate. Its control
+	// plane converges nothing of it, so its server-side rollout is empty by
+	// declaration — waiting on it, or reading that emptiness as "never
+	// published", is how control-plane prod's 2026-10-09 deploy shipped
+	// everything and then refused. See deploy_promote_unpublished.go.
+	if ledger.ledgerOnly() {
+		o.notice("\nApplied. %s's control plane only records its promotions (it binds no hosted tier), "+
+			"so the apply above was the whole deploy.\n", env)
+		return nil
 	}
 	// A PURE HOSTED env still needs its client-side PUBLISH — and ONLY a
 	// pure one. A MIXED env's publish already happened: appliesLocally is
@@ -279,11 +302,12 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if plan.Recorded != nil {
 		promotionID = plan.Recorded.ID
 	}
-	// A hosted promotion the control plane cannot converge has nothing to
-	// wait for, and waiting anyway is a 15-minute silence ending in UNKNOWN.
-	// Refuse now, naming the one command that fixes it. See
-	// refuseUnpublishedHostedDeploy.
-	if err := refuseUnpublishedHostedDeploy(ctx, env, promotionID); err != nil {
+	// The publish above ran; a rollout that still names none of what it sent
+	// has nothing for the wait to observe, and waiting anyway is a 15-minute
+	// silence ending in UNKNOWN. Whether there was anything to publish was
+	// decided before the promotion was recorded (hostedConvergencePreflight);
+	// this checks only that the control plane agrees with the publish.
+	if err := verifyHostedRolloutAfterPublish(ctx, env, ledger, promotionID); err != nil {
 		return err
 	}
 	return runPromoteWait(ctx, env, envWaitOptions{
@@ -321,11 +345,12 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 // are mapped onto it here instead of being passed to a wait that would have
 // nothing to read.
 //
-// On a MIXED env (mixed=true) this apply covers only the half forge owns, and
-// followPromote goes on to wait on the hosted half. The flags still tune this
-// policy — it is a real rollout wait over real resources — and the hosted wait
-// receives them too, so one --timeout does not silently mean "per half".
-func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFollowOptions) error {
+// On a MIXED env with hosted tiers this apply covers only the half forge owns,
+// and followPromote goes on to wait on the hosted half. The flags still tune
+// this policy — it is a real rollout wait over real resources — and the hosted
+// wait receives them too, so one --timeout does not silently mean "per half".
+// On a ledger-only env (Mixed, no hosted tier) it is the whole deploy.
+func applySelfManaged(ctx context.Context, env string, ledger envLedger, o promoteFollowOptions) error {
 	opts := o.clientDeploy
 	if o.NoWait {
 		opts.rollout.Mode = cluster.RolloutSkip
@@ -336,10 +361,14 @@ func applySelfManaged(ctx context.Context, env string, mixed bool, o promoteFoll
 	if o.FailFast {
 		opts.rollout.FailFast = true
 	}
-	if mixed {
+	switch {
+	case ledger.ledgerOnly():
+		o.notice("\nApplying %s's newly recorded release (its control plane records promotions and converges "+
+			"none of it: this apply is the whole deploy)\n", env)
+	case ledger.Hosted:
 		o.notice("\nApplying %s's locally-managed workloads at its newly recorded release "+
-			"(its control plane converges only the hosted ones)\n", env)
-	} else {
+			"(its control plane converges only the hosted ones: %s)\n", env, joinTiers(ledger.HostedTiers))
+	default:
 		o.notice("\nApplying %s's newly recorded release (self-managed: no control plane converges it)\n", env)
 	}
 	return runPromoteClientDeploy(ctx, env, opts)

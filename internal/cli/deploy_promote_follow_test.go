@@ -383,6 +383,15 @@ func TestDeployRelease_SelfManagedAppliesClientSide(t *testing.T) {
 
 // ─── Mixed: the control plane converges its half, forge applies the rest ─────
 
+// mixedLedger is a MIXED env's ledger: a control plane that converges one
+// hosted tier, beside workloads forge applies from here. The hosted tier is
+// what makes it two halves — without one the env is ledger-only, and its
+// control plane has nothing to wait on (deploy_promote_convergence_test.go).
+func mixedLedger(store *hostedStore) envLedger {
+	return envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true,
+		HostedTiers: []hostedTier{{Name: "api", Kind: hostedTierWorkload}}}
+}
+
 // TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits is the third shape,
 // and the one a two-way `hosted bool` could not express. A MIXED env keeps its
 // ledger on a control plane AND declares workloads that control plane does not
@@ -402,7 +411,7 @@ func TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits(t *testing.T) {
 
 	_, store := hostedPromoteFixture(t, "v1")
 	if _, err := runHostedPromote(t, store, "v2", promoteOptions{
-		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true},
+		Ledger: mixedLedger(store),
 		Follow: waitByDefault(),
 	}); err != nil {
 		t.Fatalf("mixed deploy: %v", err)
@@ -429,7 +438,7 @@ func TestDeployRelease_MixedEnvApplyFailureSkipsTheHostedWait(t *testing.T) {
 
 	_, store := hostedPromoteFixture(t, "v1")
 	_, err := runHostedPromote(t, store, "v2", promoteOptions{
-		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true},
+		Ledger: mixedLedger(store),
 		Follow: waitByDefault(),
 	})
 	if got := exitCodeForError(err); got != exitWrong {
@@ -451,7 +460,7 @@ func TestDeployRelease_MixedEnvNoWaitStillApplies(t *testing.T) {
 
 	_, store := hostedPromoteFixture(t, "v1")
 	if _, err := runHostedPromote(t, store, "v2", promoteOptions{
-		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Mixed: true},
+		Ledger: mixedLedger(store),
 		Follow: &promoteFollowOptions{NoWait: true},
 	}); err != nil {
 		t.Fatalf("mixed --no-wait: %v", err)

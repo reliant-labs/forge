@@ -110,6 +110,11 @@ type FirebaseHostingSpec struct {
 	Rewrites  []map[string]any
 }
 
+// FirebaseCLI is the executable a Firebase Hosting deploy runs. Exported so a
+// deploy's preflight can check it is installed before anything ships, rather
+// than discovering its absence after the cluster half has already applied.
+const FirebaseCLI = "firebase"
+
 // Name returns the provider identifier.
 func (FirebaseProvider) Name() string { return "firebase" }
 
@@ -218,7 +223,7 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 		FirebaseJSON: fbJSON,
 		FirebaseRC:   fbRC,
 		DeployCmd: []string{
-			"firebase", "deploy",
+			FirebaseCLI, "deploy",
 			"--project", fe.Spec.Project,
 			"--only", "hosting:" + fe.Spec.resolvedTarget(),
 			"--non-interactive",

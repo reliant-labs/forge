@@ -224,7 +224,27 @@ type envLedger struct {
 	// nothing from here (a second authority would fight the hub's Flux) and
 	// has no hosted workloads to publish. Implies !Mixed.
 	HubConverged bool
+	// HostedTiers are the tiers a HOSTED env binds to its control plane
+	// (hostedTiersOf): what that control plane converges, and so the only
+	// thing a server-side rollout of this env can ever contain.
+	//
+	// It is resolved with Mixed, from the same render, because together they
+	// separate two shapes Mixed alone conflates. A Mixed env WITH hosted
+	// tiers is converged in two halves. A Mixed env with NONE — control-plane
+	// prod: a forge.ControlPlane ledger over sixteen cluster workloads and a
+	// Firebase frontend — is converged by nothing but this machine's apply;
+	// its control plane records the promotion and has no rollout to report
+	// (ledgerOnly). Treating the second as the first is what made a deploy
+	// that had already shipped refuse with "nothing to converge".
+	HostedTiers []hostedTier
 }
+
+// ledgerOnly reports a hosted-ledger env whose control plane converges NONE
+// of it: Mixed (forge applies its workloads from here) with no hosted tier.
+// Its control plane is its release ledger and nothing else, so the local apply
+// is the whole deploy, there is no server-side rollout to wait on, and an
+// empty one is the declaration's doing — never a missing publish.
+func (l envLedger) ledgerOnly() bool { return l.Mixed && len(l.HostedTiers) == 0 }
 
 // appliesLocally reports whether any part of the env is applied FROM THIS
 // MACHINE. A self-managed env always is: nothing watches a jsonl file, so if
@@ -315,6 +335,7 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	// re-derived later from a second render that could disagree.
 	l.HubConverged = envConvergedByHub(entities)
 	l.Mixed = envAppliesLocally(entities) && !l.HubConverged
+	l.HostedTiers = hostedTiersOf(entities)
 	return l, nil
 }
 

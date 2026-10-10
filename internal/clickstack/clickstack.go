@@ -16,6 +16,11 @@ const (
 	EnvOTLPGRPCPort = "CLICKSTACK_OTLP_GRPC_PORT"
 	EnvUIPort       = "CLICKSTACK_UI_PORT"
 
+	// The standard OTel variables a process is handed.
+	EnvOTLPPrefix   = "OTEL_EXPORTER_OTLP_"
+	EnvOTLPEndpoint = EnvOTLPPrefix + "ENDPOINT"
+	EnvOTLPProtocol = EnvOTLPPrefix + "PROTOCOL"
+
 	// DashboardsDir is the project-relative directory mounted as HyperDX's
 	// DASHBOARD_PROVISIONER_DIR. A HyperDX v2 dashboard JSON dropped here is
 	// loaded without a restart.
@@ -30,7 +35,7 @@ const (
 // learn the backend: this is the whole contract.
 func HostOTLPEnv(httpPort string) map[string]string {
 	return map[string]string{
-		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:" + strings.TrimSpace(httpPort),
-		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+		EnvOTLPEndpoint: "http://127.0.0.1:" + strings.TrimSpace(httpPort),
+		EnvOTLPProtocol: "http/protobuf",
 	}
 }

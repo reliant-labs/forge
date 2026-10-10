@@ -5,18 +5,18 @@ description: Observability — the local ClickStack (HyperDX) that forge env up 
 
 # Observability
 
-Every Forge project ships a full observability stack for the dev loop: **ClickStack** (ClickHouse, the HyperDX UI and an OTLP collector) as the `clickstack` service in `docker-compose.yml`. Nothing to register, no key to copy. It is **on by default**: `forge env up dev` starts it, and the summary lists the **HyperDX UI** under **Compose services**.
+Every Forge project ships a full observability stack for the dev loop: **ClickStack** (ClickHouse, the HyperDX UI and an OTLP collector) as the `clickstack` service in `docker-compose.yml`. Nothing to register, no key to copy. It is **on by default**: `forge env up dev` starts it and lists the **HyperDX UI** under **Compose services**.
 
-It is one container (HyperDX's own no-auth *local mode* image), about 0.8 GB resident. Every port is published on `127.0.0.1` only; ClickHouse is not published at all and runs behind a generated dev-only user rather than the passwordless `default`.
+It is one container (HyperDX's no-auth *local mode* image), about 0.8 GB resident. Every port is published on `127.0.0.1` only; ClickHouse is not published and runs behind a generated dev-only user, not the passwordless `default`.
 
 ## How the data gets there
 
 | Signal | Path |
 |---|---|
-| Traces, metrics | Host processes started by `forge env up` get `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and push OTLP/HTTP to the collector. Compose services use `http://otel-collector:4318`. The app never learns the backend: it reads the standard variables and nothing else. |
-| Logs | The collector tails `.forge/logs/<env>/<service>.log` — the files `forge env up` already tees every host process into — parsing the JSON lines the runtime writes. `service.name` is the file name (the workload name), `trace_id` / `span_id` become the log's trace link. This is the **one** local log path; the runtime does not also export logs over OTLP, so nothing is duplicated. The pipeline is `deploy/observability/otel-collector.yaml` — yours to edit. |
+| Traces, metrics | Host processes started by `forge env up` get `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and push OTLP/HTTP to the collector. Compose services use `http://otel-collector:4318`. The app never learns the backend, only the standard variables. |
+| Logs | The collector tails `.forge/logs/<env>/<service>.log` — the files `forge env up` already tees every host process into — parsing the runtime's JSON lines. `service.name` is the file name (the workload name); `trace_id` / `span_id` become the log's trace link. This is the **one** local log path (the runtime does not also export logs over OTLP). The pipeline is `deploy/observability/otel-collector.yaml` — yours to edit. |
 
-A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge env up` fills `OTEL_EXPORTER_OTLP_ENDPOINT` / `_PROTOCOL` only when unset or empty.
+A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge env up` fills `OTEL_EXPORTER_OTLP_ENDPOINT` and `_PROTOCOL` as a pair, only when neither is set. Frontend dev servers get the endpoint (for their `/_otel` proxy) and the env name; `frontend_*.log` is not tailed, as the browser SDK ships the console.
 
 **To turn it off**, set `_observability = False` in `deploy/kcl/dev/main.k`: no container starts and no endpoint is exported. Trace context still propagates. Profiles are not collected locally yet.
 
@@ -46,16 +46,12 @@ With ClickStack off they SKIP and say so.
 **These live on `forge env status`, not `forge doctor`.** They all need an
 ADDRESS, and only `forge env status <env>` resolves one — it renders the same
 KCL `forge env up` does and overlays the ports the live stack actually bound.
-`forge doctor` had to guess (it assumed :8080), so on a project serving on
-another port it printed a gray dash indistinguishable from "not applicable".
-`forge doctor` now answers only "is this PROJECT well-formed" and takes no
-`--env`.
+`forge doctor` only answers "is this PROJECT well-formed" and takes no `--env`.
 
 A check that cannot obtain the facts it needs reports **UNDETERMINED** (`?`),
 never a pass and never a skip. Three outcomes, not two.
 
-Run it after `forge env up dev` to verify the pipeline is healthy before
-investigating issues.
+Run it after `forge env up dev` to verify the pipeline before investigating.
 
 **The runtime checks verify the telemetry pipeline, NOT app-flow correctness.** They (like `forge env smoke`) are green when containers, endpoints, and signal ingestion are healthy — they can be green while the actual app flow is broken (e.g. a cross-cluster dial failing). To prove an app-flow invariant holds, use a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>` task) plus a full `task test:e2e`. They tell you observability works; they do not certify the app does.
 

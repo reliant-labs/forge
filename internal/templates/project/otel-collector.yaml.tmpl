@@ -17,8 +17,17 @@
 #                   for that workload's traces and metrics.
 #   deployment.environment.name = the directory, i.e. the forge env.
 #
-# A line that is not JSON (air's rebuild chatter, a panic, a frontend's dev
-# server) is kept as plain text under the same service.
+# A line that is not JSON (air's rebuild chatter, a panic) is kept as plain text
+# under the same service.
+#
+# FRONTENDS ARE NOT TAILED. A scaffolded frontend mirrors the browser's console
+# into .forge/logs/<env>/frontend_<name>.log (`[browser:<level>]` lines), and
+# the HyperDX browser SDK captures the same console itself and ships it over
+# OTLP with the session and trace it belongs to. Tailing the file too would
+# store every console line twice, under two service names. The SDK is the one
+# browser path, in dev and in production alike, so the frontend_*.log files are
+# excluded here. They stay on disk, and stay what `forge skill load debug`
+# points at; they are only not shipped.
 receivers:
   filelog/forge:
     include:
@@ -27,6 +36,8 @@ receivers:
       # forge rotates a long stream aside as <stream>.<YYYY-MM-DD>T….log; the
       # live file at the original path is the one to follow.
       - /var/log/forge/*/*.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*.log
+      # The browser console mirror: shipped by the HyperDX SDK instead.
+      - /var/log/forge/*/frontend_*.log
     # Files that already exist when the collector starts are history from an
     # earlier `forge env up`, which truncates them. A file created afterwards
     # is read from its first byte whatever this says.

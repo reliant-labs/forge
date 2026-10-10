@@ -2875,7 +2875,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 		}
 		// Traces and metrics reach the local ClickStack with nothing to
 		// configure: the standard OTLP variables, unless already set.
-		cmd.Env = withDefaultEnv(cmd.Env, otlpDefaults)
+		cmd.Env = withDefaultOTLPEnv(cmd.Env, otlpDefaults)
 		if err := procs.start(name, cmd, background); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
@@ -3132,8 +3132,8 @@ func frontendPhaseEnabled(e *KCLEntities) bool {
 }
 
 func upFrontends(ctx context.Context, fl frontendLaunch) int {
-	e, env, background, noInstall := fl.entities, fl.env, fl.background, fl.noInstall
-	targets, frontendArgs, apiBaseURL, procs := fl.targets, fl.frontendArgs, fl.apiBaseURL, fl.procs
+	e, background, noInstall := fl.entities, fl.background, fl.noInstall
+	targets, procs := fl.targets, fl.procs
 	failures := 0
 	for _, fe := range e.Frontends {
 		if !inTargetSet(targets, fe.Name) {
@@ -3144,19 +3144,28 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 			failures++
 			continue
 		}
-		cmd := buildFrontendCmd(ctx, fe, env, os.Environ(), frontendArgs, apiBaseURL)
-		// Declared secrets, scoped to this frontend's own secret_ref
-		// declarations, layered over the dev server's env. In memory:
-		// the value reaches the child process environment only.
-		for k, v := range scopeSecretsToEnvVars(fl.secrets, fe.EffectiveEnvVars()) {
-			cmd.Env = withForcedEnv(cmd.Env, k, v)
-		}
+		cmd := buildFrontendDevCmd(ctx, fl, fe, os.Environ())
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++
 		}
 	}
 	return failures
+}
+
+// buildFrontendDevCmd is the command upFrontends runs for one frontend: the
+// dev server's launch env (buildFrontendCmd), the secrets this frontend
+// declares, then the telemetry env `forge env up` owns.
+func buildFrontendDevCmd(ctx context.Context, fl frontendLaunch, fe FrontendEntity, parentEnv []string) *exec.Cmd {
+	cmd := buildFrontendCmd(ctx, fe, fl.env, parentEnv, fl.frontendArgs, fl.apiBaseURL)
+	// Declared secrets, scoped to this frontend's own secret_ref
+	// declarations, layered over the dev server's env. In memory:
+	// the value reaches the child process environment only.
+	for k, v := range scopeSecretsToEnvVars(fl.secrets, fe.EffectiveEnvVars()) {
+		cmd.Env = withForcedEnv(cmd.Env, k, v)
+	}
+	cmd.Env = withFrontendTelemetryEnv(cmd.Env, fl.entities, fe, fl.env)
+	return cmd
 }
 
 // preflightFrontendDeps installs every selected frontend's dependencies before

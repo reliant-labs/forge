@@ -10,13 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **ClickStack is the local observability stack, and it is ON by default.**
-  `forge env up` now runs ONE container, HyperDX's no-auth *local mode* image
+  `forge env up` now runs ONE container, HyperDX's no-auth _local mode_ image
   (ClickHouse, the HyperDX UI and an OTLP collector), in place of the opt-in
   Grafana LGTM stack. Host processes are handed
   `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and
-  `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` unless the shell, `config.k` or a
-  workload's `env` already sets them, so traces and metrics reach HyperDX with
-  nothing to register and no key to copy. The collector tails the per-service
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, as a pair and only when the shell,
+  `config.k` and the workload's `env` set neither (a user's gRPC endpoint is
+  never paired with our protocol), so traces and metrics reach HyperDX with
+  nothing to register and no key to copy. Frontend dev servers get this
+  project's collector base URL (the port compose actually published, so their
+  `/_otel` proxy cannot reach another project's ClickStack) and the env name
+  (`NEXT_PUBLIC_ENVIRONMENT` / `VITE_ENVIRONMENT`), which the browser reports as
+  `deployment.environment.name`. The frontends' `frontend_<name>.log` console
+  mirror is not tailed, because the HyperDX browser SDK already ships the same
+  console and the two would store every line twice. The collector tails the per-service
   files `forge env up` already writes under `.forge/logs/<env>/`, parsing the
   JSON lines the runtime emits (`trace_id`/`span_id` become the log's trace
   link), and that is the one local log path. Every port is published on
@@ -32,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deploy/alloy-config.alloy`, the generated Grafana dashboards under
   `deploy/observability/grafana/`, and the Grafana MCP example. Profiles are not
   collected locally yet. An existing project keeps its own `docker-compose.yml`
-  and `deploy/kcl/dev/main.k` (both are yours); load `migrations/v0.1.45` to move
+  and `deploy/kcl/dev/main.k` (both are yours); load `migrations/v0.1.44` to move
   it over.
 
 ### Fixed

@@ -4,7 +4,9 @@ package templates
 // compose graph. Each one is a failure the first ClickStack attempt shipped.
 
 import (
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -154,6 +156,7 @@ func TestClickstackCollectorConfigTailsForgeLogs(t *testing.T) {
 	var cfg struct {
 		Receivers map[string]struct {
 			Include   []string `yaml:"include"`
+			Exclude   []string `yaml:"exclude"`
 			Operators []struct {
 				Type string `yaml:"type"`
 			} `yaml:"operators"`
@@ -172,6 +175,22 @@ func TestClickstackCollectorConfigTailsForgeLogs(t *testing.T) {
 	fl, ok := cfg.Receivers["filelog/forge"]
 	if !ok || len(fl.Include) != 1 || fl.Include[0] != "/var/log/forge/*/*.log" {
 		t.Fatalf("filelog/forge = %+v, want it to include /var/log/forge/*/*.log", fl)
+	}
+	// The browser console mirror (frontend_<name>.log) is shipped by the HyperDX
+	// SDK; tailing it too would store every console line twice, under two
+	// service names.
+	if !slices.Contains(fl.Exclude, "/var/log/forge/*/frontend_*.log") {
+		t.Errorf("filelog/forge exclude = %v, want it to exclude the frontend console mirror /var/log/forge/*/frontend_*.log", fl.Exclude)
+	}
+	for _, f := range []string{"/var/log/forge/dev/frontend_web.log", "/var/log/forge/dev/frontend_admin.log"} {
+		if !excluded(fl.Exclude, f) {
+			t.Errorf("%s is tailed: the browser console would ship twice", f)
+		}
+	}
+	for _, f := range []string{"/var/log/forge/dev/api.log", "/var/log/forge/dev/frontendish.log"} {
+		if excluded(fl.Exclude, f) {
+			t.Errorf("%s is excluded: a backend log must still ship", f)
+		}
 	}
 	var types []string
 	for _, op := range fl.Operators {
@@ -194,4 +213,15 @@ func TestClickstackCollectorConfigTailsForgeLogs(t *testing.T) {
 			}
 		}
 	}
+}
+
+// excluded reports whether any exclude glob matches path (collector globs use
+// doublestar; for this fixed-depth pattern path.Match agrees).
+func excluded(globs []string, p string) bool {
+	for _, g := range globs {
+		if ok, _ := path.Match(g, p); ok {
+			return true
+		}
+	}
+	return false
 }

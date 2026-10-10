@@ -60,7 +60,15 @@ assert_host_no_record = len([m for m in _mixed.manifests if m.kind == "Workload"
 assert_cluster_runtime = _c.runtime.type == "cluster" and _c.runtime.namespace == "cp-dev"
 assert_same_args = _c.spec.args == _h.spec.args
 assert_same_ports = _c.spec.ports == _h.spec.ports
-assert_same_env = _c.spec.env == _h.spec.env
+# The DECLARED env is the same; what forge derives is per workload and per
+# runtime (render.k _derived_env): each binding gets its own name as
+# OTEL_SERVICE_NAME, and only the cluster binding has a container memory
+# limit to derive GOMEMLIMIT from (90% of the 1Gi default: 921MiB).
+_derived = ["OTEL_SERVICE_NAME", "GOMEMLIMIT"]
+assert_same_env = [e for e in _c.spec.env if e.name not in _derived] == [e for e in _h.spec.env if e.name not in _derived]
+_cenv = {e.name: e for e in _c.spec.env}
+assert_derived_service_names = _henv["OTEL_SERVICE_NAME"].value == "admin-server" and _cenv["OTEL_SERVICE_NAME"].value == "admin-server-k8s"
+assert_gomemlimit_cluster_only = _cenv["GOMEMLIMIT"].value == "921MiB" and "GOMEMLIMIT" not in _henv
 # Only the image differs: the cluster pulls the pushed build output.
 assert_cluster_image_resolved = _c.spec.image.startswith("localhost:5051/control-plane")
 

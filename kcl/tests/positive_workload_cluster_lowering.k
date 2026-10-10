@@ -82,5 +82,6 @@ assert_env_empty_value = _env["EMPTY"].value == ""
 assert_one_channel_each = all e in _s.env {
     len([k for k in ["value", "secretRef", "configMapRef", "fieldRef", "managedSecret", "databaseRef", "workloadURL"] if k in e]) == 1
 }
-# Env order is the author's order (k8s $(VAR) expansion depends on it).
-assert_env_order = [e.name for e in _s.env] == ["LOG_LEVEL", "DATABASE_URL", "SENTRY_DSN", "MODE", "POD_IP", "EMPTY"]
+# Env order is the author's order (k8s $(VAR) expansion depends on it); the
+# keys forge derives (render.k _derived_env) follow everything declared.
+assert_env_order = [e.name for e in _s.env] == ["LOG_LEVEL", "DATABASE_URL", "SENTRY_DSN", "MODE", "POD_IP", "EMPTY", "OTEL_SERVICE_NAME"]

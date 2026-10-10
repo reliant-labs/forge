@@ -52,7 +52,10 @@ WHAT THE LOWERING DECIDES (per workload, `_lower`):
     author's third-party image; host / compose / build-only run no image;
   * ENV: the map becomes the wire's list, with each reference in its
     channel; a forge.WorkloadURL is RESOLVED to a value for a host or
-    cluster referrer and KEPT as a reference for a hosted one;
+    cluster referrer and KEPT as a reference for a hosted one. Two keys
+    the author left unset are DERIVED (`_derived_env`): OTEL_SERVICE_NAME
+    (the workload's name) and, for a Go process in a container with a
+    memory limit, GOMEMLIMIT;
   * PROBES: `_default_probes`, ADR 0002 §5;
   * the RUNTIME MASK: `_mask_violations` refuses, naming the workload, the
     field and the reason, what the bound runtime cannot honour.
@@ -88,6 +91,7 @@ _TFieldRef = tiers.FieldRef
 _TManagedSecretRef = tiers.ManagedSecretRef
 _TDatabaseRef = tiers.DatabaseRef
 _TWorkloadURLRef = tiers.WorkloadURLRef
+_TResources = tiers.Resources
 
 # ---------------------------------------------------------------------------
 # Runtime resolution.
@@ -303,6 +307,84 @@ _env_var = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any 
 }
 
 # ---------------------------------------------------------------------------
+# Derived env: the values forge writes for a key the author left unset.
+#
+# An author's own value always wins, so each of these is a DEFAULT, never an
+# override. "Unset" means absent or an empty literal: an empty
+# OTEL_SERVICE_NAME or GOMEMLIMIT means "no value" to the process reading it,
+# and a reference (SecretRef, ...) counts as set whatever it resolves to.
+#
+#   OTEL_SERVICE_NAME — the workload's name. A project-wide default
+#     ("unknown", or the project name) files every workload's spans,
+#     metrics and errors under ONE service, which is exactly the attribution
+#     an incident needs and loses. The workload name is unique per env by
+#     construction. Every runtime that runs a process (host, cluster,
+#     hosted) gets it; a tool and a build-only artifact run none.
+#
+#   GOMEMLIMIT — for a Go process in a container with a memory limit (a
+#     cluster or hosted runtime), `go_memory_limit_percent` of that limit,
+#     rounded down to whole MiB. The Go runtime does not read its cgroup
+#     limit: left alone, its heap grows toward GOGC's target and the kernel
+#     OOM-kills the pod before the collector feels any pressure. Just below
+#     the limit, the collector works harder instead. Not derived when the
+#     author sets GOMEMLIMIT or GOGC: a workload that tunes its own GC owns
+#     all of it. Not derived on host or compose: there is no container limit
+#     to derive it from.
+# ---------------------------------------------------------------------------
+
+# The default `go_memory_limit_percent` for a workload forge builds with
+# forge.GoBuild.
+DEFAULT_GO_MEMORY_LIMIT_PERCENT: int = 90
+
+_RUNS_A_PROCESS = ["host", "cluster", "hosted"]
+_HAS_MEMORY_LIMIT = ["cluster", "hosted"]
+_MIB = 1048576
+
+# Whether the author set env key k: present, and not an empty literal.
+_env_set = lambda env: {str:}, k: str -> bool {
+    k in env and not (typeof(env[k]) == "str" and env[k] == "")
+}
+
+# The workload's go_memory_limit_percent: declared, else the GoBuild default,
+# else 0 (forge cannot see that a ShellBuild, sibling image or third-party
+# image is a Go binary).
+_go_memory_limit_percent = lambda w: any -> int {
+    w.go_memory_limit_percent if w.go_memory_limit_percent != Undefined and w.go_memory_limit_percent != None \
+        else (DEFAULT_GO_MEMORY_LIMIT_PERCENT if w.build and w.build.type == "go" else 0)
+}
+
+# The container memory limit the renderer applies: the declared limit, else
+# the request (v1alpha1.Resources.WithDefaults sets an unset limit to the
+# request), else the default request.
+_memory_limit_bytes = lambda w: any -> int {
+    _r = w.resources if w.resources else _TResources {}
+    _r.memoryLimitBytes if _r.memoryLimitBytes else _r.memoryRequestBytes
+}
+
+# GOMEMLIMIT for w on runtime rt, or "" when none is derived.
+_gomemlimit = lambda w: any, rt: any -> str {
+    _env = w.env if w.env else {}
+    _pct = _go_memory_limit_percent(w)
+    _mib = _memory_limit_bytes(w) * _pct // 100 // _MIB if _pct > 0 and rt.type in _HAS_MEMORY_LIMIT else 0
+    "${_mib}MiB" if _mib > 0 and not _env_set(_env, "GOMEMLIMIT") and not _env_set(_env, "GOGC") else ""
+}
+
+# The keys forge derives for w on rt (only those the author left unset).
+_derived_env = lambda w: any, rt: any -> {str:str} {
+    _env = w.env if w.env else {}
+    _runs = rt.type in _RUNS_A_PROCESS and w.kind != "tool"
+    _gml = _gomemlimit(w, rt) if _runs else ""
+    ({OTEL_SERVICE_NAME = w.name} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
+        | ({GOMEMLIMIT = _gml} if _gml else {})
+}
+
+# The env w runs with on rt: its own, then the derived defaults. A blank
+# author value keeps its position and takes the derived value.
+_effective_env = lambda w: any, rt: any -> {str:} {
+    (w.env if w.env else {}) | _derived_env(w, rt)
+}
+
+# ---------------------------------------------------------------------------
 # forge.WorkloadURL resolution (lib/workload_url.k has the order).
 # ---------------------------------------------------------------------------
 
@@ -424,6 +506,7 @@ _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
 
 # The spec, as the generated tiers.Workload. `rt` is the resolved runtime.
 _spec = lambda w: any, rt: any, bundle: Bundle -> any {
+    _env = _effective_env(w, rt)
     _TWorkload {
         kind = w.kind
         image = _spec_image(w, rt, bundle) or "-"
@@ -432,7 +515,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         replicas = w.replicas
         if w.resources:
             resources = w.resources
-        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env] if w.env else Undefined
+        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in _env] if _env else Undefined
         ports = w.ports
         probes = _default_probes(w)
         storageGiB = w.storageGiB

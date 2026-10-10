@@ -58,10 +58,14 @@ func RequestIDFromContext(ctx context.Context) string {
 //     successes of that procedure since the previous record that were not
 //     written. A unary success at or above DefaultSlowThreshold is always
 //     written, with slow=true. See log_policy.go.
+//   - A failure whose error WithExpectedErrors declared an expected outcome
+//     is still "rpc failed" with its error — the client did get one — but
+//     is written like a success: at the procedure's success level, sampled
+//     with it, carrying expected=true.
 //
-// opts tune the success half: WithSuccessSampling, WithSlowThreshold, and
-// WithSuccessLevel for one procedure. Through Chain / DefaultMiddlewares
-// they are passed as Deps.LogOptions.
+// opts tune the success half: WithSuccessSampling, WithSlowThreshold,
+// WithSuccessLevel for one procedure, and WithExpectedErrors. Through Chain /
+// DefaultMiddlewares they are passed as Deps.LogOptions.
 func LoggingInterceptor(logger *slog.Logger, opts ...LogOption) connect.Interceptor {
 	if logger == nil {
 		logger = slog.Default()
@@ -105,13 +109,16 @@ func (i *loggingInterceptor) log(ctx context.Context, procedure string, header i
 	elapsed time.Duration, err error, completedMsg, failedMsg string, slowApplies bool,
 ) {
 	level, msg := LevelForError(err), failedMsg
+	expected := i.policy.isExpected(err)
 	var why slog.Attr
-	if err == nil {
+	if err == nil || expected {
 		var ok bool
-		if level, why, ok = i.policy.success(ctx, i.logger, procedure, elapsed, slowApplies); !ok {
+		if level, why, ok = i.policy.outcome(ctx, i.logger, procedure, elapsed, slowApplies, expected); !ok {
 			return
 		}
-		msg = completedMsg
+		if err == nil {
+			msg = completedMsg
+		}
 	}
 	attrs := []slog.Attr{
 		slog.String("procedure", procedure),
@@ -122,7 +129,11 @@ func (i *loggingInterceptor) log(ctx context.Context, procedure string, header i
 	}
 	if err != nil {
 		attrs = append(attrs, errorAttrs(err)...)
-	} else if why.Key != "" {
+		if expected {
+			attrs = append(attrs, slog.Bool("expected", true))
+		}
+	}
+	if why.Key != "" {
 		attrs = append(attrs, why)
 	}
 	i.logger.LogAttrs(ctx, level, msg, attrs...)

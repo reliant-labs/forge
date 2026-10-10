@@ -106,6 +106,7 @@ Your adapter wraps whatever client you choose — raw HTTP, the vendor SDK, an R
 - **Narrow interface in domain types.** Don't expose vendor types or mirror the vendor SDK.
 - **Test against a stub server.** Never against the live downstream.
 - **Adapters are leaf nodes.** No other adapters / services in the dep struct.
+- **Tell answers from failures.** A lookup that found nothing is the downstream answering, not failing: return it as its own domain sentinel (`ErrNotFound`), never folded into a transport error, and declare it expected to your logging layer so it doesn't log as a failure.
 
 ## When a consumer must register onto the adapter (two-phase wiring)
 
@@ -171,6 +172,27 @@ bill := billing.New(billing.Deps{Charges: stripe})  // consumer sees stripeadapt
 `forge generate` emits exactly this shape automatically: any `HTTPClient *http.Client` Deps field is wired to `infra.DefaultClient()`, and an instrumented package — one carrying the `// forge:constructor` marker (adapter scaffolds stamp it by default) or the owned `observe_chain.go` seam — is constructed wrapped, as `New<Concrete>WithForgeMiddleware(New(...))` (the constructor named after the concrete return type; the canonical `&service{}` yields `NewServiceWithForgeMiddleware`). Prefer `infra.DefaultClient()` over a bare `&http.Client{}` — the bare client makes the adapter's outbound calls invisible to traces.
 
 Because the consumer depends on the interface, swapping the real adapter for a mock (tests) or a different backend is a one-line change here — the consumer is untouched.
+
+## Expected errors: declare the answers, so failures stay loud
+
+The generated decorator logs every call through the package's chain, and an error is a failure — logged at ERROR — unless the package says otherwise. Many adapter errors are not failures: a storage read for a missing object (the origin turns it into a 404), a registry asked for a repository it does not hold (the caller treats it as empty). Logged at ERROR, those drown the real ones: a static-site proxy wrote 288 ERROR records in five hours, every one a crawler 404.
+
+Declare them where the package shapes its observability — the owned `observe_chain.go`, on `observe.LogMiddleware`:
+
+```go
+// observe_chain.go (yours)
+observe.LogMiddleware(logger, slog.LevelDebug,
+    // A missing object is the answer a 404 is built from, not a failure.
+    observe.WithExpectedErrors(ErrNotFound)),
+```
+
+- A matching error (`errors.Is` against any target) is logged like a success — at the success level, sampled with `observe.WithSuccessSampling` in its own slot, always written when slow — carrying the error and `expected=true`. Under a production INFO handler a DEBUG seam writes nothing for it.
+- Everything else stays a failure: ERROR, with the error. Nothing is expected until declared — forge cannot tell an answer from a fault.
+- `observe.WithExpectedErrorFunc(func(err error) bool)` is the primitive, for a classification no sentinel expresses (a typed vendor error whose status field decides it). Declarations accumulate.
+- The declaration scopes to THIS package's chain; the error value is not marked. A caller that turns the answer into a failure ("the bundle this deploy needs is gone") logs its own failure normally.
+- It changes logging only. The span and the `<pkg>.errors` metric still record the error.
+
+Why the seam, and not a method on the adapter or a wrapper around the error: what is expected is a fact about this package's error vocabulary, the seam is the one owned place that configures this package's chain, and the decorator stays uniform. An `IsExpected` method would put a receiver on a pure function and silently stop working the moment anything wraps the adapter; marking the error value would carry "expected" past the boundary where it is true.
 
 ## When this skill is not enough (forge sub-skills)
 

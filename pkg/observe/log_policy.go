@@ -48,11 +48,22 @@
 //     slow=true at the default success level, or at the name's own level
 //     when that is higher (so turning a poll down to DEBUG never hides the
 //     call that hung).
+//
+// # Expected errors are outcomes, not failures
+//
+// Some errors are answers: a storage lookup that found no object, a
+// registry that holds no such repository. The component returning one did
+// its job, and its caller turns the answer into a 404 or an empty list. A
+// layer told so by WithExpectedErrors / WithExpectedErrorFunc logs such an
+// error through this policy — the success path, with the error and
+// expected=true attached — instead of as a failure. Only the component knows
+// which of its errors are answers, so nothing is expected by default.
 
 package observe
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -66,7 +77,9 @@ const DefaultSlowThreshold = time.Second
 
 // LogOption tunes how a logging layer — LoggingInterceptor at the RPC edge,
 // LogMiddleware at the in-process component boundary — logs SUCCESSFUL
-// calls. Failures are never affected: each one is written, with full fields.
+// calls, and which errors are expected outcomes rather than failures
+// (WithExpectedErrors). Failures are never affected: each one is written,
+// with full fields.
 type LogOption func(*logPolicy)
 
 // WithSuccessSampling sets the sampling window for one layer: at most one
@@ -107,6 +120,51 @@ func WithSuccessLevel(name string, level slog.Level) LogOption {
 	}
 }
 
+// WithExpectedErrors declares errors that are an EXPECTED OUTCOME of the
+// calls a layer logs — an answer the caller acts on, not a failure of the
+// call. An error matching any target (errors.Is) is logged the way a success
+// is: at the call name's success level, sampled with WithSuccessSampling in a
+// slot of its own, written regardless when slow, and carrying its error plus
+// expected=true. Every other error is a failure and is logged as before.
+//
+// It is how a component says what only it knows. A storage adapter's "no
+// such object" is the answer a static-site 404 is built from, and a registry
+// adapter's "name unknown" is how a caller learns a repository is empty;
+// logged at ERROR, those buried a prod proxy's real failures under 288 ERROR
+// records in five hours. Declare them in the package's owned
+// observe_chain.go, on its LogMiddleware:
+//
+//	observe.LogMiddleware(logger, slog.LevelDebug,
+//	    observe.WithExpectedErrors(ErrNotFound)),
+//
+// Nothing is expected unless declared: forge cannot tell an answer from a
+// fault, so an undeclared not-found stays a failure. Declarations accumulate
+// across options. The declaration scopes to the layer it is passed to — the
+// error itself is not marked, so a caller that turns the answer into a
+// failure ("the bundle this deploy needs is gone") still logs a failure.
+func WithExpectedErrors(targets ...error) LogOption {
+	return WithExpectedErrorFunc(func(err error) bool {
+		for _, target := range targets {
+			if errors.Is(err, target) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// WithExpectedErrorFunc is WithExpectedErrors for a classification no
+// sentinel expresses — a typed vendor error whose status field decides it,
+// say. isExpected is called with every non-nil error the layer sees and must
+// be safe for concurrent use; a nil isExpected is ignored.
+func WithExpectedErrorFunc(isExpected func(err error) bool) LogOption {
+	return func(p *logPolicy) {
+		if isExpected != nil {
+			p.expected = append(p.expected, isExpected)
+		}
+	}
+}
+
 // withClock replaces the time source for timing and sampling. Test seam.
 func withClock(now func() time.Time) LogOption {
 	return func(p *logPolicy) { p.now = now }
@@ -121,6 +179,8 @@ type logPolicy struct {
 	slow   time.Duration         // slow threshold; <= 0 disables the rule
 	levels map[string]slog.Level // per-name success levels; read-only after construction
 	now    func() time.Time
+
+	expected []func(error) bool // declared expected-outcome classifiers; read-only after construction
 
 	slots sync.Map // name -> *sampleSlot
 }
@@ -140,11 +200,31 @@ func newLogPolicy(level slog.Level, opts []LogOption) *logPolicy {
 	return p
 }
 
-// success decides how a successful call named name, which took elapsed, is
-// logged. ok=false means write nothing. why, when its Key is non-empty, is
-// the attribute explaining the record: slow=true, or suppressed=<n> on a
-// sampled record. slowApplies is false for streams.
-func (p *logPolicy) success(ctx context.Context, logger *slog.Logger, name string, elapsed time.Duration, slowApplies bool) (level slog.Level, why slog.Attr, ok bool) {
+// isExpected reports whether err is a declared expected outcome rather than
+// a failure. nil is neither.
+func (p *logPolicy) isExpected(err error) bool {
+	if err == nil {
+		return false
+	}
+	for _, match := range p.expected {
+		if match(err) {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedSlot suffixes a name's sampling slot for its expected outcomes, so
+// they and the name's successes each keep a heartbeat: neither can use up
+// the other's window. NUL cannot occur in a procedure or operation name.
+const expectedSlot = "\x00expected"
+
+// outcome decides how a call named name that did not fail — it succeeded, or
+// returned an error isExpected accepts — and took elapsed, is logged.
+// ok=false means write nothing. why, when its Key is non-empty, is the
+// attribute explaining the record: slow=true, or suppressed=<n> on a sampled
+// record. slowApplies is false for streams.
+func (p *logPolicy) outcome(ctx context.Context, logger *slog.Logger, name string, elapsed time.Duration, slowApplies, expected bool) (level slog.Level, why slog.Attr, ok bool) {
 	level = p.level
 	if l, found := p.levels[name]; found {
 		level = l
@@ -162,7 +242,11 @@ func (p *logPolicy) success(ctx context.Context, logger *slog.Logger, name strin
 	if p.window <= 0 {
 		return level, slog.Attr{}, true
 	}
-	suppressed, admitted := p.admit(name)
+	slot := name
+	if expected {
+		slot += expectedSlot
+	}
+	suppressed, admitted := p.admit(slot)
 	if !admitted {
 		return level, slog.Attr{}, false
 	}

@@ -27,16 +27,22 @@ import (
 //     tune success logging with trailing options: one method's level
 //     (observe.WithSuccessLevel("{{.Name}}.Method", slog.LevelInfo)), a
 //     success-sampling window for this package (observe.WithSuccessSampling),
-//     the slow line (observe.WithSlowThreshold).
+//     the slow line (observe.WithSlowThreshold);
+//   - declare the errors that are an expected OUTCOME of a call, not a
+//     failure — an answer the caller acts on, like "no such object" behind
+//     a 404: observe.WithExpectedErrors(ErrNotFound) on LogMiddleware, or
+//     observe.WithExpectedErrorFunc for a classification no sentinel
+//     expresses. They log like a success, with the error and expected=true.
+//     Nothing is expected until declared here.
 //
 // Middlewares run OUTER→INNER in the order listed: recovery wraps everything
 // (a component panic becomes an error, never a crash), then one OTel span per
 // call, then call/error/duration metrics, then the log: every failure at
-// Error; every success at the level below — quiet under a production Info
-// handler. With observe.WithSuccessSampling(d) appended to LogMiddleware,
-// successes are sampled per method instead: the first, then at most one per
-// window with suppressed=<n>. Any call over 1s is always written, with
-// slow=true.
+// Error (a declared expected error is not a failure); every success at the
+// level below — quiet under a production Info handler. With
+// observe.WithSuccessSampling(d) appended to LogMiddleware, successes are
+// sampled per method instead: the first, then at most one per window with
+// suppressed=<n>. Any call over 1s is always written, with slow=true.
 //
 // To opt the package OUT, put `// forge:no-observe` on the package clause (or
 // on a single Service method to skip just that one). The opt-out wins over

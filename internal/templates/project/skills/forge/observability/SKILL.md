@@ -147,7 +147,27 @@ In Grafana → Explore → Tempo, search by:
 - Duration range
 - Status code
 
-Trace IDs are automatically injected into every log line, connecting logs to traces.
+Trace IDs are injected into every log line written with a span-bearing context, connecting logs to traces.
+
+## The environment contract
+
+Apps never learn the collector's backend. The platform renders the standard OpenTelemetry variables, and `forge/pkg/observe` obeys them:
+
+| Variable | Meaning |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | base URL of the collector (host processes `http://127.0.0.1:4318`) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (default, 4318) or `grpc` (4317) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `k=v,k2=v2`, e.g. `authorization=<key>`; per-signal `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_{ENDPOINT,PROTOCOL,HEADERS}` override it |
+| `OTEL_SERVICE_NAME` | wins over the compiled-in service name (the caller's default is only a fallback) |
+| `OTEL_RESOURCE_ATTRIBUTES` | merged into the resource; carries `deployment.environment.name=<forge env name>` |
+| `OTEL_SDK_DISABLED=true` | every export off |
+| `OTEL_LOGS_EXPORTER=otlp` | the explicit switch for OTLP logs (off by default) |
+
+`Config.OTLPEndpoint` (the typed `otlp_endpoint` config field) overrides the endpoint variables; protocol and headers always come from the environment. With no endpoint nothing is exported, but `/metrics` still works and the W3C TraceContext+Baggage propagator is **always** installed, so `traceparent` is honoured and forwarded regardless. With export on, Go runtime metrics are recorded too.
+
+### Logs: exactly one shipping path
+
+The server writes JSON lines to stdout; a record logged with a context holding a span (`logger.InfoContext(ctx, ...)`) carries `trace_id` and `span_id`. Locally a collector reads the `.forge/logs/<env>/*.log` files; on a cluster a node agent reads container logs. The OTLP logs exporter (`OTEL_LOGS_EXPORTER=otlp`) does not replace stdout and is **mutually exclusive with file/stdout collection** — turn it on only where no agent collects the same stream, or every line ships twice.
 
 ## Resource identity
 

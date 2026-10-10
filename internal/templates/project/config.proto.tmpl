@@ -265,7 +265,7 @@ message AppConfig {
   string otlp_endpoint = 21 [(forge.v1.config) = {
     env_var: "OTEL_EXPORTER_OTLP_ENDPOINT"
     flag: "otlp-endpoint"
-    description: "OTLP/gRPC collector endpoint for traces and metrics (e.g. http://localhost:4317). Empty disables OTLP export; the always-on Prometheus /metrics endpoint is unaffected."
+    description: "Base OTLP collector endpoint for traces and metrics (e.g. http://localhost:4318). The protocol (http/protobuf by default, or grpc) comes from OTEL_EXPORTER_OTLP_PROTOCOL and auth headers from OTEL_EXPORTER_OTLP_HEADERS. Empty disables OTLP export unless the SDK finds an endpoint in the environment; the always-on Prometheus /metrics endpoint is unaffected."
   }];
 
   // Connect payload caps. These are a SECURITY control, not a tuning knob:

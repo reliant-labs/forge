@@ -57,4 +57,46 @@
 // call site. The mock_gen.go file is still emitted by forge generate
 // (greppable test seam) — only the middleware/tracing/metrics codegen
 // is gone.
+//
+// # The environment contract
+//
+// The interface between a forge app and whatever collector exists is the
+// standard OpenTelemetry environment. The app never learns the backend: the
+// platform renders these variables and Setup obeys them.
+//
+//	OTEL_EXPORTER_OTLP_ENDPOINT   base URL of the collector, e.g. http://127.0.0.1:4318
+//	OTEL_EXPORTER_OTLP_PROTOCOL   http/protobuf (default, port 4318) or grpc (port 4317)
+//	OTEL_EXPORTER_OTLP_HEADERS    k=v,k2=v2 — e.g. authorization=<key>
+//	OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_{ENDPOINT,PROTOCOL,HEADERS}
+//	                              per-signal overrides of the three above
+//	OTEL_SERVICE_NAME             wins over Config.ServiceName (the compile-time default)
+//	OTEL_RESOURCE_ATTRIBUTES      merged into the resource; carries
+//	                              deployment.environment.name=<forge env name>
+//	OTEL_SDK_DISABLED=true        every export off
+//	OTEL_{TRACES,METRICS}_EXPORTER=none   that signal off
+//	OTEL_LOGS_EXPORTER=otlp       the explicit switch that turns OTLP logs ON
+//
+// Timeout, compression, TLS and the rest of the OTLP exporter variables are
+// read by the exporters themselves. Config.OTLPEndpoint, when set, overrides the
+// endpoint variables (it is a base URL; /v1/<signal> is appended for
+// http/protobuf); headers and protocol always come from the environment.
+// otelenv.go is the only file in this package that calls os.Getenv.
+//
+// With no endpoint from any source nothing is exported — only the Prometheus
+// /metrics reader is wired — but the W3C TraceContext+Baggage propagator is
+// installed regardless, so an incoming traceparent is still honoured and
+// forwarded by every observe client.
+//
+// With export on, Setup also records Go runtime metrics
+// (go.opentelemetry.io/contrib/instrumentation/runtime).
+//
+// # Logs
+//
+// serverkit's logger writes JSON lines to stdout. NewLogHandler adds trace_id
+// and span_id to every record logged with a context that holds a valid span
+// (use the *Context methods: logger.InfoContext(ctx, ...)). Log shipping is
+// ONE path per environment: the collector reads the stdout/file stream. The
+// OTLP logs exporter (OTEL_LOGS_EXPORTER=otlp or Config.OTLPLogs) is off by
+// default and is MUTUALLY EXCLUSIVE with that collection: it does not replace
+// stdout, so enabling both ships every line twice.
 package observe

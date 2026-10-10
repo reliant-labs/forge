@@ -110,19 +110,14 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 
 	// OTel: serverkit OWNS OpenTelemetry setup (the generated cmd/otel.go
 	// shim is gone). observe.Setup installs the global trace/metric
-	// providers from cfg.OTLPEndpoint + cfg.ServiceName, always wires the
-	// Prometheus reader, and returns the /metrics handler (mounted on the
-	// top mux below, IN FRONT of the edge so scrapers bypass CORS/auth) and
-	// a shutdown fn (flushed in the graceful-shutdown sequence). A setup
+	// providers from cfg.OTLPEndpoint + cfg.ServiceName and the standard
+	// OTEL_* environment, always wires the Prometheus reader, and returns
+	// the /metrics handler (mounted on the top mux below, IN FRONT of the
+	// edge so scrapers bypass CORS/auth) and a shutdown fn (flushed in the graceful-shutdown sequence). A setup
 	// error is logged, not fatal — projects depending on OTLP fail config
 	// validation before Run.
 	instanceID, _ := os.Hostname()
-	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observe.Config{
-		ServiceName:    cfg.ServiceName,
-		ServiceVersion: cfg.ServiceVersion,
-		OTLPEndpoint:   cfg.OTLPEndpoint,
-		InstanceID:     instanceID,
-	})
+	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observeConfig(cfg, instanceID))
 	if otelErr != nil {
 		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
@@ -534,5 +529,17 @@ func newLogger(cfg Config) *slog.Logger {
 	default:
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
 	}
-	return slog.New(observe.NewErrorClassHandler(handler))
+	// The error-class handler is outermost so the trace-id / OTLP log
+	// bridge sees the record at its lowered (user-error) level.
+	return slog.New(observe.NewErrorClassHandler(observe.NewLogHandler(handler, observeConfig(cfg, ""))))
+}
+
+// observeConfig projects the serverkit Config onto observe.Config.
+func observeConfig(cfg Config, instanceID string) observe.Config {
+	return observe.Config{
+		ServiceName:    cfg.ServiceName,
+		ServiceVersion: cfg.ServiceVersion,
+		OTLPEndpoint:   cfg.OTLPEndpoint,
+		InstanceID:     instanceID,
+	}
 }

@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed `forge generate` restores external-tool output too, and claims a
+  clean tree only after checking it.** A refused generate in control-plane
+  printed "your tree is back to its pre-run state" over 32 files buf had left
+  modified: the rollback journal recorded only forge's own writers, on the
+  theory that tool output is deterministic from the inputs. It is not. A local
+  plugin rendered a different version header, and buf regenerated stubs from
+  another agent's uncommitted proto. `GenStep.Writes` now declares what each
+  external tool may write (buf's `out:` dirs, the descriptor, `openapi/`,
+  frontend TS stubs, sqlc's outputs, `gen/go.mod`, every `go mod tidy`, the KCL
+  image-registry migration). Those paths join the journal before the tool runs.
+  Directories are captured recursively, and a file or directory the tool
+  creates is removed on restore. Before the first step the pipeline also
+  fingerprints the work tree (`git ls-files`, or a walk outside git; size,
+  mtime, mode and sha256). After the revert the report makes one of three
+  claims: back to its pre-run state (checked), NOT fully back (followed by
+  every file that still differs), or could not be checked (run
+  `git status`). Unjournaled changes are reported, never reverted: in a shared
+  checkout they may be another agent's. The check found forge writers that
+  wrote raw and are journaled now: the scaffold-once `contract_test.go` (a
+  refused run left it behind and kept its birth record, so it was never
+  scaffolded again), the `observe_chain.go` seam, and the frontend import
+  repoint, tsconfig/vite edits, nav and hooks writes.
+
 - **A contract mock imports every package its foreign interfaces use.**
   `forge generate` rewrote control-plane's `internal/svcdaemon/mock_gen.go`
   without `github.com/nats-io/nats.go`, so the package stopped building on every

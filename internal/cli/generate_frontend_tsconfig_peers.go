@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
@@ -239,6 +240,7 @@ func writeTsconfig(path string, body []byte) bool {
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
 	}
+	checksums.RecordPreWriteAbs(path) // journaled: a failed run restores it
 	return os.WriteFile(path, body, mode) == nil
 }
 

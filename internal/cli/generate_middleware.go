@@ -443,6 +443,12 @@ func birthContractTest(b contractTestBirth, declines *contractTestDeclines) erro
 	if renderErr != nil {
 		return fmt.Errorf("render contract_test.go for %s: %w", b.Rel, renderErr)
 	}
+	// Journaled like every other scaffold-once write: a run that fails
+	// later removes the new file — and, through the restore, its
+	// scaffold-ledger birth record, so the next run scaffolds it again.
+	// Unjournaled, a refused generate left it behind; the post-revert
+	// verification caught exactly that in the cp-forge fixture.
+	checksums.RecordPreWriteAbs(b.TestPath)
 	if writeErr := os.WriteFile(b.TestPath, content, 0644); writeErr != nil {
 		return fmt.Errorf("write contract_test.go for %s: %w", b.Rel, writeErr)
 	}
@@ -854,5 +860,6 @@ func scaffoldObserveChainSeam(projectDir, pkgDir, rel string, cfg *config.Projec
 	if err != nil {
 		return err
 	}
+	checksums.RecordPreWriteAbs(target) // journaled: a failed run removes it
 	return os.WriteFile(target, content, 0o644)
 }

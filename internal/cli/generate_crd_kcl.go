@@ -51,7 +51,8 @@ func generateCRDKCL(projectDir string, kclDirAbs string, cs *checksums.FileCheck
 		// No CRDs. Remove a previously generated module rather than leaving a
 		// stale one behind: its lambdas would still render, so a cluster would
 		// keep installing CRDs for types the project no longer declares.
-		if err := os.Remove(outPath); err != nil && !os.IsNotExist(err) {
+		// Journaled: a run that fails later restores the module.
+		if err := checksums.RemoveJournaled(outPath); err != nil {
 			return fmt.Errorf("remove stale %s: %w", outPath, err)
 		}
 		return nil

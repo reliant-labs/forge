@@ -55,6 +55,10 @@ func relocatePrivateDevLogRoute(projectDir, feDir, feName string, cs *checksums.
 		return fmt.Errorf("mkdir for dev-log route: %w", err)
 	}
 	checksums.CarryDisownAcrossRename(projectDir, cs, legacyRel, currentRel)
+	// Journaled on both ends: a run that fails later puts the route back
+	// where it was.
+	checksums.RecordPreWriteAbs(legacy)
+	checksums.RecordPreWriteAbs(current)
 	if err := os.Rename(legacy, current); err != nil {
 		return fmt.Errorf("relocate dev-log route: %w", err)
 	}
@@ -90,6 +94,7 @@ func ensureViteQueryResourceHook(projectDir, feDir string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("mkdir for %s: %w", destRel, err)
 	}
+	checksums.RecordPreWriteAbs(dest) // journaled: a failed run removes it
 	if err := os.WriteFile(dest, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", destRel, err)
 	}

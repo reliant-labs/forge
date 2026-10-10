@@ -424,6 +424,14 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// we never persist manifest state describing writes we just undid.
 	checksums.BeginRollbackJournal(ctx.AbsPath)
 	rolledBack := false
+	// Fingerprint the tree BEFORE any step can write, so a failed run's
+	// "your tree is back to its pre-run state" is checked against what the
+	// tree actually was rather than asserted from the journal alone. Not
+	// taken under --no-revert, which never makes that claim.
+	var preRun *workTreeSnapshot
+	if !flags.NoRevert {
+		preRun = snapshotWorkTree(ctx.AbsPath)
+	}
 
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
@@ -450,7 +458,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// They compose: a step that's allowlisted by the preset still has to
 	// pass its Gate, and a step gated off would skip regardless of the
 	// preset.
-	steps := generateSteps()
+	steps := pipelineSteps()
 	totalSteps := len(steps)
 	if flags.Steps != "" {
 		allow, ok := stepPresetAllowlist[flags.Steps]
@@ -501,6 +509,11 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		if !step.ReadOnly {
 			onlyReadOnlyRan = false
 		}
+		// An external tool's outputs join the rollback set before the
+		// tool runs, exactly as a forge write captures its target.
+		if step.Writes != nil {
+			checksums.CaptureExternalWrites(ctx.AbsPath, step.Writes(ctx)...)
+		}
 		if err := step.Run(ctx); err != nil {
 			// --explain-drift cleanup still runs on a mid-pipeline
 			// failure: whatever renders were parked are diffed, and the
@@ -537,7 +550,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 				// rollback branch).
 				reprintCompilerOutput(err, "")
 			} else {
-				rolledBack = rollbackGeneratedTree(ctx.AbsPath, err, onlyReadOnlyRan)
+				rolledBack = rollbackGeneratedTreeVerified(ctx.AbsPath, err, onlyReadOnlyRan, preRun)
 			}
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
@@ -576,6 +589,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	printGenerateOutcome(os.Stdout, summary, flags, len(steps), totalSteps)
 	return nil
 }
+
+// pipelineSteps is the step plan runGeneratePipelineFlags executes —
+// generateSteps, except in tests that drive the real pipeline driver
+// (journal arming, external-write capture, rollback and its report) over a
+// reduced plan.
+var pipelineSteps = generateSteps
 
 // printGenerateOutcome renders the completion line from the run's write
 // ledger instead of from "the last step returned nil".
@@ -676,7 +695,18 @@ const failedGenerateErrorFile = "error.txt"
 // journal shows and no more. It used to assert "tree is unchanged" from an
 // empty journal alone, over a .forge-kcl/ an unjournaled step had just
 // rewritten.
+//
+// The journal covers external-tool outputs too (GenStep.Writes), and
+// rollbackGeneratedTreeVerified checks the restored tree against a pre-run
+// fingerprint before claiming it is back to its pre-run state.
 func rollbackGeneratedTree(absPath string, stepErr error, onlyReadOnlyRan bool) bool {
+	return rollbackGeneratedTreeVerified(absPath, stepErr, onlyReadOnlyRan, nil)
+}
+
+// rollbackGeneratedTreeVerified is rollbackGeneratedTree with the pre-run
+// fingerprint the pipeline took before its first step (nil: none taken, so
+// no whole-tree claim can be verified and none is made).
+func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRan bool, preRun *workTreeSnapshot) bool {
 	if !checksums.RollbackEnabled() {
 		return false
 	}
@@ -684,13 +714,21 @@ func rollbackGeneratedTree(absPath string, stepErr error, onlyReadOnlyRan bool) 
 	if len(preserved) > 0 {
 		writeFailedGenerateErrorFile(absPath, stepErr)
 	}
-	restored := checksums.RestoreRollback(absPath)
+	journaled := checksums.JournaledPaths()
+	restored, failed := checksums.RestoreRollbackReport(absPath)
+	residue := verifyRestoredTree(absPath, preRun, append(journaled, restored...), failed)
 	if len(restored) == 0 {
-		if onlyReadOnlyRan {
+		switch {
+		case onlyReadOnlyRan && len(failed) == 0:
 			fmt.Fprintln(os.Stderr, "↩️  generate stopped before any step that writes had run. No files were changed.")
-		} else {
-			fmt.Fprintln(os.Stderr, "↩️  generate failed; nothing needed reverting (forge's own writers recorded no writes this run). "+
-				"Steps that ran external tools (buf, go mod tidy, sqlc) are not journaled — check `git status` for their output.")
+		case residue.Clean():
+			fmt.Fprintln(os.Stderr, "↩️  generate failed before changing any file — verified: the tree is unchanged.")
+		case residue.Checked:
+			fmt.Fprintln(os.Stderr, "↩️  generate failed; nothing needed reverting, but these files differ from before the run:")
+			writeResidue(os.Stderr, residue.Changed)
+		default:
+			fmt.Fprintln(os.Stderr, "↩️  generate failed; nothing needed reverting (no write this run was recorded). The rest of the "+
+				"tree could not be checked — run `git status` to confirm it is as you left it.")
 		}
 		reprintCompilerOutput(stepErr, "")
 		return true
@@ -707,6 +745,7 @@ func rollbackGeneratedTree(absPath string, stepErr error, onlyReadOnlyRan bool) 
 		Preserved:   preserved,
 		StepErr:     stepErr,
 		Consistency: consistency,
+		Residue:     residue,
 	})
 
 	preservedAt := ""

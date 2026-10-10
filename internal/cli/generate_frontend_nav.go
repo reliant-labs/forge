@@ -353,6 +353,7 @@ func emitScaffoldOnceIfMissing(projectDir, relPath, tmplPath string, data templa
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return fmt.Errorf("mkdir for %s: %w", relPath, err)
 	}
+	checksums.RecordPreWriteAbs(full) // journaled: a failed run removes it
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}
@@ -671,6 +672,7 @@ func emitScaffoldUntilTouched(projectDir, relPath, tmplPath string, data templat
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return fmt.Errorf("mkdir for %s: %w", relPath, err)
 	}
+	checksums.RecordPreWriteAbs(full) // journaled: a failed run removes it
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}

@@ -68,6 +68,7 @@ func TestRollbackReport_NamesRootCauseWhenRestoredTreeBuilds(t *testing.T) {
 		Restored:    []string{"internal/tagging/helpers_gen_test.go"},
 		StepErr:     rootCauseErr(),
 		Consistency: rollbackConsistency{Checked: true, Builds: true},
+		Residue:     rollbackResidue{Checked: true},
 	})
 	out := sb.String()
 
@@ -93,6 +94,7 @@ func TestRollbackReport_NonCompilingTreeStillReportsFaithfulRevert(t *testing.T)
 			Builds:  false,
 			Output:  postRollbackBuildOutput,
 		},
+		Residue: rollbackResidue{Checked: true},
 	})
 	out := sb.String()
 
@@ -217,6 +219,7 @@ func TestRollbackGeneratedTree_DogfoodScenarioEndToEnd(t *testing.T) {
 	t.Cleanup(checksums.ResetPerRunState)
 	checksums.BeginRollbackJournal(root)
 	t.Cleanup(checksums.CommitRollback)
+	preRun := snapshotWorkTree(root)
 
 	if _, err := checksums.WriteGeneratedFile(root,
 		filepath.Join("internal", "handlers", "documents", "handlers_crud_ops_gen.go"),
@@ -232,7 +235,7 @@ func TestRollbackGeneratedTree_DogfoodScenarioEndToEnd(t *testing.T) {
 	}
 
 	stderr, restore := captureStderr(t)
-	rollbackGeneratedTree(root, rootCauseErr(), false)
+	rollbackGeneratedTreeVerified(root, rootCauseErr(), false, preRun)
 	restore()
 	out := stderr.String()
 
@@ -328,6 +331,7 @@ func TestRollbackReport_StagedScaffoldTreeIsNotReportedAsDamage(t *testing.T) {
 			Output: "cmd/kalshishape/cmd/workers/book_snapshotter.go:40:87: c.WorkerBookSnapshotter undefined " +
 				"(type *app.Components has no field or method WorkerBookSnapshotter)\n",
 		},
+		Residue: rollbackResidue{Checked: true},
 	})
 	out := sb.String()
 

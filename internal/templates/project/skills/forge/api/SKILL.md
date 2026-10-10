@@ -96,6 +96,23 @@ Return domain failures with `svcerr` sentinels (not bespoke ones) — the bare s
 
 Add a new sentinel only when the set has no representative for the code you need. (`context.Canceled`/`DeadlineExceeded` pass through `svcerr.ToConnect`.)
 
+### User errors vs server errors — `svcerr.Classify`
+
+The kind you return also decides **who has to act**, and that decides the log level and whether anything pages. `svcerr.Classify(err)` returns `ClassUser` for the client-fault kinds (InvalidArgument, NotFound, AlreadyExists, PermissionDenied, Unauthenticated, FailedPrecondition — so InsufficientBalance and Expired — OutOfRange, ResourceExhausted — so PlanLimit), `ClassCanceled` for a caller that went away, and `ClassServer` for everything else, including any error nothing recognised. A user error logs `rpc failed` at INFO with `error_class=user` and never reaches ERROR, Sentry or an ERROR alert; a server error logs at ERROR. `svcerr.IsUserError(err)` is the boolean form. Table and wiring: the `observability` skill, "Error levels".
+
+So pick the kind for the client AND the operator: an empty wallet is `svcerr.InsufficientBalance`, not `svcerr.Internal("no balance")` — the second pages someone about a user's empty wallet.
+
+When the code and the fault disagree, say so with `svcerr.WithClass`. It changes nothing on the wire — not the code, not the message:
+
+```go
+// Unavailable is the honest code (retry later), but only the user can fix it.
+return nil, svcerr.Wrap(svcerr.WithClass(svcerr.Unavailable("your machine is not connected"), svcerr.ClassUser))
+// A 4xx the client must see that is really our bug.
+return nil, svcerr.Wrap(svcerr.WithClass(svcerr.NotFound("project"), svcerr.ClassServer))
+```
+
+The marker survives `fmt.Errorf("…: %w")` and `svcerr.Wrap` in process; it does not cross the network — a remote caller classifies by the code it receives.
+
 ### Structured detail and routing codes (both rare)
 
 `svcerr.WithDetail(err, proto)` attaches a machine-readable proto (e.g. a `FieldViolation`) — most handlers never need it. `svcerr.WithReason(err, "no_active_subscription")` attaches a stable snake_case code the frontend ROUTES on (upsell, redirect to billing) instead of brittle message TEXT; `svcerr.Wrap` carries it to the wire as `x-forge-error-reason` metadata. Generated CRUD already stamps one on EVERY error it returns (`duplicate`, `reference_in_use`, `not_found`, … — the `crud.Reason*` constants); reuse those names where the meaning matches. Both preserve `errors.Is`/`svcerr.Code`.

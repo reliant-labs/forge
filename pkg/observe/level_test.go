@@ -21,9 +21,9 @@ import (
 // outage — every request 500ing — the process emitted an unbroken stream of
 // WARN records, so the standard alert rule (level=ERROR) never fired. The
 // symmetric mistake would be logging every failure at ERROR, which pages on
-// each client typo. The policy is fault attribution.
+// each client typo. The policy is fault attribution: svcerr.Classify.
 
-func TestLevelForError_ServerFaultsAreError(t *testing.T) {
+func TestLevelForError_FollowsFaultAttribution(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -36,15 +36,26 @@ func TestLevelForError_ServerFaultsAreError(t *testing.T) {
 		{"unavailable", svcerr.Unavailable("payments offline"), slog.LevelError},
 		{"data loss", svcerr.DataLoss("checksum mismatch"), slog.LevelError},
 		{"unknown", svcerr.Unknown("?"), slog.LevelError},
+		{"4xx marked server", svcerr.WithClass(svcerr.NotFound("project row"), svcerr.ClassServer), slog.LevelError},
 
-		// The API working as designed.
-		{"not found", svcerr.NotFound("user"), slog.LevelWarn},
-		{"invalid argument", svcerr.InvalidArgument("name required"), slog.LevelWarn},
-		{"permission denied", svcerr.PermissionDenied("admin only"), slog.LevelWarn},
-		{"unauthenticated", svcerr.Unauthenticated("no token"), slog.LevelWarn},
-		{"resource exhausted", svcerr.ResourceExhausted("rate limited"), slog.LevelWarn},
-		{"failed precondition", svcerr.FailedPrecondition("not ready"), slog.LevelWarn},
-		{"canceled", context.Canceled, slog.LevelWarn},
+		// Server-side, but "retry", not "page".
+		{"deadline exceeded", context.DeadlineExceeded, slog.LevelWarn},
+		{"aborted", svcerr.Aborted("conflict"), slog.LevelWarn},
+		{"unimplemented", svcerr.Unimplemented("later"), slog.LevelWarn},
+
+		// The API working as designed: user errors.
+		{"not found", svcerr.NotFound("user"), slog.LevelInfo},
+		{"invalid argument", svcerr.InvalidArgument("name required"), slog.LevelInfo},
+		{"permission denied", svcerr.PermissionDenied("admin only"), slog.LevelInfo},
+		{"unauthenticated", svcerr.Unauthenticated("no token"), slog.LevelInfo},
+		{"resource exhausted", svcerr.ResourceExhausted("rate limited"), slog.LevelInfo},
+		{"plan limit", svcerr.PlanLimit("seat cap"), slog.LevelInfo},
+		{"failed precondition", svcerr.FailedPrecondition("not ready"), slog.LevelInfo},
+		{"insufficient balance", svcerr.InsufficientBalance("wallet empty"), slog.LevelInfo},
+		{"unavailable marked user", svcerr.WithClass(svcerr.Unavailable("your machine is offline"), svcerr.ClassUser), slog.LevelInfo},
+
+		// The caller went away.
+		{"canceled", context.Canceled, slog.LevelInfo},
 
 		{"no error", nil, slog.LevelInfo},
 	}
@@ -96,9 +107,9 @@ func TestLoggingInterceptor_DatabaseOutageLogsAtError(t *testing.T) {
 	}
 }
 
-// TestLoggingInterceptor_ClientErrorStaysWarn is the other half: a rejected
-// request must NOT page anyone.
-func TestLoggingInterceptor_ClientErrorStaysWarn(t *testing.T) {
+// TestLoggingInterceptor_ClientErrorIsAUserError is the other half: a
+// rejected request must NOT page anyone, and must say why it did not.
+func TestLoggingInterceptor_ClientErrorIsAUserError(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -113,8 +124,14 @@ func TestLoggingInterceptor_ClientErrorStaysWarn(t *testing.T) {
 	_, _ = next(context.Background(), connect.NewRequest(&struct{}{}))
 
 	rec := findRecord(t, &buf, "rpc failed")
-	if lvl, _ := rec["level"].(string); lvl != "WARN" {
-		t.Errorf("level = %q, want WARN — a 404 is the API working, not an incident", lvl)
+	if lvl, _ := rec["level"].(string); lvl != "INFO" {
+		t.Errorf("level = %q, want INFO — a 404 is the API working, not an incident", lvl)
+	}
+	if rec["error_class"] != "user" || rec["code"] != "not_found" {
+		t.Errorf("error_class/code = %v/%v, want user/not_found", rec["error_class"], rec["code"])
+	}
+	if rec["error"] == nil {
+		t.Error("a user error must still carry its error")
 	}
 }
 

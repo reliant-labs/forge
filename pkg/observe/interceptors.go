@@ -49,8 +49,11 @@ func RequestIDFromContext(ctx context.Context) string {
 // LoggingInterceptor returns a Connect interceptor that logs RPCs:
 // procedure, duration, request_id, and (on failure) error.
 //
-//   - Every FAILED call is written — "rpc failed" / "stream failed" — at the
-//     level LevelForError chooses, with the error and its cause.
+//   - Every FAILED call is written — "rpc failed" / "stream failed" — with
+//     the error, its cause, its error_class and its code, at the level its
+//     class earns (see error_class.go): ERROR for a server fault, the
+//     user-error level (INFO; WithUserErrorLevel) for a user error or a
+//     cancellation.
 //   - Every SUCCESSFUL call is written — "rpc completed" / "stream
 //     completed", at INFO — unless WithSuccessSampling turns success
 //     sampling on for this layer. Sampled, a procedure's first success is
@@ -63,8 +66,9 @@ func RequestIDFromContext(ctx context.Context) string {
 //     is written like a success: at the procedure's success level, sampled
 //     with it, carrying expected=true.
 //
-// opts tune the success half: WithSuccessSampling, WithSlowThreshold,
-// WithSuccessLevel for one procedure, and WithExpectedErrors. Through Chain /
+// opts tune the success half — WithSuccessSampling, WithSlowThreshold,
+// WithSuccessLevel for one procedure, WithExpectedErrors — and the failure
+// levels: WithUserErrorLevel, WithErrorClassifier. Through Chain /
 // DefaultMiddlewares they are passed as Deps.LogOptions.
 func LoggingInterceptor(logger *slog.Logger, opts ...LogOption) connect.Interceptor {
 	if logger == nil {
@@ -108,7 +112,8 @@ func (i *loggingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 func (i *loggingInterceptor) log(ctx context.Context, procedure string, header interface{ Get(string) string },
 	elapsed time.Duration, err error, completedMsg, failedMsg string, slowApplies bool,
 ) {
-	level, msg := LevelForError(err), failedMsg
+	class := i.policy.classOf(err)
+	level, msg := i.policy.failureLevel(err, class), failedMsg
 	expected := i.policy.isExpected(err)
 	var why slog.Attr
 	if err == nil || expected {
@@ -128,7 +133,7 @@ func (i *loggingInterceptor) log(ctx context.Context, procedure string, header i
 		attrs = append(attrs, slog.String("request_id", rid))
 	}
 	if err != nil {
-		attrs = append(attrs, errorAttrs(err)...)
+		attrs = append(attrs, errorAttrs(err, class)...)
 		if expected {
 			attrs = append(attrs, slog.Bool("expected", true))
 		}
@@ -154,27 +159,8 @@ func requestIDFromCtxOrHeader(ctx context.Context, header interface{ Get(string)
 	return ""
 }
 
-// errorAttrs renders a failed RPC's error for the LOG, which is not the
-// same thing as rendering it for the client.
-//
-// `error` is what the caller was told. `cause` is what actually happened:
-// svcerr redacts the message of an unrecognised internal failure before it
-// reaches the wire, so without this attribute the driver text — the SQLSTATE,
-// the constraint, the panic value — would exist in exactly no place. The
-// generated ORM records it on the active span too, but OTEL_EXPORTER_OTLP_
-// ENDPOINT is empty by default, so that span goes nowhere in the default
-// configuration and cannot be the only copy.
-//
-// SANITIZE THE WIRE, NEVER THE LOG.
-func errorAttrs(err error) []slog.Attr {
-	attrs := []slog.Attr{slog.Any("error", err)}
-	if cause := svcerr.Cause(err); cause != nil {
-		attrs = append(attrs, slog.String("cause", cause.Error()))
-	}
-	return attrs
-}
-
-// LevelForError is the single place that decides how loud a failed RPC is.
+// LevelForError is the single place that decides how loud a failed call is,
+// under the default policy (see error_class.go).
 //
 // Every failure used to log at WARN, including the ones that mean the
 // SERVER is broken. A total database outage produced a stream of WARN
@@ -183,30 +169,30 @@ func errorAttrs(err error) []slog.Attr {
 // client sending a malformed field also logged WARN, which is why raising
 // everything to ERROR is not the fix either: it just moves the noise.
 //
-// The split is fault attribution, not HTTP status:
+// The split is fault attribution — svcerr.Classify — not HTTP status:
 //
 //   - ERROR: the server failed and someone should be paged. Internal (a
 //     bug or a dependency down), Unavailable (a dependency refused),
-//     DataLoss, and Unknown (an error nothing classified — which in
-//     practice is a bug in the classification).
-//   - WARN: the request failed for a reason the server correctly
-//     detected. NotFound, InvalidArgument, PermissionDenied,
-//     ResourceExhausted, cancellations. These are the API working.
+//     DataLoss, Unknown, and any error nothing classified.
+//   - WARN: a server-side failure that says "retry", not "page" —
+//     DeadlineExceeded, Aborted, Unimplemented.
+//   - DefaultUserErrorLevel (INFO): the request failed for a reason the
+//     server correctly detected, or the caller went away. NotFound,
+//     InvalidArgument, PermissionDenied, FailedPrecondition,
+//     ResourceExhausted, cancellations, and anything marked
+//     svcerr.WithClass(err, svcerr.ClassUser). These are the API working.
 //
 // Exported so the audit interceptor and any project-owned logging site
 // classify identically — two log streams disagreeing about severity for
-// the same RPC is its own incident.
+// the same RPC is its own incident. A layer configured WithUserErrorLevel
+// uses its own level for the user half.
 func LevelForError(err error) slog.Level {
-	if err == nil {
-		return slog.LevelInfo
-	}
-	switch connect.CodeOf(err) {
-	case connect.CodeInternal, connect.CodeUnknown, connect.CodeDataLoss, connect.CodeUnavailable:
-		return slog.LevelError
-	default:
-		return slog.LevelWarn
-	}
+	return defaultPolicy.failureLevel(err, defaultPolicy.classOf(err))
 }
+
+// defaultPolicy is the policy LevelForError answers for: no classifiers, the
+// default user-error level. Read-only.
+var defaultPolicy = newLogPolicy(slog.LevelInfo, nil)
 
 // TracingInterceptor returns a Connect interceptor that creates one
 // OpenTelemetry span per RPC. The span name is the full procedure
@@ -309,10 +295,23 @@ func (i *metricsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 			i.duration.Record(ctx, time.Since(start).Seconds(), attr)
 		}
 		if err != nil && i.errs != nil {
-			i.errs.Add(ctx, 1, attr)
+			i.errs.Add(ctx, 1, errorMetricAttrs(req.Spec().Procedure, err))
 		}
 		return resp, err
 	})
+}
+
+// errorMetricAttrs labels one failed RPC: its procedure, the code the client
+// received, and who must act on it. User errors no longer log at ERROR, and
+// the counter is what keeps their volume visible — split by kind — without
+// paging anyone. Both labels are closed vocabularies, so the series count is
+// bounded by procedures × codes.
+func errorMetricAttrs(procedure string, err error) metric.MeasurementOption {
+	return metric.WithAttributes(
+		attribute.String("procedure", procedure),
+		attribute.String("code", svcerr.Code(err).String()),
+		attribute.String(ErrorClassKey, svcerr.Classify(err).String()),
+	)
 }
 
 func (i *metricsInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
@@ -331,7 +330,7 @@ func (i *metricsInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 			i.duration.Record(ctx, time.Since(start).Seconds(), attr)
 		}
 		if err != nil && i.errs != nil {
-			i.errs.Add(ctx, 1, attr)
+			i.errs.Add(ctx, 1, errorMetricAttrs(conn.Spec().Procedure, err))
 		}
 		return err
 	})

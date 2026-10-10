@@ -202,7 +202,10 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 // LogMiddleware logs component calls with the method name as the message and
 // the duration as an attribute.
 //
-//   - Every FAILED call is written at slog.LevelError, with the error.
+//   - Every FAILED call is written with the error and its error_class, at the
+//     level its class earns (see error_class.go): ERROR for a server fault —
+//     which is every error nothing classified — and the user-error level
+//     (INFO; WithUserErrorLevel) for a svcerr user error or a cancellation.
 //   - A call whose error the seam declared an EXPECTED OUTCOME
 //     (WithExpectedErrors / WithExpectedErrorFunc — a storage adapter's "no
 //     such object") is not a failure: it is logged like a success, below,
@@ -221,8 +224,9 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 // stack's log. See log_policy.go.
 //
 // opts are the RPC edge's: WithSuccessSampling, WithSlowThreshold,
-// WithSuccessLevel keyed by the "<pkg>.<Method>" operation name, and
-// WithExpectedErrors. nil logger falls back to slog.Default.
+// WithSuccessLevel keyed by the "<pkg>.<Method>" operation name,
+// WithExpectedErrors, WithUserErrorLevel and WithErrorClassifier. nil logger
+// falls back to slog.Default.
 func LogMiddleware(logger *slog.Logger, level slog.Level, opts ...LogOption) ComponentMiddleware {
 	return &logMiddleware{logger: logger, policy: newLogPolicy(level, opts)}
 }
@@ -242,9 +246,11 @@ func (m *logMiddleware) WrapComponent(ctx context.Context, method string, next C
 	}
 	expected := m.policy.isExpected(err)
 	if err != nil && !expected {
-		logger.LogAttrs(ctx, slog.LevelError, method,
+		class := m.policy.classOf(err)
+		logger.LogAttrs(ctx, m.policy.failureLevel(err, class), method,
 			slog.Duration("duration", elapsed),
 			slog.Any("error", err),
+			slog.String(ErrorClassKey, class.String()),
 		)
 		return err
 	}

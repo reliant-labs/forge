@@ -9,6 +9,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // LogCall emits a single slog.Info record summarising a wrapped
@@ -173,6 +175,11 @@ func (m *CallMetrics) RecordCall(ctx context.Context, method string, start time.
 		m.duration.Record(ctx, time.Since(start).Seconds(), attr)
 	}
 	if err != nil && m.errs != nil {
-		m.errs.Add(ctx, 1, attr)
+		// error_class keeps user errors countable now that they no longer
+		// log at ERROR; see error_class.go.
+		m.errs.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("method", method),
+			attribute.String(ErrorClassKey, svcerr.Classify(err).String()),
+		))
 	}
 }

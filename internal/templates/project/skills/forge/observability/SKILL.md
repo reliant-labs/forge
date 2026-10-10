@@ -87,7 +87,57 @@ In Grafana → Explore → Loki, use LogQL:
 {container=~".*app.*"} | json | trace_id="abc123"
 ```
 
-Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`). Emit the same attribute keys from your own log sites so dashboards stay queryable.
+Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`, `error_class`). Emit the same attribute keys from your own log sites so dashboards stay queryable.
+
+## Error levels: who has to act
+
+A log level is a routing decision: ERROR is what alerts match, what a Sentry
+forwarder sends, what a post-deploy log gate fails on. So forge sets the level
+of every error record from **fault attribution** — `svcerr.Classify(err)` —
+not from how the call site spelled its log line:
+
+| `error_class` | what it means | example | level | pages (ERROR → Sentry / alerts) |
+|---|---|---|---|---|
+| `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error | ERROR | yes |
+| `server` | server-side, but "retry", not "page" | DeadlineExceeded, Aborted, Unimplemented | WARN | no |
+| `user` | the caller or user must act; the system behaved correctly | InvalidArgument, NotFound, AlreadyExists, PermissionDenied, Unauthenticated, FailedPrecondition (InsufficientBalance, Expired), OutOfRange, ResourceExhausted (PlanLimit), or `svcerr.WithClass(err, svcerr.ClassUser)` | INFO (`observe.WithUserErrorLevel`) | no |
+| `canceled` | the caller went away | `context.Canceled`, CodeCanceled | same as `user` | no |
+
+Nothing is hidden: a user error is still written, with `error`,
+`error_class=user` and `code`, at a level production keeps — it just stops
+claiming to be an incident. Its volume stays countable: the RPC error counter
+(and `<pkg>.errors` on the component chain) carries `error_class` and `code`.
+
+The policy holds at all three places a record comes from:
+
+1. `rpc failed` / `stream failed` at the RPC edge (`observe.LoggingInterceptor`);
+2. component failures on the in-process chain (`observe.LogMiddleware`);
+3. **every hand-written `logger.Error`** — `observe.NewErrorClassHandler`
+   wraps the process's slog handler (serverkit's `NewLogger` already does) and
+   lowers a record carrying a non-server error to the user-error level, adding
+   `error_class`. It only ever lowers; it never raises a WARN to ERROR.
+
+**If you forward logs to Sentry (or count them), wrap
+`observe.NewErrorClassHandler` OUTSIDE that handler**, so it sees the
+classified level — the forwarder keeps gating on `level >= ERROR` and never
+needs to know about svcerr:
+
+```go
+handler := sentryHandler(serverkit.NewLogger(cfg).Handler()) // forwards >= ERROR
+logger := slog.New(observe.NewErrorClassHandler(handler))
+```
+
+Marking: most user errors need no marker — return the right `svcerr` kind
+(`svcerr.FailedPrecondition`, `svcerr.PlanLimit`, …). Use
+`svcerr.WithClass(err, svcerr.ClassUser)` when the CODE and the FAULT disagree
+(`Unavailable` is the honest code for "the user's machine is offline", and a
+server fault by kind), or when an error never crosses an RPC boundary (a worker
+logging a provider's "credential rejected"). `svcerr.WithClass(err,
+svcerr.ClassServer)` is the reverse: a 4xx the client must see that is really
+our bug. A library error svcerr cannot see into — a workflow engine's
+application error that crossed a serialization boundary — is taught with
+`observe.WithErrorClassifier(func(error) svcerr.Class)` (return
+`svcerr.ClassNone` for "no opinion").
 
 ## Querying Traces (Tempo)
 
@@ -181,7 +231,10 @@ always safe. This file is THE extension point:
   timeout or rate-limit layer, say).
 - **Drop a layer** — delete its line (a nil entry is dropped too).
 - **Change the success-log level** — the `observe.LogMiddleware` argument.
-  Failures always log at Error; successes log at this level. The scaffolded
+  Failures log at their class's level (ERROR for a server fault, INFO for a
+  user error or cancellation — see
+  [Error levels](#error-levels-who-has-to-act)); successes log at this
+  level. The scaffolded
   default is seeded from `observability.log_level` in forge.yaml (`debug` |
   `info` | `warn` | `error`; default `debug`, so success stays quiet under a
   production Info handler).
@@ -201,11 +254,14 @@ always safe. This file is THE extension point:
   classification no sentinel expresses. A declared error is logged like a
   success — at the success level, sampled in its own slot, carrying the
   error and `expected=true` — so it is quiet under a production INFO handler
-  while every undeclared error stays at Error. Nothing is expected until
-  declared. The same options work at the RPC edge through
-  `observe.Deps.LogOptions` (a declared NotFound logs `rpc failed` at INFO
-  instead of WARN). Logging only: the span and `<pkg>.errors` still record
-  the error.
+  while every undeclared error keeps its class's level. Nothing is expected
+  until declared. The same options work at the RPC edge through
+  `observe.Deps.LogOptions` (a declared NotFound logs `rpc failed` at the
+  procedure's success level, sampled with its successes). Logging only: the
+  span and `<pkg>.errors` still record the error.
+- **Change the user-error level** — `observe.WithUserErrorLevel(slog.LevelWarn)`
+  on `observe.LogMiddleware` (or in `observe.Deps.LogOptions` for the RPC
+  edge) for a deployment that wants user errors in a WARN view.
 
 The chain captures only method identity, duration, and error status — never
 arguments or results. It records `<pkg>.calls` / `<pkg>.errors` /

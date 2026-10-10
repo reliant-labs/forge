@@ -35,6 +35,10 @@
 //   - Backoff — capped-exponential helper used by reconcilers that
 //     track per-object retry counts.
 //
+//   - IsTransient — classifies errors that are requeued with bounded
+//     exponential backoff for Reconciler.TransientGrace before a persistent
+//     outage is returned for normal controller-runtime reporting.
+//
 //   - controllertest — small envtest harness with skip-friendly
 //     New() (returns nil + a Skip if envtest binaries are missing) so
 //     unit tests are hermetic by default.

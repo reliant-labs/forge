@@ -476,6 +476,15 @@ type Config struct {
 	// are registered. Zero falls back to 2s.
 	ReadinessTimeout time.Duration
 
+	// WriteStallTimeout bounds how long ONE write to a response may stay
+	// blocked on a client that is not reading, after which the response is
+	// abandoned (see WriteStallGuard). It is not a cap on how long a response
+	// may take: a stream that keeps moving bytes runs as long as it likes.
+	// Zero falls back to DefaultWriteStallTimeout; negative disables the
+	// guard. A handler that wants a whole-response cap sets one itself with
+	// http.NewResponseController(w).SetWriteDeadline — it composes with this.
+	WriteStallTimeout time.Duration
+
 	// OperatorHealthProbeAddr is forwarded to Server.RunOperators
 	// for projects (like cp-forge) that bind a /healthz + /readyz
 	// listener inside the controller manager. Empty string leaves the
@@ -512,6 +521,9 @@ func (c *Config) Normalize() {
 	}
 	if c.ReadinessTimeout == 0 {
 		c.ReadinessTimeout = 2 * time.Second
+	}
+	if c.WriteStallTimeout == 0 {
+		c.WriteStallTimeout = DefaultWriteStallTimeout
 	}
 	if c.ReadMaxBytes == 0 {
 		c.ReadMaxBytes = 4 << 20

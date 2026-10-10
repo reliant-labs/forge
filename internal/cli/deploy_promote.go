@@ -307,13 +307,16 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			// (F-19, exit 3). Without this the digest would be something
 			// forge checked and the server took on trust, which is the
 			// opposite of the guarantee — a client could approve a plan it
-			// fabricated.
-			PlanDigest:           deployPlanDigest(opts.DeployPlan),
+			// fabricated. Except where the plan is forge's own (a
+			// ledger-only env): the server cannot recompute that one, so it
+			// is checked here and recorded on the apply gate instead.
+			PlanDigest:           serverPlanDigest(opts.DeployPlan, ledger),
 			AcknowledgedFindings: opts.Approval.AcknowledgedFindings,
 		})
 		if writeErr == nil && opts.Follow != nil {
 			follow := *opts.Follow
 			follow.projectDir = projectDir
+			follow.planDigest = deployPlanDigest(opts.DeployPlan)
 			// Every stage the follow-through ships is recorded here, so
 			// the report below can say what is live — above all when the
 			// deploy fails after some of it already is.

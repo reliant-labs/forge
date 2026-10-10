@@ -181,12 +181,17 @@ type PlanInput struct {
 	// diverged from the applied bundle (possibly none).
 	Drift *DriftObservation
 	// SecretPresence maps a secret name to whether its value is set, for
-	// the secrets whose presence the caller COULD read (a managed store).
-	// A name the map does not contain is UNVERIFIABLE — an external
-	// provider, or a store that could not be read — never "missing": one env
-	// commonly mixes providers, and reading every external secret as
-	// missing would make the warning meaningless. nil means nothing could
-	// be read.
+	// the secrets whose presence the caller COULD read: a managed store, or
+	// the target cluster's Secrets when the caller is the one applying to
+	// it. A name the map does not contain is UNVERIFIABLE — a store or a
+	// cluster that could not be read — never "missing": one env commonly
+	// mixes providers, and reading every unread secret as missing would make
+	// the warning meaningless. nil means nothing could be read.
+	//
+	// It is consulted for every declared secret: a newly declared one is a
+	// finding either way (info when present), and a previously declared one
+	// is a finding only when explicitly false — declared at the last apply,
+	// missing now.
 	SecretPresence map[string]bool
 }
 
@@ -320,15 +325,27 @@ func BuildPlan(in PlanInput) (Plan, error) {
 		}
 	}
 
+	// Secrets. Presence is consulted for EVERY declared secret, not only the
+	// new ones: a secret that was declared at the last apply and has since
+	// been deleted is the deploy that crash-loops on its next restart, and it
+	// is invisible to a diff of declarations. What stays silent is the steady
+	// state — declared before, still present (or unverifiable, because
+	// "could not look" must not manufacture a finding every deploy).
+	newlyDeclared := map[string]bool{}
 	for _, s := range diff.SecretsAdded {
+		newlyDeclared[s.Name] = true
+	}
+	for _, s := range in.Candidate.Canonical().Secrets {
 		set, known := in.SecretPresence[s.Name]
 		switch {
-		case !known:
+		case newlyDeclared[s.Name] && !known:
 			add(FindingSecretNeeded, ClassWarn, SectionSecrets, s.Name, "newly declared; presence not verifiable for provider "+s.Provider)
-		case set:
-			add(FindingSecretNeeded, ClassInfo, SectionSecrets, s.Name, "newly declared; set")
-		default:
+		case newlyDeclared[s.Name] && set:
+			add(FindingSecretNeeded, ClassInfo, SectionSecrets, s.Name, "newly declared; present")
+		case newlyDeclared[s.Name]:
 			add(FindingSecretNeeded, ClassWarn, SectionSecrets, s.Name, "newly declared; MISSING — set it before the workload starts")
+		case known && !set:
+			add(FindingSecretNeeded, ClassWarn, SectionSecrets, s.Name, "declared at the last apply and now MISSING — set it before the workload restarts")
 		}
 	}
 

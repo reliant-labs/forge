@@ -111,6 +111,10 @@ type promoteFollowOptions struct {
 	// projectDir is where the machine ledger's apply record is written.
 	// Set by runPromote; empty means "the project the working directory is in".
 	projectDir string
+	// planDigest is the deploy plan this follow-through realizes, recorded
+	// on the hosted apply gate beside the bundle it shipped. Set by
+	// runPromote; "" when no plan was computed.
+	planDigest string
 }
 
 // notice writes a human progress line for the follow stage. It goes to stderr

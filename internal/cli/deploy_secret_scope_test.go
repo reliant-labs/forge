@@ -54,11 +54,18 @@ api-resources)
   printf 'daemonsets ds apps/v1 true DaemonSet [get]\npriorityclasses pc scheduling.k8s.io/v1 false PriorityClass [get]\n'
   exit 0 ;;
 get)
-  name="$3"; ns=""
+  name="$3"; ns=""; all="$*"
   while [ $# -gt 0 ]; do [ "$1" = "-n" ] && ns="$2"; shift; done
   echo "$ctx $ns/$name" >> "` + log + `"
   case " ` + strings.Join(has, " ") + ` " in
-  *" $ctx "*) echo '{"data":{"token":"dg==","api-token":"dg=="}}'; exit 0 ;;
+  *" $ctx "*)
+    # A keys-only read (KubectlSecretGetter's go-template) gets keys; a
+    # value read (the byte-match check's -o json) gets the object.
+    case "$all" in
+    *go-template=*) printf 'token\napi-token\n' ;;
+    *) echo '{"data":{"token":"dg==","api-token":"dg=="}}' ;;
+    esac
+    exit 0 ;;
   esac
   echo "Error from server (NotFound): secrets \"$name\" not found" >&2
   exit 1 ;;

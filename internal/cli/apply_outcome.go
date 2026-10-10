@@ -18,6 +18,11 @@ package cli
 //
 // The readers below turn either into one fact: this promotion's latest apply
 // FAILED, with what it said.
+//
+// The hosted gate is also a LEDGER-ONLY env's applied baseline: its details
+// name the bundle the apply shipped, and the next plan diffs against the
+// newest passed one (deploy_plan_applied.go). The machine ledger's apply
+// record already served a file-ledger env that way.
 
 import (
 	"context"
@@ -42,17 +47,8 @@ func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledge
 	if !ledger.Hosted || plan.Recorded == nil || o.clientDeploy.dryRun || queuedOf(applyErr) != nil {
 		return
 	}
-	finished := time.Now().UTC()
-	startedUTC := started.UTC()
-	gate := release.Gate{
-		Name: applyGateName, Status: release.GateStatusPassed,
-		Summary:   "applied from this machine",
-		StartedAt: &startedUTC, FinishedAt: &finished,
-	}
-	if applyErr != nil {
-		gate.Status = release.GateStatusFailed
-		gate.Summary = oneLine(applyErr.Error(), 300)
-	}
+	gate := applyOutcomeGate(started, time.Now(), applyErr,
+		appliedBundleDigest(env, plan.Recorded.Release, o.clientDeploy), o.planDigest)
 	backend, err := resolveGateBackend(ctx, env)
 	if err == nil && backend.store == nil {
 		err = fmt.Errorf("no gate store for %s", env)
@@ -64,6 +60,57 @@ func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledge
 		o.notice("[deploy] Note: the apply's %s verdict could not be recorded on promotion %s: %v\n",
 			gate.Status, plan.Recorded.ID, err)
 	}
+}
+
+// appliedBundleDigest is the bundle an apply of release shipped WHOLE: the one
+// this process recorded for (env, release), or "" for a SCOPED apply
+// (--target, --frontends-only). A scoped apply shipped part of the bundle, so
+// naming it would make the next plan treat the rest as applied too — and
+// under-report every change it skipped. Naming none leaves the next plan's
+// Live honestly unknown until a whole-env deploy records one again.
+func appliedBundleDigest(env, version string, applied deployOptions) string {
+	if len(applied.targets) > 0 || applied.frontendsOnly {
+		return ""
+	}
+	return recordedBundleDigest(env, version)
+}
+
+// applyOutcomeGate is the evidence one client-side apply leaves on the
+// promotion it realized.
+//
+// ITS DETAILS ARE THE ENV'S APPLIED BASELINE. bundleDigest names the bundle
+// this apply shipped — the release's bundle of record, whose objects the
+// deploy verified its own render against — and a ledger-only env's next plan
+// diffs against the newest passed gate's bundle (appliedBaseline). Without it
+// that plan has nothing recorded to diff against, and reports every object as
+// added and no removal at all. planDigest is the review that approved it,
+// which a ledger-only env's promotion cannot carry (serverPlanDigest).
+//
+// Either may be "": a bundle that was never recorded, a deploy with no plan.
+// A gate with no bundle digest is still the truth about the apply; it just
+// cannot serve as a baseline, and the next plan says so.
+func applyOutcomeGate(started, finished time.Time, applyErr error, bundleDigest, planDigest string) release.Gate {
+	startedUTC, finishedUTC := started.UTC(), finished.UTC()
+	gate := release.Gate{
+		Name: applyGateName, Status: release.GateStatusPassed,
+		Summary:   "applied from this machine",
+		StartedAt: &startedUTC, FinishedAt: &finishedUTC,
+	}
+	if applyErr != nil {
+		gate.Status = release.GateStatusFailed
+		gate.Summary = oneLine(applyErr.Error(), 300)
+	}
+	details := map[string]any{}
+	if bundleDigest != "" {
+		details[applyGateBundleDigest] = bundleDigest
+	}
+	if planDigest != "" {
+		details[applyGatePlanDigest] = planDigest
+	}
+	if len(details) > 0 {
+		gate.Details = details
+	}
+	return gate
 }
 
 // promotionApply is what the ledger says about whether a promotion was

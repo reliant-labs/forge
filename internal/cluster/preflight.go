@@ -2014,16 +2014,46 @@ func writeMissingKeyBlock(b *strings.Builder, kind string, missing map[string][]
 }
 
 // KubectlSecretGetter is the live SecretGetter: it reads a Secret's `.data`
-// keys from the target cluster via `kubectl --context <ctx> get secret
-// <name> -n <ns> -o json`, threading the DECLARED context per command (the
-// same per-command --context discipline the rest of the apply path uses, so
-// the check never trusts the ambient context). A not-found Secret returns
-// exists=false rather than an error so the preflight reports it cleanly.
+// KEY NAMES from the target cluster, threading the DECLARED context per
+// command (the same per-command --context discipline the rest of the apply
+// path uses, so the check never trusts the ambient context). A not-found
+// Secret returns exists=false rather than an error so the preflight reports
+// it cleanly.
+//
+// KEYS ONLY, NEVER VALUES. The output is a go-template that prints each key
+// and nothing else (secretKeysTemplate), so a value never reaches this
+// process — not in a buffer, not in an error string, not in a log. `-o json`
+// (and `-o jsonpath={.data}`) would hand forge every value just to read the
+// map's keys; a presence check has no business holding them.
 type KubectlSecretGetter struct{}
+
+// secretKeysTemplate prints a Secret's `.data` keys, one per line. The value
+// is bound to `$_` and never printed.
+const secretKeysTemplate = `{{range $k, $_ := .data}}{{$k}}{{"\n"}}{{end}}`
 
 // GetSecretKeys returns the keys of the named Secret's `.data` in namespace.
 func (KubectlSecretGetter) GetSecretKeys(ctx context.Context, kctx, namespace, name string) (map[string]struct{}, bool, error) {
-	return kubectlDataKeys(ctx, kctx, namespace, "secret", name)
+	args := []string{"get", "secret", name, "-o", "go-template=" + secretKeysTemplate}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	cmd := kubectlCmd(ctx, kctx, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if strings.Contains(msg, "NotFound") || strings.Contains(msg, "not found") {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("kubectl get secret: %v: %s", err, msg)
+	}
+	keys := map[string]struct{}{}
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if k := strings.TrimSpace(line); k != "" {
+			keys[k] = struct{}{}
+		}
+	}
+	return keys, true, nil
 }
 
 // KubectlSecretValueGetter is the live SecretValueGetter: it reads a

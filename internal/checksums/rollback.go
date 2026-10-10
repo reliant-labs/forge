@@ -59,6 +59,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // rollbackEntry is one journaled path's pre-run state. existed=false
@@ -187,7 +188,7 @@ func CaptureExternalWrites(root string, relPaths ...string) {
 	}
 	for _, rel := range relPaths {
 		rel = slashKey(filepath.Clean(rel))
-		if rel == "." || rel == "" || filepath.IsAbs(rel) || hasDotDotPrefix(rel) {
+		if rel == "." || rel == "" || isRooted(rel) || hasDotDotPrefix(rel) {
 			continue
 		}
 		full := filepath.Join(root, rel)
@@ -586,4 +587,12 @@ func isUnder(dir, root string) bool {
 // be pruned.
 func hasDotDotPrefix(rel string) bool {
 	return len(rel) >= 2 && rel[0] == '.' && rel[1] == '.'
+}
+
+// isRooted reports whether a slash-keyed path names somewhere other than a
+// path under its base. filepath.IsAbs alone is not enough: on Windows "/abs"
+// has no volume, so IsAbs is false, yet it names the current drive's root,
+// and filepath.Join(root, "/abs") would silently turn it into root\abs.
+func isRooted(rel string) bool {
+	return filepath.IsAbs(rel) || strings.HasPrefix(rel, "/") || filepath.VolumeName(rel) != ""
 }

@@ -199,11 +199,13 @@ func sqlcOutDirs(data []byte) []string {
 // the project.
 func cleanProjectRel(p string) string {
 	p = strings.TrimSpace(p)
-	if p == "" || filepath.IsAbs(p) {
+	// filepath.IsAbs alone misses "/abs" on Windows (no volume, so not
+	// absolute there), yet it names the drive root, never the project.
+	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
 		return ""
 	}
 	p = path.Clean(filepath.ToSlash(p))
-	if p == "." || p == ".." || strings.HasPrefix(p, "../") {
+	if p == "." || p == ".." || strings.HasPrefix(p, "../") || strings.HasPrefix(p, "/") {
 		return ""
 	}
 	return p

@@ -1179,6 +1179,7 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 		paths:         opts.paths,
 		cfg:           opts.cfg,
 		cwd:           cwd,
+		golangciMemo:  &golangciMemo{},
 	}
 	hasFailed := false
 
@@ -1456,7 +1457,9 @@ func golangciRunArgs(extra []string, paths []string) []string {
 	return append(args, paths...)
 }
 
-func runGolangciLint(ctx context.Context, fix bool, paths []string) error {
+// runGolangciLint runs the gating golangci-lint pass with bin, the binary
+// resolved for this module (golangci_toolchain.go).
+func runGolangciLint(ctx context.Context, bin string, fix bool, paths []string) error {
 	fmt.Println("Running golangci-lint...")
 
 	var extra []string
@@ -1465,7 +1468,7 @@ func runGolangciLint(ctx context.Context, fix bool, paths []string) error {
 	}
 	args := golangciRunArgs(extra, paths)
 
-	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -1489,12 +1492,12 @@ func runGolangciLint(ctx context.Context, fix bool, paths []string) error {
 // failed — --issues-exit-code=0 already neutralizes the findings exit code —
 // so it is reported as a lane that could not run (laneUnavailableError), not
 // swallowed into a ⚠️ and a nil return.
-func runTypedAccessGuardAdvisory(ctx context.Context, paths []string) error {
+func runTypedAccessGuardAdvisory(ctx context.Context, bin string, paths []string) error {
 	fmt.Println("Checking typed-config guardrail (advisory)...")
 
 	args := golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, paths)
 
-	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

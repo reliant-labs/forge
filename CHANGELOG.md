@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge lint` runs a golangci-lint that can analyze the module.**
+  golangci-lint refuses a module whose `go` directive is newer than the Go it
+  was built with ("the Go language version (go1.26) used to build
+  golangci-lint is lower than the targeted Go version (1.27)", exit 3). The
+  workspace image shipped a go1.26-built release binary, so the gating lane
+  could not run on control-plane, reliant or forge itself, all `go 1.27`. The
+  binary is now chosen per module. The one on PATH is used when its build Go
+  (read with `debug/buildinfo`, no subprocess) is at least the module's `go`
+  directive. Otherwise forge builds its pinned golangci-lint with the toolchain
+  `go` selects for the module, once per (pin, toolchain), into
+  `<UserCacheDir>/forge/tools/golangci-lint/` (`FORGE_TOOLS_CACHE` overrides
+  it), and prints a one-line notice first. If that build fails, the lane fails
+  with a message naming the binary, both Go versions and the exact
+  `GOTOOLCHAIN=… go install …` that fixes it. The gating lane and the advisory
+  typed-config guardrail share one resolution per run. No golangci-lint on
+  PATH is still a skip.
+
 - **A contract mock imports every package its foreign interfaces use.**
   `forge generate` rewrote control-plane's `internal/svcdaemon/mock_gen.go`
   without `github.com/nats-io/nats.go`, so the package stopped building on every

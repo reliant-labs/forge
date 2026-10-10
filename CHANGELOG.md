@@ -69,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an expired image each cut a new release. The cut and the deploy capture
   provenance through one function.
 
+- **Status writes survive the informer cache trailing them.** New
+  `controller.UpdateStatus` retries a `Status().Update` conflict with the
+  object's current resourceVersion, re-sending the status the reconciler
+  computed. A reconciler requeued shortly after its own status write is handed
+  the object from before that write, and a plain update was refused with "the
+  object has been modified". control-plane's ManagedDatabase controller lost
+  the Failed status it was recording that way, and logged the refusal at
+  ERROR. A status subresource has one author, so taking the newer
+  resourceVersion carries nothing stale. Any error other than a conflict is
+  returned at once, and a conflict that outlasts the retries is returned for
+  `IsTransient` to requeue. The CRD scaffold's state-machine shape uses it.
+
 - **Storage maintenance unlinks are capped, paced, and back off on filesystem
   distress.** On 2026-10-09 one `forge storage gc --apply` unlinked 175,324 Go
   build cache entries in ~30s on a virtiofs-backed workspace volume while

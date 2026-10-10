@@ -15,11 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=<env>`; it is not derived
   from the CORS/HSTS `environment` mode field, which cannot tell staging from prod.
 
-- **`pkg/observe` honours the standard OTLP environment.**
+- **BREAKING: `pkg/observe` honours the standard OTLP environment.**
   `OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and the per-signal variants
   now configure the exporters: `http/protobuf` is the default, `grpc` is
   supported, and headers reach the wire (previously gRPC only, no headers).
-  `OTEL_SERVICE_NAME` wins over the compiled-in service name, and
+  The default protocol flips from gRPC to `http/protobuf`: an existing
+  `:4317` endpoint with no `OTEL_EXPORTER_OTLP_PROTOCOL` must now set
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`.
+  `OTEL_SERVICE_NAME` now overrides the compiled-in service name, and
   `OTEL_SDK_DISABLED=true` turns export off. `Config.OTLPEndpoint` still
   overrides the endpoint; with no endpoint nothing is exported.
 - **The W3C TraceContext+Baggage propagator is always installed**, not only when

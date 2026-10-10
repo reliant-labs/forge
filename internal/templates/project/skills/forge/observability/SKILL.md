@@ -159,7 +159,7 @@ Apps never learn the collector's backend. The platform renders the standard Open
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (default, 4318) or `grpc` (4317) |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `k=v,k2=v2`, e.g. `authorization=<key>`; per-signal `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_{ENDPOINT,PROTOCOL,HEADERS}` override it |
 | `OTEL_SERVICE_NAME` | wins over the compiled-in service name (the caller's default is only a fallback) |
-| `OTEL_RESOURCE_ATTRIBUTES` | merged into the resource; carries `deployment.environment.name=<forge env name>` |
+| `OTEL_RESOURCE_ATTRIBUTES` | merged into the resource; carries `deployment.environment.name=<env>` |
 | `OTEL_SDK_DISABLED=true` | every export off |
 | `OTEL_LOGS_EXPORTER=otlp` | the explicit switch for OTLP logs (off by default) |
 

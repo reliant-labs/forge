@@ -485,6 +485,24 @@ func trimPathRef(ref string) string {
 	return strings.TrimRight(ref, ".,:;)('\"")
 }
 
+// pathRefs returns pathRefRE's matches in content, minus a .forge/ match
+// nested under some other directory: `~/.forge/ledger` or
+// `$FORGE_HOME/.forge/x` names a machine-wide directory, not the project's
+// .forge/, so checking it against the scaffold tree is a false positive.
+// `./.forge/x` stays a project reference.
+func pathRefs(content string) []string {
+	var out []string
+	for _, loc := range pathRefRE.FindAllStringIndex(content, -1) {
+		match := content[loc[0]:loc[1]]
+		if strings.HasPrefix(match, ".forge/") && loc[0] > 0 && content[loc[0]-1] == '/' &&
+			(loc[0] < 2 || content[loc[0]-2] != '.') {
+			continue
+		}
+		out = append(out, match)
+	}
+	return out
+}
+
 // segmentsMatch reports whether ref (with <placeholder>/{placeholder}/*
 // segments treated as single-segment wildcards) matches any path in tree.
 func segmentsMatch(tree map[string]bool, ref string) bool {
@@ -618,7 +636,7 @@ func TestSkillsPathReferencesExist(t *testing.T) {
 			t.Errorf("skills/%s: stale path reference %q — %s\n  (fix the skill, or add to internal/templates/testdata/skills_validation_allowlist.txt with a justification)",
 				rel, ref, reason)
 		}
-		for _, raw := range pathRefRE.FindAllString(content, -1) {
+		for _, raw := range pathRefs(content) {
 			ref := trimPathRef(raw)
 			if ref == "" {
 				continue
@@ -1090,6 +1108,18 @@ func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
 	for _, want := range []string{"internal/app/testing.go", "internal/config/config.go", "pkg/middleware/x.go"} {
 		if !slices.Contains(pathRefRE.FindAllString("see "+want+" here", -1), want) {
 			t.Errorf("pathRefRE does not extract %q — the claim would be structurally invisible", want)
+		}
+	}
+	// A .forge/ under another directory is machine state, not the project's.
+	for text, want := range map[string]bool{
+		"default `~/.forge/ledger`":      false,
+		"under $FORGE_HOME/.forge/cache": false,
+		"see .forge/logs/dev/x.log":      true,
+		"see ./.forge/logs/dev/x.log":    true,
+		"(`.forge/hostinfra/idp/z.log`)": true,
+	} {
+		if got := len(pathRefs(text)) > 0; got != want {
+			t.Errorf("pathRefs(%q) extracted=%v, want %v", text, got, want)
 		}
 	}
 

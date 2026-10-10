@@ -239,7 +239,7 @@ message GetProjectResponse {
 // fully visible to introspection.
 func assertAuditSeesService(t *testing.T, projectDir, forgeBin, serviceName, rpcName string) {
 	t.Helper()
-	out := runCmdOutput(t, projectDir, forgeBin, "project", "audit", "--json")
+	out := runCmdStdout(t, projectDir, forgeBin, "project", "audit", "--json")
 	var report struct {
 		Categories map[string]struct {
 			Details struct {

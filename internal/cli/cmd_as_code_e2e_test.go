@@ -202,7 +202,7 @@ func userCommands(deps Deps) []*cobra.Command {
 	// (3) No phantom service: audit's codegen category must not carry an
 	// unregistered_services finding — every subcommand the binary
 	// advertises is backed by a registration row.
-	auditOut := runCmdOutput(t, projectDir, forgeBin, "project", "audit", "--json")
+	auditOut := runCmdStdout(t, projectDir, forgeBin, "project", "audit", "--json")
 	var report struct {
 		Categories map[string]struct {
 			Details map[string]any `json:"details"`

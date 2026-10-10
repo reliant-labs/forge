@@ -86,7 +86,7 @@ func (g *ProjectGenerator) writeProjectJSON(reliantDir string) error {
 	metadata := map[string]interface{}{
 		"name":        g.Name,
 		"module_path": g.ModulePath,
-		"created_at":  time.Now().Format(time.RFC3339),
+		"created_at":  projectCreatedAt(filepath.Join(reliantDir, "project.json")),
 		"version":     "1.0.0",
 		"generator":   "forge",
 	}
@@ -102,6 +102,20 @@ func (g *ProjectGenerator) writeProjectJSON(reliantDir string) error {
 		return fmt.Errorf("failed to write .reliant/project.json: %w", err)
 	}
 	return nil
+}
+
+// projectCreatedAt is the creation time an existing project.json records, or
+// now for a new one. Rewriting the file must not move it: a project is created
+// once, and a timestamp that changed on every rewrite made the file differ
+// whenever the rewrite crossed a second boundary.
+func projectCreatedAt(path string) string {
+	var existing struct {
+		CreatedAt string `json:"created_at"`
+	}
+	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &existing) == nil && existing.CreatedAt != "" {
+		return existing.CreatedAt
+	}
+	return time.Now().Format(time.RFC3339)
 }
 
 // writeIfAbsent renders the given template to destPath only if destPath does

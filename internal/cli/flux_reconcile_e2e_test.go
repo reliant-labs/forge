@@ -218,6 +218,13 @@ func runForgeFluxE2E(t *testing.T, projectDir, forgeBin, ledgerHome string, args
 	cmd.Env = append(os.Environ(),
 		"FORGE_LEDGER_HOME="+ledgerHome,
 		"GOFLAGS=",
+		// The binary under test is a source build, and the project pins the
+		// published forge: a source build cannot be fetched, so the scaffold's
+		// go.mod requires the published floor and generate converges
+		// forge_version to it. `env build`/`env deploy` refuse that skew
+		// (forge_pin_skew.go) to stop a human shipping with a stale binary;
+		// this test runs a different forge from the pin on purpose.
+		allowVersionSkewEnv+"=1",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

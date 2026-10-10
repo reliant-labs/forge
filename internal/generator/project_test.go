@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -1012,6 +1013,26 @@ func TestProjectGeneratorIsIdempotentForforgeOwnedFiles(t *testing.T) {
 		if before[p] != after {
 			t.Errorf("forge-owned file %s changed on regeneration", p)
 		}
+	}
+}
+
+// TestProjectCreatedAtSurvivesRewrite pins why the test above is not
+// clock-dependent: a rewrite keeps the recorded creation time instead of
+// stamping a new one, which used to differ whenever the two writes straddled
+// a second boundary.
+func TestProjectCreatedAtSurvivesRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "project.json")
+	if got := projectCreatedAt(path); got == "" {
+		t.Fatal("a new project.json must get a creation time")
+	} else if _, err := time.Parse(time.RFC3339, got); err != nil {
+		t.Fatalf("creation time %q is not RFC3339: %v", got, err)
+	}
+	const recorded = "2001-02-03T04:05:06Z"
+	if err := os.WriteFile(path, []byte(`{"created_at": "`+recorded+`", "name": "x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectCreatedAt(path); got != recorded {
+		t.Errorf("projectCreatedAt = %q, want the recorded %q", got, recorded)
 	}
 }
 

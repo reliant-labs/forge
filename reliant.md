@@ -5,6 +5,7 @@
   has a forge.yaml, so none of that belongs here. Keep this file to what is true
   of working ON forge itself.
 -->
+
 ## ⛔ You are running INSIDE forge — do not kill it
 
 The agent session reading this is itself hosted by a forge process. Commands

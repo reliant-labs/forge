@@ -87,9 +87,20 @@ func checkHostedImagesResolve(env string, e *KCLEntities, pushBase string) error
 }
 
 // hostedOffBaseImageFindings is every host-bearing image on a hosted item of
-// this env, judged against pushBase when it is known.
-func hostedOffBaseImageFindings(e *KCLEntities, pushBase string) []hostedimage.Finding {
-	return hostedimage.OffBase(hostedImageItems(e), pushBase)
+// this env, judged against the env's push base when it is known.
+//
+// THE BASE IS RESOLVED ONLY WHEN THERE IS A HOSTED IMAGE TO JUDGE. Composing
+// it asks the control plane which organization the credential acts for
+// (hosted_org.go), and with nothing hosted no answer could change the result.
+// It used to be resolved first, unconditionally, so `forge env render prod` —
+// control-plane's prod declares a control plane and hosts nothing — called
+// admin.reliantapi.com from a script that was meant to be hermetic.
+func hostedOffBaseImageFindings(e *KCLEntities) []hostedimage.Finding {
+	items := hostedImageItems(e)
+	if len(items) == 0 {
+		return nil
+	}
+	return hostedimage.OffBase(items, platformPushBase(e))
 }
 
 // verifiedOffBaseImages is the subset forge actually PROVED is off-base.

@@ -9,9 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`FORGE_LEDGER=machine` keeps a run off a declared control plane.**
+  control-plane's hermetic `scripts/test-kata-prepull.sh` set
+  `FORGE_LEDGER_HOME` to a temp dir and ran `forge ledger import --apply`.
+  prod declares `forge.ControlPlane`, so the import planned against, and tried
+  to write to, the production ledger. Only a plan conflict stopped it.
+  `FORGE_LEDGER_HOME` is a location, not a selector, and it stays one: users
+  set it to move the ledger off a network filesystem, and making it select
+  would send their hosted envs to an empty machine ledger. The new
+  `FORGE_LEDGER=machine` sends every env to this machine's ledger. No
+  endpoint, credential or client for the declared control plane is resolved.
+  Every forge process that inherits the variable is covered, so a script's
+  render, import and status calls are all covered. An unrecognised value is
+  refused, never read as the default. The override prints one stderr line per
+  env, and `forge ledger where <env> --json` reports
+  `"override": "FORGE_LEDGER=machine"` so a script can assert it.
+  `forge ledger import` now labels each target HOSTED or machine. Before a
+  hosted write it prints `Writing to the HOSTED ledger at <url> …`.
+
+- **`forge env render` no longer asks the control plane for an organization
+  that nothing uses.** The off-base check for hosted images composed the push
+  base first, which costs a `GetTenant` call with the stored credential, and
+  only then looked for hosted images. An env that declares a control plane but
+  hosts nothing (control-plane's prod) called its control plane on every
+  render. The base is now resolved only when there is a hosted image to judge.
+
 - **A no-version `forge env deploy` reuses the release already cut for the
-  checkout, and builds nothing.** On 2026-10-09 `forge env build prod --release
-  20261009.205925-d29da50b` cut prod's release from a clean checkout. A
+  checkout, and builds nothing.** On 2026-10-09
+  `forge env build prod --release 20261009.205925-d29da50b` cut prod's release
+  from a clean checkout. A
   `forge env deploy prod` in the same unchanged checkout then rebuilt every
   image (the reliant image came out with a different digest) and named a new
   release. The control plane had stored the cut's tree hash, but the hosted

@@ -257,6 +257,56 @@ func TestBuildPlan_SecretsAndDrift(t *testing.T) {
 	}
 }
 
+// Presence over EVERY declared secret, against the last applied declaration.
+// Prod's 2026-10-10 plans carried 28 `secret_needed` warns for Secrets that
+// had existed for months: the steady state must be silent, so the one secret
+// that actually went missing is the finding a reviewer reads.
+func TestBuildPlan_SecretPresenceAgainstTheLastApply(t *testing.T) {
+	declared := []ShapeSecret{
+		{Name: "steady", Provider: "external"},
+		{Name: "deleted-since", Provider: "external"},
+		{Name: "unread", Provider: "external"},
+	}
+	live := Shape{Kind: EnvSelfManaged, Secrets: declared}
+	cand := Shape{Kind: EnvSelfManaged, Secrets: append(append([]ShapeSecret(nil), declared...),
+		ShapeSecret{Name: "new-present", Provider: "external"},
+		ShapeSecret{Name: "new-missing", Provider: "external"})}
+	p, err := BuildPlan(PlanInput{
+		EnvironmentID: "e", BundleID: "b", Candidate: cand, Live: &live, Drift: noDrift(),
+		SecretPresence: map[string]bool{
+			"steady": true, "deleted-since": false,
+			"new-present": true, "new-missing": false,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]PlanFinding{}
+	for _, f := range p.Findings {
+		if f.Code == FindingSecretNeeded {
+			got[f.Subject] = f
+		}
+	}
+	if _, ok := got["steady"]; ok {
+		t.Errorf("a secret declared at the last apply and still present is not a finding: %+v", got["steady"])
+	}
+	if _, ok := got["unread"]; ok {
+		t.Errorf("an already-declared secret nobody could read must stay silent, not warn every deploy: %+v", got["unread"])
+	}
+	if f := got["deleted-since"]; f.Class != ClassWarn || !strings.Contains(f.Detail, "MISSING") {
+		t.Errorf("a declared secret that is now missing = %+v, want a warn naming it MISSING", f)
+	}
+	if f := got["new-present"]; f.Class != ClassInfo {
+		t.Errorf("a newly declared secret that is present = %+v, want info", f)
+	}
+	if f := got["new-missing"]; f.Class != ClassWarn || !strings.Contains(f.Detail, "MISSING") {
+		t.Errorf("a newly declared secret that is missing = %+v, want a warn naming it MISSING", f)
+	}
+	if len(got) != 3 {
+		t.Errorf("secret findings = %v, want exactly deleted-since, new-present, new-missing", got)
+	}
+}
+
 func TestBuildPlan_KindChangeRefused(t *testing.T) {
 	live := Shape{Kind: EnvLocal}
 	_, err := BuildPlan(PlanInput{EnvironmentID: "e", BundleID: "b", Candidate: Shape{Kind: EnvSelfManaged}, Live: &live})

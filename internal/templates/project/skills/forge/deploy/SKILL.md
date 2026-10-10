@@ -227,6 +227,14 @@ refuses with exit **5** (`plan_unconfirmed`), having built, pushed and cut but
 written no promotion — so approving it afterwards needs no rebuild. A CI deploy
 missing `--yes` is the most common cause of exit 5.
 
+**The plan diffs against the last SUCCEEDED apply, never the declaration**,
+and whoever applies the env computes it: the control plane for an env it
+converges, forge for one it applies itself (a file-ledger env, or a
+`forge.ControlPlane` env that `converges nothing`). Every successful apply
+records the bundle it shipped, so an unchanged config plans clean. Reading a
+plan — `object_removed`, field paths, secret presence, `no recorded config`:
+`deploy/plan`.
+
 **A scoped deploy needs a release.** `--frontends-only` and `--target` ship
 part of the env, so forge refuses them when no version is named: a no-version
 deploy cuts a release over every artifact, and cutting one that ships only

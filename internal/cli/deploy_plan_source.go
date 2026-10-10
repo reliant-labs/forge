@@ -9,7 +9,14 @@ package cli
 //     to be the server's, or the digest forge showed could never be the one
 //     the server derives. Forge verifies the returned digest client-side
 //     (hosted_plan.go), which catches a version skew now rather than as a
-//     misleading plan_stale at approval time.
+//     misleading plan_stale at approval time. That holds only where the
+//     control plane can SEE what it plans against: a placed env (its own
+//     deployments) or a hub-converged one (its Flux).
+//   - A LEDGER-ONLY env's plan is built HERE (deploy_plan_applied.go).
+//     Its control plane records promotions and converges none of it, so it
+//     has no Live at all; forge is the only party that applies it, and so the
+//     only one that can record what was applied and read the cluster's
+//     Secrets.
 //   - A FILE-LEDGER env's plan is built HERE, by release.BuildPlan, because
 //     there is no server. Both sides call the same function, so the two
 //     backends cannot disagree about what a finding means — only about what
@@ -18,10 +25,11 @@ package cli
 // THE LIVE SIDE IS THE APPLIED BUNDLE, NEVER THE DECLARED SHAPE (briefing
 // §7). `forge env build` refreshes declared_shape from the very render being
 // deployed, so diffing against it would hide every change — the plan would
-// report "no differences" precisely when there were some. For a self-managed
-// env the applied bundle is the newest one with a SUCCEEDED apply; when there
-// is none, Live is nil, which BuildPlan reports as an `unknown` warn rather
-// than as an empty diff (F-20: empty and unknown must never render alike).
+// report "no differences" precisely when there were some. For an env forge
+// applies, the applied bundle is the newest one with a SUCCEEDED apply; when
+// there is none, Live is nil, which BuildPlan reports as an `unknown` warn
+// rather than as an empty diff (F-20: empty and unknown must never render
+// alike).
 
 import (
 	"context"
@@ -123,10 +131,14 @@ func bundleDigestForRelease(_ context.Context, projectDir, env, version string, 
 // usual; what it must not do is treat nil as approval, which gateDeployOnPlan
 // enforces.
 func resolveDeployPlan(ctx context.Context, projectDir, env string, ledger envLedger, bundleDigest string, errOut io.Writer) (*release.Plan, error) {
-	if ledger.Hosted {
+	switch {
+	case ledger.ledgerOnly():
+		return ledgerOnlyDeployPlan(ctx, projectDir, env, ledger, bundleDigest, errOut)
+	case ledger.Hosted:
 		return hostedDeployPlan(ctx, projectDir, env, bundleDigest, errOut)
+	default:
+		return fileLedgerDeployPlan(ctx, projectDir, env, bundleDigest)
 	}
-	return fileLedgerDeployPlan(ctx, projectDir, env, bundleDigest)
 }
 
 // hostedDeployPlan asks the control plane.
@@ -243,13 +255,26 @@ func fileLedgerDeployPlan(ctx context.Context, projectDir, env, bundleDigest str
 		Basis:                 basis,
 		// Drift: nil — a file-ledger env has no observer. BuildPlan
 		// reports that as unknown/warn (briefing §7, F-20).
-		// SecretPresence: nil — nothing here could read a provider, and
-		// #398 makes an absent name UNVERIFIABLE rather than missing.
-		// Listing names as false would report every external secret as
-		// missing and make the warning meaningless.
+		// SecretPresence: the cluster's own answer for `external` secrets,
+		// read keys-only (deploy_plan_secrets.go). A name it could not
+		// read stays out of the map, which #398 makes UNVERIFIABLE rather
+		// than missing.
+		SecretPresence: deployPlanSecretPresence(ctx, projectDir, env, candidate.Shape),
 	})
 	if err != nil {
 		return nil, err
+	}
+	if live != nil {
+		for _, b := range bundles {
+			if b.ID == basis.AppliedBundleID {
+				annotateChangedFields(ctx, &plan, b.Reference, candidate.Reference)
+				break
+			}
+		}
+	}
+	if !handled {
+		// Not Flux-reconciled: forge applies it, and nothing prunes.
+		noteDirectApplyRemovals(&plan)
 	}
 	return &plan, nil
 }

@@ -363,6 +363,10 @@ type ApplyOpts struct {
 	// the stream untouched (the single-cluster path, byte-identical to the
 	// pre-scoping behaviour). See ScopeManifestsToGroup for the ownership
 	// rule.
+	//
+	// nil does NOT mean "write everything to Context": an object stamped
+	// for a different cluster (ClusterRoutingLabel) is refused, scoped or
+	// not — see refuseForeignClusterDocs.
 	ClusterScope *GroupScope
 
 	// OnStream, when non-nil, is handed the FINAL manifest stream — after
@@ -873,6 +877,15 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 // apply, returning the rollout still to be awaited.
 func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) (*PendingRollout, error) {
 	selectedCharts, manifests, crdOwner := selectAndScope(opts, manifests)
+
+	// The WHOLE scoped stream, checked once before any pass is sent: an object
+	// still stamped for another cluster here would otherwise be refused only
+	// by the pass that carries it, after the earlier passes had already
+	// written. Refused for a dry run too, so a preview never shows a stream a
+	// real apply would refuse. See refuseForeignClusterDocs.
+	if err := refuseForeignClusterDocs(opts.Context, manifests); err != nil {
+		return nil, err
+	}
 
 	// Split the stream into its apply passes NOW, before the dry-run return
 	// and before any chart is fetched: an unknown deploy-phase declaration
@@ -1688,6 +1701,12 @@ func KubectlApplyNamespaced(ctx context.Context, kctx, namespace, manifests stri
 		return fmt.Errorf("refusing to apply manifests without an explicit kubectl context: " +
 			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
 			"forge never falls back to the current context for a write")
+	}
+	// The same discipline for every object in the stream: one stamped for
+	// another cluster is never written to this one, whichever path brought it
+	// here. Checked before the namespace split, so a refusal writes nothing.
+	if err := refuseForeignClusterDocs(kctx, manifests); err != nil {
+		return err
 	}
 	// Docs that name a DIFFERENT namespace than the target cannot ride the
 	// `-n` flag (kubectl rejects the whole stream), so they apply separately

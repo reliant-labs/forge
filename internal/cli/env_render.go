@@ -366,7 +366,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// The unverified half therefore survives only for an env that declares a
 	// control plane and nothing hosted, where forge has no base to compare
 	// against and failing a render would assert something it never checked.
-	offBase := hostedOffBaseImageFindings(entities, platformPushBase(entities))
+	offBase := hostedOffBaseImageFindings(entities)
 	if verified := verifiedOffBaseImages(offBase); len(verified) > 0 {
 		return errHostedImagesOffBase(envName, verified)
 	}

@@ -26,12 +26,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -48,6 +50,12 @@ flag: an env whose KCL declares ` + "`forge.ControlPlane`" + ` records on that c
 plane; every other env records in this machine's ledger under
 $FORGE_LEDGER_HOME (default ~/.forge/ledger), keyed by project so every
 worktree shares one history.
+
+FORGE_LEDGER=machine overrides that for every env and every forge process that
+inherits it: nothing is read from or written to a declared control plane. Use
+it for hermetic tests and scripts. $FORGE_LEDGER_HOME only relocates the
+machine ledger; it never keeps a declared env off its control plane.
+` + "`" + `ledger where <env>` + "`" + ` says which ledger an env uses, and why.
 
 ` + "`" + `import` + "`" + ` is how history reaches whichever store an env selected. forge once
 kept promotions in ` + "`.forge/promotions/<env>.jsonl`" + ` inside the checkout; those
@@ -114,10 +122,19 @@ append-only log's current binding is its last line, so interleaving imported
 history with promotions made since would leave the environment reading whatever
 sorted last. The remedy is to import first.
 
+WHERE IT WRITES is each environment's selected ledger: an env whose KCL declares
+` + "`forge.ControlPlane`" + ` imports INTO THAT CONTROL PLANE. The plan labels every
+target as hosted or machine, and --apply names a hosted target again on the
+line before it writes. To keep an import on this machine — a test, a script, a
+scratch copy of a real env — set FORGE_LEDGER=machine. Setting only
+$FORGE_LEDGER_HOME does not: it relocates the machine ledger, and a declared
+env still imports into its control plane.
+
 Examples:
   ` + Name() + ` ledger import --from-git                        # dry run against ` + defaultImportRev + `
   ` + Name() + ` ledger import --from-git --rev origin/main --apply
-  ` + Name() + ` ledger import --from-file-ledger ~/.forge/ledger/myproj-ab12cd34 --apply`,
+  ` + Name() + ` ledger import --from-file-ledger ~/.forge/ledger/myproj-ab12cd34 --apply
+  FORGE_LEDGER=machine FORGE_LEDGER_HOME=$(mktemp -d) ` + Name() + ` ledger import --from-git --rev HEAD --apply`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLedgerImport(cmd, ledgerImportOptions{
@@ -229,6 +246,13 @@ type ledgerImportPlan struct {
 type ledgerImportTarget struct {
 	// Location is the ledger's human-facing address.
 	Location string
+	// Hosted reports a control-plane ledger: a write here leaves this
+	// machine, so the plan labels it and the apply names it again on the
+	// line before it writes.
+	Hosted bool
+	// Overridden maps an env to the control plane it DECLARES, for each
+	// env FORGE_LEDGER=machine kept on this machine's ledger instead.
+	Overridden map[string]string
 	// Importer records into it.
 	Importer ledgerImporter
 	// Envs are the environments whose promotions land here, sorted.
@@ -316,6 +340,7 @@ func planLedgerImport(ctx context.Context, projectDir string, src ledgerSource) 
 		if target == nil {
 			target = &ledgerImportTarget{
 				Location:   location,
+				Hosted:     l.Hosted,
 				Importer:   importer,
 				Promotions: map[string][]sourcePromotion{},
 			}
@@ -323,6 +348,12 @@ func planLedgerImport(ctx context.Context, projectDir string, src ledgerSource) 
 			plan.Targets = append(plan.Targets, target)
 		}
 		target.Envs = append(target.Envs, env)
+		if l.OverriddenEndpoint != "" {
+			if target.Overridden == nil {
+				target.Overridden = map[string]string{}
+			}
+			target.Overridden[env] = l.OverriddenEndpoint
+		}
 	}
 
 	// The releases go to EVERY target an env of this project selected,
@@ -436,6 +467,14 @@ func importerFor(l envLedger) (ledgerImporter, error) {
 // applyLedgerImport records every target's payload.
 func applyLedgerImport(ctx context.Context, out io.Writer, plan ledgerImportPlan, project string) error {
 	for _, target := range plan.Targets {
+		if target.Hosted {
+			// Named on the line BEFORE the write, not only in the plan
+			// above it: a write that leaves this machine is the one an
+			// operator must be able to stop, and the line they read last
+			// before it happens is this one.
+			fmt.Fprintf(out, "Writing to the HOSTED ledger at %s (environments: %s) …\n",
+				target.Location, strings.Join(target.Envs, ", "))
+		}
 		result, err := target.Importer.Import(ctx, target.payload(project))
 		if err != nil {
 			return fmt.Errorf("import into %s: %w.\n"+
@@ -726,6 +765,7 @@ func writeImportPlan(out io.Writer, src ledgerSource, plan ledgerImportPlan, app
 	for _, target := range plan.Targets {
 		releases, promotions := target.counts()
 		fmt.Fprintf(out, "\n%s into %s\n", verb, target.Location)
+		writeImportTargetLedger(out, target)
 		fmt.Fprintf(out, "  environments: %s\n", strings.Join(target.Envs, ", "))
 		fmt.Fprintf(out, "  releases:     %d new", releases)
 		if target.AlreadyHeldReleases > 0 {
@@ -746,5 +786,32 @@ func writeImportPlan(out io.Writer, src ledgerSource, plan ledgerImportPlan, app
 	}
 	for _, conflict := range plan.Conflicts {
 		fmt.Fprintf(out, "\nCONFLICT %s\n", conflict)
+	}
+}
+
+// writeImportTargetLedger labels a target as hosted or machine, and why.
+//
+// The label exists because the location alone did not prevent the surprise
+// it was meant to: a URL among the plan's lines reads as a detail, and a
+// script that believed $FORGE_LEDGER_HOME kept it private imported into a
+// production control plane while printing that URL.
+func writeImportTargetLedger(out io.Writer, target *ledgerImportTarget) {
+	if target.Hosted {
+		fmt.Fprintf(out, "  ledger:       HOSTED — the control plane these environments declare (forge.ControlPlane)\n")
+		if strings.TrimSpace(os.Getenv(ledgerfile.DefaultHomeEnv)) != "" {
+			fmt.Fprintf(out, "  note:         $%s relocates this machine's ledger; it does not keep a declared env off its control plane. %s=%s does\n",
+				ledgerfile.DefaultHomeEnv, ledgerSelectionEnv, ledgerSelectMachine)
+		}
+		return
+	}
+	fmt.Fprintf(out, "  ledger:       this machine's\n")
+	envs := make([]string, 0, len(target.Overridden))
+	for env := range target.Overridden {
+		envs = append(envs, env)
+	}
+	sort.Strings(envs)
+	for _, env := range envs {
+		fmt.Fprintf(out, "  override:     %s=%s keeps %s here; it declares the control plane at %s, which this import does not touch\n",
+			ledgerSelectionEnv, ledgerSelectMachine, env, target.Overridden[env])
 	}
 }

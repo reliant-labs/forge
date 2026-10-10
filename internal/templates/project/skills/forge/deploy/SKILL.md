@@ -237,6 +237,16 @@ everything. `--dry-run` / `--explain` cut nothing and are unaffected.
 `build` and `deploy` also record that shape on the control plane, so a console
 can read an env with no daemon online.
 
+**Where releases and promotions are recorded.** An env declaring
+`forge.ControlPlane` records on that control plane; every other env in this
+machine's ledger (`$FORGE_LEDGER_HOME`, default `~/.forge/ledger`).
+`forge ledger where <env>` says which, and why. A hermetic script or test that
+renders or imports a real env sets **`FORGE_LEDGER=machine`**: every forge it
+starts stays off the declared control plane, and `forge ledger where <env>
+--json` reports `"override": "FORGE_LEDGER=machine"` to assert it.
+`$FORGE_LEDGER_HOME` alone only relocates the machine ledger — a declared env
+still reads and writes its control plane.
+
 Each workload deploys through its runtime: cluster workloads are applied to
 the kubectl context the ClusterTarget names (forge refuses when it is
 missing rather than using the current one), after a live preflight that

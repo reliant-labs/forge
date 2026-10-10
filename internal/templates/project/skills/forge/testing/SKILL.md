@@ -58,6 +58,11 @@ stays real at every tier.
   each test to know your serialization shape.
 - **Live external dependencies** belong behind an explicit opt-in env var and a
   skip-with-reason, so `task test` stays hermetic in CI.
+- **A test that renders or imports a real env** whose KCL declares
+  `forge.ControlPlane` reaches that control plane's ledger unless it exports
+  `FORGE_LEDGER=machine` (with a temp `FORGE_LEDGER_HOME`). Setting only
+  `FORGE_LEDGER_HOME` does not keep it local. Assert it first:
+  `forge ledger where <env> --json` must report `"backend": "machine"`.
 
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`

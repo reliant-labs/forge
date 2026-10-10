@@ -237,6 +237,12 @@ type envLedger struct {
 	// (ledgerOnly). Treating the second as the first is what made a deploy
 	// that had already shipped refuse with "nothing to converge".
 	HostedTiers []hostedTier
+	// OverriddenEndpoint is the control plane the env DECLARES when
+	// FORGE_LEDGER=machine kept this run on the machine ledger instead
+	// (ledger_override.go). Empty otherwise. Carried so a surface that
+	// reports where records go can say what was overridden, rather than
+	// letting the override read as "this env declares nothing".
+	OverriddenEndpoint string
 }
 
 // ledgerOnly reports a hosted-ledger env whose control plane converges NONE
@@ -261,7 +267,9 @@ func (l envLedger) hubConverged() bool { return l.Hosted && l.HubConverged }
 // the backend is chosen, and the choice is DECLARATIVE: an env whose KCL
 // declares `forge.ControlPlane` uses that control plane's ledger; every other
 // env uses this machine's ledger. No flag, no context — the same checkout
-// resolves the same backend on every machine.
+// resolves the same backend on every machine. The one override is
+// FORGE_LEDGER=machine (ledger_override.go), which keeps a hermetic run off a
+// declared control plane and says so.
 //
 // A render FAILURE is an error, never a fallback to the machine ledger. For a
 // hosted env that fallback would silently answer "never promoted", and a
@@ -287,6 +295,12 @@ func ledgerFor(ctx context.Context, projectDir, env string) (envLedger, error) {
 // `forge ledger import` itself needs, because the import must be able to
 // open the very ledger the refusal is about in order to fill it.
 func selectLedger(ctx context.Context, projectDir, env string) (envLedger, error) {
+	// Validated before anything else, so a malformed FORGE_LEDGER fails on
+	// the first command that reaches any ledger — not only once an env
+	// that declares a control plane is rendered.
+	if _, err := ledgerSelectionFromEnv(); err != nil {
+		return envLedger{}, err
+	}
 	mainK := filepath.Join(projectDir, "deploy", "kcl", env, "main.k")
 	if _, err := os.Stat(mainK); err != nil {
 		// No KCL for this env in this checkout — nothing can declare a
@@ -318,6 +332,22 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	decl := declarationFromEntities(entities)
 	if decl == nil {
 		return machineLedger(projectDir)
+	}
+	selection, err := ledgerSelectionFromEnv()
+	if err != nil {
+		return envLedger{}, err
+	}
+	if selection == ledgerSelectMachine {
+		// BEFORE the endpoint, the credential and the client: under the
+		// override nothing that could reach the declared control plane
+		// runs — not even a credential helper.
+		l, err := machineLedger(projectDir)
+		if err != nil {
+			return envLedger{}, err
+		}
+		l.OverriddenEndpoint = strings.TrimRight(strings.TrimSpace(decl.Endpoint), "/")
+		noteLedgerOverride(env, l.OverriddenEndpoint, l.Bindings.Location())
+		return l, nil
 	}
 	ep, err := cloud.ResolveEndpoint(env, decl)
 	if err != nil {

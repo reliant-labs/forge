@@ -49,8 +49,12 @@ type ledgerWhereDoc struct {
 	Because string `json:"because"`
 	// Declaration is the control-plane declaration when there is one, so a
 	// reader can see the endpoint and organization the KCL named rather
-	// than inferring them from the URL.
+	// than inferring them from the URL. Present under an override too: it
+	// is then the declaration that was NOT used.
 	Declaration *ledgerDeclarationDoc `json:"declaration,omitempty"`
+	// Override is "FORGE_LEDGER=machine" when that variable displaced a
+	// declared control plane, so a script can assert its run stays local.
+	Override string `json:"override,omitempty"`
 	// Project is the forge project the ledger is keyed by. It is what
 	// makes two worktrees of one project share one machine ledger, and it
 	// scopes a hosted env's identity, so a reader diagnosing "why is this
@@ -82,6 +86,14 @@ including local — and every other environment records in this machine's
 ledger under $FORGE_LEDGER_HOME (default ~/.forge/ledger), keyed by project so
 that every worktree of a project shares one history.
 
+ONE OVERRIDE: FORGE_LEDGER=machine sends every environment to this machine's
+ledger, whatever it declares, and nothing is read from or written to the
+declared control plane. It is for hermetic tests and scripts that render or
+import a real environment. $FORGE_LEDGER_HOME alone does NOT do this: it says
+WHERE the machine ledger is, not WHETHER an environment uses it. A script can
+assert its run stays local with ` + "`" + `ledger where <env> --json` + "`" + ` (backend
+"machine", override "FORGE_LEDGER=machine").
+
 This renders the environment and reports the declaration it FOUND. It does not
 infer the answer from which store happens to hold records: a project that has
 moved an environment to a control plane still has its old machine-ledger files
@@ -106,7 +118,7 @@ Examples:
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Print {env, backend, location, because, declaration, project} as JSON")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print {env, backend, location, because, declaration, override, project} as JSON")
 	return cmd
 }
 
@@ -126,6 +138,17 @@ func ledgerWhereFor(ctx context.Context, projectDir, env string) (ledgerWhereDoc
 		Env:      env,
 		Location: l.Bindings.Location(),
 		Project:  hostedProjectName(),
+	}
+	if !l.Hosted && l.OverriddenEndpoint != "" {
+		// The env DOES declare a control plane; FORGE_LEDGER kept this
+		// run off it. Reported as an override, with the declaration it
+		// overrode, so it cannot be mistaken for an env declaring nothing.
+		doc.Backend = ledgerBackendMachine
+		doc.Override = ledgerSelectionEnv + "=" + string(ledgerSelectMachine)
+		doc.Because = doc.Override + " overrides the forge.ControlPlane deploy/kcl/" + env +
+			"/ declares, so this run records in this machine's store and reads nothing from that control plane"
+		doc.Declaration = &ledgerDeclarationDoc{Endpoint: l.OverriddenEndpoint}
+		return doc, nil
 	}
 	if !l.Hosted {
 		doc.Backend = ledgerBackendMachine
@@ -157,6 +180,9 @@ func writeLedgerWhere(w io.Writer, doc ledgerWhereDoc) {
 	fmt.Fprintf(w, "env %s records in %s\n", doc.Env, doc.Location)
 	fmt.Fprintf(w, "  backend: %s\n", doc.Backend)
 	fmt.Fprintf(w, "  because: %s\n", doc.Because)
+	if doc.Override != "" {
+		fmt.Fprintf(w, "  override: %s\n", doc.Override)
+	}
 	if d := doc.Declaration; d != nil {
 		fmt.Fprintf(w, "  declared endpoint: %s\n", d.Endpoint)
 		if d.TokenEnv != "" {

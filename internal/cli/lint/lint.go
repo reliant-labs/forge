@@ -1086,12 +1086,26 @@ func runMigrationSafetyLint(cfg *config.ProjectConfig) error {
 	return nil
 }
 
-// hasWorkspaceGoMod reports whether the current working directory (or any
-// parent up to the filesystem root) contains a go.work file. This signals
-// that the project relies on Go workspace mode to wire local module
+// hasWorkspaceGoMod reports whether the go command will run in workspace
+// mode: GOWORK names a file, or (GOWORK unset) the current working directory
+// or any parent up to the filesystem root contains a go.work file. This
+// signals that the project relies on Go workspace mode to wire local module
 // checkouts (e.g. forge's own forge/ + forge/pkg/ pair), and we must not
 // override GOWORK when running analyzer subprocesses.
+//
+// GOWORK is consulted first because it is how cmd/go decides too. A
+// go.work kept OUTSIDE the tree (GOWORK=/tmp/x/go.work, the way to bridge a
+// pinned project to an unreleased forge checkout without writing into it) is
+// workspace mode, and adding -mod=mod to it makes every package load fail
+// with "-mod may only be set to readonly or vendor when in workspace mode".
 func hasWorkspaceGoMod() bool {
+	switch gowork := os.Getenv("GOWORK"); gowork {
+	case "off":
+		return false
+	case "":
+	default:
+		return true
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return false

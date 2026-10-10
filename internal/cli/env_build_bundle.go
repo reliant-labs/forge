@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -706,7 +707,7 @@ func withHostedPinRelease(ctx context.Context, version string) context.Context {
 	if version == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, hostedPinReleaseKey{}, version)
+	return context.WithValue(kclrender.WithRelease(ctx, version), hostedPinReleaseKey{}, version)
 }
 
 func hostedPinReleaseFrom(ctx context.Context) string {

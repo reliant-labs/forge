@@ -303,6 +303,66 @@ _env_var = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any 
 }
 
 # ---------------------------------------------------------------------------
+# Derived telemetry environment (the app <-> platform OTel contract).
+#
+# Every workload that runs a process gets the standard OTel variables, derived
+# HERE once for every runtime (host, compose, cluster, hosted) instead of
+# restated by each env template:
+#
+#   OTEL_SERVICE_NAME          the workload's logical service name:
+#                              `Workload.service_name`, else its declared name
+#   OTEL_RESOURCE_ATTRIBUTES   deployment.environment.name=<Bundle.env>,
+#                              service.namespace=<Bundle.project>,
+#                              service.version=<Bundle.release>  (each key
+#                              omitted when its source is empty)
+#
+# An author's value WINS and is never edited: a variable the workload's own
+# env (or, for compose, the runtime's env) already names is not derived, even
+# when set to "". OTEL_RESOURCE_ATTRIBUTES is all-or-nothing for the same
+# reason: merging into an author's string would rewrite what they wrote.
+#
+# Appended AFTER the author's entries, so the documented "env order is the
+# author's order" holds and a Kubernetes $(VAR) reference never reads a
+# derived value that appears before it. Not derived for `tool` (never
+# scheduled) or `build-only` (never run).
+# ---------------------------------------------------------------------------
+
+_OTEL_RUNTIMES = ["host", "compose", "cluster", "hosted"]
+
+# OTEL_RESOURCE_ATTRIBUTES values are percent-encoded (W3C baggage), so a
+# project or env name carrying `,` or `=` cannot split an attribute.
+_otel_encode = lambda v: str -> str {
+    v.replace("%", "%25").replace(",", "%2C").replace("=", "%3D").replace(" ", "%20")
+}
+
+_otel_service_name = lambda w: any -> str {
+    w.service_name if w.service_name else w.name
+}
+
+_otel_resource_attributes = lambda bundle: Bundle -> str {
+    ",".join(
+        (["deployment.environment.name=${_otel_encode(bundle.env)}"] if bundle.env else []) \
+        + ["service.namespace=${_otel_encode(bundle.project)}"] \
+        + (["service.version=${_otel_encode(bundle.release)}"] if bundle.release else [])
+    )
+}
+
+_derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
+    _taken = [k for k in (w.env if w.env else {})] + ([k for k in rt.env] if rt.type == "compose" else [])
+    _on = rt.type in _OTEL_RUNTIMES and w.kind != "tool"
+    {
+        if _on and "OTEL_SERVICE_NAME" not in _taken:
+            OTEL_SERVICE_NAME = _otel_service_name(w)
+        if _on and "OTEL_RESOURCE_ATTRIBUTES" not in _taken:
+            OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)
+    }
+}
+
+_effective_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
+    (w.env if w.env else {}) | _derived_env(w, rt, bundle)
+}
+
+# ---------------------------------------------------------------------------
 # forge.WorkloadURL resolution (lib/workload_url.k has the order).
 # ---------------------------------------------------------------------------
 
@@ -424,6 +484,7 @@ _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
 
 # The spec, as the generated tiers.Workload. `rt` is the resolved runtime.
 _spec = lambda w: any, rt: any, bundle: Bundle -> any {
+    _env = _effective_env(w, rt, bundle)
     _TWorkload {
         kind = w.kind
         image = _spec_image(w, rt, bundle) or "-"
@@ -432,7 +493,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         replicas = w.replicas
         if w.resources:
             resources = w.resources
-        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env] if w.env else Undefined
+        env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in _env] if _env else Undefined
         ports = w.ports
         probes = _default_probes(w)
         storageGiB = w.storageGiB
@@ -468,7 +529,7 @@ _spec_json = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     {k: ("" if k == "image" and v == "-" else v) for k, v in _j}
 }
 
-_render_runtime = lambda w: any, rt: any -> any {
+_render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
     {
         "type": "host"
         "runner": rt.runner
@@ -488,7 +549,7 @@ _render_runtime = lambda w: any, rt: any -> any {
         "shared": rt.shared
         # The compose PROCESS env: the workload's literal env under the
         # runtime's own (the runtime block is the more specific statement).
-        "env": {k: v for k, v in w.env if typeof(v) == "str"} | rt.env
+        "env": {k: v for k, v in _derived_env(w, rt, bundle)} | {k: v for k, v in w.env if typeof(v) == "str"} | rt.env
     } if rt.type == "compose" else ({
         "type": "cluster"
         "cluster": rt.target.cluster
@@ -518,7 +579,7 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "image": _artifact(w)
         "build_image": _build_image(w) or None
         "build": _render_build(w.build)
-        "runtime": _render_runtime(w, _rt)
+        "runtime": _render_runtime(w, _rt, bundle)
         "spec": _spec_json(w, _rt, bundle)
     } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {})
 }

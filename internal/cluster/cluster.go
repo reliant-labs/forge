@@ -1171,7 +1171,7 @@ func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string, im
 // config overrides, and image digest pins. It runs from the project root
 // so deploy-as-data file reads resolve.
 func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, error) {
-	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
+	dArgs := append(renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests), kclrender.ReleaseDArgs(ctx)...)
 	// Render from the project root so the env main.k's relative imports
 	// (`..components`, `..ingress`) and the kcl.mod vendor path resolve.
 	// mainK is `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
@@ -1195,7 +1195,7 @@ func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string
 // RenderManifestsWithOverrides is RenderManifests, additionally reporting
 // which Bundle.overrides landed — what `forge env render` summarizes.
 func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string, imageDigests map[string]string) (string, []AppliedOverride, error) {
-	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests)
+	dArgs := append(renderDArgs(imageTag, namespace, env, envCfgKV, imageDigests), kclrender.ReleaseDArgs(ctx)...)
 	workDir := projectRootFromMainK(mainK)
 	if workDir == "" {
 		if wd, err := os.Getwd(); err == nil {

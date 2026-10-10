@@ -297,6 +297,14 @@ schema Workload:
     # it (`wl.x | {runtime = ...}`), since the base declaration in
     # workloads.k is runtime-independent.
     runtime?: Runtime
+    # The LOGICAL service name this workload reports telemetry under
+    # (OTEL_SERVICE_NAME). Unset: the declared `name`. It is identity, so it
+    # must survive moving the workload between runtimes: a binding that
+    # renames the workload (`wl.api | {name = "api-k8s", ...}`, needed when
+    # two bindings of one declaration share a bundle) would otherwise change
+    # the service name with it. State it on the DECLARATION in workloads.k
+    # and every binding inherits it. Never set it to a runtime-specific name.
+    service_name?: str
     # The SENSITIVE config fields this workload reads, by ENV_VAR name.
     # Pass it to the generated `config_gen.<x>ConfigEnvMap(cfg,
     # config_secrets)`, which projects a secret for exactly these names:
@@ -383,6 +391,8 @@ schema Workload:
         kind in caps.WORKLOAD_KINDS, \
             "Workload.kind must be one of ${caps.WORKLOAD_KINDS} — got '${kind}'. A kind says HOW this runs, not what code is inside it."
         replicas > 0, "Workload '${name}': replicas must be positive"
+        service_name == Undefined or len(service_name) > 0, \
+            "Workload '${name}': service_name must not be empty — unset it to report under the workload name"
 
         # --- cron ---
         not schedule or kind == "cron", \

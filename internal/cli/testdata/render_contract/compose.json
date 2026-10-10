@@ -31,6 +31,8 @@
         "name": "postgres",
         "runtime": {
           "env": {
+            "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment.name=dev,service.namespace=acme",
+            "OTEL_SERVICE_NAME": "postgres",
             "POSTGRES_PORT": "5433"
           },
           "env_file": null,
@@ -46,6 +48,14 @@
             {
               "name": "POSTGRES_PORT",
               "value": "5433"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "postgres"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "",
@@ -64,7 +74,10 @@
         "kind": "service",
         "name": "nats",
         "runtime": {
-          "env": {},
+          "env": {
+            "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment.name=dev,service.namespace=acme",
+            "OTEL_SERVICE_NAME": "nats"
+          },
           "env_file": ".env.dev",
           "file": "docker-compose.yml",
           "service": "nats",
@@ -74,6 +87,16 @@
           "wait_timeout": 0
         },
         "spec": {
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "nats"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "",
           "kind": "service",
           "replicas": 1,

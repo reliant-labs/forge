@@ -23,6 +23,9 @@ import forge.workloads as fw
 # The declaration — what deploy/kcl/workloads.k states once.
 _admin = fw.Workload {
     name = "admin-server"
+    # The telemetry identity is stated on the declaration: the cluster binding
+    # below must take another `name`, and the service name must not move with it.
+    service_name = "admin-server"
     build = forge.GoBuild {cmd = "./cmd/control-plane", output_name = "control-plane"}
     image = "localhost:5051/control-plane"
     args = ["admin"]

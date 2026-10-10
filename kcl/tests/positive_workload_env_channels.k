@@ -69,4 +69,6 @@ assert_exactly_one_source = all e in _spec_env {
 assert_no_duplicate_names = len(_env) == len(_spec_env)
 # Overriding keeps the base's insertion order; additions go last.
 assert_order_preserved = [e.name for e in _spec_env][:3] == ["LOG_LEVEL", "DATABASE_URL", "FEATURE_MAP"]
-assert_addition_last = _spec_env[-1].name == "NEW_FLAG"
+# Additions go last among the author's entries; forge's derived OTEL_* follow.
+assert_addition_last = [e.name for e in _spec_env if not e.name.startswith("OTEL_")][-1] == "NEW_FLAG"
+assert_derived_after_author = [e.name for e in _spec_env][-2:] == ["OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES"]

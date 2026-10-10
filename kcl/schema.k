@@ -3522,6 +3522,11 @@ schema Bundle:
     # the selector above then silently matches the wrong set. The generated
     # per-env main.k always sets it.
     project: str
+    # The release version these workloads ship as, reported as
+    # `service.version` in OTEL_RESOURCE_ATTRIBUTES. Default: the
+    # `-D release_version=` binding, else empty — and EMPTY OMITS the attribute
+    # rather than reporting a guess (a tag like `latest` is not a version).
+    release: str = str(option("release_version")) if option("release_version") else ""
     # There is NO env-level runtime. Every workload in `workloads` states its
     # own (`wl.api | {runtime = forge.OnHost {}}`): an env is a list of
     # per-workload bindings, not a runtime (ADR 0002 §2).

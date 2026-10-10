@@ -96,7 +96,8 @@ assert_cluster_to_host = _env("admin-api")["API_URL"].value == "http://host.k3d.
 assert_cluster_to_frontend = _env("admin-api")["CORS_ORIGINS"].value == "http://host.k3d.internal:5173"
 # The record carries the value, never the reference.
 assert_record_resolved = _rec_env("admin-api")["API_URL"].value == "http://host.k3d.internal:8085"
-_rec_entries = [v for _, v in _rec_env("admin-api")]
+# (the author's two entries; forge's derived OTEL_* entries are not references)
+_rec_entries = [v for k, v in _rec_env("admin-api") if not k.startswith("OTEL_")]
 assert_record_no_ref = len(_rec_entries) == 2 and all e in _rec_entries { "workloadURL" not in e }
 # host → cluster (behind a route): the route URL through its listener.
 assert_host_to_routed_cluster = _env("worker")["ADMIN_URL"].value == "http://acme.localhost:8081/admin"

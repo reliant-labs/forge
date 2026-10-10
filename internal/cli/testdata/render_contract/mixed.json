@@ -153,6 +153,14 @@
             {
               "name": "API_URL",
               "value": "http://host.k3d.internal:8080"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "search"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "localhost:5050/acme:latest",
@@ -223,6 +231,16 @@
           "args": [
             "api"
           ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "api"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "",
           "kind": "service",
           "ports": [
@@ -282,6 +300,16 @@
           "before": [
             "*"
           ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "migrate"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "",
           "kind": "job",
           "replicas": 1,
@@ -298,7 +326,10 @@
         "kind": "service",
         "name": "nats",
         "runtime": {
-          "env": {},
+          "env": {
+            "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment.name=dev,service.namespace=acme",
+            "OTEL_SERVICE_NAME": "nats"
+          },
           "env_file": null,
           "file": "docker-compose.yml",
           "service": "nats",
@@ -308,6 +339,16 @@
           "wait_timeout": 0
         },
         "spec": {
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "nats"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "",
           "kind": "service",
           "replicas": 1,
@@ -350,6 +391,14 @@
             {
               "name": "API_URL",
               "value": "http://host.k3d.internal:8080"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "search"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "localhost:5050/acme:latest",
@@ -407,6 +456,14 @@
                 "name": "STRIPE_KEY"
               },
               "name": "STRIPE_KEY"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "billing"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "localhost:5050/acme",

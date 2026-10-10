@@ -87,6 +87,14 @@
                 "fieldPath": "metadata.name"
               },
               "name": "POD_NAME"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "api"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "localhost:5050/acme:latest",
@@ -138,6 +146,16 @@
           "before": [
             "*"
           ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "migrate"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "localhost:5050/acme:latest",
           "kind": "job",
           "replicas": 1,
@@ -164,6 +182,16 @@
         "spec": {
           "args": [
             "sweep"
+          ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "nightly"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
           ],
           "image": "localhost:5050/acme:latest",
           "kind": "cron",
@@ -204,6 +232,16 @@
           "namespace": "acme-dev"
         },
         "spec": {
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "nats"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "docker.io/library/nats:2.10",
           "kind": "service",
           "ports": [
@@ -255,6 +293,16 @@
           ],
           "crds": [
             "Workspace"
+          ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "workspace"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
           ],
           "image": "localhost:5050/acme:latest",
           "kind": "operator",
@@ -354,6 +402,14 @@
                 "fieldPath": "metadata.name"
               },
               "name": "POD_NAME"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "api"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
             }
           ],
           "image": "localhost:5050/acme:latest",
@@ -416,6 +472,16 @@
           "before": [
             "*"
           ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "migrate"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "localhost:5050/acme:latest",
           "kind": "job",
           "replicas": 1,
@@ -453,6 +519,16 @@
         "spec": {
           "args": [
             "sweep"
+          ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "nightly"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
           ],
           "image": "localhost:5050/acme:latest",
           "kind": "cron",
@@ -494,6 +570,16 @@
           "type": "cluster"
         },
         "spec": {
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "nats"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
+          ],
           "image": "docker.io/library/nats:2.10",
           "kind": "service",
           "ports": [
@@ -556,6 +642,16 @@
           ],
           "crds": [
             "Workspace"
+          ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "workspace"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "deployment.environment.name=dev,service.namespace=acme"
+            }
           ],
           "image": "localhost:5050/acme:latest",
           "kind": "operator",

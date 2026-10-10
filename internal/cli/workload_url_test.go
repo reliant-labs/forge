@@ -103,8 +103,11 @@ func TestWorkloadURL_HostedLowersToSpecReferences(t *testing.T) {
 		t.Errorf("published StaticSite spec does not validate: %v", err)
 	}
 	env := workload.Workload.Env
-	if len(env) != 1 || env[0].WorkloadURL == nil || env[0].WorkloadURL.Name != "web" || env[0].Value != "" {
-		t.Errorf("workload env = %+v, want CORS_ORIGINS carrying the reference to web", env)
+	// CORS_ORIGINS is the author's entry; OTEL_SERVICE_NAME and
+	// OTEL_RESOURCE_ATTRIBUTES are forge's derived ones, after it.
+	if len(env) != 3 || env[0].WorkloadURL == nil || env[0].WorkloadURL.Name != "web" || env[0].Value != "" ||
+		env[1].Name != "OTEL_SERVICE_NAME" || env[1].Value != "api" || env[2].Name != "OTEL_RESOURCE_ATTRIBUTES" {
+		t.Errorf("workload env = %+v, want CORS_ORIGINS carrying the reference to web, then the derived OTEL_* entries", env)
 	}
 }
 

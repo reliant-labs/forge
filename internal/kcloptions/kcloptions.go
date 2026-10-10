@@ -61,14 +61,15 @@ import (
 //
 // This is the whole of forge's option vocabulary. Everything else is opaque.
 var Reserved = map[string]string{
-	"env":           "the environment name — comes from the `forge env up <env>` argument",
-	"namespace":     "the k8s namespace — derived from the env's cluster target",
-	"image_tag":     "the resolved image tag — derived from the env and the build",
-	"image_digests": "the built images' content digests — captured by `forge env deploy`",
-	"target_arch":   "the deploy-target GOARCH — derived from --target-arch, the env's cluster platform, or forge.yaml deploy.target_arch",
-	"worktree":      "the git worktree basename — resolved by the parallel-dev-stack primitives",
-	"branch":        "the git branch — resolved by the parallel-dev-stack primitives",
-	"kubeconfig":    "the default kubeconfig path on this machine — resolved by forge, read via `<cluster>.kubeconfig`",
+	"env":             "the environment name — comes from the `forge env up <env>` argument",
+	"namespace":       "the k8s namespace — derived from the env's cluster target",
+	"image_tag":       "the resolved image tag — derived from the env and the build",
+	"release_version": "the release being built or deployed — bound only when a release names it; it becomes service.version in OTEL_RESOURCE_ATTRIBUTES",
+	"image_digests":   "the built images' content digests — captured by `forge env deploy`",
+	"target_arch":     "the deploy-target GOARCH — derived from --target-arch, the env's cluster platform, or forge.yaml deploy.target_arch",
+	"worktree":        "the git worktree basename — resolved by the parallel-dev-stack primitives",
+	"branch":          "the git branch — resolved by the parallel-dev-stack primitives",
+	"kubeconfig":      "the default kubeconfig path on this machine — resolved by forge, read via `<cluster>.kubeconfig`",
 	// The render refuses a frontend bound to a static runtime whose build
 	// is not a static export; this is how it knows. A caller-supplied value
 	// would let a server build through the refusal.

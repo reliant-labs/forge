@@ -191,7 +191,7 @@ func TestLoggingInterceptor_FailuresAreNeverSampled(t *testing.T) {
 		t.Fatalf("20 failed calls wrote %d \"rpc failed\" records, want 20", len(got))
 	}
 	for _, rec := range got {
-		if rec["level"] != "WARN" || rec["error"] == nil || rec["procedure"] != pollProcedure {
+		if rec["level"] != "INFO" || rec["error"] == nil || rec["procedure"] != pollProcedure {
 			t.Fatalf("failure record lost its fields: %v", rec)
 		}
 		if _, sampled := rec["suppressed"]; sampled {

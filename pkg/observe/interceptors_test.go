@@ -249,12 +249,14 @@ func (m *fakeMeter) RegisterCallback(metric.Callback, ...metric.Observable) (met
 
 type fakeInt64Counter struct {
 	embedded.Int64Counter
-	name string
-	adds []int64
+	name  string
+	adds  []int64
+	attrs []attribute.Set // one per Add
 }
 
-func (c *fakeInt64Counter) Add(_ context.Context, v int64, _ ...metric.AddOption) {
+func (c *fakeInt64Counter) Add(_ context.Context, v int64, opts ...metric.AddOption) {
 	c.adds = append(c.adds, v)
+	c.attrs = append(c.attrs, metric.NewAddConfig(opts).Attributes())
 }
 func (c *fakeInt64Counter) Enabled(context.Context) bool { return true }
 

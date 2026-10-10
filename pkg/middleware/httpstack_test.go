@@ -149,15 +149,16 @@ func TestAuditInterceptor(t *testing.T) {
 		t.Fatalf("audit record must carry identity + status: %s", out)
 	}
 
-	// Error path: WARN with the connect code.
+	// Error path: a rejected request is a user error — INFO, with the
+	// connect code.
 	buf.Reset()
 	wrapped = ic.WrapUnary(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("nope"))
 	})
 	_, _ = wrapped(context.Background(), connect.NewRequest(&struct{}{}))
 	out = buf.String()
-	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"code":"permission_denied"`) {
-		t.Fatalf("error audit must be WARN with code: %s", out)
+	if !strings.Contains(out, `"level":"INFO"`) || !strings.Contains(out, `"code":"permission_denied"`) {
+		t.Fatalf("error audit must be INFO with code: %s", out)
 	}
 	if !strings.Contains(out, `"user_id":"anonymous"`) {
 		t.Fatalf("claims-less audit must log anonymous: %s", out)

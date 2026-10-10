@@ -68,6 +68,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // DefaultSlowThreshold is the duration at which a successful call is
@@ -76,10 +78,11 @@ import (
 const DefaultSlowThreshold = time.Second
 
 // LogOption tunes how a logging layer — LoggingInterceptor at the RPC edge,
-// LogMiddleware at the in-process component boundary — logs SUCCESSFUL
-// calls, and which errors are expected outcomes rather than failures
-// (WithExpectedErrors). Failures are never affected: each one is written,
-// with full fields.
+// LogMiddleware at the in-process component boundary, NewErrorClassHandler
+// under every other log call — logs SUCCESSFUL calls, which errors are
+// expected outcomes rather than failures (WithExpectedErrors), and how loud
+// an error that is not a server fault may be (WithUserErrorLevel,
+// WithErrorClassifier). Every failure is still written, with full fields.
 type LogOption func(*logPolicy)
 
 // WithSuccessSampling sets the sampling window for one layer: at most one
@@ -182,15 +185,19 @@ type logPolicy struct {
 
 	expected []func(error) bool // declared expected-outcome classifiers; read-only after construction
 
+	userLevel   slog.Level                 // ceiling for errors that are not a server fault; see error_class.go
+	classifiers []func(error) svcerr.Class // app-declared fault attribution, consulted before svcerr.Classify
+
 	slots sync.Map // name -> *sampleSlot
 }
 
 // newLogPolicy builds a layer's policy from the options its caller passed.
 func newLogPolicy(level slog.Level, opts []LogOption) *logPolicy {
 	p := &logPolicy{
-		level: level,
-		slow:  DefaultSlowThreshold,
-		now:   time.Now,
+		level:     level,
+		slow:      DefaultSlowThreshold,
+		now:       time.Now,
+		userLevel: DefaultUserErrorLevel,
 	}
 	for _, opt := range opts {
 		if opt != nil {

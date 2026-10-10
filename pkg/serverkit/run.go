@@ -516,6 +516,13 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 // emits JSON. Exported so the cmd layer — which now composes the server
 // and bootstraps BEFORE calling Run — can build the SAME logger and pass
 // it as Server.Logger, keeping mount-time and run-time logs consistent.
+//
+// Every record goes through observe.NewErrorClassHandler, so a hand-written
+// logger.Error carrying a user error (svcerr.Classify) is written at INFO
+// rather than paging. A project that wraps this handler with something that
+// routes on level — a Sentry forwarder — wraps the result in
+// observe.NewErrorClassHandler again, OUTSIDE its forwarder; the inner one
+// then sees an already-classified record and leaves it alone.
 func NewLogger(cfg Config) *slog.Logger { return newLogger(cfg) }
 
 // newLogger builds the slog.Logger Run dispatches on.
@@ -527,5 +534,5 @@ func newLogger(cfg Config) *slog.Logger {
 	default:
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
 	}
-	return slog.New(handler)
+	return slog.New(observe.NewErrorClassHandler(handler))
 }

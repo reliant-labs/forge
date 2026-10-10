@@ -262,8 +262,8 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 			slog.String("error", err.Error()),
 		)
 		// Same severity policy as the operational log — a server fault is
-		// ERROR, a rejected request is WARN. Two streams disagreeing about
-		// how bad the same RPC was is its own incident.
+		// ERROR, a rejected request is a user error at INFO. Two streams
+		// disagreeing about how bad the same RPC was is its own incident.
 		a.logger.LogAttrs(ctx, observe.LevelForError(err), auditMessage, attrs...)
 	} else {
 		attrs = append(attrs, slog.String("status", "ok"))

@@ -157,8 +157,10 @@ func TestAuditInterceptorWithSink_ErrorPath(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"code":"permission_denied"`) {
-		t.Errorf("error audit must be WARN with code: %s", out)
+	// A rejected request is a user error: INFO, the same level the
+	// operational "rpc failed" record uses for it (observe.LevelForError).
+	if !strings.Contains(out, `"level":"INFO"`) || !strings.Contains(out, `"code":"permission_denied"`) {
+		t.Errorf("error audit must be INFO with code: %s", out)
 	}
 }
 

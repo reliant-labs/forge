@@ -1,7 +1,7 @@
 {
   "name": "@reliantlabs/forge-web-runtime",
-  "version": "0.3.2",
-  "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and client RUM. The web twin of forge/pkg.",
+  "version": "0.4.0",
+  "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and the HyperDX browser SDK wiring (errors, console, network, traces; replay off by default). The web twin of forge/pkg.",
   "license": "BUSL-1.1",
   "//repository note": "REQUIRED for `npm publish --provenance`, not decoration. npm cross-checks this against the repository in the signed provenance statement and rejects the publish with a 422 if they disagree — an absent field reads as \"\" and fails that comparison. `directory` names the subdirectory this package lives in, so the provenance points at the real source. Omitting this is what made the first 0.3.1 publish fail AFTER the tarball had been signed and written to the sigstore transparency log.",
   "repository": {
@@ -39,13 +39,13 @@
       "types": "./dist/mock-transport.d.ts",
       "default": "./dist/mock-transport.js"
     },
-    "./otel": {
-      "types": "./dist/otel.d.ts",
-      "default": "./dist/otel.js"
-    },
     "./service-hooks": {
       "types": "./dist/service-hooks.d.ts",
       "default": "./dist/service-hooks.js"
+    },
+    "./telemetry": {
+      "types": "./dist/telemetry.d.ts",
+      "default": "./dist/telemetry.js"
     },
     "./package.json": "./package.json"
   },
@@ -57,19 +57,12 @@
     "pretest": "node scripts/build.mjs",
     "test": "vitest run"
   },
-  "// peerDependencies note": "@opentelemetry/api is REQUIRED (trace.ts propagates traceparent on every RPC — always on, no collector). The eight SDK packages below it are OPTIONAL: they are imported only by the './otel' subpath, which only the Next.js scaffold reaches. A Vite-SPA or React-Native frontend installs @opentelemetry/api alone and imports the barrel, and must not be told it is missing dependencies it will never resolve.",
+  "// peerDependencies note": "@opentelemetry/api is REQUIRED (trace.ts propagates traceparent on every RPC — always on, no collector). @hyperdx/browser is OPTIONAL and exact-pinned: it is imported only (and lazily) by the './telemetry' subpath, which the Next.js and Vite scaffolds reach. It carries the whole OpenTelemetry web SDK and the rrweb recorder as its own dependencies, so a frontend that never imports './telemetry' (React Native) installs none of it and is not told it is missing a package it will never resolve.",
   "peerDependencies": {
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
+    "@hyperdx/browser": "0.26.0",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/auto-instrumentations-web": "^0.67.0",
-    "@opentelemetry/core": "^2.8.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
-    "@opentelemetry/instrumentation": "^0.222.0",
-    "@opentelemetry/resources": "^2.8.0",
-    "@opentelemetry/sdk-trace-base": "^2.8.0",
-    "@opentelemetry/sdk-trace-web": "^2.8.0",
-    "@opentelemetry/semantic-conventions": "^1.28.0",
     "@tanstack/react-query": "^5.59.0",
     "react": "^18.3.0 || ^19.0.0"
   },
@@ -77,43 +70,15 @@
     "@tanstack/react-query": {
       "optional": true
     },
-    "@opentelemetry/auto-instrumentations-web": {
-      "optional": true
-    },
-    "@opentelemetry/core": {
-      "optional": true
-    },
-    "@opentelemetry/exporter-trace-otlp-http": {
-      "optional": true
-    },
-    "@opentelemetry/instrumentation": {
-      "optional": true
-    },
-    "@opentelemetry/resources": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-trace-base": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-trace-web": {
-      "optional": true
-    },
-    "@opentelemetry/semantic-conventions": {
+    "@hyperdx/browser": {
       "optional": true
     }
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
+    "@hyperdx/browser": "0.26.0",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/auto-instrumentations-web": "^0.67.0",
-    "@opentelemetry/core": "^2.8.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
-    "@opentelemetry/instrumentation": "^0.222.0",
-    "@opentelemetry/resources": "^2.8.0",
-    "@opentelemetry/sdk-trace-base": "^2.8.0",
-    "@opentelemetry/sdk-trace-web": "^2.8.0",
-    "@opentelemetry/semantic-conventions": "^1.28.0",
     "@tanstack/react-query": "^5.59.0",
     "@types/node": "^22.14.0",
     "@types/react": "^19.1.0",

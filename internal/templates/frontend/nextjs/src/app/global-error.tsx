@@ -1,5 +1,6 @@
 "use client";
 
+import { reportException } from "@reliantlabs/forge-web-runtime";
 import { useEffect } from "react";
 
 export default function GlobalError({
@@ -10,7 +11,12 @@ export default function GlobalError({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error(error);
+    // global-error replaces the root layout, so the telemetry SDK started by
+    // providers.tsx may never have mounted. reportException is a no-op then,
+    // and the console fallback keeps the error visible.
+    if (!reportException(error, { "error.digest": error.digest ?? "" })) {
+      console.error(error);
+    }
   }, [error]);
 
   return (

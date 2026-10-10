@@ -14,6 +14,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { reportException } from "./error-reporter.js";
 import { userMessage } from "./errors.js";
 
 interface FallbackProps {
@@ -25,7 +26,7 @@ interface Props {
   children: ReactNode;
   /** Custom fallback UI. Defaults to DefaultErrorFallback. */
   fallback?: (props: FallbackProps) => ReactNode;
-  /** Reporter hook — wire to telemetry (initClientTelemetry) or Sentry. */
+  /** Extra reporter hook, called after the error is recorded with the browser telemetry SDK. */
   onError?: (error: Error, info: ErrorInfo) => void;
   /** When any value in this array changes, the boundary resets. */
   resetKeys?: unknown[];
@@ -48,8 +49,13 @@ export class RuntimeErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    // Always log; the app can additionally forward to a sink via onError.
+    // Always log, and record with the browser telemetry SDK (a no-op when
+    // none is running); the app can additionally forward to a sink via onError.
     console.error("[runtime] error boundary caught:", error, info);
+    reportException(error, {
+      "react.component_stack": info.componentStack ?? "",
+      "error.handled_by": "RuntimeErrorBoundary",
+    });
     this.props.onError?.(error, info);
   }
 

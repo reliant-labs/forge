@@ -241,6 +241,14 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		if err := emitAPIURLGen(projectDir, feDir, "vite-spa", data, cs); err != nil {
 			return fmt.Errorf("emit apiurl_gen.ts for %s: %w", fe.Name, err)
 		}
+		// ── Tier-1: src/lib/otel_gen.ts (always regenerated) ──
+		// The browser telemetry configuration — the VITE_* env reads Vite
+		// inlines at build time, handed to the HyperDX SDK wiring in
+		// @reliantlabs/forge-web-runtime/telemetry. Same module the Next.js
+		// loop emits, with the Vite spelling of the env reads.
+		if err := emitOtelGen(projectDir, feDir, "vite-spa", data, cs); err != nil {
+			return fmt.Errorf("emit otel_gen.ts for %s: %w", fe.Name, err)
+		}
 		// use-query-resource.ts pairs with <Resource>. It ships in the Vite
 		// static scaffold tree (new projects), so ensure EXISTING projects
 		// pick it up too — emit-if-missing keeps any user edits.
@@ -284,6 +292,25 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 	// tracked manifest has been settled at its published range.
 	generator.EnsureDevWebRuntimeLink(projectDir)
 
+	return nil
+}
+
+// emitOtelGen renders <tmplSubdir>/src/lib/otel_gen.ts.tmpl into the
+// frontend's src/lib/otel_gen.ts as a Tier-1 (always-regenerated,
+// checksum-guarded) file.
+func emitOtelGen(projectDir, feDir, tmplSubdir string, data templates.FrontendTemplateData, cs *checksums.FileChecksums) error {
+	if err := os.MkdirAll(filepath.Join(projectDir, feDir, "src", "lib"), 0o755); err != nil {
+		return fmt.Errorf("create lib dir: %w", err)
+	}
+	content, err := templates.FrontendTemplates().Render(
+		filepath.Join(tmplSubdir, "src", "lib", "otel_gen.ts.tmpl"), data)
+	if err != nil {
+		return fmt.Errorf("render otel_gen.ts: %w", err)
+	}
+	rel := filepath.Join(feDir, "src", "lib", "otel_gen.ts")
+	if _, err := checksums.WriteGeneratedFileTier1(projectDir, rel, content, cs, true); err != nil {
+		return fmt.Errorf("write otel_gen.ts: %w", err)
+	}
 	return nil
 }
 

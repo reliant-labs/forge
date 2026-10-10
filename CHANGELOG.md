@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Frontends ship the HyperDX browser SDK, initialised, with a same-origin
+  `/_otel` route.** Next.js and Vite scaffolds now install
+  `@hyperdx/browser` (exact-pinned `0.26.0`) and start it from the generated
+  `src/lib/otel_gen.ts`. It captures uncaught errors, unhandled rejections,
+  `console.*`, fetch/XHR spans, document load, long tasks and web vitals, and
+  sends them as OTLP to `<basePath>/_otel/v1/{traces,logs}` on the page's own
+  origin, so the bundle holds no collector address and no secret (the SDK's
+  required `apiKey` is a public placeholder; a collector that enforces ingestion
+  auth has its proxy strip or replace it). `next dev` rewrites and `vite`
+  `server.proxy` forward `/_otel` to `OTEL_EXPORTER_OTLP_ENDPOINT` (default
+  `http://127.0.0.1:4318`). A static export has no server, so a deployed
+  environment routes `/_otel` at its ingress; the production default is
+  therefore off until the frontend's `otel_endpoint` is set. `forge lint
+  --static-export` stays green because the rewrite is gated to development.
+  Session replay is shipped but **off**, and when enabled
+  (`NEXT_PUBLIC_OTEL_REPLAY` / `VITE_OTEL_REPLAY`) forces all text and inputs
+  masked. Network bodies are not captured. `traceparent` on every RPC is
+  unchanged and still always on. No Sentry SDK is scaffolded.
+
+  **Breaking, web-runtime 0.4.0.** The `@reliantlabs/forge-web-runtime/otel`
+  subpath and its eight `@opentelemetry/*` SDK peers are gone: HyperDX registers
+  the page's one global tracer provider, and a second registration silently
+  loses. `initClientTelemetry` is gone too; the new `/telemetry` subpath's
+  `initBrowserTelemetry` replaces both. `reportException()` (barrel) records an
+  error a React/Next boundary caught, and `RuntimeErrorBoundary`, `error.tsx`
+  and `global-error.tsx` call it. Existing projects: `src/lib/otel_gen.ts`
+  regenerates itself; a scaffold-once `providers.tsx` that still calls
+  `initClientTelemetry()` must drop that call and its import.
+
 ### Fixed
 
 - **`FORGE_LEDGER=machine` keeps a run off a declared control plane.**

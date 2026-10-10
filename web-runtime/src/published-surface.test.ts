@@ -76,30 +76,35 @@ describe("the published surface", () => {
       ".",
       "./interceptors",
       "./mock-transport",
-      "./otel",
       "./package.json",
       "./service-hooks",
+      "./telemetry",
     ]);
 
-    // `./mock-transport`, `./otel` and `./service-hooks` are deliberately NOT
+    // `./mock-transport`, `./telemetry` and `./service-hooks` are deliberately NOT
     // re-exported from the barrel, and each for its own reason:
     //
     //   - mock-transport is dev-only. It pulls the fixture dispatch engine
     //     in, and a production bundle has to be able to shake it out
     //     entirely. A barrel re-export would anchor it in every import of
     //     this package.
-    //   - otel imports the eight OpenTelemetry SDK packages. Only the
-    //     Next.js scaffold installs those; a Vite-SPA or React-Native
-    //     frontend declares @opentelemetry/api alone. Re-exporting from the
-    //     barrel would leave those frontends resolving packages they never
-    //     installed — a build error in a file they do not use.
+    //   - telemetry imports @hyperdx/browser (lazily). The Next.js and Vite
+    //     scaffolds install it; a React-Native frontend declares
+    //     @opentelemetry/api alone. Re-exporting from the barrel would leave
+    //     it resolving a package it never installed — a build error in a
+    //     file it does not use. The barrel carries only error-reporter.ts,
+    //     the dependency-free seam the error boundary reports through.
     //   - service-hooks imports @tanstack/react-query. Every frontend forge
     //     scaffolds installs it, but the barrel is also what a consumer
     //     imports for interceptors and errors alone; anchoring React Query
     //     there would make a non-React consumer resolve a package it never
     //     declared.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
-    for (const forbidden of ["./mock-transport", "./otel", "./service-hooks"]) {
+    for (const forbidden of [
+      "./mock-transport",
+      "./telemetry",
+      "./service-hooks",
+    ]) {
       expect(
         barrel.includes(forbidden),
         `index.d.ts re-exports ${forbidden}; it must stay reachable only through its own subpath`,
@@ -107,30 +112,45 @@ describe("the published surface", () => {
     }
   });
 
-  it("declares the OTel SDK peers optional, and @opentelemetry/api required", () => {
-    // The `./otel` subpath's imports are peers, not dependencies: the
-    // consuming app owns the OTel version so the browser loads exactly one
-    // copy of the SDK. Marking them OPTIONAL is what lets the frontends that
-    // never import `./otel` install nothing and still get a clean, warning-
-    // free `npm install`.
-    const sdkPeers = Object.keys(pkg.peerDependencies).filter(
+  it("pins @hyperdx/browser exactly, declares it an optional peer, and keeps @opentelemetry/api required", () => {
+    // The `./telemetry` subpath's SDK is a peer, not a dependency: the
+    // consuming app owns the install so the bundle carries one copy. OPTIONAL
+    // is what lets a frontend that never imports `./telemetry` (React Native)
+    // install nothing and still get a clean, warning-free `npm install`.
+    //
+    // EXACT, not a range: the SDK is 0.x and bundles rrweb and its own OTel
+    // web stack, so a minor can change the ingest wire shape (replay chunks,
+    // span names) that the collector and HyperDX's saved sources depend on.
+    expect(pkg.peerDependencies["@hyperdx/browser"]).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pkg.peerDependenciesMeta?.["@hyperdx/browser"]?.optional).toBe(true);
+
+    // The retired `./otel` SDK wiring must not creep back: HyperDX registers
+    // the one global tracer provider, and a second registration silently loses.
+    const staleSdk = Object.keys(pkg.peerDependencies).filter(
       (name) =>
         name.startsWith("@opentelemetry/") && name !== "@opentelemetry/api",
     );
-    expect(sdkPeers.length).toBeGreaterThan(0);
-    for (const name of sdkPeers) {
-      expect(
-        pkg.peerDependenciesMeta?.[name]?.optional,
-        `${name} must be an OPTIONAL peer — only the Next.js scaffold installs it`,
-      ).toBe(true);
-    }
+    expect(staleSdk).toEqual([]);
 
-    // @opentelemetry/api is the exception and must stay required: trace.ts
-    // propagates W3C traceparent on every RPC from the BARREL, with no
-    // collector and no SDK. Every frontend resolves it.
+    // @opentelemetry/api is required: trace.ts propagates W3C traceparent on
+    // every RPC from the BARREL, with no collector and no SDK.
     expect(pkg.peerDependenciesMeta?.["@opentelemetry/api"]?.optional).not.toBe(
       true,
     );
+  });
+
+  it("keeps the HyperDX SDK out of the barrel's dependency graph", () => {
+    // error-boundary reports through error-reporter.ts, never telemetry.ts.
+    // If a barrel module imported the SDK, React Native — which installs no
+    // @hyperdx/browser — would fail to resolve it from a file it never uses.
+    for (const name of distFiles.filter((f) => f.endsWith(".js"))) {
+      if (name === "telemetry.js") continue;
+      const body = readFileSync(join(pkgDir, "dist", name), "utf8");
+      expect(
+        body.includes("@hyperdx/"),
+        `dist/${name} imports the HyperDX SDK; only dist/telemetry.js may`,
+      ).toBe(false);
+    }
   });
 
   it("declares @tanstack/react-query an optional peer, reachable only via ./service-hooks", () => {

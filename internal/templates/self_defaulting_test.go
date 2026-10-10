@@ -59,7 +59,7 @@ func TestFrontendTemplateDataExplicitPinsWin(t *testing.T) {
 	if !strings.Contains(got, `"@example/only"`) {
 		t.Errorf("explicit pins were not honoured:\n%s", got)
 	}
-	if strings.Contains(got, "@opentelemetry/sdk-trace-web") {
+	if strings.Contains(got, "@hyperdx/browser") {
 		t.Error("defaults were merged into an explicit list; the caller's set must win outright")
 	}
 }

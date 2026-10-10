@@ -16,6 +16,10 @@
 //	                                    congruent mod BlockSize collide at
 //	                                    a block reachable within MaxStacks
 //	                                    (see allocate_port_spacing.go)
+//	forgeconv-config-service-name       a config field must not bind
+//	                                    OTEL_SERVICE_NAME, a per-workload
+//	                                    fact forge.render derives
+//	                                    (see config_service_name.go)
 //
 // `auth_required` is lint-free here: it is enforced at runtime (projected
 // into pkg/middleware/procedures_gen.go, read fail-closed by the auth
@@ -212,6 +216,7 @@ func lintProtoFile(relPath, content string, opts LintOptions) []Finding {
 
 	findings = append(findings, checkOneServicePerFile(pf)...)
 	findings = append(findings, checkServiceDirConsistency(pf)...)
+	findings = append(findings, checkConfigServiceName(relPath, content)...)
 	_ = opts // reserved: no rule currently escalates on LintOptions.Strict
 
 	return findings

@@ -11,11 +11,11 @@ import (
 )
 
 func TestResourceFromConfig(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment.name=staging")
 	res, err := resourceFromConfig(context.Background(), Config{
-		ServiceName:           "api",
-		ServiceVersion:        "1.2.3",
-		InstanceID:            "instance-1",
-		DeploymentEnvironment: "staging",
+		ServiceName:    "api",
+		ServiceVersion: "1.2.3",
+		InstanceID:     "instance-1",
 	})
 	if err != nil {
 		t.Fatalf("resourceFromConfig returned error: %v", err)
@@ -35,6 +35,7 @@ func TestResourceFromConfig(t *testing.T) {
 }
 
 func TestResourceFromConfig_OmitsEmptyOptionalAttributes(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
 	res, err := resourceFromConfig(context.Background(), Config{ServiceName: "api"})
 	if err != nil {
 		t.Fatalf("resourceFromConfig returned error: %v", err)
@@ -47,9 +48,8 @@ func TestResourceFromConfig_OmitsEmptyOptionalAttributes(t *testing.T) {
 	}
 }
 
-// Setup must NEVER read os.Getenv / use resource.WithFromEnv. We assert that by
-// confirming behaviour is governed entirely by Config: with no endpoint we get
-// the Prometheus-only path even if the OTLP env var is set.
+// Exporter selection is governed by Config: with no endpoint we get the
+// Prometheus-only path even if the OTLP env var is set.
 func TestSetup_NoOTLPEndpoint_PrometheusOnly(t *testing.T) {
 	// Set the env var the OLD code read; the new lib must ignore it.
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://should-be-ignored:4317")

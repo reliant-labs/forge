@@ -110,15 +110,19 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 
 	// OTel: serverkit OWNS OpenTelemetry setup (the generated cmd/otel.go
 	// shim is gone). observe.Setup installs the global trace/metric
-	// providers from cfg.OTLPEndpoint + cfg.ServiceName + cfg.Environment,
-	// always wires the Prometheus reader, and returns the /metrics handler
-	// (mounted on the top mux below, IN FRONT of the edge so scrapers bypass
-	// CORS/auth) and
+	// providers from cfg.OTLPEndpoint + cfg.ServiceName, always wires the
+	// Prometheus reader, and returns the /metrics handler (mounted on the
+	// top mux below, IN FRONT of the edge so scrapers bypass CORS/auth) and
 	// a shutdown fn (flushed in the graceful-shutdown sequence). A setup
 	// error is logged, not fatal — projects depending on OTLP fail config
 	// validation before Run.
 	instanceID, _ := os.Hostname()
-	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observeConfig(cfg, instanceID))
+	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observe.Config{
+		ServiceName:    cfg.ServiceName,
+		ServiceVersion: cfg.ServiceVersion,
+		OTLPEndpoint:   cfg.OTLPEndpoint,
+		InstanceID:     instanceID,
+	})
 	if otelErr != nil {
 		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
@@ -484,16 +488,6 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 // context pins the process until the platform SIGKILLs it, skipping every
 // remaining teardown step — including the telemetry flush that would have
 // explained what happened.
-func observeConfig(cfg Config, instanceID string) observe.Config {
-	return observe.Config{
-		ServiceName:           cfg.ServiceName,
-		ServiceVersion:        cfg.ServiceVersion,
-		OTLPEndpoint:          cfg.OTLPEndpoint,
-		InstanceID:            instanceID,
-		DeploymentEnvironment: cfg.Environment,
-	}
-}
-
 func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 	done := make(chan struct{})
 	go func() {

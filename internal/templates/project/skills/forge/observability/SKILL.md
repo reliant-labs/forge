@@ -151,7 +151,7 @@ Trace IDs are automatically injected into every log line, connecting logs to tra
 
 ## Resource identity
 
-Forge reports every service's typed `Environment` configuration as the OpenTelemetry resource attribute `deployment.environment.name` (for example, `dev`, `staging`, or `prod`). It is emitted alongside `service.name`, `service.version` when available, and `service.instance.id`. `forge/pkg/observe` never reads `OTEL_RESOURCE_ATTRIBUTES`; applications pass identity explicitly through `serverkit.Config`, which fresh generated servers project from `AppConfig.Environment`.
+`service.name`, `service.version` and `service.instance.id` come from `observe.Config`. Everything else on the OpenTelemetry resource comes from the standard `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` environment variables, which the SDK merges in (`resource.WithFromEnv`) and which win over the `Config` values. The deployment environment is the **forge env name** (`dev`, `staging`, `prod`): the platform renders it as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=<env>`. It is deliberately not the app's `environment` config field, which is a CORS/HSTS mode switch and reads `production` in both staging and prod.
 
 ## Querying Metrics (Prometheus)
 

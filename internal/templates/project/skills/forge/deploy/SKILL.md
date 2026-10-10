@@ -296,8 +296,9 @@ no default, and a frontend with no `runtime` is a render error naming it:
 | `forge.BuildOnly {}`                          | builds it for a sibling frontend's `bundle`; ships nothing                    |
 
 Build facts are the frontend's on every runtime: `public_dir` (default `out`
-for Next.js, `dist` otherwise), `base_path`, `bundle`, `cache_control`
-(OnBucket only). A static Next.js frontend needs `output: static` in forge.yaml
+for Next.js, `dist` otherwise), `asset_dir`, `base_path`, `bundle`,
+`cache_control` (OnBucket, OnFirebase). A Firebase SPA sets `spa_fallback`.
+A static Next.js frontend needs `output: static` in forge.yaml
 (render refuses others; `forge lint --static-export` lists what an export
 can't serve); a server build is a workload (`forge.DockerBuild`).
 

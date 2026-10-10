@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Firebase deploy no longer breaks every tab opened before it.** Sentry
+  ELECTRON-CC: a tab on the previous build of app.reliantlabs.io lazy-loaded
+  a code-split chunk the deploy had removed; Firebase answered the missing
+  `/assets/<name>-<hash>.js` with index.html and HTTP 200 (the site's
+  `** -> /index.html` rewrite), and the dynamic import died on a MIME/parse
+  error. Three changes on `forge.OnFirebase`:
+  - `spa_fallback = "/index.html"` replaces the catch-all rewrite, which is
+    now refused. forge renders it as an RE2 `regex` rewrite matching only
+    route-shaped paths — inside the document's directory, last segment not
+    ending in a static-file extension — so a missing chunk is a real 404.
+  - Each deploy carries forward the hashed assets of the previous releases
+    (`keep_asset_releases`, default 10, floor 2) and records what the site
+    serves in `<base_path>/forge-assets.json`; downloads are verified
+    against the recorded sha256. Firebase stores content by hash, so carried
+    files cost no upload. A site whose live release predates this is read
+    as "no manifest", and an unreachable site degrades to carrying nothing;
+    neither blocks the deploy.
+  - forge renders `headers`: the build's asset dir (new `Frontend.asset_dir`,
+    default `assets` for vite and `_next/static` for nextjs) is
+    `public, max-age=31536000, immutable`, everything else `no-cache` (it
+    was Firebase's default `max-age=3600` for index.html too). A frontend's
+    `cache_control` rules, previously refused on Firebase, now replace that
+    default.
+
 - **A contract mock imports every package its foreign interfaces use.**
   `forge generate` rewrote control-plane's `internal/svcdaemon/mock_gen.go`
   without `github.com/nats-io/nats.go`, so the package stopped building on every

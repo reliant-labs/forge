@@ -26,6 +26,7 @@
     "env": "prod",
     "frontends": [
       {
+        "asset_dir": "assets",
         "base_path": null,
         "bundle": [],
         "cache_control": [],

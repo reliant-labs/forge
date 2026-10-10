@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // FrontendConfigJSName is the filename of the runtime config document
@@ -58,6 +61,20 @@ type FirebaseProvider struct {
 	// Empty means a temp dir under os.TempDir(). Tests set it so they
 	// can inspect the assembled layout.
 	StagingRoot string
+
+	// HTTPClient reads the live release (its asset manifest and the
+	// assets retention carries forward). Nil means a client with a
+	// two-minute timeout.
+	HTTPClient *http.Client
+
+	// SiteURL maps a Firebase Hosting site id to the origin its live
+	// release is read from. Nil means https://<site>.web.app, the origin
+	// every site answers on. Tests point it at an httptest server.
+	SiteURL func(site string) string
+
+	// RetryDelay is the backoff between attempts to read the live
+	// release. Zero means one second.
+	RetryDelay time.Duration
 }
 
 // FirebaseFrontend is one frontend the Firebase provider should deploy.
@@ -108,6 +125,28 @@ type FirebaseHostingSpec struct {
 	BasePath  string
 	Bundle    []BundleDirSpec
 	Rewrites  []map[string]any
+
+	// SPAFallback is the entry document ("/index.html") served for a
+	// client-side route — a missing path inside its directory whose last
+	// segment is not a static file. Empty means no SPA fallback. Rendered
+	// AFTER Rewrites, so an explicit rewrite always wins.
+	SPAFallback string
+
+	// AssetDir is the build's content-hashed asset directory relative to
+	// the frontend's mount ("assets" for Vite, "_next/static" for a
+	// Next.js export). Empty means the build declares none: no immutable
+	// cache rule and no asset retention.
+	AssetDir string
+
+	// KeepAssetReleases is how many releases' hashed assets the live site
+	// serves, the new one included. Zero means the default (10); the floor
+	// is 2. See firebase_assets.go.
+	KeepAssetReleases int
+
+	// CacheControl is the frontend's declared Cache-Control rules
+	// (first match wins). Empty means forge's default: the asset dir
+	// immutable, everything else no-cache. See firebaseHeaders.
+	CacheControl []CacheRuleSpec
 }
 
 // FirebaseCLI is the executable a Firebase Hosting deploy runs. Exported so a
@@ -148,6 +187,25 @@ func (s FirebaseHostingSpec) hasExplicitTarget() bool {
 	return s.Target != ""
 }
 
+// mountRel is the frontend's mount relative to the site root: "" for the
+// root, "admin" for base_path /admin.
+func (s FirebaseHostingSpec) mountRel() string {
+	if m := cleanDestRel(s.BasePath); m != "." {
+		return filepath.ToSlash(m)
+	}
+	return ""
+}
+
+// assetRel is the build's hashed asset directory relative to the site root
+// ("assets", "admin/assets"), or "" when the build declares none.
+func (s FirebaseHostingSpec) assetRel() string {
+	dir := strings.Trim(path.Clean("/"+strings.TrimSpace(s.AssetDir)), "/")
+	if s.AssetDir == "" || dir == "" {
+		return ""
+	}
+	return path.Join(s.mountRel(), dir)
+}
+
 // Deploy ships every frontend in the group to its Firebase Hosting
 // site. It reads the frontends off group.Frontends and the dry-run knob
 // off group.DryRun so the Firebase provider satisfies the same Provider
@@ -174,6 +232,7 @@ func (p FirebaseProvider) deployFrontends(ctx context.Context, fes []FirebaseFro
 // plus the Firebase-specific configure and deploy steps.
 type firebasePlan struct {
 	Stage         StagePlan
+	Retention     assetRetentionPlan
 	FirebaseJSON  string   // marshaled firebase.json contents
 	FirebaseRC    string   // marshaled .firebaserc contents
 	DeployCmd     []string // argv for the firebase deploy invocation
@@ -219,7 +278,13 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 	}
 
 	return firebasePlan{
-		Stage:        stage,
+		Stage: stage,
+		Retention: assetRetentionPlan{
+			AssetRel:    fe.Spec.assetRel(),
+			ManifestRel: path.Join(fe.Spec.mountRel(), AssetManifestName),
+			SiteURL:     p.siteURL(fe.Spec.Site),
+			Keep:        effectiveKeepAssetReleases(fe.Spec.KeepAssetReleases),
+		},
 		FirebaseJSON: fbJSON,
 		FirebaseRC:   fbRC,
 		DeployCmd: []string{
@@ -249,6 +314,12 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 
 	// Build + assemble — the shared static staging step.
 	if err := runStagePlan(ctx, runner, plan.Stage); err != nil {
+		return err
+	}
+
+	// Retain — put the previous releases' hashed assets back into the
+	// tree, so a tab opened before this deploy can still load its chunks.
+	if err := p.retainAssets(ctx, plan.Stage.Name, plan.Stage.StagingDir, plan.Retention); err != nil {
 		return err
 	}
 
@@ -389,8 +460,10 @@ func printBuildOnlyPlan(w io.Writer, plan buildOnlyPlan) {
 // renderFirebaseJSON builds the firebase.json contents. `hosting.public`
 // is the staging dir (relative to the deploy workdir, which is its
 // parent — so just the basename). `hosting.site` pins the target site;
-// rewrites pass through verbatim. ignore mirrors the firebase defaults so
-// the generated config files don't get uploaded.
+// declared rewrites pass through verbatim, followed by the SPA fallback
+// when one is declared; `headers` carries the Cache-Control policy (see
+// firebase_serving.go). ignore mirrors the firebase defaults so the
+// generated config files don't get uploaded.
 func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, error) {
 	hosting := map[string]any{
 		"public": filepath.Base(stagingDir),
@@ -406,9 +479,14 @@ func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, er
 	} else {
 		hosting["site"] = spec.Site
 	}
-	if len(spec.Rewrites) > 0 {
-		hosting["rewrites"] = spec.Rewrites
+	rewrites := append([]map[string]any{}, spec.Rewrites...)
+	if spec.SPAFallback != "" {
+		rewrites = append(rewrites, spaFallbackRewrite(spec.SPAFallback))
 	}
+	if len(rewrites) > 0 {
+		hosting["rewrites"] = rewrites
+	}
+	hosting["headers"] = firebaseHeaders(spec.CacheControl, spec.assetRel())
 	doc := map[string]any{"hosting": hosting}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -456,6 +534,12 @@ func printFirebasePlan(w io.Writer, plan firebasePlan) {
 	_, _ = fmt.Fprintf(w, "    firebase.json (hosting.public=%s):\n", filepath.Base(plan.Stage.StagingDir))
 	for _, line := range strings.Split(strings.TrimRight(plan.FirebaseJSON, "\n"), "\n") {
 		_, _ = fmt.Fprintf(w, "      %s\n", line)
+	}
+	if r := plan.Retention; r.enabled() {
+		_, _ = fmt.Fprintf(w, "    asset retention: keep /%s/** of the last %d release(s), read from %s\n",
+			r.AssetRel, r.Keep, r.manifestURL())
+	} else {
+		_, _ = fmt.Fprintf(w, "    asset retention: off (the frontend declares no asset_dir)\n")
 	}
 	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec (cwd %s): %s\n",
 		plan.DeployWorkdir, strings.Join(plan.DeployCmd, " "))

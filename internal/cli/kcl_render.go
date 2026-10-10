@@ -990,13 +990,18 @@ type FrontendEntity struct {
 	// PublicDir is the build's static output dir relative to the frontend's
 	// code — declared, else the type's convention (resolved by the render).
 	PublicDir string `json:"public_dir,omitempty"`
+	// AssetDir is the build's content-hashed asset directory relative to
+	// PublicDir — declared, else the type's convention ("assets" for vite,
+	// "_next/static" for nextjs). Empty when the build has none.
+	AssetDir string `json:"asset_dir,omitempty"`
 	// BasePath mounts the frontend under a sub-path ("/admin"); empty is
 	// the site root.
 	BasePath string `json:"base_path,omitempty"`
 	// Bundle is the extra pre-built static dirs assembled into the site.
 	Bundle []BundleDir `json:"bundle,omitempty"`
-	// CacheControl is the ordered Cache-Control rules forge applies to the
-	// objects it uploads (OnBucket only; the render refuses them elsewhere).
+	// CacheControl is the ordered Cache-Control rules forge applies where it
+	// publishes the build itself (OnBucket object headers, OnFirebase
+	// firebase.json headers; the render refuses them elsewhere).
 	CacheControl []CacheRule `json:"cache_control,omitempty"`
 	// RuntimeConfig is the frontend's declared `runtime_config` RESOLVED
 	// to literals by the KCL render (forge.WorkloadURL references lowered

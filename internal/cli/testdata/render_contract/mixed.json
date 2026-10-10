@@ -21,6 +21,7 @@
     "env": "dev",
     "frontends": [
       {
+        "asset_dir": "assets",
         "base_path": null,
         "bundle": [],
         "cache_control": [],
@@ -50,6 +51,7 @@
         "type": "vite"
       },
       {
+        "asset_dir": "assets",
         "base_path": "/docs",
         "bundle": [],
         "cache_control": [

@@ -77,6 +77,12 @@ type FirebaseRuntime struct {
 	Site     string           `json:"site"`
 	Target   string           `json:"target,omitempty"`
 	Rewrites []map[string]any `json:"rewrites,omitempty"`
+	// SPAFallback is the entry document served for client-side routes
+	// ("/index.html"); empty means no SPA fallback.
+	SPAFallback string `json:"spa_fallback,omitempty"`
+	// KeepAssetReleases is how many releases' hashed assets the live site
+	// serves. The render projects it unconditionally (default 10, floor 2).
+	KeepAssetReleases int `json:"keep_asset_releases"`
 }
 
 // CacheRule is one Cache-Control header applied to the objects a glob

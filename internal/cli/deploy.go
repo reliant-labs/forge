@@ -2394,15 +2394,29 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 		DevRunner: f.DevRunner,
 		BuildEnv:  buildEnv,
 		Spec: deploytarget.FirebaseHostingSpec{
-			Project:   fb.Project,
-			Site:      fb.Site,
-			Target:    fb.Target,
-			PublicDir: f.PublicDir,
-			BasePath:  f.BasePath,
-			Bundle:    frontendBundleSpecs(f),
-			Rewrites:  fb.Rewrites,
+			Project:           fb.Project,
+			Site:              fb.Site,
+			Target:            fb.Target,
+			PublicDir:         f.PublicDir,
+			BasePath:          f.BasePath,
+			Bundle:            frontendBundleSpecs(f),
+			Rewrites:          fb.Rewrites,
+			SPAFallback:       fb.SPAFallback,
+			AssetDir:          f.AssetDir,
+			KeepAssetReleases: fb.KeepAssetReleases,
+			CacheControl:      frontendCacheRules(f),
 		},
 	}
+}
+
+// frontendCacheRules is the frontend's Cache-Control rules in the
+// provider's shape, order kept (first match wins).
+func frontendCacheRules(f FrontendEntity) []deploytarget.CacheRuleSpec {
+	rules := make([]deploytarget.CacheRuleSpec, 0, len(f.CacheControl))
+	for _, r := range f.CacheControl {
+		rules = append(rules, deploytarget.CacheRuleSpec{Pattern: r.Pattern, CacheControl: r.CacheControl})
+	}
+	return rules
 }
 
 // frontendBundleSpecs is the frontend's bundle dirs in the provider's shape.
@@ -2423,15 +2437,11 @@ func frontendBundleSpecs(f FrontendEntity) []deploytarget.BundleDirSpec {
 // a hosted frontend (the control plane owns its bucket), which is built by
 // this same projection and never uploaded from here.
 func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
-	rules := make([]deploytarget.CacheRuleSpec, 0, len(f.CacheControl))
-	for _, r := range f.CacheControl {
-		rules = append(rules, deploytarget.CacheRuleSpec{Pattern: r.Pattern, CacheControl: r.CacheControl})
-	}
 	spec := deploytarget.StaticSiteSpec{
 		PublicDir:    f.PublicDir,
 		BasePath:     f.BasePath,
 		Bundle:       frontendBundleSpecs(f),
-		CacheControl: rules,
+		CacheControl: frontendCacheRules(f),
 	}
 	if b := f.Runtime.Bucket; b != nil {
 		spec.Bucket = b.Bucket

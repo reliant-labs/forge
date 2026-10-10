@@ -950,6 +950,12 @@ _public_dir = lambda f: Frontend -> str {
     f.public_dir if f.public_dir else ("out" if f.type == "nextjs" else "dist")
 }
 
+# The build's content-hashed asset directory, relative to public_dir:
+# declared, else the type's convention. "" for a build with none (rn).
+_asset_dir = lambda f: Frontend -> str {
+    f.asset_dir if f.asset_dir else ({"vite": "assets", "nextjs": "_next/static"}[f.type] if f.type in ["vite", "nextjs"] else "")
+}
+
 # The production build shape of each frontend the PROJECT declares, by name:
 # "static" | "standalone" | "server" — read from the frontend's own
 # next.config (a Vite or Expo build is always "static").
@@ -1016,8 +1022,8 @@ _frontend_violations = lambda f: Frontend -> [str] {
         + (["delve_port: a frontend's dev server is not a Go process"] if _host and _rt.delve_port != 2345 else []) \
         + (["build_variants: a frontend has one build"] if _t == "build-only" and _rt.build_variants else []) \
         + (["bundle: the dev server assembles nothing; bundle dirs are assembled into a PUBLISHED site"] if _host and f.bundle else []) \
-        + (["cache_control: forge sets Cache-Control only on the objects it uploads to your bucket (forge.OnBucket); ${'the platform owns the CDN and its headers' if _t == 'hosted' else ('Firebase owns the headers' if _t == 'firebase' else 'nothing here serves the build')}"] \
-            if f.cache_control and _t != "bucket" else []) \
+        + (["cache_control: forge sets Cache-Control only where it publishes the build itself (forge.OnBucket object headers, forge.OnFirebase firebase.json headers); ${'the platform owns the CDN and its headers' if _t == 'hosted' else 'nothing here serves the build'}"] \
+            if f.cache_control and _t not in ["bucket", "firebase"] else []) \
         + (["image: nothing here pushes a registry artifact — ${'your bucket serves the build' if _t == 'bucket' else ('your Firebase site serves it' if _t == 'firebase' else ('the dev server serves it' if _host else 'the build is not published'))}"] \
             if f.image and _t != "hosted" else []) \
         + (["image is REQUIRED on forge.OnHosted: the site release is pushed to a registry, and the registry is part of the reference (e.g. image = \"ghcr.io/<owner>/${f.name}\"). forge appends the platform's own static.v1 layout to it. There is no env-level registry"] \
@@ -1069,7 +1075,9 @@ _render_frontend_runtime = lambda rt: any -> any {
         "project": rt.project
         "site": rt.site
         "target": rt.target if rt.target else None
+        "spa_fallback": rt.spa_fallback if rt.spa_fallback else None
         "rewrites": rt.rewrites if rt.rewrites else []
+        "keep_asset_releases": rt.keep_asset_releases
     } if rt.type == "firebase" else {"type": rt.type})
 }
 
@@ -1097,6 +1105,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # The static build, on the frontend: every publishing runtime
         # builds and assembles the same way.
         "public_dir": _public_dir(f)
+        "asset_dir": _asset_dir(f) if _asset_dir(f) else None
         "base_path": f.base_path if f.base_path else None
         "bundle": [_render_bundle_dir(b) for b in f.bundle]
         "cache_control": [_render_cache_rule(r) for r in f.cache_control]

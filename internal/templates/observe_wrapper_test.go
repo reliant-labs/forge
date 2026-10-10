@@ -66,6 +66,39 @@ func TestObserveChainSeamTemplate(t *testing.T) {
 	}
 }
 
+// TestObserveChainSeamTemplate_NamesExpectedErrors: the seam is where a
+// package declares which of its errors are answers rather than failures, and
+// the scaffolded file is the only place an author reliably reads about the
+// seam's knobs. Without the declaration named there, an adapter's "no such
+// object" logs at ERROR forever — 288 ERROR records in five hours of one prod
+// static-site proxy, every one a crawler 404. The adapter contract scaffold
+// points at it too, since that is where the error sentinels get written.
+func TestObserveChainSeamTemplate_NamesExpectedErrors(t *testing.T) {
+	seam, err := InternalPkgTemplates().Render("observe_chain.go.tmpl", observeSeamData{
+		Name: "stripe", ImportPath: "stripe", Module: "example.com/proj", LogLevel: "slog.LevelDebug",
+	})
+	if err != nil {
+		t.Fatalf("render observe_chain.go.tmpl: %v", err)
+	}
+	for _, want := range []string{"observe.WithExpectedErrors(ErrNotFound)", "observe.WithExpectedErrorFunc"} {
+		if !strings.Contains(string(seam), want) {
+			t.Errorf("the owned seam must name %q as the way to declare an expected error:\n%s", want, seam)
+		}
+	}
+
+	contract, err := InternalPkgKindTemplates("adapter").Render("contract.go.tmpl",
+		observePkgData{Name: "stripe", ImportPath: "stripe", Module: "example.com/proj", Flavor: "adapter"})
+	if err != nil {
+		t.Fatalf("render adapter contract.go.tmpl: %v", err)
+	}
+	if !strings.Contains(string(contract), "observe.WithExpectedErrors(ErrNotFound)") {
+		t.Errorf("the adapter contract must point at the seam's expected-error declaration:\n%s", contract)
+	}
+	if _, ferr := format.Source(contract); ferr != nil {
+		t.Fatalf("rendered adapter contract.go is not gofmt-valid: %v\n%s", ferr, contract)
+	}
+}
+
 // TestProvidersTemplate_DefaultClient renders providers.go.tmpl in all
 // database shapes and asserts the DefaultClient method + shared instrumented
 // base transport are present and the output is gofmt-valid.

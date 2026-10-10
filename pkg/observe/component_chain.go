@@ -203,6 +203,10 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 // the duration as an attribute.
 //
 //   - Every FAILED call is written at slog.LevelError, with the error.
+//   - A call whose error the seam declared an EXPECTED OUTCOME
+//     (WithExpectedErrors / WithExpectedErrorFunc — a storage adapter's "no
+//     such object") is not a failure: it is logged like a success, below,
+//     with the error and expected=true attached.
 //   - Every SUCCESSFUL call is written at level — which the owned seam wires
 //     from forge.yaml's observability.log_level (default Debug: quiet under a
 //     production Info handler) — unless success sampling is on. Sampling is
@@ -216,9 +220,9 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 // a tight loop: one method on a 10s work loop was two thirds of a dev
 // stack's log. See log_policy.go.
 //
-// opts are the RPC edge's: WithSuccessSampling, WithSlowThreshold, and
-// WithSuccessLevel keyed by the "<pkg>.<Method>" operation name. nil logger
-// falls back to slog.Default.
+// opts are the RPC edge's: WithSuccessSampling, WithSlowThreshold,
+// WithSuccessLevel keyed by the "<pkg>.<Method>" operation name, and
+// WithExpectedErrors. nil logger falls back to slog.Default.
 func LogMiddleware(logger *slog.Logger, level slog.Level, opts ...LogOption) ComponentMiddleware {
 	return &logMiddleware{logger: logger, policy: newLogPolicy(level, opts)}
 }
@@ -236,21 +240,25 @@ func (m *logMiddleware) WrapComponent(ctx context.Context, method string, next C
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if err != nil {
+	expected := m.policy.isExpected(err)
+	if err != nil && !expected {
 		logger.LogAttrs(ctx, slog.LevelError, method,
 			slog.Duration("duration", elapsed),
 			slog.Any("error", err),
 		)
 		return err
 	}
-	level, why, ok := m.policy.success(ctx, logger, method, elapsed, true)
+	level, why, ok := m.policy.outcome(ctx, logger, method, elapsed, true, expected)
 	if !ok {
-		return nil
+		return err
 	}
 	attrs := []slog.Attr{slog.Duration("duration", elapsed)}
+	if expected {
+		attrs = append(attrs, slog.Any("error", err), slog.Bool("expected", true))
+	}
 	if why.Key != "" {
 		attrs = append(attrs, why)
 	}
 	logger.LogAttrs(ctx, level, method, attrs...)
-	return nil
+	return err
 }

@@ -193,6 +193,19 @@ always safe. This file is THE extension point:
   `observe.WithSuccessSampling(d)` to sample this package's successes
   (`0` = every success),
   `observe.WithSlowThreshold(d)` to move the slow line.
+- **Declare expected errors** — an error that is an ANSWER, not a failure
+  (a storage read for a missing object behind a 404, a registry asked for a
+  repository it does not hold), is declared on `observe.LogMiddleware`:
+  `observe.WithExpectedErrors(ErrNotFound)` (`errors.Is` against each
+  target), or `observe.WithExpectedErrorFunc(func(err error) bool)` for a
+  classification no sentinel expresses. A declared error is logged like a
+  success — at the success level, sampled in its own slot, carrying the
+  error and `expected=true` — so it is quiet under a production INFO handler
+  while every undeclared error stays at Error. Nothing is expected until
+  declared. The same options work at the RPC edge through
+  `observe.Deps.LogOptions` (a declared NotFound logs `rpc failed` at INFO
+  instead of WARN). Logging only: the span and `<pkg>.errors` still record
+  the error.
 
 The chain captures only method identity, duration, and error status — never
 arguments or results. It records `<pkg>.calls` / `<pkg>.errors` /

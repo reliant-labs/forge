@@ -16,6 +16,10 @@
 //     forgeconv-outbound-io-no-rpc).
 //   - Translate vendor errors at the boundary; surface domain-typed
 //     errors or wrapped svcerr sentinels.
+//   - An error that is an ANSWER rather than a failure (a lookup that
+//     found nothing) is declared expected in observe_chain.go —
+//     observe.WithExpectedErrors(ErrNotFound) — so it logs below Error
+//     and real failures stay visible.
 //   - Keep retries / timeouts / circuit breakers here, not in callers.
 //
 // Skill: forge skill load adapter

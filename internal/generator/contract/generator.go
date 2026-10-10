@@ -167,6 +167,13 @@ type Options struct {
 	// generate).
 	ProjectRoot string
 	Checksums   *checksums.FileChecksums
+
+	// Resolver answers what each import is called and what each foreign
+	// Deps interface's method set is, from the Go toolchain. A caller
+	// generating many contracts (the `forge generate` contracts step)
+	// builds ONE with NewResolver over all of them, so the whole run costs
+	// two go/packages loads. nil resolves this contract alone.
+	Resolver *Resolver
 }
 
 // Generate parses contractPath and writes mock_gen.go next to it.
@@ -188,7 +195,7 @@ func Generate(contractPath string) error {
 // entry point; the bare Generate is preserved for call sites that don't
 // need the extension surface.
 func GenerateWithOptions(contractPath string, opts Options) error {
-	cf, err := ParseContract(contractPath)
+	cf, err := ParseContractWith(contractPath, opts.Resolver)
 	if err != nil {
 		return fmt.Errorf("parse contract: %w", err)
 	}
@@ -256,11 +263,26 @@ func removeJournaled(path string) error {
 // emit "nil" for interface-typed returns whose declaration lives outside
 // contract.go (e.g. internal/debug defines Service in contract.go and
 // Debugger in debugger.go).
-// of the contract file in order. Splitting a sequential parse into helpers
-// trades a long function for hidden state passed between them.
+//
+// Import names and foreign Deps interfaces are resolved through the Go
+// toolchain by a Resolver scoped to this one contract; callers parsing many
+// contracts share one via ParseContractWith.
+func ParseContract(path string) (*File, error) {
+	return ParseContractWith(path, nil)
+}
+
+// ParseContractWith is ParseContract against a shared Resolver (nil builds
+// one for this contract alone).
+//
+// It is a single-pass parser: each statement consumes one part of the
+// contract file in order. Splitting a sequential parse into helpers trades a
+// long function for hidden state passed between them.
 //
 //nolint:funlen // A single-pass parser: each statement consumes one part
-func ParseContract(path string) (*File, error) {
+func ParseContractWith(path string, r *Resolver) (*File, error) {
+	if r == nil {
+		r = NewResolver(path)
+	}
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
@@ -308,17 +330,17 @@ func ParseContract(path string) (*File, error) {
 	// Service interface in the same file.
 	collectPrimitiveAliases(file, cf.PrimitiveAliases)
 
-	// Collect imports: build a map from local name → import path.
+	// Collect imports: build a map from local name → import path. An
+	// unaliased import binds its package's DECLARED name, which is not
+	// always its last path element (github.com/nats-io/nats.go binds
+	// `nats`) — the resolver asks the toolchain.
 	for _, imp := range file.Imports {
-		path := strings.Trim(imp.Path.Value, `"`)
-		var name string
-		if imp.Name != nil {
-			name = imp.Name.Name
+		name, path, explicit := r.importLocalName(imp)
+		if name == "_" || name == "." {
+			continue
+		}
+		if explicit {
 			cf.ExplicitImports[name] = true
-		} else {
-			// Default name is the last path element.
-			parts := strings.Split(path, "/")
-			name = parts[len(parts)-1]
 		}
 		cf.Imports[name] = path
 	}
@@ -406,7 +428,7 @@ func ParseContract(path string) (*File, error) {
 	// these the scaffolded contract_test.go's promise of a
 	// "pipeline.MockStore" is false, and users hand-roll the fake that
 	// same comment forbids. See deps_stores.go.
-	foreign, foreignImports := foreignInterfaces(dir, fset, cf.Imports, cf.ExplicitImports)
+	foreign, foreignImports := foreignInterfaces(dir, fset, cf.Imports, cf.ExplicitImports, r)
 	localNames := make(map[string]bool, len(cf.Interfaces))
 	for _, iface := range cf.Interfaces {
 		localNames[iface.Name] = true
@@ -634,13 +656,40 @@ func collectImports(cf *File, ifaces []InterfaceDef) []ImportDef {
 // collectFromTypeExpr scans a type expression string for package references
 // and adds the corresponding import paths to the needed set.
 func collectFromTypeExpr(typeExpr string, importMap map[string]string, explicit map[string]bool, needed map[string]ImportDef) {
-	for alias, path := range importMap {
-		// Look for "alias." in the type expression. This handles cases like
-		// "context.Context", "*sql.Rows", "sql.Result", "func([]byte) ([]byte, error)".
-		if strings.Contains(typeExpr, alias+".") {
-			needed[path] = ImportDef{Path: path, Name: alias, Explicit: explicit[alias]}
+	for _, qualifier := range typeExprQualifiers(typeExpr) {
+		if path, ok := importMap[qualifier]; ok {
+			needed[path] = ImportDef{Path: path, Name: qualifier, Explicit: explicit[qualifier]}
 		}
 	}
+}
+
+// typeExprQualifiers returns every identifier in a rendered type expression
+// that is immediately followed by a "." — the package qualifiers in
+// "context.Context", "*sql.Rows", "func([]byte) (*nats.Msg, error)". It
+// matches whole identifiers: a substring test made an explicit `v1` alias
+// match inside "controlplanev1.Plan" and emitted an import the mock never
+// used, which does not compile.
+func typeExprQualifiers(typeExpr string) []string {
+	var out []string
+	isIdent := func(c byte) bool {
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+	}
+	for i := 0; i < len(typeExpr); {
+		if !isIdent(typeExpr[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(typeExpr) && isIdent(typeExpr[i]) {
+			i++
+		}
+		// A selector's right-hand side (the "Msg" of nats.Msg) is
+		// preceded by "."; only the left-hand side is a qualifier.
+		if i < len(typeExpr) && typeExpr[i] == '.' && (start == 0 || typeExpr[start-1] != '.') {
+			out = append(out, typeExpr[start:i])
+		}
+	}
+	return out
 }
 
 // renderMock renders the mock_gen.go body for cf — the pure half of

@@ -48,8 +48,8 @@ const depsTypeName = "Deps"
 // its own contract.go mocks — mock generation runs on every `forge
 // generate`, so a hard failure here would block codegen for the whole
 // project over a dep that is merely not understood yet.
-func foreignInterfaces(dir string, fset *token.FileSet, consumerImports map[string]string, consumerExplicit map[string]bool) ([]InterfaceDef, map[string]ImportDef) {
-	fields := depsFieldTypes(dir, fset)
+func foreignInterfaces(dir string, fset *token.FileSet, consumerImports map[string]string, consumerExplicit map[string]bool, r *Resolver) ([]InterfaceDef, map[string]ImportDef) {
+	fields := depsFieldTypes(dir, fset, r)
 	if len(fields) == 0 {
 		return nil, nil
 	}
@@ -75,7 +75,7 @@ func foreignInterfaces(dir string, fset *token.FileSet, consumerImports map[stri
 		req.names = append(req.names, f.typeName)
 	}
 
-	aliases := newImportAliases(consumerImports, consumerExplicit)
+	aliases := newImportAliases(consumerImports, consumerExplicit, r)
 	var defs []InterfaceDef
 	var importPaths []string
 	for importPath := range byImport {
@@ -88,8 +88,19 @@ func foreignInterfaces(dir string, fset *token.FileSet, consumerImports map[stri
 		if !ok {
 			continue
 		}
-		pkg, ok := parseForeignPackage(pkgDir, fset)
-		if !ok {
+		typed := r.foreignPackage(importPath)
+		// The syntax view is the fallback for interfaces the toolchain
+		// could not type. Parsed lazily: with a healthy load it is never
+		// needed.
+		var syntax *foreignPackage
+		syntaxOK := true
+		parseSyntax := func() *foreignPackage {
+			if syntax == nil && syntaxOK {
+				syntax, syntaxOK = parseForeignPackage(pkgDir, fset, r)
+			}
+			return syntax
+		}
+		if typed == nil && parseSyntax() == nil {
 			continue
 		}
 		qualifier := aliases.use(importPath, req.qualifier, true)
@@ -107,11 +118,28 @@ func foreignInterfaces(dir string, fset *token.FileSet, consumerImports map[stri
 			if seen[name] {
 				continue
 			}
+			if typed != nil {
+				def, reachable, isIface, ok := typedInterface(typed, name, aliases)
+				if ok {
+					if !isIface {
+						// A Deps field can name a struct (a row type, a
+						// config). Not every named type is mockable, and a
+						// mock for a struct would not compile.
+						continue
+					}
+					seen[name] = true
+					def.Qualifier = qualifier
+					defs = append(defs, def)
+					queue = append(queue, reachable...)
+					continue
+				}
+			}
+			pkg := parseSyntax()
+			if pkg == nil {
+				continue
+			}
 			iface, isIface := pkg.interfaces[name]
 			if !isIface {
-				// A Deps field can name a struct (a row type, a config).
-				// Not every named type is mockable, and a mock for a
-				// struct would not compile.
 				continue
 			}
 			seen[name] = true
@@ -153,13 +181,29 @@ type importAliases struct {
 	byPath map[string]ImportDef
 	byName map[string]string
 	needed map[string]bool
+	// resolver supplies each path's declared package name, which decides
+	// whether a chosen qualifier needs an explicit alias in the import
+	// block. declared holds names learned exactly from type-checked
+	// packages during this render, and wins over the resolver.
+	resolver *Resolver
+	declared map[string]string
 }
 
-func newImportAliases(imports map[string]string, explicit map[string]bool) *importAliases {
+// packageName is the name an unaliased import of path binds.
+func (r *importAliases) packageName(path string) string {
+	if name, ok := r.declared[path]; ok {
+		return name
+	}
+	return r.resolver.packageName(path)
+}
+
+func newImportAliases(imports map[string]string, explicit map[string]bool, resolver *Resolver) *importAliases {
 	r := &importAliases{
-		byPath: make(map[string]ImportDef),
-		byName: make(map[string]string),
-		needed: make(map[string]bool),
+		byPath:   make(map[string]ImportDef),
+		byName:   make(map[string]string),
+		needed:   make(map[string]bool),
+		resolver: resolver,
+		declared: make(map[string]string),
 	}
 	var names []string
 	for name := range imports {
@@ -184,7 +228,7 @@ func (r *importAliases) use(path, preferred string, explicit bool) string {
 		return existing.Name
 	}
 	if preferred == "" {
-		preferred = defaultImportName(path)
+		preferred = r.packageName(path)
 	}
 	name := preferred
 	if occupied, ok := r.byName[name]; ok && occupied != path {
@@ -197,7 +241,9 @@ func (r *importAliases) use(path, preferred string, explicit bool) string {
 			}
 		}
 	}
-	if name != defaultImportName(path) {
+	// An import binds its package's DECLARED name; any other qualifier
+	// must be spelled out in the import block.
+	if name != r.packageName(path) {
 		explicit = true
 	}
 	imp := ImportDef{Path: path, Name: name, Explicit: explicit}
@@ -207,19 +253,20 @@ func (r *importAliases) use(path, preferred string, explicit bool) string {
 	return name
 }
 
+// useNamed is use for a package whose declared name is known exactly (a
+// type-checked *types.Package): that name is preferred, and an alias is
+// written only when it collides with one already taken.
+func (r *importAliases) useNamed(path, pkgName string) string {
+	r.declared[path] = pkgName
+	return r.use(path, pkgName, false)
+}
+
 func (r *importAliases) neededImports() map[string]ImportDef {
 	imports := make(map[string]ImportDef, len(r.needed))
 	for path := range r.needed {
 		imports[path] = r.byPath[path]
 	}
 	return imports
-}
-
-func defaultImportName(path string) string {
-	if slash := strings.LastIndexByte(path, '/'); slash >= 0 {
-		return path[slash+1:]
-	}
-	return path
 }
 
 // depsField is one Deps field that names a type from another package.
@@ -237,7 +284,7 @@ type depsField struct {
 // type this package already declares — contract.go's own interfaces
 // already cover those — and a field typed as a pointer, slice or func is
 // not an interface to mock.
-func depsFieldTypes(dir string, fset *token.FileSet) []depsField {
+func depsFieldTypes(dir string, fset *token.FileSet, r *Resolver) []depsField {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -256,7 +303,7 @@ func depsFieldTypes(dir string, fset *token.FileSet) []depsField {
 			continue
 		}
 
-		imports := importRefs(file)
+		imports := importRefs(file, r)
 		for _, decl := range file.Decls {
 			genDecl, ok := decl.(*ast.GenDecl)
 			if !ok || genDecl.Tok != token.TYPE {
@@ -310,7 +357,7 @@ type foreignInterface struct {
 	imports  map[string]importRef
 }
 
-func parseForeignPackage(dir string, fset *token.FileSet) (*foreignPackage, bool) {
+func parseForeignPackage(dir string, fset *token.FileSet, r *Resolver) (*foreignPackage, bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, false
@@ -334,7 +381,7 @@ func parseForeignPackage(dir string, fset *token.FileSet) (*foreignPackage, bool
 			continue
 		}
 		found = true
-		fileImports := importRefs(file)
+		fileImports := importRefs(file, r)
 		for _, decl := range file.Decls {
 			genDecl, ok := decl.(*ast.GenDecl)
 			if !ok || genDecl.Tok != token.TYPE {
@@ -528,19 +575,12 @@ type importRef struct {
 	explicit bool
 }
 
-func importRefs(file *ast.File) map[string]importRef {
+// importRefs maps each identifier file's imports bind to its import. An
+// unaliased import binds its package's declared name, which r resolves.
+func importRefs(file *ast.File, r *Resolver) map[string]importRef {
 	out := make(map[string]importRef, len(file.Imports))
 	for _, imp := range file.Imports {
-		path := strings.Trim(imp.Path.Value, `"`)
-		name := ""
-		explicit := false
-		if imp.Name != nil {
-			name = imp.Name.Name
-			explicit = true
-		} else {
-			parts := strings.Split(path, "/")
-			name = parts[len(parts)-1]
-		}
+		name, path, explicit := r.importLocalName(imp)
 		if name == "_" || name == "." {
 			continue
 		}

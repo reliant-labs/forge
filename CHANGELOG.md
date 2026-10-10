@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A contract mock imports every package its foreign interfaces use.**
+  `forge generate` rewrote control-plane's `internal/svcdaemon/mock_gen.go`
+  without `github.com/nats-io/nats.go`, so the package stopped building on every
+  run. The mock generator named an unaliased import by guessing its path's last
+  element (`nats.go`), so the `*nats.Msg` a foreign Deps interface returned never
+  matched it. It also read foreign interfaces from syntax alone, which skipped
+  embedded interfaces, and matched an alias by substring (`v1` inside
+  `controlplanev1.Plan`), which left an unused import. A new
+  `contract.Resolver` asks the toolchain instead: unaliased imports get their
+  declared package name, and each foreign interface is rendered from `go/types`,
+  embedded methods included, with every package its signatures reference
+  imported under its real path. Declared methods keep their source order, so
+  existing mocks are not reshuffled. One resolver serves the whole run (two
+  `go/packages` loads, not two per contract). A package the toolchain cannot
+  load falls back to the syntax path, so mock generation never blocks codegen.
+
 - **`FORGE_LEDGER=machine` keeps a run off a declared control plane.**
   control-plane's hermetic `scripts/test-kata-prepull.sh` set
   `FORGE_LEDGER_HOME` to a temp dir and ran `forge ledger import --apply`.

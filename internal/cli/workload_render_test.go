@@ -168,8 +168,11 @@ func TestWorkload_RoundTripsKCLToAppliedObjects(t *testing.T) {
 	// The secret pre-flight sees the secretRef (the channels it can check);
 	// databaseRef reads CNPG's own Secret, which no store renders.
 	envs := w.EnvVars()
-	if len(envs) != 2 || envs[1].SecretRef != "acme-prod-db" || envs[1].SecretKey != "password" {
-		t.Errorf("EnvVars() = %+v, want LOG_LEVEL and the DB_PASSWORD secret ref only", envs)
+	// forge appends the derived OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES
+	// after the author's two entries.
+	if len(envs) != 4 || envs[1].SecretRef != "acme-prod-db" || envs[1].SecretKey != "password" ||
+		envs[2].Name != "OTEL_SERVICE_NAME" || envs[3].Name != "OTEL_RESOURCE_ATTRIBUTES" {
+		t.Errorf("EnvVars() = %+v, want LOG_LEVEL, the DB_PASSWORD secret ref, then the derived OTEL_* entries", envs)
 	}
 
 	// ── layer 2: the entity contract -> deploy groups ─────────────────

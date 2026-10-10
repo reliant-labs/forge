@@ -1639,8 +1639,14 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 		return deployTagResolution{}, derr
 	}
 	// Fail closed: a release-bound env whose declared images did not all
-	// resolve a digest must not deploy on the mutable tag.
-	if entities, eerr := RenderKCL(ctx, projectDir, envName); eerr == nil {
+	// resolve a digest must not deploy on the mutable tag. That includes a
+	// render that cannot be read — skipping the check then would ship the
+	// mutable tag on exactly the run that could not prove the pins.
+	if boundRel != "" {
+		entities, eerr := RenderKCL(ctx, projectDir, envName)
+		if eerr != nil {
+			return deployTagResolution{}, fmt.Errorf("read env %q's declaration to verify release %s pins every image: %w", envName, boundRel, eerr)
+		}
 		if perr := checkReleasePinned(entities, digests, boundRel, envName); perr != nil {
 			return deployTagResolution{}, perr
 		}
@@ -1784,10 +1790,17 @@ func buildDeployGroupsForEnv(envName string, entities *KCLEntities, namespace, p
 // renderAndScopeEntities reads the rendered KCL once and applies the
 // application-level scoping filters (--target, --frontends-only) BEFORE
 // everything that derives from the entity set (deploy-group bucketing, the
-// rollout-wait / host-skip / one-shot-Job sets, the cluster banners). Missing
-// KCL render is logged and treated as "no filter" (every Deployment in the
-// namespace is awaited), preserving the pre-orchestration behaviour for
-// projects that haven't migrated to the deploy module yet.
+// rollout-wait / host-skip / one-shot-Job sets, the cluster banners).
+//
+// A render that cannot be read REFUSES the deploy. It used to be logged as a
+// note and the deploy carried on with no entities, which is not a degraded
+// deploy but a different one: no deploy groups, so no per-cluster scope, no
+// helm charts, no minted kubeconfigs, no preflight — just the env's whole
+// manifest stream applied to one context. On 2026-10-09 a transient entity-read
+// failure during a control-plane prod deploy did exactly that, and every
+// object declared for prod's daemon cluster was written to the main cluster.
+// The entities are what say where each object goes; a deploy that cannot read
+// them has nothing to route by, so it stops before anything is applied.
 //
 // --target: an empty filter is a no-op (every app). A typo'd target is caught
 // here (with the list of available app names) rather than producing a silent
@@ -1805,7 +1818,10 @@ func buildDeployGroupsForEnv(envName string, entities *KCLEntities, namespace, p
 func renderAndScopeEntities(ctx context.Context, projectDir, envName string, targets []string, frontendsOnly bool, renderManifests func() (string, error)) (scoped, full *KCLEntities, err error) {
 	entities, kerr := RenderKCL(ctx, projectDir, envName)
 	if kerr != nil {
-		fmt.Printf("Note: KCL entity read skipped (%v) — waiting on every Deployment in namespace.\n", kerr)
+		return nil, nil, fmt.Errorf("read env %q's declaration (deploy/kcl/%s): %w\n"+
+			"  nothing was deployed: without the rendered entities forge cannot tell which cluster each object belongs on, "+
+			"so it applies none of them. Fix the render (`forge env render %s --list` reproduces it) and re-run",
+			envName, envName, kerr, envName)
 	}
 	full = entities
 	if len(targets) > 0 && entities != nil {

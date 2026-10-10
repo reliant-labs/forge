@@ -341,7 +341,9 @@ the constructor is for the client.**
 
 The one way to defeat it: `svcerr.InvalidArgument(err.Error())` puts the raw
 error back on the wire, because codes you choose keep the message you gave
-them. Use `svcerr.WithCause(svcerr.Internal("create failed"), err)` instead.
+them. Use `svcerr.WithCause(svcerr.Internal("create failed"), err)` instead:
+the outer error decides the code, message, reason and error class; the cause
+— even another service's `*connect.Error` — reaches only the log.
 
 `svcerr.WithReason(err, "no_active_subscription")` attaches a stable
 snake_case code delivered as a header, so frontends branch on a code rather

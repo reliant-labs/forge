@@ -93,6 +93,22 @@ type Classed interface {
 // about whose fault it was would be its own bug. A 4xx that is really ours
 // (a row that must exist and does not) is a wrong code, or a place for
 // WithClass(err, ClassServer).
+//
+// # Behind a WithCause
+//
+// Steps 2 and 4 read the OUTER error of a [WithCause], exactly as the client
+// does: a WithClass marker, a [Classed] type or a kind in the cause does not
+// count. WithCause(Internal("charge failed"), notFoundFromBilling) is our
+// fault — a dependency said not_found, and we answered internal — so it is
+// ClassServer; an inner ClassUser marker must not silence it.
+//
+// Step 3 is the one exception, deliberately: it sees a cancellation anywhere,
+// cause included. A context.Canceled is not a verdict someone chose; it is
+// the fact that the caller went away, and it reaches handlers labelled
+// however they label every repository failure —
+// WithCause(Internal("list failed"), err) receives one each time a browser
+// navigates away mid-query. Paging on those is the noise this exists to
+// remove. The wire still reads the outer error.
 func Classify(err error) Class {
 	if err == nil {
 		return ClassNone
@@ -100,6 +116,7 @@ func Classify(err error) Class {
 	if class := explicitClass(err); class != ClassNone {
 		return class
 	}
+	// errors.Is, not the client view: a canceled cause counts (see above).
 	if IsCanceled(err) {
 		return ClassCanceled
 	}
@@ -126,29 +143,17 @@ func IsUserError(err error) bool { return Classify(err) == ClassUser }
 
 // explicitClass returns the nearest non-None class an error on err's chain
 // declares, walking the same tree errors.As does (Unwrap() error and
-// Unwrap() []error, depth first).
+// Unwrap() []error, depth first) — the client view, so a class declared
+// behind a WithCause cause is not err's class.
 func explicitClass(err error) Class {
-	for err != nil {
-		if c, ok := err.(Classed); ok {
-			if class := c.ErrorClass(); class != ClassNone {
-				return class
-			}
+	class := ClassNone
+	walkVisible(err, func(e error) bool {
+		if c, ok := e.(Classed); ok {
+			class = c.ErrorClass()
 		}
-		switch u := err.(type) {
-		case interface{ Unwrap() error }:
-			err = u.Unwrap()
-		case interface{ Unwrap() []error }:
-			for _, inner := range u.Unwrap() {
-				if class := explicitClass(inner); class != ClassNone {
-					return class
-				}
-			}
-			return ClassNone
-		default:
-			return ClassNone
-		}
-	}
-	return ClassNone
+		return class != ClassNone
+	})
+	return class
 }
 
 // classError carries an explicit Class. It is invisible everywhere else:
@@ -185,7 +190,8 @@ func (e *classError) ErrorClass() Class { return e.class }
 // (fmt.Errorf("...: %w", err)) and Wrap/ToConnect in process. It does not
 // cross a network boundary; a remote caller classifies by the code it
 // receives. The nearest marker wins, so an outer WithClass overrides an
-// inner one.
+// inner one. A marker on a [WithCause] cause is not the error's class: the
+// outer error decides.
 //
 // Behavior:
 //   - WithClass(nil, _) returns nil.

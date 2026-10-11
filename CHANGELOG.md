@@ -50,6 +50,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hosts nothing (control-plane's prod) called its control plane on every
   render. The base is now resolved only when there is a hosted image to judge.
 
+- **`forge lint`'s contract lane honours `GOWORK`.** It decided workspace mode
+  by looking for a `go.work` up the tree, so a workspace named by
+  `GOWORK=/tmp/x/go.work` (how a pinned project is bridged to an unreleased
+  forge checkout without writing into it) looked like none. The lane then
+  added `GOFLAGS=-mod=mod` and every package load failed with "-mod may only
+  be set to readonly or vendor when in workspace mode". `GOWORK` is consulted
+  first, as cmd/go does: a file means workspace mode, `off` means none, unset
+  falls back to the search.
+
+- **`forge lint` runs a golangci-lint that can analyze the module.**
+  golangci-lint refuses a module whose `go` directive is newer than the Go it
+  was built with ("the Go language version (go1.26) used to build
+  golangci-lint is lower than the targeted Go version (1.27)", exit 3). The
+  workspace image shipped a go1.26-built release binary, so the gating lane
+  could not run on control-plane, reliant or forge itself, all `go 1.27`. The
+  binary is now chosen per module. The one on PATH is used when its build Go
+  (read with `debug/buildinfo`, no subprocess) is at least the module's `go`
+  directive. Otherwise forge builds its pinned golangci-lint with the toolchain
+  `go` selects for the module, once per (pin, toolchain), into
+  `<UserCacheDir>/forge/tools/golangci-lint/` (`FORGE_TOOLS_CACHE` overrides
+  it), and prints a one-line notice first. If that build fails, the lane fails
+  with a message naming the binary, both Go versions and the exact
+  `GOTOOLCHAIN=… go install …` that fixes it. The gating lane and the advisory
+  typed-config guardrail share one resolution per run. No golangci-lint on
+  PATH is still a skip.
+
 - **A no-version `forge env deploy` reuses the release already cut for the
   checkout, and builds nothing.** On 2026-10-09
   `forge env build prod --release 20261009.205925-d29da50b` cut prod's release

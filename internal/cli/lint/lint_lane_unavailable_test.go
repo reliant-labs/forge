@@ -73,7 +73,7 @@ func TestTypedAccessGuardAdvisoryReportsUnavailable(t *testing.T) {
 	}
 	fakeGolangciLint(t, contendedLockStub)
 
-	err := runTypedAccessGuardAdvisory(context.Background(), []string{"./..."})
+	err := runTypedAccessGuardAdvisory(context.Background(), "golangci-lint", []string{"./..."})
 	if err == nil {
 		t.Fatal("guardrail returned nil after golangci-lint exited 3 without reporting — " +
 			"the driver reads that as a lane that ran and passed")
@@ -103,7 +103,7 @@ func TestTypedAccessGuardAdvisoryPassesWhenItRuns(t *testing.T) {
 	}
 	fakeGolangciLint(t, `echo "0 issues."; exit 0`)
 
-	if err := runTypedAccessGuardAdvisory(context.Background(), []string{"./..."}); err != nil {
+	if err := runTypedAccessGuardAdvisory(context.Background(), "golangci-lint", []string{"./..."}); err != nil {
 		t.Fatalf("guardrail reported a problem on a clean run: %v", err)
 	}
 }

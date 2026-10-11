@@ -947,13 +947,13 @@ func parseDigitsLint(s string) int {
 // fix applies golangci's safe autofixes first, exactly as text mode does;
 // --json always passes false (it is detect-only), --quiet passes the
 // default run's value so the two reach the same verdict.
-func collectGolangciLintJSON(ctx context.Context, paths []string, fix bool) ([]lintJSONFinding, bool) {
+func collectGolangciLintJSON(ctx context.Context, bin string, paths []string, fix bool) ([]lintJSONFinding, bool) {
 	var extra []string
 	if fix {
 		extra = append(extra, "--fix")
 	}
 	args := golangciRunArgs(extra, paths)
-	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	var buf strings.Builder
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -996,8 +996,12 @@ const (
 // same rule id at warning severity with gated=false, so `forge lint --json`
 // answered "ok": true over a check that never executed.
 func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+	res := rc.golangci()
+	if res.err != nil {
+		return []lintJSONFinding{golangciUnresolvedFinding(res.err, unavailableSeverity(rc.strict))}, rc.strict, nil
+	}
 	args := golangciRunArgs([]string{"--enable-only=forbidigo", "--issues-exit-code=0"}, rc.paths)
-	cmd := exec.CommandContext(rc.ctx, "golangci-lint", args...)
+	cmd := exec.CommandContext(rc.ctx, res.path, args...)
 	var buf strings.Builder
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

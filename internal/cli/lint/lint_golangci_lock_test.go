@@ -40,26 +40,26 @@ func TestGolangciLanesQueueForTheMachineLock(t *testing.T) {
 	}
 	t.Run("text gate", func(t *testing.T) {
 		fakeGolangciLint(t, contendedUnlessSerialStub)
-		if err := runGolangciLint(context.Background(), false, []string{"./..."}); err != nil {
+		if err := runGolangciLint(context.Background(), "golangci-lint", false, []string{"./..."}); err != nil {
 			t.Fatalf("golangci-lint gate failed on a lock another process held: %v — forge lint must "+
 				"pass --allow-serial-runners so a contended lock waits instead of exiting 3", err)
 		}
 	})
 	t.Run("text gate with --fix", func(t *testing.T) {
 		fakeGolangciLint(t, contendedUnlessSerialStub)
-		if err := runGolangciLint(context.Background(), true, []string{"./..."}); err != nil {
+		if err := runGolangciLint(context.Background(), "golangci-lint", true, []string{"./..."}); err != nil {
 			t.Fatalf("golangci-lint --fix failed on a contended lock: %v", err)
 		}
 	})
 	t.Run("text advisory guardrail", func(t *testing.T) {
 		fakeGolangciLint(t, contendedUnlessSerialStub)
-		if err := runTypedAccessGuardAdvisory(context.Background(), []string{"./..."}); err != nil {
+		if err := runTypedAccessGuardAdvisory(context.Background(), "golangci-lint", []string{"./..."}); err != nil {
 			t.Fatalf("typed-config guardrail could not run on a contended lock: %v", err)
 		}
 	})
 	t.Run("json gate", func(t *testing.T) {
 		fakeGolangciLint(t, contendedUnlessSerialStub)
-		fs, gated := collectGolangciLintJSON(context.Background(), []string{"./..."}, false)
+		fs, gated := collectGolangciLintJSON(context.Background(), "golangci-lint", []string{"./..."}, false)
 		if gated || len(fs) != 0 {
 			t.Fatalf("--json golangci-lint gated on a contended lock: gated=%v findings=%+v", gated, fs)
 		}

@@ -678,6 +678,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: forge no longer runs or scaffolds sqlc.** The data-access path is
+  the ORM projected from the applied migrations: the generated `<Entity>Store`,
+  plus the owned `internal/db/<entity>_repo_ext.go` seam for anything it cannot
+  express (bun, CTEs, `FOR UPDATE SKIP LOCKED`, raw SQL), tested against a real
+  migrated database. The `sqlc generate` step is gone from `forge generate`, so
+  a root `sqlc.yaml` is no longer run: invoke sqlc from your own Taskfile while
+  you port off it. `forge project new` no longer writes `db/sqlc.yaml` or
+  `db/queries/`. That stub was dead on arrival anyway: generate only looked for
+  a ROOT `sqlc.yaml`, its paths were root-relative inside a file sqlc resolves
+  relative to `db/`, and it targeted the `internal/db` package the ORM generates
+  into. `db/README.md` now documents migrations, seeds and the query seam. The
+  `db`, `contracts`, `testing/integration` and `migration-service` skills say to
+  port sqlc queries onto the store, not to keep writing them.
 - **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
   `Delete`, `HostClientID`, `Location`, `Credential`).** A host used to copy its
   own session token into `credentials.json` under client `host-app`, and forge

@@ -259,8 +259,12 @@ Deployed envs migrate themselves — load the `db/deploy-migrations` skill.
 
 ### Queries
 
-- Simple: `internal/db/<entity>_repo_ext.go` — the custom-query seam forge scaffolds beside every entity, once, and never rewrites. Its header names the tools: the generated repo delegates with `orm.QueryOption` filters, raw SQL via `db.Bun()`, and the `orm.Context` that runs a method in or out of a transaction.
-- Complex: write SQL in `db/queries/` and use sqlc. Run `forge generate` to pick up sqlc changes. Bucketing by time has a silent timezone trap — load `db/time-buckets`.
+Every query goes through ONE data-access path: the generated store, then the owned seam beside it. forge does not run sqlc and scaffolds no `db/queries/`. A second, parallel query layer would re-describe the schema the ORM already projects.
+
+- Generated: `go doc ./internal/db <Entity>Store` covers reads by key, filtered lists (`orm.QueryOption`) and writes.
+- Anything else: `internal/db/<entity>_repo_ext.go`, the custom-query seam forge scaffolds beside every entity, once, and never rewrites. Its header names the tools: the generated delegates with `orm.QueryOption` filters, SQL via `db.Bun()`, and the `orm.Context` that runs a method in or out of a transaction. bun takes joins, CTEs (`NewSelect().With(...)`), `FOR UPDATE SKIP LOCKED`, advisory locks and fully raw statements (`NewRaw`), so a hand-tuned hot-path query stays hand-tuned SQL.
+- Test every `_repo_ext.go` query against a real migrated database (`testing/integration`). That is what checks the SQL against the schema; nothing does it at generate time.
+- Bucketing by time has a silent timezone trap: load `db/time-buckets`.
 
 ## Forge-specific rules
 

@@ -14,8 +14,8 @@ import (
 
 // Declared outputs of the pipeline steps that run EXTERNAL tools.
 //
-// forge's own writers journal every file they touch, but buf, `go mod tidy`,
-// sqlc and protoc-gen-connect-openapi write files forge never sees. A failed
+// forge's own writers journal every file they touch, but buf, `go mod tidy`
+// and protoc-gen-connect-openapi write files forge never sees. A failed
 // control-plane generate printed "your tree is back to its pre-run state"
 // over 32 buf outputs left modified: some carried a different protoc-gen-go
 // version header (the plugin on PATH was not the one that produced the
@@ -95,18 +95,6 @@ func writesFrontendTS(ctx *pipelineContext) []string {
 	return dedupeSorted(out)
 }
 
-// writesSqlc: the output directories sqlc.yaml names.
-func writesSqlc(ctx *pipelineContext) []string {
-	for _, name := range []string{"sqlc.yaml", "sqlc.yml"} {
-		data, err := os.ReadFile(filepath.Join(ctx.ProjectDir, name))
-		if err != nil {
-			continue
-		}
-		return sqlcOutDirs(data)
-	}
-	return nil
-}
-
 // writesKCLMigration: the image-registry migration (internal/kclmigrate)
 // rewrites existing .k files under deploy/kcl in place, through its own
 // writes. Declared as the FILES that exist, not the directory, so a file a
@@ -156,38 +144,6 @@ func bufTemplateOutDirs(templatePath string) []string {
 	var out []string
 	for _, p := range tmpl.Plugins {
 		if dir := cleanProjectRel(p.Out); dir != "" {
-			out = append(out, dir)
-		}
-	}
-	return dedupeSorted(out)
-}
-
-// sqlcOutDirs returns the output directories of a sqlc config: v2's
-// sql[].gen.go.out and v1's packages[].path.
-func sqlcOutDirs(data []byte) []string {
-	var cfg struct {
-		SQL []struct {
-			Gen struct {
-				Go struct {
-					Out string `yaml:"out"`
-				} `yaml:"go"`
-			} `yaml:"gen"`
-		} `yaml:"sql"`
-		Packages []struct {
-			Path string `yaml:"path"`
-		} `yaml:"packages"`
-	}
-	if yaml.Unmarshal(data, &cfg) != nil {
-		return nil
-	}
-	var out []string
-	for _, s := range cfg.SQL {
-		if dir := cleanProjectRel(s.Gen.Go.Out); dir != "" {
-			out = append(out, dir)
-		}
-	}
-	for _, p := range cfg.Packages {
-		if dir := cleanProjectRel(p.Path); dir != "" {
 			out = append(out, dir)
 		}
 	}

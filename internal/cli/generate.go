@@ -83,7 +83,6 @@ When forge.yaml exists, generation is driven by the config:
   - buf generate for TypeScript stubs for Next.js frontends
   - Service stubs and mocks for new services
   - pkg/app/bootstrap.go with explicit service bootstrapping
-  - sqlc generate if sqlc.yaml exists
   - go mod tidy in gen/
 
 Without forge.yaml, falls back to directory convention scanning:
@@ -317,7 +316,7 @@ type pipelineFlags struct {
 	// steps only. Skips the Tier-1 drift guard, the validation tail
 	// (pre-codegen contract check, post-gen warnings, `go build`), the
 	// stale-artifact cleanup sweep, and every external generator
-	// (buf/protoc/sqlc/goimports/go mod tidy/KCL).
+	// (buf/protoc/goimports/go mod tidy/KCL).
 	//
 	// Use case: a forge template change (e.g. `bootstrap.go.tmpl` gets a
 	// louder warning) needs to land in a downstream project that has

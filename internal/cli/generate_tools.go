@@ -119,34 +119,6 @@ func tidyBridgedModuleWith(run goOffWorkspaceRunner, moduleDir, label string) er
 	return nil
 }
 
-// runSqlcGenerate runs sqlc generate if sqlc.yaml exists.
-func runSqlcGenerate(projectDir string) error {
-	if _, err := os.Stat(filepath.Join(projectDir, "sqlc.yaml")); os.IsNotExist(err) {
-		if _, err := os.Stat(filepath.Join(projectDir, "sqlc.yml")); os.IsNotExist(err) {
-			// No sqlc config found, skip silently
-			return nil
-		}
-	}
-
-	if _, err := exec.LookPath("sqlc"); err != nil {
-		fmt.Println("  ⚠️  sqlc not found on PATH - skipping sqlc generate")
-		return nil
-	}
-
-	fmt.Println("🔨 Running sqlc generate...")
-	cmd := exec.Command("sqlc", "generate")
-	cmd.Dir = projectDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("sqlc generate failed: %w", err)
-	}
-
-	fmt.Println("  ✅ sqlc queries generated")
-	return nil
-}
-
 // ensureGenGoMod bootstraps `gen/go.mod` when it's missing.
 //
 // `forge project new` renders gen-go.mod.tmpl as part of the initial scaffold, but a

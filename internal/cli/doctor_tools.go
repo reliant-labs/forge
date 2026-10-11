@@ -217,7 +217,7 @@ func allToolChecks() []toolCheck {
 	return []toolCheck{
 		{
 			Name:        "go",
-			Description: "Go toolchain — required for forge build, generate, sqlc, vendored binaries",
+			Description: "Go toolchain — required for forge build, generate, vendored binaries",
 			Required:    requiredAlways,
 			VersionArgs: []string{"version"},
 			MinVersion:  "1.22.0",

@@ -18,7 +18,7 @@ import (
 //
 // The corpus's frontend lane (TestE2EScaffoldFrontendBuilds) is the only
 // gate that reads generated TypeScript the way a user's build does:
-// scaffold → generate → proto → sqlc → TypeScript → `tsc --noEmit`. What
+// scaffold → generate → proto → TypeScript → `tsc --noEmit`. What
 // it exercises is decided by two consts in scaffold_frontend_e2e_test.go
 // (itemCRUDProto and itemsVocabularyMigration) — hand-written text.
 //

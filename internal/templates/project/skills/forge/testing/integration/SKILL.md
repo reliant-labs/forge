@@ -76,9 +76,9 @@ func TestCreateUser(t *testing.T) {
 }
 ```
 
-## Testing sqlc Queries
+## Testing Hand-Written Queries
 
-Integration tests are the right place to verify sqlc-generated queries against the real schema. Test the actual SQL — don't mock the database when the query behavior is what you're validating.
+Integration tests are the right place to verify the SQL in `internal/db/<entity>_repo_ext.go` (bun queries and raw statements) against the real schema. Nothing checks that SQL at generate time, so every such query needs one. Test the actual SQL; don't mock the database when the query's behavior is what you're validating.
 
 ## Seed Data
 

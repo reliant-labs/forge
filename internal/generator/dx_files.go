@@ -71,8 +71,8 @@ func (g *ProjectGenerator) generateDXFiles() error {
 		}
 	}
 	if g.isService() && g.Features.ORMEnabled() {
-		if err := g.generateSQLCStub(); err != nil {
-			return fmt.Errorf("write db/sqlc stub: %w", err)
+		if err := g.generateDBReadme(); err != nil {
+			return fmt.Errorf("write db/README.md: %w", err)
 		}
 	}
 	return nil
@@ -1253,92 +1253,46 @@ groups:
 	return os.WriteFile(filepath.Join(dir, "prometheus-rules.yaml"), []byte(rules), 0o644)
 }
 
-// generateSQLCStub writes db/sqlc.yaml, db/queries/.gitkeep, and
-// db/README.md so the scaffold has a ready-to-use sqlc layout.
-func (g *ProjectGenerator) generateSQLCStub() error {
-	qDir := filepath.Join(g.Path, "db", "queries")
-	if err := os.MkdirAll(qDir, 0o755); err != nil {
+// generateDBReadme writes db/README.md: where the schema lives, what forge
+// projects from it, and where a query the generated store cannot express goes.
+// There is deliberately no db/queries/ and no sqlc config — the ORM projected
+// from the applied migrations is the one data-access path, and raw SQL lives
+// beside it in the owned internal/db/<entity>_repo_ext.go seam.
+func (g *ProjectGenerator) generateDBReadme() error {
+	if err := os.MkdirAll(filepath.Join(g.Path, "db"), 0o755); err != nil {
 		return err
 	}
+	return os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0o644)
+}
 
-	sqlcYAML := `version: "2"
-sql:
-  - engine: "postgresql"
-    queries: "db/queries/"
-    schema: "db/migrations/"
-    gen:
-      go:
-        package: "db"
-        out: "internal/db"
-        sql_package: "pgx/v5"
-        emit_json_tags: true
-        emit_prepared_queries: false
-        emit_interface: true
-        emit_exact_table_names: false
-        emit_empty_slices: true
-`
-	_ = sqlcYAML
+// dbReadme is the scaffolded db/README.md.
+const dbReadme = `# Database
 
-	readme := `# Database
-
-This directory contains the database layer for the project.
+The schema is declared here, in SQL, and nowhere else. ` + "`forge generate`" + ` applies
+the migrations to a throwaway postgres and projects what it finds into Go: entity
+structs, the ` + "`<Entity>Store`" + ` ORM and the CRUD wiring under ` + "`internal/db/`" + `.
 
 ## Layout
 
 ` + "```" + `
 db/
-  migrations/     # SQL migration files (up/down pairs)
-  queries/        # sqlc query files (*.sql)
-  seeds/          # Seed data for development
-  sqlc.yaml       # sqlc configuration
+  migrations/   # <UTC timestamp>_<name>.up.sql — roll forward only
+  seeds/        # dev seed vocabulary and hand-authored demo data
 ` + "```" + `
 
-## sqlc
+New migration: ` + "`forge db migration new <name>`" + `, then ` + "`forge generate`" + `.
+Dev data: ` + "`forge db seed apply`" + `.
 
-[sqlc](https://sqlc.dev) generates type-safe Go code from SQL queries.
+## Queries
 
-### Installation
-
-` + "```" + `bash
-# macOS
-brew install sqlc
-
-# Other platforms
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-` + "```" + `
-
-### Usage
-
-1. Write your SQL queries in ` + "`db/queries/*.sql`" + `
-2. Run ` + "`sqlc generate`" + ` to generate Go code
-3. Generated code appears in ` + "`internal/db/`" + `
-
-### Example query file
-
-` + "```sql" + `
--- name: GetUser :one
-SELECT id, name, email, created_at
-FROM users
-WHERE id = $1;
-
--- name: ListUsers :many
-SELECT id, name, email, created_at
-FROM users
-ORDER BY created_at DESC
-LIMIT $1 OFFSET $2;
-` + "```" + `
+The generated store covers reads by key, filtered lists and writes. A query it
+cannot express goes in ` + "`internal/db/<entity>_repo_ext.go`" + `, which forge scaffolds
+beside each entity and never rewrites: compose ` + "`orm.QueryOption`" + ` filters on the
+generated delegates, or drop to SQL with ` + "`db.Bun()`" + ` — bun takes CTEs,
+` + "`FOR UPDATE SKIP LOCKED`" + ` and raw statements directly. Cover every such query
+with a test against a real migrated database (` + "`testkit`" + `), which is what checks
+the SQL against the schema.
 `
-
-	gitkeep := "# Place sqlc query files (*.sql) here.\n# See db/README.md for usage.\n"
-
-	if err := os.WriteFile(filepath.Join(g.Path, "db", "sqlc.yaml"), []byte(sqlcYAML), 0o644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(qDir, ".gitkeep"), []byte(gitkeep), 0o644); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(readme), 0o644)
-}
 
 // seedVocabTemplate is the scaffolded db/seeds/vocab.yaml. It lives at package
 // scope because it is a long document, not logic: inline it made

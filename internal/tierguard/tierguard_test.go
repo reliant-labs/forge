@@ -61,7 +61,7 @@ func TestMain(m *testing.M) {
 // maxConcurrentRenders bounds how many fixture render children run at once.
 //
 // Each child is a whole forge pipeline — project new, scaffold, generate,
-// buf, sqlc, go mod tidy — plus the go toolchain processes it spawns, so a
+// buf, go mod tidy — plus the go toolchain processes it spawns, so a
 // render's memory is the price of a real project build, and the guard's peak
 // is this number times that price. Leaving it at len(specs) made the peak
 // grow with every fixture added and co-reside with whatever else the runner
@@ -76,7 +76,7 @@ func TestMain(m *testing.M) {
 const maxConcurrentRenders = 2
 
 // renderOnce memoizes the fixture renders. Each costs ~20s of real
-// codegen (buf, sqlc, go mod tidy), and every test in this package wants
+// codegen (buf, go mod tidy), and every test in this package wants
 // the same set, so they are built once per binary.
 var (
 	renderOnce   sync.Once
@@ -99,7 +99,7 @@ func renders(t *testing.T) (inputs []*renderResult, identity *renderResult) {
 	t.Helper()
 	// Every test in this package that needs a render comes through here, so
 	// this is the one gate: the renders are four whole forge projects (project
-	// new, generate, buf, sqlc, go mod tidy) and cost minutes, not seconds.
+	// new, generate, buf, go mod tidy) and cost minutes, not seconds.
 	if testing.Short() {
 		t.Skip("renders four full forge projects in child processes (minutes); runs in task test")
 	}

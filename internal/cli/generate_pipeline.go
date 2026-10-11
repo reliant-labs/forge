@@ -98,7 +98,7 @@ type GenStep struct {
 	// The pipeline captures them into the rollback journal immediately
 	// before Run, so a failed run restores tool output exactly as it
 	// restores forge's own writes. Required for every step that shells a
-	// tool which writes into the project (buf, go mod tidy, sqlc, …) —
+	// tool which writes into the project (buf, go mod tidy, …) —
 	// pinned by TestGenerateStepsDeclareExternalToolOutputs. See
 	// generate_external_writes.go.
 	Writes func(*pipelineContext) []string
@@ -377,7 +377,6 @@ func generateSteps() []GenStep {
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "db/embed.go (embedded migrations)", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
-		{Name: "sqlc generate", Gate: always, Run: stepSqlcGenerate, Tag: "tools", Writes: writesSqlc},
 		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
 		// NOT gated on features.deploy. The Tier-1 files this sweep writes
 		// each carry their own enabledFor predicate and none is a deploy
@@ -635,7 +634,7 @@ const envConfigStepPreset = "env-config"
 // subset: every step whose work is rendering a forge-owned template
 // (Tier-1 codegen, Tier-2 scaffolds, infra/CI yaml, frontend hooks/nav/
 // mocks, KCL per-env config). Everything else — drift guards,
-// validation, external subprocess generators (buf/protoc/sqlc/
+// validation, external subprocess generators (buf/protoc/
 // goimports/go mod tidy/KCL render), and the cleanup sweep — is
 // excluded.
 //
@@ -658,7 +657,7 @@ const envConfigStepPreset = "env-config"
 //   - External generators: "buf generate (Go stubs)",
 //     "descriptor extraction", "OpenAPI specs (protoc-gen-connect-openapi)",
 //     "ORM generate (proto/db)", "TypeScript stubs (frontends)",
-//     "sqlc generate", "go mod tidy (gen/)", "go mod tidy (root)",
+//     "go mod tidy (gen/)", "go mod tidy (root)",
 //     "goimports on generated Go", "refresh ORM output mtimes",
 //     "ingress k3d ports fragment" (calls `kcl run`).
 //   - Cleanup: "cleanup stale codegen", "rehash tracked files" (the
@@ -2156,14 +2155,6 @@ func stepBootstrapMigrate(ctx *pipelineContext) error {
 		return fmt.Errorf("migrate generation failed: %w", err)
 	}
 	return nil
-}
-
-// stepSqlcGenerate — was Step 7.
-// Runs `sqlc generate` if sqlc.yaml exists. Best-effort: failure
-// surfaces as a warning so projects without sqlc on PATH (or with a
-// transient sqlc misconfig) can still complete generate.
-func stepSqlcGenerate(ctx *pipelineContext) error {
-	return ctx.warnOrFail("sqlc generate", runSqlcGenerate(ctx.ProjectDir))
 }
 
 // stepGoModTidyGen — was Step 8.

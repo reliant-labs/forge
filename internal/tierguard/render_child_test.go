@@ -12,7 +12,7 @@ import (
 )
 
 // Rendering a fixture costs ~30s of real codegen (project new, scaffold,
-// buf, sqlc, go mod tidy) and the guard needs four of them. Run serially
+// buf, go mod tidy) and the guard needs four of them. Run serially
 // that is the single slowest package in the repo; run concurrently it is
 // roughly the cost of the slowest fixture.
 //
@@ -145,7 +145,7 @@ func renderInChild(parent string, fx fixture) (*renderResult, error) {
 	}
 
 	cmd := exec.Command(self, renderChildArgv, key, parent)
-	// Inherit the environment: the pipeline shells out to buf, sqlc and
+	// Inherit the environment: the pipeline shells out to buf and
 	// go, all of which need PATH, HOME and the Go env as configured for
 	// the parent run.
 	//

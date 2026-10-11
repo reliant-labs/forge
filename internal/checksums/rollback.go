@@ -26,7 +26,7 @@
 //     restamps, disown marker strips). That is the "mid-regen broken tree"
 //     the friction names.
 //   - A step that runs an EXTERNAL tool (`buf generate` into gen/, `go mod
-//     tidy` on go.mod/go.sum, sqlc, protoc-gen-connect-openapi) declares the
+//     tidy` on go.mod/go.sum, protoc-gen-connect-openapi) declares the
 //     paths that tool may write, and the pipeline captures them with
 //     CaptureExternalWrites immediately before the tool runs. These used to
 //     be left out on the theory that tool output is "deterministic from the

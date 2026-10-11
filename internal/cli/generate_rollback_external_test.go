@@ -277,7 +277,7 @@ func TestRestoreVerification_SameBytesRewriteIsNotAChange(t *testing.T) {
 }
 
 // Every step that runs a tool writing into the project must declare it.
-// Adding a step that shells buf, go mod tidy, sqlc, an npm install, or any
+// Adding a step that shells buf, go mod tidy, an npm install, or any
 // other writer without declaring Writes is exactly how the control-plane
 // report came to lie; this set is reviewed like the ReadOnly one.
 func TestGenerateStepsDeclareExternalToolOutputs(t *testing.T) {
@@ -289,7 +289,6 @@ func TestGenerateStepsDeclareExternalToolOutputs(t *testing.T) {
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"TypeScript stubs (frontends)",
 		"go mod tidy (pre-wiring)",
-		"sqlc generate",
 		"go mod tidy (gen/)",
 		"go mod tidy (root)",
 	}
@@ -316,17 +315,6 @@ func TestBufTemplateOutDirs(t *testing.T) {
 	}
 	if got := bufTemplateOutDirs(filepath.Join(dir, "missing.yaml")); got != nil {
 		t.Errorf("missing template: got %v", got)
-	}
-}
-
-func TestSqlcOutDirs(t *testing.T) {
-	v2 := "version: \"2\"\nsql:\n  - engine: postgresql\n    queries: q\n    schema: s\n    gen:\n      go:\n        package: db\n        out: internal/db/sqlc\n"
-	if got, want := sqlcOutDirs([]byte(v2)), []string{"internal/db/sqlc"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("v2: got %v, want %v", got, want)
-	}
-	v1 := "version: \"1\"\npackages:\n  - name: db\n    path: internal/db\n"
-	if got, want := sqlcOutDirs([]byte(v1)), []string{"internal/db"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("v1: got %v, want %v", got, want)
 	}
 }
 

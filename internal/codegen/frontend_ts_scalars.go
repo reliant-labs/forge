@@ -74,7 +74,7 @@ func protoScalarTSType(kind string) (string, bool) {
 //
 // It is exported for the end-to-end corpus, which has to answer a
 // question no unit test can: which kinds actually travelled scaffold →
-// generate → proto → sqlc → TypeScript → tsc. That corpus previously
+// generate → proto → TypeScript → tsc. That corpus previously
 // carried a hand-written list of field types, which is a guard that
 // cannot fail — it covers the kinds someone remembered, and `bytes` was
 // not one of them, so a `bytes` column shipped green and produced 33 tsc

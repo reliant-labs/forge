@@ -134,7 +134,7 @@ compose standing up. On pull requests the e2e job is gated behind the
 {{.Name}}/
 ├── .reliant/    # Forge-managed conventions, skills, and project metadata
 ├── cmd/         # Application entrypoints
-├── db/          # SQL migrations and sqlc queries
+├── db/          # SQL migrations (the schema) and dev seed data
 ├── deploy/      # KCL deployment manifests
 ├── e2e/         # End-to-end tests (gated by the `e2e` build tag)
 ├── frontends/   # Frontend applications

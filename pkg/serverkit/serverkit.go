@@ -389,8 +389,10 @@ type Config struct {
 	// a deployed environment: closed by default.
 	Environment string
 
-	// OTLPEndpoint is the OTLP/gRPC collector endpoint (e.g.
-	// "http://localhost:4317"). serverkit OWNS OpenTelemetry setup: Run
+	// OTLPEndpoint is the base OTLP collector endpoint (e.g.
+	// "http://localhost:4318"); the wire protocol (http/protobuf by default,
+	// grpc) and headers come from OTEL_EXPORTER_OTLP_PROTOCOL / _HEADERS.
+	// Empty defers to OTEL_EXPORTER_OTLP_ENDPOINT read by the SDK. serverkit OWNS OpenTelemetry setup: Run
 	// calls observe.Setup internally with this endpoint, installs the
 	// global trace/metric providers, mounts the Prometheus /metrics handler
 	// on its own edge, and flushes the providers during graceful shutdown.

@@ -121,6 +121,14 @@ linters:
         linters:
           - forbidigo
 
+      # observe/otelenv.go reads the standard OTEL_* variables — the published
+      # contract between an app and the platform's collector. No typed config
+      # object can carry them: the platform renders them per environment and the
+      # OpenTelemetry SDK itself reads the same names. Scoped to that one file.
+      - path: ^observe/otelenv\.go$
+        linters:
+          - forbidigo
+
       # The prettier guard over the component library reads CI to decide
       # whether a missing npx is a skip (laptop) or a failure (CI). It is a
       # test-harness switch: it never runs in a shipped binary and changes

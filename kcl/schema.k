@@ -2789,10 +2789,15 @@ schema FrontendConfig:
     # "hybrid" (scenario overlay on the real backend). forge enforces this
     # on the build path so a mock never ships.
     mock: str = "off"
-    # Browser OTLP/HTTP trace endpoint. Unset => client telemetry is off.
+    # Ingest base for BROWSER telemetry: a path on the app's own origin,
+    # normally "/_otel", which the dev server proxies (and a deployed
+    # environment's ingress must route) to a collector's OTLP/HTTP port. The
+    # browser holds no collector address and no secret. In dev, unset =>
+    # "/_otel"; in a deployed environment, unset or "off" => telemetry is off.
     otel_endpoint?: str
-    # Logical environment label the frontend surfaces (banners, Sentry
-    # environment, …). Unset => the framework default.
+    # The environment name the browser reports as
+    # deployment.environment.name, the key the backend uses. Unset => the forge
+    # env name (config.js carries it).
     environment?: str
     # Disable Next.js's build-time CLI telemetry (NEXT_TELEMETRY_DISABLED).
     # Default True — a forge scaffold opts out. No-op for vite / rn.

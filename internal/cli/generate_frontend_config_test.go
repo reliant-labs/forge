@@ -80,3 +80,38 @@ func TestFrontendRuntimeValues_NoAuthPostureIsUntouched(t *testing.T) {
 		t.Errorf("OIDC_CLIENT_ID = %q, want empty/absent for the no-auth posture", v)
 	}
 }
+
+// The browser reports the forge env as deployment.environment.name, the key the
+// backend uses. It rides the runtime DOCUMENT (config.js), the one artifact that
+// differs per environment, so a bundle built once and promoted reports the
+// environment it is running in, not the one it was built for.
+func TestWithRuntimeEnvironment(t *testing.T) {
+	t.Run("adds the env the document is rendered for", func(t *testing.T) {
+		got := withRuntimeEnvironment(frontendRuntimeValues(oidcFrontendConfig(), nil), "staging")
+		if got["ENVIRONMENT"] != "staging" {
+			t.Errorf("ENVIRONMENT = %#v, want staging", got["ENVIRONMENT"])
+		}
+		if got["API_URL"] != "http://localhost:8080" {
+			t.Errorf("the other values must survive: %#v", got)
+		}
+	})
+	t.Run("a declared environment wins", func(t *testing.T) {
+		got := withRuntimeEnvironment(map[string]any{"ENVIRONMENT": "qa-eu"}, "staging")
+		if got["ENVIRONMENT"] != "qa-eu" {
+			t.Errorf("ENVIRONMENT = %#v, want the declared qa-eu", got["ENVIRONMENT"])
+		}
+	})
+	t.Run("an empty declared environment is unset", func(t *testing.T) {
+		if got := withRuntimeEnvironment(map[string]any{"ENVIRONMENT": ""}, "dev"); got["ENVIRONMENT"] != "dev" {
+			t.Errorf("ENVIRONMENT = %#v, want dev", got["ENVIRONMENT"])
+		}
+	})
+	t.Run("nil values and no env", func(t *testing.T) {
+		if got := withRuntimeEnvironment(nil, "dev"); got["ENVIRONMENT"] != "dev" {
+			t.Errorf("nil map: %#v", got)
+		}
+		if got := withRuntimeEnvironment(map[string]any{"A": "b"}, ""); len(got) != 1 {
+			t.Errorf("no env must add nothing: %#v", got)
+		}
+	})
+}

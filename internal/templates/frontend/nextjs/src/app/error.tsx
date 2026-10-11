@@ -1,5 +1,6 @@
 "use client";
 
+import { reportException } from "@reliantlabs/forge-web-runtime";
 import { useEffect } from "react";
 
 export default function Error({
@@ -10,9 +11,14 @@ export default function Error({
   reset: () => void;
 }) {
   useEffect(() => {
-    // Log to console and telemetry sink. Replace with your own reporter
-    // (e.g. OpenTelemetry, Sentry) as needed.
-    console.error(error);
+    // Record with the browser telemetry SDK (src/lib/otel_gen.ts). When it is
+    // not running — telemetry off, or still loading — fall back to the
+    // console, so the error is never silent. The SDK already records an
+    // error React logged to console.error, and reportException knows that, so
+    // this never counts one failure twice.
+    if (!reportException(error, { "error.digest": error.digest ?? "" })) {
+      console.error(error);
+    }
   }, [error]);
 
   return (

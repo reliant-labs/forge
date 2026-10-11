@@ -1,8 +1,8 @@
 ---
 name: v0.1.44
-description: Convert a Next.js frontend's generated CRUD routes from dynamic `/<slug>/[id]` pages to static `/<slug>/view?id=…` and `/<slug>/edit?id=…` pages, so `output: static` (the new scaffold default, and the only shape hosted static hosting serves) can build. Use when `next build` fails with "missing generateStaticParams()", or before binding a frontend to `forge.OnHosted {}`. Separately, keep the version-stamping code generators (protoc-gen-es, protoc-gen-go) out of `.github/dependabot.yml`, whose bumps fail Verify Generated Code every time.
+description: Convert a Next.js frontend's generated CRUD routes from dynamic `/<slug>/[id]` pages to static `/<slug>/view?id=…` and `/<slug>/edit?id=…` pages, so `output: static` (the new scaffold default, and the only shape hosted static hosting serves) can build. Use when `next build` fails with "missing generateStaticParams()", or before binding a frontend to `forge.OnHosted {}`. Separately, keep the version-stamping code generators (protoc-gen-es, protoc-gen-go) out of `.github/dependabot.yml`, whose bumps fail Verify Generated Code every time. Separately, move a web frontend from `initClientTelemetry` and the `@opentelemetry/*` browser SDK packages to the HyperDX browser SDK shipped by `@reliantlabs/forge-web-runtime` 0.4.0: use when providers.tsx or main.tsx still calls `initClientTelemetry`, or `@opentelemetry/sdk-trace-web` is in a frontend package.json.
 version: v0.1.44
-detection: for d in frontends/*/src/app/*/[[]id[]]; do test -d "$d" && exit 0; done; f=.github/dependabot.yml; test -f "$f" || exit 1; if grep -q 'package-ecosystem: *npm' "$f" && ! grep -qF '@bufbuild/protoc-gen-es' "$f"; then exit 0; fi; grep -qF protoc-gen-go buf.gen.yaml && ! grep -qF google.golang.org/protobuf "$f"
+detection: for d in frontends/*/src/app/*/[[]id[]]; do test -d "$d" && exit 0; done; grep -qs 'initClientTelemetry' frontends/*/src/app/providers.tsx frontends/*/src/main.tsx && exit 0; grep -qs '"@opentelemetry/sdk-trace-web"' frontends/*/package.json && exit 0; f=.github/dependabot.yml; test -f "$f" || exit 1; if grep -q 'package-ecosystem: *npm' "$f" && ! grep -qF '@bufbuild/protoc-gen-es' "$f"; then exit 0; fi; grep -qF protoc-gen-go buf.gen.yaml && ! grep -qF google.golang.org/protobuf "$f"
 ---
 
 # Static-exportable CRUD routes
@@ -250,3 +250,89 @@ through a shared requirement. That PR needs the same regenerate.
 grep -n 'protoc-gen-es\|bufbuild/protobuf\|google.golang.org/protobuf' .github/dependabot.yml
 forge project upgrade list   # offers v0.1.44 only while some part of it still applies
 ```
+
+# Also in v0.1.44: browser telemetry moves to the HyperDX SDK
+
+Use this when a Next.js or Vite frontend scaffolded before
+`@reliantlabs/forge-web-runtime` 0.4.0 still calls `initClientTelemetry()` (in
+`src/app/providers.tsx` or `src/main.tsx`), or lists `@opentelemetry/sdk-trace-web`
+in its `package.json`. It is independent of the routes and the Dependabot
+change above.
+
+## What changed
+
+Frontends now start the **HyperDX browser SDK** from the generated
+`src/lib/otel_gen.ts`. It records uncaught errors, unhandled rejections,
+`console.*`, fetch/XHR spans, page loads and web vitals, and sends them to a
+**same-origin `/_otel`** route, so the bundle holds no collector address and no
+secret. Every RPC still carries `traceparent`, so a browser span joins the
+backend's trace. Session replay is off.
+
+web-runtime 0.4.0 is a **breaking** release:
+
+- the `@reliantlabs/forge-web-runtime/otel` subpath and its eight
+  `@opentelemetry/*` SDK peers are gone. HyperDX registers the page's one
+  global tracer provider, and a second registration silently loses;
+- `initClientTelemetry` is gone; `initTelemetry()` (from `src/lib/otel_gen.ts`)
+  replaces it and the old tracing init;
+- `reportException()` is new. `RuntimeErrorBoundary`, `error.tsx` and
+  `global-error.tsx` call it.
+
+`forge generate` does this part for you: it rewrites `src/lib/otel_gen.ts`,
+raises `@reliantlabs/forge-web-runtime` to `^0.4.0`, and adds `@hyperdx/browser`
+at the runtime's exact pin. Everything else below is a file you own.
+
+## Steps
+
+1. **Upgrade the runtime first.** `forge generate`, then `npm install` in each
+   frontend. This needs `@reliantlabs/forge-web-runtime@0.4.x` to be published.
+2. **Next.js: `src/app/providers.tsx`.** Delete `initClientTelemetry` from the
+   import, delete `const teardownRum = initClientTelemetry();`, and delete
+   `return teardownRum;`. Keep `initTelemetry();`. The effect becomes:
+
+   ```tsx
+   useEffect(() => {
+     initTelemetry();
+     if (process.env.NODE_ENV !== "production") {
+       installDevLogging({ dev: true });
+     }
+   }, [isDev]);
+   ```
+
+3. **Vite: `src/main.tsx`.** Add `import { initTelemetry } from "@/lib/otel_gen";`
+   and call `initTelemetry();` once, before `createRoot(...)`. Delete any
+   `initClientTelemetry` call.
+4. **The dev proxy (`next.config.ts` / `vite.config.ts`).** Both are yours, so
+   forge did not touch them. Take the `/_otel` block from a fresh scaffold
+   (`forge project new scratch --service x --frontend web` in a temporary
+   directory): a `rewrites()` gated to `NODE_ENV === "development"` for Next.js,
+   or `server.proxy["/_otel"]` for Vite, both aimed at
+   `OTEL_EXPORTER_OTLP_ENDPOINT`. `forge env up` sets that variable for the dev
+   server. Without the block the browser's POSTs to `/_otel` 404 and nothing
+   is sent.
+5. **Optional: `error.tsx` and `global-error.tsx`.** Call
+   `reportException(error)` from `@reliantlabs/forge-web-runtime` before the
+   `console.error` fallback, as the scaffold does, so a boundary-caught error
+   reaches the SDK.
+6. **Drop the old SDK packages** from `package.json` if nothing else in the app
+   imports them: `@opentelemetry/auto-instrumentations-web`, `core`,
+   `exporter-trace-otlp-http`, `instrumentation`, `resources`,
+   `sdk-trace-base`, `sdk-trace-web` and `semantic-conventions`. Keep
+   `@opentelemetry/api`. Then `npm install`.
+7. **Any other caller of the removed API** (`initBrowserTracing`, imports from
+   `@reliantlabs/forge-web-runtime/otel`) moves to `initTelemetry` and the
+   re-exported `trace`, `context`, `propagation` and `getTracer` in
+   `src/lib/otel_gen.ts`.
+
+## Verify
+
+```bash
+forge generate
+(cd frontends/web && npm install && npx tsc --noEmit && npm run build)
+grep -rn 'initClientTelemetry\|forge-web-runtime/otel' frontends/*/src   # prints nothing
+forge project upgrade list   # offers v0.1.44 only while some part of it still applies
+```
+
+Then `forge env up dev`, open the app, and trigger an error in the console. It
+appears in HyperDX under the frontend's service, with `deployment.environment.name`
+set to the env, and a browser span shares a trace id with the API call it made.

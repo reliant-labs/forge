@@ -67,6 +67,29 @@ const webRuntimePeers: string[] = readWebRuntimePeers();
 //
 // Still the function form rather than a plain object, so a `mode`-dependent
 // setting can be added without restructuring the file.
+// ── Browser telemetry proxy (DEV ONLY) ──────────────────────────────────
+//
+// The browser sends telemetry to `/_otel/v1/{traces,logs}` on ITS OWN origin
+// and holds no collector address and no secret (see src/lib/otel_gen.ts).
+// `vite` forwards that to the local collector's OTLP/HTTP port.
+//
+//   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
+//             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
+//   path:     /_otel/*  ->  <upstream>/*   (the /_otel prefix is stripped)
+//
+// `forge env up` sets the variable for the dev server, so this follows the
+// collector that stack started.
+//
+// `server.proxy` exists only while the dev server runs. A built SPA is plain
+// static files, so there is NO production equivalent in this file, by design:
+// routing `/_otel/*` to the collector in a deployed environment is the
+// ingress's job (the hosted gateway, or your cluster's ingress). Until that
+// route exists, leave the frontend's otel_endpoint unset and the production
+// bundle sends nothing.
+const OTEL_UPSTREAM = (
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
+).replace(/\/+$/, "");
+
 export default defineConfig(() => {
   return {
     // devLogPlugin is dev-only (`apply: "serve"`): it receives the browser
@@ -94,6 +117,13 @@ export default defineConfig(() => {
     server: {
       port: 5173,
       host: true,
+      proxy: {
+        "/_otel": {
+          target: OTEL_UPSTREAM,
+          changeOrigin: true,
+          rewrite: (p: string) => p.replace(/^\/_otel/, ""),
+        },
+      },
     },
     // Vitest reads THIS file when a project has no vitest.config.ts. The
     // scaffold ships component tests that mount into the DOM

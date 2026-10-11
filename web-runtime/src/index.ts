@@ -126,12 +126,16 @@ export {
   type ResourceStatus,
 } from "./resource.js";
 
-/** Client RUM (opt-in export). */
+/**
+ * Record a caught error with the browser telemetry SDK, when one is running.
+ * A no-op otherwise, so it is safe in any catch block. The SDK itself arrives
+ * through the "/telemetry" subpath, never the barrel.
+ */
 export {
-  initClientTelemetry,
-  type TelemetryConfig,
-  type TelemetryEvent,
-} from "./telemetry.js";
+  reportException,
+  setExceptionReporter,
+  type ExceptionAttributes,
+} from "./error-reporter.js";
 
 /**
  * Dev-only browser log forwarding: mirrors console output and uncaught errors

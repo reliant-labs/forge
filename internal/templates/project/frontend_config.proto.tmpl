@@ -82,7 +82,7 @@ message {{.MessageName}} {
 
   string otel_endpoint = 4 [(forge.v1.config) = {
     env_var: "OTEL_ENDPOINT"
-    description: "OTLP/HTTP collector endpoint for BROWSER traces. Empty disables browser telemetry entirely, which is the correct default for local development — there is nothing to export to."
+    description: "Ingest base for BROWSER telemetry (errors, console, network, traces): a path on the app's own origin, normally `/_otel`, which the dev server proxies — and a deployed environment's ingress must route — to a collector's OTLP/HTTP port. The browser never holds a collector address or a secret. Empty or `off` disables browser telemetry; the dev default is `/_otel`, the production default is empty."
   }];
 
   // ── NO OIDC FIELDS HERE, AND THAT IS THE POINT ───────────────────────

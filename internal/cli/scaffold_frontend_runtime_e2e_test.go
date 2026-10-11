@@ -130,8 +130,8 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	if !strings.Contains(providersTSX, "ToastNotification") {
 		t.Errorf("providers.tsx does not supply the toast presentation:\n%s", providersTSX)
 	}
-	if !strings.Contains(providersTSX, "initClientTelemetry") {
-		t.Errorf("providers.tsx does not init client telemetry:\n%s", providersTSX)
+	if !strings.Contains(providersTSX, "initTelemetry()") {
+		t.Errorf("providers.tsx does not init browser telemetry:\n%s", providersTSX)
 	}
 
 	// ── The build gate: the real toolchain must be green. ──

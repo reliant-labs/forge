@@ -69,6 +69,32 @@ if (process.env.NODE_ENV === "production" && basePath === "") {
 }
 {{- end}}
 
+// ── Browser telemetry proxy (DEV ONLY) ──────────────────────────────────
+//
+// The browser sends telemetry to `<basePath>/_otel/v1/{traces,logs}` on ITS
+// OWN origin and holds no collector address and no secret (see
+// src/lib/otel_gen.ts). `next dev` forwards that to the local collector's
+// OTLP/HTTP port; the rewrite below is the whole proxy.
+//
+//   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
+//             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
+//   path:     /_otel/:path*  ->  <upstream>/:path*
+//
+// `forge env up` sets the variable for the dev server, so this follows the
+// collector that stack started. It is read when the dev server starts.
+//
+// There is NO production equivalent in this file, by design: a static export
+// (`output: "export"`) has no Next.js server, so `rewrites` do not exist in
+// the built site, and a standalone build bakes a rewrite's destination in at
+// BUILD time, which cannot name a collector that differs per environment.
+// Routing `<basePath>/_otel/*` to the collector in a deployed environment is
+// the ingress's job (the hosted gateway, or your cluster's ingress). Until
+// that route exists, leave the frontend's otel_endpoint unset and the
+// production bundle sends nothing.
+const otelUpstream = (
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
+).replace(/\/+$/, "");
+
 const nextConfig: NextConfig = {
   // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
   // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
@@ -109,6 +135,18 @@ const nextConfig: NextConfig = {
   // export does not have — `next build` refuses an <Image> without this.
   // Size images for the web before they go in public/.
   images: { unoptimized: true },
+  // Dev-only /_otel proxy to the local collector — see otelUpstream above.
+  // Gated on NODE_ENV so `forge lint --static-export` can see the intent: a
+  // static host applies no rewrites.
+  ...(process.env.NODE_ENV === "development"
+    ? {
+        async rewrites() {
+          return [
+            { source: "/_otel/:path*", destination: `${otelUpstream}/:path*` },
+          ];
+        },
+      }
+    : {}),
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.
@@ -262,6 +300,32 @@ const withBundleAnalyzer = bundleAnalyzer({
 //   2. forge.yaml `frontends[].base_path`, baked in by forge: "{{.BasePath}}".
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
 
+// ── Browser telemetry proxy (DEV ONLY) ──────────────────────────────────
+//
+// The browser sends telemetry to `<basePath>/_otel/v1/{traces,logs}` on ITS
+// OWN origin and holds no collector address and no secret (see
+// src/lib/otel_gen.ts). `next dev` forwards that to the local collector's
+// OTLP/HTTP port; the rewrite below is the whole proxy.
+//
+//   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
+//             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
+//   path:     /_otel/:path*  ->  <upstream>/:path*
+//
+// `forge env up` sets the variable for the dev server, so this follows the
+// collector that stack started. It is read when the dev server starts.
+//
+// There is NO production equivalent in this file, by design: a static export
+// (`output: "export"`) has no Next.js server, so `rewrites` do not exist in
+// the built site, and a standalone build bakes a rewrite's destination in at
+// BUILD time, which cannot name a collector that differs per environment.
+// Routing `<basePath>/_otel/*` to the collector in a deployed environment is
+// the ingress's job (the hosted gateway, or your cluster's ingress). Until
+// that route exists, leave the frontend's otel_endpoint unset and the
+// production bundle sends nothing.
+const otelUpstream = (
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
+).replace(/\/+$/, "");
+
 const nextConfig: NextConfig = {
   // No `output:` field — full Next.js for both dev and prod. Production
   // builds are served via `next start` (or a managed host like Vercel).
@@ -278,6 +342,18 @@ const nextConfig: NextConfig = {
   // `forge env up dev`. `next start` also runs with NODE_ENV=production, so it
   // serves the same directory the production build wrote.
   distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
+  // Dev-only /_otel proxy to the local collector — see otelUpstream above.
+  // Gated on NODE_ENV so `forge lint --static-export` can see the intent: a
+  // static host applies no rewrites.
+  ...(process.env.NODE_ENV === "development"
+    ? {
+        async rewrites() {
+          return [
+            { source: "/_otel/:path*", destination: `${otelUpstream}/:path*` },
+          ];
+        },
+      }
+    : {}),
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.
@@ -431,6 +507,32 @@ const withBundleAnalyzer = bundleAnalyzer({
 //   2. forge.yaml `frontends[].base_path`, baked in by forge: "{{.BasePath}}".
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
 
+// ── Browser telemetry proxy (DEV ONLY) ──────────────────────────────────
+//
+// The browser sends telemetry to `<basePath>/_otel/v1/{traces,logs}` on ITS
+// OWN origin and holds no collector address and no secret (see
+// src/lib/otel_gen.ts). `next dev` forwards that to the local collector's
+// OTLP/HTTP port; the rewrite below is the whole proxy.
+//
+//   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
+//             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
+//   path:     /_otel/:path*  ->  <upstream>/:path*
+//
+// `forge env up` sets the variable for the dev server, so this follows the
+// collector that stack started. It is read when the dev server starts.
+//
+// There is NO production equivalent in this file, by design: a static export
+// (`output: "export"`) has no Next.js server, so `rewrites` do not exist in
+// the built site, and a standalone build bakes a rewrite's destination in at
+// BUILD time, which cannot name a collector that differs per environment.
+// Routing `<basePath>/_otel/*` to the collector in a deployed environment is
+// the ingress's job (the hosted gateway, or your cluster's ingress). Until
+// that route exists, leave the frontend's otel_endpoint unset and the
+// production bundle sends nothing.
+const otelUpstream = (
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
+).replace(/\/+$/, "");
+
 const nextConfig: NextConfig = {
   // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
   // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
@@ -505,6 +607,18 @@ const nextConfig: NextConfig = {
       dir = parent;
     }
   })(),
+  // Dev-only /_otel proxy to the local collector — see otelUpstream above.
+  // Gated on NODE_ENV so `forge lint --static-export` can see the intent: a
+  // static host applies no rewrites.
+  ...(process.env.NODE_ENV === "development"
+    ? {
+        async rewrites() {
+          return [
+            { source: "/_otel/:path*", destination: `${otelUpstream}/:path*` },
+          ];
+        },
+      }
+    : {}),
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run
   // them through its own compiler instead of treating node_modules as
   // pre-built JavaScript.

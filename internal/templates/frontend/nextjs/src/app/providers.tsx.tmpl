@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  initClientTelemetry,
   installDevLogging,
   RuntimeShell,
 } from "@reliantlabs/forge-web-runtime";
@@ -29,13 +28,13 @@ import type {
 /**
  * Top-level client-only provider wrapper.
  *
- * - Initializes OpenTelemetry tracing (initTelemetry) and client RUM
- *   (initClientTelemetry) exactly once per page load. `"use client"` +
- *   `useEffect` guarantees this runs only after hydration; both are
- *   idempotent and no-op without configuration, so a StrictMode
- *   double-invoke is safe. Distributed tracing (the traceparent on every
- *   RPC) is independent — it lives in the runtime interceptor stack and is
- *   always on.
+ * - Initializes browser telemetry (initTelemetry: the HyperDX SDK — errors,
+ *   console, fetch/XHR spans, web vitals, to the same-origin /_otel route)
+ *   exactly once per page load. `"use client"` + `useEffect` guarantees this
+ *   runs only after hydration; it is idempotent and a no-op while telemetry
+ *   is off, so a StrictMode double-invoke is safe. Distributed tracing (the
+ *   traceparent on every RPC) is independent — it lives in the runtime
+ *   interceptor stack and is always on.
  * - Provides the shared `QueryClient` so any descendant can run Connect
  *   queries/mutations.
  * - Wraps with `AuthContextProvider` (dependency-injectable auth; the stub
@@ -51,7 +50,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     initTelemetry();
-    const teardownRum = initClientTelemetry();
     // Mirror console output and uncaught errors to the dev server, which
     // writes them to .forge/logs/<env>/frontend_<name>.log — so a browser-side
     // failure is visible on disk instead of only in devtools. Delete this
@@ -65,7 +63,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
     if (process.env.NODE_ENV !== "production") {
       installDevLogging({ dev: true });
     }
-    return teardownRum;
   }, [isDev]);
 
   return (

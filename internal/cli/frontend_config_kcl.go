@@ -199,7 +199,7 @@ func renderTypedFrontendRuntimeValues(projectDir, envName string) (map[string]ma
 
 	out := make(map[string]map[string]any, len(configs))
 	for _, fc := range configs {
-		out[fc.Frontend] = frontendRuntimeValues(fc, values[fc.Frontend])
+		out[fc.Frontend] = withRuntimeEnvironment(frontendRuntimeValues(fc, values[fc.Frontend]), envName)
 	}
 	return out, nil
 }

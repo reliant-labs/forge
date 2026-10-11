@@ -238,3 +238,43 @@ func TestCmdServe_DefaultScaffoldWiresDevCORS(t *testing.T) {
 		t.Error("the default scaffold's dev CORS branch does not use serverkit.EnvDevelopment")
 	}
 }
+
+// The browser's traceparent must PARENT the API's server span. otelconnect
+// treats inbound trace context as untrusted by default and only LINKS to it, so
+// without WithTrustRemote a page and the API call it made are two traces and
+// "this click, end to end" has no answer. Found live: ClickHouse held the
+// browser's and the API's spans under different trace ids although the request
+// carried a valid traceparent.
+func TestServeScaffoldTrustsTheBrowsersTraceContext(t *testing.T) {
+	file := parseServeFields(t, nil)
+	found := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "NewInterceptor" {
+			return true
+		}
+		if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "otelconnect" {
+			return true
+		}
+		found = true
+		trusted := false
+		for _, arg := range call.Args {
+			if c, ok := arg.(*ast.CallExpr); ok {
+				if s, ok := c.Fun.(*ast.SelectorExpr); ok && s.Sel.Name == "WithTrustRemote" {
+					trusted = true
+				}
+			}
+		}
+		if !trusted {
+			t.Error("otelconnect.NewInterceptor is built without WithTrustRemote: browser and API spans land in different traces")
+		}
+		return true
+	})
+	if !found {
+		t.Fatal("the serve scaffold builds no otelconnect interceptor (the assertion above would be vacuous)")
+	}
+}

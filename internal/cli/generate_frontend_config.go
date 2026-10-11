@@ -112,7 +112,7 @@ func generateFrontendConfigModules(
 		if staticDir == "" {
 			continue // react-native has no served static asset root
 		}
-		values := frontendRuntimeValues(fc, devValues[fc.Frontend])
+		values := withRuntimeEnvironment(frontendRuntimeValues(fc, devValues[fc.Frontend]), frontendConfigDevEnv)
 		encoded, err := json.MarshalIndent(values, "", "  ")
 		if err != nil {
 			return fmt.Errorf("encode dev config for %s: %w", fe.Name, err)
@@ -171,6 +171,32 @@ func frontendRuntimeValues(fc codegen.FrontendConfig, envValues map[string]any) 
 		out[key] = f.DefaultValue
 	}
 	return dropHalfConfiguredOIDC(out)
+}
+
+// frontendEnvironmentKey is the runtime-document key that carries the forge env
+// name. src/lib/otel_gen.ts reads it first and reports it as the browser's
+// deployment.environment.name, the key the backend uses too.
+const frontendEnvironmentKey = "ENVIRONMENT"
+
+// withRuntimeEnvironment adds the env name the document is rendered for, unless
+// the document already states one (a typed `environment` field wins).
+//
+// It is in the DOCUMENT, not only in the dev server's env, because a hosted
+// release is built once and promoted: anything inlined at build time would
+// carry the build's environment into every other one. The document is the
+// part that differs per environment.
+func withRuntimeEnvironment(values map[string]any, envName string) map[string]any {
+	if envName == "" {
+		return values
+	}
+	if v, _ := stringValue(values[frontendEnvironmentKey]); v != "" {
+		return values
+	}
+	if values == nil {
+		values = map[string]any{}
+	}
+	values[frontendEnvironmentKey] = envName
+	return values
 }
 
 // OIDC env-var names the frontend's auth provider reads as a matched pair.

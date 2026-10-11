@@ -359,6 +359,21 @@ func PinPackageDir(name string, hoisted bool) string {
 	return TypePinPath(name, hoisted, "")
 }
 
+// PeerSpec returns the version specifier the runtime declares for one peer, and
+// whether it declares that peer at all. A scaffold installs the peers it needs
+// at exactly this specifier, so the pin lives in one place: web-runtime's own
+// package.json.
+func PeerSpec(name string) (string, bool) {
+	var doc struct {
+		PeerDependencies map[string]string `json:"peerDependencies"`
+	}
+	if err := json.Unmarshal(peersJSON, &doc); err != nil {
+		return "", false
+	}
+	spec, ok := doc.PeerDependencies[name]
+	return spec, ok && spec != ""
+}
+
 // decodePeers returns the runtime's declared peer dependency names.
 func decodePeers() []string {
 	var doc struct {

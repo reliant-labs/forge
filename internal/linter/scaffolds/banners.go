@@ -297,7 +297,8 @@ func isKnownTier1(rel, noTmpl string) bool {
 		strings.HasSuffix(rel, "frontend/mocks/mock-transport.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/scenarios/scenario-types.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/scenarios/scenarios-index.ts.tmpl") ||
-		strings.HasSuffix(rel, "frontend/nextjs/src/lib/otel_gen.ts.tmpl") {
+		strings.HasSuffix(rel, "frontend/nextjs/src/lib/otel_gen.ts.tmpl") ||
+		strings.HasSuffix(rel, "frontend/vite-spa/src/lib/otel_gen.ts.tmpl") {
 		return true
 	}
 	// Project-level cmd/ scaffolds: regenerated; they carry the canonical header.

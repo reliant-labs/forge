@@ -10,6 +10,7 @@ import { router } from "./routes";
 import { queryClient } from "@/lib/query-client";
 import { EventBusProvider } from "@/lib/event-context";
 import { AuthContextProvider } from "@/lib/auth/context";
+import { initTelemetry } from "@/lib/otel_gen";
 
 // There is no auth-token bridge here, and that is the design rather than an
 // omission. Sign-in is native: the browser POSTs credentials to this app's
@@ -31,6 +32,12 @@ function App() {
     </QueryClientProvider>
   );
 }
+
+// Start browser telemetry (the HyperDX SDK: errors, console, fetch/XHR spans,
+// web vitals, to the same-origin /_otel route). A no-op while telemetry is off
+// (see src/lib/otel_gen.ts), idempotent, and never throws. Delete this call
+// and src/lib/otel_gen.ts to opt out.
+initTelemetry();
 
 // Mirror console output and uncaught errors to the dev server, which writes
 // them to .forge/logs/<env>/frontend_<name>.log — so a browser-side failure is

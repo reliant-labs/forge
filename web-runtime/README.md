@@ -12,7 +12,7 @@ import {
   useSession, // the signed-in user
   RouteGuard, // signed-in render gate
   Resource, // the list tristate + cursor pagination
-  initClientTelemetry, // opt-in client RUM
+  reportException, // record a caught error with the browser telemetry SDK
   formatMinorUnits, // exact money display; parseMinorUnits for input
 } from "@reliantlabs/forge-web-runtime";
 ```
@@ -23,7 +23,7 @@ import {
 traceparent, error normalization, idempotency-gated retry), the session
 derived from JWT claims, the error boundary, the toast queue, the
 `<Resource>` tristate/pagination container, trace-context propagation,
-client RUM, and integer money / basis-point formatting and parsing.
+the HyperDX browser SDK wiring (`/telemetry` subpath), and integer money / basis-point formatting and parsing.
 
 **Out:** presentation a project is meant to own. The component library under
 `src/components/ui`, `globals.css`, the nav and the app layout all stay in the

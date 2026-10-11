@@ -59,19 +59,15 @@ func TestNextJSESLintConfig_ExemptsScenariosAndConfigs(t *testing.T) {
 }
 
 // TestNextJSOtelKeepsEnvReadsInProjectCode pins the one thing the scaffolded
-// `lib/otel_gen.ts` must keep now that the SDK wiring itself has moved into
-// @reliantlabs/forge-web-runtime/otel: the `process.env.NEXT_PUBLIC_*` reads.
+// `lib/otel_gen.ts` must keep now that the SDK wiring itself lives in
+// @reliantlabs/forge-web-runtime/telemetry: the `process.env.NEXT_PUBLIC_*`
+// reads.
 //
 // Next.js inlines those literals at BUILD time, and it can only do that where
 // they are written out verbatim in application code. A library reading
 // `process.env` at runtime finds nothing in a browser, so hoisting these
-// upstream would silently disable trace export for every project — with no
-// error anywhere, just no spans.
-//
-// (This test used to assert the @opentelemetry/* imports were alphabetised,
-// for the eslint import/order rule. There are no such imports left to sort:
-// the eight SDK packages are the library's dependency now, and the project
-// file imports exactly one module.)
+// upstream would silently disable browser telemetry for every project — with
+// no error anywhere, just no data.
 func TestNextJSOtelKeepsEnvReadsInProjectCode(t *testing.T) {
 	content, err := FrontendTemplates().Render(
 		filepath.Join("nextjs", "src", "lib", "otel_gen.ts.tmpl"),
@@ -88,18 +84,23 @@ func TestNextJSOtelKeepsEnvReadsInProjectCode(t *testing.T) {
 	for _, envVar := range []string{
 		"process.env.NEXT_PUBLIC_OTEL_ENDPOINT",
 		"process.env.NEXT_PUBLIC_APP_VERSION",
+		"process.env.NEXT_PUBLIC_API_URL",
+		"process.env.NEXT_PUBLIC_OTEL_REPLAY",
 	} {
 		if !strings.Contains(s, envVar) {
-			t.Errorf("otel_gen.ts no longer reads %s in project code — Next.js can only inline that literal where it is written verbatim, so tracing would silently no-op; got:\n%s", envVar, s)
+			t.Errorf("otel_gen.ts no longer reads %s in project code — Next.js can only inline that literal where it is written verbatim, so telemetry would silently no-op; got:\n%s", envVar, s)
 		}
 	}
 
 	// The engine comes from the SUBPATH, never the barrel: the barrel is
-	// imported by Vite-SPA and React-Native frontends, which install
-	// @opentelemetry/api alone and would fail to resolve the SDK packages.
-	if !strings.Contains(s, `"@reliantlabs/forge-web-runtime/otel"`) &&
-		!strings.Contains(s, `'@reliantlabs/forge-web-runtime/otel'`) {
-		t.Errorf("otel_gen.ts must import the SDK wiring from the @reliantlabs/forge-web-runtime/otel subpath; got:\n%s", s)
+	// imported by React Native frontends, which do not install
+	// @hyperdx/browser and would fail to resolve it.
+	if !strings.Contains(s, `"@reliantlabs/forge-web-runtime/telemetry"`) &&
+		!strings.Contains(s, `'@reliantlabs/forge-web-runtime/telemetry'`) {
+		t.Errorf("otel_gen.ts must import the SDK wiring from the @reliantlabs/forge-web-runtime/telemetry subpath; got:\n%s", s)
+	}
+	if strings.Contains(s, "forge-web-runtime/otel") {
+		t.Errorf("otel_gen.ts still names the retired ./otel subpath; got:\n%s", s)
 	}
 
 	// initTelemetry is the name providers.tsx imports. providers.tsx is

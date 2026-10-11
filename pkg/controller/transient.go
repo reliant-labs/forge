@@ -23,8 +23,9 @@ import (
 // because the API server shed load, failed for a reason that is gone by the
 // next requeue. Reporting each of those as an error pages someone for a blip
 // the controller was already recovering from. A reconcile that failed because
-// the spec is invalid, a referenced object is missing, or RBAC denies the write
-// will fail identically next time, and that is the failure worth reporting.
+// the spec is invalid, a referenced object is missing, or Kubernetes RBAC
+// denies the write will fail identically next time, and that is the failure
+// worth reporting.
 //
 // Classified by type wherever the error carries one:
 //

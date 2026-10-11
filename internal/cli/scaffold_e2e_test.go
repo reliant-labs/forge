@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -557,6 +558,23 @@ func runCmdOutput(t *testing.T, dir string, name string, args ...string) string 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q failed: %v\n%s", append([]string{name}, args...), err, output)
+	}
+	return string(output)
+}
+
+// runCmdStdout is runCmdOutput for a command whose stdout is parsed, e.g.
+// `--json`. Only stdout is returned: forge writes warnings to stderr (the
+// forge_version skew warning, for one), and folding them in breaks the
+// parse. stderr is still shown when the command fails.
+func runCmdStdout(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("command %q failed: %v\n%s%s", append([]string{name}, args...), err, output, stderr.Bytes())
 	}
 	return string(output)
 }

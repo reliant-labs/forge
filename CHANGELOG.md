@@ -29,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`forge env render` no longer asks the control plane for an organization
   that nothing uses.** The off-base check for hosted images composed the push
-  base first, which costs a `GetTenant` call with the stored credential, and
-  only then looked for hosted images. An env that declares a control plane but
+  base first, which costs an organization lookup with the stored credential,
+  and only then looked for hosted images. An env that declares a control plane but
   hosts nothing (control-plane's prod) called its control plane on every
   render. The base is now resolved only when there is a hosted image to judge.
 

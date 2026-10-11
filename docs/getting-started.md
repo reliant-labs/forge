@@ -306,7 +306,7 @@ There are really three categories, not two.
 
 | Category                     | Examples                                                                                                                                                     | Behavior                                  |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
-| **Regenerated every run**    | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`                                                                                | Overwritten. Never edit.                  |
+| **Regenerated every run**    | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`                                                                               | Overwritten. Never edit.                  |
 | **Written once, then yours** | `internal/app/compose.go`, `internal/app/auth.go`, `db/migrations/*.sql`, `internal/db/<entity>_repo_ext.go`, `deploy/kcl/<env>/config.k`                    | Forge writes if absent, then leaves alone |
 | **Purely yours**             | handler bodies (`internal/handlers/<svc>/rpc_<name>.go`), a domain package's `internal/<name>/contract.go`, `internal/app/providers.go`, `cmd/<bin>/main.go` | Forge never writes these                  |
 

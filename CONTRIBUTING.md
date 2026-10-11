@@ -121,6 +121,24 @@ The pre-commit `commit-msg` hook enforces this via
 - Fill in the PR description: what changed, why, and how you verified it.
 - CI must be green before merge.
 
+## License of contributions
+
+Forge is licensed under the [Apache License, Version 2.0](LICENSE). Under its
+section 5, anything you submit for inclusion is contributed under those same
+terms. There is no contributor license agreement to sign.
+
+Instead, certify each commit under the
+[Developer Certificate of Origin](https://developercertificate.org/) by
+signing it off:
+
+```bash
+git commit -s
+```
+
+That appends `Signed-off-by: Your Name <you@example.com>` and states that you
+wrote the change, or otherwise have the right to submit it under the
+project's license.
+
 ## Filing issues
 
 Please open issues in this repository's issue tracker with:

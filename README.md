@@ -578,4 +578,26 @@ project conventions.
 
 ## License
 
-Copyright (c) 2026 Reliant Labs, Inc. Licensed under the [Business Source License 1.1](LICENSE).
+Copyright 2025-2026 Reliant Labs, Inc. Licensed under the
+[Apache License, Version 2.0](LICENSE); see also [`NOTICE`](NOTICE). That
+covers all of forge: the CLI, the `github.com/reliant-labs/forge/pkg/...`
+libraries your services import, the KCL modules, and the
+`@reliantlabs/forge-web-runtime` npm package your frontends bundle.
+
+**Earlier versions.** Forge versions published before this change were
+released under the Business Source License 1.1. Reliant Labs, Inc., as their
+copyright holder, also licenses every one of those versions — every commit of
+this repository, tagged or not, and every published version of
+`@reliantlabs/forge-web-runtime` — under the Apache License, Version 2.0. You
+may use any of them under either license.
+
+**What forge writes into your project is yours.** Generated code, scaffolded
+files, and the components forge copies into your frontends become part of
+your project. Where any of that output reproduces or derives from forge's own
+templates or component library, Reliant Labs, Inc. grants you a perpetual,
+worldwide, non-exclusive, no-charge, royalty-free, irrevocable license to use,
+reproduce, modify, sublicense and distribute it under terms of your choice,
+without any obligation to carry forge's license text, `NOTICE` or other
+attribution. This grant covers that output only. Forge itself, including the
+libraries and packages your project depends on, stays under the Apache
+License 2.0.

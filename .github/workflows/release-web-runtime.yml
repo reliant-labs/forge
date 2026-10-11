@@ -179,9 +179,15 @@ jobs:
         # index.d.ts is asserted specifically because it is the file every
         # TypeScript consumer resolves against — a tarball with .js and no
         # typings typechecks green here and fails in every scaffold.
+        #
+        # LICENSE and NOTICE are asserted because Apache-2.0 §4 obliges every
+        # redistributor to pass both on, and the tarball is the thing apps
+        # redistribute. npm packs LICENSE on its own; NOTICE rides on `files`.
+        # Both are copies of the repo-root files, held identical by
+        # TestWebRuntimeShipsTheRepoLicense (license_test.go).
         run: |
           npm pack --dry-run 2>&1 | tee /tmp/pack.txt
-          for required in dist/index.js dist/index.d.ts; do
+          for required in dist/index.js dist/index.d.ts LICENSE NOTICE; do
             if ! grep -q "$required" /tmp/pack.txt; then
               echo "::error::$required is missing from the packed tarball — the build emitted nothing usable"
               exit 1

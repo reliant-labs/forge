@@ -550,6 +550,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Forge is open source: Apache License 2.0, replacing the Business Source
+  License 1.1.** The license covers the whole module (the CLI, every
+  `forge/pkg` library, the KCL modules) and `@reliantlabs/forge-web-runtime`,
+  which is published as 0.4.1 under `Apache-2.0`. Every version published
+  before this change is also licensed under Apache-2.0, alongside BSL. Code
+  forge generates, scaffolds or copies into a project belongs to that project
+  and carries no attribution obligation (README, "License"). `NOTICE` is new.
+  The npm package ships `LICENSE` and `NOTICE`; `TestWebRuntimeShipsTheRepoLicense`
+  keeps its copies identical to the root, and the release workflow refuses a
+  tarball without them. Contributions are signed off under the Developer
+  Certificate of Origin rather than a CLA (CONTRIBUTING, "License of
+  contributions").
+
 - **Every successful call is logged again by default; sampling is a
   per-environment setting in typed config.** `observe.LoggingInterceptor`
   (`rpc completed`) and `observe.LogMiddleware` (component calls) sampled

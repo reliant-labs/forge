@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `http://127.0.0.1:4318`). A static export has no server, so a deployed
   environment routes `/_otel` at its ingress; the production default is
   therefore off until the frontend's `otel_endpoint` is set. `forge lint
-  --static-export` stays green because the rewrite is gated to development.
+--static-export` stays green because the rewrite is gated to development.
   Session replay is shipped but **off**, and when enabled
   (`NEXT_PUBLIC_OTEL_REPLAY` / `VITE_OTEL_REPLAY`) forces all text and inputs
   masked. Network bodies are not captured. `traceparent` on every RPC is
@@ -34,9 +34,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loses. `initClientTelemetry` is gone too; the new `/telemetry` subpath's
   `initBrowserTelemetry` replaces both. `reportException()` (barrel) records an
   error a React/Next boundary caught, and `RuntimeErrorBoundary`, `error.tsx`
-  and `global-error.tsx` call it. Existing projects: `src/lib/otel_gen.ts`
-  regenerates itself; a scaffold-once `providers.tsx` that still calls
-  `initClientTelemetry()` must drop that call and its import.
+  and `global-error.tsx` call it.
+
+  **The browser reports `deployment.environment.name`**, the key the backend
+  uses, so a browser span and a server span of one trace carry the same
+  environment. The forge env name is rendered into the runtime config document
+  (`config.js`) as `ENVIRONMENT` for every env forge writes it for, and
+  `forge env up` also hands it to the dev server (`NEXT_PUBLIC_ENVIRONMENT` /
+  `VITE_ENVIRONMENT`). A declared `config.environment` wins. A hosted frontend's
+  `config.js` is written by the control plane from its `runtime_config`, which
+  this change leaves as published; declare `ENVIRONMENT` there when you turn
+  hosted browser telemetry on.
+
+  **Existing projects** (load `migrations/v0.1.44`): `forge generate` rewrites
+  `src/lib/otel_gen.ts`, raises the web-runtime range to `^0.4.0` and adds
+  `@hyperdx/browser` at the runtime's pin to each web frontend's
+  `package.json`. A scaffold-once `providers.tsx` (Next.js) or `main.tsx`
+  (Vite) that still calls `initClientTelemetry()` must drop that call and its
+  import, and `next.config.ts` / `vite.config.ts` need the `/_otel` proxy block.
+  **Requires `@reliantlabs/forge-web-runtime@0.4.0` on npm** before a released
+  forge scaffolds or regenerates a frontend.
 
 ### Fixed
 

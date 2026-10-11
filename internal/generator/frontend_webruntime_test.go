@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // fakeForgeCheckout writes the minimum a forge source tree needs for the
@@ -241,4 +242,59 @@ func TestWebRuntimePublishedRangeTracksPackage(t *testing.T) {
 		t.Errorf("webRuntimePublishedRange %q does not track web-runtime version %q",
 			webRuntimePublishedRange, doc.Version)
 	}
+}
+
+// A project scaffolded before web-runtime 0.4.0 does not declare @hyperdx/browser,
+// and `forge generate` rewrites src/lib/otel_gen.ts to import it. Without this
+// sync the first build after upgrading fails to resolve the package.
+func TestEnsureBrowserTelemetryDependencies(t *testing.T) {
+	feRel := filepath.Join("frontends", "web")
+
+	t.Run("adds the SDK at the runtime's own pin", func(t *testing.T) {
+		projectDir := filepath.Join(t.TempDir(), "app")
+		manifest := writeFrontendManifest(t, projectDir, "web", "\n    \"react\": \"^19.1.0\"")
+
+		EnsureBrowserTelemetryDependencies(projectDir, feRel, "web")
+
+		want, ok := webruntimepeers.PeerSpec("@hyperdx/browser")
+		if !ok || want == "" {
+			t.Fatal("web-runtime declares no @hyperdx/browser peer")
+		}
+		deps := readDeps(t, manifest)
+		if deps["@hyperdx/browser"] != want {
+			t.Errorf("@hyperdx/browser = %q, want %q", deps["@hyperdx/browser"], want)
+		}
+		if deps["react"] != "^19.1.0" {
+			t.Errorf("a neighbouring entry was disturbed: %v", deps)
+		}
+	})
+
+	t.Run("an existing declaration is the project's own and is kept", func(t *testing.T) {
+		projectDir := filepath.Join(t.TempDir(), "app")
+		manifest := writeFrontendManifest(t, projectDir, "web", "\n    \"@hyperdx/browser\": \"0.25.0\"")
+		before, _ := os.ReadFile(manifest)
+
+		EnsureBrowserTelemetryDependencies(projectDir, feRel, "web")
+
+		after, _ := os.ReadFile(manifest)
+		if string(before) != string(after) {
+			t.Errorf("manifest rewritten:\n%s", after)
+		}
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		projectDir := filepath.Join(t.TempDir(), "app")
+		manifest := writeFrontendManifest(t, projectDir, "web", "")
+		EnsureBrowserTelemetryDependencies(projectDir, feRel, "web")
+		first, _ := os.ReadFile(manifest)
+		EnsureBrowserTelemetryDependencies(projectDir, feRel, "web")
+		again, _ := os.ReadFile(manifest)
+		if string(first) != string(again) || strings.Count(string(again), "@hyperdx/browser") != 1 {
+			t.Errorf("not idempotent:\n%s", again)
+		}
+	})
+
+	t.Run("no manifest is a no-op", func(t *testing.T) {
+		EnsureBrowserTelemetryDependencies(t.TempDir(), feRel, "web") // must not panic or create files
+	})
 }

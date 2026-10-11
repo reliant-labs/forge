@@ -42,6 +42,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime
@@ -288,7 +290,7 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 		at := webRuntimeDepRe.FindStringSubmatchIndex(text)
 		text = text[:at[2]] + jsonString(want) + text[at[3]:]
 	default:
-		text, err = insertWebRuntimeDep(text, decision.spec)
+		text, err = insertDependency(text, WebRuntimePackage, decision.spec)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not declare %s in %s: %v\n", WebRuntimePackage, pkgPath, err)
 			return
@@ -324,9 +326,9 @@ func currentWebRuntimeSpec(text string) (string, bool) {
 	return spec, true
 }
 
-// insertWebRuntimeDep adds the entry to the top-level "dependencies" object,
+// insertDependency adds name@spec to the top-level "dependencies" object,
 // matching the surrounding indentation.
-func insertWebRuntimeDep(text, spec string) (string, error) {
+func insertDependency(text, name, spec string) (string, error) {
 	loc := dependenciesOpenRe.FindStringIndex(text)
 	if loc == nil {
 		return "", fmt.Errorf(`no "dependencies" object`)
@@ -337,7 +339,7 @@ func insertWebRuntimeDep(text, spec string) (string, error) {
 		keyIndent = "  " // "dependencies" did not start its own line
 	}
 	entryIndent := keyIndent + "  "
-	entry := jsonString(WebRuntimePackage) + ": " + jsonString(spec)
+	entry := jsonString(name) + ": " + jsonString(spec)
 
 	after := loc[1]
 	rest := text[after:]
@@ -357,4 +359,54 @@ func jsonString(s string) string {
 		return `""`
 	}
 	return string(b)
+}
+
+// browserSDKPackage is the HyperDX browser SDK. web-runtime/telemetry imports it
+// lazily and declares it an OPTIONAL, exact-pinned peer, so nothing installs it
+// for the app: the app's own package.json must.
+const browserSDKPackage = "@hyperdx/browser"
+
+// EnsureBrowserTelemetryDependencies declares the packages the generated
+// src/lib/otel_gen.ts needs in a web frontend's package.json.
+//
+// A project scaffolded before web-runtime 0.4.0 has none of them, and
+// `forge generate` rewrites otel_gen.ts (Tier-1) to import the SDK, so without
+// this the first build after upgrading fails to resolve "@hyperdx/browser".
+//
+// Add-only: a version the project already declares is its own decision, and the
+// peer is exact-pinned, so a different one is reported by npm, not rewritten
+// here. The specifier is the runtime's own (webruntimepeers.PeerSpec).
+func EnsureBrowserTelemetryDependencies(projectDir, feRelDir, feName string) {
+	spec, ok := webruntimepeers.PeerSpec(browserSDKPackage)
+	if !ok {
+		return
+	}
+	pkgPath := filepath.Join(projectDir, feRelDir, "package.json")
+	info, err := os.Stat(pkgPath)
+	if err != nil {
+		return
+	}
+	original, err := os.ReadFile(pkgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", pkgPath, err)
+		return
+	}
+	text := string(original)
+	if regexp.MustCompile(`"` + regexp.QuoteMeta(browserSDKPackage) + `"\s*:`).MatchString(text) {
+		return
+	}
+	text, err = insertDependency(text, browserSDKPackage, spec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not declare %s in %s: %v\n", browserSDKPackage, pkgPath, err)
+		return
+	}
+	if !json.Valid([]byte(text)) {
+		fmt.Fprintf(os.Stderr, "warning: declaring %s in %s would have produced invalid JSON; left unchanged\n", browserSDKPackage, pkgPath)
+		return
+	}
+	if err := os.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
+		return
+	}
+	fmt.Printf("  + frontend %s: declared %s@%s (browser telemetry); run npm install\n", feName, browserSDKPackage, spec)
 }

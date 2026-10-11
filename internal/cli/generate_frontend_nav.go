@@ -202,6 +202,7 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		// picked up by a differently-built forge, gets a specifier that
 		// still points somewhere real.
 		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
+		generator.EnsureBrowserTelemetryDependencies(projectDir, feDir, fe.Name)
 
 		// ── Scaffold ("yours"): page.tsx (user-owned, scaffold-once) ──
 		pageRel := filepath.Join(feDir, "src", "app", "page.tsx")
@@ -257,6 +258,7 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		}
 		// ── package.json: the @reliantlabs/forge-web-runtime specifier ──
 		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
+		generator.EnsureBrowserTelemetryDependencies(projectDir, feDir, fe.Name)
 	}
 
 	// ── React Native frontends: emit the apiurl_gen dev floor ──

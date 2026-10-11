@@ -139,28 +139,25 @@ func TestDevStack_PostgresRunsOnTheHostByDefault(t *testing.T) {
 	}
 }
 
-// TestDevStack_ObservabilityIsOptIn pins the lgtm/alloy decision: an LGTM
-// stack is ~1 GB resident, which is the wrong default on the small machines
-// host-native infra exists to serve. It stays defined in compose and declared
-// in dev/main.k behind ONE switch that defaults off — the switch also wires
-// the OTLP port and endpoint, which a bare "add the workload" opt-in left out
-// (TestDevObservabilityOptInDeliversTelemetry renders both states). Alloy,
-// which mounts the Docker socket, stays a commented line.
-func TestDevStack_ObservabilityIsOptIn(t *testing.T) {
+// TestDevStack_ObservabilityIsOnByDefault pins the decision: ClickStack is on
+// in a fresh dev env, behind ONE switch, and nothing that mounts the Docker
+// socket or collects every container's logs (the old Alloy opt-in) is in the
+// default path. It is one container, not the six-container topology whose
+// collector accepted nothing until a user registered in the UI.
+func TestDevStack_ObservabilityIsOnByDefault(t *testing.T) {
 	for _, tmpl := range []string{"kcl/dev/main.k.tmpl"} {
 		t.Run(tmpl, func(t *testing.T) {
 			src := renderDevMainK(t, tmpl)
-			if !regexp.MustCompile(`(?m)^_observability = False$`).MatchString(src) {
-				t.Errorf("dev/main.k must declare the observability switch, defaulting off")
+			if !regexp.MustCompile(`(?m)^_observability = True$`).MatchString(src) {
+				t.Errorf("dev/main.k must declare the observability switch, defaulting on")
 			}
-			if !regexp.MustCompile(`(?s)_telemetry_workloads = \[fw\.Workload \{\s*name = "lgtm".*\}\] if _observability else \[\]`).MatchString(src) {
-				t.Errorf("the lgtm workload must be declared, and gated on _observability")
+			if !regexp.MustCompile(`(?s)_telemetry_workloads = \[fw\.Workload \{\s*name = "clickstack".*\}\] if _observability else \[\]`).MatchString(src) {
+				t.Errorf("the clickstack workload must be declared, and gated on _observability")
 			}
-			if regexp.MustCompile(`(?m)^[^#\n]*name\s*=\s*"alloy"`).MatchString(src) {
-				t.Errorf("alloy is live in the dev env — it mounts the Docker socket and must stay a commented opt-in")
-			}
-			if !strings.Contains(src, `name = "alloy"`) {
-				t.Errorf("alloy is not even mentioned in the dev env — it should remain a commented, copy-pasteable opt-in")
+			for _, gone := range []string{"lgtm", "alloy"} {
+				if regexp.MustCompile(`(?m)^[^#\n]*name\s*=\s*"` + gone + `"`).MatchString(src) {
+					t.Errorf("%s is back in the dev env; the local backend is clickstack", gone)
+				}
 			}
 		})
 	}

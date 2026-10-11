@@ -10,7 +10,7 @@
 //   - ConfigService — read / write / mutate forge.yaml on disk.
 //
 // Data carriers (FileChecksums, Harness, ProjectGenerator,
-// E2EMethodInfo, UpgradeResult, ServiceInfo, *TemplateData
+// E2EMethodInfo, UpgradeResult, *TemplateData
 // structs) remain plain types — they have no behavioural seam to mock.
 package generator
 
@@ -32,7 +32,6 @@ type Service interface { //nolint:interfacebloat // one method per emitted artif
 	GenerateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string) error
 	EnsureCoreComponents(frontendDir string) error
 	GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, methods []E2EMethodInfo) error
-	GenerateGrafanaDashboards(projectName, projectDir string) error
 
 	// Project-level upgrade / regeneration.
 	RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error

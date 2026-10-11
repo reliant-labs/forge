@@ -1,14 +1,17 @@
 ---
 name: v0.1.44
-description: Convert a Next.js frontend's generated CRUD routes from dynamic `/<slug>/[id]` pages to static `/<slug>/view?id=…` and `/<slug>/edit?id=…` pages, so `output: static` (the new scaffold default, and the only shape hosted static hosting serves) can build. Use when `next build` fails with "missing generateStaticParams()", or before binding a frontend to `forge.OnHosted {}`. Separately, keep the version-stamping code generators (protoc-gen-es, protoc-gen-go) out of `.github/dependabot.yml`, whose bumps fail Verify Generated Code every time.
+description: Convert a Next.js frontend's generated CRUD routes from dynamic `/<slug>/[id]` pages to static `/<slug>/view?id=…` and `/<slug>/edit?id=…` pages, so `output: static` (the new scaffold default, and the only shape hosted static hosting serves) can build. Use when `next build` fails with "missing generateStaticParams()", or before binding a frontend to `forge.OnHosted {}`. Separately, keep the version-stamping code generators (protoc-gen-es, protoc-gen-go) out of `.github/dependabot.yml`, whose bumps fail Verify Generated Code every time. Separately, move local observability from the Grafana LGTM stack (and the opt-in Alloy collector) to ClickStack, now ON by default in `forge env up`: use when docker-compose.yml still has an `lgtm` or `alloy` service, deploy/kcl/dev/main.k still declares an `lgtm` workload, or deploy/alloy-config.alloy exists.
 version: v0.1.44
-detection: for d in frontends/*/src/app/*/[[]id[]]; do test -d "$d" && exit 0; done; f=.github/dependabot.yml; test -f "$f" || exit 1; if grep -q 'package-ecosystem: *npm' "$f" && ! grep -qF '@bufbuild/protoc-gen-es' "$f"; then exit 0; fi; grep -qF protoc-gen-go buf.gen.yaml && ! grep -qF google.golang.org/protobuf "$f"
+detection: for d in frontends/*/src/app/*/[[]id[]]; do test -d "$d" && exit 0; done; test -f deploy/alloy-config.alloy && exit 0; grep -qsE 'grafana/otel-lgtm|name = "lgtm"' docker-compose.yml deploy/kcl/dev/main.k && exit 0; f=.github/dependabot.yml; test -f "$f" || exit 1; if grep -q 'package-ecosystem: *npm' "$f" && ! grep -qF '@bufbuild/protoc-gen-es' "$f"; then exit 0; fi; grep -qF protoc-gen-go buf.gen.yaml && ! grep -qF google.golang.org/protobuf "$f"
 ---
 
 # Static-exportable CRUD routes
 
-> This release also changed the scaffolded `.github/dependabot.yml`. That
-> part is independent of the routes below: see
+> This release also changed the scaffolded `.github/dependabot.yml`, and moved
+> local observability from Grafana LGTM to ClickStack. Both are independent of
+> the routes below: see
+> [local observability](#also-in-v0144-local-observability-moves-from-lgtm-to-clickstack)
+> and
 > [Keep code generators out of Dependabot](#also-in-v0144-keep-code-generators-out-of-dependabot)
 > at the end.
 
@@ -170,6 +173,70 @@ list → row → Edit → Cancel.
 
 Record the migration only once every part of it that applies is done:
 `forge project upgrade list` stops offering v0.1.44 after `apply`.
+
+# Also in v0.1.44: local observability moves from LGTM to ClickStack
+
+`forge env up` now runs ClickStack (ClickHouse, the HyperDX UI and an OTLP
+collector in one container) instead of Grafana LGTM, and it is on by default.
+Host processes get `OTEL_EXPORTER_OTLP_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` from `forge env up`; logs are read
+from `.forge/logs/<env>/*.log`. Nothing to register, no key to copy.
+
+Your `docker-compose.yml` and `deploy/kcl/dev/main.k` are yours, so forge did
+not rewrite them. Until you do, the project keeps its old LGTM wiring. Take the
+new shape from a fresh scaffold: `forge project new scratch --service x` in a
+temporary directory, and copy from it.
+
+## Steps
+
+1. **`docker-compose.yml`.** Delete the `alloy` and `lgtm` services and the
+   `lgtm_data` volume. Add the `clickstack` service, its three
+   `clickstack_*` volumes, and the `otel-collector` network alias, exactly as in
+   the scaffold. In `app` and `app-debug`, replace
+   `OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317` with
+   `http://otel-collector:4318` and add `OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf`;
+   change `depends_on: lgtm` to `clickstack`.
+2. **`deploy/kcl/dev/main.k`.**
+   - Replace the `_observability` block and `_otlp_port` with the scaffold's:
+     `_observability = True` plus `_otlp_http_port`, `_otlp_grpc_port` and
+     `_hyperdx_port`, each from `plugin.resolve_port`.
+   - Delete the `_telemetry = {OTEL_EXPORTER_OTLP_ENDPOINT = ...}` env layer and
+     its use in `_env`. `forge env up` exports the endpoint now.
+   - Replace the `lgtm` workload in `_telemetry_workloads` with the `clickstack`
+     one, passing the three `CLICKSTACK_*_PORT` values.
+3. **New files.** Copy `deploy/observability/otel-collector.yaml` (the log
+   pipeline) and `deploy/observability/dashboards/` (the dashboard provisioner
+   directory) from the scaffold.
+4. **Remove the dead files.** `deploy/alloy-config.alloy` and
+   `deploy/observability/grafana/` are no longer written. `forge generate` lists
+   them as stale; `forge generate --force-cleanup` deletes the untouched ones.
+   Delete any you edited by hand.
+5. `forge generate && forge env render dev`, then `forge env up dev`. The summary
+   lists the HyperDX UI; `forge env status dev` reports traces, metrics and logs
+   by service name.
+
+## Things that changed under you
+
+- **Grafana, Prometheus, Tempo, Loki and Pyroscope are gone from the default
+  path.** `/metrics` on your app is untouched. Dashboards that lived in Grafana
+  are not carried over; put HyperDX dashboard JSON in
+  `deploy/observability/dashboards/`.
+- **Profiles are not collected locally yet.** pprof stays on `127.0.0.1`.
+- **Memory.** ClickStack is about 0.8 GB resident, in the same range as LGTM.
+
+## To keep it off
+
+`_observability = False` in `deploy/kcl/dev/main.k`. No container starts and no
+endpoint is exported.
+
+## Existing OTLP configuration wins
+
+`forge env up` fills `OTEL_EXPORTER_OTLP_ENDPOINT` and `_PROTOCOL` as a pair,
+and only when neither is set (an empty value counts as unset; so does the
+per-signal `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` family). If your shell,
+`config.k` or a workload's `env` sets either one, forge adds neither, so a
+project that already points at its own collector, say a gRPC one on :4317,
+is never paired with a protocol it did not choose.
 
 # Also in v0.1.44: keep code generators out of Dependabot
 

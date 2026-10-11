@@ -1,55 +1,61 @@
 package doctor
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
-// parsePyroscopeLabels must separate "I could not read the answer" from
-// "I read it and it is empty". Only the first is UNDETERMINED; reporting
-// both as a warning made a hole in the report look like a finding about
-// ingestion.
-func TestParsePyroscopeLabels(t *testing.T) {
+func TestSignalVerdict(t *testing.T) {
 	tests := []struct {
 		name string
-		body string
+		rows [][]string
 		want Status
+		has  string
 	}{
-		{
-			name: "plain array of labels",
-			body: `["app","other"]`,
-			want: StatusPass,
-		},
-		{
-			name: "grpc-web values wrapper",
-			body: `{"values":["app"]}`,
-			want: StatusPass,
-		},
-		{
-			name: "grpc-web names wrapper",
-			body: `{"names":["app"]}`,
-			want: StatusPass,
-		},
-		{
-			// Decoded fine, genuinely empty: a real finding, not a hole.
-			name: "decoded but empty is a warning about ingestion",
-			body: `[]`,
-			want: StatusWarn,
-		},
-		{
-			// In none of the shapes we can decode — Pyroscope may well be
-			// ingesting. forge could not obtain the fact.
-			name: "undecodable body is undetermined",
-			body: `<html>not json</html>`,
-			want: StatusUnknown,
-		},
+		{"nothing recent is a warning, not a pass", nil, StatusWarn, "no traces"},
+		{"zero counts are nothing", [][]string{{"api", "0"}}, StatusWarn, "no traces"},
+		{"junk rows are ignored", [][]string{{"api"}, {"api", "x"}}, StatusWarn, "no traces"},
+		{"rows name the senders, busiest first", [][]string{{"worker", "2"}, {"api", "9"}}, StatusPass, "11 spans from 2 service(s): api, worker"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parsePyroscopeLabels([]byte(tt.body), "app")
-			if got.Status != tt.want {
-				t.Fatalf("status = %s, want %s (message: %s)", got.Status, tt.want, got.Message)
+			got := signalVerdict("traces", "spans", tt.rows)
+			if got.Status != tt.want || !strings.Contains(got.Message, tt.has) {
+				t.Fatalf("got %s %q, want %s containing %q", got.Status, got.Message, tt.want, tt.has)
 			}
 		})
+	}
+}
+
+func TestMetricsQueryReadsEveryFamily(t *testing.T) {
+	var sql string
+	env := &Environment{Compose: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		sql = args[len(args)-1]
+		return []byte("api\t3\n"), nil
+	}}
+	if got := CheckMetrics(context.Background(), env); got.Status != StatusPass {
+		t.Fatalf("metrics = %s %q", got.Status, got.Message)
+	}
+	for _, table := range metricTables {
+		if !strings.Contains(sql, "default."+table) {
+			t.Errorf("metrics check never reads %s; an app exporting only that family reads as having no metrics", table)
+		}
+	}
+}
+
+func TestSignalCheckSeparatesDownFromUnaskable(t *testing.T) {
+	down := &Environment{Compose: func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New(`service "clickstack" is not running`)
+	}}
+	if got := CheckTraces(context.Background(), down); got.Status != StatusSkip {
+		t.Errorf("clickstack not running = %s, want skip (observability off is not a fault)", got.Status)
+	}
+	broken := &Environment{Compose: func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("Authentication failed")
+	}}
+	if got := CheckTraces(context.Background(), broken); got.Status != StatusUnknown {
+		t.Errorf("a query that failed for another reason = %s, want unknown", got.Status)
 	}
 }

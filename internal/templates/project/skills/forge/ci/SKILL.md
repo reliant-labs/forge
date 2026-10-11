@@ -195,7 +195,7 @@ forge picks each workload's path from its own binding.
 ### Pre-commit and generated files
 
 `.pre-commit-config.yaml` excludes every forge-generated path (`gen/`,
-`*_gen.*`, `.forge-kcl/`, the grafana dashboards, `deploy/alloy-config.alloy`,
+`*_gen.*`, `.forge-kcl/`,
 `public/config.js`, the hooks barrel) from the MUTATING hooks — whitespace
 fixers, gofmt/goimports, prettier. `forge ci verify-generated` demands
 generated files regenerate byte-identically, so a formatter that rewrote one

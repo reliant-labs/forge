@@ -82,8 +82,9 @@ until you name your domain's words in `db/seeds/vocab.yaml`
 (`orders.currency: [USD, EUR]`, `orders.customer_email: {type: email}`); from
 then on the rows read like your product.
 
-Set `_observability = True` in `deploy/kcl/dev/main.k` and the table includes
-Grafana too, with dashboards over the app's own traces and metrics.
+The table includes the HyperDX UI too (ClickStack runs by default; set
+`_observability = False` in `deploy/kcl/dev/main.k` to turn it off), already
+receiving the app's traces, metrics and logs.
 
 No signup, no external accounts, no cloud project, no cluster.
 
@@ -180,9 +181,11 @@ has a command instead of a wiki page.
   schema**, in one transaction, only when every seedable table is empty.
   Synthesized values satisfy your CHECK constraints, length caps, and UNIQUE
   columns by construction. No seed files land in your repo.
-- **Full observability locally.** The Grafana LGTM stack — Grafana, Prometheus,
-  Tempo, Loki, Pyroscope — runs in Docker Compose with dashboards already
-  provisioned. No accounts, no signup, no sampling surprises.
+- **Full observability locally.** `forge env up` runs ClickStack — ClickHouse,
+  the HyperDX UI and an OTLP collector, in one container — and points every
+  host process at it. Traces, metrics and logs show up in HyperDX with nothing
+  to register or copy, no accounts, no sampling surprises. Turn it off with
+  `_observability = False`.
 - **Ten checkouts don't collide.** Each git worktree gets its own stable
   100-port block through a lock-guarded registry, so parallel stacks (or
   parallel agents) coexist. `forge env ps` lists every Forge stack on the
@@ -249,9 +252,9 @@ Three boundaries are instrumented, so a request is traceable end to end:
 Logs are structured JSON with stable keys (`procedure`, `request_id`,
 `trace_id`, `duration_ms`, `status`, `code`), and the trace ID is injected into
 every log line — so a log entry is one click from the trace that produced it.
-The full Grafana LGTM stack (Grafana, Prometheus, Tempo, Loki, Pyroscope) runs
-locally in Docker Compose with two dashboards provisioned. No external
-accounts, no signup, no sampling surprises.
+ClickStack (ClickHouse, the HyperDX UI and an OTLP collector) runs locally in
+Docker Compose, on by default, with traces, metrics and logs already flowing.
+No external accounts, no signup, no sampling surprises.
 
 ### Checks that refuse to lie to you
 

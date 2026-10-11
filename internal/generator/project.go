@@ -573,8 +573,8 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	}
 
 	if g.isService() && g.Features.ObservabilityEnabled() {
-		if err := g.generateAlloyConfig(); err != nil {
-			return fmt.Errorf("failed to generate alloy config: %w", err)
+		if err := g.generateObservability(); err != nil {
+			return fmt.Errorf("failed to generate observability files: %w", err)
 		}
 	}
 

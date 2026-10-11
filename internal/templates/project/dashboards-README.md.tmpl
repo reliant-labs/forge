@@ -1,0 +1,12 @@
+# HyperDX dashboards
+
+Every `*.json` file in this directory is loaded into the local HyperDX as a
+provisioned dashboard, within about 15 seconds of the file appearing or
+changing, with no restart. The files are HyperDX v2 dashboard JSON
+(`name`, `tiles`, `tags`, `filters`).
+
+A provisioned dashboard is read-only in the UI and is replaced by name on the
+next load, so edit the file here, not the copy in the browser. A dashboard you
+build by hand in the UI is separate and is never overwritten.
+
+This directory is yours. forge scaffolds it empty and does not rewrite it.

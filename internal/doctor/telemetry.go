@@ -1,387 +1,137 @@
 package doctor
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"sort"
+	"strconv"
 	"strings"
-	"time"
+
+	"github.com/reliant-labs/forge/internal/clickstack"
 )
 
-var httpClient = &http.Client{Timeout: 5 * time.Second}
+// Local telemetry is read from ClickHouse itself, through `docker compose exec`
+// into the clickstack container with the credentials that container already
+// holds. ClickHouse publishes no port to the host, so there is nothing to
+// discover and no address to get wrong; and asking the store the collector
+// writes to answers the real question — did this signal arrive — rather than
+// whether an API in front of it is up.
 
-// grafanaAddr returns the Grafana host address, or an UNDETERMINED result
-// when the compose check could not publish one. Undetermined, not skip: the
-// telemetry backends ship in the bundled lgtm container, so a missing port
-// means forge could not look — not that the question does not apply.
-func grafanaAddr(env *Environment) (string, *CheckResult) {
-	addr, ok := env.GetPort("lgtm", 3000)
-	if !ok {
-		return "", &CheckResult{
-			Status:  StatusUnknown,
-			Message: "Grafana port not published by the compose stack — could not query this signal",
-		}
-	}
-	return addr, nil
-}
+// telemetrySince bounds every check to recent data, so a stale row from a run
+// last week cannot pass today's check.
+const telemetrySince = "now() - INTERVAL 15 MINUTE"
 
-// doGet performs a GET request and returns the body bytes.
-func doGet(ctx context.Context, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
+// metricTables are all three metric families the collector writes. A check
+// that read only one (a sum, say) reported a healthy app that exports gauges
+// and histograms as having no metrics.
+var metricTables = []string{"otel_metrics_gauge", "otel_metrics_sum", "otel_metrics_histogram"}
+
+// clickhouseQuery runs one query inside the clickstack container and returns
+// its TSV rows. The SQL travels as a positional parameter of `sh -c`, never
+// interpolated into the script.
+func clickhouseQuery(ctx context.Context, env *Environment, sql string) ([][]string, error) {
+	out, err := env.compose(ctx, "exec", "-T", clickstack.Service, "sh", "-c",
+		`clickhouse-client -u "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --format TSV --query "$1"`,
+		"sh", sql)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
+	var rows [][]string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		rows = append(rows, strings.Split(line, "\t"))
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return body, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
-	}
-	return body, nil
+	return rows, nil
 }
 
-// CheckPrometheus verifies Prometheus is reachable AND holds this app's
-// metrics.
-//
-// Reachable is not the question. The bundled lgtm image scrapes its own
-// collector, so `up` always has a target — the check used to report
-// "✓ 1 targets up" on a stack where the app exported nothing at all, which is
-// a green on exactly the property it exists to verify. It passes only when
-// Prometheus has series stamped with the app's service name (job=<project>,
-// what the collector derives from the OTLP resource's service.name — the
-// same name the Tempo check searches for).
-func CheckPrometheus(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
-	}
-
-	base := "http://" + addr + "/api/datasources/proxy/uid/prometheus/api/v1/query"
-
-	upBody, err := doGet(ctx, base+"?query=up")
-	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "Prometheus query failed: " + err.Error(), Evidence: string(upBody)}
-	}
-	up, err := parsePromVector(upBody)
-	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "failed to parse Prometheus response: " + err.Error(), Evidence: string(upBody)}
-	}
-	if len(up) == 0 {
-		return CheckResult{Status: StatusFail, Message: "no targets reporting up"}
-	}
-
-	appQuery := fmt.Sprintf(`count by (__name__) ({job=%q})`, env.ProjectName)
-	appBody, err := doGet(ctx, base+"?query="+url.QueryEscape(appQuery))
-	if err != nil {
-		return CheckResult{Status: StatusUnknown, Message: "Prometheus is up, but the query for this app's metrics failed: " + err.Error(), Evidence: string(appBody)}
-	}
-	series, err := parsePromVector(appBody)
-	if err != nil {
-		return CheckResult{Status: StatusUnknown, Message: "Prometheus is up, but its answer about this app's metrics could not be read: " + err.Error(), Evidence: string(appBody)}
-	}
-	return prometheusAppVerdict(env.ProjectName, len(up), series)
+// notRunning reports whether a compose error means the clickstack container
+// simply is not up — observability off, or the stack down — as opposed to a
+// failure to ask.
+func notRunning(err error) bool {
+	m := err.Error()
+	return strings.Contains(m, "is not running") || strings.Contains(m, "no such service") ||
+		strings.Contains(m, "no service selected")
 }
 
-// prometheusAppVerdict turns "which metric names carry job=<project>" into
-// the check's result. Split from the HTTP so the verdict is testable alone.
-func prometheusAppVerdict(project string, upTargets int, series []promSample) CheckResult {
-	if len(series) == 0 {
-		return CheckResult{
-			Status: StatusWarn,
-			Message: fmt.Sprintf("Prometheus is up (%d scrape target(s)) but holds no metrics from %s — nothing is exporting to it; "+
-				"check the app's OTEL_EXPORTER_OTLP_ENDPOINT (metrics are pushed about once a minute)", upTargets, project),
-		}
-	}
-	names := make([]string, 0, len(series))
-	for _, s := range series {
-		if n, _ := s.Metric["__name__"].(string); n != "" {
-			names = append(names, n)
-		}
-	}
-	// The RPC histogram first: it is the series that says requests are
-	// being measured, rather than that a connection pool exists.
-	sort.Slice(names, func(i, j int) bool {
-		ri, rj := strings.HasPrefix(names[i], "rpc_"), strings.HasPrefix(names[j], "rpc_")
-		if ri != rj {
-			return ri
-		}
-		return names[i] < names[j]
-	})
-	shown := names
-	if len(shown) > 3 {
-		shown = shown[:3]
-	}
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d metric(s) from %s (%s)", len(series), project, strings.Join(shown, ", ")),
-	}
+// CheckTraces verifies spans reached ClickStack, naming the services that sent
+// them.
+func CheckTraces(ctx context.Context, env *Environment) CheckResult {
+	return signalCheck(ctx, env, "traces", "spans",
+		`SELECT ServiceName, count() FROM default.otel_traces WHERE Timestamp > `+telemetrySince+` GROUP BY ServiceName`)
 }
 
-// promSample is one element of a Prometheus instant-vector result.
-type promSample struct {
-	Metric map[string]interface{} `json:"metric"`
-	Value  []interface{}          `json:"value"`
+// CheckMetrics verifies metric points of ANY family reached ClickStack.
+func CheckMetrics(ctx context.Context, env *Environment) CheckResult {
+	parts := make([]string, 0, len(metricTables))
+	for _, t := range metricTables {
+		parts = append(parts, `SELECT ServiceName, count() AS n FROM default.`+t+` WHERE TimeUnix > `+telemetrySince+` GROUP BY ServiceName`)
+	}
+	return signalCheck(ctx, env, "metrics", "points",
+		`SELECT ServiceName, sum(n) FROM (`+strings.Join(parts, " UNION ALL ")+`) GROUP BY ServiceName`)
 }
 
-// parsePromVector decodes a Prometheus instant-query response.
-func parsePromVector(body []byte) ([]promSample, error) {
-	var resp struct {
-		Status string `json:"status"`
-		Data   struct {
-			Result []promSample `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-	if resp.Status != "success" {
-		return nil, fmt.Errorf("status %q", resp.Status)
-	}
-	return resp.Data.Result, nil
+// CheckLogs verifies log records reached ClickStack. They come from the files
+// `forge env up` writes under .forge/logs/<env>/, so a miss here with healthy
+// traces points at the collector's file mount, not the app.
+func CheckLogs(ctx context.Context, env *Environment) CheckResult {
+	return signalCheck(ctx, env, "logs", "records",
+		`SELECT ServiceName, count() FROM default.otel_logs WHERE Timestamp > `+telemetrySince+` GROUP BY ServiceName`)
 }
 
-// CheckTempo verifies traces are being ingested into Tempo.
-func CheckTempo(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
-	}
-
-	searchURL := fmt.Sprintf("http://%s/api/datasources/proxy/uid/tempo/api/search?tags=%s&limit=5",
-		addr, url.QueryEscape("service.name="+env.ProjectName))
-
-	body, err := doGet(ctx, searchURL)
+func signalCheck(ctx context.Context, env *Environment, signal, unit, sql string) CheckResult {
+	rows, err := clickhouseQuery(ctx, env, sql)
 	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "Tempo query failed: " + err.Error(), Evidence: string(body)}
-	}
-
-	var tempoResp struct {
-		Traces []struct {
-			TraceID         string `json:"traceID"`
-			RootServiceName string `json:"rootServiceName"`
-			RootTraceName   string `json:"rootTraceName"`
-		} `json:"traces"`
-		Metrics struct {
-			InspectedTraces int `json:"inspectedTraces"`
-		} `json:"metrics"`
-	}
-	if err := json.Unmarshal(body, &tempoResp); err != nil {
-		return CheckResult{Status: StatusFail, Message: "failed to parse Tempo response", Evidence: string(body)}
-	}
-
-	totalTraces := tempoResp.Metrics.InspectedTraces
-	if len(tempoResp.Traces) == 0 {
-		return CheckResult{
-			Status:  StatusWarn,
-			Message: "no traces found (send some requests to generate traces)",
-		}
-	}
-
-	// Collect root trace names for the summary.
-	var names []string
-	for _, t := range tempoResp.Traces {
-		if t.RootTraceName != "" {
-			names = append(names, t.RootTraceName)
-		}
-	}
-	namesSummary := ""
-	if len(names) > 0 {
-		namesSummary = " (" + strings.Join(names, ", ") + ")"
-	}
-
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d traces found%s", totalTraces, namesSummary),
-	}
-}
-
-// CheckLoki verifies logs are being ingested into Loki.
-func CheckLoki(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
-	}
-
-	params := url.Values{}
-	params.Set("query", `{container=~".*app.*"}`)
-	params.Set("limit", "5")
-	lokiURL := fmt.Sprintf("http://%s/api/datasources/proxy/uid/loki/loki/api/v1/query_range?%s", addr, params.Encode())
-
-	body, err := doGet(ctx, lokiURL)
-	if err != nil {
-		return CheckResult{Status: StatusFail, Message: "Loki query failed: " + err.Error(), Evidence: string(body)}
-	}
-
-	var lokiResp struct {
-		Status string `json:"status"`
-		Data   struct {
-			ResultType string `json:"resultType"`
-			Result     []struct {
-				Stream map[string]interface{} `json:"stream"`
-				Values [][]string             `json:"values"`
-			} `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &lokiResp); err != nil {
-		return CheckResult{Status: StatusFail, Message: "failed to parse Loki response", Evidence: string(body)}
-	}
-
-	streamCount := len(lokiResp.Data.Result)
-	if streamCount == 0 {
-		return CheckResult{
-			Status:  StatusWarn,
-			Message: "no log streams found (app may not have produced logs yet)",
-		}
-	}
-
-	var totalLines int
-	for _, s := range lokiResp.Data.Result {
-		totalLines += len(s.Values)
-	}
-
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d log streams, %d lines", streamCount, totalLines),
-	}
-}
-
-// CheckPyroscope verifies continuous profiling is working.
-func CheckPyroscope(ctx context.Context, env *Environment) CheckResult {
-	addr, skip := grafanaAddr(env)
-	if skip != nil {
-		return *skip
-	}
-
-	// Try via Grafana datasource proxy first.
-	profileURL := fmt.Sprintf("http://%s/api/datasources/proxy/uid/pyroscope/api/v1/profileTypes", addr)
-	body, err := doGet(ctx, profileURL)
-	if err == nil {
-		return parsePyroscopeProfileTypes(body, env.ProjectName)
-	}
-
-	// Fallback: check Pyroscope health via docker exec (use curl, not wget).
-	readyOut, err := env.compose(ctx, "exec", "-w", "/", "lgtm",
-		"curl", "-sf", "http://localhost:4040/ready")
-	if err != nil {
-		return CheckResult{
-			Status:   StatusFail,
-			Message:  "Pyroscope not reachable",
-			Evidence: strings.TrimSpace(string(readyOut) + "\n" + err.Error()),
-		}
-	}
-
-	// Pyroscope is healthy — query via gRPC-web endpoint for label values.
-	labelsOut, err := env.compose(ctx, "exec", "-w", "/", "lgtm",
-		"curl", "-sf", "http://localhost:4040/querier.v1.QuerierService/LabelValues",
-		"-H", "Content-Type: application/json",
-		"-d", `{"name":"__service_name__"}`)
-	if err != nil {
-		return CheckResult{
-			Status:  StatusWarn,
-			Message: "Pyroscope is healthy but could not query labels",
-		}
-	}
-
-	return parsePyroscopeLabels(labelsOut, env.ProjectName)
-}
-
-// parsePyroscopeProfileTypes checks the Grafana proxy response for profile types.
-func parsePyroscopeProfileTypes(body []byte, projectName string) CheckResult {
-	// The response is an array of profile type objects.
-	var profileTypes []map[string]interface{}
-	if err := json.Unmarshal(body, &profileTypes); err != nil {
-		// Try as a wrapper object.
-		var wrapper struct {
-			ProfileTypes []map[string]interface{} `json:"profileTypes"`
-		}
-		if err2 := json.Unmarshal(body, &wrapper); err2 != nil {
-			return CheckResult{Status: StatusFail, Message: "failed to parse Pyroscope response", Evidence: string(body)}
-		}
-		profileTypes = wrapper.ProfileTypes
-	}
-
-	if len(profileTypes) == 0 {
-		return CheckResult{
-			Status:  StatusWarn,
-			Message: "Pyroscope is healthy but no profiles ingested yet",
-		}
-	}
-
-	return CheckResult{
-		Status:  StatusPass,
-		Message: fmt.Sprintf("%d profile types available", len(profileTypes)),
-	}
-}
-
-// parsePyroscopeLabels checks the label-values response for our service.
-func parsePyroscopeLabels(body []byte, projectName string) CheckResult {
-	body = bytes.TrimSpace(body)
-
-	// Could be a plain array, or wrapped as {"values":[...]} or {"names":[...]} (gRPC-web).
-	var labels []string
-	if err := json.Unmarshal(body, &labels); err != nil {
-		var wrapper struct {
-			Values []string `json:"values"`
-			Names  []string `json:"names"`
-		}
-		if err2 := json.Unmarshal(body, &wrapper); err2 != nil {
-			// The label response is this check's only evidence about
-			// ingestion, so a body in none of the shapes we can decode
-			// leaves the question unanswered — Pyroscope may well be
-			// receiving profiles. UNDETERMINED, for the same reason
-			// grafanaAddr above is: forge could not obtain the fact, which
-			// is not a finding about the stack (see the StatusSkip vs
-			// StatusUnknown note in doctor.go). Contrast the branch below,
-			// where the labels DID decode and are genuinely empty — that
-			// is a real "nothing ingested yet" warning.
+		if notRunning(err) {
 			return CheckResult{
-				Status:   StatusUnknown,
-				Message:  "Pyroscope is healthy but its label response could not be parsed — ingestion unknown",
-				Evidence: err2.Error(),
+				Status:   StatusSkip,
+				Message:  "local ClickStack is not running — `forge env up` starts it unless `_observability = False` in deploy/kcl/<env>/main.k",
+				Evidence: err.Error(),
 			}
 		}
-		labels = wrapper.Values
-		if len(labels) == 0 {
-			labels = wrapper.Names
-		}
+		return CheckResult{Status: StatusUnknown, Message: "could not query ClickStack for " + signal + ": " + err.Error()}
 	}
+	return signalVerdict(signal, unit, rows)
+}
 
-	if len(labels) == 0 {
+// signalVerdict turns "which services sent how many rows" into the result.
+// Split from the query so the verdict is testable alone.
+func signalVerdict(signal, unit string, rows [][]string) CheckResult {
+	type svcCount struct {
+		name string
+		n    int
+	}
+	var got []svcCount
+	total := 0
+	for _, r := range rows {
+		if len(r) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(r[1]))
+		if err != nil || n <= 0 {
+			continue
+		}
+		got = append(got, svcCount{r[0], n})
+		total += n
+	}
+	if total == 0 {
 		return CheckResult{
-			Status:  StatusWarn,
-			Message: "Pyroscope is healthy but no profiles ingested yet",
+			Status: StatusWarn,
+			Message: fmt.Sprintf("ClickStack is up but holds no %s from the last 15 minutes — nothing is exporting "+
+				"(host processes get OTEL_EXPORTER_OTLP_ENDPOINT from `forge env up`; a process started by hand does not)", signal),
 		}
 	}
-
-	// Check if our service is among the labels.
-	found := false
-	for _, l := range labels {
-		if strings.Contains(l, projectName) {
-			found = true
-			break
-		}
+	sort.Slice(got, func(i, j int) bool { return got[i].n > got[j].n })
+	names := make([]string, 0, len(got))
+	for _, g := range got {
+		names = append(names, g.name)
 	}
-
-	if found {
-		return CheckResult{
-			Status:  StatusPass,
-			Message: fmt.Sprintf("profiles found for %s", projectName),
-		}
+	if len(names) > 4 {
+		names = append(names[:4], "…")
 	}
-
 	return CheckResult{
-		Status:  StatusWarn,
-		Message: fmt.Sprintf("Pyroscope has %d services but none match %s", len(labels), projectName),
+		Status:  StatusPass,
+		Message: fmt.Sprintf("%d %s from %d service(s): %s", total, unit, len(got), strings.Join(names, ", ")),
 	}
 }

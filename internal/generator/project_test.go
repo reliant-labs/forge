@@ -1235,8 +1235,9 @@ func TestFeatureFlag_ObservabilityDisabled(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// Alloy config should not exist
-	assertPathNotExists(t, filepath.Join(root, "deploy", "alloy-config.alloy"))
+	// The local ClickStack's inputs should not exist
+	assertPathNotExists(t, filepath.Join(root, "deploy", "observability", "otel-collector.yaml"))
+	assertPathNotExists(t, filepath.Join(root, "deploy", "observability", "dashboards"))
 
 	// OTel is owned by serverkit now — there is no generated cmd/otel.go shim
 	// regardless of the observability flag.
@@ -1296,8 +1297,10 @@ func TestFeatureFlag_AllEnabled(t *testing.T) {
 		}
 	}
 
-	// Observability
-	assertPathExists(t, filepath.Join(root, "deploy", "alloy-config.alloy"))
+	// Observability: the collector pipeline and the dashboard provisioner dir
+	assertPathExists(t, filepath.Join(root, "deploy", "observability", "otel-collector.yaml"))
+	assertPathExists(t, filepath.Join(root, "deploy", "observability", "dashboards", "README.md"))
+	assertPathNotExists(t, filepath.Join(root, "deploy", "alloy-config.alloy"))
 
 	// serve.go must actually INVOKE the migrate step when migrations are
 	// enabled — the mirror of TestFeatureFlag_MigrationsDisabled. Asserted

@@ -109,23 +109,34 @@ _database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.Pro
 # `forge secret set --env {{.EnvName}} <KEY>` (value on stdin).
 _secret_store = forge.FileSecrets {path = "secrets/{{.EnvName}}.yaml"}
 
-# ── OBSERVABILITY — OPT-IN ─────────────────────────────────────────────────
-# True runs docker-compose.yml's `lgtm` (Grafana, Prometheus, Tempo, Loki,
-# Pyroscope and an OTLP collector) beside the stack, and points every host
-# process's OTLP export at it; `forge env up` then lists Grafana with the
-# other URLs, and the forge dashboards are provisioned in it. Off by default:
-# an LGTM stack is ~1 GB resident to look at a service in your terminal.
+# ── OBSERVABILITY — ON BY DEFAULT ───────────────────────────────────────────
+# True runs docker-compose.yml's `clickstack` beside the stack: ClickHouse, the
+# HyperDX UI and an OTLP collector in ONE container (HyperDX's no-auth local
+# mode, ~0.8 GB resident). `forge env up` then
 #
-# One switch, because three things must agree: the compose service has to
-# RUN, it has to PUBLISH its OTLP port to this machine (the API is a host
+#   * exports OTEL_EXPORTER_OTLP_ENDPOINT / _PROTOCOL to every host process
+#     (traces + metrics), unless you set them yourself, and
+#   * has the collector tail .forge/logs/{{.EnvName}}/*.log (logs),
+#
+# so traces, metrics and logs reach HyperDX with nothing to register or copy,
+# and `forge env up` lists the HyperDX URL with the other services.
+#
+# TO TURN IT OFF set this to False: no container starts and no endpoint is
+# exported, so processes run exactly as they did before observability. The
+# runtime still propagates trace context; it just has nowhere to send spans.
+#
+# One switch because three things must agree: the compose service has to RUN,
+# it has to PUBLISH its OTLP and UI ports to this machine (the API is a host
 # process, not on the compose network), and every process has to EXPORT to
-# that port. The opt-in used to be "add the lgtm workload" alone, which ran
-# Grafana with nothing reaching it.
-_observability = False
+# the port it published. All three read the ports below.
+_observability = True
 
-# The collector's OTLP gRPC port on loopback: compose publishes it
-# (OTLP_GRPC_PORT, below) and the processes export to it, from this one value.
-_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp", 4317) if _observability else 0
+# The ports compose publishes on loopback and host processes export to.
+# resolve_port steps off a busy preferred port, so two worktrees never fight
+# over 4318.
+_otlp_http_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-http", 4318) if _observability else 0
+_otlp_grpc_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-grpc", 4317) if _observability else 0
+_hyperdx_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-hyperdx", 8180) if _observability else 0
 
 # ---------------------------------------------------------------------------
 # Each workload's env here.
@@ -152,7 +163,6 @@ _env = lambda w: fw.Workload -> {str:} {
         PORT = str(_port_of(w.name))
         PPROF_ADDR = "127.0.0.1:${_pprof_port_of(w.name)}"
     } if w.kind in _LONG_RUNNING else {}
-    _telemetry = {OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:${_otlp_port}"} if _observability else {}
 {{- if .HasFrontend}}
     # NATIVE SIGN-IN's redirect URI, and where the server reaches the issuer.
     # Composed from the origins above, which this file owns.
@@ -173,9 +183,9 @@ _env = lambda w: fw.Workload -> {str:} {
         # config_secrets. Reused while the issuer accepts it; never printed.
         IDP_BROKER_TOKEN_STORE = _secret_store.path
     } if w.name == "idp-provision" else {}
-    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _telemetry | _sign_in | _idp_job
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _sign_in | _idp_job
 {{- else}}
-    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port | _telemetry
+    config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | _machine | _port
 {{- end}}
 }
 
@@ -268,18 +278,20 @@ _workloads = [
 {{.Bindings}}
 ]
 
-# The observability stack, when `_observability` (above) is on: compose
-# owns the container, and this hands it the OTLP port to publish.
-#
-# `alloy` (also in docker-compose.yml) is a further opt-in: it scrapes the
-# containers on the compose network and ingests their Docker logs, mounting
-# the Docker socket to do it — so on a shared machine it reads EVERY
-# container's logs, not just this project's. Add
-# `fw.Workload {name = "alloy", runtime = forge.OnCompose {service = "alloy"}}`
-# here to run it.
+# The observability stack, when `_observability` (above) is on: compose owns
+# the container, and this hands it the ports to publish. Rebind or drop this
+# one workload to point at a different backend; the processes only ever see
+# the standard OTEL_EXPORTER_OTLP_* variables.
 _telemetry_workloads = [fw.Workload {
-    name = "lgtm"
-    runtime = forge.OnCompose {service = "lgtm", env = {"OTLP_GRPC_PORT" = str(_otlp_port)}}
+    name = "clickstack"
+    runtime = forge.OnCompose {
+        service = "clickstack"
+        env = {
+            "CLICKSTACK_UI_PORT" = str(_hyperdx_port)
+            "CLICKSTACK_OTLP_HTTP_PORT" = str(_otlp_http_port)
+            "CLICKSTACK_OTLP_GRPC_PORT" = str(_otlp_grpc_port)
+        }
+    }
 }] if _observability else []
 
 _bundle = forge.Bundle {

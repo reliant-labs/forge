@@ -47,10 +47,6 @@ func (s *svc) GenerateE2ETests(projectDir, serviceName, modulePath, projectName 
 	return GenerateE2ETests(projectDir, serviceName, modulePath, projectName, methods)
 }
 
-func (s *svc) GenerateGrafanaDashboards(projectName, projectDir string) error {
-	return GenerateGrafanaDashboards(projectName, projectDir)
-}
-
 func (s *svc) RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 	return RegenerateInfraFiles(projectDir, cfg)
 }

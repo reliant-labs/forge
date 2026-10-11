@@ -34,7 +34,6 @@ type portQuery struct {
 var defaultPortQueries = []portQuery{
 	{"app", 8080},
 	{"app", 6060},
-	{"lgtm", 3000},
 	{"postgres", 5432},
 	{"app-debug", 2345},
 	{"app-debug", 8080},
@@ -59,7 +58,7 @@ func hasComposeFile(projectDir string) bool {
 }
 
 // CheckDocker verifies that the project's docker-compose infra (postgres,
-// nats, the bundled lgtm telemetry container, …) is running, and discovers
+// nats, the local ClickStack container, …) is running, and discovers
 // published ports for use by downstream checks.
 //
 // It covers ONLY the compose half of a dev stack. The host-service half —

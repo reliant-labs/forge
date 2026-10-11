@@ -42,9 +42,6 @@ func guardTemplateMode(g config.ConfigGuardConfig) string {
 //   - ServicePackage / ForgeVersion — scaffold-only.
 //     Consumed by scaffold-only templates (config.proto.tmpl, go.mod.tmpl)
 //     that the upgrade lane never renders.
-//   - Services — upgrade-only. Consumed by alloy-config.alloy.tmpl, which
-//     the scaffold lane renders through a separate local struct
-//     (generateAlloyConfig), so the scaffold payload never needs it.
 type projectTemplateData struct {
 	Name           string
 	ProtoName      string
@@ -66,11 +63,7 @@ type projectTemplateData struct {
 	GoVersion              string
 	GoVersionMinor         string
 	DockerBuilderGoVersion string
-	// Services lists (name, port) pairs for templates like alloy-config.
-	// Populated by forUpgrade only — the scaffold lane renders alloy-config
-	// through its own local struct, so forScaffold leaves this nil.
-	Services     []ServiceInfo
-	ConfigFields map[string]bool
+	ConfigFields           map[string]bool
 	// RESTEnabled mirrors the `api.rest` toggle in forge.yaml. At scaffold
 	// time this is always false (REST is opt-in via a post-scaffold edit),
 	// but the field is declared here so buf.yaml's dep gate has a known
@@ -315,20 +308,6 @@ func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		}
 	}
 
-	// Build the services list for templates like alloy-config.
-	// The first server maps to docker-compose name "app".
-	var services []ServiceInfo
-	for i, svc := range servers {
-		name := svc.Name
-		if i == 0 {
-			name = "app" // docker-compose service name for the primary service
-		}
-		services = append(services, ServiceInfo{Name: name, Port: config.DefaultServePort})
-	}
-	if len(services) == 0 {
-		services = []ServiceInfo{{Name: "app", Port: config.DefaultServePort}}
-	}
-
 	// Parse config fields from proto/config/ so templates can conditionally
 	// include code blocks that reference specific config fields.
 	configFields := codegen.DefaultConfigFieldNames()
@@ -354,7 +333,6 @@ func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		GoVersion:              goVersion,
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
-		Services:               services,
 		ConfigFields:           configFields,
 		RESTEnabled:            cfg.API.REST,
 		// The forge.yaml `build:` block is gone; the Dockerfile's

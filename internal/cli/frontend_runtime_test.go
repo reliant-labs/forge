@@ -81,7 +81,9 @@ func TestFrontendRuntime_DecodeEveryRuntime(t *testing.T) {
             name = "fb"
             path = "fb"
             base_path = "/app"
-            runtime = forge.OnFirebase {project = "p", site = "s", rewrites = [{source = "**", destination = "/index.html"}]}
+            type = "vite"
+            cache_control = [forge.CacheRule {pattern = "assets/**", cache_control = "public, max-age=600"}]
+            runtime = forge.OnFirebase {project = "p", site = "s", spa_fallback = "/app/index.html", keep_asset_releases = 4}
         }
         forge.Frontend {name = "spa", path = "spa", type = "vite", runtime = forge.BuildOnly {}}
     ]`, `    control_plane = forge.ControlPlane {}`)
@@ -117,11 +119,19 @@ func TestFrontendRuntime_DecodeEveryRuntime(t *testing.T) {
 		t.Errorf("cache rules lost their declaration order: %+v", b.CacheControl)
 	}
 	// Defaulted public_dir is resolved by the render, by type.
-	if by["spa"].PublicDir != "dist" || by["fb"].PublicDir != "out" {
-		t.Errorf("defaulted public_dir: spa %q (want dist), fb %q (want out)", by["spa"].PublicDir, by["fb"].PublicDir)
+	if by["spa"].PublicDir != "dist" || by["fb"].PublicDir != "dist" || by["admin-web"].PublicDir != "out" {
+		t.Errorf("defaulted public_dir: spa %q (want dist), fb %q (want dist)", by["spa"].PublicDir, by["fb"].PublicDir)
 	}
-	if fb := by["fb"].Runtime.Firebase; fb == nil || fb.Project != "p" || fb.Site != "s" || fb.Rewrites[0]["destination"] != "/index.html" {
+	// Defaulted asset_dir likewise: the build's content-hashed directory.
+	if by["fb"].AssetDir != "assets" || by["admin-web"].AssetDir != "_next/static" {
+		t.Errorf("defaulted asset_dir: fb %q (want assets), admin-web %q (want _next/static)", by["fb"].AssetDir, by["admin-web"].AssetDir)
+	}
+	if fb := by["fb"].Runtime.Firebase; fb == nil || fb.Project != "p" || fb.Site != "s" ||
+		fb.SPAFallback != "/app/index.html" || fb.KeepAssetReleases != 4 || len(fb.Rewrites) != 0 {
 		t.Errorf("firebase runtime = %+v", fb)
+	}
+	if rules := by["fb"].CacheControl; len(rules) != 1 || rules[0].Pattern != "assets/**" {
+		t.Errorf("firebase cache rules = %+v, want the declared rule (Firebase renders them as headers)", rules)
 	}
 }
 
@@ -152,12 +162,19 @@ func TestFrontendRuntime_ProviderMappings(t *testing.T) {
 	}
 
 	fb := FrontendEntity{
-		Name: "fb", Path: "fb", PublicDir: "dist", BasePath: "/app", Bundle: []BundleDir{{Src: "x"}},
-		Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase, Firebase: &FirebaseRuntime{Project: "p", Site: "s", Target: "t"}},
+		Name: "fb", Path: "fb", PublicDir: "dist", AssetDir: "assets", BasePath: "/app", Bundle: []BundleDir{{Src: "x"}},
+		CacheControl: []CacheRule{{Pattern: "assets/**", CacheControl: "public, max-age=600"}},
+		Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase, Firebase: &FirebaseRuntime{
+			Project: "p", Site: "s", Target: "t", SPAFallback: "/app/index.html", KeepAssetReleases: 4,
+		}},
 	}
 	got := frontendToFirebase(fb).Spec
 	if got.Project != "p" || got.Site != "s" || got.Target != "t" || got.PublicDir != "dist" || got.BasePath != "/app" || len(got.Bundle) != 1 {
 		t.Errorf("frontendToFirebase spec = %+v", got)
+	}
+	if got.SPAFallback != "/app/index.html" || got.AssetDir != "assets" || got.KeepAssetReleases != 4 ||
+		!reflect.DeepEqual(got.CacheControl, []deploytarget.CacheRuleSpec{{Pattern: "assets/**", CacheControl: "public, max-age=600"}}) {
+		t.Errorf("frontendToFirebase dropped serving policy: %+v", got)
 	}
 
 	if bo := frontendToBuildOnly(FrontendEntity{Name: "spa", Path: "spa", PublicDir: "dist"}); bo.PublicDir != "dist" {

@@ -80,16 +80,20 @@ workload-only fields on them (`runner`, `listen_ports`, `build_variants`, ...)
 are refused on a frontend, naming the field. `output.frontends[].runtime` is
 `{type, ...}`, and the Go dispatch keys on `type`:
 
-| Runtime                                         | `forge env deploy` does                                                                                                        |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `OnHost {}`                                     | nothing — it is the dev server (`<dev_runner> dev` on `port`); `forge env up` runs it                                          |
-| `OnHosted {}`                                   | `forge env build <env> --push` pushes the site as an OCI release; the deploy publishes a StaticSite CR (needs `control_plane`) |
-| `OnBucket {bucket, cdn?, keep_releases}`        | builds, assembles, uploads `releases/<digest>/`, syncs `live/`, invalidates the CDN                                            |
-| `OnFirebase {project, site, target?, rewrites}` | builds, assembles, `firebase deploy`                                                                                           |
-| `BuildOnly {}`                                  | builds it, so a sibling frontend's `bundle` can assemble its output; ships nothing                                             |
+| Runtime                                                                             | `forge env deploy` does                                                                                                                                                    |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OnHost {}`                                                                         | nothing — it is the dev server (`<dev_runner> dev` on `port`); `forge env up` runs it                                                                                      |
+| `OnHosted {}`                                                                       | `forge env build <env> --push` pushes the site as an OCI release; the deploy publishes a StaticSite CR (needs `control_plane`)                                             |
+| `OnBucket {bucket, cdn?, keep_releases}`                                            | builds, assembles, uploads `releases/<digest>/`, syncs `live/`, invalidates the CDN                                                                                        |
+| `OnFirebase {project, site, target?, spa_fallback?, rewrites, keep_asset_releases}` | builds, assembles, carries the last `keep_asset_releases` releases' hashed assets forward, `firebase deploy` with a route-only SPA fallback and immutable/no-cache headers |
+| `BuildOnly {}`                                                                      | builds it, so a sibling frontend's `bundle` can assemble its output; ships nothing                                                                                         |
 
-`cache_control` is honoured only on `OnBucket` (forge sets the object headers
-there and nowhere else); `bundle` is refused on `OnHost`. `OnHosted` has no
+`cache_control` is honoured on `OnBucket` (object headers) and `OnFirebase`
+(firebase.json `headers`, replacing its default of an immutable `asset_dir`
+and `no-cache` everywhere else), and refused elsewhere; `bundle` is refused
+on `OnHost`. On `OnFirebase` a catch-all `** -> /index.html` rewrite is
+refused: it answers a missing hashed asset with the page and a 200, so
+declare `spa_fallback = "/index.html"` instead. `OnHosted` has no
 `bucket` field at all, so "a hosted site that names a bucket" does not compile.
 
 ### Cross-repo sources

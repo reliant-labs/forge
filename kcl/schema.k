@@ -2727,22 +2727,64 @@ schema OnFirebase:
       * `site`     — Firebase Hosting site id (e.g. reliant-prod).
       * `target`   — hosting target alias used in `--only hosting:<target>`
                      and in `firebase target:apply`. Defaults to `site`.
+      * `spa_fallback` — a single-page app's entry document
+                     ("/index.html"). A client-side route (a missing path
+                     inside the document's directory whose last segment
+                     is not a static file) is served it; a missing
+                     `/assets/<name>-<hash>.js` is a 404. Unset: no SPA
+                     fallback.
       * `rewrites` — Firebase Hosting rewrites passed through verbatim
-                     into the generated firebase.json `hosting.rewrites`
-                     (SPA fallback, etc.). Empty omits the key.
+                     into the generated firebase.json `hosting.rewrites`,
+                     ahead of the SPA fallback (a function or Cloud Run
+                     route, a second SPA's mount). Empty omits the key.
+      * `keep_asset_releases` — how many releases' content-hashed assets
+                     the live site serves, the new one included (see
+                     below).
 
-    Firebase owns the cache headers and the CDN, so a frontend on this
-    runtime declares no `cache_control` (refused at render).
+    WHY `spa_fallback` AND NOT `rewrites = [{source = "**", destination =
+    "/index.html"}]` — which is refused. Firebase applies a rewrite to any
+    path no uploaded file matches, and `**` cannot tell a route from a
+    file. So a tab opened before a deploy, asking for a code-split chunk
+    the deploy removed, was answered with index.html and a 200: the
+    dynamic import died on a MIME/parse error, and the app could not tell
+    that from a bug. forge renders the fallback as a regex that leaves
+    missing files to Firebase's 404.
+
+    STALE TABS KEEP WORKING. A Firebase release is a complete snapshot, so
+    without help every hashed asset the new build does not contain is
+    gone the moment it goes live — including the chunks every open tab is
+    about to lazy-load. Each deploy therefore carries forward the hashed
+    assets of the previous releases (the build's `asset_dir`) and records
+    what the site serves in `<base_path>/forge-assets.json`; an asset
+    stays until `keep_asset_releases` releases have passed without
+    building it. Carried files are already in Firebase's content store,
+    so they cost no upload. Floor 2: the release going live plus the one
+    open tabs are running.
+
+    CACHE HEADERS. forge renders them: the build's `asset_dir` is
+    `public, max-age=31536000, immutable` (a new build emits new names);
+    everything else — the entry document served for every route,
+    config.js — is `no-cache`, so a deploy is visible on the next load.
+    A frontend's `cache_control` rules replace that default, matched
+    against the REQUEST path ("/" + pattern), first match wins.
     """
     type: "firebase" = "firebase"
     project: str
     site: str
     target?: str
+    spa_fallback?: str
     rewrites: [{str: any}] = []
+    keep_asset_releases: int = 10
 
     check:
         project, "OnFirebase.project is required (Firebase/GCP project id)"
         site, "OnFirebase.site is required (Firebase Hosting site id)"
+        not spa_fallback or (spa_fallback.startswith("/") and spa_fallback.endswith(".html")), \
+            "OnFirebase.spa_fallback must be the absolute path of an HTML document (e.g. '/index.html'), got '${spa_fallback}'"
+        keep_asset_releases >= 2, \
+            "OnFirebase.keep_asset_releases must be at least 2 — the release going live plus the one open tabs are still running; fewer deletes the chunks those tabs lazy-load next"
+        all r in rewrites { not ("source" in r and r["source"] in ["**", "/**", "**/*", "/**/*"] and typeof(r["destination"]) == "str" and r["destination"].endswith(".html")) }, \
+            "OnFirebase.rewrites: a catch-all rewrite to an HTML document answers EVERY missing path with that page and HTTP 200 — including a missing /assets/<name>-<hash>.js after a deploy, which a stale tab's dynamic import then fails to parse. Declare `spa_fallback = \"/index.html\"` instead: forge serves the document for client-side routes and lets a missing file 404"
 
 # Where a frontend runs. OnHost, OnHosted and BuildOnly are the workload
 # runtimes of the same name; OnBucket and OnFirebase are the static-hosting
@@ -2918,7 +2960,7 @@ schema Frontend:
       * `forge.OnBucket {bucket, cdn?, keep_releases}`
                               — YOUR object-storage bucket
                                 (`releases/<digest>/` + `live/`).
-      * `forge.OnFirebase {project, site, target?, rewrites}`
+      * `forge.OnFirebase {project, site, target?, spa_fallback?, rewrites, keep_asset_releases}`
                               — Firebase Hosting.
       * `forge.BuildOnly {}`  — built by `forge env deploy`, never shipped:
                                 its output exists on disk for a sibling
@@ -2928,13 +2970,14 @@ schema Frontend:
     refuses the workload-only fields (`runner`, `listen_ports`, ...) on a
     frontend, naming them.
 
-    The STATIC BUILD facts — `public_dir`, `base_path`, `bundle`,
-    `cache_control` — are the frontend's own, true on every runtime that
-    publishes a build, and never re-stated per runtime. A frontend can
-    therefore be declared once and bound per env (`_web | {runtime =
-    forge.OnHost {}}` in dev, `forge.OnBucket {...}` in prod). `cache_control`
-    is serving policy and is honoured only where forge sets the headers
-    (OnBucket); everywhere else it is refused rather than dropped.
+    The STATIC BUILD facts — `public_dir`, `asset_dir`, `base_path`,
+    `bundle`, `cache_control` — are the frontend's own, true on every
+    runtime that publishes a build, and never re-stated per runtime. A
+    frontend can therefore be declared once and bound per env (`_web |
+    {runtime = forge.OnHost {}}` in dev, `forge.OnBucket {...}` in prod).
+    `cache_control` is serving policy and is honoured only where forge sets
+    the headers (OnBucket, OnFirebase); everywhere else it is refused
+    rather than dropped.
 
     A frontend that ships as a CONTAINER (a server-rendered Next.js app,
     an internal console) is a process forge runs, so it is a workload:
@@ -3018,6 +3061,14 @@ schema Frontend:
     # at ("/admin"). Unset: the site root. On OnHost it is the dev mount,
     # so a forge.WorkloadURL to the dev server carries it too.
     base_path?: str
+    # The build's CONTENT-HASHED asset directory, relative to public_dir:
+    # every file in it is named for its bytes, so it can be cached forever
+    # and must outlive the release that built it. Unset: the type's
+    # convention — "assets" for vite (build.assetsDir), "_next/static" for
+    # nextjs, none for rn. Set it when the build moves its assets.
+    # OnFirebase marks it immutable and keeps previous releases' copies
+    # serveable (OnFirebase.keep_asset_releases).
+    asset_dir?: str
     # NO `domains` HERE. A hosted custom hostname is not spec — it is a
     # control-plane resource, created once for the org and BOUND to one
     # environment's frontend:
@@ -3041,8 +3092,10 @@ schema Frontend:
     # BundleDir): a sibling SPA at the root with this frontend under
     # base_path. Ignored on OnHost (the dev server assembles nothing).
     bundle: [BundleDir] = []
-    # Ordered Cache-Control rules (see CacheRule). OnBucket only: forge
-    # sets object headers there and nowhere else.
+    # Ordered Cache-Control rules (see CacheRule). OnBucket sets them as
+    # object headers; OnFirebase renders them as firebase.json `headers`
+    # (replacing its immutable-assets/no-cache default). Refused where
+    # forge sets no headers.
     cache_control: [CacheRule] = []
 
     # The browser's runtime configuration document — what the bundle reads
@@ -3085,6 +3138,8 @@ schema Frontend:
             "Frontend '${name}'.public_dir must be relative to the frontend's code (e.g. 'dist')"
         base_path == Undefined or base_path.startswith("/"), \
             "Frontend '${name}'.base_path must start with '/' (e.g. '/admin'); omit for the site root"
+        not asset_dir or not (asset_dir.startswith("/") or asset_dir.startswith("..") or "/../" in asset_dir), \
+            "Frontend '${name}'.asset_dir must be a directory inside public_dir (e.g. 'assets')"
 
 # ---------------------------------------------------------------------------
 # Platform dependency — a helm chart rendered (NOT installed) by forge.

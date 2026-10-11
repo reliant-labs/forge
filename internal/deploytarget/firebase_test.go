@@ -28,9 +28,7 @@ func fakeFirebaseFrontend(projectDir, staging string) FirebaseFrontend {
 			Bundle: []BundleDirSpec{
 				{Src: "../reliant-web/dist", Dest: ""},
 			},
-			Rewrites: []map[string]any{
-				{"source": "**", "destination": "/index.html"},
-			},
+			SPAFallback: "/index.html",
 		},
 	}
 }

@@ -280,3 +280,36 @@ func TestWriteScaffoldIfMissing_DeletedFileStaysDeleted(t *testing.T) {
 		t.Fatalf("deleted scaffold is back on disk (stat err = %v)", statErr)
 	}
 }
+
+// A nested git checkout (a linked worktree's `.git` FILE, or a nested repo's
+// `.git` directory) is another copy of the project, not part of it: its
+// failing markers must never trip this project's stomp guard.
+func TestScanTier1Drift_SkipsNestedCheckouts(t *testing.T) {
+	root := t.TempDir()
+	stamped, _ := Stamp("buf.yaml", []byte("version: v2\n"))
+	edited := append(stamped, []byte("# edited in the other checkout\n")...)
+	for _, nested := range []struct{ dir, gitEntry string }{
+		{"agent-worktree", "file"},
+		{"vendored-repo", "dir"},
+	} {
+		writeDisownFixture(t, root, nested.dir+"/buf.yaml", edited)
+		gitPath := filepath.Join(root, nested.dir, ".git")
+		if nested.gitEntry == "file" {
+			if err := os.WriteFile(gitPath, []byte("gitdir: /elsewhere/.git/worktrees/x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.MkdirAll(gitPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if drift := ScanTier1Drift(root, &FileChecksums{}); len(drift) != 0 {
+		t.Errorf("a nested checkout's files must not drift this project; got %+v", drift)
+	}
+
+	// The same edited file as part of THIS project still trips the guard,
+	// so the skip is the nested checkout and not the file.
+	writeDisownFixture(t, root, "buf.yaml", edited)
+	if drift := ScanTier1Drift(root, &FileChecksums{}); len(drift) != 1 || drift[0].Path != "buf.yaml" {
+		t.Errorf("the project's own edited file must still drift; got %+v", drift)
+	}
+}

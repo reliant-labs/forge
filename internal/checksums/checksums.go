@@ -1002,6 +1002,9 @@ func ScanMarkers(root string) map[string]MarkerInfo {
 			if scanSkipDirs[info.Name()] {
 				return filepath.SkipDir
 			}
+			if path != root && isNestedCheckout(path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !info.Mode().IsRegular() {
@@ -1034,6 +1037,20 @@ func ScanMarkers(root string) map[string]MarkerInfo {
 		return nil
 	})
 	return out
+}
+
+// isNestedCheckout reports whether dir is the root of ANOTHER git checkout:
+// a nested repository (`.git` directory) or a linked worktree (`.git` file),
+// whatever its name. Agents park worktrees inside the main checkout
+// (control-plane/control-plane-hosted-identity/), and each is a whole second
+// copy of the project on some other commit. Scanning one reported its files
+// as hand-edited Tier-1 files of THIS project and refused `forge generate`,
+// naming paths whose only remedies (--force, disown) would have rewritten or
+// frozen another checkout. The `.kilo` entry in scanSkipDirs covered one
+// such directory by name; this covers all of them by what they are.
+func isNestedCheckout(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 // headContainsMarker reports whether the first markerProbeBytes of the

@@ -123,6 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge generate` no longer refuses over a nested git checkout.** The
+  Tier-1 stomp guard walked into any worktree or repository parked inside the
+  project directory (control-plane's `control-plane-hosted-identity/`) and
+  reported that checkout's files as hand-edited Tier-1 files of this project,
+  with remedies (`--force`, `disown`) that would have rewritten or frozen the
+  other checkout. The marker scan now skips every subdirectory carrying a
+  `.git` file or directory.
+
 - **Generated frontend mocks no longer read the clock.** control-plane's
   "Verify Generated Code" check went red every day at 00:00Z with no source
   change. `forge generate` built the `src/mocks/*_gen.ts` fixtures from the

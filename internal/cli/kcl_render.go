@@ -1013,6 +1013,22 @@ type FrontendEntity struct {
 	// wire shape, references KEPT. The hosted provider publishes it as
 	// spec.runtimeConfig.
 	RuntimeConfigSpec map[string]deployv1alpha1.RuntimeConfigValue `json:"runtime_config_spec,omitempty"`
+
+	// The three fields below are what forge learns AFTER the render, on the
+	// way to a build, and are never rendered. frontendBuildIdentityEnv hands
+	// them to the build as FORGE_SOURCE_* / FORGE_RELEASE.
+
+	// SourceCommit is the sha Source.Ref resolved to when the source was
+	// fetched. Empty for an in-repo frontend, and for a pin whose fetch
+	// could not read its own HEAD.
+	SourceCommit string `json:"-"`
+	// SourceOverridden is true when .forge/source-overrides.yaml stood in
+	// for the pin: the code being built is a local checkout, NOT Source.Ref,
+	// so the pin must not be reported as what was built.
+	SourceOverridden bool `json:"-"`
+	// Release is the release version this build ships under (the deploy's
+	// bound release), "" when there is none.
+	Release string `json:"-"`
 }
 
 // FrontendConfigEntity mirrors the kcl/schema.k FrontendConfig — the

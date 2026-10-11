@@ -19,3 +19,15 @@ func TestReleaseDArgs(t *testing.T) {
 		t.Fatalf("ReleaseDArgs = %v, want %v", got, want)
 	}
 }
+
+// TestRelease pins the getter the frontend build reads FORGE_RELEASE from: the
+// same value ReleaseDArgs binds into the render, so a frontend and the
+// workloads beside it can never report different releases.
+func TestRelease(t *testing.T) {
+	if got := Release(context.Background()); got != "" {
+		t.Fatalf("unbound ctx must report no release, got %q", got)
+	}
+	if got := Release(WithRelease(context.Background(), "20261011.184732-0b1d2c3e4f5a")); got != "20261011.184732-0b1d2c3e4f5a" {
+		t.Fatalf("Release = %q, want the bound version", got)
+	}
+}

@@ -133,6 +133,32 @@ everything above: a dependency that silently changes underneath a build is
 the non-reproducibility this feature exists to remove. To move, bump the
 ref, or drop the cache entry.
 
+### What the build is told about itself
+
+The fetch is shallow and carries no tags, so a build pinned to `v1.8.1`
+sees a detached sha: `git describe` answers with a hash, and the build
+cannot name its own version. So forge tells it. Every frontend build forge
+runs (`forge env deploy` for Firebase / bucket / build-only, and the hosted
+static build) gets:
+
+| Variable | Value |
+|---|---|
+| `FORGE_SOURCE_REPO` | the GitSource `repo` as declared |
+| `FORGE_SOURCE_REF` | the GitSource `ref` — the pin: a tag, a branch, or a sha |
+| `FORGE_SOURCE_COMMIT` | the sha that ref resolved to when it was fetched |
+| `FORGE_RELEASE` | the release version the deploy is bound to |
+
+All four are always present and EMPTY when forge does not know the value —
+an in-repo frontend, an unbound deploy, or a source standing in for its pin
+through a local override (below), where naming the pin would misreport what
+was built. Empty overrides any stale value in the calling shell, and means
+"read your own checkout". The values are forge's and win over an `env_vars`
+entry of the same name.
+
+A build bakes them into whatever reports its identity — an About page, a
+`version.json`, an error reporter's release name. reliant-web shipped
+"version unknown" to production before they existed.
+
 ## Local iteration: `.forge/source-overrides.yaml`
 
 Pinning without an escape hatch would force every one-line frontend edit

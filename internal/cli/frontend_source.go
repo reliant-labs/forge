@@ -143,6 +143,11 @@ func resolveFrontendEntitySources(ctx context.Context, projectDir string, entiti
 			return fmt.Errorf("frontend %q: %w", fe.Name, err)
 		}
 		fe.Path = res.Dir
+		// What the build is told it was built from (frontendBuildIdentityEnv).
+		// The fetch is shallow and carries no tags, so without this a build
+		// pinned to `v1.8.1` cannot name its own version.
+		fe.SourceCommit = res.Commit
+		fe.SourceOverridden = res.Overridden
 	}
 	return nil
 }

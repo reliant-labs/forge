@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Frontend builds are told what they were built from.** Every frontend build
+  forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
+  (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the
+  deploy's bound release), always present and empty when unknown. A GitSource
+  is fetched shallow with no tags, so a tag-pinned build could not name its own
+  version and the release name never reached a build at all; reliant-web
+  shipped "version unknown" to prod. A local source override reports no source.
+  See `docs/cross-repo-sources.md`, "What the build is told about itself".
 - **`forge storage gc` reclaims dangling images and anonymous Docker volumes.**
   Dangling images (untagged, used by no container, built over an hour ago) are
   removed by every pass, the automatic ones included. Anonymous volumes (the

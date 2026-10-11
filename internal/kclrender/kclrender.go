@@ -78,10 +78,19 @@ func WithRelease(ctx context.Context, version string) context.Context {
 // ReleaseDArgs is the `-D release_version=<quoted>` binding for ctx's release,
 // or nil. Quoted so an all-digit version stays a str (see image_tag).
 func ReleaseDArgs(ctx context.Context) []string {
-	if v, _ := ctx.Value(releaseKey{}).(string); v != "" {
+	if v := Release(ctx); v != "" {
 		return []string{"release_version=" + strconv.Quote(v)}
 	}
 	return nil
+}
+
+// Release is the release version WithRelease bound to ctx, or "" when the
+// render is unbound. The same value the KCL sees as option("release_version"),
+// for the Go-side consumers that never pass through a render — a frontend
+// build's env, notably.
+func Release(ctx context.Context) string {
+	v, _ := ctx.Value(releaseKey{}).(string)
+	return v
 }
 
 // withKubeconfigDArg appends `kubeconfig=<quoted path>` — the machine's

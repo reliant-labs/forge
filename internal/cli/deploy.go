@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2221,11 +2222,16 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 		return err
 	}
 
+	// The release this deploy is bound to (runDeploy's kclrender.WithRelease),
+	// handed to every build below as FORGE_RELEASE.
+	release := kclrender.Release(ctx)
+
 	var fes []deploytarget.FirebaseFrontend
 	var sites []deploytarget.StaticSiteFrontend
 	var buildOnly []deploytarget.BuildOnlyFrontend
 	var builtDirs []string
 	for _, f := range entities.Frontends {
+		f.Release = release
 		switch f.Runtime.Type {
 		case FrontendRuntimeBuildOnly:
 			// Built (env-injected) so its output exists on disk before
@@ -2521,11 +2527,61 @@ func frontendBuildEnv(f FrontendEntity) map[string]string {
 			buildEnv[ev.Name] = ev.Value
 		}
 	}
+	maps.Copy(buildEnv, frontendBuildIdentityEnv(f))
 	// Force LAST so it wins over any explicit env_vars entry AND (downstream,
 	// via MergeExtraWins) any exported shell value. Present-but-empty for the
 	// default "off".
 	buildEnv[frontendMockEnvVar(f.Type)] = frontendConfigMockValue(f.Config)
 	return buildEnv
+}
+
+// Build-identity variables forge hands every frontend build it runs. They are
+// how a bundle names the code it was built from and the release it ships in —
+// the facts its About page, its version.json and its error reports need.
+//
+// The build cannot recover them itself. A cross-repo source is fetched
+// SHALLOW with no tags (gitsource.GitFetcher), so a build pinned to `v1.8.1`
+// sees only a detached sha and `git describe` answers with a hash; and the
+// release name exists only in forge. reliant-web shipped "version unknown" to
+// prod for exactly that reason.
+const (
+	// FORGE_SOURCE_REPO / _REF are the GitSource as declared: the ref is the
+	// pin (a tag, a branch, or a full sha), so a tag-pinned build learns its
+	// version from it.
+	envForgeSourceRepo = "FORGE_SOURCE_REPO"
+	envForgeSourceRef  = "FORGE_SOURCE_REF"
+	// FORGE_SOURCE_COMMIT is the sha the ref resolved to when fetched.
+	envForgeSourceCommit = "FORGE_SOURCE_COMMIT"
+	// FORGE_RELEASE is the release version the deploy is bound to.
+	envForgeRelease = "FORGE_RELEASE"
+)
+
+// frontendBuildIdentityEnv is the FORGE_SOURCE_* / FORGE_RELEASE block of a
+// frontend's build env.
+//
+// Every variable is ALWAYS present, empty when forge does not know the value —
+// the same present-but-empty rule as the mock var. The build env reaches the
+// child through MergeExtraWins, so an empty value overrides a stale one in the
+// caller's shell (an agent's session runs inside forge; a value left over from
+// an enclosing build is precisely the kind that would leak) instead of letting
+// it through. Empty means "read your own checkout".
+//
+// A local source override reports NO source: the code on disk is the
+// developer's checkout, not the pin, and naming the pin would be a lie about
+// what was built. The build's own `git` reads the override truthfully.
+func frontendBuildIdentityEnv(f FrontendEntity) map[string]string {
+	env := map[string]string{
+		envForgeSourceRepo:   "",
+		envForgeSourceRef:    "",
+		envForgeSourceCommit: "",
+		envForgeRelease:      f.Release,
+	}
+	if f.Source != nil && f.Source.Repo != "" && !f.SourceOverridden {
+		env[envForgeSourceRepo] = f.Source.Repo
+		env[envForgeSourceRef] = f.Source.Ref
+		env[envForgeSourceCommit] = f.SourceCommit
+	}
+	return env
 }
 
 // checkDeployableFrontendMock hard-errors when a frontend forge is about to

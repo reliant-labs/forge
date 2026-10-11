@@ -978,7 +978,7 @@ plugins:
 
 // forgeModulePathForBridge is forge's module path — the single module that
 // carries both the CLI and the pkg/* runtime libraries a scaffold imports.
-// The dev bridge resolves it from the local checkout's ./pkg submodule.
+// The dev bridge resolves it from the local checkout's root.
 const forgeModulePathForBridge = "github.com/reliant-labs/forge"
 
 // writeDevForgeGoWork bridges a freshly-scaffolded project to the LOCAL forge

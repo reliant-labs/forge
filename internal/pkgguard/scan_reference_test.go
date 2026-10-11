@@ -26,7 +26,7 @@ func TestScan_FlagsEveryReferenceNotOnlyCalls(t *testing.T) {
 
 	cases := []struct {
 		name string
-		path string // module-relative
+		path string // relative to the scanned root, as under pkg/
 		src  string
 		want []string // Finding.Ref values, in line order; nil = must be clean
 	}{

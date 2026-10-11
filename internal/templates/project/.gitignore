@@ -33,14 +33,13 @@ vendor/
 # The root go.mod already carries `replace <module>/gen => ./gen`, so a
 # plain `go build ./...` resolves root↔gen with no go.work at all. A
 # committed go.work is therefore both redundant AND a pollution hazard:
-# the moment someone adds a sibling `use ../forge/pkg` (to build against a
-# local, unpublished forge/pkg), that absolute/relative path breaks every
+# the moment someone adds a sibling `use ../forge` (to build against a
+# local, unpublished forge), that absolute/relative path breaks every
 # other clone and CI. Keep it local. `forge new` scaffolds a starter
-# go.work (`use ( . gen )`) for workspace mode on this machine — and when a
-# DEV build of forge scaffolds you, it also adds a `use <local-forge>/pkg`
-# so the project builds against your in-development forge/pkg (a released
-# forge never does this). Either way it stays ignored. go.work.sum is a
-# generated lock file.
+# go.work (`use ( . gen )`) for workspace mode on this machine — and
+# `forge project new --link-forge` also adds a `use <local-forge>` so the
+# project builds against your in-development forge checkout. Either way it
+# stays ignored. go.work.sum is a generated lock file.
 go.work
 go.work.sum
 

@@ -5,12 +5,12 @@
 //
 // # Why this is in pkg/ and not internal/
 //
-// forge/pkg is a separate Go module with its own go.mod, and that module
-// boundary IS the plug point. An operator of many forge projects —
-// Reliant, or anyone else — implements [Store] against an interface it
-// can actually import, and forge's own loop is one caller among several.
-// Put the interface in internal/ and there is no pluggable backend;
-// there is only a fork.
+// pkg/ is forge's public import surface, and Go's internal/ rule is what
+// makes that boundary the plug point: no other module may import forge's
+// internal/ tree. An operator of many forge projects — Reliant, or anyone
+// else — implements [Store] against an interface it can actually import,
+// and forge's own loop is one caller among several. Put the interface in
+// internal/ and there is no pluggable backend; there is only a fork.
 //
 // # The constraint that keeps this honest
 //

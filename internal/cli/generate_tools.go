@@ -20,8 +20,8 @@ import (
 
 // devWorkspaceBridgesExternalModule reports whether the project's go.work
 // bridges a module to a LOCAL directory OUTSIDE the project tree — the
-// signature of a cross-repo dev bridge, which `forge project new` writes on a
-// DEV forge build (`use <local-forge>/pkg`, see writeDevForgeGoWork).
+// signature of a cross-repo dev bridge, which `forge project new --link-forge`
+// writes (`use <local-forge>`, see writeDevForgeGoWork).
 //
 // It matters for the go-mod-tidy steps: when the workspace deliberately
 // overrides a published `require` with an UNPUBLISHED local checkout, a plain

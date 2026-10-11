@@ -1,25 +1,22 @@
 // File: internal/cli/release_forge_script_test.go
 //
 // Exercises scripts/release-forge.sh — the one-command release gate that
-// tags BOTH github.com/reliant-labs/forge (vX.Y.Z) and its pkg submodule
-// (pkg/vX.Y.Z) at a single commit.
+// tags github.com/reliant-labs/forge (vX.Y.Z) once, at the commit that syncs
+// the version files.
 //
-// The tests that matter most here are not the refusals but the two
-// invariants the old two-commit flow could not hold:
+// The tests that matter most here are not the refusals but the invariants:
 //
-//   - the go.sum assertion. An in-workspace `go build ./...` passes with NO
-//     forge/pkg hashes in go.sum, because go.work resolves pkg from disk. The
-//     gap only surfaces for a consumer, after the release is public. The
-//     script resolves the hashes from a local clone before the tag is pushed;
-//     TestReleaseForgeScript_DryRunPopulatesGoSum pins that it really does.
-//   - a dry run leaving NO trace. The script edits five files in place, so a
-//     failed or dry run must restore the tree exactly — this checkout is
-//     routinely shared with other agents, and the obvious cleanup verb
-//     (`git checkout -- <path>`) is the destructive one we must never use.
+//   - one tag, on the release commit. It used to be two — the module and its
+//     pkg/ submodule, which had to land on the same commit — until pkg/ was
+//     folded into the root module.
+//   - a dry run leaving NO trace. The script edits the version files in
+//     place, so a failed or dry run must restore the tree exactly — this
+//     checkout is routinely shared with other agents, and the obvious cleanup
+//     verb (`git checkout -- <path>`) is the destructive one we must never use.
 //
 // These tests shell out to bash + git + go; they skip when bash is
-// unavailable (never the case on the supported dev platforms). The
-// resolution step runs a real `go mod download` against a local bare clone,
+// unavailable (never the case on the supported dev platforms). The script
+// builds the fixture module and the push tests drive a real git remote,
 // which is why they are skipped in -short mode.
 package cli
 
@@ -71,9 +68,8 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 }
 
 // newForgeFixtureRepo builds a minimal repo shaped like the forge repo from
-// the script's point of view: a root module requiring its own ./pkg
-// submodule, the three version files, and a go.work stitching them together
-// (which is what makes the go.sum trap reproducible).
+// the script's point of view: one module with pkg/ as a plain directory, a
+// cmd/forge main package, and the version files.
 func newForgeFixtureRepo(t *testing.T) string {
 	t.Helper()
 	for _, bin := range []string{"bash", "git", "go"} {
@@ -181,7 +177,7 @@ func originHasTag(repo, tag string) bool {
 // agents, so a dry run must be invisible.
 func TestReleaseForgeScript_DryRunLeavesNoTrace(t *testing.T) {
 	if testing.Short() {
-		t.Skip("runs a real go mod download against a local clone")
+		t.Skip("runs the release script, which builds the fixture module")
 	}
 	repo := newForgeFixtureRepo(t)
 	if out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0"); err != nil {
@@ -199,9 +195,6 @@ func TestReleaseForgeScript_DryRunLeavesNoTrace(t *testing.T) {
 	}
 }
 
-// TestReleaseForgeScript_TagsBothAtOneCommit is the whole point of the
-// command: the two tags Go forces on a multi-module repo must land on the
-// SAME commit, which is what removes the push-ordering hazard.
 // TestReleaseForgeScript_TagsOnceAtTheReleaseCommit: one module, one tag, on
 // the commit that syncs the version files. This replaced a test asserting
 // that pkg/vX.Y.Z and vX.Y.Z landed on the SAME commit — an invariant that

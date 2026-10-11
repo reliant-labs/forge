@@ -1,6 +1,8 @@
 package pkgguard
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,12 +42,12 @@ func TestLibraryReadsNoAmbientEnvironment(t *testing.T) {
 			"green over 12 environment reads")
 	}
 	if len(policy.Forbid) == 0 {
-		t.Fatal("pkg/.golangci.yml forbids nothing — this guard would then certify every call in the module")
+		t.Fatal("pkg/.golangci.yml forbids nothing — this guard would then certify every call in the library")
 	}
 
 	findings, files, err := Scan(pkgRoot, policy)
 	if err != nil {
-		t.Fatalf("scan the library module: %v", err)
+		t.Fatalf("scan the library: %v", err)
 	}
 	if files == 0 {
 		t.Fatal("the walk parsed no Go files under pkg/ — the guard is broken, and a guard that " +
@@ -61,19 +63,24 @@ func TestLibraryReadsNoAmbientEnvironment(t *testing.T) {
 	t.Logf("scanned %d Go files under pkg/", files)
 }
 
-// TestLibraryModuleIsGatedInCI closes the failure mode the guard above cannot
-// see: a lint config that nothing runs, and a test suite nothing executes.
+// TestLibraryLintIsGatedInCI closes the failure mode the guard above cannot
+// see: a lint config that nothing runs.
 //
-// forge/pkg is a separate module. `golangci-lint run` and `go test ./...`
-// both act on the module of the directory they are invoked in, so the repo's
-// root jobs — which is all CI had — read none of it. Every assertion in
-// pkg/**/*_test.go, including the ones pinning that no ambient credential can
-// re-authenticate a request, ran on developer machines only.
+// The repo-root .golangci.yml excludes pkg/, and golangci-lint reads the
+// config it finds walking up from the directory it runs in, so ci.yml's root
+// `lint` job never reads pkg/.golangci.yml. Only a run from pkg/ does, and
+// without one every linter that config enables gates nothing.
 //
 // The set is derived by walking the workflows and matching the COMMANDS, not
 // by naming a job or a file, and it fails loudly when the walk finds no
-// golangci-lint or `go test` step at all.
-func TestLibraryModuleIsGatedInCI(t *testing.T) {
+// golangci-lint step at all.
+//
+// There used to be a `go test` half, requiring a `cd pkg && go test` step:
+// while pkg/ was a separate module, `./...` from the repo root could not
+// reach it, and every pkg/** test ran on developer machines only. pkg/ is
+// part of the root module now and ci.yml's test jobs cover it;
+// TestLibraryIsPartOfTheRootModule pins the fact that makes that so.
+func TestLibraryLintIsGatedInCI(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(repoRoot(t), ".github", "workflows")
 	entries, err := os.ReadDir(dir)
@@ -81,7 +88,7 @@ func TestLibraryModuleIsGatedInCI(t *testing.T) {
 		t.Fatalf("read workflows: %v", err)
 	}
 
-	var lintSteps, testSteps []step
+	var lintSteps []step
 	for _, e := range entries {
 		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yml") && !strings.HasSuffix(e.Name(), ".yaml")) {
 			continue
@@ -96,11 +103,8 @@ func TestLibraryModuleIsGatedInCI(t *testing.T) {
 		}
 		for _, job := range wf.Jobs {
 			for _, s := range job.Steps {
-				switch {
-				case strings.Contains(s.Uses, "golangci-lint-action") || strings.Contains(s.Run, "golangci-lint run"):
+				if strings.Contains(s.Uses, "golangci-lint-action") || strings.Contains(s.Run, "golangci-lint run") {
 					lintSteps = append(lintSteps, s)
-				case strings.Contains(s.Run, "go test"):
-					testSteps = append(testSteps, s)
 				}
 			}
 		}
@@ -109,28 +113,44 @@ func TestLibraryModuleIsGatedInCI(t *testing.T) {
 	if len(lintSteps) == 0 {
 		t.Fatal("no workflow runs golangci-lint at all — this assertion inspected nothing")
 	}
-	if len(testSteps) == 0 {
-		t.Fatal("no workflow runs `go test` at all — this assertion inspected nothing")
-	}
 
-	if !coversPkgModule(lintSteps) {
-		t.Error("no CI step lints the forge/pkg module: golangci-lint reads the module of the " +
-			"directory it runs in, so a job without `working-directory: pkg` (or a `cd pkg`) leaves " +
-			"the library that ships into every user binary unlinted — which is how 12 forbidden " +
-			"environment reads accumulated under a config that already forbade them")
-	}
-	if !coversPkgModule(testSteps) {
-		t.Error("no CI step runs `go test` in the forge/pkg module: `./...` at the repo root does not " +
-			"match a separate module even inside a go.work workspace, so every test in pkg/**, " +
-			"including the ones pinning that no ambient credential authenticates a request, runs " +
-			"nowhere but a developer's laptop")
+	if !runsFromPkgDir(lintSteps) {
+		t.Error("no CI step lints forge/pkg under pkg/.golangci.yml: the root config excludes pkg/, " +
+			"and golangci-lint reads the config it finds walking up from the directory it runs in, so " +
+			"a job without `working-directory: pkg` (or a `cd pkg`) leaves the library that ships into " +
+			"every user binary unlinted — which is how 12 forbidden environment reads accumulated " +
+			"under a config that already forbade them")
 	}
 }
 
-// coversPkgModule reports whether any step is invoked with the pkg module as
-// its working directory — declared via working-directory, or entered by the
+// TestLibraryIsPartOfTheRootModule pins why CI has no pkg-specific test step.
+// ci.yml's test jobs run every package `go list ./...` reports from the repo
+// root (scripts/ci-test-packages.sh), and that reaches pkg/** only while pkg/
+// belongs to the root module. A pkg/go.mod would carve every library test out
+// of that set without failing anything — which is exactly how they once ran
+// on developer machines only.
+func TestLibraryIsPartOfTheRootModule(t *testing.T) {
+	t.Parallel()
+	pkgRoot := filepath.Join(repoRoot(t), "pkg")
+	if fi, err := os.Stat(pkgRoot); err != nil || !fi.IsDir() {
+		t.Fatalf("pkg/ is not a directory at %s (%v) — this assertion would inspect nothing", pkgRoot, err)
+	}
+	_, err := os.Stat(filepath.Join(pkgRoot, "go.mod"))
+	switch {
+	case err == nil:
+		t.Error("pkg/go.mod exists, so pkg/ is a separate module again and `go test ./...` from the " +
+			"repo root — what ci.yml's test jobs run — no longer reaches a single library test. Keep " +
+			"pkg/ a directory of the forge module, or add a CI step that tests it from pkg/ and " +
+			"replace this assertion with one that pins that step")
+	case !errors.Is(err, fs.ErrNotExist):
+		t.Fatalf("stat pkg/go.mod: %v", err)
+	}
+}
+
+// runsFromPkgDir reports whether any step is invoked with pkg/ as its
+// working directory — declared via working-directory, or entered by the
 // script itself.
-func coversPkgModule(steps []step) bool {
+func runsFromPkgDir(steps []step) bool {
 	for _, s := range steps {
 		if strings.Trim(s.workingDir(), "./") == "pkg" {
 			return true

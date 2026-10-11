@@ -23,10 +23,12 @@ import (
 // control-plane's CI pinned itself to `@v0.0.3` as a result — a released
 // toolchain nobody can install is worse than an unreleased one.
 //
-// The in-repo bridge is go.work (gitignored, machine-local), which resolves
-// ./pkg for local development WITHOUT following the module into the published
-// artifact. That is the same split reliant and control-plane use for their own
-// sibling dependencies.
+// (That replace pointed at the forge/pkg submodule, which has since been
+// folded into this module, but the rule outlived it.) To build against a
+// local checkout of a dependency, use a go.work (gitignored, machine-local),
+// which resolves it for local development WITHOUT following the module into
+// the published artifact. That is the same split reliant and control-plane
+// use for their own sibling dependencies.
 //
 // This guard is deliberately blunt — no replace at all in the root go.mod —
 // because Go's rule is equally blunt: it rejects the module for having any.
@@ -61,8 +63,8 @@ func TestRootGoModHasNoReplace(t *testing.T) {
 			"Go refuses `go install <module>/cmd/...@version` for ANY module whose go.mod "+
 			"has one, so this makes every published tag uninstallable — measured: v0.0.3 "+
 			"installs, v0.0.4 and v0.0.5 do not.\n"+
-			"For local development against ./pkg use the gitignored go.work instead:\n"+
-			"    go work init . ./pkg", i+1, trimmed)
+			"To build against a local checkout of a dependency, use a gitignored go.work instead:\n"+
+			"    go work init . <path-to-the-checkout>", i+1, trimmed)
 	}
 }
 

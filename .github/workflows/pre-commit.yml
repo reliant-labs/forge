@@ -29,12 +29,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
         with:
@@ -49,9 +43,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-precommit-${{ runner.os }}-
       - name: Install goimports
         # Pinned, for the same reason ci.yml pins govulncheck and

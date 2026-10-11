@@ -1,24 +1,24 @@
-# forge/pkg's OWN lint configuration — the library module, which compiles
+# forge/pkg's OWN lint configuration — the runtime library, which compiles
 # INTO every generated binary.
 #
-# It exists because the repo-root .golangci.yml never read this module. A
-# bare `golangci-lint run` lints the packages of the module it is invoked
-# in, and forge/pkg is a SEPARATE module (see ../go.work): the root run
-# reported green over 12 direct environment reads in code that ships to
-# users. golangci-lint discovers this file by walking up from its working
-# directory, so CI must run it with `working-directory: pkg` (see
-# ../.github/workflows/library-module.yml) — a run from the repo root does
-# not.
+# It exists because the repo-root .golangci.yml does not lint pkg/: it
+# excludes `(^|/)pkg/` (that entry's comment has the backlog and the plan to
+# shrink it). Before pkg/ joined the root module the root run could not see
+# it at all, and it reported green over 12 direct environment reads in code
+# that ships to users. golangci-lint discovers this file by walking up from
+# its working directory, so CI must run it with `working-directory: pkg`
+# (see ../.github/workflows/library-lint.yml) — a run from the repo root
+# reads the root config instead.
 #
 # NARROW ON PURPOSE. Only forbidigo is enabled here. The root config's full
-# linter set reports 77 pre-existing findings against this module — real
+# linter set reports 77 pre-existing findings against this library — real
 # triage that belongs in its own change, not smuggled in behind a security
 # guardrail. Widening this file is welcome; leaving forbidigo out is not.
 #
 # The rule itself is not new: forge's own project template
 # (../internal/templates/project/golangci.yml.tmpl) FAILS a generated
 # project's build for exactly these three calls, allowlisting exactly one
-# package — the generated config loader. This module was the one place
+# package — the generated config loader. This library was the one place
 # where forge's library did what forge's lint forbids in the code it
 # generates.
 
@@ -30,8 +30,8 @@ run:
   timeout: 20m
   # See the root .golangci.yml for the full rationale: the golangci-lint
   # lock is one machine-wide path, and its five-second default deadline
-  # turns concurrent runs into spurious exit-3 failures. This module is
-  # linted right after the root one by `task lint`, so it needs the same
+  # turns concurrent runs into spurious exit-3 failures. pkg/ is linted
+  # right after the repo root by `task lint`, so it needs the same
   # setting or the second run races the first.
   allow-serial-runners: true
 

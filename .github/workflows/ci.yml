@@ -29,9 +29,9 @@ concurrency:
 # world from cold rather than reusing the ~99% of build artifacts that
 # did not change.
 #
-# A go.sum change is not the rare case here: this repo is 2 modules and
-# Dependabot bumps them continuously, and it is exactly the PR where a
-# cold compile is least affordable. The steps below add a second, keyed
+# A go.sum change is not the rare case here: Dependabot bumps it
+# continuously, and that is exactly the PR where a cold compile is least
+# affordable. The steps below add a second, keyed
 # cache over the same GOCACHE directory with a restore-key ladder, so a
 # go.sum change degrades to "reuse the previous commit's build cache"
 # instead of "start from nothing".
@@ -57,12 +57,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # golangci-lint type-checks the whole repo, which is a full compile
       # in all but name. Its own action caches the analyzer results; this
       # caches the Go build artifacts underneath them.
@@ -70,9 +64,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-lint-${{ runner.os }}-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
@@ -130,12 +124,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # This job compiles far more than it looks: the suite scaffolds real
       # projects and runs real `go build` / `go mod tidy` inside them, and
       # it runs under -race, which is a separate set of build artifacts
@@ -145,9 +133,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-test-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-test-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-test-${{ runner.os }}-
       # internal/tierguard renders real fixture projects, which drives the
       # generate pipeline's "buf generate (Go stubs)" step. Without buf on
@@ -192,18 +180,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # Its own key: this job builds WITHOUT -race, a different artifact set
       # from `test`'s, so sharing a key would have each job evict the other's.
       - name: Restore Go build cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-test-guards-${{ runner.os }}-
       # tierguard's fixture renders run the generate pipeline's buf step; it
       # fails without buf rather than reporting an empty inventory as a pass.
@@ -256,10 +241,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # See the `lint` job: forge is 2 modules.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # GOCACHE is %LocalAppData%\go-build on Windows, not ~/.cache/go-build,
       # so ask Go rather than hardcode it. Ladder rationale: top of file.
       - name: Locate Go build cache
@@ -269,9 +250,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ steps.gocache.outputs.dir }}
-          key: go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-windows-${{ runner.os }}-
       # CGO_ENABLED=0 is asserted, not assumed: the point is that no C
       # toolchain is needed, and windows-latest has one that would hide a
@@ -317,12 +298,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       - name: Restore Go build cache
         uses: actions/cache@v6
         with:
@@ -330,9 +305,9 @@ jobs:
           # with it do not match ones built without, so this job keeps its
           # own scope rather than sharing the test job's.
           path: ~/.cache/go-build
-          key: go-build-build-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-build-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-build-${{ runner.os }}-
       - name: Go build
         # -trimpath makes builds reproducible across runners;
@@ -351,12 +326,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # verify-generated, validate-kcl and vuln-scan all run
       # `go install ./cmd/forge` with identical flags, so they share ONE
       # cache scope: whichever job finishes first warms the other two on
@@ -366,9 +335,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-tools-${{ runner.os }}-
       - name: Install forge
         # THIS repo is forge. A scaffolded project pins the published forge
@@ -414,21 +383,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # Shares the tools scope with verify-generated and vuln-scan — same
       # `go install ./cmd/forge`, same flags, same artifacts.
       - name: Restore Go build cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-tools-${{ runner.os }}-
       # KCL_VERSION is pinned deliberately. Left unset, the installer
       # resolves "latest" through an UNAUTHENTICATED api.github.com call,
@@ -468,20 +431,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # Shares the tools scope with verify-generated and validate-kcl.
       - name: Restore Go build cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-tools-${{ runner.os }}-
       - name: Install govulncheck
         # Pinned explicitly: @latest makes CI non-reproducible and lets a
@@ -513,12 +470,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # go-licenses is compiled from source on every run and then walks
       # the whole dependency graph, both of which are pure compile work.
       # Its own scope: it is the only job that builds go-licenses, and it
@@ -527,9 +478,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
-          key: go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-${{ github.sha }}
+          key: go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/go.sum') }}-
+            go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             go-build-licenses-${{ runner.os }}-
       - name: Install go-licenses
         run: go install github.com/google/go-licenses@v1.6.0

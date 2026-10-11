@@ -112,16 +112,16 @@ func TestDiagnosticsDocClaimsNoGeneratedRegistrationFile(t *testing.T) {
 	}
 }
 
-// packagesImporting returns the packages in the workspace that import target.
+// packagesImporting returns the packages in the forge module that import target.
 func packagesImporting(t *testing.T, repoRoot, target string) []string {
 	t.Helper()
-	// Both modules in the workspace must be listed EXPLICITLY: `./...` from
-	// the workspace root expands to the root module only, so a version of
-	// this walk that passed just "./..." reported "no importers" even with a
-	// real importer sitting in pkg/ — a guard that could not fail.
+	// One pattern covers pkg/ too: it is part of the forge module. (It used
+	// to be a separate module listed alongside, because `./...` from the
+	// workspace root stopped at the module boundary and a walk that missed
+	// pkg/ reported "no importers" whatever the code did.)
 	cmd := exec.Command("go", "list", "-deps=false",
 		"-f", `{{.ImportPath}}{{range .Imports}} {{.}}{{end}}`,
-		"github.com/reliant-labs/forge/...", "github.com/reliant-labs/forge/pkg/...")
+		"github.com/reliant-labs/forge/...")
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
@@ -132,9 +132,9 @@ func packagesImporting(t *testing.T, repoRoot, target string) []string {
 		t.Fatalf("go list returned %d line(s) — the import graph is empty, so this test "+
 			"would report 'no importers' no matter what the code does", len(lines))
 	}
-	// The walk must actually REACH the module the package under test lives
-	// in. Without this, a listing that silently covered only the other
-	// module would report "no importers" unconditionally.
+	// The walk must actually REACH the tree the package under test lives
+	// in. Without this, a listing that silently stopped short of pkg/ would
+	// report "no importers" unconditionally.
 	sawOwnModule := false
 	for _, line := range lines {
 		if fields := strings.Fields(line); len(fields) > 0 &&
@@ -144,8 +144,8 @@ func packagesImporting(t *testing.T, repoRoot, target string) []string {
 		}
 	}
 	if !sawOwnModule {
-		t.Fatal("the import-graph walk listed no package from the forge/pkg module — " +
-			"it cannot see the module pkg/diagnostics lives in, so 'no importers' " +
+		t.Fatal("the import-graph walk listed no package under forge/pkg — " +
+			"it cannot see the tree pkg/diagnostics lives in, so 'no importers' " +
 			"would be its answer regardless of the code")
 	}
 

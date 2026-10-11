@@ -1205,18 +1205,19 @@ func assertZeroServiceShape(t *testing.T, projectDir, name string) {
 
 // ───────────────────────────── corpus helpers ─────────────────────────────
 
-// addCorpusForgePkgReplace wires the unpublished forge/pkg module a
-// scaffolded project imports to local source, in BOTH module roots
-// (project + gen/) so `go mod tidy` resolves on either side.
+// addCorpusForgePkgReplace wires the unpublished forge module, whose pkg/*
+// libraries a scaffolded project imports, to local source in BOTH module
+// roots (project + gen/) so `go mod tidy` resolves on either side.
 //
 // Under "Path A" proto unification the scaffolded proto/forge/v1/forge.proto
 // declares `option go_package = ".../forge/pkg/forgepb;forgepb"`, and
 // buf.gen.yaml excludes forge/v1 from output — so the project generates NO
 // local gen/forge/v1 copy and every generated *.pb.go (root AND gen module)
 // blank-imports forge/pkg/forgepb. forgepb already lives inside forge/pkg,
-// which is vendored to <project>/.forge-pkg, so a single forge/pkg replace in
-// each module satisfies everything. (The old forge/gen shim module is gone:
-// nothing imports github.com/reliant-labs/forge/gen anymore.)
+// which is vendored with the rest of the module to <project>/.forge-pkg, so a
+// single forge replace in each module satisfies everything. (The old
+// forge/gen shim module is gone: nothing imports
+// github.com/reliant-labs/forge/gen anymore.)
 func addCorpusForgePkgReplace(t *testing.T, projectDir string) {
 	t.Helper()
 	repoRoot := findRepoRoot(t)

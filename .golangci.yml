@@ -212,7 +212,7 @@ linters:
       - ".*\\.pb\\.go$"
       - ".*\\.connect\\.go$"
       # pkg/ is linted by pkg/.golangci.yml, in its own CI job
-      # (.github/workflows/library-module.yml, `working-directory: pkg`).
+      # (.github/workflows/library-lint.yml, `working-directory: pkg`).
       # That config is NOT a relaxed copy of this one — it is `default: none`
       # with only forbidigo enabled, a single narrow gate: a LIBRARY must not
       # read the environment, because a library changes behaviour only through

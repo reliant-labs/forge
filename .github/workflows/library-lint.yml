@@ -1,0 +1,68 @@
+# forge/pkg's lint gate: the runtime library that compiles INTO every
+# generated binary, held to its own config, pkg/.golangci.yml.
+#
+# WHY A SEPARATE RUN. pkg/ is part of the root module, so ci.yml's test
+# jobs already run every pkg/** test (`go list ./...` reaches it), but its
+# `lint` job does not lint pkg/: the root .golangci.yml excludes
+# `(^|/)pkg/`, because the CLI's linter set reports a backlog of findings
+# there that is being paid down separately (see that exclusion's comment).
+# The library answers to pkg/.golangci.yml instead, a narrow forbidigo gate
+# against reading the ambient environment. golangci-lint picks its config
+# by walking up from its working directory, so that config is only read by
+# a run from pkg/, which is what this job is.
+#
+# Today forbidigo is all that config enables, and internal/pkgguard's
+# TestLibraryReadsNoAmbientEnvironment derives the same rule from the same
+# file and enforces it in ci.yml's test job, so the two overlap. This job is
+# kept because it is the only golangci-lint pass over pkg/ at all: a linter
+# added to pkg/.golangci.yml gates nothing unless something runs it, and
+# TestLibraryLintIsGatedInCI pins that something does.
+#
+# Hand-written rather than added to ci.yml, which started as a render of
+# internal/templates/ci/github/ci.yml.tmpl, the template every forge project
+# gets. A pkg/ lint config is a fact about THIS repository, and keeping it
+# out of ci.yml keeps that file reconcilable with the template.
+#
+# There used to be a test job here too, running `cd pkg && go test ./...`,
+# from when forge/pkg was a separate module the root `./...` could not
+# reach. It duplicated ci.yml's test job once pkg/ joined the root module,
+# so it is gone.
+name: Library Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (forge/pkg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          # Pinned; see ci.yml's lint job and templates.GolangciLintVersion.
+          version: v2.14.0
+          # golangci-lint discovers pkg/.golangci.yml by walking up from its
+          # working directory. Running from the repo root would pick the
+          # root config, which excludes pkg/ entirely, and lint none of it.
+          working-directory: pkg
+          args: --timeout=5m
+          # NOT only-new-issues: the guardrail this library is held to is
+          # whole-file, and a rule that only sees changed lines lets a
+          # violation ride in on an untouched line of an edited file.
+          only-new-issues: false

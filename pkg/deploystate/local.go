@@ -193,9 +193,10 @@ func readJSON[T any](path, label string, out *T) (bool, error) {
 
 // legacyDeployState is the shape of the pre-existing deploy-state file.
 // Declared here, in pkg/, as a deliberate copy of forge's internal
-// deploytarget.DeployState: pkg is a separate module and cannot import
-// forge's internal tree, and the alternative — hoisting a three-field
-// struct into a third shared package — costs more than the duplicate.
+// deploytarget.DeployState: pkg/ is the library that ships into user
+// binaries and does not reach into forge's internal tree, and the
+// alternative — hoisting a three-field struct into a third shared
+// package — costs more than the duplicate.
 // The three json tags are the contract; they must not change.
 type legacyDeployState struct {
 	Image      string `json:"image"`

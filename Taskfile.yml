@@ -65,7 +65,7 @@ tasks:
       - go install -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   release:forge:
-    desc: "Cut a full forge release (both modules, one commit): task release:forge -- vX.Y.Z (add --dry-run to validate only)"
+    desc: "Cut a forge release (one module, one tag): task release:forge -- vX.Y.Z (add --dry-run to validate only)"
     cmds:
       # THE release command. forge is one module, so a release is one tag:
       # validate the version shape, a clean tree and that the tag does not
@@ -203,13 +203,14 @@ tasks:
           fi
 
   lint:
-    desc: Run golangci-lint over BOTH modules
+    desc: Run golangci-lint over the repo, then pkg/ under its own config
     cmds:
       - golangci-lint run
-      # THIS REPO ONLY (same reason as `test`): golangci-lint reads the
-      # module of the directory it runs in, and it discovers
-      # pkg/.golangci.yml (which gates the typed-config guardrail) by
-      # walking up from there.
+      # THIS REPO ONLY: the root config excludes pkg/, which answers to
+      # pkg/.golangci.yml (the typed-config guardrail) instead.
+      # golangci-lint discovers that file by walking up from its working
+      # directory, so it is only read by a run from pkg/. CI runs the same
+      # pair: ci.yml's lint job, then .github/workflows/library-lint.yml.
       - cmd: cd pkg && golangci-lint run
 
   fmt:

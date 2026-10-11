@@ -164,7 +164,8 @@ func TestScanReachesTheWholeRepo(t *testing.T) {
 		t.Fatalf("the walk reached only %d _test.go files under %s — either the repo root is wrong "+
 			"or skipDirs grew until the guard stopped looking at forge", len(scanned), root)
 	}
-	// The scan must reach both modules in this repository.
+	// The scan must reach both halves of this repository: the CLI's
+	// internal/ tree and the pkg/ runtime library.
 	var sawInternal, sawPkg bool
 	for _, f := range scanned {
 		if strings.HasPrefix(f, "internal/") {

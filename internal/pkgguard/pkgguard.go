@@ -1,13 +1,16 @@
 // Package pkgguard holds the repository-wide proof that forge/pkg — the
-// library module that compiles INTO every generated binary — obeys the rules
+// runtime library that compiles INTO every generated binary — obeys the rules
 // forge's own generated projects are held to.
 //
-// It exists because forge/pkg is a SEPARATE Go module. `go test ./...` and
-// `golangci-lint run` at the repo root both operate on the module they are
-// invoked in, so for as long as CI only ran them from the root, nothing in
-// pkg/ was ever tested or linted. Twelve direct environment reads accumulated
-// outside the sanctioned readers — in a library whose shipped lint config
-// fails a user's build for the same call.
+// It exists because pkg/ went unchecked for a long time. It used to be a
+// SEPARATE Go module, and `go test ./...` and `golangci-lint run` at the repo
+// root both operate on the module they are invoked in, so for as long as CI
+// only ran them from the root, nothing in pkg/ was ever tested or linted.
+// Twelve direct environment reads accumulated outside the sanctioned readers
+// — in a library whose shipped lint config fails a user's build for the same
+// call. pkg/ is part of the root module now, so the root `go test ./...`
+// reaches it, but the root lint config still excludes it: pkg/ is linted
+// only under pkg/.golangci.yml, by a run from pkg/.
 //
 // The scanner lives here (rather than in the test) so its inputs are
 // explicit: it derives BOTH the forbidden calls and the exempt packages from
@@ -46,14 +49,14 @@ type ForbidigoPolicy struct {
 	// matches them.
 	Forbid []*regexp.Regexp
 	// Exempt are the compiled `exclusions.rules[].path` regexes of every
-	// rule that names forbidigo, matched against the module-relative path.
+	// rule that names forbidigo, matched against the pkg/-relative path.
 	Exempt []*regexp.Regexp
 }
 
 // Finding is one forbidden reference: where it is and what it named.
 type Finding struct {
-	// Path is module-relative and slash-separated, matching what
-	// golangci-lint prints when run inside the module.
+	// Path is relative to the scanned root (pkg/) and slash-separated —
+	// the form pkg/.golangci.yml's exclusion paths are written against.
 	Path string
 	Line int
 	// Ref is the reference in canonical form — "os.Getenv" — whatever the
@@ -125,7 +128,7 @@ func LoadForbidigoPolicy(path string) (ForbidigoPolicy, error) {
 	return p, nil
 }
 
-// Exempted reports whether a module-relative path is allowlisted.
+// Exempted reports whether a pkg/-relative path is allowlisted.
 func (p ForbidigoPolicy) Exempted(rel string) bool {
 	for _, re := range p.Exempt {
 		if re.MatchString(rel) {
@@ -135,16 +138,16 @@ func (p ForbidigoPolicy) Exempted(rel string) bool {
 	return false
 }
 
-// skipDirs are never scanned: not source, or not this module's code.
+// skipDirs are never scanned: not source, or not the library's own code.
 var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "vendor": true, "testdata": true,
 	"bin": true, "tmp": true, "dist": true,
 }
 
-// Scan walks the module rooted at root and returns every REFERENCE matching
+// Scan walks the tree rooted at root and returns every REFERENCE matching
 // policy.Forbid outside an exempt path, plus the number of Go files it
 // actually parsed. A caller that gets files == 0 has a broken walk, not a
-// clean module — the assertion is only as real as the set it inspected.
+// clean tree — the assertion is only as real as the set it inspected.
 //
 // A reference, not only a call: `getenv: os.Getenv` stores the function and
 // reads the environment later, through a field, at a call site that names

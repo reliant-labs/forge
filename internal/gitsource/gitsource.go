@@ -39,8 +39,9 @@
 // Pinning without an escape hatch would force every one-line frontend edit
 // through a push, a tag and a re-fetch, which is how a feature gets
 // resented rather than adopted. So a source may be overridden to a local
-// directory, the same way the `.forge-pkg` Go flow bridges to a sibling
-// forge checkout during development.
+// directory, the same way a gitignored go.work bridges a project's Go side
+// to a local forge checkout during development (`forge project new
+// --link-forge`).
 //
 // The override lives in `.forge/source-overrides.yaml` — machine-local,
 // gitignored, and read only when present. Two properties are deliberate:

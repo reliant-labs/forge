@@ -83,12 +83,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
       # Both, not just build: `go vet` type-checks the test files themselves
       # (an unused import, a helper whose signature moved), which `go build`
       # does not reach.
@@ -130,12 +124,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          # forge is 2 modules (root CLI + pkg/ runtime lib). The default key
-          # is the root go.sum only, which misses a pkg/ dependency change —
-          # and pkg/ is exactly what the release flow touches.
-          cache-dependency-path: |
-            go.sum
-            pkg/go.sum
 
       # ── Toolchain. Every tool the suite reaches for, because with
       # FORGE_E2E_REQUIRE_TOOLS=1 a missing one is now a red job, not a
@@ -215,10 +203,16 @@ jobs:
       # on first use into the user cache dir; caching it saves that on
       # every subsequent run and removes a network dependency from the
       # critical path.
+      #
+      # Keyed on go.sum: pgtest takes embedded-postgres's DEFAULT postgres
+      # version, so the binary changes exactly when that module's version in
+      # go.sum does. (This used to hash pkg/go.sum alone. That file went
+      # away with the pkg submodule, which made the hash empty and the key a
+      # constant that never invalidated.)
       - uses: actions/cache@v6
         with:
           path: ~/.cache/forge/embedded-postgres
-          key: e2e-embedded-postgres-${{ runner.os }}-${{ hashFiles('pkg/go.sum') }}
+          key: e2e-embedded-postgres-${{ runner.os }}-${{ hashFiles('go.sum') }}
           restore-keys: e2e-embedded-postgres-${{ runner.os }}-
 
       # The tests build the forge binary themselves — the binary under test

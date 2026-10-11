@@ -100,7 +100,10 @@ func (r *{{.ControllerType}}) reconcileRunning(ctx context.Context, obj *{{.APIP
 	// TODO: implement the desired-state reconcile.
 	obj.Status.Phase = {{.APIPackage}}.{{.TypeName}}PhaseReady
 	obj.Status.ObservedGeneration = obj.Generation
-	if err := r.Client.Status().Update(ctx, obj); err != nil {
+	// controller.UpdateStatus, not r.Client.Status().Update: obj came from
+	// the informer cache, which can trail this reconciler's own previous
+	// status write, and a plain Update would then conflict.
+	if err := controller.UpdateStatus(ctx, r.Client, obj); err != nil {
 		return controller.Done(), fmt.Errorf("update status: %w", err)
 	}
 	return controller.Requeue(30 * time.Second), nil
@@ -111,7 +114,7 @@ func (r *{{.ControllerType}}) reconcileRunning(ctx context.Context, obj *{{.APIP
 func (r *{{.ControllerType}}) reconcileSuspended(ctx context.Context, obj *{{.APIPackage}}.{{.TypeName}}) (controller.Result, error) {
 	// TODO: implement suspend.
 	obj.Status.Phase = "Suspended"
-	if err := r.Client.Status().Update(ctx, obj); err != nil {
+	if err := controller.UpdateStatus(ctx, r.Client, obj); err != nil {
 		return controller.Done(), fmt.Errorf("update status: %w", err)
 	}
 	return controller.Done(), nil

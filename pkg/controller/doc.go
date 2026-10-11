@@ -39,6 +39,9 @@
 //     exponential backoff for Reconciler.TransientGrace before a persistent
 //     outage is returned for normal controller-runtime reporting.
 //
+//   - UpdateStatus — a status write that retries the conflict a reconciler
+//     gets when the informer cache trails its own previous write.
+//
 //   - controllertest — small envtest harness with skip-friendly
 //     New() (returns nil + a Skip if envtest binaries are missing) so
 //     unit tests are hermetic by default.

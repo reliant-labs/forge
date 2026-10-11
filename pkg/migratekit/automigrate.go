@@ -83,17 +83,37 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 		return fmt.Errorf("creating migration source (%s): %w", dir, err)
 	}
 
-	// postgres.WithInstance binds to the pool the caller already opened —
-	// see the signature note above.
-	dbDriver, err := postgres.WithInstance(db, &postgres.Config{})
+	// The migrator runs on ONE connection borrowed from the pool the caller
+	// already opened (see the signature note above), and gives it back when
+	// it is done.
+	//
+	// Not postgres.WithInstance, although it also takes the pool: it checks
+	// out a dedicated *sql.Conn and releases it only in Close, and its Close
+	// also closes the *sql.DB — the caller's live pool. So the migrator could
+	// never be closed, and that connection stayed checked out for the life of
+	// the process: one slot of MaxOpenConns gone and one idle server session
+	// held on every server that ever booted. It also stops anyone using the
+	// database as a CREATE DATABASE ... TEMPLATE (refused while a session is
+	// connected), even after the pool is closed. WithConnection binds to a
+	// connection this function owns, and m.Close then closes only that
+	// connection, which returns it to the pool.
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
 	if err != nil {
+		return fmt.Errorf("acquiring a migration connection: %w", err)
+	}
+	dbDriver, err := postgres.WithConnection(ctx, conn, &postgres.Config{})
+	if err != nil {
+		_ = conn.Close()
 		return fmt.Errorf("creating migration db driver: %w", err)
 	}
 
 	m, err := migrate.NewWithInstance("iofs", sourceDriver, "postgres", dbDriver)
 	if err != nil {
+		_ = dbDriver.Close()
 		return fmt.Errorf("creating migrator: %w", err)
 	}
+	defer func() { _, _ = m.Close() }()
 
 	before, err := stateOf(m)
 	if err != nil {

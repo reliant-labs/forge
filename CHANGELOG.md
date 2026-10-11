@@ -142,6 +142,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Boot-time migration gives its database connection back.**
+  `migratekit.AutoMigrate` built golang-migrate's driver with `WithInstance`.
+  That driver checks out a dedicated `*sql.Conn` and releases it only in
+  `Close`, and its `Close` also closes the caller's pool, so the migrator was
+  never closed. Every server that booted with auto-migrate kept one
+  `MaxOpenConns` slot checked out and one idle server session open for its
+  whole life. The migrated database could not be used as a
+  `CREATE DATABASE ... TEMPLATE` even after the pool closed, which is how
+  control-plane's integration harness found it. The migrator now runs on a
+  connection `AutoMigrate` owns (`WithConnection`) and closes it on return.
+
 - **`forge generate` no longer refuses over a nested git checkout.** The
   Tier-1 stomp guard walked into any worktree or repository parked inside the
   project directory (control-plane's `control-plane-hosted-identity/`) and

@@ -317,6 +317,25 @@ schema Workload:
     # scaffold` does not declare a second workload for one. Nothing renders
     # from it: it never changes what deploys.
     serves?: [str]
+    # GOMEMLIMIT, derived from the container's memory limit. The Go runtime
+    # does not read its cgroup limit: left alone, its heap grows toward
+    # GOGC's target and the kernel OOM-kills the pod before the collector
+    # feels any pressure. On a runtime with a container memory limit
+    # (forge.OnCluster, forge.OnHosted) forge sets GOMEMLIMIT to this
+    # percent of that limit (the declared limit, else the request, which
+    # the renderer uses as the limit), rounded down to whole MiB.
+    #
+    #   unset: 90 for a workload forge builds with forge.GoBuild; nothing for
+    #          any other, because forge cannot see that a ShellBuild, a
+    #          sibling repo's image or a third-party image is a Go binary.
+    #          Declare it for those.
+    #   0:     opt out.
+    #
+    # Never applied when `env` sets GOMEMLIMIT or GOGC: a workload that
+    # tunes its own GC owns all of it. At most 95, because the limit also
+    # has to hold what the Go runtime does not count (cgo allocations, the
+    # mapped binary).
+    go_memory_limit_percent?: int
 
     # --- v1alpha1.WorkloadSpec ---
     kind: str = "service"
@@ -383,6 +402,8 @@ schema Workload:
         kind in caps.WORKLOAD_KINDS, \
             "Workload.kind must be one of ${caps.WORKLOAD_KINDS} — got '${kind}'. A kind says HOW this runs, not what code is inside it."
         replicas > 0, "Workload '${name}': replicas must be positive"
+        go_memory_limit_percent == Undefined or go_memory_limit_percent == None or (go_memory_limit_percent >= 0 and go_memory_limit_percent <= 95), \
+            "Workload '${name}': go_memory_limit_percent must be 0 (off) or 1..95 — got ${go_memory_limit_percent}. GOMEMLIMIT is a fraction of the container limit, and the limit also has to hold memory the Go runtime does not count."
 
         # --- cron ---
         not schedule or kind == "cron", \

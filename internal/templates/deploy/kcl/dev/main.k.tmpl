@@ -143,9 +143,11 @@ _LONG_RUNNING = ["service", "worker", "operator"]
 #      and overrides the secret reference: a DSN seeded into the secret
 #      store at scaffold time names whatever port was free THEN, and a stale
 #      port is exactly what connects an app to another project's database.
+#
+# OTEL_SERVICE_NAME is not set here: forge.render gives every workload its
+# own name unless its env sets one.
 _env = lambda w: fw.Workload -> {str:} {
     _machine = {
-        OTEL_SERVICE_NAME = w.name
         DATABASE_URL = _database_url
     }
     _port = {

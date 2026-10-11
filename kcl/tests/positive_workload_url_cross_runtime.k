@@ -97,7 +97,8 @@ assert_cluster_to_frontend = _env("admin-api")["CORS_ORIGINS"].value == "http://
 # The record carries the value, never the reference.
 assert_record_resolved = _rec_env("admin-api")["API_URL"].value == "http://host.k3d.internal:8085"
 _rec_entries = [v for _, v in _rec_env("admin-api")]
-assert_record_no_ref = len(_rec_entries) == 2 and all e in _rec_entries { "workloadURL" not in e }
+# Two declared entries plus the derived OTEL_SERVICE_NAME.
+assert_record_no_ref = len(_rec_entries) == 3 and all e in _rec_entries { "workloadURL" not in e }
 # host → cluster (behind a route): the route URL through its listener.
 assert_host_to_routed_cluster = _env("worker")["ADMIN_URL"].value == "http://acme.localhost:8081/admin"
 # hosted → hosted: the reference is kept for the control plane.

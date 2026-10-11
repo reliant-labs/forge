@@ -120,6 +120,14 @@
               "workloadURL": {
                 "name": "web"
               }
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "api"
+            },
+            {
+              "name": "GOMEMLIMIT",
+              "value": "921MiB"
             }
           ],
           "image": "ghcr.io/acme/acme",
@@ -183,6 +191,14 @@
                 "name": "db"
               },
               "name": "DATABASE_URL"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "migrate"
+            },
+            {
+              "name": "GOMEMLIMIT",
+              "value": "921MiB"
             }
           ],
           "image": "ghcr.io/acme/acme",

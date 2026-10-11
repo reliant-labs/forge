@@ -103,6 +103,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each file's imports and reports any `os.Getenv` / `os.LookupEnv` /
   `os.Environ` reference, including through an aliased or dot import.
 
+- **New lint rule `forgeconv-config-service-name`.** It flags a config-proto
+  field bound to `OTEL_SERVICE_NAME`. A config field projects one value into
+  every workload's env, overriding the per-workload name `forge.render`
+  derives, and the scaffold shipped exactly such a field (`service_name`,
+  default `"unknown"`) until 0d94e103, so every project scaffolded before then
+  still carries it. Delete the field and reserve its tag and name. A workload
+  that wants another name sets `OTEL_SERVICE_NAME` in its own env. ERROR,
+  suppressible with `forge:lint-disable-next-line`.
+
+- **Every workload gets its own `OTEL_SERVICE_NAME`.** A project-wide value
+  filed every workload's spans, metrics and errors under one service:
+  control-plane's config proto still carried the scaffold's old
+  `service_name` field (default `"unknown"`), and the config projection
+  stamped it onto reliant-api-server, its worker, daemon-gateway and every Job
+  alike. `forge.render` now sets `OTEL_SERVICE_NAME` to the workload's name on
+  every runtime that runs a process (host, cluster, hosted; not a tool),
+  unless the workload's env sets one. An empty literal counts as unset.
+  Derived keys follow the declared ones, so `$(VAR)` expansion order is
+  unchanged. The scaffolded `dev` and `cloud` envs drop the per-env lambda
+  that did this.
+
+- **Go workloads get `GOMEMLIMIT` from their container memory limit.** The Go
+  runtime does not read its cgroup limit, so a heap growing toward GOGC's
+  target was OOM-killed before the collector felt any pressure. On a cluster
+  or hosted runtime, `forge.render` now sets `GOMEMLIMIT` to
+  `go_memory_limit_percent` (a new `Workload` field) of the memory limit (the
+  declared limit, else the request), in whole MiB. The default is 90 for a
+  `forge.GoBuild` workload and unset for any other: forge cannot see that a
+  sibling repo's or a third-party image is Go, so declare it there. `0` opts
+  out, and values above 95 are refused. It is never set when the workload's
+  env sets `GOMEMLIMIT` or `GOGC`, or on host and compose, which have no
+  container limit.
+
 - **A release refuses a sibling checkout that is not at the commit the
   project pins.** A `ShellBuild` with `cwd = "../reliant"` built whatever that
   checkout had on disk, so a release could record a days-old sibling image

@@ -53,8 +53,10 @@ _db = forge.ManagedDatabase {
 
 # This env's layer over a workload: the typed config projected into its env
 # (a credential only into the workloads that list it in `config_secrets`).
+# OTEL_SERVICE_NAME is not set here: forge.render gives every workload its
+# own name unless its env sets one.
 _configured = lambda w: fw.Workload -> fw.Workload {
-    w | {env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env | {OTEL_SERVICE_NAME = w.name}}
+    w | {env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env}
 }
 
 # ---------------------------------------------------------------------------

@@ -153,6 +153,14 @@
             {
               "name": "API_URL",
               "value": "http://host.k3d.internal:8080"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "search"
+            },
+            {
+              "name": "GOMEMLIMIT",
+              "value": "921MiB"
             }
           ],
           "image": "localhost:5050/acme:latest",
@@ -223,6 +231,12 @@
           "args": [
             "api"
           ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "api"
+            }
+          ],
           "image": "",
           "kind": "service",
           "ports": [
@@ -281,6 +295,12 @@
           ],
           "before": [
             "*"
+          ],
+          "env": [
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "migrate"
+            }
           ],
           "image": "",
           "kind": "job",
@@ -350,6 +370,14 @@
             {
               "name": "API_URL",
               "value": "http://host.k3d.internal:8080"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "search"
+            },
+            {
+              "name": "GOMEMLIMIT",
+              "value": "921MiB"
             }
           ],
           "image": "localhost:5050/acme:latest",
@@ -407,6 +435,14 @@
                 "name": "STRIPE_KEY"
               },
               "name": "STRIPE_KEY"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "billing"
+            },
+            {
+              "name": "GOMEMLIMIT",
+              "value": "921MiB"
             }
           ],
           "image": "localhost:5050/acme",

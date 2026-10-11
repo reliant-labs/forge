@@ -191,7 +191,7 @@ func forgeOwnsBytes(dir, rel, name string, onDisk []byte, opts Options) bool {
 // the caller has no render to compare against and must keep the file.
 func renderCurrentMock(dir string, opts Options) ([]byte, bool) {
 	contractPath := filepath.Join(dir, "contract.go")
-	cf, err := ParseContract(contractPath)
+	cf, err := ParseContractWith(contractPath, opts.Resolver)
 	if err != nil {
 		return nil, false
 	}

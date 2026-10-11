@@ -124,6 +124,31 @@ func generateWebhookRoutes(reg *serviceRegistry, projectDir string, cs *generato
 	return nil
 }
 
+// contractPathsUnder lists every contract.go the contracts walk below will
+// generate from — same testdata and cfg.Contracts.Exclude pruning — so one
+// contract.Resolver can be built over all of them before the walk starts.
+// Walk errors are not fatal here: the generating walk reports them.
+func contractPathsUnder(internalDir, projectDir string, cfg *config.ProjectConfig) []string {
+	var paths []string
+	_ = filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if d.Name() == "testdata" {
+			return filepath.SkipDir
+		}
+		if rel, relErr := filepath.Rel(projectDir, path); relErr == nil && cfg != nil && cfg.Contracts.IsExcluded(filepath.ToSlash(rel)) {
+			return filepath.SkipDir
+		}
+		contractPath := filepath.Join(path, "contract.go")
+		if _, statErr := os.Stat(contractPath); statErr == nil {
+			paths = append(paths, contractPath)
+		}
+		return nil
+	})
+	return paths
+}
+
 // generateInternalPackageContracts walks internal/ recursively and, for every
 // directory containing a contract.go, generates mock_gen.go, middleware_gen.go,
 // tracing_gen.go and metrics_gen.go via the contract AST generator.
@@ -168,6 +193,10 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		// see the cs param doc above for the stale-sweep rationale.
 		ProjectRoot: projectDir,
 		Checksums:   cs,
+		// ONE resolver for every contract in the walk: the import names
+		// and foreign Deps interfaces of the whole tree cost two
+		// go/packages loads for the run, not two per contract.
+		Resolver: contract.NewResolver(contractPathsUnder(internalDir, projectDir, cfg)...),
 	}
 
 	generated := 0
@@ -266,7 +295,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		// the ctorType==ifaceName gate inside ShouldInstrumentComponent
 		// (otelconnect owns the edge). Method-level `// forge:no-observe` still
 		// generates the decorator; those methods delegate directly (SkipObserve).
-		obsCF, obsErr := contract.ParseContract(contractPath)
+		obsCF, obsErr := contract.ParseContractWith(contractPath, contractOpts.Resolver)
 		if obsErr != nil {
 			return fmt.Errorf("parse contract for observability decorator %s: %w", rel, obsErr)
 		}
@@ -334,6 +363,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 				TestRoot:     testRoot,
 				TestRel:      testRel,
 				TestLedger:   testLedger,
+				Resolver:     contractOpts.Resolver,
 			}, declines); err != nil {
 				return err
 			}
@@ -365,6 +395,9 @@ type contractTestBirth struct {
 	TestRoot     string
 	TestRel      string
 	TestLedger   bool
+	// Resolver is the contracts walk's shared contract.Resolver, so
+	// re-parsing here costs no toolchain load of its own.
+	Resolver *contract.Resolver
 }
 
 // birthContractTest scaffolds contract_test.go for a package that has none.
@@ -376,7 +409,7 @@ type contractTestBirth struct {
 // does not build, so each declined shape prints why and what to change to opt
 // back in.
 func birthContractTest(b contractTestBirth, declines *contractTestDeclines) error {
-	cf, parseErr := contract.ParseContract(b.ContractPath)
+	cf, parseErr := contract.ParseContractWith(b.ContractPath, b.Resolver)
 	if parseErr != nil {
 		return fmt.Errorf("parse contract for %s: %w", b.Rel, parseErr)
 	}

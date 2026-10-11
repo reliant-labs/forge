@@ -120,6 +120,19 @@ type Deps struct {
 	return root
 }
 
+// skipTypeCheckUnderShort gates a test whose Generate type-checks the
+// fixture's foreign packages: the Resolver runs `go list -export`, which
+// compiles them (1-6s on a loaded machine, against the -short tier's 2s
+// budget). Foreign mocks are rendered from go/types in production, so a
+// syntax-only stand-in under -short would assert something forge no longer
+// does — the test is gated, not gutted.
+func skipTypeCheckUnderShort(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("-short: Generate type-checks the fixture via `go list -export`; runs in task test")
+	}
+}
+
 // buildDepsProject compiles the whole throwaway project, which is the
 // assertion that actually matters: a mock for a foreign interface has to
 // re-qualify every type in the method signatures (*Estimate is *db.Estimate
@@ -143,6 +156,7 @@ func buildDepsProject(t *testing.T, root string) {
 // interface from another package in this module produces a working mock
 // in this package's mock_gen.go.
 func TestGenerate_DepsStoreMock(t *testing.T) {
+	skipTypeCheckUnderShort(t)
 	root := depsProject(t, "\tEstimates db.EstimateStore\n")
 	contractPath := filepath.Join(root, "internal", "pipeline", "contract.go")
 
@@ -185,6 +199,7 @@ func TestGenerate_DepsStoreMock(t *testing.T) {
 // depending on one store must not acquire mocks for every other store in
 // internal/db — that is how a generated file becomes noise nobody reads.
 func TestGenerate_DepsStoreMockIsProportionate(t *testing.T) {
+	skipTypeCheckUnderShort(t)
 	root := depsProject(t, "\tEstimates db.EstimateStore\n")
 	contractPath := filepath.Join(root, "internal", "pipeline", "contract.go")
 
@@ -202,6 +217,7 @@ func TestGenerate_DepsStoreMockIsProportionate(t *testing.T) {
 // the stores its accessors return are mockable too. Reachability from the
 // named interface is what bounds this — not "every store in the package".
 func TestGenerate_DepsAggregateStoreMock(t *testing.T) {
+	skipTypeCheckUnderShort(t)
 	root := depsProject(t, "\tStore db.Store\n")
 	contractPath := filepath.Join(root, "internal", "pipeline", "contract.go")
 
@@ -230,6 +246,7 @@ func TestGenerate_DepsAggregateStoreMock(t *testing.T) {
 // one is prefixed with its package. Caught by probing this change
 // against forge itself before shipping it, not in review.
 func TestGenerate_DepsForeignNameCollision(t *testing.T) {
+	skipTypeCheckUnderShort(t)
 	root := depsProject(t, "\tEstimates db.EstimateStore\n\tPeer db.Service\n")
 
 	// Give the foreign package a Service too, colliding with the local one.
@@ -271,6 +288,7 @@ func TestGenerate_DepsForeignNameCollision(t *testing.T) {
 // and Config are concrete carve-outs, func fields are seams, and a
 // stdlib type is not ours to mock.
 func TestGenerate_DepsNonInterfaceFieldsIgnored(t *testing.T) {
+	skipTypeCheckUnderShort(t)
 	root := depsProject(t, "\tEstimates db.EstimateStore\n\tRow *db.Estimate\n")
 	contractPath := filepath.Join(root, "internal", "pipeline", "contract.go")
 
@@ -293,6 +311,7 @@ func TestGenerate_DepsNonInterfaceFieldsIgnored(t *testing.T) {
 // generated mock must use one alias consistently and invent concrete names it
 // can record and forward.
 func TestGenerate_DepsForeignUnnamedParamsAndAliasCollision(t *testing.T) {
+	skipTypeCheckUnderShort(t)
 	root := depsProject(t, "\tClient clientconnect.Client\n")
 
 	write := func(rel, body string) {

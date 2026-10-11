@@ -88,6 +88,10 @@ type rollbackReport struct {
 	Preserved   []string
 	StepErr     error
 	Consistency rollbackConsistency
+	// Residue is the verdict on the rest of the tree: whether anything the
+	// revert did not own also differs from before the run. The "back to
+	// its pre-run state" claim is made only when it is verified Clean.
+	Residue rollbackResidue
 }
 
 // goBuildRestoredTree runs `go build ./...` against the tree the rollback
@@ -193,14 +197,29 @@ func writeRollbackReport(w io.Writer, rep rollbackReport) {
 		}
 	}
 
-	// 2. What the rollback did. Two INDEPENDENT facts, reported
-	//    separately: the revert put every listed file back to its exact
-	//    pre-run bytes, and — separately — whether that tree compiles.
-	//    Conflating them is what made this report lie; see the note above.
-	fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed%s):\n",
-		len(rep.Restored), compileVerdictSuffix(rep.Consistency))
+	// 2. What the rollback did. INDEPENDENT facts, reported separately:
+	//    the revert put every listed file back to its exact pre-run bytes;
+	//    whether the REST of the tree is also as it was (verified against
+	//    the pre-run fingerprint, never assumed); and whether the tree
+	//    compiles. Conflating them is what made this report lie twice — see
+	//    the note above, and generate_rollback_verify.go.
+	switch {
+	case rep.Residue.Clean():
+		fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) this run wrote; your tree is back to its pre-run state (checked against the pre-run tree; no `git checkout` needed%s):\n",
+			len(rep.Restored), compileVerdictSuffix(rep.Consistency))
+	case rep.Residue.Checked:
+		fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) this run wrote, but the tree is NOT fully back to its pre-run state (see below%s):\n",
+			len(rep.Restored), compileVerdictSuffix(rep.Consistency))
+	default:
+		fmt.Fprintf(w, "\n↩️  generate failed its own validation — reverted %d file(s) this run wrote to their pre-run bytes%s. The rest of the tree could not be checked — run `git status` to confirm it is as you left it:\n",
+			len(rep.Restored), compileVerdictSuffix(rep.Consistency))
+	}
 	for _, p := range rep.Restored {
 		fmt.Fprintf(w, "   - %s\n", p)
+	}
+	if rep.Residue.Checked && len(rep.Residue.Changed) > 0 {
+		fmt.Fprintf(w, "\n   ⚠️  %d file(s) still differ from before the run:\n", len(rep.Residue.Changed))
+		writeResidue(w, rep.Residue.Changed)
 	}
 	if rep.Consistency.Checked && !rep.Consistency.Builds {
 		writePreRunDoesNotCompileNote(w)

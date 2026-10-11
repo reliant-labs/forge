@@ -433,6 +433,7 @@ func writeHooksIndex(path string, hookFiles []hookFileEntry) error {
 		}
 	}
 
+	checksums.RecordPreWriteAbs(path) // journaled: a failed run restores it
 	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
@@ -570,7 +571,7 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 		// A leftover .starter beside a live test is dead weight and goes.
 		if _, err := os.Stat(testPath); err == nil {
 			if _, err := os.Stat(legacyStarterPath); err == nil {
-				if err := os.Remove(legacyStarterPath); err != nil {
+				if err := checksums.RemoveJournaled(legacyStarterPath); err != nil {
 					return fmt.Errorf("remove superseded starter test %s: %w", legacyStarterPath, err)
 				}
 			}
@@ -582,6 +583,8 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 	// in place instead of writing a second copy beside it. The user may
 	// have edited it while it sat there.
 	if _, err := os.Stat(legacyStarterPath); err == nil {
+		checksums.RecordPreWriteAbs(legacyStarterPath)
+		checksums.RecordPreWriteAbs(testPath)
 		if err := os.Rename(legacyStarterPath, testPath); err != nil {
 			return fmt.Errorf("activate starter test %s: %w", legacyStarterPath, err)
 		}
@@ -626,6 +629,7 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 	if err := tmpl.Execute(&buf, starterData); err != nil {
 		return fmt.Errorf("render hook test for %s: %w", svc.Name, err)
 	}
+	checksums.RecordPreWriteAbs(testPath) // journaled: a failed run removes it
 	if err := os.WriteFile(testPath, templates.CanonicalTSImportOrder(buf.Bytes()), 0o644); err != nil {
 		return fmt.Errorf("write hook test %s: %w", testPath, err)
 	}

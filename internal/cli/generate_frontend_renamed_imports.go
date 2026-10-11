@@ -167,6 +167,8 @@ func rewriteRenamedImportsInFile(path string, renames []renamedFrontendModule) b
 	if err == nil {
 		mode = info.Mode().Perm()
 	}
+	// Journaled: a run that fails later restores the import it repointed.
+	checksums.RecordPreWriteAbs(path)
 	if err := os.WriteFile(path, updated, mode); err != nil {
 		return false
 	}

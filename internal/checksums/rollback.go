@@ -19,18 +19,30 @@
 // deleting as needed). On success the pipeline calls CommitRollback,
 // which simply drops the journal.
 //
-// Scope — deliberately bounded to forge-WRITTEN files:
+// Scope — every file the run writes, by any route it declares:
 //
-//   - The journal restores exactly the files forge's writers touched
-//     this run (Tier-1 codegen, scaffold-once "yours" files, comment-incapable
-//     outputs, restamps, disown marker strips). That is the "mid-regen
-//     broken tree" the friction names.
-//   - It does NOT snapshot the whole working tree. External-tool churn
-//     (`buf generate` into gen/, `go mod tidy` rewriting go.mod/go.sum,
-//     `sqlc`, KCL render) is deterministic from the proto/config inputs
-//     and is NOT what leaves a half-regenerated Tier-1 tree; snapshotting
-//     it would manufacture spurious rollback diffs (e.g. a legitimately
-//     re-tidied go.sum) on every failed run.
+//   - forge's own writers journal each file they touch this run (Tier-1
+//     codegen, scaffold-once "yours" files, comment-incapable outputs,
+//     restamps, disown marker strips). That is the "mid-regen broken tree"
+//     the friction names.
+//   - A step that runs an EXTERNAL tool (`buf generate` into gen/, `go mod
+//     tidy` on go.mod/go.sum, sqlc, protoc-gen-connect-openapi) declares the
+//     paths that tool may write, and the pipeline captures them with
+//     CaptureExternalWrites immediately before the tool runs. These used to
+//     be left out on the theory that tool output is "deterministic from the
+//     inputs". It is not: a failed control-plane run left 32 buf outputs
+//     modified while reporting the tree "back to its pre-run state" — some
+//     carried a different protoc-gen-go version header (the local plugin is
+//     not the one that produced the committed stubs), others were
+//     regenerated from another agent's uncommitted proto. A revert that
+//     skips them does not restore the pre-run tree.
+//   - It does NOT snapshot the whole working tree. Restoring paths a run
+//     never declared would also revert edits another process made to them
+//     DURING the run — another agent in a shared checkout, an editor. What
+//     is outside the declared set is verified rather than restored: the
+//     generate pipeline compares the tree to a pre-run fingerprint and names
+//     anything else that changed instead of claiming a restore it did not
+//     perform.
 //   - goimports/restamp rewrite files that are THEMSELVES already in the
 //     journal (forge wrote them earlier this run), so restoring the
 //     journal also undoes those in-place rewrites.
@@ -47,6 +59,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // rollbackEntry is one journaled path's pre-run state. existed=false
@@ -57,6 +70,11 @@ type rollbackEntry struct {
 	existed bool
 	content []byte
 	mode    os.FileMode
+	// external is true for a path captured AHEAD of an external tool
+	// (CaptureExternalWrites) that no forge writer has targeted since. The
+	// tool may never write it at all, so it counts as written — in the
+	// write ledger and in the restored list — only when its bytes changed.
+	external bool
 }
 
 // rollbackJournal is the per-run capture set: relPath -> pre-run state.
@@ -72,6 +90,13 @@ var rollbackJournal map[string]rollbackEntry
 // BeginRollbackJournal; cleared with the journal.
 var rollbackRoot string
 
+// rollbackTrees are the declared external-tool output paths captured this
+// run (project-relative, slash form). Every regular file that existed under
+// one when it was captured is in the journal, so on restore a file under a
+// tree that is NOT in the journal was created during the run, and is
+// deleted.
+var rollbackTrees map[string]bool
+
 // BeginRollbackJournal turns journaling ON and clears any prior capture.
 // Called once at the head of a `forge generate` run, before any writer
 // fires, with the project root the run operates on. After this, every
@@ -79,6 +104,7 @@ var rollbackRoot string
 // RestoreRollback can undo the whole run.
 func BeginRollbackJournal(root string) {
 	rollbackJournal = map[string]rollbackEntry{}
+	rollbackTrees = map[string]bool{}
 	if abs, err := filepath.Abs(root); err == nil {
 		rollbackRoot = abs
 	} else {
@@ -92,6 +118,7 @@ func BeginRollbackJournal(root string) {
 // silently recorded.
 func CommitRollback() {
 	rollbackJournal = nil
+	rollbackTrees = nil
 	rollbackRoot = ""
 }
 
@@ -111,14 +138,27 @@ func recordPreWrite(root, relPath string) {
 		return
 	}
 	relPath = slashKey(relPath)
-	if _, seen := rollbackJournal[relPath]; seen {
+	if entry, seen := rollbackJournal[relPath]; seen {
+		// Already captured — possibly ahead of an external tool. The
+		// first capture holds the pre-run bytes either way; a forge
+		// writer targeting it now makes it a write this run made.
+		if entry.external {
+			entry.external = false
+			rollbackJournal[relPath] = entry
+		}
 		return
 	}
+	captureEntry(root, relPath, false)
+}
+
+// captureEntry records relPath's current on-disk state. external marks a
+// capture made ahead of an external tool rather than at a forge write.
+func captureEntry(root, relPath string, external bool) {
 	full := filepath.Join(root, relPath)
 	info, statErr := os.Stat(full)
 	if statErr != nil {
 		// Absent (or unreadable) before this run: restore = delete.
-		rollbackJournal[relPath] = rollbackEntry{existed: false}
+		rollbackJournal[relPath] = rollbackEntry{existed: false, external: external}
 		return
 	}
 	content, readErr := os.ReadFile(full)
@@ -126,10 +166,73 @@ func recordPreWrite(root, relPath string) {
 		// Exists but unreadable — best effort: treat as absent so a
 		// failed run at least removes the half-written forge output rather
 		// than leaving a corrupt file claiming to be pristine.
-		rollbackJournal[relPath] = rollbackEntry{existed: false}
+		rollbackJournal[relPath] = rollbackEntry{existed: false, external: external}
 		return
 	}
-	rollbackJournal[relPath] = rollbackEntry{existed: true, content: content, mode: info.Mode().Perm()}
+	rollbackJournal[relPath] = rollbackEntry{existed: true, content: content, mode: info.Mode().Perm(), external: external}
+}
+
+// CaptureExternalWrites journals the paths an external tool is about to
+// write, so a failed run restores them like any forge write. Call it
+// immediately before the tool runs, with project-relative paths: a file, or
+// a directory the tool writes into (captured recursively; files created
+// under it during the run are deleted on restore). A path that does not
+// exist yet is both — whatever the tool creates there is removed.
+//
+// First-capture-wins, exactly as recordPreWrite: a path forge already wrote
+// earlier this run keeps its true pre-run bytes. Paths outside the root are
+// ignored. No-op when journaling is OFF.
+func CaptureExternalWrites(root string, relPaths ...string) {
+	if rollbackJournal == nil {
+		return
+	}
+	for _, rel := range relPaths {
+		rel = slashKey(filepath.Clean(rel))
+		if rel == "." || rel == "" || isRooted(rel) || hasDotDotPrefix(rel) {
+			continue
+		}
+		full := filepath.Join(root, rel)
+		info, err := os.Lstat(full)
+		switch {
+		case err == nil && info.IsDir():
+			rollbackTrees[rel] = true
+			_ = filepath.WalkDir(full, func(path string, d os.DirEntry, walkErr error) error {
+				if walkErr != nil || !d.Type().IsRegular() {
+					return nil
+				}
+				if fileRel, relErr := filepath.Rel(root, path); relErr == nil {
+					captureExternal(root, slashKey(fileRel))
+				}
+				return nil
+			})
+		case err == nil && !info.Mode().IsRegular():
+			// A symlink or device: not ours to rewrite.
+		default:
+			captureExternal(root, rel)
+			if err != nil {
+				rollbackTrees[rel] = true
+			}
+		}
+	}
+}
+
+func captureExternal(root, relPath string) {
+	if _, seen := rollbackJournal[relPath]; seen {
+		return
+	}
+	captureEntry(root, relPath, true)
+}
+
+// JournaledPaths returns every path the journal holds (slash form, sorted)
+// — the set a restore puts back. Callers verifying a restore read it BEFORE
+// RestoreRollback, which clears the journal.
+func JournaledPaths() []string {
+	out := make([]string, 0, len(rollbackJournal))
+	for p := range rollbackJournal {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // RecordPreWrite is the exported shim for pipeline steps that mutate a
@@ -286,8 +389,13 @@ func SummarizeWrites(root string) WriteSummary {
 	if rollbackJournal == nil {
 		return WriteSummary{}
 	}
-	sum := WriteSummary{Touched: len(rollbackJournal)}
+	var sum WriteSummary
 	for relPath, entry := range rollbackJournal {
+		if entry.external && externalSettled(entry, filepath.Join(root, relPath)) {
+			// Captured ahead of a tool that left it alone: not a write.
+			continue
+		}
+		sum.Touched++
 		current, err := os.ReadFile(filepath.Join(root, relPath))
 		if err != nil {
 			// Targeted but not readable now: the write failed, or a later
@@ -305,9 +413,42 @@ func SummarizeWrites(root string) WriteSummary {
 			sum.Updated = append(sum.Updated, relPath)
 		}
 	}
+	// Files an external tool created under a captured directory are new
+	// this run too, though no journal entry names them.
+	for _, rel := range createdUnderTrees(root) {
+		sum.Touched++
+		sum.Created = append(sum.Created, rel)
+	}
 	sort.Strings(sum.Created)
 	sort.Strings(sum.Updated)
 	return sum
+}
+
+// createdUnderTrees lists the regular files under a captured external-tool
+// directory that are not in the journal — i.e. that did not exist when the
+// directory was captured.
+func createdUnderTrees(root string) []string {
+	var out []string
+	seen := map[string]bool{} // nested captured trees walk a file twice
+	for tree := range rollbackTrees {
+		_ = filepath.WalkDir(filepath.Join(root, tree), func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil || !d.Type().IsRegular() {
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return nil
+			}
+			rel = slashKey(rel)
+			if _, journaled := rollbackJournal[rel]; !journaled && !seen[rel] {
+				seen[rel] = true
+				out = append(out, rel)
+			}
+			return nil
+		})
+	}
+	sort.Strings(out)
+	return out
 }
 
 // RestoreRollback rewinds every journaled path to its captured pre-run
@@ -321,21 +462,38 @@ func SummarizeWrites(root string) WriteSummary {
 // exactly what was recovered. Clears the journal and turns journaling
 // OFF — a restored run is over.
 func RestoreRollback(root string) []string {
+	restored, _ := RestoreRollbackReport(root)
+	return restored
+}
+
+// RestoreRollbackReport is RestoreRollback that also returns the paths it
+// could NOT restore, so a caller can refuse to claim a restore that did not
+// happen.
+//
+// Paths captured ahead of an external tool (CaptureExternalWrites) are
+// rewritten and listed only when the tool actually changed them, and every
+// file created under a captured directory during the run is deleted.
+func RestoreRollbackReport(root string) (restored, failed []string) {
 	if rollbackJournal == nil {
-		return nil
+		return nil, nil
 	}
-	restored := make([]string, 0, len(rollbackJournal))
+	restored = make([]string, 0, len(rollbackJournal))
 	for relPath, entry := range rollbackJournal {
 		full := filepath.Join(root, relPath)
+		if entry.external && externalSettled(entry, full) {
+			continue
+		}
 		if entry.existed {
 			mode := entry.mode
 			if mode == 0 {
 				mode = 0o644
 			}
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				failed = append(failed, relPath)
 				continue
 			}
 			if err := os.WriteFile(full, entry.content, mode); err != nil {
+				failed = append(failed, relPath)
 				continue
 			}
 			restored = append(restored, relPath)
@@ -343,6 +501,7 @@ func RestoreRollback(root string) []string {
 		}
 		// Did not exist pre-run: delete forge's new output.
 		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			failed = append(failed, relPath)
 			continue
 		}
 		// A scaffold-once file created THIS run is being un-created, so its
@@ -355,10 +514,37 @@ func RestoreRollback(root string) []string {
 		pruneEmptyParents(root, filepath.Dir(full))
 		restored = append(restored, relPath)
 	}
+	// Files an external tool CREATED under a captured directory: every
+	// file that existed there at capture time is journaled, so anything
+	// else is new this run.
+	for _, rel := range createdUnderTrees(root) {
+		full := filepath.Join(root, rel)
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			failed = append(failed, rel)
+			continue
+		}
+		pruneEmptyParents(root, filepath.Dir(full))
+		restored = append(restored, rel)
+	}
 	rollbackJournal = nil
+	rollbackTrees = nil
 	rollbackRoot = ""
 	sort.Strings(restored)
-	return restored
+	sort.Strings(failed)
+	return restored, failed
+}
+
+// externalSettled reports whether a path captured ahead of an external tool
+// needs nothing restored on its own account: it is in its pre-run state, or
+// it was absent and the tool made it a DIRECTORY — whose files the
+// created-under-trees sweep removes.
+func externalSettled(entry rollbackEntry, full string) bool {
+	if !entry.existed {
+		info, err := os.Lstat(full)
+		return os.IsNotExist(err) || (err == nil && info.IsDir())
+	}
+	current, err := os.ReadFile(full)
+	return err == nil && bytes.Equal(current, entry.content)
 }
 
 // pruneEmptyParents removes now-empty directories from dir up toward
@@ -401,4 +587,12 @@ func isUnder(dir, root string) bool {
 // be pruned.
 func hasDotDotPrefix(rel string) bool {
 	return len(rel) >= 2 && rel[0] == '.' && rel[1] == '.'
+}
+
+// isRooted reports whether a slash-keyed path names somewhere other than a
+// path under its base. filepath.IsAbs alone is not enough: on Windows "/abs"
+// has no volume, so IsAbs is false, yet it names the current drive's root,
+// and filepath.Join(root, "/abs") would silently turn it into root\abs.
+func isRooted(rel string) bool {
+	return filepath.IsAbs(rel) || strings.HasPrefix(rel, "/") || filepath.VolumeName(rel) != ""
 }

@@ -93,6 +93,16 @@ type GenStep struct {
 	// "deploy", "tools", "validate".
 	Tag string
 
+	// Writes declares the project-relative paths (files, or directories,
+	// captured recursively) an EXTERNAL tool this step runs may write.
+	// The pipeline captures them into the rollback journal immediately
+	// before Run, so a failed run restores tool output exactly as it
+	// restores forge's own writes. Required for every step that shells a
+	// tool which writes into the project (buf, go mod tidy, sqlc, …) —
+	// pinned by TestGenerateStepsDeclareExternalToolOutputs. See
+	// generate_external_writes.go.
+	Writes func(*pipelineContext) []string
+
 	// ReadOnly declares that the step never writes to the project tree,
 	// by any route — forge's journaled writers, a raw os.WriteFile, or an
 	// external tool. It is what lets a failed run say "No files were
@@ -306,7 +316,7 @@ func generateSteps() []GenStep {
 		{Name: "forge version compatibility", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate", ReadOnly: true},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate", ReadOnly: true},
 		{Name: "retired ShellBuild tokens", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepShellBuildTokens, Tag: "validate", ReadOnly: true},
-		{Name: "migrate env registries onto images", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepMigrateImageRegistry, Tag: "config"},
+		{Name: "migrate env registries onto images", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepMigrateImageRegistry, Tag: "config", Writes: writesKCLMigration},
 		// Sits with the other config migration, AFTER the refusals: a
 		// refusal is only honest if it leaves the tree as it found it, and
 		// this step writes. The load above tolerates the old nesting (the
@@ -335,12 +345,12 @@ func generateSteps() []GenStep {
 		// its writes are journaled so a later failure restores them.
 		{Name: "sync forge KCL module vendor", Gate: always, Run: stepSyncForgeKCL, Tag: "config"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
-		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config"},
-		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto"},
-		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto"},
-		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto"},
+		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config", Writes: writesGenGoMod},
+		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto", Writes: writesBufGo},
+		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto", Writes: writesDescriptor},
+		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto", Writes: writesOpenAPI},
 		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
-		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend"},
+		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend", Writes: writesFrontendTS},
 		{Name: "config loader (proto/config)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
 		// parse services: needed when the project has proto/services/
 		// (handlers, mocks, CRUD, auth, bootstrap all read ctx.Services) OR
@@ -363,12 +373,12 @@ func generateSteps() []GenStep {
 		{Name: "open-procedure set (pkg/middleware)", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepAuthProcedures, Tag: "codegen"},
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
-		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
+		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools", Writes: writesBothTidies},
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "db/embed.go (embedded migrations)", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
-		{Name: "sqlc generate", Gate: always, Run: stepSqlcGenerate, Tag: "tools"},
-		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools"},
+		{Name: "sqlc generate", Gate: always, Run: stepSqlcGenerate, Tag: "tools", Writes: writesSqlc},
+		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
 		// NOT gated on features.deploy. The Tier-1 files this sweep writes
 		// each carry their own enabledFor predicate and none is a deploy
 		// artifact (deploy/alloy-config.alloy gates on observability, not
@@ -445,7 +455,7 @@ func generateSteps() []GenStep {
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
 		{Name: "retire delivered agent skills", Gate: always, Run: stepRetireAgentSkills, Tag: "tools"},
-		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools"},
+		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
 		{Name: "goimports on generated Go", Gate: always, Run: stepGoimports, Tag: "tools"},
 		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
 		// Runs after every Tier-1 emitter so checksums.Tier1TargetSet is

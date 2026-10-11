@@ -183,4 +183,3 @@ forge.yaml (the sibling of `config.enforce_typed_access`).
 For a one-off child span or metric at a single call site (rather than a whole
 decorator), `observe.LogCall` / `observe.TraceCall` / `observe.NewCallMetrics`
 remain available.
-

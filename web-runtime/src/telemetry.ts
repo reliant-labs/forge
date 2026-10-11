@@ -308,19 +308,23 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// @hyperdx/browser is a UMD/CJS bundle whose module.exports IS the client.
-// Bundlers hand it back as `.default`, native ESM as `.default`, and its
-// .d.ts (`export default`) makes TypeScript expect `.default.default` — so
-// walk `default` until something that looks like the client turns up.
+// @hyperdx/browser is a UMD/CJS bundle whose module.exports IS the client, and
+// its methods use `this`. A bundler hands back a module NAMESPACE that exposes
+// both the client's members at the top level (as read-only getters) and the
+// client itself as `default`. Calling init on the namespace binds `this` to that
+// frozen object and the SDK throws on its first property write, which disabled
+// telemetry silently. So descend to the deepest `default` that is still a
+// client, the real instance, and never settle for the namespace in front of it.
 function resolveClient(mod: unknown): HyperDXClient | null {
   let cur: unknown = mod;
-  for (let depth = 0; depth < 4 && cur; depth++) {
-    if (isClient(cur)) {
-      return cur;
+  for (let depth = 0; depth < 4; depth++) {
+    const next = peek(cur, "default");
+    if (!isClient(next)) {
+      break;
     }
-    cur = peek(cur, "default");
+    cur = next;
   }
-  return null;
+  return isClient(cur) ? cur : null;
 }
 
 function isClient(v: unknown): v is HyperDXClient {

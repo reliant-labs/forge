@@ -189,7 +189,14 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// otelconnect PREPENDED, so the span it opens covers every interceptor
 	// after it — including auth rejections, which are exactly the requests
 	// you want to see in a trace.
-	if otelInt, oerr := otelconnect.NewInterceptor(); oerr == nil {
+	//
+	// WithTrustRemote makes the browser's traceparent the PARENT of this span.
+	// Without it otelconnect treats every inbound trace context as untrusted
+	// and only LINKS to it, so a page's spans and the API spans it caused land
+	// in two traces and "show me this click end to end" has no answer. The
+	// browser is first-party here. Drop the option if this server is reachable
+	// by callers you do not want choosing your trace ids.
+	if otelInt, oerr := otelconnect.NewInterceptor(otelconnect.WithTrustRemote()); oerr == nil {
 		chainDeps.Extras = append([]connect.Interceptor{otelInt}, chainDeps.Extras...)
 	} else {
 		logger.Error("failed to create otelconnect interceptor", "error", oerr)

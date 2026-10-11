@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error a React/Next boundary caught, and `RuntimeErrorBoundary`, `error.tsx`
   and `global-error.tsx` call it.
 
+  **Browser and API spans share one trace.** The serve scaffold builds
+  `otelconnect.NewInterceptor(otelconnect.WithTrustRemote())`. By default
+  otelconnect only _links_ to an inbound `traceparent`, so a page and the API
+  call it made were two traces even though the header arrived intact. Found by
+  running the stack: ClickHouse held them under different trace ids. `serve.go`
+  is scaffold-once, so an existing project adds the option by hand.
+
   **The browser reports `deployment.environment.name`**, the key the backend
   uses, so a browser span and a server span of one trace carry the same
   environment. The forge env name is rendered into the runtime config document

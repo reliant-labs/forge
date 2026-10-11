@@ -10,9 +10,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const init = vi.fn();
 const recordException = vi.fn();
 
-vi.mock("@hyperdx/browser", () => ({
-  default: { init, recordException },
-}));
+// The SDK as a bundler hands it back: a module NAMESPACE, whose members are
+// read-only getters at the top level AND the real client under `default`. The
+// real client's methods use `this`, so calling one on the namespace throws.
+const client = {
+  init(this: unknown, ...args: unknown[]) {
+    if (this !== client) {
+      throw new TypeError("init called on the module namespace, not the client");
+    }
+    return init(...args);
+  },
+  recordException(this: unknown, ...args: unknown[]) {
+    if (this !== client) {
+      throw new TypeError("recordException called on the module namespace");
+    }
+    return recordException(...args);
+  },
+};
+
+vi.mock("@hyperdx/browser", () => {
+  const ns = { default: client } as Record<string, unknown>;
+  for (const key of ["init", "recordException"] as const) {
+    Object.defineProperty(ns, key, { get: () => client[key], enumerable: true });
+  }
+  return ns;
+});
 
 const ORIGIN = "http://localhost:3000";
 

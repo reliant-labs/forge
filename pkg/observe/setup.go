@@ -20,9 +20,10 @@ import (
 )
 
 // Config is the explicit, typed configuration for Setup. Every field that
-// influences exporter or resource behaviour is named here; Setup never reads
-// os.Getenv or uses resource.WithFromEnv, so the caller (a forge app) owns the
-// full configuration surface via its typed config.
+// influences exporter behaviour is named here; Setup itself never calls
+// os.Getenv. The resource additionally merges the standard OTEL_SERVICE_NAME and
+// OTEL_RESOURCE_ATTRIBUTES variables through the SDK (resource.WithFromEnv), which
+// is how the deployment environment reaches it.
 type Config struct {
 	// ServiceName is the logical service name reported on traces and metrics
 	// (semconv service.name). Empty falls back to "unknown".
@@ -53,9 +54,11 @@ type Config struct {
 // for push-based collection, the global text-map propagator is set to
 // TraceContext+Baggage, and a resource describing the service is attached.
 //
-// Setup performs NO environment reads: the OTLP endpoint, service name/version,
-// and instance id all come from Config. This is the library form of the code
-// that forge previously generated into each app's cmd/otel.go.
+// The OTLP endpoint, service name/version and instance id come from Config.
+// Resource identity beyond that (notably deployment.environment.name, which is the
+// forge env name) arrives through the standard OTEL_RESOURCE_ATTRIBUTES variable,
+// merged by the SDK. This is the library form of the code that forge previously
+// generated into each app's cmd/otel.go.
 //
 // It returns a shutdown function (flushes/stops the providers), an http.Handler
 // for /metrics, and any error.
@@ -76,26 +79,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 		return func(ctx context.Context) error { return mp.Shutdown(ctx) }, metricsHandler, nil
 	}
 
-	serviceName := cfg.ServiceName
-	if serviceName == "" {
-		serviceName = "unknown"
-	}
-
-	attrs := []attribute.KeyValue{
-		semconv.ServiceNameKey.String(serviceName),
-	}
-	if cfg.ServiceVersion != "" && cfg.ServiceVersion != "dev" {
-		attrs = append(attrs, semconv.ServiceVersionKey.String(cfg.ServiceVersion))
-	}
-	if cfg.InstanceID != "" {
-		attrs = append(attrs, semconv.ServiceInstanceIDKey.String(cfg.InstanceID))
-	}
-
-	// Resource is built explicitly from Config — no resource.WithFromEnv, so
-	// nothing is auto-read from OTEL_RESOURCE_ATTRIBUTES / OTEL_SERVICE_NAME.
-	res, err := resource.New(ctx,
-		resource.WithAttributes(attrs...),
-	)
+	res, err := resourceFromConfig(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating otel resource: %w", err)
 	}
@@ -137,4 +121,33 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 	return func(ctx context.Context) error {
 		return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
 	}, metricsHandler, nil
+}
+
+// resourceFromConfig constructs the OpenTelemetry resource for Setup. It is
+// separate from exporter setup so resource identity is testable without a
+// collector or global SDK providers.
+func resourceFromConfig(ctx context.Context, cfg Config) (*resource.Resource, error) {
+	serviceName := cfg.ServiceName
+	if serviceName == "" {
+		serviceName = "unknown"
+	}
+
+	attrs := []attribute.KeyValue{
+		semconv.ServiceNameKey.String(serviceName),
+	}
+	if cfg.ServiceVersion != "" && cfg.ServiceVersion != "dev" {
+		attrs = append(attrs, semconv.ServiceVersionKey.String(cfg.ServiceVersion))
+	}
+	if cfg.InstanceID != "" {
+		attrs = append(attrs, semconv.ServiceInstanceIDKey.String(cfg.InstanceID))
+	}
+
+	// WithFromEnv is listed after the Config-derived attributes so the standard
+	// OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES variables win over them. The
+	// deployment environment is never typed config: the platform renders it as
+	// OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=<forge env name>.
+	return resource.New(ctx,
+		resource.WithAttributes(attrs...),
+		resource.WithFromEnv(),
+	)
 }

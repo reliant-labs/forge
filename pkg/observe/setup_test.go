@@ -6,12 +6,50 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// Setup must NEVER read os.Getenv / use resource.WithFromEnv. We assert that by
-// confirming behaviour is governed entirely by Config: with no endpoint we get
-// the Prometheus-only path even if the OTLP env var is set.
+func TestResourceFromConfig(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment.name=staging")
+	res, err := resourceFromConfig(context.Background(), Config{
+		ServiceName:    "api",
+		ServiceVersion: "1.2.3",
+		InstanceID:     "instance-1",
+	})
+	if err != nil {
+		t.Fatalf("resourceFromConfig returned error: %v", err)
+	}
+
+	for key, want := range map[attribute.Key]string{
+		"service.name":                "api",
+		"service.version":             "1.2.3",
+		"service.instance.id":         "instance-1",
+		"deployment.environment.name": "staging",
+	} {
+		got, ok := res.Set().Value(key)
+		if !ok || got.AsString() != want {
+			t.Errorf("resource attribute %q = %q, %t; want %q, true", key, got.AsString(), ok, want)
+		}
+	}
+}
+
+func TestResourceFromConfig_OmitsEmptyOptionalAttributes(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+	res, err := resourceFromConfig(context.Background(), Config{ServiceName: "api"})
+	if err != nil {
+		t.Fatalf("resourceFromConfig returned error: %v", err)
+	}
+
+	for _, key := range []attribute.Key{"service.version", "service.instance.id", "deployment.environment.name"} {
+		if got, ok := res.Set().Value(key); ok {
+			t.Errorf("resource unexpectedly contains %q = %q", key, got.AsString())
+		}
+	}
+}
+
+// Exporter selection is governed by Config: with no endpoint we get the
+// Prometheus-only path even if the OTLP env var is set.
 func TestSetup_NoOTLPEndpoint_PrometheusOnly(t *testing.T) {
 	// Set the env var the OLD code read; the new lib must ignore it.
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://should-be-ignored:4317")

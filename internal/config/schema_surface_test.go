@@ -35,7 +35,7 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker",
-				"forge_version", "harness", "k8s",
+				"forge_version", "generate", "harness", "k8s",
 				"lint", "module_path", "name", "observability",
 			},
 		},
@@ -88,6 +88,18 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "APIConfig",
 			typ:  reflect.TypeFor[APIConfig](),
 			want: []string{"openapi", "proto_package", "rest"},
+		},
+		{
+			// hooks: read by the "generate hooks (forge.yaml)" pipeline
+			// step (internal/cli/generate_hooks.go).
+			name: "GenerateConfig",
+			typ:  reflect.TypeFor[GenerateConfig](),
+			want: []string{"hooks"},
+		},
+		{
+			name: "GenerateHook",
+			typ:  reflect.TypeFor[GenerateHook](),
+			want: []string{"command", "dir", "name", "writes"},
 		},
 	}
 

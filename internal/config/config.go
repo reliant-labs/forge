@@ -202,6 +202,11 @@ type ProjectConfig struct {
 	// See [DevStackConfig] for why this has to be declared rather than
 	// inferred.
 	DevStack DevStackConfig `yaml:"dev_stack,omitempty"`
+	// Generate declares commands `forge generate` runs for the project —
+	// the escape hatch for a generator forge does not own. See
+	// [GenerateConfig] / [GenerateHook]; read by the "generate hooks
+	// (forge.yaml)" pipeline step.
+	Generate GenerateConfig `yaml:"generate,omitempty"`
 }
 
 // DevStackConfig bounds the parallel-dev-stack port allocator

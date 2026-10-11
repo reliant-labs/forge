@@ -377,6 +377,11 @@ func generateSteps() []GenStep {
 		{Name: "cmd/commands.go (user extension point)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepCmdCommands, Tag: "codegen"},
 		{Name: "per-service test helpers", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "db/embed.go (embedded migrations)", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
+		// The project's own commands (forge.yaml generate.hooks): after
+		// forge's codegen, so a hook can read what forge emitted, and before
+		// both tidies and the validation build, so what a hook emits is
+		// tidied and compiled in this same run.
+		{Name: "generate hooks (forge.yaml)", Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
 		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
 		// NOT gated on features.deploy. The Tier-1 files this sweep writes
 		// each carry their own enabledFor predicate and none is a deploy

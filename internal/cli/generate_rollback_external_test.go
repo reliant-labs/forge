@@ -289,6 +289,7 @@ func TestGenerateStepsDeclareExternalToolOutputs(t *testing.T) {
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"TypeScript stubs (frontends)",
 		"go mod tidy (pre-wiring)",
+		"generate hooks (forge.yaml)",
 		"go mod tidy (gen/)",
 		"go mod tidy (root)",
 	}

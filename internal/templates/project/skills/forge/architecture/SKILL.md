@@ -85,6 +85,17 @@ internal/<name>/contract.go (standalone domain packages) → forge generate → 
 gen/ts/ → forge generate → frontends/<name>/src/hooks/*-hooks.ts
 ```
 
+A generator forge does not own (a query generator kept during a port, your own codegen tool) runs as a **generate hook** declared in `forge.yaml`. Hooks run in order after forge's codegen and before `go mod tidy` and the validation build, so their output is tidied and compiled in the same run. A failing hook fails the generate. `writes:` puts the hook's output in generate's rollback journal:
+
+```yaml
+generate:
+  hooks:
+    - name: sqlc
+      command: [sqlc, generate]          # argv, no shell; a shell line is [sh, -c, "..."]
+      dir: .                             # optional, project-relative
+      writes: [internal/db/postgres/generated]
+```
+
 `forge generate` is always safe — it only touches infrastructure, never your handlers, migrations, or business logic. In the DB layer it rewrites only `internal/db/<entity>_orm.go`. Observability is applied by `forge/pkg/observe` interceptors on the serve path, not per-package `_gen.go` wrappers — see `observability`.
 
 ## The composition root (`internal/app/providers.go` + `internal/app/compose.go`)

@@ -65,8 +65,10 @@ describe("the published surface", () => {
     // And src/ is not in the tarball at all, so a tool that GLOBS the package
     // directory rather than resolving through it — Tailwind's `@source`
     // directive scans exactly this package — cannot reach the sources either.
+    // NOTICE is listed because Apache-2.0 §4 obliges every redistributor to
+    // pass it on; npm packs LICENSE by itself, so it needs no entry.
     expect(pkg.files).not.toContain("src");
-    expect(pkg.files).toEqual(["dist", "interceptors", "README.md"]);
+    expect(pkg.files).toEqual(["dist", "interceptors", "README.md", "NOTICE"]);
   });
 
   it("publishes the engine subpaths OUTSIDE the barrel", () => {

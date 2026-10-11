@@ -66,9 +66,8 @@ func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
 
 	// The host process the route must reach. Started FIRST so the port is
 	// genuinely bound before the cluster resolves it.
-	hostPort := freePortE2E(t)
 	const wantBody = "adr3-f2-host-process-reached"
-	stopHost := startHostProbeServer(t, hostPort, wantBody)
+	hostPort, stopHost := startHostProbeServer(t, wantBody)
 	defer stopHost()
 
 	gatewayHostPort := freePortE2E(t)
@@ -134,12 +133,10 @@ func TestE2ERouteTrafficHealthCheckExpects401(t *testing.T) {
 	// Backend A answers 401 on /v2/ (a healthy token-authed registry).
 	// Backend B answers 404 there — the control, which must go unhealthy
 	// under the SAME check.
-	healthyPort := freePortE2E(t)
-	stopHealthy := startRegistryStyleServer(t, healthyPort, 401)
+	healthyPort, stopHealthy := startRegistryStyleServer(t, 401)
 	defer stopHealthy()
 
-	unhealthyPort := freePortE2E(t)
-	stopUnhealthy := startRegistryStyleServer(t, unhealthyPort, 404)
+	unhealthyPort, stopUnhealthy := startRegistryStyleServer(t, 404)
 	defer stopUnhealthy()
 
 	gatewayHostPort := freePortE2E(t)
@@ -413,20 +410,20 @@ func assertRenderedHostBackend(t *testing.T, manifests []map[string]any, wantPor
 // Host probe servers.
 // ---------------------------------------------------------------------------
 
-func startHostProbeServer(t *testing.T, port int, body string) func() {
+func startHostProbeServer(t *testing.T, body string) (int, func()) {
 	t.Helper()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, body)
 	})
-	return startServer(t, port, mux)
+	return startServer(t, mux)
 }
 
 // startRegistryStyleServer answers /v2/ with statusForV2 and everything
 // else with 200 — the shape of a token-authed registry, whose healthy
 // answer on /v2/ is 401.
-func startRegistryStyleServer(t *testing.T, port, statusForV2 int) func() {
+func startRegistryStyleServer(t *testing.T, statusForV2 int) (int, func()) {
 	t.Helper()
 
 	mux := http.NewServeMux()
@@ -436,22 +433,25 @@ func startRegistryStyleServer(t *testing.T, port, statusForV2 int) func() {
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	})
-	return startServer(t, port, mux)
+	return startServer(t, mux)
 }
 
-func startServer(t *testing.T, port int, h http.Handler) func() {
+// startServer serves h on a kernel-assigned port and returns it. The port is
+// bound here, not probed with freePortE2E and bound later: in that gap a
+// parallel test can take it ("bind: address already in use").
+func startServer(t *testing.T, h http.Handler) (int, func()) {
 	t.Helper()
 
 	// Bind 0.0.0.0: the request arrives from the k3d node's view of the
 	// host, not over loopback.
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
-		t.Fatalf("bind host probe server on :%d: %v", port, err)
+		t.Fatalf("bind host probe server: %v", err)
 	}
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 
-	return func() {
+	return ln.Addr().(*net.TCPAddr).Port, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)

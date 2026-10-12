@@ -283,7 +283,7 @@ func missingPathFix(projectDir, p string) string {
 	if _, err := os.Stat(filepath.Join(abs, "package.json")); err != nil {
 		return fmt.Sprintf("install the dependencies that provide %s, or point the template at where the plugin actually is", p)
 	}
-	return fmt.Sprintf("run `%s` in %s", jsInstallCommand(abs), pkg)
+	return fmt.Sprintf("run %#q in %s", jsInstallCommand(abs), pkg)
 }
 
 // jsInstallCommand is the lockfile-honouring install for a package directory.

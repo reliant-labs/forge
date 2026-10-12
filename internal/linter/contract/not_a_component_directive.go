@@ -108,7 +108,7 @@ func CheckNotAComponentDirectives(pkgs []*packages.Package, opts ExcludeGateOpti
 					"`//forge:not-a-component` — the marker requires a reason", p.PkgPath),
 				FixHint: "say who constructs it instead of the server: `//forge:not-a-component: <why>` " +
 					"(e.g. \"CLI-only: built by the login command\"). If the server does use it, delete the marker — " +
-					"see `forge skill load contracts`",
+					"see `forge skill load contracts/package-markers`",
 			})
 		}
 		// Placement is about what forge's composition reads, and there is no
@@ -124,7 +124,7 @@ func CheckNotAComponentDirectives(pkgs []*packages.Package, opts ExcludeGateOpti
 				Line:     marker.Line,
 				Message:  fmt.Sprintf("`//forge:not-a-component` on package %s %s", p.PkgPath, why),
 				FixHint: "delete the marker. It applies only to an internal/<pkg> contract package (one with " +
-					"contract.go) that the server should not construct — see `forge skill load contracts`",
+					"contract.go) that the server should not construct — see `forge skill load contracts/package-markers`",
 			})
 		}
 	}

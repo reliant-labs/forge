@@ -1376,7 +1376,7 @@ func missingProviderError(missing []MissingProvider, unconsumed map[string]strin
 		sort.Strings(notServer)
 		fmt.Fprintf(&b, "\nNo service, worker or operator requires %s. If the server does not use it — it is built by the CLI, a daemon or another binary — do not wire its Deps into the server's Infra. Mark the package instead:\n\n", strings.Join(notServer, ", "))
 		b.WriteString("      //forge:not-a-component: <who constructs it>\n\n")
-		b.WriteString("It keeps contract.go, mock_gen.go and its decorator; compose.go stops constructing it (`forge skill load contracts`).\n")
+		b.WriteString("It keeps contract.go, mock_gen.go and its decorator; compose.go stops constructing it (`forge skill load contracts/package-markers`).\n")
 	}
 	return fmt.Errorf("%s", b.String())
 }

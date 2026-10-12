@@ -556,6 +556,14 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 		messages = codegen.DefaultConfigMessages()
 	}
 
+	// A (forge.v1.binary_config) binding that names no cmd/<name> — or a
+	// binary another message already binds — is refused before anything is
+	// written: its loader, KCL schema and env projection would be generated
+	// for a process that never loads them.
+	if err := codegen.ValidateBinaryConfigBindings(messages, codegen.ProjectBinaries(projectDir)); err != nil {
+		return nil, err
+	}
+
 	// A `sensitive` field bound to a FRONTEND is refused before anything is
 	// written. This runs at the head of config generation on purpose: a
 	// secret that reaches a bundle, a config.js, or even a rendered KCL
@@ -668,6 +676,12 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 		// No annotated config — fall back to scaffold defaults. Same
 		// behavior as generateConfigLoader so the two stay in sync.
 		messages = codegen.DefaultConfigMessages()
+	}
+	// The same binding gate generateConfigLoader applies, repeated here
+	// because this step also runs when Go codegen is disabled: a binding to
+	// a process that does not exist must not reach config_gen.k either.
+	if err := codegen.ValidateBinaryConfigBindings(messages, codegen.ProjectBinaries(projectDir)); err != nil {
+		return err
 	}
 
 	// Flatten all proto config fields. Most projects have a single

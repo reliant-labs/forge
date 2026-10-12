@@ -828,12 +828,42 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 		return codegen.ConfigMessage{}, false
 	}
 
+	protoFile, line := configMessageLocation(msg)
 	return codegen.ConfigMessage{
-		Name:     string(msg.Desc.Name()),
-		Fields:   configFields,
-		Binary:   configMessageBinary(msg),
-		Frontend: configMessageFrontend(msg),
+		Name:      string(msg.Desc.Name()),
+		Fields:    configFields,
+		Binary:    configMessageBinary(msg),
+		Frontend:  configMessageFrontend(msg),
+		ProtoFile: protoFile,
+		Line:      line,
 	}, true
+}
+
+// descriptorMessageOptionsField is DescriptorProto.options' field number —
+// the source-path element between a message and an option set on it.
+const descriptorMessageOptionsField = 7
+
+// configMessageLocation returns the file declaring msg and the 1-based line
+// of its (forge.v1.binary_config) option, falling back to the line of the
+// `message` keyword when the option carries no recorded position. The
+// option line is preferred because it is the one an author edits when
+// generate refuses the binding. Line is 0 when the request carried no
+// source info.
+func configMessageLocation(msg *protogen.Message) (string, int) {
+	file := msg.Desc.ParentFile()
+	if file == nil {
+		return "", 0
+	}
+	locs := file.SourceLocations()
+	optPath := append(append(protoreflect.SourcePath(nil), msg.Location.Path...),
+		descriptorMessageOptionsField, int32(forgev1.E_BinaryConfig.TypeDescriptor().Number()))
+	if loc := locs.ByPath(optPath); loc.Path != nil {
+		return file.Path(), loc.StartLine + 1
+	}
+	if loc := locs.ByDescriptor(msg.Desc); loc.Path != nil {
+		return file.Path(), loc.StartLine + 1
+	}
+	return file.Path(), 0
 }
 
 // configMessageFrontend reads the message-level

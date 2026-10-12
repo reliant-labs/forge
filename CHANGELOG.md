@@ -311,6 +311,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fix (``run `npm ci` in tools/protoc-gen-es``, `go get -tool …`,
   `forge tools install`, `chmod +x …`). Forms decided only at run time
   (`go run pkg@v`, npx, interpreter flags) have just their argv[0] checked.
+- **`forge generate` refuses a `(forge.v1.binary_config)` binding to a binary
+  that does not exist.** `binary` accepted any string: `{binary: "x server
+  api"}` (a subcommand line where a binary name belongs) and
+  `{binary: "nonexistent"}` both generated a loader, a KCL schema and an env
+  projection that no process ever loaded, contradicting forge.proto's own
+  contract. A binding must now name a `cmd/<name>` directory; the refusal names
+  every offender as `proto/<file>:<line>`, lists the project's binaries, and
+  suggests the `cmd/` spelling when the name differs only by `-`/`_`. Two
+  messages bound to the same binary are refused too: the KCL projection looked
+  the binary up rather than the message, so both got the first message's fields.
 - **`forge lint` no longer reports a golangci-lint that cannot read the
   toolchain's export data as a typecheck failure.** On control-plane the
   gating lane failed with one `typecheck` error, `could not import time (…

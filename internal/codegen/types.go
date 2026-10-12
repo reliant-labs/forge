@@ -555,6 +555,16 @@ type ConfigMessage struct {
 	// block (BaseConfig) onto an annotated binary config AND an annotated
 	// frontend config, so the shared fact is declared once.
 	Frontend string `json:",omitempty"`
+
+	// ProtoFile and Line locate the message's (forge.v1.binary_config)
+	// option — or the message itself when the option has no recorded
+	// position — so a generate-time refusal of the binding names the line
+	// an author edits (see ValidateBinaryConfigBindings). ProtoFile is
+	// relative to the buf module root ("config/v1/config.proto"), as on
+	// ConfigField; Line is 1-based and 0 when unknown (a request without
+	// source info). Neither carries codegen behavior.
+	ProtoFile string `json:",omitempty"`
+	Line      int    `json:",omitempty"`
 }
 
 // DetermineFieldKind classifies a field based on its ProtoType and GoType.

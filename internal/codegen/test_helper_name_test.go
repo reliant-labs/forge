@@ -142,7 +142,7 @@ func TestComputeTestHelperName_AgreesWithHelpersNamespace(t *testing.T) {
 
 	for _, pkg := range []string{"billing", "deploy", "user", "absent"} {
 		// The helpers generator's namespace, derived the way it derives it.
-		inNamespace := len(filterExternalComponentPackages(projectDir, []BootstrapPackageData{
+		inNamespace := len(filterWiredComponentPackages(projectDir, []BootstrapPackageData{
 			{Name: pkg, Package: pkg, ImportPath: pkg},
 		})) == 1 && IsWiredComponentDir(filepath.Join(projectDir, "internal", pkg))
 

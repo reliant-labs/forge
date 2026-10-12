@@ -100,6 +100,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marker on an rpc or message, fails generate. `codegen.ParseServicesFromProtos`
   now returns managed services only; `ParseDeclaredServices` returns all.
   See the `migration` skill, "Adopting in place".
+- **`//forge:not-a-component: <why>` takes a contract package out of the server
+  composition and keeps its contract.** Every `internal/<pkg>/contract.go`
+  package used to be treated as a server component, so a package only the CLI
+  or a daemon uses (a browser login flow whose `Deps` are a credentials
+  directory, an `OpenURL func(string) error` and an HTTP doer) failed
+  `forge generate` with `Cliauth.Deps.Dirs (credentials.Dirs) has no provider`
+  until its collaborators were wired onto the server's `Infra`. A marked
+  package keeps `contract.go`, the contract lint, `mock_gen.go` and (with
+  `// forge:constructor`) its decorator; `compose.go` never constructs it,
+  never resolves its `Deps` and gives it no `Infra` field, and it gets no
+  `NewTest<Pkg>` factory. A server component that requires it by type fails
+  generate naming the marker, and `forge lint` refuses a bare marker
+  (`forge-not-a-component-reason`) or one where composition does not read it
+  (`forge-not-a-component-scope`: a handler, worker or operator, beside
+  `//forge:external-component`, or a package with no `contract.go`). When an
+  unmarked package's `Deps` have no provider and no service, worker or
+  operator reaches it, the missing-provider error names the marker as a
+  second remedy. `forge project audit --json` reports `uncomposed_packages`
+  and `forge project graph` a per-package `composition`. See the `contracts`
+  skill, "Packages the server does not have".
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the

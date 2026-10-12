@@ -25,8 +25,9 @@
 //
 // SCOPE: proto comments only. The `forge:*` markers read out of Go source
 // (forge:constructor, forge:optional-dep, forge:no-observe, forge:service,
-// forge:exclude-contract, forge:external-component, forge:outbound-io,
-// forge:gen, forge:placeholder, forge:custom-read-shape, forge:hash) and the
+// forge:exclude-contract, forge:external-component, forge:not-a-component,
+// forge:outbound-io, forge:gen, forge:placeholder, forge:custom-read-shape,
+// forge:hash) and the
 // ones read out of postgres catalog comments (schemadef.KnownColumnMarkers:
 // forge:immutable, forge:ref, forge:version, forge:fill) are deliberately
 // NOT here. They are legitimate markers in their own files, but none of them

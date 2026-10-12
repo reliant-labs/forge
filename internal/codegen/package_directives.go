@@ -10,7 +10,7 @@
 // comment line (after stripping comment syntax + whitespace) so prose that
 // merely mentions the directive is never mistaken for it.
 //
-// Two directives live here, deliberately separate because they mean two
+// Three directives live here, deliberately separate because they mean
 // DIFFERENT things (FORGE_SHAPE_REDESIGN §1/§4, friction fr-b158e37541):
 //
 //   - `//forge:exclude-contract` — opt this package OUT of contract
@@ -25,8 +25,19 @@
 //     for a package that IS contract-shaped and WANTS its mock, but whose
 //     construction is bespoke (adapter wrapping, two-phase setters, a
 //     dialer nil'd on unset env) and so cannot be a plain New(Deps) node.
+//     The server HAS it: a consumer's Deps field resolves to the Infra field
+//     the owner put it on.
 //
-// Both are recognized as either a package doc comment (above the `package`
+//   - `//forge:not-a-component: <why>` — the server does NOT have this
+//     package at all. It keeps its contract, its mock and (if it opts in)
+//     its decorator, but the server composition never constructs it, never
+//     resolves its Deps and gives it no Infra field: something else builds
+//     it (the CLI, a daemon, another binary). A server component that
+//     requires it by type is a generate error, because the marker would
+//     then be false. Unlike external-component, it makes a claim about the
+//     server rather than about how the server builds it.
+//
+// All are recognized as either a package doc comment (above the `package`
 // clause) or a free-standing comment anywhere in the package's .go files —
 // the latter so a package can carry the marker without disturbing its
 // existing package doc.
@@ -50,6 +61,7 @@ const (
 	directiveExcludeContract    = "forge:exclude-contract"
 	directiveExternalComponent  = "forge:external-component"
 	directiveExternalComponent2 = "forge:provided"
+	directiveNotAComponent      = "forge:not-a-component"
 
 	// directiveServiceMarker / directiveContractMarker sit on an INTERFACE's
 	// doc (or inline) comment and declare it the package's Service contract
@@ -304,14 +316,15 @@ func HasExcludeContractDirective(dir string) bool {
 	return ok
 }
 
-// ExcludeContractMarker is one `//forge:exclude-contract` occurrence.
-type ExcludeContractMarker struct {
+// ReasonedMarker is one occurrence of a package directive that takes a
+// reason — `//forge:exclude-contract: <why>` or `//forge:not-a-component:
+// <why>`.
+type ReasonedMarker struct {
 	// File is the absolute path of the file carrying the marker.
 	File string
 	// Line is the marker's 1-indexed line.
 	Line int
-	// Reason is the text after `forge:exclude-contract:`; "" for a bare
-	// marker.
+	// Reason is the text after `forge:<directive>:`; "" for a bare marker.
 	Reason string
 }
 
@@ -319,10 +332,45 @@ type ExcludeContractMarker struct {
 // marker, scanning non-test, non-generated files in name order so the answer
 // is deterministic. When a package carries several, the first REASONED one
 // wins — a package that already says why is not made to say it twice.
-func FindExcludeContractMarker(dir string) (ExcludeContractMarker, bool) {
+func FindExcludeContractMarker(dir string) (ReasonedMarker, bool) {
+	return findReasonedDirective(dir, directiveExcludeContract)
+}
+
+// HasNotAComponentDirective reports whether the package rooted at dir
+// declares `//forge:not-a-component` in any of its non-test .go files, with
+// or without a reason. Such a package keeps its contract codegen (mock, and
+// the decorator if it opts in) but is not a component of the server
+// composition: compose.go never constructs it and never resolves its Deps.
+//
+// The bare form counts here for the same reason a bare exclude-contract
+// does: codegen must never break a project over the spelling of a marker.
+// `forge lint` refuses the bare form (forge-not-a-component-reason).
+func HasNotAComponentDirective(dir string) bool {
+	_, ok := FindNotAComponentMarker(dir)
+	return ok
+}
+
+// FindNotAComponentMarker returns the package's `//forge:not-a-component`
+// marker, preferring a reasoned one (see FindExcludeContractMarker).
+func FindNotAComponentMarker(dir string) (ReasonedMarker, bool) {
+	return findReasonedDirective(dir, directiveNotAComponent)
+}
+
+// ParseNotAComponentComment reports whether one raw comment IS the
+// not-a-component directive, and its reason — the same two accepted
+// spellings as ParseExcludeContractComment.
+func ParseNotAComponentComment(raw string) (reason string, ok bool) {
+	return parseReasonedDirective(raw, directiveNotAComponent)
+}
+
+// findReasonedDirective returns the first occurrence of a reasoned package
+// directive (`//<directive>: <why>` or the bare `//<directive>`) in dir's
+// non-test, non-generated files, scanned in name order. A reasoned
+// occurrence anywhere wins over a bare one.
+func findReasonedDirective(dir, directive string) (ReasonedMarker, bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ExcludeContractMarker{}, false
+		return ReasonedMarker{}, false
 	}
 	var names []string
 	for _, e := range entries {
@@ -335,7 +383,7 @@ func FindExcludeContractMarker(dir string) (ExcludeContractMarker, bool) {
 	}
 	sort.Strings(names)
 
-	var first ExcludeContractMarker
+	var first ReasonedMarker
 	found := false
 	fset := token.NewFileSet()
 	for _, n := range names {
@@ -346,11 +394,11 @@ func FindExcludeContractMarker(dir string) (ExcludeContractMarker, bool) {
 		}
 		for _, cg := range file.Comments {
 			for _, c := range cg.List {
-				reason, ok := ParseExcludeContractComment(c.Text)
+				reason, ok := parseReasonedDirective(c.Text, directive)
 				if !ok {
 					continue
 				}
-				m := ExcludeContractMarker{File: path, Line: fset.Position(c.Pos()).Line, Reason: reason}
+				m := ReasonedMarker{File: path, Line: fset.Position(c.Pos()).Line, Reason: reason}
 				if reason != "" {
 					return m, true
 				}
@@ -373,11 +421,17 @@ func FindExcludeContractMarker(dir string) (ExcludeContractMarker, bool) {
 // forge:outbound-io, …` lists, a different separator — is not the directive,
 // matching every other forge marker's whole-line rule.
 func ParseExcludeContractComment(raw string) (reason string, ok bool) {
+	return parseReasonedDirective(raw, directiveExcludeContract)
+}
+
+// parseReasonedDirective is the shared whole-line rule for a directive that
+// takes a reason after a colon.
+func parseReasonedDirective(raw, directive string) (reason string, ok bool) {
 	text := trimCommentMarkers(raw)
-	if text == directiveExcludeContract {
+	if text == directive {
 		return "", true
 	}
-	rest, has := strings.CutPrefix(text, directiveExcludeContract+":")
+	rest, has := strings.CutPrefix(text, directive+":")
 	if !has {
 		return "", false
 	}

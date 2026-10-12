@@ -3,6 +3,7 @@ package codegen
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -149,24 +150,83 @@ func TestHasExternalComponentDirective(t *testing.T) {
 	}
 }
 
-// TestFilterExternalComponents proves the external-component marker drops a
-// component from the Build graph while leaving unmarked ones in place.
-func TestFilterExternalComponents(t *testing.T) {
+// TestComposedComponents proves both markers drop a component from the Build
+// graph while leaving unmarked ones in place — and that only not-a-component
+// is reported back, because only it makes a claim a consumer can contradict.
+func TestComposedComponents(t *testing.T) {
 	projectDir := t.TempDir()
 
-	// Two packages under internal/: one marked external, one normal.
 	writeGoFile(t, filepath.Join(projectDir, "internal", "billing"),
 		"contract.go", "//forge:external-component\npackage billing\n\ntype Service interface{}\n")
 	writeGoFile(t, filepath.Join(projectDir, "internal", "user"),
 		"contract.go", "package user\n\ntype Service interface{}\n")
+	writeGoFile(t, filepath.Join(projectDir, "internal", "cliauth"),
+		"contract.go", "//forge:not-a-component: built by the login command\npackage cliauth\n\ntype Service interface{}\n")
+	// A worker is a server component by definition; the marker is not
+	// honoured there (lint reports it), or lifecycle.go would name a field
+	// compose.go never declared.
+	writeGoFile(t, filepath.Join(projectDir, "internal", "workers", "sweeper"),
+		"worker.go", "//forge:not-a-component: misplaced\npackage sweeper\n")
 
 	comps := []BuildComponent{
 		{FieldName: "Billing", compRoleRoot: "internal", compImportLeaf: "billing"},
 		{FieldName: "User", compRoleRoot: "internal", compImportLeaf: "user"},
+		{FieldName: "Cliauth", compRoleRoot: "internal", compImportLeaf: "cliauth"},
+		{FieldName: "Sweeper", compRoleRoot: "internal/workers", compImportLeaf: "sweeper"},
 	}
 
-	got := filterExternalComponents(projectDir, comps)
-	if len(got) != 1 || got[0].FieldName != "User" {
-		t.Fatalf("filterExternalComponents kept %+v, want only [User]", got)
+	composed, notComponents := composedComponents(projectDir, comps)
+	var names []string
+	for _, c := range composed {
+		names = append(names, c.FieldName)
+	}
+	if strings.Join(names, ",") != "User,Sweeper" {
+		t.Fatalf("composedComponents kept %v, want [User Sweeper]", names)
+	}
+	if len(notComponents) != 1 || notComponents[0].FieldName != "Cliauth" {
+		t.Fatalf("notComponents = %+v, want only [Cliauth]", notComponents)
+	}
+}
+
+func TestNotAComponentDirective(t *testing.T) {
+	cases := []struct {
+		name       string
+		file       string
+		want       bool
+		wantReason string
+	}{
+		{"reasoned unspaced", "//forge:not-a-component: CLI-only\npackage foo\n", true, "CLI-only"},
+		{"reasoned spaced", "// forge:not-a-component: daemon-only\npackage foo\n", true, "daemon-only"},
+		{"bare still counts for codegen", "//forge:not-a-component\npackage foo\n", true, ""},
+		{"prose mentioning it is not the directive", "// see forge:not-a-component for CLI packages\npackage foo\n", false, ""},
+		{"external-component is NOT not-a-component", "//forge:external-component\npackage foo\n", false, ""},
+		{"no directive", "package foo\n", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeGoFile(t, dir, "contract.go", tc.file)
+			if got := HasNotAComponentDirective(dir); got != tc.want {
+				t.Fatalf("HasNotAComponentDirective = %v, want %v", got, tc.want)
+			}
+			if m, ok := FindNotAComponentMarker(dir); ok && m.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", m.Reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestIsWiredComponentDir_NotAComponent: a not-a-component package has no
+// forge-built instance, so it takes no slot in the test-factory namespace —
+// the same answer the helpers generator and ComputeTestHelperName must share.
+func TestIsWiredComponentDir_NotAComponent(t *testing.T) {
+	projectDir := t.TempDir()
+	dir := filepath.Join(projectDir, "internal", "billing")
+	writeGoFile(t, dir, "contract.go", "//forge:not-a-component: CLI-only\npackage billing\n\ntype Service interface{}\n")
+	if IsWiredComponentDir(dir) {
+		t.Fatal("a not-a-component package must not count as a wired component")
+	}
+	if got := ComputeTestHelperName("billing", projectDir); got != "Billing" {
+		t.Fatalf("handler billing beside a not-a-component internal/billing must keep its plain factory name, got %q", got)
 	}
 }

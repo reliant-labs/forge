@@ -123,13 +123,18 @@ type graphFrontend struct {
 	Port int    `json:"port,omitempty"`
 }
 
-// graphPackage is one internal Go package. Both fields come from the
+// graphPackage is one internal Go package. Every field comes from the
 // package's own source: it exists because internal/<name>/contract.go
 // exists, and its Type is "outbound-io" when it carries the
-// `//forge:outbound-io` marker, "service" when it does not.
+// `//forge:outbound-io` marker, "service" when it does not. Composition says
+// whether the server builds it: "composed" (compose.go), "external"
+// (`//forge:external-component`, hand-built on Infra) or "not-a-component"
+// (`//forge:not-a-component`, not in the server; Reason says who builds it).
 type graphPackage struct {
-	Name string `json:"name"`
-	Type string `json:"type,omitempty"`
+	Name        string `json:"name"`
+	Type        string `json:"type,omitempty"`
+	Composition string `json:"composition,omitempty"`
+	Reason      string `json:"composition_reason,omitempty"`
 }
 
 // graphBinary is one non-server long-running binary.
@@ -271,16 +276,17 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 	// Build a lookup of internal package names so service Deps fields can be
 	// matched to a producing package. The set is DISCOVERED from the code
 	// (internal/<pkg>/contract.go), which is the same source the bootstrap
-	// codegen wires from — so the graph can never name a package the binary
-	// does not construct, nor omit one it does. An unknown type leaves the
-	// package field empty and emits a typeless dep edge.
+	// codegen wires from — so the graph can never omit a package the binary
+	// constructs, and each package's Composition (read off the same markers
+	// compose.go obeys) says whether the server builds it at all. An unknown
+	// type leaves the package field empty and emits a typeless dep edge.
 	pkgByName := map[string]graphPackage{}
 	discovered, pkgErr := codegen.DiscoverInternalPackages(projectDir)
 	if pkgErr != nil {
 		doc.Warnings = append(doc.Warnings, fmt.Sprintf("discover internal packages: %v", pkgErr))
 	}
 	for _, p := range discovered {
-		gp := graphPackage{Name: p.Name, Type: p.Type}
+		gp := graphPackage{Name: p.Name, Type: p.Type, Composition: p.Composition, Reason: p.CompositionReason}
 		pkgByName[p.Name] = gp
 		doc.Packages = append(doc.Packages, gp)
 	}

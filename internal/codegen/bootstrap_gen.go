@@ -750,17 +750,18 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		})
 	}
 
-	// Drop external-component packages from the test-factory namespace. An
-	// `//forge:external-component` domain pkg is HAND-CONSTRUCTED in
-	// providers.go / OpenInfra — it is not a forge-wired component, so it
-	// gets no NewTest<Pkg> factory (mirroring filterExternalComponents on the
-	// Build side). This also removes it from the cross-role collision count:
+	// Drop packages forge does not construct from the test-factory namespace.
+	// An `//forge:external-component` domain pkg is HAND-CONSTRUCTED in
+	// providers.go / OpenInfra, and a `//forge:not-a-component` one is not in
+	// the server at all — neither is a forge-wired component, so neither gets
+	// a NewTest<Pkg> factory (mirroring composedComponents on the Build
+	// side). This also removes them from the cross-role collision count:
 	// a domain `internal/billing` and a handler `internal/handlers/billing`
 	// both `package billing` would otherwise drive a spurious Svc-prefix
 	// rename on the HANDLER service's factory (NewTestSvcBilling) that no
 	// scaffold test references (ComputeTestHelperName is now external-aware
 	// too), and could duplicate-declare the same factory identifier.
-	packages = filterExternalComponentPackages(projectDir, packages)
+	packages = filterWiredComponentPackages(projectDir, packages)
 
 	// Resolve cross-role import-alias collisions. Build a count over the
 	// services + packages namespace (workers/operators don't appear in
@@ -1186,10 +1187,11 @@ func removeRetiredBootstrapTesting(projectDir string, cs *checksums.FileChecksum
 	return nil
 }
 
-// filterExternalComponentPackages narrows pkgs to the packages that actually
+// filterWiredComponentPackages narrows pkgs to the packages that actually
 // occupy a test-factory namespace slot: the forge-WIRED components. It drops
 // anything hand-built in providers.go / OpenInfra
-// (`//forge:external-component`) and anything with no component to construct
+// (`//forge:external-component`), anything the server does not have
+// (`//forge:not-a-component`) and anything with no component to construct
 // at all — a types-only package carrying `//forge:exclude-contract`, or a
 // directory with no contract.go. None of those get a NewTest<Pkg> factory, so
 // none of them participate in the cross-role collision count.
@@ -1200,8 +1202,8 @@ func removeRetiredBootstrapTesting(projectDir string, cs *checksums.FileChecksum
 // from different sources, a types-only internal/deploy put NewTestDeploy in
 // testing.go and NewTestSvcDeploy in the scaffold tests. The on-disk dir is
 // internal/<ImportPath> (PackageDataFromNames preserves the nested import
-// path). Mirrors filterExternalComponents on the Build side.
-func filterExternalComponentPackages(projectDir string, pkgs []BootstrapPackageData) []BootstrapPackageData {
+// path). Mirrors composedComponents on the Build side.
+func filterWiredComponentPackages(projectDir string, pkgs []BootstrapPackageData) []BootstrapPackageData {
 	out := make([]BootstrapPackageData, 0, len(pkgs))
 	for _, p := range pkgs {
 		dir := filepath.Join(projectDir, "internal", filepath.FromSlash(p.ImportPath))

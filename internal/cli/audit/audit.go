@@ -576,19 +576,34 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	}
 
 	// Internal packages are DISCOVERED from internal/<pkg>/contract.go —
-	// the same walk the bootstrap codegen wires from, so the audit reports
-	// exactly the set the binary constructs. A discovery failure yields an
-	// empty list; the codegen category is where a broken tree gets reported.
+	// the same walk the bootstrap codegen wires from, so `packages` names
+	// every contract package. `uncomposed_packages` names the ones the server
+	// composition does NOT construct, read off the same markers compose.go
+	// obeys: external-component (hand-built on Infra) and not-a-component
+	// (not in the server at all). Absent means every package is composed. A
+	// discovery failure yields an empty list; the codegen category is where a
+	// broken tree gets reported.
 	discoveredPkgs, _ := codegen.DiscoverInternalPackages(projectDir)
 	packages := make([]string, 0, len(discoveredPkgs))
+	var uncomposed []map[string]string
 	for _, p := range discoveredPkgs {
 		packages = append(packages, p.Name)
+		if p.Composition != codegen.CompositionComposed {
+			entry := map[string]string{"name": p.Name, "composition": p.Composition}
+			if p.CompositionReason != "" {
+				entry["reason"] = p.CompositionReason
+			}
+			uncomposed = append(uncomposed, entry)
+		}
 	}
 
 	details := map[string]any{
 		"services":  services,
 		"frontends": frontends,
 		"packages":  packages,
+	}
+	if len(uncomposed) > 0 {
+		details["uncomposed_packages"] = uncomposed
 	}
 	// proto_integrity surfaces the RPC-count parse failure (if any) so
 	// JSON consumers don't have to guess whether RPCCount: 0 means

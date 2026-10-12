@@ -333,7 +333,15 @@ func GenerateCompose(in InjectGenInput) error {
 	if err != nil {
 		return err
 	}
-	comps = filterExternalComponents(in.ProjectDir, comps)
+	comps, notComponents := composedComponents(in.ProjectDir, comps)
+	// A not-a-component package is one the server does not have. A server
+	// component that requires it by type makes that claim false, and no
+	// provider forge could pick is right: refuse before planning, naming the
+	// marker, instead of reporting "no provider" and steering the author to
+	// put a CLI collaborator on the server's Infra.
+	if consumed := notAComponentConsumers(comps, notComponents); len(consumed) > 0 {
+		return notAComponentConsumedError(in.ProjectDir, consumed)
+	}
 	// No len(comps)==0 early-return: cmd/server.go imports internal/app
 	// unconditionally, so the package must exist and compile even with zero
 	// components. The template renders a valid empty NewComponents over an
@@ -461,7 +469,7 @@ func GenerateCompose(in InjectGenInput) error {
 	}
 
 	if len(missing) > 0 {
-		return missingProviderError(missing)
+		return missingProviderError(missing, unconsumedPackages(comps, plan.Edges))
 	}
 
 	// Fields: the Components struct rows, one per component typed as its
@@ -1337,7 +1345,14 @@ func scalarConfigHint(df DepsField, c BuildComponent) string {
 // missingProviderError builds the loud generate-time error naming every
 // required collaborator field with no provider, with the exact remediation
 // (add an assignable field to Infra in internal/app/providers.go).
-func missingProviderError(missing []MissingProvider) error {
+//
+// unconsumed maps the FieldName of every internal package nothing in the
+// server consumes to its import path (unconsumedPackages). A missing provider
+// on one of those gets a second remedy: the package may not belong to the
+// server at all. That is a hint, never a decision — "no server component
+// requires it yet" is also how a package looks before its consumer is
+// written, so forge names the marker and leaves the call to the author.
+func missingProviderError(missing []MissingProvider, unconsumed map[string]string) error {
 	sort.Slice(missing, func(i, j int) bool {
 		if missing[i].Component != missing[j].Component {
 			return missing[i].Component < missing[j].Component
@@ -1347,10 +1362,22 @@ func missingProviderError(missing []MissingProvider) error {
 	var b strings.Builder
 	b.WriteString("the explicit component construction site (internal/app/compose.go) has Deps fields with no provider.\n\n")
 	b.WriteString("Each required collaborator must resolve to either another registered component (by its Service interface type) or a field on the owned *Infra struct (internal/app/providers.go). forge will NOT emit a nil for a custom-interface dep (that passes validateDeps and nil-derefs at runtime), so the following must be hand-wired:\n\n")
+	var notServer []string
+	seen := map[string]bool{}
 	for _, m := range missing {
 		writeMissingProviderRemedy(&b, m)
+		if path, ok := unconsumed[m.Component]; ok && !seen[path] {
+			seen[path] = true
+			notServer = append(notServer, path)
+		}
 	}
 	b.WriteString("Then re-run `forge generate` — compose.go's NewComponents will fill the Deps field from the Infra field automatically (any field ASSIGNABLE to the dep type resolves it; the field name need not match).\n")
+	if len(notServer) > 0 {
+		sort.Strings(notServer)
+		fmt.Fprintf(&b, "\nNo service, worker or operator requires %s. If the server does not use it — it is built by the CLI, a daemon or another binary — do not wire its Deps into the server's Infra. Mark the package instead:\n\n", strings.Join(notServer, ", "))
+		b.WriteString("      //forge:not-a-component: <who constructs it>\n\n")
+		b.WriteString("It keeps contract.go, mock_gen.go and its decorator; compose.go stops constructing it (`forge skill load contracts`).\n")
+	}
 	return fmt.Errorf("%s", b.String())
 }
 
@@ -1587,7 +1614,7 @@ func GenerateLifecycle(in InjectGenInput) error {
 	if err != nil {
 		return err
 	}
-	comps = filterExternalComponents(in.ProjectDir, comps)
+	comps, _ = composedComponents(in.ProjectDir, comps)
 	// No len(comps)==0 early-return: cmd/server.go reads app.AllWorkers /
 	// app.AllOperators / app.RunOperators over *Components, so lifecycle.go
 	// must exist even with zero supervised components (the template emits
@@ -2077,31 +2104,4 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	}
 
 	return comps, nil
-}
-
-// filterExternalComponents drops every component whose package declares
-// the `//forge:external-component` (or `//forge:provided`) directive from
-// the Build graph. Such a component is HAND-CONSTRUCTED in providers.go /
-// OpenInfra — the type-topological injector must NOT emit a New(Deps) node
-// for it, and other components that depend on its Service interface resolve
-// to an Infra field instead (the hand-built instance the owner placed on
-// Infra). See package_directives.go for why this is SEPARATE from
-// contract-exclusion: an external component still gets its mock/contract
-// codegen (a different walk entirely) — it is only absent from the Build
-// node set, not from the type-shaped surface.
-//
-// This is a SELECTION predicate over the already-assembled component slice,
-// applied post-enumeration — it deliberately does not touch how components
-// are discovered. The component's on-disk package dir is reconstructed from
-// the role root + import leaf the assembler already resolved.
-func filterExternalComponents(projectDir string, comps []BuildComponent) []BuildComponent {
-	out := comps[:0:0]
-	for _, c := range comps {
-		dir := filepath.Join(projectDir, filepath.FromSlash(c.compRoleRoot), filepath.FromSlash(c.compImportLeaf))
-		if HasExternalComponentDirective(dir) {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
 }

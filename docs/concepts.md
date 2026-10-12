@@ -256,14 +256,20 @@ never mistaken for one.
 | `forge:service` (or `forge:contract`)            | the interface's doc                      | Names the contract when it isn't called `Service`.                                                                                                             |
 | `forge:exclude-contract: <why>`                  | the package                              | No contract codegen at all — and therefore **no generated mock**. Needs a reason; refused on outbound-I/O and multi-impl packages.                             |
 | `forge:external-component` (or `forge:provided`) | the package                              | Constructed by hand in `providers.go`, so the injector skips it — but the mock is still generated.                                                             |
+| `forge:not-a-component: <why>`                   | the package                              | The server does not have it (CLI-, daemon- or other-binary-only): no `compose.go` entry, no `Infra` field, `Deps` never resolved — mock still generated.       |
 | `forge:outbound-io`                              | the package                              | Declares an outbound boundary; lint then forbids inbound RPCs in it.                                                                                           |
 
-The distinction between the last two is the one people get wrong.
-`exclude-contract` means _forge does not manage this package_ and costs you
-the mock. `external-component` means _forge does not **build** this package_
-but still generates its mock — the right choice when construction is bespoke
-(adapter wrapping, two-phase setters, a dialer nil'd on unset env) but the
-package is otherwise contract-shaped.
+The distinction between the three package opt-outs is the one people get
+wrong. `exclude-contract` means _forge does not manage this package_ and
+costs you the mock. `external-component` means _forge does not **build** this
+package_ but the server still has it — you construct it in `providers.go` and
+consumers resolve to that `Infra` field; the right choice when construction is
+bespoke (adapter wrapping, two-phase setters, a dialer nil'd on unset env) but
+the package is otherwise contract-shaped. `not-a-component` means _the server
+does not have this package at all_ — the CLI, a daemon or another binary
+builds it — so the generator never asks for its `Deps`, and a server component
+that requires it fails `forge generate` rather than quietly wiring a CLI
+collaborator into the server. Both of the last two keep the mock.
 
 Without `forge:optional-dep`, a required non-scalar `Deps` field that
 resolves to nothing is a loud generate-time or compile-time error. Forge

@@ -26,9 +26,11 @@ package lint
 // (observe it); a pure-compute component toward `// forge:no-observe`.
 //
 // Scope exclusions: handler packages (internal/handlers/*, concrete *Service),
-// `//forge:external-component` (hand-wired), `//forge:exclude-contract`,
-// testdata fixtures, and test-only packages (no Service interface in non-test
-// source). Kill-switch: config.enforce_component_observe: off.
+// `//forge:external-component` (hand-wired), `//forge:not-a-component` (not
+// in the server; whoever builds it decides whether to wrap it),
+// `//forge:exclude-contract`, testdata fixtures, and test-only packages (no
+// Service interface in non-test source). Kill-switch:
+// config.enforce_component_observe: off.
 
 import (
 	"errors"
@@ -93,8 +95,12 @@ func scanUndecidedObserveComponents(projectDir string) ([]observeComponent, erro
 			return nil //nolint:nilerr // no contract.go → not a component dir
 		}
 
-		// Excluded from codegen / hand-wired — no forge-owned decorator applies.
-		if codegen.HasExcludeContractDirective(path) || codegen.HasExternalComponentDirective(path) {
+		// Excluded from codegen, hand-wired, or not in the server — compose.go
+		// never constructs it, so no forge-owned decorator wrap applies. (A
+		// not-a-component package still GETS the decorator when it opts in;
+		// it is just not forge's call to demand one.)
+		if codegen.HasExcludeContractDirective(path) || codegen.HasExternalComponentDirective(path) ||
+			codegen.HasNotAComponentDirective(path) {
 			return nil
 		}
 

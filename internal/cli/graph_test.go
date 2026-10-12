@@ -204,6 +204,10 @@ func TestGraph_EmitsAllResourceTypes(t *testing.T) {
 	if doc.Packages[0].Name != "repo" || doc.Packages[0].Type != "outbound-io" {
 		t.Errorf("packages[0] = %+v, want {repo outbound-io}", doc.Packages[0])
 	}
+	// No composition marker: the server composes it.
+	if doc.Packages[0].Composition != "composed" {
+		t.Errorf("packages[0].composition = %q, want composed", doc.Packages[0].Composition)
+	}
 	if len(doc.Gateways) != 1 {
 		t.Fatalf("gateways len = %d, want 1", len(doc.Gateways))
 	}

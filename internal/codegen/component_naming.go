@@ -15,14 +15,18 @@ import (
 // generated test-factory namespace (`app.NewTest<X>`).
 //
 // A wired component is a package forge itself constructs, which means all
-// three of:
+// four of:
 //
 //   - it declares a contract.go (the Service/Deps/New triple lives there);
 //   - it is not opted out with `//forge:exclude-contract` — a types-only
 //     package (internal/db, internal/deploy) carries this precisely because
 //     there is nothing to construct;
 //   - it is not `//forge:external-component` — hand-built in providers.go /
-//     OpenInfra, so forge emits no factory for it either.
+//     OpenInfra, so forge emits no factory for it either;
+//   - it is not `//forge:not-a-component` — the server composition does not
+//     construct it at all (a CLI- or daemon-only package), so there is no
+//     forge-wired instance for a factory to stand in for. It keeps its
+//     mock_gen.go, which is the seam its consumers test against.
 //
 // WHY THIS EXISTS AS ONE FUNCTION. The name is derived by two generators —
 // the helpers generator (which builds its namespace from real components) and
@@ -50,7 +54,7 @@ func IsWiredComponentDir(dir string) bool {
 	if HasExcludeContractDirective(dir) {
 		return false // types-only / library shape, opted out by its own source
 	}
-	return !HasExternalComponentDirective(dir)
+	return !HasExternalComponentDirective(dir) && !HasNotAComponentDirective(dir)
 }
 
 // ComputeTestHelperName returns the suffix used by the `app.NewTest<X>` and

@@ -440,6 +440,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "// forge:external-component\npackage natsbus",
 		},
 		{
+			Name:      "forge:not-a-component",
+			AppliesTo: "package",
+			Effect:    "The server does not have this package: the CLI, a daemon or another binary constructs it. It keeps contract.go, its generated mock and (with `forge:constructor`) its decorator, but compose.go never constructs it, never resolves its Deps and gives it no Infra field. A server component that requires it by type fails `forge generate`, because the marker would then be false. Unlike `forge:external-component`, which says the server builds it by hand, this says the server does not build it at all. REQUIRES a reason naming who does (`forge:not-a-component: <why>`); a bare marker, or one on a handler/worker/operator or a package without contract.go, is a `forge lint` error.",
+			Placement: "package doc comment, or a free-standing comment in any of an internal/<pkg> contract package's .go files",
+			Example:   "//forge:not-a-component: CLI-only — built by `reliant login`\npackage cliauth",
+		},
+		{
 			Name:      "forge:outbound-io",
 			AppliesTo: "package",
 			Effect:    "Asserts the package is an outbound boundary — it talks OUT to a third-party system and must not serve inbound RPCs. `forge lint` enforces that with forgeconv-outbound-io-no-rpc.",

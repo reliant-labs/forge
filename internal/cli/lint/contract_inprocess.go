@@ -184,7 +184,11 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string,
 	// internal/linter/contract/exclude_directive.go for why it is not an
 	// analyzer. The forge.yaml contracts.exclude list does not silence it: that
 	// list excludes paths, and the gate is about a marker in the source.
-	for _, f := range contract.CheckExcludeDirectives(pkgs, gate) {
+	// The not-a-component gate rides the same pass: a reason, and a marker
+	// placed where composition reads it (not_a_component_directive.go).
+	gateFindings := contract.CheckExcludeDirectives(pkgs, gate)
+	gateFindings = append(gateFindings, contract.CheckNotAComponentDirectives(pkgs, gate)...)
+	for _, f := range gateFindings {
 		pos := token.Position{Filename: f.File, Line: f.Line}
 		if cwd != "" {
 			if rel, rerr := filepath.Rel(cwd, pos.Filename); rerr == nil && !strings.HasPrefix(rel, "..") {

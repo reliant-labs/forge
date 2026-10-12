@@ -324,7 +324,7 @@ func CheckExcludeDirectives(pkgs []*packages.Package, opts ExcludeGateOptions) [
 	return applyDirectiveSuppressions(out)
 }
 
-func checkOnePackage(p *packages.Package, marker codegen.ExcludeContractMarker, candidates []*types.TypeName) []ExcludeFinding {
+func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candidates []*types.TypeName) []ExcludeFinding {
 	var out []ExcludeFinding
 	if marker.Reason == "" {
 		out = append(out, ExcludeFinding{

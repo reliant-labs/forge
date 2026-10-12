@@ -62,6 +62,17 @@ type ProjectGenerator struct {
 	// resolveForgeVersion().
 	ForgePin string
 
+	// GenInRootModule is set when `forge project new --in-place` adopts a
+	// module that already owns gen/: its generated Go packages live in the
+	// root module, with no gen/go.mod. The scaffold then keeps them there —
+	// it writes no gen/go.mod, and go.work uses only the root. Splitting gen/
+	// off would move every gen/ package out of the module that the project's
+	// importers require (control-plane imports reliant's gen/reliant/v1
+	// through reliant's root module), and the root's own `go mod tidy` could
+	// no longer resolve them. The import paths are the same either way, so
+	// nothing else in forge depends on which module holds gen/.
+	GenInRootModule bool
+
 	// factsDir, when set, is where the scaffold reads facts ABOUT the
 	// project tree (existing migrations, the binaries under cmd/, the
 	// discovered components) instead of Path. It is set only when the
@@ -362,24 +373,23 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	// go.mod via blank imports under //go:build tools, so contributors
 	// can `go install` them without remembering the module paths. The
 	// runtime `local:` plugins in buf.gen.yaml resolve them via $PATH.
-	if g.Features.CodegenEnabled() {
+	//
+	// CLI projects get the same set without codegen, so that adding entity
+	// protos later "just works".
+	//
+	// gen/ becomes its own module unless the project's root module already
+	// owns it (GenInRootModule): then there is no gen/go.mod, and go.work
+	// uses only the root.
+	if g.Features.CodegenEnabled() || g.isCLI() {
 		files = append(files,
 			struct{ template, dest string }{"go.work.tmpl", "go.work"},
-			struct{ template, dest string }{"gen-go.mod.tmpl", "gen/go.mod"},
 			struct{ template, dest string }{"buf.yaml.tmpl", "buf.yaml"},
 			struct{ template, dest string }{"buf.gen.yaml", "buf.gen.yaml"},
 			struct{ template, dest string }{"tools.go.tmpl", "tools/tools.go"},
 		)
-	} else if g.isCLI() {
-		// CLI projects: keep buf.yaml/buf.gen.yaml and a minimal go.work
-		// so that adding entity protos later "just works".
-		files = append(files,
-			struct{ template, dest string }{"go.work.tmpl", "go.work"},
-			struct{ template, dest string }{"gen-go.mod.tmpl", "gen/go.mod"},
-			struct{ template, dest string }{"buf.yaml.tmpl", "buf.yaml"},
-			struct{ template, dest string }{"buf.gen.yaml", "buf.gen.yaml"},
-			struct{ template, dest string }{"tools.go.tmpl", "tools/tools.go"},
-		)
+		if !g.GenInRootModule {
+			files = append(files, struct{ template, dest string }{"gen-go.mod.tmpl", "gen/go.mod"})
+		}
 	}
 
 	switch {

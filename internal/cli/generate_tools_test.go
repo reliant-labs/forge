@@ -65,6 +65,91 @@ func TestEnsureGenGoMod_NoGoWorkSkips(t *testing.T) {
 	}
 }
 
+// A go.work whose only mention of "gen" is inside another `use` path does
+// not make gen/ a workspace member. The old byte match did, and bootstrapped
+// a gen/go.mod into a project whose root module owns gen/ — splitting its
+// packages out of the module everything imports them through.
+func TestEnsureGenGoMod_GenOnlyInsideAnotherUsePathSkips(t *testing.T) {
+	dir := t.TempDir()
+	writeForTest(t, filepath.Join(dir, "go.mod"), "module example.com/proj\n\ngo 1.26.2\n")
+	writeForTest(t, filepath.Join(dir, "gen", "proj", "v1", "proj.pb.go"), "package projv1\n")
+	writeForTest(t, filepath.Join(dir, "go.work"), "go 1.26.2\n\nuse (\n\t.\n\t../forge-gen-fix\n)\n")
+
+	if err := ensureGenGoMod(dir); err != nil {
+		t.Fatalf("ensureGenGoMod: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gen", "go.mod")); !os.IsNotExist(err) {
+		t.Errorf("ensureGenGoMod created gen/go.mod, but go.work does not use gen (stat err = %v)", err)
+	}
+}
+
+func TestGoWorkUsesGen(t *testing.T) {
+	for name, tc := range map[string]struct {
+		work string // "" = no go.work
+		want bool
+	}{
+		"no go.work":              {work: "", want: false},
+		"use . and gen":           {work: "go 1.26.2\n\nuse (\n\t.\n\tgen\n)\n", want: true},
+		"use ./gen":               {work: "go 1.26.2\n\nuse ./gen\n", want: true},
+		"root only":               {work: "go 1.26.2\n\nuse .\n", want: false},
+		"gen inside another path": {work: "go 1.26.2\n\nuse (\n\t.\n\t../forge-gen-fix\n)\n", want: false},
+		"a gen dir elsewhere":     {work: "go 1.26.2\n\nuse (\n\t.\n\t../other/gen\n)\n", want: false},
+		"malformed":               {work: "use (\n", want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.work != "" {
+				writeForTest(t, filepath.Join(dir, "go.work"), tc.work)
+			}
+			if got := goWorkUsesGen(dir); got != tc.want {
+				t.Errorf("goWorkUsesGen = %v, want %v for go.work:\n%s", got, tc.want, tc.work)
+			}
+		})
+	}
+}
+
+// rootModuleOwnsGen decides whether `project new --in-place` keeps gen/ in
+// the root module. Only a gen/ that already holds Go packages and has no
+// go.mod of its own is the root module's.
+func TestRootModuleOwnsGen(t *testing.T) {
+	const goMod = "module example.com/proj\n\ngo 1.26.2\n"
+	for name, tc := range map[string]struct {
+		files map[string]string
+		want  bool
+	}{
+		"gen packages in the root module": {
+			files: map[string]string{"go.mod": goMod, "gen/proj/v1/proj.pb.go": "package projv1\n"},
+			want:  true,
+		},
+		"gen is its own module": {
+			files: map[string]string{"go.mod": goMod, "gen/go.mod": "module example.com/proj/gen\n", "gen/proj/v1/proj.pb.go": "package projv1\n"},
+			want:  false,
+		},
+		"no gen": {
+			files: map[string]string{"go.mod": goMod},
+			want:  false,
+		},
+		"gen holds no Go files": {
+			files: map[string]string{"go.mod": goMod, "gen/forge_descriptor.json": "{}\n"},
+			want:  false,
+		},
+		"not a module": {
+			files: map[string]string{"gen/proj/v1/proj.pb.go": "package projv1\n"},
+			want:  false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for rel, body := range tc.files {
+				writeForTest(t, filepath.Join(dir, filepath.FromSlash(rel)), body)
+			}
+			if got := rootModuleOwnsGen(dir); got != tc.want {
+				t.Errorf("rootModuleOwnsGen = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // writeForTest is a small fixture helper that ensures the parent dir
 // exists before writing. The package's other mustWrite helper
 // (generate_cleanup_test.go) assumes the parent exists; the gen/go.mod

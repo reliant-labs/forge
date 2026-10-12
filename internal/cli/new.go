@@ -275,6 +275,11 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		forgePin = adopted.pin
 		announceAdoptedForgePin(*adopted)
 	}
+	// An in-place target whose root module already owns gen/ keeps it.
+	genInRootModule := inPlace && rootModuleOwnsGen(targetPath)
+	if genInRootModule {
+		fmt.Println("gen/ already holds Go packages of this module (no gen/go.mod): forge keeps it in the root module — no gen/go.mod, and go.work uses only the root.")
+	}
 	modulePath, defaulted := defaultModulePath(modulePath, projectName)
 	if defaulted {
 		fmt.Printf("Go module path: %s (no --mod given; pass --mod github.com/<you>/%s to set the path you will publish under)\n", modulePath, projectName)
@@ -369,6 +374,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			harness:            harness,
 			disableFeatures:    disableFeatures,
 			forgePin:           forgePin,
+			genInRootModule:    genInRootModule,
 		},
 		bufPlugins: bufPluginsNormalized,
 		inPlace:    inPlace,
@@ -586,6 +592,9 @@ type newGeneratorConfig struct {
 	// forgePin is the forge require of the module an in-place scaffold
 	// adopts (generator.ProjectGenerator.ForgePin); "" for a fresh project.
 	forgePin string
+	// genInRootModule reports an in-place target whose root module already
+	// owns gen/ (rootModuleOwnsGen; generator.ProjectGenerator.GenInRootModule).
+	genInRootModule bool
 }
 
 // configureProjectGenerator builds and configures the project generator from
@@ -610,6 +619,7 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	}
 	gen.GoVersionOverride = c.goVersion
 	gen.ForgePin = c.forgePin
+	gen.GenInRootModule = c.genInRootModule
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}
@@ -1019,8 +1029,8 @@ const forgeModulePathForBridge = "github.com/reliant-labs/forge"
 // a decision the user makes, and forgecompat.InspectBridge reports whenever it
 // drifts.
 //
-// It augments the starter go.work the generator already emitted (use . + gen)
-// with `use <root>`. go.work / go.work.sum are already in the scaffold's
+// It augments the starter go.work the generator already emitted (use ., plus
+// gen when gen/ is its own module) with `use <root>`. go.work / go.work.sum are already in the scaffold's
 // .gitignore, so the machine-local path never gets committed.
 func writeDevForgeGoWork(targetPath string, link bool) {
 	if !link {
@@ -1428,6 +1438,21 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 		}
 	}
 	return nil
+}
+
+// rootModuleOwnsGen reports whether the module at dir already owns gen/: dir
+// has a go.mod, gen/ holds Go files, and gen/ is not a module of its own (no
+// gen/go.mod). An in-place scaffold keeps such a gen/ where it is (see
+// generator.ProjectGenerator.GenInRootModule). A fresh scaffold's gen/ holds
+// no Go files, so it still becomes forge's separate gen module.
+func rootModuleOwnsGen(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gen", "go.mod")); err == nil {
+		return false
+	}
+	return dirHasGoFiles(filepath.Join(dir, "gen"))
 }
 
 // dirHasGoFiles reports whether any .go file lives at or below dir.

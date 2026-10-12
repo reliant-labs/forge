@@ -149,13 +149,11 @@ func ensureGenGoMod(projectDir string) error {
 	}
 
 	// Only bootstrap when go.work declares `use gen` — if there's no
-	// gen workspace member, the missing file is by design.
-	workData, err := os.ReadFile(filepath.Join(projectDir, "go.work"))
-	if err != nil {
-		// No go.work at all → no workspace → no need for gen/go.mod.
-		return nil
-	}
-	if !strings.Contains(string(workData), "gen") {
+	// gen workspace member, the missing file is by design: a project whose
+	// root module owns gen/ (an in-place adoption; see
+	// generator.ProjectGenerator.GenInRootModule) has none, and writing one
+	// would split gen/'s packages out of the module that imports them.
+	if !goWorkUsesGen(projectDir) {
 		return nil
 	}
 
@@ -195,6 +193,34 @@ func ensureGenGoMod(projectDir string) error {
 	}
 	fmt.Println("🔧 Bootstrapped missing gen/go.mod (fresh worktree).")
 	return nil
+}
+
+// goWorkUsesGen reports whether the project's go.work has a `use` directive
+// naming the project's gen/ directory. It parses the file: matching the bytes
+// "gen" anywhere in it (what this used to do) also fired on a `use` path that
+// merely contains the letters, such as a bridged checkout at ../forge-gen-fix,
+// and bootstrapped a gen/go.mod the project never had.
+func goWorkUsesGen(projectDir string) bool {
+	path := filepath.Join(projectDir, "go.work")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false // no go.work → no workspace → no gen member
+	}
+	wf, err := modfile.ParseWork(path, data, nil)
+	if err != nil {
+		return false // malformed go.work — `go` itself reports it
+	}
+	genDir := filepath.Join(projectDir, "gen")
+	for _, u := range wf.Use {
+		p := u.Path
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(projectDir, p)
+		}
+		if filepath.Clean(p) == genDir {
+			return true
+		}
+	}
+	return false
 }
 
 // retiredForgePkgModule is the pre-collapse companion module. Importing

@@ -69,6 +69,9 @@ type projectTemplateData struct {
 	// but the field is declared here so buf.yaml's dep gate has a known
 	// input shape; the upgrade lane reads the live forge.yaml api.rest value.
 	RESTEnabled bool
+	// GenInRootModule mirrors ProjectGenerator.GenInRootModule: go.work.tmpl
+	// then uses only the root module, because there is no gen/go.mod.
+	GenInRootModule bool
 	// ForgeVersion is the forge version go.mod.tmpl and gen-go.mod.tmpl pin
 	// (`require github.com/reliant-labs/forge <version>`, no replace): this
 	// binary's version when a proxy serves it, else the newest published
@@ -236,8 +239,9 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		// REST is off at scaffold time; users opt-in post-scaffold by
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
-		RESTEnabled: false,
-		VersionVar:  g.BuildVersionVar,
+		RESTEnabled:     false,
+		GenInRootModule: g.GenInRootModule,
+		VersionVar:      g.BuildVersionVar,
 		// Greenfield projects carry no legacy env-reading debt, so the
 		// typed-access guardrail scaffolds in its strict, gating form. The
 		// matching `config.enforce_typed_access: error` is written into the

@@ -70,11 +70,11 @@ func TestCheckScaffoldCanResolveForge_LinkWithoutCheckout(t *testing.T) {
 	buildinfo.SetDiscoveredForgeRoot("")
 	t.Cleanup(buildinfo.ClearDiscoveredForgeRoot)
 
-	err := checkScaffoldCanResolveForge(config.ProjectKindCLI, true)
+	err := checkScaffoldCanResolveForge(config.ProjectKindCLI, true, nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot locate the checkout") {
 		t.Fatalf("--link-forge without a checkout must be refused, got %v", err)
 	}
-	if err := checkScaffoldCanResolveForge(config.ProjectKindCLI, false); err != nil {
+	if err := checkScaffoldCanResolveForge(config.ProjectKindCLI, false, nil); err != nil {
 		t.Errorf("a cli scaffold without --link-forge needs nothing: %v", err)
 	}
 }

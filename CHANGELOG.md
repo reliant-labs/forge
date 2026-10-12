@@ -239,7 +239,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a boot needs no extra pool slot. If the unlock fails, that connection is
   discarded rather than returned to the pool still holding the lock. Covered
   by `TestReplicasRacingThroughBothEntryPointsTakeTurns`.
-
+- **`forge project new --in-place` adopts the forge pin the module's go.mod
+  already has.** Scaffolding reliant in place (its go.mod requires forge
+  `v0.1.44-0.20261007193810-e75c74afb46e`) wrote the RUNNING binary's
+  `v0.1.44-0.20261010080729-…` into `forge.yaml` `forge_version`, so the two
+  version facts disagreed from birth. The scaffold now records exactly what
+  generate's reconcile step follows (go.mod's forge require), and a `--force`
+  that replaces go.mod requires the same version again. It never moves the
+  pin: when this forge cannot generate into the forge the module resolves
+  (the same verdicts as generate's compatibility check: an unreleased build
+  without `--link-forge`, a pin older than a released binary, or a binary
+  older than the pin), `project new` refuses before writing anything and
+  names the pinned forge to run (`go run …/cmd/forge@<pin> …`). The
+  unreleased-build guard no longer refuses an in-place module that already
+  resolves forge to the very build running. `generate`'s reconcile step also
+  stopped following the require of a REPLACED forge: `goModForgeRequire`
+  parsed go.mod in lax mode, which drops `replace`, so that branch never fired.
+- **`forge generate` resolves every `local:` buf plugin before buf runs.**
+  reliant's kept `buf.gen.yaml` runs
+  `local: [node, tools/protoc-gen-es/node_modules/protoc-gen-es-v2.15.0/bin/protoc-gen-es]`;
+  with `npm ci` never run there, generate died with a Node `MODULE_NOT_FOUND`
+  stack trace from inside buf. Right before each `buf generate` (the root
+  `buf.gen.yaml`, each frontend template, the workspace template), with the
+  PATH buf will get, forge now checks each v2 `local:` plugin (string or argv
+  list): argv[0] on PATH or as a project-relative executable, `go tool <name>`
+  against go.mod's (or the go.work's) tool directives, and `node <script>`'s
+  script. A miss fails with the template, the plugin, what is missing and the
+  fix (``run `npm ci` in tools/protoc-gen-es``, `go get -tool …`,
+  `forge tools install`, `chmod +x …`). Forms decided only at run time
+  (`go run pkg@v`, npx, interpreter flags) have just their argv[0] checked.
 - **`forge lint` no longer reports a golangci-lint that cannot read the
   toolchain's export data as a typecheck failure.** On control-plane the
   gating lane failed with one `typecheck` error, `could not import time (…

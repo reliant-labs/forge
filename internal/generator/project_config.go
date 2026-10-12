@@ -34,7 +34,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		Name:         g.Name,
 		ModulePath:   g.ModulePath,
 		Binary:       binaryYAML,
-		ForgeVersion: buildinfo.Version(),
+		ForgeVersion: g.recordedForgeVersion(),
 		// The harness choice has to survive `forge project new`: every later
 		// `forge generate` decides whether to deliver on-disk skills from it,
 		// and the flag is gone by then. Written for EVERY harness including
@@ -87,6 +87,34 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	}
 
 	return nil
+}
+
+// recordedForgeVersion is the forge_version a scaffolded forge.yaml records:
+// the pin of the module being adopted when there is one (ForgePin), else the
+// binary doing the scaffolding.
+//
+// The adopted pin wins because forge_version is a projection of go.mod's forge
+// require (internal/cli/generate_forge_pin.go). An in-place scaffold keeps the
+// user's go.mod, so stamping this binary instead wrote a forge.yaml that
+// disagreed with the go.mod beside it from birth — reliant got
+// v0.1.44-0.20261010080729-… over a go.mod pinning
+// v0.1.44-0.20261007193810-e75c74afb46e, and the generate that would have
+// converged it refused the project before reaching that step.
+func (g *ProjectGenerator) recordedForgeVersion() string {
+	if g.ForgePin != "" {
+		return g.ForgePin
+	}
+	return buildinfo.Version()
+}
+
+// requiredForgeVersion is the forge version a scaffolded go.mod and
+// gen/go.mod require: the adopted pin when there is one, else
+// resolveForgeVersion().
+func (g *ProjectGenerator) requiredForgeVersion() string {
+	if g.ForgePin != "" {
+		return g.ForgePin
+	}
+	return resolveForgeVersion()
 }
 
 // resolveBinaryName returns the primary binary name (the cmd/<bin>/ leaf the

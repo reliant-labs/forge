@@ -53,6 +53,15 @@ type ProjectGenerator struct {
 	// upgrade re-render with the live forge.yaml value.
 	BuildVersionVar string
 
+	// ForgePin is the forge version the project ALREADY requires, set when
+	// `forge project new --in-place` adopts a module whose go.mod pins forge.
+	// It is then the version forge.yaml's forge_version records and the
+	// version a --force-replaced go.mod (and gen/go.mod) requires, so the
+	// scaffold never contradicts the pin the user chose. Empty for a fresh
+	// project: forge.yaml records this binary and go.mod requires
+	// resolveForgeVersion().
+	ForgePin string
+
 	// factsDir, when set, is where the scaffold reads facts ABOUT the
 	// project tree (existing migrations, the binaries under cmd/, the
 	// discovered components) instead of Path. It is set only when the

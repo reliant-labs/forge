@@ -256,3 +256,31 @@ func TestWriteProjectConfig_NonServiceKindsStillStampForgeVersion(t *testing.T) 
 		})
 	}
 }
+
+// TestWriteProjectConfig_AdoptedForgePinWins: an in-place scaffold adopting a
+// module that already requires forge records THAT version, not the binary's,
+// and renders go.mod / gen/go.mod against it — forge_version is a projection
+// of go.mod's forge require.
+func TestWriteProjectConfig_AdoptedForgePinWins(t *testing.T) {
+	const pin = "v0.1.44-0.20261007193810-e75c74afb46e"
+	tmp := t.TempDir()
+	g := NewProjectGenerator("adopted", tmp, "github.com/example/adopted")
+	g.ForgePin = pin
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatalf("writeProjectConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg config.ProjectConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.ForgeVersion != pin {
+		t.Errorf("forge_version = %q, want the adopted pin %q", cfg.ForgeVersion, pin)
+	}
+	if got := g.forScaffold().ForgeVersion; got != pin {
+		t.Errorf("go.mod templates would require forge %q, want the adopted pin %q", got, pin)
+	}
+}

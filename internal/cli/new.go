@@ -254,13 +254,25 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	if err != nil {
 		return err
 	}
-	if err := checkScaffoldCanResolveForge(kindNormalized, linkForge); err != nil {
-		return err
-	}
-
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
 	if err != nil {
 		return err
+	}
+	// An in-place target may be a module that already requires forge. Its
+	// pin is adopted, never moved — see new_inplace_forge_pin.go.
+	var adopted *adoptedForge
+	if inPlace {
+		if a, ok := inspectAdoptedForge(targetPath, kindNormalized); ok {
+			adopted = &a
+		}
+	}
+	if err := checkScaffoldCanResolveForge(kindNormalized, linkForge, adopted); err != nil {
+		return err
+	}
+	forgePin := ""
+	if adopted != nil {
+		forgePin = adopted.pin
+		announceAdoptedForgePin(*adopted)
 	}
 	modulePath, defaulted := defaultModulePath(modulePath, projectName)
 	if defaulted {
@@ -355,6 +367,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			frontendWorkspaces: frontendWorkspaces,
 			harness:            harness,
 			disableFeatures:    disableFeatures,
+			forgePin:           forgePin,
 		},
 		bufPlugins: bufPluginsNormalized,
 		inPlace:    inPlace,
@@ -569,6 +582,9 @@ type newGeneratorConfig struct {
 	frontendWorkspaces bool
 	harness            string
 	disableFeatures    []string
+	// forgePin is the forge require of the module an in-place scaffold
+	// adopts (generator.ProjectGenerator.ForgePin); "" for a fresh project.
+	forgePin string
 }
 
 // configureProjectGenerator builds and configures the project generator from
@@ -592,6 +608,7 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 		}
 	}
 	gen.GoVersionOverride = c.goVersion
+	gen.ForgePin = c.forgePin
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}
@@ -1070,8 +1087,11 @@ func devForgeBridgeRoot() string {
 
 // checkScaffoldCanResolveForge refuses, BEFORE anything is written, a
 // --link-forge this binary cannot honour, and a service scaffold that could
-// neither pin forge in go.mod nor be bridged. See scaffoldForgeResolution.
-func checkScaffoldCanResolveForge(kind string, link bool) error {
+// neither pin forge in go.mod nor be bridged (scaffoldForgeResolution). For an
+// in-place scaffold adopting a go.mod that already requires forge (adopted
+// non-nil), the require exists, so the question becomes whether this binary
+// can generate into the forge it resolves (adoptedForgeResolution).
+func checkScaffoldCanResolveForge(kind string, link bool, adopted *adoptedForge) error {
 	root := devForgeBridgeRoot()
 	if link && root == "" {
 		return cliutil.UserErr(Name()+" project new --link-forge",
@@ -1081,6 +1101,10 @@ func checkScaffoldCanResolveForge(kind string, link bool) error {
 			"",
 			"rebuild forge from its checkout with `task install:dev` / `make dev` (which records the checkout), "+
 				"or scaffold without --link-forge and bridge by hand: go work use <path-to-forge-checkout>")
+	}
+	if adopted != nil {
+		return adoptedForgeResolution(kind, *adopted, link, buildinfo.InstallableVersion(), buildinfo.Version(),
+			root, forgeInvocationArgs())
 	}
 	bridgeRoot := ""
 	if link {

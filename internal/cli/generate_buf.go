@@ -28,12 +28,17 @@ func runBufGenerateGo(projectDir string) error {
 		fmt.Println("📝 Generated default buf.gen.yaml")
 	}
 
-	fmt.Println("🔨 Running buf generate (Go stubs)...")
 	cmd := exec.Command("buf", "generate")
 	cmd.Dir = projectDir
 	if err := withPinnedTools(cmd, projectDir); err != nil {
 		return err
 	}
+	// After withPinnedTools: the pre-flight resolves plugins on the PATH
+	// buf will actually get. See generate_buf_preflight.go.
+	if err := preflightBufTemplate(projectDir, "buf.gen.yaml", nil, cmd.Env); err != nil {
+		return err
+	}
+	fmt.Println("🔨 Running buf generate (Go stubs)...")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -147,7 +152,11 @@ plugins:
 	}
 
 	// Build command: run from project root, use --template with relative path to frontend's buf.gen.yaml
-	template := filepath.Join(feDir, "buf.gen.yaml")
+	templatePath := filepath.Join(feDir, "buf.gen.yaml")
+	template := templatePath
+	// inlineTemplate is the retargeted body when template carries one
+	// instead of a path.
+	var inlineTemplate []byte
 
 	// Verify the local TS plugin is on disk before invoking buf — otherwise
 	// buf emits a confusing "fork/exec: no such file" error.
@@ -193,7 +202,16 @@ plugins:
 		}
 		if retargeted, changed := retargetedTSTemplate(body, pluginRel); changed {
 			template = string(retargeted)
+			inlineTemplate = retargeted
 		}
+	}
+
+	// Every local plugin of the template buf is about to get — the
+	// retargeted one when the step above rewrote it — resolved before buf
+	// runs. See generate_buf_preflight.go.
+	env := withNodeNoDeprecation()
+	if err := preflightBufTemplate(projectDir, filepath.ToSlash(templatePath), inlineTemplate, env); err != nil {
+		return err
 	}
 
 	args := []string{"generate", "--template", template}
@@ -207,7 +225,7 @@ plugins:
 
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
-	cmd.Env = withNodeNoDeprecation()
+	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -321,6 +339,11 @@ plugins:
 		}
 	}
 
+	env := withNodeNoDeprecation()
+	if err := preflightBufTemplate(projectDir, "packages/api/buf.gen.yaml", nil, env); err != nil {
+		return err
+	}
+
 	fmt.Println("🔨 Generating TypeScript stubs into packages/api/src/gen...")
 	relativeTemplate := filepath.Join("packages", "api", "buf.gen.yaml")
 	args := []string{"generate", "--template", relativeTemplate}
@@ -330,7 +353,7 @@ plugins:
 
 	cmd := exec.Command("buf", args...)
 	cmd.Dir = projectDir
-	cmd.Env = withNodeNoDeprecation()
+	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

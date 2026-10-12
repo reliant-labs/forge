@@ -73,7 +73,9 @@ type projectTemplateData struct {
 	// (`require github.com/reliant-labs/forge <version>`, no replace): this
 	// binary's version when a proxy serves it, else the newest published
 	// release its source descends from (a dev build is bridged to its checkout
-	// by go.work). Never empty in practice — an empty require lets
+	// by go.work); for an in-place scaffold adopting a module that already
+	// requires forge, that module's pin (ProjectGenerator.ForgePin). Never
+	// empty in practice — an empty require lets
 	// `go mod tidy` resolve forge/pkg/* to the retired forge/pkg module; see
 	// resolveForgeVersion in project_pkgdep.go.
 	// Populated by forScaffold only (go.mod is not an upgrade-managed file).
@@ -228,8 +230,9 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		ConfigFields:           codegen.DefaultConfigFieldNames(),
 		// forge/pkg is a published module — pin its version, no replace, no
 		// vendoring. resolveForgeVersion uses this binary's proxy-resolvable
-		// version, or the published release its source descends from.
-		ForgeVersion: resolveForgeVersion(),
+		// version, or the published release its source descends from; an
+		// in-place scaffold adopting a module keeps that module's pin.
+		ForgeVersion: g.requiredForgeVersion(),
 		// REST is off at scaffold time; users opt-in post-scaffold by
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).

@@ -83,9 +83,15 @@ func goModForgeRequire(projectDir string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	f, err := modfile.ParseLax(path, data, nil)
+	// Parse, not ParseLax: lax mode is for DEPENDENCY go.mods and drops
+	// main-module-only directives, replace among them, so the replace check
+	// below never saw one. Lax stays as the fallback for a go.mod carrying a
+	// directive this x/mod predates; it still reads the require.
+	f, err := modfile.Parse(path, data, nil)
 	if err != nil {
-		return "", false
+		if f, err = modfile.ParseLax(path, data, nil); err != nil {
+			return "", false
+		}
 	}
 	for _, r := range f.Replace {
 		if r.Old.Path == forgeModuleRequirePath {

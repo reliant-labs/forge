@@ -110,6 +110,8 @@ If the source uses goose (one-file migrations with `-- +goose Up` / `-- +goose D
 
 If source migrations have foreign-key dependencies on tables that pack migrations create (or vice versa), reorder carefully. Pack migrations are not negotiable; renumber yours.
 
+**Renumbering is only for databases you can rebuild.** A database goose already migrated would run every renumbered file again. To keep those databases, squash goose's history into one first-migration baseline that declares `-- forge:adopts goose <every goose version>`. The migrator then adopts each one on its next run without re-running anything. See `db/deploy-migrations`, "Adopting a database another tool migrated".
+
 ## Test regressions during port — fix the port, never blame the source
 
 If a test passes in the source repo but fails in the port, **it is always a port bug**. Never write "pre-existing in source" in a synthesis or friction note without first running `go test ./<same-package>/...` against the source tree to verify.

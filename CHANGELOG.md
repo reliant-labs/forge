@@ -55,6 +55,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generate. Declared `writes:` join the rollback journal, so a failed generate
   restores them like forge's own output. See `architecture`, "The Generate
   Pipeline".
+- **migratekit adopts a database goose already migrated.** A project leaving
+  goose squashes goose's history into one first-migration baseline and lists
+  every goose version in the baseline's header:
+  `-- forge:adopts goose <version> …` (the line repeats to wrap).
+
+  On the normal `db migrate up` and `AutoMigrate` paths, a database with a
+  `goose_db_version` table and nothing yet in `schema_migrations` is checked
+  against that list:
+  - **Exactly the listed set:** the baseline is recorded as applied without
+    running its SQL, and later migrations apply on the same run.
+    `Result.Adopted` is set and `AutoMigrate` logs `ADOPTED`.
+  - **A listed version missing, or a version applied that the list lacks:**
+    the run refuses with `*migratekit.AdoptionError`. It names the versions,
+    says how to fix each case, and changes nothing.
+
+  The check is set membership, never "the newest version matches", because
+  goose applies out of order. A version counts as applied when its latest row
+  says so, which is how goose reads its own table. goose's table is never
+  modified, so the last goose release remains a safe rollback target. After
+  adoption, goose's table is never read again.
+
+  A malformed declaration, or one on any migration but the first, is refused
+  at `Open` and at boot on every database. `forge lint` reports the same at
+  review time as the new `invalid-adopts-directive` rule. The scaffolded
+  `db migrate up` prints the adoption. `forge project migrate import --from
+  goose` now warns that renumbering re-runs history on a database goose
+  already migrated. See the `db/deploy-migrations` skill, "Adopting a database
+  another tool migrated".
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the

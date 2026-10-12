@@ -245,11 +245,16 @@ func recordCompat(ctx context.Context, db *sql.DB, source sourceSet) error {
 	return nil
 }
 
-// scanSource reads what the binary embeds.
+// scanSource reads what the binary embeds, and refuses a set whose adoption
+// declaration (adopt.go) is misplaced.
 func scanSource(fsys fs.FS, dir string) (sourceSet, error) {
 	ms, err := compat.Scan(fsys, dir)
 	if err != nil {
 		return nil, err
 	}
-	return sourceSet(ms), nil
+	source := sourceSet(ms)
+	if err := validateAdoption(source); err != nil {
+		return nil, err
+	}
+	return source, nil
 }

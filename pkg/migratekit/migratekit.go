@@ -264,6 +264,13 @@ type Result struct {
 	// an operator mid-deploy most needs confirmed. A schema ahead that is
 	// NOT proven compatible is a *SchemaAheadError instead, never this.
 	Ahead *Ahead
+	// Adopted is set when THIS call adopted a database another tool
+	// migrated: the baseline that declares that history was recorded as
+	// applied without running its SQL (see adopt.go). Before is then the
+	// state after adoption, so Changed and Before → After describe only the
+	// migrations that ran on top of it. A caller should say so: it is the
+	// one run in a database's life where the version moved and no SQL did.
+	Adopted *Adopted
 }
 
 // Up applies every pending migration.
@@ -289,6 +296,12 @@ type Result struct {
 // binary's compatibility declarations, which is what lets an OLDER binary
 // (at boot via AutoMigrate, or here) reach that verdict. See ahead.go.
 //
+// First of all, a database another tool migrated is ADOPTED when the embedded
+// baseline declares that tool's history (`-- forge:adopts`): the baseline is
+// recorded as applied without running, and everything after it applies as
+// usual. A database whose history is not the declared one is an
+// *AdoptionError and nothing runs. See adopt.go.
+//
 // The whole run holds migratekit's run lock, shared with AutoMigrate, so
 // replicas racing a release through either entry point take turns. See
 // runlock.go.
@@ -304,6 +317,10 @@ func (mg *Migrator) Up() (res Result, err error) {
 func (mg *Migrator) up() (Result, error) {
 	ctx := context.Background()
 	before, err := mg.State()
+	if err != nil {
+		return Result{}, err
+	}
+	before, adopted, err := adopt(ctx, mg.db, mg.m, mg.source, before)
 	if err != nil {
 		return Result{}, err
 	}
@@ -326,6 +343,7 @@ func (mg *Migrator) up() (Result, error) {
 	if err := recordApplied(ctx, mg.db, mg.source, res.Before, res.After); err != nil {
 		return Result{}, err
 	}
+	res.Adopted = adopted
 	return res, nil
 }
 

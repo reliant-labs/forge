@@ -45,6 +45,14 @@ For each *.sql file in --src-dir, the importer:
 
 Files with no goose markers are skipped.
 
+Importing renumbers the history, so it suits a project whose databases can be
+rebuilt. A database goose ALREADY migrated would run every imported migration
+again. For those, squash goose's history into one baseline whose header
+declares it — "-- forge:adopts goose <every goose version>" — and the migrator
+adopts each goose database on its next run without re-running anything. See
+the forge skill db/deploy-migrations, "Adopting a database another tool
+migrated".
+
 Examples:
   forge project migrate import --from goose --src-dir ../old-project/migrations
   forge project migrate import --from goose --src-dir ./legacy --dry-run

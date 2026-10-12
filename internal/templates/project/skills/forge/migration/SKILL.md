@@ -136,6 +136,32 @@ If the source project was an older forge project with annotated entity
 protos (or a `proto/db/` directory), delete both: the applied schema in
 `db/migrations/` is the entity model now, and the annotations are ignored.
 
+## Databases another migration tool already migrated (goose)
+
+Converting the migration FILES is the easy half. The deployed databases matter
+more: production, staging, a shared dev database, users' desktop installs.
+goose has already migrated them, and the new binary must not run their history
+again.
+
+- **Databases you can rebuild:** `reliant forge project migrate import --from goose`
+  converts and renumbers the files (`migration-service`, "Goose →
+  golang-migrate").
+- **Databases you must keep:** squash goose's history into ONE baseline as
+  the first migration, and declare in its header the history it replaces:
+  `-- forge:adopts goose <every goose version>`. The migrator adopts each goose
+  database the first time it meets it, on the normal `db migrate up` /
+  `AutoMigrate` path. It records the baseline as applied without running it
+  when goose's applied set is exactly the listed one, and refuses with
+  `*migratekit.AdoptionError` when the database is behind or holds a version
+  the list does not account for. goose's table is never modified, so the last
+  goose release stays a safe rollback target.
+
+Ship the cutover as its own release, roll it out environment by environment,
+and prove the baseline equals goose's schema with a `pg_dump --schema-only`
+diff before the first deploy. `db/deploy-migrations`, "Adopting a database
+another tool migrated", has the full rules, the command that generates the
+version list, and the verification.
+
 ## When forge itself is wrong, mid-migration
 
 Stop and report it, with a reproduction. Do not paper over it, and do not hand-edit generated output to compensate — `forge generate` will overwrite the patch and the defect returns. Fixing forge is a separate piece of work from your migration; detouring into it mid-migration means rebuilding a toolchain and re-verifying everything you had already checked against the old one.

@@ -212,13 +212,20 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 		return Result{Dir: dir, Skipped: fmt.Sprintf("%s exists but holds no *.up.sql files — create one with `forge db migration new <name>`", dir)}, nil
 	}
 
+	var adopting []adoptingFile
 	for _, file := range files {
 		data, err := os.ReadFile(file)
 		if err != nil {
 			return Result{}, err
 		}
 		findings = append(findings, lintMigrationFile(file, string(data), cfg)...)
+		a, adoptFindings := lintAdoption(file, string(data))
+		findings = append(findings, adoptFindings...)
+		if a != nil {
+			adopting = append(adopting, *a)
+		}
 	}
+	findings = append(findings, lintAdoptionPlacement(files, adopting)...)
 	return Result{Findings: findings, Dir: dir, Scanned: files}, nil
 }
 
@@ -535,6 +542,8 @@ func RemediationFor(rule string) string {
 		return NonTimestampVersionRemediation
 	case RuleVersionBelowMergedHead:
 		return VersionBelowMergedHeadRemediation
+	case RuleInvalidAdoption:
+		return InvalidAdoptionRemediation
 	default:
 		return DestructiveChangeRemediation
 	}

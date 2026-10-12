@@ -75,3 +75,7 @@ The match is on the **filename**, not the number, because what a database record
 Forge deliberately does not apply it out of order. That would make the schema depend on merge order, so A-then-B and B-then-A would produce different databases from the same commit with nothing reporting which one you got — a `DROP COLUMN` landing after the migration that reads the column is a different schema from the reverse. For the least reversible thing that ships, a loud refusal beats a quiet guess.
 
 See `db/deploy-migrations` for the full record model (`schema_migrations_applied`, the mismatch check, and the one-time bootstrap that lets an existing database adopt the check without refusing).
+
+## A baseline that replaces another tool's history
+
+A baseline that squashes goose's history gets an ordinary fresh timestamp from `reliant forge db migration new baseline`. Its version has no relationship to goose's versions, and none is needed: goose's versions live in the baseline's `-- forge:adopts goose …` lines and in `goose_db_version`, never in `schema_migrations`. It must be the **first** (lowest-versioned) migration in the directory. `forge lint`'s `invalid-adopts-directive` rule reports a declaration anywhere else. Everything after it is versioned exactly as above. See `db/deploy-migrations`, "Adopting a database another tool migrated".

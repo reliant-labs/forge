@@ -138,6 +138,26 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	}
 	logf(logger, "migration status", "current_version", before.Version, "dirty", before.Dirty)
 
+	source, err := scanSource(fsys, dir)
+	if err != nil {
+		return err
+	}
+
+	// A database another tool migrated (goose), meeting the baseline that
+	// replaced that tool's history, is adopted before anything else reads
+	// the record: the baseline is recorded as applied without running, and
+	// the migrations after it apply below as usual. A history that is not
+	// the declared one refuses to start. See adopt.go. The state is taken
+	// from adopt because a replica booting alongside may have just moved it.
+	before, adopted, err := adopt(context.Background(), db, m, source, before)
+	if err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
+	if adopted != nil {
+		warnf(logger, "ADOPTED a database another migration tool migrated: its history matches the baseline exactly, so the baseline was recorded as applied WITHOUT running its SQL; the tool's own table is left in place",
+			"tool", adopted.Tool, "baseline", adopted.Name, "version", adopted.Version, "verified_versions", adopted.Versions)
+	}
+
 	// A dirty schema means a previous migration failed partway. Running more
 	// migrations (or serving traffic) against it compounds the damage — stop
 	// and make a human look. The CLI's db.go can express the other policy
@@ -153,10 +173,7 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	// this until the old ReplicaSet is gone. It gets the same verdict
 	// `db migrate up` does — serve if every unknown version was declared
 	// backward-compatible, refuse to start if not. See ahead.go.
-	source, err := scanSource(fsys, dir)
-	if err != nil {
-		return err
-	}
+	//
 	// A version applied from a different file than this binary's (a branch's
 	// migration, renumbered before merge) means the recorded version does not
 	// describe the schema (applied.go). A version the schema has already

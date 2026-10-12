@@ -149,6 +149,90 @@ old database ran under a given number is the one thing it cannot vouch for.
 There is no stepping a schema back, and no rollback of a release either — see
 "Roll forward only" below.
 
+## Adopting a database another tool migrated
+
+A project moving onto forge from **goose** squashes goose's history into ONE
+baseline migration. Two kinds of database then meet the same binary:
+
+- a **fresh** one, which applies the baseline as SQL;
+- one **goose already migrated**, whose schema already IS the baseline. Running
+  the baseline there would fail on its first `CREATE TABLE` and leave the
+  schema dirty.
+
+The baseline says which history it replaces, in its own header, listing EVERY
+version goose recorded. The line repeats to wrap; the lists accumulate:
+
+```sql
+-- forge:adopts goose 20260211000002 20260211000003 20260212100000
+-- forge:adopts goose 20261011194043 20261011203444
+CREATE TABLE chats (...);
+```
+
+On the normal path — `db migrate up` and `AutoMigrate` alike, so the init
+container and a desktop install both get it with no step to run — a database
+golang-migrate has never recorded anything in, but which has a
+`goose_db_version` table, is checked against that list:
+
+| goose's applied set | What happens |
+|---|---|
+| exactly the listed versions | **Adopted.** The baseline is recorded as applied (`schema_migrations` + `schema_migrations_applied`) and none of its SQL runs. Later migrations then apply on the same run. `Result.Adopted` is set, and `AutoMigrate` logs `ADOPTED` at WARN. |
+| missing a listed version | `*migratekit.AdoptionError` (Missing). The database is BEHIND, and this binary no longer carries that migration. Run the last release that still migrates with goose, then this one. |
+| holds a version the list lacks | `*migratekit.AdoptionError` (Unexpected). Either the baseline was cut before that migration merged (re-cut it), or it is a branch's migration on a shared database (reconcile the schema, then delete its `goose_db_version` row). |
+| no `goose_db_version` table | Not a goose database; the baseline runs as SQL. |
+
+Every refusal changes nothing and names the versions involved. The check is
+**set membership**, never "the newest version matches". goose applies out of
+order (`WithAllowMissing`), so a database can hold the newest version and
+still lack an older one. A version counts as applied when its **latest** row
+says `is_applied`, which is how goose reads its own table, so a rolled-back
+version counts as missing.
+
+Properties you can rely on:
+
+- **Once only.** After golang-migrate records a version, goose's table is
+  never read again. Re-runs are ordinary no-ops.
+- **goose's table is left alone.** Rolling back to the last goose release is
+  safe: goose finds every version it knows applied and does nothing.
+- **Concurrent replicas are safe.** The check-and-record runs under
+  migratekit's run lock, so one replica adopts and the rest find it done.
+- **Only the first migration may declare it.** A goose database has run none
+  of the project's other migrations. A misplaced or malformed declaration is
+  refused at `Open` and at boot on every database, so the first test run
+  fails. `forge lint` reports it at review time as `invalid-adopts-directive`.
+
+Generate the list from the goose files; never type it. goose's version is the
+filename's numeric prefix:
+
+```bash
+ls <goose-dir>/*.sql | xargs -n1 basename | cut -d_ -f1 | sort -n | xargs -n8 | sed 's/^/-- forge:adopts goose /'
+```
+
+Build the baseline body with `pg_dump --schema-only --no-owner
+--no-privileges` from a throwaway database the goose history built, excluding
+`goose_db_version`. Then strip pg_dump's session prelude and psql commands:
+
+```bash
+grep -v -e '^SET ' -e '^SELECT pg_catalog.set_config' -e '^\\' dump.sql
+```
+
+Leaving them in breaks things, and measurably. The migrator runs the
+baseline on its own session, so `set_config('search_path', '', false)`
+persists on that session. The next migration in the same run then fails with
+`relation "…" does not exist`, and under `AutoMigrate` the connection returns
+to the app's pool with an empty `search_path`. `\restrict` (pg_dump ≥ 16.10
+and its sibling minor releases) is a psql command, so it fails as SQL.
+
+Prove the baseline before shipping it. Build one database with the last goose
+release, and let the new binary adopt it. Build a second fresh database from
+the baseline. `pg_dump --schema-only` both, excluding each tool's bookkeeping
+tables, and diff them. The declaration says the two schemas are equal; only
+that diff shows it.
+
+`forge project migrate import --from goose` is the other path: it renumbers
+goose's history into new forge versions. It suits only a project whose
+databases can be rebuilt, because a database goose already migrated would run
+every imported migration again.
+
 ## Where AUTO_MIGRATE still fits
 
 `AUTO_MIGRATE=true` migrates **in-process at startup**. It is not a duplicate

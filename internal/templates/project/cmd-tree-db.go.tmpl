@@ -120,6 +120,18 @@ func newDBCmd(deps Deps) *cobra.Command {
 				// schema, and forge never steps a schema back.
 				return fmt.Errorf("migrate up: %w", err)
 			}
+			// A DATABASE ANOTHER TOOL MIGRATED (goose) WAS ADOPTED: its
+			// history matched the baseline's `-- forge:adopts` declaration
+			// exactly, so the baseline was recorded as applied WITHOUT running.
+			// Say so — it is the one run in a database's life where the
+			// version moved and no SQL did. Anything after the baseline was
+			// applied as usual and is reported below.
+			if res.Adopted != nil {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"ADOPTED a database %s migrated: %s recorded as applied without running its SQL "+
+						"(%d %s versions verified; %s's own table left in place)\n",
+					res.Adopted.Tool, res.Adopted.Name, res.Adopted.Versions, res.Adopted.Tool, res.Adopted.Tool)
+			}
 			// THE SCHEMA IS AHEAD OF THIS BINARY — the app was rolled
 			// back — and every version it does not embed was declared
 			// `-- forge:backward-compatible`. Nothing was applied and this

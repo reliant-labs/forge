@@ -1,5 +1,6 @@
-// Package compat reads the BACKWARD-COMPATIBILITY contract a migration
-// declares about itself.
+// Package compat reads the contracts a migration declares about itself: that
+// it is BACKWARD-COMPATIBLE (this file), and which foreign migration history a
+// baseline ADOPTS (adopt.go).
 //
 // THE CONTRACT. A migration's .up.sql may carry the line
 //
@@ -91,6 +92,9 @@ type Migration struct {
 	Descriptor string
 	// BackwardCompatible is whether the file carries Directive.
 	BackwardCompatible bool
+	// Adopts is the foreign history this migration replaces, from its
+	// AdoptsDirective lines; nil when it declares none. See adopt.go.
+	Adopts *Adoption
 }
 
 // Scan reads every up migration in dir of fsys, in version order.
@@ -124,7 +128,11 @@ func Scan(fsys fs.FS, dir string) ([]Migration, error) {
 		if rerr != nil {
 			return nil, fmt.Errorf("read migration %s: %w", e.Name(), rerr)
 		}
-		out = append(out, Migration{Version: uint(v), Name: e.Name(), Descriptor: m[2], BackwardCompatible: Declared(string(raw))})
+		adopts, aerr := ParseAdoption(string(raw))
+		if aerr != nil {
+			return nil, fmt.Errorf("migration %s: %w", e.Name(), aerr)
+		}
+		out = append(out, Migration{Version: uint(v), Name: e.Name(), Descriptor: m[2], BackwardCompatible: Declared(string(raw)), Adopts: adopts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil

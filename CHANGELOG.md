@@ -188,6 +188,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`db migrate up` and `AutoMigrate` no longer race each other.** Both rely
+  on golang-migrate's advisory lock, but golang-migrate names the database
+  differently for each: the URL path (`/app`) for the DSN that `Open` uses,
+  and `current_database()` (`app`) for the pool connection `AutoMigrate`
+  wraps. That gives one database two lock keys, so a deploy initContainer or
+  the dev loop's migrate job never excluded a server booting with
+  `AUTO_MIGRATE`. Six replicas racing one database, half through each entry
+  point, failed every time:
+  - two replicas ran the same migration, and the second failed on the
+    table the first had just created;
+  - replicas met `Dirty database version` while a peer was mid-apply;
+  - a replica refused a migration a peer had just recorded;
+  - a replica lost the race to create `schema_migrations`
+    (`duplicate key … pg_type_typname_nsp_index`).
+
+  migratekit now takes its own advisory lock, under one key both entry points
+  share. It is held from before golang-migrate's driver is built (building it
+  creates `schema_migrations`) through the last bookkeeping write. `Open`
+  holds it only while building the driver. `Up` and `AutoMigrate` hold it for
+  the whole run. `AutoMigrate` takes it on the connection it already borrows,
+  so a boot needs no extra pool slot. If the unlock fails, that connection is
+  discarded rather than returned to the pool still holding the lock. Covered
+  by `TestReplicasRacingThroughBothEntryPointsTakeTurns`.
+
 - **`forge lint` no longer reports a golangci-lint that cannot read the
   toolchain's export data as a typecheck failure.** On control-plane the
   gating lane failed with one `typecheck` error, `could not import time (…

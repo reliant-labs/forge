@@ -87,10 +87,11 @@ func newDBCmd(deps Deps) *cobra.Command {
 	migrateCmd.AddCommand(&cobra.Command{
 		Use:   "up",
 		Short: "Apply all pending migrations",
-		Long: "Apply every pending migration, then exit 0. Safe to run concurrently: " +
-			"golang-migrate's postgres driver takes a session advisory lock, so replicas " +
-			"racing the same release serialize — one applies, the rest wait and then find " +
-			"nothing to do. Already-applied migrations are skipped, so a re-run is a no-op.",
+		Long: "Apply every pending migration, then exit 0. Safe to run concurrently, " +
+			"including alongside servers that migrate at boot (AUTO_MIGRATE): migratekit takes " +
+			"one session advisory lock per database, so replicas racing the same release " +
+			"serialize — one applies, the rest wait and then find nothing to do. " +
+			"Already-applied migrations are skipped, so a re-run is a no-op.",
 		// This runs unattended (a deploy-time initContainer). A failure must
 		// leave the SQL error at the end of the pod log, not a flag table.
 		SilenceUsage: true,

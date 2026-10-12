@@ -144,17 +144,26 @@ func Open(opts Options) (*Migrator, error) {
 		_ = source.Close()
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
-	m, err := migrate.NewWithSourceInstance("iofs", source, NormalizeDSN(opts.DSN))
+	db, err := sql.Open("pgx/v5", sqlDSN(opts.DSN))
+	if err != nil {
+		_ = source.Close()
+		return nil, fmt.Errorf("open migrator: %w", err)
+	}
+	// Building golang-migrate's driver creates schema_migrations, so it
+	// happens under the run lock: a server's AutoMigrate building its own
+	// against the same database would otherwise race the CREATE. See
+	// runlock.go.
+	var m *migrate.Migrate
+	err = withRunLock(context.Background(), db, func() (err error) {
+		m, err = migrate.NewWithSourceInstance("iofs", source, NormalizeDSN(opts.DSN))
+		return err
+	})
 	if err != nil {
 		// The source instance owns an open handle even though the
 		// migrator never took ownership of it, so close it here or a
 		// failed Open leaks it.
 		_ = source.Close()
-		return nil, fmt.Errorf("open migrator: %w", err)
-	}
-	db, err := sql.Open("pgx/v5", sqlDSN(opts.DSN))
-	if err != nil {
-		_, _ = m.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)
 	}
 	return &Migrator{m: m, db: db, source: embedded}, nil
@@ -279,28 +288,42 @@ type Result struct {
 // Up also records this
 // binary's compatibility declarations, which is what lets an OLDER binary
 // (at boot via AutoMigrate, or here) reach that verdict. See ahead.go.
-func (mg *Migrator) Up() (Result, error) {
+//
+// The whole run holds migratekit's run lock, shared with AutoMigrate, so
+// replicas racing a release through either entry point take turns. See
+// runlock.go.
+func (mg *Migrator) Up() (res Result, err error) {
+	err = withRunLock(context.Background(), mg.db, func() error {
+		res, err = mg.up()
+		return err
+	})
+	return res, err
+}
+
+// up is Up's body, run under the run lock.
+func (mg *Migrator) up() (Result, error) {
+	ctx := context.Background()
 	before, err := mg.State()
 	if err != nil {
 		return Result{}, err
 	}
-	if err := checkApplied(context.Background(), mg.db, mg.source, before); err != nil {
+	if err := checkApplied(ctx, mg.db, mg.source, before); err != nil {
 		return Result{}, err
 	}
-	if ahead, err := classifyAhead(context.Background(), mg.db, mg.source, before); err != nil || ahead != nil {
+	if ahead, err := classifyAhead(ctx, mg.db, mg.source, before); err != nil || ahead != nil {
 		if err != nil {
 			return Result{}, err
 		}
 		return Result{Before: before, After: before, Ahead: ahead}, nil
 	}
-	if err := recordCompat(context.Background(), mg.db, mg.source); err != nil {
+	if err := recordCompat(ctx, mg.db, mg.source); err != nil {
 		return Result{}, err
 	}
 	res, err := mg.apply(mg.m.Up)
 	if err != nil {
 		return Result{}, err
 	}
-	if err := recordApplied(context.Background(), mg.db, mg.source, res.Before, res.After); err != nil {
+	if err := recordApplied(ctx, mg.db, mg.source, res.Before, res.After); err != nil {
 		return Result{}, err
 	}
 	return res, nil

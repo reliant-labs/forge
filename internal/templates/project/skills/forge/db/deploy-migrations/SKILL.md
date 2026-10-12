@@ -60,9 +60,13 @@ against the Deployments at all.
 
 ## Failure modes, and what each does
 
-- **Replicas race the same migration.** Safe. golang-migrate's postgres driver
-  takes a session advisory lock: one replica applies, the rest block, then
-  find nothing to do. Every one exits 0.
+- **Replicas race the same migration.** Safe, whichever way each one migrates.
+  migratekit takes one session advisory lock per database, shared by
+  `db migrate up` (the init container, the dev loop's migrate job) and
+  `AutoMigrate` (a server booting with `AUTO_MIGRATE`). One replica applies;
+  the others wait, then find nothing to do, and every one exits 0. The lock
+  is migratekit's own because golang-migrate's lock key differs between those
+  two entry points, so on its own it never made them wait for each other.
 - **A migration fails.** The init container exits non-zero → CrashLoopBackOff
   → the rollout stalls, with the OLD pods still serving. That is the correct
   outcome: shipping code that needs a schema the database does not have is

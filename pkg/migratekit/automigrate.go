@@ -100,20 +100,37 @@ func autoMigrate(fsys fs.FS, dir string, db *sql.DB, logger *slog.Logger) error 
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
+		_ = sourceDriver.Close()
 		return fmt.Errorf("acquiring a migration connection: %w", err)
+	}
+	// The run lock `db migrate up` shares (runlock.go), taken on the
+	// migrator's own connection so a boot needs no extra pool slot. Taken
+	// before the driver is built, because building it creates
+	// schema_migrations, and released before the connection goes back to
+	// the pool, because the lock belongs to the session.
+	if err := lockRun(ctx, conn); err != nil {
+		_ = conn.Close()
+		_ = sourceDriver.Close()
+		return err
 	}
 	dbDriver, err := postgres.WithConnection(ctx, conn, &postgres.Config{})
 	if err != nil {
+		unlockRun(ctx, conn)
 		_ = conn.Close()
+		_ = sourceDriver.Close()
 		return fmt.Errorf("creating migration db driver: %w", err)
 	}
 
 	m, err := migrate.NewWithInstance("iofs", sourceDriver, "postgres", dbDriver)
 	if err != nil {
+		unlockRun(ctx, conn)
 		_ = dbDriver.Close()
 		return fmt.Errorf("creating migrator: %w", err)
 	}
-	defer func() { _, _ = m.Close() }()
+	defer func() {
+		unlockRun(ctx, conn)
+		_, _ = m.Close()
+	}()
 
 	before, err := stateOf(m)
 	if err != nil {

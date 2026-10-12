@@ -538,6 +538,14 @@ type ConfigMessage struct {
 	// readable (additive contract, see the audit-json skill).
 	Binary string `json:",omitempty"`
 
+	// Command is the cobra command path below Binary whose process loads
+	// this config, from (forge.v1.binary_config).command — ["server", "api"]
+	// for `reliant server api`. Empty means the binary's ROOT config: the
+	// binary-wide surface every one of its processes loads. Non-empty means
+	// exactly the process running that subcommand loads it, alongside the
+	// root config. A binding is keyed on (Binary, Command).
+	Command []string `json:",omitempty"`
+
 	// Frontend is the forge.yaml frontends[].name whose BUNDLE loads this
 	// config, from the message-level (forge.v1.frontend_config).frontend
 	// annotation. Empty means the message is not bound to a frontend.

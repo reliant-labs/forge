@@ -166,30 +166,55 @@ type ConfigTemplateData struct {
 type BinaryConfig struct {
 	// Binary is the cmd/<name> leaf this config belongs to.
 	Binary string
+	// Command is the cobra path below Binary whose process loads this
+	// config (["server", "api"]); empty for the binary's ROOT config. See
+	// ConfigMessage.Command.
+	Command []string
 	// MessageName is the config message's proto name (e.g. "AdminConfig") —
 	// the generated Go type this binary's Config aliases.
 	MessageName string
-	// Fields is every leaf this binary resolves, composed blocks included,
-	// each with its GoPath set. This is what the binary's env projection and
+	// Fields is every leaf this config resolves, composed blocks included,
+	// each with its GoPath set. This is what the process's env projection and
 	// its Deployment's env vars are built from: the union of what the
-	// process actually reads, and nothing else.
+	// process actually reads, and nothing else. Every one of them registers
+	// in ONE flag set — persistent on the root for a root config, local on
+	// the subcommand for a command config — so composition shares a
+	// DEFINITION, never a flag home.
 	Fields []ConfigTemplateField
-	// OwnFields are the leaves declared DIRECTLY on the binary's message —
-	// the fields only it reads. They register as LOCAL cobra flags on the
-	// binary's subcommand.
-	OwnFields []ConfigTemplateField
-	// SharedFields are the leaves reached through a composed block (the
-	// BaseConfig case). They register as PERSISTENT flags on the root, so one
-	// definition serves every binary while each resolves its own value.
-	SharedFields []ConfigTemplateField
 	// Blocks are the config blocks this message composes, in declaration
 	// order — the shared definitions, named so the template can reach them.
 	Blocks []ConfigBlockRef
+	// BinaryHasRootConfig reports, on a command config, whether its binary
+	// also binds a root config. That root config owns the --config file flag
+	// (persistent on the binary's root), so the command config registers its
+	// leaves alone rather than a second --config shadowing the inherited one.
+	BinaryHasRootConfig bool
+}
+
+// Process is the process this config is loaded by, as typed at a shell:
+// "reliant" for a root config, "reliant server api" for a command config.
+func (bc BinaryConfig) Process() string {
+	return ConfigMessage{Binary: bc.Binary, Command: bc.Command}.ProcessName()
+}
+
+// CommandLine is the subcommand path alone ("server api"); "" for a root
+// config.
+func (bc BinaryConfig) CommandLine() string { return strings.Join(bc.Command, " ") }
+
+// CommandGoArgs renders Command as Go string-literal arguments
+// (`"server", "api"`), for the generated loader's path check.
+func (bc BinaryConfig) CommandGoArgs() string {
+	q := make([]string, len(bc.Command))
+	for i, c := range bc.Command {
+		q[i] = strconv.Quote(c)
+	}
+	return strings.Join(q, ", ")
 }
 
 // BinaryConfigsFromMessages resolves the per-binary config surfaces from a
 // project's parsed config messages: one BinaryConfig per message carrying a
-// (forge.v1.binary_config).binary annotation, in declaration order.
+// (forge.v1.binary_config) annotation — a binary's root config or one of its
+// command configs — in declaration order.
 //
 // A project that annotates nothing gets NO BinaryConfigs, and every caller
 // falls back to the single project-global AppConfig path — which is why
@@ -207,12 +232,12 @@ func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
 		if m.Binary == "" {
 			continue
 		}
-		bc := BinaryConfig{Binary: m.Binary, MessageName: m.Name}
+		bc := BinaryConfig{Binary: m.Binary, Command: m.Command, MessageName: m.Name}
 		for _, f := range m.Fields {
 			// A message-typed field naming another config message is a
-			// composed block — the shared half. Its leaves keep their own
-			// annotations and are qualified through the block field, exactly
-			// as component config blocks already are.
+			// composed block — a shared DEFINITION. Its leaves keep their
+			// own annotations and are qualified through the block field,
+			// exactly as component config blocks already are.
 			if f.ProtoType == "message" && f.MessageType != "" {
 				bm, known := byName[f.MessageType]
 				if !known {
@@ -223,38 +248,47 @@ func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
 					if bf.ProtoType == "message" && bf.MessageType != "" {
 						continue // one nesting level, as elsewhere
 					}
-					tf := configTemplateField(bf, f.GoName+"."+bf.GoName)
-					bc.Fields = append(bc.Fields, tf)
-					bc.SharedFields = append(bc.SharedFields, tf)
+					bc.Fields = append(bc.Fields, configTemplateField(bf, f.GoName+"."+bf.GoName))
 				}
 				continue
 			}
-			tf := configTemplateField(f, f.GoName)
-			bc.Fields = append(bc.Fields, tf)
-			bc.OwnFields = append(bc.OwnFields, tf)
+			bc.Fields = append(bc.Fields, configTemplateField(f, f.GoName))
 		}
 		out = append(out, bc)
+	}
+	hasRoot := map[string]bool{}
+	for _, bc := range out {
+		if len(bc.Command) == 0 {
+			hasRoot[bc.Binary] = true
+		}
+	}
+	for i := range out {
+		out[i].BinaryHasRootConfig = len(out[i].Command) > 0 && hasRoot[out[i].Binary]
 	}
 	return out
 }
 
-// ConfigFieldsForBinary returns the raw ConfigFields one binary resolves —
-// its own leaves plus the leaves of every block it composes — in the order
-// the KCL emitters expect. It is the ConfigField-level twin of
-// BinaryConfig.Fields, kept separate because the KCL projection works from
-// the parsed proto fields (env_var/sensitive/default), not the Go template
-// shape.
+// ConfigFieldsForMessage returns the raw ConfigFields one binary-bound config
+// message resolves — its own leaves plus the leaves of every block it
+// composes — in the order the KCL emitters expect. It is the ConfigField-
+// level twin of BinaryConfig.Fields, kept separate because the KCL
+// projection works from the parsed proto fields (env_var/sensitive/default),
+// not the Go template shape.
 //
-// This is what makes a workload's Deployment carry only ITS binary's env
-// vars: the projection for a binary is emitted from exactly this set.
-func ConfigFieldsForBinary(messages []ConfigMessage, binary string) []ConfigField {
+// This is what makes a workload's Deployment carry only ITS process's env
+// vars: the projection for a config is emitted from exactly this set.
+//
+// Keyed on the MESSAGE, not the binary: one binary binds several messages
+// (its root config and one per command), and a lookup by binary returned the
+// first message's fields for all of them.
+func ConfigFieldsForMessage(messages []ConfigMessage, name string) []ConfigField {
 	for i := range messages {
 		m := &messages[i]
-		if m.Binary != binary {
+		if m.Name != name {
 			continue
 		}
 		// Shared flattener, so a leaf name claimed by two composed blocks is
-		// qualified instead of declared twice in this binary's schema. See
+		// qualified instead of declared twice in this config's schema. See
 		// config_block_flatten.go — the bare-name version made a config
 		// failure that `forge generate` only warns about, which left the
 		// previous config_gen.k on disk missing both blocks entirely.
@@ -763,7 +797,11 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 		if treeDir := primaryCmdTreeDir(targetDir); treeDir != "" {
 			primaryBinary := filepath.Base(filepath.Dir(treeDir))
 			for _, bc := range data.BinaryConfigs {
-				if bc.Binary == primaryBinary {
+				// The primary binary's ROOT config: the binary-wide surface
+				// every one of its commands — and so its whole component
+				// graph — loads. A command config is one process's surface
+				// and cannot stand in for it.
+				if bc.Binary == primaryBinary && len(bc.Command) == 0 {
 					data.PrimaryConfigMessage = bc.MessageName
 					break
 				}
@@ -779,11 +817,12 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 			// files fail to compile with no explanation of why.
 			if data.PrimaryConfigMessage == "" {
 				return fmt.Errorf(
-					"no root AppConfig and no config message is bound to the primary binary %q (cmd/%s): "+
+					"no root AppConfig and no ROOT config message is bound to the primary binary %q (cmd/%s): "+
 						"the primary binary's own component graph (services, workers, internal packages, "+
-						"providers.go, compose.go) needs a Config type to construct against. "+
-						"Fix: annotate a config message with `option (forge.v1.binary_config) = {binary: %q};`, "+
-						"or restore an unannotated root AppConfig",
+						"providers.go, compose.go) needs a Config type to construct against, and a config "+
+						"scoped to one subcommand (`command: [...]`) is one process's surface, not the binary's. "+
+						"Fix: annotate a config message with `option (forge.v1.binary_config) = {binary: %q};` "+
+						"(no `command`), or restore an unannotated root AppConfig",
 					primaryBinary, primaryBinary, primaryBinary)
 			}
 		}

@@ -122,7 +122,47 @@ This does not change how a `forge scaffold binary` composition root or a `forge 
 - **All-binary-annotated, no root `AppConfig`**: `config.Config` aliases the config message bound to the project's PRIMARY binary — the one with the full `cmd/<bin>/cmd` command tree (`server`, `db migrate`, etc.), i.e. the binary a fresh `forge project new` scaffolds. Every service, worker, and internal package mounted into THAT binary's composition graph (`internal/app/compose.go`) keeps reading `Config *config.Config` unchanged.
 - **A secondary binary** (`forge scaffold binary <name>`) that wants its OWN config type, distinct from the primary binary's, reads it through the per-binary alias forge always generates alongside `Config` — `config.<MessageName>` / `config.Load<MessageName>(cmd)` — and takes that type on `Deps.Config` instead of `*config.Config`. A freshly scaffolded secondary binary's `Deps.Config *config.Config` compiles either way (it is reading the primary binary's config, same as any other component) until you point it at its own message.
 
-The primary binary MUST have a config message bound to it once the project goes all-binary — `forge generate` refuses, naming the primary binary, if none is. There is nothing else for `config.Config` to mean once the root `AppConfig` is gone.
+The primary binary MUST have a ROOT config message (no `command`) bound to it once the project goes all-binary — `forge generate` refuses, naming the primary binary, if none is. There is nothing else for `config.Config` to mean once the root `AppConfig` is gone.
+
+`binary` must name a `cmd/<name>` directory, and one message per binary: `forge generate` refuses anything else, with the `proto/<file>:<line>` of each offending annotation. A binary's root config registers EVERY leaf (composed blocks included) as a persistent flag: `config.Register<Msg>Flags(root)` on the binary's root command, `config.Load<Msg>(cmd)` from any of its commands.
+
+### One binary, several processes: `command`
+
+When a binary's subcommands run as SEPARATE PROCESSES (`app server api`, `app server worker`, `app daemon`) — one image, one Deployment per role — scope a config to a subcommand instead of splitting the binary:
+
+```protobuf
+message AppConfig {                       // the binary-wide surface: every process
+  option (forge.v1.binary_config) = {binary: "app"};
+  LogConfig log = 1;
+}
+message ApiServerConfig {                 // only the `app server api` process
+  option (forge.v1.binary_config) = {binary: "app", command: ["server", "api"]};
+  int32 grpc_port = 1 [(forge.v1.config) = {env_var: "GRPC_PORT", flag: "grpc-port", default_value: "9090"}];
+  string auth_api_key = 2 [(forge.v1.config) = {env_var: "AUTH_API_KEY", sensitive: true}];
+}
+```
+
+The binding is keyed on `(binary, command)`. A process loads its binary's root config plus the ONE config declared for its exact command path (command configs do not nest):
+
+```go
+config.RegisterAppConfigFlags(root)            // persistent: every subcommand inherits
+config.RegisterApiServerConfigFlags(apiCmd)    // local: `app server api --help` lists exactly these
+// in apiCmd's RunE:
+base, err := config.LoadAppConfig(cmd)
+api, err := config.LoadApiServerConfig(cmd)    // refuses any command but `server api`
+```
+
+- `generate` checks each `command` element is one command name. It cannot check the path EXISTS — a cobra tree is built at runtime — so `Load<Msg>` checks it exactly against the real tree and errors, naming both paths, when called from another command.
+- A root config and a command config of one binary may not declare the same env var or flag (one process would read it twice); `generate` refuses the pair. Compose a shared block onto the root config, not onto each command config.
+- KCL: every config keeps its own `<msg>EnvMap`, and a binary with command configs also gets `config_gen.<bin>ProcessEnvMap(cfgs, argv, config_secrets)`, which projects one workload's env from its own `command + args` — root config plus the matching command config, longest declared path first, `config_secrets` routed to whichever config declares each name. config.k scaffolds the bundle as `<bin>_process`:
+
+  ```kcl
+  env = config_gen.appProcessEnvMap(appcfg.app_process, (w.command or []) + (w.args or []), w.config_secrets) | w.env
+  ```
+
+  The subcommand path is read after the argv token naming the binary (`app`, `./cmd/app`, `/app/app`), or from all of argv when none does (`args = ["server", "api"]` on the project image), and ends at the first flag.
+
+Splitting into separate binaries instead (`cmd/app-server` + `cmd/app`) is right when the roles share nothing. When they share a binary — one image, a monolith mode that runs every role in one process, a CLI on the same root — `command` keeps one binary and still gives each process only its own config and credentials.
 
 ## Errors
 

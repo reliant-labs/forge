@@ -61,6 +61,17 @@ app_config: config_gen.AppConfig = {
 any credential-shaped env var renders as a literal — that check going
 green is what the annotation is for.
 
+**Which workload carries it** is decided by WHICH config message declares
+the field, then by the workload's `config_secrets` naming it. Put a
+credential on the config of the process that reads it — a binary's own
+message (`(forge.v1.binary_config) = {binary: "admin"}`), or one
+subcommand's when one binary runs several processes
+(`{binary: "app", command: ["server", "api"]}`) — and no other workload's
+manifest can carry it, whatever its `config_secrets` says. For such a
+binary, `config_gen.<bin>ProcessEnvMap(cfgs, argv, config_secrets)` picks
+the process's configs from the workload's own `command + args` and refuses a
+`config_secrets` name that neither of them declares (`binaries` skill).
+
 ### The escape hatch: a raw `EnvVar` secret_ref
 
 For a secret that is NOT app config (a sidecar's token, an infra

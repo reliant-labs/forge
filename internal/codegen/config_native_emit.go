@@ -315,8 +315,9 @@ func generateConfigKBodyPerBinary(rootFields []ConfigField, perBinary []BinaryCo
 	var b strings.Builder
 	b.WriteString("# Per-environment app config VALUES (user-owned — edit here).\n")
 	b.WriteString("# This project declares PER-BINARY configs: one typed instance below per\n")
-	b.WriteString("# binary, each carrying only the values THAT binary reads. The schemas and\n")
-	b.WriteString("# their env projections are generated from proto/config/v1/config.proto;\n")
+	b.WriteString("# binary (or binary subcommand), each carrying only the values THAT process\n")
+	b.WriteString("# reads. The schemas and their env projections are generated from\n")
+	b.WriteString("# proto/config/v1/config.proto;\n")
 	b.WriteString("# add or change FIELDS in the proto, values here. Only fields this env pins\n")
 	b.WriteString("# are set — every other field inherits its schema default.\n\n")
 	b.WriteString(fmt.Sprintf("import %s\n\n", ConfigSchemaModule))
@@ -338,10 +339,39 @@ func generateConfigKBodyPerBinary(rootFields []ConfigField, perBinary []BinaryCo
 		}
 	}
 	for i, bc := range perBinary {
-		emit(bc.Fields, bc.MessageName, naming.ToSnakeCase(bc.MessageName))
+		// Name the process each instance configures: with command-scoped
+		// configs, one binary has several, and the message name alone does
+		// not say which subcommand reads which.
+		if len(bc.Command) == 0 {
+			fmt.Fprintf(&b, "# Every `%s` process (the binary's root config).\n", bc.Binary)
+		} else {
+			fmt.Fprintf(&b, "# The `%s %s` process.\n", bc.Binary, strings.Join(bc.Command, " "))
+		}
+		emit(bc.Fields, bc.MessageName, InstanceName(bc.MessageName))
 		if i < len(perBinary)-1 {
 			b.WriteString("\n")
 		}
+	}
+
+	// A binary that scopes config to its subcommands gets its instances
+	// bundled for the generated process selector, so a workload's env is one
+	// call that picks the right command config from the workload's argv:
+	//
+	//	config_gen.<bin>ProcessEnvMap(appcfg.<bin>_process, argv, secrets)
+	for _, ps := range ProcessSelectorsFrom(perBinary) {
+		fmt.Fprintf(&b, "\n# Every `%s` process's config, for config_gen.%s: a workload's env is\n", ps.Binary, ps.LambdaName())
+		fmt.Fprintf(&b, "#     config_gen.%s(%s, (w.command or []) + (w.args or []), w.config_secrets)\n",
+			ps.LambdaName(), "appcfg."+naming.ToSnakeCase(ps.SchemaName()))
+		fmt.Fprintf(&b, "%s: %s.%s = {\n", naming.ToSnakeCase(ps.SchemaName()), ConfigSchemaModule, ps.SchemaName())
+		if ps.Root != nil {
+			inst := InstanceName(ps.Root.MessageName)
+			fmt.Fprintf(&b, "    %s = %s\n", inst, inst)
+		}
+		for _, c := range ps.Commands {
+			inst := InstanceName(c.MessageName)
+			fmt.Fprintf(&b, "    %s = %s\n", inst, inst)
+		}
+		b.WriteString("}\n")
 	}
 	return b.String()
 }

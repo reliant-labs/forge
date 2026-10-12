@@ -69,12 +69,89 @@ func RegisterOwnFlags(cmd *cobra.Command, msg proto.Message) error {
 	return RegisterFlagsScoped(cmd.Flags(), msg, ScopeOwn)
 }
 
+// RegisterPersistentFlags registers EVERY config-bound leaf of msg — its own
+// and those of the blocks it composes — as PERSISTENT flags on cmd, plus the
+// --config file flag.
+//
+// It is the registration for a binary's ROOT config, the binary-wide surface
+// every one of its processes loads: called on the binary's root command,
+// every subcommand inherits the flags, so `reliant server api --log-level
+// debug` and `reliant --log-level debug server api` both resolve, and Load
+// from any subcommand sees them (cobra merges inherited persistent flags into
+// a subcommand's Flags()). A command-scoped config registers on its own
+// subcommand with RegisterFlags instead, as LOCAL flags.
+func RegisterPersistentFlags(cmd *cobra.Command, msg proto.Message) error {
+	registerConfigFileFlag(cmd)
+	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeAll)
+}
+
+// RegisterLocalFlags registers EVERY config-bound leaf of msg — its own and
+// those of the blocks it composes — as LOCAL flags on cmd, and NOT the
+// --config file flag.
+//
+// It is the registration for a command-scoped config whose binary also has a
+// root config: the root config's RegisterPersistentFlags already put
+// --config on the root, every subcommand inherits it, and a second
+// declaration here would only shadow it. A command config with no root
+// config beside it registers with RegisterFlags, which adds --config itself.
+func RegisterLocalFlags(cmd *cobra.Command, msg proto.Message) error {
+	return RegisterFlagsScoped(cmd.Flags(), msg, ScopeAll)
+}
+
+// CheckCommandPath refuses to load a command-scoped config from any command
+// other than the one it is declared for. configName names the config message
+// and want is its (forge.v1.binary_config).command — the cobra path below the
+// binary's root, e.g. "server", "api".
+//
+// It is the exact form of a check generate cannot make: whether a command
+// path exists is decided by the cobra tree the binary assembles at runtime,
+// so this compares against that real tree. A config whose declared path is
+// wrong can then never load silently — every Load errors, naming the
+// declared path and the command that called it.
+//
+// A DETACHED command (no parent) is not checked: a test, or a binary loading
+// a config outside its tree, has no path to compare. A nil cmd is not
+// checked either, matching LoadInto's "cmd may be nil".
+func CheckCommandPath(cmd *cobra.Command, configName string, want ...string) error {
+	if cmd == nil || !cmd.HasParent() {
+		return nil
+	}
+	var got []string
+	for c := cmd; c.HasParent(); c = c.Parent() {
+		got = append([]string{c.Name()}, got...)
+	}
+	if strings.Join(got, " ") == strings.Join(want, " ") {
+		return nil
+	}
+	return fmt.Errorf(
+		"config: %s is declared for the %q subcommand ((forge.v1.binary_config).command = [%s]), "+
+			"but `%s` loaded it. Its flags are registered on that subcommand alone "+
+			"(Register%sFlags), so another command would load it without them: call Load%s "+
+			"from the %q command, or correct the annotation in proto/config",
+		configName, strings.Join(want, " "), quoteJoin(want), cmd.CommandPath(),
+		configName, configName, strings.Join(want, " "))
+}
+
+// quoteJoin renders a command path as the annotation's list elements.
+func quoteJoin(items []string) string {
+	q := make([]string, len(items))
+	for i, s := range items {
+		q[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(q, ", ")
+}
+
 // registerConfigFileFlag adds the persistent --config <path> flag if neither
 // this command nor a parent already carries it. Idempotent, so the shared and
 // whole-message registration paths can both call it.
 func registerConfigFileFlag(cmd *cobra.Command) {
 	if cmd.PersistentFlags().Lookup(ConfigFlag) != nil || cmd.Flags().Lookup(ConfigFlag) != nil {
 		return
+	}
+	for p := cmd.Parent(); p != nil; p = p.Parent() {
+		if p.PersistentFlags().Lookup(ConfigFlag) != nil {
+			return // inherited: a second declaration would shadow it
+		}
 	}
 	cmd.PersistentFlags().String(ConfigFlag, "",
 		fmt.Sprintf("path to a config file (.json/.yaml/.yml); also settable via %s. "+

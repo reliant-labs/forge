@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -74,5 +75,24 @@ func TestExtractConfigMessage_RecordsBindingPosition(t *testing.T) {
 				t.Errorf("position = %s:%d, want config/v1/config.proto:%d", cm.ProtoFile, cm.Line, c.want)
 			}
 		})
+	}
+}
+
+// The command half of the binding reaches the descriptor alongside the
+// binary, so the (binary, command) key the generator projects is the one
+// the proto declares.
+func TestExtractConfigMessage_RecordsCommand(t *testing.T) {
+	file := boundConfigFile("reliant", 10, 11)
+	proto.SetExtension(file.MessageType[0].Options, forgev1.E_BinaryConfig,
+		&forgev1.BinaryConfigOptions{Binary: "reliant", Command: []string{"server", "api"}})
+	cm, ok := extractConfigMessage(buildConfigPlugin(t, file).Messages[0])
+	if !ok {
+		t.Fatal("ServerApiConfig not extracted")
+	}
+	if cm.Binary != "reliant" || strings.Join(cm.Command, " ") != "server api" {
+		t.Errorf("binding = %q %v, want reliant [server api]", cm.Binary, cm.Command)
+	}
+	if got := cm.ProcessName(); got != "reliant server api" {
+		t.Errorf("ProcessName = %q", got)
 	}
 }

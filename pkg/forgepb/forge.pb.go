@@ -1072,13 +1072,46 @@ func (x *ConfigFieldOptions) GetOptional() bool {
 //
 // A project that annotates NOTHING is unchanged: its single AppConfig stays
 // the one config every binary loads. Per-binary config is opt-in.
+//
+// ONE BINARY, SEVERAL PROCESSES. A binary whose subcommands are different
+// processes (`reliant server api`, `reliant server worker`, `reliant
+// daemon`) scopes a config to a subcommand with `command`, so each process
+// carries only what it reads — the api's credentials never reach the
+// worker's Deployment. The binding is keyed on (binary, command):
+//
+//   - The ROOT config (no `command`) is the binary-wide surface: every
+//     process of the binary loads it, and its flags register as PERSISTENT
+//     flags on the binary's root command, so every subcommand inherits them.
+//   - A COMMAND config is loaded by exactly the process running that
+//     subcommand. Its leaves — composed blocks included — register as LOCAL
+//     flags on that subcommand, and its loader refuses to load from any
+//     other command.
+//
+// A process therefore reads the root config plus the ONE config declared for
+// its exact command path; command configs do not nest (a config for
+// ["server"] is not inherited by `server api`). The root config and a command
+// config of the same binary may not declare the same env var or flag: one
+// process would read the value twice, from two declarations that can drift.
 type BinaryConfigOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Binary is the cmd/<name> leaf whose process loads this config — the same
 	// name `forge scaffold binary` creates and the deploy layer names its
 	// workload after. A message annotated with a binary that has no cmd/<name>
 	// directory is a generate-time error, not a silently unused config.
-	Binary        string `protobuf:"bytes,1,opt,name=binary,proto3" json:"binary,omitempty"`
+	Binary string `protobuf:"bytes,1,opt,name=binary,proto3" json:"binary,omitempty"`
+	// Command is the cobra command path BELOW the binary whose process loads
+	// this config, one command name per element: ["server", "api"] for
+	// `reliant server api`. Empty binds the binary's root config. Two
+	// messages may not bind the same (binary, command).
+	//
+	// forge validates the SHAPE at generate time (each element one command
+	// name: non-empty, no whitespace, not a flag) but cannot prove the path
+	// exists there: a cobra tree is assembled at runtime by AddCommand calls in
+	// any package, from `Use` strings that may be computed, so a static scan
+	// would be a guess that is wrong in both directions — and a wrong refusal
+	// blocks generate. The exact check runs where the tree is real: the
+	// generated Load<Msg>(cmd) refuses a command whose path is not this one.
+	Command       []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1118,6 +1151,13 @@ func (x *BinaryConfigOptions) GetBinary() string {
 		return x.Binary
 	}
 	return ""
+}
+
+func (x *BinaryConfigOptions) GetCommand() []string {
+	if x != nil {
+		return x.Command
+	}
+	return nil
 }
 
 // FrontendConfigOptions binds a config message to the FRONTEND that loads
@@ -1379,9 +1419,10 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x04role\x18\b \x01(\x0e2\x19.forge.v1.ConfigFieldRoleR\x04role\x12%\n" +
 	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues\x12\x1a\n" +
 	"\boptional\x18\n" +
-	" \x01(\bR\boptional\"-\n" +
+	" \x01(\bR\boptional\"G\n" +
 	"\x13BinaryConfigOptions\x12\x16\n" +
-	"\x06binary\x18\x01 \x01(\tR\x06binary\"3\n" +
+	"\x06binary\x18\x01 \x01(\tR\x06binary\x12\x18\n" +
+	"\acommand\x18\x02 \x03(\tR\acommand\"3\n" +
 	"\x15FrontendConfigOptions\x12\x1a\n" +
 	"\bfrontend\x18\x01 \x01(\tR\bfrontend*q\n" +
 	"\aStoreAs\x12\x18\n" +

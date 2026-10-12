@@ -48,7 +48,11 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // GenerateConfigKCL emits the ONE generated config module —
@@ -209,15 +213,221 @@ func GenerateConfigKCLPerBinary(rootFields []ConfigField, perBinary []BinaryConf
 		}
 	}
 
+	declared := map[string]bool{"AppConfig": true, "ConfigSecretRef": true}
+	for _, bc := range perBinary {
+		declared[bc.MessageName] = true
+	}
+	for _, ps := range ProcessSelectorsFrom(perBinary) {
+		if declared[ps.SchemaName()] {
+			return "", fmt.Errorf(
+				"binary %q binds a config per subcommand, so forge generates the KCL schema %s for its processes — "+
+					"and a config message of that name already exists. Rename the message",
+				ps.Binary, ps.SchemaName())
+		}
+		b.WriteString(renderProcessSelector(ps))
+		b.WriteString("\n")
+	}
+
 	return strings.TrimRight(b.String(), "\n") + "\n", nil
 }
 
-// BinaryConfigFields is one binary's KCL projection input: the config
-// message name (which names the schema and lambda) and the ConfigFields that
-// binary resolves — its own leaves plus the leaves of every block it
-// composes.
+// ProcessSelector is one binary that scopes config to its subcommands: its
+// root config (the binary-wide surface, nil when it declares none) and its
+// command configs, ordered LONGEST command first so the first prefix match
+// is the most specific one.
+//
+// It exists because, for such a binary, no single per-message env map is a
+// workload's env: the process running `reliant server api` reads the root
+// config AND the api config. The generated selector composes the two, picks
+// the command config from the workload's own argv — so which workload gets
+// which env is derived from the command it runs, not hand-filtered per
+// workload — and splits the workload's config_secrets between them.
+type ProcessSelector struct {
+	Binary   string
+	Root     *BinaryConfigFields
+	Commands []BinaryConfigFields
+}
+
+// ProcessSelectorsFrom groups per-binary configs into one ProcessSelector per
+// binary that declares at least one command config, in first-declaration
+// order. A binary with only a root config needs no selector: its one env map
+// is the process's env.
+func ProcessSelectorsFrom(perBinary []BinaryConfigFields) []ProcessSelector {
+	var order []string
+	byBinary := map[string]*ProcessSelector{}
+	for i := range perBinary {
+		bc := perBinary[i]
+		ps, ok := byBinary[bc.Binary]
+		if !ok {
+			ps = &ProcessSelector{Binary: bc.Binary}
+			byBinary[bc.Binary] = ps
+			order = append(order, bc.Binary)
+		}
+		if len(bc.Command) == 0 {
+			if ps.Root == nil {
+				ps.Root = &perBinary[i]
+			}
+			continue
+		}
+		ps.Commands = append(ps.Commands, bc)
+	}
+	var out []ProcessSelector
+	for _, b := range order {
+		ps := byBinary[b]
+		if len(ps.Commands) == 0 {
+			continue
+		}
+		sort.SliceStable(ps.Commands, func(i, j int) bool {
+			return len(ps.Commands[i].Command) > len(ps.Commands[j].Command)
+		})
+		out = append(out, *ps)
+	}
+	return out
+}
+
+// SchemaName is the generated KCL schema bundling the binary's config
+// instances: `reliant` -> `ReliantProcess`.
+func (ps ProcessSelector) SchemaName() string { return kclPascal(ps.Binary) + "Process" }
+
+// LambdaName is the generated selector: `reliant` -> `reliantProcessEnvMap`.
+func (ps ProcessSelector) LambdaName() string {
+	s := ps.SchemaName()
+	return strings.ToLower(s[:1]) + s[1:] + "EnvMap"
+}
+
+// InstanceName is the member a config's instance takes on the bundle, and the
+// name the per-env config.k scaffold declares it under: `ApiServerConfig` ->
+// `api_server_config`.
+func InstanceName(messageName string) string { return naming.ToSnakeCase(messageName) }
+
+// kclPascal PascalCases a binary name for a KCL identifier: `api-gateway` ->
+// `ApiGateway`. Unlike naming.ToPascalCase it applies no Go initialisms, which
+// would make the lower-camelled lambda read `aPIGatewayProcessEnvMap`.
+func kclPascal(s string) string {
+	var b strings.Builder
+	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '_' || r == '.' }) {
+		b.WriteString(strings.ToUpper(w[:1]) + w[1:])
+	}
+	return b.String()
+}
+
+// renderProcessSelector emits a binary's process bundle schema and its
+// selector lambda. See ProcessSelector for why it exists; the comment it
+// emits is the user-facing contract.
+func renderProcessSelector(ps ProcessSelector) string {
+	var b strings.Builder
+	schema, lambda := ps.SchemaName(), ps.LambdaName()
+	process := func(bc BinaryConfigFields) string {
+		return strings.TrimSpace(ps.Binary + " " + strings.Join(bc.Command, " "))
+	}
+
+	fmt.Fprintf(&b, "# The `%s` binary binds a config per subcommand, so a workload's env is the\n", ps.Binary)
+	b.WriteString("# binary's root config PLUS the config of the subcommand its process runs.\n")
+	fmt.Fprintf(&b, "# %s carries the instances (config.k declares one); %s\n", schema, lambda)
+	b.WriteString("# picks the subcommand's from the workload's own command line.\n")
+	fmt.Fprintf(&b, "schema %s:\n", schema)
+	if ps.Root != nil {
+		fmt.Fprintf(&b, "    # Every `%s` process: the binary-wide root config.\n", ps.Binary)
+		fmt.Fprintf(&b, "    %s?: %s\n", InstanceName(ps.Root.MessageName), ps.Root.MessageName)
+	}
+	for _, c := range ps.Commands {
+		fmt.Fprintf(&b, "    # `%s`\n", process(c))
+		fmt.Fprintf(&b, "    %s?: %s\n", InstanceName(c.MessageName), c.MessageName)
+	}
+	b.WriteString("\n")
+
+	fmt.Fprintf(&b, "# %s projects ONE `%s` process's config into a workload's env\n", lambda, ps.Binary)
+	b.WriteString("# map: the root config, plus the config of the subcommand argv runs.\n")
+	b.WriteString("#\n")
+	b.WriteString("# argv is the process's command line, a workload's `command + args`. The\n")
+	fmt.Fprintf(&b, "# subcommand path is what follows the token naming the binary (`%s`, or one\n", ps.Binary)
+	fmt.Fprintf(&b, "# ending in `/%s`: `./cmd/%s`, `/app/%s`), or all of argv when no token\n", ps.Binary, ps.Binary, ps.Binary)
+	b.WriteString("# names it (an image whose ENTRYPOINT is the binary, run with `args`). The\n")
+	b.WriteString("# path ends at the first flag, so put flags after the subcommand. The\n")
+	b.WriteString("# LONGEST declared command that prefixes the path wins; a process running\n")
+	b.WriteString("# none of them gets the root config alone.\n")
+	b.WriteString("#\n")
+	b.WriteString("# config_secrets names the sensitive fields the workload reads, across both\n")
+	b.WriteString("# configs; each is routed to the config that declares it.\n")
+	b.WriteString("#\n")
+	fmt.Fprintf(&b, "#     env = config_gen.%s(appcfg.%s, (w.command or []) + (w.args or []), w.config_secrets) | w.env\n",
+		lambda, naming.ToSnakeCase(schema))
+	fmt.Fprintf(&b, "%s = lambda p: %s, argv: [str], config_secrets: [str] -> {str: str | forge.SecretRef} {\n", lambda, schema)
+	fmt.Fprintf(&b, "    _at = [_i for _i, _a in argv if _a == %q or _a.endswith(%q)]\n", ps.Binary, "/"+ps.Binary)
+	b.WriteString("    _rest = argv[_at[0] + 1:] if _at else argv\n")
+	b.WriteString("    _flags = [_i for _i, _a in _rest if _a.startswith(\"-\")]\n")
+	b.WriteString("    _path = _rest[:_flags[0]] if _flags else _rest\n")
+
+	// The matched command config, by instance name; "" for none. Longest
+	// first (ProcessSelectorsFrom), so a chain of conditionals is a
+	// longest-prefix match.
+	b.WriteString("    _cmd = ")
+	for _, c := range ps.Commands {
+		fmt.Fprintf(&b, "%q if _path[:%d] == %s else ", InstanceName(c.MessageName), len(c.Command), kclStrList(c.Command))
+	}
+	b.WriteString("\"\"\n")
+
+	rootSensitive := "[]"
+	if ps.Root != nil {
+		rootSensitive = KCLAllSensitiveName(ps.Root.MessageName)
+	}
+	fmt.Fprintf(&b, "    _root_sensitive: [str] = %s\n", rootSensitive)
+	b.WriteString("    _cmd_sensitive: [str] = ")
+	for _, c := range ps.Commands {
+		fmt.Fprintf(&b, "%s if _cmd == %q else ", KCLAllSensitiveName(c.MessageName), InstanceName(c.MessageName))
+	}
+	b.WriteString("[]\n")
+
+	b.WriteString("    assert all _n in config_secrets { _n in _root_sensitive or _n in _cmd_sensitive }, \\\n")
+	fmt.Fprintf(&b, "        \"%s: config_secrets names ${[_n for _n in config_secrets if _n not in _root_sensitive and _n not in _cmd_sensitive]}, which is not a `sensitive` field of the config(s) a `%s` process running ${_path} loads. Sensitive fields: ${sorted(_root_sensitive + _cmd_sensitive)}.\"\n", lambda, ps.Binary)
+
+	rootEnv := "{}"
+	if ps.Root != nil {
+		inst := InstanceName(ps.Root.MessageName)
+		_, rootLambda := KCLConfigName(ps.Root.MessageName)
+		fmt.Fprintf(&b, "    assert p.%s not in [None, Undefined], \"%s: every `%s` process loads %s — set `%s` on the %s.\"\n",
+			inst, lambda, ps.Binary, ps.Root.MessageName, inst, schema)
+		rootEnv = fmt.Sprintf("%s(p.%s, [_n for _n in config_secrets if _n in _root_sensitive])", rootLambda, inst)
+	}
+	for _, c := range ps.Commands {
+		inst := InstanceName(c.MessageName)
+		fmt.Fprintf(&b, "    assert _cmd != %q or p.%s not in [None, Undefined], \"%s: this workload runs `%s`, which loads %s — set `%s` on the %s.\"\n",
+			inst, inst, lambda, process(c), c.MessageName, inst, schema)
+	}
+	fmt.Fprintf(&b, "    _root_env = %s\n", rootEnv)
+	b.WriteString("    _cmd_env = ")
+	for _, c := range ps.Commands {
+		inst := InstanceName(c.MessageName)
+		_, cmdLambda := KCLConfigName(c.MessageName)
+		fmt.Fprintf(&b, "%s(p.%s, [_n for _n in config_secrets if _n in _cmd_sensitive]) if _cmd == %q else ", cmdLambda, inst, inst)
+	}
+	b.WriteString("{}\n")
+	// Root first, then the command config. Their keys are disjoint —
+	// generate refuses a leaf both declare (ValidateBinaryConfigBindings) —
+	// so `|` only adds keys and keeps insertion order.
+	b.WriteString("    _root_env | _cmd_env\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// kclStrList renders a string list as a KCL list literal.
+func kclStrList(items []string) string {
+	q := make([]string, len(items))
+	for i, s := range items {
+		q[i] = strconv.Quote(s)
+	}
+	return "[" + strings.Join(q, ", ") + "]"
+}
+
+// BinaryConfigFields is one binary-bound config's KCL projection input: the
+// config message name (which names the schema and lambda), the process that
+// loads it, and the ConfigFields it resolves — its own leaves plus the
+// leaves of every block it composes.
 type BinaryConfigFields struct {
-	Binary      string
+	Binary string
+	// Command is the subcommand path whose process loads this config; empty
+	// for the binary's root config. See ConfigMessage.Command.
+	Command     []string
 	MessageName string
 	Fields      []ConfigField
 }
@@ -233,8 +443,9 @@ func BinaryConfigFieldsFrom(messages []ConfigMessage) []BinaryConfigFields {
 		}
 		out = append(out, BinaryConfigFields{
 			Binary:      m.Binary,
+			Command:     m.Command,
 			MessageName: m.Name,
-			Fields:      ConfigFieldsForBinary(messages, m.Binary),
+			Fields:      ConfigFieldsForMessage(messages, m.Name),
 		})
 	}
 	return out

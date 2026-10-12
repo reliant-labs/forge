@@ -54,6 +54,8 @@ deploy/kcl/<env>/             # KCL deployment manifests + per-env config       
 forge.yaml                    # project-GLOBAL config only: identity, frontends, packages, overrides
 ```
 
+Config ownership follows the PROCESS: one project-global `AppConfig` by default, or a message per binary (`(forge.v1.binary_config) = {binary: "<cmd/name>"}`), or — for a binary whose subcommands are separate processes — per subcommand (`command: ["server", "api"]`), so each Deployment carries only its own process's env and credentials (`binaries` skill).
+
 `pkg/app` is substrate only — the live DI composition is `internal/app` (`pkg/app/CONVENTIONS.md` documents the split). There is no top-level `handlers/`/`workers/`/`operators/` — that would falsely advertise public API. **What the project contains is discovered from the code** — service protos, `internal/workers/`, `internal/operators/`, `cmd/` — never from a list in `forge.yaml`.
 
 ## Generated vs Hand-Written

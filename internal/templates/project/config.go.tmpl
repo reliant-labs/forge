@@ -106,8 +106,9 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 // plus any composed shared block) as flags on cmd — the same generic
 // registration a root AppConfig would get, applied here to the primary
 // binary's own per-binary config since there is no AppConfig to register
-// instead. See Register{{.PrimaryConfigMessage}}Flags / Register{{.PrimaryConfigMessage}}SharedFlags below for the
-// split (shared-on-root / own-on-subcommand) form other binaries use.
+// instead, as LOCAL flags on cmd — the per-command form forge's command tree
+// calls on each command that loads it. Register{{.PrimaryConfigMessage}}Flags below is the
+// binary-wide form: the same leaves, once, as PERSISTENT flags on the root.
 func RegisterFlags(cmd *cobra.Command) {
 	if err := forgeconfig.RegisterFlags(cmd, &configv1.{{.PrimaryConfigMessage}}{}); err != nil {
 		panic("config: RegisterFlags: " + err.Error())
@@ -131,70 +132,100 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 
 // ── Per-binary configs ────────────────────────────────────────────────────
 //
-// Each config message below carries a (forge.v1.binary_config).binary
-// annotation naming the cmd/<name> whose process loads it, so each binary
-// has its OWN type, flags and env surface. A field on one binary's config is
-// invisible to every other binary — including its secrets, which is why each
-// workload's Deployment carries only the env vars its own process reads.
+// Each config message below carries a (forge.v1.binary_config) annotation
+// naming the PROCESS that loads it — a cmd/<name> binary, and optionally the
+// cobra subcommand path below it — so each process has its OWN type, flags
+// and env surface. A field on one process's config is invisible to every
+// other process — including its secrets, which is why each workload's
+// Deployment carries only the env vars its own process reads.
 //
 // Shared DEFINITIONS stay shared: a config that composes a block (the
 // BaseConfig convention) gets that block's leaves too. Those are separate
 // VALUES on separate processes — two binaries each having a log level is not
 // duplication, and changing one does not change the other. Deleting a field
-// from one binary's message removes it from that binary alone.
+// from one config's message removes it from that process alone.
 //
-// Flag homes follow the split, which is cobra used as designed rather than
+// Flag homes follow the binding, which is cobra used as designed rather than
 // routed around:
 //
-//   - Register<Bin>SharedFlags puts the composed block's leaves on the ROOT
-//     command as PERSISTENT flags, so `app --log-level=debug <bin>` works and
-//     one definition serves every subcommand.
-//   - Register<Bin>Flags puts the binary's OWN leaves on its subcommand as
-//     LOCAL flags, so `app <bin> --help` lists exactly what it reads and two
-//     binaries may each declare a --port without colliding.
+//   - A binary's ROOT config (no `command`) is its binary-wide surface:
+//     Register<Msg>Flags puts EVERY leaf on the binary's ROOT command as a
+//     PERSISTENT flag, so every subcommand inherits it and Load<Msg> works
+//     from any of them.
+//   - A COMMAND config (`command: ["server", "api"]`) is one subcommand's
+//     surface: Register<Msg>Flags puts every leaf on THAT subcommand as a
+//     LOCAL flag, so `<bin> server api --help` lists exactly what it reads
+//     and a sibling subcommand rejects it. Load<Msg> refuses to load from
+//     any other command, which is where a mistyped `command` surfaces.
 //
-// Load<Bin> resolves BOTH halves in one call: cobra merges inherited
-// persistent flags into a subcommand's flag set, so precedence is unchanged
+// A process running a subcommand loads its binary's root config AND its
+// command config (two Load calls); precedence is unchanged for both
 // (flags > env > config file > proto defaults).
 {{- range .BinaryConfigs}}
+{{- if .Command}}
 
-// {{.MessageName}} is the {{.Binary}} binary's configuration.
+// {{.MessageName}} is the configuration of the `{{.Process}}` process: the
+// {{.Binary}} binary's "{{.CommandLine}}" subcommand. That process also loads
+// its binary's root config, when it declares one.
 type {{.MessageName}} = configv1.{{.MessageName}}
-{{- if .SharedFields}}
 
-// Register{{.MessageName}}SharedFlags registers the shared config block(s)
-// {{.MessageName}} composes as PERSISTENT flags on cmd — call it on the ROOT
-// command. Also registers the --config file flag.
-func Register{{.MessageName}}SharedFlags(cmd *cobra.Command) {
-	if err := forgeconfig.RegisterSharedFlags(cmd, &configv1.{{.MessageName}}{}); err != nil {
-		panic("config: Register{{.MessageName}}SharedFlags: " + err.Error())
+// Register{{.MessageName}}Flags registers every leaf {{.MessageName}}
+// resolves — its own and those of the blocks it composes — as LOCAL flags on
+// cmd: call it on the "{{.CommandLine}}" subcommand. Sensitive fields are
+// skipped (env / Secret only).
+{{- if .BinaryHasRootConfig}} The --config file flag is the {{.Binary}}
+// binary's root config's to register, persistent on the root.
+{{- else}} Also registers the --config file flag: the
+// {{.Binary}} binary binds no root config to carry it.
+{{- end}}
+func Register{{.MessageName}}Flags(cmd *cobra.Command) {
+	if err := forgeconfig.{{if .BinaryHasRootConfig}}RegisterLocalFlags{{else}}RegisterFlags{{end}}(cmd, &configv1.{{.MessageName}}{}); err != nil {
+		panic("config: Register{{.MessageName}}Flags: " + err.Error())
 	}
 }
-{{- end}}
 
-// Register{{.MessageName}}Flags registers the leaves {{.MessageName}}
-// declares itself as LOCAL flags on cmd — call it on the {{.Binary}}
-// subcommand. Sensitive fields are skipped (env / Secret only).
+// Load{{.MessageName}} populates the `{{.Process}}` process's config from CLI
+// flags > environment variables > config file > proto defaults, including
+// the block(s) it composes. It refuses a cmd that is not the
+// "{{.CommandLine}}" subcommand: its flags are registered there alone.
+func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
+	if err := forgeconfig.CheckCommandPath(cmd, "{{.MessageName}}", {{.CommandGoArgs}}); err != nil {
+		return nil, err
+	}
+	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
+}
+{{- else}}
+
+// {{.MessageName}} is the {{.Binary}} binary's configuration: its binary-wide
+// surface, loaded by every {{.Binary}} process.
+type {{.MessageName}} = configv1.{{.MessageName}}
+
+// Register{{.MessageName}}Flags registers every leaf {{.MessageName}}
+// resolves — its own and those of the blocks it composes — as PERSISTENT
+// flags on cmd, plus the --config file flag: call it on the {{.Binary}}
+// binary's ROOT command, so every subcommand inherits them. Sensitive fields
+// are skipped (env / Secret only).
 func Register{{.MessageName}}Flags(cmd *cobra.Command) {
-	if err := forgeconfig.RegisterOwnFlags(cmd, &configv1.{{.MessageName}}{}); err != nil {
+	if err := forgeconfig.RegisterPersistentFlags(cmd, &configv1.{{.MessageName}}{}); err != nil {
 		panic("config: Register{{.MessageName}}Flags: " + err.Error())
 	}
 }
 
 // Load{{.MessageName}} populates the {{.Binary}} binary's config from CLI
 // flags > environment variables > config file > proto defaults, including the
-// shared block(s) it composes.
+// block(s) it composes. Call it from any {{.Binary}} command.
 func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
 }
+{{- end}}
 
 // ModeOf{{.MessageName}} derives the runtime mode from the field tagged
-// role=MODE on the {{.Binary}} binary's config (typically carried by the
+// role=MODE on the `{{.Process}}` process's config (typically carried by a
 // shared block it composes).
 func ModeOf{{.MessageName}}(cfg *{{.MessageName}}) Mode { return forgeconfig.Mode(cfg) }
 
 // Validate{{.MessageName}} runs the same cross-field / closed-set invariants
-// Validate runs, against the {{.Binary}} binary's own config.
+// Validate runs, against the `{{.Process}}` process's own config.
 func Validate{{.MessageName}}(cfg *{{.MessageName}}) error { return forgeconfig.Validate(cfg) }
 {{- end}}
 {{- end}}

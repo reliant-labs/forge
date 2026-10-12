@@ -120,6 +120,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   second remedy. `forge project audit --json` reports `uncomposed_packages`
   and `forge project graph` a per-package `composition`. See the `contracts`
   skill, "Packages the server does not have".
+- **Config scoped to one subcommand of a binary:
+  `(forge.v1.binary_config).command`.** A binary whose subcommands run as
+  separate processes (`reliant server api`, `reliant server worker`) can now
+  give each process its own config instead of one surface every role links:
+  `{binary: "reliant", command: ["server", "api"]}`. The binding is keyed on
+  `(binary, command)`. The binary's root config (no `command`) stays the
+  binary-wide surface every process loads; a command config's leaves register
+  as LOCAL flags on that subcommand (`Register<Msg>Flags(cmd)`), and
+  `Load<Msg>(cmd)` refuses to load from any other command
+  (`config.CheckCommandPath`), which is where a mistyped path surfaces: a
+  cobra tree is assembled at runtime, so generate checks the path's shape
+  only. Generate refuses two messages for one `(binary, command)`, a
+  malformed path, and a root and command config of one binary declaring the
+  same env var or flag. In KCL each config keeps its own `<msg>EnvMap`, and a
+  binary with command configs also gets a `<Bin>Process` bundle and
+  `config_gen.<bin>ProcessEnvMap(cfgs, argv, config_secrets)`, which projects
+  one workload's env from its own `command + args` (root config plus the
+  longest matching command config) and routes each `config_secrets` name to
+  the config that declares it. New projects' `config.k` scaffolds the bundle as
+  `<bin>_process`. See the `binaries` skill, "One binary, several processes".
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the
@@ -171,6 +191,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unmanaged one refused to boot a complete server. `serverkit.ProjectServiceFiles`,
   which built that file-scoped registry, is removed; `RequireMounted` with a
   descriptor source you build is unchanged.
+- **BREAKING: a binary's root config registers every leaf as a persistent
+  flag, and `Register<Msg>SharedFlags` is gone.** The generated
+  `Register<Msg>Flags(cmd)` for a `(forge.v1.binary_config)` message with no
+  `command` now registers all of its leaves, composed blocks included, as
+  PERSISTENT flags on the command it is given (the binary's root), via the new
+  `config.RegisterPersistentFlags`; it used to register only the message's own
+  leaves, as LOCAL flags, beside a separate `Register<Msg>SharedFlags` for the
+  composed blocks. That split modelled binaries as subcommands of one root,
+  which `command` now expresses directly, and it left a root config's own
+  flags invisible to the binary's subcommands. Replace
+  `Register<Msg>SharedFlags(root)` + `Register<Msg>Flags(root)` with one
+  `Register<Msg>Flags(root)`. `config.RegisterSharedFlags` /
+  `RegisterOwnFlags` remain as library primitives.
 - **ClickStack is the local observability stack, and it is ON by default.**
   `forge env up` now runs ONE container, HyperDX's no-auth _local mode_ image
   (ClickHouse, the HyperDX UI and an OTLP collector), in place of the opt-in
@@ -319,8 +352,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract. A binding must now name a `cmd/<name>` directory; the refusal names
   every offender as `proto/<file>:<line>`, lists the project's binaries, and
   suggests the `cmd/` spelling when the name differs only by `-`/`_`. Two
-  messages bound to the same binary are refused too: the KCL projection looked
-  the binary up rather than the message, so both got the first message's fields.
+  messages bound to the same binary (and `command`) are refused too: the KCL
+  projection looked the binary up rather than the message, so both got the
+  first message's fields.
 - **`forge lint` no longer reports a golangci-lint that cannot read the
   toolchain's export data as a typecheck failure.** On control-plane the
   gating lane failed with one `typecheck` error, `could not import time (…

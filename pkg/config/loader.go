@@ -175,6 +175,13 @@ func RegisterFlagsFor(flags *pflag.FlagSet, msg proto.Message) error {
 // cobra's Flags() on a subcommand already merges inherited persistent flags
 // (so Changed()/Lookup() resolve a root flag from the subcommand). One load
 // call therefore fills both halves with the normal precedence.
+//
+// The GENERATED per-binary surface does not split a message: since
+// (forge.v1.binary_config).command scopes a config to one subcommand, each
+// message has one flag home — a binary's root config registers ScopeAll
+// persistent on the root (RegisterPersistentFlags), a command config ScopeAll
+// local on its subcommand (RegisterLocalFlags / RegisterFlags). ScopeShared
+// and ScopeOwn remain for a tree assembled by hand.
 type FlagScope int
 
 const (

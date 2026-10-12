@@ -55,12 +55,35 @@ option go_package = "{{.Module}}/gen/config/v1;configv1";
 // level is not duplication, they are separate values on separate processes.
 //
 // What forge generates per binary: a typed config + Load in pkg/config, a
-// KCL schema + env projection, and a per-env instance in config.k. Base
-// leaves register as PERSISTENT flags on the root command (so
-// `app --log-level=debug admin` works); the binary's own leaves register as
-// LOCAL flags on its subcommand. Precedence is unchanged
+// KCL schema + env projection, and a per-env instance in config.k. Every
+// leaf — composed blocks included — registers as a PERSISTENT flag on the
+// binary's root command (config.Register<Msg>Flags(root)), so every
+// subcommand inherits it. Precedence is unchanged
 // (flags > env > config file > proto defaults), and the binary's Deployment
-// carries only ITS env vars.
+// carries only ITS env vars. `binary` must name a cmd/<name> directory;
+// anything else is a generate-time error.
+//
+// ONE BINARY, SEVERAL PROCESSES. When a binary's subcommands run as separate
+// processes (`app server api`, `app server worker`), scope a config to one
+// with `command` — the cobra path below the binary:
+//
+//   message ApiServerConfig {
+//     option (forge.v1.binary_config) = {binary: "app", command: ["server", "api"]};
+//     string auth_api_key = 1 [(forge.v1.config) = {env_var: "AUTH_API_KEY", sensitive: true}];
+//   }
+//
+// A binary's ROOT config (no `command`, like AdminConfig above) stays the
+// binary-wide surface every one of its processes loads; the process running
+// `app server api` loads app's root config AND ApiServerConfig. A command
+// config's leaves register as LOCAL flags on its subcommand (call
+// config.RegisterApiServerConfigFlags on it), config.LoadApiServerConfig
+// refuses to load from any other command, and the worker's Deployment never
+// carries AUTH_API_KEY. Command configs do not nest (`server`'s config is not
+// `server api`'s), and a root and a command config may not declare the same
+// env var or flag. In KCL, config_gen.<bin>ProcessEnvMap projects a
+// workload's env from its own `command + args`: the root config plus the
+// matching command config, with config_secrets routed to whichever declares
+// each name.
 //
 // Selection is by ANNOTATION, never by message name — renaming AdminConfig
 // does not re-point it at a different binary.

@@ -38,10 +38,12 @@ func TestValidateBinaryConfigBindings_RefusesUnknownBinaries(t *testing.T) {
 	}
 	got := err.Error()
 	for _, want := range []string{
-		"proto/config/v1/config.proto:42: message ServerApiConfig: binary_config.binary = \"x server api\"",
+		`proto/config/v1/config.proto:42: message ServerApiConfig: (forge.v1.binary_config) = {binary: "x server api"}`,
 		"there is no cmd/x server api/ directory",
 		"not a command line",
-		"proto/config/v1/config.proto:57: message GhostConfig: binary_config.binary = \"nonexistent\"",
+		// The leading word IS a binary: the refusal writes the fix.
+		`write {binary: "x", command: ["server", "api"]}`,
+		`proto/config/v1/config.proto:57: message GhostConfig: (forge.v1.binary_config) = {binary: "nonexistent"}`,
 		"there is no cmd/nonexistent/ directory",
 		"Binaries in this project (cmd/<name>): x",
 		"forge scaffold binary <name>",
@@ -117,6 +119,133 @@ func TestValidateBinaryConfigBindings_RefusesTwoConfigsForOneBinary(t *testing.T
 	}
 }
 
+// commandMessage is a config message bound to one subcommand of binary.
+func commandMessage(name, binary string, command []string, line int, fields ...ConfigField) ConfigMessage {
+	m := boundMessage(name, binary, line)
+	m.Command = command
+	if len(fields) > 0 {
+		m.Fields = fields
+	}
+	return m
+}
+
+func envField(name, envVar, flag string) ConfigField {
+	return ConfigField{Name: name, GoName: name, GoType: "string", ProtoType: "string", EnvVar: envVar, Flag: flag}
+}
+
+// The reliant shape: one binary, a binary-wide root config, and one config
+// per server role — keyed on (binary, command), so the same binary binds
+// several messages without any of them being a duplicate.
+func TestValidateBinaryConfigBindings_OneBinarySeveralProcesses(t *testing.T) {
+	msgs := []ConfigMessage{
+		commandMessage("ReliantConfig", "reliant", nil, 10, envField("log_level", "RELIANT_LOG_LEVEL", "log-level")),
+		commandMessage("ApiServerConfig", "reliant", []string{"server", "api"}, 20, envField("grpc_port", "GRPC_PORT", "grpc-port")),
+		commandMessage("WorkerConfig", "reliant", []string{"server", "worker"}, 30, envField("pprof_port", "PPROF_PORT", "pprof-port")),
+		// The same flag on two DIFFERENT commands is fine: each is a local
+		// flag on its own subcommand, read by its own process.
+		commandMessage("GatewayConfig", "reliant", []string{"server", "gateway"}, 40, envField("pprof_port", "PPROF_PORT", "pprof-port")),
+	}
+	if err := ValidateBinaryConfigBindings(msgs, []string{"reliant"}); err != nil {
+		t.Fatalf("one binary with a root config and per-command configs refused: %v", err)
+	}
+}
+
+func TestValidateBinaryConfigBindings_RefusesMalformedCommands(t *testing.T) {
+	cases := []struct {
+		name    string
+		command []string
+		want    string
+	}{
+		{"a whole line in one element", []string{"server api"}, `element "server api" contains whitespace. Each element is ONE cobra command name: ["server", "api"]`},
+		{"an empty element", []string{"server", ""}, "`command` has an empty element"},
+		{"a flag", []string{"server", "--port"}, `element "--port" is a flag`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateBinaryConfigBindings([]ConfigMessage{commandMessage("ApiConfig", "reliant", c.command, 5)}, []string{"reliant"})
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("want refusal containing %q, got: %v", c.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateBinaryConfigBindings_RefusesCommandWithoutBinary(t *testing.T) {
+	m := commandMessage("ApiConfig", "", []string{"server", "api"}, 5)
+	err := ValidateBinaryConfigBindings([]ConfigMessage{m}, []string{"reliant"})
+	if err == nil || !strings.Contains(err.Error(), "no `binary` is set") {
+		t.Fatalf("want refusal of a command with no binary, got: %v", err)
+	}
+}
+
+func TestValidateBinaryConfigBindings_RefusesTwoConfigsForOneCommand(t *testing.T) {
+	msgs := []ConfigMessage{
+		commandMessage("ApiServerConfig", "reliant", []string{"server", "api"}, 20),
+		commandMessage("ApiExtrasConfig", "reliant", []string{"server", "api"}, 50),
+	}
+	err := ValidateBinaryConfigBindings(msgs, []string{"reliant"})
+	if err == nil {
+		t.Fatal("two configs for one command generated cleanly; want a refusal")
+	}
+	if got := err.Error(); !strings.Contains(got, "config.proto:50: message ApiExtrasConfig") ||
+		!strings.Contains(got, "`reliant server api` is already bound by ApiServerConfig") {
+		t.Errorf("refusal should name the second binding and the process:\n%s", got)
+	}
+}
+
+// The `server api` process loads the root config AND its command config, so
+// a leaf both declare — directly or through a composed block — is read
+// twice. Refused, naming both declarations.
+func TestValidateBinaryConfigBindings_RefusesARootAndCommandCollision(t *testing.T) {
+	logBlock := ConfigMessage{Name: "LogConfig", Fields: []ConfigField{envField("level", "RELIANT_LOG_LEVEL", "log-level")}}
+	msgs := []ConfigMessage{
+		logBlock,
+		commandMessage("ReliantConfig", "reliant", nil, 10,
+			ConfigField{Name: "log", GoName: "Log", ProtoType: "message", MessageType: "LogConfig"}),
+		commandMessage("ApiServerConfig", "reliant", []string{"server", "api"}, 20,
+			// Composes the same block the root does.
+			ConfigField{Name: "log", GoName: "Log", ProtoType: "message", MessageType: "LogConfig"}),
+		commandMessage("WorkerConfig", "reliant", []string{"server", "worker"}, 30,
+			// A different env var, same flag name as the root's.
+			envField("verbosity", "WORKER_VERBOSITY", "log-level")),
+	}
+	err := ValidateBinaryConfigBindings(msgs, []string{"reliant"})
+	if err == nil {
+		t.Fatal("root and command configs declaring the same leaf generated cleanly; want a refusal")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"config.proto:20: message ApiServerConfig",
+		"env var RELIANT_LOG_LEVEL (log.level) is also declared by ReliantConfig (log.level)",
+		"The `reliant server api` process loads both",
+		"config.proto:30: message WorkerConfig",
+		"flag --log-level (verbosity) is also declared by ReliantConfig (log.level)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("refusal missing %q\n---\n%s", want, got)
+		}
+	}
+	// No unknown-binary footer for a project whose binaries all exist.
+	if strings.Contains(got, "Binaries in this project") {
+		t.Errorf("collision-only refusal should not carry the unknown-binary runbook:\n%s", got)
+	}
+}
+
+func TestConfigMessage_ProcessName(t *testing.T) {
+	for _, c := range []struct {
+		m    ConfigMessage
+		want string
+	}{
+		{ConfigMessage{}, ""},
+		{ConfigMessage{Binary: "reliant"}, "reliant"},
+		{ConfigMessage{Binary: "reliant", Command: []string{"server", "api"}}, "reliant server api"},
+	} {
+		if got := c.m.ProcessName(); got != c.want {
+			t.Errorf("ProcessName(%+v) = %q, want %q", c.m, got, c.want)
+		}
+	}
+}
+
 // The position degrades rather than lying: no file renders no prefix, and
 // a file with no line renders the file alone.
 func TestConfigMessageWhere_Degrades(t *testing.T) {
@@ -152,5 +281,30 @@ func TestProjectBinaries(t *testing.T) {
 	}
 	if got, want := ProjectBinaries(dir), []string{"admin", "server"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ProjectBinaries = %v, want %v", got, want)
+	}
+}
+
+// `{binary: "x server"}` and `{binary: "x", command: ["server"]}` print
+// alike but are different bindings, and a binding refused for its own shape
+// names no process: neither is reported again as a "duplicate".
+func TestValidateBinaryConfigBindings_RefusedBindingsAreNotDuplicates(t *testing.T) {
+	msgs := []ConfigMessage{
+		boundMessage("LineConfig", "x server worker", 10),                     // not a binary
+		commandMessage("ShapeConfig", "x", []string{"server worker"}, 20),     // not a path
+		commandMessage("WorkerConfig", "x", []string{"server", "worker"}, 30), // valid
+	}
+	err := ValidateBinaryConfigBindings(msgs, []string{"x"})
+	if err == nil {
+		t.Fatal("want refusals for the two malformed bindings")
+	}
+	got := err.Error()
+	if strings.Contains(got, "already bound") {
+		t.Errorf("malformed bindings must not be reported as duplicates:\n%s", got)
+	}
+	if strings.Contains(got, "message WorkerConfig") {
+		t.Errorf("the valid binding must not be refused:\n%s", got)
+	}
+	if strings.Index(got, "config.proto:10:") > strings.Index(got, "config.proto:20:") {
+		t.Errorf("refusals should be listed in declaration order:\n%s", got)
 	}
 }

@@ -154,6 +154,30 @@ const (
 	// concern, and another reason the registry cannot be derived from the
 	// birth scanner alone.
 	ProtoMarkerMutation = "forge:mutation"
+
+	// ProtoMarkerUnmanaged takes a whole SERVICE out of forge's service
+	// model: buf still generates its Go/TS wire code and its descriptor
+	// entry, but forge scaffolds and generates nothing service-scoped for
+	// it — no internal/handlers/<svc>/, no rpc stubs or scaffold tests, no
+	// mocks, CRUD wiring or entities, no mount, compose entry or
+	// subcommand, no frontend hooks or pages — and every audit and lint
+	// that checks a service's handlers skips it. Deleting the line adopts
+	// the service; the next `forge generate` scaffolds it like any other.
+	//
+	// It exists so a project with handlers that already live somewhere
+	// else can adopt forge one service at a time. Without it the first
+	// generate scaffolds a stub for every rpc of every service at once.
+	//
+	// The one projection that still covers an unmanaged service is the
+	// open-procedure set (pkg/middleware/procedures_gen.go): auth_required
+	// is a fact about the API contract, not about who implements the
+	// handler, and a declared-public rpc must not fail closed because its
+	// handler is mounted by hand.
+	//
+	// Read by the descriptor path (ServiceDef.Unmanaged) and by the raw
+	// scanner (RawProtoService.Unmanaged), from the comment block above
+	// `service X {`, with the entity markers' placement rule.
+	ProtoMarkerUnmanaged = "forge:unmanaged"
 )
 
 // KnownProtoMarkers is the complete set of `forge:*` marker names a .proto
@@ -173,6 +197,46 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerSecret,
 	ProtoMarkerGuards,
 	ProtoMarkerMutation,
+	ProtoMarkerUnmanaged,
+}
+
+// unmanagedCommentRE recognizes ProtoMarkerUnmanaged in comment text buf has
+// already stripped the `//` from — any line of the block, prose after the
+// token tolerated, a longer token that merely starts with it refused.
+var unmanagedCommentRE = ProtoMarkerCommentRE(ProtoMarkerUnmanaged)
+
+// CommentMarksUnmanaged reports whether a service's comment text (slashes
+// already stripped, the descriptor path's shape) carries ProtoMarkerUnmanaged.
+func CommentMarksUnmanaged(comment string) bool {
+	return unmanagedCommentRE.MatchString(comment)
+}
+
+// forgeTokenRE finds every `forge:<name>` token in comment text.
+var forgeTokenRE = regexp.MustCompile(`forge:[A-Za-z][\w-]*`)
+
+// UnmanagedMarkerNearMiss returns the first `forge:*` token in a service's
+// comment that is a misspelling of ProtoMarkerUnmanaged (`forge:unmanged`,
+// `forge:un-managed`), or "" when there is none.
+//
+// The proto-markers lint reports an unknown marker as a warning, because one
+// is usually prose. On a service this one is not: a misspelled
+// forge:unmanaged leaves the service managed, and the next generate scaffolds
+// a stub for every one of its rpcs — the exact outcome the marker was written
+// to prevent. So the descriptor path refuses a near miss outright. Known
+// markers and tokens nowhere near this one stay prose.
+func UnmanagedMarkerNearMiss(comment string) string {
+	if CommentMarksUnmanaged(comment) {
+		return "" // the marker is there; nothing was lost
+	}
+	for _, tok := range forgeTokenRE.FindAllString(comment, -1) {
+		if tok == ProtoMarkerUnmanaged || IsKnownProtoMarker(tok) {
+			continue
+		}
+		if ClosestFrom(tok, []string{ProtoMarkerUnmanaged}) != "" {
+			return tok
+		}
+	}
+	return ""
 }
 
 // guardTargetRE matches ONE `forge:guards <table>.<column>` declaration and

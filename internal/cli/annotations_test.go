@@ -38,18 +38,18 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 	}
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
-		"forge:read-only", "forge:secret", "forge:mutation",
+		"forge:read-only", "forge:secret", "forge:mutation", "forge:unmanaged",
 	} {
 		if !markerNames[want] {
 			t.Errorf("markers missing %q", want)
 		}
 	}
-	// Nine proto markers plus the column-comment markers plus the
+	// Ten proto markers plus the column-comment markers plus the
 	// Go-source markers. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
 	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 23 {
-		t.Errorf("expected 23 markers, got %d", len(spec.Markers))
+	if len(spec.Markers) != 24 {
+		t.Errorf("expected 24 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -185,12 +185,15 @@ func TestAnnotations_KindFilters(t *testing.T) {
 		}
 	}
 
-	// service → only service_options.
+	// service → service_options plus the service-level comment marker.
 	service := dumpJSON(t, "service")
 	if len(service.ServiceOptions) == 0 {
 		t.Error("--kind service returned no service_options")
 	}
-	if len(service.Markers) != 0 || len(service.FieldTypes) != 0 ||
+	if len(service.Markers) != 1 || service.Markers[0].Name != "forge:unmanaged" {
+		t.Errorf("--kind service must carry the service-level marker: %+v", service.Markers)
+	}
+	if len(service.FieldTypes) != 0 ||
 		len(service.ValidateRules) != 0 || len(service.MethodOptions) != 0 {
 		t.Errorf("--kind service leaked other sections: %+v", service)
 	}
@@ -340,6 +343,7 @@ message LedgerEntity {
 	for _, want := range []string{
 		"forge:entity", "forge:soft-delete", "forge:append-only",
 		"forge:read-only", "forge:generated", "forge:secret", "forge:guards", "forge:mutation",
+		"forge:unmanaged",
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
 		"forge:external-component", "forge:outbound-io",
@@ -348,8 +352,8 @@ message LedgerEntity {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 22 {
-		t.Errorf("expected 22 marker specs, got %d", len(got))
+	if len(got) != 23 {
+		t.Errorf("expected 23 marker specs, got %d", len(got))
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same
@@ -359,7 +363,7 @@ message LedgerEntity {
 	// is the identical guarantee one layer down.
 	protoMarkers := map[string]bool{}
 	for _, m := range markerSpecs() {
-		if m.AppliesTo == "entity" || m.AppliesTo == "field" || m.AppliesTo == "method" {
+		if m.AppliesTo == "entity" || m.AppliesTo == "field" || m.AppliesTo == "method" || m.AppliesTo == "service" {
 			protoMarkers[m.Name] = true
 		}
 	}
@@ -428,6 +432,24 @@ service DemoService {
 	}
 	if marked["FindSeat"] {
 		t.Error("forge:mutation leaked onto an unmarked rpc")
+	}
+
+	// forge:unmanaged is read by BOTH the raw scanner and the descriptor
+	// path — pin each against the catalog name.
+	unmanagedProto := "syntax = \"proto3\";\npackage services.demo.v1;\n// forge:unmanaged\nservice LegacyService {\n  rpc Ping(Req) returns (Resp);\n}\n"
+	udir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(udir, "legacy.proto"), []byte(unmanagedProto), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uscan, err := codegen.ScanRawProtoDir(udir)
+	if err != nil {
+		t.Fatalf("ScanRawProtoDir: %v", err)
+	}
+	if !uscan.ServiceUnmanaged("LegacyService") {
+		t.Error("forge:unmanaged not recognized by the raw scanner")
+	}
+	if !codegen.CommentMarksUnmanaged(" forge:unmanaged\n") {
+		t.Error("forge:unmanaged not recognized by the descriptor-path recognizer")
 	}
 }
 

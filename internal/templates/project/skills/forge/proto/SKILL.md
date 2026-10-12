@@ -414,6 +414,29 @@ implementer: the remote proto is the source of truth — **import it (pinned
 hand-copy it into `proto/services/` and scaffold a server: every method
 `CodeUnimplemented` and a `Deps` holding only `Logger`/`Config` is the tell.
 
+## Services forge does not manage (yet) — `// forge:unmanaged`
+
+A service this project declares and SERVES, but whose handlers live outside
+forge's `internal/handlers/<svc>/` model — the in-place adoption case
+(`migration`). Mark it with a full-line comment above the declaration (only
+comment and blank lines may sit between):
+
+```proto
+// forge:unmanaged — handlers still in internal/grpc/services.
+service ChatService { ... }
+```
+
+buf still generates its code and its rpcs' `auth_required` still projects into
+the open-procedure set; forge generates nothing service-scoped for it (no
+handler stubs, mocks, CRUD, mounts, compose entry, subcommand, frontend hooks).
+Delete the line to adopt it. It is a whole-service switch: on an rpc or a
+message, or misspelled, it fails `forge generate`. `forge project annotations
+--kind service` has the full effect list.
+
+Not the same as the section above: an rpc owned by ANOTHER repo is imported
+and generates only a client; an unmanaged service is yours, served by code
+forge has not taken over yet.
+
 ## Common Mistakes
 
 1. **Missing forge import** — Every proto using `(forge.v1.method)` / `(forge.v1.service)` needs `import "forge/v1/forge.proto";`.

@@ -182,7 +182,12 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 			ValidateRules: all.ValidateRules,
 		}, nil
 	case "service":
-		return AnnotationsSpec{ServiceOptions: all.ServiceOptions}, nil
+		// Service options plus the one comment marker that attaches to a
+		// service (forge:unmanaged).
+		return AnnotationsSpec{
+			Markers:        filterMarkers(all.Markers, "service"),
+			ServiceOptions: all.ServiceOptions,
+		}, nil
 	case "method":
 		// Method options plus the one comment marker that attaches to an rpc.
 		return AnnotationsSpec{
@@ -304,6 +309,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Forces the generated React Query hook for this rpc to be a useMutation. Classification is otherwise by leading verb — Get/List/Search/Find/Check/Has/Is/Count/Exists (whole-word) are reads, EVERYTHING else is a mutation — so this is needed only for an imperative rpc that happens to open with a read word (FindAndHoldSeat, IssueRefund). A write generated as useQuery re-fires on every component remount. Unlike the entity/field markers this one is read on every `forge generate`, not just at birth.",
 			Placement: "leading full-line comment above the `rpc` line, or a trailing comment on it",
 			Example:   "// forge:mutation — holds inventory, so it must never be a cached read.\nrpc FindAndHoldSeat(FindAndHoldSeatRequest) returns (FindAndHoldSeatResponse);",
+		},
+		{
+			Name:      codegen.ProtoMarkerUnmanaged,
+			AppliesTo: "service",
+			Effect:    "Takes the whole service out of forge's service model, for a project whose handlers for it live somewhere else — the incremental way onto forge. buf still generates its Go/TS code and it stays in gen/forge_descriptor.json, but forge generates nothing service-scoped for it: no internal/handlers/<svc>/ or rpc stubs, no mocks, CRUD wiring or entities, no mount, compose entry or per-service subcommand, no frontend hooks or pages; `forge scaffold` skips it and refuses `scaffold service|rpc|entity --from-proto` on it; audit, shapes and the list-filter lint treat it as not forge's. Its rpcs' auth_required declarations still project into pkg/middleware/procedures_gen.go, because whether an rpc is public is part of the contract whoever serves it. `forge project audit` lists every unmanaged service (shape → unmanaged_services). Adopt one by deleting the line: the next `forge generate` scaffolds it like any new service. A near-miss spelling, or the marker on an rpc or message, fails generate.",
+			Placement: "full-line comment above `service X {`, with only comment or blank lines between",
+			Example:   "// forge:unmanaged — handlers still in internal/grpc/services; adopt one service per PR.\nservice ChatService { ... }",
 		},
 		{
 			Name:      codegen.ProtoMarkerSecret,

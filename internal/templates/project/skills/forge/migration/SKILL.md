@@ -41,7 +41,28 @@ forge project new <name>-next --kind <service|cli|library> --mod <module-path>
 
 ## Module path strategy
 
-Use a `-next` suffix (e.g. `github.com/owner/project-next`) during the migration so old and new repos build side-by-side. Rename the module path as the final cutover step. The friction is small and the safety upside is large — never try to migrate in-place.
+For a project nothing else imports, use a `-next` suffix (e.g. `github.com/owner/project-next`) during the migration so old and new repos build side-by-side, and rename the module path as the final cutover step. The friction is small and the safety upside is large.
+
+A project other modules already `require` — or one too large and too busy to fork for months — adopts forge **in place** instead (`forge project new --in-place`), one service at a time. That only works because forge can be told which services it does not manage yet; see the next section.
+
+## Adopting in place, one service at a time: `// forge:unmanaged`
+
+The first `forge generate` on an existing tree discovers every proto service and, by default, scaffolds `internal/handlers/<svc>/` with an `Unimplemented` stub per rpc, mocks, a mount, a compose entry and a subcommand for each — beside the real handlers that already exist elsewhere. On a large API that is hundreds of stubs in one commit. Prevent it by marking every service whose handlers live outside forge:
+
+```proto
+// forge:unmanaged — handlers still in internal/grpc/services; adopt one per PR.
+service ChatService {
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+}
+```
+
+- **What forge still does:** buf generates the service's Go/TS code as before, it stays in `gen/forge_descriptor.json`, and its rpcs' `auth_required` declarations still project into `pkg/middleware/procedures_gen.go` (whether an rpc is public is part of the contract, whoever serves it — so a hand-written server can use the generated open set).
+- **What forge skips:** everything service-scoped — handler dir and rpc stubs, scaffold tests, mocks, CRUD wiring and entities, the mount, compose entry and subcommand, frontend hooks and pages. `forge scaffold` skips it and refuses `scaffold service|rpc|entity --from-proto` on it; `forge lint`'s list-filter rule and `forge project shapes` treat its rpcs as not forge's.
+- **The ledger:** `forge project audit --json` lists every unmanaged service under the shape category's `unmanaged_services`; `generate` prints the count each run.
+- **Adopt one:** delete its marker line, run `forge generate` — it scaffolds `internal/handlers/<svc>/` like any new service — move the real logic onto the generated `*Service` methods, swap the old mount for `Mount<Svc>`, and delete the old handler. One service per PR; the rest of the tree is untouched.
+- **Hard to get wrong:** a near-miss spelling (`forge:unmanged`) or the marker on an rpc or message fails `forge generate` — it is a whole-service switch, never per-rpc.
+
+A NEW service added to an in-place project gets no marker, so it is born forge-managed.
 
 ## Service / package naming
 

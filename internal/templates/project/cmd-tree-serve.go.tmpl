@@ -9,8 +9,8 @@
 // way down. Those are yours. Change them here.
 //
 // The steps that are the same in every forge project — building the logger
-// and the mux, the migrate ceremony, recording mounts, scoping the proto
-// registry for the completeness gate — are in
+// and the mux, the migrate ceremony, recording mounts, checking them against
+// the inventory for the completeness gate — are in
 // github.com/reliant-labs/forge/pkg/serverkit, so this file stays short
 // enough to read and improvements to them reach you through a dependency
 // bump instead of a re-scaffold.
@@ -87,9 +87,9 @@ type ServeSpec struct {
 	// RunOperators controller rows from the returned slice, so the
 	// supervised set and the run set can never diverge.
 	Operators func(*app.Components) []app.OperatorEntry
-	// RequireComplete runs the boot-time completeness gate (every declared
-	// proto service must be mounted) — the all-services `server` path sets
-	// it; a subset mount leaves it false.
+	// RequireComplete runs the boot-time completeness gate (every service in
+	// app.Inventory — each forge-managed proto service — must be mounted) —
+	// the all-services `server` path sets it; a subset mount leaves it false.
 	RequireComplete bool
 }
 

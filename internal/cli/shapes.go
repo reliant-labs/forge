@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/kcl"
 )
 
@@ -46,6 +47,7 @@ import (
 // next step is a targeted read rather than another search:
 //
 //	rpc      roofops.RecalculateEstimate   proto/services/roofops/v1/roofops.proto:412  in=… out=…
+//	rpc      legacy.Ping                   proto/services/legacy/v1/legacy.proto:9  in=… out=… unmanaged
 //	message  Estimate                      proto/services/roofops/v1/roofops.proto:640  fields=14
 //	enum     EstimateStatus                proto/services/roofops/v1/roofops.proto:604  values=5
 //	table    estimates                     db/migrations/00004_create_estimates.up.sql:9
@@ -267,19 +269,42 @@ func eachLine(root, ext string, fn func(rel string, lineNo int, line string)) {
 
 func scanProtos(root string) []shape {
 	var out []shape
-	var svc string
+	var (
+		file string
+		svc  string
+		// An rpc of a `// forge:unmanaged` service is declared but has no
+		// forge handler by design; its detail says so, so `--kind
+		// rpc,handler` does not read it as an unimplemented rpc.
+		svcUnmanaged, pendingUnmanaged bool
+	)
 	eachLine(root, ".proto", func(rel string, n int, line string) {
-		if m := reProtoService.FindStringSubmatch(line); m != nil {
-			svc = m[1]
+		if rel != file {
+			file, svc, svcUnmanaged, pendingUnmanaged = rel, "", false, false
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			if codegen.IsUnmanagedMarkerLine(trimmed) {
+				pendingUnmanaged = true
+			}
 			return
+		}
+		if m := reProtoService.FindStringSubmatch(line); m != nil {
+			svc, svcUnmanaged, pendingUnmanaged = m[1], pendingUnmanaged, false
+			return
+		}
+		if trimmed != "" {
+			pendingUnmanaged = false
 		}
 		if m := reProtoRPC.FindStringSubmatch(line); m != nil {
 			name := m[1]
 			if svc != "" {
 				name = svc + "." + m[1]
 			}
-			out = append(out, shape{"rpc", name, rel, n,
-				fmt.Sprintf("in=%s out=%s", m[2], m[3])})
+			detail := fmt.Sprintf("in=%s out=%s", m[2], m[3])
+			if svcUnmanaged {
+				detail += " unmanaged"
+			}
+			out = append(out, shape{"rpc", name, rel, n, detail})
 			return
 		}
 		if m := reProtoMessage.FindStringSubmatch(line); m != nil {

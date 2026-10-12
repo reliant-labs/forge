@@ -506,13 +506,28 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	// backlog.
 	rpcByService := map[string][]rpcInfo{}
 	var protoParseErr string
+	// unmanagedInfo is one `// forge:unmanaged` service: declared in proto,
+	// handlers owned outside forge. Listed apart from `services` because
+	// nothing forge generates or checks covers it — this is the adoption
+	// ledger a project migrating onto forge works down.
+	type unmanagedInfo struct {
+		Name      string `json:"name"` // fully-qualified, e.g. "acme.v1.ChatService"
+		ProtoFile string `json:"proto_file"`
+		RPCCount  int    `json:"rpc_count"`
+	}
+	var unmanaged []unmanagedInfo
 	// Services are read from the protoc-gen-forge descriptor, which covers
 	// every Connect service in any proto package — so flat / multi-service
 	// layouts (proto/controlplane/v1/*.proto) are audited identically to the
-	// canonical proto/services/<svc>/v1/ layout. The dir arg is vestigial.
+	// canonical proto/services/<svc>/v1/ layout.
 	if f.Audit.ProjectDefinesConnectServices(projectDir) {
-		if defs, err := codegen.ParseServicesFromProtos("", projectDir); err == nil {
-			for _, d := range defs {
+		if declared, err := codegen.ParseDeclaredServices(projectDir); err == nil {
+			for _, d := range codegen.UnmanagedServices(declared) {
+				unmanaged = append(unmanaged, unmanagedInfo{
+					Name: d.Package + "." + d.Name, ProtoFile: d.ProtoFile, RPCCount: len(d.Methods),
+				})
+			}
+			for _, d := range codegen.ManagedServices(declared) {
 				rpcs := make([]rpcInfo, 0, len(d.Methods))
 				for _, m := range d.Methods {
 					// "" means unary.
@@ -583,10 +598,15 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	status := audittype.StatusOK
 	summary := fmt.Sprintf("kind=%s, %d service(s), %d frontend(s) (workers/operators are owned code — not inventoried by forge)",
 		cfg.EffectiveKind(), len(services), len(frontends))
+	if len(unmanaged) > 0 {
+		sort.Slice(unmanaged, func(i, j int) bool { return unmanaged[i].Name < unmanaged[j].Name })
+		details["unmanaged_services"] = unmanaged
+		summary += fmt.Sprintf(", %d unmanaged service(s) (// %s — see unmanaged_services)", len(unmanaged), codegen.ProtoMarkerUnmanaged)
+	}
 	if protoParseErr != "" {
 		details["proto_integrity"] = map[string]any{
 			"status": "warn",
-			"reason": "ParseServicesFromProtos failed — RPC counts may be 0 even for services with methods",
+			"reason": "reading the forge descriptor failed — RPC counts may be 0 even for services with methods",
 			"error":  protoParseErr,
 		}
 		status = audittype.StatusWarn

@@ -67,6 +67,13 @@ type ServiceDef struct {
 	// Absent on older descriptors; readers then fall back to the proto
 	// package rule (enumWireGoName).
 	EnumGoRefs map[string]EnumGoRef `json:",omitempty"`
+
+	// Unmanaged reports a `// forge:unmanaged` marker above the service
+	// declaration (ProtoMarkerUnmanaged): its handlers live outside forge's
+	// model, so nothing service-scoped is generated for it.
+	// ParseServicesFromProtos leaves such services out; ParseDeclaredServices
+	// keeps them, for the consumers that project the wire contract itself.
+	Unmanaged bool `json:",omitempty"`
 }
 
 // EnumGoRef locates a generated Go enum type.

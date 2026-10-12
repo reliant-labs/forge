@@ -172,6 +172,9 @@ func runRPC(f *factory.Factory, svc, rpcName string, mode rpcStreamMode) error {
 	if err := requireServiceKind(root, "rpc"); err != nil {
 		return err
 	}
+	if err := refuseUnmanagedService(ctxLabel, root, svc); err != nil {
+		return err
+	}
 
 	// Tombstoned services (mentioned only in a pkg/app/services.go
 	// comment — types-only) have no handler scaffold by design: adding

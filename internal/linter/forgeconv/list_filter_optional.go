@@ -123,6 +123,14 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 	var scans []*codegen.RawProtoScan
 	enums := map[string]bool{}
 	listRequests := map[string]bool{}
+	// Request messages of rpcs on `// forge:unmanaged` services, and of rpcs
+	// on managed ones. The rule's premise is forge's GENERATED list filter,
+	// and forge generates nothing for an unmanaged service — its handlers
+	// read the request however they like. A request only unmanaged rpcs use
+	// is therefore not this rule's to judge; the findings arrive when the
+	// service is adopted, which is when they start to matter.
+	unmanagedRequests := map[string]bool{}
+	managedRequests := map[string]bool{}
 	for _, d := range dirs {
 		scan, err := codegen.ScanRawProtoFiles(byDir[d])
 		if err != nil {
@@ -137,7 +145,17 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 			enums[fq] = true
 		}
 		for _, rpc := range scan.RPCs {
-			if !listRPCNameRE.MatchString(rpc.Name) || rpc.Request == "" {
+			if rpc.Request == "" {
+				continue
+			}
+			unmanaged := scan.ServiceUnmanaged(rpc.Service)
+			requests := managedRequests
+			if unmanaged {
+				requests = unmanagedRequests
+			}
+			requests[rpc.Request] = true
+			requests[scan.Package+"."+rpc.Request] = true
+			if unmanaged || !listRPCNameRE.MatchString(rpc.Name) {
 				continue
 			}
 			// The request may be written package-relative or fully
@@ -153,6 +171,9 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 		for _, msg := range scan.Messages {
 			fq := scan.Package + "." + msg.Name
 			if !listRequestNameRE.MatchString(msg.Name) && !listRequests[fq] {
+				continue
+			}
+			if unmanagedRequests[fq] && !managedRequests[fq] {
 				continue
 			}
 			for _, f := range msg.Fields {

@@ -10,8 +10,8 @@ package serverkit
 // Everything in THIS file is the other half — the steps that are identical
 // in every forge project and that an author has no reason to re-derive:
 // building the logger and the mux, running migrations before anything
-// mounts, recording mounted services for the completeness gate, scoping the
-// proto registry to the project's own services, and adding an
+// mounts, recording mounted services for the completeness gate, checking
+// them against the project's own services, and adding an
 // already-selected worker set. They live here so serve.go can be short
 // enough to read, and so improvements to them reach every project without
 // anyone re-scaffolding.
@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -140,53 +141,45 @@ func (s *Server) AddWorkers(workers []Worker) {
 
 // RequireComplete is the boot-time mount-completeness gate, scoped to the
 // project's OWN declared services: every service in inv must have been
-// recorded as mounted, or boot fails.
-//
-// It fuses ProjectServiceFiles with RequireMounted because the two are only
-// ever correct together, and the failure mode of splitting them is a
-// half-wired server that boots green. A composition root that deliberately
+// recorded as mounted, or boot fails. A composition root that deliberately
 // mounts a SUBSET (a per-service subcommand) simply does not call this.
+//
+// The scope is exactly the inventory's services — never every service in
+// their proto files, nor protoregistry.GlobalFiles. GlobalFiles also carries
+// framework and transitively-imported services this binary does not serve
+// (grpc.health.v1.Health, which serverkit mounts itself, and the OTel
+// collector services the SDK pulls in). And a proto file can declare a
+// service forge does not manage (`// forge:unmanaged`) beside one it does;
+// the inventory leaves the first out, so a gate that widened to the whole
+// file would refuse to boot over a service that is not forge's to mount.
+//
+// A service the inventory names but the binary never linked is a hard
+// error: the inventory and the generated packages must agree, and a
+// disagreement means the gate would be checking something other than what
+// the binary serves.
 func (s *Server) RequireComplete(inv []inventory.ComponentInfo) error {
-	files, err := ProjectServiceFiles(inv)
-	if err != nil {
-		return fmt.Errorf("server completeness check: scoping project descriptors: %w", err)
-	}
-	if err := s.RequireMounted(files); err != nil {
-		return fmt.Errorf("server completeness check: %w", err)
-	}
-	return nil
-}
-
-// ProjectServiceFiles builds a *protoregistry.Files scoped to the PROJECT's
-// own declared services, for the RequireMounted completeness gate.
-//
-// It looks each inventory ConnectPath (a fully-qualified Connect service
-// name) up in protoregistry.GlobalFiles and registers ONLY those services'
-// parent FileDescriptors. GlobalFiles is not usable directly: it also
-// carries framework and transitively-imported proto files this binary does
-// not serve — grpc.health.v1.Health, which serverkit mounts itself, and the
-// OTel collector services the SDK pulls in — so a gate reading it would
-// demand mounts for services that are not the project's to mount.
-//
-// A missing descriptor is a hard error: the inventory and the generated
-// packages must agree, and a disagreement means the gate would be checking
-// something other than what the binary serves.
-func ProjectServiceFiles(inv []inventory.ComponentInfo) (*protoregistry.Files, error) {
-	files := &protoregistry.Files{}
-	seen := make(map[protoreflect.FullName]struct{})
+	var missing []string
 	for _, info := range inv {
 		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(info.ConnectPath))
 		if err != nil {
-			return nil, fmt.Errorf("service %q (%s) not found in global proto registry: %w", info.Name, info.ConnectPath, err)
+			return fmt.Errorf("server completeness check: service %q (%s) not found in global proto registry: %w", info.Name, info.ConnectPath, err)
 		}
-		fd := desc.ParentFile()
-		if _, ok := seen[fd.FullName()]; ok {
-			continue
+		if _, ok := desc.(protoreflect.ServiceDescriptor); !ok {
+			return fmt.Errorf("server completeness check: %q (%s) names a %T, not a service", info.Name, info.ConnectPath, desc)
 		}
-		seen[fd.FullName()] = struct{}{}
-		if err := files.RegisterFile(fd); err != nil {
-			return nil, fmt.Errorf("registering file for service %q: %w", info.Name, err)
+		if _, ok := s.mounted[info.ConnectPath]; !ok {
+			missing = append(missing, info.ConnectPath)
 		}
 	}
-	return files, nil
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return fmt.Errorf(
+		"server completeness check: %d declared proto service(s) have no mounted handler: %v — "+
+			"the binary's inventory lists them but nothing mounted them (a forgotten Mount<Svc> call, "+
+			"or a Mounted() recording omitted). Mount them, or run a subcommand that deliberately "+
+			"serves a subset and does not ask for completeness",
+		len(missing), missing,
+	)
 }

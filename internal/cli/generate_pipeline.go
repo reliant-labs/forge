@@ -229,10 +229,16 @@ type pipelineContext struct {
 	Components codegen.Inventory
 
 	// Parsed once and reused by mid-pipeline steps. Nil until populated.
-	Services     []codegen.ServiceDef
-	ModulePath   string
-	EntityDefs   []codegen.EntityDef
-	ConfigFields map[string]bool
+	//
+	// Services is what forge MANAGES — every service-scoped emitter reads
+	// it. DeclaredServices adds the `// forge:unmanaged` ones, and is read
+	// only by steps that project the API contract itself (the
+	// open-procedure set); see codegen.ParseDeclaredServices.
+	Services         []codegen.ServiceDef
+	DeclaredServices []codegen.ServiceDef
+	ModulePath       string
+	EntityDefs       []codegen.EntityDef
+	ConfigFields     map[string]bool
 
 	// registry is the memoized parse of the user-owned
 	// pkg/app/services.go registration file (what this binary serves —
@@ -1618,7 +1624,7 @@ func stepConfigLoader(ctx *pipelineContext) error {
 // service. When there are no proto services but there ARE workers or
 // operators, fall back to a direct GetModulePath() call.
 func stepParseServicesAndModule(ctx *pipelineContext) error {
-	var services []codegen.ServiceDef
+	var services, declared []codegen.ServiceDef
 	var modulePath string
 	var err error
 
@@ -1639,10 +1645,12 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 	// per-service emitters already iterate ctx.Services, so an empty slice
 	// is a self-correcting no-op without disabling the steps wholesale.
 	if ctx.HasServices {
-		services, err = codegen.ParseServicesFromProtos("", ctx.ProjectDir)
+		declared, err = codegen.ParseDeclaredServices(ctx.ProjectDir)
 		if err != nil {
 			return fmt.Errorf("failed to parse service protos: %w", err)
 		}
+		services = codegen.ManagedServices(declared)
+		announceUnmanagedServices(codegen.UnmanagedServices(declared))
 		// Catch a proto service name that generates a Go identifier
 		// incompatible with the one forge's own bootstrap wiring derives
 		// from the proto/services/<dir>/ directory name — BEFORE any
@@ -1686,8 +1694,30 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 	}
 
 	ctx.Services = services
+	ctx.DeclaredServices = declared
 	ctx.ModulePath = modulePath
 	return nil
+}
+
+// announceUnmanagedServices prints one line naming the services generate is
+// deliberately leaving alone, so "why is there no internal/handlers/<svc>/?"
+// has its answer in the output. A project mid-adoption can carry dozens, so a
+// long list collapses to a count; `forge project audit` lists every one.
+func announceUnmanagedServices(unmanaged []codegen.ServiceDef) {
+	if len(unmanaged) == 0 {
+		return
+	}
+	const maxNamed = 5
+	what := fmt.Sprintf("%d services", len(unmanaged))
+	if len(unmanaged) <= maxNamed {
+		names := make([]string, 0, len(unmanaged))
+		for _, svc := range unmanaged {
+			names = append(names, svc.Name)
+		}
+		what = strings.Join(names, ", ")
+	}
+	fmt.Printf("  ⏭️  Unmanaged (// %s): %s — buf still generates their code; forge scaffolds nothing for them. List: `%s project audit`\n",
+		codegen.ProtoMarkerUnmanaged, what, Name())
 }
 
 // stepFrontendHooks — was Step 3c.
@@ -1950,8 +1980,14 @@ func stepInternalContracts(ctx *pipelineContext) error {
 // against it, so this is the projection of the declaration that actually gates
 // requests — see codegen.BuildOpenProcedures for why the hand-written map it
 // replaced was a second, disagreeing declaration surface.
+//
+// It reads DeclaredServices, not Services: whether an rpc is public is part
+// of the API contract, true whoever implements the handler. A
+// `// forge:unmanaged` service's handlers may be mounted on this server by
+// hand, behind this same interceptor, and dropping its declared-public rpcs
+// would make them fail closed.
 func stepAuthProcedures(ctx *pipelineContext) error {
-	content, err := codegen.RenderOpenProcedures(ctx.Services, ctx.ModulePath)
+	content, err := codegen.RenderOpenProcedures(ctx.DeclaredServices, ctx.ModulePath)
 	if err != nil {
 		return err
 	}

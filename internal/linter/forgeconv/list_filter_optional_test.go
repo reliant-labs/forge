@@ -343,3 +343,46 @@ func TestListFilterOptional_HonorsReasonedSuppression(t *testing.T) {
 		t.Fatalf("a reasoned suppression must silence the finding:\n%s", res.FormatText())
 	}
 }
+
+// The rule's premise is forge's GENERATED list filter, and forge generates
+// nothing for a `// forge:unmanaged` service: its hand-written handlers read
+// the request however they like. So a request only an unmanaged service uses
+// is not judged — the finding arrives when the service is adopted. A request
+// a managed service ALSO uses keeps the finding, because that service's
+// generated filter does read it.
+func TestListFilterOptional_SkipsRequestsOnlyUnmanagedServicesUse(t *testing.T) {
+	unmanaged := `syntax = "proto3";
+
+package legacy.v1;
+
+// forge:unmanaged — handlers still live in internal/grpc.
+service LegacyService {
+  rpc ListThings(ListThingsRequest) returns (ListThingsResponse);
+}
+
+message ListThingsRequest {
+  string org_id = 1;
+}
+
+message ListThingsResponse {}
+`
+	if got := lintListFilters(t, "legacy.proto", unmanaged); len(got) != 0 {
+		t.Fatalf("unmanaged service's list request was judged: %+v", got)
+	}
+
+	// Same file without the marker: the finding is back.
+	managed := strings.Replace(unmanaged, "// forge:unmanaged — handlers still live in internal/grpc.\n", "", 1)
+	if got := lintListFilters(t, "legacy.proto", managed); len(got) != 1 {
+		t.Fatalf("managed service: want 1 finding, got %d: %+v", len(got), got)
+	}
+
+	// Shared by an unmanaged and a managed service: still judged.
+	shared := unmanaged + `
+service ModernService {
+  rpc ListThings(ListThingsRequest) returns (ListThingsResponse);
+}
+`
+	if got := lintListFilters(t, "legacy.proto", shared); len(got) != 1 {
+		t.Fatalf("request shared with a managed service: want 1 finding, got %d: %+v", len(got), got)
+	}
+}

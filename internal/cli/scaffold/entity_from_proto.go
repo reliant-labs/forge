@@ -78,6 +78,12 @@ func runEntityFromProto(args []string, fromProto string, opts entityOpts) error 
 			"birth several messages with positional names: `--from-proto <svc> <Msg> [<Msg> ...]`")
 	}
 
+	// An unmanaged service is absent from the managed set below, which would
+	// read as "missing descriptor" or "no such service" — name the real
+	// reason first.
+	if err := refuseUnmanagedService(ctxLabel, root, svcArg); err != nil {
+		return err
+	}
 	services, err := codegen.ParseServicesFromProtos("", root)
 	if err != nil || len(services) == 0 {
 		return cliutil.UserErr(ctxLabel,

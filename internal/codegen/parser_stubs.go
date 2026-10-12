@@ -163,9 +163,36 @@ func loadDescriptor(projectDir string) (*ForgeDescriptor, error) {
 	return &desc, nil
 }
 
-// ParseServicesFromProtos reads service definitions from the forge descriptor.
-// Falls back to empty if the descriptor does not exist yet.
+// ParseServicesFromProtos reads the services forge MANAGES from the forge
+// descriptor: every declared service except those marked
+// `// forge:unmanaged`. Falls back to empty if the descriptor does not exist
+// yet.
+//
+// This is the set every service-scoped consumer reads — handler scaffolds,
+// CRUD, mocks, composition and mounts, cmd subcommands, frontend hooks and
+// pages, audit, doctor, scaffold. Filtering HERE rather than at each consumer
+// is the point: a consumer that forgot to filter would scaffold stubs for
+// handlers that live elsewhere, which is the failure the marker exists to
+// prevent. A consumer that genuinely needs the whole wire contract asks for
+// it by name with ParseDeclaredServices.
 func ParseServicesFromProtos(dir string, projectDir string) ([]ServiceDef, error) {
+	defs, err := ParseDeclaredServices(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	return ManagedServices(defs), nil
+}
+
+// ParseDeclaredServices reads EVERY service the protos declare, managed or
+// not, with ModulePath set from go.mod. Falls back to empty if the
+// descriptor does not exist yet.
+//
+// Only for consumers that project the API contract rather than forge's
+// handler model — the open-procedure set (auth_required describes the rpc,
+// whoever implements it), "does this project declare services at all", and
+// the unmanaged-service listing in `forge project audit`. Everything else
+// reads ParseServicesFromProtos.
+func ParseDeclaredServices(projectDir string) ([]ServiceDef, error) {
 	desc, err := loadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
@@ -186,12 +213,41 @@ func ParseServicesFromProtos(dir string, projectDir string) ([]ServiceDef, error
 	return desc.Services, nil
 }
 
+// ManagedServices returns the services in defs that forge manages — those
+// without a `// forge:unmanaged` marker — in their original order.
+func ManagedServices(defs []ServiceDef) []ServiceDef {
+	var out []ServiceDef
+	for _, d := range defs {
+		if !d.Unmanaged {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// UnmanagedServices returns the services in defs marked `// forge:unmanaged`,
+// in their original order.
+func UnmanagedServices(defs []ServiceDef) []ServiceDef {
+	var out []ServiceDef
+	for _, d := range defs {
+		if d.Unmanaged {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // ParseEntityProtos returns the project's entities. Despite the
 // historical name, entities are no longer parsed from proto
 // annotations: they are the join of the APPLIED schema (db/migrations
 // shadow-applied + introspected) with the service protos' CRUD method
 // shapes — see BuildSchemaEntities. Falls back to empty when the
 // descriptor or migrations don't exist yet.
+//
+// Only MANAGED services' CRUD rpcs make an entity. A CRUD-shaped rpc on a
+// `// forge:unmanaged` service is hand-implemented elsewhere; projecting an
+// entity from it would wire generic CRUD, pages and seeds over business
+// logic forge does not own. The entity appears when the service is adopted.
 func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 	desc, err := loadDescriptor(projectDir)
 	if err != nil {
@@ -201,7 +257,7 @@ func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 		noticeMissingDescriptor(projectDir)
 		return nil, nil
 	}
-	return BuildSchemaEntities(projectDir, desc.Services)
+	return BuildSchemaEntities(projectDir, ManagedServices(desc.Services))
 }
 
 // ParseConfigProto reads config messages from the forge descriptor,

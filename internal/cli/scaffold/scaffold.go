@@ -146,6 +146,35 @@ func requireServiceKind(root, action string) error {
 	return nil
 }
 
+// refuseUnmanagedService returns a user error when svc names a service its
+// proto marks `// forge:unmanaged`. forge scaffolds nothing for such a
+// service by design, so a scaffold aimed at it would write into a handler
+// package that generate never wires — or, for a fresh `scaffold service`, a
+// second declaration of a service that already exists. The answer is the
+// adoption step, and the error says so.
+//
+// Best-effort: an unreadable or absent descriptor resolves to nil and the
+// command proceeds exactly as it did before the marker existed.
+func refuseUnmanagedService(ctxLabel, root, svc string) error {
+	declared, err := codegen.ParseDeclaredServices(root)
+	if err != nil {
+		return nil //nolint:nilerr // best-effort guard; the command's own checks still run
+	}
+	want := naming.ServicePackage(svc)
+	for _, d := range codegen.UnmanagedServices(declared) {
+		if naming.ServicePackage(d.Name) != want {
+			continue
+		}
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("service %s is marked `// %s`: its handlers live outside forge, so forge scaffolds nothing for it",
+				d.Name, codegen.ProtoMarkerUnmanaged),
+			d.ProtoFile,
+			fmt.Sprintf("to adopt it, delete the `// %s` line above `service %s {` and run `%s generate` — that scaffolds internal/handlers/%s/ with a stub for each of its rpcs",
+				codegen.ProtoMarkerUnmanaged, d.Name, cmdutil.Name(), want))
+	}
+	return nil
+}
+
 // componentSpec captures the kind-specific knobs of a single
 // `forge scaffold <kind> <name>` invocation. scaffoldComponent owns the spine every
 // component-appending path repeats — validate-name, projectRoot,
@@ -703,6 +732,11 @@ func runService(f *factory.Factory, name string, resume, force bool, batch *serv
 			return nil
 		},
 		preflight: func(cfg *config.ProjectConfig, inv codegen.Inventory, root string) error {
+			// The inventory below lists MANAGED services only, so an
+			// unmanaged one would otherwise read as "not there yet".
+			if err := refuseUnmanagedService(ctxLabel, root, name); err != nil {
+				return err
+			}
 			// checkConflict runs after preflight and owns the hard-error path;
 			// this resolves the same lookup once, for the conflict check and
 			// for the rollback decision in postScaffold.

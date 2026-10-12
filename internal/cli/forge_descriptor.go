@@ -78,6 +78,14 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 		}
 		fragmentKeyParts = append(fragmentKeyParts, f.Desc.Path())
 
+		// `// forge:unmanaged` decides whether forge scaffolds a whole
+		// service, so a marker that would silently do nothing — misspelled,
+		// or written on an rpc or message — is refused here, before any
+		// codegen reads the descriptor.
+		if err := checkUnmanagedMarkers(f); err != nil {
+			return err
+		}
+
 		// Extract services
 		for _, svc := range f.Services {
 			sd := extractService(f, svc)
@@ -259,6 +267,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		PkgName:   goPkgName(file),
 		ProtoFile: file.Desc.Path(),
 		Messages:  make(map[string][]codegen.MessageFieldDef),
+		Unmanaged: codegen.CommentMarksUnmanaged(serviceMarkerComments(svc)),
 	}
 
 	for _, m := range svc.Methods {
@@ -470,6 +479,53 @@ func fieldGeneratedExpr(f *protogen.Field) string {
 	}
 	expr, _ := codegen.GeneratedMarkerExpr(string(f.Comments.Trailing))
 	return expr
+}
+
+// serviceMarkerComments is the comment text a service-level marker may sit
+// in: every comment block between the previous declaration and
+// `service X {` — the detached blocks as well as the attached one. That is
+// the raw scanner's placement rule for the entity markers (only comment and
+// blank lines between marker and declaration) read off the descriptor, so a
+// blank line under `// forge:unmanaged` cannot quietly turn it off.
+func serviceMarkerComments(svc *protogen.Service) string {
+	var b strings.Builder
+	for _, c := range svc.Comments.LeadingDetached {
+		b.WriteString(string(c))
+		b.WriteString("\n")
+	}
+	b.WriteString(string(svc.Comments.Leading))
+	return b.String()
+}
+
+// checkUnmanagedMarkers refuses a `forge:unmanaged` marker that would do
+// nothing where it is written. Both cases leave a service the author meant to
+// exclude fully managed, and the next generate would scaffold a stub for each
+// of its rpcs:
+//
+//   - a near-miss spelling above a service (`forge:unmanged`);
+//   - the marker on an rpc or a top-level message. It takes a whole service,
+//     never part of one, because a service's handlers are one package.
+func checkUnmanagedMarkers(f *protogen.File) error {
+	path := f.Desc.Path()
+	for _, svc := range f.Services {
+		if tok := codegen.UnmanagedMarkerNearMiss(serviceMarkerComments(svc)); tok != "" {
+			return fmt.Errorf("%s: service %s: %q is not a forge marker — did you mean %q? As written, forge manages %s and scaffolds a handler stub for every rpc it declares",
+				path, svc.Desc.Name(), tok, codegen.ProtoMarkerUnmanaged, svc.Desc.Name())
+		}
+		for _, m := range svc.Methods {
+			if codegen.CommentMarksUnmanaged(string(m.Comments.Leading)) || codegen.CommentMarksUnmanaged(string(m.Comments.Trailing)) {
+				return fmt.Errorf("%s: rpc %s.%s carries %q, which applies to a whole service and does nothing on an rpc. Move it above `service %s {` to leave every rpc of the service to your own handlers, or delete it",
+					path, svc.Desc.Name(), m.Desc.Name(), codegen.ProtoMarkerUnmanaged, svc.Desc.Name())
+			}
+		}
+	}
+	for _, msg := range f.Messages {
+		if codegen.CommentMarksUnmanaged(string(msg.Comments.Leading)) {
+			return fmt.Errorf("%s: message %s carries %q, which applies to a service and does nothing on a message. Move it above the `service X {` whose handlers live outside forge, or delete it",
+				path, msg.Desc.Name(), codegen.ProtoMarkerUnmanaged)
+		}
+	}
+	return nil
 }
 
 // fieldGuardTargets reads the `// forge:guards <table>.<column>` targets a

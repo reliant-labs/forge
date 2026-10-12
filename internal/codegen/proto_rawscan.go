@@ -74,6 +74,11 @@ var (
 	softDeleteMarkerRE = protoMarkerFullLineRE(ProtoMarkerSoftDelete)
 )
 
+// unmanagedMarkerRE matches the SERVICE-level `// forge:unmanaged` marker,
+// with the entity markers' placement rule: a full-line comment preceding
+// `service X {` with only comment/blank lines between.
+var unmanagedMarkerRE = protoMarkerFullLineRE(ProtoMarkerUnmanaged)
+
 // readOnlyFieldMarkerRE matches the FIELD-level read-only markers
 // (ReadOnlyProtoMarkers: `// forge:read-only`, `// forge:computed` and
 // `// forge:generated`, whose expression GeneratedMarkerExpr reads), in
@@ -207,11 +212,38 @@ type GeneratedFieldMarker struct {
 	Site RawProtoMarkerSite
 }
 
+// IsUnmanagedMarkerLine reports whether one raw proto source line is the
+// `// forge:unmanaged` marker, by the same rule the raw scan applies — for
+// line scanners outside this package that track their own declarations.
+func IsUnmanagedMarkerLine(line string) bool {
+	return unmanagedMarkerRE.MatchString(strings.TrimSpace(line))
+}
+
+// RawProtoService is one `service X {` block captured by the raw scan.
+type RawProtoService struct {
+	Name string
+	// File is the absolute path of the declaring .proto file.
+	File string
+	// Unmanaged reports a `// forge:unmanaged` marker above the declaration
+	// (ProtoMarkerUnmanaged) — the raw-source reading of
+	// ServiceDef.Unmanaged, for passes that run before or without the
+	// compiled descriptor.
+	Unmanaged bool
+	// BodyOpen / BodyClose are byte offsets into File: just after the
+	// opening `{`, and at the matching `}`. Zero when the body was not
+	// found (a single-line `service X {}` still records both).
+	BodyOpen  int
+	BodyClose int
+}
+
 // RawProtoRPC is one rpc declaration captured by the raw scan.
 type RawProtoRPC struct {
 	Name string
 	// File is the absolute path of the declaring .proto file.
 	File string
+	// Service is the name of the service block that encloses the rpc, or ""
+	// when the scan could not attribute it to one.
+	Service string
 	// Request is the request message type as written in the signature,
 	// minus any `stream` keyword and leading dot ("ListOrdersRequest",
 	// "shared.v1.PageQuery"). Not resolved against the declared types.
@@ -229,6 +261,8 @@ type RawProtoScan struct {
 	// service block exists in the directory.
 	ServiceName string
 	ServiceFile string
+	// Services are every service block found, in file+declaration order.
+	Services []RawProtoService
 	// Files are the absolute paths scanned, sorted.
 	Files []string
 	// Messages are the top-level messages, in file+declaration order.
@@ -250,6 +284,17 @@ func (s *RawProtoScan) MessageByName(name string) (RawProtoMessage, bool) {
 		}
 	}
 	return RawProtoMessage{}, false
+}
+
+// ServiceUnmanaged reports whether the named service carries a
+// `// forge:unmanaged` marker. False for a service the scan did not find.
+func (s *RawProtoScan) ServiceUnmanaged(name string) bool {
+	for _, svc := range s.Services {
+		if svc.Name == name {
+			return svc.Unmanaged
+		}
+	}
+	return false
 }
 
 // RPCNames returns the set of rpc names declared across the scanned
@@ -360,6 +405,11 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		pendingMarker := false // // forge:entity (or any marker — see below)
 		pendingAppendOnly := false
 		pendingSoftDelete := false
+		// SERVICE-level marker, pending until the next declaration exactly
+		// like the entity markers above.
+		pendingUnmanaged := false
+		svcStartIdx := len(scan.Services)
+		openService := -1 // index into scan.Services of the body being read
 		// FIELD-level marker: a leading `// forge:read-only` comment line is
 		// pending until the very next captured field consumes it (the trailing
 		// inline spelling is read off the field's own statement instead).
@@ -403,6 +453,8 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 					pendingMarker, pendingAppendOnly = true, true
 				case softDeleteMarkerRE.MatchString(trimmedRaw):
 					pendingMarker, pendingSoftDelete = true, true
+				case unmanagedMarkerRE.MatchString(trimmedRaw):
+					pendingUnmanaged = true
 				case readOnlyFieldMarkerRE.MatchString(trimmedRaw):
 					// FIELD-level marker on its own line: attaches to the next
 					// captured field, NOT to the message (never tablizes).
@@ -444,6 +496,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 							scan.Package = m[1]
 						}
 						pendingMarker, pendingAppendOnly, pendingSoftDelete = false, false, false
+						pendingUnmanaged = false
 						continue
 					}
 				}
@@ -488,6 +541,11 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 					if scan.ServiceName == "" {
 						scan.ServiceName = name
 						scan.ServiceFile = path
+					}
+					if len(stack) == 0 {
+						scan.Services = append(scan.Services, RawProtoService{
+							Name: name, File: path, Unmanaged: pendingUnmanaged,
+						})
 					}
 					decl = &ctx{kind: "service", name: name}
 				case rawOneofDeclRE.MatchString(trimmed):
@@ -608,6 +666,10 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 							if decl.kind == "message" && len(stack) == 0 && currentMsg != nil {
 								currentMsg.msg.BodyOpen = trimStart + i + 1
 							}
+							if decl.kind == "service" && len(stack) == 0 && len(scan.Services) > svcStartIdx {
+								openService = len(scan.Services) - 1
+								scan.Services[openService].BodyOpen = trimStart + i + 1
+							}
 							stack = append(stack, *decl)
 							declPushed = true
 						} else {
@@ -623,6 +685,10 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 								}
 								currentMsg = nil
 							}
+							if popped.kind == "service" && len(stack) == 0 && openService >= 0 {
+								scan.Services[openService].BodyClose = trimStart + i
+								openService = -1
+							}
 						}
 					}
 				}
@@ -630,6 +696,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 					carriedDecl = decl
 				}
 				pendingMarker, pendingAppendOnly, pendingSoftDelete = false, false, false
+				pendingUnmanaged = false
 				// A pending field marker attaches to the immediately-next field
 				// only: any non-field statement (a decl, an enum value) drops it.
 				// Comment/blank lines `continue` above without reaching here, so
@@ -679,12 +746,22 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 
 		// rpcs: a single whole-file regex — rpc signatures are one-liners
 		// in every proto forge scaffolds or documents.
-		for _, m := range rawRPCRE.FindAllStringSubmatch(content, -1) {
+		// Each is attributed to the service block whose body encloses it.
+		for _, loc := range rawRPCRE.FindAllStringSubmatchIndex(content, -1) {
+			req, resp := content[loc[4]:loc[5]], content[loc[6]:loc[7]]
+			service := ""
+			for _, svc := range scan.Services[svcStartIdx:] {
+				if svc.BodyClose > 0 && loc[0] >= svc.BodyOpen && loc[0] < svc.BodyClose {
+					service = svc.Name
+					break
+				}
+			}
 			scan.RPCs = append(scan.RPCs, RawProtoRPC{
-				Name:      m[1],
+				Name:      content[loc[2]:loc[3]],
 				File:      path,
-				Request:   rawRPCMessageType(m[2]),
-				Streaming: strings.Contains(m[2], "stream ") || strings.Contains(m[3], "stream "),
+				Service:   service,
+				Request:   rawRPCMessageType(req),
+				Streaming: strings.Contains(req, "stream ") || strings.Contains(resp, "stream "),
 			})
 		}
 	}

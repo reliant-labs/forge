@@ -83,6 +83,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   goose` now warns that renumbering re-runs history on a database goose
   already migrated. See the `db/deploy-migrations` skill, "Adopting a database
   another tool migrated".
+- **Adopt forge one service at a time: `// forge:unmanaged`.** A full-line
+  comment above `service X {` takes that service out of forge's service model.
+  buf still generates its code and it stays in the descriptor, but `forge
+  generate` scaffolds nothing service-scoped for it: no `internal/handlers/<svc>/`
+  or rpc stubs, no mocks, CRUD wiring or entities, no mount, compose entry or
+  subcommand, no frontend hooks or pages. `forge scaffold` skips it and refuses
+  `scaffold service|rpc|entity --from-proto` on it, `forge lint`'s
+  list-filter-optional rule and `forge project shapes` treat its rpcs as not
+  forge's, and `forge project audit` lists every one under
+  `unmanaged_services`. Its rpcs' `auth_required` still projects into
+  `pkg/middleware/procedures_gen.go`, because whether an rpc is public is part
+  of the contract whoever serves it. Before this, the first `generate` on an
+  existing server stubbed every rpc of every service at once — 307 stubs on
+  reliant. Delete the line to adopt the service. A near-miss spelling, or the
+  marker on an rpc or message, fails generate. `codegen.ParseServicesFromProtos`
+  now returns managed services only; `ParseDeclaredServices` returns all.
+  See the `migration` skill, "Adopting in place".
 - **Frontend builds are told what they were built from.** Every frontend build
   forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
   (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the
@@ -128,6 +145,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`serverkit.RequireComplete` checks exactly the inventory's services.** It
+  used to register each inventory service's whole proto FILE and demand every
+  service in it, so a file declaring a forge-managed service beside an
+  unmanaged one refused to boot a complete server. `serverkit.ProjectServiceFiles`,
+  which built that file-scoped registry, is removed; `RequireMounted` with a
+  descriptor source you build is unchanged.
 - **ClickStack is the local observability stack, and it is ON by default.**
   `forge env up` now runs ONE container, HyperDX's no-auth _local mode_ image
   (ClickHouse, the HyperDX UI and an OTLP collector), in place of the opt-in

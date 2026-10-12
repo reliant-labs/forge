@@ -112,3 +112,36 @@ func TestCollectShapes_IgnoresTheDescriptorCache(t *testing.T) {
 		t.Errorf("shapes missed an RPC declared in a .proto; got %v", names)
 	}
 }
+
+// An rpc of a `// forge:unmanaged` service is declared but deliberately has no
+// forge handler. `--kind rpc,handler` answers "declared vs implemented", so
+// the rpc says so — otherwise every unmanaged rpc reads as a missing handler.
+// The marker binds only to the service it precedes, per file.
+func TestCollectShapes_TagsUnmanagedServiceRPCs(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("proto/services/legacy/v1/legacy.proto", "syntax = \"proto3\";\n\n// forge:unmanaged\n\n// Legacy docs.\nservice LegacyService {\n  rpc Ping(A) returns (B);\n}\n")
+	write("proto/services/shop/v1/shop.proto", "syntax = \"proto3\";\nservice ShopService {\n  rpc Buy(A) returns (B);\n}\n")
+
+	details := map[string]string{}
+	for _, s := range collectShapes(dir) {
+		if s.Kind == "rpc" {
+			details[s.Name] = s.Detail
+		}
+	}
+	if d := details["LegacyService.Ping"]; !strings.HasSuffix(d, " unmanaged") {
+		t.Errorf("unmanaged service's rpc not tagged: %q", d)
+	}
+	if d := details["ShopService.Buy"]; strings.Contains(d, "unmanaged") {
+		t.Errorf("managed service's rpc tagged unmanaged: %q", d)
+	}
+}

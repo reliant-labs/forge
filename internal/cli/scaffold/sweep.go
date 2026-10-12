@@ -176,20 +176,34 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 	}
 
 	// The compiled descriptor — best-effort here; phase 2 owns refreshing
-	// it, and phase 1 reads the RAW protos, not this.
-	services, _ := codegen.ParseServicesFromProtos("", root)
+	// it, and phase 1 reads the RAW protos, not this. `declared` answers
+	// "is the descriptor there at all"; `services` is what forge manages.
+	declared, _ := codegen.ParseDeclaredServices(root)
+	services := codegen.ManagedServices(declared)
 
 	migDir := filepath.Join(root, "db", "migrations")
 	applied, existing := appliedSchema(migDir)
 	fkReg := newFKRegistry(existing)
 	summary := &sweepSummary{}
 
-	// Raw scans, one per service dir — shared by phases 1 and 2.
+	// Raw scans, one per service dir — shared by phases 1 and 2. A service
+	// marked `// forge:unmanaged` is left out of both: births would inject
+	// CRUD rpcs into a service whose handlers forge does not own, and the
+	// projection generates nothing for it anyway.
 	scans := map[string]*codegen.RawProtoScan{}
 	for _, leaf := range svcLeaves {
-		if scan, serr := codegen.ScanRawProtoDir(filepath.Join(root, "proto", "services", leaf)); serr == nil {
-			scans[leaf] = scan
+		scan, serr := codegen.ScanRawProtoDir(filepath.Join(root, "proto", "services", leaf))
+		if serr != nil {
+			continue
 		}
+		if scan.ServiceName != "" && scan.ServiceUnmanaged(scan.ServiceName) {
+			note := fmt.Sprintf("proto/services/%s: %s is marked // %s — skipped (delete the marker to adopt it)",
+				leaf, scan.ServiceName, codegen.ProtoMarkerUnmanaged)
+			fmt.Printf("  ⏭️  %s\n", note)
+			summary.Skipped = append(summary.Skipped, note)
+			continue
+		}
+		scans[leaf] = scan
 	}
 
 	// Pre-flight: a proto service whose name disagrees with its directory
@@ -319,8 +333,8 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 	if _, statErr := os.Stat(filepath.Join(root, ".forge", "failed-generate")); statErr == nil {
 		prevFailed = true
 	}
-	needGenerate := birthsWrote || len(staleRPCs) > 0 || len(services) == 0 || prevFailed
-	reason := generateReason(birthsWrote, staleRPCs, len(services) == 0, prevFailed)
+	needGenerate := birthsWrote || len(staleRPCs) > 0 || len(declared) == 0 || prevFailed
+	reason := generateReason(birthsWrote, staleRPCs, len(declared) == 0, prevFailed)
 	switch {
 	case dryRun && (needGenerate || birthsPlanned > 0):
 		if birthsPlanned > 0 && reason == "" {

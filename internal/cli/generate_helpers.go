@@ -102,8 +102,11 @@ func discoverProtoSubdirs(projectDir string) []string {
 // step — the silent-stomp failure the loud-by-default model forbids. The
 // per-service emitters iterate ctx.Services, so an empty slice is a
 // self-correcting no-op without disabling the steps wholesale.
+//
+// Unmanaged services count: this is the project's declared shape, and the
+// open-procedure set still projects over them.
 func projectDefinesConnectServices(projectDir string) bool {
-	defs, err := codegen.ParseServicesFromProtos("", projectDir)
+	defs, err := codegen.ParseDeclaredServices(projectDir)
 	if err == nil && len(defs) > 0 {
 		return true
 	}

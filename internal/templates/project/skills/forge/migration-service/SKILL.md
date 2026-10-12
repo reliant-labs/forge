@@ -31,6 +31,19 @@ forge scaffold webhook <name> --service <existing-service>  # webhook on an exis
 
 Run `forge generate && go build ./...` after each. Hyphens are OK: forge stores the hyphenated form as the display name and snake-cases the directory and Go package paths.
 
+## Services whose handlers already exist: `// forge:unmanaged`
+
+Adopting forge **in place** on a server that already has its protos and handlers (see `migration`, "Adopting in place")? Before the first `forge generate`, put `// forge:unmanaged` above every `service X {` whose handlers live outside `internal/handlers/`. Generate then scaffolds nothing for those services (no stubs, mocks, mounts, compose entries or subcommands) while buf still generates their code, and `forge project audit` lists them as the adoption ledger.
+
+Your existing server keeps mounting them by hand. Port them one per PR:
+
+1. Delete the service's marker and run `forge generate` → `internal/handlers/<svc>/` with a stub per rpc.
+2. Move each rpc's logic onto its `*Service` method; return `svcerr.Wrap(err)` rather than hand-built connect errors.
+3. In the existing server, replace the old handler's mount with the forge one; delete the old handler.
+4. `forge lint` now holds that service to forge's conventions (e.g. `forgeconv-list-filter-optional`), which it skipped while the service was unmanaged.
+
+The boot-time completeness gate (`RequireComplete`) checks only the forge-managed services in `app.Inventory`, so unmanaged services never block a forge-served binary from starting — even one that shares a proto file with a managed service.
+
 ## Cross-cutting concerns are code + libraries, not packs
 
 Auth, audit logging, API keys, and frontend components are owned scaffold you edit or thin code over a `forge/pkg/*` library — there is nothing to `install`. The parent **`migration`** skill covers each (which file owns it, which library backs it, how the interceptors compose) and applies unchanged here.

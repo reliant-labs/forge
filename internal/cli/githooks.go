@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // skipHookActivationAnnotation marks a command during which the root
@@ -51,6 +53,11 @@ func hookActivationSkipped(cmd *cobra.Command) bool {
 // command:
 //   - no-op unless we're in a forge project that ships .githooks/pre-commit
 //     (skips pre-feature projects until their next `forge generate`),
+//   - no-op unless that pre-commit is FORGE'S (generator.IsForgeManagedGitHook).
+//     `project new --in-place` keeps a repository's own .githooks/pre-commit,
+//     and activating it would switch on the project's hooks (a format-on-commit,
+//     a test run) for everyone sharing the clone's .git/config — every linked
+//     worktree. Whether a project's own hooks run is its own setup's call,
 //   - no-op unless it's a git repo,
 //   - never clobbers a core.hooksPath the user pointed elsewhere; only
 //     acts when it is unset,
@@ -62,10 +69,12 @@ func ensureGitHooksActivated(root string) {
 	if os.Getenv("FORGE_NO_HOOKS") != "" {
 		return
 	}
-	// Only when the tracked hook is actually present. This gates the whole
-	// feature on the generator having written .githooks/ — pre-feature
-	// projects pick it up on their next `forge generate`.
-	if _, err := os.Stat(filepath.Join(root, ".githooks", "pre-commit")); err != nil {
+	// Only when the tracked hook is present AND forge wrote it. This gates
+	// the whole feature on the generator having written .githooks/ —
+	// pre-feature projects pick it up on their next `forge generate` — and
+	// leaves a project's own hooks to the project.
+	script, err := os.ReadFile(filepath.Join(root, ".githooks", "pre-commit"))
+	if err != nil || !generator.IsForgeManagedGitHook(script) {
 		return
 	}
 	// Must be a git repo. In a linked worktree .git is a file (a gitdir

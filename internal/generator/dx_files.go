@@ -594,6 +594,12 @@ repos:
 // `forge generate`, like .pre-commit-config.yaml. Project-specific
 // checks belong in .pre-commit-config.yaml (which the chain runs), not
 // in these files.
+//
+// Every hook opens with forgeManagedHookHeader on the line after its
+// shebang. That line is how IsForgeManagedGitHook tells these hooks from a
+// project's own: `project new --in-place` keeps an existing
+// .githooks/pre-commit, and forge must never activate a hook it did not
+// write.
 func (g *ProjectGenerator) generateGitHooks() error {
 	dir := filepath.Join(g.Path, ".githooks")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -651,6 +657,27 @@ if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
 fi
 `
 	return os.WriteFile(filepath.Join(dir, "commit-msg"), []byte(commitMsg), 0o755)
+}
+
+// forgeManagedHookHeader starts the second line (the one after the shebang)
+// of every hook generateGitHooks writes: "# forge-managed git <stage> hook".
+const forgeManagedHookHeader = "# forge-managed git "
+
+// IsForgeManagedGitHook reports whether script is a git hook forge wrote
+// (generateGitHooks) rather than one the project owns. It reads only the
+// line after the shebang, where every forge hook carries
+// forgeManagedHookHeader, so a project hook that merely mentions forge is
+// still the project's.
+//
+// Forge activates .githooks (core.hooksPath) only for its own hooks. An
+// in-place adopted repository keeps the hooks it already had, and pointing
+// git at them is that project's decision, made by its own setup step.
+func IsForgeManagedGitHook(script []byte) bool {
+	lines := strings.SplitN(string(script), "\n", 3)
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "#!") {
+		return false
+	}
+	return strings.HasPrefix(lines[1], forgeManagedHookHeader)
 }
 
 // generatePreCommitWorkflow writes .github/workflows/pre-commit.yml as a

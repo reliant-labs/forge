@@ -48,8 +48,8 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 	// Go-source markers. The authoritative per-marker pin is
 	// TestAnnotations_MarkerNamesMatchRecognizers and its Go-source twin;
 	// this only guards the full dump against silent loss.
-	if len(spec.Markers) != 24 {
-		t.Errorf("expected 24 markers, got %d", len(spec.Markers))
+	if len(spec.Markers) != 25 {
+		t.Errorf("expected 25 markers, got %d", len(spec.Markers))
 	}
 
 	// The proto→column mapping a birth applies: every proto3 scalar kind
@@ -352,8 +352,8 @@ message LedgerEntity {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
 		}
 	}
-	if len(got) != 23 {
-		t.Errorf("expected 23 marker specs, got %d", len(got))
+	if len(got) != 24 {
+		t.Errorf("expected 24 marker specs, got %d", len(got))
 	}
 
 	// Proto markers are pinned against codegen.KnownProtoMarkers — the same

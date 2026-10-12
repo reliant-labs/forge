@@ -669,10 +669,13 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	projectDir := in.ProjectDir
 	cs := in.Checksums
 
-	appDir := filepath.Join(projectDir, "pkg", "app")
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return err
-	}
+	// Nothing is written under pkg/app/ any more — each helper lands beside
+	// its own component — so pkg/app/ is not created here. It used to be,
+	// unconditionally, and an empty pkg/app/ is service evidence to
+	// config.deriveProjectKindFromSources: a project derived as a CLI on one
+	// `forge generate` became a service on the next (more CI workflows
+	// scaffolded, observability and hot reload switched on), so generate
+	// was not idempotent.
 
 	var testSvcs []BootstrapTestServiceData
 	anyServiceHasDB := false

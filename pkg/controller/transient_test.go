@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"sync"
@@ -14,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/http2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,6 +60,74 @@ func TestIsTransient(t *testing.T) {
 		"forbidden":      apierrors.NewForbidden(resource, "db", errors.New("denied")),
 		"not found":      apierrors.NewNotFound(resource, "db"),
 		"webhook denial": apierrors.NewInternalError(errors.New("webhook denied the request")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if IsTransient(err) {
+				t.Fatalf("IsTransient(%v) = true, want false", err)
+			}
+		})
+	}
+}
+
+// relayedStorageError is the API server's answer when etcd fails a request
+// with an error the API server has no Status for: a 500 of unknown reason
+// whose message is the etcd client's error text (apiserver ErrorToAPIStatus).
+func relayedStorageError(message string) error {
+	return &apierrors.StatusError{ErrStatus: metav1.Status{
+		Status: metav1.StatusFailure, Code: http.StatusInternalServerError,
+		Reason: metav1.StatusReasonUnknown, Message: message,
+	}}
+}
+
+// TestIsTransient_Throttling is the regression test for control-plane's
+// workspace reconciler reporting ~20 errors in one burst of API-server/etcd
+// throttling (2026-10-09), each one cleared by the next requeue:
+//
+//	ensuring user namespace: checking namespace ws-…: rpc error: code =
+//	ResourceExhausted desc = stream terminated by RST_STREAM with error
+//	code: ENHANCE_YOUR_CALM
+//
+// IsTransient read them as permanent, so each was reported at once instead of
+// riding out TransientGrace. Every throttling shape is wrapped the way a
+// reconciler wraps it, because that is how IsTransient receives it.
+func TestIsTransient_Throttling(t *testing.T) {
+	resource := schema.GroupResource{Resource: "namespaces"}
+	wrap := func(err error) error {
+		return fmt.Errorf("ensuring user namespace: checking namespace ws-1: %w", err)
+	}
+	for name, err := range map[string]error{
+		"etcd RST_STREAM relayed by the API server": wrap(relayedStorageError(
+			"rpc error: code = ResourceExhausted desc = stream terminated by RST_STREAM with error code: ENHANCE_YOUR_CALM")),
+		"etcd too many requests relayed":          wrap(relayedStorageError("etcdserver: too many requests")),
+		"etcd too many requests as InternalError": wrap(apierrors.NewInternalError(errors.New("etcdserver: too many requests"))),
+		"etcd unavailable relayed":                wrap(relayedStorageError("rpc error: code = Unavailable desc = etcdserver: leader changed")),
+		"etcd request timed out relayed":          wrap(relayedStorageError("etcdserver: request timed out")),
+		"API server too many requests":            wrap(apierrors.NewTooManyRequests("throttled", 1)),
+		"API server 429 response":                 wrap(apierrors.NewGenericServerResponse(http.StatusTooManyRequests, "get", resource, "ws-1", "", 1, true)),
+		"API server server timeout":               wrap(apierrors.NewServerTimeout(resource, "get", 1)),
+		"API server request timeout":              wrap(apierrors.NewTimeoutError("timed out", 1)),
+		"gRPC ResourceExhausted":                  wrap(status.Error(codes.ResourceExhausted, "etcdserver: too many requests")),
+		"gRPC Unavailable":                        wrap(status.Error(codes.Unavailable, "connection closed")),
+		"HTTP/2 ENHANCE_YOUR_CALM":                &url.Error{Op: "Get", URL: "https://10.0.0.1:443", Err: http2.StreamError{StreamID: 3, Code: http2.ErrCodeEnhanceYourCalm}},
+		"HTTP/2 REFUSED_STREAM":                   wrap(http2.StreamError{StreamID: 5, Code: http2.ErrCodeRefusedStream}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !IsTransient(err) {
+				t.Fatalf("IsTransient(%v) = false, want true", err)
+			}
+		})
+	}
+
+	// The throttling text is a retry signal only on a SERVER-side failure,
+	// and a gRPC status only for the codes that mean "not now".
+	for name, err := range map[string]error{
+		"invalid quoting the text": wrap(apierrors.NewInvalid(schema.GroupKind{Kind: "Namespace"}, "ws-1", nil)),
+		"forbidden quoting the text": wrap(apierrors.NewForbidden(resource, "ws-1",
+			errors.New("rpc error: code = ResourceExhausted"))),
+		"gRPC InvalidArgument":     wrap(status.Error(codes.InvalidArgument, "bad spec")),
+		"gRPC PermissionDenied":    wrap(status.Error(codes.PermissionDenied, "denied")),
+		"HTTP/2 PROTOCOL_ERROR":    wrap(http2.StreamError{StreamID: 1, Code: http2.ErrCodeProtocol}),
+		"unrelated internal error": wrap(apierrors.NewInternalError(errors.New("nil pointer in admission"))),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if IsTransient(err) {

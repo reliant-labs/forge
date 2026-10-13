@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/net/http2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,11 +39,23 @@ import (
 //   - transport failures between this process and an API server: connection
 //     refused or reset, an EOF on a dropped connection, a network timeout;
 //   - context cancellation or deadline, which is the manager shutting down or
-//     a call outliving its budget.
+//     a call outliving its budget;
+//   - a gRPC status of ResourceExhausted or Unavailable anywhere in the chain:
+//     a gRPC backend shedding load or briefly unreachable;
+//   - an HTTP/2 stream the server reset with ENHANCE_YOUR_CALM or
+//     REFUSED_STREAM, its way of telling a client to back off.
 //
-// And one text match, because the API server does not give it a type of its
-// own: an admission webhook the API server could not call is an InternalError
-// whose message reads `failed calling webhook "<name>": ...`.
+// And two text matches, for failures the API server reports without a type of
+// their own:
+//
+//   - an admission webhook the API server could not call is an InternalError
+//     whose message reads `failed calling webhook "<name>": ...`;
+//   - etcd throttling the API server. The API server relays an etcd failure
+//     it has no Status for as a 500 whose message is the etcd client's gRPC
+//     error text — `rpc error: code = ResourceExhausted desc = stream
+//     terminated by RST_STREAM with error code: ENHANCE_YOUR_CALM`, or
+//     `etcdserver: too many requests`. Nothing typed survives the hop, so
+//     the message is all there is (see isRelayedStorageThrottling).
 //
 // "Transient" is a claim about one attempt, not about the condition. A webhook
 // misconfigured for good also fails to be called, which is why Reconciler.Run
@@ -59,7 +75,10 @@ func IsTransient(err error) bool {
 		apierrors.IsServiceUnavailable(err):
 		return true
 	}
-	if isWebhookCallFailure(err) {
+	if isWebhookCallFailure(err) || isRelayedStorageThrottling(err) {
+		return true
+	}
+	if isGRPCBackoff(err) || isHTTP2Backoff(err) {
 		return true
 	}
 	if utilnet.IsConnectionRefused(err) || utilnet.IsConnectionReset(err) ||
@@ -79,6 +98,68 @@ func isWebhookCallFailure(err error) bool {
 	}
 	result := status.Status()
 	return result.Reason == metav1.StatusReasonInternalError && strings.Contains(result.Message, webhookCallFailure)
+}
+
+// storageThrottlingText are the fragments of an etcd client error that mean
+// "back off and retry": the gRPC codes etcd's client reports for a server
+// shedding load or briefly unreachable, the HTTP/2 reset behind the first, and
+// etcd's own overload and leader-election errors.
+var storageThrottlingText = []string{
+	"code = ResourceExhausted",
+	"code = Unavailable",
+	"ENHANCE_YOUR_CALM",
+	"etcdserver: too many requests",
+	"etcdserver: request timed out",
+	"etcdserver: leader changed",
+}
+
+// isRelayedStorageThrottling reports whether err is an API-server error
+// relaying etcd throttling. Only a server-side failure qualifies — a 500, or
+// the InternalError / unknown reason the API server gives an error it has no
+// Status for — so a validation or permission error that happens to quote one
+// of these strings is never read as a retry signal.
+func isRelayedStorageThrottling(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	result := status.Status()
+	serverSide := result.Code == http.StatusInternalServerError ||
+		result.Reason == metav1.StatusReasonInternalError || result.Reason == metav1.StatusReasonUnknown
+	if !serverSide {
+		return false
+	}
+	for _, text := range storageThrottlingText {
+		if strings.Contains(result.Message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// isGRPCBackoff reports whether err carries a gRPC status of ResourceExhausted
+// or Unavailable, the codes a gRPC server uses for "not now". status.FromError
+// finds a status wrapped anywhere in the chain.
+func isGRPCBackoff(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok || st == nil {
+		return false
+	}
+	switch st.Code() {
+	case codes.ResourceExhausted, codes.Unavailable:
+		return true
+	}
+	return false
+}
+
+// isHTTP2Backoff reports whether err is an HTTP/2 stream the server reset to
+// make the client back off.
+func isHTTP2Backoff(err error) bool {
+	var stream http2.StreamError
+	if !errors.As(err, &stream) {
+		return false
+	}
+	return stream.Code == http2.ErrCodeEnhanceYourCalm || stream.Code == http2.ErrCodeRefusedStream
 }
 
 // DefaultTransientGrace is how long Reconciler.Run tolerates one object's

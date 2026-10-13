@@ -11,7 +11,8 @@
 //
 //   - the audit_log TABLE — add it with the normal entity flow
 //     (`forge scaffold entity`), owning the migration; the columns this
-//     store reads/writes are documented on [Entry].
+//     store reads/writes are documented on [Entry]. If the migration puts it
+//     in a schema, tell the store which one with [WithSchema].
 //   - the READ-SIDE ListAuditEvents RPC + its Connect handler — own the proto
 //     and the handler, backing it with this [Store].
 //
@@ -19,7 +20,7 @@
 // short version is:
 //
 //	// write side — one line in the interceptor chain (see audit.Interceptor):
-//	store := audit.NewDBAuditStore(db)
+//	store := audit.NewDBAuditStore(db, audit.WithSchema("app"))
 //	// observe.Chain(observe.Deps{Audit: audit.Interceptor(logger, claimsFrom, store)})
 //
 //	// read side — your owned handler delegates to the same store:
@@ -35,6 +36,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -86,13 +88,58 @@ type Store interface {
 // standard SQL, so it works against Postgres (the scaffold default) unchanged.
 type DBAuditStore struct {
 	db *sql.DB
+	// table is the relation every statement names: audit_log, or
+	// "<schema>".audit_log under [WithSchema].
+	table string
+}
+
+// auditTable is the table name the store reads and writes.
+const auditTable = "audit_log"
+
+// StoreOption configures a [DBAuditStore] at construction.
+type StoreOption func(*DBAuditStore)
+
+// WithSchema names the schema the audit_log table lives in, so every statement
+// the store runs says "<schema>".audit_log instead of resolving a bare
+// audit_log through the connection's search_path. The name is quoted, so it
+// is taken literally (case included) and needs no validation. An empty schema
+// leaves the name unqualified.
+//
+// Use it whenever the table is not in the search_path's first schema, and
+// ALWAYS behind a transaction-pooling proxy (PgBouncer pool_mode=transaction).
+// There a statement runs on whichever server backend the pooler hands out, and
+// a backend's search_path is whatever the last session to use it left behind:
+// one client's session-level `SET search_path` (or the empty search_path
+// pg_dump sets before anything else) outlives its transaction and makes a
+// bare audit_log fail with SQLSTATE 42P01 for every later client that draws
+// that backend. A qualified name does not depend on the connection's state.
+func WithSchema(schema string) StoreOption {
+	return func(s *DBAuditStore) {
+		if schema == "" {
+			s.table = auditTable
+			return
+		}
+		s.table = quoteIdent(schema) + "." + auditTable
+	}
 }
 
 // NewDBAuditStore returns a [DBAuditStore] backed by db. Pass the same store to
 // [Interceptor] (write side) and the ListAuditEvents handler (read side) so
-// reads observe the writes.
-func NewDBAuditStore(db *sql.DB) *DBAuditStore {
-	return &DBAuditStore{db: db}
+// reads observe the writes. Without [WithSchema] the table name is unqualified
+// and resolves through the connection's search_path.
+func NewDBAuditStore(db *sql.DB, opts ...StoreOption) *DBAuditStore {
+	s := &DBAuditStore{db: db, table: auditTable}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// quoteIdent renders name as a double-quoted SQL identifier, doubling any
+// embedded quote, which is how Postgres (and SQLite) spell an identifier
+// that must be taken literally.
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // Log inserts entry into the audit_log table. ID and CreatedAt are left to the
@@ -106,7 +153,7 @@ func (s *DBAuditStore) Log(ctx context.Context, entry Entry) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO audit_log (timestamp, user_id, email, procedure, peer_address, duration_ms, status, error_code, error_message, metadata)
+		`INSERT INTO `+s.table+` (timestamp, user_id, email, procedure, peer_address, duration_ms, status, error_code, error_message, metadata)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		entry.Timestamp,
 		entry.UserID,
@@ -129,7 +176,7 @@ func (s *DBAuditStore) Log(ctx context.Context, entry Entry) error {
 // descending. Filters are AND-combined; a nil filter (zero value) returns the
 // most recent page. Pagination is offset-based with a default page size of 100.
 func (s *DBAuditStore) Query(ctx context.Context, filter Filter) ([]Entry, error) {
-	query := `SELECT id, timestamp, user_id, email, procedure, peer_address, duration_ms, status, error_code, error_message, metadata, created_at FROM audit_log WHERE 1=1`
+	query := `SELECT id, timestamp, user_id, email, procedure, peer_address, duration_ms, status, error_code, error_message, metadata, created_at FROM ` + s.table + ` WHERE 1=1`
 	args := []any{}
 	argIdx := 1
 

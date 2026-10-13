@@ -44,6 +44,13 @@ app-specific read-side (the table + the RPC) is code you own.
    }
    ```
 
+   If your migration puts the table in a schema, say which:
+   `audit.NewDBAuditStore(db, audit.WithSchema("app"))` names it
+   `"app".audit_log` in every statement. Do the same (with `"public"` if that is
+   where it is) whenever the database sits behind a transaction-pooling
+   PgBouncer: a pooled backend keeps whatever `search_path` an earlier session
+   SET on it, and a bare `audit_log` then fails with SQLSTATE 42P01.
+
    `audit.Interceptor` logs to slog exactly as the base interceptor does AND
    persists each event to the store off the request path (fire-and-forget, so
    audit writes never add latency). A nil store falls back to slog-only. It is a

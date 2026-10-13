@@ -9,6 +9,7 @@ package audit
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,15 @@ CREATE TABLE audit_log (
 
 func newTestStore(t *testing.T) *DBAuditStore {
 	t.Helper()
+	db := openTestDB(t)
+	if _, err := db.Exec(sqliteAuditSchema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	return NewDBAuditStore(db)
+}
+
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -47,10 +57,54 @@ func newTestStore(t *testing.T) *DBAuditStore {
 	// single connection so DDL and every subsequent op share one DB.
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(sqliteAuditSchema); err != nil {
-		t.Fatalf("create schema: %v", err)
+	return db
+}
+
+// TestDBAuditStore_WithSchema pins that WithSchema makes every statement name
+// the table in that schema. An ATTACHed SQLite database stands in for a
+// Postgres schema, and a decoy audit_log in `main` is what a bare name
+// resolves to — so a store that ignored the option would write the decoy and
+// read it back, and only the per-schema row counts tell the two apart.
+func TestDBAuditStore_WithSchema(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.Exec(`ATTACH DATABASE ':memory:' AS controlplane`); err != nil {
+		t.Fatalf("attach: %v", err)
 	}
-	return NewDBAuditStore(db)
+	if _, err := db.Exec(sqliteAuditSchema); err != nil {
+		t.Fatalf("create decoy main.audit_log: %v", err)
+	}
+	qualified := strings.Replace(sqliteAuditSchema, "CREATE TABLE audit_log", "CREATE TABLE controlplane.audit_log", 1)
+	if _, err := db.Exec(qualified); err != nil {
+		t.Fatalf("create controlplane.audit_log: %v", err)
+	}
+	ctx := context.Background()
+
+	store := NewDBAuditStore(db, WithSchema("controlplane"))
+	if err := store.Log(ctx, Entry{Timestamp: time.Now().UTC(), Procedure: "/svc.v1.Users/Get", Status: "ok"}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	got, err := store.Query(ctx, Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 1 || got[0].Procedure != "/svc.v1.Users/Get" {
+		t.Fatalf("Query = %+v, want the one entry just logged", got)
+	}
+
+	count := func(table string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		return n
+	}
+	if n := count("controlplane.audit_log"); n != 1 {
+		t.Errorf("controlplane.audit_log has %d rows, want 1", n)
+	}
+	if n := count("main.audit_log"); n != 0 {
+		t.Errorf("main.audit_log (what a bare audit_log resolves to) has %d rows, want 0", n)
+	}
 }
 
 func TestDBAuditStore_LogAndQuery(t *testing.T) {

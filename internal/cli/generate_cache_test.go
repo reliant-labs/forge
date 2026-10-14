@@ -25,13 +25,14 @@ import (
 // cacheFixture is a git project, a sibling module it `replace`s, and a
 // directory of fake executables standing in for forge and its tools.
 type cacheFixture struct {
-	root   string
-	lib    string
-	shared string
-	bin    string
-	env    []string
-	now    time.Time
-	shadow string
+	root    string
+	lib     string
+	libRepo string
+	shared  string
+	bin     string
+	env     []string
+	now     time.Time
+	shadow  string
 }
 
 func newCacheFixture(t *testing.T) *cacheFixture {
@@ -42,14 +43,17 @@ func newCacheFixture(t *testing.T) *cacheFixture {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	f := &cacheFixture{root: t.TempDir(), lib: t.TempDir(), shared: t.TempDir(), bin: t.TempDir(), now: time.Now()}
+	f := &cacheFixture{root: t.TempDir(), lib: t.TempDir(), libRepo: t.TempDir(), shared: t.TempDir(), bin: t.TempDir(), now: time.Now()}
+	// A second replace target that is a git checkout, as a bridged forge is.
+	initGitRepo(t, f.libRepo, map[string]string{"go.mod": "module example.com/librepo\n", "lib.go": "package lib\n"})
 	initGitRepo(t, f.root, map[string]string{
 		".gitignore": "gen-ignored/\nnode_modules/\n.forge/*\n!.forge/hashes.json\ngo.work\ngo.work.sum\n.env*\n*.local\nsecrets/*.yaml\n",
 		"forge.yaml": "name: demo\ngenerate:\n  hooks:\n    - name: sqlc\n      command: [sqlc, generate]\n",
 		"buf.gen.yaml": "version: v2\nplugins:\n  - local: protoc-gen-go\n    out: gen\n" +
 			"  - local: [protoc-gen-custom, --flag]\n    out: gen\n" +
 			"  - local: ./frontends/web/node_modules/.bin/protoc-gen-es\n    out: frontends/web/src/gen\n",
-		"go.mod":                     "module example.com/demo\n\ngo 1.27\n\nreplace example.com/lib => " + strconv.Quote(filepath.ToSlash(f.lib)) + "\n",
+		"go.mod": "module example.com/demo\n\ngo 1.27\n\nreplace example.com/lib => " + strconv.Quote(filepath.ToSlash(f.lib)) +
+			"\n\nreplace example.com/librepo => " + strconv.Quote(filepath.ToSlash(f.libRepo)) + "\n",
 		"proto/a.proto":              "syntax = \"proto3\";\n",
 		"gen/a.pb.go":                "package gen\n",
 		"frontends/web/package.json": "{}\n",
@@ -212,7 +216,7 @@ func TestGenerateCacheEveryInputClassInvalidates(t *testing.T) {
 		{"node_modules installed", func(t *testing.T, f *cacheFixture) {
 			f.write(t, "frontends/web/node_modules/.package-lock.json", "{\"lockfileVersion\":3}\n")
 		}, "node_modules/.package-lock.json"},
-		{".forge port ledger written", func(t *testing.T, f *cacheFixture) { f.write(t, ".forge/ports-dev.json", "{\"api\":8080}\n") }, ".forge/ports-dev.json"},
+		{".forge port ledger written", func(t *testing.T, f *cacheFixture) { f.write(t, ".forge/ports-dev.json", "{\"api\":8080}\n") }, "1 .forge/ state file(s)"},
 		{"unnamed gitignored file edited", func(t *testing.T, f *cacheFixture) { f.write(t, "deploy/settings.local", "changed\n") }, "deploy/settings.local"},
 		{"dotenv edited", func(t *testing.T, f *cacheFixture) { f.write(t, ".env.dev", "DATABASE_URL=postgres://x\n") }, ".env.dev"},
 		{"replace target edited", func(t *testing.T, f *cacheFixture) {
@@ -221,6 +225,9 @@ func TestGenerateCacheEveryInputClassInvalidates(t *testing.T) {
 		{"replace target gained a file", func(t *testing.T, f *cacheFixture) {
 			writeTreeFileT(t, filepath.Join(f.lib, "more.go"), "package lib\n")
 		}, "more.go"},
+		{"replace target checkout gained an untracked Go file", func(t *testing.T, f *cacheFixture) {
+			writeTreeFileT(t, filepath.Join(f.libRepo, "extra.go"), "package lib\n")
+		}, "extra.go"},
 		{"forge binary rebuilt", func(t *testing.T, f *cacheFixture) { f.writeExec(t, "forge", "#!/bin/sh\necho forge v2\n") }, "the forge binary"},
 		{"tool rebuilt", func(t *testing.T, f *cacheFixture) { f.writeExec(t, "buf", "#!/bin/sh\necho buf v2\n") }, "buf"},
 		{"go toolchain replaced", func(t *testing.T, f *cacheFixture) { f.writeExec(t, "go", "#!/bin/sh\necho go v2\n") }, "go"},
@@ -288,6 +295,12 @@ func TestGenerateCacheIrrelevantChangesStillMatch(t *testing.T) {
 		{"project lock and friction log rewritten", func(t *testing.T, f *cacheFixture) {
 			f.write(t, ".forge/forge.lock", "pid 4242\n")
 			f.write(t, ".forge/friction.jsonl", "{}\n")
+		}},
+		{"CI report written into a replace target's checkout", func(t *testing.T, f *cacheFixture) {
+			// The forge e2e job tees e2e-shard-N.json into the forge checkout
+			// that the scaffolded project's go.work bridges to, while generate
+			// runs. No Go build reads it.
+			writeTreeFileT(t, filepath.Join(f.libRepo, "e2e-shard-1.json"), "{\"Action\":\"run\"}\n")
 		}},
 		{"tree committed", func(t *testing.T, f *cacheFixture) {
 			mustGit(t, f.root, "commit", "--quiet", "--allow-empty", "-m", "another commit")

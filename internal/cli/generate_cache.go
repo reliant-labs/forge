@@ -37,7 +37,8 @@ package cli
 //     under the output directories external tools declare (gen/, a frontend's
 //     src/gen);
 //   - source outside the project the build compiles: local `replace` targets
-//     and go.work `use` directories;
+//     and go.work `use` directories (their tracked files, and untracked Go
+//     build sources — not a report a CI job tees into the checkout);
 //   - the forge executable (content hash), each tool generate shells out to
 //     (go, buf, the protoc plugins buf.gen.yaml names, goimports, node,
 //     generate hooks' commands), the environment variables that steer
@@ -52,7 +53,8 @@ package cli
 // by version in the repo, as `make sqlc` does); hand edits inside an
 // installed node_modules that npm's lockfile does not record; a shadow
 // postgres server upgraded in place at the same address; a buf `remote:`
-// plugin with no pinned version, which the BSR can move. Every one of them
+// plugin with no pinned version, which the BSR can move; an UNTRACKED,
+// non-Go file that a replace target's package embeds. Every one of them
 // also makes generate's output depend on machine state, which
 // verify-generated in a fresh CI clone (no record) would catch.
 //
@@ -339,7 +341,7 @@ func fingerprintGenerate(root string, snap *workTreeSnapshot, outputs, outputDir
 		return nil, err
 	}
 	for _, dir := range extern {
-		if err := fp.addExternalTree(dir); err != nil {
+		if err := fp.addExternalModule(dir); err != nil {
 			return nil, err
 		}
 	}
@@ -464,7 +466,48 @@ func (fp *generateFingerprint) addLinkTarget(root, rel string) error {
 // lists there (tracked plus untracked-not-ignored), or every file when it is
 // not a git work tree.
 func (fp *generateFingerprint) addExternalTree(dir string) error {
+	return fp.addExternalFiles(dir, false)
+}
+
+// addExternalModule records a Go module outside the project that its build
+// compiles (a local replace target, a go.work `use`): every tracked file,
+// and the untracked files a Go build of it can read (goBuildSource). An
+// untracked file of any other kind in a module checkout — a test report a CI
+// job tees into the root, a coverage profile — is neither compiled nor
+// imported, and keying on it would turn every such write into a miss.
+func (fp *generateFingerprint) addExternalModule(dir string) error {
+	return fp.addExternalFiles(dir, true)
+}
+
+// goBuildSource reports whether an untracked file in a module checkout is one
+// the Go toolchain reads when building it.
+func goBuildSource(rel string) bool {
+	switch path.Base(rel) {
+	case "go.mod", "go.sum", "go.work", "go.work.sum":
+		return true
+	}
+	switch path.Ext(rel) {
+	case ".go", ".s", ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".m", ".f", ".syso":
+		return true
+	}
+	return false
+}
+
+func (fp *generateFingerprint) addExternalFiles(dir string, goModule bool) error {
 	files, ok := gitListWorkTree(dir)
+	if ok && goModule {
+		tracked, tok := gitListTracked(dir)
+		if !tok {
+			return fmt.Errorf("could not list the tracked files of %s", dir)
+		}
+		kept := files[:0]
+		for _, rel := range files {
+			if tracked[rel] || goBuildSource(rel) {
+				kept = append(kept, rel)
+			}
+		}
+		files = kept
+	}
 	if !ok {
 		files = nil
 		err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -635,6 +678,23 @@ func gitIgnoredFiles(root string) []string {
 		files = append(files, rel)
 	}
 	return files
+}
+
+// gitListTracked returns the set of files git tracks under root.
+func gitListTracked(root string) (map[string]bool, bool) {
+	cmd := exec.Command("git", "ls-files", "-z", "--cached")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	set := map[string]bool{}
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel != "" {
+			set[rel] = true
+		}
+	}
+	return set, true
 }
 
 // gitSubmodules lists the project-relative paths of root's gitlinks

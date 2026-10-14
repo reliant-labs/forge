@@ -292,7 +292,11 @@ forge. DO NOT EDIT.` header or a Tier-2 scaffold missing the
 - **`forge project audit`** — reports drift on Tier-1 workflows (forge-space
   files with hand-edits) under the `codegen` category.
 - **`forge ci verify-generated`** — re-runs `forge generate` and fails
-  if the diff is non-empty.
+  if the diff is non-empty. On a checkout where a full `forge generate`
+  already verified this exact tree (same forge binary, tools and
+  environment) as its own output, the regenerate skips its steps: a tree
+  that is a recorded fixed point cannot drift. A fresh clone has no record
+  and runs in full; `--no-cache` forces it anywhere.
 
 If you want stricter checks (no `@latest` action versions, required
 secrets enumerated, permissions-locked-down rules), file a forge issue

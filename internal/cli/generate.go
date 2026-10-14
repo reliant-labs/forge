@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -73,30 +74,9 @@ func generateLockedInSlot(cmd *cobra.Command, fn func() error) error {
 	return generateInSlot(cmd, func() error { return withGenerateLock(".", fn) })
 }
 
-func newGenerateCmd() *cobra.Command {
-	var (
-		watch           bool
-		force           bool
-		explain         bool
-		explainDrift    bool
-		skipValidate    bool
-		skipPreChecks   bool
-		skipConfigCheck bool
-		checkOnly       bool
-		forceCleanup    bool
-		templatesOnly   bool
-		strict          bool
-		verbose         bool
-		planOnly        bool
-		heal            bool
-		noRevert        bool
-		steps           string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "generate",
-		Short: "Generate code from proto files",
-		Long: `Generate code from proto files based on project configuration or directory conventions.
+// generateLongHelp is `forge generate --help`'s body. A const, so the
+// command constructor stays about flags and wiring.
+const generateLongHelp = `Generate code from proto files based on project configuration or directory conventions.
 
 When forge.yaml exists, generation is driven by the config:
   - buf generate for Go stubs (protoc-gen-go + protoc-gen-connect-go)
@@ -123,20 +103,57 @@ Hooks:
   core.hooksPath=.githooks and its merge driver in your clone. FORGE_NO_HOOKS=1
   is its older name and means the same.
 
+Skipping:
+  A full run that changes nothing records the tree as a verified fixed point
+  (.forge/generate-cache.json, per checkout). The next run that finds every
+  input and output byte-identical — the work tree, the files git ignores but
+  generate reads or writes, the forge binary, every tool it runs, and the
+  environment that steers them — prints one line saying so and stops, in
+  about a second instead of minutes. Any change runs every step. --no-cache
+  (or FORGE_GENERATE_NO_CACHE=1) always runs every step.
+
 Examples:
   forge generate            # Generate all code
   forge generate --watch    # Watch mode for development
   forge generate --force    # Discard hand-edits to Tier-1 files and regenerate
   forge generate --check    # Run generate into a tmpdir; exit 1 if it would change the tree (CI guard)
+  forge generate --no-cache # Run every step even if nothing changed since the last verified run
   forge generate --explain  # Print per-file provenance log after generate
   forge generate --verbose  # Print one line per gate-off skipped step
 
 Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
-'forge generate --help-dev' to list them.`,
+'forge generate --help-dev' to list them.`
+
+func newGenerateCmd() *cobra.Command {
+	var (
+		watch           bool
+		force           bool
+		explain         bool
+		explainDrift    bool
+		skipValidate    bool
+		skipPreChecks   bool
+		skipConfigCheck bool
+		checkOnly       bool
+		forceCleanup    bool
+		templatesOnly   bool
+		strict          bool
+		verbose         bool
+		planOnly        bool
+		heal            bool
+		noRevert        bool
+		timings         bool
+		noCache         bool
+		steps           string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "generate",
+		Short: "Generate code from proto files",
+		Long:  generateLongHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
-				return generateInSlot(cmd, runGenerateCheck)
+				return generateInSlot(cmd, func() error { return runGenerateCheck(noCache) })
 			}
 			if planOnly {
 				return runGeneratePlan(".", pipelineFlags{
@@ -151,10 +168,37 @@ forensics, parallel-lane and migration escape hatches); run
 					Steps:           steps,
 				})
 			}
+			flags := pipelineFlags{
+				Force:           force,
+				ExplainDrift:    explainDrift,
+				SkipValidate:    skipValidate,
+				SkipPreChecks:   skipPreChecks,
+				SkipConfigCheck: skipConfigCheck,
+				ForceCleanup:    forceCleanup,
+				TemplatesOnly:   templatesOnly,
+				Strict:          strict,
+				Verbose:         verbose,
+				Heal:            heal,
+				NoRevert:        noRevert,
+				Timings:         timings,
+				Cache:           true,
+				NoCache:         noCache,
+				Steps:           steps,
+			}
+			// A run with nothing to do must not queue for a heavy slot
+			// behind real work first: the cache check is a second of
+			// hashing, not heavy work. --explain wants a pipeline to explain.
+			skipped := false
+			if !explain {
+				var err error
+				if skipped, err = generateCachedNoop(".", flags); err != nil {
+					return err
+				}
+			}
 			// The explain scans run inside the lock too: a concurrent run
 			// finishing between the pre-scan and this run's pipeline would
 			// otherwise be labeled as this run's rewrites.
-			err := generateLockedInSlot(cmd, func() error {
+			body := func() error {
 				// Capture pre-pipeline body hashes (from the embedded
 				// markers) so --explain can diff against post-pipeline
 				// state to label rewritten vs idempotent.
@@ -167,20 +211,7 @@ forensics, parallel-lane and migration escape hatches); run
 					}
 				}
 
-				pipeErr := runGeneratePipelineFlags(".", pipelineFlags{
-					Force:           force,
-					ExplainDrift:    explainDrift,
-					SkipValidate:    skipValidate,
-					SkipPreChecks:   skipPreChecks,
-					SkipConfigCheck: skipConfigCheck,
-					ForceCleanup:    forceCleanup,
-					TemplatesOnly:   templatesOnly,
-					Strict:          strict,
-					Verbose:         verbose,
-					Heal:            heal,
-					NoRevert:        noRevert,
-					Steps:           steps,
-				})
+				pipeErr := runGeneratePipelineFlags(".", flags)
 
 				// Print the explain log even when the pipeline failed — partial
 				// provenance is still useful for diagnosing what got generated
@@ -199,7 +230,11 @@ forensics, parallel-lane and migration escape hatches); run
 					}
 				}
 				return pipeErr
-			})
+			}
+			var err error
+			if !skipped {
+				err = generateLockedInSlot(cmd, body)
+			}
 			if err != nil {
 				return err
 			}
@@ -245,6 +280,8 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&planOnly, "dry-run", false, "Print the pipeline plan ([RUN]/[SKIP] per step + gate reason) and exit without running any step.")
 	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
 	cmd.Flags().BoolVar(&heal, "heal", false, "Overwrite on-disk content that matches a PRIOR forge render (an older vintage) with the current template. OFF by default: such content is byte-indistinguishable from a deliberate edit, so forge leaves it untouched and tells you how to proceed rather than silently reverting your work. Pass --heal to advance every such file to the current templates.")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Run every step even when nothing changed since a full run verified this tree (a no-op generate otherwise skips in about a second; see the 'Skipping' section above). FORGE_GENERATE_NO_CACHE=1 does the same.")
+	cmd.Flags().BoolVar(&timings, "timings", false, "Print each pipeline step's wall time when the run ends, slowest first (FORGE_GENERATE_TIMINGS=1 does the same for runs you do not type, such as verify-generated's)")
 	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "Diagnostic mode: on a post-write step failure (most often the final 'go build' validate), leave the generated files ON DISK instead of rewinding the tree, so you can inspect the codegen output that failed to build. Default (off) reverts to the clean pre-run tree.")
 
 	// User-vs-maintainer surface split: the flags below are fully
@@ -261,6 +298,7 @@ forensics, parallel-lane and migration escape hatches); run
 		"plan",              // pipeline introspection (debugging gates)
 		"skip-config-check", // parallel-lane / mid-migration escape hatch
 		"no-revert",         // codegen forensics (inspect the output that failed to build)
+		"timings",           // pipeline profiling (where a run's wall time went)
 	)
 
 	return cmd
@@ -406,6 +444,21 @@ type pipelineFlags struct {
 	// current templates (loudly — checksums.HealNoticeFn still fires per
 	// file). `forge generate --force` is the per-file equivalent.
 	Heal bool
+
+	// Timings (--timings, or FORGE_GENERATE_TIMINGS=1) prints each step's
+	// wall time when the run ends. See generate_timings.go.
+	Timings bool
+
+	// Cache opts the run into the generate cache (generate_cache.go): skip
+	// when the tree is a recorded fixed point, record one when the run
+	// changes nothing. Only the `forge generate` command sets it — every
+	// other pipeline entry point (a scaffold's regenerate, watch mode) runs
+	// in full and records nothing.
+	Cache bool
+	// NoCache (--no-cache, or FORGE_GENERATE_NO_CACHE=1) runs every step
+	// even when the tree is a recorded fixed point. The run still records,
+	// so it is also how to refresh the record.
+	NoCache bool
 }
 
 // runGeneratePipelineFlags is the canonical entrypoint. Both the
@@ -425,6 +478,22 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// Routine "forge did nothing here" lines are printed by helpers well
 	// below this frame, to stdout. See generate_verbosity.go.
 	defer setGenerateVerbosity(flags.Verbose)()
+
+	// Fingerprint the tree BEFORE any step can write. Three claims are
+	// checked against it rather than asserted from the journal alone: a
+	// failed run's "your tree is back to its pre-run state", a successful
+	// run's "N changed" (taken under --no-revert too: agents read that line
+	// as the fixed-point check, so it must count every write, whatever made
+	// it), and the generate cache's "nothing changed since a verified run".
+	preRun := snapshotWorkTree(ctx.AbsPath)
+
+	// The whole-run skip (generate_cache.go): when this exact tree, binary,
+	// toolset and environment were already verified as a fixed point,
+	// running the pipeline again can only reproduce them.
+	cache := openGenerateCache(ctx.AbsPath, flags, preRun, generateCacheSystem())
+	if cache.skip(os.Stdout) {
+		return nil
+	}
 
 	if flags.SkipValidate {
 		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
@@ -452,13 +521,6 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// we never persist manifest state describing writes we just undid.
 	checksums.BeginRollbackJournal(ctx.AbsPath)
 	rolledBack := false
-	// Fingerprint the tree BEFORE any step can write. Two claims are checked
-	// against it rather than asserted from the journal alone: a failed run's
-	// "your tree is back to its pre-run state", and a successful run's "N
-	// changed". The second is taken under --no-revert too: agents read that
-	// line as the fixed-point check, so it must count every write, whatever
-	// made it.
-	preRun := snapshotWorkTree(ctx.AbsPath)
 
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
@@ -489,10 +551,21 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// A plan that keeps the stomp guard keeps its fresh-render check.
 	steps = withDriftAdjudication(steps)
 
+	// --timings / FORGE_GENERATE_TIMINGS: per-step wall time, printed on
+	// the way out whatever the outcome.
+	var timer *stepTimer
+	if generateTimingsRequested(flags.Timings) {
+		timer = newStepTimer()
+		defer timer.print(os.Stderr)
+	}
+
 	// onlyReadOnlyRan stays true while every step that has RUN is declared
 	// ReadOnly. Together with an empty journal it is the evidence behind a
 	// failure's "No files were changed" — see rollbackGeneratedTree.
 	onlyReadOnlyRan := true
+	// ran is the steps whose gate passed: the cache records the outputs
+	// their external tools declare.
+	var ran []GenStep
 	for _, step := range steps {
 		if !step.Gate(ctx) {
 			// Verbose mode prints one line per gate-off skip so the user
@@ -503,6 +576,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			}
 			continue
 		}
+		ran = append(ran, step)
 		if !step.ReadOnly {
 			onlyReadOnlyRan = false
 		}
@@ -511,7 +585,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		if step.Writes != nil {
 			checksums.CaptureExternalWrites(ctx.AbsPath, step.Writes(ctx)...)
 		}
-		if err := step.Run(ctx); err != nil {
+		stepStart := time.Now()
+		err := step.Run(ctx)
+		if timer != nil {
+			timer.record(step.Name, time.Since(stepStart))
+		}
+		if err != nil {
 			// --explain-drift cleanup still runs on a mid-pipeline
 			// failure: whatever renders were parked are diffed, and the
 			// snapshot restore keeps the deferred SaveChecksums honest.
@@ -594,6 +673,11 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	fmt.Println()
 	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
 	printSoftFailures(os.Stdout, ctx.SoftFailures)
+	// Last, after the journal is committed and the outcome printed: a run
+	// that changed nothing has proven this tree is generate's own output —
+	// unless a step failed soft, in which case its outputs were not
+	// produced, let alone checked.
+	cache.record(os.Stdout, ctx, ran, summary)
 	return nil
 }
 
@@ -1414,7 +1498,12 @@ func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error
 // pipeline is idempotent in the steady state, so the cheapest and most
 // honest check is "run it and see if git notices". The pipeline is
 // already designed to be re-runnable.
-func runGenerateCheck() error {
+//
+// The run consults the generate cache like any `forge generate`: a clean
+// tree that a full run verified as its own output cannot drift, so the check
+// passes without re-running. It never RECORDS one — it skips the validate
+// build, and a record vouches for a validated tree. noCache forces the run.
+func runGenerateCheck(noCache bool) error {
 	if _, err := exec.LookPath("git"); err != nil {
 		return cliutil.UserErr("forge generate --check",
 			"git not found on PATH",
@@ -1436,7 +1525,7 @@ func runGenerateCheck() error {
 
 	fmt.Println("[generate --check] running generate against current tree...")
 	pipeErr := withGenerateLock(".", func() error {
-		return runGeneratePipelineOpts(".", false, true)
+		return runGeneratePipelineFlags(".", pipelineFlags{SkipValidate: true, Cache: true, NoCache: noCache})
 	})
 	if pipeErr != nil {
 		return fmt.Errorf("generate pipeline: %w", pipeErr)

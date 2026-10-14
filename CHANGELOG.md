@@ -299,6 +299,31 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   Anything already inside a slot (`FORGE_SLOT_HELD`, or an ancestor holding
   one) never waits again, so nested heavy commands cannot deadlock. See
   `migrations/v0.1.46`.
+- **A no-op `forge generate` skips its steps.** A full run that changes
+  nothing records the tree as a verified fixed point in
+  `.forge/generate-cache.json` (gitignored, per checkout). The next run that
+  finds every input byte-identical prints one `⏭️  forge generate: nothing to
+  do` line and stops: on control-plane, about half a second instead of about
+  three minutes at moderate load (2–5 s instead of 8+ minutes on a heavily
+  loaded box). The key covers the work tree as git sees it,
+  the gitignored files generate reads or writes (go.work, installed
+  node_modules, dotenvs, secrets, `.forge/` state, every other ignored file
+  outside a wholly ignored directory), the outputs the verifying run wrote,
+  local `replace`/`go.work` source outside the project, the forge executable
+  by content, every tool it runs (go, buf and the plugins the buf templates
+  name, goimports, node, generate hooks), the environment that steers them,
+  and which postgres hosts the shadow schema. Any difference runs every step
+  and names what changed. A run that WROTE files never records — the run
+  after a change is the one that proves the tree converged — and neither does
+  a narrowed or weakened run (`--steps`, `--force`, `--skip-validate`, …).
+  `--no-cache` (or `FORGE_GENERATE_NO_CACHE=1`) runs every step;
+  `forge ci verify-generated --no-cache` passes it through. `--check` and
+  verify-generated consult the record (a recorded fixed point cannot drift)
+  but never write one. The check runs before `forge generate` queues for a
+  heavy slot, so a no-op never waits behind other agents' builds.
+- **`forge generate --timings`** (or `FORGE_GENERATE_TIMINGS=1`) prints each
+  step's wall time, slowest first, when the run ends — including runs that
+  failed, and runs nobody typed (verify-generated's).
 
 - **`//forge:resolves-caller` declares a project's own caller resolver.** The
   `unscoped_auth` audit counted a handler as resolving the caller only when it

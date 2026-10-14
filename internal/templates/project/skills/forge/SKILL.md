@@ -375,7 +375,7 @@ forge skill search migration  # find one by keyword
 - Check `forge project capabilities` before concluding forge has no verb for this.
 - Check `forge project libraries` before writing a utility, and `go doc` to read one.
 - Never hand-edit `gen/` or any `*_gen.go`. `internal/app/providers.go` and `internal/app/compose.go` are both yours to wire — forge reconciles compose.go's component set and Deps keys and leaves your value expressions alone (`forge project disown` to opt out).
-- Run `forge generate` after any proto or migration change. It never touches business logic or migrations.
+- Run `forge generate` after any proto or migration change. It never touches business logic or migrations. Re-running it when nothing changed costs seconds, not minutes: a run that finds the tree byte-identical to one a full run verified as its own output says `nothing to do` and stops (`--no-cache` forces every step). So run it whenever in doubt; the minutes are spent only when something it reads actually moved.
 - Parallel agents in one checkout may each run `forge generate` and `forge scaffold`. Every run takes the project's lock (`.forge/forge.lock`); a second run prints one `waiting for pid N` line and starts when the first finishes. The OS releases the lock when its holder exits, so never delete the file.
 - Declare schema in migrations, never in proto; the ORM follows the schema.
 - Use `forge scaffold` to scaffold — never copy-paste an existing directory.

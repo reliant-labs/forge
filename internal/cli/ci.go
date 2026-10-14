@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,7 +42,8 @@ func newCICmd() *cobra.Command {
 }
 
 func newCIVerifyGeneratedCmd() *cobra.Command {
-	return &cobra.Command{
+	var noCache bool
+	cmd := &cobra.Command{
 		Use:   "verify-generated",
 		Short: "Verify generated code is pristine and up to date",
 		Long: "Three checks, all local to the checkout:\n" +
@@ -50,6 +52,9 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			"     committed without --force / forge project disown.\n" +
 			"  2. Freshness: runs forge generate and verifies no files changed —\n" +
 			"     catches stale generated code after an input (proto/forge.yaml) change.\n" +
+			"     The regenerate skips its steps when this exact tree, forge binary,\n" +
+			"     toolset and environment were already verified as generate's own\n" +
+			"     output (see `forge generate --help`); --no-cache runs them anyway.\n" +
 			"  3. Commit policy: no generated file is gitignored (check 2 cannot see an\n" +
 			"     ignored file), and no machine-local state (.forge-kcl/, a frontend's\n" +
 			"     dev public/config.js) is tracked.",
@@ -103,7 +108,11 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve forge binary: %w", err)
 			}
-			genCmd := exec.CommandContext(cmd.Context(), parts[0], append(parts[1:], "generate")...)
+			genArgs := append(slices.Clone(parts[1:]), "generate")
+			if noCache {
+				genArgs = append(genArgs, "--no-cache")
+			}
+			genCmd := exec.CommandContext(cmd.Context(), parts[0], genArgs...)
 			genCmd.Stdout = os.Stdout
 			genCmd.Stderr = os.Stderr
 			if err := genCmd.Run(); err != nil {
@@ -158,6 +167,8 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Make the regenerate run every step, even when the committed tree is one a full `forge generate` already verified as its own output (FORGE_GENERATE_NO_CACHE=1 does the same)")
+	return cmd
 }
 
 func newCIValidateKCLCmd() *cobra.Command {

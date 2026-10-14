@@ -187,12 +187,12 @@ func unitSplitOf(e *KCLEntities) (unitSplit, error) {
 // hubUnitsConvergeable refuses a hub_converges the hub could not act on.
 func hubUnitsConvergeable(e *KCLEntities, hub []string) error {
 	if bound, _ := declaredBindings(e); len(bound) == 0 {
-		return fmt.Errorf("Bundle.hub_converges = [%s] but no cluster is bound to a connected cluster: "+
+		return fmt.Errorf("bundle.hub_converges = [%s] but no cluster is bound to a connected cluster: "+
 			"the hub converges a unit only onto a connected cluster (set connected_cluster on the env's forge.ClusterTarget, "+
 			"or Bundle.connected_clusters), and `forge cluster connect` registers it", strings.Join(hub, ", "))
 	}
 	if e.HasHosted() {
-		return fmt.Errorf("Bundle.hub_converges = [%s] but the env also binds hosted tiers (%s) to its control plane: "+
+		return fmt.Errorf("bundle.hub_converges = [%s] but the env also binds hosted tiers (%s) to its control plane: "+
 			"a hosted tier is published, not converged from a bundle, and one env cannot be both. "+
 			"Move the hosted tiers to their own env, or leave hub_converges unset",
 			strings.Join(hub, ", "), joinTiers(hostedTiersOf(e)))

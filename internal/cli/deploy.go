@@ -1383,19 +1383,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 			} else {
 				fmt.Println("Nothing to deploy outside a cluster.")
 			}
-			// An env whose every unit the hub converges still has the frontends
-			// forge ships from here. They are the part of the env that no
-			// bundle carries, so they are the one thing left to do. They ship
-			// here, in a deploy that runs AFTER the promotion is recorded: the
-			// pre-record pass (preflightOnly) only checks they can ship.
 			if hubSplit.AllHub() {
-				if opts.preflightOnly {
-					return opts.preflightFrontend(ctx, entities, projectDir)
-				}
-				return dispatchFrontendsOrSkip(ctx, deployFrontendInput{
+				return shipFrontendsOnly(ctx, opts, deployFrontendInput{
 					cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
-					envCfgKV: envCfgKV, targets: targets, dryRun: dryRun,
-					skipFrontend: opts.skipFrontend, shipped: opts.shipLog(),
+					envCfgKV: envCfgKV, targets: targets, dryRun: dryRun, skipFrontend: opts.skipFrontend,
 				})
 			}
 			return nil
@@ -1574,6 +1565,19 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// shipFrontendsOnly is the whole deploy of an env whose every delivery unit the
+// hub converges: the frontends forge ships from this machine are the part of the
+// env no bundle carries, so they are the one thing left to do. They ship in the
+// deploy that runs AFTER the promotion is recorded; the pre-record pass
+// (preflightOnly) only checks that they can.
+func shipFrontendsOnly(ctx context.Context, opts deployOptions, in deployFrontendInput) error {
+	if opts.preflightOnly {
+		return opts.preflightFrontend(ctx, in.entities, in.projectDir)
+	}
+	in.shipped = opts.shipLog()
+	return dispatchFrontendsOrSkip(ctx, in)
 }
 
 // resolveDeployNamespace resolves the target namespace by the established

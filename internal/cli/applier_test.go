@@ -143,10 +143,12 @@ func TestProjectShapeCarriesApplier(t *testing.T) {
 	}
 }
 
-// The notice: an env declaring neither lifecycle nor applier is told both ways
-// out; it must name `applier` or the notice sends people nowhere useful.
-func TestLifecycleNoticeNamesBothWaysOut(t *testing.T) {
-	for _, want := range []string{"lifecycle", `applier = "forge"`, "F-REFUSE-DIRECT"} {
+// The notice: an env declaring none of lifecycle, applier or hub_converges is
+// told every way out, and that forge-applied is a stage ("until its units
+// move"), not a place to stay; it must name `applier` and `hub_converges` or
+// the notice sends people nowhere useful.
+func TestLifecycleNoticeNamesEveryWayOut(t *testing.T) {
+	for _, want := range []string{"lifecycle", `applier = "forge"`, "hub_converges", "until its units move", "F-REFUSE-DIRECT"} {
 		if !strings.Contains(lifecycleNoticeLine, want) {
 			t.Errorf("the notice omits %q: %s", want, lifecycleNoticeLine)
 		}

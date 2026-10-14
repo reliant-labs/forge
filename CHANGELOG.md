@@ -849,6 +849,42 @@ AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   is now 35 minutes. Non-release commits are unaffected: the pinned version
   is already served and the probe returns at once.
 
+- **API keys work in a scaffolded project (#746).** The README called them a
+  first-class credential, but a scaffold had no working path for one. The
+  generated `credentialFrom` read only `Authorization: Bearer` and the session
+  cookie. The `auth/api-keys` skill said to pass `Provider: "both"` to a
+  `SetupAuth` that returned a bare `func(token string)`. And `serve.go` ran
+  `SetupAuth` before `app.OpenInfra`, so a key validator had no database
+  handle (the project that found this opened a second pool). Now:
+
+  - `forge/pkg/auth.Authenticator` (`NewAuthenticator`, `UseKeyValidator`,
+    `Authenticate`) routes a credential by its shape. `fk_…`
+    (`apikey.KeyPrefix`) goes to a key validator installed after
+    construction, with the request context, and anything else goes to the JWT
+    validator. It fails closed: keys disabled, a malformed key (rejected
+    before the store is read), a rejected key (`ErrInvalidAPIKey`; the
+    validator's own error stays server-side as `svcerr.Cause`), or no claims.
+    `auth.KeyValidatorFunc` adapts a closure.
+  - `forge/pkg/authn.Policy.ValidateContext` hands the validator the request
+    context. Set exactly one of `Validate` and `ValidateContext`.
+  - **Behavior change:** `pkg/authn` now rejects a validator that returns
+    neither claims nor an error. Such a request used to reach the handler with
+    no claims, so an `auth_required` rpc whose handler never calls `GetUser`
+    (every CRUD shim) served it.
+  - The scaffold. `pkg/middleware/middleware.go` declares
+    `APIKeyHeader = "X-API-Key"`, and `credentialFrom` reads a Bearer header,
+    else `X-API-Key`, else the cookie: one credential per request, with no
+    fallback. `AuthDeps.Validate` takes the request context.
+    `internal/app/auth.go`'s `SetupAuth` returns `*auth.Authenticator`, and a
+    new `APIKeyValidator(*Infra)` seam returns the key validator (`nil`
+    leaves keys disabled). `serve.go` installs it right after
+    `app.OpenInfra`, on the pool the handlers use.
+
+  Existing projects own `serve.go` and `internal/app/auth.go`.
+  `forge project upgrade` refreshes `pkg/middleware/middleware.go` only while
+  it is unedited, and the refreshed file does not compile against an old
+  `serve.go`. See `migrations/v0.1.46`.
+
 - **A rotated `OTEL_EXPORTER_OTLP_HEADERS_FILE` is noticed by its content.**
   The headers file was re-read only when its identity, size or mtime moved. On
   Windows `os.SameFile` resolves a stat'ed path when it is called, so it

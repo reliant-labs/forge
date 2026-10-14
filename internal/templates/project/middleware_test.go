@@ -4,10 +4,14 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"connectrpc.com/connect"
+
+	"github.com/reliant-labs/forge/pkg/apikey"
+	"github.com/reliant-labs/forge/pkg/auth"
 )
 
 // These tests cover the POLICY WIRING this file owns — the mechanism
@@ -27,7 +31,7 @@ func TestNewAuthInterceptor_UnconfiguredErrors(t *testing.T) {
 
 // An explicit AuthDeps.Validate flips the interceptor into validate mode.
 func TestNewAuthInterceptor_ValidatorConfigured(t *testing.T) {
-	validate := func(string) (*Claims, error) {
+	validate := func(context.Context, string) (*Claims, error) {
 		return &Claims{UserID: "u1"}, nil
 	}
 	ic, err := NewAuthInterceptor(AuthDeps{Validate: validate})
@@ -37,9 +41,99 @@ func TestNewAuthInterceptor_ValidatorConfigured(t *testing.T) {
 	if ic == nil {
 		t.Fatal("NewAuthInterceptor must not return nil when configured")
 	}
-	claims, err := validate("anything")
+	claims, err := validate(context.Background(), "anything")
 	if err != nil || claims == nil || claims.UserID != "u1" {
 		t.Fatalf("the threaded validator must dispatch, got %+v, %v", claims, err)
+	}
+}
+
+// The wiring cmd serve.go builds — this file's credentialFrom and
+// NewAuthInterceptor over the auth.Authenticator app.SetupAuth returns —
+// accepts an API key on APIKeyHeader, still accepts a bearer token, and
+// rejects everything else on an RPC that is not on the allow-list. The key
+// validator here is a stand-in for internal/app/auth.go's APIKeyValidator:
+// it stores only the key's hash, the way your table must.
+func TestAuthWiring_APIKeyAndBearer(t *testing.T) {
+	t.Parallel()
+	key, err := apikey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPrefix, err := apikey.LookupPrefix(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := map[string]string{keyPrefix: apikey.Hash(key)} // lookup prefix -> hash
+	var keyCtx context.Context
+
+	authenticator := auth.NewAuthenticator(func(token string) (*Claims, error) {
+		if token == "a.valid.jwt" {
+			return &Claims{UserID: "jwt-user"}, nil
+		}
+		return nil, errors.New("signature is invalid")
+	})
+	authenticator.UseKeyValidator(auth.KeyValidatorFunc(func(ctx context.Context, presented string) (*Claims, error) {
+		keyCtx = ctx
+		prefix, err := apikey.LookupPrefix(presented)
+		if err != nil {
+			return nil, err
+		}
+		hash, ok := stored[prefix]
+		if !ok || !apikey.Verify(presented, hash) {
+			return nil, errors.New("unknown key")
+		}
+		return &Claims{UserID: "key-owner"}, nil
+	}))
+	ic, err := NewAuthInterceptor(AuthDeps{Validate: authenticator.Authenticate})
+	if err != nil {
+		t.Fatalf("NewAuthInterceptor: %v", err)
+	}
+
+	wrongKey := key[:len(key)-1] + "?"
+	cases := []struct {
+		name   string
+		header []string // name, value, name, value, ...
+		want   string   // the authenticated UserID; "" means rejected
+	}{
+		{"api key on APIKeyHeader", []string{APIKeyHeader, key}, "key-owner"},
+		{"api key as a bearer token", []string{"Authorization", "Bearer " + key}, "key-owner"},
+		{"jwt as a bearer token", []string{"Authorization", "Bearer a.valid.jwt"}, "jwt-user"},
+		{"wrong api key", []string{APIKeyHeader, wrongKey}, ""},
+		{"malformed api key", []string{APIKeyHeader, apikey.KeyPrefix + "x"}, ""},
+		{"not an api key at all", []string{APIKeyHeader, "hunter2"}, ""},
+		{"no credential", nil, ""},
+		// One credential per request, and no fallback: the Bearer token is
+		// the credential, so a valid key cannot rescue an invalid token.
+		{"bad bearer beside a good key", []string{"Authorization", "Bearer forged", APIKeyHeader, key}, ""},
+		{"good bearer beside a bad key", []string{"Authorization", "Bearer a.valid.jwt", APIKeyHeader, wrongKey}, "jwt-user"},
+	}
+	type reqKey struct{}
+	for _, tc := range cases {
+		var got *Claims
+		next := ic.WrapUnary(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			got, _ = ClaimsFromContext(ctx)
+			return nil, nil
+		})
+		// A request with no procedure is on no allow-list: auth is enforced.
+		req := connect.NewRequest(&struct{}{})
+		for i := 0; i+1 < len(tc.header); i += 2 {
+			req.Header().Set(tc.header[i], tc.header[i+1])
+		}
+		_, err := next(context.WithValue(context.Background(), reqKey{}, tc.name), req)
+
+		switch {
+		case tc.want == "" && err == nil:
+			t.Errorf("%s: accepted, want CodeUnauthenticated", tc.name)
+		case tc.want == "" && connect.CodeOf(err) != connect.CodeUnauthenticated:
+			t.Errorf("%s: got %v, want CodeUnauthenticated", tc.name, err)
+		case tc.want != "" && err != nil:
+			t.Errorf("%s: rejected: %v", tc.name, err)
+		case tc.want != "" && (got == nil || got.UserID != tc.want):
+			t.Errorf("%s: handler saw claims %+v, want UserID %q", tc.name, got, tc.want)
+		}
+	}
+	if keyCtx == nil || keyCtx.Value(reqKey{}) == nil {
+		t.Error("the key validator must run with the request's context — it is a database read")
 	}
 }
 
@@ -118,26 +212,35 @@ func TestClaimsReExportsReachTheLibraryStash(t *testing.T) {
 	}
 }
 
-// Native sign-in keeps the session in an HttpOnly cookie, so the browser has
-// no other way to present it. Reading only the Authorization header 401'd
-// every RPC right after a successful sign-in. A Bearer header still wins:
-// a service or a test that sends one means that credential.
-func TestCredentialFrom_ReadsBearerThenTheSessionCookie(t *testing.T) {
+// credentialFrom reads ONE credential: a Bearer header, else APIKeyHeader,
+// else the session cookie. Native sign-in keeps the session in an HttpOnly
+// cookie, so the browser has no other way to present it — reading only the
+// Authorization header 401'd every RPC right after a successful sign-in. An
+// explicit header wins over the ambient cookie, and a Bearer header wins
+// over an API key: a caller that sends one means that credential.
+func TestCredentialFrom_ReadsBearerThenAPIKeyThenTheSessionCookie(t *testing.T) {
 	t.Parallel()
 	cookie := (&http.Cookie{Name: SessionCookieName, Value: "from-cookie"}).String()
 
 	cases := []struct {
 		name   string
-		header http.Header
+		header []string // name, value, name, value, ...
 		want   string
 	}{
-		{"session cookie only", http.Header{"Cookie": {cookie}}, "from-cookie"},
-		{"bearer wins over the cookie", http.Header{"Authorization": {"Bearer from-header"}, "Cookie": {cookie}}, "from-header"},
-		{"another app's cookie is not a credential", http.Header{"Cookie": {"other_session=x"}}, ""},
-		{"nothing presented", http.Header{}, ""},
+		{"session cookie only", []string{"Cookie", cookie}, "from-cookie"},
+		{"api key only", []string{APIKeyHeader, "fk_from-key-header"}, "fk_from-key-header"},
+		{"bearer wins over the cookie", []string{"Authorization", "Bearer from-header", "Cookie", cookie}, "from-header"},
+		{"bearer wins over an api key", []string{"Authorization", "Bearer from-header", APIKeyHeader, "fk_k"}, "from-header"},
+		{"api key wins over the cookie", []string{APIKeyHeader, "fk_k", "Cookie", cookie}, "fk_k"},
+		{"another app's cookie is not a credential", []string{"Cookie", "other_session=x"}, ""},
+		{"nothing presented", nil, ""},
 	}
 	for _, tc := range cases {
-		if got := credentialFrom(tc.header); got != tc.want {
+		h := http.Header{}
+		for i := 0; i+1 < len(tc.header); i += 2 {
+			h.Set(tc.header[i], tc.header[i+1])
+		}
+		if got := credentialFrom(h); got != tc.want {
 			t.Errorf("%s: credentialFrom = %q, want %q", tc.name, got, tc.want)
 		}
 	}

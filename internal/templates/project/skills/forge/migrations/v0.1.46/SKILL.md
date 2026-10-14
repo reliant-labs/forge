@@ -1,8 +1,8 @@
 ---
 name: v0.1.46
-description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args. (4) A bundle now seals the env's `observability_policy` (behavior change: the bundle digest of an env that opts out of, or into, any observability category changes on its next build). (5) The same-origin dev API proxy: `<basePath>/_api` on the dev server, so a Next.js or Vite frontend works when its dev server is opened through a Reliant workspace preview URL, a tunnel or a LAN IP. Use when deploy/kcl declares `forge.Observability` with `enabled = False`, a disabled signal or an opt-in, and a bundle of that env is already recorded, or when a frontend's `next.config.ts` / `vite.config.ts` has no `FORGE_DEV_API_PROXY`. (6) A web frontend's test toolchain moves together to vitest 5, vite 8 and `@vitejs/plugin-react` 6, with `engines.node >=22.12`. Use when a Next.js or Vite SPA frontend's package.json pins vitest ^3 or ^4 or `@vitejs/plugin-react` ^4 or ^5, or `tsc --noEmit` fails vitest.config.ts / vite.config.ts with TS2769 "Property 'rolldownVersion' is missing", or `npm audit` reports `tinypool`.
+description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args. (4) A bundle now seals the env's `observability_policy` (behavior change: the bundle digest of an env that opts out of, or into, any observability category changes on its next build). (5) The same-origin dev API proxy: `<basePath>/_api` on the dev server, so a Next.js or Vite frontend works when its dev server is opened through a Reliant workspace preview URL, a tunnel or a LAN IP. Use when deploy/kcl declares `forge.Observability` with `enabled = False`, a disabled signal or an opt-in, and a bundle of that env is already recorded, or when a frontend's `next.config.ts` / `vite.config.ts` has no `FORGE_DEV_API_PROXY`. (6) A web frontend's test toolchain moves together to vitest 5, vite 8 and `@vitejs/plugin-react` 6, with `engines.node >=22.12`. Use when a Next.js or Vite SPA frontend's package.json pins vitest ^3 or ^4 or `@vitejs/plugin-react` ^4 or ^5, or `tsc --noEmit` fails vitest.config.ts / vite.config.ts with TS2769 "Property 'rolldownVersion' is missing", or `npm audit` reports `tinypool`. (7) API keys: the owned APIKeyValidator seam is installed after OpenInfra on the shared DB pool; middleware reads X-API-Key.
 version: v0.1.46
-detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k ) || grep -qsE 'forge\.Observability' deploy/kcl/*/*.k || ( for f in frontends/*/next.config.ts frontends/*/vite.config.ts; do test -f "$f" && ! grep -qs FORGE_DEV_API_PROXY "$f" && exit 0; done; exit 1 ) || grep -qsE '"vitest": "[~^]?[34]\.|"@vitejs/plugin-react": "[~^]?[45]\.' frontends/*/package.json
+detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k ) || grep -qsE 'forge\.Observability' deploy/kcl/*/*.k || ( for f in frontends/*/next.config.ts frontends/*/vite.config.ts; do test -f "$f" && ! grep -qs FORGE_DEV_API_PROXY "$f" && exit 0; done; exit 1 ) || grep -qsE '"vitest": "[~^]?[34]\.|"@vitejs/plugin-react": "[~^]?[45]\.' frontends/*/package.json || grep -qsF 'authDeps.Validate = authValidate' cmd/*/cmd/serve.go || grep -qsF 'func SetupAuth(cfg *config.Config) (func(token string)' internal/app/auth.go
 ---
 
 # Upgrading to v0.1.46
@@ -229,3 +229,85 @@ vitest 4.1 is skipped on purpose: the npm that ships with Node 22 (10.x) crashes
 ### Verify
 
 `npm ls vite` lists one version. `npm run typecheck`, `npm test` and `npm run build` pass in each frontend, and `npm audit` no longer lists `tinypool` or `vitest`.
+
+## 7. API keys, and a validator that sees the request
+
+Use when `grep -n 'authDeps.Validate = authValidate' cmd/*/cmd/serve.go` matches, or `internal/app/auth.go` declares `func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error)`.
+
+`serve.go`, `internal/app/auth.go` and `pkg/middleware/middleware.go` are yours, so forge makes none of these edits for you. One exception: `forge project upgrade` refreshes `pkg/middleware/middleware.go` and `middleware_test.go` if you never edited them. The refreshed file's `AuthDeps.Validate` takes a context, so the old `serve.go` line `authDeps.Validate = authValidate` stops compiling until step 3 below is done.
+
+### What was wrong
+
+Following the `auth/api-keys` skill did not give a server that accepts API keys:
+
+- `credentialFrom` read `Authorization: Bearer` and the session cookie only. A key sent as `X-API-Key` reached no validator.
+- The skill said to pass `Provider: "both"` and an `auth.KeyValidator` to `SetupAuth`. `SetupAuth` returned a bare `func(token string)` and had no place for either.
+- `serve.go` called `SetupAuth` before `app.OpenInfra`, so a key validator had no database handle. The workaround was a second `sql.Open` pool inside `SetupAuth`.
+
+### What changed
+
+- `forge/pkg/auth`: `Authenticator` (`NewAuthenticator`, `UseKeyValidator`, `Authenticate`) routes a credential by shape. Anything starting with `apikey.KeyPrefix` (`fk_`) goes to the installed `KeyValidator`, with the request context. Everything else goes to the JWT validator. `KeyValidatorFunc` adapts a closure. See `auth/api-keys` for every way it fails closed.
+- `forge/pkg/authn`: `Policy.ValidateContext` is `Validate` with the request context; set exactly one of the two.
+- **Behavior change in `pkg/authn`:** a validator that returns `(nil, nil)` is now rejected with `CodeUnauthenticated`. Before, the request reached the handler with no claims, and an `auth_required` rpc whose handler never called `GetUser` (every CRUD shim) served it. If a validator of yours returns `(nil, nil)` on purpose, return an error instead.
+
+### Steps
+
+If you never edited the files, delete them and let forge write today's versions:
+
+```bash
+rm cmd/<bin>/cmd/serve.go internal/app/auth.go pkg/middleware/middleware.go pkg/middleware/middleware_test.go
+forge project rescaffold cmd/<bin>/cmd/serve.go internal/app/auth.go pkg/middleware/middleware.go pkg/middleware/middleware_test.go
+```
+
+Otherwise port these edits by hand:
+
+1. **`pkg/middleware/middleware.go`**
+
+   - Declare `const APIKeyHeader = "X-API-Key"`.
+   - In `credentialFrom`, between the Bearer branch and the cookie, add:
+
+     ```go
+     if key := strings.TrimSpace(h.Get(APIKeyHeader)); key != "" {
+         return key
+     }
+     ```
+
+   - Change `AuthDeps.Validate` to `func(ctx context.Context, credential string) (*Claims, error)`.
+   - In `NewAuthInterceptor`, replace `Validate: deps.Validate,` with `ValidateContext: deps.Validate,`.
+
+2. **`internal/app/auth.go`**
+
+   - Change `SetupAuth`'s result to `(*auth.Authenticator, error)`.
+   - Change its last line to `return auth.NewAuthenticator(validator.Validate), nil`.
+   - Add the key seam:
+
+     ```go
+     // APIKeyValidator returns the validator API keys are checked with; nil leaves them disabled.
+     func APIKeyValidator(_ *Infra) auth.KeyValidator {
+         return nil
+     }
+     ```
+
+3. **`cmd/<bin>/cmd/serve.go`**
+
+   - Replace `authValidate, aerr := app.SetupAuth(cfg)` with `authenticator, aerr := app.SetupAuth(cfg)`.
+   - Replace `authDeps.Validate = authValidate` with `authDeps.Validate = authenticator.Authenticate`.
+   - Directly after the `app.OpenInfra` error check, add:
+
+     ```go
+     authenticator.UseKeyValidator(app.APIKeyValidator(infra))
+     ```
+
+4. **`pkg/middleware/middleware_test.go`**: in `TestNewAuthInterceptor_ValidatorConfigured`, give the stub validator the new signature, `func(context.Context, string) (*Claims, error)`, and call it as `validate(context.Background(), "anything")`.
+
+To accept keys, fill in `APIKeyValidator` over your own table: `forge skill load auth/api-keys`.
+
+### Verify
+
+```bash
+go build ./... && go test ./pkg/middleware/
+curl -si -X POST localhost:<port>/<pkg>.<Service>/<Method> -H 'content-type: application/json' -d '{}' \
+  -H 'X-API-Key: fk_0000000000000000000000000000000' | head -1
+```
+
+Before you fill in `APIKeyValidator`, expect `401` with `API keys are not enabled on this server`. That answer proves the header is read. A bearer token works exactly as before.

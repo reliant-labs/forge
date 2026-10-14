@@ -50,6 +50,12 @@
 //     Validator 1 only proves the chain resolves; a flag forge dropped —
 //     or whose sense inverted, as `--no-heal` did when healing became
 //     opt-in `--heal` — sails straight through it.
+//  11. A package-qualified auth identifier — `auth.X`, `authn.X`,
+//     `apikey.X`, `middleware.X` — must be exported by that package.
+//     Truth source: go/parser over forge/pkg/{auth,authn,apikey,middleware}
+//     and the rendered project pkg/middleware templates. Its companion pins
+//     every `Provider: "…"` an auth skill shows to the scaffolded
+//     internal/app/auth.go.
 //
 // Legitimate exceptions live in testdata/skills_validation_allowlist.txt
 // (one per line: "<skill rel path>|<claim>|<justification>"). The goal is
@@ -59,6 +65,9 @@ package templates_test
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1342,6 +1351,156 @@ func TestSkillsForgePkgReferencesExist(t *testing.T) {
 			}
 			t.Errorf("skills/%s: %s is not a forge/pkg subpackage\n"+
 				"  (fix the skill, or add to internal/templates/testdata/skills_validation_allowlist.txt with a justification)", rel, claim)
+		}
+	}
+}
+
+// ─── validator 11: package-qualified auth identifiers ───────────────────
+
+// authSymbolRefRE matches a package-qualified exported identifier in the
+// auth surface a skill teaches: forge/pkg/{auth,authn,apikey} and the
+// middleware package (the project's scaffolded pkg/middleware, or forge's
+// own pkg/middleware). Validator 5 proves the PACKAGE exists; this proves
+// the SYMBOL does. The auth/api-keys skill once told readers to implement
+// auth.KeyValidator and pass Provider: "both" into a SetupAuth that had no
+// place for either (issue #746) — symbols are the cheap half of that drift.
+var authSymbolRefRE = regexp.MustCompile(`\b(auth|authn|apikey|middleware)\.([A-Z][A-Za-z0-9_]*)`)
+
+// exportedIdents returns every exported top-level identifier (funcs, types,
+// vars, consts) declared by the non-test Go files of dir.
+func exportedIdents(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no Go files under %s (err %v) — truth source is wrong", dir, err)
+	}
+	out := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, f, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", f, err)
+		}
+		addExportedDecls(file, out)
+	}
+	return out
+}
+
+// addExportedDecls records the exported top-level names file declares.
+// Methods are skipped: `pkg.Name` never names one.
+func addExportedDecls(file *ast.File, into map[string]bool) {
+	for _, d := range file.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && d.Name.IsExported() {
+				into[d.Name.Name] = true
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch s := spec.(type) {
+				case *ast.TypeSpec:
+					if s.Name.IsExported() {
+						into[s.Name.Name] = true
+					}
+				case *ast.ValueSpec:
+					for _, n := range s.Names {
+						if n.IsExported() {
+							into[n.Name] = true
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// scaffoldedMiddlewareIdents returns what the project's pkg/middleware
+// declares: the owned policy file plus the generated allow-list.
+func scaffoldedMiddlewareIdents(t *testing.T) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	fset := token.NewFileSet()
+	for name, data := range map[string]any{
+		"middleware.go.tmpl":            struct{ Name string }{Name: "demo"},
+		"middleware-procedures.go.tmpl": struct{ Imports, Open []struct{} }{},
+	} {
+		src, err := templates.ProjectTemplates().Render(name, data)
+		if err != nil {
+			t.Fatalf("render %s: %v", name, err)
+		}
+		file, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse rendered %s: %v", name, err)
+		}
+		addExportedDecls(file, out)
+	}
+	return out
+}
+
+func TestSkillsAuthSymbolReferencesExist(t *testing.T) {
+	pkgDir := filepath.Join("..", "..", "pkg")
+	known := map[string]map[string]bool{
+		"auth":   exportedIdents(t, filepath.Join(pkgDir, "auth")),
+		"authn":  exportedIdents(t, filepath.Join(pkgDir, "authn")),
+		"apikey": exportedIdents(t, filepath.Join(pkgDir, "apikey")),
+	}
+	// middleware.X is the project's own pkg/middleware in handler code and
+	// forge's pkg/middleware in serve.go; either declaring it is honest.
+	known["middleware"] = scaffoldedMiddlewareIdents(t)
+	for name := range exportedIdents(t, filepath.Join(pkgDir, "middleware")) {
+		known["middleware"][name] = true
+	}
+
+	allow := allowlist(t)
+	for rel, content := range shippedSkills(t) {
+		seen := map[string]bool{}
+		for _, m := range authSymbolRefRE.FindAllStringSubmatch(content, -1) {
+			claim := m[1] + "." + m[2]
+			if seen[claim] {
+				continue
+			}
+			seen[claim] = true
+			if known[m[1]][m[2]] || allowed(allow, rel, claim) {
+				continue
+			}
+			t.Errorf("skills/%s: %s names no exported symbol of package %s\n"+
+				"  (fix the skill, or add to internal/templates/testdata/skills_validation_allowlist.txt with a justification)",
+				rel, claim, m[1])
+		}
+	}
+}
+
+// TestAuthSkillsProviderClaimsMatchTheScaffold pins the exact claim issue
+// #746 found stale. The auth skills describe internal/app/auth.go, and the
+// api-keys skill said to pass `Provider: "both"` to the SetupAuth that file
+// declares — which builds a JWT validator only and has no place for a key
+// validator. Every `Provider: "<name>"` an auth skill shows must therefore be
+// one the scaffolded file actually sets.
+func TestAuthSkillsProviderClaimsMatchTheScaffold(t *testing.T) {
+	authGo, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", struct{ Module string }{Module: "example.com/demo"})
+	if err != nil {
+		t.Fatalf("render app-auth.go.tmpl: %v", err)
+	}
+	providerRE := regexp.MustCompile(`Provider:\s*"[a-z_]*"`)
+	scaffolded := map[string]bool{}
+	for _, m := range providerRE.FindAllString(string(authGo), -1) {
+		scaffolded[strings.Join(strings.Fields(m), " ")] = true
+	}
+	if len(scaffolded) == 0 {
+		t.Fatal("the scaffolded internal/app/auth.go sets no Provider — truth source is wrong")
+	}
+	for rel, content := range shippedSkills(t) {
+		if !strings.HasPrefix(rel, "forge/auth/") {
+			continue
+		}
+		for _, m := range providerRE.FindAllString(content, -1) {
+			if claim := strings.Join(strings.Fields(m), " "); !scaffolded[claim] {
+				t.Errorf("skills/%s shows %s, which the scaffolded internal/app/auth.go never sets (it sets %v) — "+
+					"describe the wiring forge generates", rel, claim, scaffolded)
+			}
 		}
 	}
 }

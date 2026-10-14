@@ -105,8 +105,9 @@ The defaults are chosen to fail safe:
 - **Auth fails closed.** A production server refuses to boot with no auth
   provider configured, at construction time rather than on first request.
   JWT with OIDC discovery is the default; Clerk and Firebase are variants, API
-  keys are a first-class credential, and a local dev IdP gives you a real
-  browser sign-in with one command.
+  keys are a first-class credential (`X-API-Key`, checked against a table you
+  own, on the same pool your handlers use), and a local dev IdP gives you a
+  real browser sign-in with one command.
 - **Unsafe migrations are caught before they run**, not after they lock a table
   in production — see [bug-class linting](#linting-for-bug-classes-not-just-style).
 - **You can't deploy the wrong env to the wrong cluster.** The kubectl context

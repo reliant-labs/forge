@@ -1402,14 +1402,19 @@ func generateTwiceIdempotent(t *testing.T, forgeBin, projectDir string) {
 	// (its outputs were never produced). Run 3 must skip exactly when run 2
 	// recorded (generate_cache.go). A miss after a record means the cache
 	// never hits on a real scaffold; a skip without one is a false skip.
+	//
+	// Run 2 may itself have skipped: when run 1 changed nothing, run 1 is
+	// the run that recorded, and run 2 found it. The record is then still
+	// valid, and run 3 must skip too.
 	out3 := runCorpusCmdOK(t, projectDir, forgeBin, "generate")
-	recorded := strings.Contains(out2, "Recorded as a verified fixed point")
+	ran2 := !strings.Contains(out2, "nothing to do")
+	verified := !ran2 || strings.Contains(out2, "Recorded as a verified fixed point")
 	switch skipped := strings.Contains(out3, "nothing to do"); {
-	case recorded && !skipped:
+	case verified && !skipped:
 		t.Fatalf("third `forge generate` over a verified, unchanged tree did not skip:\nrun 2:\n%s\nrun 3:\n%s", out2, out3)
-	case !recorded && skipped:
-		t.Fatalf("third `forge generate` skipped although run 2 recorded nothing:\nrun 2:\n%s\nrun 3:\n%s", out2, out3)
-	case !recorded && len(corpusSoftFailures(out2)) == 0:
+	case !verified && skipped:
+		t.Fatalf("third `forge generate` skipped although nothing was recorded:\nrun 2:\n%s\nrun 3:\n%s", out2, out3)
+	case !verified && len(corpusSoftFailures(out2)) == 0:
 		t.Fatalf("run 2 changed nothing and no step failed, yet it did not record a fixed point:\n%s", out2)
 	}
 	if after3 := hashProjectTree(t, projectDir); !maps.Equal(after, after3) {

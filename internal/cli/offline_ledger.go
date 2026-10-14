@@ -342,10 +342,10 @@ func (r offlineReleases) List(context.Context) ([]release.Release, error) {
 }
 
 // offlineShapeError says why an env cannot be served from the cache.
-func offlineShapeError(env, endpoint string, hub bool, tiers []hostedTier) error {
+func offlineShapeError(env, endpoint string, units unitSplit, tiers []hostedTier) error {
 	switch {
-	case hub:
-		return fmt.Errorf("--offline-ledger cannot deploy %s: its clusters are converged by %s's hub, so the control plane is the applier and nothing on this machine can stand in for it", env, endpoint)
+	case units.AnyHub():
+		return fmt.Errorf("--offline-ledger cannot deploy %s: %s's hub converges %s, so the control plane is the applier of those units and nothing on this machine can stand in for it", env, endpoint, strings.Join(units.Hub, ", "))
 	case len(tiers) > 0:
 		return fmt.Errorf("--offline-ledger cannot deploy %s: it binds %s to %s, which the control plane publishes and converges", env, joinTiers(tiers), endpoint)
 	default:

@@ -83,16 +83,23 @@ type KCLEntities struct {
 	Lifecycle string `json:"lifecycle,omitempty"`
 
 	// Applier is "forge" when the env DECLARES that forge applies it
-	// (Bundle.applier): a real environment, not a scratch one, whose own
-	// control plane must not apply it. Empty otherwise. Read it through
-	// [Applier] helpers (DirectApplyAllowed, envConvergedByHub) rather than
-	// comparing strings.
+	// (Bundle.applier): a real environment, not a scratch one, none of whose
+	// delivery units has moved onto the hub yet. Transitional. Empty
+	// otherwise. Read it through unitSplitOf and DirectApplyAllowed rather
+	// than comparing strings.
 	Applier string `json:"applier,omitempty"`
 
 	// DeliveryUnits are the units the env's bundle is split into, in
 	// declaration order (Bundle.delivery_units). Empty: everything is in the
 	// default unit.
 	DeliveryUnits []release.DeliveryUnit
+
+	// HubConverges is the Bundle.hub_converges declaration: the delivery units
+	// the hub converges, with every other unit applied by forge directly. NIL
+	// means the env declared none (forge keeps its inference); a non-nil empty
+	// slice is a declaration that the hub converges nothing. Read it through
+	// unitSplitOf rather than directly.
+	HubConverges []string
 
 	// Clusters are the k3d clusters forge ensures exist at the head of
 	// `forge env up` before any workload deploys. Empty for an env that
@@ -193,6 +200,12 @@ type KCLEntities struct {
 	// its own, so a forge.Manifests group on an otherwise empty cluster is
 	// applied there instead of silently never applied.
 	ManifestClusters []ManifestClusterEntity `json:"-"`
+
+	// ManifestUnits are the delivery units raw forge.Manifests objects are
+	// stamped with (forge.dev/delivery-unit), sorted and de-duplicated. Together
+	// with the workloads' units and Bundle.delivery_units they are the universe
+	// a Bundle.hub_converges split is drawn from.
+	ManifestUnits []string `json:"-"`
 
 	// ClusterWork names ("Kind/name") every rendered object that DOES
 	// something on a cluster — everything in `output.manifests` except the
@@ -1255,6 +1268,7 @@ type kclRenderRaw struct {
 	Lifecycle           string                       `json:"lifecycle,omitempty"`
 	Applier             string                       `json:"applier,omitempty"`
 	DeliveryUnits       []deliveryUnitRaw            `json:"delivery_units,omitempty"`
+	HubConverges        *[]string                    `json:"hub_converges,omitempty"`
 	Clusters            []ClusterEntity              `json:"clusters,omitempty"`
 	ClusterTarget       *ClusterTargetEntity         `json:"cluster_target,omitempty"`
 	KubeconfigSecrets   []KubeconfigSecretEntity     `json:"kubeconfig_secrets,omitempty"`
@@ -1358,6 +1372,27 @@ func manifestClusterWork(manifests []rawManifest, gateways []GatewayEntity) []st
 		work = append(work, m.Kind+"/"+m.Metadata.Name)
 	}
 	return work
+}
+
+// manifestUnits returns every distinct delivery unit the rendered stream stamps
+// on an object, sorted. Objects that carry none belong to the default unit and
+// are not listed.
+func manifestUnits(manifests []rawManifest) []string {
+	seen := map[string]bool{}
+	for _, m := range manifests {
+		if u := strings.TrimSpace(m.Metadata.Labels[release.LabelDeliveryUnit]); u != "" {
+			seen[u] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for u := range seen {
+		out = append(out, u)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func manifestClusters(manifests []rawManifest) []ManifestClusterEntity {
@@ -1557,6 +1592,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Lifecycle:            raw.Lifecycle,
 		Applier:              raw.Applier,
 		DeliveryUnits:        deliveryUnitsOf(raw.DeliveryUnits),
+		HubConverges:         hubConvergesOf(raw.HubConverges),
 		Clusters:             raw.Clusters,
 		ClusterTarget:        raw.ClusterTarget,
 		KubeconfigSecrets:    raw.KubeconfigSecrets,
@@ -1579,6 +1615,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ManifestNamespace:    manifestNamespace(raw.Manifests),
 		ManifestServiceNames: manifestServiceNames(raw.Manifests),
 		ManifestClusters:     manifestClusters(raw.Manifests),
+		ManifestUnits:        manifestUnits(raw.Manifests),
 		ClusterWork:          manifestClusterWork(raw.Manifests, raw.Gateways),
 	}
 	for _, c := range raw.BundledCharts {
@@ -1996,6 +2033,14 @@ func (e *KCLEntities) HasHosted() bool {
 // published to the control plane as a StaticSite.
 func frontendIsHosted(f FrontendEntity) bool {
 	return f.Runtime.Type == FrontendRuntimeHosted
+}
+
+// hubConvergesOf keeps "not declared" (nil) distinct from "declared empty".
+func hubConvergesOf(raw *[]string) []string {
+	if raw == nil {
+		return nil
+	}
+	return append([]string{}, (*raw)...)
 }
 
 // deliveryUnitsOf converts the rendered declarations to the release type,

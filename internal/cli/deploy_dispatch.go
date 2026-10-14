@@ -395,6 +395,9 @@ type applyOptsContext struct {
 	ImageDigests     map[string]string
 	HelmCharts       []cluster.HelmChartSpec
 	Rollout          cluster.RolloutPolicy
+	// SkipUnits are the delivery units the hub converges (Bundle.hub_converges):
+	// this apply leaves their objects alone. See cluster.ApplyOpts.SkipUnits.
+	SkipUnits []string
 	// OnStream and OnRollout are the optional observation callbacks the
 	// --json report installs (nil in text mode). Threaded through the builder
 	// so a multi-group dispatch reports every group's stream and every
@@ -494,6 +497,7 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			Render:       render,
 			HelmCharts:   charts,
 			Rollout:      p.Rollout,
+			SkipUnits:    p.SkipUnits,
 			OnStream:     p.OnStream,
 			OnRollout:    p.OnRollout,
 		}

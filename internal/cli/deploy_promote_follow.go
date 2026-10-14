@@ -185,7 +185,7 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	// (the Promote response's holds) — so this is known with no extra call,
 	// before anything waits. See deploy_queued.go.
 	held := recordedHolds(ledger, plan)
-	if ledger.appliesLocally() && !ledger.hubConverged() {
+	if ledger.appliesLocally() {
 		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
 		started := time.Now()
 		err := applySelfManaged(ctx, env, ledger, o)
@@ -210,7 +210,7 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if !ledger.Hosted {
 		return nil
 	}
-	if ledger.hubConverged() {
+	if ledger.hubUnits() {
 		return followHubConverged(ctx, env, plan, held, o)
 	}
 	// A LEDGER-ONLY env (Mixed, no hosted tier) is done: the apply above WAS
@@ -343,6 +343,10 @@ func applySelfManaged(ctx context.Context, env string, ledger envLedger, o promo
 		opts.rollout.FailFast = true
 	}
 	switch {
+	case ledger.hubUnits():
+		o.notice("\nApplying the units of %s that forge applies (%s) at its newly recorded release; "+
+			"the hub converges %s from the recorded bundle and is waited on after this\n",
+			env, strings.Join(ledger.Units.Forge, ", "), strings.Join(ledger.Units.Hub, ", "))
 	case ledger.ledgerOnly():
 		o.notice("\nApplying %s's newly recorded release (its control plane records promotions and converges "+
 			"none of it: this apply is the whole deploy)\n", env)
@@ -381,7 +385,7 @@ func applySelfManaged(ctx context.Context, env string, ledger envLedger, o promo
 // for the plan to name, not as an error that stops the plan from printing. A
 // real deploy gets them as the refusal it always was.
 func preflightBeforeRecord(ctx context.Context, env, version string, ledger envLedger, o promoteFollowOptions, nonBinding bool) ([]frontendPreflightFinding, error) {
-	if !ledger.appliesLocally() || ledger.hubConverged() {
+	if !ledger.appliesLocally() {
 		return nil, nil
 	}
 	opts := o.clientDeploy

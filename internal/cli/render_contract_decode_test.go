@@ -45,7 +45,7 @@ func runtimesOf(e *KCLEntities) map[string][]string {
 // Every golden decodes, strictly, and every workload's runtime block carries
 // exactly the variant its type names — nothing guessed, nothing dropped.
 func TestRenderContract_EveryGoldenDecodes(t *testing.T) {
-	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "mixed"} {
+	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "mixed", "unit-split"} {
 		t.Run(name, func(t *testing.T) {
 			e, _ := loadContract(t, name)
 			if len(e.Workloads) == 0 {
@@ -425,5 +425,54 @@ func TestWorkloadEnvVars_ManagedSecretIsNotAStoreRef(t *testing.T) {
 	required.Spec.Env = []deployv1alpha1.EnvVar{{Name: "K", ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "STRIPE_KEY"}}}
 	if got := managedSecretNamesForService(&required); len(got) != 1 || got[0] != "STRIPE_KEY" {
 		t.Errorf("required managedSecret names = %v, want [STRIPE_KEY]", got)
+	}
+}
+
+// The mixed-split golden is the decoder's contract for an env mid-move onto the
+// hub: the declaration survives KCL, the units survive the decoder, and the
+// split that falls out of them is the one the author wrote.
+func TestRenderContract_UnitSplit(t *testing.T) {
+	e, raw := loadContract(t, "unit-split")
+	if !reflect.DeepEqual(e.HubConverges, []string{"reliant"}) {
+		t.Fatalf("hub_converges did not survive the render: %v", e.HubConverges)
+	}
+	var doc struct {
+		Output map[string]json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Output["hub_converges"]; !ok {
+		t.Fatal("the golden does not carry the declaration")
+	}
+	split, err := unitSplitOf(e)
+	if err != nil {
+		t.Fatalf("unitSplitOf: %v", err)
+	}
+	if !reflect.DeepEqual(split.Hub, []string{"reliant"}) || !reflect.DeepEqual(split.Forge, []string{"base", "infra"}) {
+		t.Fatalf("split = %s, want hub: reliant; forge: base, infra", split.Describe())
+	}
+	// Each workload's object carries the unit it was declared in, which is what
+	// direct apply drops by and what the bundle's trees are cut by.
+	units := map[string]string{}
+	for _, m := range e.Workloads {
+		units[m.Name] = m.DeliveryUnit
+	}
+	if units["api"] != "reliant" || units["nats"] != "infra" || units["admin"] != "" {
+		t.Errorf("workload units = %v", units)
+	}
+	// A frontend forge ships belongs to no unit and so is forge's whatever the
+	// split says.
+	if !forgeAppliesLocally(e, split) {
+		t.Error("the Firebase frontend and the forge-applied units are forge's work")
+	}
+	allHub := unitSplit{Hub: split.Forge, Source: unitSplitDeclared}
+	allHub.Hub = append(allHub.Hub, "reliant")
+	if !forgeAppliesLocally(e, allHub) {
+		t.Error("with every unit moved, forge still ships the frontend from a machine")
+	}
+	// Direct apply is allowed for an env that declares the split.
+	if !DirectApplyAllowed(e) {
+		t.Error("an env that declares hub_converges is mid-move and may be direct-applied for now")
 	}
 }

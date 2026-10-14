@@ -217,16 +217,18 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	}
 
 	built, err := bundle.Build(ctx, bundle.BuildInput{
-		Project:       doc.Project,
-		Env:           env,
-		Release:       in.Release,
-		Pins:          in.Pins,
-		Provenance:    doc.Provenance,
-		Shape:         bundleShapeInputOf(doc),
-		CreatedAt:     createdAt,
-		Units:         doc.units,
-		Reconciled:    doc.reconciled(),
-		Observability: observability,
+		Project:    doc.Project,
+		Env:        env,
+		Release:    in.Release,
+		Pins:       in.Pins,
+		Provenance: doc.Provenance,
+		Shape:      bundleShapeInputOf(doc),
+		CreatedAt:  createdAt,
+		Units:      doc.units,
+		Reconciled: doc.reconciled(),
+		// The units the hub converges, for an env that splits them.
+		ReconciledUnits: doc.reconciledUnits(),
+		Observability:   observability,
 	})
 	if err != nil {
 		return bundleWriteOutcome{}, err
@@ -302,7 +304,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	// it cannot be resolved by the control plane and it has no admissible
 	// repository to validate.
 	if ledger.Hosted && placed.repository == "" {
-		if ledger.hubConverged() && in.Pushed {
+		if ledger.hubUnits() && in.Pushed {
 			return placed.bundleWriteOutcome, errHubBundleNotPushed(env, "it was not pushed to the hosted registry")
 		}
 		fmt.Fprintf(in.errWriter(),
@@ -484,7 +486,7 @@ func pushHostedBundle(ctx context.Context, projectDir, env string, built bundle.
 		// stands. The bundle goes to the local layout, which is
 		// where it stays — nothing later will learn an address the
 		// declaration does not state.
-		if ledger.hubConverged() {
+		if ledger.hubUnits() {
 			return placedBundle{}, errHubBundleNotPushed(env, "it declares no platform registry subtree (forge could not learn the organization its credential acts for)")
 		}
 		fmt.Fprintf(in.errWriter(),
@@ -507,7 +509,7 @@ func pushHostedBundle(ctx context.Context, projectDir, env string, built bundle.
 		// A hub-converged env is deployed FROM its recorded bundle, so
 		// there is no "next build renders one on demand" to defer to:
 		// without the bundle the release is not deployable at all.
-		if ledger.hubConverged() {
+		if ledger.hubUnits() {
 			return placedBundle{}, errHubBundleNotPushed(env, fmt.Sprintf("the push to %s failed: %v", repo, err))
 		}
 		// A FAILED PUSH DOES NOT FAIL THE BUILD, for the same reason a
@@ -584,7 +586,7 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 		// Opening the records half can fail the same way the record call
 		// can — no credential, no transport — and it is classified the same
 		// way, by the one classifier the declaration and RecordBundle use.
-		if declarationUndeliverable(err) && ledger.hubConverged() && in.Pushed {
+		if declarationUndeliverable(err) && ledger.hubUnits() && in.Pushed {
 			return placed.bundleWriteOutcome, errHubBundleNotRecorded(env, placed.Digest, err)
 		}
 		if declarationUndeliverable(err) {
@@ -618,7 +620,7 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 				"[bundle]   Env %s's bundle %s was written but not recorded; the build continues on the pre-bundle path.\n",
 			errControlPlanePredatesBundles.Error(), env, shortDigest(placed.Digest))
 		return placed.bundleWriteOutcome, nil
-	case declarationUndeliverable(err) && ledger.hubConverged() && in.Pushed:
+	case declarationUndeliverable(err) && ledger.hubUnits() && in.Pushed:
 		return placed.bundleWriteOutcome, errHubBundleNotRecorded(env, placed.Digest, err)
 	case declarationUndeliverable(err):
 		fmt.Fprintf(in.errWriter(),
@@ -845,7 +847,7 @@ func writeReleaseBundle(ctx context.Context, projectDir, env, version string, le
 		// nobody reviewed under a release that names other bytes.
 		var differs *releaseBundleDiffersError
 		var denied *bundleRegistryDeniedError
-		if errors.As(err, &differs) || errors.As(err, &denied) || ledger.hubConverged() {
+		if errors.As(err, &differs) || errors.As(err, &denied) || ledger.hubUnits() {
 			return err
 		}
 		fmt.Fprintf(errOut, "[bundle] Warning: env %s's bundle for %s could not be written: %v\n", env, version, err)
@@ -853,7 +855,7 @@ func writeReleaseBundle(ctx context.Context, projectDir, env, version string, le
 	}
 	printBundleWrites(errOut, out)
 	noteRecordedBundles(version, out)
-	if ledger.hubConverged() {
+	if ledger.hubUnits() {
 		for _, o := range out {
 			if o.Skipped || !o.Recorded {
 				return fmt.Errorf("env %s's bundle for release %s was not recorded, so the control plane has nothing to apply.\n"+

@@ -52,8 +52,10 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // hostedTier is one tier an env binds to its control plane.
@@ -121,6 +123,19 @@ type promotePlanConverges struct {
 	// Unpublished are hosted tiers the control plane has no deployment for
 	// that this deploy will NOT publish: they do not run this release.
 	Unpublished []hostedTier `json:"unpublished,omitempty"`
+	// Units is who applies each delivery unit of the env, when it declares a
+	// split (Bundle.hub_converges, or applier = "forge"): the units the hub
+	// converges from the recorded bundle, and the units this deploy applies
+	// from here. Nil when the env declares no delivery unit and no split.
+	Units []release.ShapeUnit `json:"units,omitempty"`
+	// Trees is the bound-vs-live view of the CURRENT binding's trees, so a
+	// reviewer sees what the hub has and has not converged before approving a
+	// move on top of it. Promotion is intent and convergence is observed: a
+	// tree behind its binding is shown behind. Empty when the env has no bound
+	// bundle, no hub unit, or a control plane that reports nothing per tree
+	// (TreesDetail says which).
+	Trees       []envStatusTree `json:"trees,omitempty"`
+	TreesDetail string          `json:"trees_detail,omitempty"`
 	// Detail is the one-sentence reading.
 	Detail string `json:"detail"`
 }
@@ -147,10 +162,14 @@ type publishedWorkloadsReader interface {
 // after its cluster half has already been applied. They stay where they were
 // too: `forge env up` reaches that path with no plan in front of it.
 func hostedConvergencePreflight(ctx context.Context, env string, ledger envLedger, o promoteFollowOptions) (*promotePlanConverges, error) {
-	if !ledger.Hosted || ledger.hubConverged() {
+	if !ledger.Hosted {
 		return nil, nil
 	}
+	if ledger.hubUnits() {
+		return hubConvergencePlan(ctx, env, ledger), nil
+	}
 	conv := &promotePlanConverges{ControlPlane: ledger.Bindings.Location(), Tiers: ledger.HostedTiers}
+	conv.Units = ledger.Units.ShapeUnits()
 	if ledger.ledgerOnly() {
 		conv.LedgerOnly = true
 		conv.Tiers = []hostedTier{}
@@ -281,6 +300,21 @@ func renderConvergesSection(out io.Writer, c *promotePlanConverges) {
 		return
 	}
 	fmt.Fprintf(out, "  converges %s\n", c.Detail)
+	if len(c.Units) > 0 {
+		var hub, forge []string
+		for _, u := range c.Units {
+			if u.Applier == release.UnitApplierHub {
+				hub = append(hub, u.Name)
+			} else {
+				forge = append(forge, u.Name)
+			}
+		}
+		fmt.Fprintf(out, "    units          hub: %s | forge: %s\n", emptyAs(strings.Join(hub, ", "), "(none)"), emptyAs(strings.Join(forge, ", "), "(none)"))
+	}
+	writeTreeTable(out, c.Trees)
+	if c.TreesDetail != "" {
+		fmt.Fprintf(out, "    trees: %s\n", c.TreesDetail)
+	}
 	for _, t := range c.FirstPublish {
 		fmt.Fprintf(out, "    first publish  %s — not on the control plane yet; this deploy creates it\n", t)
 	}
@@ -376,4 +410,42 @@ func (s *hostedStore) promotionRollout(ctx context.Context, env, promotionID str
 		return wireRollout{}, err
 	}
 	return readRollout(ctx, s.client, envID, promotionID)
+}
+
+// hubConvergencePlan is the plan's answer for an env the hub converges at least
+// one delivery unit of: the split, so the reviewer sees which units this deploy
+// leaves to the hub and which it applies itself, and the bound-vs-live view of
+// the current binding's trees.
+//
+// It never refuses. The refusals that apply to a hub unit are the hub-readiness
+// check (refuseUnreadyHub) and the bundle push/record gates; this is description.
+func hubConvergencePlan(ctx context.Context, env string, ledger envLedger) *promotePlanConverges {
+	conv := &promotePlanConverges{
+		ControlPlane: ledger.Bindings.Location(),
+		Tiers:        []hostedTier{},
+		Units:        ledger.Units.ShapeUnits(),
+	}
+	switch {
+	case ledger.Units.AllHub():
+		conv.Detail = fmt.Sprintf("the hub converges every delivery unit (%s) from the recorded bundle; "+
+			"nothing is applied from this machine except anything outside the bundle (a frontend)", strings.Join(ledger.Units.Hub, ", "))
+	default:
+		conv.Detail = fmt.Sprintf("the hub converges %s from the recorded bundle; this deploy applies %s directly",
+			strings.Join(ledger.Units.Hub, ", "), strings.Join(ledger.Units.Forge, ", "))
+	}
+	hosted, ok := ledger.Bindings.(*hostedStore)
+	if !ok {
+		return conv
+	}
+	if lr, lerr := (hostedLiveClient{client: hosted.client}).GetLiveView(ctx, hosted.project, false, time.Now().UTC()); lerr == nil {
+		for _, row := range lr {
+			if row.Env.Name != env {
+				continue
+			}
+			conv.Trees, conv.TreesDetail = treesOf(ctx, hosted, env, ledger.Units, row)
+		}
+	} else {
+		conv.TreesDetail = "the control plane's Live view could not be read: " + lerr.Error()
+	}
+	return conv
 }

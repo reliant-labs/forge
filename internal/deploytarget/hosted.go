@@ -349,13 +349,15 @@ type HostedEnvRef struct {
 	ClusterBindings []ClusterBinding
 
 	// HubConverged is WHO APPLIES the env's bound clusters, as decided from
-	// the same render as Shape: true when the control plane's hub converges
-	// the recorded bundle onto them and forge applies nothing, false when
-	// forge applies them from the author's machine (a ledger-only or mixed
-	// env — control-plane prod). It is the declaration of the decision
-	// envLedger.HubConverged makes on this side, sent so the control plane
-	// obeys it instead of inferring it from the bindings: a bound cluster
-	// says WHERE the env lands, not who puts it there.
+	// the same render as Shape: true ONLY when the control plane's hub
+	// converges EVERY delivery unit and forge applies none of them, false when
+	// forge applies any part of the env from the author's machine. It is the
+	// env-level summary of HubConvergedUnits, kept because a control plane that
+	// predates per-unit convergence reads only this: sending true for an env
+	// that has moved some units would make an old control plane converge the
+	// units forge still applies, so the summary is deliberately the
+	// conservative one. A bound cluster says WHERE the env lands, not who puts
+	// it there.
 	//
 	// A SHAPE FIELD, sent only beside a Shape, because it is a projection of
 	// that render. Nil means "this ensure did not render" and leaves the
@@ -363,6 +365,17 @@ type HostedEnvRef struct {
 	// declared is treated as forge-applied server-side, so an older forge
 	// can never make the hub a second applier over a cluster it applies.
 	HubConverged *bool
+	// HubConvergedUnits are the delivery units the control plane's hub
+	// converges, by name: the per-unit declaration an env uses to move onto
+	// Flux one unit at a time (Bundle.hub_converges). Every other unit of the
+	// env is applied by forge. Nil means this ensure did not render, like
+	// HubConverged; a non-nil empty slice says "the hub converges none".
+	//
+	// A control plane that predates the field ignores it (connect's JSON codec
+	// discards unknown fields) and obeys HubConverged, which is false until
+	// every unit has moved: so an old control plane never converges a
+	// partially moved env.
+	HubConvergedUnits *[]string
 }
 
 // DeclaresShape reports whether this ref carries a declaration to record.
@@ -456,6 +469,10 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 		// the control plane must record, not the absence of one.
 		if ref.HubConverged != nil {
 			spec["hubConverged"] = *ref.HubConverged
+		}
+		if ref.HubConvergedUnits != nil {
+			units := append([]string{}, (*ref.HubConvergedUnits)...)
+			spec["hubConvergedUnits"] = units
 		}
 	}
 	if len(ref.ClusterBindings) > 0 {

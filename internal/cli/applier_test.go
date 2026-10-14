@@ -19,7 +19,7 @@ import (
 
 // boundOnCluster is an env the way control-plane's prod is shaped: a control
 // plane, a cluster workload, and the cluster bound to a connected cluster, which
-// is every condition envConvergedByHub reads.
+// is every condition the unit split reads.
 func boundOnCluster(applier string) *KCLEntities {
 	return &KCLEntities{
 		Applier:      applier,
@@ -57,12 +57,20 @@ func TestDirectApplyAllowed_DeclaredApplier(t *testing.T) {
 // clusters, nothing hosted), and the control plane would converge it as a
 // second applier over objects forge applies, which for the platform's own env
 // is the circle.
-func TestEnvConvergedByHub_DeclaredApplierWins(t *testing.T) {
-	if !envConvergedByHub(boundOnCluster("")) {
+func TestUnitSplit_DeclaredApplierWins(t *testing.T) {
+	inferred, err := unitSplitOf(boundOnCluster(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inferred.AllHub() {
 		t.Fatal("control: a fully bound env with nothing hosted must read as hub-converged, or this test pins nothing")
 	}
-	if envConvergedByHub(boundOnCluster("forge")) {
-		t.Error("applier = forge was overridden by the cluster bindings: the hub would become a second applier")
+	declared, err := unitSplitOf(boundOnCluster("forge"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declared.AnyHub() {
+		t.Errorf("applier = forge was overridden by the cluster bindings: the hub would become a second applier (%s)", declared.Describe())
 	}
 }
 
@@ -70,10 +78,12 @@ func TestEnvConvergedByHub_DeclaredApplierWins(t *testing.T) {
 // applies nothing.
 func TestLedgerForEntities_DeclaredApplierIsLedgerOnly(t *testing.T) {
 	e := boundOnCluster("forge")
-	hub := envConvergedByHub(e)
-	mixed := envAppliesLocally(e) && !hub
-	l := envLedger{Hosted: true, HubConverged: hub, Mixed: mixed}
-	if l.hubConverged() {
+	units, err := unitSplitOf(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := envLedger{Hosted: true, Units: units, Mixed: forgeAppliesLocally(e, units)}
+	if l.hubUnits() {
 		t.Error("the ledger would hand the env to the hub")
 	}
 	if !l.appliesLocally() {
@@ -192,15 +202,22 @@ output = forge.render(forge.Bundle {
 		return e
 	}
 
+	hubUnitsOf := func(e *KCLEntities) bool {
+		split, err := unitSplitOf(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return split.AnyHub()
+	}
 	undeclared := render("")
-	if !envConvergedByHub(undeclared) || DirectApplyAllowed(undeclared) {
+	if !hubUnitsOf(undeclared) || DirectApplyAllowed(undeclared) {
 		t.Fatal("control: an undeclared bound env should be hub-converged and refuse direct apply")
 	}
 	declared := render(`applier = "forge"`)
 	if declared.Applier != "forge" {
 		t.Fatalf("the declaration was lost between KCL and the entity: %q", declared.Applier)
 	}
-	if envConvergedByHub(declared) {
+	if hubUnitsOf(declared) {
 		t.Error("a declared applier env was handed to the hub")
 	}
 	if !DirectApplyAllowed(declared) {

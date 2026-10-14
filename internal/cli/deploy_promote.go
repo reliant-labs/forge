@@ -385,7 +385,7 @@ func preflightFollow(ctx context.Context, env, version, projectDir string, ledge
 	// A PINNED env refuses the apply. --plan is exempt for the same reason
 	// the apply's own gate exempts a dry run: a reviewer reading what WOULD
 	// ship during a freeze is who the freeze is for.
-	if !opts.DryRun && ledger.appliesLocally() && !ledger.hubConverged() {
+	if !opts.DryRun && ledger.appliesLocally() {
 		policyStore := deploystate.NewLocal(projectDir)
 		if err := gateDeployOnPolicy(ctx, policyStore, env, policyStore.PolicyPath(env)); err != nil {
 			return fmt.Errorf("%w\n\nNOTHING WAS RECORDED: env %q's binding did not move", err, env)

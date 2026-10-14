@@ -133,6 +133,13 @@ type BuildInput struct {
 	// an unhashed one, and refusing there would break builds that work today.
 	// The fixes that change nothing at runtime are made either way.
 	Reconciled bool
+	// ReconciledUnits narrows the refusal to the delivery units a reconciler
+	// applies, for an env that moves onto Flux one unit at a time: an object in
+	// a unit forge still applies directly is not refused, so the first unit to
+	// move is not held up by a Job in one that has not. Consulted only when
+	// Reconciled is false; Reconciled true is every unit. The fixes that change
+	// nothing at runtime are made for every unit regardless.
+	ReconciledUnits []string
 	// Units declares the delivery units' order (see release.DeliveryUnit).
 	// An object's unit is its forge.dev/delivery-unit label; a unit nobody
 	// declares waits for the default unit. Every real cluster is split into
@@ -292,7 +299,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	// written down, and an object that needs Flux's recreate policy gets its
 	// force annotation. What only the author can fix (a Job's TTL, an unhashed
 	// Job name) is refused instead. See pkg/release/fluxsafe.go.
-	if err := makeFluxSafe(docs, in.Reconciled); err != nil {
+	if err := makeFluxSafe(docs, in.Reconciled, in.ReconciledUnits); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 	guarded := guardStatefulObjects(docs, in.Shape.StatefulWorkloads)

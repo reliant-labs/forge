@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -665,7 +666,7 @@ func TestDeployRelease_HubConvergedEnvDoesNoClientApply(t *testing.T) {
 
 	_, store := hostedPromoteFixture(t, "v1")
 	if _, err := runHostedPromote(t, store, "v2", promoteOptions{
-		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, HubConverged: true},
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Units: allHubUnits()},
 		Follow: waitByDefault(),
 	}); err != nil {
 		t.Fatalf("hub-converged deploy: %v", err)
@@ -678,21 +679,164 @@ func TestDeployRelease_HubConvergedEnvDoesNoClientApply(t *testing.T) {
 	}
 }
 
-func TestEnvConvergedByHub(t *testing.T) {
+// The inference an undeclared env keeps: bound clusters and nothing the hub
+// cannot converge means the hub converges the whole env.
+func TestUnitSplit_InferredHubConvergence(t *testing.T) {
 	bound := map[string]string{"gke_prod": "prod-control-plane"}
+	cp := &ControlPlaneEntity{Endpoint: "https://cp.example"}
 	cases := []struct {
 		name string
 		e    *KCLEntities
 		want bool
 	}{
 		{"nil", nil, false},
-		{"bound clusters only", &KCLEntities{ConnectedClusters: bound}, true},
-		{"no bound cluster", &KCLEntities{}, false},
-		{"hosted database", &KCLEntities{ConnectedClusters: bound, Databases: []DatabaseEntity{{Name: "d", Runtime: RuntimeHosted}}}, false},
+		{"no control plane", &KCLEntities{ConnectedClusters: bound}, false},
+		{"bound clusters only", &KCLEntities{ControlPlane: cp, ConnectedClusters: bound}, true},
+		{"no bound cluster", &KCLEntities{ControlPlane: cp}, false},
+		{"hosted database", &KCLEntities{ControlPlane: cp, ConnectedClusters: bound, Databases: []DatabaseEntity{{Name: "d", Runtime: RuntimeHosted}}}, false},
 	}
 	for _, c := range cases {
-		if got := envConvergedByHub(c.e); got != c.want {
-			t.Errorf("%s: envConvergedByHub = %v, want %v", c.name, got, c.want)
+		split, err := unitSplitOf(c.e)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
 		}
+		if got := split.AllHub(); got != c.want {
+			t.Errorf("%s: AllHub = %v, want %v (%s)", c.name, got, c.want, split.Describe())
+		}
+	}
+}
+
+// ─── An env mid-move onto the hub ────────────────────────────────────────────
+
+// splitLedger is a hosted ledger whose delivery units are split: the hub
+// converges `reliant`, forge applies `base` and `infra`.
+func splitLedger(store *hostedStore) envLedger {
+	units := unitSplit{Hub: []string{"reliant"}, Forge: []string{"base", "infra"}, Source: unitSplitDeclared}
+	return envLedger{Bindings: store, Releases: store, Hosted: true, Units: units, Mixed: true}
+}
+
+// THE FOLLOW-THROUGH OF A SPLIT ENV IS BOTH HALVES, IN ORDER. forge applies the
+// units it still owns, and THEN waits on what the hub reports for the units it
+// converges. Either half alone would report a release live while the other half
+// still ran the previous one.
+func TestDeployRelease_SplitEnvAppliesItsUnitsThenWaitsOnTheHub(t *testing.T) {
+	var order []string
+	var wait capturedWait
+	var apply capturedClientDeploy
+	wait.install(t)
+	apply.install(t)
+	prevWait, prevApply := runPromoteWait, runPromoteClientDeploy
+	t.Cleanup(func() { runPromoteWait, runPromoteClientDeploy = prevWait, prevApply })
+	runPromoteWait = func(ctx context.Context, env string, o envWaitOptions) error {
+		order = append(order, "wait")
+		return prevWait(ctx, env, o)
+	}
+	runPromoteClientDeploy = func(ctx context.Context, env string, o deployOptions) error {
+		if !o.preflightOnly {
+			order = append(order, "apply")
+		}
+		return prevApply(ctx, env, o)
+	}
+
+	_, store := hostedPromoteFixture(t, "v1")
+	if _, err := runHostedPromote(t, store, "v2", promoteOptions{
+		Ledger: splitLedger(store),
+		Follow: waitByDefault(),
+	}); err != nil {
+		t.Fatalf("split deploy: %v", err)
+	}
+	if got := strings.Join(order, ","); got != "apply,wait" {
+		t.Fatalf("follow-through ran %q, want apply then wait: forge's units first, then the hub's", got)
+	}
+}
+
+// An env whose every unit the hub converges applies nothing from here and
+// publishes nothing: the recorded bundle is all the hub needs.
+func TestDeployRelease_FullyMovedEnvAppliesNothingFromHere(t *testing.T) {
+	var wait capturedWait
+	var apply capturedClientDeploy
+	wait.install(t)
+	apply.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	ledger := envLedger{Bindings: store, Releases: store, Hosted: true,
+		Units: unitSplit{Hub: []string{"base", "reliant"}, Source: unitSplitDeclared}}
+	if _, err := runHostedPromote(t, store, "v2", promoteOptions{Ledger: ledger, Follow: waitByDefault()}); err != nil {
+		t.Fatalf("fully moved deploy: %v", err)
+	}
+	if len(apply.calls) != 0 {
+		t.Errorf("an env the hub converges whole was applied from here %d time(s)", len(apply.calls))
+	}
+	if len(wait.calls) != 1 {
+		t.Errorf("waited %d time(s), want 1: the hub is the only thing left to wait on", len(wait.calls))
+	}
+}
+
+// FRONTENDS SHIP AFTER THE PROMOTION IS RECORDED. The pre-record pass renders
+// and checks (it can refuse: no `firebase` CLI, a mock build), but ships
+// nothing: a frontend that went live before the binding moved would serve a
+// release the ledger does not yet say is promoted.
+//
+// Proved against the record itself: each client-side run notes how many
+// promotions the control plane had by then.
+func TestDeployRelease_FrontendsShipAfterThePromotionIsRecorded(t *testing.T) {
+	var wait capturedWait
+	var apply capturedClientDeploy
+	wait.install(t)
+	apply.install(t)
+
+	type run struct {
+		preflight bool
+		dryRun    bool
+		promoted  int
+	}
+	var runs []run
+	fake, store := hostedPromoteFixture(t, "v1")
+	useGateBackend(t, gateBackend{hosted: true, store: newGateTestStore(t, fake), bindings: store})
+	prev := runPromoteClientDeploy
+	t.Cleanup(func() { runPromoteClientDeploy = prev })
+	runPromoteClientDeploy = func(ctx context.Context, env string, o deployOptions) error {
+		runs = append(runs, run{o.preflightOnly, o.dryRun, fake.callCount(procPromote)})
+		return prev(ctx, env, o)
+	}
+
+	seeded := fake.callCount(procPromote) // the fixture promotes v1 to start
+	if _, err := runHostedPromote(t, store, "v2", promoteOptions{Ledger: splitLedger(store), Follow: waitByDefault()}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected a pre-record preflight and one shipping apply, got %+v", runs)
+	}
+	pre, ship := runs[0], runs[1]
+	pre.promoted, ship.promoted = pre.promoted-seeded, ship.promoted-seeded
+	if !pre.preflight || !pre.dryRun || pre.promoted != 0 {
+		t.Errorf("the pre-record pass must be a dry-run preflight before any promotion is written, got %+v", pre)
+	}
+	if ship.preflight || ship.dryRun || ship.promoted != 1 {
+		t.Errorf("the shipping apply (which carries the frontends) must run after the promotion is recorded, got %+v", ship)
+	}
+}
+
+// The apply gate says who applied what, so a ledger reader asking whether forge
+// touched the `reliant` unit on a promotion need not re-render an old KCL file.
+func TestWithUnitSplit_RecordsWhoAppliedWhat(t *testing.T) {
+	g := withUnitSplit(release.Gate{Name: applyGateName, Status: release.GateStatusPassed},
+		unitSplit{Hub: []string{"reliant"}, Forge: []string{"base", "infra"}, Source: unitSplitDeclared})
+	if got := g.Details[applyGateUnitsHub]; !reflect.DeepEqual(got, []string{"reliant"}) {
+		t.Errorf("units_hub = %v", got)
+	}
+	if got := g.Details[applyGateUnitsForge]; !reflect.DeepEqual(got, []string{"base", "infra"}) {
+		t.Errorf("units_forge = %v", got)
+	}
+	// An env that declares no split leaves the gate as it always was.
+	plain := withUnitSplit(release.Gate{Name: applyGateName}, unitSplit{})
+	if plain.Details != nil {
+		t.Errorf("an undeclared split added details to the gate: %v", plain.Details)
+	}
+	// The baseline details a ledger-only env's next plan reads survive.
+	withDigest := applyOutcomeGate(time.Now(), time.Now(), nil, "sha256:abc", "")
+	both := withUnitSplit(withDigest, unitSplit{Hub: []string{"reliant"}, Source: unitSplitDeclared})
+	if both.Details[applyGateBundleDigest] != "sha256:abc" {
+		t.Errorf("recording the split lost the applied bundle digest: %v", both.Details)
 	}
 }

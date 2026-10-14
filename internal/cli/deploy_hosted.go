@@ -123,37 +123,6 @@ func envAppliesLocally(e *KCLEntities) bool {
 	return false
 }
 
-// envConvergedByHub reports whether the env's whole local-apply surface is
-// clusters bound to connected clusters, with nothing hosted: the shape whose
-// bundle the control plane converges and forge must not also apply.
-func envConvergedByHub(e *KCLEntities) bool {
-	if e == nil || e.HasHosted() {
-		return false
-	}
-	// A DECLARED applier is a decision, not an inference, and it outranks the
-	// inference below. The platform's own env binds clusters the hub could
-	// converge, and a hub applying the env that runs the hub is circular, so
-	// binding must never be read as "the hub applies this". Without this,
-	// declaring applier = "forge" would still record hubConverged = true for
-	// an env whose every cluster is bound, and the control plane would start a
-	// second applier over objects forge applies.
-	if e.Applier == applierForge {
-		return false
-	}
-	if bound, _ := declaredBindings(e); len(bound) == 0 {
-		return false
-	}
-	if len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 {
-		return false
-	}
-	for _, f := range e.Frontends {
-		if f.Runtime.Ships() || f.Runtime.Type == FrontendRuntimeBuildOnly {
-			return false
-		}
-	}
-	return true
-}
-
 // runHostedDeploy is `forge env deploy <env>` for the HOSTED part of an env:
 // it publishes groups (the one hosted group buildDeployGroups built) to the
 // env's control plane.

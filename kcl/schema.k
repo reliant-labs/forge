@@ -4566,34 +4566,73 @@ schema Bundle:
     #
     # TODAY THIS REFUSES NOTHING. forge parses it, reports it
     # (`forge env shape --json`, `forge env status --json`) and prints a
-    # notice on a direct apply to an env that declares neither this nor
-    # `applier`. The refusal (F-REFUSE-DIRECT) is planned; declaring one of
-    # the two now is what makes that change a flag flip rather than a
-    # migration.
+    # notice on a direct apply to an env that declares none of `lifecycle`,
+    # `applier` or `hub_converges`. The refusal (F-REFUSE-DIRECT) is planned;
+    # declaring one of the three now is what makes that change a flag flip
+    # rather than a migration.
     lifecycle?: "local" | "ephemeral"
-    # A REAL environment that FORGE applies, by declaration. The answer for an
-    # env whose own control plane must not apply it: the platform's own env
-    # (control-plane's prod) is bound to clusters its hub could converge, and a
-    # hub applying the env that runs the hub is circular. `forge env deploy`
-    # (an operator or CI) is its applier, permanently, not as a stopgap.
+    # A REAL environment that FORGE applies, for now: every one of its
+    # delivery units is applied by `forge env deploy`, and the hub converges
+    # none of them. It is a TRANSITIONAL state, not a destination: every real
+    # env, the platform's own included, is moving onto the build → OCI bundle
+    # → ledger → Flux path, and direct apply narrows to dev and ephemeral
+    # envs. The move is made ONE UNIT AT A TIME with `hub_converges`; this
+    # field is the starting position of that move, not a place to stay.
     #
     #     applier = "forge"
+    #
+    # It is the same declaration as `hub_converges = []`, spelled as a
+    # statement about the env instead of a list. Use it when no unit has
+    # moved yet; as soon as one has, list it in `hub_converges` and drop this
+    # (declaring both with a non-empty list is refused: they would say the
+    # hub both does and does not apply the env).
     #
     # What it changes, all by construction:
     #   * direct apply is allowed (DirectApplyAllowed), so it is exempt from
     #     the planned F-REFUSE-DIRECT and prints no "undeclared" notice;
-    #   * the env is never hub-converged (`hubConverged = false` is what the
-    #     control plane records), however fully its clusters are bound, so the
-    #     hub cannot become a second applier over objects forge applies;
+    #   * no unit is hub-converged (the control plane records
+    #     `hubConverged = false`), however fully the clusters are bound, so
+    #     the hub cannot become a second applier over objects forge applies
+    #     before the owner has decided it should;
     #   * it is recorded in the env shape (`shape.applier`), so the control
     #     plane and a reader can see WHO applies without a render.
     #
     # It is NOT `lifecycle`. lifecycle = "local" | "ephemeral" says the
     # cluster is forge's scratch (a developer's own, or a per-run one) and is
     # checked against every cluster the env targets. This says the opposite:
-    # the cluster is real, and forge is deliberately the applier. Declaring
-    # both is refused: they answer the same question differently.
+    # the cluster is real, and forge is the applier until the units move.
+    # Declaring both is refused: they answer the same question differently.
     applier?: "forge"
+    # THE DELIVERY UNITS THE HUB CONVERGES, by name. Every other unit of a
+    # real cluster is applied by `forge env deploy`, directly. This is how an
+    # env moves onto the Flux path one unit at a time, with forge's direct
+    # apply shrinking as the list grows:
+    #
+    #     hub_converges = ["reliant"]                        # stage 1
+    #     hub_converges = ["reliant", "daemon-substrate"]    # stage 2
+    #     ...                                                # every unit: forge applies nothing
+    #
+    # A unit is a name from `delivery_units`, or `base` (everything that
+    # declares no unit). Listing a unit moves it: the hub creates its trees
+    # and starts converging them, forge stops applying its objects, and the
+    # bundle's tree for it stops being decoration. Removing a unit from the
+    # list moves it back (the hub orphans its trees; forge applies again).
+    #
+    # DECLARED, NEVER INFERRED, ONCE YOU WRITE IT. Left unset, forge keeps
+    # its old inference (a plain env whose clusters are all bound to
+    # connected clusters, and which ships no frontend from this machine, is
+    # converged by the hub as a whole); setting it, even to `[]`, replaces
+    # that inference with exactly what you wrote. An env that already works
+    # must not be handed to the hub because forge learned something new.
+    #
+    # A frontend forge ships (`forge.OnFirebase`, `forge.OnBucket`) belongs to
+    # no unit: it is shipped from this machine AFTER the promotion is
+    # recorded, whatever the list says.
+    #
+    # Needs a control plane (the hub is the control plane's) and real
+    # clusters, and cannot be combined with `lifecycle`, a non-empty list
+    # with `applier`, or a hosted tier. Both are checked below.
+    hub_converges?: [str]
     # TYPED OVERRIDES of forge's own rendered objects, keyed by the object.
     # The 20%'s escape hatch: forge renders an opinionated object and the
     # author changes ONE field of it, without forking the template and
@@ -4754,6 +4793,20 @@ schema Bundle:
         # reconciliation by editing one line.
         not (applier and lifecycle), \
             "Bundle sets both applier = \"${applier}\" and lifecycle = \"${lifecycle}\". They answer one question opposite ways: lifecycle says this env's clusters are scratch that forge creates and deletes; applier says the clusters are REAL and forge is deliberately the one that applies them. Declare the one that is true"
+        # hub_converges names delivery units the HUB applies, so each name must
+        # be one the bundle can split out, it must be said once, and it needs
+        # a hub (a control plane) to do the converging on real clusters.
+        # `hub_converges or []` is the declared list, empty when unset.
+        len(hub_converges or []) == len({u: u for u in (hub_converges or [])}), \
+            "Bundle.hub_converges lists a unit twice: ${hub_converges}"
+        len([u for u in (hub_converges or []) if u != "base" and u not in [d.name for d in delivery_units]]) == 0, \
+            "Bundle.hub_converges names a unit that is not declared: ${[u for u in (hub_converges or []) if u != 'base' and u not in [d.name for d in delivery_units]]} (declared: ${[d.name for d in delivery_units] + ['base']}). A unit exists only if Bundle.delivery_units declares it, or it is the default unit base"
+        not hub_converges or control_plane, \
+            "Bundle.hub_converges = ${hub_converges} needs control_plane = forge.ControlPlane {}: the control plane's hub is what converges the units it lists"
+        not (hub_converges and lifecycle), \
+            "Bundle sets both hub_converges = ${hub_converges} and lifecycle = \"${lifecycle}\". A local or ephemeral env's clusters are scratch that forge applies directly; there is no hub to hand a unit to"
+        not (hub_converges and applier), \
+            "Bundle sets both applier = \"${applier}\" and hub_converges = ${hub_converges}. applier = \"forge\" says the hub converges no unit; hub_converges says it converges these. Drop applier once the first unit moves (hub_converges = [] is the same as applier = \"forge\")"
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
                 manifests, generated, rendered_secrets)) == 0, \

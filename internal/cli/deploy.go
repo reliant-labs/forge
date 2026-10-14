@@ -1252,6 +1252,25 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if len(targets) > 0 && !opts.frontendsOnly {
 		hasK8sServices = kclEntitiesHaveK8sCluster(fullEntities)
 	}
+	// WHICH DELIVERY UNITS THE HUB CONVERGES, from the same declaration. This
+	// apply leaves those units' objects to the hub: applying them as well
+	// would put a second applier over them, which is the one thing an env
+	// moving onto Flux unit by unit must never have. Resolved from the FULL
+	// env because --target scopes what this run applies and must not change
+	// what the environment IS.
+	hubSplit, uerr := unitSplitOf(fullEntities)
+	if uerr != nil {
+		return fmt.Errorf("env %q: %w", envName, uerr)
+	}
+	skipUnits := hubSplit.Hub
+	// Every unit is the hub's and forge owns no cluster-side extra (a chart, a
+	// Secret it renders): this run touches no cluster, so it must not demand a
+	// kubectl context, a live preflight or a rollout wait for one. What is left
+	// is the work outside the bundle: a frontend, compose, host infra.
+	if hubSplit.AllHub() && !forgeOwnsClusterExtras(fullEntities) {
+		opts.skipClusterApply = true
+	}
+
 	// The caller established that nothing this run brings up needs a
 	// cluster, so every cluster-shaped step below is out of scope.
 	if opts.skipClusterApply {
@@ -1364,6 +1383,21 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 			} else {
 				fmt.Println("Nothing to deploy outside a cluster.")
 			}
+			// An env whose every unit the hub converges still has the frontends
+			// forge ships from here. They are the part of the env that no
+			// bundle carries, so they are the one thing left to do. They ship
+			// here, in a deploy that runs AFTER the promotion is recorded: the
+			// pre-record pass (preflightOnly) only checks they can ship.
+			if hubSplit.AllHub() {
+				if opts.preflightOnly {
+					return opts.preflightFrontend(ctx, entities, projectDir)
+				}
+				return dispatchFrontendsOrSkip(ctx, deployFrontendInput{
+					cfg: cfg, entities: entities, projectDir: projectDir, envName: envName,
+					envCfgKV: envCfgKV, targets: targets, dryRun: dryRun,
+					skipFrontend: opts.skipFrontend, shipped: opts.shipLog(),
+				})
+			}
 			return nil
 		}
 	}
@@ -1439,7 +1473,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 			namespace: namespace, envName: envName, deployContext: deployContext,
 			envCfgKV: envCfgKV, dryRun: true, prune: prune, cfg: cfg,
 			targets: targets, helmSpecs: helmSpecs,
-			rollout: opts.rollout, report: report,
+			rollout: opts.rollout, report: report, skipUnits: skipUnits,
 			directApplyAllowed: opts.directApplyAllowed,
 		}); err != nil {
 			return err
@@ -1497,7 +1531,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 			namespace: namespace, envName: envName, deployContext: deployContext,
 			envCfgKV: envCfgKV, dryRun: dryRun, prune: prune, cfg: cfg,
 			targets: targets, helmSpecs: helmSpecs,
-			rollout: opts.rollout, report: report,
+			rollout: opts.rollout, report: report, skipUnits: skipUnits,
 			directApplyAllowed: opts.directApplyAllowed,
 		})
 	})
@@ -1748,6 +1782,9 @@ type deployApplyInput struct {
 	targets          []string
 	helmSpecs        []cluster.HelmChartSpec
 	rollout          cluster.RolloutPolicy
+	// skipUnits are the delivery units the hub converges: the apply leaves
+	// them alone (unit_convergence.go, cluster.ApplyOpts.SkipUnits).
+	skipUnits []string
 	// report, when non-nil, receives the applied manifest stream and the
 	// per-resource rollout outcomes. Nil-safe.
 	report *deployReport
@@ -1791,6 +1828,7 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Targets:      in.targets,
 			HelmCharts:   in.helmSpecs,
 			Rollout:      in.rollout,
+			SkipUnits:    in.skipUnits,
 			OnStream:     in.report.streamObserver(),
 			OnRollout:    in.report.rolloutObserver(),
 		})
@@ -1802,8 +1840,9 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			Topology: in.topology, TopologyEntities: in.topologyEntities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
-			Rollout:  in.rollout,
-			OnStream: in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
+			Rollout:   in.rollout,
+			SkipUnits: in.skipUnits,
+			OnStream:  in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})

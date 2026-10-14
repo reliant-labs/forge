@@ -389,7 +389,7 @@ func stubHostedBundleLedger(t *testing.T, hub bool, base string) {
 	t.Helper()
 	prev := bundleLedgerFor
 	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
-		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true, HubConverged: hub}, nil
+		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true, Units: hubUnitsIf(hub)}, nil
 	}
 	t.Cleanup(func() { bundleLedgerFor = prev })
 	prevRec := bundleRecorderForEnv
@@ -507,4 +507,11 @@ func sliceHas(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func hubUnitsIf(hub bool) unitSplit {
+	if hub {
+		return allHubUnits()
+	}
+	return unitSplit{}
 }

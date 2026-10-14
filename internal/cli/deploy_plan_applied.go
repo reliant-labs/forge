@@ -2,8 +2,13 @@ package cli
 
 // THE PLAN OF AN ENV FORGE ITSELF APPLIES, against what forge last applied.
 //
-// A LEDGER-ONLY env (envLedger.ledgerOnly: a hosted ledger, nothing bound to
-// its control plane — control-plane prod) is converged by nothing but this
+// A FORGE-PLANNED env (envLedger.forgePlans) is one whose control plane cannot
+// see all of what is applied: a LEDGER-ONLY env (a hosted ledger, nothing bound
+// to its control plane — control-plane prod before any unit moved), or an env
+// that has moved only SOME delivery units to the hub, so forge still applies
+// the rest. The hub observes its own units; nothing observes forge's.
+//
+// The ledger-only case is the clearest. It is converged by nothing but this
 // machine's apply. Its control plane records promotions and observes nothing:
 // it holds no deployment rows to carry an applied_bundle_id, and no Flux it
 // could read a convergence from. So the server's PlanDeploy had no Live to
@@ -66,7 +71,7 @@ const appliedBaselineMaxPromotions = 200
 // plan's, unless the plan is the actuator's own (a ledger-only env), which the
 // control plane cannot recompute and would refuse as stale.
 func serverPlanDigest(plan *release.Plan, ledger envLedger) string {
-	if ledger.ledgerOnly() {
+	if ledger.forgePlans() {
 		return ""
 	}
 	return deployPlanDigest(plan)

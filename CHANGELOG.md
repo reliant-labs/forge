@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An env moves onto the Flux path one delivery unit at a time.**
+  `Bundle.hub_converges = [<unit>, …]` lists the delivery units the control plane's
+  hub converges from the recorded bundle; `forge env deploy` applies every other
+  unit directly. This replaces the env-level "the hub converges this env" boolean,
+  which could only say yes or no for the whole env. Direct apply leaves a
+  hub-converged unit's objects alone and **prunes against the full render**, so a
+  skipped Deployment is never read as an orphan; the rollout wait skips it, and a
+  deploy whose every unit is the hub's applies nothing to a cluster and asks for
+  no kubectl context. The shape records `units: [{name, applier}]`, the env's
+  declaration tells the control plane `hubConvergedUnits` (the old `hubConverged`
+  flag is true only once every unit has moved, so a control plane that predates
+  units can never converge one forge still applies), and each apply gate records
+  `units_forge` / `units_hub`. The `flux-safe` refusal now follows the object's
+  unit: an error in a unit the hub converges, a warning in one forge applies.
+  Unset, forge keeps its old inference. Declaring a non-empty `hub_converges`
+  beside `applier = "forge"` or a `lifecycle` is refused at render.
+- **Bound vs live, per tree.** `forge env status` and the deploy plan list each
+  tree of the bound bundle (cluster × unit × phase) with who applies it, the
+  revision the promotion binds it to, the revision the hub's reconciler reports it
+  applied, and the verdict (`converged`, `behind`, `failed`, `unobserved`,
+  `forge-applied`). Promotion is intent and convergence is observed: the binding
+  is never moved late to make them agree. A control plane that reports one reading
+  per cluster is shown as such; a tree it reports nothing for reads `unobserved`.
 - **A direct apply prunes superseded one-shot Jobs, keeping the newest three of
   each.** A standalone Job is named by the hash of its spec, so every release that
   changes one leaves the previous Job behind, and since a reconciler made
@@ -164,6 +187,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`applier = "forge"` is a transitional state, not a permanent one.** Every real
+  env, the platform's own included, moves onto build → OCI bundle → ledger → Flux,
+  and direct apply narrows to dev and ephemeral envs. The schema, the skills
+  (`deploy/shape`, `deploy/flux`, `deploy/flux-safe`, the v0.1.45 migration) and the
+  direct-apply notice now say so, and name `hub_converges` as the way to move.
+- **Static and Firebase frontends ship after the promotion is recorded**, from the
+  machine that deploys, for an env whose every unit is the hub's too (the
+  pre-record pass only checks they can ship).
 - **The observability outputs are one file per service, so a rebase no longer
   rewrites them.** Three files listed every service:
   `deploy/observability/dashboard-spec_gen.json`, `alert-defaults_gen.json`

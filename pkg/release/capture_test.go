@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func gitInit(t *testing.T) string {
@@ -181,5 +182,53 @@ func TestInspectCheckout_ParsesRenamesAndLeadingSpace(t *testing.T) {
 	}
 	if got := strings.Join(changes.Paths, "|"); got != "b b.txt|c.txt" {
 		t.Fatalf("paths = %q", got)
+	}
+}
+
+// The commit time is the committer date of HEAD in UTC, recorded for a clean
+// checkout only: a dirty tree's bytes are no commit's, so the time of HEAD
+// would be a claim about content it does not describe.
+func TestCaptureProvenance_CommitTime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	dir := gitInit(t)
+	ctx := context.Background()
+	opts := CaptureOptions{ForgeVersion: "v0.1.44"}
+
+	// A committer date in a non-UTC zone, distinct from the author date.
+	cmd := exec.Command("git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t",
+		"commit", "-q", "--amend", "--no-edit", "--date", "2026-01-02T03:04:05+00:00")
+	cmd.Env = append(os.Environ(), "GIT_COMMITTER_DATE=2026-03-04T10:30:00+05:30")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("amend: %v\n%s", err, out)
+	}
+	want := time.Date(2026, 3, 4, 5, 0, 0, 0, time.UTC)
+
+	clean, err := CaptureProvenance(ctx, dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean.CommitTime == nil || !clean.CommitTime.Equal(want) || clean.CommitTime.Location() != time.UTC {
+		t.Fatalf("clean commit time = %v, want %v (committer date, UTC)", clean.CommitTime, want)
+	}
+	if err := clean.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := CaptureProvenance(ctx, dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirty.Dirty || dirty.CommitTime != nil {
+		t.Fatalf("a dirty capture must leave the commit time unset: %+v", dirty)
+	}
+
+	plain, err := CaptureProvenance(ctx, t.TempDir(), opts)
+	if err != nil || plain.CommitTime != nil {
+		t.Fatalf("non-git dir: %+v %v", plain, err)
 	}
 }

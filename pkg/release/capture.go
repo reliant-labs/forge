@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -84,6 +85,7 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 	}
 	p.Dirty = changes.Dirty()
 	if !p.Dirty {
+		p.CommitTime = commitTime(ctx, top)
 		tree, err := gitOut(ctx, top, "rev-parse", "HEAD^{tree}")
 		if err != nil {
 			return p, fmt.Errorf("capture provenance: resolve HEAD tree: %w", err)
@@ -103,6 +105,22 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 	}
 	p.Tree = tree
 	return p, nil
+}
+
+// commitTime is HEAD's committer date in UTC, or nil when git cannot say. A
+// unix timestamp is read rather than a formatted date so the result does not
+// depend on git's date configuration.
+func commitTime(ctx context.Context, top string) *time.Time {
+	out, err := gitOut(ctx, top, "log", "-1", "--format=%ct", "HEAD")
+	if err != nil {
+		return nil
+	}
+	secs, err := strconv.ParseInt(out, 10, 64)
+	if err != nil || secs <= 0 {
+		return nil
+	}
+	t := time.Unix(secs, 0).UTC()
+	return &t
 }
 
 // dirtyTree hashes exactly what is in the working tree — tracked changes and

@@ -220,7 +220,38 @@ func TestDeriveApplyState(t *testing.T) {
 	}
 }
 
+// Provenance JSON, with and without a commit time. The field is omitted when
+// unset, so a ledger written before it existed (or from a dirty tree) is
+// byte-identical to what it was.
+func TestProvenance_CommitTimeJSON(t *testing.T) {
+	commit, tree := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	ct := time.Date(2026, 3, 4, 5, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		p    Provenance
+		want string
+	}{
+		{"without", Provenance{Commit: commit, Tree: tree, ForgeVersion: "v1"},
+			`{"repo":"","commit":"` + commit + `","dirty":false,"tree":"` + tree + `","worktree":{"key":""},"forge_version":"v1"}`},
+		{"with", Provenance{Commit: commit, Tree: tree, ForgeVersion: "v1", CommitTime: &ct},
+			`{"repo":"","commit":"` + commit + `","commit_time":"2026-03-04T05:00:00Z","dirty":false,"tree":"` + tree + `","worktree":{"key":""},"forge_version":"v1"}`},
+	} {
+		got, err := json.Marshal(tc.p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.name, got, tc.want)
+		}
+		var back Provenance
+		if err := json.Unmarshal(got, &back); err != nil || !reflect.DeepEqual(back, tc.p) {
+			t.Errorf("%s: round trip: %+v %v", tc.name, back, err)
+		}
+	}
+}
+
 func TestProvenance(t *testing.T) {
+	ct := time.Date(2026, 3, 4, 5, 0, 0, 0, time.UTC)
 	good := Provenance{Commit: strings.Repeat("a", 40), Tree: strings.Repeat("b", 40), Worktree: Worktree{Path: "/home/x/repo"}}
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
@@ -232,6 +263,7 @@ func TestProvenance(t *testing.T) {
 		"short commit":      {Commit: "abc"},
 		"tree no commit":    {Tree: strings.Repeat("b", 40)},
 		"attest no subject": {Commit: strings.Repeat("a", 40), Attestation: &Attest{Provider: "github-oidc"}},
+		"time no commit":    {CommitTime: &ct},
 	} {
 		if err := p.Validate(); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: want ErrInvalid, got %v", name, err)

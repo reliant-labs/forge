@@ -3,6 +3,7 @@ package release
 import (
 	"fmt"
 	"regexp"
+	"time"
 )
 
 // Provenance is WHERE a release or a bundle came from: the source tree, the
@@ -19,7 +20,7 @@ import (
 //   - Tree is checkable when Dirty is false: a clean tree's hash IS the
 //     commit's tree, so a clean claim can be verified without trusting the
 //     client.
-//   - Branch, Worktree and Dirty are claims. They are evidence and are
+//   - Branch, Worktree, Dirty and CommitTime are claims. They are evidence and are
 //     rendered as such ("reported by forge"), never used as authority.
 //   - Ancestry ("is this commit on main") is never a field here. It changes
 //     over time — a branch is merged, a force-push orphans a commit — so it
@@ -34,6 +35,12 @@ type Provenance struct {
 	Repo string `json:"repo"`
 	// Commit is HEAD, full hex. Empty when the source is not a git tree.
 	Commit string `json:"commit"`
+	// CommitTime is when Commit was made: the committer date, UTC. It is the
+	// start of a lead-time measurement (commit to production), so it is only
+	// ever the time of the commit that was BUILT: nil when the checkout was
+	// dirty (the bytes are no commit's) or the commit is unknown. It is a
+	// claim like Branch, not authority.
+	CommitTime *time.Time `json:"commit_time,omitempty"`
 	// Branch is the symbolic ref at build time; empty on a detached HEAD.
 	Branch string `json:"branch,omitempty"`
 	// Tag is an exact tag at HEAD, if any.
@@ -100,6 +107,9 @@ func (p Provenance) Validate() error {
 	}
 	if p.Tree != "" && p.Commit == "" {
 		return fmt.Errorf("%w: provenance names a tree but no commit", ErrInvalid)
+	}
+	if p.CommitTime != nil && p.Commit == "" {
+		return fmt.Errorf("%w: provenance names a commit time but no commit", ErrInvalid)
 	}
 	if p.Attestation != nil && (p.Attestation.Provider == "" || p.Attestation.Subject == "") {
 		return fmt.Errorf("%w: provenance attestation needs a provider and a subject", ErrInvalid)

@@ -12,6 +12,7 @@ package deploytarget
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -62,6 +63,10 @@ func ProvenanceWireFields(p release.Provenance) map[string]any {
 	putNonEmpty(fields, "forgeVersion", p.ForgeVersion)
 	if p.Dirty {
 		fields["dirty"] = true
+	}
+	if p.CommitTime != nil && !p.CommitTime.IsZero() {
+		// RFC 3339 UTC: proto3 JSON's form for google.protobuf.Timestamp.
+		fields["commitTime"] = p.CommitTime.UTC().Format(time.RFC3339)
 	}
 	worktree := map[string]any{}
 	putNonEmpty(worktree, "key", p.Worktree.Key)

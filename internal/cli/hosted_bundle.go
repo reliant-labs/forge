@@ -108,6 +108,7 @@ type wireProvenance struct {
 	Tag          string           `json:"tag,omitempty"`
 	Dirty        bool             `json:"dirty,omitempty"`
 	Tree         string           `json:"tree,omitempty"`
+	CommitTime   *time.Time       `json:"commitTime,omitempty"`
 	Worktree     *wireWorktree    `json:"worktree,omitempty"`
 	ForgeVersion string           `json:"forgeVersion,omitempty"`
 	Attestation  *wireAttestation `json:"attestation,omitempty"`
@@ -124,6 +125,7 @@ func provenanceFromWire(w *wireProvenance) (*release.Provenance, error) {
 	p := release.Provenance{
 		Repo: w.Repo, Commit: w.Commit, Branch: w.Branch, Tag: w.Tag,
 		Dirty: w.Dirty, Tree: w.Tree, ForgeVersion: w.ForgeVersion,
+		CommitTime: w.CommitTime,
 	}
 	if wt := w.Worktree; wt != nil {
 		p.Worktree = release.Worktree{Key: wt.Key, Label: wt.Label, Host: wt.HostID}

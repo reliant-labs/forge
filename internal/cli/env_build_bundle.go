@@ -384,6 +384,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		ObservabilityPolicy: doc.Shape.ObservabilityPolicy,
 		DeliveryPolicy:      doc.Shape.DeliveryPolicy,
 		Applier:             doc.Shape.Applier,
+		Units:               doc.Shape.Units,
 	}
 }
 

@@ -302,11 +302,11 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 - **A no-op `forge generate` skips its steps.** A full run that changes
   nothing records the tree as a verified fixed point in
   `.forge/generate-cache.json` (gitignored, per checkout). The next run that
-  finds every input byte-identical prints one `⏭️  forge generate: nothing to
-  do` line and stops: on control-plane, about half a second instead of about
-  three minutes at moderate load (2–5 s instead of 8+ minutes on a heavily
-  loaded box). The key covers the work tree as git sees it,
-  the gitignored files generate reads or writes (go.work, installed
+  finds every input byte-identical prints one "nothing to do" line and
+  stops: on control-plane, about half a second instead of about three minutes
+  at moderate load (2–5 s instead of 8+ minutes on a heavily loaded box). The
+  key covers the work tree as git sees it, the gitignored files generate
+  reads or writes (go.work, installed
   node_modules, dotenvs, secrets, `.forge/` state, every other ignored file
   outside a wholly ignored directory), the outputs the verifying run wrote,
   local `replace`/`go.work` source outside the project, the forge executable

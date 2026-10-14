@@ -333,6 +333,12 @@ func TestGenerateCacheExecutableIdentityCache(t *testing.T) {
 	if err := os.Chtimes(p, old, old); err != nil {
 		t.Fatal(err)
 	}
+	// The cache keys on the resolved path (Windows temp dirs carry 8.3 short
+	// names that EvalSymlinks expands), so the test's records must too.
+	p, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	info, err := os.Stat(p)
 	if err != nil {
 		t.Fatal(err)
@@ -729,6 +735,10 @@ func TestDiffGenerateFingerprint(t *testing.T) {
 		if !strings.Contains(d, want) {
 			t.Errorf("miss reason %q should contain %q", d, want)
 		}
+	}
+	state := describeFileChange([]string{".forge/disowned.json", ".forge/hashes.json", "proto/a.proto"})
+	if state != "3 file(s) changed (proto/a.proto, 2 .forge/ state file(s))" {
+		t.Errorf("forge's own state must collapse to one entry after the user's files, got %q", state)
 	}
 	gone := &generateFingerprint{env: maps.Clone(m.Env), files: map[string]string{}}
 	if d := diffGenerateFingerprint(m, gone); !strings.Contains(d, "4 file(s) changed") {

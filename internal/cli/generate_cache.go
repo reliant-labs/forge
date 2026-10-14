@@ -1091,12 +1091,23 @@ func describeEnvChange(keys []string) string {
 }
 
 func describeFileChange(keys []string) string {
-	names := make([]string, 0, len(keys))
+	// Name what the user edited. forge's own .forge/ state moves with every
+	// run that wrote, so it is one entry at the end, not three names that
+	// push the proto that changed off the line.
+	var names []string
+	state := 0
 	for _, k := range keys {
+		if strings.HasPrefix(k, ".forge/") {
+			state++
+			continue
+		}
 		for _, prefix := range []string{"ext:", "gowork:", "goenv:"} {
 			k = strings.TrimPrefix(k, prefix)
 		}
 		names = append(names, strings.TrimSuffix(k, "/"))
+	}
+	if state > 0 {
+		names = append(names, fmt.Sprintf("%d .forge/ state file(s)", state))
 	}
 	return fmt.Sprintf("%d file(s) changed (%s)", len(keys), listSome(names))
 }

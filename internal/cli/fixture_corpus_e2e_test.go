@@ -116,6 +116,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1395,6 +1396,18 @@ func generateTwiceIdempotent(t *testing.T, forgeBin, projectDir string) {
 		t.Fatalf("second `forge generate` is not idempotent — %d file(s) changed:\n  %s\n%s",
 			len(diffs), strings.Join(diffs, "\n  "), detail.String())
 	}
+
+	// Run 2 changed nothing, so it recorded the tree as a verified fixed
+	// point; run 3 must find it and skip every step (generate_cache.go). A
+	// miss here means the cache never hits on a real scaffold — the line it
+	// printed instead names what it thought had changed.
+	out3 := runCorpusCmdOK(t, projectDir, forgeBin, "generate")
+	if !strings.Contains(out3, "nothing to do") {
+		t.Fatalf("third `forge generate` over a verified, unchanged tree did not skip:\nrun 2:\n%s\nrun 3:\n%s", out2, out3)
+	}
+	if after3 := hashProjectTree(t, projectDir); !maps.Equal(after, after3) {
+		t.Fatal("a skipped `forge generate` changed the tree")
+	}
 }
 
 // snapshotSmallFiles captures the content of textual files under 1MB so
@@ -1507,8 +1520,12 @@ func corpusSkipDir(name string) bool {
 // side renders, go.sum — a second generate must leave ALL of it
 // untouched. (Only non-forge trees are skipped; see corpusSkipDir.)
 //
-// The one exception is the generate lock (generateLockRel). It is not
-// output: it is the OS lock every run takes, and the holder writes its pid
+// The exceptions are the generate lock (generateLockRel) and the generate
+// cache's manifest (generateCacheRel). The manifest is machine-local
+// bookkeeping, not output: run 2 is the run that verifies the fixed point,
+// so it is the run that records it — generateTwiceIdempotent then checks the
+// record works with a third run. The lock is not output either: it is the
+// OS lock every run takes, and the holder writes its pid
 // and start time into it on every acquisition (recordGenerateLockHolder)
 // so a waiting run can name it. Two runs therefore always differ there,
 // and hashing it would fail every idempotence check on the second run.
@@ -1532,7 +1549,7 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 		if rerr != nil {
 			return rerr
 		}
-		if filepath.ToSlash(rel) == generateLockRel {
+		if filepath.ToSlash(rel) == generateLockRel || filepath.ToSlash(rel) == generateCacheRel {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)

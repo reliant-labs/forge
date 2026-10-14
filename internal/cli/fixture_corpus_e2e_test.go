@@ -1398,12 +1398,19 @@ func generateTwiceIdempotent(t *testing.T, forgeBin, projectDir string) {
 	}
 
 	// Run 2 changed nothing, so it recorded the tree as a verified fixed
-	// point; run 3 must find it and skip every step (generate_cache.go). A
-	// miss here means the cache never hits on a real scaffold — the line it
-	// printed instead names what it thought had changed.
+	// point — unless a step failed soft, which makes the run unrecordable
+	// (its outputs were never produced). Run 3 must skip exactly when run 2
+	// recorded (generate_cache.go). A miss after a record means the cache
+	// never hits on a real scaffold; a skip without one is a false skip.
 	out3 := runCorpusCmdOK(t, projectDir, forgeBin, "generate")
-	if !strings.Contains(out3, "nothing to do") {
+	recorded := strings.Contains(out2, "Recorded as a verified fixed point")
+	switch skipped := strings.Contains(out3, "nothing to do"); {
+	case recorded && !skipped:
 		t.Fatalf("third `forge generate` over a verified, unchanged tree did not skip:\nrun 2:\n%s\nrun 3:\n%s", out2, out3)
+	case !recorded && skipped:
+		t.Fatalf("third `forge generate` skipped although run 2 recorded nothing:\nrun 2:\n%s\nrun 3:\n%s", out2, out3)
+	case !recorded && len(corpusSoftFailures(out2)) == 0:
+		t.Fatalf("run 2 changed nothing and no step failed, yet it did not record a fixed point:\n%s", out2)
 	}
 	if after3 := hashProjectTree(t, projectDir); !maps.Equal(after, after3) {
 		t.Fatal("a skipped `forge generate` changed the tree")
@@ -1513,6 +1520,18 @@ func assertFieldWired(t *testing.T, file, content, field string) {
 // for the content snapshot, memory, without guarding anything.
 func corpusSkipDir(name string) bool {
 	return name == ".git" || name == "node_modules" || name == ".next"
+}
+
+// corpusSoftFailures returns the "step(s) FAILED and the run continued"
+// line a generate prints when a step failed as a warning, or nil.
+func corpusSoftFailures(out string) []string {
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "FAILED and the run continued") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // hashProjectTree walks the project and returns rel-path → sha256 for

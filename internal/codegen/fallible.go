@@ -133,6 +133,49 @@ func DetectDepsConfigImport(dir string) string {
 	return ""
 }
 
+// ConfigPackageDeclaresDefaults reports whether the project package at
+// importPath declares a package-level `func Defaults()` returning one value —
+// the generated pkg/config's constructor for the config Load yields with
+// nothing set (config.go.tmpl). The test harness defaults a component's
+// config to it when it exists. It is read from the source rather than assumed
+// from the path: a CLI's stub pkg/config, a hand-written one, or a config
+// package outside pkg/config declares Config without it, and a harness
+// calling a function that does not exist would not compile.
+//
+// The config loader step runs before the harness step, so a generate that
+// (re)writes pkg/config/config_gen.go is seen by the harness in the same run.
+func ConfigPackageDeclaresDefaults(projectDir, modulePath, importPath string) bool {
+	rel, ok := strings.CutPrefix(importPath, modulePath+"/")
+	if modulePath == "" || !ok {
+		return false
+	}
+	dir := filepath.Join(projectDir, filepath.FromSlash(rel))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Name.Name != "Defaults" {
+				continue
+			}
+			if fn.Type.Params.NumFields() == 0 && fn.Type.Results.NumFields() == 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // fieldNamed reports whether a struct field declares name.
 func fieldNamed(field *ast.Field, name string) bool {
 	for _, n := range field.Names {

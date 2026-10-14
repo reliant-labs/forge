@@ -404,6 +404,20 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	return checkRequired(m)
 }
 
+// DefaultsInto populates msg with the defaults layer alone — the base LoadInto
+// starts from before any file, environment or flag overlays it: every
+// annotated field at its proto default, nested config blocks allocated, and
+// sensitive fields empty. It reads nothing from the process and skips the
+// required-field check (a required field with no default is legitimately
+// empty here), so it is the hermetic stand-in for LoadInto that tests need:
+// the config production would load with nothing set.
+//
+// It errors only on a default that does not parse for its field's kind — a
+// defect in the config proto, never a runtime condition.
+func DefaultsInto(msg proto.Message) error {
+	return applyDefaults(msg.ProtoReflect())
+}
+
 // applyDefaults sets every annotated field to its proto default, recursing
 // into nested config blocks. Sensitive fields are skipped — a literal secret
 // default would be a leak (their value must come from file/env). A field with

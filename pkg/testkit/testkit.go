@@ -20,7 +20,7 @@
 //
 //	cfg := &testConfig{
 //	    logger: testkit.DiscardLogger(),
-//	    cfg:    &config.Config{},
+//	    cfg:    config.Defaults(), // the config Load yields with nothing set
 //	    db:     testkit.NewPostgresDB(t), // when AnyServiceHasDB
 //	}
 //

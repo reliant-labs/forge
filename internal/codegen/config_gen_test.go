@@ -64,6 +64,10 @@ func TestGenerateConfigLoader_ThinAliasShim(t *testing.T) {
 		"forgeconfig.RegisterFlags(cmd, &configv1.AppConfig{})",
 		"func Load(cmd *cobra.Command) (*Config, error)",
 		"forgeconfig.LoadTyped[*configv1.AppConfig](cmd)",
+		// Defaults: the config Load yields with nothing set, which the
+		// generated test harness constructs components with (#749).
+		"func Defaults() *Config {",
+		"forgeconfig.DefaultsTyped[*configv1.AppConfig]()",
 		// Free funcs over the message — never methods on a generated struct.
 		"func Validate(cfg *Config) error",
 		"forgeconfig.Validate(cfg)",

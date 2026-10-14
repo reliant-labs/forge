@@ -156,6 +156,8 @@ func TestGenerateConfigLoader_AllBinaryAnnotated_PrimaryBinaryGetsConfigAlias(t 
 		"forgeconfig.RegisterFlags(cmd, &configv1.AdminConfig{})",
 		"func Load(cmd *cobra.Command) (*Config, error) {",
 		"forgeconfig.LoadTyped[*configv1.AdminConfig](cmd)",
+		"func Defaults() *Config {",
+		"forgeconfig.DefaultsTyped[*configv1.AdminConfig]()",
 		"func Validate(cfg *Config) error",
 		"func ModeOf(cfg *Config) Mode",
 	} {

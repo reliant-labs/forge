@@ -815,6 +815,19 @@ AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   gofmt check). Generate also warns when compose.go still constructs a
   package whose marker now takes it out of the server's composition, and says
   what to delete; it never deletes that code itself.
+- **Generated test helpers build the config production loads (#749).**
+  `defaultTestConfig` in every `helpers_gen_test.go` returned
+  `&config.Config{}`, so a nested config block was nil and every proto
+  `default_value` behind it read as zero: handler tests ran against a config
+  no process ever has (a project's hard-rule limits all read 0). pkg/config
+  now generates `config.Defaults()`, the config `Load` yields when no file,
+  environment variable or flag is set: proto defaults applied, nested blocks
+  allocated, sensitive fields empty. It reads nothing from the process, and
+  the harness defaults to it. The library side is the new
+  `forgeconfig.DefaultsInto` / `DefaultsTyped`, the same defaults layer
+  `LoadInto` starts from rather than a second copy of it. A component whose
+  config package declares no `Defaults()` (a hand-written one, a CLI's stub)
+  keeps the zero value.
 
 - **A release commit's E2E Scaffold waits out the proxy's negative cache.**
   `release-forge.sh` checks that the version was never published by asking

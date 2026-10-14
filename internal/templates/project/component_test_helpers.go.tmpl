@@ -436,7 +436,7 @@ func defaultTestConfig(t *testing.T) *testConfig {
 	return &testConfig{
 		logger: testkit.DiscardLogger(),
 {{- if .ConfigImport}}
-		cfg:    &config.Config{},
+		cfg:    {{if .ConfigDefaults}}config.Defaults(){{else}}&config.Config{}{{end}},
 {{- end}}
 {{- if .HasDB}}
 		// Bare real postgres — no schema (a fresh isolated database on the

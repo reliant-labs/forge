@@ -449,7 +449,7 @@ func (p planner) checksLane() []Check {
 			Group: GroupStatic,
 			Heavy: true,
 			Tools: []Tool{goLicenses},
-			Argv:  []string{"go-licenses", "check", "./...", "--disallowed_types=forbidden,restricted"},
+			Argv:  licenseCheckArgv(p.Root),
 		})
 	}
 

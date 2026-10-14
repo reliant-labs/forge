@@ -27,6 +27,10 @@ and its lane. For a project with services and a frontend the `checks` lane is:
 `vuln-go`, `vuln-npm`, `license-check`, `validate-kcl`, `deployability`. Which
 rows exist follows the same forge.yaml toggles the workflow renders from
 (`ci.lint`, `ci.vuln_scan`, ...), so a toggle means the same thing in both.
+`license-check` judges the licenses of your dependencies, not your own code:
+it passes go-licenses `--ignore` for the module in `go.mod` and for the modules
+a root `go.work` uses from inside the project, so a project needs no LICENSE
+file of its own for the check to run clean.
 
 Four rules every run obeys:
 

@@ -166,6 +166,61 @@ func TestPlan_FrontendRowsNeedTheirDeps(t *testing.T) {
 	}
 }
 
+// license-check exempts the project's own module (#755): go-licenses checks
+// every package it loads, so without --ignore a project with no LICENSE file
+// logged "Failed to find license" for each of its own packages.
+func TestPlan_LicenseCheckIgnoresTheProjectsOwnModule(t *testing.T) {
+	in := serviceInput(t)
+	write(t, in.Root, "go.mod", "module example.com/shop\n\ngo 1.24\n\nrequire github.com/google/uuid v1.6.0\n")
+	all, err := Plan(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(find(t, all, "license-check").Argv, " ")
+	if want := "go-licenses check ./... --disallowed_types=forbidden,restricted --ignore example.com/shop"; got != want {
+		t.Errorf("license-check argv:\n got %s\nwant %s", got, want)
+	}
+}
+
+// go-licenses matches --ignore as a plain string prefix, so the ignores must
+// not reach past the project's own modules, and must reach all of them.
+func TestLicenseIgnores(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"no go.mod: nothing to exempt", nil, ""},
+		{"own module", map[string]string{
+			"go.mod": "module example.com/shop\n",
+		}, "example.com/shop"},
+		{"a dependency extends the module path: only the subtree", map[string]string{
+			"go.mod": "module example.com/shop\n\nrequire (\n\texample.com/shop-client v1.0.0\n\texample.com/shop/api v0.1.0\n)\n",
+		}, "example.com/shop/"},
+		{"workspace: modules inside the tree, not a linked checkout outside it", map[string]string{
+			"go.mod":       "module example.com/shop\n",
+			"go.work":      "go 1.24\n\nuse (\n\t.\n\t./tools\n\t./api\n\t../forge\n)\n",
+			"tools/go.mod": "module example.com/shoptools\n",
+			"api/go.mod":   "module example.com/shop/api\n", // nested: covered by example.com/shop
+		}, "example.com/shop example.com/shoptools"},
+		{"workspace modules requiring each other are not collisions", map[string]string{
+			"go.mod":       "module example.com/shop\n\nrequire example.com/shoptools v0.0.0\n",
+			"go.work":      "go 1.24\n\nuse (\n\t.\n\t./tools\n)\n",
+			"tools/go.mod": "module example.com/shoptools\n",
+		}, "example.com/shop example.com/shoptools"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for rel, body := range tc.files {
+				write(t, root, rel, body)
+			}
+			if got := strings.Join(licenseIgnores(root), " "); got != tc.want {
+				t.Errorf("licenseIgnores = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // ci.race=false in forge.yaml reaches `task test` the way the workflow carries
 // it, so the local gate and CI run the same go test flags.
 func TestPlan_CarriesTheRaceToggleToTask(t *testing.T) {

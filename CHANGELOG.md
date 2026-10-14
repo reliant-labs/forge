@@ -1323,6 +1323,17 @@ connection`. `Open` now checks one connection out of its own pool (capped at
   guard (`TestGoTemplatesJustifyBlankImports`) checks every Go template for
   the same, under `-short`. An existing project's `metrics.go` is yours once
   written: add the comment above the import by hand.
+- **`license-check` checks your dependencies, not your own packages.**
+  `forge ci gate` ran `go-licenses check ./...` without excluding the project,
+  so a project with no LICENSE file logged `Failed to find license` for every
+  one of its own packages and then passed, and a project under a restricted
+  license would have failed its own gate. The check now passes
+  `--ignore <module>` for the module in `go.mod` and for every module a root
+  `go.work` uses from inside the project tree (a `--link-forge` checkout
+  outside it stays checked). go-licenses matches `--ignore` as a plain string
+  prefix, so when a dependency's path extends the module's (`example.com/app`
+  and `example.com/app-client`) the ignore is narrowed to the module's subtree,
+  `example.com/app/`, and the dependency is still checked (#755).
 - **A contract parameter may be named anything; the generated mock,
   decorator and test stubs still compile.** An interface method has no body,
   so `Run(ctx context.Context, m Manifest)` is legal Go. The mock that

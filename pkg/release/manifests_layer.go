@@ -2,8 +2,8 @@ package release
 
 // ValidateManifestsLayer: the INGEST GATE for a bundle's manifests layer.
 //
-// The layer is what a shared, multi-tenant Flux builds and applies, so its
-// bytes are the one input a hostile tenant fully controls. kustomize-controller
+// The layer is what a Flux shared by many organizations builds and applies,
+// so its bytes are the one input a hostile organization fully controls. kustomize-controller
 // honours a kustomization file it finds in the artifact (generators, patches,
 // components, file loads), and otherwise generates its own kustomization over
 // every *.yaml it finds — so the safe input is plain, validated YAML and

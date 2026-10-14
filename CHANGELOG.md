@@ -801,6 +801,20 @@ AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   then add the rewrite and `allowedDevOrigins` to `next.config.ts` and route
   `connect.ts` and `native-login.ts` through `apiBase()`. No generated file
   changes. See `migrations/v0.1.46/dev-api-proxy`.
+- **`forge generate` no longer fails after a composed package is marked
+  `//forge:external-component` (#747).** compose.go's reconciler drops a
+  `<pkg>.Deps{…}` key whose field the Deps struct no longer declares, but it
+  only checked packages still in the discovered component set. Marking a
+  composed package external (or `//forge:not-a-component`, or excluding it)
+  took it out of that set while compose.go, which is yours and only ever
+  added to, kept constructing it, so removing one of its Deps fields left a
+  key naming nothing: `unknown field BaseURL in struct literal of type
+  alpaca.Deps`, then a rollback, on every generate. The drop now covers every
+  project package compose.go constructs, with the same guards (keys only, a
+  proven Deps struct, the alias resolved through the file's own import, a
+  gofmt check). Generate also warns when compose.go still constructs a
+  package whose marker now takes it out of the server's composition, and says
+  what to delete; it never deletes that code itself.
 
 - **A release commit's E2E Scaffold waits out the proxy's negative cache.**
   `release-forge.sh` checks that the version was never published by asking

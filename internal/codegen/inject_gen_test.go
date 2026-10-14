@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -1208,6 +1209,148 @@ func TestGenerateCompose_DropSurvivesCustomizedFile(t *testing.T) {
 	}
 	if _, err := parser.ParseFile(token.NewFileSet(), "compose.go", out, parser.SkipObjectResolution); err != nil {
 		t.Fatalf("reconciled compose.go is not valid Go: %v\n----\n%s", err, out)
+	}
+}
+
+// TestGenerateCompose_ReconcileDropsStaleKeyOfExternalComponent is the
+// regression test for #747. The stale-key drop measured only DISCOVERED
+// components' literals, so a package that left the discovered set while
+// compose.go — owned, only ever added to — kept constructing it was never
+// checked again. Marking a composed adapter //forge:external-component and
+// then removing a Deps field left a key naming nothing, and every generate
+// after that failed its validate build and rolled back:
+//
+//	internal/app/compose.go:62:3: unknown field BaseURL in struct literal of type alpaca.Deps
+//
+// Go fixes that literal's key set to the Deps struct exactly as it does a
+// discovered component's, so the drop now covers every project package the
+// file constructs. The construction itself is the author's to delete: it is
+// kept, and reported, when the package's own marker says the server no
+// longer composes it.
+func TestGenerateCompose_ReconcileDropsStaleKeyOfExternalComponent(t *testing.T) {
+	cases := []struct {
+		name string
+		// header is prepended to the package's contract.go once it leaves
+		// the composition; discovered says whether it is still in the
+		// discovered package set (a marked package is; an excluded one is not).
+		header, warning string
+		discovered      bool
+	}{
+		{
+			name:       "external-component",
+			header:     "//forge:external-component\n",
+			warning:    "internal/app/compose.go still constructs internal/alpaca, which is now //forge:external-component — delete its import, Components field and construction, and put the instance on Infra",
+			discovered: true,
+		},
+		{
+			name:       "not-a-component",
+			header:     "//forge:not-a-component: the CLI builds it\n",
+			warning:    "internal/app/compose.go still constructs internal/alpaca, which is now //forge:not-a-component — delete its import, Components field and construction: the server does not have it",
+			discovered: true,
+		},
+		{
+			// No marker to report: the package simply left discovery (its
+			// contract opted out). The key is still dead, so it still goes.
+			name:   "excluded",
+			header: "//forge:exclude-contract\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newInjectProject(t)
+			writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config\n\tAuditLog *slog.Logger")
+			writeFallibleComponentDeps(t, dir, "internal", "alpaca", "alpaca",
+				"\tLogger *slog.Logger\n\tBaseURL string")
+			alpaca := BootstrapPackageData{Name: "alpaca", Package: "alpaca", ImportPath: "alpaca", FieldName: "Alpaca", VarName: "alpaca", Fallible: true}
+			var warnings strings.Builder
+			in := InjectGenInput{
+				GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+				Packages:   []BootstrapPackageData{alpaca},
+				Warnings:   &warnings,
+			}
+			if err := GenerateCompose(in); err != nil {
+				t.Fatalf("first GenerateCompose: %v", err)
+			}
+			flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+			if first := flat(readInject(t, dir)); !strings.Contains(first, "BaseURL:") || !strings.Contains(first, "Logger: infra.Log,") {
+				t.Fatalf("precondition: the first emit composes alpaca with Logger and BaseURL:\n%s", readInject(t, dir))
+			}
+
+			// The author re-wires Logger by hand…
+			composePath := filepath.Join(dir, "internal", "app", "compose.go")
+			handWired := regexp.MustCompile(`Logger:\s+infra\.Log,`).ReplaceAllString(readInject(t, dir), "Logger: infra.AuditLog,")
+			if !strings.Contains(handWired, "infra.AuditLog") {
+				t.Fatalf("failed to hand-wire Logger:\n%s", readInject(t, dir))
+			}
+			if err := os.WriteFile(composePath, []byte(handWired), 0o644); err != nil {
+				t.Fatalf("write hand-wired compose.go: %v", err)
+			}
+			// …takes the package out of the composition, and removes BaseURL.
+			writeContract(t, dir, "internal/alpaca", tc.header+"package alpaca\n\ntype Service interface{ Do() }\n\n"+
+				"type Deps struct {\n\tLogger *slog.Logger\n}\n\nfunc New(d Deps) (Service, error) { return nil, nil }\n")
+			if !tc.discovered {
+				in.Packages = nil
+			}
+			warnings.Reset()
+			if err := GenerateCompose(in); err != nil {
+				t.Fatalf("reconcile GenerateCompose: %v", err)
+			}
+			out := readInject(t, dir)
+			if strings.Contains(flat(out), "BaseURL") {
+				t.Fatalf("compose.go still keys the removed BaseURL field — the project cannot build:\n%s", out)
+			}
+			if !strings.Contains(flat(out), "Logger: infra.AuditLog,") {
+				t.Fatalf("the hand-wired expression on the surviving key changed — the drop must touch keys only:\n%s", out)
+			}
+			if !strings.Contains(flat(out), "alpaca.New(alpaca.Deps{") {
+				t.Fatalf("the construction is the author's code and must be kept, not deleted:\n%s", out)
+			}
+			if _, err := format.Source([]byte(out)); err != nil {
+				t.Fatalf("reconciled compose.go is not gofmt-valid: %v\n----\n%s", err, out)
+			}
+
+			got := strings.TrimSpace(warnings.String())
+			switch {
+			case tc.warning == "" && got != "":
+				t.Errorf("no marker takes the package out of the composition, so nothing to report; got:\n%s", got)
+			case tc.warning != "" && got != "⚠️  "+tc.warning:
+				t.Errorf("warning:\n got: %q\nwant: %q", got, "⚠️  "+tc.warning)
+			}
+
+			// Idempotent: the converged file is left as it is.
+			if err := GenerateCompose(in); err != nil {
+				t.Fatalf("idempotent GenerateCompose: %v", err)
+			}
+			if again := readInject(t, dir); again != out {
+				t.Fatalf("reconcile is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", out, again)
+			}
+		})
+	}
+}
+
+// TestComposeDropStaleDepsKeys_ProjectPackagesOnly pins the boundary of the
+// widened drop: an undiscovered literal is measured only when its alias
+// resolves, through the file's own imports, to a package of THIS project
+// whose Deps struct parses. A dependency's literal, or a package that does
+// not parse, is never touched.
+func TestComposeDropStaleDepsKeys_ProjectPackagesOnly(t *testing.T) {
+	dir := newInjectProject(t)
+	writeContract(t, dir, "internal/broken", "package broken\n\ntype Deps struct {\n\tLogger *slog.Logger\n")
+	src := `package app
+
+import (
+	"example.com/other/vendorpkg"
+	"example.com/proj/internal/broken"
+)
+
+func build() {
+	_ = vendorpkg.Deps{Gone: 1}
+	_ = broken.Deps{Gone: 1}
+}
+`
+	got, changed := composeDropStaleDepsKeys(src, InjectGenData{Module: "example.com/proj", ProjectDir: dir})
+	if changed || got != src {
+		t.Fatalf("only a parsed Deps struct of a project package may drop keys; got:\n%s", got)
 	}
 }
 

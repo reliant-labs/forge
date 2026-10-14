@@ -57,6 +57,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -305,6 +306,12 @@ type InjectGenData struct {
 	// HasCycle / CycleEdges drive the two-phase setter stub block.
 	HasCycle   bool
 	CycleEdges []BuildEdge
+	// ProjectDir is the project root. Template-invisible: the reconciler
+	// reads it to find the Deps struct of a package compose.go still imports
+	// but the discovered set no longer holds (composeDropStaleDepsKeys), and
+	// to read that package's composition markers (composeStaleConstructions).
+	// Empty disables both reads.
+	ProjectDir string
 }
 
 // GenerateCompose emits internal/app/compose.go: the EXPLICIT per-binary
@@ -505,6 +512,7 @@ func GenerateCompose(in InjectGenInput) error {
 		Order:             rendered,
 		HasCycle:          plan.HasCycle(),
 		CycleEdges:        plan.CycleEdges,
+		ProjectDir:        in.ProjectDir,
 	}
 
 	content, err := templates.ProjectTemplates().Render("compose.go.tmpl", data)
@@ -534,6 +542,9 @@ func GenerateCompose(in InjectGenInput) error {
 			if werr := writeUserScaffold(composeAbs, []byte(reconciled)); werr != nil {
 				return fmt.Errorf("update internal/app/compose.go: %w", werr)
 			}
+		}
+		for _, w := range composeStaleConstructions(reconciled, data) {
+			fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
 		}
 		return nil
 	case os.IsNotExist(rerr):
@@ -794,10 +805,12 @@ func reconcileComposeAddComponentsAfterDrop(existing, freshRender string, data I
 	return string(formatted), true
 }
 
-// composeDropStaleDepsKeys removes, from each discovered component's
-// `<alias>.Deps{…}` literal in an existing compose.go, every key that is not a
-// field of that component's Deps struct — the ONE subtractive edit the
-// reconciler is licensed to make, and the argument for why it is licensed.
+// composeDropStaleDepsKeys removes, from each `<alias>.Deps{…}` literal in an
+// existing compose.go whose alias names a package of this project — a
+// discovered component, or one compose.go still constructs after it left the
+// discovered set — every key that is not a field of that package's Deps
+// struct: the ONE subtractive edit the reconciler is licensed to make, and the
+// argument for why it is licensed.
 //
 // WHAT COMPOSE.GO OWNS. The banner calls compose.go user-owned and additively
 // reconciled, and the additive passes take that literally: they only ever add.
@@ -842,7 +855,9 @@ func reconcileComposeAddComponentsAfterDrop(existing, freshRender string, data I
 //     discovered set assigns it. A retroactive collision rename can point an
 //     alias at a DIFFERENT component than it named at emit time, and checking
 //     one component's literal against another's field set is precisely the
-//     destruction this must not do.
+//     destruction this must not do. A package outside the discovered set is
+//     read from the path this file's own import names — the path Go types the
+//     literal by — never from a name match.
 //   - AST-located and gofmt-verified. Only a real KeyValueExpr key at the top
 //     level of that literal is a candidate, and the whole edit is discarded
 //     unless the result parses.
@@ -857,19 +872,7 @@ func composeDropStaleDepsKeys(existing string, data InjectGenData) (string, bool
 	if err != nil {
 		return existing, false
 	}
-	// alias -> import path, as THIS file spells it.
-	aliasPath := map[string]string{}
-	for _, imp := range file.Imports {
-		path, uerr := strconv.Unquote(imp.Path.Value)
-		if uerr != nil {
-			continue
-		}
-		alias := path[strings.LastIndex(path, "/")+1:]
-		if imp.Name != nil {
-			alias = imp.Name.Name
-		}
-		aliasPath[alias] = path
-	}
+	aliasPath := composeImportAliases(file)
 
 	// The literals we may touch, and the key set each is measured against.
 	keysByAlias := map[string]map[string]bool{}
@@ -882,8 +885,33 @@ func composeDropStaleDepsKeys(existing string, data InjectGenData) (string, bool
 		}
 		keysByAlias[c.Alias] = c.DepsKeys
 	}
-	if len(keysByAlias) == 0 {
-		return existing, false
+	// Any OTHER project package compose.go constructs is measured the same
+	// way, against the Deps struct its import path names. A package leaves
+	// the discovered set while compose.go — user-owned, and only ever added
+	// to — keeps constructing it: marked //forge:external-component or
+	// //forge:not-a-component, excluded, its contract.go deleted. Go still
+	// fixes that literal's key set to the struct's fields, so a removed field
+	// leaves a key that breaks the build exactly as it would for a discovered
+	// component, and this drop is the only pass that can heal it (#747).
+	// Identity is proven the same way: the alias is resolved through THIS
+	// file's own import, which is the path Go types the literal by. Read
+	// lazily, so only an alias that keys a Deps literal costs a parse.
+	resolved := map[string]map[string]bool{}
+	keysFor := func(alias string) (map[string]bool, bool) {
+		if keys, ok := keysByAlias[alias]; ok {
+			return keys, true
+		}
+		if keys, ok := resolved[alias]; ok {
+			return keys, keys != nil
+		}
+		var keys map[string]bool
+		if dir, ok := projectPackageDir(data, aliasPath[alias]); ok {
+			if k, found := DepsLiteralKeys(dir); found {
+				keys = k
+			}
+		}
+		resolved[alias] = keys
+		return keys, keys != nil
 	}
 
 	type cut struct{ start, end int }
@@ -901,7 +929,7 @@ func composeDropStaleDepsKeys(existing string, data InjectGenData) (string, bool
 		if !ok {
 			return true
 		}
-		keys, ok := keysByAlias[alias.Name]
+		keys, ok := keysFor(alias.Name)
 		if !ok {
 			return true
 		}
@@ -938,6 +966,101 @@ func composeDropStaleDepsKeys(existing string, data InjectGenData) (string, bool
 		return existing, false
 	}
 	return string(formatted), true
+}
+
+// composeImportAliases maps each import alias in file to its import path, as
+// the file spells it: the explicit name, else the path's last element.
+func composeImportAliases(file *ast.File) map[string]string {
+	aliasPath := map[string]string{}
+	for _, imp := range file.Imports {
+		path, uerr := strconv.Unquote(imp.Path.Value)
+		if uerr != nil {
+			continue
+		}
+		alias := path[strings.LastIndex(path, "/")+1:]
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		aliasPath[alias] = path
+	}
+	return aliasPath
+}
+
+// projectPackageDir returns the on-disk directory of importPath when it names
+// a package of this project (the module path is its prefix), and false for
+// anything else — the standard library, a dependency, an unknown project.
+func projectPackageDir(data InjectGenData, importPath string) (string, bool) {
+	if data.ProjectDir == "" || data.Module == "" {
+		return "", false
+	}
+	rel, ok := strings.CutPrefix(importPath, data.Module+"/")
+	if !ok || rel == "" {
+		return "", false
+	}
+	return filepath.Join(data.ProjectDir, filepath.FromSlash(rel)), true
+}
+
+// composeStaleConstructions returns one warning per project package that
+// compose.go still constructs (a `<alias>.Deps{…}` literal) although its own
+// marker now takes it out of the server's composition:
+// //forge:external-component (the server has it, built by hand onto Infra) or
+// //forge:not-a-component (the server does not have it).
+//
+// The construction is the author's code, so it is reported and never deleted:
+// removing a Components field, its construction and its import is a judgment
+// the reconciler cannot derive — something hand-written may read the field.
+// composeDropStaleDepsKeys keeps such a construction compiling as its Deps
+// struct changes; this tells the author it is now dead weight, and what to do.
+func composeStaleConstructions(existing string, data InjectGenData) []string {
+	if data.ProjectDir == "" {
+		return nil
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "compose.go", existing, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	aliasPath := composeImportAliases(file)
+	composed := make(map[string]bool, len(data.Order))
+	for _, c := range data.Order {
+		composed[data.Module+"/"+c.ImportPath] = true
+	}
+	seen := map[string]bool{}
+	var warnings []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		sel, ok := lit.Type.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Deps" {
+			return true
+		}
+		alias, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		path := aliasPath[alias.Name]
+		if path == "" || composed[path] || seen[path] {
+			return true
+		}
+		seen[path] = true
+		dir, ok := projectPackageDir(data, path)
+		if !ok {
+			return true
+		}
+		rel := strings.TrimPrefix(path, data.Module+"/")
+		switch composition, _ := internalPackageComposition(dir); composition {
+		case CompositionExternal:
+			warnings = append(warnings, fmt.Sprintf(
+				"internal/app/compose.go still constructs %s, which is now //forge:external-component — delete its import, Components field and construction, and put the instance on Infra", rel))
+		case CompositionNotAComponent:
+			warnings = append(warnings, fmt.Sprintf(
+				"internal/app/compose.go still constructs %s, which is now //forge:not-a-component — delete its import, Components field and construction: the server does not have it", rel))
+		}
+		return true
+	})
+	sort.Strings(warnings)
+	return warnings
 }
 
 // widenDepsElementCut widens one Deps-literal element's byte range so removing
@@ -1926,6 +2049,18 @@ type InjectGenInput struct {
 	Packages  []BootstrapPackageData
 	Workers   []BootstrapWorkerData
 	Operators []BootstrapOperatorData
+	// Warnings receives GenerateCompose's advisory lines — a construction
+	// compose.go keeps that the project no longer composes. Nil means
+	// os.Stderr.
+	Warnings io.Writer
+}
+
+// warnings returns where advisory lines go: Warnings, else os.Stderr.
+func (in InjectGenInput) warnings() io.Writer {
+	if in.Warnings != nil {
+		return in.Warnings
+	}
+	return os.Stderr
 }
 
 // RoleRoot returns the role-root directory the assignability matcher loads

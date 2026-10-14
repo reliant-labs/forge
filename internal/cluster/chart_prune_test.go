@@ -526,6 +526,93 @@ func TestNamespaceManifest_NoMetadataByDefault(t *testing.T) {
 	}
 }
 
+// A chart may not declare a label forge stamps on the Namespace it creates.
+// RenderHelmChart refuses the spec, naming the key, before it runs helm.
+// Without the refusal the declared value would decide the outcome silently: it
+// would replace forge's app.kubernetes.io/name and managed-by, which
+// stampDocAppLabel only defaults, and it would be overwritten on the forced
+// forge.dev/* keys.
+func TestRenderHelmChart_RefusesForgeOwnedNamespaceMetadata(t *testing.T) {
+	requirePOSIXFake(t, "helm")
+	// A helm that leaves a mark, so the test proves the refusal comes BEFORE the
+	// render, which is a network operation.
+	dir := t.TempDir()
+	mark := filepath.Join(dir, "helm-ran")
+	if err := os.WriteFile(filepath.Join(dir, "helm"), []byte("#!/bin/sh\ntouch "+mark+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	for _, tc := range []struct {
+		name        string
+		labels      map[string]string
+		annotations map[string]string
+		want        string
+	}{
+		{"app name", map[string]string{AppNameLabel: "flux2"}, nil, "label app.kubernetes.io/name"},
+		{"managed-by", map[string]string{AppManagedByLabel: "flux"}, nil, "label app.kubernetes.io/managed-by"},
+		{"workload", map[string]string{WorkloadLabel: "other"}, nil, "label forge.dev/workload"},
+		{"chart owner", map[string]string{ChartOwnerLabel: "acme.staging"}, nil, "label forge.dev/chart-owner"},
+		{"any forge.dev key", map[string]string{"forge.dev/anything": "x"}, nil, "label forge.dev/anything"},
+		{"apiserver's name", map[string]string{"kubernetes.io/metadata.name": "x"}, nil, "label kubernetes.io/metadata.name"},
+		{"forge.dev annotation", nil, map[string]string{"forge.dev/note": "x"}, "annotation forge.dev/note"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := fluxLikeSpec()
+			spec.NamespaceLabels = tc.labels
+			spec.NamespaceAnnotations = tc.annotations
+			// A PSA label beside it is fine on its own and must not mask the refusal.
+			if spec.NamespaceLabels == nil {
+				spec.NamespaceLabels = map[string]string{}
+			}
+			spec.NamespaceLabels["pod-security.kubernetes.io/enforce"] = "restricted"
+			_, err := RenderHelmChart(context.Background(), spec)
+			if err == nil {
+				t.Fatalf("RenderHelmChart accepted namespace metadata %v / %v, which sets a key forge owns", tc.labels, tc.annotations)
+			}
+			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), `"flux"`) {
+				t.Errorf("the refusal must name the chart and the key (%q): %v", tc.want, err)
+			}
+			if _, statErr := os.Stat(mark); statErr == nil {
+				t.Error("helm ran for a spec that must be refused before rendering")
+			}
+		})
+	}
+}
+
+// The precedence the refusal protects: a declared PSA label lands beside
+// forge's own stamps on the Namespace, and forge's stamps are forge's values.
+func TestRenderHelmChart_NamespaceCarriesDeclaredAndForgeLabels(t *testing.T) {
+	setRelease := fakeHelmReleases(t)
+	setRelease(docDeployment)
+	spec := fluxLikeSpec()
+	spec.NamespaceLabels = map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}
+	out, err := RenderHelmChart(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("RenderHelmChart: %v", err)
+	}
+	var ns *parsedDoc
+	for _, doc := range splitDocs(out) {
+		if m, ok := parseDoc(doc); ok && m.Kind == "Namespace" {
+			ns = &m
+		}
+	}
+	if ns == nil {
+		t.Fatalf("no Namespace in the render:\n%s", out)
+	}
+	for k, want := range map[string]string{
+		"pod-security.kubernetes.io/enforce": "restricted",
+		AppNameLabel:                         "flux",
+		AppManagedByLabel:                    "forge",
+		WorkloadLabel:                        "flux",
+		ChartOwnerLabel:                      chartOwnerFixture,
+	} {
+		if got := ns.Metadata.Labels[k]; got != want {
+			t.Errorf("Namespace label %s = %q, want %q (labels %v)", k, got, want, ns.Metadata.Labels)
+		}
+	}
+}
+
 // ChartOwner shares CRDOwner's spelling and, like it, is empty when either half
 // is unknown so the stamp and the prune switch off together.
 func TestChartOwner(t *testing.T) {

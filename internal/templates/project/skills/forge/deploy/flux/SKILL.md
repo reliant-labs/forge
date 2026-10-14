@@ -124,6 +124,11 @@ forge.flux_chart() | {
 They converge under server-side apply: a changed value is updated, a key you
 stop declaring is removed, a key another manager set is left alone.
 
+The labels forge stamps on that Namespace are forge's, and declaring one is
+refused: every `forge.dev/*` key, `app.kubernetes.io/name` (the chart's `name`),
+`app.kubernetes.io/managed-by` (`forge`), and the apiserver's
+`kubernetes.io/metadata.name`. Every other key, PSA included, is yours.
+
 A re-apply also **deletes the objects the chart stopped rendering**: every object
 is stamped `forge.dev/chart-owner=<project>.<env>`, and after the chart's apply
 succeeds the ones carrying that stamp that the new render lacks are removed. It

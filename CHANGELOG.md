@@ -374,6 +374,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a release that re-homes an object has a different digest even when its bytes
   are unchanged. Bundles built before this release have a different layout and so
   a different digest; this is the one-time migration above.
+
+- **`forge.HelmChart.namespace_labels` refuses `app.kubernetes.io/name` and
+  `app.kubernetes.io/managed-by`.** forge stamps both on the Namespace it
+  creates for a chart, but it only DEFAULTS them, so that a chart's own name
+  label survives for its selectors. On the Namespace, a declared value therefore
+  replaced forge's in silence. Declaring one now fails KCL evaluation, as
+  `forge.dev/*` and `kubernetes.io/metadata.name` already did. `RenderHelmChart`
+  refuses a spec carrying any of these keys before it runs helm, so a spec that
+  reaches it some other way is refused too. Drop the key: forge's values are the
+  chart's `name` and `forge`.
+
 - **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
   the chart stopped rendering.** forge applies a chart with `kubectl apply`,
   which never deletes, so an object a chart version dropped (the Flux chart's

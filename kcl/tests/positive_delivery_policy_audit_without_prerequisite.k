@@ -21,4 +21,3 @@ output = forge.render(forge.Bundle {
 })
 
 assert_audit_allowed = output.delivery_policy.admission_verify.mode == "audit" and output.delivery_policy.signing.mode == "off"
-

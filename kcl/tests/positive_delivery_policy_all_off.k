@@ -25,4 +25,3 @@ output = forge.render(forge.Bundle {
 })
 
 assert_all_off = len([m for m in [output.delivery_policy.trusted_builder.mode, output.delivery_policy.signing.mode, output.delivery_policy.provenance_sbom.mode, output.delivery_policy.flux_verify.mode, output.delivery_policy.admission_verify.mode, output.delivery_policy.signed_promotions.mode, output.delivery_policy.vuln_gate.mode, output.delivery_policy.bundle_kinds.mode, output.delivery_policy.approvals.mode] if m != "off"]) == 0
-

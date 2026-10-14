@@ -52,7 +52,7 @@ func TestRunNew_BridgedScaffoldIsTidyWithoutGenerate(t *testing.T) {
 
 	parent := t.TempDir()
 	if err := runNew(t.Context(), "demo", parent, "example.com/demo", config.ProjectKindService,
-		nil, nil, "", false, false, nil, "", true, "local", "", false, true); err != nil {
+		nil, nil, "", false, false, nil, "", true, "local", "", false, true, false); err != nil {
 		t.Fatalf("runNew: %v", err)
 	}
 	projectDir := filepath.Join(parent, "demo")

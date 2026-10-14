@@ -182,7 +182,7 @@ func TestRunNew_InPlaceRefusesPinItCannotGenerateIntoBeforeWriting(t *testing.T)
 	writeGoModIn(t, target, "module example.com/adopted\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge v0.1.44\n")
 
 	err := runNew(t.Context(), "adopted", target, "example.com/adopted", config.ProjectKindService,
-		nil, nil, "", true, false, nil, "", true, "local", "", false, false)
+		nil, nil, "", true, false, nil, "", true, "local", "", false, false, false)
 	if err == nil || !strings.Contains(err.Error(), "older than the forge generating into it") {
 		t.Fatalf("runNew = %v, want the stale-pin refusal", err)
 	}

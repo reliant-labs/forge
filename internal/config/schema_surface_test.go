@@ -72,10 +72,18 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			// env / path: every check's environment, read by
 			// cigate.GateEnv / GatePath. affected_ignore: read by
-			// cigate.ComputeAffected.
+			// affected.Compute; affected_rules: the same, per rule
+			// (CIAffectedRule below).
 			name: "CIGateConfig",
 			typ:  reflect.TypeFor[CIGateConfig](),
-			want: []string{"affected_ignore", "env", "extra_checks", "path"},
+			want: []string{"affected_ignore", "affected_rules", "env", "extra_checks", "path"},
+		},
+		{
+			// Every key is read by cigate's affected-package selection
+			// (internal/cigate/affected_rules.go).
+			name: "CIAffectedRule",
+			typ:  reflect.TypeFor[CIAffectedRule](),
+			want: []string{"affects", "also", "exact", "except", "full", "paths", "tests"},
 		},
 		{
 			// Every key is read by cigate's planner (internal/cigate/

@@ -14,9 +14,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/affected"
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -178,10 +180,10 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 
 	base := flags.base
 	if base == "" {
-		base = os.Getenv(cigate.BaseEnv)
+		base = os.Getenv(affected.BaseEnv)
 	}
 	selected = applyAffectedMode(ctx, out, selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, env: env, skips: skips, cache: cache, full: flags.full,
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, env: env, skips: skips, cache: cache, full: flags.full,
 	})
 
 	opt := cigate.Options{
@@ -239,12 +241,13 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 }
 
 // applyAffectedMode narrows the unit-tests row to the packages a branch
-// reaches (cigate.ComputeAffected), printing the mode and why. A PASS of the
+// reaches (affected.Compute), printing the mode and why. A PASS of the
 // whole suite cached for this tree answers for any narrower run, so then the
 // row stays whole and the cache answers it.
 type affectedArgs struct {
 	root, base         string
 	ignore, env, skips []string
+	rules              []config.CIAffectedRule
 	cache              *cigate.VerdictCache
 	full               bool
 }
@@ -274,10 +277,10 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	switch {
 	case in.full:
 		force = "--full"
-	case truthy(os.Getenv(cigate.FullEnv)):
-		force = cigate.FullEnv + "=1"
+	case truthy(os.Getenv(affected.FullEnv)):
+		force = affected.FullEnv + "=1"
 	}
-	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force, Ignore: in.ignore})
+	a := affected.Compute(ctx, affected.Input{Root: in.root, BaseRef: in.base, Env: in.env, Force: force, Ignore: in.ignore, Rules: in.rules})
 	fmt.Fprintln(out, a.Line())
 	return cigate.ApplyAffected(checks, a)
 }

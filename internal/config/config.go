@@ -842,10 +842,47 @@ type CIGateConfig struct {
 	// change to one does not force the full unit suite when the gate tests
 	// only the packages a branch affects. Any other non-Go change does.
 	AffectedIgnore []string `yaml:"affected_ignore,omitempty"`
+	// AffectedRules say what a changed file selects when the import graph
+	// alone cannot: a file no Go package owns, a tree-wide guard that reads
+	// every file. A file nothing claims runs the full suite.
+	AffectedRules []CIAffectedRule `yaml:"affected_rules,omitempty"`
 	// ExtraChecks are the project's own rows. By default each runs in the
 	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
 	// developer's `task ci` run the same ones.
 	ExtraChecks []CIGateCheck `yaml:"extra_checks,omitempty"`
+}
+
+// CIAffectedRule is one line of the table that maps changed files to the Go
+// packages whose tests must run (`forge ci affected`, affected mode of
+// `forge ci gate`). A file a rule matches is claimed: it no longer forces the
+// full suite. Rules union with each other and with the import graph.
+type CIAffectedRule struct {
+	// Paths are project-relative globs; `**` matches any number of path
+	// segments, every other segment is a path.Match pattern.
+	Paths []string `yaml:"paths"`
+	// Except removes files from Paths.
+	Except []string `yaml:"except,omitempty"`
+	// Affects are package patterns (`./kcl`, `./internal/cli/...`) treated
+	// as CHANGED: their own tests run, and so do the tests of everything
+	// whose test binary links them.
+	Affects []string `yaml:"affects,omitempty"`
+	// Tests are package patterns whose tests run, without their reverse
+	// dependencies: readers of the file, not consumers of the code.
+	Tests []string `yaml:"tests,omitempty"`
+	// Exact makes this rule the whole decision for the files it matches:
+	// the package that owns or embeds the file is NOT treated as changed,
+	// and no test is selected for merely naming the path. For a file
+	// embedded into a widely-imported package that only a few tests read.
+	Exact bool `yaml:"exact,omitempty"`
+	// Also makes the rule additive: it selects its packages but does not
+	// claim the file, so a file only `also` rules match still runs the full
+	// suite unless a package or another rule claims it. For guards that
+	// read every file (`paths: ["**"]`), which must not make every path
+	// "known".
+	Also bool `yaml:"also,omitempty"`
+	// Full, when set, is the reason a change here is judged by the whole
+	// suite (a pin, a workflow, the config that defines these rules).
+	Full string `yaml:"full,omitempty"`
 }
 
 // CIGateCheck is one project-owned check in `forge ci gate`.

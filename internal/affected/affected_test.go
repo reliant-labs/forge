@@ -1,4 +1,4 @@
-package cigate
+package affected
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// fakeGit answers the git calls ComputeAffected makes.
+// fakeGit answers the git calls Compute makes.
 type fakeGit struct {
 	branch    string
 	noOrigin  bool
@@ -75,10 +75,10 @@ func listed(root string) func(context.Context, string, []string) (io.Reader, err
 func affected(t *testing.T, g fakeGit, ignore ...string) Affected {
 	t.Helper()
 	root := t.TempDir()
-	return ComputeAffected(context.Background(), AffectedInput{Root: root, Git: g.run, GoList: listed(root), Ignore: ignore})
+	return Compute(context.Background(), AffectedInput{Root: root, Git: g.run, GoList: listed(root), Ignore: ignore})
 }
 
-func TestComputeAffected_SelectsWhatTheChangeReaches(t *testing.T) {
+func TestCompute_SelectsWhatTheChangeReaches(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		changed []string
@@ -107,7 +107,7 @@ func TestComputeAffected_SelectsWhatTheChangeReaches(t *testing.T) {
 	}
 }
 
-func TestComputeAffected_FallsBackToTheFullSuite(t *testing.T) {
+func TestCompute_FallsBackToTheFullSuite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		g    fakeGit
@@ -139,7 +139,7 @@ func TestComputeAffected_FallsBackToTheFullSuite(t *testing.T) {
 		})
 	}
 	root := t.TempDir()
-	forced := ComputeAffected(context.Background(), AffectedInput{Root: root, Force: "CI_FULL=1", Git: fakeGit{branch: "f", changed: []string{"a/a.go"}}.run, GoList: listed(root)})
+	forced := Compute(context.Background(), AffectedInput{Root: root, Force: "CI_FULL=1", Git: fakeGit{branch: "f", changed: []string{"a/a.go"}}.run, GoList: listed(root)})
 	if !forced.Full || forced.Reason != "CI_FULL=1" {
 		t.Errorf("forced: %+v", forced)
 	}
@@ -147,7 +147,7 @@ func TestComputeAffected_FallsBackToTheFullSuite(t *testing.T) {
 
 // affected_ignore names files no Go test reads; a change to one keeps the
 // branch in affected mode.
-func TestComputeAffected_IgnoreGlobs(t *testing.T) {
+func TestCompute_IgnoreGlobs(t *testing.T) {
 	a := affected(t, fakeGit{branch: "f", changed: []string{"CHANGELOG.md", "docs/guide/x.png", "a/README.md", "b/b.go"}}, "*.md", "docs/**")
 	if a.Full || strings.Join(a.Packages, " ") != "ex.com/m/b" {
 		t.Fatalf("Full=%v (%s) packages=%v", a.Full, a.Reason, a.Packages)
@@ -183,7 +183,7 @@ func TestApplyAffected(t *testing.T) {
 }
 
 // The real thing, once: git and `go list` over a small module, on a branch.
-func TestComputeAffected_RealModule(t *testing.T) {
+func TestCompute_RealModule(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs git and `go list -deps -test` subprocesses; runs in task test")
 	}
@@ -200,7 +200,7 @@ func TestComputeAffected_RealModule(t *testing.T) {
 	git(t, root, "checkout", "-q", "-b", "feature")
 	write(t, root, "a/a.go", "package a\n\nfunc A() int { return 2 }\n")
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
-	a := ComputeAffected(context.Background(), AffectedInput{Root: root, Env: env})
+	a := Compute(context.Background(), AffectedInput{Root: root, Env: env})
 	if a.Full {
 		t.Fatalf("full suite: %s", a.Reason)
 	}

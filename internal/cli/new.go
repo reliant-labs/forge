@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -48,6 +49,7 @@ func newNewCmd() *cobra.Command {
 		// checkout this binary was built from (a gitignored go.work `use`).
 		// See forge_bridge.go for why it is never implicit.
 		linkForge bool
+		verbose   bool
 	)
 
 	cmd := &cobra.Command{
@@ -126,7 +128,7 @@ checkout stop being the same source; drop the bridge with
 				}
 				projectName = args[0]
 			}
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge))
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose)
 		},
 	}
 
@@ -146,6 +148,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
 	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks + packages/ui-web shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
 	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default; required for a service scaffold from an unreleased forge build (also: "+linkForgeEnv+"=1)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
 }
@@ -255,7 +258,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 }
 
 //nolint:revive,cyclop // TODO: collapse into a runNewOptions struct; the cyclomatic complexity comes from cobra flag fan-out (resume/force/in-place/per-feature toggles) and refactoring requires a shared options type — cobra flag wiring is the only call site.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool) error {
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool, verbose bool) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
@@ -374,6 +377,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		skipTools:     skipTools,
 		frontendNames: frontendNames,
 		markerPath:    scaffold.markerPath,
+		verbose:       verbose,
 	})
 
 	scaffold.finish()
@@ -720,6 +724,10 @@ type newFinalizeInput struct {
 	skipTools     bool
 	frontendNames []string
 	markerPath    string
+	// verbose prints the raw output of a step forge otherwise summarizes
+	// in one line (today: the initial commit skipped for want of a git
+	// identity).
+	verbose bool
 }
 
 // finalizeNewProject runs the post-generation phase: install proto codegen
@@ -810,7 +818,7 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	} else {
 		fmt.Println("\n🔧 Initializing git repository...")
 		if err := initGitRepository(ctx, in.targetPath); err != nil {
-			fmt.Printf("Warning: failed to initialize git repository: %v\n", err)
+			reportGitInitError(os.Stdout, err, in.verbose)
 		}
 	}
 
@@ -1200,13 +1208,69 @@ func initGitRepository(ctx context.Context, path string) error {
 	// on it. The heavy gate (forge lint + audit) is on pre-push, which this
 	// commit doesn't trigger anyway; the hooks govern the user's work from
 	// here on.
-	cmd = exec.CommandContext(ctx, "git", "commit", "--no-verify", "-m", "Initial commit from forge")
+	cmd = exec.CommandContext(ctx, "git", "commit", "--no-verify", "-m", initialCommitMessage)
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
+		if gitIdentityMissing(ctx, path) {
+			return &gitIdentityError{output: string(output)}
+		}
 		return fmt.Errorf("git commit failed: %s", string(output))
 	}
 
 	return nil
+}
+
+const initialCommitMessage = "Initial commit from forge"
+
+// gitIdentityError reports that the initial commit was not made because git
+// has no author or committer identity: no user.name / user.email, and none
+// it could guess from the machine. Everything before the commit succeeded —
+// the repository exists, hooks are activated and every file is staged — so
+// this is a skipped step the user finishes with one command, not a failed
+// init. output is git's own explanation, shown only under --verbose.
+type gitIdentityError struct {
+	output string
+}
+
+func (e *gitIdentityError) Error() string {
+	return "git commit failed: no git identity (user.name / user.email)"
+}
+
+// gitIdentityMissing reports whether git in dir has no usable author or
+// committer identity. Asked after a failed commit, so the failure is
+// attributed to identity only when git itself says that is the problem — not
+// by matching commit's output, which is localized.
+func gitIdentityMissing(ctx context.Context, dir string) bool {
+	for _, ident := range []string{"GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"} {
+		cmd := exec.CommandContext(ctx, "git", "var", ident)
+		cmd.Dir = dir
+		var exitErr *exec.ExitError
+		if err := cmd.Run(); errors.As(err, &exitErr) {
+			return true
+		}
+	}
+	return false
+}
+
+// reportGitInitError prints why initGitRepository fell short. A missing git
+// identity is the common case on a fresh machine and is one line: git's
+// "Please tell me who you are" text names config commands but not the commit
+// forge skipped, so it is shown only under --verbose. Anything else is
+// unexpected, and git's output is the diagnosis.
+func reportGitInitError(w io.Writer, err error, verbose bool) {
+	var idErr *gitIdentityError
+	if !errors.As(err, &idErr) {
+		fmt.Fprintf(w, "Warning: failed to initialize git repository: %v\n", err)
+		return
+	}
+	// --no-verify, as forge's own commit used: the commit-msg hook runs
+	// commitlint when pre-commit is installed, and this message is not a
+	// Conventional Commit.
+	fmt.Fprintf(w, "⚠️  git repository initialized and staged, but the initial commit was skipped: "+
+		"no git identity (set user.name / user.email, then 'git commit --no-verify -m %q').\n", initialCommitMessage)
+	if verbose {
+		fmt.Fprintf(w, "    git commit said:\n%s\n", indentLines(strings.TrimSpace(idErr.output), "      "))
+	}
 }
 
 // npmInstallAttempts is how many times a frontend's `npm install` is tried

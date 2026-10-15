@@ -95,7 +95,7 @@ func TestRunNew_RefusesUnresolvableForgeBeforeWriting(t *testing.T) {
 
 	parent := t.TempDir()
 	err := runNew(t.Context(), "demo", parent, "github.com/example/demo", config.ProjectKindService,
-		nil, nil, "", false, false, nil, "", true, "local", "", false, false)
+		nil, nil, "", false, false, nil, "", true, "local", "", false, false, false)
 	if err == nil {
 		t.Fatal("runNew succeeded for a build that can neither pin nor bridge forge; " +
 			"its go.mod would have required the retired forge/pkg module")

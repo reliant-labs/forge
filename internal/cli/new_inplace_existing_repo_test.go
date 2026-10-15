@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -213,6 +216,119 @@ func TestRunNewInPlace_FreshDirectoryStillInitsGit(t *testing.T) {
 	// An empty directory is greenfield, in place or not: nothing reads the
 	// environment yet, so the typed-config guardrail starts gating.
 	assertTypedAccess(t, dir, config.EnforceTypedAccessError)
+}
+
+// TestRunNewInPlace_NoGitIdentitySkipsOnlyTheCommit pins #750: on a machine
+// with no git identity, `project new` used to print git's dozen-line "Please
+// tell me who you are" fatal error as "failed to initialize git repository",
+// then report success. The repository WAS initialized and staged; only the
+// commit is missing, and the output now says exactly that, in one line.
+func TestRunNewInPlace_NoGitIdentitySkipsOnlyTheCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds a project and runs git + go mod tidy; runs in task test")
+	}
+	isolateGit(t)
+	// No identity from anywhere. GIT_CONFIG_GLOBAL replaces ~/.gitconfig and
+	// the XDG file, so HOME (which also locates Go's caches for the
+	// scaffold's go mod tidy) stays put. useConfigOnly stops git guessing an
+	// address from the hostname, which succeeds on a host with a domain
+	// name (CI runners) and would make the commit go through.
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	writeTestFile(t, cfg, "[user]\n\tuseConfigOnly = true\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"} {
+		t.Setenv(k, "") // restores the original at cleanup
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+
+	out := captureProcessOutput(t, func() { runInPlace(t, dir, config.ProjectKindLibrary, false) })
+
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("fresh directory was not git-initialised: %v", err)
+	}
+	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); !strings.Contains(staged, "forge.yaml") {
+		t.Errorf("the scaffold is not staged; staged files:\n%s", staged)
+	}
+	if hp := gitOut(t, dir, "config", "--local", "core.hooksPath"); hp != ".githooks" {
+		t.Errorf("core.hooksPath = %q, want .githooks", hp)
+	}
+	if strings.Contains(out, "fatal:") || strings.Contains(out, "failed to initialize git repository") {
+		t.Errorf("git's raw failure leaked into the output:\n%s", out)
+	}
+	const warning = "git repository initialized and staged, but the initial commit was skipped: no git identity"
+	if n := strings.Count(out, warning); n != 1 {
+		t.Errorf("output carries the one-line warning %d times, want 1:\n%s", n, out)
+	}
+}
+
+// TestReportGitInitError: git's own explanation of a missing identity is
+// shown only under --verbose; any other git failure shows git's output, which
+// is the only diagnosis there is.
+func TestReportGitInitError(t *testing.T) {
+	const gitSaid = "*** Please tell me who you are.\nfatal: unable to auto-detect email address"
+	idErr := &gitIdentityError{output: gitSaid}
+	for _, tc := range []struct {
+		name    string
+		err     error
+		verbose bool
+		want    []string
+		notWant []string
+	}{
+		{"identity", idErr, false,
+			[]string{"initial commit was skipped: no git identity", `git commit --no-verify -m "Initial commit from forge"`},
+			[]string{"fatal:", "Please tell me who you are"}},
+		{"identity verbose", idErr, true,
+			[]string{"initial commit was skipped: no git identity", "      fatal: unable to auto-detect email address"},
+			nil},
+		{"other failure", errors.New("git add failed: fatal: pathspec"), false,
+			[]string{"failed to initialize git repository: git add failed: fatal: pathspec"},
+			[]string{"no git identity"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			reportGitInitError(&buf, tc.err, tc.verbose)
+			got := buf.String()
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("output lacks %q:\n%s", w, got)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("output carries %q:\n%s", w, got)
+				}
+			}
+		})
+	}
+}
+
+// captureProcessOutput runs f with the process's stdout and stderr pointed at
+// one pipe and returns what was written: project new prints with fmt.Print*,
+// which never goes near cobra's writer.
+func captureProcessOutput(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realOut, realErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = w, w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	defer func() {
+		os.Stdout, os.Stderr = realOut, realErr
+		_ = w.Close()
+	}()
+	f()
+	os.Stdout, os.Stderr = realOut, realErr
+	_ = w.Close()
+	return <-done
 }
 
 // assertTypedAccess fails unless dir's scaffolded forge.yaml records want as

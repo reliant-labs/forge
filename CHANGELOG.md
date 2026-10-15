@@ -28,8 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   providers are reserved. The issuer is `https://<slug>.reliantidentity.com`,
   the slug assigned once by the control plane (`release.IdentitySlug`).
   `forge.ControlPlaneSecret` is generalised beyond `telemetry_token`: the derived
-  kinds `identity` (required: pods wait for the first delivery, and `forge env
-  shape` says so), `identity_machine_key` and `identity_jwks`, plus `keys` and
+  kinds `identity` (required: pods wait for the first delivery, and
+  `forge env shape` says so), `identity_machine_key` and `identity_jwks`, plus `keys` and
   `required`. See `deploy/managed-identity`.
 - **An env moves onto the Flux path one delivery unit at a time.**
   `Bundle.hub_converges = [<unit>, …]` lists the delivery units the control plane's

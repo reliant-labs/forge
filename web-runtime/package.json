@@ -17,6 +17,12 @@
   "publishConfig": {
     "access": "public"
   },
+  "// overrides note": "The recorder still pins vulnerable fflate 0.7.4 (GHSA-px8p-9vwx-vf98); use the patched 0.7 line only in that subtree. npm applies overrides only at the install root, not from published dependencies, so the Next.js and Vite scaffold manifests carry the same override. Remove when HyperDX updates the recorder's pin.",
+  "overrides": {
+    "@hyperdx/otel-web-session-recorder": {
+      "fflate": "^0.7.5"
+    }
+  },
   "type": "module",
   "sideEffects": false,
   "files": [

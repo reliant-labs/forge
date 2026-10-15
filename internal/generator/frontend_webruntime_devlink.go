@@ -114,6 +114,12 @@ func devWorkspaceRootManifest(members []string) string {
 	return `{
   "name": "` + devWorkspaceRootName + `",
   "private": true,
+  "// overrides note": "npm honours overrides only at the install root, not in workspace members. Match the scaffold's fflate security override here while the dev bridge owns the root (GHSA-px8p-9vwx-vf98).",
+  "overrides": {
+    "@hyperdx/otel-web-session-recorder": {
+      "fflate": "^0.7.5"
+    }
+  },
   "//": [
     "GITIGNORED, machine-local, written by a DEV build of forge. Not part of your project.",
     "This is the npm twin of a gitignored go.work: it bridges this project's frontends to a",

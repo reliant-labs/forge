@@ -296,7 +296,14 @@ func newCIVulnScanCmd() *cobra.Command {
 			"This is a GATE, so it never reports a pass it did not verify. If a selected scanner\n" +
 			"cannot run — the binary is not on PATH, or the config selects no scanner at all —\n" +
 			"the command FAILS and names the missing piece, rather than exiting 0 over a scan\n" +
-			"that never happened. The success line names every scanner that actually ran.",
+			"that never happened. The success line names every scanner that actually ran.\n\n" +
+			"Go fails on any advisory your code CALLS; npm fails on any advisory of severity\n" +
+			"high or critical (lower ones are printed, not failed). An advisory with no fixed\n" +
+			"version that cannot reach your code can be accepted under ci.vuln_scan.exemptions\n" +
+			"in forge.yaml — by its GO-… id (govulncheck) or GHSA-… id (npm audit), with a\n" +
+			"reason and an expiry date. Each entry accepts that one advisory and nothing else; an\n" +
+			"expired or incomplete entry fails the gate, and one that matches nothing is reported\n" +
+			"so it can be removed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := requireFeature(config.FeatureCI)
 			if err != nil {
@@ -329,14 +336,26 @@ func newCIVulnScanCmd() *cobra.Command {
 					"set `ci.vuln_scan.go: true` and/or `ci.vuln_scan.npm: true` in forge.yaml (removing the whole `ci.vuln_scan` block enables both), or select one explicitly with `forge ci vuln-scan --go` / `--npm`")
 			}
 
-			// ran records the scanners that actually executed, so the
-			// success line can name them. A scanner that could not run
-			// contributes an error, never a silent absence.
-			var ran []string
-			hasFailed := false
+			// ran records the scanners that actually executed and passed,
+			// so the success line can name them; failed names the ones
+			// that did not pass, so the failure can. A scanner that could
+			// not run contributes an error, never a silent absence.
+			var ran, failed []string
+
+			// One exemption list serves both scanners; each entry's ID
+			// says which one it belongs to. An entry neither scanner
+			// reports can accept nothing, and fails the gate the way a
+			// malformed entry does.
+			exemptions, unroutable := partitionExemptions(ci.VulnScan.Exemptions)
+			for _, m := range unroutable {
+				fmt.Fprintf(os.Stderr, "❌ exemption not honored: %s\n", m)
+			}
+			if len(unroutable) > 0 {
+				failed = append(failed, fmt.Sprintf("%d unusable exemption(s) in forge.yaml", len(unroutable)))
+			}
 
 			if runGo {
-				what, err := ciRunGovulncheck(cmd.Context(), ci.VulnScan.Exemptions)
+				what, err := ciRunGovulncheck(cmd.Context(), exemptions[ecosystemGo])
 				switch {
 				case err != nil && errors.Is(err, errScannerUnavailable):
 					// Cannot verify ⇒ cannot pass. Hard-fail with the
@@ -345,14 +364,14 @@ func newCIVulnScanCmd() *cobra.Command {
 					return err
 				case err != nil:
 					fmt.Fprintf(os.Stderr, "❌ govulncheck failed: %v\n", err)
-					hasFailed = true
+					failed = append(failed, "govulncheck")
 				default:
 					ran = append(ran, what)
 				}
 			}
 
 			if runNPM {
-				what, err := ciRunNPMAudit(cmd.Context(), store.Config())
+				what, err := ciRunNPMAudit(cmd.Context(), store.Config(), exemptions[ecosystemNPM], time.Now())
 				switch {
 				case err != nil && errors.Is(err, errScannerUnavailable):
 					// Only fatal when the user asked for npm explicitly; a
@@ -365,19 +384,22 @@ func newCIVulnScanCmd() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "⏭️  npm audit: %v\n", err)
 				case err != nil:
 					fmt.Fprintf(os.Stderr, "❌ npm audit failed: %v\n", err)
-					hasFailed = true
+					failed = append(failed, "npm audit")
 				default:
 					ran = append(ran, what)
 				}
 			}
 
-			if hasFailed {
+			if len(failed) > 0 {
 				return cliutil.UserErr("forge ci vuln-scan",
-					"vulnerabilities were reported by "+strings.Join(ran, ", ")+" (see the scanner output above)",
+					"the vulnerability gate failed: "+strings.Join(failed, ", ")+" (see the output above)",
 					"",
-					"upgrade the affected modules (`go get -u <module>` / `npm audit fix`); if a Go advisory has no fixed "+
-						"version AND your code cannot reach it, accept it explicitly under `ci.vuln_scan.exemptions` in "+
-						"forge.yaml (id + reason + expires), which suppresses that advisory only")
+					"upgrade the affected dependency (`go get -u <module>` / bump it in package.json, or an npm "+
+						"`overrides` entry when only a transitive dependency has the fix). If an advisory has NO fixed "+
+						"version and cannot reach your code, accept it explicitly under `ci.vuln_scan.exemptions` in "+
+						"forge.yaml — `id` (the GO-… id govulncheck printed, or the GHSA-… id npm audit printed), "+
+						"`reason` (why it cannot affect you) and `expires` (YYYY-MM-DD) — which suppresses that "+
+						"advisory only")
 			}
 			if len(ran) == 0 {
 				return cliutil.UserErr("forge ci vuln-scan",
@@ -472,38 +494,6 @@ func ciRunGovulncheck(ctx context.Context, exemptions []config.CIVulnExemption) 
 		what += fmt.Sprintf(", %d accepted exemption(s)", len(res.Accepted))
 	}
 	return what, nil
-}
-
-// ciRunNPMAudit runs npm audit across every declared frontend and returns
-// a short description of what it scanned, or an error. A project with no
-// frontends yields errScannerUnavailable — nothing was audited, which the
-// caller must not fold into a pass.
-func ciRunNPMAudit(ctx context.Context, cfg *config.ProjectConfig) (string, error) {
-	if len(cfg.Frontends) == 0 {
-		return "", unavailable{cliutil.UserErr("forge ci vuln-scan --npm",
-			"no frontends are declared in forge.yaml, so there is no package.json to audit",
-			"forge.yaml (frontends)",
-			"add a frontend with `forge scaffold frontend <name>`, or drop --npm — a Go-only project has nothing for npm audit to scan")}
-	}
-
-	hasFailed := false
-	for _, fe := range cfg.Frontends {
-		dir := fe.DeclaredDir()
-		fmt.Printf("Running npm audit in %s ...\n", dir)
-		cmd := exec.CommandContext(ctx, "npm", "audit", "--audit-level=high")
-		cmd.Dir = dir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "  ❌ npm audit failed for %s (%s): %v\n", fe.Name, dir, err)
-			hasFailed = true
-		}
-	}
-
-	if hasFailed {
-		return "", fmt.Errorf("npm audit found vulnerabilities")
-	}
-	return fmt.Sprintf("npm audit (%d frontend(s))", len(cfg.Frontends)), nil
 }
 
 // gitPorcelainChanges returns the `git status --porcelain` lines for the

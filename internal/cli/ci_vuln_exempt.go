@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -11,20 +12,29 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// The Go vulnerability gate's decision layer.
+// The vulnerability gate's decision layer, shared by both scanners.
 //
-// govulncheck itself has no allowlist: it prints what it finds and exits
-// non-zero, so a project that links an advisory with NO fixed version has
-// only two native options — a permanently red gate, or no gate at all.
-// Both are bad in the same direction. A red gate stops being read after
-// the second week, and a disabled one cannot report the NEXT advisory,
-// which is the one that might actually be reachable.
+// Neither scanner has a reviewed allowlist. govulncheck has none at all: it
+// prints what it finds and exits non-zero. npm audit has none either — its
+// only knob is a severity floor, which cannot say "this ONE advisory". So a
+// project that carries an advisory with NO fixed version has only two native
+// options — a permanently red gate, or no gate at all. Both are bad in the
+// same direction. A red gate stops being read after the second week, and a
+// disabled one cannot report the NEXT advisory, which is the one that might
+// actually be reachable.
 //
-// So forge makes the pass/fail call itself. It runs govulncheck in JSON
-// mode (which exits 0 regardless of findings, handing the decision over
-// deliberately), keeps the findings govulncheck judged CALLED, and drops
-// only the advisory IDs the project has explicitly accepted. Everything
-// else fails exactly as before.
+// So forge makes the pass/fail call itself. It runs each scanner in JSON
+// mode, which hands the decision over deliberately: govulncheck exits 0
+// regardless of findings, and npm audit's exit code is ignored in favour of
+// the report it prints. Forge keeps the findings that can fail the gate
+// (govulncheck's CALLED findings; npm advisories at or above `high`) and
+// drops only the advisory IDs the project has explicitly accepted.
+// Everything else fails exactly as before.
+//
+// Both scanners read ONE list, ci.vuln_scan.exemptions, and the ID's own
+// namespace says which scanner an entry belongs to: govulncheck reports
+// GO-YYYY-NNNN, npm audit reports GHSA-xxxx-xxxx-xxxx. See
+// partitionExemptions.
 //
 // What keeps this from becoming a place to hide problems:
 //   - Exemptions are per-ID. Accepting one CVE in a module does not accept
@@ -58,12 +68,117 @@ type govulncheckMessage struct {
 	Finding *govulncheckFinding `json:"finding"`
 }
 
-// vulnFinding is one called advisory, reduced to what the gate reports.
+// vulnFinding is one advisory a scanner reported, reduced to what the gate
+// reports. The Go scanner fills ID/Summary/Module/Version; the npm scanner
+// fills ID/Summary/Module (the package)/Range/Severity/URL/In.
 type vulnFinding struct {
 	ID      string
 	Summary string
 	Module  string
 	Version string
+	// Range is the vulnerable version range npm audit states, e.g.
+	// "<=3.0.3" — npm reports which versions are affected, not the one
+	// installed.
+	Range string
+	// Severity is the advisory's own severity (npm only). The gate's
+	// threshold applies to it — see npmGateSeverity.
+	Severity string
+	// URL is the advisory page, printed so a reviewer is one click away
+	// from the details.
+	URL string
+	// In names the frontends whose install tree carries the advisory.
+	In []string
+	// Acceptance is populated only after a live exemption matched.
+	Acceptance *config.CIVulnExemption
+}
+
+// label renders the finding's location for the report: module@version for
+// Go, "package <range>, severity, in <frontends>" for npm.
+func (f vulnFinding) label() string {
+	s := f.Module
+	switch {
+	case f.Version != "":
+		s += "@" + f.Version
+	case f.Range != "":
+		s += " " + f.Range
+	}
+	if f.Severity != "" {
+		s += ", " + f.Severity
+	}
+	if len(f.In) > 0 {
+		s += ", in " + strings.Join(f.In, ", ")
+	}
+	return s
+}
+
+// Advisory namespaces. Each scanner reports exactly one, so an exemption's ID
+// alone routes it: there is no `scanner:` field to keep in step with the ID.
+const (
+	ecosystemGo  = "go"  // govulncheck: GO-2026-4887
+	ecosystemNPM = "npm" // npm audit:   GHSA-vfj7-8cjw-p6xm
+)
+
+var (
+	goAdvisoryRE   = regexp.MustCompile(`^GO-\d{4}-\d+$`)
+	ghsaAdvisoryRE = regexp.MustCompile(`^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$`)
+)
+
+// canonicalAdvisoryID normalizes an ID for comparison. GitHub prints GHSA
+// IDs with an upper-case prefix and a lower-case body, and people retype them
+// in either case; an exemption that fails to match on case alone would be a
+// silent no-op, so both sides are folded to GitHub's spelling before
+// comparing. Anything that is not a GHSA ID is only trimmed.
+func canonicalAdvisoryID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) > 5 && strings.EqualFold(id[:5], "GHSA-") {
+		return "GHSA-" + strings.ToLower(id[5:])
+	}
+	return id
+}
+
+// advisoryEcosystem names the scanner that reports id, or "" when neither
+// does.
+func advisoryEcosystem(id string) string {
+	id = canonicalAdvisoryID(id)
+	switch {
+	case goAdvisoryRE.MatchString(id):
+		return ecosystemGo
+	case ghsaAdvisoryRE.MatchString(id):
+		return ecosystemNPM
+	}
+	return ""
+}
+
+// partitionExemptions splits ci.vuln_scan.exemptions by the scanner each
+// entry's ID belongs to, so each scanner judges only its own: a GHSA entry
+// must not read as stale to govulncheck merely because govulncheck never
+// reports GHSA IDs, and the reverse.
+//
+// An entry whose ID neither scanner reports — a blank id, a CVE alias, a
+// typo — can accept nothing anywhere. It is returned in unroutable, as a
+// message, and the caller FAILS the gate on it, for the same reason a
+// malformed entry fails: the file claims an acceptance the gate is not
+// honoring. Reporting it here, once, rather than inside each scanner keeps it
+// from being reported twice, or not at all when only the other scanner runs.
+func partitionExemptions(all []config.CIVulnExemption) (byEcosystem map[string][]config.CIVulnExemption, unroutable []string) {
+	byEcosystem = map[string][]config.CIVulnExemption{}
+	for _, ex := range all {
+		id := strings.TrimSpace(ex.ID)
+		eco := advisoryEcosystem(id)
+		switch {
+		case id == "":
+			unroutable = append(unroutable,
+				"an exemption entry has no `id` — it cannot accept anything, so it is ignored")
+		case eco == "":
+			unroutable = append(unroutable, fmt.Sprintf(
+				"%s is not an ID either scanner reports, so it can accept nothing — govulncheck findings "+
+					"are accepted by their GO-YYYY-NNNN id and npm audit findings by their GHSA-xxxx-xxxx-xxxx "+
+					"id; use the id the scan printed", id))
+		default:
+			byEcosystem[eco] = append(byEcosystem[eco], ex)
+		}
+	}
+	return byEcosystem, unroutable
 }
 
 // parseGovulncheckJSON reduces a govulncheck JSON stream to the advisories
@@ -148,7 +263,7 @@ func evaluateVulnFindings(findings []vulnFinding, exemptions []config.CIVulnExem
 	matched := map[string]bool{}
 
 	for _, ex := range exemptions {
-		id := strings.TrimSpace(ex.ID)
+		id := canonicalAdvisoryID(ex.ID)
 		switch {
 		case id == "":
 			res.Malformed = append(res.Malformed,
@@ -182,8 +297,10 @@ func evaluateVulnFindings(findings []vulnFinding, exemptions []config.CIVulnExem
 	}
 
 	for _, f := range findings {
-		if _, ok := live[f.ID]; ok {
-			matched[f.ID] = true
+		id := canonicalAdvisoryID(f.ID)
+		if ex, ok := live[id]; ok {
+			matched[id] = true
+			f.Acceptance = &ex
 			res.Accepted = append(res.Accepted, f)
 			continue
 		}
@@ -205,9 +322,10 @@ func evaluateVulnFindings(findings []vulnFinding, exemptions []config.CIVulnExem
 // ever see the reasoning.
 func (r vulnGateResult) report(w io.Writer) {
 	for _, f := range r.Accepted {
-		fmt.Fprintf(w, "  ⚠️  accepted: %s (%s@%s)\n", f.ID, f.Module, f.Version)
-		if f.Summary != "" {
-			fmt.Fprintf(w, "      %s\n", f.Summary)
+		fmt.Fprintf(w, "  ⚠️  accepted: %s (%s)\n", f.ID, f.label())
+		printFindingDetail(w, f)
+		if f.Acceptance != nil {
+			fmt.Fprintf(w, "      reason: %s\n      expires: %s\n", f.Acceptance.Reason, f.Acceptance.Expires)
 		}
 	}
 	for _, id := range r.StaleExemptions {
@@ -219,9 +337,18 @@ func (r vulnGateResult) report(w io.Writer) {
 		fmt.Fprintf(w, "  ❌ exemption not honored: %s\n", m)
 	}
 	for _, f := range r.Blocking {
-		fmt.Fprintf(w, "  ❌ %s (%s@%s)\n", f.ID, f.Module, f.Version)
-		if f.Summary != "" {
-			fmt.Fprintf(w, "      %s\n", f.Summary)
-		}
+		fmt.Fprintf(w, "  ❌ %s (%s)\n", f.ID, f.label())
+		printFindingDetail(w, f)
+	}
+}
+
+// printFindingDetail prints the indented summary and advisory link under a
+// finding's headline.
+func printFindingDetail(w io.Writer, f vulnFinding) {
+	if f.Summary != "" {
+		fmt.Fprintf(w, "      %s\n", f.Summary)
+	}
+	if f.URL != "" {
+		fmt.Fprintf(w, "      %s\n", f.URL)
 	}
 }

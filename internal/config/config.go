@@ -982,21 +982,27 @@ type CIVulnConfig struct {
 	Docker bool `yaml:"docker"` // trivy, default true
 	NPM    bool `yaml:"npm"`    // npm audit, default true
 
-	// Exemptions accepts specific advisory IDs that must not fail the Go
+	// Exemptions accepts specific advisory IDs that must not fail the
 	// gate. It exists for exactly one situation: a vulnerability with no
 	// fixed version, reached only through a code path the project does not
 	// execute. Without it the only options are a red gate forever or
 	// disabling the scan — and a disabled scan is how the NEXT advisory,
 	// the reachable one, goes unnoticed.
 	//
+	// One list serves both scanners, and each entry's ID says which one it
+	// belongs to: govulncheck reports GO-YYYY-NNNN ids, npm audit reports
+	// GHSA-xxxx-xxxx-xxxx ids. An id neither scanner reports fails the gate,
+	// since it can accept nothing.
+	//
 	// Scoped by ID on purpose: an exemption suppresses the advisories it
-	// names and nothing else, so a new CVE in the very same module still
-	// fails. See CIVulnExemption for the per-entry contract.
+	// names and nothing else, so a new CVE in the very same module or
+	// package still fails. See CIVulnExemption for the per-entry contract.
 	Exemptions []CIVulnExemption `yaml:"exemptions,omitempty"`
 }
 
-// CIVulnExemption accepts one advisory ID against the Go vulnerability
-// gate, with the justification and the expiry date attached to it.
+// CIVulnExemption accepts one advisory ID against the vulnerability gate
+// (govulncheck or npm audit), with the justification and the expiry date
+// attached to it.
 //
 // Both extra fields are REQUIRED, and that is the whole design. An
 // allowlist of bare IDs rots invisibly: nobody can tell a still-valid
@@ -1011,7 +1017,10 @@ type CIVulnConfig struct {
 // it should be deleted, not left behind to suppress a future finding
 // nobody chose to accept.
 type CIVulnExemption struct {
-	// ID is the Go advisory ID, e.g. "GO-2026-4887".
+	// ID is the advisory ID exactly as the scanner printed it: a Go
+	// advisory ID for govulncheck ("GO-2026-4887"), a GitHub advisory ID
+	// for npm audit ("GHSA-vfj7-8cjw-p6xm"). The namespace routes the
+	// entry to its scanner.
 	ID string `yaml:"id"`
 	// Reason states why this advisory cannot affect this project —
 	// the unreachability argument, not a ticket number.

@@ -110,12 +110,14 @@ Each workflow's header says why its lanes are shaped the way they are; read it b
 moving a check between lanes.
 
 - **Unit** — `ci.yml` Test: `go test -race -count=1` over `scripts/ci-test-packages.sh unit`
-  (every package except the guards).
+  (every package except `internal/cli` and the guards).
+- **internal/cli** — `ci.yml` Test (internal/cli): the package alone, `-race -count=1`. Its
+  subpackages stay in Unit.
 - **Guards** — `ci.yml` Test (guards): tierguard, removalguard, deadcodeguard; `-p 1`, no
   `-race`.
-- **Windows** — `ci.yml` Windows: build, vet, the windows/arm64 build, the `-short` unit tier,
-  and a scaffold+render smoke. No `-count=1`: a PR restores main's build cache and replays
-  unchanged packages; only a push to main saves the cache.
+- **Windows** — `ci.yml` Windows: build, vet, the windows/arm64 build, the `-short` tier of
+  Unit + internal/cli, and a scaffold+render smoke. No `-count=1`: a PR restores main's
+  build cache and replays unchanged packages; only a push to main saves the cache.
 - **e2e** — `e2e-suite.yml`: the `-tags e2e` suite in 4 shards, plus a coverage ledger that
   proves the shards ran every test.
 - **Nightly** — `nightly.yml` (schedule + dispatch): the full windows/arm64 `go vet`. A red

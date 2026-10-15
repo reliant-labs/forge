@@ -80,7 +80,7 @@ Common error codes: `invalid_argument` (400), `unauthenticated` (401), `permissi
 
 ## Auth headers
 
-If the project's `forge.yaml` sets `auth.jwt: true` or `auth.api_keys: true`, methods default to requiring authentication. Pass credentials as standard HTTP headers:
+Every rpc requires a credential unless it declares `auth_required: false`. Pass a bearer token, or an API key once the project enables keys (`auth/api-keys`):
 
 ```bash
 # JWT

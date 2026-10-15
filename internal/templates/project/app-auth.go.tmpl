@@ -8,8 +8,15 @@
 // deploy/kcl/<env>/config.k, with the secret coming from the env's secret
 // provider. Nothing here reads the environment directly.
 //
-// The generated cmd serve wiring calls SetupAuth and threads the returned
-// validator into the auth interceptor (pkg/middleware AuthDeps.Validate).
+// This file decides how a presented credential is checked:
+//
+//   - SetupAuth — bearer tokens (JWTs). The generated cmd serve.go calls it
+//     BEFORE anything is opened and threads the authenticator it returns into
+//     the auth interceptor (pkg/middleware AuthDeps.Validate), so a server
+//     that cannot authenticate refuses to start.
+//   - APIKeyValidator — API keys. cmd serve.go calls it right AFTER
+//     OpenInfra, because checking a key reads the database, and installs the
+//     result on that same authenticator.
 package app
 
 import (
@@ -27,8 +34,10 @@ import (
 // boot when the JWKS URL is derived from jwt_issuer rather than configured.
 const discoveryTimeout = 10 * time.Second
 
-// SetupAuth returns the bearer-token validator this service authenticates
-// requests with.
+// SetupAuth returns the authenticator this service checks every request's
+// credential with. It routes a credential by its shape: an API key ("fk_…")
+// to the key validator APIKeyValidator supplies once infra is open, anything
+// else to the bearer-token validator built here.
 //
 // Default: validate JWTs using the typed config fields —
 //
@@ -72,7 +81,8 @@ const discoveryTimeout = 10 * time.Second
 // and/or the per-env config, never patching a provider enum.
 //
 // Swap the validator freely — it is arbitrary code, not a fixed enum. Each
-// constructor returns a *auth.Validator; hand back its .Validate method:
+// constructor returns a *auth.Validator; wrap its .Validate method in
+// auth.NewAuthenticator, as the last line below does:
 //
 //	// Clerk (JWKS + org/session claim shape):
 //	validator, err := auth.Clerk(auth.ClerkOpts{
@@ -89,14 +99,13 @@ const discoveryTimeout = 10 * time.Second
 // project IDs, above) gets a new field in proto/config/v1/config.proto —
 // that is the one place per-deployment values are declared.
 //
-// For API keys or a bespoke header scheme, return your own
-// func(token string) (*auth.Claims, error): look the presented key up in
-// your store and verify it with forge/pkg/apikey (see the auth skill's
-// "API keys" recipe).
+// API keys are not configured here — they are APIKeyValidator's, below.
+// A service that takes API keys ONLY passes nil to auth.NewAuthenticator:
+// every bearer token is then rejected.
 //
-// Refuse-to-start: a nil validator makes the server REFUSE TO START — a
+// Refuse-to-start: a nil authenticator makes the server REFUSE TO START — a
 // server with no authenticator is a bug. The default below always returns
-// a validator, so a fresh project does real JWT auth in every environment
+// one, so a fresh project does real JWT auth in every environment
 // out of the box, failing closed on every request until signing material
 // (jwt_secret, or a reachable jwt_jwks_url) is configured. To exercise a
 // protected endpoint locally, present a token this validator accepts: sign
@@ -111,7 +120,7 @@ const discoveryTimeout = 10 * time.Second
 // HOW a presented token is checked. There is no env var, and no value of
 // any field read below, that makes this server serve a protected RPC to an
 // anonymous caller.
-func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error) {
+func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {
 	jwksURL := cfg.JwtJwksUrl
 	snapshot := auth.JWKSSnapshot{
 		File:   cfg.JwtJwksSnapshotFile,
@@ -176,5 +185,48 @@ func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), er
 	if err != nil {
 		return nil, fmt.Errorf("build JWT validator: %w", err)
 	}
-	return validator.Validate, nil
+	return auth.NewAuthenticator(validator.Validate), nil
+}
+
+// APIKeyValidator returns the validator API keys are checked with — a
+// credential that starts with apikey.KeyPrefix ("fk_"), presented as
+// "X-API-Key: fk_…" (middleware.APIKeyHeader) or "Authorization: Bearer
+// fk_…". The generated cmd serve.go calls it right after OpenInfra and
+// installs the result with authenticator.UseKeyValidator, so a key check
+// runs on the pool the handlers serve from (infra.DB / infra.ORM), never on
+// a second connection pool of its own, and with the request's context.
+//
+// nil — the default — leaves API keys DISABLED: every "fk_" credential is
+// rejected and bearer tokens are unaffected. Disabled is not unchecked;
+// there is no value this function can return that lets a key through
+// unverified, and a key too short to be one never reaches your store.
+//
+// To enable keys, own a table that stores each key's SHA-256 HASH and an
+// indexed lookup prefix — never the key — and return a lookup over it:
+//
+//	func APIKeyValidator(infra *Infra) auth.KeyValidator {
+//		return auth.KeyValidatorFunc(func(ctx context.Context, key string) (*auth.Claims, error) {
+//			prefix, err := apikey.LookupPrefix(key)
+//			if err != nil {
+//				return nil, err
+//			}
+//			var hash, userID string
+//			err = infra.DB.QueryRowContext(ctx, `SELECT key_hash, user_id FROM api_keys
+//				WHERE prefix = $1 AND revoked_at IS NULL
+//				AND (expires_at IS NULL OR expires_at > now())`, prefix).Scan(&hash, &userID)
+//			if err != nil {
+//				return nil, err // sql.ErrNoRows included: an unknown key
+//			}
+//			if !apikey.Verify(key, hash) { // constant time
+//				return nil, errors.New("key does not match")
+//			}
+//			return &auth.Claims{UserID: userID}, nil
+//		})
+//	}
+//
+// Return errors freely: the caller only ever reads "invalid API key", and
+// your error is logged server-side as its cause. The table, issuing keys
+// and revoking them: `forge skill load auth/api-keys`.
+func APIKeyValidator(_ *Infra) auth.KeyValidator {
+	return nil
 }

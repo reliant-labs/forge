@@ -70,9 +70,10 @@
 //	        ValidatorConfigured: deps.Validate != nil,
 //	        ExternalAuth:        deps.ExternalAuth,
 //	        AnonymousOK:         deps.AnonymousOK,
-//	        Validate:            deps.Validate,
+//	        ValidateContext:     deps.Validate, // (*auth.Authenticator).Authenticate
 //	        Unauthenticated:     UnauthenticatedProcedures,
 //	        Enrich:              enrichClaims,
+//	        ExtractToken:        credentialFrom, // Bearer, else X-API-Key, else the session cookie
 //	    })
 //	}
 //
@@ -110,9 +111,8 @@ import (
 // refused) outside dev mode — fail-closed by default.
 type Policy struct {
 	// ValidatorConfigured reports whether the project installed a real
-	// token validator (e.g. via its SetTokenValidator helper). When
-	// true the interceptor runs in Validate mode and Validate +
-	// ContextWithClaims must be non-nil.
+	// credential validator. When true the interceptor runs in Validate
+	// mode and exactly one of Validate and ValidateContext must be set.
 	ValidatorConfigured bool
 
 	// ExternalAuth reports whether an auth provider (a pack, or
@@ -136,7 +136,27 @@ type Policy struct {
 	// resolution remains construction-time: if no validator is
 	// installed by the time the interceptor is built, set
 	// ValidatorConfigured accordingly and construction is refused.
+	//
+	// Set exactly one of Validate and ValidateContext.
 	Validate func(token string) (*auth.Claims, error)
+
+	// ValidateContext is Validate with the request's context. Use it for
+	// a validator that does I/O — an API-key lookup in the application's
+	// database, a token-introspection call — so the lookup is cancelled
+	// with the request, carries its deadline, and opens its spans under
+	// the request's trace. Validate has nowhere to put a context, which
+	// left such a validator running on context.Background(), detached
+	// from everything the request carries.
+	//
+	// [auth.Authenticator.Authenticate] has this signature: it routes a
+	// bearer token to a JWT validator and an API key to a key validator
+	// installed after the interceptor is built (late binding is the
+	// Authenticator's job, so pass its method value directly).
+	//
+	// Set exactly one of Validate and ValidateContext: NewInterceptor
+	// refuses a policy that sets both, because two validators for one
+	// credential is a configuration error, not a precedence question.
+	ValidateContext func(ctx context.Context, token string) (*auth.Claims, error)
 
 	// Unauthenticated is the explicit allow-list of procedures that
 	// bypass authentication. Entries must be FULL procedure strings of
@@ -287,8 +307,13 @@ func NewInterceptor(p Policy) (connect.Interceptor, error) {
 			"your own source, and there is no environment variable that runs this " +
 			"server without authentication (see pkg/middleware/middleware.go)")
 	case modeValidate:
-		if p.Validate == nil {
-			return nil, errors.New("authn.NewInterceptor: ValidatorConfigured is true but Policy.Validate is nil")
+		switch {
+		case p.Validate == nil && p.ValidateContext == nil:
+			return nil, errors.New("authn.NewInterceptor: ValidatorConfigured is true but Policy.Validate is nil " +
+				"(and so is Policy.ValidateContext)")
+		case p.Validate != nil && p.ValidateContext != nil:
+			return nil, errors.New("authn.NewInterceptor: Policy.Validate and Policy.ValidateContext are both set — " +
+				"a policy has ONE validator; pass it as ValidateContext, or as Validate when it needs no request context")
 		}
 		if p.ContextWithClaims == nil {
 			// Default to the library's own claims stash, which
@@ -375,6 +400,19 @@ func (p Policy) authorization(header http.Header) string {
 	return "Bearer " + token
 }
 
+// validate runs whichever validator the policy carries. NewInterceptor
+// guarantees exactly one is set; ValidateContext gets the request context.
+func (p Policy) validate(ctx context.Context, token string) (*auth.Claims, error) {
+	if p.ValidateContext != nil {
+		return p.ValidateContext(ctx, token)
+	}
+	return p.Validate(token)
+}
+
+// errNoClaims is the validation failure for a validator that returned
+// neither claims nor an error. See authenticate.
+var errNoClaims = errors.New("validator returned no claims")
+
 // allowUnauthenticated reports whether the procedure is on the explicit
 // allow-list. Exact match only — see Policy.Unauthenticated.
 func (a *interceptor) allowUnauthenticated(procedure string) bool {
@@ -413,7 +451,16 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid authorization format"))
 	}
 
-	claims, err := a.policy.Validate(token)
+	claims, err := a.policy.validate(ctx, token)
+	if err == nil && claims == nil {
+		// SUCCESS with no principal is a validator bug — the classic shape
+		// is a hand-written lookup answering "not found" with (nil, nil).
+		// Stashing nil claims and calling next would serve an
+		// auth_required RPC to a caller nobody authenticated (a handler
+		// that never calls GetUser — every scaffolded CRUD shim — cannot
+		// tell). No principal is a failed validation, whoever said so.
+		err = errNoClaims
+	}
 	if err != nil {
 		fallback := connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid token: %w", err))
 		if a.policy.MapError != nil {

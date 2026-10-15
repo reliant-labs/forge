@@ -118,15 +118,19 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// server stops authenticating, and it is a source change.
 	authDeps := middleware.AuthDeps{AnonymousOK: false}
 
-	// app.SetupAuth (internal/app/auth.go, yours) picks the validator —
-	// JWT by default, configured from the typed cfg. Edit SetupAuth to swap
-	// validators or add providers: picking an authenticator is code, and
-	// only the per-environment values it reads are config.
-	authValidate, aerr := app.SetupAuth(cfg)
+	// app.SetupAuth (internal/app/auth.go, yours) builds the authenticator —
+	// JWT bearer tokens by default, configured from the typed cfg. Edit
+	// SetupAuth to swap validators or add providers: picking an
+	// authenticator is code, and only the per-environment values it reads
+	// are config. API keys join it below, once the database is open. A nil
+	// authenticator leaves Validate unset, which NewAuthInterceptor refuses.
+	authenticator, aerr := app.SetupAuth(cfg)
 	if aerr != nil {
 		return fmt.Errorf("auth setup: %w", aerr)
 	}
-	authDeps.Validate = authValidate
+	if authenticator != nil {
+		authDeps.Validate = authenticator.Authenticate
+	}
 
 	// Built UP FRONT so a server with no validator REFUSES TO START:
 	// NewAuthInterceptor errors when Validate is nil and AuthDeps.ExternalAuth
@@ -238,6 +242,19 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	if err != nil {
 		return fmt.Errorf("open infra: %w", err)
 	}
+
+	// API KEYS. Installed HERE, not in SetupAuth, because checking a key
+	// reads the database OpenInfra just opened: app.APIKeyValidator
+	// (internal/app/auth.go, yours) builds it over infra, so a key check
+	// shares the handlers' pool instead of opening its own. The interceptor
+	// built above already calls authenticator.Authenticate, and no RPC is
+	// mounted until below, so every request sees what is installed. nil —
+	// the scaffold's default — leaves API keys disabled (rejected), and
+	// bearer tokens unaffected.
+	if authenticator != nil {
+		authenticator.UseKeyValidator(app.APIKeyValidator(infra))
+	}
+
 	components, err := app.NewComponents(infra)
 	if err != nil {
 		return fmt.Errorf("build components: %w", err)

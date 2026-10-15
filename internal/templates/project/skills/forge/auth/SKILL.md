@@ -5,7 +5,7 @@ description: Authentication — the owned SetupAuth validator (JWT default with 
 
 # Authentication
 
-Authentication is a **middleware, nothing more**: an interceptor validates the bearer token and puts `*Claims` on the context, **fail-closed** — no token, or an invalid one, is rejected before any handler runs. Forge scaffolds the validator choice in OWNED code (`SetupAuth`) and wires the interceptor.
+Authentication is a **middleware, nothing more**: an interceptor validates the request's credential — a bearer token, or an API key — and puts `*Claims` on the context, **fail-closed** — no credential, or an invalid one, is rejected before any handler runs. Forge scaffolds the validator choice in OWNED code (`internal/app/auth.go`) and wires the interceptor.
 
 **Which RPCs are callable without credentials is declared in the proto**, per rpc, with `option (forge.v1.method) = { auth_required: false }` — projected into `pkg/middleware/procedures_gen.go`, which the interceptor reads. No second list to keep in step.
 
@@ -15,13 +15,13 @@ Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-is
 
 ## Choosing the validator (owned code, not config)
 
-Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the validator `cmd serve.go` mounts. Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.
+Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the `*auth.Authenticator` `cmd serve.go` mounts — a JWT validator wrapped so API keys can join it later (`auth/api-keys`). Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.
 
 `SetupAuth(cfg *config.Config)` is unaffected by per-binary config (`forge skill load binaries`, "Config"): `config.Config` is always a real type, whether it aliases a single project-global `AppConfig` or — in an all-binary-annotated project — the config message bound to the primary server binary. `SetupAuth` never needs to know which.
 
 ```go
 // internal/app/auth.go — YOURS (scaffolded once, never regenerated). Abridged.
-func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error) {
+func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {
 	// Issuer but no explicit JWKS URL: discover where its keys are. Passed as a
 	// func, not resolved here, so it re-runs on every live attempt and a
 	// snapshot can cover an issuer that is down at boot.
@@ -47,7 +47,7 @@ func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), er
 		},
 	})
 	if err != nil { return nil, fmt.Errorf("build JWT validator: %w", err) }
-	return validator.Validate, nil
+	return auth.NewAuthenticator(validator.Validate), nil
 }
 ```
 
@@ -64,7 +64,7 @@ func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), er
 
 **Most swaps are a CONFIG change, not a code change.** Any standards-compliant issuer — Auth0, Keycloak, Zitadel, Okta, Supabase, a local dev IdP — needs no constructor: point `jwt_issuer` (plus `jwt_jwks_url` if discovery cannot describe it) at the new issuer and the default validator validates against its keys.
 
-Only a NON-STANDARD claim shape needs code — edit `internal/app/auth.go` and return a different validator's `.Validate`:
+Only a NON-STANDARD claim shape needs code — edit `internal/app/auth.go` and wrap a different validator's `.Validate` in `auth.NewAuthenticator`:
 
 ```go
 // Clerk — JWKS + Clerk's org/session claim shape (sub / org_id / org_role → Claims).
@@ -96,11 +96,11 @@ Read it with `middleware.ClaimsFromContext(ctx)` (`(*Claims, ok)`) on an RPC tha
 
 ## The wiring file + interceptor chain
 
-The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`. The project keeps ONE scaffolded-once file, `pkg/middleware/middleware.go`, wiring the two things projects customize: the **token validator** (passed EXPLICITLY into `NewAuthInterceptor(AuthDeps{Validate: fn})` — no package global) and the **identity enricher** `enrichClaims`. It also owns `Claims`, the claims context key, and `GetUser`. The allow-list is not among them — it is generated into `procedures_gen.go`.
+The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`. The project keeps ONE scaffolded-once file, `pkg/middleware/middleware.go`, wiring the things projects customize: the **credential validator** (passed EXPLICITLY into `NewAuthInterceptor(AuthDeps{Validate: fn})`, with the request's context — no package global), the **identity enricher** `enrichClaims`, and the **credential channel** `credentialFrom` (a Bearer header, else `APIKeyHeader`, else the session cookie — one credential per request, never a fallback). It also owns `Claims`, the claims context key, and `GetUser`. The allow-list is not among them — it is generated into `procedures_gen.go`.
 
 **How to tell from SOURCE whether this server authenticates** — two facts, both in the repo, neither of them runtime state:
 
-1. the generated `cmd serve.go` builds `middleware.AuthDeps{AnonymousOK: false}` and threads the OWNED `app.SetupAuth(cfg)` validator into `AuthDeps.Validate`;
+1. the generated `cmd serve.go` builds `middleware.AuthDeps{AnonymousOK: false}` and threads the OWNED `app.SetupAuth(cfg)` authenticator's `Authenticate` into `AuthDeps.Validate`;
 2. the exempt RPCs are `procedures_gen.go`, projected from the protos' `auth_required` declarations.
 
 Mode resolution happens ONCE at construction: a validator → enforce; `ExternalAuth` → passthrough (another interceptor owns identity); neither → **refuse to start**. **No environment variable can run a forge service without authentication**, and no config value can either — which is why the answer is readable in a diff rather than only observable in production.
@@ -169,7 +169,7 @@ The token says who the caller is; your database says what they are. `enrichClaim
 
 ## API keys
 
-A bearer credential you own end to end: your table, your store, `forge/pkg/apikey`'s primitives (SHA-256 hash + indexed prefix + constant-time verify), and an `auth.KeyValidator` wired into `SetupAuth` with `Provider: "both"` to accept a JWT OR a key. Recipe: `auth/api-keys`.
+Wired in every scaffold, disabled until you supply a key validator. A key arrives as `X-API-Key: fk_…` (`middleware.APIKeyHeader`) or `Authorization: Bearer fk_…`. The authenticator routes it by its `fk_` shape to the `auth.KeyValidator` that `internal/app/auth.go`'s `APIKeyValidator(infra)` returns, which `serve.go` installs right after `OpenInfra` so the lookup runs on the handlers' own pool. You own the table (hash + indexed prefix, never the key) and the lookup, over `forge/pkg/apikey`'s primitives. Recipe: `auth/api-keys`.
 
 ## Dev mode
 

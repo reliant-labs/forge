@@ -3,10 +3,11 @@
 // Package middleware is YOUR authentication policy surface — forge
 // scaffolded it once and will not rewrite it.
 //
-// Authentication is a MIDDLEWARE: it validates the bearer token and puts
-// *Claims on the context. It runs FAIL-CLOSED — a request with no token, or
-// an invalid one, is rejected before any handler runs, unless the RPC it
-// names declared `auth_required: false` in the proto.
+// Authentication is a MIDDLEWARE: it validates the request's credential — a
+// bearer token or an API key — and puts *Claims on the context. It runs
+// FAIL-CLOSED — a request with no credential, or an invalid one, is rejected
+// before any handler runs, unless the RPC it names declared
+// `auth_required: false` in the proto.
 //
 // That is authentication and nothing more. Deciding what a caller may DO,
 // and WHICH ROWS they may see, is HANDLER LOGIC you write — call GetUser
@@ -24,14 +25,15 @@
 //
 // This file wires the POLICY: the three things projects actually customize.
 //
-//  1. Token validator  — passed EXPLICITLY into NewAuthInterceptor via
+//  1. Credential validator — passed EXPLICITLY into NewAuthInterceptor via
 //     AuthDeps.Validate (no package-global slot). The OWNED composition
-//     root internal/app/auth.go (SetupAuth) builds the validator and the
-//     generated cmd serve.go threads it in.
+//     root internal/app/auth.go builds it — SetupAuth for bearer tokens,
+//     APIKeyValidator for API keys — and the generated cmd serve.go
+//     threads it in.
 //  2. Identity enricher — enrichClaims (hydrate roles/org/flags onto
 //     validated claims before handlers see them).
-//  3. Credential channel — credentialFrom (a Bearer header, else the native
-//     sign-in session cookie).
+//  3. Credential channel — credentialFrom (a Bearer header, else the
+//     APIKeyHeader, else the native sign-in session cookie).
 //
 // The allow-list is NOT a hook here: which RPCs are callable without
 // credentials is declared per-rpc in the proto (auth_required: false) and
@@ -95,7 +97,7 @@ func GetUser(ctx context.Context) (*Claims, error) { return authn.GetUser(ctx) }
 // nothing to the runtime. Publishing an endpoint is now one edit, in the file
 // that declares the endpoint.
 //
-// ─── Policy hook 1: the token validator (explicit, no global) ─────────
+// ─── Policy hook 1: the credential validator (explicit, no global) ────
 
 // AuthDeps carries the EXPLICIT authentication policy into the
 // interceptor. The composition root builds an AuthDeps once and threads it
@@ -122,11 +124,16 @@ type AuthDeps struct {
 	// identity, or if this service genuinely authenticates nothing.
 	AnonymousOK bool
 
-	// Validate validates a raw bearer token and returns the claims. Non-nil
-	// switches the interceptor into validate mode; nil leaves ExternalAuth
-	// as the only remaining signal and otherwise refuses to start (a
-	// production server with no auth provider is a bug).
-	Validate func(token string) (*Claims, error)
+	// Validate checks the raw credential credentialFrom read — a bearer
+	// token or an API key — and returns the claims of the principal it
+	// proves. It receives the request's context, because checking an API
+	// key is a read of this app's database. The generated cmd serve.go
+	// passes (*auth.Authenticator).Authenticate from app.SetupAuth.
+	//
+	// Non-nil switches the interceptor into validate mode; nil leaves
+	// ExternalAuth as the only remaining signal and otherwise refuses to
+	// start (a production server with no auth provider is a bug).
+	Validate func(ctx context.Context, credential string) (*Claims, error)
 }
 
 // ─── Policy hook 2: identity enrichment ──────────────────────────────
@@ -148,9 +155,29 @@ func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 // file READS it, so it is declared once, here, and the broker names it.
 const SessionCookieName = "{{.Name}}_session"
 
-// credentialFrom reads the caller's raw token: an "Authorization: Bearer"
-// header when one is presented — another service, a CLI, a test — and
-// otherwise the native sign-in session cookie the browser carries.
+// APIKeyHeader is the request header an API key is read from — "X-API-Key",
+// the same default forge/pkg/auth's APIKeyConfig uses. Rename it here to
+// take keys on another header. A browser client sending it cross-origin also
+// needs it in cors_allow_headers; an API key rarely belongs in a browser.
+//
+// A key is checked as a key by its "fk_" shape, not by this header, so a
+// client that can only send "Authorization: Bearer fk_…" works too. Whether
+// keys are accepted at all is internal/app/auth.go's APIKeyValidator.
+const APIKeyHeader = "X-API-Key"
+
+// credentialFrom reads the ONE credential a request presents, from the
+// first of these channels whose header is present (even when empty):
+//
+//  1. "Authorization: Bearer <token>" — another service, a CLI, a test.
+//     A JWT, or an API key from a client that only knows bearer tokens;
+//  2. the APIKeyHeader — "X-API-Key: fk_…";
+//  3. the native sign-in session cookie the browser carries.
+//
+// Only that credential is validated. There is no fallback: a request whose
+// Bearer token is invalid is rejected even if it also carries a valid API
+// key, so a second credential can never rescue a bad first one and "who is
+// this request?" has exactly one answer. An explicit header beats the
+// ambient cookie.
 //
 // The cookie is the browser's ONLY channel. It is HttpOnly, so no script can
 // read it (which is what stops an XSS from stealing it) and therefore no
@@ -163,12 +190,22 @@ const SessionCookieName = "{{.Name}}_session"
 // Content-Type an HTML form cannot produce.
 //
 // Return "" for "no credential presented"; it is treated exactly like a
-// missing Authorization header. This changes only WHERE the token is read —
-// it still goes through the same validator, so a channel cannot weaken
-// authentication. Point it somewhere else if your session lives elsewhere.
+// missing Authorization header. This changes only WHERE the credential is
+// read — it still goes through the same validator, so a channel cannot
+// weaken authentication. Point it somewhere else if your session lives
+// elsewhere.
 func credentialFrom(h http.Header) string {
-	if bearer, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer "); ok {
+	// Select by presence, not validity: even an empty or malformed higher
+	// priority header must not fall through to another principal.
+	if len(h.Values("Authorization")) != 0 {
+		bearer, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer ")
+		if !ok {
+			return ""
+		}
 		return strings.TrimSpace(bearer)
+	}
+	if len(h.Values(APIKeyHeader)) != 0 {
+		return strings.TrimSpace(h.Get(APIKeyHeader))
 	}
 	cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName)
 	if err != nil {
@@ -199,7 +236,7 @@ func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
 		ValidatorConfigured: deps.Validate != nil,
 		ExternalAuth:        deps.ExternalAuth,
 		AnonymousOK:         deps.AnonymousOK,
-		Validate:            deps.Validate,
+		ValidateContext:     deps.Validate,
 		Unauthenticated:     UnauthenticatedProcedures,
 		Enrich:              enrichClaims,
 		ExtractToken:        credentialFrom,

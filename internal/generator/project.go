@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -855,10 +856,17 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 		typedConfig = ScaffoldedFrontendTypedConfig()
 	}
 
-	return GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
+	if err := GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
 		Workspaces:  g.FrontendWorkspaces,
 		TypedConfig: typedConfig,
-	})
+	}); err != nil {
+		return err
+	}
+	// forge.yaml exists by now (writeProjectConfig ran first). Accept the
+	// no-fix npm advisories the Next.js template carries, so the project's
+	// own vuln-npm gate is green on day 0 — see scaffold_vuln_exemptions.go.
+	EnsureScaffoldNPMExemptions(g.Path, "nextjs", time.Now())
+	return nil
 }
 
 // generateE2ETests generates the E2E test harness for the initial service.

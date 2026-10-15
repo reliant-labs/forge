@@ -1,9 +1,10 @@
 // File: internal/cli/scaffold/frontend_test.go
 //
 // Tests for `forge scaffold frontend <name>`. The guarantee that matters: adding
-// a frontend leaves forge.yaml exactly as it was and the project still sees the
-// frontend, because the inventory and the frontend feature are DERIVED from what
-// is on disk (frontends/<name>) and declared in KCL — never recorded in yaml.
+// a frontend leaves what forge.yaml says exactly as it was and the project still
+// sees the frontend, because the inventory and the frontend feature are DERIVED
+// from what is on disk (frontends/<name>) and declared in KCL — never recorded
+// in yaml.
 //
 // History: the command used to write `frontends:`, `features.frontend` and
 // `stack.frontend.framework` into forge.yaml, and a missed write left those
@@ -19,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -54,8 +57,13 @@ forge_version: v0.0.0-test
 
 // TestRunAddFrontend_DerivesTheFrontendAndLeavesForgeYAMLAlone is the
 // regression guard for the whole class: after adding a frontend the project
-// loads with that frontend and the frontend feature on, and forge.yaml is
-// byte-identical.
+// loads with that frontend and the frontend feature on, and nothing ABOUT THE
+// FRONTEND lands in forge.yaml — what was there stays byte-identical.
+//
+// The one thing a Next.js frontend does add is the vuln gate's acceptance of
+// the no-fix npm advisories its template carries (issue #754), appended as a
+// `ci:` section after the untouched original. That is gate policy, not
+// frontend inventory, so it is asserted to be exactly that and nothing more.
 func TestRunAddFrontend_DerivesTheFrontendAndLeavesForgeYAMLAlone(t *testing.T) {
 	skipNpmInstall(t)
 	dir := withTempProject(t, freshServiceForgeYAML)
@@ -69,8 +77,16 @@ func TestRunAddFrontend_DerivesTheFrontendAndLeavesForgeYAMLAlone(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != freshServiceForgeYAML {
-		t.Errorf("scaffolding a frontend must not touch forge.yaml, now:\n%s", after)
+	appended, ok := strings.CutPrefix(string(after), freshServiceForgeYAML)
+	if !ok {
+		t.Fatalf("scaffolding a frontend must not change what forge.yaml already says, now:\n%s", after)
+	}
+	var added map[string]any
+	if err := yaml.Unmarshal([]byte(appended), &added); err != nil {
+		t.Fatalf("the appended section must be valid YAML on its own: %v\n%s", err, appended)
+	}
+	if len(added) != 1 || added["ci"] == nil {
+		t.Errorf("scaffolding a frontend may only append the ci.vuln_scan acceptance, appended:\n%s", appended)
 	}
 
 	cfg, err := generator.ReadProjectConfig(filepath.Join(dir, "forge.yaml"))

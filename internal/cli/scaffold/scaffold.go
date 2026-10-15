@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
@@ -1783,13 +1784,20 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 		}
 	}
 
-	// Nothing is written to forge.yaml: the frontend inventory is derived from
-	// frontends/<name> on disk and the KCL declaration below, and the
-	// frontend feature derives from a frontend existing. The route allowlist
-	// and the dev port live on the KCL forge.Frontend, which is where the
-	// dev loop reads them.
+	// The frontend itself is not recorded in forge.yaml: the frontend
+	// inventory is derived from frontends/<name> on disk and the KCL
+	// declaration below, and the frontend feature derives from a frontend
+	// existing. The route allowlist and the dev port live on the KCL
+	// forge.Frontend, which is where the dev loop reads them.
 	//
-	// Declare it where the environments are declared, exactly as
+	// What forge.yaml may gain is the vuln gate's acceptance of the no-fix
+	// npm advisories this template's own dependencies carry, appended as a
+	// new `ci:` section only when there is none (otherwise printed to
+	// paste). Without it the project's vuln-npm gate is red the day the
+	// frontend lands — see generator/scaffold_vuln_exemptions.go.
+	generator.EnsureScaffoldNPMExemptions(root, frontendType, time.Now())
+
+	// Declare the frontend where the environments are declared, exactly as
 	// `forge project new --frontend` does: without this the dev loop has no
 	// KCL-resolved port for it and `forge env up` falls back to a literal.
 	declareFrontendInKCL(root, cfg.Name, name, kclFrontendType(frontendType), port, routes)

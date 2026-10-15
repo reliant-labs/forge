@@ -6,6 +6,13 @@
   "engines": {
     "node": ">=22.12"
   },
+  "// vitest range note": "vitest is ^5 on purpose, and internal/templates/frontend_vitest_pin_test.go pins the major so the next bump is a decision rather than a drift. 3.x pulls tinypool (GHSA-5gmw-xhrv-c9v3 and GHSA-85c8-ppgw-ccpr, critical) and a vulnerable @vitest/mocker (GHSA-82fw-gwwq-j7x9), which failed a fresh project's own vuln-npm gate. 4.x carries neither, but npm 10 (the npm Node 22 ships) crashes resolving its peer set with \"Cannot read properties of null (reading 'edgesOut')\", so `npm install` never finishes. 5.x installs and audits clean. Same pin as the vite-spa scaffold.",
+  "// overrides note": "fflate is pinned to its patched 0.7 release (GHSA-px8p-9vwx-vf98) under @hyperdx/otel-web-session-recorder ONLY. The recorder pins fflate 0.7.4 exactly, even in its latest release, and it ships in the production bundle through @hyperdx/browser. 0.7.5 is a patch release on the same line. The override is scoped to that subtree so it can never force 0.7.x on another package that asks for a newer fflate. Drop it once a @hyperdx/browser release resolves fflate >= 0.7.5 on its own. npm honours overrides only in the ROOT package.json of an install, which this file is.",
+  "overrides": {
+    "@hyperdx/otel-web-session-recorder": {
+      "fflate": "^0.7.5"
+    }
+  },
   "scripts": {
     "dev": "next dev --webpack",
     "build": "NODE_ENV=production next build --webpack",
@@ -63,7 +70,7 @@
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.30.0",
     "vite": "^8.0.0",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.4",
     "@vitejs/plugin-react": "^6.0.0",
     "@next/bundle-analyzer": "^16.3.5"
   }

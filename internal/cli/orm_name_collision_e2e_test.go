@@ -15,8 +15,8 @@ import (
 // = core.Task`) next to a hand-written types.go.
 //
 // Pinned:
-//  1. generate refuses BEFORE the validate build (a warning by default,
-//     fatal under --strict), naming the project's
+//  1. generate refuses BEFORE the validate build (non-fatal to the other steps by default, fatal
+//     under --strict), naming the project's
 //     declaration (file:line), the entity and table behind the clash, and the
 //     ways out — where it used to fail on `Task redeclared` and revert;
 //  2. the hand-written internal/db/types.go survives every run (the
@@ -56,15 +56,16 @@ message GetTaskResponse { Task task = 1; }
 	writeCollideFile(t, filepath.Join(dbDir, "models.go"), models)
 
 	// ── (1) refused, with the declaration and the way out ───────────────
-	// A default generate reports the refused ORM step as a warning and
-	// continues (its dependents say they were skipped); --strict makes the
-	// refusal fatal.
+	// A default generate runs the steps that do not need the refused ORM,
+	// says which were skipped, and exits non-zero; --strict stops at the
+	// refusal.
 	out, err := runCmdAllowFail(t, projectDir, forgeBin, "generate")
-	if err != nil {
-		t.Fatalf("a default generate reports the ORM refusal as a warning and exits 0, got %v:\n%s", err, out)
+	if err == nil {
+		t.Fatalf("generate must exit non-zero when its ORM step is refused:\n%s", out)
 	}
 	for _, w := range []string{
 		"ORM generation failed",
+		"the other steps ran and their output stands",
 		"Task, declared at internal/db/models.go:4",
 		"for entity Task (table tasks)",
 		"//forge:no-orm",

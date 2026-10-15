@@ -124,10 +124,8 @@ func buildCRUDTestFixtures(projectDir string, methods []CRUDMethod) *crudTestFix
 // difference: "nothing to emit" and "could not look" call for different
 // actions on a file that already exists.
 func loadCRUDTestFixtures(projectDir string, methods []CRUDMethod) (*crudTestFixtures, error) {
-	tables, shadow, err := schemadef.ApplyAndIntrospectShadowAt(
-		filepath.Join(projectDir, "db", "migrations"), shadowdb.Resolve(projectDir))
+	tables, shadow, err := shadowdb.Open(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
-		shadow.Close()
 		return nil, err
 	}
 	if len(tables) == 0 {

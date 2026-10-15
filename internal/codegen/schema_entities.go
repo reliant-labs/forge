@@ -50,8 +50,7 @@ func declaresOwnerMarker(comment string) bool {
 // Tables without CRUD RPCs are plain schema — owned by hand-written
 // code, invisible to the CRUD/frontend projections.
 func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef, error) {
-	tables, err := schemadef.ApplyAndIntrospectAt(
-		filepath.Join(projectDir, "db", "migrations"), shadowdb.Resolve(projectDir))
+	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return nil, err
 	}

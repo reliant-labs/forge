@@ -6,6 +6,8 @@ import (
 	"os"
 	"sort"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/shadowdb"
 )
 
 // generateTimingsEnv turns on the per-step wall-time report for every
@@ -21,6 +23,9 @@ const generateTimingsEnv = "FORGE_GENERATE_TIMINGS"
 type stepTimer struct {
 	start time.Time
 	steps []stepTiming
+	// shadow is the applied-schema memo's totals when the run started; the
+	// report prints what this run added to them.
+	shadow shadowdb.Stats
 }
 
 type stepTiming struct {
@@ -28,7 +33,9 @@ type stepTiming struct {
 	Dur  time.Duration
 }
 
-func newStepTimer() *stepTimer { return &stepTimer{start: time.Now()} }
+func newStepTimer() *stepTimer {
+	return &stepTimer{start: time.Now(), shadow: shadowdb.CurrentStats()}
+}
 
 func (t *stepTimer) record(name string, d time.Duration) {
 	t.steps = append(t.steps, stepTiming{Name: name, Dur: d})
@@ -70,6 +77,21 @@ func (t *stepTimer) print(w io.Writer) {
 	if other := total - listed - rest; other > 50*time.Millisecond {
 		fmt.Fprintf(w, "   %8s  %5.1f%%  (outside any step: setup, snapshots, state save)\n", other.Round(10*time.Millisecond), pct(other, total))
 	}
+	printShadowSchemaLine(w, shadowdb.StatsSince(t.shadow))
+}
+
+// printShadowSchemaLine says how many times this run applied the migrations
+// to a shadow database, and how many readers reused an application instead.
+// The apply time is already inside the step that first read the schema; the
+// line exists so that a second apply — a regression to one per reader — is
+// visible as a number rather than as a slower run. Silent when nothing read
+// the schema.
+func printShadowSchemaLine(w io.Writer, s shadowdb.Stats) {
+	if s.Applies == 0 && s.Reuses == 0 {
+		return
+	}
+	fmt.Fprintf(w, "   shadow schema: migrations applied %d× (%s), reused by %d more reader(s)\n",
+		s.Applies, s.ApplyTime.Round(10*time.Millisecond), s.Reuses)
 }
 
 func pct(d, total time.Duration) float64 {

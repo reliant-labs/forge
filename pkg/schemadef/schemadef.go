@@ -21,6 +21,13 @@
 // and calls Introspect on its own handle. Both entries return the same
 // model; they differ only in who applied the migrations.
 //
+// A caller with several readers of one schema applies it once instead:
+// ReadMigrationSet names the files by content digest, and
+// MigrationSet.ApplyTemplateAt builds a Template whose Tables serve the
+// model and whose Open hands out private copies of the applied database
+// (template.go). internal/shadowdb uses it to make one `forge generate`
+// apply each migration set once.
+//
 // # Why this ships in pkg
 //
 // The model this package produces is the input to forge's seed planner
@@ -57,8 +64,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -655,8 +660,8 @@ func (s *Shadow) Close() {
 // A non-nil *Shadow is returned whenever one was opened, INCLUDING on a later
 // error, so the caller's deferred Close always reclaims the scratch database.
 func ApplyAndIntrospectShadowAt(migDir, baseURL string) ([]Table, *Shadow, error) {
-	ups, err := upMigrations(migDir)
-	if err != nil || len(ups) == 0 {
+	set, err := ReadMigrationSet(migDir)
+	if err != nil || set.Len() == 0 {
 		return nil, nil, err
 	}
 
@@ -665,7 +670,7 @@ func ApplyAndIntrospectShadowAt(migDir, baseURL string) ([]Table, *Shadow, error
 		return nil, nil, fmt.Errorf("open postgres shadow db: %w", err)
 	}
 	shadow := &Shadow{db: db, cleanup: cleanup}
-	if err := applyMigrationFiles(db, migDir, ups); err != nil {
+	if err := set.apply(db); err != nil {
 		return nil, shadow, err
 	}
 
@@ -686,7 +691,7 @@ func ApplyAndIntrospectShadowAt(migDir, baseURL string) ([]Table, *Shadow, error
 // beside a replay error, which made `defer shadow.Close()` BEFORE the err
 // check the only correct spelling at the call site.)
 func OpenShadowAt(migDir, baseURL string) (*Shadow, error) {
-	ups, err := upMigrations(migDir)
+	set, err := ReadMigrationSet(migDir)
 	if err != nil {
 		return nil, err
 	}
@@ -695,7 +700,7 @@ func OpenShadowAt(migDir, baseURL string) (*Shadow, error) {
 		return nil, fmt.Errorf("open postgres shadow db: %w", err)
 	}
 	shadow := &Shadow{db: db, cleanup: cleanup}
-	if err := applyMigrationFiles(db, migDir, ups); err != nil {
+	if err := set.apply(db); err != nil {
 		shadow.Close()
 		return nil, err
 	}
@@ -739,21 +744,6 @@ func (s *Shadow) TryApply(ctx context.Context, sqlText string) error {
 	return nil
 }
 
-// applyMigrationFiles replays the named *.up.sql files under migDir, in the
-// order given, onto db.
-func applyMigrationFiles(db *sql.DB, migDir string, ups []string) error {
-	for _, name := range ups {
-		raw, rerr := os.ReadFile(filepath.Join(migDir, name))
-		if rerr != nil {
-			return fmt.Errorf("read migration %s: %w", name, rerr)
-		}
-		if aerr := applyMigration(db, string(raw)); aerr != nil {
-			return fmt.Errorf("apply migration %s to shadow schema: %w", name, aerr)
-		}
-	}
-	return nil
-}
-
 // openShadow creates the ephemeral shadow database: a scratch DB on the
 // resolved server when baseURL is set, else pkg/pgtest's default ephemeral
 // server.
@@ -762,24 +752,6 @@ func openShadow(baseURL string) (*sql.DB, func(), error) {
 		return pgtest.NewAtURL(baseURL)
 	}
 	return pgtest.New()
-}
-
-func upMigrations(migDir string) ([]string, error) {
-	entries, err := os.ReadDir(migDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var ups []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
-			ups = append(ups, e.Name())
-		}
-	}
-	sort.Strings(ups)
-	return ups, nil
 }
 
 // applyMigration executes one migration file statement by statement

@@ -472,12 +472,38 @@ func cacheDir() string {
 // it with t.Cleanup. The connection is configured for postgres
 // (database/sql driver "postgres").
 func New() (*sql.DB, func(), error) {
+	return newOnShared("")
+}
+
+// NewClone is New with the fresh database created as a COPY of the existing
+// database named template on the same shared server (CREATE DATABASE …
+// TEMPLATE …): every table, index, constraint, function and row it holds,
+// without re-running whatever built it.
+//
+// Unlike NewFromTemplate, which builds and publishes a server-lifetime
+// template under a key, NewClone copies a database the caller already built
+// and owns, and whose lifetime the caller decides.
+//
+// Postgres refuses the copy while any other session is connected to the
+// template, so the caller closes its own connections to it first. The copy is
+// independent from then on: nothing done to it reaches the template or a
+// sibling copy, sequence positions included.
+func NewClone(template string) (*sql.DB, func(), error) {
+	if template == "" {
+		return nil, nil, fmt.Errorf("pgtest: NewClone needs a template database name")
+	}
+	return newOnShared(template)
+}
+
+// newOnShared creates the scratch database on the shared server, empty or as
+// a copy of template.
+func newOnShared(template string) (*sql.DB, func(), error) {
 	s, err := boot()
 	if err != nil {
 		return nil, nil, err
 	}
 	name := fmt.Sprintf("forge_test_%d_%d", os.Getpid(), dbCounter.Add(1))
-	if _, err := s.baseDB.Exec("CREATE DATABASE " + name); err != nil {
+	if _, err := s.baseDB.Exec(createDatabaseSQL(name, template)); err != nil {
 		return nil, nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
 	}
 
@@ -553,6 +579,33 @@ func NewURL() (dsn string, cleanup func(), err error) {
 //
 // Callers own the returned cleanup; the generate pipeline defers it.
 func NewAtURL(baseURL string) (*sql.DB, func(), error) {
+	return newAtURL(baseURL, "")
+}
+
+// NewCloneAtURL is NewAtURL with the scratch database created as a COPY of
+// the database named template on the same server — NewClone's counterpart
+// for a caller-resolved server, with the same contract: the caller holds no
+// connection to template, and the copy is independent.
+func NewCloneAtURL(baseURL, template string) (*sql.DB, func(), error) {
+	if template == "" {
+		return nil, nil, fmt.Errorf("pgtest: NewCloneAtURL needs a template database name")
+	}
+	return newAtURL(baseURL, template)
+}
+
+// createDatabaseSQL is the CREATE DATABASE statement for a scratch database,
+// empty or copied from template. Both names are quoted as identifiers.
+func createDatabaseSQL(name, template string) string {
+	stmt := "CREATE DATABASE " + quoteIdent(name)
+	if template != "" {
+		stmt += " TEMPLATE " + quoteIdent(template)
+	}
+	return stmt
+}
+
+// newAtURL creates the scratch database on the server at baseURL, empty or
+// as a copy of template.
+func newAtURL(baseURL, template string) (*sql.DB, func(), error) {
 	base, err := openBase(baseURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pgtest: connect to %s: %w", redactDSN(baseURL), err)
@@ -561,7 +614,7 @@ func NewAtURL(baseURL string) (*sql.DB, func(), error) {
 	// Drop-if-exists first: robust to a leftover database an earlier run
 	// left behind after a crash before its cleanup could drop it.
 	_, _ = base.Exec("DROP DATABASE IF EXISTS " + name)
-	if _, err := base.Exec("CREATE DATABASE " + name); err != nil {
+	if _, err := base.Exec(createDatabaseSQL(name, template)); err != nil {
 		_ = base.Close()
 		return nil, nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
 	}

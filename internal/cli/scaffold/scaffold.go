@@ -47,6 +47,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/nodeengine"
 )
 
 // validateServiceName / validateIdentifier / validateProjectName /
@@ -1884,6 +1885,9 @@ func reportFrontendAuthNextStep(root string) {
 func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
 	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
+	}
+	if err := nodeengine.Check(frontendDir); err != nil {
+		return fmt.Errorf("npm install not run: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, "npm", "install")
 	cmd.Dir = frontendDir

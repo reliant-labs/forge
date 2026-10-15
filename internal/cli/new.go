@@ -20,6 +20,7 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/nodeengine"
 )
 
 func newNewCmd() *cobra.Command {
@@ -1229,6 +1230,11 @@ func runNpmInstall(ctx context.Context, root string, frontends []string) error {
 		feDir := filepath.Join(root, "frontends", name)
 		if _, err := os.Stat(filepath.Join(feDir, "package.json")); err != nil {
 			continue
+		}
+		// A Node below the frontend's floor is not flaky: no retry passes,
+		// and npm's own failure ("reading 'edgesOut'") never names Node.
+		if err := nodeengine.Check(feDir); err != nil {
+			return fmt.Errorf("npm install (%s) not run: %w", name, err)
 		}
 		var lastErr error
 		for attempt := 1; attempt <= npmInstallAttempts; attempt++ {

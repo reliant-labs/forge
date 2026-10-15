@@ -538,6 +538,18 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 
 ### Fixed
 
+- **forge refuses to run npm in a frontend on a Node below its
+  `engines.node`, and says which Node it needs.** The scaffolded frontends
+  require Node `>=22.12` (vite 8, vitest 5). On Node 20, `npm install` there
+  does not fail cleanly. npm 10.8 crashes resolving the tree with
+  `npm error Cannot read properties of null (reading 'edgesOut')`, a message
+  that names neither Node nor the floor. That is how
+  `forge project new --frontend` broke in forge's own scaffold smoke test,
+  which still ran Node 20. `forge project new`, `forge scaffold frontend` and
+  the TypeScript step of `forge generate` now check the node on PATH against
+  the frontend's `engines.node` first. They name both versions and the fix,
+  and run no npm. They refuse only a range they can read (`>=`, `^`, a bare
+  version, joined by `||`), and only when `node` is on PATH.
 - **A web frontend's test toolchain resolves one vite: vitest 5, vite 8,
   `@vitejs/plugin-react` 6.** The Next.js scaffold left `vite` to vitest's
   dependency, so `vitest.config.ts` took `defineConfig` from vitest's vite and

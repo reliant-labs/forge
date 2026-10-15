@@ -34,7 +34,7 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `login.mode` | `native` (default): the app's own form plus the server-side login broker. `hosted` is **phase 2**: accepted and recorded, nothing converges it yet |
 | `roles` | `key`, `display_name`, `group`; `members_from = "console"` (default) or `"declared"` with `members = [emails]`, a set converged from KCL and read-only in the console |
 | `applications` | derived when empty: one `native_broker` named `<env>:api` for the workload `api`, else one per service workload. `redirect_uris`, `logout_uris`, `login_uri` are literal overrides |
-| `consumers` | derived when empty: every service workload on a runtime that can reach the instance. `fields = forge.IdentityFields {...}` remaps an output to a non-standard config field (an app validating two issuers) |
+| `consumers` | derived when empty: every service workload on a runtime that can reach the instance. `fields = forge.IdentityFields {...}` remaps an output to a non-standard config field (an app validating two issuers); `deliver_only = True` delivers the Secrets without projecting anything into the workload (adopting an identity while the workload still reads its legacy config; flip it off to cut over) |
 | `machine_users` | `name`, `roles`, `key_secret` + `cluster`: where its key is delivered (hosted instance); a host-run one keeps the key in the env's secret store |
 | `smtp` | `host`, `port`, `user`, `sender`, `password = forge.ManagedSecret {name = ...}`: a **name**, never the password. Omit it and mail goes through the platform relay |
 | `seed_users` | only in an env that declares `lifecycle = "local"` or `"ephemeral"` |

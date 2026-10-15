@@ -781,6 +781,7 @@ _idn_consumers = lambda workloads: [any], id: any, env: str, project: str -> [Id
         application = c.application or _idn_app_of(_apps, c.workload)
         if c.fields:
             fields = c.fields
+        deliver_only = c.deliver_only
     } for c in _base]
 }
 
@@ -937,7 +938,7 @@ _idn_entries = lambda c: any, rt: any, bundle: Bundle -> {str:} {
 # The env a consumer is given, after refusing a field the author also set.
 _idn_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _id = bundle.identity
-    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name] if _id else []
+    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id else []
     _c = _cs[0] if _cs else Undefined
     _env = w.env if w.env else {}
     _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)) if _c else []
@@ -950,7 +951,7 @@ _idn_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
 # variable a config projection (or a hand) left behind must not stay beside it.
 _idn_shadowed = lambda w: any, rt: any, bundle: Bundle -> [str] {
     _id = bundle.identity
-    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name] if _id else []
+    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id else []
     _c = _cs[0] if _cs else Undefined
     _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)) if _c else []
     [_idn_envname(_c, o) for o in ["broker_token", "jwks"] if o in _outs] if _c and _idn_lowering(_id, rt) == "secret" else []
@@ -962,7 +963,7 @@ _idn_shadowed = lambda w: any, rt: any, bundle: Bundle -> [str] {
 # the snapshot is a fallback, so its Secret is.
 _idn_volumes = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
     _id = bundle.identity
-    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name] if _id and rt.type == "cluster" and _idn_rt(_id) == "hosted" else []
+    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id and rt.type == "cluster" and _idn_rt(_id) == "hosted" else []
     _c = _cs[0] if _cs else Undefined
     _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project) if _c else []
     _outs = _idn_outputs(_c, _apps) if _c else []
@@ -1026,6 +1027,7 @@ _render_identity = lambda b: Bundle -> any {
             "workload": c.workload
             "application": c.application if c.application else None
             "fields": ({o: _idn_field(c, o) for o in IDENTITY_OUTPUTS if c.fields and _idn_field(c, o) != IDENTITY_FIELDS[o]} or None) if c.fields else None
+            "deliver_only": True if c.deliver_only else None
         } for c in _idn_consumers(b.workloads, _id, b.env, b.project)]
         "machine_users": [{
             "name": m.name

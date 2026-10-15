@@ -834,8 +834,8 @@ AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   composed package external (or `//forge:not-a-component`, or excluding it)
   took it out of that set while compose.go, which is yours and only ever
   added to, kept constructing it, so removing one of its Deps fields left a
-  key naming nothing: `unknown field BaseURL in struct literal of type
-  alpaca.Deps`, then a rollback, on every generate. The drop now covers every
+  key naming nothing:
+  `unknown field BaseURL in struct literal of type alpaca.Deps`, then a rollback, on every generate. The drop now covers every
   project package compose.go constructs, with the same guards (keys only, a
   proven Deps struct, the alias resolved through the file's own import, a
   gofmt check). Generate also warns when compose.go still constructs a

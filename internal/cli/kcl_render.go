@@ -43,6 +43,7 @@ import (
 	"sync/atomic"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
@@ -1924,13 +1925,15 @@ func (w WorkloadEntity) HostPort() int {
 	return 0
 }
 
-// FindWorkload returns the named workload, or nil.
+// FindWorkload returns the named workload, or nil. name may be the
+// workload's declared name or its component's (`admin_server` finds the
+// workload declared `admin-server`; see codegen.WorkloadName).
 func (e *KCLEntities) FindWorkload(name string) *WorkloadEntity {
 	if e == nil {
 		return nil
 	}
 	for i := range e.Workloads {
-		if e.Workloads[i].Name == name {
+		if codegen.SameWorkload(e.Workloads[i].Name, name) {
 			return &e.Workloads[i]
 		}
 	}

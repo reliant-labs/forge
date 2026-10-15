@@ -40,6 +40,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // componentDriftFinding is one disagreement between the code and the deploy
@@ -127,12 +128,18 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 
 	declared := declaredWorkloadNames(string(raw))
 	runs := codegen.DeclaredWorkloads(string(raw))
+	// A component and its workload match in any spelling: `engine_shadow`
+	// is declared `name = "engine-shadow"` (codegen.WorkloadName).
+	declaredAs := map[string]bool{}
+	for name := range declared {
+		declaredAs[naming.KCLIdentifier(name)] = true
+	}
 
 	inCode := map[string]bool{}
 	var findings []componentDriftFinding
 	for _, c := range codegen.DiscoverProjectComponents(projectDir, cfg.Name) {
-		inCode[c.Name] = true
-		if declared[c.Name] {
+		inCode[naming.KCLIdentifier(c.Name)] = true
+		if declaredAs[naming.KCLIdentifier(c.Name)] {
 			continue
 		}
 		// Run by another workload's process — named in its `serves`, or
@@ -154,7 +161,7 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	// generated is a SUPPORTED use of this file, not a mistake.
 	var orphans []string
 	for name := range declared {
-		if inCode[name] {
+		if inCode[naming.KCLIdentifier(name)] {
 			continue
 		}
 		if w, ok := runs[name]; ok && (runsBuiltinCommand(w, cfg.Name) || servesAnyOf(w, inCode)) {

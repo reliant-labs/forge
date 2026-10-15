@@ -298,7 +298,7 @@ func WorkloadStanza(modulePath, projectName string, c config.ComponentConfig) st
 	kind := WorkloadKindFor(c.EffectiveKind())
 
 	fmt.Fprintf(&b, "%s = fw.Workload {\n", naming.KCLIdentifier(c.Name))
-	fmt.Fprintf(&b, "    name = %q\n", c.Name)
+	fmt.Fprintf(&b, "    name = %q\n", WorkloadName(c.Name))
 	fmt.Fprintf(&b, "    kind = %q\n", kind)
 
 	// The image, registry INCLUDED — a workload declares its own registry,
@@ -354,6 +354,27 @@ func WorkloadStanza(modulePath, projectName string, c config.ComponentConfig) st
 	}
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// WorkloadName is the `name` a component's workload declares in
+// deploy/kcl/workloads.k: the component name as a DNS-1123 label, which
+// fw.Workload requires because it becomes every object's name. A component
+// is named like a Go package (`engine_shadow`, `admin_server`); its
+// workload is `engine-shadow`, declared under the KCL identifier
+// `engine_shadow`.
+//
+// KCLIdentifier(WorkloadName(c)) == KCLIdentifier(c) for every component
+// name, so code that matches a declared workload to a component compares
+// the two through KCLIdentifier (SameWorkload) and never depends on the
+// spelling.
+func WorkloadName(component string) string {
+	return strings.ReplaceAll(naming.KCLIdentifier(component), "_", "-")
+}
+
+// SameWorkload reports whether two names spell the same workload: a
+// declared `name` and a component name, in any of their forms.
+func SameWorkload(a, b string) bool {
+	return naming.KCLIdentifier(a) == naming.KCLIdentifier(b)
 }
 
 // componentSubcommand is the cobra subcommand the project binary registers

@@ -170,7 +170,7 @@ func TestCreateMigration_PreviousMigrationIsOneLevelDeep(t *testing.T) {
 	}
 	create := func(name, sql string) string {
 		t.Helper()
-		if err := CreateMigration(context.Background(), name, dir, &MigrationOptions{}); err != nil {
+		if err := CreateMigration(context.Background(), name, dir, &MigrationOptions{Context: true}); err != nil {
 			t.Fatalf("CreateMigration(%s) error = %v", name, err)
 		}
 		path := upFile(name)

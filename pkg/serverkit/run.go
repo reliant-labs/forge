@@ -12,59 +12,12 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
-
-// newHTTPServer builds the serving http.Server around the routed handler: the
-// protocols (HTTP/1.1, HTTP/2 over TLS, and h2c), the write-stall guard, and
-// the connection timeouts.
-//
-// There is deliberately NO WriteTimeout. It is a deadline on the whole
-// response, so it cuts every long-lived response at the same mark — SSE,
-// Connect and gRPC server streams, reverse-proxied LLM completions, and
-// websockets. Slow-read protection instead belongs to WriteStallGuard, which
-// bounds a write that cannot complete without capping a response that takes a
-// long time.
-//
-// h2c is net/http's own (Protocols.SetUnencryptedHTTP2), not x/net's
-// h2c.NewHandler. That handler HIJACKS each h2c connection, and a hijacked
-// connection is invisible to http.Server.Shutdown: Run's graceful drain
-// returned at once while every h2c request was still in flight, so a rolling
-// deploy behind an h2c load balancer — every Connect and gRPC call — cut them
-// all. A native h2c connection is the server's own, so Shutdown sends it
-// GOAWAY, waits for its streams, and runs Server.OnDrain. (Native h2c takes
-// prior knowledge, which is what Connect, gRPC and load balancers send; an
-// HTTP/1.1 `Upgrade: h2c` request is served as HTTP/1.1.)
-func newHTTPServer(cfg Config, routed http.Handler) *http.Server {
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetHTTP2(true)
-	protocols.SetUnencryptedHTTP2(true)
-	return &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           WriteStallGuard(routed, cfg.WriteStallTimeout),
-		Protocols:         protocols,
-		HTTP2:             &http.HTTP2Config{MaxConcurrentStreams: cfg.HTTP2MaxConcurrentStreams},
-		ReadHeaderTimeout: serverTimeout(cfg.ReadHeaderTimeout),
-		ReadTimeout:       serverTimeout(cfg.ReadTimeout),
-		IdleTimeout:       serverTimeout(cfg.IdleTimeout),
-		MaxHeaderBytes:    1 << 20,
-	}
-}
-
-// serverTimeout maps a normalized Config timeout onto http.Server's field,
-// where zero means none: a negative Config value disables the timeout.
-func serverTimeout(d time.Duration) time.Duration {
-	if d < 0 {
-		return 0
-	}
-	return d
-}
 
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
 // error. It takes an ALREADY-COMPOSED Server (handler with services
@@ -144,11 +97,17 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
 
-	// Readiness gate: flipped true AFTER the listener binds (see ln/Serve
-	// below) and false again at the top of shutdown. It is only the FIRST
-	// half of /readyz's answer — the dependency checks in srv.ReadyChecks
-	// are the other half, and they run per request.
-	var ready atomic.Bool
+	// Readiness gate and drain budget: opened AFTER the listener binds (see
+	// ln/Serve below) and flipped to draining at the top of shutdown. It is
+	// only the FIRST half of /readyz's answer — the dependency checks in
+	// srv.ReadyChecks are the other half, and they run per request.
+	drainer := NewDrainer(cfg)
+
+	// The listener's registry of long-lived streams. Installed into every
+	// request's context by NewHTTPServer, so a LongLived route binds to it
+	// without the composition root handing it around; drained soft-then-hard
+	// by DrainHTTP below.
+	streams := &Streams{DrainReserve: cfg.DrainReserve}
 
 	// serverkit no longer owns the service mux, so it can't MOUNT its
 	// probes on it. Instead it applies the edge wrap to the CALLER's
@@ -200,7 +159,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// every registered dependency reachable. It is what a rolling deploy
 	// believes, so it runs the checks live on each request rather than
 	// reporting a value latched at boot. See readiness.go.
-	top.HandleFunc("/readyz", readyzHandler(&ready, srv.ReadyChecks, cfg.ReadinessTimeout, logger))
+	top.HandleFunc("/readyz", drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger))
 	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
 	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
 	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check
@@ -217,12 +176,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 	top.Handle("/", handler)
 
-	httpSrv := newHTTPServer(cfg, top)
-	if srv.OnDrain != nil {
-		// net/http calls it when Shutdown begins, before Shutdown waits
-		// for in-flight requests (see Server.OnDrain).
-		httpSrv.RegisterOnShutdown(srv.OnDrain)
-	}
+	httpSrv := NewHTTPServer(cfg, top, streams)
 
 	// Graceful shutdown: serverkit owns the signal context. The caller-
 	// supplied ctx governed composition (mount, migrate, OTel setup)
@@ -270,7 +224,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// The listener is bound and accepting connections; flip readiness
 	// so /readyz starts returning 200. Serve below hands off to the
 	// accept loop without a second bind step.
-	ready.Store(true)
+	drainer.MarkReady()
 
 	tls := cfg.TLSCertPath != "" && cfg.TLSKeyPath != ""
 	logger.Info("server listening", "addr", cfg.Addr, "tls", tls)
@@ -415,23 +369,24 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 	logger.Info("server stopping")
 
-	// Graceful shutdown sequence:
-	//   1. Flip readiness to false so /readyz starts failing.
+	// Graceful shutdown sequence (drain.go):
+	//   1. Flip readiness to "draining" so /readyz starts failing.
 	//   2. Sleep pre_stop_delay so load balancers observe the failing
 	//      probe and stop routing new traffic to this replica.
-	//   3. Begin httpSrv.Shutdown, bounded by shutdown_timeout, so in-flight
-	//      requests drain without accepting new ones.
+	//   3. DrainHTTP, bounded by shutdown_timeout: httpSrv.Shutdown stops
+	//      accepting and drains in-flight unary requests while the
+	//      long-lived streams drain soft-then-hard (streams.go), so a stream
+	//      that would never finish on its own cannot hold the drain for the
+	//      whole budget and then be cut without a status.
 	// Without step 1 + 2, httpSrv.Shutdown stops accepting new conns
 	// immediately but the LB keeps sending them until it next polls
 	// /readyz — producing brief but real 502s on every rollout.
-	ready.Store(false)
-
 	if cfg.PreStopDelay > 0 {
 		logger.Info("readiness flipped, waiting for LB drain", "pre_stop_delay", cfg.PreStopDelay)
-		time.Sleep(cfg.PreStopDelay)
 	}
+	drainer.Begin()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	shutdownCtx, cancel := drainer.ShutdownContext()
 	defer cancel()
 
 	// TEARDOWN ORDER, innermost dependency last. Every step below is
@@ -439,7 +394,8 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	//
 	//  1. Drain in-flight HTTP. Those requests are still reading the DB and
 	//     handing work to workers, so nothing they depend on may be torn
-	//     down first.
+	//     down first. Long-lived streams end inside the same window, by
+	//     DrainReserve before its deadline.
 	//  2. Stop workers, then operators.
 	//  3. OnShutdown — the caller's teardown, which is where the serving
 	//     *sql.DB gets closed. Closing it before (1) would fail the very
@@ -449,7 +405,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	//     everything up to that instant and then discarded whatever the
 	//     shutdown itself produced — precisely the window an operator reads
 	//     when a deploy goes wrong.
-	if shutErr := httpSrv.Shutdown(shutdownCtx); shutErr != nil {
+	if shutErr := DrainHTTP(shutdownCtx, httpSrv, streams); shutErr != nil {
 		logger.Error("server shutdown error", "error", shutErr)
 	}
 

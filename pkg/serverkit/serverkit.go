@@ -69,20 +69,11 @@ type Server struct {
 	Operators []Operator
 
 	// OnShutdown is the caller's teardown (closing the serving DB pool,
-	// flushing app-owned buffers). It runs after the HTTP drain has
-	// finished and workers have stopped, so nothing it closes is still in
-	// use. Optional; nil is a no-op.
+	// flushing app-owned buffers). Run calls it after in-flight HTTP has
+	// drained and workers and operators have stopped, so nothing it closes
+	// is still in use, and before the telemetry flush. Optional; nil is a
+	// no-op.
 	OnShutdown func(context.Context) error
-
-	// OnDrain runs when the HTTP drain BEGINS, in its own goroutine, while
-	// http.Server.Shutdown waits for in-flight requests (it is registered
-	// with RegisterOnShutdown). It is where a server ends its long-lived
-	// streams — subscriptions, SSE, bidi Connect streams — so they return
-	// and the drain completes, rather than holding Shutdown until
-	// ShutdownTimeout and being cut when the process exits. A stream that
-	// never ends on its own is exactly the request the drain would wait on.
-	// It must not block: Shutdown does not wait for it. Optional.
-	OnDrain func()
 
 	// RunOperators starts the controller-runtime manager and blocks
 	// until ctx is done. serverkit calls it in a goroutine when
@@ -480,6 +471,14 @@ type Config struct {
 	// share this budget). Zero falls back to 30s.
 	ShutdownTimeout time.Duration
 
+	// DrainReserve is the part of ShutdownTimeout kept back after the
+	// long-lived streams are ended (Streams.DrainReserve): a stream that
+	// claimed the soft phase (serverkit.Draining) may run until the deadline
+	// minus this, and the rest of the teardown — workers, OnShutdown, the
+	// telemetry flush — runs in what remains. Zero falls back to
+	// DefaultDrainReserve (5s); never more than half the budget.
+	DrainReserve time.Duration
+
 	// ReadMaxBytes caps the size of a single Connect request payload.
 	// Zero falls back to 4 MiB — but ONLY after Normalize has run. A
 	// zero reaching connect.WithReadMaxBytes means UNLIMITED, so any
@@ -557,13 +556,16 @@ type Config struct {
 // it can observe a zero.
 func (c *Config) Normalize() {
 	if c.PreStopDelay == 0 {
-		c.PreStopDelay = 5 * time.Second
+		c.PreStopDelay = defaultPreStopDelay
 	}
 	if c.ShutdownTimeout == 0 {
-		c.ShutdownTimeout = 30 * time.Second
+		c.ShutdownTimeout = defaultShutdownTimeout
+	}
+	if c.DrainReserve == 0 {
+		c.DrainReserve = DefaultDrainReserve
 	}
 	if c.ReadinessTimeout == 0 {
-		c.ReadinessTimeout = 2 * time.Second
+		c.ReadinessTimeout = defaultReadinessTimeout
 	}
 	if c.WriteStallTimeout == 0 {
 		c.WriteStallTimeout = DefaultWriteStallTimeout
@@ -590,6 +592,14 @@ func (c *Config) Normalize() {
 		c.DBConnectTimeout = DefaultDBConnectTimeout
 	}
 }
+
+// The drain and probe defaults Normalize applies, shared with Drainer so a
+// hand-built main and Run agree on the grace arithmetic.
+const (
+	defaultPreStopDelay     = 5 * time.Second
+	defaultShutdownTimeout  = 30 * time.Second
+	defaultReadinessTimeout = 2 * time.Second
+)
 
 // EnvDevelopment is the one Environment value that unlocks permissive edge
 // defaults. It is compared exactly: "dev", "Development" and "" are all

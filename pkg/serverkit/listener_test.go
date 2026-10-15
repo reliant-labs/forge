@@ -80,11 +80,13 @@ func TestRun_DrainsInFlightH2CRequests(t *testing.T) {
 	}
 }
 
-// OnDrain runs when the drain begins, before Shutdown waits: a long-lived
-// stream it ends lets the drain finish at once instead of holding Run until
-// ShutdownTimeout. OnShutdown, the teardown, still runs after the drain.
-// reliant ends its streams this way (RegisterOnShutdown(streams.End)).
-func TestRun_OnDrainEndsLongStreamsBeforeTheDrainWaits(t *testing.T) {
+// A long-lived stream is ended as the drain begins, before Shutdown waits,
+// over HTTP/1.1 and h2c alike, so the drain finishes at once instead of
+// holding Run until ShutdownTimeout. OnShutdown, the teardown, still runs
+// after the drain. The listener's drain registry (LongLived) is the one way a
+// stream is ended before Shutdown waits; over h2c each stream is its own
+// request to it, because native h2c does not hijack the connection.
+func TestRun_LongLivedStreamsEndBeforeTheDrainWaits(t *testing.T) {
 	requireSelfSIGTERM(t)
 	for _, proto := range []string{"http1", "h2c"} {
 		t.Run(proto, func(t *testing.T) {
@@ -94,19 +96,20 @@ func TestRun_OnDrainEndsLongStreamsBeforeTheDrainWaits(t *testing.T) {
 				order []string
 			)
 			note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
-			endStreams := make(chan struct{})
 			inStream := make(chan struct{})
 			mux := http.NewServeMux()
-			mux.HandleFunc("/stream", func(w http.ResponseWriter, _ *http.Request) {
+			mux.Handle("/stream", serverkit.LongLived(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				w.(http.Flusher).Flush()
 				close(inStream)
-				<-endStreams // a subscription that only ends when told to
+				<-r.Context().Done() // a subscription that only ends when told to
+				if !serverkit.Ended(r.Context()) {
+					t.Error("the stream ended, but not by the drain")
+				}
 				note("stream ended")
-			})
+			})))
 			srv := serverkit.Server{
 				Handler: mux,
-				OnDrain: func() { note("OnDrain"); close(endStreams) },
 				OnShutdown: func(context.Context) error {
 					note("OnShutdown")
 					return nil
@@ -136,8 +139,8 @@ func TestRun_OnDrainEndsLongStreamsBeforeTheDrainWaits(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			want := []string{"OnDrain", "stream ended", "OnShutdown"}
-			if len(order) != 3 || order[0] != want[0] || order[1] != want[1] || order[2] != want[2] {
+			want := []string{"stream ended", "OnShutdown"}
+			if len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
 				t.Errorf("order = %v, want %v", order, want)
 			}
 		})

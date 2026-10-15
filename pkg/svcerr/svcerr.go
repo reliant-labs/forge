@@ -167,6 +167,20 @@ var (
 	// FailedPrecondition. Wire code: FailedPrecondition.
 	ErrExpired = errors.New("expired")
 
+	// ErrServerDraining indicates the call was ended because THIS replica
+	// is shutting down — a rollout, a scale-down, a node drain — and not
+	// because anything failed. The client reconnects and lands on a replica
+	// that is still serving. Wire code: Unavailable, the code a client
+	// already treats as "retry".
+	//
+	// It is the cause serverkit.Streams gives every long-lived stream it
+	// ends at shutdown, and what a transport returns when it tells its own
+	// peers about the drain in its own words ([Draining]). Distinct from
+	// ErrUnavailable so logging and metrics can treat a drain as the
+	// expected outcome of a rollout instead of a dependency outage: one
+	// ERROR per connected client per deploy is noise that buries the faults.
+	ErrServerDraining = errors.New("server draining: this replica is shutting down; reconnect to reach a live replica")
+
 	// ErrScaffoldStub marks a handler forge scaffolded and NOBODY HAS
 	// IMPLEMENTED YET. It is not a failure mode an application ever
 	// chooses: application code returns ErrUnimplemented for a
@@ -304,6 +318,13 @@ func InsufficientBalance(detail string) error { return wrapped(ErrInsufficientBa
 // time-limited resources (invitation, session, password-reset token)
 // that have aged out.
 func Expired(detail string) error { return wrapped(ErrExpired, detail) }
+
+// Draining wraps ErrServerDraining with the supplied detail: the message a
+// transport tells its own peers when it ends their call because this
+// replica is going away ("gateway draining: reconnect to a live replica").
+// errors.Is(err, ErrServerDraining) holds, so every layer that recognises a
+// drain recognises this one; the client reads Unavailable and the detail.
+func Draining(detail string) error { return wrapped(ErrServerDraining, detail) }
 
 // detailError is what every constructor returns: the application's own
 // words, carrying a sentinel for identity.
@@ -652,6 +673,10 @@ func codeForRecognized(err error) (connect.Code, error, bool) {
 		return connect.CodeUnimplemented, ErrUnimplemented, true
 	case visibleIs(err, ErrInternal):
 		return connect.CodeInternal, ErrInternal, true
+	// ErrServerDraining shares Unavailable's wire code: checked first, for
+	// the same shadowing reason as ErrPlanLimit.
+	case visibleIs(err, ErrServerDraining):
+		return connect.CodeUnavailable, ErrServerDraining, true
 	case visibleIs(err, ErrUnavailable):
 		return connect.CodeUnavailable, ErrUnavailable, true
 	case visibleIs(err, ErrDataLoss):
@@ -727,6 +752,11 @@ func IsInsufficientBalance(err error) bool { return errors.Is(err, ErrInsufficie
 
 // IsExpired reports whether err carries (or wraps) ErrExpired.
 func IsExpired(err error) bool { return errors.Is(err, ErrExpired) }
+
+// IsServerDraining reports whether err carries (or wraps) ErrServerDraining:
+// the call ended because this replica is shutting down. Matching is by
+// identity, never by message.
+func IsServerDraining(err error) bool { return errors.Is(err, ErrServerDraining) }
 
 // IsClassified reports whether err carries a verdict someone on this side of
 // the wire made deliberately — a *connect.Error, or any sentinel from this

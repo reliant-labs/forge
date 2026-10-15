@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 )
@@ -40,6 +41,9 @@ func TestDeclareFlagDefaultsToStrict(t *testing.T) {
 		}
 		if flag.DefValue != string(declareStrict) {
 			t.Errorf("`forge %s --declare` defaults to %q, want %q", name, flag.DefValue, declareStrict)
+		}
+		if placeholder, _ := pflag.UnquoteUsage(flag); placeholder != "policy" {
+			t.Errorf("`forge %s --help` shows --declare %s; want --declare policy", name, placeholder)
 		}
 	}
 }
@@ -137,6 +141,7 @@ func TestWarnRefusedRecord(t *testing.T) {
 	warnRefusedRecord(&buf, "[declare]", "env prod's declaration", "the next `forge env build prod`", err)
 	out := buf.String()
 	for _, want := range []string{"WARNING (--declare=best-effort)", "env prod's declaration", "NOT recorded",
+		`server said: spec.shape is not a release.Shape: json: unknown field "tree"`,
 		`refused field(s): ["tree"]`, "the next `forge env build prod` run WITHOUT --declare=best-effort"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("warning lacks %q:\n%s", want, out)

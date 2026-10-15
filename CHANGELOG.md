@@ -52,8 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "delete it by hand".
 
 - **`forge/pkg/identity` converges the content of a Zitadel instance to a
-  declared spec.** One library for both halves of managed identity: `forge env
-  up` will run it against the dev instance with a bootstrap PAT, and the
+  declared spec.** One library for both halves of managed identity:
+  `forge env up` will run it against the dev instance with a bootstrap PAT, and the
   control plane against each tenant instance with that instance's owner machine
   key. It reconciles the project (with role assertion), roles, OIDC
   applications (web, SPA, native and the native-sign-in broker app with its

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge.ManagedIdentity`: an env's users, declared in KCL, with no app code
+  change.** `Bundle.identity` names the roles, the applications that sign users
+  in (derived from the env's `api` workload) and the consumers (every service
+  workload that can reach the instance); forge records the declaration in the
+  release shape (`shape.identity`, names only, omitted when absent so no existing
+  shape moves, sealed into the bundle config) and fills each consumer's typed
+  config (`jwt_issuer`, `jwt_audience`, `oidc_scopes`, `oidc_client_id`,
+  `oidc_redirect_uri`, `idp_login_uri`, `idp_base`, `idp_broker_token`,
+  `jwt_roles_claim`, `jwt_jwks_snapshot`) through the new `forge.IdentityRef` env
+  source: a reserved managed secret on a hosted workload, a key of the delivered
+  Secret `forge-identity-<name>` on a cluster workload (the broker token and the
+  JWKS snapshot as re-read files), the secret store for a host-run identity. A
+  field the identity fills AND a workload sets by hand is refused. Login is
+  `native` (default; `hosted` is accepted and recorded, phase 2), instances are
+  private unless asked, `share_with` reuses a sibling env's users within one
+  project (no chains), SMTP and seed-user passwords are secret names, social
+  providers are reserved. The issuer is `https://<slug>.reliantidentity.com`,
+  the slug assigned once by the control plane (`release.IdentitySlug`).
+  `forge.ControlPlaneSecret` is generalised beyond `telemetry_token`: the derived
+  kinds `identity` (required: pods wait for the first delivery, and `forge env
+  shape` says so), `identity_machine_key` and `identity_jwks`, plus `keys` and
+  `required`. See `deploy/managed-identity`.
 - **An env moves onto the Flux path one delivery unit at a time.**
   `Bundle.hub_converges = [<unit>, …]` lists the delivery units the control plane's
   hub converges from the recorded bundle; `forge env deploy` applies every other

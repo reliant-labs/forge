@@ -160,10 +160,10 @@ IDENTITY_DOMAIN: str = "reliantidentity.com"
 # JWKS snapshot): whole-directory Secret volumes, so a rotation reaches the pod
 # without a restart.
 IDENTITY_DIR: str = "/var/run/secrets/forge/identity"
+IDENTITY_JWKS_DIR: str = "/var/run/secrets/forge/identity-jwks"
 
-# What an identity can hand a workload. `client_id`, `redirect_uri`,
-# `login_uri` and `broker_token` belong to an APPLICATION; the rest are the
-# instance's.
+# What an identity can hand a workload. The APPLICATION outputs below belong
+# to the application a consumer brokers for; the rest are the instance's.
 IDENTITY_OUTPUTS: [str] = [
     "audience", "broker_token", "client_id", "idp_base", "issuer",
     "jwks", "login_uri", "redirect_uri", "roles_claim", "scopes",
@@ -192,7 +192,7 @@ IDENTITY_FIELDS: {str: str} = {
 # CONFLICT. The others (scopes, roles_claim, login_uri) have non-empty proto
 # defaults, so a literal there is the default and the identity replaces it.
 IDENTITY_CONFLICT_OUTPUTS: [str] = [
-    "audience", "client_id", "idp_base", "issuer", "jwks", "redirect_uri",
+    "audience", "client_id", "idp_base", "issuer", "redirect_uri",
 ]
 
 # The Secret the node agent reads its ingest token from when the destination is

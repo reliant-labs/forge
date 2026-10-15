@@ -75,6 +75,7 @@ Workload etc. as bare names; `import .schema` would fork type identity.
 """
 
 import json
+import regex
 import .tiers
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
@@ -97,6 +98,8 @@ _TManagedSecretRef = tiers.ManagedSecretRef
 _TDatabaseRef = tiers.DatabaseRef
 _TWorkloadURLRef = tiers.WorkloadURLRef
 _TResources = tiers.Resources
+_TManagedIdSecret = ManagedSecret
+_TIdSecretRef = SecretRef
 
 # ---------------------------------------------------------------------------
 # Runtime resolution.
@@ -283,6 +286,7 @@ _channel = lambda v: any -> str {
         "ManagedSecret" = "managedSecret"
         "DatabaseRef" = "databaseRef"
         "WorkloadURL" = "workloadURL"
+        "IdentityRef" = "identityRef"
     }[typeof(v)]
 }
 
@@ -290,8 +294,9 @@ _channel = lambda v: any -> str {
 # `rt`: a hosted referrer lowers a config-projected secret to its store key
 # as a managedSecret and KEEPS a WorkloadURL; every other referrer resolves
 # the WorkloadURL, through its cluster's host gateway when it is a pod.
-_env_var = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any {
+_env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any {
     hosted = rt.type == "hosted"
+    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else v0
     _c = _channel(v)
     _TEnvVar {
         name = name
@@ -682,7 +687,7 @@ observability_ttl = lambda o: Observability -> str {
 }
 
 # The keys forge derives for w on rt (only those the author left unset).
-_derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
+_derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _env = w.env if w.env else {}
     _runs = rt.type in _RUNS_A_PROCESS and w.kind != "tool"
     _gml = _gomemlimit(w, rt) if _runs else ""
@@ -696,7 +701,363 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
 # The env w runs with on rt: its own, then the derived defaults. A blank
 # author value keeps its position and takes the derived value.
 _effective_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
-    (w.env if w.env else {}) | _derived_env(w, rt, bundle)
+    _gone = _idn_shadowed(w, rt, bundle)
+    _own = {k: v for k, v in (w.env if w.env else {}) if k not in _gone} if _gone else (w.env if w.env else {})
+    _idn = _idn_env(w, rt, bundle)
+    # The identity's entries replace whatever the author left in the same
+    # slot, in place. `|` refuses two values of different types, and a blank
+    # or defaulted literal legitimately gives way to a reference, so the
+    # identity layer is laid over by comprehension; everything else keeps
+    # `|` and its rule that a blank author value keeps its position and takes
+    # the derived value.
+    _base = {k: (_idn[k] if k in _idn else v) for k, v in _own} if _idn else _own
+    _rest = {k: v for k, v in _idn if k not in _own} if _idn else {}
+    (_base | _derived_env(w, rt, bundle)) | _rest
+}
+
+# ---------------------------------------------------------------------------
+# forge.ManagedIdentity: resolution, derivation and lowering.
+#
+# The declaration is small on purpose. Everything else is DERIVED here, from
+# the env's own workloads, so nothing is copy-pasted and no app code changes:
+#
+#   applications  one native_broker `<env>:<workload>` for the workload named
+#                 `api`, else one per service workload
+#   consumers     every service workload on a runtime that can reach the
+#                 instance (hosted identity: cluster, hosted; host-run
+#                 identity: host, cluster)
+#   deliveries    ControlPlaneSecrets of kind identity / identity_jwks /
+#                 identity_machine_key, one set per cluster namespace that
+#                 runs a consumer
+#   config        each consumer's typed config fields, as env values:
+#                   hosted referrer   a reserved managed secret
+#                   cluster referrer  a key of the delivered Secret (a FILE,
+#                                     re-read on change, for the broker token
+#                                     and the JWKS snapshot)
+#                   host-run identity the env's secret store, by env var name
+# ---------------------------------------------------------------------------
+
+_idn_rt = lambda id: any -> str {
+    id.runtime.type if id.runtime else "hosted"
+}
+
+# The runtimes a consumer may run on, given where the instance runs.
+_idn_reach = lambda id: any -> [str] {
+    ["host", "cluster"] if _idn_rt(id) == "host" else ["cluster", "hosted"]
+}
+
+_idn_tok = lambda s: str -> str {
+    regex.replace(s.upper(), r"[^A-Z0-9]+", "_")
+}
+
+_idn_secret = lambda id: any -> str {
+    IDENTITY_SECRET_PREFIX + id.name
+}
+
+_idn_services = lambda workloads: [any], id: any -> [any] {
+    [w for w in workloads if w.kind == "service" and w.runtime and w.runtime.type in _idn_reach(id)]
+}
+
+_idn_apps = lambda workloads: [any], id: any, env: str, project: str -> [IdentityApplication] {
+    _svc = _idn_services(workloads, id)
+    _api = [w for w in _svc if w.name == "api"]
+    id.applications if id.applications else [IdentityApplication {
+        name = "${env or project}:${w.name}"
+        workload = w.name
+        kind = "native_broker"
+    } for w in (_api if _api else _svc)]
+}
+
+_idn_app_of = lambda apps: [any], workload: str -> str {
+    _m = [a.name for a in apps if a.workload == workload]
+    _m[0] if _m else ""
+}
+
+_idn_consumers = lambda workloads: [any], id: any, env: str, project: str -> [IdentityConsumer] {
+    _apps = _idn_apps(workloads, id, env, project)
+    _base = id.consumers if id.consumers else [IdentityConsumer {workload = w.name} for w in _idn_services(workloads, id)]
+    [IdentityConsumer {
+        workload = c.workload
+        application = c.application or _idn_app_of(_apps, c.workload)
+        if c.fields:
+            fields = c.fields
+    } for c in _base]
+}
+
+_idn_workload = lambda workloads: [any], name: str -> any {
+    _m = [w for w in workloads if w.name == name]
+    _m[0] if _m else Undefined
+}
+
+# Names a declaration points at that the env cannot honour. Empty = fine.
+_idn_bad_apps = lambda workloads: [any], id: any, env: str, project: str -> [str] {
+    [a.workload for a in _idn_apps(workloads, id, env, project) if len([w for w in workloads if w.name == a.workload and w.kind == "service"]) == 0] if id else []
+}
+_idn_bad_consumers = lambda workloads: [any], id: any, env: str, project: str -> [str] {
+    [c.workload for c in _idn_consumers(workloads, id, env, project) if len([w for w in _idn_services(workloads, id) if w.name == c.workload]) == 0] if id else []
+}
+
+# The keys an application contributes to the delivered Secret.
+_idn_app_keys = lambda a: any -> [str] {
+    _t = _idn_tok(a.name)
+    ["${_t}_CLIENT_ID", "${_t}_REDIRECT_URI"] + (["${_t}_BROKER_TOKEN", "${_t}_LOGIN_URI"] if a.kind == "native_broker" else [])
+}
+
+# The outputs one consumer is handed.
+_idn_outputs = lambda c: any, apps: [any] -> [str] {
+    _app = [a for a in apps if a.name == c.application]
+    _inst = ["audience", "issuer", "jwks", "roles_claim", "scopes"]
+    _web = ["client_id", "redirect_uri"]
+    _native = ["broker_token", "idp_base", "login_uri"]
+    _inst + (_web + (_native if _app[0].kind == "native_broker" else []) if _app else [])
+}
+
+# The config field an output fills for c, and its env var.
+_idn_field = lambda c: any, o: str -> str {
+    _f = {
+        "audience" = c.fields.audience
+        "broker_token" = c.fields.broker_token
+        "client_id" = c.fields.client_id
+        "idp_base" = c.fields.idp_base
+        "issuer" = c.fields.issuer
+        "jwks" = c.fields.jwks
+        "login_uri" = c.fields.login_uri
+        "redirect_uri" = c.fields.redirect_uri
+        "roles_claim" = c.fields.roles_claim
+        "scopes" = c.fields.scopes
+    } if c.fields else {}
+    _f[o] or IDENTITY_FIELDS[o]
+}
+_idn_envname = lambda c: any, o: str -> str {
+    _idn_field(c, o).upper()
+}
+
+# Which lowering a referrer on rt gets: "store" (a host-run identity), "managed"
+# (a hosted referrer), "secret" (a cluster referrer of a hosted identity).
+_idn_lowering = lambda id: any, rt: any -> str {
+    "store" if _idn_rt(id) == "host" else ("managed" if rt.type == "hosted" else "secret")
+}
+
+# --- the Secrets the control plane delivers ---------------------------------
+
+_idn_cluster_consumers = lambda workloads: [any], id: any, env: str, project: str -> [any] {
+    [c for c in _idn_consumers(workloads, id, env, project) if _idn_workload(workloads, c.workload) and _idn_workload(workloads, c.workload).runtime.type == "cluster"]
+}
+
+_idn_cps = lambda workloads: [any], id: any, env: str, project: str -> [ControlPlaneSecret] {
+    _apps = _idn_apps(workloads, id, env, project)
+    _cc = _idn_cluster_consumers(workloads, id, env, project) if _idn_rt(id) == "hosted" else []
+    _targets = {"${_idn_workload(workloads, c.workload).runtime.target.cluster}/${_idn_workload(workloads, c.workload).runtime.target.namespace}": _idn_workload(workloads, c.workload).runtime.target for c in _cc}
+    _keys = lambda t: any -> [str] {
+        sorted({k: 0 for k in ["AUDIENCE", "ISSUER", "SCOPES"] + [k for c in _cc for a in _apps if c.application == a.name and "${_idn_workload(workloads, c.workload).runtime.target.cluster}/${_idn_workload(workloads, c.workload).runtime.target.namespace}" == "${t.cluster}/${t.namespace}" for k in _idn_app_keys(a)]})
+    }
+    ([ControlPlaneSecret {
+        name = _idn_secret(id)
+        cluster = t
+        kind = "identity"
+        keys = _keys(t)
+        required = True
+        reason = "managed identity '${id.name}' outputs (issuer, audience, applications)"
+    } for _, t in _targets] if _targets else []) \
+    + [ControlPlaneSecret {
+        name = _idn_secret(id) + "-jwks"
+        cluster = t
+        kind = "identity_jwks"
+        keys = ["jwks.json"]
+        reason = "managed identity '${id.name}' signing-key snapshot (the fallback when the issuer is unreachable at boot)"
+    } for _, t in _targets] \
+    + [ControlPlaneSecret {
+        name = m.key_secret
+        cluster = m.cluster
+        kind = "identity_machine_key"
+        keys = ["key.json"]
+        reason = "managed identity '${id.name}' machine user '${m.name}'"
+    } for m in id.machine_users if m.key_secret and _idn_rt(id) == "hosted"]
+}
+
+# The author's control-plane secrets plus the ones the identity derives.
+_cps_decl = lambda workloads: [any], id: any, env: str, project: str, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
+    declared + (_idn_cps(workloads, id, env, project) if id else [])
+}
+
+# --- lowering: an output as an env value ------------------------------------
+
+_idn_key = lambda o: str, app: str -> str {
+    "JWKS" if o == "jwks" else ({
+        "audience" = "AUDIENCE"
+        "issuer" = "ISSUER"
+        "idp_base" = "ISSUER"
+        "scopes" = "SCOPES"
+        "client_id" = "${_idn_tok(app)}_CLIENT_ID"
+        "redirect_uri" = "${_idn_tok(app)}_REDIRECT_URI"
+        "login_uri" = "${_idn_tok(app)}_LOGIN_URI"
+        "broker_token" = "${_idn_tok(app)}_BROKER_TOKEN"
+    }[o] if o in ["audience", "issuer", "idp_base", "scopes", "client_id", "redirect_uri", "login_uri", "broker_token"] else "")
+}
+
+# An IdentityRef as the value its referrer reads. Only called with a bundle
+# that declares an identity. `roles_claim` is a literal, and the rest lower to
+# the channel the referrer's runtime reads (see _idn_lowering).
+_idn_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
+    _id = bundle.identity
+    assert _id, "${where}: forge.IdentityRef needs Bundle.identity (forge.ManagedIdentity): there is no identity to read ${v.output} from"
+    _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)
+    _app = v.application or (_apps[0].name if len(_apps) == 1 else "")
+    assert v.output not in IDENTITY_APP_OUTPUTS or _app, "${where}: forge.IdentityRef output '${v.output}' belongs to an application: name one with `application = ...` (declared: ${[a.name for a in _apps]})"
+    _kind = _idn_lowering(_id, rt)
+    _k = _idn_key(v.output, _app)
+    _snap = v.output == "jwks"
+    _name = IDENTITY_MANAGED_PREFIX + _idn_tok(_id.name) + "_" + _k
+    _secret = _idn_secret(_id) + ("-jwks" if _snap else "")
+    _skey = "jwks.json" if _snap else _k
+    _managed = _TManagedIdSecret {name = _name, optional = True if _snap else Undefined}
+    _cluster = _TIdSecretRef {name = _secret, key = _skey, optional = True if _snap else Undefined}
+    _store = _TIdSecretRef {name = _idn_secret(_id), key = _k, optional = True if _snap else Undefined}
+    "auto" if v.output == "roles_claim" else (_managed if _kind == "managed" else (_cluster if _kind == "secret" else _store))
+}
+
+# What the identity hand-set values would collide with.
+_idn_hand_set = lambda env: {str:}, k: str -> bool {
+    _t = typeof(env[k]) if k in env else "none"
+    False if _t == "none" else ((env[k] != "") if _t == "str" else (False if _t == "IdentityRef" else (not env[k].store_key if _t == "SecretRef" else True)))
+}
+
+_idn_entries = lambda c: any, rt: any, bundle: Bundle -> {str:} {
+    _id = bundle.identity
+    _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)
+    _outs = _idn_outputs(c, _apps)
+    _files = ["broker_token", "jwks"] if _idn_lowering(_id, rt) == "secret" else []
+    {
+        _idn_envname(c, o): ("auto" if o == "roles_claim" else IdentityRef {output = o, application = c.application}) for o in _outs if o not in _files
+    } | {
+        "${_idn_envname(c, o)}_FILE": (IDENTITY_DIR + "/broker_token" if o == "broker_token" else IDENTITY_JWKS_DIR + "/jwks.json") for o in _outs if o in _files
+    }
+}
+
+# The env a consumer is given, after refusing a field the author also set.
+_idn_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
+    _id = bundle.identity
+    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name] if _id else []
+    _c = _cs[0] if _cs else Undefined
+    _env = w.env if w.env else {}
+    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)) if _c else []
+    _clash = ["${_idn_envname(_c, o)} (config field ${_idn_field(_c, o)})" for o in _outs if o in IDENTITY_CONFLICT_OUTPUTS and _idn_hand_set(_env, _idn_envname(_c, o))] if _c else []
+    assert len(_clash) == 0, "workload '${w.name}' sets ${_clash} by hand AND Bundle.identity fills it. One source per field: drop the value from the workload's env / deploy/kcl/${bundle.env or '<env>'}/config.k and let the identity supply it, or remove Bundle.identity to bring your own issuer"
+    _idn_entries(_c, rt, bundle) if _c else {}
+}
+
+# The env vars an identity FILE output replaces: the file wins, so the plain
+# variable a config projection (or a hand) left behind must not stay beside it.
+_idn_shadowed = lambda w: any, rt: any, bundle: Bundle -> [str] {
+    _id = bundle.identity
+    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name] if _id else []
+    _c = _cs[0] if _cs else Undefined
+    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)) if _c else []
+    [_idn_envname(_c, o) for o in ["broker_token", "jwks"] if o in _outs] if _c and _idn_lowering(_id, rt) == "secret" else []
+}
+
+# The Secret volumes a cluster consumer re-reads the broker token and the JWKS
+# snapshot from. Whole-directory mounts: the kubelet refreshes them in place.
+# The identity Secret is NOT optional, so the pod waits for the first delivery;
+# the snapshot is a fallback, so its Secret is.
+_idn_volumes = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
+    _id = bundle.identity
+    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name] if _id and rt.type == "cluster" and _idn_rt(_id) == "hosted" else []
+    _c = _cs[0] if _cs else Undefined
+    _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project) if _c else []
+    _outs = _idn_outputs(_c, _apps) if _c else []
+    ([tiers.Volume {
+        name = "forge-identity"
+        mountPath = IDENTITY_DIR
+        readOnly = True
+        source = tiers.VolumeSource {secret = tiers.SecretVolumeSource {
+            name = _idn_secret(_id)
+            items = [tiers.KeyToPath {key = _idn_key("broker_token", _c.application), path = "broker_token"}]
+        }}
+    }] if "broker_token" in _outs else []) + ([tiers.Volume {
+        name = "forge-identity-jwks"
+        mountPath = IDENTITY_JWKS_DIR
+        readOnly = True
+        source = tiers.VolumeSource {secret = tiers.SecretVolumeSource {
+            name = _idn_secret(_id) + "-jwks"
+            optional = True
+            items = [tiers.KeyToPath {key = "jwks.json", path = "jwks.json"}]
+        }}
+    }] if "jwks" in _outs else [])
+}
+
+# --- the shape's identity ---------------------------------------------------
+
+_idn_managed_names = lambda b: Bundle -> [str] {
+    _id = b.identity
+    _apps = _idn_apps(b.workloads, _id, b.env, b.project)
+    _hosted = [c for c in _idn_consumers(b.workloads, _id, b.env, b.project) if _idn_workload(b.workloads, c.workload) and _idn_workload(b.workloads, c.workload).runtime.type == "hosted"] if _idn_rt(_id) == "hosted" else []
+    sorted({IDENTITY_MANAGED_PREFIX + _idn_tok(_id.name) + "_" + _idn_key(o, c.application): 0 for c in _hosted for o in _idn_outputs(c, _apps) if o != "roles_claim"})
+}
+
+_render_identity = lambda b: Bundle -> any {
+    _id = b.identity
+    _apps = _idn_apps(b.workloads, _id, b.env, b.project)
+    _dl = [s for s in _idn_cps(b.workloads, _id, b.env, b.project) if s.kind in IDENTITY_SECRET_KINDS]
+    {
+        "name": _id.name
+        "runtime": _idn_rt(_id)
+        "share_with": _id.share_with if _id.share_with else None
+        "project_name": _id.project_name if _id.project_name else None
+        "login": {"mode": _id.login.mode}
+        "public": (_id.public or _id.login.mode == "hosted") or None
+        "domain": _id.domain if _id.domain else None
+        "roles": [{
+            "key": r.key
+            "display_name": r.display_name if r.display_name else None
+            "group": r.group if r.group else None
+            "members_from": r.members_from
+            "members": r.members if r.members else None
+        } for r in _id.roles]
+        "applications": [{
+            "name": a.name
+            "workload": a.workload
+            "kind": a.kind
+            "redirect_uris": a.redirect_uris if a.redirect_uris else None
+            "logout_uris": a.logout_uris if a.logout_uris else None
+            "login_uri": a.login_uri if a.login_uri else None
+        } for a in _apps]
+        "consumers": [{
+            "workload": c.workload
+            "application": c.application if c.application else None
+            "fields": ({o: _idn_field(c, o) for o in IDENTITY_OUTPUTS if c.fields and _idn_field(c, o) != IDENTITY_FIELDS[o]} or None) if c.fields else None
+        } for c in _idn_consumers(b.workloads, _id, b.env, b.project)]
+        "machine_users": [{
+            "name": m.name
+            "roles": m.roles if m.roles else None
+            "key_secret": {
+                "name": m.key_secret
+                "namespace": m.cluster.namespace
+                "cluster": m.cluster.cluster
+                "connected_cluster": _cps_connected(m.cluster.cluster, m.cluster, b.workloads, b.cluster_target, b.connected_clusters)
+            } if m.key_secret else None
+        } for m in _id.machine_users]
+        "smtp": {
+            "host": _id.smtp.host
+            "port": _id.smtp.port
+            "user": _id.smtp.user if _id.smtp.user else None
+            "sender": _id.smtp.sender
+            "password_secret": _id.smtp.password.name
+        } if _id.smtp else None
+        "seed_users": [{
+            "email": u.email
+            "roles": u.roles if u.roles else None
+            "password_secret": u.password_secret.name if u.password_secret else None
+        } for u in _id.seed_users]
+        "deliveries": [{
+            "kind": s.kind
+            "name": s.name
+            "namespace": _cps_ns(s)
+            "cluster": s.cluster.cluster
+            "connected_cluster": _cps_connected(s.cluster.cluster, s.cluster, b.workloads, b.cluster_target, b.connected_clusters)
+        } for s in _dl]
+        "managed_secrets": _idn_managed_names(b) or None
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -846,7 +1207,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         serviceAccount = w.serviceAccount
         serviceAccountAnnotations = w.serviceAccountAnnotations
         sidecars = w.sidecars
-        volumes = ((w.volumes if w.volumes else []) + _cps_volume(w, rt, bundle)) or Undefined
+        volumes = ((w.volumes if w.volumes else []) + _cps_volume(w, rt, bundle) + _idn_volumes(w, rt, bundle)) or Undefined
         nodeSelector = w.nodeSelector
         tolerations = w.tolerations
         podAnnotations = w.podAnnotations
@@ -1404,6 +1765,11 @@ render = lambda bundle: Bundle -> any {
         # defaults.
         if bundle.delivery_policy:
             "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
+        # The env's managed identity as DECLARED, with the applications and
+        # consumers derived and the deliveries listed. It is release.Shape's
+        # `identity` in the shape's own vocabulary.
+        if bundle.identity:
+            "identity": _render_identity(bundle)
         "infra": [_render_host_infra(i) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
@@ -1433,7 +1799,7 @@ render = lambda bundle: Bundle -> any {
         # checklist, and the preflight BLOCK on a required-but-absent Secret.
         "required_secrets": [_render_external_secret(s) for s in bundle.required_secrets]
         "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
-        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, bundle.control_plane_secrets)]
+        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, _cps_decl(bundle.workloads, bundle.identity, bundle.env, bundle.project, bundle.control_plane_secrets))]
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
         if bundle.secret_provider:
@@ -2121,7 +2487,8 @@ _render_control_plane_secret = lambda s: ControlPlaneSecret, bundle: Bundle -> a
         "cluster": s.cluster.cluster
         "connected_cluster": _cps_connected(s.cluster.cluster, s.cluster, bundle.workloads, bundle.cluster_target, bundle.connected_clusters) or None
         "kind": s.kind
-        "keys": CONTROL_PLANE_SECRET_KINDS[s.kind]
+        "keys": s.keys if s.keys else CONTROL_PLANE_SECRET_KINDS[s.kind]
+        "required": s.required if s.required else None
         "reason": s.reason if s.reason else None
     }
 }

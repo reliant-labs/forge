@@ -107,7 +107,34 @@ schema DatabaseRef(tiers.DatabaseRef):
     """A credential of a `forge.ManagedDatabase` in this env:
     `databaseRef` on the wire. `key` defaults to the connection URI."""
 
-type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL
+schema IdentityRef:
+    """One output of this env's `forge.ManagedIdentity`, as an env value:
+
+        env = {JWT_ISSUER = forge.IdentityRef {output = "issuer"}}
+
+    You rarely write it. Declaring `Bundle.identity` fills each consumer's
+    typed config (jwt_issuer, jwt_audience, oidc_client_id, ...) with
+    IdentityRefs by itself; this is the primitive that does it, and the way to
+    hand a workload an output the projection does not (a second issuer, say).
+
+    `output` is one of issuer, audience, scopes, idp_base, jwks, client_id,
+    redirect_uri, login_uri, broker_token, roles_claim. The last four of those
+    but roles_claim belong to an APPLICATION, named by `application` (empty =
+    the consuming workload's own).
+
+    What it lowers to depends on where the referrer runs: a hosted workload
+    reads a reserved managed secret, a cluster workload a key of the Secret
+    the control plane delivers (`forge-identity-<name>`), a host process the
+    env's secret store. The control plane is the only writer of all three.
+    """
+    output: str
+    application: str = ""
+
+    check:
+        output in ["issuer", "audience", "scopes", "idp_base", "jwks", "client_id", "redirect_uri", "login_uri", "broker_token", "roles_claim"], \
+            "IdentityRef.output '${output}' must be one of issuer, audience, scopes, idp_base, jwks, client_id, redirect_uri, login_uri, broker_token, roles_claim"
+
+type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL | IdentityRef
 
 # ---------------------------------------------------------------------------
 # Runtimes. The `type` discriminator is what the JSON contract dispatches on

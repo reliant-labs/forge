@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Partition the module's packages between ci.yml's two Go test jobs.
+# Partition the module's packages between ci.yml's three Go test jobs.
 #
-#   scripts/ci-test-packages.sh unit     every package EXCEPT the guards
-#   scripts/ci-test-packages.sh guards   exactly the guards
-#   scripts/ci-test-packages.sh check    prove the two sets partition `go list ./...`
+#   scripts/ci-test-packages.sh unit         every package EXCEPT internal/cli and the guards
+#   scripts/ci-test-packages.sh cli          exactly internal/cli
+#   scripts/ci-test-packages.sh guards       exactly the guards
+#   scripts/ci-test-packages.sh unit cli     the union of the named sets (Windows runs this)
+#   scripts/ci-test-packages.sh check        prove the three sets partition `go list ./...`
 #
-# WHY TWO JOBS. internal/tierguard renders four whole forge projects,
-# internal/removalguard regex-scans every file in the repository, and
+# Taskfile.yml's `task test` runs the same three sets with the same flags, so
+# the local full tier and CI cannot disagree about what runs where.
+#
+# WHY THE GUARDS HAVE THEIR OWN JOB. internal/tierguard renders four whole forge
+# projects, internal/removalguard regex-scans every file in the repository, and
 # internal/deadcodeguard type-checks the whole program — every dependency
 # included — once per target OS. They are the slowest and the largest packages
 # in the suite. Run inside `go test -race ./...` they co-resided with a hundred
@@ -17,14 +22,24 @@
 # -race). In their own job their peak never meets the rest of the suite's —
 # bounded by the job boundary, not by the luck of go test's package scheduling.
 #
-# WHY THIS SCRIPT. A package list typed into two workflow steps can drift: add
-# a guard to one list and forget the other, and it runs twice or — worse — not
-# at all while both jobs stay green. So the list lives HERE, once, and `check`
-# fails the job unless unit ∪ guards == `go list ./...` and unit ∩ guards == ∅.
-# A build tag was rejected for the same reason e2e-suite.yml documents: tagged
-# tests are invisible to golangci-lint and to every plain `go test ./...`,
-# which is how 47 e2e tests once went unexecuted while CI stayed green. The
-# guards stay ordinary tests; locally `go test ./...` still runs them.
+# WHY internal/cli HAS ITS OWN JOB. It is the largest test binary in the
+# module, and the most-changed package. Under -race it alone took 665-692s of
+# the Test job's 1215-1253s `go test` step, sharing the runner's four cores
+# with every other package's compile and run. Split, each half gets a runner
+# to itself and the two run side by side, so the unit lane's wall time is the
+# slower half instead of both halves contending for one machine. Only the
+# package itself moves: its subpackages (internal/cli/lint,
+# internal/cli/scaffold, ...) are ordinary-sized and stay in `unit`.
+#
+# WHY THIS SCRIPT. A package list typed into several workflow steps can drift:
+# add a guard to one list and forget another, and it runs twice or — worse —
+# not at all while every job stays green. So the lists live HERE, once, and
+# `check` fails the job unless unit ∪ cli ∪ guards == `go list ./...` and the
+# three are pairwise disjoint. A build tag was rejected for the same reason
+# e2e-suite.yml documents: tagged tests are invisible to golangci-lint and to
+# every plain `go test ./...`, which is how 47 e2e tests once went unexecuted
+# while CI stayed green. The guards stay ordinary tests; locally
+# `go test ./...` still runs them.
 set -euo pipefail
 
 # The guard packages. Import paths, one per line.
@@ -34,45 +49,73 @@ guards=(
   github.com/reliant-labs/forge/internal/tierguard
 )
 
-all() { go list ./...; }
+# The package that gets a job of its own.
+cli=(
+  github.com/reliant-labs/forge/internal/cli
+)
+
+# `go list ./...` once per invocation: it is the slow part, and `check` needs
+# it four times over.
+all_cache=""
+all() {
+  [[ -n "$all_cache" ]] || all_cache=$(go list ./...)
+  printf '%s\n' "$all_cache"
+}
 guard_set() { printf '%s\n' "${guards[@]}"; }
-unit_set() { all | grep -vxF -f <(guard_set); }
+cli_set() { printf '%s\n' "${cli[@]}"; }
+unit_set() { all | grep -vxF -f <(guard_set) -f <(cli_set); }
+
+set_of() {
+  case "$1" in
+    unit) unit_set ;;
+    cli) cli_set ;;
+    guards) guard_set ;;
+    *)
+      echo "usage: $0 unit|cli|guards [unit|cli|guards ...] | check" >&2
+      exit 2
+      ;;
+  esac
+}
 
 case "${1:-}" in
-  unit) unit_set ;;
-  guards) guard_set ;;
   check)
+    # Primed here, in this shell: every $(...) below is a subshell, and an
+    # assignment inside one does not survive it.
+    all_cache=$(go list ./...)
     all_pkgs=$(all | sort)
-    unit_pkgs=$(unit_set | sort)
-    guard_pkgs=$(guard_set | sort)
     status=0
-    # Every guard must be a real package: a renamed or deleted guard would
-    # otherwise leave the guards job testing nothing and passing.
-    missing=$(comm -13 <(printf '%s\n' "$all_pkgs") <(printf '%s\n' "$guard_pkgs"))
+    named=$(printf '%s\n%s\n' "$(guard_set)" "$(cli_set)" | sort)
+    # Every named package must be real: a renamed or deleted one would
+    # otherwise leave its job testing nothing and passing.
+    missing=$(comm -13 <(printf '%s\n' "$all_pkgs") <(printf '%s\n' "$named"))
     if [[ -n "$missing" ]]; then
-      echo "::error::guard package(s) not in \`go list ./...\` — renamed or deleted? Update scripts/ci-test-packages.sh:"
+      echo "::error::package(s) named in scripts/ci-test-packages.sh are not in \`go list ./...\` — renamed or deleted?"
       printf '  %s\n' $missing
       status=1
     fi
-    overlap=$(comm -12 <(printf '%s\n' "$unit_pkgs") <(printf '%s\n' "$guard_pkgs"))
-    if [[ -n "$overlap" ]]; then
-      echo "::error::package(s) in BOTH jobs:"
-      printf '  %s\n' $overlap
+    # Pairwise disjoint: a package in two sets runs in two jobs.
+    dup=$(printf '%s\n%s\n%s\n' "$(unit_set)" "$(cli_set)" "$(guard_set)" | sort | uniq -d)
+    if [[ -n "$dup" ]]; then
+      echo "::error::package(s) in more than one job:"
+      printf '  %s\n' $dup
       status=1
     fi
-    union=$(printf '%s\n%s\n' "$unit_pkgs" "$guard_pkgs" | sort -u)
+    union=$(printf '%s\n%s\n%s\n' "$(unit_set)" "$(cli_set)" "$(guard_set)" | sort -u)
     if [[ "$union" != "$all_pkgs" ]]; then
-      echo "::error::the two jobs do not cover \`go list ./...\` exactly:"
+      echo "::error::the three jobs do not cover \`go list ./...\` exactly:"
       diff <(printf '%s\n' "$all_pkgs") <(printf '%s\n' "$union") || true
       status=1
     fi
     if [[ $status -eq 0 ]]; then
-      echo "partition ok: $(printf '%s\n' "$unit_pkgs" | wc -l | tr -d ' ') unit + $(printf '%s\n' "$guard_pkgs" | wc -l | tr -d ' ') guard = $(printf '%s\n' "$all_pkgs" | wc -l | tr -d ' ') packages"
+      n() { printf '%s\n' "$1" | grep -c .; }
+      echo "partition ok: $(n "$(unit_set)") unit + $(n "$(cli_set)") cli + $(n "$(guard_set)") guard = $(n "$all_pkgs") packages"
     fi
     exit $status
     ;;
+  "")
+    set_of ""
+    ;;
   *)
-    echo "usage: $0 unit|guards|check" >&2
-    exit 2
+    for s in "$@"; do set_of "$s"; done
     ;;
 esac

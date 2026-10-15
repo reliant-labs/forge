@@ -98,15 +98,40 @@ tasks:
     # packages; with no `--` args it is the whole module. An unmatched pattern
     # fails in `go test` itself, so a scoped run can never quietly widen into
     # a whole-module run that reports success.
-    desc: Run Go unit tests (excludes `//go:build integration` files)
+    desc: "Run Go unit tests in CI's three lanes: unit, internal/cli, guards (excludes integration + e2e build tags)"
     cmds:
-      # `-timeout 120s` matches the global per-package timeout convention so a
-      # hung test fails the suite quickly rather than wedging CI. Integration
-      # tests use the `integration` build tag and ship their own task below.
-      - go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
-      # (`./...` covers pkg/* too now — it used to be a separate module that
-      # needed its own `cd pkg && go test`, which meant the library shipping
-      # into every generated binary went untested whenever someone forgot.)
+      # THE SAME THREE LANES AS ci.yml, from the same script. Unscoped, this
+      # is the whole module — pkg/* included — split by
+      # scripts/ci-test-packages.sh exactly as ci.yml's Test, Test
+      # (internal/cli) and Test (guards) jobs split it, with their flags: the
+      # unit and cli lanes under {{.GOTESTRACE}}, the guards at -p 1 without
+      # it (ci.yml's test-guards comment says why; under -race removalguard
+      # alone took ~980s). Integration and e2e tests carry build tags and
+      # have their own tasks.
+      #
+      # ONE BUDGET PER LANE. -timeout bounds a test BINARY, so it has to fit
+      # the slowest package in the lane on a loaded machine, ~2x what a CI
+      # runner measures. The old single `-timeout 120s` fitted none of the
+      # slow three and could not pass: under -race in CI, internal/cli took
+      # 505-692s, the root package's TestCrossPlatformBuild (two whole-module
+      # cross-compiles in a subprocess) 339s, and internal/cluster 161-197s.
+      #   unit    15m  the root package, ~2x its CI time
+      #   cli     45m  internal/cli; a local -race run at load ~100 was still
+      #                going after 30 minutes
+      #   guards  30m  ci.yml's own budget for them
+      # These are hang detectors, not speed budgets. Speed comes from the
+      # inner loop: `task test:short`, scoped, cached.
+      #
+      # A scoped `task test -- <pkgs>` is one invocation at the largest budget:
+      # it may name internal/cli.
+      - cmd: go test {{.GOTESTRACE}} -count=1 -timeout 45m {{.CLI_ARGS}}
+        if: '[ -n "{{.CLI_ARGS}}" ]'
+      - cmd: go test {{.GOTESTRACE}} -count=1 -timeout 15m $(scripts/ci-test-packages.sh unit)
+        if: '[ -z "{{.CLI_ARGS}}" ]'
+      - cmd: go test {{.GOTESTRACE}} -count=1 -timeout 45m $(scripts/ci-test-packages.sh cli)
+        if: '[ -z "{{.CLI_ARGS}}" ]'
+      - cmd: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
+        if: '[ -z "{{.CLI_ARGS}}" ]'
 
   test:short:
     # The inner-loop tier from reliant.md "Testing tiers": run it after each

@@ -58,6 +58,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -136,6 +137,14 @@ type HelmChartSpec struct {
 	// Namespace rides the chart's server-side apply, so a re-apply sets
 	// exactly the declared keys, drops a key that is no longer declared (the
 	// same field manager owned it), and leaves every key another manager set.
+	//
+	// PRECEDENCE: the labels forge stamps on that Namespace are forge's, and
+	// a declaration may not set them (forgeOwnedNamespaceLabel). That is
+	// enforced by REFUSING the spec in RenderHelmChart, as the KCL schema
+	// refuses the declaration, rather than by picking a winner. Either
+	// silent outcome is wrong: if forge's value won, the declared one would
+	// vanish, and if the declared one won, forge's routing and ownership
+	// stamps would change without anyone deciding to change them.
 	NamespaceLabels      map[string]string
 	NamespaceAnnotations map[string]string
 	// Owner is the (project, env) that applies this chart — ChartOwner's
@@ -439,6 +448,9 @@ func writeValuesFile(values map[string]any) (string, error) {
 // applied first by Apply (CRDs → wait Established → rest); RenderHelmChart
 // returns only the `--skip-crds` controller/RBAC/Service manifests.
 func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
+	if err := validateNamespaceMetadata(spec); err != nil {
+		return "", err
+	}
 	rendered, err := helmTemplate(ctx, spec)
 	if err != nil {
 		return "", err
@@ -503,13 +515,66 @@ func applyChartPatches(chart, manifests string, patches map[string]any) (string,
 	return strings.Join(docs, docDelimiter), nil
 }
 
+// forgeOwnedNamespaceLabel reports whether key is a label forge (or the
+// apiserver) writes on the Namespace forge creates for a chart, so a chart's
+// NamespaceLabels may not declare it:
+//
+//   - `forge.dev/*`: WorkloadLabel routes the Namespace on the chart's
+//     `--target`, and ChartOwnerLabel is the ownership proof the chart prune
+//     relies on.
+//   - AppNameLabel and AppManagedByLabel: stampDocAppLabel only DEFAULTS
+//     these, so that a chart's own `app.kubernetes.io/name` survives for the
+//     selectors that match on it. On the Namespace no chart wrote them, so the
+//     only competing value is a declared one, and a declared one would have
+//     silently replaced forge's.
+//   - `kubernetes.io/metadata.name`: the apiserver sets it to the Namespace's
+//     name and refuses any other value.
+//
+// kcl/schema.k's HelmChart check refuses the same keys with the same reason.
+func forgeOwnedNamespaceLabel(key string) bool {
+	switch key {
+	case AppNameLabel, AppManagedByLabel, "kubernetes.io/metadata.name":
+		return true
+	}
+	return strings.HasPrefix(key, "forge.dev/")
+}
+
+// validateNamespaceMetadata refuses a chart spec whose Namespace metadata sets
+// a key forge owns (forgeOwnedNamespaceLabel, and `forge.dev/*` annotations).
+// The KCL schema refuses the declaration first. This repeats the check at the
+// one seam every render passes through, so a spec built another way is refused
+// too instead of being resolved in silence.
+func validateNamespaceMetadata(spec HelmChartSpec) error {
+	var bad []string
+	for k := range spec.NamespaceLabels {
+		if forgeOwnedNamespaceLabel(k) {
+			bad = append(bad, "label "+k)
+		}
+	}
+	for k := range spec.NamespaceAnnotations {
+		if strings.HasPrefix(k, "forge.dev/") {
+			bad = append(bad, "annotation "+k)
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	sort.Strings(bad)
+	return fmt.Errorf("helm chart %q: namespace metadata may not set %s: forge stamps those on the Namespace it creates "+
+		"for the chart (forge.dev/* routes and proves ownership, app.kubernetes.io/name and app.kubernetes.io/managed-by "+
+		"name the chart and forge) and the apiserver owns kubernetes.io/metadata.name - drop the key",
+		spec.Name, strings.Join(bad, ", "))
+}
+
 // namespaceManifest renders the `kind: Namespace` document for ns, or "" when
 // ns is empty (a chart with no namespace renders into whatever the apply
 // default is — nothing to create). labels and annotations are the chart's
-// declared NamespaceLabels / NamespaceAnnotations; stampAppLabel adds the chart
-// group + managed-by afterwards so it rides the chart's --target and
-// applyRenderedCharts promotes it ahead of the namespaced resources.
-// Idempotent at apply time (already-exists is fine under server-side apply).
+// declared NamespaceLabels / NamespaceAnnotations, which validateNamespaceMetadata
+// has already checked hold none of forge's keys; stampAppLabel adds the chart
+// group, owner, name and managed-by afterwards so it rides the chart's
+// --target and applyRenderedCharts promotes it ahead of the namespaced
+// resources. Idempotent at apply time (already-exists is fine under
+// server-side apply).
 func namespaceManifest(ns string, labels, annotations map[string]string) string {
 	if strings.TrimSpace(ns) == "" {
 		return ""

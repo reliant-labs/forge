@@ -3278,8 +3278,17 @@ schema HelmChart:
     `kubernetes.io/metadata.name`, a mesh's injection label) alone. The
     namespace is shared state, though: two envs that install the same chart
     into one cluster must declare the SAME metadata, or each re-apply
-    strips what the other set. Keys under `forge.dev/` are forge's own and
-    are refused.
+    strips what the other set.
+
+    The labels forge stamps on that Namespace are forge's, and declaring one
+    is REFUSED rather than resolved either way. Those labels are every
+    `forge.dev/*` key (the `--target` group and the prune's ownership stamp),
+    `app.kubernetes.io/name` (the chart's `name`) and
+    `app.kubernetes.io/managed-by` (`forge`). The apiserver's
+    `kubernetes.io/metadata.name` is refused as well. A silent winner would be
+    wrong either way: if forge won, your value would vanish, and if yours won,
+    forge's routing or ownership stamp would change. `forge.dev/*` annotation
+    keys are refused for the same reason. Every other key is yours.
 
     PATCHES. A chart's values reach only what its templates expose. `patches`
     reaches the rest — a pod's `runtimeClassName`, an `initContainer` — by
@@ -3381,8 +3390,8 @@ schema HelmChart:
             "HelmChart '${name}'.namespace_labels has a key that is not a valid Kubernetes label key"
         all _k, v in namespace_labels { regex.match(v, "^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$") and len(v) <= 63 }, \
             "HelmChart '${name}'.namespace_labels has a value that is not a valid Kubernetes label value (at most 63 characters, alphanumerics, '-', '_' and '.', starting and ending alphanumeric)"
-        all k, _v in namespace_labels { not k.startswith("forge.dev/") and k != "kubernetes.io/metadata.name" }, \
-            "HelmChart '${name}'.namespace_labels may not set forge.dev/* or kubernetes.io/metadata.name: forge and the apiserver own those"
+        all k, _v in namespace_labels { not k.startswith("forge.dev/") and k not in ["app.kubernetes.io/name", "app.kubernetes.io/managed-by", "kubernetes.io/metadata.name"] }, \
+            "HelmChart '${name}'.namespace_labels may not set forge.dev/*, app.kubernetes.io/name, app.kubernetes.io/managed-by or kubernetes.io/metadata.name: forge and the apiserver own those on the Namespace forge creates - drop the key"
         all k, _v in namespace_annotations { k and not k.startswith("forge.dev/") }, \
             "HelmChart '${name}'.namespace_annotations keys must be non-empty and outside forge.dev/*, which forge owns"
         delivery != "bundle" or not crds, "HelmChart '${name}': a delivery 'bundle' chart ships no CRDs (they are platform state a bundle prune must not own) - drop `crds`, or keep the chart on delivery 'bootstrap'"

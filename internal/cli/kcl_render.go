@@ -153,6 +153,12 @@ type KCLEntities struct {
 	// DeliveryPolicy is Bundle.delivery_policy, every control resolved. Nil
 	// when the env declares none (every control at its default).
 	DeliveryPolicy *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	// Identity is Bundle.identity, resolved by the render: the applications
+	// and consumers derived, the deliveries and reserved managed-secret names
+	// listed. Nil when the env declares none. See release.ShapeIdentity: the
+	// render emits the shape's own vocabulary, so there is nothing to
+	// translate between the two.
+	Identity *release.ShapeIdentity `json:"identity,omitempty"`
 	// RenderedSecrets are the Bundle-level forge.RenderedSecret
 	// declarations (Bundle.rendered_secrets): Secrets forge renders and
 	// applies itself, INDEPENDENT of SecretProvider, each at the
@@ -662,11 +668,15 @@ type ControlPlaneSecretEntity struct {
 	// `forge cluster connect` registered, the credential it is delivered with.
 	Cluster          string `json:"cluster"`
 	ConnectedCluster string `json:"connected_cluster,omitempty"`
-	// Kind says what the control plane mints into it ("telemetry_token").
+	// Kind says what the control plane mints into it ("telemetry_token",
+	// "identity", "identity_machine_key", "identity_jwks").
 	Kind string `json:"kind"`
 	// Keys are the data keys the control plane writes.
 	Keys   []string `json:"keys,omitempty"`
 	Reason string   `json:"reason,omitempty"`
+	// Required is true when a workload reads the Secret without an optional
+	// marker, so its pods wait for the first delivery.
+	Required bool `json:"required,omitempty"`
 }
 
 // DNSRecordEntity mirrors the kcl/schema.k DNSRecord — a DNS record a
@@ -1277,6 +1287,7 @@ type kclRenderRaw struct {
 	Workloads           []kclWorkloadRaw             `json:"workloads,omitempty"`
 	Observability       *ObservabilityEntity         `json:"observability,omitempty"`
 	DeliveryPolicy      *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	Identity            *release.ShapeIdentity       `json:"identity,omitempty"`
 	Infra               []HostInfraEntity            `json:"infra,omitempty"`
 	Frontends           []FrontendEntity             `json:"frontends,omitempty"`
 	Gateways            []GatewayEntity              `json:"gateways,omitempty"`
@@ -1608,6 +1619,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		SecretProvider:       raw.SecretProvider,
 		Observability:        raw.Observability,
 		DeliveryPolicy:       raw.DeliveryPolicy,
+		Identity:             raw.Identity,
 		RenderedSecrets:      raw.RenderedSecrets,
 		ControlPlane:         raw.ControlPlane,
 		RequiredSecrets:      raw.RequiredSecrets,

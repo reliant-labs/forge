@@ -258,9 +258,13 @@ func printPrerequisiteChecklist(entities *KCLEntities) {
 		return
 	}
 	if len(entities.ControlPlaneSecrets) > 0 {
-		fmt.Println("Secrets the control plane delivers AFTER this deploy (they never block it; pods start without them and pick them up):")
+		fmt.Println("Secrets the control plane delivers AFTER this deploy (they never block it; pods start without an optional one and pick it up, and wait for a required one):")
 		for _, c := range entities.ControlPlaneSecrets {
-			fmt.Printf("  - Secret %s/%s [%s] on %s via connected cluster %s\n", c.Namespace, c.Name, c.Kind, c.Cluster, emptyAs(c.ConnectedCluster, "(none)"))
+			wait := ""
+			if c.Required {
+				wait = " (required: pods wait for the first delivery)"
+			}
+			fmt.Printf("  - Secret %s/%s [%s] on %s via connected cluster %s%s\n", c.Namespace, c.Name, c.Kind, c.Cluster, emptyAs(c.ConnectedCluster, "(none)"), wait)
 		}
 		fmt.Println()
 	}

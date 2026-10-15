@@ -47,7 +47,7 @@ The connect grant that lets the control plane write exactly these Secrets is ins
 
 ## Kinds
 
-`kind = "telemetry_token"` (the default, and the only one) is the per-environment OTLP ingest token. The control plane writes two keys of the one Secret:
+`kind = "telemetry_token"` (the default, and the only one you declare) is the per-environment OTLP ingest token. The `identity`, `identity_machine_key` and `identity_jwks` kinds are **derived** from `Bundle.identity` and refused if declared by hand (`deploy/managed-identity`); an `identity` Secret is `required`, so pods wait for its first delivery, where a telemetry token is always optional. For `telemetry_token` the control plane writes two keys of the one Secret:
 
 | key | holds | read by |
 |---|---|---|

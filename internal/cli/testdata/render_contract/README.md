@@ -18,6 +18,10 @@ one mixed env. Together they are the §9.1 contract between three parties:
 | `hosted` | `forge.OnHosted` service and job, a hosted database, and a frontend on `forge.OnHosted`. References stay references: `managedSecret` (from a config `SecretRef`'s `store_key`), `databaseRef`, `workloadURL` |
 | `build-only` | `forge.BuildOnly` tools: a Go CLI with a build variant, and a docker-built image |
 | `mixed` | One env binding host (the default), compose, cluster, hosted and build-only side by side. The cluster workload reaches the host `api` through the cluster's `host_gateway` |
+| `identity-hosted` | `forge.ManagedIdentity` on a hosted env: the API reads reserved managed secrets (`RELIANT_IDENTITY_*`), declared role members and an SMTP relay are recorded as names, and the one delivered Secret is a machine user's key |
+| `identity-cluster` | The same declaration on a cluster env: roles only; applications, consumers, the delivered `identity` (required) and `identity_jwks` Secrets and the API's whole typed config are derived, with the broker token and JWKS snapshot as re-read files |
+| `identity-share-with` | A preview env reusing staging's users: only derived applications and consumers, the owner named |
+| `identity-host` | The dev loop: the identity on a host-run Zitadel, a seed user, config read from the env's secret store |
 
 ## Invariants
 

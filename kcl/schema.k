@@ -3575,7 +3575,19 @@ schema ControlPlaneSecret:
     name: str
     cluster: ClusterTarget
     namespace: str = ""
-    kind: "telemetry_token" = "telemetry_token"
+    # What the control plane mints into it. `telemetry_token` is the only kind
+    # an author declares. The `identity*` kinds are DERIVED from
+    # Bundle.identity (forge.ManagedIdentity) and refused here: the identity
+    # declaration is the declaration.
+    kind: "telemetry_token" | "identity" | "identity_machine_key" | "identity_jwks" = "telemetry_token"
+    # The data keys the control plane writes, when the kind does not fix them
+    # (`identity`: they depend on the applications). Empty = the kind's own.
+    keys: [str] = []
+    # A workload reads it WITHOUT an optional marker, so its pods wait for the
+    # first delivery (CreateContainerConfigError, then start by themselves)
+    # instead of starting without it. The telemetry token is the other way
+    # round: optional, so a first deploy is never blocked on it.
+    required: bool = False
     reason: str = ""
 
     check:
@@ -4349,6 +4361,254 @@ schema NetworkPolicy:
 # would be noise on every key; it is what disambiguates when they do not.
 _OVERRIDE_KEY_RE = r"^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?(@[A-Za-z0-9][-A-Za-z0-9_.:]*)?$"
 
+# ---------------------------------------------------------------------------
+# ManagedIdentity — the env's users, declared. One identity-provider instance
+# per env (or one shared with a sibling env), converged by the control plane.
+# ---------------------------------------------------------------------------
+
+schema IdentityRole:
+    """One role of the identity project. `members_from = "console"` (the
+    default) leaves membership to the console, which a reconcile never
+    touches. `"declared"` makes `members` a set converged from this
+    declaration and read-only in the console: the right choice for an
+    operator role."""
+    key: str
+    display_name: str = ""
+    group: str = ""
+    members_from: "console" | "declared" = "console"
+    members: [str] = []
+
+    check:
+        regex.match(key, r"^[a-z][a-z0-9_.:-]{0,63}$"), \
+            "IdentityRole.key '${key}' must match ^[a-z][a-z0-9_.:-]{0,63}$"
+        members_from == "declared" or len(members) == 0, \
+            "IdentityRole '${key}' lists members but takes them from the console: set `members_from = \"declared\"` to converge them from KCL, or drop `members`"
+        all m in members { regex.match(m, r"^[^@\s]+@[^@\s]+\.[^@\s]+$") }, \
+            "IdentityRole '${key}': members must be email addresses"
+        len({m: 0 for m in members}) == len(members), "IdentityRole '${key}': a member is listed twice"
+
+schema IdentityLogin:
+    """How users sign in. `native` (the default) is the app's own sign-in
+    form, with the server-side login broker: nothing of the identity
+    provider is public. `hosted` is the provider's own login pages and is
+    PHASE 2: the schema accepts it and the shape records it, but nothing
+    converges it yet."""
+    mode: "native" | "hosted" = "native"
+
+schema IdentityApplication:
+    """One OIDC application registered in the instance. Omit
+    `ManagedIdentity.applications` and one is derived: a `native_broker`
+    named `<env>:api` for the workload named `api`, else one per service
+    workload. Redirect, logout and login URIs are DERIVED from the env's
+    origins unless a literal is given here."""
+    name: str
+    # The broker: the workload that runs the sign-in endpoint.
+    workload: str
+    kind: "native_broker" | "oidc_web" = "native_broker"
+    redirect_uris: [str] = []
+    logout_uris: [str] = []
+    login_uri: str = ""
+
+    check:
+        regex.match(name, r"^[A-Za-z0-9][A-Za-z0-9:._-]*$") and len(name) <= 80, \
+            "IdentityApplication.name '${name}' must match ^[A-Za-z0-9][A-Za-z0-9:._-]*$ (at most 80 characters)"
+        workload, "IdentityApplication '${name}' needs a workload"
+        kind == "native_broker" or not login_uri, \
+            "IdentityApplication '${name}': login_uri is the native sign-in route, so it applies only to kind 'native_broker'"
+
+schema IdentityFields:
+    """Which typed-config field each identity OUTPUT fills, when it is not the
+    standard one (the 20%: an app that validates two issuers). Standard:
+    issuer -> jwt_issuer, audience -> jwt_audience, scopes -> oidc_scopes,
+    client_id -> oidc_client_id, redirect_uri -> oidc_redirect_uri,
+    login_uri -> idp_login_uri, idp_base -> idp_base, broker_token ->
+    idp_broker_token, jwks -> jwt_jwks_snapshot, roles_claim ->
+    jwt_roles_claim. The env var is the upper-cased field name."""
+    issuer?: str
+    audience?: str
+    scopes?: str
+    client_id?: str
+    redirect_uri?: str
+    login_uri?: str
+    idp_base?: str
+    broker_token?: str
+    jwks?: str
+    roles_claim?: str
+
+    check:
+        all v in [issuer, audience, scopes, client_id, redirect_uri, login_uri, idp_base, broker_token, jwks, roles_claim] { not v or regex.match(v, r"^[a-z][a-z0-9_]*$") }, \
+            "IdentityFields: every value must be a config field name (lower snake case)"
+
+schema IdentityConsumer:
+    """A workload whose typed config the identity's outputs fill. Omit
+    `ManagedIdentity.consumers` and every service workload the env binds is
+    one. `application` defaults to the application whose `workload` is this
+    one; a consumer with none gets only the instance's outputs (issuer,
+    audience, scopes, the signing-key snapshot) and cannot broker a login."""
+    workload: str
+    application: str = ""
+    fields?: IdentityFields
+
+    check:
+        workload, "IdentityConsumer needs a workload"
+
+schema IdentityMachineUser:
+    """A non-human account. `key_secret` (a Kubernetes Secret name) and
+    `cluster` say where its key is delivered: required on a hosted instance,
+    where the control plane delivers it; refused on a host-run one, where the
+    key goes to the env's secret store."""
+    name: str
+    roles: [str] = []
+    key_secret?: str
+    cluster?: ClusterTarget
+
+    check:
+        regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "IdentityMachineUser.name '${name}' must be an RFC-1123 label"
+        (key_secret != Undefined) == (cluster != Undefined), \
+            "IdentityMachineUser '${name}': key_secret and cluster go together (the Secret and the cluster it is delivered to)"
+
+schema IdentitySMTP:
+    """A bring-your-own mail relay. `password` is a ManagedSecret: a NAME in
+    the env's secret store, never the password. Omit it and mail goes through
+    the platform's relay, under a per-org cap."""
+    host: str
+    port: int = 587
+    user: str = ""
+    sender: str
+    password: ManagedSecret
+
+    check:
+        host, "IdentitySMTP.host is required"
+        port > 0 and port < 65536, "IdentitySMTP.port must be 1..65535"
+        sender, "IdentitySMTP.sender is required"
+
+schema IdentitySeedUser:
+    """A user created in a local or ephemeral env so there is someone to sign
+    in as. Refused anywhere else. `password_secret` names the store entry
+    holding the password."""
+    email: str
+    roles: [str] = []
+    password_secret?: ManagedSecret
+
+    check:
+        regex.match(email, r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), "IdentitySeedUser.email '${email}' must be an email address"
+
+schema IdentitySocialProvider:
+    """RESERVED. Social identity providers are not supported yet: declaring
+    one is refused at render."""
+    provider: str
+
+schema IdentityOnHost:
+    """The identity runs as the env's own host-run IdP: a `forge.HostInfra`
+    with `engine = "zitadel"`, named by `infra`. It is the dev loop's
+    runtime. Locally the env lands in that server's default instance (the dev
+    IdP answers only to localhost), so one instance per env is true per
+    machine, not per instance id."""
+    type: "host" = "host"
+    infra: str
+
+    check:
+        infra, "IdentityOnHost.infra is required: name the HostInfra (engine 'zitadel') the identity runs on"
+
+schema ManagedIdentity:
+    """The env's users: which roles exist, which workloads sign users in
+    (applications), which read their tokens (consumers), and where the
+    instance runs. The control plane converges an identity-provider instance
+    to it; forge records the DECLARATION in the release shape (`identity`)
+    and fills each consumer's typed config from the instance's outputs, so no
+    app code changes and nothing is copy-pasted.
+
+        # deploy/kcl/identity.k, imported by every env
+        IDENTITY = forge.ManagedIdentity {
+            roles = [
+                forge.IdentityRole {key = "admin", display_name = "Administrators"}
+                forge.IdentityRole {key = "member"}
+            ]
+        }
+
+        # deploy/kcl/prod/main.k
+        identity = idn.IDENTITY                       # hosted by default
+
+        # deploy/kcl/dev/main.k: the same declaration, the local engine
+        identity = idn.IDENTITY | {runtime = forge.IdentityOnHost {infra = "idp"}}
+
+        # a preview env reusing staging's users
+        identity = forge.ManagedIdentity {share_with = "staging"}
+
+    WHERE IT RUNS is `runtime`: `forge.OnHosted {}` (the default) is an
+    instance on the control plane's shared identity deployment and needs
+    `Bundle.control_plane`; `forge.IdentityOnHost {infra}` is the env's own
+    host-run IdP.
+
+    THE ISSUER is https://<slug>.reliantidentity.com. The control plane
+    assigns the slug once, when the instance is first provisioned, and never
+    changes it (see pkg/release.IdentitySlug); forge records no issuer. A
+    `domain` replaces it with your own, on a public instance.
+
+    PRIVATE BY DEFAULT: nothing of the provider is reachable from outside the
+    platform network. `public = True`, hosted login and `domain` ask for a
+    public route; the control plane also raises it by itself for a consumer
+    that runs outside the network.
+
+    `share_with` reuses the instance of another env of THE SAME PROJECT (it
+    is a bare env name, so another project is unspellable). The owner must
+    declare an identity and must not itself be a sharer: no chains (checked
+    at render, which renders the owner). A sharer declares only applications
+    and consumers; roles, smtp, seed users, machine users, domain and
+    project name are the owner's.
+
+    NOT BUILT YET: `login.mode = "hosted"` (phase 2) and `social`.
+    """
+    name: str = "identity"
+    runtime?: OnHosted | IdentityOnHost
+    login: IdentityLogin = IdentityLogin {}
+    roles: [IdentityRole] = []
+    applications: [IdentityApplication] = []
+    consumers: [IdentityConsumer] = []
+    machine_users: [IdentityMachineUser] = []
+    # The identity project's name. Empty = Bundle.project. Settable so an
+    # adopted instance keeps its legacy name.
+    project_name: str = ""
+    # A custom issuer domain (login.acme.com) instead of the assigned one.
+    domain: str = ""
+    public: bool = False
+    share_with: str = ""
+    smtp?: IdentitySMTP
+    seed_users: [IdentitySeedUser] = []
+    social: [IdentitySocialProvider] = []
+
+    check:
+        regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \
+            "ManagedIdentity.name '${name}' must be an RFC-1123 label of at most 40 characters: it names the delivered Secret forge-identity-<name>"
+        len({r.key: 0 for r in roles}) == len(roles), \
+            "ManagedIdentity.roles: a role key is declared twice: ${_duplicates([r.key for r in roles])}"
+        len(social) == 0, \
+            "ManagedIdentity.social: social identity providers are not supported yet, so ${[p.provider for p in social]} cannot be declared"
+        all m in machine_users { all r in m.roles { r in [x.key for x in roles] } }, \
+            "ManagedIdentity.machine_users hold roles that are not declared: ${[r for m in machine_users for r in m.roles if r not in [x.key for x in roles]]}"
+        all u in seed_users { all r in u.roles { r in [x.key for x in roles] } }, \
+            "ManagedIdentity.seed_users hold roles that are not declared: ${[r for u in seed_users for r in u.roles if r not in [x.key for x in roles]]}"
+        len({m.name: 0 for m in machine_users}) == len(machine_users), \
+            "ManagedIdentity.machine_users: a name is declared twice: ${_duplicates([m.name for m in machine_users])}"
+        len({u.email: 0 for u in seed_users}) == len(seed_users), \
+            "ManagedIdentity.seed_users: an email is declared twice: ${_duplicates([u.email for u in seed_users])}"
+        len({a.name: 0 for a in applications}) == len(applications), \
+            "ManagedIdentity.applications: a name is declared twice: ${_duplicates([a.name for a in applications])}"
+        len({c.workload: 0 for c in consumers}) == len(consumers), \
+            "ManagedIdentity.consumers: a workload is declared twice: ${_duplicates([c.workload for c in consumers])}"
+        all c in consumers { not c.application or c.application in [a.name for a in applications] }, \
+            "ManagedIdentity.consumers name applications that are not declared: ${[c.application for c in consumers if c.application and c.application not in [a.name for a in applications]]}. Declared: ${[a.name for a in applications]}"
+        not domain or regex.match(domain, r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"), \
+            "ManagedIdentity.domain '${domain}' must be a DNS name"
+        not domain or public or login.mode == "hosted", \
+            "ManagedIdentity.domain '${domain}' needs a public instance: a private one is reachable only inside the platform network, so no certificate for your own name could be validated or served. Set `public = True`, or use the assigned <slug>.reliantidentity.com issuer"
+        not share_with or regex.match(share_with, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), \
+            "ManagedIdentity.share_with '${share_with}' must be the bare name of an env of THIS project. Sharing across projects is not supported"
+        not share_with or (len(roles) == 0 and not smtp and len(seed_users) == 0 and len(machine_users) == 0 and not domain and not project_name), \
+            "ManagedIdentity.share_with '${share_with}' reuses that env's instance, so roles, smtp, seed_users, machine_users, domain and project_name belong to the owner and must be empty here. A sharer declares only applications and consumers"
+        not share_with or not runtime or runtime.type == "hosted", \
+            "ManagedIdentity.share_with needs a hosted instance to share: a host-run IdP belongs to one machine"
+
 schema Bundle:
     """Everything one environment runs and declares.
 
@@ -4684,6 +4944,11 @@ schema Bundle:
     # builder, vulnerability gate, approvals, ...). UNSET = every control at
     # its default. See DeliveryPolicy and the `deploy/delivery-policy` skill.
     delivery_policy?: DeliveryPolicy
+    # The env's users (forge.ManagedIdentity): roles, the applications that
+    # sign users in, the workloads that read tokens, and where the instance
+    # runs. UNSET = no managed identity (bring your own issuer in config.k).
+    # Declaring it AND hand-setting a config field it fills is refused.
+    identity?: ManagedIdentity
 
     check:
         # The key grammar, checked at load so a typo'd key is a KCL error
@@ -4815,18 +5080,41 @@ schema Bundle:
         # CONNECTED CLUSTER TO DELIVER IT TO. Both are declared facts, so both
         # are refused here, while the author is looking at the KCL, rather than
         # as a deploy that is accepted and never delivers.
-        len(_cps_all(workloads, observability, control_plane_secrets)) == 0 or control_plane, \
-            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, control_plane_secrets)]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
-        len(_cps_unbound(workloads, observability, control_plane_secrets, cluster_target, connected_clusters)) == 0, \
-            _cps_unbound_msg(workloads, observability, control_plane_secrets, cluster_target, connected_clusters)
+        len(_cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0 or control_plane, \
+            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
+        len(_cps_unbound(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
+            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), cluster_target, connected_clusters)
         not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(workloads)) > 0, \
             "Bundle.observability.destination.token_from_control_plane = True needs a cluster workload: the credential is delivered to the node agent, which forge renders only on a cluster the env deploys to"
-        len(_cps_duplicates(workloads, observability, control_plane_secrets)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, control_plane_secrets)} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
-        len(_cps_second_telemetry_token(workloads, observability, control_plane_secrets)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, control_plane_secrets)} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
-        len(_cps_also_provided(workloads, observability, control_plane_secrets, required_secrets, rendered_secrets, cluster_target)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, control_plane_secrets, required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
+        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
+        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        # MANAGED IDENTITY (forge.ManagedIdentity). The structural rules live on
+        # the schema; these need the Bundle: its control plane, workloads,
+        # infra and lifecycle.
+        all s in control_plane_secrets { s.kind not in IDENTITY_SECRET_KINDS }, \
+            "Bundle.control_plane_secrets ${[s.name for s in control_plane_secrets if s.kind in IDENTITY_SECRET_KINDS]} have an identity kind. Those are DERIVED from Bundle.identity (forge.ManagedIdentity) and never declared by hand: declare the identity and forge lists its Secrets"
+        not (identity and _idn_rt(identity) == "hosted") or control_plane, \
+            "Bundle.identity runs on the hosted runtime, which needs control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what provisions the instance and delivers its outputs. For a local env use `runtime = forge.IdentityOnHost {infra = \"idp\"}`"
+        not (identity and identity.runtime and identity.runtime.type == "host") or any i in infra { i.name == identity.runtime.infra and i.engine == "zitadel" }, \
+            "Bundle.identity.runtime = IdentityOnHost names infra '${identity.runtime.infra if identity and identity.runtime and identity.runtime.type == 'host' else ''}', which is not a forge.HostInfra with engine 'zitadel' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"
+        len(identity.seed_users if identity else []) == 0 or lifecycle in ["local", "ephemeral"], \
+            "Bundle.identity.seed_users create users with known passwords, so they are only allowed in an env that declares `lifecycle = \"local\"` or \"ephemeral\" (a real environment's users sign up or are invited). Remove them from this env, or declare the lifecycle if it really is scratch"
+        not identity or not identity.share_with or identity.share_with != env, \
+            "Bundle.identity.share_with '${identity.share_with if identity else ''}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"
+        len(_idn_bad_apps(workloads, identity, env, project)) == 0, \
+            "Bundle.identity.applications name workloads that are not service workloads of this env: ${_idn_bad_apps(workloads, identity, env, project)}. An application's workload runs the sign-in endpoint. Declared: ${[w.name for w in workloads if w.kind == 'service']}"
+        len(_idn_bad_consumers(workloads, identity, env, project)) == 0, \
+            "Bundle.identity.consumers name workloads that are not service workloads on a runtime that can reach the instance (${_idn_reach(identity) if identity else []}): ${_idn_bad_consumers(workloads, identity, env, project)}"
+        not identity or len(_idn_apps(workloads, identity, env, project)) > 0 or len(_idn_consumers(workloads, identity, env, project)) == 0, \
+            "Bundle.identity has consumers but no application: no workload can broker a sign-in. Declare `applications`, or bind a service workload named 'api'"
+        not identity or _idn_rt(identity) != "host" or all m in identity.machine_users { not m.key_secret }, \
+            "Bundle.identity.machine_users key_secret/cluster apply to a hosted instance, where the control plane delivers the key. A host-run IdP keeps the key in the env's secret store: drop key_secret and cluster"
+        not identity or _idn_rt(identity) != "hosted" or all m in identity.machine_users { m.key_secret }, \
+            "Bundle.identity.machine_users ${[m.name for m in (identity.machine_users if identity else []) if not m.key_secret]} have no key_secret/cluster: a hosted instance delivers a machine user's key to a Secret on a connected cluster, so say which"
         # THE DESTINATION'S HEADERS MUST RESOLVE. The node agent reads them
         # through a secretKeyRef in its own namespace, and a Secret nothing
         # supplies leaves the DaemonSet in CreateContainerConfigError with
@@ -4835,7 +5123,7 @@ schema Bundle:
         # checked live by the deploy preflight) or a rendered_secrets entry.
         # A local env without cluster workloads uses the secret store instead,
         # which `forge env up` checks before it starts anything.
-        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, control_plane_secrets)), \
+        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))), \
             _headers_secret_msg(observability)
         # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
         # collector (host) already ship container/process logs; a workload that

@@ -577,6 +577,24 @@ func lintPipeline() []linterStep {
 			collect:   collectFluxSafeJSON,
 		},
 
+		// 13d-quater. identity-share-with: a forge.ManagedIdentity share_with
+		// whose owner env is missing, declares no identity, is itself a sharer
+		// or is not hosted. One env's render cannot see another's, so this
+		// judges them together (see lint_identity_share.go).
+		{
+			name:  "identity-share-with lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runIdentityShareLint(rc.cwd, rc.cfg)
+			},
+			errFormat: "❌ identity-share-with lint: %v\n",
+			collect:   collectIdentityShareJSON,
+		},
+
 		// 13d-bis. Column-markers — flags a COMMENT ON COLUMN/CONSTRAINT
 		// whose text contains forge: but matches no known column marker
 		// (see lint_column_markers.go). Warnings only.

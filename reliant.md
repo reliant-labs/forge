@@ -102,3 +102,29 @@ Rules that keep the tiers honest:
 - Never set a private `GOMODCACHE` either; CI runs the full non-short suite with `-race`, and `-short` is a local/agent convention only.
 
 See the comment block at the top of `internal/cli/fixture_corpus_e2e_test.go` for the same tiers from the e2e corpus's point of view.
+
+### CI: what runs where
+
+Every workflow runs on pull requests and on pushes to main, except `nightly.yml`.
+Each workflow's header says why its lanes are shaped the way they are; read it before
+moving a check between lanes.
+
+- **Unit** — `ci.yml` Test: `go test -race -count=1` over `scripts/ci-test-packages.sh unit`
+  (every package except the guards).
+- **Guards** — `ci.yml` Test (guards): tierguard, removalguard, deadcodeguard; `-p 1`, no
+  `-race`.
+- **Windows** — `ci.yml` Windows: build, vet, the windows/arm64 build, the `-short` unit tier,
+  and a scaffold+render smoke. No `-count=1`: a PR restores main's build cache and replays
+  unchanged packages; only a push to main saves the cache.
+- **e2e** — `e2e-suite.yml`: the `-tags e2e` suite in 4 shards, plus a coverage ledger that
+  proves the shards ran every test.
+- **Nightly** — `nightly.yml` (schedule + dispatch): the full windows/arm64 `go vet`. A red
+  nightly on main opens, or comments on, the "Nightly CI is red" issue; the next green one
+  closes it.
+
+A check moves to nightly only when it is slow AND a failure is rare and cheap to bisect a
+day later. Say why in its job comment.
+
+Build caches: a PR job restores main's cache and never saves one; only pushes to main
+save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR
+saves were evicting main's entries from the repository's 10 GB budget.

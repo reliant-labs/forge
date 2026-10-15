@@ -54,6 +54,19 @@ concurrency:
 # mis-used. That is what makes a loose restore-key safe here — the worst
 # case of an old cache is a miss on the changed packages, never a wrong
 # object.
+#
+# PULL REQUESTS RESTORE; ONLY MAIN SAVES. Each laddered cache is a
+# `actions/cache/restore` step at the top of its job and an
+# `actions/cache/save` step at the bottom that runs only on a push to main.
+# A cache a pull request saves is scoped to that PR's ref: no other PR, and
+# not main, can restore it. All it bought was a warm re-run of the same PR,
+# and it cost everyone else their hits. The repository's cache budget is
+# 10 GB, and with every PR job saving its own entry (the Windows job alone
+# saved ~3.8 GB per run) the budget held about an hour of entries: on
+# 2026-10-15 there was no main entry left for test-guards, windows or the
+# tools scope, and the Test job ran 1045-1302s on a miss against 529s on a
+# hit. Saving after the job's real work (not in a post step) also means a
+# red main still saves what it compiled: `!cancelled()`, not `success()`.
 
 jobs:
   lint:
@@ -69,7 +82,8 @@ jobs:
       # in all but name. Its own action caches the analyzer results; this
       # caches the Go build artifacts underneath them.
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -92,6 +106,13 @@ jobs:
           # failing its own linter, and the action cannot fetch a PR patch over
           # 20k lines, so large PRs silently fell back to whole-repo regardless.
           only-new-issues: false
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   # ── Go tests: two jobs, partitioned by scripts/ci-test-packages.sh ──────
   #
@@ -140,7 +161,8 @@ jobs:
       # from the non-race ones every other job produces. It is the job
       # that benefits most from a warm GOCACHE.
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -182,6 +204,13 @@ jobs:
         run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
       - name: Local registry maintenance integration
         run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   test-guards:
     name: Test (guards)
@@ -195,7 +224,8 @@ jobs:
       # Its own key: this job builds WITHOUT -race, a different artifact set
       # from `test`'s, so sharing a key would have each job evict the other's.
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-test-guards-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -222,6 +252,13 @@ jobs:
         # laptop: 10.8 GB peak process-tree RSS at -p 4 against 6.9 GB at
         # -p 1, and -p 1 was not slower (132s against 217s).
         run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   # ── Windows: first runtime coverage for the cgo-free, Windows-ported CLI ──
   #
@@ -241,6 +278,20 @@ jobs:
   # depend on the host it runs on). -short keeps the tier the repo defines for
   # fast loops; no -race (Linux's `test` job owns it). Tools the Linux job installs (buf, migrate)
   # are not installed here: tests needing them must skip under -short.
+  #
+  # ONE BUILD CACHE, SAVED ONLY FROM MAIN. Saving is the expensive half on
+  # Windows: tarring tens of thousands of GOCACHE files on NTFS measured
+  # 229-380s per cache, and this job used to save TWO caches of the same
+  # directory — setup-go's `cache: true` (GOMODCACHE + GOCACHE, keyed on
+  # go.sum) and the laddered one below — both after every PR run, about 10
+  # minutes of a ~25-minute critical path spent on bookkeeping. A PR's cache
+  # is scoped to its own ref and no other PR can restore it, so every PR save
+  # bought at most a warm re-run of that one PR. Now setup-go caches nothing
+  # here, PRs only RESTORE, and a push to main SAVES (after the tests, so the
+  # entry carries their cached results too). Modules are downloaded rather
+  # than restored: a module-cache restore is the same NTFS extraction plus the
+  # zips — setup-go's combined restore measured 238s where the GOCACHE-only
+  # one below measured 62-144s.
   windows:
     name: Windows
     runs-on: windows-latest
@@ -254,14 +305,16 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          # The one cache is the laddered step below; see the job header.
+          cache: false
       # GOCACHE is %LocalAppData%\go-build on Windows, not ~/.cache/go-build,
       # so ask Go rather than hardcode it. Ladder rationale: top of file.
       - name: Locate Go build cache
         id: gocache
         run: echo "dir=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: go-build-windows-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -279,14 +332,17 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go vet ./...
+      # The arm64 BUILD stays on every PR: it is the proof forge still
+      # compiles for windows/arm64. The arm64 VET does not: it re-vetted the
+      # whole module (~4 min cold) to re-check what the amd64 vet above
+      # already checked, since only GOARCH-specific files differ. It runs in
+      # nightly.yml instead.
       - name: Cross-compile windows/arm64
         env:
           CGO_ENABLED: "0"
           GOOS: windows
           GOARCH: arm64
-        run: |
-          go build -o "$RUNNER_TEMP/forge-arm64.exe" ./cmd/forge
-          go vet ./...
+        run: go build -o "$RUNNER_TEMP/forge-arm64.exe" ./cmd/forge
       - name: Go tests (-short)
         env:
           CGO_ENABLED: "0"
@@ -294,13 +350,27 @@ jobs:
           # needs it treats CI=true as "missing tool is a provisioning bug".
           # This is the documented override that turns that back into a skip.
           FORGE_E2E_REQUIRE_TOOLS: "0"
-        run: go test -short -count=1 -timeout 30m $(scripts/ci-test-packages.sh unit)
+        # No -count=1: this is the -short tier, which the repo holds
+        # cache-sound (reliant.md, "Testing tiers"), so a package whose
+        # inputs did not change replays its result from the build cache main
+        # last saved instead of re-running. -count=1 defeated exactly that.
+        run: go test -short -timeout 30m $(scripts/ci-test-packages.sh unit)
       - name: Install forge
         env:
           CGO_ENABLED: "0"
         run: go install ./cmd/forge
       - name: Scaffold + render smoke
         run: scripts/ci-windows-smoke.sh
+      # Main only, and after the tests so the entry carries their results.
+      # !cancelled(): a red main still compiled everything, and the next PR
+      # restores the artifacts whether or not a test failed. The key carries
+      # the sha, so this never collides with the entry it restored from.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.gocache.outputs.dir }}
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   build:
     name: Build
@@ -313,7 +383,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           # -trimpath below is part of the cache identity: artifacts built
           # with it do not match ones built without, so this job keeps its
@@ -331,6 +402,14 @@ jobs:
         # match the Dockerfile / Taskfile so CI, Docker, and local
         # binaries hash identically from the same source.
         run: go build -trimpath -buildvcs=true ./cmd/...
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+
   verify-generated:
     name: Verify Generated Code
     runs-on: ubuntu-latest
@@ -346,7 +425,8 @@ jobs:
       # the next run, instead of three jobs each compiling forge from
       # cold in parallel.
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -387,6 +467,13 @@ jobs:
         run: forge tools install --force
       - name: Verify generated code
         run: forge ci verify-generated
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   validate-kcl:
     name: Validate KCL
@@ -400,7 +487,8 @@ jobs:
       # Shares the tools scope with verify-generated and vuln-scan — same
       # `go install ./cmd/forge`, same flags, same artifacts.
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -437,6 +525,13 @@ jobs:
         run: go install ./cmd/forge
       - name: Validate KCL manifests
         run: forge ci validate-kcl
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   vuln-scan:
     name: Vulnerability Scan
@@ -450,7 +545,8 @@ jobs:
           cache: true
       # Shares the tools scope with verify-generated and validate-kcl.
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -477,6 +573,13 @@ jobs:
         run: go install ./cmd/forge
       - name: Go vulnerability check
         run: forge ci vuln-scan --go
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   license-check:
     name: License Compliance
@@ -492,7 +595,8 @@ jobs:
       # Its own scope: it is the only job that builds go-licenses, and it
       # never builds ./cmd/forge.
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-licenses-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -503,3 +607,10 @@ jobs:
         run: go install github.com/google/go-licenses@v1.6.0
       - name: Check licenses
         run: go-licenses check ./... --disallowed_types=forbidden,restricted
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}

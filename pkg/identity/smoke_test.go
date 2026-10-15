@@ -770,7 +770,7 @@ func smokeAdopt(t *testing.T, env *smokeEnv) {
 	in := env.startZitadel(t, "b")
 	ctx := context.Background()
 
-	// Pre-seed the instance the way tenant zero was made: by hand and by the
+	// Pre-seed the instance the way the first prod instance was made: by hand and by the
 	// previous provisioner, under ids a fresh converge would never produce, and
 	// in a shape that has drifted from what the declaration wants.
 	var proj struct {

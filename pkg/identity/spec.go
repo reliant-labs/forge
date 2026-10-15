@@ -35,10 +35,10 @@ type ProjectSpec struct {
 	Name string
 	// AdoptID pins the id the project must have. See the package comment.
 	AdoptID string
-	// RoleCheck makes Zitadel refuse tokens for users who hold no role in the
+	// MustHoldRole makes Zitadel refuse tokens for users who hold no role in the
 	// project; ProjectCheck refuses tokens for users whose org was not granted
 	// the project. Both default to off.
-	RoleCheck    bool
+	MustHoldRole bool
 	ProjectCheck bool
 }
 

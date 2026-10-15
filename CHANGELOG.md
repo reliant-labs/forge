@@ -112,7 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SetupAuth`; `Validator.Close` now stops the JWKS refresh).
 - **The dev Zitadel moves to v4.19.4** (was v4.16.2) in host-infra, the compose
   `idp` service and its per-platform checksums. 4.16.2 carries open critical
-  advisories (account takeover, cross-org authz). No config or steps changes were
+  advisories (account takeover, cross-org privilege escalation). No config or steps changes were
   needed, and the host-infra suite now downloads the real archive and checks it
   against the pinned checksum. 4.18.0 is broken upstream and was skipped.
 
@@ -138,7 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`forge/pkg/identity` converges the content of a Zitadel instance to a
   declared spec.** One library for both halves of managed identity:
   `forge env up` will run it against the dev instance with a bootstrap PAT, and the
-  control plane against each tenant instance with that instance's owner machine
+  control plane against each customer instance with that instance's owner machine
   key. It reconciles the project (with role assertion), roles, OIDC
   applications (web, SPA, native and the native-sign-in broker app with its
   per-app login route), machine users with keys and expiring tokens, the login,

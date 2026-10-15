@@ -81,6 +81,19 @@ type envStatusRecords struct {
 	//
 	// Nil means none is known. Never a failure: see the file header.
 	Convergence *envStatusConvergence `json:"convergence,omitempty"`
+	// Trees is the BOUND-vs-LIVE view per tree of the bound bundle: for each
+	// cluster x delivery unit x phase, who applies it, the revision the
+	// promotion binds it to, the revision the hub's reconciler reports it
+	// applied, and what the two add up to. Present only for an env whose
+	// bundle carries trees. See tree_status.go.
+	//
+	// Promotion is INTENT and convergence is OBSERVED: the binding is never
+	// moved late to make the two agree, so a tree behind its binding is shown
+	// as behind.
+	Trees []envStatusTree `json:"trees,omitempty"`
+	// TreesDetail says why Trees is empty or imprecise when that is not
+	// obvious: no bound bundle, or a control plane that reports per cluster.
+	TreesDetail string `json:"trees_detail,omitempty"`
 	// ConvergenceDetail says why there is none to show. Two structural
 	// cases, which must not render alike: this env has no reconciler, or
 	// its control plane has not reported one yet.
@@ -360,6 +373,12 @@ func readHostedEnvRecords(ctx context.Context, env string, entities *KCLEntities
 			out.Provenance = provenanceOf(*row.CurrentPromotion, row.CurrentRelease)
 		}
 		out.Convergence, out.ConvergenceDetail = convergenceOf(row)
+		split, serr := unitSplitOf(entities)
+		if serr != nil {
+			out.TreesDetail = "the env's delivery-unit split could not be read: " + serr.Error()
+		} else {
+			out.Trees, out.TreesDetail = treesOf(ctx, hosted, env, split, row)
+		}
 		// Sessions come back only for a LOCAL env; the server's trigger
 		// confines them. So the presence of the row IS the answer to
 		// "were sessions read", and a non-local env reports none
@@ -561,6 +580,11 @@ func writeEnvStatusRecords(w io.Writer, r envStatusRecords) {
 		}
 	}
 
+	writeTreeTable(w, r.Trees)
+	if r.TreesDetail != "" {
+		fmt.Fprintf(w, "  trees: %s\n", r.TreesDetail)
+	}
+
 	switch {
 	case !r.SessionsRead:
 		fmt.Fprintf(w, "  sessions      not reported for this environment")
@@ -669,4 +693,65 @@ func shortID(id string) string {
 		return id[:7]
 	}
 	return id
+}
+
+// treesOf is the per-tree bound-vs-live view of one env's Live row.
+//
+// BOUND is the bundle the env's current promotion resolves to: the control
+// plane's recorded bundle for the promoted release, whose shape names every
+// object's tree. It is read from the Live row (CurrentBundle) and falls back to
+// nothing when the control plane holds none.
+//
+// LIVE is the control plane's convergence timeline (ListConvergences), read at
+// whatever precision it reports (see tree_status.go). A timeline that cannot be
+// read, or a control plane without one, leaves every hub tree "unobserved" and
+// says so in TreesDetail: this view never fails the command and never invents a
+// reading.
+func treesOf(ctx context.Context, hosted *hostedStore, env string, split unitSplit, row LiveEnvironment) ([]envStatusTree, string) {
+	bundle := row.CurrentBundle
+	if bundle == nil {
+		if row.CurrentPromotion == nil {
+			return nil, ""
+		}
+		return nil, "no bundle is recorded for the bound release, so its trees cannot be listed"
+	}
+	trees := treeInventory(bundle.Shape)
+	if len(trees) == 0 {
+		return nil, ""
+	}
+	if !split.AnyHub() {
+		return judgeTrees(trees, split, bundle.Digest, nil), "forge applies every unit of this env; no reconciler observes its trees"
+	}
+	readings, found, rerr := readHubReadings(ctx, envLedger{Bindings: hosted, Hosted: true}, env)
+	if rerr != nil {
+		return judgeTrees(trees, split, bundle.Digest, nil), "the hub's convergence readings could not be read: " + rerr.Error()
+	}
+	if !found {
+		return judgeTrees(trees, split, bundle.Digest, nil), "the control plane has not reported on this env yet"
+	}
+	var tr []treeReading
+	perTree := false
+	for _, r := range readings {
+		if r.Tree != "" {
+			perTree = true
+		}
+		tr = append(tr, treeReading{
+			Cluster: r.Cluster, Tree: r.Tree, State: r.State, Revision: revisionDigestOf(r.Revision),
+			Reason: r.Reason, Message: r.Message, ObservedAt: r.ObservedAt,
+		})
+	}
+	detail := ""
+	if !perTree && len(tr) > 0 {
+		detail = "this control plane reports convergence per cluster, not per tree; each tree shows its cluster's reading"
+	}
+	return judgeTrees(trees, split, bundle.Digest, tr), detail
+}
+
+// revisionDigestOf extracts the sha256 digest from a reconciler revision such
+// as "latest@sha256:abc…"; a revision without one is returned verbatim.
+func revisionDigestOf(rev string) string {
+	if i := strings.Index(rev, "sha256:"); i >= 0 {
+		return rev[i:]
+	}
+	return rev
 }

@@ -373,8 +373,12 @@ func TestRecordEnvDeclarationDeclaresWhoAppliesTheBoundClusters(t *testing.T) {
 			}
 			// The same predicate the deploy path follows, so the declaration
 			// and what this machine does can never disagree.
-			if want := envConvergedByHub(entities); got != want {
-				t.Errorf("spec.hubConverged = %v but envConvergedByHub = %v", got, want)
+			split, err := unitSplitOf(entities)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := split.AllHub(); got != want {
+				t.Errorf("spec.hubConverged = %v but the unit split says AllHub = %v", got, want)
 			}
 		})
 	}

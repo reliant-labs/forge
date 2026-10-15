@@ -21,7 +21,7 @@ func TestDeployRelease_HubConvergedRefusesWhileTheHubIsFailing(t *testing.T) {
 	}}}
 
 	_, err := runHostedPromote(t, store, "v2", promoteOptions{
-		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, HubConverged: true},
+		Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Units: allHubUnits()},
 		Follow: waitByDefault(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "FAILING") || !strings.Contains(err.Error(), "is forbidden") {
@@ -56,7 +56,7 @@ func TestDeployRelease_HubConvergedRecordsWhenTheHubCanApply(t *testing.T) {
 			follow := waitByDefault()
 			follow.skipHubCheck = tc.skip
 			if _, err := runHostedPromote(t, store, "v2", promoteOptions{
-				Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, HubConverged: true},
+				Ledger: envLedger{Bindings: store, Releases: store, Hosted: true, Units: allHubUnits()},
 				Follow: follow,
 			}); err != nil {
 				t.Fatalf("deploy: %v", err)
@@ -74,7 +74,7 @@ func TestDeployApplyPath(t *testing.T) {
 		ledger envLedger
 		want   string
 	}{
-		{envLedger{Hosted: true, HubConverged: true}, "hub converge"},
+		{envLedger{Hosted: true, Units: allHubUnits()}, "hub converge"},
 		{envLedger{Hosted: true, Mixed: true, HostedTiers: []hostedTier{{Name: "api", Kind: hostedTierWorkload}}}, "mixed"},
 		{envLedger{Hosted: true, Mixed: true}, "ledger only"},
 		{envLedger{Hosted: true}, "hosted"},

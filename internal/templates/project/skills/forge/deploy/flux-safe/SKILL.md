@@ -18,10 +18,13 @@ build check them.
 | `flux-job-unhashed` — a Job name not ending in `-<6+ hex>` | a Job's spec is immutable, so after any change every reconcile fails instead of creating a new Job | name it `<name>-<hash of its spec>`; a forge `kind = "job"` workload already is |
 | `flux-force-on-data` — `kustomize.toolkit.fluxcd.io/force: enabled` on a PVC, PV, StatefulSet, Secret, Namespace or CRD | Flux would delete and re-create it on an immutable-field change, losing its data | remove it; change the field through a migration |
 
-These are **errors** for an env a reconciler may apply (it declares neither a
-`local`/`ephemeral` lifecycle nor `applier = "forge"`) and **warnings** for an env
-forge applies itself, so a build that works today keeps working. Fix the warnings
-before moving an env onto Flux.
+These are **errors** for an object in a delivery unit a reconciler applies and
+**warnings** for one forge applies itself, so a build that works today keeps
+working. That is the whole env when it declares no `lifecycle`, no `applier` and no
+`hub_converges`; only the listed units when it declares `hub_converges`; and
+nothing when it declares `lifecycle = "local"`/`"ephemeral"`. A warning is the
+to-do list for the move onto Flux: fix it before listing the unit in
+`hub_converges`, which is when it becomes an error.
 
 ## Done for you (nothing to change)
 

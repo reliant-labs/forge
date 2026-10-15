@@ -138,7 +138,7 @@ func resolveDeployPlan(ctx context.Context, projectDir, env string, ledger envLe
 		// behind the confirmation gate, as for any env with no plan.
 		fmt.Fprintf(errOut, "[plan] --offline-ledger: env %s's deploy plan needs the control plane, so none was computed.\n", env)
 		return nil, nil
-	case ledger.ledgerOnly():
+	case ledger.forgePlans():
 		return ledgerOnlyDeployPlan(ctx, projectDir, env, ledger, bundleDigest, errOut)
 	case ledger.Hosted:
 		return hostedDeployPlan(ctx, projectDir, env, bundleDigest, errOut)

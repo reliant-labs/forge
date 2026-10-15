@@ -23,10 +23,13 @@ const (
 	lifecycleEphemeral = "ephemeral"
 
 	// applierForge is Bundle.applier = "forge": a REAL environment that forge
-	// applies, by declaration and permanently. It is the answer for an env
-	// whose own control plane must not apply it (the platform's own env: a hub
-	// applying the env that runs the hub is circular), and it is not a
-	// stopgap on the way to a reconciler.
+	// applies, by declaration, and that no delivery unit of has moved onto the
+	// hub yet. It is a TRANSITIONAL state, not a destination: every real env,
+	// the platform's own included, is moving onto build -> OCI bundle -> ledger
+	// -> Flux, one delivery unit at a time (Bundle.hub_converges), and direct
+	// apply narrows to dev and ephemeral envs. applier = "forge" is the
+	// starting position of that move, the same declaration as
+	// hub_converges = [].
 	applierForge = "forge"
 )
 
@@ -49,11 +52,12 @@ const (
 // and this returns false for it. That default is deliberate: an env whose
 // author forgot to declare it is treated as production, not as scratch.
 //
-//  3. the env DECLARES `applier = "forge"` — a real environment that forge
-//     applies on purpose. The cluster is not scratch (lifecycle would be a
-//     false claim, and KCL checks it), and no reconciler is wanted: the
-//     platform's own env cannot be applied by the hub it runs. Declaring who
-//     applies is exactly what this predicate asks, so it is allowed.
+//  3. the env DECLARES who applies it: `applier = "forge"`, or
+//     `hub_converges = [...]` for the units forge still applies. The cluster
+//     is not scratch (lifecycle would be a false claim, and KCL checks it),
+//     and the declaration is the env saying it is mid-move onto the hub, so
+//     direct apply is allowed for now. It is a transitional allowance: it
+//     shrinks as units move, and ends when the list names every unit.
 //
 // TODAY NOTHING REFUSES ON THIS. It drives a notice and the JSON
 // projections. The refusal (F-REFUSE-DIRECT) will land for an env that
@@ -66,7 +70,7 @@ func DirectApplyAllowed(e *KCLEntities) bool {
 		// paths that must not invent one.
 		return true
 	}
-	if e.Applier == applierForge {
+	if e.Applier == applierForge || e.HubConverges != nil {
 		return true
 	}
 	switch e.Lifecycle {
@@ -82,9 +86,9 @@ func DirectApplyAllowed(e *KCLEntities) bool {
 // It is a NOTICE, not a warning, and it changes no behaviour: the apply it
 // annotates still runs, identically. Its whole job is to make the coming
 // change visible at the place it will land, so the day direct apply is
-// refused is not the day anyone first hears about it. It names the two ways
-// out: lifecycle for scratch clusters, applier for a real env forge applies
-// on purpose.
+// refused is not the day anyone first hears about it. It names the ways out:
+// lifecycle for scratch clusters; applier or hub_converges for a real env that
+// is mid-move onto the hub.
 //
 // Stdout is deliberate and it is safe: `forge env render`'s manifest stream
 // and every --json document divert stdout for their duration (see
@@ -92,5 +96,6 @@ func DirectApplyAllowed(e *KCLEntities) bool {
 // kubectl is reading or ahead of a document a jq is parsing. The apply paths
 // that print it already report their progress on stdout, and a notice about
 // an apply belongs with the apply.
-const lifecycleNoticeLine = "Note: this env declares neither `lifecycle` (a scratch cluster) nor `applier = \"forge\"` " +
-	"(a real env forge applies on purpose); direct apply to it will be refused once F-REFUSE-DIRECT lands. Declare the one that is true"
+const lifecycleNoticeLine = "Note: this env declares none of `lifecycle` (a scratch cluster), `applier = \"forge\"` " +
+	"(a real env forge applies until its units move) or `hub_converges` (the units the hub applies); direct apply to it " +
+	"will be refused once F-REFUSE-DIRECT lands. Declare the one that is true"

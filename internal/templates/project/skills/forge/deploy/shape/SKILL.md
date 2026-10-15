@@ -86,11 +86,11 @@ the env itself, and it says WHO APPLIES it:
 
 | `Bundle.lifecycle` | Means |
 |---|---|
-| unset | **A REAL ENVIRONMENT that declared nothing.** Direct apply works today and prints one notice; it will be refused (F-REFUSE-DIRECT) for an env that declares neither this nor `applier`. |
+| unset | **A REAL ENVIRONMENT that declared nothing.** Direct apply works today and prints one notice; it will be refused (F-REFUSE-DIRECT) for an env that declares none of this, `applier` or `hub_converges`. |
 | `"local"` | A developer's OWN cluster — the `forge env up` inner loop. |
 | `"ephemeral"` | A THROWAWAY per-run cluster (CI / e2e), deleted inside the run, so nothing could converge it. |
 
-`lifecycle` has a sibling for the opposite case, a real env that **forge** applies:
+`lifecycle` has siblings for the opposite case, a real env that **forge** applies while it moves onto the hub:
 
 ```kcl
 _bundle = forge.Bundle {
@@ -121,33 +121,98 @@ least local target, so a cloud env cannot declare itself local to keep direct
 apply: the render fails, naming the offending context.
 
 `forge env shape --json` and `forge env status --json` both report
-`lifecycle` (on `env status`: top-level `lifecycle` for one env, `environments[].lifecycle` for the all-envs view; empty string when unset), and a direct cluster apply to an env that declares neither `lifecycle` nor `applier` prints
+`lifecycle` (on `env status`: top-level `lifecycle` for one env, `environments[].lifecycle` for the all-envs view; empty string when unset), and a direct cluster apply to an env that declares none of `lifecycle`, `applier` or `hub_converges` prints
 one notice saying direct apply will be refused once F-REFUSE-DIRECT lands. That
 is the fields' whole effect today — they refuse nothing — and declaring one now
 is what makes retiring direct apply a flag flip rather than a migration.
 
-## `applier = "forge"`: a real env that forge applies on purpose
+## `applier = "forge"`: forge applies a real env, until its units move
 
-`lifecycle` says the clusters are scratch. The platform's own env is the opposite:
-**real** clusters, applied by forge (an operator or CI running `forge env deploy`),
-because the control plane that would converge it is the very thing running there.
-A hub applying the env that runs the hub is circular, so for that env forge is the
-applier permanently, not as a stopgap.
+`lifecycle` says the clusters are scratch. The opposite case is a **real** env
+that forge applies (an operator or CI running `forge env deploy`) because it has
+not moved onto the Flux path yet. That is a **transitional state, not a
+destination**: every real env, the platform's own included, ends up converged by
+the control plane's hub from the recorded bundle, and forge's direct apply
+narrows to dev and ephemeral envs. `applier = "forge"` is where that move
+starts, and `hub_converges` is how it is made.
 
 ```kcl
 control_plane = forge.ControlPlane {}
-applier = "forge"
+applier = "forge"          # nothing has moved yet
 ```
 
 | effect | how |
 |---|---|
 | exempt from F-REFUSE-DIRECT | `DirectApplyAllowed` is true; no notice is printed |
-| never hub-converged | `hubConverged = false` is recorded however fully the clusters are bound to connected clusters; binding says WHERE an env lands, not who puts it there |
-| recorded in the shape | `shape.applier = "forge"` in `forge env shape --json`; an env that declares nothing records nothing, so "undeclared" and "applied on purpose" stay distinguishable |
+| no unit hub-converged | `hubConverged = false` is recorded however fully the clusters are bound to connected clusters; binding says WHERE an env lands, not who puts it there |
+| recorded in the shape | `shape.applier = "forge"` in `forge env shape --json`; an env that declares nothing records nothing, so "undeclared" and "forge applies it for now" stay distinguishable |
 
 Declaring both `applier` and `lifecycle` is refused at render: they answer one
 question opposite ways. Unlike `lifecycle` it is **not** checked against the
 clusters, because a real cluster is exactly what it is for.
+
+## `hub_converges`: moving an env onto the hub one delivery unit at a time
+
+An env is made of delivery units (`Bundle.delivery_units`, plus `base` for
+everything that names none). `hub_converges` lists the ones the hub converges;
+`forge env deploy` applies every other unit directly.
+
+```kcl
+delivery_units = [
+    forge.DeliveryUnit {name = "reliant", after = []}
+    forge.DeliveryUnit {name = "daemon-substrate", after = ["reliant"]}
+    forge.DeliveryUnit {name = "infra", after = ["daemon-substrate"]}
+    forge.DeliveryUnit {name = "control-plane", after = ["infra"]}
+    forge.DeliveryUnit {name = "hub-base", after = ["control-plane"]}
+]
+hub_converges = ["reliant"]                      # stage 1
+# hub_converges = ["reliant", "daemon-substrate"]  # stage 2 ... every unit last
+```
+
+| the env declares | split |
+|---|---|
+| `hub_converges = [u, …]` | exactly those units are the hub's, the rest are forge's. Never augmented |
+| `hub_converges = []` or `applier = "forge"` | no unit is the hub's |
+| neither | forge's old inference: a plain env with every cluster bound to a connected cluster, nothing hosted, and no frontend forge ships, is the hub's as a whole |
+| both `applier` and a non-empty `hub_converges` | refused at render: drop `applier` once the first unit moves |
+
+What changes when a unit is listed:
+
+- `forge env deploy` stops applying that unit's objects. Pruning, PDB cleanup and
+  CRD pruning still read the **full** render, so a skipped Deployment is never
+  mistaken for an orphan and deleted; the rollout wait skips it too (it is the
+  hub's to roll).
+- The bundle build refuses unsafe objects (`flux-safe`) **in that unit** and warns
+  about the rest.
+- The shape records `units: [{name, applier}]`, and the env's declaration tells the
+  control plane `hubConvergedUnits`. `hubConverged` (the old env-level flag, still
+  read by control planes that predate units) is `true` only once **every** unit
+  has moved, so an older control plane can never converge a unit forge still
+  applies.
+- Each apply records which units forge applied and which it left to the hub on
+  its `apply` gate (`units_forge`, `units_hub`).
+- A frontend (`OnFirebase`, `OnBucket`) belongs to no unit: forge ships it from
+  this machine, **after** the promotion is recorded, whatever the list says.
+
+Adopting a unit of a live env also needs its trees created suspended and their
+managed fields handed to Flux; that is the adoption runbook's job, and
+`hub_converges` is the switch it ends on. To move a unit back, remove it from the
+list: the hub orphans its trees and forge applies it again.
+
+### Bound vs live, per tree
+
+`forge env status <env>` (and the deploy plan) shows each **tree** of the bound
+bundle (one per cluster × unit × phase): who applies it, the revision the
+promotion **binds** it to, the revision the hub's reconciler reports it
+**applied**, and what the two add up to (`converged`, `behind`, `failed`,
+`unobserved`, `forge-applied`).
+
+Promotion is **intent** and convergence is **observed**. The binding is never
+moved late to make the two agree, so a tree that is bound to the new release and
+live at the old one reads `behind`; that is the information. A control plane that
+reports convergence per cluster rather than per tree is shown as such: each tree
+carries its cluster's reading and says so. Nothing is invented where the control
+plane reports nothing: the tree reads `unobserved`.
 
 ## Recording it is what makes the console work offline
 

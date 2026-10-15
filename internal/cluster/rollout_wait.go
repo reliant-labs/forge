@@ -34,6 +34,9 @@ type PendingRollout struct {
 	// jobs is the post-rollout one-shot Job wait set: every Job the apply
 	// sent, minus the pre-rollout Jobs the gate already saw complete.
 	jobs []string
+	// skipDeployments are Deployments the hub rolls, not this apply: they are
+	// not awaited (delivery_unit_filter.go).
+	skipDeployments []string
 	// label prefixes this rollout's failure in WaitRollouts' verdict — the
 	// caller's own name for the apply. Empty leaves the error unprefixed,
 	// which is what Apply returns.
@@ -193,7 +196,11 @@ func WaitRollouts(ctx context.Context, pending ...*PendingRollout) error {
 			}
 			continue
 		}
+		hub := unitSet(w.p.skipDeployments)
 		for _, dep := range deployments {
+			if hub[dep] {
+				continue
+			}
 			queue = append(queue, deploymentWait{w: w, name: dep})
 		}
 	}

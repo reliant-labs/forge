@@ -15,7 +15,10 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
                               or null for a real env reconciled from a
                               bundle. Never a refusal here — see Bundle
     applier                   "forge" for a real env forge applies by
-                              declaration (the platform's own env), else null
+                              declaration, until its units move (transitional),
+                              else null
+    hub_converges             the delivery units the hub converges, present only
+                              when declared (a list, possibly empty)
     clusters, cluster_target, kubeconfig_secrets, connected_clusters
     network_policy            the env NetworkPolicy bundle's inputs, or null
     workloads[]               EVERY workload, of every runtime:
@@ -1376,6 +1379,11 @@ render = lambda bundle: Bundle -> any {
         # WHO APPLIES, declared: "forge" for a real env forge applies (the
         # platform's own env), else null. See Bundle.applier.
         "applier": bundle.applier if bundle.applier else None
+        # WHICH DELIVERY UNITS THE HUB CONVERGES. The key appears only when the
+        # Bundle declares it, and an empty list IS a declaration (the hub
+        # converges none): absent keeps forge's inference, [] ends it.
+        if bundle.hub_converges != Undefined:
+            "hub_converges": bundle.hub_converges
         "clusters": [_render_cluster(c) for c in bundle.clusters]
         if _pt:
             "cluster_target": _render_cluster_target(_pt)

@@ -71,6 +71,8 @@ type ShapeInput struct {
 
 	// Applier is the env's declared applier (release.ApplierForge), or "".
 	Applier string
+	// Units is who applies each delivery unit, when the env declares a split.
+	Units []release.ShapeUnit
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -119,6 +121,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		ObservabilityPolicy: in.ObservabilityPolicy,
 		DeliveryPolicy:      in.DeliveryPolicy,
 		Applier:             in.Applier,
+		Units:               in.Units,
 	}.Canonical()
 }
 

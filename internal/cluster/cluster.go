@@ -410,6 +410,14 @@ type ApplyOpts struct {
 	// callback's result is ignored and it cannot affect the apply.
 	OnStream func(manifests string)
 
+	// SkipUnits are the delivery units whose objects this apply LEAVES to the
+	// hub: Bundle.hub_converges, resolved by the caller. The objects are
+	// dropped from what is sent and their Deployments from what is awaited,
+	// and nothing else changes: pruning still reads the full stream, because
+	// pruning from a filtered one would delete every skipped Deployment as an
+	// orphan. See delivery_unit_filter.go.
+	SkipUnits []string
+
 	// OnRollout, when non-nil, receives one observation per resource whose
 	// readiness was awaited, as each verdict arrives.
 	//
@@ -920,6 +928,14 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 // apply, returning the rollout still to be awaited.
 func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) (*PendingRollout, error) {
 	selectedCharts, manifests, crdOwner := selectAndScope(opts, manifests)
+	// What the render holds for this cluster, before the hub's units are taken
+	// out: the prunes below compare the cluster against THIS, never against
+	// what this apply chose to send.
+	desired := manifests
+	manifests = DropDeliveryUnits(manifests, opts.SkipUnits)
+	if len(opts.SkipUnits) > 0 && !opts.Quiet {
+		fmt.Printf("Leaving delivery unit(s) %s to the hub (Bundle.hub_converges): not applied from here\n", strings.Join(opts.SkipUnits, ", "))
+	}
 
 	// The WHOLE scoped stream, checked once before any pass is sent: an object
 	// still stamped for another cluster here would otherwise be refused only
@@ -994,6 +1010,17 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 		return nil, nil
 	}
 
+	// Every object of this cluster is in a unit the hub converges: nothing is
+	// sent, and there is nothing to wait for. kubectl refuses an empty stream,
+	// and an apply that reached it would fail a deploy that had correctly
+	// left everything to the hub.
+	if strings.TrimSpace(manifests) == "" && len(opts.SkipUnits) > 0 {
+		if !opts.Quiet {
+			fmt.Println("Nothing to apply from here: every object is in a unit the hub converges.")
+		}
+		return nil, nil
+	}
+
 	if !opts.Quiet {
 		fmt.Println("Applying manifests...")
 	}
@@ -1062,11 +1089,11 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// A workload that dropped to one replica stops rendering its PDB and
 	// apply never deletes it; a stale one can block node drains. Not gated
 	// on --prune: PDBs hold no state.
-	if err := PrunePDBs(ctx, opts.Context, manifests, opts.Namespace); err != nil {
+	if err := PrunePDBs(ctx, opts.Context, desired, opts.Namespace); err != nil {
 		fmt.Printf("Warning: prune PodDisruptionBudgets: %v\n", err)
 	}
 	if opts.Prune {
-		if err := Prune(ctx, opts.Context, manifests, opts.Namespace); err != nil {
+		if err := Prune(ctx, opts.Context, desired, opts.Namespace); err != nil {
 			fmt.Printf("Warning: prune: %v\n", err)
 		}
 	}
@@ -1083,7 +1110,7 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// A --target apply renders a subset of the env, so a CRD missing from
 	// it proves nothing: the CRD prune runs on a full apply only.
 	if opts.PruneCRDs && len(opts.Targets) == 0 && crdOwner != "" {
-		if _, _, err := PruneCRDs(ctx, opts.Context, manifests, crdOwner); err != nil {
+		if _, _, err := PruneCRDs(ctx, opts.Context, desired, crdOwner); err != nil {
 			fmt.Printf("Warning: %v\n", err)
 		}
 	}
@@ -1106,7 +1133,7 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			jobs = append(jobs, name)
 		}
 	}
-	return &PendingRollout{opts: opts, policy: policy, jobs: jobs}, nil
+	return &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}, nil
 }
 
 // oneShotWaitSet is the set of Jobs Apply blocks on after applying:

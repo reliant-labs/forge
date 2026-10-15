@@ -128,8 +128,12 @@ type FluxFinding struct {
 	Kind      string
 	Namespace string
 	Name      string
-	Reason    string
-	Fix       string
+	// Unit is the delivery unit the object is in ([DefaultDeliveryUnit] when it
+	// declares none), so a caller that judges only the units a reconciler
+	// applies can tell which findings are its own.
+	Unit   string
+	Reason string
+	Fix    string
 }
 
 func (f FluxFinding) String() string {
@@ -160,8 +164,14 @@ func CheckFluxSafety(docs []any) []FluxFinding {
 		meta, _ := doc["metadata"].(map[string]any)
 		name, _ := meta["name"].(string)
 		ns, _ := meta["namespace"].(string)
+		unit := DefaultDeliveryUnit
+		if labels, _ := meta["labels"].(map[string]any); labels != nil {
+			if u, _ := labels[LabelDeliveryUnit].(string); u != "" {
+				unit = u
+			}
+		}
 		add := func(rule, reason, fix string) {
-			out = append(out, FluxFinding{Rule: rule, Kind: kind, Namespace: ns, Name: name, Reason: reason, Fix: fix})
+			out = append(out, FluxFinding{Rule: rule, Kind: kind, Namespace: ns, Name: name, Unit: unit, Reason: reason, Fix: fix})
 		}
 		if kind == "Job" {
 			spec, _ := doc["spec"].(map[string]any)

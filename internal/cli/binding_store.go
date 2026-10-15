@@ -204,11 +204,12 @@ type envLedger struct {
 	// Hosted reports whether this env's ledger is a control plane, and so
 	// whether a promotion to it is converged server-side.
 	Hosted bool
-	// Mixed reports that a HOSTED env also declares workloads its control
-	// plane does not run — a cluster or compose workload, host infra, a
-	// cluster database, a shipped frontend (envAppliesLocally). Such an env
-	// needs BOTH halves of the follow-through: forge applies the part it
-	// owns, the control plane converges the rest.
+	// Mixed reports that a HOSTED env also declares work its control plane
+	// does not run: a cluster or compose workload in a unit the hub does not
+	// converge, host infra, a cluster database, a shipped frontend
+	// (forgeAppliesLocally). Such an env needs BOTH halves of the
+	// follow-through: forge applies the part it owns, the control plane
+	// converges the rest.
 	//
 	// Meaningless unless Hosted, which is why it is not spelled
 	// "AppliesLocally": a self-managed env always applies from this
@@ -217,13 +218,14 @@ type envLedger struct {
 	// binding and apply nothing. Mixed is the fact nothing else implies,
 	// and the zero value is right for both other shapes.
 	Mixed bool
-	// HubConverged reports a HOSTED-ledger env that declares no hosted tiers
-	// and whose every cluster is bound to a connected cluster: the control
-	// plane's reconciler converges its recorded bundle onto those clusters,
-	// so recording the promotion plus bundle is the whole job. forge applies
-	// nothing from here (a second authority would fight the hub's Flux) and
-	// has no hosted workloads to publish. Implies !Mixed.
-	HubConverged bool
+	// Units is who applies each delivery unit of the env (unit_convergence.go):
+	// the units the control plane's hub converges, and the units forge still
+	// applies directly. An env moves onto the hub one unit at a time, so this
+	// is a per-unit answer; the old env-level "hub converged" boolean could
+	// only say yes or no for the whole env. Meaningful only for a hosted
+	// ledger. Mixed already accounts for it: it is false when the hub converges
+	// everything forge would otherwise apply.
+	Units unitSplit
 	// HostedTiers are the tiers a HOSTED env binds to its control plane
 	// (hostedTiersOf): what that control plane converges, and so the only
 	// thing a server-side rollout of this env can ever contain.
@@ -249,11 +251,14 @@ type envLedger struct {
 }
 
 // ledgerOnly reports a hosted-ledger env whose control plane converges NONE
-// of it: Mixed (forge applies its workloads from here) with no hosted tier.
-// Its control plane is its release ledger and nothing else, so the local apply
-// is the whole deploy, there is no server-side rollout to wait on, and an
-// empty one is the declaration's doing — never a missing publish.
-func (l envLedger) ledgerOnly() bool { return l.Mixed && len(l.HostedTiers) == 0 }
+// of it: Mixed (forge applies its workloads from here), no hosted tier, and no
+// unit handed to the hub. Its control plane is its release ledger and nothing
+// else, so the local apply is the whole deploy, there is no server-side rollout
+// to wait on, and an empty one is the declaration's doing — never a missing
+// publish.
+func (l envLedger) ledgerOnly() bool {
+	return l.Mixed && len(l.HostedTiers) == 0 && !l.Units.AnyHub()
+}
 
 // appliesLocally reports whether any part of the env is applied FROM THIS
 // MACHINE. A self-managed env always is: nothing watches a jsonl file, so if
@@ -261,8 +266,25 @@ func (l envLedger) ledgerOnly() bool { return l.Mixed && len(l.HostedTiers) == 0
 // hosted env is only when it is Mixed.
 func (l envLedger) appliesLocally() bool { return !l.Hosted || l.Mixed }
 
-// hubConverged reports whether the hub, not this machine, applies the env.
-func (l envLedger) hubConverged() bool { return l.Hosted && l.HubConverged }
+// hubUnits reports whether the hub applies at least one unit of the env: the
+// bundle must be recorded for it, its reconciler must be able to apply, and the
+// deploy waits on what it reports. It is the per-unit replacement for the old
+// env-level "hub converged" question, true for an env the hub converges whole
+// and for one that has moved only some units.
+func (l envLedger) hubUnits() bool { return l.Hosted && l.Units.AnyHub() }
+
+// forgePlans reports an env whose deploy plan only the machine applying it can
+// compute: forge applies bundle objects itself and the control plane has no
+// hosted tier to diff, so the control plane's Live is missing what forge
+// applied and its plan would call it all new, every release. That is the
+// ledger-only env, and an env that has moved only SOME units to the hub: the
+// hub sees its own units, forge sees the rest, and only forge's apply gates
+// record a baseline for both. An env whose every unit the hub converges is
+// planned by the control plane even if forge still ships a frontend, because
+// the frontend is outside the bundle and the bundle is all the hub's.
+func (l envLedger) forgePlans() bool {
+	return l.Mixed && len(l.HostedTiers) == 0 && (!l.Units.AnyHub() || len(l.Units.Forge) > 0)
+}
 
 // ─── Selection ───────────────────────────────────────────────────────────────
 
@@ -366,13 +388,14 @@ func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir stri
 	if err != nil {
 		return envLedger{}, err
 	}
-	base := envLedger{
-		HubConverged: envConvergedByHub(entities),
-		HostedTiers:  hostedTiersOf(entities),
+	units, err := unitSplitOf(entities)
+	if err != nil {
+		return envLedger{}, err
 	}
-	base.Mixed = envAppliesLocally(entities) && !base.HubConverged
+	base := envLedger{Units: units, HostedTiers: hostedTiersOf(entities)}
+	base.Mixed = forgeAppliesLocally(entities, units)
 	if !base.ledgerOnly() {
-		return envLedger{}, offlineShapeError(env, ep.URL, base.HubConverged, base.HostedTiers)
+		return envLedger{}, offlineShapeError(env, ep.URL, base.Units, base.HostedTiers)
 	}
 	return openOfflineLedger(projectDir, env, ep.URL, base)
 }
@@ -424,8 +447,12 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	// workloads the control plane does not run. Both facts come from the
 	// same render, so they are resolved together here rather than being
 	// re-derived later from a second render that could disagree.
-	l.HubConverged = envConvergedByHub(entities)
-	l.Mixed = envAppliesLocally(entities) && !l.HubConverged
+	units, err := unitSplitOf(entities)
+	if err != nil {
+		return envLedger{}, fmt.Errorf("env %q: %w", env, err)
+	}
+	l.Units = units
+	l.Mixed = forgeAppliesLocally(entities, units)
 	l.HostedTiers = hostedTiersOf(entities)
 	return attachHostedMirror(l, projectDir), nil
 }

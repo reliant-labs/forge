@@ -31,6 +31,15 @@ type hubReading struct {
 	Reason      string `json:"reason"`
 	Message     string `json:"message"`
 	PromotionID string `json:"promotionId"`
+	// Revision is what the reconciler reported APPLIED, verbatim.
+	Revision string `json:"revision,omitempty"`
+	// Tree is the bundle tree this reading is about (its path), when the
+	// control plane reports per tree. Empty on a control plane that reports one
+	// reading per cluster, which is every one that predates control-plane C2:
+	// the display then says the reading is cluster-level instead of claiming a
+	// precision it does not have.
+	Tree       string `json:"tree,omitempty"`
+	ObservedAt string `json:"observedAt,omitempty"`
 }
 
 // readHubReadings asks the env's control plane for its newest reconcile
@@ -54,16 +63,22 @@ func readHubReadings(ctx context.Context, ledger envLedger, env string) (reading
 	if err := hosted.client.Call(ctx, procListConvergencesCLI, map[string]any{"environmentId": envID, "limit": 50}, &resp); err != nil {
 		return nil, true, err
 	}
-	newest := map[string]hubReading{}
+	newest := map[[2]string]hubReading{}
 	for _, r := range resp.Convergences { // newest first
-		if _, seen := newest[r.Cluster]; !seen {
-			newest[r.Cluster] = r
+		k := [2]string{r.Cluster, r.Tree}
+		if _, seen := newest[k]; !seen {
+			newest[k] = r
 		}
 	}
 	for _, r := range newest {
 		readings = append(readings, r)
 	}
-	sort.Slice(readings, func(i, j int) bool { return readings[i].Cluster < readings[j].Cluster })
+	sort.Slice(readings, func(i, j int) bool {
+		if readings[i].Cluster != readings[j].Cluster {
+			return readings[i].Cluster < readings[j].Cluster
+		}
+		return readings[i].Tree < readings[j].Tree
+	})
 	return readings, true, nil
 }
 
@@ -78,7 +93,7 @@ func readHubReadings(ctx context.Context, ledger envLedger, env string) (reading
 // like. A control plane that cannot be read is said and not refused: an
 // unreadable status is not evidence the hub is broken.
 func refuseUnreadyHub(ctx context.Context, env string, ledger envLedger, bound bool, o promoteFollowOptions) error {
-	if !ledger.hubConverged() {
+	if !ledger.hubUnits() {
 		return nil
 	}
 	readings, found, err := readHubReadings(ctx, ledger, env)
@@ -92,7 +107,11 @@ func refuseUnreadyHub(ctx context.Context, env string, ledger envLedger, bound b
 	var failing []string
 	for _, r := range readings {
 		if r.State == "failed" && r.Reason != "ArtifactFailed" {
-			failing = append(failing, fmt.Sprintf("    %s: %s", emptyAs(r.Cluster, "(cluster not named)"),
+			where := emptyAs(r.Cluster, "(cluster not named)")
+			if r.Tree != "" {
+				where = r.Tree
+			}
+			failing = append(failing, fmt.Sprintf("    %s: %s", where,
 				oneLine(strings.Join(nonEmptyStrings(r.Reason, r.Message), ": "), 400)))
 		}
 	}
@@ -130,8 +149,11 @@ func nonEmptyStrings(vals ...string) []string {
 // have to infer it from the ledger's flags.
 func deployApplyPath(ledger envLedger) string {
 	switch {
-	case ledger.hubConverged():
+	case ledger.hubUnits() && !ledger.Mixed:
 		return "hub converge — forge records the promotion and bundle; the control plane's reconciler applies it to the connected clusters; nothing is applied from this machine"
+	case ledger.hubUnits():
+		return "split — the control plane's hub converges " + strings.Join(ledger.Units.Hub, ", ") +
+			" from the recorded bundle; forge applies " + strings.Join(ledger.Units.Forge, ", ") + " (and anything outside a unit) FROM THIS MACHINE"
 	case ledger.ledgerOnly():
 		return "ledger only — forge applies the whole env FROM THIS MACHINE (kubectl, server-side apply); the control plane only records the promotion and converges nothing, because the env binds no hosted tier"
 	case ledger.Hosted && ledger.Mixed:

@@ -51,6 +51,10 @@ func fullyDeclaredShape() release.Shape {
 		},
 		DeliveryPolicy: &policy,
 		Applier:        release.ApplierForge,
+		Units: []release.ShapeUnit{
+			{Name: "base", Applier: release.UnitApplierForge},
+			{Name: "reliant", Applier: release.UnitApplierHub},
+		},
 	}
 }
 

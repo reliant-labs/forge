@@ -17,9 +17,14 @@ pointer and waits", it is describing a path that does not exist.
 | the env declares | applied by |
 |---|---|
 | `forge.ControlPlane` and clusters bound to connected clusters (`forge cluster connect`) | the control plane's hub Flux converges the recorded bundle; forge records and waits (`deploy/cluster-connect`) |
-| `applier = "forge"` | **forge**, directly, on purpose, and the hub never converges it (`deploy/shape`) |
+| `hub_converges = [units]` | the hub converges **those delivery units** from the recorded bundle; forge applies the rest directly. This is how a real env moves onto Flux one unit at a time (`deploy/shape`) |
+| `applier = "forge"` | **forge**, directly, for now: no unit has moved to the hub yet. A transitional state, the same as `hub_converges = []`; every real env ends on the hub (`deploy/shape`) |
 | `lifecycle = "local"` / `"ephemeral"` | forge, directly: the clusters are scratch it creates and deletes |
 | none of these | forge, directly, with one notice that this will be refused (F-REFUSE-DIRECT) once an env must say which of the above it is |
+
+Direct apply is where every env starts and where only dev and ephemeral envs end.
+For a real env it is a stage, not a mode: list its units in `hub_converges` as
+they move, and the declaration ends when the list is complete.
 
 A Flux on a cluster exists only because a control plane declared one. Flux is a
 platform dependency of the control plane, not something forge puts in your

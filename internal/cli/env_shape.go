@@ -107,12 +107,33 @@ type envShapeDoc struct {
 	hostedPlaceholder bool
 }
 
-// reconciled reports whether a reconciler may apply this env's bundle: it
-// declares neither a local or ephemeral lifecycle nor forge as its applier. Such
-// a bundle is applied repeatedly and pruned, so it must be safe to (see
+// reconciled reports whether a reconciler may apply the WHOLE of this env's
+// bundle: it declares no local or ephemeral lifecycle and no applier, and it
+// does not split its delivery units between the hub and forge. Such a bundle is
+// applied repeatedly and pruned, so it must be safe to (see
 // release.CheckFluxSafety).
+//
+// An env that DOES split its units is not wholly reconciled, but its hub units
+// are: reconciledUnits names them, and the build refuses unsafe objects in
+// exactly those, so the first unit to move onto Flux is neither held up by an
+// unsafe object in one that has not, nor allowed to carry its own.
 func (d envShapeDoc) reconciled() bool {
-	return d.Lifecycle == "" && d.Shape.Applier == ""
+	return d.Lifecycle == "" && d.Shape.Applier == "" && len(d.Shape.Units) == 0
+}
+
+// reconciledUnits are the delivery units the hub converges, from the shape's
+// recorded split. Empty for an env that declares none.
+func (d envShapeDoc) reconciledUnits() []string {
+	if d.Lifecycle != "" || d.Shape.Applier != "" {
+		return nil
+	}
+	var out []string
+	for _, u := range d.Shape.Units {
+		if u.Applier == release.UnitApplierHub {
+			out = append(out, u.Name)
+		}
+	}
+	return out
 }
 
 func newEnvShapeCmd() *cobra.Command {
@@ -340,6 +361,10 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	if aerr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, aerr)
 	}
+	split, splitErr := unitSplitOf(entities)
+	if splitErr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, splitErr)
+	}
 	shape, err := bundle.ProjectShape(bundle.ShapeInput{
 		Kind:              shapeEnvKindOf(entities),
 		Workloads:         shapeWorkloadsOf(entities),
@@ -356,6 +381,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		ObservabilityPolicy: shapeObservabilityPolicyOf(entities),
 		DeliveryPolicy:      shapeDeliveryPolicyOf(entities),
 		Applier:             shapeApplierOf(entities),
+		Units:               split.ShapeUnits(),
 	})
 	if err != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, err)
@@ -691,15 +717,18 @@ func recordEnvDeclaration(ctx context.Context, envName string, entities *KCLEnti
 		return err
 	}
 	ref.ClusterBindings = bindings
-	// WHO APPLIES the bound clusters, by the predicate ledgerForEntities
+	// WHO APPLIES each delivery unit, by the same split ledgerForEntities
 	// uses to choose between applying from here and following the hub. The
-	// control plane converges a self-managed env's bundle only when this
-	// says so; without it, a mixed env (control-plane prod: bound clusters
-	// plus a Firebase frontend) got hub Kustomizations over the very objects
-	// this machine applies — two appliers, one of which would revert the
-	// other once it gained the permissions to try.
-	hubConverged := envConvergedByHub(entities)
-	ref.HubConverged = &hubConverged
+	// control plane converges a unit's trees only when this says so; without
+	// it, a mixed env (control-plane prod: bound clusters plus a Firebase
+	// frontend) got hub Kustomizations over the very objects this machine
+	// applies — two appliers, one of which would revert the other once it
+	// gained the permissions to try.
+	declared, serr := unitSplitOf(entities)
+	if serr != nil {
+		return fmt.Errorf("env %q: %w", envName, serr)
+	}
+	ref.HubConverged, ref.HubConvergedUnits = hubConvergedWire(declared)
 	if err := declareHostedEnv(ctx, client, ref); err != nil {
 		// F-15, stated loudly. A control plane that predates the shape
 		// IGNORES the field (connect's JSON codec discards unknown

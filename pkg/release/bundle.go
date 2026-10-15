@@ -424,14 +424,41 @@ type Shape struct {
 	// reader treats absence as [DefaultDeliveryPolicy], never as "off".
 	DeliveryPolicy *ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
-	// environment forge applies on purpose (the platform's own env, which its
-	// own hub must not apply). Empty means undeclared, and omitted, so every
-	// shape recorded before the field encodes and hashes as it did.
+	// environment none of whose delivery units has moved onto the hub yet. It
+	// is a transitional state (see [ApplierForge]). Empty means undeclared, and
+	// omitted, so every shape recorded before the field encodes and hashes as
+	// it did.
 	Applier string `json:"applier,omitempty"`
+	// Units is who applies each delivery unit of the env: the split between the
+	// units the hub converges and the units forge still applies directly. It is
+	// recorded only when the env declares one (delivery units, or
+	// hub_converges), and omitted otherwise, so every shape recorded before the
+	// field encodes and hashes exactly as it did. Sorted by name.
+	//
+	// It is a DECLARATION about who applies, so it is not part of the config
+	// digest: moving a unit onto the hub changes nobody's configuration.
+	Units []ShapeUnit `json:"units,omitempty"`
 }
 
-// ApplierForge is [Shape.Applier] for an env forge applies by declaration.
+// ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
+// a transitional state: an env whose every delivery unit is still applied by
+// forge. The end state is every unit converged by the hub ([UnitApplierHub]).
 const ApplierForge = "forge"
+
+// Who applies a delivery unit ([ShapeUnit.Applier]).
+const (
+	// UnitApplierForge: `forge env deploy` applies the unit's objects directly.
+	UnitApplierForge = "forge"
+	// UnitApplierHub: the control plane's hub converges the unit's trees from
+	// the recorded bundle, and forge applies none of its objects.
+	UnitApplierHub = "hub"
+)
+
+// ShapeUnit is one delivery unit and who applies it.
+type ShapeUnit struct {
+	Name    string `json:"name"`
+	Applier string `json:"applier"`
+}
 
 // ShapeWorkload is one declared workload and where it runs.
 type ShapeWorkload struct {
@@ -720,6 +747,18 @@ func (s Shape) Validate() error {
 	if s.Applier != "" && s.Applier != ApplierForge {
 		return fmt.Errorf("%w: shape applier %q (expected %q or none)", ErrInvalid, s.Applier, ApplierForge)
 	}
+	seenUnit := map[string]bool{}
+	for _, u := range s.Units {
+		switch {
+		case strings.TrimSpace(u.Name) == "":
+			return fmt.Errorf("%w: shape unit with no name", ErrInvalid)
+		case u.Applier != UnitApplierForge && u.Applier != UnitApplierHub:
+			return fmt.Errorf("%w: shape unit %q applier %q (expected %q or %q)", ErrInvalid, u.Name, u.Applier, UnitApplierForge, UnitApplierHub)
+		case seenUnit[u.Name]:
+			return fmt.Errorf("%w: shape names unit %q twice", ErrInvalid, u.Name)
+		}
+		seenUnit[u.Name] = true
+	}
 	if p := s.ObservabilityPolicy; p != nil {
 		valid := map[string]bool{}
 		for _, c := range ObsCategories {
@@ -882,6 +921,10 @@ func (s Shape) Canonical() Shape {
 	if len(s.Alerts) > 0 {
 		out.Alerts = append([]ShapeAlert(nil), s.Alerts...)
 		sort.Slice(out.Alerts, func(i, j int) bool { return out.Alerts[i].Alert < out.Alerts[j].Alert })
+	}
+	if len(s.Units) > 0 {
+		out.Units = append([]ShapeUnit(nil), s.Units...)
+		sort.Slice(out.Units, func(i, j int) bool { return out.Units[i].Name < out.Units[j].Name })
 	}
 	out.Domains = sortedStrings(s.Domains)
 	out.Clusters = sortedStrings(s.Clusters)

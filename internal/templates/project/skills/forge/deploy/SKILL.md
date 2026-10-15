@@ -98,9 +98,10 @@ forge env new cloud --from prod --bind item=cluster         # item on your clust
 forge env new cloud --check                                 # no placeholder left, renders, admissible
 ```
 
-`Bundle.lifecycle` (`"local"` / `"ephemeral"`) and `Bundle.applier = "forge"`
-declare WHO APPLIES an env: forge, directly. Scaffolded `dev` is `local`; the
-platform's own env is `applier = "forge"`. See deploy/shape.
+`lifecycle` (`"local"`/`"ephemeral"`), `applier = "forge"` and `hub_converges` declare
+WHO APPLIES an env: scratch clusters (scaffolded `dev`), a real env forge applies for
+now, and the delivery units the hub has taken over, so a real env moves onto Flux one
+unit at a time. See deploy/shape.
 
 ### What forge writes into every spec
 
@@ -347,8 +348,8 @@ PDB lint + stale-PDB prune: deploy/pdb.
 
 ## Pod priority on shared nodes
 
-On nodes shared with pods that carry a PriorityClass, declare
-`priorityClassName` or yours get preempted: `deploy/pod-priority`.
+Declare `priorityClassName` on nodes shared with ranked pods, or yours get
+preempted: `deploy/pod-priority`.
 
 ## forge env up — the local loop
 

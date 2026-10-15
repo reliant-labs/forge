@@ -45,8 +45,8 @@ func TestLedgerForEntities_ControlPlaneEnvWithOnlyClusterWorkloadsIsLedgerOnly(t
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
-	if !prod.Hosted || !prod.Mixed || prod.HubConverged {
-		t.Fatalf("prod shape: hosted=%v mixed=%v hub=%v, want true/true/false", prod.Hosted, prod.Mixed, prod.HubConverged)
+	if !prod.Hosted || !prod.Mixed || prod.hubUnits() {
+		t.Fatalf("prod shape: hosted=%v mixed=%v hub=%v, want true/true/false", prod.Hosted, prod.Mixed, prod.hubUnits())
 	}
 	if len(prod.HostedTiers) != 0 || !prod.ledgerOnly() {
 		t.Fatalf("a control-plane env with only cluster workloads binds nothing to its control plane: "+

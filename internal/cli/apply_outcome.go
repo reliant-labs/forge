@@ -36,6 +36,17 @@ import (
 // under on a hosted ledger.
 const applyGateName = "apply"
 
+// The apply gate's details keys for the delivery-unit split: which units forge
+// applied from this machine, and which it left to the hub. Recorded beside the
+// applied bundle so the ledger says, per promotion, who applied what: an env
+// moving onto Flux one unit at a time has promotions applied by both, and a
+// reader asking "did forge touch the reliant unit on this promotion" must not
+// have to re-render an old declaration.
+const (
+	applyGateUnitsForge = "units_forge"
+	applyGateUnitsHub   = "units_hub"
+)
+
 // recordApplyOutcome files the client-side apply's verdict on the promotion
 // it realized, for a HOSTED ledger. Best-effort: the deploy's outcome is the
 // apply's, and a ledger that cannot take the evidence must not change it — so
@@ -53,6 +64,7 @@ func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledge
 	}
 	gate := applyOutcomeGate(started, time.Now(), applyErr,
 		appliedBundleDigest(env, plan.Recorded.Release, o.clientDeploy), o.planDigest)
+	gate = withUnitSplit(gate, ledger.Units)
 	backend, err := resolveGateBackend(ctx, env)
 	if err == nil && backend.store == nil {
 		err = fmt.Errorf("no gate store for %s", env)
@@ -115,6 +127,21 @@ func applyOutcomeGate(started, finished time.Time, applyErr error, bundleDigest,
 		gate.Details = details
 	}
 	return gate
+}
+
+// withUnitSplit records on the apply gate which delivery units forge applied and
+// which it left to the hub. Nothing is added for an env that declares no split,
+// so every gate recorded before the field is unchanged.
+func withUnitSplit(g release.Gate, split unitSplit) release.Gate {
+	if split.Source == unitSplitNone || len(split.Hub)+len(split.Forge) == 0 {
+		return g
+	}
+	if g.Details == nil {
+		g.Details = map[string]any{}
+	}
+	g.Details[applyGateUnitsForge] = append([]string{}, split.Forge...)
+	g.Details[applyGateUnitsHub] = append([]string{}, split.Hub...)
+	return g
 }
 
 // promotionApply is what the ledger says about whether a promotion was

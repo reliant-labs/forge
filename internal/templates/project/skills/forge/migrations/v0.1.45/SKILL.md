@@ -287,13 +287,13 @@ Use when an env declares a control plane (`control_plane = forge.ControlPlane {}
 
 `forge env shape <env> --json | jq .shape.control_plane_secrets` lists the Secret; a first `forge env deploy` where it does not exist yet passes the preflight.
 
-## 8. `Bundle.applier = "forge"`: a declared self-applied platform env
+## 8. `Bundle.applier = "forge"`: a declared forge-applied env (transitional)
 
-Use when an env declares `forge.ControlPlane`, binds its clusters to connected clusters, AND is applied by `forge env deploy` rather than converged by the control plane's hub (control-plane's own `prod`).
+Use when an env declares `forge.ControlPlane`, binds its clusters to connected clusters, AND is still applied by `forge env deploy` rather than converged by the hub (control-plane's `prod`). A stage, not a destination: `Bundle.hub_converges` moves it one delivery unit at a time (`deploy/shape`).
 
 ### What changed
 
-- New `Bundle.applier?: "forge"`: a **real** env forge applies on purpose. It is exempt from the planned F-REFUSE-DIRECT, is **never recorded hub-converged** (`hubConverged = false`, however fully its clusters are bound), and is recorded as `shape.applier = "forge"`. Setting it beside `lifecycle` is refused at render. Detail: `deploy/shape`.
+- New `Bundle.applier?: "forge"`: a **real** env forge applies for now. Exempt from the planned F-REFUSE-DIRECT, **not** recorded hub-converged (`hubConverged = false`), recorded as `shape.applier = "forge"`. Refused beside `lifecycle`. Detail: `deploy/shape`.
 - **Deleted**: the dead in-cluster Flux pointer path (Flux install in `forge cluster up`, the OCIRepository/Kustomization `env deploy` wrote, Flux convergence in `env status`). `forge.flux_chart()` and declared bootstrap charts stay. See `deploy/flux`.
 
 ### Steps

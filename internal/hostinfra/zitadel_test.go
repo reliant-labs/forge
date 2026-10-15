@@ -4,11 +4,14 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // THE CACHE PATH IS A CONTRACT, not an implementation detail.
@@ -437,5 +440,36 @@ func TestZitadelVersion_MatchesComposeTemplate(t *testing.T) {
 	want := "image: ghcr.io/zitadel/zitadel:" + ZitadelVersion + "\n"
 	if !strings.Contains(string(b), want) {
 		t.Errorf("docker-compose.yml.tmpl does not pin %q; ZitadelVersion and the compose image must move together", want)
+	}
+}
+
+// Smoke for the pin: fetches the REAL upstream archive for this platform into
+// a throwaway cache, so a wrong checksum in zitadelChecksums, a renamed asset
+// or a retagged release fails here instead of at a developer's first
+// `forge env up`. Then runs the unmodified binary and asserts its version.
+func TestEnsureZitadelBinary_RealUpstreamArchiveMatchesPin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("downloads the real ~50 MB release archive; runs in task test")
+	}
+	if _, ok := zitadelAsset(runtime.GOOS, runtime.GOARCH); !ok {
+		t.Skipf("no zitadel build for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache) // linux
+	t.Setenv("HOME", cache)           // darwin: ~/Library/Caches
+	t.Setenv("LocalAppData", cache)   // windows
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	bin, err := ensureZitadelBinary(ctx)
+	if err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			t.Skipf("release host unreachable from this machine: %v", err)
+		}
+		t.Fatalf("ensureZitadelBinary: %v", err)
+	}
+	if err := verifyZitadelBinary(bin); err != nil {
+		t.Fatalf("the downloaded binary is not %s: %v", ZitadelVersion, err)
 	}
 }

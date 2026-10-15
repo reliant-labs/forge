@@ -1,9 +1,12 @@
 # Full heap snapshots: semantics and cost
 
-This change only removes useless zero rows. CPU, heap and goroutine capture
-cadence is unchanged. A separate opt-in typed heap interval is proposed; changing
-the default to 15 minutes requires the owner's fidelity/volume decision. No
-cadence change or silent delta conversion ships in the sparse-only fix.
+Zero-row suppression shipped separately. This proposal exposes
+`Config.ProfilesHeapInterval` as a typed opt-in: zero/negative preserves heap
+capture every cycle; positive captures initially then no more often than the
+chosen duration, measured from the last attempt even after failure. No catch-up
+queue/burst is created, and restart begins a new independent snapshot series.
+CPU/goroutine capture cadence is unchanged. A 15-minute **default** requires the
+owner's fidelity/volume decision; no new default or delta semantics is enabled.
 
 ## Why this representation
 

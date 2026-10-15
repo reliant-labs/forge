@@ -63,8 +63,10 @@ var profilingActive atomic.Bool
 type profiler struct {
 	res *resource.Resource
 
-	interval time.Duration
-	window   time.Duration
+	interval     time.Duration
+	window       time.Duration
+	heapInterval time.Duration
+	lastHeap     time.Time // last attempt, not success: errors must not amplify captures
 
 	probe func(context.Context) error
 	send  func(context.Context, pprofile.Profiles) error
@@ -89,13 +91,14 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 		return nil, err
 	}
 	p := &profiler{
-		res:      res,
-		interval: profilerInterval,
-		window:   profilerCPUWindow,
-		probe:    tcpProbe(tgt),
-		send:     send,
-		log:      slog.Default().With("component", "profiler"),
-		sleep:    sleepCtx,
+		res:          res,
+		interval:     profilerInterval,
+		heapInterval: cfg.ProfilesHeapInterval,
+		window:       profilerCPUWindow,
+		probe:        tcpProbe(tgt),
+		send:         send,
+		log:          slog.Default().With("component", "profiler"),
+		sleep:        sleepCtx,
 	}
 	loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
@@ -191,8 +194,10 @@ func (p *profiler) cycle(ctx context.Context) error {
 	}
 
 	var heap, gor bytes.Buffer
-	if err := pprof.Lookup("heap").WriteTo(&heap, 0); err != nil {
-		return fmt.Errorf("heap profile: %w", err)
+	if p.heapDue(time.Now()) {
+		if err := pprof.Lookup("heap").WriteTo(&heap, 0); err != nil {
+			return fmt.Errorf("heap profile: %w", err)
+		}
 	}
 	if err := pprof.Lookup("goroutine").WriteTo(&gor, 0); err != nil {
 		return fmt.Errorf("goroutine profile: %w", err)
@@ -219,6 +224,20 @@ func (p *profiler) cycle(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// heapDue claims a capture slot even if conversion/export subsequently fails.
+// This bounds full-snapshot attempts, not their size. No delta baseline, retry
+// backlog, or catch-up burst: each later capture is independently interpretable.
+func (p *profiler) heapDue(now time.Time) bool {
+	if p.heapInterval <= 0 {
+		return true // preserve default cadence; policy belongs to the owner
+	}
+	if !p.lastHeap.IsZero() && now.Sub(p.lastHeap) < p.heapInterval {
+		return false
+	}
+	p.lastHeap = now
+	return true
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/nodeengine"
 )
 
 // runBufGenerateGo runs buf generate using the project's buf.gen.yaml for Go stubs.
@@ -414,6 +415,9 @@ func ensureTSPluginInstalled(feName, projectDir, feDir string) error {
 		return nil
 	}
 
+	if err := nodeengine.Check(absFeDir); err != nil {
+		return fmt.Errorf("%s: @bufbuild/protoc-gen-es is not installed, and npm was not run: %w", feName, err)
+	}
 	verb := "ci"
 	if _, err := os.Stat(filepath.Join(absFeDir, "package-lock.json")); err != nil {
 		verb = "install"

@@ -66,6 +66,9 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"force-cleanup",
 		"heal",
 		"help-dev",
+		// VISIBLE on purpose: a skipped run says "--no-cache runs every
+		// step", and the flag it names must be one --help shows.
+		"no-cache",
 		"verbose",
 		"watch",
 	})
@@ -80,6 +83,7 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"steps",
 		"strict",
 		"templates-only",
+		"timings",
 	})
 
 	usage := cmd.UsageString()

@@ -132,6 +132,8 @@ func NewComponents(infra *Infra) (*Components, error) {
 
 The serve path (`cmd/<bin>/cmd/serve.go`) then applies the typed `Mount<Svc>` method values onto a `serverkit.Server` and calls `srv.RequireMounted(...)`.
 
+- **Per-service handler options are a value, passed explicitly.** Every service shares the serve path's interceptor chain. To give one service more (an extra interceptor, its own read limit, its own HTTP stack), build the generated `app.MountOptions` — one `[]mountkit.Option` field per service — in owned code and name one of its methods as the mount: `ServeSpec{Mount: app.MountOptions{Worktree: []mountkit.Option{mountkit.WithHandlerOptions(connect.WithInterceptors(wake))}}.MountAll, ...}` in `server.go`, or `.MountWorktree` in that service's subcommand. `mountkit.WithHandlerOptions` comes after the shared chain, so the shared interceptors wrap it.
+
 - **Selection is code.** To stop serving a service, stop constructing it in `NewComponents` and stop mounting it. To serve it elsewhere, construct it in that binary's composition. No `forge.yaml` edit, no string match.
 - **The `Deps` interface is the seam.** A consumer's field is `Users user.Service`, never the concrete type — it can't tell whether it got the in-process instance, a Connect client, or a mock. Splitting a service into its own Deployment later is a one-line swap in `NewComponents` (`billing.New(billing.Deps{Users: userclient.New(conn)})`) with the consumer untouched.
 - **Per-binary singletons are natural.** A dep that must be one instance within each process (e.g. `enforcement` in both the server and the workspace-proxy) is one field on the owned `Infra`, opened once in `OpenInfra` and shared across the components.

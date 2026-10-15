@@ -138,3 +138,88 @@ func TestGenerateInventory_NoServicesEmptyInventory(t *testing.T) {
 		t.Fatalf("no-services inventory should have no rows:\n%s", out)
 	}
 }
+
+// TestGenerateInventory_MountOptions: per-service mount options are a plain
+// value the owned serve code builds — a generated struct with one field per
+// service — never a method forge discovers by name. Its methods are the
+// mounts (each a MountFunc as a method value), every service's handler
+// options are resolved through mountkit after the shared chain, and the
+// option-less (*Components).Mount<Svc> / MountAll method expressions the
+// server and per-service subcommands name are unchanged.
+func TestGenerateInventory_MountOptions(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing", "\tLogger *slog.Logger")
+	writeComponentDeps(t, dir, "internal/handlers", "user", "user", "\tLogger *slog.Logger")
+	// An owned method named like the retired seam must not change the output:
+	// nothing is discovered by name.
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	decoy := "package app\n\nfunc (c *Components) BillingMountOptions() []int { return nil }\n"
+	if err := os.WriteFile(filepath.Join(dir, "internal", "app", "decoy.go"), []byte(decoy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := GenerateInventory(InventoryGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services: []ServiceDef{
+			{Name: "BillingService", Package: "billing.v1", ModulePath: "example.com/proj"},
+			{Name: "UserService", Package: "user.v1", ModulePath: "example.com/proj"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateInventory: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "mounts_services_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	if strings.Contains(out, "BillingMountOptions") {
+		t.Errorf("a method named like the retired seam was discovered:\n%s", out)
+	}
+	for _, want := range []string{
+		`"github.com/reliant-labs/forge/pkg/mountkit"`,
+		"type MountOptions struct {\n\tBilling []mountkit.Option\n\tUser    []mountkit.Option\n}",
+		"func (o MountOptions) MountBilling(c *Components, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {",
+		"func (o MountOptions) MountAll(c *Components, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {",
+		// The option-less method expressions stay, so the generated server
+		// and per-service subcommands compile unchanged.
+		"func (c *Components) MountBilling(mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {",
+		"func (c *Components) MountAll(mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("mounts missing %q:\n%s", want, out)
+		}
+	}
+	billing := between(out, "func (o MountOptions) MountBilling(", "\n}\n")
+	for _, want := range []string{
+		"m := mountkit.Resolve(opts, fmw.HTTPStack(logger, middleware.ClaimsFromContext), o.Billing...)",
+		"c.Billing.Register(mux, m.HandlerOptions...)",
+		"c.Billing.RegisterHTTP(mux, m.HTTPStack)",
+	} {
+		if !strings.Contains(billing, want) {
+			t.Errorf("MountOptions.MountBilling missing %q:\n%s", want, billing)
+		}
+	}
+	if all := between(out, "func (o MountOptions) MountAll(", "\n}\n"); !strings.Contains(all, "o.MountBilling(c, mux, cfg, logger, opts...)") ||
+		!strings.Contains(all, "o.MountUser(c, mux, cfg, logger, opts...)") {
+		t.Errorf("MountOptions.MountAll must mount each service with its own options:\n%s", all)
+	}
+	if plain := between(out, "func (c *Components) MountBilling(", "\n}\n"); !strings.Contains(plain, "return MountOptions{}.MountBilling(c, mux, cfg, logger, opts...)") {
+		t.Errorf("(*Components).MountBilling must be the zero-options mount:\n%s", plain)
+	}
+}
+
+// between returns s from the first start through the next end after it.
+func between(s, start, end string) string {
+	i := strings.Index(s, start)
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(s[i:], end)
+	if j < 0 {
+		return s[i:]
+	}
+	return s[i : i+j+len(end)]
+}

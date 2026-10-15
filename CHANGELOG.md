@@ -331,6 +331,31 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   pins by requiring that the bundle never stamps a Job prune-exempt. The plan's
   `object_removed` detail for a Job now says the apply prunes it, where it said to
   "delete it by hand".
+- **Per-service Connect handler options: `mountkit.WithHandlerOptions`, and
+  a generated `app.MountOptions` value with one field per service.** Before
+  this, `serverkit.Server.HandlerOpts` was a single chain shared by every
+  service, and `mountkit.Option` could only change the HTTP stack. reliant
+  adds a machine-wake interceptor to two of its services (P3c G1), and the
+  only way to do that on generated mounts was to disown
+  `mounts_services_gen.go`.
+  - `mountkit.WithHandlerOptions(...connect.HandlerOption)` adds options to
+    one mount, after the shared chain. Connect runs interceptors in the order
+    they were added, so the shared chain (recovery, logging, auth) wraps the
+    per-mount interceptor. Where Connect lets the last option win (read and
+    send limits), the per-mount option overrides the shared one. It works
+    with `mountkit.RegisterService` and `serverkit.Server.Mount`. Each mount
+    gets a fresh slice, so one mount's options never leak into another's.
+  - `mountkit.Resolve(shared, defaultStack, opts...)` is the same rule for a
+    caller that registers through its own methods.
+  - `mounts_services_gen.go` generates `type MountOptions struct` with one
+    `[]mountkit.Option` field per service (the zero value is none). Its
+    methods are the mounts, and each is a `MountFunc` as a method value, so
+    owned serve code passes the options explicitly:
+    `Mount: app.MountOptions{Worktree: wake}.MountAll` for the server, or
+    `.MountWorktree` for one service's subcommand. Nothing is discovered by
+    name. `(*Components).Mount<Svc>` and `MountAll` are the same mounts with
+    no options, so the generated `server` and per-service commands compile
+    unchanged.
 
 - **`forge/pkg/identity` converges the content of a Zitadel instance to a
   declared spec.** One library for both halves of managed identity:

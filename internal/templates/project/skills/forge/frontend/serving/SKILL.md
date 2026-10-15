@@ -30,6 +30,55 @@ billing like every hosted workload (a deploy that needs it is queued,
 
 `next dev` is the same in every mode.
 
+## The dev loop is one origin (`/_api`, `/_otel`)
+
+Under the dev server (`next dev`, or `vite` for the SPA) the browser talks
+only to the dev server's own origin. Two dev-only proxies in
+`next.config.ts` / `vite.config.ts` forward what is not a page:
+
+| Path | Forwards to | Upstream |
+| ---- | ----------- | -------- |
+| `<basePath>/_api/*` | the API | `NEXT_PUBLIC_API_URL` / `VITE_API_URL`. `forge env up` sets it to the API it started; your shell or the frontend's KCL `env_vars` win over forge's |
+| `<basePath>/_otel/*` | the collector's OTLP/HTTP port | `OTEL_EXPORTER_OTLP_ENDPOINT` |
+
+`src/lib/api-base.ts` decides where API traffic goes, and both
+`src/lib/connect.ts` (every RPC) and `src/lib/auth/native-login.ts` (sign-in)
+ask it: `<origin><basePath>/_api` under the dev server, the runtime config's
+`API_URL` (`config.js`) in every build. The config hands its decision to the
+bundle as `FORGE_DEV_API_PROXY` (Next's `env`, Vite's `define`), so the
+rewrite and the transport cannot disagree.
+
+Why: the API's own URL, `http://localhost:<api port>`, only works for a
+browser on the machine running the stack. A dev server opened through a
+Reliant workspace preview URL (`reliant preview-url <port>`), a tunnel, or a
+LAN or container IP would send every RPC and the sign-in POST to the viewer's
+own machine. Through the page's origin there is nothing else to reach, no
+CORS, and the session cookie is first-party to the host the page is on.
+
+- **Which hosts may load the dev server:** `next dev` refuses its HMR socket
+  and dev resources to any origin but localhost, and a refused page renders
+  but never hydrates. `next.config.ts` therefore sets `allowedDevOrigins` to
+  the Reliant preview host (`RELIANT_PREVIEW_URL_TEMPLATE` + `PORT`), this
+  machine's own IPv4 addresses, and `FORGE_DEV_ALLOWED_ORIGINS` (comma-
+  separated hostnames, for a tunnel or a custom dev DNS name).
+  `vite.config.ts` puts the preview host and `FORGE_DEV_ALLOWED_ORIGINS` in
+  `server.allowedHosts`. Vite already accepts any IP.
+- **Opting out:** start the dev server with `FORGE_DEV_API_PROXY=off`. The
+  browser calls the configured API URL directly, cross-origin, as before.
+  The proxy is also off when the dev server has no upstream (`npm run dev`
+  without `NEXT_PUBLIC_API_URL`).
+- **Long streams:** Next's rewrite proxy ends a request after 30s
+  (`experimental.proxyTimeout`). Raise it, or opt out, for a server stream
+  that must outlive that.
+- **Production has neither proxy.** A static export has no server. The API
+  URL comes from `config.js`, and `<basePath>/_otel` must be routed by the
+  ingress.
+- **Expo** has no page origin: `EXPO_PUBLIC_API_URL` must name an address
+  the device can reach.
+
+A frontend scaffolded before this has neither `src/lib/api-base.ts` nor the
+`/_api` rewrite: `forge skill load migrations/v0.1.46/dev-api-proxy`.
+
 ## Static export: what a route may be
 
 An export holds only the pages Next can enumerate at build time. That gives

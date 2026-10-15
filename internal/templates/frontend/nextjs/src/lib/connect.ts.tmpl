@@ -4,6 +4,7 @@ import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 {{if .HasTypedConfig}}
 import { loadConfig } from "@/lib/config_gen";
 {{end}}
+import { apiBase } from "./api-base";
 import { DEV_API_URL } from "./apiurl_gen";
 
 import type { DescService } from "@bufbuild/protobuf";
@@ -19,20 +20,30 @@ import type { DescService } from "@bufbuild/protobuf";
 // regenerated on every `forge generate` from the proto descriptor + the
 // canonical dev port, so it can't drift from where the backend listens.
 //
+// Under `next dev`, apiBase() answers with this page's own origin instead
+// (`<basePath>/_api`, which next.config.ts proxies to the API), so the dev
+// loop works from any host the dev server is opened on — see
+// src/lib/api-base.ts.
+//
 // A function, not a module-scope const, for the same reason
 // src/lib/auth/session-provider.ts uses one: loadConfig() throws on invalid
 // config, and evaluating that at import time turns a fixable
 // misconfiguration into a blank page whose stack trace points at an import.
 function apiBaseUrl(): string {
-  return loadConfig().API_URL || DEV_API_URL;
+  return apiBase(loadConfig().API_URL || DEV_API_URL);
 }
 {{- else}}
 // The API URL is read from the NEXT_PUBLIC_API_URL environment variable.
 // In development it falls back to DEV_API_URL — regenerated on every
 // `forge generate` from the proto descriptor + the canonical dev port, so
 // it can't drift from where the backend actually listens.
+//
+// Under `next dev`, apiBase() answers with this page's own origin instead
+// (`<basePath>/_api`, which next.config.ts proxies to the API), so the dev
+// loop works from any host the dev server is opened on — see
+// src/lib/api-base.ts.
 function apiBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_API_URL ?? DEV_API_URL;
+  return apiBase(process.env.NEXT_PUBLIC_API_URL ?? DEV_API_URL);
 }
 {{- end}}
 
@@ -51,12 +62,14 @@ const interceptors = buildRuntimeInterceptors({});
 
 // Send the session cookie with every RPC.
 //
-// "include", not the browser's "same-origin" default: in the dev loop the
-// API binds its own port, so every RPC is cross-origin and the default
-// silently DROPS the cookie — the calls go out unauthenticated, the backend
-// answers 401, and nothing in the console explains why. The server pairs
-// this with cors_allow_credentials. native-login.ts makes the identical
-// choice for the same reason.
+// "include", not the browser's "same-origin" default: whenever the API is on
+// another origin — a deployed API_URL naming its own host, or the dev loop
+// with FORGE_DEV_API_PROXY=off, where the API binds its own port — the
+// default silently DROPS the cookie: the calls go out unauthenticated, the
+// backend answers 401, and nothing in the console explains why. The server
+// pairs this with cors_allow_credentials. Through the dev proxy the requests
+// are same-origin and this costs nothing. native-login.ts makes the
+// identical choice for the same reason.
 const fetchWithSession: typeof globalThis.fetch = (input, init) =>
   fetch(input, { ...init, credentials: "include" });
 

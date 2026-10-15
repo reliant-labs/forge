@@ -175,6 +175,11 @@ func TestLintFrontendProcessEnv_Allowlist(t *testing.T) {
 	writeFE(t, feDir, "src/app/providers.tsx", `const isDev = process.env.NODE_ENV === "development";`)
 	writeFE(t, feDir, "src/lib/telemetry.ts", `const d = process.env?.NODE_ENV === "development";`)
 	writeFE(t, feDir, "src/main.tsx", `const dev = import.meta.env.DEV;`)
+	//    The dev-server API proxy switch the frontend's own bundler config
+	//    defines (src/lib/api-base.ts, in both web scaffolds).
+	writeFE(t, feDir, "src/lib/api-base.ts",
+		`const p = process.env.NODE_ENV === "development" ? (process.env.FORGE_DEV_API_PROXY ?? "") : "";`+"\n"+
+			`const v = import.meta.env.DEV ? (import.meta.env.FORGE_DEV_API_PROXY ?? "") : "";`)
 	// 5. Vendored / generated protobuf output and build artefacts.
 	writeFE(t, feDir, "src/gen/thing_pb.ts", `const z = process.env.NEXT_PUBLIC_API_URL;`)
 	writeFE(t, feDir, "node_modules/pkg/index.js", `const z = process.env.NEXT_PUBLIC_API_URL;`)

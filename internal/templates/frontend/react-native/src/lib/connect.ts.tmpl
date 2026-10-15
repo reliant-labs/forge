@@ -10,6 +10,12 @@ import { DEV_API_URL } from "./apiurl_gen";
 // actually binds. In a deployable build the per-env EXPO_PUBLIC_API_URL is
 // injected from KCL (forge.Frontend config / env_vars); this floor is
 // dev-only.
+//
+// No same-origin dev proxy here, unlike the web scaffolds' `/_api`
+// (src/lib/api-base.ts in a Next.js or Vite frontend). A native app has no
+// page origin to proxy through: on a device or emulator "localhost" is the
+// device itself, so point EXPO_PUBLIC_API_URL at an address the device can
+// reach (the dev machine's LAN IP, or a tunnel to the API port).
 const baseUrl =
   process.env.EXPO_PUBLIC_API_URL ?? DEV_API_URL;
 

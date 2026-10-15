@@ -101,6 +101,9 @@
 //     they cannot come from KCL (the bundler defines them statically, and
 //     dead-code elimination depends on that), so there is no typed field to
 //     redirect to. The scaffold's own providers.tsx uses NODE_ENV this way.
+//     FORGE_DEV_API_PROXY joins them for the same reason: the frontend's
+//     own next.config.ts / vite.config.ts defines it for its dev server,
+//     and src/lib/api-base.ts reads it to send RPCs through that server.
 //   - NEXT.JS SERVER-ONLY App Router modules — app/**/route.ts, middleware.ts,
 //     instrumentation.ts. This one is not a convenience: the rule's central
 //     premise is false for them. Next inlines process.env when building the
@@ -175,6 +178,12 @@ var buildModeVars = map[string]bool{
 	"NODE_ENV": true,
 	// Vite's own import.meta.env intrinsics.
 	"DEV": true, "PROD": true, "MODE": true, "SSR": true, "BASE_URL": true,
+	// The scaffold's dev-server API proxy switch (src/lib/api-base.ts). Not
+	// deployment config: the frontend's OWN bundler config defines it —
+	// next.config.ts's `env` block, vite.config.ts's `define` — as the path
+	// its dev server proxies to the API, and as "" in every build. KCL has no
+	// value to give it, because no deployed bundle has a dev server.
+	"FORGE_DEV_API_PROXY": true,
 }
 
 // scannedExts are the source extensions this rule reads.

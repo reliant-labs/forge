@@ -37,11 +37,13 @@ The session cookie is **HttpOnly**, so no script can read it. That is the proper
 
 What you get is an **`Identity`**: `{ authenticated, email?, name?, subject? }`. **Presentation only.** Use it to decide what to SHOW (hide an admin tab, render a name). Never to decide what is ALLOWED — the server validates the real token on every request, and a caller who edits anything in the browser changes the UI and nothing else.
 
-`credentials: "include"` on every auth `fetch` is load-bearing and easy to lose. In the dev loop the API is on its own port, so every auth call is cross-origin, and under the default (`"same-origin"`) the browser **silently drops the `Set-Cookie`**: login returns 200, the identity comes back, and the user stays signed out with nothing in the console to explain it. The server pairs it with `cors_allow_credentials`.
+**Where the auth calls go.** `native-login.ts` asks `src/lib/api-base.ts`, the same module the transport asks. Under the dev server that is the page's own origin, `<basePath>/_api/auth/login` and so on, which `next.config.ts` (or `vite.config.ts`) proxies to the API. The API's `Set-Cookie` (`Path=/`, no `Domain`, `SameSite=Lax`, not `Secure` in development) passes through unchanged, so the session cookie is first-party to whatever host the page was opened on: localhost, a Reliant workspace preview URL, or a LAN IP. Every later `/_api` RPC carries it. In a build the calls go to `API_URL` from `config.js`, and an empty value means same-origin. See `frontend/serving`.
+
+`credentials: "include"` on every auth `fetch` is load-bearing and easy to lose. Whenever the API is on another origin (a deployed `API_URL` naming its own host, or the dev loop with `FORGE_DEV_API_PROXY=off`, where the API is on its own port), the default (`"same-origin"`) makes the browser **silently drop the `Set-Cookie`**: login returns 200, the identity comes back, and the user stays signed out with nothing in the console to explain it. The server pairs it with `cors_allow_credentials`. Through the dev proxy it costs nothing.
 
 The same holds for every RPC after sign-in, on both sides:
 
-- **The transport** (`src/lib/connect.ts`) builds every real Connect transport on `fetchWithSession`, a fetch that sends credentials. Without it the session cookie never reaches the API cross-origin.
+- **The transport** (`src/lib/connect.ts`) builds every real Connect transport on `fetchWithSession`, a fetch that sends credentials, against the base `src/lib/api-base.ts` chooses. Without it the session cookie never reaches an API on another origin.
 - **The server's auth interceptor** (`pkg/middleware/middleware.go`, `credentialFrom`) reads an `Authorization: Bearer` header when one is sent — a service, a CLI, a test — and otherwise the session cookie, `SessionCookieName`. That constant is declared there and `internal/app/login_broker.go` sets the cookie under it, so the name the broker writes and the name the interceptor reads are one value. An interceptor that read only the header answered every RPC after a successful sign-in with 401 "missing Authorization header".
 
 ## Why this rather than the browser-side PKCE flow it replaced

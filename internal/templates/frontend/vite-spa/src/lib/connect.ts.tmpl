@@ -4,7 +4,8 @@ import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 import type { DescService } from "@bufbuild/protobuf";
 import { createMockTransport } from "@/lib/mock-transport_gen";
 {{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
-{{end}}import { DEV_API_URL } from "./apiurl_gen";
+{{end}}import { apiBase } from "./api-base";
+import { DEV_API_URL } from "./apiurl_gen";
 {{if .HasTypedConfig}}
 // The API origin comes from the typed config module, which reads it at
 // RUNTIME from the KCL-rendered config.js. Reading import.meta.env.VITE_API_URL
@@ -17,11 +18,15 @@ import { createMockTransport } from "@/lib/mock-transport_gen";
 // regenerated on every `forge generate` (src/lib/apiurl_gen.ts) so it tracks
 // the port the backend actually binds.
 //
+// Under the dev server, apiBase() answers with this page's own origin
+// instead (`/_api`, which vite.config.ts proxies to the API), so the dev loop
+// works from any host the dev server is opened on — see src/lib/api-base.ts.
+//
 // A function, not a module-scope const: loadConfig() throws on invalid
 // config, and evaluating that at import time turns a fixable
 // misconfiguration into a blank page whose stack trace points at an import.
 function apiBaseUrl(): string {
-  return loadConfig().API_URL || DEV_API_URL;
+  return apiBase(loadConfig().API_URL || DEV_API_URL);
 }
 {{else}}
 // The API URL is read from VITE_API_URL (Vite exposes import.meta.env vars
@@ -30,8 +35,12 @@ function apiBaseUrl(): string {
 // tracks the port the backend actually binds. In a deployable build the
 // per-env VITE_API_URL is injected from KCL (forge.Frontend config /
 // env_vars), so this floor is dev-only.
+//
+// Under the dev server, apiBase() answers with this page's own origin
+// instead (`/_api`, which vite.config.ts proxies to the API), so the dev loop
+// works from any host the dev server is opened on — see src/lib/api-base.ts.
 function apiBaseUrl(): string {
-  return (import.meta.env.VITE_API_URL as string | undefined) ?? DEV_API_URL;
+  return apiBase((import.meta.env.VITE_API_URL as string | undefined) ?? DEV_API_URL);
 }
 {{end}}
 
@@ -50,12 +59,14 @@ const interceptors = buildRuntimeInterceptors({});
 
 // Send the session cookie with every RPC.
 //
-// "include", not the browser's "same-origin" default: in the dev loop the
-// API binds its own port, so every RPC is cross-origin and the default
-// silently DROPS the cookie — the calls go out unauthenticated, the backend
-// answers 401, and nothing in the console explains why. The server pairs
-// this with cors_allow_credentials. native-login.ts makes the identical
-// choice for the same reason.
+// "include", not the browser's "same-origin" default: whenever the API is on
+// another origin — a deployed API_URL naming its own host, or the dev loop
+// with FORGE_DEV_API_PROXY=off, where the API binds its own port — the
+// default silently DROPS the cookie: the calls go out unauthenticated, the
+// backend answers 401, and nothing in the console explains why. The server
+// pairs this with cors_allow_credentials. Through the dev proxy the requests
+// are same-origin and this costs nothing. native-login.ts makes the
+// identical choice for the same reason.
 const fetchWithSession: typeof globalThis.fetch = (input, init) =>
   fetch(input, { ...init, credentials: "include" });
 

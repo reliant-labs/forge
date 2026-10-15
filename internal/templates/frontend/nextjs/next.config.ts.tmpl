@@ -24,9 +24,16 @@
   the production build when forge.yaml declares a base_path but the
   override empties it — a static export would bake root-mounted URLs
   that 404 behind the proxy.
+
+  All three also emit the same dev-only proxies: `/_otel` to the local
+  collector and `/_api` to the API (src/lib/api-base.ts reads the latter's
+  on/off answer through `env`), so the browser in the dev loop talks only
+  to the dev server's own origin — plus the `allowedDevOrigins` that let
+  that origin be a workspace preview host or this machine's own address.
 */ -}}
 {{- if eq .Output "static" -}}
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import bundleAnalyzer from "@next/bundle-analyzer";
@@ -95,6 +102,79 @@ const otelUpstream = (
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
 ).replace(/\/+$/, "");
 
+// ── API proxy (DEV ONLY) ────────────────────────────────────────────────
+//
+// Under `next dev` the browser calls the API on ITS OWN origin, at
+// `<basePath>/_api/*`, and the rewrite below forwards that to the API server.
+// A page opened through a Reliant workspace preview URL, a tunnel or another
+// machine's IP cannot reach "localhost:<api port>" — that is the viewer's
+// machine — so the API is reached through the one host the browser already
+// has. src/lib/api-base.ts has the whole story.
+//
+//   upstream: NEXT_PUBLIC_API_URL, the API's base URL. `forge env up` sets it
+//             to the API it started, and a value from your shell or the
+//             frontend's KCL env_vars wins over forge's. Read here, on the
+//             server, when the dev server starts.
+//   path:     /_api/:path*  ->  <upstream>/:path*
+//   off:      FORGE_DEV_API_PROXY=off, or no upstream. The browser then calls
+//             the configured API URL directly, cross-origin, as before.
+//
+// The answer reaches the bundle as process.env.FORGE_DEV_API_PROXY (`env`
+// below), which api-base.ts reads, so the rewrite and the transport are one
+// decision. Next's proxy ends a request after 30s (`experimental.proxyTimeout`);
+// a server-streaming RPC that must outlive that needs it raised, or the proxy off.
+//
+// There is no production equivalent, for the same reasons as /_otel above. A
+// build reads the API's URL from the runtime config (config.js), as before.
+const apiUpstream = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const devApiProxy =
+  process.env.NODE_ENV === "development" &&
+  apiUpstream !== "" &&
+  !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
+    ? "/_api"
+    : "";
+
+// ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
+//
+// `next dev` refuses its own dev resources — the HMR socket, /__nextjs_*,
+// dev fonts — to a page whose Origin is not localhost or listed in
+// `allowedDevOrigins`. A page opened any other way renders but never
+// hydrates: every button is dead and nothing in the console says why.
+// Allowed here, beside localhost:
+//
+//   - this dev server's Reliant workspace preview host: RELIANT_PREVIEW_URL_TEMPLATE
+//     (`https://{port}-<id>.workspaces.reliantapi.com`, set on a Reliant
+//     cloud machine) with the port the dev server binds (PORT, which
+//     `forge env up` sets; Next's 3000 otherwise).
+//   - this machine's own network addresses, so `http://<LAN or container
+//     IP>:<port>` works once the dev server listens beyond loopback
+//     (`forge env up dev -- -H 0.0.0.0`). A page served from this machine's
+//     own address is no more foreign than localhost, which Next allows on
+//     any port.
+//   - FORGE_DEV_ALLOWED_ORIGINS: more hostnames, comma-separated (a tunnel,
+//     a custom dev DNS name). Next matches hostnames, with `*` for a whole
+//     label, and ignores ports.
+const devOrigins = (): string[] => {
+  const out = new Set<string>();
+  const preview = process.env.RELIANT_PREVIEW_URL_TEMPLATE;
+  if (preview) {
+    try {
+      out.add(new URL(preview.replace("{port}", process.env.PORT || "3000")).hostname);
+    } catch {
+      // A malformed template allows nothing extra.
+    }
+  }
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (!addr.internal && addr.family === "IPv4") out.add(addr.address);
+    }
+  }
+  for (const host of (process.env.FORGE_DEV_ALLOWED_ORIGINS ?? "").split(",")) {
+    if (host.trim()) out.add(host.trim());
+  }
+  return [...out];
+};
+
 const nextConfig: NextConfig = {
   // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
   // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
@@ -135,14 +215,23 @@ const nextConfig: NextConfig = {
   // export does not have — `next build` refuses an <Image> without this.
   // Size images for the web before they go in public/.
   images: { unoptimized: true },
-  // Dev-only /_otel proxy to the local collector — see otelUpstream above.
-  // Gated on NODE_ENV so `forge lint --static-export` can see the intent: a
-  // static host applies no rewrites.
+  // Whether `next dev` proxies the API, for src/lib/api-base.ts — see
+  // devApiProxy above. "" in every build.
+  env: { FORGE_DEV_API_PROXY: devApiProxy },
+  // Hosts besides localhost that may load this dev server — see devOrigins.
+  ...(process.env.NODE_ENV === "development" ? { allowedDevOrigins: devOrigins() } : {}),
+  // Dev-only proxies: /_otel to the local collector (see otelUpstream above)
+  // and /_api to the API (see devApiProxy). Gated on NODE_ENV so
+  // `forge lint --static-export` can see the intent: a static host applies no
+  // rewrites.
   ...(process.env.NODE_ENV === "development"
     ? {
         async rewrites() {
           return [
             { source: "/_otel/:path*", destination: `${otelUpstream}/:path*` },
+            ...(devApiProxy
+              ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
+              : []),
           ];
         },
       }
@@ -276,6 +365,7 @@ const nextConfig: NextConfig = {
 export default withBundleAnalyzer(nextConfig);
 {{- else if eq .Output "server" -}}
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import bundleAnalyzer from "@next/bundle-analyzer";
@@ -326,6 +416,79 @@ const otelUpstream = (
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
 ).replace(/\/+$/, "");
 
+// ── API proxy (DEV ONLY) ────────────────────────────────────────────────
+//
+// Under `next dev` the browser calls the API on ITS OWN origin, at
+// `<basePath>/_api/*`, and the rewrite below forwards that to the API server.
+// A page opened through a Reliant workspace preview URL, a tunnel or another
+// machine's IP cannot reach "localhost:<api port>" — that is the viewer's
+// machine — so the API is reached through the one host the browser already
+// has. src/lib/api-base.ts has the whole story.
+//
+//   upstream: NEXT_PUBLIC_API_URL, the API's base URL. `forge env up` sets it
+//             to the API it started, and a value from your shell or the
+//             frontend's KCL env_vars wins over forge's. Read here, on the
+//             server, when the dev server starts.
+//   path:     /_api/:path*  ->  <upstream>/:path*
+//   off:      FORGE_DEV_API_PROXY=off, or no upstream. The browser then calls
+//             the configured API URL directly, cross-origin, as before.
+//
+// The answer reaches the bundle as process.env.FORGE_DEV_API_PROXY (`env`
+// below), which api-base.ts reads, so the rewrite and the transport are one
+// decision. Next's proxy ends a request after 30s (`experimental.proxyTimeout`);
+// a server-streaming RPC that must outlive that needs it raised, or the proxy off.
+//
+// There is no production equivalent, for the same reasons as /_otel above. A
+// build reads the API's URL from the runtime config (config.js), as before.
+const apiUpstream = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const devApiProxy =
+  process.env.NODE_ENV === "development" &&
+  apiUpstream !== "" &&
+  !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
+    ? "/_api"
+    : "";
+
+// ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
+//
+// `next dev` refuses its own dev resources — the HMR socket, /__nextjs_*,
+// dev fonts — to a page whose Origin is not localhost or listed in
+// `allowedDevOrigins`. A page opened any other way renders but never
+// hydrates: every button is dead and nothing in the console says why.
+// Allowed here, beside localhost:
+//
+//   - this dev server's Reliant workspace preview host: RELIANT_PREVIEW_URL_TEMPLATE
+//     (`https://{port}-<id>.workspaces.reliantapi.com`, set on a Reliant
+//     cloud machine) with the port the dev server binds (PORT, which
+//     `forge env up` sets; Next's 3000 otherwise).
+//   - this machine's own network addresses, so `http://<LAN or container
+//     IP>:<port>` works once the dev server listens beyond loopback
+//     (`forge env up dev -- -H 0.0.0.0`). A page served from this machine's
+//     own address is no more foreign than localhost, which Next allows on
+//     any port.
+//   - FORGE_DEV_ALLOWED_ORIGINS: more hostnames, comma-separated (a tunnel,
+//     a custom dev DNS name). Next matches hostnames, with `*` for a whole
+//     label, and ignores ports.
+const devOrigins = (): string[] => {
+  const out = new Set<string>();
+  const preview = process.env.RELIANT_PREVIEW_URL_TEMPLATE;
+  if (preview) {
+    try {
+      out.add(new URL(preview.replace("{port}", process.env.PORT || "3000")).hostname);
+    } catch {
+      // A malformed template allows nothing extra.
+    }
+  }
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (!addr.internal && addr.family === "IPv4") out.add(addr.address);
+    }
+  }
+  for (const host of (process.env.FORGE_DEV_ALLOWED_ORIGINS ?? "").split(",")) {
+    if (host.trim()) out.add(host.trim());
+  }
+  return [...out];
+};
+
 const nextConfig: NextConfig = {
   // No `output:` field — full Next.js for both dev and prod. Production
   // builds are served via `next start` (or a managed host like Vercel).
@@ -342,14 +505,23 @@ const nextConfig: NextConfig = {
   // `forge env up dev`. `next start` also runs with NODE_ENV=production, so it
   // serves the same directory the production build wrote.
   distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
-  // Dev-only /_otel proxy to the local collector — see otelUpstream above.
-  // Gated on NODE_ENV so `forge lint --static-export` can see the intent: a
-  // static host applies no rewrites.
+  // Whether `next dev` proxies the API, for src/lib/api-base.ts — see
+  // devApiProxy above. "" in every build.
+  env: { FORGE_DEV_API_PROXY: devApiProxy },
+  // Hosts besides localhost that may load this dev server — see devOrigins.
+  ...(process.env.NODE_ENV === "development" ? { allowedDevOrigins: devOrigins() } : {}),
+  // Dev-only proxies: /_otel to the local collector (see otelUpstream above)
+  // and /_api to the API (see devApiProxy). Gated on NODE_ENV so
+  // `forge lint --static-export` can see the intent: a static host applies no
+  // rewrites.
   ...(process.env.NODE_ENV === "development"
     ? {
         async rewrites() {
           return [
             { source: "/_otel/:path*", destination: `${otelUpstream}/:path*` },
+            ...(devApiProxy
+              ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
+              : []),
           ];
         },
       }
@@ -483,6 +655,7 @@ const nextConfig: NextConfig = {
 export default withBundleAnalyzer(nextConfig);
 {{- else -}}
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import bundleAnalyzer from "@next/bundle-analyzer";
@@ -532,6 +705,79 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
 const otelUpstream = (
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
 ).replace(/\/+$/, "");
+
+// ── API proxy (DEV ONLY) ────────────────────────────────────────────────
+//
+// Under `next dev` the browser calls the API on ITS OWN origin, at
+// `<basePath>/_api/*`, and the rewrite below forwards that to the API server.
+// A page opened through a Reliant workspace preview URL, a tunnel or another
+// machine's IP cannot reach "localhost:<api port>" — that is the viewer's
+// machine — so the API is reached through the one host the browser already
+// has. src/lib/api-base.ts has the whole story.
+//
+//   upstream: NEXT_PUBLIC_API_URL, the API's base URL. `forge env up` sets it
+//             to the API it started, and a value from your shell or the
+//             frontend's KCL env_vars wins over forge's. Read here, on the
+//             server, when the dev server starts.
+//   path:     /_api/:path*  ->  <upstream>/:path*
+//   off:      FORGE_DEV_API_PROXY=off, or no upstream. The browser then calls
+//             the configured API URL directly, cross-origin, as before.
+//
+// The answer reaches the bundle as process.env.FORGE_DEV_API_PROXY (`env`
+// below), which api-base.ts reads, so the rewrite and the transport are one
+// decision. Next's proxy ends a request after 30s (`experimental.proxyTimeout`);
+// a server-streaming RPC that must outlive that needs it raised, or the proxy off.
+//
+// There is no production equivalent, for the same reasons as /_otel above. A
+// build reads the API's URL from the runtime config (config.js), as before.
+const apiUpstream = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const devApiProxy =
+  process.env.NODE_ENV === "development" &&
+  apiUpstream !== "" &&
+  !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
+    ? "/_api"
+    : "";
+
+// ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
+//
+// `next dev` refuses its own dev resources — the HMR socket, /__nextjs_*,
+// dev fonts — to a page whose Origin is not localhost or listed in
+// `allowedDevOrigins`. A page opened any other way renders but never
+// hydrates: every button is dead and nothing in the console says why.
+// Allowed here, beside localhost:
+//
+//   - this dev server's Reliant workspace preview host: RELIANT_PREVIEW_URL_TEMPLATE
+//     (`https://{port}-<id>.workspaces.reliantapi.com`, set on a Reliant
+//     cloud machine) with the port the dev server binds (PORT, which
+//     `forge env up` sets; Next's 3000 otherwise).
+//   - this machine's own network addresses, so `http://<LAN or container
+//     IP>:<port>` works once the dev server listens beyond loopback
+//     (`forge env up dev -- -H 0.0.0.0`). A page served from this machine's
+//     own address is no more foreign than localhost, which Next allows on
+//     any port.
+//   - FORGE_DEV_ALLOWED_ORIGINS: more hostnames, comma-separated (a tunnel,
+//     a custom dev DNS name). Next matches hostnames, with `*` for a whole
+//     label, and ignores ports.
+const devOrigins = (): string[] => {
+  const out = new Set<string>();
+  const preview = process.env.RELIANT_PREVIEW_URL_TEMPLATE;
+  if (preview) {
+    try {
+      out.add(new URL(preview.replace("{port}", process.env.PORT || "3000")).hostname);
+    } catch {
+      // A malformed template allows nothing extra.
+    }
+  }
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (!addr.internal && addr.family === "IPv4") out.add(addr.address);
+    }
+  }
+  for (const host of (process.env.FORGE_DEV_ALLOWED_ORIGINS ?? "").split(",")) {
+    if (host.trim()) out.add(host.trim());
+  }
+  return [...out];
+};
 
 const nextConfig: NextConfig = {
   // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
@@ -607,14 +853,23 @@ const nextConfig: NextConfig = {
       dir = parent;
     }
   })(),
-  // Dev-only /_otel proxy to the local collector — see otelUpstream above.
-  // Gated on NODE_ENV so `forge lint --static-export` can see the intent: a
-  // static host applies no rewrites.
+  // Whether `next dev` proxies the API, for src/lib/api-base.ts — see
+  // devApiProxy above. "" in every build.
+  env: { FORGE_DEV_API_PROXY: devApiProxy },
+  // Hosts besides localhost that may load this dev server — see devOrigins.
+  ...(process.env.NODE_ENV === "development" ? { allowedDevOrigins: devOrigins() } : {}),
+  // Dev-only proxies: /_otel to the local collector (see otelUpstream above)
+  // and /_api to the API (see devApiProxy). Gated on NODE_ENV so
+  // `forge lint --static-export` can see the intent: a static host applies no
+  // rewrites.
   ...(process.env.NODE_ENV === "development"
     ? {
         async rewrites() {
           return [
             { source: "/_otel/:path*", destination: `${otelUpstream}/:path*` },
+            ...(devApiProxy
+              ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
+              : []),
           ];
         },
       }

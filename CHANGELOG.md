@@ -588,6 +588,36 @@ AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   now fails `forge lint`; keep one declaration, in the package's `doc.go`,
   which the docs and remediation text now recommend.
 
+- **A web frontend's dev loop works from any origin, not just localhost.**
+  `forge env up` handed the dev server the API's URL,
+  `http://localhost:<api port>`, and the browser called it directly. Opened
+  through a Reliant workspace preview URL
+  (`https://<port>-<id>.workspaces.reliantapi.com`), a tunnel or a LAN IP,
+  that is the viewer's own machine, so sign-in and every RPC failed (and
+  Private Network Access blocks it regardless). Under the dev server the
+  browser now calls `<origin><basePath>/_api/*`, and `next.config.ts`
+  rewrites it to the API (`vite.config.ts` proxies it), the same pattern as
+  `/_otel`. The upstream is the `NEXT_PUBLIC_API_URL` / `VITE_API_URL`
+  `forge env up` already injects, so an explicit value from your shell or
+  KCL still wins. The session cookie becomes first-party to the page's host,
+  and CORS is not involved in dev. A new scaffold-once `src/lib/api-base.ts`
+  makes the choice for both `src/lib/connect.ts` and
+  `src/lib/auth/native-login.ts`: the dev proxy under the dev server, the
+  runtime `config.js` `API_URL` in every build, exactly as before. Opt out
+  with `FORGE_DEV_API_PROXY=off` on the dev server. `next dev` also refused
+  its HMR socket and dev resources to any non-localhost page, which then
+  rendered but never hydrated; `next.config.ts` now sets `allowedDevOrigins`
+  to the Reliant preview host (`RELIANT_PREVIEW_URL_TEMPLATE` + `PORT`), the
+  machine's own IPv4 addresses and `FORGE_DEV_ALLOWED_ORIGINS`
+  (`vite.config.ts`: `server.allowedHosts`). `forge lint`'s
+  `forgeconv-frontend-process-env` treats `FORGE_DEV_API_PROXY` like
+  `NODE_ENV`. Expo is unchanged. **Migration:** the four files are
+  scaffold-once, so existing projects merge by hand:
+  `forge project rescaffold` the new `src/lib/api-base.ts` (and its test),
+  then add the rewrite and `allowedDevOrigins` to `next.config.ts` and route
+  `connect.ts` and `native-login.ts` through `apiBase()`. No generated file
+  changes. See `migrations/v0.1.46/dev-api-proxy`.
+
 - **A release commit's E2E Scaffold waits out the proxy's negative cache.**
   `release-forge.sh` checks that the version was never published by asking
   proxy.golang.org for it moments before tagging, and the proxy caches that

@@ -167,7 +167,7 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Make the regenerate run every step, even when the committed tree is one a full `forge generate` already verified as its own output (FORGE_GENERATE_NO_CACHE=1 does the same)")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Make the regenerate run every step, even when the committed tree is one a full forge generate already verified as its own output (FORGE_GENERATE_NO_CACHE=1 does the same)")
 	return cmd
 }
 

@@ -333,7 +333,9 @@ func claimAPIPortKey(content, priorBody, workloadName string) string {
 	if ownerRef.MatchString(StripKCLProse(priorBody)) {
 		return content
 	}
-	return content[:m[4]] + workloadName + content[m[5]:]
+	// The lambda compares the workload's declared `name`, not its
+	// component name: `admin_server` is declared `name = "admin-server"`.
+	return content[:m[4]] + WorkloadName(workloadName) + content[m[5]:]
 }
 
 // EnvBindingHint is the message shown when a binding could not be appended.

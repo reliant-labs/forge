@@ -181,6 +181,24 @@ background = fw.Workload {
 	}
 }
 
+// TestComponentDrift_AMultiWordComponentMatchesItsWorkload: a worker named
+// like a Go package (`billing_sweep`) is declared the way scaffold declares
+// it, as the DNS-1123 label `billing-sweep` (codegen.WorkloadName). The two
+// spellings are one workload: neither undeclared nor an orphan.
+func TestComponentDrift_AMultiWordComponentMatchesItsWorkload(t *testing.T) {
+	dir := scaffoldedWorkloadsProject(t, "demo", false)
+	withWorkers(t, dir, "billing_sweep")
+	appendWorkloads(t, dir, codegen.WorkloadStanza("github.com/acme/demo", "demo",
+		config.ComponentConfig{Name: "billing_sweep", Kind: config.ComponentKindWorker}))
+	findings, err := collectComponentDrift(dir, &config.ProjectConfig{Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("findings = %+v, want none", findings)
+	}
+}
+
 // TestComponentDrift_AllInOneServerDeclaresEverything: a project deploying
 // its binary's `server` command runs every service, worker and operator in
 // that one process, so no component of it is undeclared.

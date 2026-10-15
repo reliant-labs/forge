@@ -429,6 +429,21 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   load. Only `--` comment lines that mention `forge:` reach the regexes now:
   24ms a scan, 72ms under `-race`. What is read, and every line number, is
   unchanged.
+- **A multi-word component's workload is named as a DNS label, so its env
+  renders.** `forge scaffold worker engine_shadow` declared
+  `name = "engine_shadow"` in `deploy/kcl/workloads.k`, and `fw.Workload`
+  rejects that name: it becomes every object's name, so it must be an RFC-1123
+  label. After that, no env rendered. `forge generate` reported this only as a
+  failed k3d-ports step, and still exited 0. The same happened to a
+  multi-word service or operator. Scaffold now declares
+  `engine_shadow = fw.Workload { name = "engine-shadow" … }`: the KCL binding
+  keeps the component's identifier, and `args` still selects the
+  `engine_shadow` subcommand. Everything that matches a declared workload to a
+  component now matches it in either spelling (`codegen.SameWorkload`). That
+  covers scaffold's already-declared check, `forge scaffold crd --operator`,
+  the component-drift lint, the dev env's API port key and `FindWorkload`
+  (`forge doctor parity`). To fix a project scaffolded before this, rename
+  the `name` field to its dashed form.
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

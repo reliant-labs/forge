@@ -101,7 +101,7 @@ func AppendOperatorCRD(projectDir, workloadName, kind string) (CRDListEdit, erro
 		if !ok {
 			continue
 		}
-		if m := workloadNameField.FindStringSubmatch(StripKCLProse(body)); len(m) < 2 || m[1] != workloadName {
+		if m := workloadNameField.FindStringSubmatch(StripKCLProse(body)); len(m) < 2 || !SameWorkload(m[1], workloadName) {
 			continue
 		}
 		fields := crdsField.FindAllStringIndex(body, -1)
@@ -192,11 +192,18 @@ var allListHead = regexp.MustCompile(`(?m)^ALL\s*:\s*\[\s*fw\.Workload\s*\]\s*=\
 // documents the format with a worked example, and an example is not a
 // declaration. Without this, a project whose docs happen to name the
 // workload being added would silently skip the append.
+//
+// The field matches in any spelling of the name (SameWorkload): a component
+// `engine_shadow` is declared as `name = "engine-shadow"`.
 func workloadDeclaredIn(content, name string) bool {
 	stripped := StripKCLProse(content)
-	nameField := regexp.MustCompile(`(?m)^\s*name\s*=\s*"` + regexp.QuoteMeta(name) + `"\s*$`)
+	for _, m := range workloadNameField.FindAllStringSubmatch(stripped, -1) {
+		if SameWorkload(m[1], name) {
+			return true
+		}
+	}
 	binding := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(naming.KCLIdentifier(name)) + `\s*=`)
-	return nameField.MatchString(stripped) || binding.MatchString(stripped)
+	return binding.MatchString(stripped)
 }
 
 // WorkloadDeclared reports whether workloads.k content declares a workload

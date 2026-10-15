@@ -29,7 +29,7 @@ package cluster
 //     touched, however old.
 //  5. it is not named by the current render: the release being applied still
 //     references it (and a rollback re-applies an older hash that must survive).
-//  6. it is not among the newest [DefaultKeepJobs] finished Jobs of its base
+//  6. it is not among the newest [KeepFinishedJobs] finished Jobs of its base
 //     name, current release included, kept for debugging ("why did the
 //     migration of three releases ago do that?").
 //
@@ -43,7 +43,7 @@ package cluster
 // prune-exempt (internal/bundle/prune_guard.go keeps only data-bearing kinds out
 // of the inventory's reach, and TestBuild_HashNamedJobsStayPrunable pins that a
 // Job stays inside it). The difference is retention: Flux keeps none past the
-// current release, direct apply keeps the last [DefaultKeepJobs]. What Flux
+// current release, direct apply keeps the last [KeepFinishedJobs]. What Flux
 // cannot reach is a Job it never applied, which is exactly the backlog a direct
 // apply left; this prune clears that on the next direct apply, and a one-time
 // kubectl command clears it for an env that has already moved.
@@ -60,9 +60,11 @@ import (
 	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
-// DefaultKeepJobs is how many finished Jobs of one base name an apply leaves
-// behind, the current release's included.
-const DefaultKeepJobs = 3
+// KeepFinishedJobs is how many finished Jobs of one base name an apply leaves
+// behind, the current release's included. It is fixed, not a knob: the plan's
+// object_removed detail and the deploy skills state this number, so a per-env
+// override would have to reach them too, and nothing has needed one.
+const KeepFinishedJobs = 3
 
 // liveJob is the part of a batch/v1 Job the prune reads.
 type liveJob struct {
@@ -141,10 +143,7 @@ func renderedOneShotJobs(manifests, defaultNS string) renderedJobs {
 // supersededJobs picks, from the Jobs live in namespace ns, the ones to delete.
 // Pure: every guard in the file comment is a line here, so a test can pin each.
 // env may be empty (no env guard).
-func supersededJobs(live []liveJob, rendered renderedJobs, ns, env string, keep int) []string {
-	if keep < 0 {
-		return nil
-	}
+func supersededJobs(live []liveJob, rendered renderedJobs, ns, env string) []string {
 	byBase := map[string][]liveJob{}
 	for _, j := range live {
 		if j.Kind != "" && j.Kind != "Job" {
@@ -181,7 +180,7 @@ func supersededJobs(live []liveJob, rendered renderedJobs, ns, env string, keep 
 			return finished[a].Metadata.Name > finished[b].Metadata.Name
 		})
 		for i, j := range finished {
-			if i < keep || j.Metadata.DeletionTimestamp != nil {
+			if i < KeepFinishedJobs || j.Metadata.DeletionTimestamp != nil {
 				continue
 			}
 			if _, current := rendered.names[jobBaseKey(ns, j.Metadata.Name)]; current {
@@ -195,15 +194,11 @@ func supersededJobs(live []liveJob, rendered renderedJobs, ns, env string, keep 
 }
 
 // PruneSupersededJobs deletes the finished, superseded Jobs described in the
-// file comment. keep is how many finished Jobs of one base name stay (0 selects
-// [DefaultKeepJobs]; a negative value disables the prune). It returns the names
-// it deleted.
-func PruneSupersededJobs(ctx context.Context, kctx, manifests, namespace, env string, keep int) ([]string, error) {
-	if strings.TrimSpace(namespace) == "" || keep < 0 {
+// file comment, keeping the newest [KeepFinishedJobs] finished Jobs of each base
+// name. It returns the names it deleted.
+func PruneSupersededJobs(ctx context.Context, kctx, manifests, namespace, env string) ([]string, error) {
+	if strings.TrimSpace(namespace) == "" {
 		return nil, nil
-	}
-	if keep == 0 {
-		keep = DefaultKeepJobs
 	}
 	rendered := renderedOneShotJobs(manifests, namespace)
 	if len(rendered.bases) == 0 {
@@ -220,12 +215,12 @@ func PruneSupersededJobs(ctx context.Context, kctx, manifests, namespace, env st
 	if err := json.Unmarshal(out, &list); err != nil {
 		return nil, fmt.Errorf("parse jobs: %w", err)
 	}
-	doomed := supersededJobs(list.Items, rendered, namespace, env, keep)
+	doomed := supersededJobs(list.Items, rendered, namespace, env)
 	if len(doomed) == 0 {
 		return nil, nil
 	}
 	fmt.Printf("Pruning %d superseded finished Job(s) in %s (keeping the newest %d of each): %s\n",
-		len(doomed), namespace, keep, summarizeNames(doomed, 8))
+		len(doomed), namespace, KeepFinishedJobs, summarizeNames(doomed, 8))
 	var deleted []string
 	var firstErr error
 	for _, name := range doomed {

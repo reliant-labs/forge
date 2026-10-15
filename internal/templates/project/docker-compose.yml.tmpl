@@ -222,7 +222,7 @@ services:
   # version under a dev stack turns "login broke today" into an
   # archaeology exercise. Bump deliberately.
   idp:
-    image: ghcr.io/zitadel/zitadel:v4.16.2
+    image: ghcr.io/zitadel/zitadel:v4.19.4
     restart: unless-stopped
     # Backed by `idp-db` below — a postgres container of the IdP's OWN,
     # NOT the app's database.

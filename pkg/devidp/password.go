@@ -25,7 +25,7 @@ import (
 //
 // The login broker's credential (IAM_LOGIN_CLIENT — see EnsureLoginBroker)
 // is allowed to call SetPassword WITHOUT a verification code, and Zitadel
-// then simply overwrites the password. Verified against v4.16.2: the broker
+// then simply overwrites the password. Verified against v4.19.4: the broker
 // token set a new password on another user with no code in the body, HTTP
 // 200. The same token can also mint a reset code with `returnCode`.
 //
@@ -215,7 +215,7 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 // Zitadel's stable ids for the two rejections a reset form must tell apart.
 //
 //   - `CODE-…` comes from the code verifier itself. CODE-woT0xc ("Code is
-//     invalid") is verified against v4.16.2; an expired code is rejected by
+//     invalid") is verified against v4.19.4; an expired code is rejected by
 //     the same verifier, under the same prefix.
 //   - COMMAND-2M9fs is "Code not found" (verified): no outstanding code,
 //     which is what a used or never-issued code looks like.

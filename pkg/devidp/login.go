@@ -47,7 +47,7 @@ import (
 // Zitadel treats "which factors were checked" as the CALLER's decision. A
 // session created with a user check and NO password check is a perfectly
 // valid session, and it will finalize an auth request and yield real
-// tokens. Verified against v4.16.2: a session with `checks: {user: {...}}`
+// tokens. Verified against v4.19.4: a session with `checks: {user: {...}}`
 // and nothing else produced a working access_token and id_token for an
 // admin account, and the id_token carried NO `amr` claim — so a downstream
 // validator cannot even tell the credential was never verified.
@@ -221,7 +221,7 @@ func (c *Client) FinalizeAuthRequest(ctx context.Context, authRequestID string, 
 // IAM_OWNER is NOT enough, and the failure is unhelpful: without this role
 // FinalizeAuthRequest returns "No matching permissions found (AUTH-AWfge)"
 // after the credential check has already succeeded, which reads like a
-// broken session rather than a missing grant. Verified against v4.16.2.
+// broken session rather than a missing grant. Verified against v4.19.4.
 const loginClientRole = "IAM_LOGIN_CLIENT"
 
 // EnsureLoginClientRole grants the service account behind this client the

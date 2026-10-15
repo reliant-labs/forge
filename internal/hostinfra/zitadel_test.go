@@ -122,7 +122,7 @@ func TestExtractZitadel_FindsTheBinaryInsideThePlatformDirectory(t *testing.T) {
 	writeTarGz(t, archive, map[string]string{
 		"zitadel-darwin-arm64/LICENSE":   "license text",
 		"zitadel-darwin-arm64/README.md": "readme",
-		"zitadel-darwin-arm64/zitadel":   "#!/bin/sh\necho zitadel version v4.16.2\n",
+		"zitadel-darwin-arm64/zitadel":   "#!/bin/sh\necho zitadel version v4.19.4\n",
 	})
 
 	dest := filepath.Join(dir, "out", "zitadel")
@@ -382,8 +382,8 @@ func writeExecutable(t *testing.T, path, body string) {
 
 func TestZitadelWindows_AssetsAndHashes(t *testing.T) {
 	want := map[string]string{
-		"amd64": "34663a17b480a213a853e1e2500629f73beb808659651237187c95cda79ba3cc",
-		"arm64": "829fb2d755c639295826f887408d73fd9dafa1cc50de525d905a934d133410e3",
+		"amd64": "362efd292ef5d5593c0a472bc4fd91de79b75f672e5d9d2fec8a091b738365be",
+		"arm64": "12ed69fa813243efaa4cc0ac23949b75cb253b43997c7b6d1afc7761fdf216d6",
 	}
 	for arch, sum := range want {
 		asset, ok := zitadelAsset("windows", arch)
@@ -423,5 +423,19 @@ func TestExtractZitadel_WindowsMemberIsExe(t *testing.T) {
 	}
 	if err := extractZitadelFor(archive, filepath.Join(dir, "x"), "linux"); err == nil {
 		t.Error("linux extraction must not match zitadel.exe")
+	}
+}
+
+// The compose `idp` service is the container escape hatch for the same IdP
+// the host path runs; a bump that moves one pin and not the other leaves a
+// dev stack and its escape hatch disagreeing about what an IdP is.
+func TestZitadelVersion_MatchesComposeTemplate(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "templates", "project", "docker-compose.yml.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "image: ghcr.io/zitadel/zitadel:" + ZitadelVersion + "\n"
+	if !strings.Contains(string(b), want) {
+		t.Errorf("docker-compose.yml.tmpl does not pin %q; ZitadelVersion and the compose image must move together", want)
 	}
 }

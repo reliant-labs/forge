@@ -14,7 +14,7 @@ import (
 // the failure mode it guards against is not a crash — it is a session that
 // works perfectly and authenticates nobody.
 //
-// Verified against Zitadel v4.16.2: a session created with a user check and
+// Verified against Zitadel v4.19.4: a session created with a user check and
 // no password check yields a real access_token and id_token, with no `amr`
 // claim to reveal that nothing was verified. So "does a passwordless
 // session get refused" is the single most load-bearing assertion in this

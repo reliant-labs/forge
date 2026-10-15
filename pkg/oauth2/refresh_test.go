@@ -17,7 +17,7 @@ import (
 
 // rotatingIdP is a refresh endpoint that behaves the way a STRICT rotating
 // provider does. It is deliberately harsher than the dev IdP forge scaffolds
-// (Zitadel v4.16.2 rotates on every refresh and rejects a replayed token
+// (Zitadel v4.19.4 rotates on every refresh and rejects a replayed token
 // immediately, but revokes only that token, not the grant) because the client
 // has to be correct against the harshest behaviour in the wild:
 //

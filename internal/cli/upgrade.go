@@ -50,6 +50,10 @@ gained, how far behind you are in lines, and how many lines in your copy no
 template accounts for. Adopt one by naming it:
 'forge project upgrade --force <path>'. Bare --force does not reach them.
 
+Upgrade synchronizes every project module that requires Forge using
+GOWORK=off go get and go mod tidy, preserving module replacements and go.work.
+If either command fails, its module-file changes are rolled back and upgrade
+stops before changing templates or forge.yaml, with exact recovery commands.
 After a successful upgrade the project's forge_version field in forge.yaml
 is bumped to the current binary version (or to --to when provided). Migrations
 whose declared version range AND detection script both match this project are
@@ -108,6 +112,10 @@ func runUpgrade(check, force bool, forcePaths []string, toVersion string) error 
 // <path>` details — and it is why paths mean something different in the
 // two modes without ever being ambiguous: --force writes, --check cannot.
 func runUpgradeWithView(check, force, showAll bool, forcePaths []string, toVersion string) error {
+	return runUpgradeWithGo(check, force, showAll, forcePaths, toVersion, runGoOffWorkspace)
+}
+
+func runUpgradeWithGo(check, force, showAll bool, forcePaths []string, toVersion string, run goOffWorkspaceRunner) error {
 	configPath, err := findProjectConfigFile()
 	if err != nil {
 		return err
@@ -190,6 +198,15 @@ func runUpgradeWithView(check, force, showAll bool, forcePaths []string, toVersi
 	// destructive work, so the user (or LLM) can decide whether to halt
 	// and load them first.
 	printApplicableMigrations(projectDir, from)
+
+	// Resolve all module pins before changing templates or config. This phase
+	// rolls back its Go-tool writes on failure; --check only reports drift.
+	if err := upgradeForgeModules(projectDir, target, check, run); err != nil {
+		return err
+	}
+	if check && cfg.ForgeVersion != target {
+		fmt.Printf("  forge.yaml: %s → %s\n", describeVersion(cfg.ForgeVersion), describeVersion(target))
+	}
 
 	// Run the per-version codemod chain (deterministic AST rewrites)
 	// BEFORE the template-update upgrade pass. Codemods rewrite

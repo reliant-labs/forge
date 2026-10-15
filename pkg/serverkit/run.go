@@ -107,7 +107,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// request's context by NewHTTPServer, so a LongLived route binds to it
 	// without the composition root handing it around; drained soft-then-hard
 	// by DrainHTTP below.
-	streams := &Streams{DrainReserve: cfg.DrainReserve}
+	streams := &Streams{DrainReserve: cfg.DrainReserve, RedialOnDrain: cfg.RedialOnDrain}
 
 	// serverkit no longer owns the service mux, so it can't MOUNT its
 	// probes on it. Instead it applies the edge wrap to the CALLER's

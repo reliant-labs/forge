@@ -199,6 +199,14 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 		LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())},
 {{- end}}
 	}
+	// DRAIN. A server-streaming or bidi RPC never finishes on its own, so at
+	// shutdown it would hold the drain for the whole SHUTDOWN_TIMEOUT and then
+	// be cut without a status. This binds every one to the listener's drain:
+	// it ends OK, with the x-forge-drained trailer, after the pre-stop pause —
+	// the client reopens it against a live replica. A procedure whose peer
+	// should redial on Unavailable instead goes in skCfg.RedialOnDrain. Inner
+	// to logging and metrics, so they record the status the client received.
+	chainDeps.Extras = append(chainDeps.Extras, serverkit.StreamDrainInterceptor())
 	// protovalidate rejects requests whose buf.validate field rules fail
 	// with CodeInvalidArgument BEFORE the handler runs. Appended LAST, so it
 	// is the innermost extra: it runs right before the handler, after auth.

@@ -267,6 +267,16 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   default). `svcerr.Draining(detail)` / `svcerr.ErrServerDraining` is the
   drain's identity (wire code Unavailable), distinct from `ErrUnavailable`.
   `/readyz` now answers `{"status":"draining"}` during shutdown.
+- **Connect streaming RPCs end cleanly when a server drains.**
+  `serverkit.StreamDrainInterceptor()`, now in the scaffolded interceptor
+  chain, binds every server-streaming and bidi handler to the listener's drain.
+  A drained stream ends **OK** with the trailer `x-forge-drained: true` — a
+  browser client treats Unavailable as a dead connection and may abandon every
+  read on it — or **Unavailable** for procedures and services listed in
+  `serverkit.Config.RedialOnDrain`, for peers that redial on it. Unary and
+  client-streaming RPCs are untouched. The scaffolded `serve.go` is yours, so
+  an existing project adds the one line itself: `forge project upgrade list`
+  offers v0.1.46 §8.
 - **The shutdown sequence is usable without `serverkit.Run`.** A main that runs
   its own listener (a worker with a health port, a gateway) uses the same
   pieces: `serverkit.Drainer` (readiness gate, pre-stop pause, shutdown budget,

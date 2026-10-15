@@ -57,7 +57,7 @@ func upgradeForgeModules(root, target string, check bool, run goOffWorkspaceRunn
 		if len(failed) > 0 {
 			retErr = fmt.Errorf("%w\nRollback incomplete; inspect: %s", retErr, strings.Join(failed, ", "))
 		} else {
-			retErr = fmt.Errorf("%w\nModule files restored; forge.yaml and templates were not upgraded.", retErr)
+			retErr = fmt.Errorf("%w\nModule files restored; forge.yaml and templates were not upgraded", retErr)
 		}
 		retErr = fmt.Errorf("%w\n%s", retErr, upgradeModulesNext(pending, target))
 	}()

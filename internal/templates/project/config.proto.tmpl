@@ -456,6 +456,41 @@ message AppConfig {
     description: "The login broker's service-account token. SENSITIVE and HIGHLY PRIVILEGED: it holds the issuer's login-client role, which can complete an authorization request for ANY user in the instance, so a leak is an impersonation capability rather than a data exposure. Provisioned by `auth idp-provision` as a DEDICATED account, separate from the provisioning credential, so the login path and the deploy path have independent blast radii and can be rotated separately. The deploy projection binds it to valueFrom.secretKeyRef in every environment; it must never appear in a frontend bundle or a build environment. Required only when idp_login_uri is set."
   }];
 
+  string idp_broker_token_file = 41 [(forge.v1.config) = {
+    env_var: "IDP_BROKER_TOKEN_FILE"
+    flag: "idp-broker-token-file"
+    description: "Path to a file holding the login broker's token, read on every use so the issuer-side credential can rotate WITHOUT a restart (a mounted Secret volume updates in place). Takes precedence over idp_broker_token while the file yields a token; idp_broker_token stays supported and is the fallback. A missing or empty file never stops the app: the last token read keeps being used and a warning is logged. The path is not a secret, so this field is not sensitive — the file's content is."
+  }];
+
+  // ── Roles and key fallback for the token validator ────────────────────
+
+  string jwt_roles_claim = 42 [(forge.v1.config) = {
+    env_var: "JWT_ROLES_CLAIM"
+    flag: "jwt-roles-claim"
+    default_value: "auto"
+    description: "The token claim Claims.Roles is read from. `auto` (the default) reads the flat `roles` array that Clerk, Auth0, Firebase and most issuers emit, and, when a token has none, Zitadel's `urn:zitadel:iam:org:project:<jwt_audience>:roles` map (role -> {orgId: domain}; the map's keys become the roles). With jwt_audience unset, auto merges the roles of every Zitadel project in the token — set jwt_audience so a role in another project cannot pass as one in this one. Name a claim to read exactly that one: a flat array, a space or comma separated string, or a role map. When roles came from a map and there is exactly one, Claims.Role is set to it too."
+  }];
+
+  string jwt_jwks_snapshot_file = 43 [(forge.v1.config) = {
+    env_var: "JWT_JWKS_SNAPSHOT_FILE"
+    flag: "jwt-jwks-snapshot-file"
+    description: "Path to a JWKS snapshot (the issuer's public keys plus a `delivered_at` timestamp, delivered out of band — e.g. a mounted Secret). With it, an issuer that is UNREACHABLE AT BOOT no longer prevents startup: the server starts on the snapshot, retries the issuer in the background with a warning, and switches to live keys on the first success. Only a snapshot no older than jwt_jwks_snapshot_max_age is used; with none usable, an unreachable issuer still refuses to start. Re-read when the file changes. Needs jwt_jwks_url or jwt_issuer. When the issuer IS reachable the snapshot is not consulted, except for a token signed with a key the live set lacks that the snapshot (delivered later than the last live fetch) holds — a rotation overlap."
+  }];
+
+  string jwt_jwks_snapshot = 44 [(forge.v1.config) = {
+    env_var: "JWT_JWKS_SNAPSHOT"
+    flag: "jwt-jwks-snapshot"
+    sensitive: true
+    description: "The same JWKS snapshot as jwt_jwks_snapshot_file, delivered inline as a config value — the shape the secret store (a ManagedSecret / ControlPlaneSecret) carries. Marked sensitive only so it rides the secret path instead of being inlined into a manifest; the keys in it are PUBLIC. It needs `delivered_at`, because an inline value has no file mtime to date it by. If both are set the newer snapshot wins."
+  }];
+
+  google.protobuf.Duration jwt_jwks_snapshot_max_age = 45 [(forge.v1.config) = {
+    env_var: "JWT_JWKS_SNAPSHOT_MAX_AGE"
+    flag: "jwt-jwks-snapshot-max-age"
+    default_value: "168h"
+    description: "How old a JWKS snapshot's `delivered_at` may be and still be trusted (Go duration; default 7 days). JWKS keys carry no expiry of their own, so this is the bound on running with last-known keys. Past it the snapshot is ignored: while the issuer is down the server fails closed on every token and keeps retrying, and an unreachable issuer at boot refuses to start."
+  }];
+
   // NOTE: there is intentionally NO `service_name` config field. The OTel
   // service.name is the binary's APP IDENTITY, emitted as the generated
   // `ServiceName` constant in internal/cli/root.go and passed to serverkit

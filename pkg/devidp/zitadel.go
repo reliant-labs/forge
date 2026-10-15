@@ -42,6 +42,11 @@ type Client struct {
 	// in idp-steps.yaml, which Zitadel writes to disk on first boot.
 	Token string
 
+	// TokenFile, when set, names a file holding the token, read on every use
+	// so the credential can rotate without a restart. It takes precedence over
+	// Token while it yields one; Token stays the fallback. See token_file.go.
+	TokenFile string
+
 	// OrgID scopes management calls to one organization. Resolved by
 	// DefaultOrg when empty.
 	OrgID string
@@ -360,8 +365,8 @@ func (c *Client) sendJSON(ctx context.Context, method, path string, payload any)
 }
 
 func (c *Client) authorize(req *http.Request) *http.Request {
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	if tok := c.bearer(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	// The management API is org-scoped; without this header a call lands
 	// on whichever org the credential's own user belongs to.

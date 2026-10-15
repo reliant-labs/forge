@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -32,12 +33,19 @@ import (
 // It is the seam [Clerk] and [Firebase] use internally; call it directly when
 // wiring a custom JWKS issuer through [NewJWKSValidator].
 func JWKSKeyfunc(urls ...string) (jwt.Keyfunc, error) {
+	return jwksKeyfuncCtx(context.Background(), 0, urls...)
+}
+
+// jwksKeyfuncCtx is [JWKSKeyfunc] with the refresh goroutine bound to ctx and
+// an optional bound on each fetch (0 keeps keyfunc's one-minute default).
+func jwksKeyfuncCtx(ctx context.Context, fetchTimeout time.Duration, urls ...string) (jwt.Keyfunc, error) {
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("auth: JWKSKeyfunc requires at least one JWKS URL")
 	}
 	failFast := false
-	kf, err := keyfunc.NewDefaultOverrideCtx(context.Background(), urls, keyfunc.Override{
+	kf, err := keyfunc.NewDefaultOverrideCtx(ctx, urls, keyfunc.Override{
 		NoErrorReturnFirstHTTPReq: &failFast,
+		HTTPTimeout:               fetchTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("auth: fetch JWKS from %v: %w", urls, err)
@@ -205,7 +213,7 @@ func Firebase(opts FirebaseOpts) (*Validator, error) {
 type firebaseResolver struct{}
 
 func (firebaseResolver) Resolve(mc map[string]any) (*Claims, error) {
-	c := defaultProjectClaims(mc)
+	c := defaultProjectClaims(mc, claimOpts{})
 	if c.UserID == "" {
 		m := jwt.MapClaims(mc)
 		if uid := getStringClaim(m, "user_id"); uid != "" {

@@ -15,7 +15,8 @@ import (
 // = core.Task`) next to a hand-written types.go.
 //
 // Pinned:
-//  1. generate refuses BEFORE the validate build, naming the project's
+//  1. generate refuses BEFORE the validate build (a warning by default,
+//     fatal under --strict), naming the project's
 //     declaration (file:line), the entity and table behind the clash, and the
 //     ways out — where it used to fail on `Task redeclared` and revert;
 //  2. the hand-written internal/db/types.go survives every run (the
@@ -55,14 +56,20 @@ message GetTaskResponse { Task task = 1; }
 	writeCollideFile(t, filepath.Join(dbDir, "models.go"), models)
 
 	// ── (1) refused, with the declaration and the way out ───────────────
+	// A default generate reports the refused ORM step as a warning and
+	// continues (its dependents say they were skipped); --strict makes the
+	// refusal fatal.
 	out, err := runCmdAllowFail(t, projectDir, forgeBin, "generate")
-	if err == nil {
-		t.Fatalf("generate must refuse an ORM that redeclares internal/db/models.go's Task:\n%s", out)
+	if err != nil {
+		t.Fatalf("a default generate reports the ORM refusal as a warning and exits 0, got %v:\n%s", err, out)
 	}
 	for _, w := range []string{
+		"ORM generation failed",
 		"Task, declared at internal/db/models.go:4",
 		"for entity Task (table tasks)",
 		"//forge:no-orm",
+		"Skipped: the ORM step above failed",
+		"1 step(s) FAILED",
 	} {
 		if !strings.Contains(out, w) {
 			t.Errorf("refusal does not mention %q:\n%s", w, out)
@@ -70,6 +77,16 @@ message GetTaskResponse { Task task = 1; }
 	}
 	if strings.Contains(out, "redeclared in this block") {
 		t.Errorf("the collision reached the validate build instead of being refused up front:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dbDir, "task_orm_gen.go")); err == nil {
+		t.Errorf("task_orm_gen.go was written despite the refusal")
+	}
+	strictOut, strictErr := runCmdAllowFail(t, projectDir, forgeBin, "generate", "--strict")
+	if strictErr == nil {
+		t.Fatalf("generate --strict must fail on an ORM that redeclares internal/db/models.go's Task:\n%s", strictOut)
+	}
+	if !strings.Contains(strictOut, "Task, declared at internal/db/models.go:4") {
+		t.Errorf("--strict failure does not name the declaration:\n%s", strictOut)
 	}
 
 	// ── (2) + (3) hand the name to forge ─────────────────────────────────

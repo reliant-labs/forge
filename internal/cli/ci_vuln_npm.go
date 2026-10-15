@@ -117,14 +117,25 @@ func parseNPMAuditJSON(r io.Reader) ([]vulnFinding, error) {
 		return nil, fmt.Errorf("npm audit printed auditReportVersion %d; this gate reads version 2 "+
 			"(npm >= 7) — upgrade npm", report.AuditReportVersion)
 	}
+	if report.Vulnerabilities == nil {
+		return nil, fmt.Errorf("npm audit report has no vulnerabilities map — refusing an unverified pass")
+	}
 
 	byID := map[string]vulnFinding{}
-	for _, vuln := range report.Vulnerabilities {
+	for pkg, vuln := range report.Vulnerabilities {
+		if len(vuln.Via) == 0 {
+			return nil, fmt.Errorf("npm audit vulnerability %s has no advisory or dependency edges", pkg)
+		}
 		for _, raw := range vuln.Via {
-			var adv npmAdvisory
-			// A string is a graph edge, not an advisory: skip it.
-			if err := json.Unmarshal(raw, &adv); err != nil {
+			// Only strings are graph edges. Malformed advisory objects
+			// must fail, not disappear into a passing report.
+			var edge string
+			if json.Unmarshal(raw, &edge) == nil && edge != "" {
 				continue
+			}
+			var adv npmAdvisory
+			if err := json.Unmarshal(raw, &adv); err != nil || adv.URL == "" || adv.Name == "" || adv.Severity == "" {
+				return nil, fmt.Errorf("npm audit %s has an unreadable advisory: %s", pkg, raw)
 			}
 			id := canonicalAdvisoryID(path.Base(strings.TrimRight(adv.URL, "/")))
 			if advisoryEcosystem(id) != ecosystemNPM {
@@ -141,6 +152,9 @@ func parseNPMAuditJSON(r io.Reader) ([]vulnFinding, error) {
 			}
 			byID[id] = f
 		}
+	}
+	if len(report.Vulnerabilities) > 0 && len(byID) == 0 {
+		return nil, fmt.Errorf("npm audit reported vulnerable packages but no advisories — refusing an unverified pass")
 	}
 
 	out := make([]vulnFinding, 0, len(byID))
@@ -259,14 +273,18 @@ func runNPMAudit(ctx context.Context, dir string) ([]vulnFinding, error) {
 	cmd.Stderr = os.Stderr
 	runErr := cmd.Run()
 
-	findings, err := parseNPMAuditJSON(&stdout)
-	if err != nil {
+	if runErr != nil {
 		var exitErr *exec.ExitError
-		if runErr != nil && !errors.As(runErr, &exitErr) {
-			// npm never ran (or was killed): say that, not "bad JSON".
+		if ctx.Err() != nil || !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 1 {
 			return nil, fmt.Errorf("npm audit did not complete: %w", runErr)
 		}
+	}
+	findings, err := parseNPMAuditJSON(&stdout)
+	if err != nil {
 		return nil, err
+	}
+	if runErr != nil && len(findings) == 0 {
+		return nil, fmt.Errorf("npm audit exited non-zero without advisories: %w", runErr)
 	}
 	return findings, nil
 }

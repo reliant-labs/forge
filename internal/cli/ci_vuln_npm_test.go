@@ -138,6 +138,10 @@ func TestParseNPMAuditJSON_NoReportIsNotAPass(t *testing.T) {
 	for name, out := range map[string]string{
 		"npm's own error report (no lockfile)": `{"error": {"code": "ENOLOCK", "summary": "This command requires an existing lockfile.", "detail": "Try creating one first with: npm i --package-lock-only"}}`,
 		"the npm 6 report shape":               `{"advisories": {}, "metadata": {"vulnerabilities": {"high": 0}}}`,
+		"missing vulnerability map":            `{"auditReportVersion":2}`,
+		"null advisory":                        `{"auditReportVersion":2,"vulnerabilities":{"x":{"via":[null]}}}`,
+		"bad advisory":                         `{"auditReportVersion":2,"vulnerabilities":{"x":{"via":[42]}}}`,
+		"empty advisory":                       `{"auditReportVersion":2,"vulnerabilities":{"x":{"via":[{}]}}}`,
 		"empty output":                         ``,
 		"not JSON":                             `npm ERR! code ECONNREFUSED`,
 	} {

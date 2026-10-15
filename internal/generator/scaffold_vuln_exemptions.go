@@ -50,10 +50,8 @@ type scaffoldNPMAdvisory struct {
 // scaffoldNPMAdvisories is every no-fix advisory a scaffolded frontend
 // carries. Remove an entry the moment upstream ships a fix — and bump the
 // template so the fix is what a new project installs. Whether an entry is
-// still needed is a fact about the npm registry, not this repo, so no unit
-// test can check it: the scheduled scaffold audit
-// (.github/workflows/scaffold-npm-audit.yml) does, and reports an entry as
-// matching nothing once its advisory is gone.
+// still needed is a fact about the npm registry, not this repo; the real npm
+// scan reports an entry as matching nothing once its advisory is gone.
 var scaffoldNPMAdvisories = []scaffoldNPMAdvisory{
 	{
 		// braces through 3.0.3 — every release — recurses without a depth

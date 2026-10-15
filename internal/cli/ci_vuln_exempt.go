@@ -88,6 +88,8 @@ type vulnFinding struct {
 	URL string
 	// In names the frontends whose install tree carries the advisory.
 	In []string
+	// Acceptance is populated only after a live exemption matched.
+	Acceptance *config.CIVulnExemption
 }
 
 // label renders the finding's location for the report: module@version for
@@ -296,8 +298,9 @@ func evaluateVulnFindings(findings []vulnFinding, exemptions []config.CIVulnExem
 
 	for _, f := range findings {
 		id := canonicalAdvisoryID(f.ID)
-		if _, ok := live[id]; ok {
+		if ex, ok := live[id]; ok {
 			matched[id] = true
+			f.Acceptance = &ex
 			res.Accepted = append(res.Accepted, f)
 			continue
 		}
@@ -321,6 +324,9 @@ func (r vulnGateResult) report(w io.Writer) {
 	for _, f := range r.Accepted {
 		fmt.Fprintf(w, "  ⚠️  accepted: %s (%s)\n", f.ID, f.label())
 		printFindingDetail(w, f)
+		if f.Acceptance != nil {
+			fmt.Fprintf(w, "      reason: %s\n      expires: %s\n", f.Acceptance.Reason, f.Acceptance.Expires)
+		}
 	}
 	for _, id := range r.StaleExemptions {
 		fmt.Fprintf(w, "  🧹 exemption %s matched nothing in this scan — the advisory is gone or now "+

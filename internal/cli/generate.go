@@ -489,9 +489,10 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return err
 	}
 
-	// Routine "forge did nothing here" lines are printed by helpers well
-	// below this frame, to stdout. See generate_verbosity.go.
-	defer setGenerateVerbosity(flags.Verbose)()
+	// The process state one run owns — routine-line verbosity, and the
+	// shadow schema every step that reads the applied schema shares — is
+	// opened here and closed on the way out. See beginGenerateRun.
+	defer beginGenerateRun(flags)()
 
 	// Fingerprint the tree BEFORE any step can write. Three claims are
 	// checked against it rather than asserted from the journal alone: a
@@ -508,12 +509,6 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	if cache.skip(os.Stdout) {
 		return nil
 	}
-
-	// One run applies each migration set to a shadow database once: every
-	// step that reads the applied schema (entities, ORM, CRUD wiring, pages,
-	// nav, test factories, mocks) shares that one application. The template
-	// databases are dropped on the way out. See internal/shadowdb/applied.go.
-	defer shadowdb.BeginRun()()
 
 	if flags.SkipValidate {
 		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
@@ -710,6 +705,26 @@ func softFailureOutcome(w io.Writer, failed []string) error {
 	}
 	printSoftFailures(w, failed)
 	return &factory.StepsFailedError{Steps: slices.Clone(failed)}
+}
+
+// beginGenerateRun opens the per-run process state a pipeline run owns and
+// returns the function that closes it, in reverse order:
+//
+//   - verbosity: routine "forge did nothing here" lines are printed by
+//     helpers well below the pipeline frame (generate_verbosity.go);
+//   - the shadow-schema run scope: every step that reads the applied schema
+//     (entities, ORM, CRUD wiring, pages, nav, test factories, mocks) shares
+//     ONE application of each migration set, and the template databases are
+//     dropped when the run ends (internal/shadowdb/applied.go). Opening it
+//     costs nothing until a step reads the schema, so a run the generate
+//     cache skips never touches postgres.
+func beginGenerateRun(flags pipelineFlags) (end func()) {
+	restoreVerbosity := setGenerateVerbosity(flags.Verbose)
+	endShadowRun := shadowdb.BeginRun()
+	return func() {
+		endShadowRun()
+		restoreVerbosity()
+	}
 }
 
 // printSoftFailures closes a run that continued past failed steps by naming

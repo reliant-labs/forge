@@ -28,9 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   providers are reserved. The issuer is `https://<slug>.reliantidentity.com`,
   the slug assigned once by the control plane (`release.IdentitySlug`).
   `forge.ControlPlaneSecret` is generalised beyond `telemetry_token`: the derived
-  kinds `identity` (required: pods wait for the first delivery, and `forge env
-  shape` says so), `identity_machine_key` and `identity_jwks`, plus `keys` and
-  `required`. See `deploy/managed-identity`.
+  kinds `identity` (required: pods wait for the first delivery, and
+  `forge env shape` says so), `identity_machine_key` and `identity_jwks`, plus
+  `keys` and `required`. See `deploy/managed-identity`.
 
 - **One `forge generate` applies the migrations to a shadow database once.**
   Every step that reads the applied schema — the entity join behind the
@@ -46,8 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it applied plus the shadow server, so a migration written mid-run (a scaffold
   birth) is applied afresh, never served stale; the server is resolved once per
   run, and the templates are dropped when the run ends. `--timings` reports the
-  count: `shadow schema: migrations applied 1× (…), reused by N more
-  reader(s)`. New library surface: `schemadef.ReadMigrationSet`,
+  count:
+  `shadow schema: migrations applied 1× (…), reused by N more reader(s)`.
+  New library surface: `schemadef.ReadMigrationSet`,
   `MigrationSet.ApplyTemplateAt`, `Template.{Tables,Open,Close,Digest}`, and
   `pgtest.NewClone` / `pgtest.NewCloneAtURL` (copy a database the caller built).
 

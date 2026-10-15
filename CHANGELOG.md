@@ -31,6 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kinds `identity` (required: pods wait for the first delivery, and `forge env
   shape` says so), `identity_machine_key` and `identity_jwks`, plus `keys` and
   `required`. See `deploy/managed-identity`.
+
+- **`task test` runs only what your change can reach.** `forge ci affected`
+  (`internal/affected`, also built as `cmd/affected` so the Taskfile starts it in
+  a second) maps the files that differ from the merge-base with `origin/main`
+  to Go packages — a package runs when its test binary links a changed package;
+  a test file, a package's `testdata/` and a file only its tests embed reach
+  that package alone — and `forge.yaml` `ci.gate.affected_rules` (new:
+  `paths` / `except` / `affects` / `tests` / `exact` / `also` / `full`) says what
+  the files no package owns select. A file no rule and no package claims, a rule
+  that declares `full` (a pin, the Taskfile, a workflow), the default branch and
+  an empty diff run the whole module. Every selected package prints with the
+  changed file that selected it. `forge ci affected --files a,b` answers "what if
+  only these changed", `--lane e2e|integration` names the build-tagged tests a
+  change reaches, `--json` prints the whole decision. forge's own `task test` and
+  `task test:short` use it; `task test:full` is the whole module. The gate's
+  affected mode (`forge ci gate`) shares the selector, so `affected_rules` apply
+  there too.
+
 - **An env moves onto the Flux path one delivery unit at a time.**
   `Bundle.hub_converges = [<unit>, …]` lists the delivery units the control plane's
   hub converges from the recorded bundle; `forge env deploy` applies every other

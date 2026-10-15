@@ -116,9 +116,12 @@ package. The gate prints the mode and why, e.g.
 
 It **falls back to the whole suite** when any other file changed (`go.mod`,
 `go.sum`, a `testdata/` outside a package, KCL, proto, migrations, the
-Taskfile, scripts — nothing proves which tests read them), on the default
+Taskfile, scripts — nothing proves which tests read them) unless an
+`affected_rules` entry claims it, on the default
 branch, when nothing changed, without `origin/<default>`, and with `CI_FULL=1`
-or `--full`. A branch stacked on another names its parent with `CI_BASE=<ref>`
+or `--full`. `forge ci affected` prints the same decision with the changed file
+behind every selected package (`--files a,b` asks what a hypothetical change
+would run). A branch stacked on another names its parent with `CI_BASE=<ref>`
 or `--base`. List files no Go test reads in `ci.gate.affected_ignore`
 (`["*.md", "docs/**"]`) so they do not force it. A direct `task test` always
 runs the whole suite: affected mode is the gate's, for a branch.
@@ -160,6 +163,13 @@ ci:
     env: { GOPRIVATE: "github.com/acme/*" } # every check, forge's too
     path: [.tools/bin]                       # first on every check's PATH (your own pins)
     affected_ignore: ["*.md", "docs/**"]     # files no Go test reads
+    affected_rules:                          # what files no Go package owns select
+      - paths: [go.mod, go.sum, Taskfile.yml]
+        full: a pin changed                  # a subset cannot judge it
+      - paths: ["kcl/**"]
+        affects: [./kcl]                     # treated as a change to that package
+      - paths: ["testdata/golden/**"]
+        tests: [./internal/render]           # only these packages' tests, not importers
     extra_checks:
       - name: gen-llm-gateway        # the row; what CI_SKIP / CI_ONLY match; unique
         command: [go, run, ./cmd/gen-llm-gateway, -check]  # argv, no shell; exit 0 = PASS

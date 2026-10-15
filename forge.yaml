@@ -152,6 +152,7 @@ contracts:
     - "internal/linter/scaffolds" # Same — scaffold-ownership analyzer; entry point is exported funcs (LintRoot/Result).
     - "internal/cli" # Cobra command boundary; CLI is the seam, not internals.
     - "internal/database" # Multi-interface contract.go (SchemaIntrospector + MigrationService + ProtoGenerator); used by the forge CLI, not bootstrap codegen.
+    - "internal/affected" # Concrete selector over git and go list; its seams (Input.Git, Input.GoList) are injectable fields, so a one-implementation interface would add indirection and no substitution point.
     - "internal/cigate" # Concrete gate runner; its seams (Exec, Resolver.Probe/Install) are injectable fields, so a one-implementation interface would add indirection and no substitution point.
     - "internal/checksums" # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
     - "cmd/forge" # Linker-set version metadata; -X flags require exported package vars.

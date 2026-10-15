@@ -26,8 +26,11 @@ type selection struct {
 
 // selector accumulates what the changed files select.
 type selector struct {
-	g   *packageGraph
-	mod string
+	g     *packageGraph
+	rules []config.CIAffectedRule
+	dirs  map[string]string
+	// readers is built on first use: it parses every package's tests.
+	readers *readerIndex
 
 	// changed: packages whose code changed — their own tests and every test
 	// binary that links them run. own: packages whose own tests run, no more.
@@ -47,103 +50,132 @@ func (s *selector) markOwn(pkg, cause string)     { s.own[pkg] = append(s.own[pk
 // package that owns, embeds or holds it as testdata. A file nothing accounts
 // for runs everything — nothing proves which tests read it.
 func selectAffected(ctx context.Context, in Input, g *packageGraph, tagGraph func() *packageGraph, git func(context.Context, string, ...string) (string, error), changed []string) selection {
-	s := &selector{
-		g: g, changed: map[string][]string{}, own: map[string][]string{},
-		taggedOwn: map[string]map[string]bool{}, claims: map[string]string{},
-	}
 	if err := validateRules(in.Rules); err != nil {
 		return selection{full: err.Error()}
 	}
-	dirs := packageDirs(g)
-	var resolveErr error
-	resolve := func(patterns []string) []string {
-		var out []string
-		for _, p := range patterns {
-			m := matchPackages(dirs, p)
-			if len(m) == 0 && resolveErr == nil {
-				resolveErr = fmt.Errorf("ci.gate.affected_rules names %q, which matches no package of this module", p)
-			}
-			out = append(out, m...)
-		}
-		return out
+	s := &selector{
+		g: g, changed: map[string][]string{}, own: map[string][]string{},
+		taggedOwn: map[string]map[string]bool{}, claims: map[string]string{},
+		rules: in.Rules, dirs: packageDirs(g),
 	}
-
-	var readers *readerIndex
 	for _, f := range changed {
 		if ignoredByGlobs(f, in.Ignore) {
 			s.claims[f] = "ci.gate.affected_ignore: no test reads it"
 			continue
 		}
-		var matched []int
-		for i := range in.Rules {
-			if ruleMatches(in.Rules[i], f) {
-				matched = append(matched, i)
-			}
+		if why := s.account(ctx, f, in.Root, git); why != "" {
+			return selection{full: why}
 		}
-		exact := false
-		for _, i := range matched {
-			if r := in.Rules[i]; r.Full != "" {
-				return selection{full: fmt.Sprintf("%s changed: %s", f, r.Full)}
-			}
-			exact = exact || in.Rules[i].Exact
-		}
+	}
+	return s.selection(tagGraph)
+}
 
-		var notes []string
-		claimed := false
-		if o, ok := g.classify(f); ok && !exact {
-			claimed = true
-			switch o.kind {
-			case kindCode:
-				s.markChanged(o.pkg, f+" ("+o.how+")")
-			case kindTest:
-				s.markOwn(o.pkg, f+" ("+o.how+")")
-			case kindTagged:
-				for _, l := range o.lanes {
-					if s.taggedOwn[l] == nil {
-						s.taggedOwn[l] = map[string]bool{}
-					}
-					s.taggedOwn[l][o.pkg] = true
-				}
-			}
-			notes = append(notes, o.how)
+// account attributes one changed file; a non-empty return is the reason the
+// whole suite must run.
+func (s *selector) account(ctx context.Context, f, root string, git func(context.Context, string, ...string) (string, error)) string {
+	var matched []int
+	for i := range s.rules {
+		if ruleMatches(s.rules[i], f) {
+			matched = append(matched, i)
 		}
-		for _, i := range matched {
-			r := in.Rules[i]
-			for _, p := range resolve(r.Affects) {
-				s.markChanged(p, f+" (rule "+ruleName(i, r)+")")
-			}
-			for _, p := range resolve(r.Tests) {
-				if _, ok := g.testDeps[p]; !ok && resolveErr == nil {
-					resolveErr = fmt.Errorf("ci.gate.affected_rules (%s) lists %s under tests, and it has no tests", ruleName(i, r), p)
-				}
-				s.markOwn(p, f+" (rule "+ruleName(i, r)+")")
-			}
-			if !r.Also {
-				claimed = true
-			}
-			notes = append(notes, "rule "+ruleName(i, r))
+	}
+	exact := false
+	for _, i := range matched {
+		if r := s.rules[i]; r.Full != "" {
+			return fmt.Sprintf("%s changed: %s", f, r.Full)
 		}
-		if resolveErr != nil {
-			return selection{full: resolveErr.Error()}
-		}
-		if !claimed {
-			return selection{full: fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package, and no ci.gate.affected_rules entry claims it — nothing proves which tests read it", f)}
-		}
-		// A test that names the file reads it: select it as a safety net.
-		// Readers never claim a file; they only add to what rules selected.
-		if !exact && !strings.HasSuffix(f, ".go") {
-			if readers == nil {
-				readers = loadReaders(ctx, in.Root, git, g)
-			}
-			for _, p := range readers.of(f) {
-				s.markOwn(p, f+" (its tests name this path)")
-			}
-		}
-		s.claims[f] = strings.Join(notes, "; ")
+		exact = exact || s.rules[i].Exact
 	}
 
+	var notes []string
+	claimed := false
+	if o, ok := s.g.classify(f); ok && !exact {
+		claimed = true
+		s.attribute(f, o)
+		notes = append(notes, o.how)
+	}
+	for _, i := range matched {
+		r := s.rules[i]
+		if err := s.applyRule(f, i, r); err != nil {
+			return err.Error()
+		}
+		claimed = claimed || !r.Also
+		notes = append(notes, "rule "+ruleName(i, r))
+	}
+	if !claimed {
+		return fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package, and no ci.gate.affected_rules entry claims it — nothing proves which tests read it", f)
+	}
+	// A test that names the file reads it: select it as a safety net.
+	// Readers never claim a file; they only add to what rules selected.
+	if !exact && !strings.HasSuffix(f, ".go") {
+		if s.readers == nil {
+			s.readers = loadReaders(ctx, root, git, s.g)
+		}
+		for _, p := range s.readers.of(f) {
+			s.markOwn(p, f+" (its tests name this path)")
+		}
+	}
+	s.claims[f] = strings.Join(notes, "; ")
+	return ""
+}
+
+func (s *selector) attribute(f string, o owned) {
+	switch o.kind {
+	case kindCode:
+		s.markChanged(o.pkg, f+" ("+o.how+")")
+	case kindTest:
+		s.markOwn(o.pkg, f+" ("+o.how+")")
+	case kindTagged:
+		for _, l := range o.lanes {
+			if s.taggedOwn[l] == nil {
+				s.taggedOwn[l] = map[string]bool{}
+			}
+			s.taggedOwn[l][o.pkg] = true
+		}
+	}
+}
+
+func (s *selector) applyRule(f string, i int, r config.CIAffectedRule) error {
+	for _, p := range s.resolve(r.Affects) {
+		s.markChanged(p, f+" (rule "+ruleName(i, r)+")")
+	}
+	for _, pat := range r.Affects {
+		if len(matchPackages(s.dirs, pat)) == 0 {
+			return fmt.Errorf("ci.gate.affected_rules (%s) names %q, which matches no package of this module", ruleName(i, r), pat)
+		}
+	}
+	for _, pat := range r.Tests {
+		m := matchPackages(s.dirs, pat)
+		if len(m) == 0 {
+			return fmt.Errorf("ci.gate.affected_rules (%s) names %q, which matches no package of this module", ruleName(i, r), pat)
+		}
+		for _, p := range m {
+			if _, ok := s.g.testDeps[p]; !ok {
+				// A pattern naming a directory of packages (./x/...) may
+				// include ones without tests; a single named package must.
+				if !strings.HasSuffix(pat, "...") {
+					return fmt.Errorf("ci.gate.affected_rules (%s) lists %s under tests, and it has no tests", ruleName(i, r), pat)
+				}
+				continue
+			}
+			s.markOwn(p, f+" (rule "+ruleName(i, r)+")")
+		}
+	}
+	return nil
+}
+
+func (s *selector) resolve(patterns []string) []string {
+	var out []string
+	for _, p := range patterns {
+		out = append(out, matchPackages(s.dirs, p)...)
+	}
+	return out
+}
+
+// selection turns what the files marked into the packages to run.
+func (s *selector) selection(tagGraph func() *packageGraph) selection {
+	g := s.g
 	sel := selection{claims: s.claims, why: map[string]string{}, tagged: map[string][]string{}}
-	rel := func(p string) string { return relPkg(g, p) }
 	for pkg, deps := range g.testDeps {
 		switch {
 		case len(s.changed[pkg]) > 0:
@@ -161,7 +193,7 @@ func selectAffected(ctx context.Context, in Input, g *packageGraph, tagGraph fun
 				continue
 			}
 			sort.Strings(hit)
-			sel.why[pkg] = fmt.Sprintf("its tests link %s (%s)", rel(hit[0]), firstCause(s.changed[hit[0]]))
+			sel.why[pkg] = fmt.Sprintf("its tests link %s (%s)", relPkg(g, hit[0]), firstCause(s.changed[hit[0]]))
 		}
 		sel.packages = append(sel.packages, pkg)
 	}
@@ -172,20 +204,7 @@ func selectAffected(ctx context.Context, in Input, g *packageGraph, tagGraph fun
 	// package whose code changed.
 	for pkg, lanes := range g.taggedLanes {
 		for _, lane := range lanes {
-			hit := s.taggedOwn[lane][pkg]
-			if !hit && len(s.changed) > 0 {
-				tg := tagGraph()
-				if tg == nil {
-					continue
-				}
-				for _, d := range tg.testDeps[pkg] {
-					if len(s.changed[d]) > 0 {
-						hit = true
-						break
-					}
-				}
-			}
-			if hit {
+			if s.taggedOwn[lane][pkg] || s.taggedLinksChange(pkg, tagGraph) {
 				sel.tagged[lane] = append(sel.tagged[lane], pkg)
 			}
 		}
@@ -194,6 +213,22 @@ func selectAffected(ctx context.Context, in Input, g *packageGraph, tagGraph fun
 		sort.Strings(v)
 	}
 	return sel
+}
+
+func (s *selector) taggedLinksChange(pkg string, tagGraph func() *packageGraph) bool {
+	if len(s.changed) == 0 {
+		return false
+	}
+	tg := tagGraph()
+	if tg == nil {
+		return false
+	}
+	for _, d := range tg.testDeps[pkg] {
+		if len(s.changed[d]) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func firstCause(c []string) string {

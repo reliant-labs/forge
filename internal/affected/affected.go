@@ -96,56 +96,17 @@ func Compute(ctx context.Context, in Input) Result {
 	if git == nil {
 		git = runGit
 	}
-	a := Result{}
+	var a Result
 	var changed []string
 	if len(in.Files) > 0 {
 		changed = uniqueLines(strings.Join(in.Files, "\n"))
-		a.BaseRef, a.Base = "the given file list", ""
+		a.BaseRef = "the given file list"
 	} else {
-		baseRef := in.BaseRef
-		defaultBranch := ""
-		if baseRef == "" {
-			if ref, err := git(ctx, in.Root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil && ref != "" {
-				baseRef = strings.TrimPrefix(ref, "refs/remotes/")
-			} else {
-				for _, cand := range []string{"origin/main", "origin/master"} {
-					if _, err := git(ctx, in.Root, "rev-parse", "--verify", "--quiet", "refs/remotes/"+cand); err == nil {
-						baseRef = cand
-						break
-					}
-				}
-			}
-			if baseRef == "" {
-				return full("no origin/<default branch> to diff against")
-			}
-			defaultBranch = strings.TrimPrefix(baseRef, "origin/")
+		var reason string
+		a.BaseRef, a.Base, changed, reason = gitChanges(ctx, in, git)
+		if reason != "" {
+			return full(reason)
 		}
-		if branch, err := git(ctx, in.Root, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil && defaultBranch != "" && branch == defaultBranch {
-			return full("on the default branch (" + branch + ")")
-		}
-		base, err := git(ctx, in.Root, "merge-base", "HEAD", baseRef)
-		if err != nil || base == "" {
-			return full("no merge-base with " + baseRef)
-		}
-		diff, err := git(ctx, in.Root, "diff", "--name-only", "--no-renames", base)
-		if err != nil {
-			return full("cannot diff against " + baseRef)
-		}
-		untracked, err := git(ctx, in.Root, "ls-files", "--others", "--exclude-standard")
-		if err != nil {
-			return full("cannot list untracked files")
-		}
-		changed = uniqueLines(diff + "\n" + untracked)
-		short := base
-		if len(short) > 12 {
-			short = short[:12]
-		}
-		if len(changed) == 0 {
-			// Nothing to narrow by: a branch identical to its base proves
-			// nothing about the base unless the suite actually runs.
-			return full("nothing changed since " + baseRef + " (" + short + ")")
-		}
-		a.BaseRef, a.Base = baseRef, short
 	}
 	a.Changed = changed
 
@@ -327,4 +288,54 @@ func shortPkg(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// gitChanges is the work tree's diff against the merge-base with the default
+// branch: committed, staged, unstaged and untracked. A non-empty reason is why
+// it cannot say, and the whole suite runs.
+func gitChanges(ctx context.Context, in Input, git func(context.Context, string, ...string) (string, error)) (baseRef, short string, changed []string, reason string) {
+	baseRef = in.BaseRef
+	defaultBranch := ""
+	if baseRef == "" {
+		if ref, err := git(ctx, in.Root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil && ref != "" {
+			baseRef = strings.TrimPrefix(ref, "refs/remotes/")
+		} else {
+			for _, cand := range []string{"origin/main", "origin/master"} {
+				if _, err := git(ctx, in.Root, "rev-parse", "--verify", "--quiet", "refs/remotes/"+cand); err == nil {
+					baseRef = cand
+					break
+				}
+			}
+		}
+		if baseRef == "" {
+			return "", "", nil, "no origin/<default branch> to diff against"
+		}
+		defaultBranch = strings.TrimPrefix(baseRef, "origin/")
+	}
+	if branch, err := git(ctx, in.Root, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil && defaultBranch != "" && branch == defaultBranch {
+		return "", "", nil, "on the default branch (" + branch + ")"
+	}
+	base, err := git(ctx, in.Root, "merge-base", "HEAD", baseRef)
+	if err != nil || base == "" {
+		return "", "", nil, "no merge-base with " + baseRef
+	}
+	diff, err := git(ctx, in.Root, "diff", "--name-only", "--no-renames", base)
+	if err != nil {
+		return "", "", nil, "cannot diff against " + baseRef
+	}
+	untracked, err := git(ctx, in.Root, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return "", "", nil, "cannot list untracked files"
+	}
+	changed = uniqueLines(diff + "\n" + untracked)
+	short = base
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	if len(changed) == 0 {
+		// Nothing to narrow by: a branch identical to its base proves
+		// nothing about the base unless the suite actually runs.
+		return "", "", nil, "nothing changed since " + baseRef + " (" + short + ")"
+	}
+	return baseRef, short, changed, ""
 }

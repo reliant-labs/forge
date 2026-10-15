@@ -88,9 +88,9 @@ enforced conventions — if you add a test that breaks a budget, gate it. Most o
 an agent's test time was measured as compile/link plus defeated caching, not
 test bodies.
 
-1. **Inner loop — every edit:** `task test:short -- ./internal/<pkg>/...`, naming only the packages you touched (`go test -short`, cached, no `-race`).
-2. **Package-targeted — before committing:** `task test -- ./internal/<pkg>/...`. Full mode (no `-short`, with `-race`) for the packages you touched, so the gated slow tests run too.
-3. **Full gate — once, at the end / CI:** `task test` (`go test -race -count=1 ./...`) plus the e2e corpus: `go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/`. The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so wall-clock is roughly the slowest fixture. Run it in the background: the full lane, `internal/cli` / `internal/tierguard` in full mode, and the e2e corpus all exceed ~2 minutes.
+1. **Inner loop — every edit:** `task test:short` runs only the packages your change can reach (`forge ci affected`: the import graph plus `forge.yaml` `ci.gate.affected_rules`; it prints why each runs) under `go test -short`, cached, no `-race`. `task test:short -- ./internal/<pkg>/...` names packages by hand.
+2. **Before committing:** `task test` (affected packages) or `task test -- ./internal/<pkg>/...`. Full mode (no `-short`, with `-race`) for the packages you touched, so the gated slow tests run too.
+3. **Full gate — once, at the end / CI:** `task test:full` (`go test -race -count=1 ./...`; `task test` is the same, narrowed to what your change reaches — a go.mod, Taskfile or unclaimed-path change widens it to everything) plus the e2e corpus: `go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/`. The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so wall-clock is roughly the slowest fixture. Run it in the background: the full lane, `internal/cli` / `internal/tierguard` in full mode, and the e2e corpus all exceed ~2 minutes.
 
 Rules that keep the tiers honest:
 

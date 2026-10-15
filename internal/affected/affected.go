@@ -291,3 +291,40 @@ func goList(ctx context.Context, dir string, env []string, extra ...string) (io.
 	}
 	return bytes.NewReader(out), nil
 }
+
+// WritePlan prints the decision for one lane: the mode, then every selected
+// package with the changed file that selected it, then every changed file
+// with what accounted for it.
+func (a Result) WritePlan(w io.Writer, lane string, selected []string) {
+	if a.Full {
+		fmt.Fprintf(w, "affected (%s): FULL — %s\n", lane, a.Reason)
+		return
+	}
+	total := fmt.Sprintf("of %d test packages", a.Total)
+	if lane != "unit" {
+		total = "with -tags " + lane + " tests"
+	}
+	fmt.Fprintf(w, "affected (%s): %d %s reach the %d changed file(s) since %s %s\n", lane, len(selected), total, len(a.Changed), a.BaseRef, a.Base)
+	pkgs := append([]string(nil), selected...)
+	sort.Strings(pkgs)
+	for _, p := range pkgs {
+		why := a.Why[p]
+		if why == "" {
+			why = "a changed file of this package carries the " + lane + " build tag"
+		}
+		fmt.Fprintf(w, "  run  %-48s %s\n", shortPkg(p), why)
+	}
+	for _, f := range a.Changed {
+		fmt.Fprintf(w, "  file %-48s %s\n", f, a.Claims[f])
+	}
+}
+
+func shortPkg(p string) string {
+	if i := strings.Index(p, "/internal/"); i >= 0 {
+		return p[i+1:]
+	}
+	if i := strings.Index(p, "/pkg/"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}

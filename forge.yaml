@@ -38,6 +38,62 @@ ci:
   test:
     race: true
     coverage: false
+  # `task test` runs only the packages a change can reach: `forge ci affected`
+  # (internal/affected) maps each changed file to Go packages by the import
+  # graph (a package's test binary links what it tests), then these rules say
+  # what the files no Go package owns select. A file no rule and no package
+  # claims runs the WHOLE suite (fail safe), so adding a new kind of file never
+  # silently skips tests. `forge ci affected` prints why each package runs.
+  # Rule vocabulary: internal/config CIAffectedRule.
+  gate:
+    affected_rules:
+      # Pins and the definitions of the lanes themselves: a subset cannot
+      # judge a change to what the subset is made of.
+      - paths: [go.mod, go.sum, Taskfile.yml, Makefile, forge.yaml, .golangci.yml, .pre-commit-config.yaml, scripts/ci-test-packages.sh, ".github/workflows/**", ".github/actions/**"]
+        full: a pin, a lane definition or a workflow changed — a subset cannot judge it
+      # Tree-wide guards. removalguard scans every tracked text file;
+      # the others read every Go file (deadcodeguard: the whole program).
+      # `also`: they select, they never claim a file.
+      - paths: ["**"]
+        also: true
+        tests: [./internal/removalguard]
+      - paths: ["**/*.go"]
+        also: true
+        tests: [./internal/fmtguard, ./internal/trimpathguard, ./internal/vacuousguard, ./internal/pkgguard, ./internal/modguard]
+      - paths: ["internal/**/*.go"]
+        also: true
+        tests: [./internal/deadcodeguard]
+      # KCL that no package embeds (the module's tests and example env) is read
+      # by every package that renders through it: the packages that link kcl.
+      - paths: ["kcl/tests/**", "kcl/example/**"]
+        affects: [./kcl]
+      # Skills are embedded in internal/templates, which ~23 packages link, but
+      # only these tests look at skill text — `exact` so a skill edit does not
+      # re-run every package that merely links the template tree.
+      - paths: ["internal/templates/project/skills/**"]
+        exact: true
+        tests: [./internal/templates, ./internal/generator, ./internal/cli, ./cli]
+      # The proto sources and what is generated from them.
+      - paths: ["proto/**", buf.yaml, buf.gen.yaml, "gen/**"]
+        affects: [./pkg/forgepb]
+        tests: [./internal/assets, ./internal/codegen, ./internal/generator, ./internal/cli, ./internal/checksums, ./internal/templates, ./internal/commitpolicy, ./internal/linter/...]
+      # The npm runtime forge scaffolds against.
+      - paths: ["web-runtime/**"]
+        tests: [., ./internal/webruntimepeers, ./internal/buildinfo, ./internal/generator, ./internal/templates, ./internal/cli, ./internal/vacuousguard, ./pkg/components]
+      - paths: ["scripts/**"]
+        tests: [./internal/cli, ./internal/generator, ./internal/pkgguard, ./internal/cigate]
+      - paths: [VERSION]
+        tests: [./internal/buildinfo, ./internal/cli, ./internal/cigate]
+      - paths: [LICENSE, NOTICE]
+        tests: [.]
+      - paths: [pkg/.golangci.yml]
+        tests: [./internal/pkgguard]
+      # Prose and editor config: no Go test reads them as input. A test that
+      # does name one is still found (the reader scan under the rules selects
+      # the package that names the path).
+      - paths: ["docs/**", "**/*.md", "examples/**", ".vscode/**", ".devcontainer/**", ".reliant/**", ".forge/**",
+                ".mcp.json", ".mcp.json.example", .commitlintrc.js, .gitattributes, .gitignore, ".license-allowlist*",
+                ".github/CODEOWNERS", ".github/pull_request_template.md", ".github/dependabot.yml"]
   vuln_scan:
     go: true
     docker: false

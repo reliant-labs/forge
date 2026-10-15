@@ -94,19 +94,41 @@ tasks:
       - ./scripts/release-web-runtime.sh {{.CLI_ARGS}}
 
   test:
+    # Runs ONLY the packages your change can reach (`forge ci affected`, from
+    # forge.yaml's ci.gate.affected_rules + the import graph, against the
+    # merge-base with origin/main): a typical change is a handful of packages,
+    # not the module. It prints why each package runs. Anything it cannot
+    # judge — go.mod, this file, a path no rule claims, the default branch, an
+    # empty diff — runs the whole module, so the answer is never silently
+    # narrower than the change. `task test:full` (or CI_FULL=1) is the whole
+    # module, always.
+    #
     # Scoping: `task test -- ./internal/lifecycle/...` runs ONLY those Go
-    # packages; with no `--` args it is the whole module. An unmatched pattern
-    # fails in `go test` itself, so a scoped run can never quietly widen into
-    # a whole-module run that reports success.
-    desc: Run Go unit tests (excludes `//go:build integration` files)
+    # packages (affected selection is skipped); an unmatched pattern fails in
+    # `go test` itself, so a scoped run can never quietly widen into a
+    # whole-module run that reports success. CI_BASE=<rev> moves the diff base
+    # for a stacked branch.
+    desc: Run the Go unit tests your change can reach (`task test:full` runs everything)
     cmds:
       # `-timeout 120s` matches the global per-package timeout convention so a
       # hung test fails the suite quickly rather than wedging CI. Integration
       # tests use the `integration` build tag and ship their own task below.
+      - cmd: |
+          if [ -n "{{.CLI_ARGS}}" ]; then
+            go test {{.GOTESTRACE}} -count=1 -timeout 120s {{.CLI_ARGS}}
+          else
+            scripts/go-test-affected.sh {{.GOTESTRACE}} -count=1 -timeout 120s
+          fi
+
+  test:full:
+    # The whole module, every package, every time: what a release, a go.mod
+    # bump or "I want to be sure" needs, and what CI runs on main.
+    # (`./...` covers pkg/* too now — it used to be a separate module that
+    # needed its own `cd pkg && go test`, which meant the library shipping
+    # into every generated binary went untested whenever someone forgot.)
+    desc: Run every Go unit test in the module (what `task test` runs when it cannot narrow)
+    cmds:
       - go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
-      # (`./...` covers pkg/* too now — it used to be a separate module that
-      # needed its own `cd pkg && go test`, which meant the library shipping
-      # into every generated binary went untested whenever someone forgot.)
 
   test:short:
     # The inner-loop tier from reliant.md "Testing tiers": run it after each
@@ -141,9 +163,18 @@ tasks:
     # measured 192-263s under -short, so a 60s value panicked with a
     # goroutine dump on a healthy run and taught agents to abandon the tier.
     # 300s still catches a genuine deadlock in one package within minutes.
-    desc: "Inner-loop Go tests: -short, cached, no race. Scope it: task test:short -- ./internal/foo/..."
+    #
+    # With no `--` args it runs the packages your change can reach, like
+    # `task test` (`forge ci affected`); `task test:short -- ./...` is the whole
+    # module under -short.
+    desc: "Inner-loop Go tests: -short, cached, no race, only what your change can reach. Scope it: task test:short -- ./internal/foo/..."
     cmds:
-      - go test -short -timeout 300s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+      - cmd: |
+          if [ -n "{{.CLI_ARGS}}" ]; then
+            go test -short -timeout 300s {{.CLI_ARGS}}
+          else
+            scripts/go-test-affected.sh -short -timeout 300s
+          fi
 
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)
@@ -162,9 +193,9 @@ tasks:
     # ADD files rather than filter them, so `-tags=integration` already
     # recompiles and reruns every untagged test — a single combined pass plus
     # a plain pass would run the whole unit suite twice for no extra signal.
-    desc: Run the unit and integration suites in order
+    desc: Run the whole unit suite and the integration suite in order
     cmds:
-      - task: test
+      - task: test:full
       - task: test:integration
 
   coverage:

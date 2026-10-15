@@ -46,16 +46,16 @@ func FuncMap() template.FuncMap {
 		// it — rpc GetOauth2token is the handler method GetOauth2Token.
 		// Never pascalCase for these: that is forge's rule for forge's own
 		// identifiers, and it disagrees with the generators at digits.
-		"goName":        naming.GoCamelCase,
+		"goName": naming.GoCamelCase,
 		// tripsReviveVarNaming is true when revive's var-naming rule would
 		// rewrite a connect-generated handler method (CreateApiKey→CreateAPIKey).
 		// Scaffolded stubs must keep the Handler interface spelling, so templates
 		// emit a targeted //nolint:revive instead of renaming.
 		"tripsReviveVarNaming": naming.TripsReviveVarNaming,
 		"kebabCase":            toKebabCase,
-		"plural":        pluralize,
-		"singular":      singularize,
-		"formatComment": formatComment,
+		"plural":               pluralize,
+		"singular":             singularize,
+		"formatComment":        formatComment,
 		// typePinTarget maps a tsconfig `paths` KEY to the node_modules
 		// directory its VALUE must point at. They differ only for packages
 		// whose typings ship separately under @types/ — see

@@ -114,16 +114,22 @@ jobs:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
-  # ── Go tests: two jobs, partitioned by scripts/ci-test-packages.sh ──────
+  # ── Go tests: three jobs, partitioned by scripts/ci-test-packages.sh ────
   #
-  # `test` runs every package under -race EXCEPT the repo-wide guards
-  # (internal/tierguard, internal/removalguard, internal/deadcodeguard);
-  # `test-guards` runs exactly those, on a runner of their own. The script is
-  # the single list and each job's first step proves the two sets partition
-  # `go list ./...`, so a package can neither drop out of both jobs nor run in
-  # both.
+  # `test` runs every package under -race EXCEPT internal/cli and the
+  # repo-wide guards (internal/tierguard, internal/removalguard,
+  # internal/deadcodeguard); `test-cli` runs internal/cli under -race;
+  # `test-guards` runs the guards. Each on a runner of its own. The script is
+  # the single list and each job's first step proves the three sets partition
+  # `go list ./...`, so a package can neither drop out of every job nor run in
+  # two. `task test` runs the same three sets locally.
   #
-  # WHY. The guards are the two slowest packages by a wide margin (~980s and
+  # WHY internal/cli ALONE. Under -race it took 665-692s of `test`'s
+  # 1215-1253s `go test` step by itself, sharing four cores with every other
+  # package. In a job of its own the two halves run side by side, and the
+  # lane's wall time is the slower half (the script's header has the detail).
+  #
+  # WHY THE GUARDS. They are the two slowest packages by a wide margin (~980s and
   # ~700s under -race; the next is ~410s) and the two largest in memory.
   # Inside `go test -race ./...` they co-resided with every other test binary
   # on one 16 GB runner, and the job was OOM-killed about one run in three —
@@ -188,8 +194,9 @@ jobs:
           # repository; contents: read is all a release lookup needs.
           # Same failure mode ci.yml already pins KCL_VERSION to avoid.
           github_token: ${{ secrets.GITHUB_TOKEN }}
-      # TestDBReset_* shell out to the golang-migrate CLI. This job runs
-      # ./... and the test carries no e2e tag, so it lands here too.
+      # TestDBReset_* shell out to the golang-migrate CLI and carry no e2e
+      # tag. They live in internal/cli (test-cli installs it too); this job
+      # keeps the install so no package here can lose a tool by moving.
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
 
@@ -205,6 +212,53 @@ jobs:
       - name: Local registry maintenance integration
         run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
       # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+
+  test-cli:
+    name: Test (internal/cli)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Its own scope: internal/cli's -race test binary and the projects its
+      # tests scaffold and build. It falls back to `test`'s scope, which holds
+      # the same -race artifacts for every package internal/cli imports.
+      - name: Restore Go build cache
+        id: restore-gocache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-test-cli-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-test-cli-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-test-cli-${{ runner.os }}-
+            go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+      # The same toolchain as `test`, for the same reasons: postgres for the
+      # DB-backed tests, buf for the generate pipeline, migrate for
+      # TestDBReset_* (internal/cli/db_reset*_test.go).
+      - uses: ./.github/actions/embedded-postgres-cache
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          # Authenticated for the rate limit; see the same step in `test`.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install golang-migrate CLI
+        uses: ./.github/actions/install-migrate
+      - name: Check the test-job partition
+        run: scripts/ci-test-packages.sh check
+      - name: Go tests (internal/cli)
+        # The same 30m budget as `test`: internal/cli alone measured
+        # 665-692s under -race, so this is a hang detector, not a speed bound.
+        run: go test -race -count=1 -timeout 30m $(scripts/ci-test-packages.sh cli)
+      # Main only: a PR's cache is visible to that PR alone.
       - name: Save Go build cache
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v6
@@ -268,7 +322,8 @@ jobs:
   # (scripts/ci-windows-smoke.sh), which is the proof the KCL native-library
   # extraction + load works on Windows.
   #
-  # TESTS. Every package except the repo-wide guards, from the same
+  # TESTS. Every package except the repo-wide guards (`unit cli`: the two
+  # sets the Linux Test jobs run between them), from the same
   # scripts/ci-test-packages.sh the Linux jobs use, so the set cannot drift
   # from `go list ./...`. The guards (tierguard, removalguard, deadcodeguard)
   # are excluded: they render whole projects, scan the whole tree or load the
@@ -354,7 +409,7 @@ jobs:
         # cache-sound (reliant.md, "Testing tiers"), so a package whose
         # inputs did not change replays its result from the build cache main
         # last saved instead of re-running. -count=1 defeated exactly that.
-        run: go test -short -timeout 30m $(scripts/ci-test-packages.sh unit)
+        run: go test -short -timeout 30m $(scripts/ci-test-packages.sh unit cli)
       - name: Install forge
         env:
           CGO_ENABLED: "0"
@@ -374,7 +429,7 @@ jobs:
 
   build:
     name: Build
-    needs: [lint, test, test-guards]
+    needs: [lint, test, test-cli, test-guards]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -535,7 +590,7 @@ jobs:
 
   vuln-scan:
     name: Vulnerability Scan
-    needs: [lint, test, test-guards]
+    needs: [lint, test, test-cli, test-guards]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

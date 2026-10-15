@@ -154,6 +154,59 @@ func TestGetPreviousMigration(t *testing.T) {
 	}
 }
 
+// TestCreateMigration_PreviousMigrationIsOneLevelDeep pins #745: the
+// PREVIOUS MIGRATION section quotes that migration's SQL, not the header
+// forge generated into it. Quoting the whole file made every header embed the
+// one before it, so the comment grew a level deeper with every migration.
+func TestCreateMigration_PreviousMigrationIsOneLevelDeep(t *testing.T) {
+	dir := t.TempDir()
+	upFile := func(name string) string {
+		t.Helper()
+		matches, err := filepath.Glob(filepath.Join(dir, "*_"+name+".up.sql"))
+		if err != nil || len(matches) != 1 {
+			t.Fatalf("glob %s: %v, %v", name, matches, err)
+		}
+		return matches[0]
+	}
+	create := func(name, sql string) string {
+		t.Helper()
+		if err := CreateMigration(context.Background(), name, dir, &MigrationOptions{}); err != nil {
+			t.Fatalf("CreateMigration(%s) error = %v", name, err)
+		}
+		path := upFile(name)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(content, sql...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return string(content)
+	}
+
+	create("add_a", "SELECT 1; -- a\n")
+	create("add_b", "SELECT 1; -- b\n")
+	third := create("add_c", "SELECT 1; -- c\n")
+
+	if got := strings.Count(third, "PREVIOUS MIGRATION"); got != 1 {
+		t.Errorf("third migration has %d PREVIOUS MIGRATION sections, want 1:\n%s", got, third)
+	}
+	if !strings.Contains(third, "-- SELECT 1; -- b\n") {
+		t.Errorf("third migration does not quote the second migration's SQL:\n%s", third)
+	}
+	if strings.Contains(third, "SELECT 1; -- a") {
+		t.Errorf("third migration quotes the first migration's SQL, so headers still nest:\n%s", third)
+	}
+
+	// A previous migration with only its header says so rather than
+	// quoting an empty line.
+	create("add_d", "")
+	fifth := create("add_e", "")
+	if !strings.Contains(fifth, "-- (no SQL)\n") || strings.Count(fifth, "PREVIOUS MIGRATION") != 1 {
+		t.Errorf("migration after a header-only migration:\n%s", fifth)
+	}
+}
+
 func TestGetMigrationHistory(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "001_first.up.sql"), []byte(""), 0644)

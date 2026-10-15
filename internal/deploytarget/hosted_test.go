@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -264,6 +265,11 @@ func TestHostedImagePushBase(t *testing.T) {
 	// address any image could be under. Refused, and the refusal names the
 	// credential to supply rather than a server setting the author cannot reach.
 	t.Run("no resolved push base refused", func(t *testing.T) {
+		// The remedy names the credential source the HOST offers: with a
+		// credential helper configured (Reliant sets one) it names the
+		// helper instead of `forge login`. Pin the bare-host case, so the
+		// verdict does not depend on the machine running the test.
+		t.Setenv(cloudcred.HelperEnv, "")
 		cp, err := deploy("")
 		if err == nil || !strings.Contains(err.Error(), "resolved no image push base") {
 			t.Fatalf("err = %v, want the no-push-base refusal", err)

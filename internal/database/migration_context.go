@@ -247,7 +247,32 @@ func parseColumnDefs(body string) []ParsedColumn {
 
 // --- Previous migration ---
 
-// GetPreviousMigration reads the most recent .up.sql file from the migrations dir.
+// migrationBodyMarker is the last line of the header GenerateContextComment
+// writes. Everything after it is the migration's own SQL.
+const migrationBodyMarker = "-- Write your migration SQL below:"
+
+// migrationBody returns the SQL a migration carries below forge's generated
+// context header, or the whole file when it has no such header (a
+// hand-written or imported migration).
+//
+// Without this cut every header would embed the previous file's header,
+// which embeds the one before it, so the comment grew one level deeper with
+// every migration. Only an unprefixed marker line counts: the marker of an
+// older header quoted inside a PREVIOUS MIGRATION section is commented out
+// ("-- -- Write ..."), so the first exact match is the file's own.
+func migrationBody(content string) string {
+	offset := 0
+	for _, line := range strings.SplitAfter(content, "\n") {
+		offset += len(line)
+		if strings.TrimRight(line, " \t\r\n") == migrationBodyMarker {
+			return content[offset:]
+		}
+	}
+	return content
+}
+
+// GetPreviousMigration reads the most recent .up.sql file from the migrations
+// dir. Content is that migration's SQL without forge's generated header.
 func GetPreviousMigration(dir string) (*PreviousMigrationInfo, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -278,7 +303,7 @@ func GetPreviousMigration(dir string) (*PreviousMigrationInfo, error) {
 
 	return &PreviousMigrationInfo{
 		Filename: latest,
-		Content:  string(content),
+		Content:  migrationBody(string(content)),
 	}, nil
 }
 
@@ -365,9 +390,12 @@ func GenerateContextComment(ctx *MigrationContext) string {
 	// Previous migration.
 	if ctx.PreviousMigration != nil {
 		fmt.Fprintf(&sb, "-- === PREVIOUS MIGRATION (%s) ===\n", ctx.PreviousMigration.Filename)
-		lines := strings.Split(strings.TrimSpace(ctx.PreviousMigration.Content), "\n")
-		for _, line := range lines {
-			fmt.Fprintf(&sb, "-- %s\n", line)
+		if body := strings.TrimSpace(ctx.PreviousMigration.Content); body == "" {
+			sb.WriteString("-- (no SQL)\n")
+		} else {
+			for _, line := range strings.Split(body, "\n") {
+				fmt.Fprintf(&sb, "-- %s\n", line)
+			}
 		}
 		sb.WriteString("--\n")
 	}
@@ -381,7 +409,7 @@ func GenerateContextComment(ctx *MigrationContext) string {
 		sb.WriteString("--\n")
 	}
 
-	sb.WriteString("-- Write your migration SQL below:\n\n")
+	sb.WriteString(migrationBodyMarker + "\n\n")
 
 	return sb.String()
 }

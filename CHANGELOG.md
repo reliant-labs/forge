@@ -826,6 +826,15 @@ AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   the package directory `go test` runs in. `internal/trimpathguard` fails on
   any new `runtime.Caller` whose file result is kept.
 
+- **`forge db migration new` quotes the previous migration's SQL, not its
+  header.** The PREVIOUS MIGRATION section commented out the whole previous
+  file, including the context header forge had generated into it, which
+  quoted the migration before that, and so on: every header nested one level
+  deeper than the last. The section now quotes only what follows the previous
+  file's `-- Write your migration SQL below:` line (#745). A migration with no
+  such line (hand-written or imported) is still quoted in full, and one with
+  nothing below the line reads `(no SQL)`.
+
 - **A fresh checkout no longer regenerates a committed, current `gen/` before
   every build.** The build's staleness check compared modification times.
   git writes `gen/` before `proto/` (index order), so on every clone the

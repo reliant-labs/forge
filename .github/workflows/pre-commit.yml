@@ -41,8 +41,11 @@ jobs:
       # The go-imports hook shells out to a goimports BINARY and fails with
       # "goimports not installed or available in the PATH" when it is absent
       # — the runner image does not ship one, and setup-go does not add it.
+      # Restored on every run, saved only from main (the last step): a PR's
+      # cache is visible to nobody but that PR. ci.yml's "Build-cache note".
       - name: Restore Go build cache
-        uses: actions/cache@v6
+        id: restore-gocache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
           key: go-build-precommit-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -59,3 +62,9 @@ jobs:
         # hook formats with the same version the module builds against.
         run: go install golang.org/x/tools/cmd/goimports@v0.49.0
       - uses: pre-commit/action@v3.0.1
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}

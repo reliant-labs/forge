@@ -1,0 +1,99 @@
+# The nightly tier: checks worth running, but not worth a pull request's wall
+# time. Everything here runs on a schedule against main, and on demand
+# (workflow_dispatch, any branch).
+#
+# WHAT LIVES HERE, AND WHY IT IS NOT ON EVERY PR.
+#
+#   windows/arm64 vet   `go vet ./...` for GOOS=windows GOARCH=arm64. The
+#                       Windows job in ci.yml still BUILDS arm64 on every PR
+#                       — that is the proof forge compiles there — but the
+#                       full vet re-checked the whole module (~4 min cold) to
+#                       find what the amd64 vet beside it already checks:
+#                       only GOARCH-specific files differ. vet's verdict
+#                       depends on the target, not the host, so it runs on
+#                       Linux.
+#
+# A check moves here only when it is slow AND its failure is rare and cheap to
+# bisect a day later. Moving one is a decision about where a regression will
+# be caught, so say why in the job's comment, as above.
+#
+# A RED NIGHTLY IS NOT ALLOWED TO BE QUIET. Nobody watches scheduled runs, so
+# the `report` job opens an issue titled "Nightly CI is red" when any job
+# fails (or comments on the open one), and closes it the first time a nightly
+# on main is green again. One open issue at a time, linked to every red run.
+name: Nightly
+
+on:
+  schedule:
+    # 07:17 UTC: off the top of the hour, when scheduled runs pile up and
+    # GitHub delays them most.
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A run in progress always finishes (ci.yml says why); a second schedule or
+# dispatch on the same ref waits for it.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-arm64-vet:
+    name: windows/arm64 vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet ./... (windows/arm64)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: arm64
+        run: go vet ./...
+
+  report:
+    name: report (issue on red)
+    needs: [windows-arm64-vet]
+    # Always: a red job is exactly when this has something to say. Only for
+    # main, so a dispatch on a feature branch never files an issue.
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update or close the "Nightly CI is red" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULTS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Nightly CI is red"
+          # A cancelled job did not verify anything either: a job that runs
+          # past timeout-minutes is reported as cancelled, not failed.
+          red=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "- `\(.key)`: \(.value.result)"' <<<"$RESULTS")
+          open=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$red" ]; then
+            body=$(printf 'The nightly run on main is red: %s\n\n%s\n\nNightly checks are the ones moved off pull requests for speed (see `.github/workflows/nightly.yml`), so a pull request merged since the last green nightly is the likely cause.\n' "$RUN_URL" "$red")
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --body "$body"
+              echo "commented on #$open"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+            echo "::error::nightly is red:"
+            echo "$red"
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "Green again: $RUN_URL"
+            echo "closed #$open"
+          else
+            echo "nightly is green; no open issue"
+          fi

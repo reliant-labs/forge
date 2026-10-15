@@ -68,9 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `kid` it holds; the snapshot adds a key only in a rotation overlap (delivered
   after the last live fetch); a stale, absent or malformed snapshot still refuses
   to start. `idp_broker_token_file` is re-read on every use, with
-  `idp_broker_token` as the fallback. Library: `auth.JWTConfig.{RolesClaim,
-  JWKSSnapshot, JWKSDiscover}`, `auth.JWKSKeyfuncWithSnapshot`,
-  `devidp.Client.TokenFile`. New fields are in the scaffold's `config.proto`, so an
+  `idp_broker_token` as the fallback. Library:
+  `auth.JWTConfig.{RolesClaim, JWKSSnapshot, JWKSDiscover}`,
+  `auth.JWKSKeyfuncWithSnapshot`, `devidp.Client.TokenFile`. New fields are in
+  the scaffold's `config.proto`, so an
   existing project adds them by hand (the `auth` skill has the block and the new
   `SetupAuth`; `Validator.Close` now stops the JWKS refresh).
 - **The dev Zitadel moves to v4.19.4** (was v4.16.2) in host-infra, the compose

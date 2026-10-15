@@ -237,6 +237,7 @@ Every query goes through ONE data-access path: the generated store, then the own
 
 - **Draft, then `forge generate` — it is the fast, exact oracle.** Let `forge scaffold entity` write the first-draft migration + proto (or hand-write one), then generate, read the error, fix, repeat. A failing `CREATE TABLE`/`ALTER TABLE`, a missing import, or a List filter naming no real column fails loudly. Don't reverse-engineer forge's `internal/**` or exhaustively plan first.
 - **The schema drives the struct, never the reverse.** Need a field on the entity struct? Write the migration that adds the column. Don't hand-edit `gen/` or `internal/db/<entity>_orm.go` — those are the only DB-layer files generate rewrites.
+- **Open the serving pool with `serverkit.OpenDB`** (the scaffolded `openDatabase` does), not `sql.Open`. Besides the bounded connect retry, its `pgx` pool rides through a pooler rollout: a statement a draining PgBouncer refused (`FATAL: server shutting down`, 08P01 — it never ran) is run again on another connection, and closing a connection the pooler already dropped is not an error. To reach the `*pgx.Conn` through `sql.Conn.Raw`, assert `interface{ Conn() *pgx.Conn }`, not `*stdlib.Conn`.
 
 See also: `proto` for the wire half (CRUD RPC naming), `architecture` for the naming-conventions table.
 <!-- @forge-only:end -->

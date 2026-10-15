@@ -63,7 +63,8 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 	protoPath := filepath.Join(projectDir, "proto", "services", "orders", "v1", "orders.proto")
 	proto := readFileE2E(t, protoPath)
 	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
-		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse);", 1)
+		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse);\n"+
+			"  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse);", 1)
 	proto += `
 // forge:entity
 message Order {
@@ -86,6 +87,9 @@ message ArchiveOrderRequest {
 message ArchiveOrderResponse {
   bool archived = 1;
 }
+
+message CreateApiKeyRequest {}
+message CreateApiKeyResponse {}
 `
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
 		t.Fatalf("author orders proto: %v", err)

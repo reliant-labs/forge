@@ -72,6 +72,15 @@ func applyGoInitialisms(s string) string {
 	return s
 }
 
+// TripsReviveVarNaming reports whether revive's var-naming rule would want a
+// different spelling of goIdent (e.g. CreateApiKey → CreateAPIKey). Proto /
+// connect-generated handler method names must match the Handler interface
+// exactly, so scaffolded stubs keep the generator spelling and suppress the
+// lint instead of renaming.
+func TripsReviveVarNaming(goIdent string) bool {
+	return applyGoInitialisms(goIdent) != goIdent
+}
+
 // ToSnakeCase converts a string (camelCase, PascalCase, UPPER_CASE, etc.) to snake_case.
 // e.g. "firstName" -> "first_name", "HTTPStatus" -> "http_status", "UPPER_CASE" -> "upper_case".
 func ToSnakeCase(s string) string {

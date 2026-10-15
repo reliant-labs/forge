@@ -14,6 +14,9 @@ import (
 // {{.Name | goName}} implements the {{.Name | goName}} bidirectional streaming RPC.
 // FORGE_SCAFFOLD: implement business logic; remove this marker when done.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name | goName}}
+{{- if .Name | goName | tripsReviveVarNaming}}
+//nolint:revive // var-naming: name fixed by the generated {{$.HandlerName}}Handler interface (proto rpc {{.Name}})
+{{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
 	stream *connect.BidiStream[pb.{{.InputType | goName}}, pb.{{.OutputType | goName}}],
@@ -24,6 +27,9 @@ func (s *Service) {{.Name | goName}}(
 // {{.Name | goName}} implements the {{.Name | goName}} client streaming RPC.
 // FORGE_SCAFFOLD: implement business logic; remove this marker when done.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name | goName}}
+{{- if .Name | goName | tripsReviveVarNaming}}
+//nolint:revive // var-naming: name fixed by the generated {{$.HandlerName}}Handler interface (proto rpc {{.Name}})
+{{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
 	stream *connect.ClientStream[pb.{{.InputType | goName}}],
@@ -34,6 +40,9 @@ func (s *Service) {{.Name | goName}}(
 // {{.Name | goName}} implements the {{.Name | goName}} server streaming RPC.
 // FORGE_SCAFFOLD: implement business logic; remove this marker when done.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name | goName}}
+{{- if .Name | goName | tripsReviveVarNaming}}
+//nolint:revive // var-naming: name fixed by the generated {{$.HandlerName}}Handler interface (proto rpc {{.Name}})
+{{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType | goName}}],
@@ -45,6 +54,9 @@ func (s *Service) {{.Name | goName}}(
 // {{.Name | goName}} implements the {{.Name | goName}} RPC.
 // FORGE_SCAFFOLD: implement business logic; remove this marker when done.
 // forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name | goName}}
+{{- if .Name | goName | tripsReviveVarNaming}}
+//nolint:revive // var-naming: name fixed by the generated {{$.HandlerName}}Handler interface (proto rpc {{.Name}})
+{{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType | goName}}],

@@ -44,7 +44,7 @@ var vulnSeverities = []string{"none", "low", "medium", "high", "critical"}
 // promotion's signature), at the converger (Flux verification) and at
 // admission (pod images).
 //
-// Tenant-isolation controls (per-binding identity, kubeconfig-ref binding,
+// Isolation controls between bindings (per-binding identity, kubeconfig-ref binding,
 // narrowed impersonation, ledger and pointer integrity, ingest validation,
 // head-of-line fairness, the hub's PSA and NetworkPolicy baseline) are NOT
 // here: they are not an env's choice.

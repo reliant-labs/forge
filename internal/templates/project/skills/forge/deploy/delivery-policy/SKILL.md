@@ -116,7 +116,7 @@ refused until you also set `flux_verify` to `audit` or `off`.
 
 ## Not in this policy (mandatory for every env)
 
-These protect other tenants and the platform, so they are not an env's choice and
+These protect other users of the platform and the platform itself, so they are not an env's choice and
 there is no mode for them: per-binding apply identity, kubeconfig-ref binding,
 narrowed controller impersonation, ledger and pointer integrity, ingest
 validation (layout, file types, size, strict YAML, no kustomization files, and the

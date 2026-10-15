@@ -30,7 +30,6 @@
 package compat
 
 import (
-	"bufio"
 	"fmt"
 	"io/fs"
 	"path"
@@ -95,10 +94,7 @@ type Declaration struct {
 // line in one migration's up SQL. A file is meant to carry exactly one of
 // the two; the linter reports anything else.
 func Declarations(upSQL string) (compatible, breaksRollback []Declaration) {
-	sc := bufio.NewScanner(strings.NewReader(upSQL))
-	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
-	for line := 1; sc.Scan(); line++ {
-		text := sc.Text()
+	_ = directiveLines(upSQL, func(line int, text string) error {
 		var into *[]Declaration
 		switch {
 		case directiveRe.MatchString(text):
@@ -106,7 +102,7 @@ func Declarations(upSQL string) (compatible, breaksRollback []Declaration) {
 		case breaksRollbackRe.MatchString(text):
 			into = &breaksRollback
 		default:
-			continue
+			return nil
 		}
 		reason := ""
 		if m := directiveTailRe.FindStringSubmatch(text); m != nil {
@@ -116,8 +112,50 @@ func Declarations(upSQL string) (compatible, breaksRollback []Declaration) {
 			reason = ""
 		}
 		*into = append(*into, Declaration{Line: line, Reason: reason})
-	}
+		return nil
+	})
 	return compatible, breaksRollback
+}
+
+// directiveLines calls fn with every line of upSQL that could hold a forge
+// directive, with its 1-based number: a SQL line comment (`--` after leading
+// whitespace) that mentions `forge:` in any case. Every directive regex in
+// this package requires both, so a line skipped here is one none of them
+// could match. Lines are split as bufio.ScanLines splits them (a trailing \r
+// dropped), with no length limit. It stops at the first error fn returns.
+//
+// WHY. The migrator scans every embedded migration on every start, and a
+// migration is overwhelmingly DDL, not directives. Running the regexes on
+// every line cost control-plane's 170 migrations (12k lines) 240ms per scan,
+// and 5s under -race — paid by every integration test that migrates a fresh
+// database, which pushed whole packages past their 30m budget. With the
+// prefilter the regexes see the directive lines alone.
+func directiveLines(upSQL string, fn func(line int, text string) error) error {
+	for line := 1; upSQL != ""; line++ {
+		text, rest, _ := strings.Cut(upSQL, "\n")
+		upSQL = rest
+		text = strings.TrimSuffix(text, "\r")
+		// `\s` in the directive regexes is [\t\n\f\r ].
+		t := strings.TrimLeft(text, " \t\f\r")
+		if !strings.HasPrefix(t, "--") || !containsFold(t, "forge:") {
+			continue
+		}
+		if err := fn(line, text); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// containsFold reports whether s contains the ASCII lower-case substr in any
+// case, without allocating.
+func containsFold(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if strings.EqualFold(s[i:i+len(substr)], substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // upFileRe is golang-migrate's filename grammar, restricted to the up half:
@@ -188,13 +226,16 @@ func Scan(fsys fs.FS, dir string) ([]Migration, error) {
 		if rerr != nil {
 			return nil, fmt.Errorf("read migration %s: %w", e.Name(), rerr)
 		}
-		adopts, aerr := ParseAdoption(string(raw))
+		upSQL := string(raw)
+		adopts, aerr := ParseAdoption(upSQL)
 		if aerr != nil {
 			return nil, fmt.Errorf("migration %s: %w", e.Name(), aerr)
 		}
-		_, breaks := Declarations(string(raw))
+		compatible, breaks := Declarations(upSQL)
 		out = append(out, Migration{Version: uint(v), Name: e.Name(), Descriptor: m[2],
-			BackwardCompatible: Declared(string(raw)), BreaksRollback: len(breaks) > 0, Adopts: adopts})
+			// Declared's rule: a file that also declares breaks-rollback is
+			// read the safe way, as not compatible.
+			BackwardCompatible: len(compatible) > 0 && len(breaks) == 0, BreaksRollback: len(breaks) > 0, Adopts: adopts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil

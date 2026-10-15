@@ -1,7 +1,6 @@
 package compat
 
 import (
-	"bufio"
 	"fmt"
 	"regexp"
 	"sort"
@@ -112,31 +111,27 @@ func ParseAdoption(upSQL string) (*Adoption, error) {
 		out  *Adoption
 		seen = map[int64]bool{}
 	)
-	sc := bufio.NewScanner(strings.NewReader(upSQL))
-	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
-	line := 0
-	for sc.Scan() {
-		line++
-		m := adoptsRe.FindStringSubmatch(sc.Text())
+	err := directiveLines(upSQL, func(line int, text string) error {
+		m := adoptsRe.FindStringSubmatch(text)
 		if m == nil {
-			continue
+			return nil
 		}
 		if !strings.EqualFold(m[1], "adopts") {
-			return nil, &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("unknown directive `forge:%s` — the adoption directive is spelled %q", m[1], AdoptsDirective)}
+			return &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("unknown directive `forge:%s` — the adoption directive is spelled %q", m[1], AdoptsDirective)}
 		}
 		fields := strings.Fields(m[2])
 		if len(fields) == 0 {
-			return nil, &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("%q names no tool — write `%s <tool> <version>...` (tools: %s)", strings.TrimSpace(sc.Text()), AdoptsDirective, strings.Join(adoptableTools, ", "))}
+			return &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("%q names no tool — write `%s <tool> <version>...` (tools: %s)", strings.TrimSpace(text), AdoptsDirective, strings.Join(adoptableTools, ", "))}
 		}
 		tool := strings.ToLower(fields[0])
 		if !adoptable(tool) {
-			return nil, &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("cannot adopt %q history — the migrator reads only: %s", fields[0], strings.Join(adoptableTools, ", "))}
+			return &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("cannot adopt %q history — the migrator reads only: %s", fields[0], strings.Join(adoptableTools, ", "))}
 		}
 		if out != nil && out.Tool != tool {
-			return nil, &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("this line adopts %s history but line %d adopts %s — one baseline replaces one tool's history", tool, out.Line, out.Tool)}
+			return &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("this line adopts %s history but line %d adopts %s — one baseline replaces one tool's history", tool, out.Line, out.Tool)}
 		}
 		if len(fields) == 1 {
-			return nil, &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("`%s %s` lists no versions — list every version %s recorded for the history this baseline replaces", AdoptsDirective, tool, tool)}
+			return &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("`%s %s` lists no versions — list every version %s recorded for the history this baseline replaces", AdoptsDirective, tool, tool)}
 		}
 		if out == nil {
 			out = &Adoption{Tool: tool, Line: line}
@@ -144,17 +139,18 @@ func ParseAdoption(upSQL string) (*Adoption, error) {
 		for _, tok := range fields[1:] {
 			v, err := strconv.ParseInt(tok, 10, 64)
 			if err != nil || v <= 0 {
-				return nil, &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("%q is not a %s version (a positive integer)", tok, tool)}
+				return &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("%q is not a %s version (a positive integer)", tok, tool)}
 			}
 			if seen[v] {
-				return nil, &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("version %d is listed twice — the list is generated from the replaced migration files, and a repeat means it was not", v)}
+				return &AdoptionSyntaxError{Line: line, Reason: fmt.Sprintf("version %d is listed twice — the list is generated from the replaced migration files, and a repeat means it was not", v)}
 			}
 			seen[v] = true
 			out.Versions = append(out.Versions, v)
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read adoption directive: %w", err)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if out != nil {
 		sort.Slice(out.Versions, func(i, j int) bool { return out.Versions[i] < out.Versions[j] })

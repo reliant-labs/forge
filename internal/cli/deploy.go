@@ -309,6 +309,7 @@ func newDeployCmd() *cobra.Command {
 	// hand-copied struct literal that used to sit in RunE — the place a
 	// newly added flag was silently dropped by forgetting one line.
 	var apply deployCmdFlags
+	var declare string
 
 	cmd := &cobra.Command{
 		Use:   "deploy <environment> [version]",
@@ -324,12 +325,17 @@ func newDeployCmd() *cobra.Command {
 			if len(args) == 2 {
 				apply.promote.version = args[1]
 			}
-			return dispatchDeployCmd(cmd.Context(), args[0], apply)
+			policy, err := parseDeclarePolicy(declare)
+			if err != nil {
+				return err
+			}
+			return dispatchDeployCmd(withDeclarePolicy(cmd.Context(), policy), args[0], apply)
 		},
 	}
 
 	registerDeployApplyFlags(cmd, &apply)
 	registerPromoteFlags(cmd, &apply.promote)
+	registerDeclareFlag(cmd.Flags(), &declare)
 
 	return cmd
 }

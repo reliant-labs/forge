@@ -442,6 +442,10 @@ type Options struct {
 	LogDir string
 	// Clock stamps durations; nil is time.Now (tests substitute).
 	Clock func() time.Time
+	// Expected is how long each check took when it last ran
+	// (DurationHistory). The checks that only read the tree start longest
+	// path first by it; nil keeps plan order.
+	Expected map[string]time.Duration
 }
 
 // ExecFunc runs argv in dir with env, writing combined output to out.
@@ -534,7 +538,7 @@ func newScheduler(ctx context.Context, checks []Check, opt Options) *scheduler {
 		s.exec = osExec
 	}
 	s.cond = sync.NewCond(&s.mu)
-	s.deps, s.pos = executionOrder(checks)
+	s.deps, s.pos = executionOrder(checks, opt.Expected)
 	return s
 }
 
@@ -548,10 +552,17 @@ func (s *scheduler) now() time.Time {
 // executionOrder resolves `after` names to indices and fixes a total order the
 // start conditions are expressed in: a topological order of the dependencies
 // in which every tree-mutating check, and everything it depends on, comes
-// before every check that only reads the tree. Ties keep plan order. Every
-// wait the scheduler performs is on a check EARLIER in this order, so no set
-// of waits can form a cycle.
-func executionOrder(checks []Check) (deps [][]int, pos []int) {
+// before every check that only reads the tree. Every wait the scheduler
+// performs is on a check EARLIER in this order, so no set of waits can form a
+// cycle.
+//
+// Among the checks that only read the tree, the one with the longest path
+// still to run goes first: its own expected duration plus the longest chain of
+// checks that wait on it (expected, from DurationHistory). That is the order
+// host slots are granted in, so the gate's longest check starts as soon as the
+// tree is ready instead of behind every shorter one planned before it. With no
+// history every path is zero long and plan order stands. Ties keep plan order.
+func executionOrder(checks []Check, expected map[string]time.Duration) (deps [][]int, pos []int) {
 	idx := map[string]int{}
 	for i, c := range checks {
 		if _, dup := idx[c.Name]; !dup {
@@ -592,18 +603,24 @@ func executionOrder(checks []Check) (deps [][]int, pos []int) {
 			users[j] = append(users[j], i)
 		}
 	}
-	key := func(i int) int {
-		if phase0[i] {
-			return i
+	path := criticalPaths(checks, users, expected)
+	// before reports whether i goes ahead of j when both are ready: mutating
+	// phase first, then (outside it) the longer path, then plan order.
+	before := func(i, j int) bool {
+		if phase0[i] != phase0[j] {
+			return phase0[i]
 		}
-		return len(checks) + i
+		if !phase0[i] && path[i] != path[j] {
+			return path[i] > path[j]
+		}
+		return i < j
 	}
 	pos = make([]int, len(checks))
 	placed := make([]bool, len(checks))
 	for n := 0; n < len(checks); n++ {
 		best := -1
 		for i := range checks {
-			if !placed[i] && indeg[i] == 0 && (best < 0 || key(i) < key(best)) {
+			if !placed[i] && indeg[i] == 0 && (best < 0 || before(i, best)) {
 				best = i
 			}
 		}
@@ -624,6 +641,44 @@ func executionOrder(checks []Check) (deps [][]int, pos []int) {
 		}
 	}
 	return deps, pos
+}
+
+// criticalPaths is, for each check, its expected duration plus the longest
+// expected chain of checks that wait on it (users[i] lists them). A check with
+// no recorded duration counts as zero. A dependency cycle, which the planner
+// rejects before this runs, is cut rather than followed.
+func criticalPaths(checks []Check, users [][]int, expected map[string]time.Duration) []time.Duration {
+	path := make([]time.Duration, len(checks))
+	if len(expected) == 0 {
+		return path
+	}
+	const (
+		unseen = iota
+		visiting
+		visited
+	)
+	state := make([]int, len(checks))
+	var visit func(i int) time.Duration
+	visit = func(i int) time.Duration {
+		switch state[i] {
+		case visiting:
+			return 0
+		case visited:
+			return path[i]
+		}
+		state[i] = visiting
+		var longest time.Duration
+		for _, u := range users[i] {
+			longest = max(longest, visit(u))
+		}
+		path[i] = expected[checks[i].Name] + longest
+		state[i] = visited
+		return path[i]
+	}
+	for i := range checks {
+		visit(i)
+	}
+	return path
 }
 
 func (s *scheduler) run() {
@@ -960,6 +1015,11 @@ type heavyQueue struct {
 	once    sync.Once
 }
 
+// grantSettle is how long a freshly taken slot waits for the other checks
+// that became ready at the same moment to queue, before it picks the most
+// urgent one.
+const grantSettle = 20 * time.Millisecond
+
 type heavyReq struct {
 	pos   int
 	label string
@@ -1017,6 +1077,18 @@ func (q *heavyQueue) serve() {
 		slot, err := q.slot(q.ctx)
 		if err != nil {
 			q.failAll(err)
+			return
+		}
+		// Let the checks that became ready together finish asking. When the
+		// tree-mutating phase ends, every reader wakes at once and races to
+		// take(); a slot that is free right away would otherwise go to
+		// whichever goroutine ran first rather than to the longest path.
+		// Short against any check's run, and only paid once per slot.
+		select {
+		case <-time.After(grantSettle):
+		case <-q.ctx.Done():
+			_ = slot.Release()
+			q.failAll(q.ctx.Err())
 			return
 		}
 		q.mu.Lock()

@@ -197,10 +197,19 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 		LogDir:   gateLogDir(root, label),
 	}
 	opt.Slot = gateSlots(out, stderr)
+	// How long each check took last time, so the longest path starts first.
+	history := cigate.OpenDurationHistory(ctx, root, os.Getenv(cigate.CacheDirEnv))
+	if opt.Expected = history.Expected(); len(opt.Expected) > 0 {
+		fmt.Fprintf(out, "scheduling: longest path first, from %d check duration(s) recorded by earlier runs\n", len(opt.Expected))
+	}
 
 	rep := cigate.Run(ctx, label, selected, opt)
 	rep.Head, rep.Dirty = gitHead(root)
 	rep.RenderText(out)
+	history.Observe(rep)
+	if err := history.Save(); err != nil {
+		fmt.Fprintf(stderr, "warning: could not record check durations: %v\n", err)
+	}
 
 	if cache != nil {
 		if n, why := cache.Flush(context.WithoutCancel(ctx)); why != "" {

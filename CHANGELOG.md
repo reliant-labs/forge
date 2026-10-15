@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge ci gate` starts the longest path first.** Host slots used to be
+  granted in plan order (forge's static checks, then a project's extras, then
+  the test lanes), so a gate's longest checks waited behind every shorter
+  heavy check planned before them: on control-plane the unit suite (~15 min)
+  and the integration suite (~22 min under load) queued behind ~25
+  slot-minutes of lint, build and render rows. The gate now records how long
+  each check's command took (`durations.json` beside the verdict cache, shared
+  by every worktree of a repository) and orders the checks that read the tree
+  by the longest chain still to run: a check's own recorded time plus the
+  longest chain of checks that wait on it. The first run has no history and
+  keeps plan order; tree-mutating checks still run first and alone. A slot that
+  is free when several checks become ready together now waits 20ms for them
+  all to ask before it picks one.
 - **`forge generate --steps harness` regenerates only the test harness, in
   seconds.** After a `Deps` edit the next thing you need is each
   `helpers_gen_test.go` (`NewTest<Svc>`, `With<Svc>Deps`, the `Stub<Field>`

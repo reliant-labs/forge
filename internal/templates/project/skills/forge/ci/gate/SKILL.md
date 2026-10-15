@@ -75,6 +75,10 @@ each one's time and the gate's wall time. Three things bound the concurrency:
   it runs (`forge generate`, `task test`'s `forge slot run`) run inside that
   slot instead of queueing again. Light checks run under `--jobs` (default half
   the CPUs, 2-8). Do not wrap the gate itself in `forge slot run`.
+- **Longest path first** — slots go to the waiting check with the longest
+  chain still to run: its own duration plus the longest chain of checks that
+  wait on it, from the durations earlier runs of this repository recorded
+  (`durations.json` beside the verdict cache). With no history, plan order.
 
 Each check's output goes to `tmp/ci/<lane>/<check>.log` (`CI_LOG_DIR` moves it;
 `.forge/ci/<lane>/` when git does not ignore `tmp/`). The console carries one

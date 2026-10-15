@@ -124,9 +124,9 @@ func OpenVerdictCache(ctx context.Context, in CacheInput) (*VerdictCache, string
 		return nil, "no HEAD commit"
 	}
 	commit, _ := git(in.Root, "rev-parse", "--short", "HEAD")
-	common, err := git(in.Root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil || common == "" {
-		return nil, "cannot read the repository's git dir"
+	repoDir, why := repoCacheDir(ctx, in.Root, in.Dir)
+	if why != "" {
+		return nil, why
 	}
 
 	salt := sha256.New()
@@ -149,22 +149,35 @@ func OpenVerdictCache(ctx context.Context, in CacheInput) (*VerdictCache, string
 		fmt.Fprintf(salt, "outside=%s\n", o)
 	}
 
-	dir := in.Dir
-	if dir == "" {
-		base, err := os.UserCacheDir()
-		if err != nil {
-			return nil, "no user cache dir"
-		}
-		dir = filepath.Join(base, "forge", "ci-verdicts")
-	}
-	repo := sha256.Sum256([]byte(filepath.Clean(common)))
 	return &VerdictCache{
-		dir:    filepath.Join(dir, hex.EncodeToString(repo[:8])),
+		dir:    repoDir,
 		root:   in.Root,
 		tree:   tree,
 		commit: commit,
 		salt:   hex.EncodeToString(salt.Sum(nil)),
 	}, ""
+}
+
+// repoCacheDir is this repository's directory under the gate's cache: dir
+// ("" is <user cache>/forge/ci-verdicts), keyed by the git common dir, so
+// every worktree of one repository shares it.
+func repoCacheDir(ctx context.Context, root, dir string) (string, string) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	common := strings.TrimSpace(string(out))
+	if err != nil || common == "" {
+		return "", "cannot read the repository's git dir"
+	}
+	if dir == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			return "", "no user cache dir"
+		}
+		dir = filepath.Join(base, "forge", "ci-verdicts")
+	}
+	repo := sha256.Sum256([]byte(filepath.Clean(common)))
+	return filepath.Join(dir, hex.EncodeToString(repo[:8])), ""
 }
 
 // Commit is the short commit the cache keys this run on.

@@ -54,9 +54,19 @@ func writeFile(t *testing.T, root, rel, content string) string {
 	return abs
 }
 
-// newFormatProject scaffolds a temp project with a go.mod so the pre-pass
-// resolves the canonical goimports local-prefix (the module path).
+// newFormatProject scaffolds a temp project with a go.mod and the formatters
+// block the scaffolded .golangci.yml declares (goimports, the module as its
+// local prefix), which is the gate the pre-pass formats to.
 func newFormatProject(t *testing.T) string {
+	t.Helper()
+	root := newBareFormatProject(t)
+	writeFile(t, root, ".golangci.yml", "version: \"2\"\nformatters:\n  enable:\n    - goimports\n  settings:\n    goimports:\n      local-prefixes:\n        - example.com/thing\n")
+	return root
+}
+
+// newBareFormatProject is a temp project with a go.mod and no golangci-lint
+// config.
+func newBareFormatProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", "module example.com/thing\n\ngo 1.22\n")

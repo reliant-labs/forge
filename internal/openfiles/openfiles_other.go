@@ -7,7 +7,7 @@ import (
 	"errors"
 )
 
-// takeLazy is only reached on windows; elsewhere Take shells out to lsof.
+// takeLazy is only reached on windows; macOS and other Unixes Take shells out to lsof.
 func takeLazy(context.Context) (Snapshot, error) {
 	return Snapshot{}, errors.New("openfiles: lazy snapshots exist only on windows")
 }

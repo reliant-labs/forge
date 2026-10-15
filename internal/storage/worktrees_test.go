@@ -540,7 +540,8 @@ func TestWorktreesRetainWhenLsofIsMissing(t *testing.T) {
 	if err := os.Symlink(gitPath, filepath.Join(bin, "git")); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin) // git, and no lsof
+	t.Setenv("PATH", bin)                      // git, and no lsof
+	t.Setenv("FORGE_OPENFILES_SOURCE", "lsof") // Linux reads /proc, which needs none; force the lsof source
 	var out strings.Builder
 	err = (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false)
 	if _, statErr := os.Stat(worktree); statErr != nil {
@@ -702,6 +703,7 @@ func TestWorktreeRecheckCatchesUseAfterBatchClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FORGE_OPENFILES_SOURCE", "lsof")
 	report := reapOnce(t, Runner{}, repo, true)
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("worktree removed although a process started using it after the batch snapshot (held %+v)", report.Held)

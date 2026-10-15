@@ -30,6 +30,7 @@ func fakeLsof(t *testing.T, records, tail string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FORGE_OPENFILES_SOURCE", "lsof") // Linux reads /proc unless told otherwise
 }
 
 // resolved is path with every symlink resolved, which is the form lsof

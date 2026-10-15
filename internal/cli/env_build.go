@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -40,6 +41,7 @@ import (
 func newEnvBuildCmd() *cobra.Command {
 	var opts buildOptions
 	var noBuild bool
+	var declare string
 
 	cmd := &cobra.Command{
 		Use:   "build <environment>",
@@ -131,6 +133,11 @@ Examples:
 				return err
 			}
 			opts.parallelSet = cmd.Flags().Changed("parallel")
+			policy, err := parseDeclarePolicy(declare)
+			if err != nil {
+				return err
+			}
+			ctx := withDeclarePolicy(cmd.Context(), policy)
 
 			// Record what the env DECLARES before producing anything.
 			//
@@ -147,15 +154,15 @@ Examples:
 			// nothing, so recording a declaration from it would make a
 			// dry run the thing that changed the world.
 			if !opts.plan {
-				if err := recordEnvBuildDeclaration(cmd.Context(), opts.env); err != nil {
+				if err := recordEnvBuildDeclaration(ctx, opts.env); err != nil {
 					return err
 				}
 			}
 
 			if noBuild {
-				return runEnvBuildCutOnly(cmd.Context(), opts)
+				return runEnvBuildCutOnly(ctx, opts)
 			}
-			return runBuild(cmd.Context(), opts)
+			return runBuild(ctx, opts)
 		},
 	}
 
@@ -175,6 +182,7 @@ Examples:
 	cmd.Flags().BoolVar(&noBuild, "no-build", false, "With --release: record the release over the digests an earlier `--push` already captured in .forge/state, without rebuilding. This is the cut-only half of a pipeline whose build and release are separate jobs.")
 	cmd.Flags().StringVar(&opts.bundleEnvs, "bundle-envs", "", "Write a bundle for each of these envs (comma-separated) from this one build, instead of only for the env argument. A release is env-agnostic and a bundle is not, so this is how one cut produces the manifests for every env it will ship to — each pinned to the same release and the same source. Each env is rendered; each bundle is pushed beside its images for a control-plane env, or written to this machine's ledger otherwise.")
 	registerRunFlags(cmd.Flags(), &opts.run)
+	registerDeclareFlag(cmd.Flags(), &declare)
 
 	return cmd
 }
@@ -211,6 +219,14 @@ func recordEnvBuildDeclaration(ctx context.Context, envName string) error {
 	if err != nil && declarationUndeliverable(err) {
 		fmt.Printf("[declare] Warning: env %s's declaration was not recorded: %v\n"+
 			"[declare]   The build continues; the next build or deploy that reaches the control plane records it.\n", envName, err)
+		return nil
+	}
+	// A REFUSED declaration fails the build, unless the caller asked for
+	// --declare=best-effort and the refusal is of the content (a control
+	// plane older than this forge). See declare_policy.go.
+	if declarationRefusalDowngraded(ctx, err) {
+		warnRefusedRecord(os.Stdout, "[declare]", fmt.Sprintf("env %s's declaration", envName),
+			fmt.Sprintf("the next `forge env build %s`", envName), err)
 		return nil
 	}
 	return err

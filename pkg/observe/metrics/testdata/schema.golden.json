@@ -24,6 +24,27 @@
       "since": "v0.1.45"
     },
     {
+      "name": "forge.server.drain.duration",
+      "type": "histogram",
+      "unit": "s",
+      "description": "How long each phase of a graceful shutdown took: the pre-stop pause, the listener drain (unary requests and long-lived streams), stopping workers and operators, the caller's teardown, and the whole shutdown (total).",
+      "attributes": [
+        {
+          "key": "phase",
+          "values": [
+            "pre_stop",
+            "listener",
+            "workers",
+            "operators",
+            "teardown",
+            "total"
+          ]
+        }
+      ],
+      "stability": "experimental",
+      "since": "v0.1.46"
+    },
+    {
       "name": "go.config.gogc",
       "type": "updowncounter",
       "unit": "%",

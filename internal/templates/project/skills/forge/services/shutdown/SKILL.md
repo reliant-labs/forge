@@ -127,6 +127,28 @@ never more than half the budget; `serverkit.Config.DrainReserve`). The reserve
 is what the rest of the teardown runs in. A stream that never asked is ended at
 once — waiting would only delay its client's reconnect.
 
+## Reading a shutdown
+
+Each phase writes one INFO line, `msg` starting `drain:`, with `phase` and its
+`elapsed`; the same durations are the `forge.server.drain.duration` histogram
+(attribute `phase`), exported by the telemetry flush that ends the shutdown:
+
+| `phase` | line | carries |
+|---|---|---|
+| `readiness` | `drain: readiness flipped to draining` | `pre_stop_delay`, `streams_open` |
+| `pre_stop` | `drain: pre-stop pause over; draining the listener` | `streams_open` |
+| `listener` | `drain: listener drained` | `streams_ended`, `streams_claimed`, `streams_hard_ended`, `hijacked_conns_closed`, `streams_still_running` |
+| `workers` | `drain: workers stopped` | `workers` |
+| `operators` | `drain: operators stopped` (only with operators) | `operators` |
+| `teardown` | `drain: teardown done` (OnShutdown, pprof) | |
+| `total` | `drain: complete` | `shutdown_timeout` |
+
+A non-zero `streams_hard_ended` is a stream that asked to say goodbye and did
+not finish within the soft phase; `hijacked_conns_closed` or
+`streams_still_running` is a handler that ignores its ended context — fix the
+handler. A slow `listener` phase with neither is a unary request taking that
+long.
+
 ## Without `serverkit.Run`
 
 Every piece is exported for a main that runs its own listener (a worker with a

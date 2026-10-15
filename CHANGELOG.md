@@ -277,6 +277,16 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   client-streaming RPCs are untouched. The scaffolded `serve.go` is yours, so
   an existing project adds the one line itself: `forge project upgrade list`
   offers v0.1.46 §8.
+- **A shutdown says where its time went.** `serverkit.Run` used to log
+  "server stopping" and then nothing until an error, so a rollout that used
+  its whole grace period could not be diagnosed from its own log. Each phase
+  now writes one `drain: …` INFO line with `phase` and `elapsed` — readiness
+  flipped, pre-stop over, listener drained (with `streams_ended`,
+  `streams_claimed`, `streams_hard_ended`, `hijacked_conns_closed`,
+  `streams_still_running`), workers stopped, operators stopped, teardown done,
+  complete — and records the new built-in histogram
+  `forge.server.drain.duration` by `phase`. `Streams.Report()` returns the
+  listener's counts for a main that drains its own listener.
 - **A websocket open at shutdown closes with a status and runs its cleanup.**
   `http.Server.Shutdown` neither waits for nor closes a hijacked connection,
   so the process exit dropped every open websocket — the browser saw a dead

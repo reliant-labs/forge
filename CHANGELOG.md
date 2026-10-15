@@ -38,8 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ttlSecondsAfterFinished` wrong (the Job re-runs every TTL period) nothing
   removed them: control-plane-prod held ~250 completed Jobs and gained about five
   per deploy. After a full, non-dry-run apply, forge deletes the finished Jobs of
-  each base name beyond the newest `ApplyOpts.KeepJobs` (default 3, the current
-  release's included; negative turns it off). It deletes a Job only when forge
+  each base name beyond the newest three (the current release's included). It
+  deletes a Job only when forge
   made it (`managed-by=forge` and the `forge.dev/job-name` handle), it is in the
   applied namespace and env, the render still defines that base name, and it has
   finished. A running Job, a Job the render being applied names (a rollback's),

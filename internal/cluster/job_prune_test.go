@@ -111,36 +111,35 @@ func TestSupersededJobs_DecisionTable(t *testing.T) {
 		live     []map[string]any
 		rendered []string
 		env      string
-		keep     int
 		want     []string
 	}{
 		{
 			name:     "keeps the newest three finished, deletes the older ones",
 			live:     mig,
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
 			name:     "the current release's Job is never deleted, even when older than the cut",
 			live:     mig,
 			rendered: []string{"migrate-h1"}, // a rollback re-renders h1
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h2", "migrate-h3"},
 		},
 		{
 			name:     "a running Job is never touched, however old, and does not count toward keep",
 			live:     append([]map[string]any{jobDoc(jobNS, "migrate-h0", "migrate", "running", 0, nil)}, mig...),
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
 			name:     "a Job with no terminal condition yet (just created) is left alone",
 			live:     append([]map[string]any{jobDoc(jobNS, "migrate-h0", "migrate", "pending", 0, nil)}, mig...),
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
 			name: "failed Jobs are finished: they are kept for debugging, then pruned like any other",
@@ -151,15 +150,15 @@ func TestSupersededJobs_DecisionTable(t *testing.T) {
 				jobDoc(jobNS, "migrate-h4", "migrate", "complete", 4, nil),
 			},
 			rendered: []string{"migrate-h4"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1"},
+			env:      "prod",
+			want:     []string{"migrate-h1"},
 		},
 		{
 			name:     "fewer than keep: nothing to prune",
 			live:     mig[:2],
 			rendered: []string{"migrate-h2"},
-			env:      "prod", keep: 3,
-			want: nil,
+			env:      "prod",
+			want:     nil,
 		},
 		{
 			name: "each base name is counted on its own",
@@ -168,8 +167,8 @@ func TestSupersededJobs_DecisionTable(t *testing.T) {
 				jobDoc(jobNS, "idp-b", "idp", "complete", 2, nil),
 			),
 			rendered: []string{"migrate-h4", "idp-b"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1"},
+			env:      "prod",
+			want:     []string{"migrate-h1"},
 		},
 		{
 			name: "a base the render no longer defines is left alone (a --target subset or a conditional that went false proves nothing)",
@@ -180,8 +179,8 @@ func TestSupersededJobs_DecisionTable(t *testing.T) {
 				jobDoc(jobNS, "gone-d", "gone", "complete", 4, nil),
 			),
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
 			name: "not forge's: no managed-by label, or no forge.dev/job-name handle (a CronJob's child, a chart's Job)",
@@ -197,8 +196,8 @@ func TestSupersededJobs_DecisionTable(t *testing.T) {
 				}(),
 			),
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
 			name: "another namespace is never pruned by this apply",
@@ -209,8 +208,8 @@ func TestSupersededJobs_DecisionTable(t *testing.T) {
 				jobDoc("other", "migrate-o4", "migrate", "complete", 4, nil),
 			),
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
 			name: "another env's Jobs (forge.dev/env differs) are never pruned",
@@ -218,41 +217,41 @@ func TestSupersededJobs_DecisionTable(t *testing.T) {
 				jobDoc(jobNS, "migrate-s1", "migrate", "complete", 0, map[string]string{"forge.dev/env": "staging"}),
 			),
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
 			name:     "a Job already being deleted is not deleted again",
 			live:     append([]map[string]any{withDeletion(jobDoc(jobNS, "migrate-h0", "migrate", "complete", 0, nil))}, mig...),
 			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-h1", "migrate-h2", "migrate-h3"},
+			env:      "prod",
+			want:     []string{"migrate-h1", "migrate-h2", "migrate-h3"},
 		},
 		{
-			name:     "keep 1 retains only the newest",
+			name:     "exactly three finished: all are kept",
 			live:     mig[:3],
 			rendered: []string{"migrate-h3"},
-			env:      "prod", keep: 1,
-			want: []string{"migrate-h1", "migrate-h2"},
+			env:      "prod",
+			want:     nil,
 		},
 		{
-			name:     "a negative keep disables the prune",
-			live:     mig,
-			rendered: []string{"migrate-h6"},
-			env:      "prod", keep: -1,
-			want: nil,
+			name:     "a fourth finished Job is the first one pruned",
+			live:     mig[:4],
+			rendered: []string{"migrate-h4"},
+			env:      "prod",
+			want:     []string{"migrate-h1"},
 		},
 		{
 			name:     "equal timestamps are broken by name, so the choice is stable",
 			live:     []map[string]any{jobDoc(jobNS, "migrate-a", "migrate", "complete", 1, nil), jobDoc(jobNS, "migrate-b", "migrate", "complete", 1, nil), jobDoc(jobNS, "migrate-c", "migrate", "complete", 1, nil), jobDoc(jobNS, "migrate-d", "migrate", "complete", 1, nil)},
 			rendered: []string{"migrate-d"},
-			env:      "prod", keep: 3,
-			want: []string{"migrate-a"},
+			env:      "prod",
+			want:     []string{"migrate-a"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := supersededJobs(asLiveJobs(t, tc.live...), renderedOneShotJobs(jobRender(tc.rendered...), jobNS), jobNS, tc.env, tc.keep)
+			got := supersededJobs(asLiveJobs(t, tc.live...), renderedOneShotJobs(jobRender(tc.rendered...), jobNS), jobNS, tc.env)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("supersededJobs = %v, want %v", got, tc.want)
 			}
@@ -408,7 +407,7 @@ func TestPruneSupersededJobs_NeverDeletesAJobTheRenderStillReferences(t *testing
 	cl := newFakeCluster(t)
 	seedBacklog(cl)
 
-	deleted, err := PruneSupersededJobs(context.Background(), "k3d-job-prune", jobRender("control-plane-migrate-h1"), jobNS, "prod", 0)
+	deleted, err := PruneSupersededJobs(context.Background(), "k3d-job-prune", jobRender("control-plane-migrate-h1"), jobNS, "prod")
 	if err != nil {
 		t.Fatalf("PruneSupersededJobs: %v", err)
 	}
@@ -444,36 +443,6 @@ func TestApply_TargetedApplyPrunesNoJobs(t *testing.T) {
 	}
 }
 
-// A negative keep turns the prune off and a larger keep retains more; 0 is the default 3.
-func TestPruneSupersededJobs_KeepIsConfigurable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
-	}
-	render := jobRender("control-plane-migrate-h7")
-	for _, tc := range []struct {
-		name string
-		keep int
-		want []string
-	}{
-		{"negative disables", -1, nil},
-		{"zero is the default three", 0, []string{"control-plane-migrate-h1", "control-plane-migrate-h2", "control-plane-migrate-h3"}},
-		{"five keeps five", 5, []string{"control-plane-migrate-h1"}},
-		{"ten keeps all", 10, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cl := newFakeCluster(t)
-			seedBacklog(cl)
-			got, err := PruneSupersededJobs(context.Background(), "k3d-job-prune", render, jobNS, "prod", tc.keep)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("deleted %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 // A render with no hash-named Job at all (an env with no migrations) never even
 // lists Jobs, so a cluster whose Jobs this apply knows nothing about is untouched.
 func TestPruneSupersededJobs_RenderWithoutJobsPrunesNothing(t *testing.T) {
@@ -483,7 +452,7 @@ func TestPruneSupersededJobs_RenderWithoutJobsPrunesNothing(t *testing.T) {
 	cl := newFakeCluster(t)
 	seedBacklog(cl)
 	stream := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: settings\n  namespace: " + jobNS + "\ndata:\n  a: b"
-	deleted, err := PruneSupersededJobs(context.Background(), "k3d-job-prune", stream, jobNS, "prod", 0)
+	deleted, err := PruneSupersededJobs(context.Background(), "k3d-job-prune", stream, jobNS, "prod")
 	if err != nil || len(deleted) != 0 {
 		t.Errorf("deleted %v (err %v) from a render that defines no Job", deleted, err)
 	}

@@ -292,12 +292,6 @@ type ApplyOpts struct {
 	// destructive (see deploy.go's pruneOrphanDeployments docstring).
 	Prune bool
 
-	// KeepJobs is how many finished Jobs of each hash-named one-shot (a
-	// migration) an apply leaves behind, the current release's included;
-	// older finished ones are deleted (job_prune.go). 0 selects
-	// DefaultKeepJobs; a negative value turns the prune off.
-	KeepJobs int
-
 	// Project is the forge project name. With Env it names the owner of
 	// the CRDs this apply renders (CRDOwner), which is what makes CRD
 	// pruning provable. Empty disables the CRD stamp and prune.
@@ -1103,7 +1097,7 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// Deployment prune is the destructive one), but a FULL apply only: a
 	// --target subset says nothing about what the env stopped rendering.
 	if len(opts.Targets) == 0 {
-		if _, err := PruneSupersededJobs(ctx, opts.Context, manifests, opts.Namespace, opts.Env, opts.KeepJobs); err != nil {
+		if _, err := PruneSupersededJobs(ctx, opts.Context, manifests, opts.Namespace, opts.Env); err != nil {
 			fmt.Printf("Warning: prune superseded Jobs: %v\n", err)
 		}
 	}

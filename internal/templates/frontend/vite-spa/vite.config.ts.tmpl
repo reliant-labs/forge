@@ -90,8 +90,70 @@ const OTEL_UPSTREAM = (
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318"
 ).replace(/\/+$/, "");
 
-export default defineConfig(() => {
+// ── API proxy (DEV ONLY) ────────────────────────────────────────────────
+//
+// Under the dev server the browser calls the API on ITS OWN origin, at
+// `/_api/*`, and `vite` forwards that to the API server. A page opened
+// through a Reliant workspace preview URL, a tunnel or another machine's IP
+// cannot reach "localhost:<api port>" — that is the viewer's machine — so
+// the API is reached through the one host the browser already has.
+// src/lib/api-base.ts has the whole story.
+//
+//   upstream: VITE_API_URL, the API's base URL. `forge env up` sets it to the
+//             API it started, and a value from your shell or the frontend's
+//             KCL env_vars wins over forge's.
+//   path:     /_api/*  ->  <upstream>/*   (the /_api prefix is stripped)
+//   off:      FORGE_DEV_API_PROXY=off, or no upstream. The browser then calls
+//             the configured API URL directly, cross-origin, as before.
+//
+// The answer reaches the bundle as import.meta.env.FORGE_DEV_API_PROXY
+// (`define` below), which api-base.ts reads, so the proxy and the transport
+// are one decision. Like /_otel, there is no production equivalent: a built
+// SPA reads the API's URL from the runtime config (config.js), as before.
+const API_UPSTREAM = (process.env.VITE_API_URL || "").replace(/\/+$/, "");
+const DEV_API_PROXY =
+  API_UPSTREAM !== "" && !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
+    ? "/_api"
+    : "";
+
+// ── Dev hosts (DEV ONLY) ────────────────────────────────────────────────
+//
+// `vite` answers only requests whose Host it recognises: localhost,
+// *.localhost and any IP address (a guard against DNS rebinding). Anything
+// else gets "Blocked request. This host is not allowed." Allowed here as
+// well:
+//
+//   - this dev server's Reliant workspace preview host: RELIANT_PREVIEW_URL_TEMPLATE
+//     (`https://{port}-<id>.workspaces.reliantapi.com`, set on a Reliant
+//     cloud machine) with the dev server's port.
+//   - FORGE_DEV_ALLOWED_ORIGINS: more hostnames, comma-separated (a tunnel,
+//     a custom dev DNS name). A leading "." allows every subdomain.
+const devAllowedHosts = (port: number): string[] => {
+  const out = new Set<string>();
+  const preview = process.env.RELIANT_PREVIEW_URL_TEMPLATE;
+  if (preview) {
+    try {
+      out.add(new URL(preview.replace("{port}", String(port))).hostname);
+    } catch {
+      // A malformed template allows nothing extra.
+    }
+  }
+  for (const host of (process.env.FORGE_DEV_ALLOWED_ORIGINS ?? "").split(",")) {
+    if (host.trim()) out.add(host.trim());
+  }
+  return [...out];
+};
+
+export default defineConfig(({ command, mode }) => {
+  // Only the dev server proxies. A build, and Vitest (which loads this file
+  // too), must not believe in a proxy that is not there.
+  const devApiProxy = command === "serve" && mode !== "test" ? DEV_API_PROXY : "";
   return {
+    // Whether the dev server proxies the API, for src/lib/api-base.ts — see
+    // DEV_API_PROXY above. Undefined (so "") everywhere else.
+    define: devApiProxy
+      ? { "import.meta.env.FORGE_DEV_API_PROXY": JSON.stringify(devApiProxy) }
+      : {},
     // devLogPlugin is dev-only (`apply: "serve"`): it receives the browser
     // console lines that installDevLogging() posts in src/main.tsx and prints
     // them to this dev server's stdout, which `forge env up` tees to
@@ -117,12 +179,24 @@ export default defineConfig(() => {
     server: {
       port: 5173,
       host: true,
+      // A Reliant workspace preview host (and any FORGE_DEV_ALLOWED_ORIGINS)
+      // — see devAllowedHosts above. Vite's port, not PORT: this file pins it.
+      allowedHosts: devAllowedHosts(5173),
       proxy: {
         "/_otel": {
           target: OTEL_UPSTREAM,
           changeOrigin: true,
           rewrite: (p: string) => p.replace(/^\/_otel/, ""),
         },
+        ...(devApiProxy
+          ? {
+              [devApiProxy]: {
+                target: API_UPSTREAM,
+                changeOrigin: true,
+                rewrite: (p: string) => p.slice(devApiProxy.length),
+              },
+            }
+          : {}),
       },
     },
     // Vitest reads THIS file when a project has no vitest.config.ts. The

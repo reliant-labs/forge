@@ -114,7 +114,7 @@ An unregistered status renders neutral, never a guessed color.
 
 ## Connect RPC clients + mock mode
 
-Import the generated transport from `src/lib/connect.ts`; for direct calls `createClient(MyService, transport)`. It talks to the REAL backend (`forge env up dev`). Mock mode is **opt-in**: set `mock_api` in `deploy/kcl/<env>/config.k`, then `forge generate`.
+Import the generated transport from `src/lib/connect.ts`; for direct calls `createClient(MyService, transport)`. It talks to the REAL backend through `src/lib/api-base.ts` (`frontend/serving`). Mock mode is **opt-in**: set `mock_api` in `deploy/kcl/<env>/config.k`, then `forge generate`.
 
 | `mock_api` | RPCs | Signed-in user |
 |---|---|---|

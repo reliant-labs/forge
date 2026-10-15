@@ -29,8 +29,18 @@
 // What you get instead is an `Identity`: who is signed in, for rendering.
 // Use it to decide what to SHOW. Never to decide what is ALLOWED — the
 // server validates the real token on every request.
+//
+// ── Where these requests go ───────────────────────────────────────────
+//
+// Wherever src/lib/connect.ts sends RPCs: both ask src/lib/api-base.ts. In
+// the dev loop that is this page's own origin (`/_api`, proxied to the API
+// by the dev server), so the cookie the API sets is first-party to whatever
+// host the page was opened on — localhost, or a workspace preview URL.
 {{if .HasTypedConfig}}
+import { apiBase } from "@/lib/api-base";
 import { loadConfig } from "@/lib/config_gen";
+{{else}}
+import { apiBase } from "@/lib/api-base";
 {{end}}
 {{- if .HasTypedConfig}}
 /**
@@ -41,13 +51,18 @@ import { loadConfig } from "@/lib/config_gen";
  * browser and the process environment during server rendering, so routing
  * through it removes a second, hand-maintained copy of that same fallback
  * chain — and removes the build-time-inlined env read that would freeze
- * this bundle to the environment it was built against.
+ * this bundle to the environment it was built against. apiBase() swaps in
+ * this page's own origin while the dev server proxies the API.
  */
 function apiOrigin(): string {
-  return String(loadConfig().API_URL || "").replace(/\/+$/, "");
+  return apiBase(String(loadConfig().API_URL || ""));
 }
 {{- else}}
-/** Where the API lives. Empty means same-origin, which is the common case. */
+/**
+ * Where the API lives. Empty means same-origin, which is the common case.
+ * apiBase() swaps in this page's own origin while the dev server proxies
+ * the API.
+ */
 function apiOrigin(): string {
   const fromRuntime =
     typeof window !== "undefined"
@@ -58,7 +73,7 @@ function apiOrigin(): string {
     fromRuntime ||
     (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_API_URL) ||
     "";
-  return String(configured).replace(/\/+$/, "");
+  return apiBase(String(configured));
 }
 {{- end}}
 
@@ -139,8 +154,8 @@ export async function signOut(): Promise<Identity> {
 export async function fetchIdentity(): Promise<Identity> {
   try {
     const response = await fetch(`${apiOrigin()}/auth/session`, {
-      // See the note in post(): cross-origin in dev, so the cookie only
-      // travels with "include".
+      // See the note in post(): the cookie only travels to an API on
+      // another origin with "include".
       credentials: "include",
       headers: { Accept: "application/json" },
     });
@@ -159,11 +174,12 @@ async function post(path: string, body: unknown): Promise<Identity> {
     response = await fetch(`${apiOrigin()}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // "include", not "same-origin": in the dev loop the API is on its
-      // own port, so every auth call is cross-origin and "same-origin"
-      // silently DROPS the session cookie — login returns 200 and the user
-      // stays signed out, with nothing in the console to explain it. The
-      // server pairs this with cors_allow_credentials.
+      // "include", not "same-origin": whenever the API is on another origin
+      // — a deployed API_URL naming its own host, or the dev loop with
+      // FORGE_DEV_API_PROXY=off — "same-origin" silently DROPS the session
+      // cookie: login returns 200 and the user stays signed out, with
+      // nothing in the console to explain it. The server pairs this with
+      // cors_allow_credentials. Through the dev proxy it costs nothing.
       credentials: "include",
       body: JSON.stringify(body),
     });

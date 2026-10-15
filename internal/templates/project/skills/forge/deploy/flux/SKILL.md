@@ -129,14 +129,19 @@ refused: every `forge.dev/*` key, `app.kubernetes.io/name` (the chart's `name`),
 `app.kubernetes.io/managed-by` (`forge`), and the apiserver's
 `kubernetes.io/metadata.name`. Every other key, PSA included, is yours.
 
-A re-apply also **deletes the objects the chart stopped rendering**: every object
-is stamped `forge.dev/chart-owner=<project>.<env>`, and after the chart's apply
-succeeds the ones carrying that stamp that the new render lacks are removed. It
-keeps (and reports) CRDs, Namespaces and stateful kinds (PV, PVC, StatefulSet,
-Secret); anything annotated `kustomize.toolkit.fluxcd.io/prune: disabled`; and
-anything with `ownerReferences`. `prune = False` turns it off for a chart.
-Objects dropped before forge began stamping are never deleted: remove those by
-hand once.
+A re-apply also **deletes the objects the chart stopped rendering**. Every apply
+records what it sent in the chart's inventory (a ConfigMap
+`forge-chart-inventory-<name>-<hash>` in the chart's namespace) and stamps each
+object `forge.dev/chart-owner=<project>.<env>`. After the chart's apply
+succeeds, the objects the inventory recorded before it that the new render
+lacks are removed, and only while they still carry the stamp. It keeps (and
+reports) CRDs, Namespaces and stateful kinds (PV, PVC, StatefulSet, Secret);
+anything annotated `kustomize.toolkit.fluxcd.io/prune: disabled`; and anything
+with `ownerReferences`. A failed apply prunes nothing. The first apply without
+an inventory prunes nothing and records one. A concurrent apply of the same
+chart never has its new objects pruned. `prune = False` turns it off for a
+chart. An object dropped before the chart had an inventory was never recorded
+and is never deleted: remove it by hand once.
 
 Detection of "this env already provides Flux" is **by chart reference, never by
 name**: a chart's `name` is the `--target` selector its author picks freely, so a

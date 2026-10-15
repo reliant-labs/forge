@@ -3316,23 +3316,35 @@ schema HelmChart:
     PRUNING. forge applies a chart's objects but a plain `kubectl apply`
     never deletes, so an object a chart version stops rendering (a
     NetworkPolicy, a ClusterRole) used to stay live forever. forge now
-    stamps every object a chart renders with `forge.dev/chart-owner =
-    <project>.<env>` and, after a successful apply of the chart, deletes
-    the objects carrying that stamp that the new render no longer contains.
-    It deletes only what it can prove it applied, and never:
+    records every object a chart's apply sends in the chart's INVENTORY (a
+    ConfigMap `forge-chart-inventory-<name>-<hash>` in the chart's namespace,
+    one per env) and stamps each with `forge.dev/chart-owner =
+    <project>.<env>`. After a successful apply it deletes the objects the
+    inventory recorded BEFORE that apply which the new render no longer
+    contains. Nothing outside the inventory is ever a candidate, not even an
+    object carrying the stamp (a copied manifest). It never deletes:
 
       * a CRD, a Namespace, or a kind that holds data (PersistentVolume,
         PersistentVolumeClaim, StatefulSet, Secret) — kept, and reported
-        (a Secret is never even listed);
+        (only their existence is read, never a Secret's contents);
+      * an object that no longer carries this chart's stamp (forge stops
+        tracking it);
       * an object another controller owns (`ownerReferences`);
       * an object annotated `kustomize.toolkit.fluxcd.io/prune: disabled`
         (the SAME escape hatch a Flux bundle honours);
-      * anything from a chart whose render came out empty or unparseable.
+      * anything after a FAILED apply (what it sent is still recorded), or
+        from a chart whose render came out empty or unparseable.
 
-    `prune = False` turns the step off for a chart whose live objects are
-    hand-managed. A `--target` apply of another workload renders no chart
-    and prunes nothing. Objects dropped from a chart BEFORE forge began
-    stamping carry no owner and are never deleted: remove those by hand once.
+    The first apply that finds no inventory (the first deploy under this
+    version) prunes nothing and records one; pruning starts with the next.
+    Two concurrent applies of one chart each prune only from the inventory
+    they read before applying, so neither deletes what the other is adding,
+    and their inventory writes merge (compare-and-swap) rather than
+    overwrite. `prune = False` turns the step off for a chart whose live
+    objects are hand-managed. A `--target` apply of another workload renders
+    no chart and prunes nothing. An object a chart dropped before its
+    inventory existed was never recorded and is never deleted: remove it by
+    hand once.
     """
     name: str
     chart: str = ""

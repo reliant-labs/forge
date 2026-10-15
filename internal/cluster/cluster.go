@@ -709,6 +709,10 @@ func renderSelectedCharts(ctx context.Context, specs []HelmChartSpec) ([]rendere
 // where `rc.spec.Namespace` is read, so it is the seam a regression test has
 // to drive.
 func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChart, quiet bool) error {
+	// One id for this run's inventory writes (chart_prune.go): how a
+	// concurrent apply's merge tells an entry this run recorded from one it
+	// only read.
+	applyID := newChartApplyID()
 	for _, rc := range charts {
 		// A chart may declare its OWN cluster (HelmChartSpec.Cluster), which
 		// overrides the env's primary context for THIS chart alone. Resolved
@@ -727,10 +731,17 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 				fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
 			}
 		}
+		// The chart's inventory is read BEFORE its apply: the prune deletes
+		// only from what an earlier apply recorded, never from what a
+		// concurrent apply is introducing now. nil when the prune is off.
+		prune := beginChartPrune(ctx, chartCtx, rc, applyID)
 		// rc.spec.Namespace is the chart's DECLARED namespace, threaded into
 		// the apply as `-n` so a chart object with no `metadata.namespace`
 		// lands there instead of in `default` (see KubectlApplyNamespaced).
 		if err := applyCRDsThenRest(ctx, chartCtx, rc.spec.Namespace, rc.crds, rc.manifests); err != nil {
+			// Nothing is pruned after a failed apply; what it sent is still
+			// recorded, so an object it did create is tracked.
+			prune.afterFailedApply(ctx)
 			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
 		}
 		// Consumer-declared manifests riding this chart's --target
@@ -740,6 +751,7 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 		// any CRD-then-rest within them too (harmless: these carry none).
 		if strings.TrimSpace(rc.extra) != "" {
 			if err := applyChartRidingManifests(ctx, chartCtx, rc, quiet); err != nil {
+				prune.afterFailedApply(ctx)
 				return err
 			}
 		}
@@ -747,7 +759,7 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 		// of what it declares, so only now can an object it dropped be pruned.
 		// A failed prune never fails the deploy (it is housekeeping, like the
 		// Deployment and CRD prunes), but it is never silent.
-		if _, err := PruneChartObjects(ctx, chartCtx, rc); err != nil {
+		if _, err := prune.afterApply(ctx); err != nil {
 			fmt.Printf("Warning: platform dependency %q: %v\n", rc.spec.Name, err)
 		}
 	}

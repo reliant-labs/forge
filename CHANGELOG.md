@@ -465,6 +465,26 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   reaches it some other way is refused too. Drop the key: forge's values are the
   chart's `name` and `forge`.
 
+- **A chart prune deletes only what the chart's INVENTORY recorded.** The
+  chart prune (below) chose its candidates by listing every object that carried
+  the chart's `forge.dev/chart-owner` stamp. That deleted two kinds of object
+  forge's own apply never sent. One was a stamped object a concurrent apply of
+  the same chart had just created. The other was a copy someone made of a
+  chart object, which carries the stamp too. Every chart apply now records what
+  it sent in a per-chart inventory, a ConfigMap
+  `forge-chart-inventory-<name>-<hash>` in the chart's namespace, one per
+  (project, env). The candidates are the objects that inventory recorded BEFORE
+  the apply which the render no longer contains, and each is still deleted only
+  while it carries the stamp. A **failed** apply deletes nothing but records
+  what it sent. The **first** apply that finds no inventory deletes nothing and
+  records one, so the first deploy under this version prunes nothing. **Two
+  applies at once** each prune only from the inventory they read, and their
+  writes merge by compare-and-swap instead of overwriting each other. The
+  prune no longer lists every resource type in the cluster: it reads only its
+  candidates, and a stateful kind only by name, so a Secret's contents are
+  never read. An inventory ConfigMap a chart left in its old namespace is folded
+  into the new one when the chart moves.
+
 - **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
   the chart stopped rendering.** forge applies a chart with `kubectl apply`,
   which never deletes, so an object a chart version dropped (the Flux chart's

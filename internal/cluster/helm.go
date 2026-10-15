@@ -149,9 +149,11 @@ type HelmChartSpec struct {
 	NamespaceAnnotations map[string]string
 	// Owner is the (project, env) that applies this chart — ChartOwner's
 	// value. Every object the chart renders is stamped with it
-	// (ChartOwnerLabel), and the prune after a successful apply deletes only
-	// objects carrying it. Empty disables both the stamp and the prune: an
-	// owner that cannot be named cannot be proven.
+	// (ChartOwnerLabel), and the chart's inventory is recorded per owner. The
+	// prune after a successful apply deletes only objects that an earlier
+	// apply recorded in that inventory and that still carry the stamp
+	// (chart_prune.go). Empty disables the stamp, the inventory and the prune:
+	// an owner that cannot be named cannot be proven.
 	Owner string
 	// Prune enables that prune for this chart. The zero value is OFF so a
 	// spec built by hand never deletes anything by accident; the KCL
@@ -860,9 +862,10 @@ func helmTemplateIncludeCRDs(ctx context.Context, spec HelmChartSpec) (string, e
 // name when the chart set none, so every document still carries the
 // recommended label. See WorkloadLabel for why routing cannot share that key.
 //
-// A non-empty owner additionally stamps ChartOwnerLabel on every document: the
-// proof the prune after the apply (chart_prune.go) needs that forge applied the
-// object, and for which (project, env).
+// A non-empty owner additionally stamps ChartOwnerLabel on every document. The
+// prune after the apply (chart_prune.go) deletes an object the chart's
+// inventory recorded only while it still carries this stamp for this
+// (project, env).
 func stampAppLabel(manifests, name, owner string) string {
 	var out []string
 	for _, doc := range splitDocs(manifests) {

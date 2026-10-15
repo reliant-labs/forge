@@ -27,6 +27,7 @@ func fakeLsof(t *testing.T, records, tail string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FORGE_OPENFILES_SOURCE", "lsof") // Linux reads /proc unless told otherwise
 }
 
 // TestHoldsComparesCanonicalPaths is the macOS defect in miniature: the caller
@@ -73,7 +74,7 @@ func TestHoldsComparesCanonicalPaths(t *testing.T) {
 func TestTakeParsesACompleteListing(t *testing.T) {
 	dir := t.TempDir()
 	fakeLsof(t, "p1\nfcwd\nn"+dir+"\nf3\nn->0xdeadbeef\nf4\nn*:8080\n", "exit 0")
-	snap, err := Take(context.Background())
+	snap, err := takeLsof(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestTakeAcceptsLsofsRoutineExitOne(t *testing.T) {
 	}
 	dir := t.TempDir()
 	fakeLsof(t, "p1\nf3\nn"+dir+"/open\n", "exit 1")
-	snap, err := Take(context.Background())
+	snap, err := takeLsof(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestTakeFailsClosed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakeLsof(t, tc.records, tc.tail)
-			if _, err := Take(context.Background()); err == nil {
+			if _, err := takeLsof(context.Background()); err == nil {
 				t.Fatal("an incomplete lsof listing was accepted as a snapshot")
 			}
 		})
@@ -127,7 +128,7 @@ func TestTakeFailsClosedOnDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := Take(ctx)
+	_, err := takeLsof(ctx)
 	if err == nil || !strings.Contains(err.Error(), "did not finish") {
 		t.Fatalf("a timed-out lsof must be an error: %v", err)
 	}
@@ -136,12 +137,12 @@ func TestTakeFailsClosedOnDeadline(t *testing.T) {
 	}
 }
 
-func TestTakeWithoutLsof(t *testing.T) {
+func TestTakeLsofWithoutLsof(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows takes its snapshot through the Restart Manager and process table, not lsof (openfiles_windows.go)")
 	}
 	t.Setenv("PATH", t.TempDir())
-	if _, err := Take(context.Background()); err == nil {
+	if _, err := takeLsof(context.Background()); err == nil {
 		t.Fatal("a machine with no lsof produced a snapshot")
 	}
 }

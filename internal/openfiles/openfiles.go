@@ -18,6 +18,10 @@
 //   - NO TIMEOUT. One caller ran lsof unbounded, so a wedged lsof hung
 //     `forge env up`. Take always runs under Timeout.
 //
+// The /proc source (openfiles_proc.go) avoids the same three by construction:
+// it feeds FromPaths, scans every process before answering or fails, and runs
+// under Timeout.
+//
 // Every failure is an error, and every caller treats an error as "everything
 // is in use". Without the snapshot, age is the only evidence left, and age
 // cannot tell abandoned from merely quiet.
@@ -30,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -47,6 +52,12 @@ const Timeout = 2 * time.Minute
 // timeout indefinitely.
 const waitDelay = 5 * time.Second
 
+// SourceEnv names the environment variable that, set to "lsof", makes Take use
+// lsof on Linux instead of /proc: an escape hatch for a host whose procfs is
+// restricted in a way lsof is not (and the seam the tests use to drive a fake
+// lsof).
+const SourceEnv = "FORGE_OPENFILES_SOURCE"
+
 // Snapshot is the set of paths live processes held at one instant: open files,
 // working directories, mapped executables. The zero value holds nothing.
 type Snapshot struct {
@@ -62,15 +73,33 @@ type Snapshot struct {
 	probe func(path string) bool
 }
 
-// Take records one machine-wide snapshot with lsof.
+// Take records one machine-wide snapshot: from /proc on Linux, with lsof on
+// other Unixes, lazily on Windows.
 //
-// One snapshot rather than a probe per candidate: lsof costs seconds, and a
-// per-path `lsof +D` would also race — a path could be opened between its own
-// probe and its removal.
+// Linux reads /proc rather than running lsof because lsof is itself only a
+// reader of /proc there. Going to the source needs no binary (minimal images,
+// containers and sandboxes ship none, and every caller fails closed without a
+// snapshot, so a missing lsof meant nothing was ever reclaimed), no subprocess
+// whose output can be cut short, and no parsing of a second format. macOS has
+// no /proc, so lsof stays the source there.
+//
+// One snapshot rather than a probe per candidate: a per-path `lsof +D` would
+// race — a path could be opened between its own probe and its removal.
 func Take(ctx context.Context) (Snapshot, error) {
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		return takeLazy(ctx)
+	case "linux":
+		if os.Getenv(SourceEnv) == "lsof" {
+			return takeLsof(ctx)
+		}
+		return takeProc(ctx, procRoot)
 	}
+	return takeLsof(ctx)
+}
+
+// takeLsof records one machine-wide snapshot with lsof.
+func takeLsof(ctx context.Context) (Snapshot, error) {
 	if _, err := exec.LookPath("lsof"); err != nil {
 		return Snapshot{}, fmt.Errorf("lsof not found: %w", err)
 	}

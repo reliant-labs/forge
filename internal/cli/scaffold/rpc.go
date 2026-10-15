@@ -406,6 +406,10 @@ func buildRPCHandlerStub(pkg, rpcName, pbImportPath string, mode rpcStreamMode) 
 	// forge's own freshly-scaffolded file, on a project with nothing else
 	// in it. The marker is the LAST doc line for the same reason: the
 	// FIRST one has to start with the method name.
+	nolint := ""
+	if naming.TripsReviveVarNaming(rpcName) {
+		nolint = "//nolint:revive // var-naming: name fixed by the generated Handler interface (proto rpc " + rpcName + ")\n"
+	}
 	return fmt.Sprintf(`package %s
 
 import (
@@ -424,7 +428,7 @@ import (
 // Declare the RPC in the service .proto (the snippet is printed for you),
 // then run `+"`forge generate`"+` so %s / %s exist.
 %s
-%s {
+%s%s {
 %s
 }
 `,
@@ -434,6 +438,7 @@ import (
 		reqType,
 		respType,
 		codegen.UnwiredStubMarkerComment(pkg, rpcName),
+		nolint,
 		sig,
 		body,
 	)

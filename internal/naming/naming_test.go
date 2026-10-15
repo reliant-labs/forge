@@ -265,3 +265,21 @@ func TestHumanize(t *testing.T) {
 		t.Errorf("HumanizeLower = %q", got)
 	}
 }
+
+func TestTripsReviveVarNaming(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"CreateApiKey", true},
+		{"CreateAPIKey", false},
+		{"ListOrders", false},
+		{"GetHTTPStatus", false},
+		{"GetHttpStatus", true},
+	}
+	for _, c := range cases {
+		if got := TripsReviveVarNaming(c.in); got != c.want {
+			t.Errorf("TripsReviveVarNaming(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}

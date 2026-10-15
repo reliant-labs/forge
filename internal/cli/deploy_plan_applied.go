@@ -44,8 +44,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -163,12 +165,29 @@ func ledgerOnlyDeployPlan(ctx context.Context, projectDir, env string, ledger en
 // an object the render stopped producing stays in the cluster.
 const directApplyRemovalNote = "this deploy does NOT delete it (forge applies directly; only --prune removes Deployments, and a forge.HelmChart's own objects are pruned after the chart applies) — if it still exists, delete it by hand; the next plan will not list it again"
 
+// directApplyJobRemovalNote is the same finding for a hash-named one-shot Job.
+// A new spec is a new Job name, so every release that changes one reports the
+// previous Job as removed; the apply prunes those itself (internal/cluster
+// job_prune.go), so "delete it by hand" would be wrong advice.
+var directApplyJobRemovalNote = fmt.Sprintf("this deploy leaves it until it is superseded: forge's direct apply keeps the newest %d finished Jobs of each one-shot name (the current release's included) and deletes the older finished ones after the apply; a running Job is never deleted", cluster.DefaultKeepJobs)
+
+// removalNote picks the detail for an object_removed finding by the kind in its
+// subject ("<cluster>/<kind>/<ns>/<name>", read from the right so a cluster
+// name cannot shift it).
+func removalNote(subject string) string {
+	parts := strings.Split(subject, "/")
+	if len(parts) >= 4 && parts[len(parts)-3] == "Job" {
+		return directApplyJobRemovalNote
+	}
+	return directApplyRemovalNote
+}
+
 // noteDirectApplyRemovals says so on every object_removed finding. Detail is
 // not digested, so this changes what a reviewer reads, never the approval.
 func noteDirectApplyRemovals(plan *release.Plan) {
 	for i := range plan.Findings {
 		if f := &plan.Findings[i]; f.Code == release.FindingObjectRemoved && f.Detail == "" {
-			f.Detail = directApplyRemovalNote
+			f.Detail = removalNote(f.Subject)
 		}
 	}
 }

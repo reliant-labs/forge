@@ -58,7 +58,7 @@ baseline and the plan after it is clean.
 | finding | class | meaning |
 |---|---|---|
 | `object_added` | info | in the candidate, not in the last applied bundle |
-| `object_removed` | warn | applied last time, gone from the render now. A reconciler (Flux, the control plane) prunes it; forge's direct apply does NOT (only `--prune`, and only Deployments; a `forge.HelmChart`'s own objects are the exception and are pruned after the chart's apply), so the detail says so — if it still exists, delete it by hand; the next plan no longer lists it |
+| `object_removed` | warn | applied last time, gone from the render now. A reconciler (Flux, the control plane) prunes it; forge's direct apply does NOT (only `--prune`, and only Deployments; a `forge.HelmChart`'s own objects are the exception and are pruned after the chart's apply), so the detail says so — if it still exists, delete it by hand; the next plan no longer lists it. A hash-named one-shot **Job** is the exception to the exception: every release that changes its spec reports the previous Job as removed, and the direct apply deletes finished superseded Jobs itself (the newest 3 of each name stay), so its detail says that instead |
 | `stateful_deletion` / `lb_identity_change` | **stop** | a removal that loses data or an external address; needs `--acknowledge-destructive <code>` even with `--yes` |
 | `config_changed` | info | the object's non-image fields changed; detail names them: `fields: spec.replicas, spec.template.spec.containers[api].env[LOG_LEVEL].value` |
 | `object_changed` | info | changed, where the image/config split cannot be made |

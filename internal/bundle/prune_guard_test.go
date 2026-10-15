@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -309,5 +310,94 @@ func TestHoldsData_PDBStaysPrunableInStatefulWorkload(t *testing.T) {
 	doc := parsedDoc{meta: docMeta{kind: "PodDisruptionBudget", workload: "maindb"}}
 	if holdsData(doc, map[string]bool{"maindb": true}) {
 		t.Fatal("a PodDisruptionBudget must stay prunable even when its workload is stateful")
+	}
+}
+
+const jobRenderRelease = `# cluster: k3d-a
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+---
+# cluster: k3d-a
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: app-migrate-%s
+  namespace: app
+  labels:
+    app.kubernetes.io/managed-by: forge
+    forge.dev/job-name: app-migrate
+    forge.dev/spec-hash: %s
+  annotations:
+    forge.dev/deploy-phase: pre-rollout
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: main
+          image: example/app:%s
+`
+
+func buildJobRelease(t *testing.T, hash string) Bundle {
+	t.Helper()
+	b, err := Build(context.Background(), BuildInput{
+		Project: "fixture", Env: "prod", CreatedAt: time.Unix(1, 0).UTC(), Reconciled: true,
+		Shape: ShapeInput{
+			Kind:      release.EnvSelfManaged,
+			Manifests: fmt.Sprintf(jobRenderRelease, hash, hash, hash),
+			Clusters:  []string{"k3d-a"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	return b
+}
+
+// TestBuild_HashNamedJobsStayPrunable pins the Flux half of the Job-cleanup
+// story. A hash-named Job is superseded by a NEW name, so under a reconciler the
+// previous Job leaves the render and Flux's inventory prune deletes it: nothing
+// else is needed, PROVIDED the bundle never stamps a Job prune-exempt. A Job that
+// held `kustomize.toolkit.fluxcd.io/prune: disabled` would be skipped by that
+// prune and pile up exactly as under direct apply. (Direct apply cannot rely on
+// an inventory, so it keeps the newest few itself: internal/cluster/job_prune.go.)
+func TestBuild_HashNamedJobsStayPrunable(t *testing.T) {
+	t.Parallel()
+	one, two := buildJobRelease(t, "aaaaaaaaaa"), buildJobRelease(t, "bbbbbbbbbb")
+
+	jobIn := func(b Bundle) []byte {
+		t.Helper()
+		doc, ok := unpackByKind(t, b)["Job"]
+		if !ok {
+			t.Fatal("the layer carries no Job; the fixture is wrong")
+		}
+		return doc
+	}
+	for name, b := range map[string]Bundle{"release one": one, "release two": two} {
+		if got := annotationOf(jobIn(b), annotationPrune); got != "" {
+			t.Errorf("%s: a Job carries prune=%q; it must stay inside Flux's inventory so a superseded Job is deleted", name, got)
+		}
+	}
+	// And the Job set the layer carries moves with the hash: release two does not
+	// carry release one's Job, so a Kustomization that applied one and now applies
+	// two prunes it. Read from the shape, which is what the plan diffs.
+	has := func(b Bundle, name string) bool {
+		for _, o := range b.Doc.Shape.Objects {
+			if o.Kind == "Job" && o.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(one, "app-migrate-aaaaaaaaaa") || has(one, "app-migrate-bbbbbbbbbb") {
+		t.Errorf("release one should carry only its own Job: %+v", one.Doc.Shape.Objects)
+	}
+	if !has(two, "app-migrate-bbbbbbbbbb") || has(two, "app-migrate-aaaaaaaaaa") {
+		t.Errorf("release two should carry only its own Job, so release one's leaves the render: %+v", two.Doc.Shape.Objects)
+	}
+	if one.GuardedObjects != 1 || two.GuardedObjects != 1 {
+		t.Errorf("guarded objects = %d / %d, want 1 each (the Namespace only): a Job is never guarded", one.GuardedObjects, two.GuardedObjects)
 	}
 }

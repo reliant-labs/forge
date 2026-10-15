@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A direct apply prunes superseded one-shot Jobs, keeping the newest three of
+  each.** A standalone Job is named by the hash of its spec, so every release that
+  changes one leaves the previous Job behind, and since a reconciler made
+  `ttlSecondsAfterFinished` wrong (the Job re-runs every TTL period) nothing
+  removed them: control-plane-prod held ~250 completed Jobs and gained about five
+  per deploy. After a full, non-dry-run apply, forge deletes the finished Jobs of
+  each base name beyond the newest `ApplyOpts.KeepJobs` (default 3, the current
+  release's included; negative turns it off). It deletes a Job only when forge
+  made it (`managed-by=forge` and the `forge.dev/job-name` handle), it is in the
+  applied namespace and env, the render still defines that base name, and it has
+  finished. A running Job, a Job the render being applied names (a rollback's),
+  a CronJob's child, a chart's Job and any other namespace or env are never
+  touched, and a `--target` apply prunes nothing. A failure is a warning, never a
+  failed deploy. The Flux path needs no code: a superseded Job leaves the render
+  and Flux's inventory prune deletes it, which `TestBuild_HashNamedJobsStayPrunable`
+  pins by requiring that the bundle never stamps a Job prune-exempt. The plan's
+  `object_removed` detail for a Job now says the apply prunes it, where it said to
+  "delete it by hand".
 - **`forge ci gate` starts the longest path first.** Host slots used to be
   granted in plan order (forge's static checks, then a project's extras, then
   the test lanes), so a gate's longest checks waited behind every shorter

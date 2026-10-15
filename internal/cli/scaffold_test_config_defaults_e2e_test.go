@@ -38,7 +38,8 @@ func TestE2ETestHarnessConfigIsProductionDefaults(t *testing.T) {
 	if !strings.Contains(src, anchor) {
 		t.Fatalf("config.proto has no %q to anchor the block field before:\n%s", anchor, src)
 	}
-	src = strings.Replace(src, anchor, "  TraderConfig trader = 41;\n\n"+anchor, 1)
+	// Keep the fixture extension outside the scaffold's built-in tag range.
+	src = strings.Replace(src, anchor, "  TraderConfig trader = 1000;\n\n"+anchor, 1)
 	src += `
 message TraderConfig {
   int32 max_per_tick = 1 [(forge.v1.config) = {

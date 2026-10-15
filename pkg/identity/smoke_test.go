@@ -85,6 +85,16 @@ func startSmokeEnv(t *testing.T) *smokeEnv {
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", e.pg).Run() })
 	docker(t, "run", "-d", "--name", e.pg, "--network", e.network, "-e", "POSTGRES_PASSWORD=postgres",
 		pgImage, "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
+	// The image's init phase runs a throwaway server with no TCP listener, so
+	// only a TCP probe says the real one is up; Zitadel exits at once if it
+	// dials before that.
+	deadline := time.Now().Add(60 * time.Second)
+	for exec.Command("docker", "exec", e.pg, "pg_isready", "-h", "127.0.0.1", "-U", "postgres").Run() != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("postgres never accepted TCP connections")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	return e
 }
 
@@ -770,7 +780,7 @@ func smokeAdopt(t *testing.T, env *smokeEnv) {
 	in := env.startZitadel(t, "b")
 	ctx := context.Background()
 
-	// Pre-seed the instance the way tenant zero was made: by hand and by the
+	// Pre-seed the instance the way the first prod instance was made: by hand and by the
 	// previous provisioner, under ids a fresh converge would never produce, and
 	// in a shape that has drifted from what the declaration wants.
 	var proj struct {

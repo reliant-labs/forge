@@ -298,7 +298,9 @@ func TestJWKSSnapshot_RotationOverlapUnion(t *testing.T) {
 
 	// The control plane re-delivers a snapshot that includes the rotated key,
 	// after this process's last live fetch.
-	if err := os.WriteFile(path, []byte(snapshotJSON(t, time.Now(), snapIssuer,
+	// Dated a second ahead so it is strictly after the live fetch even on a
+	// clock too coarse to tell the two instants apart (Windows).
+	if err := os.WriteFile(path, []byte(snapshotJSON(t, time.Now().Add(time.Second), snapIssuer,
 		rsaJWK(t, oldKey, "old"), rsaJWK(t, newKey, "new"))), 0o600); err != nil {
 		t.Fatal(err)
 	}

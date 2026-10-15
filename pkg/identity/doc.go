@@ -6,7 +6,7 @@
 //
 // It is the one library behind both halves of managed identity. `forge env up`
 // runs it against the dev instance with a bootstrap PAT; the control plane runs
-// it against each tenant instance with that instance's owner machine key. The
+// it against each customer instance with that instance's owner machine key. The
 // same code path in both is what makes dev parity real.
 //
 // # What it deliberately is not
@@ -28,7 +28,7 @@
 //
 // # Adoption
 //
-// An instance that already holds content (tenant zero) is converged in place.
+// An instance that already holds content (one created by hand) is converged in place.
 // The natural-key match above is what keeps its objects: nothing is recreated
 // because its internal id is not the one a fresh instance would have produced.
 // Where another system holds an id (the project id is the token audience; the

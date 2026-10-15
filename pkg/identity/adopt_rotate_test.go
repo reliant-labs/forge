@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// tenantZero is the shape of the prod instance adopted in place: content that
+// adoptedInstance is the shape of the prod instance adopted in place: content that
 // exists under ids a fresh converge would never have produced.
-func tenantZero(f *fakeZitadel) (*fProject, *fApp) {
+func adoptedInstance(f *fakeZitadel) (*fProject, *fApp) {
 	p := f.seedProject("389458096738533670", "control-plane admin API")
 	app := f.seedApp(p, "389458096906306630", "control-plane internal-console", "389458096906371366", map[string]any{
 		"redirectUris":             []any{"http://localhost:8098/old"},
@@ -38,7 +38,7 @@ func tenantZero(f *fakeZitadel) (*fProject, *fApp) {
 	return p, app
 }
 
-func tenantZeroSpec() Spec {
+func adoptedInstanceSpec() Spec {
 	return Spec{
 		Project: ProjectSpec{Name: "control-plane admin API", AdoptID: "389458096738533670"},
 		Roles:   []Role{{Key: "admin", DisplayName: "admin", Declared: true, Members: []string{"admin@reliantlabs.io"}}},
@@ -53,10 +53,10 @@ func tenantZeroSpec() Spec {
 
 func TestAdoptionKeepsIdsAndExistingObjects(t *testing.T) {
 	f := newFake(t)
-	proj, app := tenantZero(f)
+	proj, app := adoptedInstance(f)
 	r, _ := newRec(t, f, func(o *Options) { o.Adopt = true })
 
-	rep, err := r.Reconcile(context.Background(), tenantZeroSpec())
+	rep, err := r.Reconcile(context.Background(), adoptedInstanceSpec())
 	if err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestAdoptionKeepsIdsAndExistingObjects(t *testing.T) {
 	}
 	// And now it is quiet.
 	before := f.writeCount()
-	rep, err = r.Reconcile(context.Background(), tenantZeroSpec())
+	rep, err = r.Reconcile(context.Background(), adoptedInstanceSpec())
 	if err != nil || rep.Changed() || f.writeCount() != before {
 		t.Fatalf("second adoption pass must be a no-op: err=%v changes=%v", err, rep.Changes)
 	}
@@ -118,8 +118,8 @@ func TestAdoptionRefusesToCreateTheProjectOrAnApplication(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 
-	tenantZero(f)
-	spec := tenantZeroSpec()
+	adoptedInstance(f)
+	spec := adoptedInstanceSpec()
 	spec.Applications[0].Name = "never-existed"
 	spec.Applications[0].AdoptClientID = ""
 	_, err = r.Reconcile(context.Background(), spec)
@@ -133,10 +133,10 @@ func TestAdoptionRefusesToCreateTheProjectOrAnApplication(t *testing.T) {
 
 func TestPinnedIdMismatchIsAnErrorNotARecreate(t *testing.T) {
 	f := newFake(t)
-	tenantZero(f)
+	adoptedInstance(f)
 	r, _ := newRec(t, f, nil)
 
-	spec := tenantZeroSpec()
+	spec := adoptedInstanceSpec()
 	spec.Project.AdoptID = "999"
 	_, err := r.Reconcile(context.Background(), spec)
 	if err == nil || !strings.Contains(err.Error(), "pinned id 999") {
@@ -146,7 +146,7 @@ func TestPinnedIdMismatchIsAnErrorNotARecreate(t *testing.T) {
 		t.Error("a pinned project id that does not exist created a project")
 	}
 
-	spec = tenantZeroSpec()
+	spec = adoptedInstanceSpec()
 	spec.Applications[0].AdoptClientID = "000"
 	_, err = r.Reconcile(context.Background(), spec)
 	if err == nil || !strings.Contains(err.Error(), "pinned client id 000") {
@@ -156,10 +156,10 @@ func TestPinnedIdMismatchIsAnErrorNotARecreate(t *testing.T) {
 
 func TestPinnedClientIdFindsARenamedApplicationAndRenamesItBack(t *testing.T) {
 	f := newFake(t)
-	_, app := tenantZero(f)
+	_, app := adoptedInstance(f)
 	app.Name = "renamed in the console"
 	r, _ := newRec(t, f, func(o *Options) { o.Adopt = true })
-	rep, err := r.Reconcile(context.Background(), tenantZeroSpec())
+	rep, err := r.Reconcile(context.Background(), adoptedInstanceSpec())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,9 +173,9 @@ func TestPinnedClientIdFindsARenamedApplicationAndRenamesItBack(t *testing.T) {
 
 func TestPinnedProjectIdWithANameClashIsRefused(t *testing.T) {
 	f := newFake(t)
-	tenantZero(f)
+	adoptedInstance(f)
 	f.seedProject("123", "other")
-	spec := tenantZeroSpec()
+	spec := adoptedInstanceSpec()
 	spec.Project.Name = "other"
 	r, _ := newRec(t, f, nil)
 	_, err := r.Reconcile(context.Background(), spec)
@@ -552,19 +552,19 @@ func TestReadinessWaitIsBoundedAndNamesTheInstance(t *testing.T) {
 func TestHostHeaderOverrideReachesTheInstance(t *testing.T) {
 	f := newFake(t)
 	r, _ := newRec(t, f, func(o *Options) {
-		o.Host = "tenant.reliantidentity.com"
-		o.Issuer = "https://tenant.reliantidentity.com"
+		o.Host = "adopted.reliantidentity.com"
+		o.Issuer = "https://adopted.reliantidentity.com"
 	})
 	rep, err := r.Reconcile(context.Background(), Spec{Project: ProjectSpec{Name: "p"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for h := range f.hosts {
-		if h != "tenant.reliantidentity.com" {
+		if h != "adopted.reliantidentity.com" {
 			t.Errorf("a request carried Host %q", h)
 		}
 	}
-	if rep.Output.Issuer != "https://tenant.reliantidentity.com" {
+	if rep.Output.Issuer != "https://adopted.reliantidentity.com" {
 		t.Errorf("issuer = %q", rep.Output.Issuer)
 	}
 }

@@ -94,7 +94,7 @@ func (p *run) applyProject(ctx context.Context) error {
 		return map[string]any{
 			"name":                 name,
 			"projectRoleAssertion": true,
-			"projectRoleCheck":     want.RoleCheck,
+			"projectRoleCheck":     want.MustHoldRole,
 			"hasProjectCheck":      want.ProjectCheck,
 		}
 	}
@@ -116,7 +116,7 @@ func (p *run) applyProject(ctx context.Context) error {
 		p.logf("created project", "name", want.Name, "id", out.ID)
 		return nil
 	}
-	if cur.Name == want.Name && cur.ProjectRoleAssertion && cur.ProjectRoleCheck == want.RoleCheck && cur.HasProjectCheck == want.ProjectCheck {
+	if cur.Name == want.Name && cur.ProjectRoleAssertion && cur.ProjectRoleCheck == want.MustHoldRole && cur.HasProjectCheck == want.ProjectCheck {
 		return nil
 	}
 	detail := "settings"

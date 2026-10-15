@@ -63,10 +63,10 @@ type fakeZitadel struct {
 }
 
 type fProject struct {
-	ID, Name                    string
-	Assert, RoleCheck, HasCheck bool
-	Roles                       []roleObj
-	Apps                        []*fApp
+	ID, Name                       string
+	Assert, MustHoldRole, HasCheck bool
+	Roles                          []roleObj
+	Apps                           []*fApp
 }
 
 type fApp struct {
@@ -402,7 +402,7 @@ func (f *fakeZitadel) projectAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		p := &fProject{ID: f.id(), Name: name}
 		p.Assert, _ = body["projectRoleAssertion"].(bool)
-		p.RoleCheck, _ = body["projectRoleCheck"].(bool)
+		p.MustHoldRole, _ = body["projectRoleCheck"].(bool)
 		p.HasCheck, _ = body["hasProjectCheck"].(bool)
 		f.projects[p.ID] = p
 		f.mutate("create project " + name)
@@ -444,11 +444,11 @@ func (f *fakeZitadel) projectAPI(w http.ResponseWriter, r *http.Request) {
 		a, _ := body["projectRoleAssertion"].(bool)
 		rc, _ := body["projectRoleCheck"].(bool)
 		hc, _ := body["hasProjectCheck"].(bool)
-		if n == p.Name && a == p.Assert && rc == p.RoleCheck && hc == p.HasCheck {
+		if n == p.Name && a == p.Assert && rc == p.MustHoldRole && hc == p.HasCheck {
 			notChanged(w, "COMMAND-1m88i")
 			return
 		}
-		p.Name, p.Assert, p.RoleCheck, p.HasCheck = n, a, rc, hc
+		p.Name, p.Assert, p.MustHoldRole, p.HasCheck = n, a, rc, hc
 		f.mutate("update project " + n)
 		reply(w, 200, map[string]any{"details": details()})
 	default:
@@ -461,7 +461,7 @@ func projectJSON(p *fProject) map[string]any {
 	if p.Assert {
 		m["projectRoleAssertion"] = true
 	}
-	if p.RoleCheck {
+	if p.MustHoldRole {
 		m["projectRoleCheck"] = true
 	}
 	if p.HasCheck {

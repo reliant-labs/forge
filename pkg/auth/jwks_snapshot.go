@@ -86,7 +86,7 @@ type JWKSSnapshot struct {
 	MaxAge time.Duration
 
 	// Issuer, when set, must equal the snapshot's issuer member (if the
-	// snapshot names one): a snapshot published for another tenant is
+	// snapshot names one): a snapshot published for another issuer is
 	// refused, not merged. [NewValidator] fills it from JWTConfig.Issuer.
 	Issuer string
 }

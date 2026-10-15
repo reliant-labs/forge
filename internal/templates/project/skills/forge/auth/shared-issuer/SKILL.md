@@ -5,7 +5,7 @@ description: Running a forge app against a shared, operated identity provider (a
 
 # Shared-issuer runtime: roles mapping, snapshot fallback, rotating broker token
 
-Three runtime behaviours exist for an app whose issuer is a shared, operated one (a managed Zitadel) rather than a single-tenant IdP it owns. All three are typed config, read by the scaffolded `SetupAuth` / login broker, and all three are off or inert until configured — a Clerk, Firebase or generic-OIDC app is unchanged.
+Three runtime behaviours exist for an app whose issuer is a shared, operated one (a managed Zitadel) rather than a single-owner IdP it owns. All three are typed config, read by the scaffolded `SetupAuth` / login broker, and all three are off or inert until configured — a Clerk, Firebase or generic-OIDC app is unchanged.
 
 ## 1. Roles: `jwt_roles_claim`
 
@@ -44,7 +44,7 @@ Document format — a normal JWKS plus two members:
   "keys": [ { "kty": "RSA", "kid": "…", "alg": "RS256", "n": "…", "e": "AQAB" } ] }
 ```
 
-`delivered_at` is required in an inline value (nothing else dates it); a file without it is dated by its mtime. JWKS keys carry no expiry, which is why age is judged from the delivery time against `max_age`. `issuer`, if present, must equal `jwt_issuer` — another tenant's snapshot is refused, not merged.
+`delivered_at` is required in an inline value (nothing else dates it); a file without it is dated by its mtime. JWKS keys carry no expiry, which is why age is judged from the delivery time against `max_age`. `issuer`, if present, must equal `jwt_issuer` — another issuer's snapshot is refused, not merged.
 
 **Boot behaviour** — try live first, always:
 

@@ -157,8 +157,8 @@ func TestGenerateMock_ZeroMethods_Skipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMock() error = %v", err)
 	}
-	if written {
-		t.Error("expected written=false for zero-RPC service")
+	if written.Wrote || written.Skipped != "no RPCs" {
+		t.Errorf("expected a no-RPCs skip for zero-RPC service, got %+v", written)
 	}
 
 	mockFile := filepath.Join(mockDir, "orders_mock_gen.go")
@@ -201,7 +201,7 @@ func TestGenerateMock_Tier1WriterRecordsTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMock() error = %v", err)
 	}
-	if !written {
+	if !written.Wrote || !written.Changed {
 		t.Fatal("expected mock file to be written")
 	}
 
@@ -254,7 +254,7 @@ func TestGenerateMock_CrossPackageMessageImports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMock() error = %v", err)
 	}
-	if !written {
+	if !written.Wrote || !written.Changed {
 		t.Fatal("expected mock file to be written")
 	}
 

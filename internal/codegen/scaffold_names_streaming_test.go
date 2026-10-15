@@ -58,7 +58,7 @@ func TestMockRelPath_IsTheFileGenerateMockWrites(t *testing.T) {
 		ModulePath: "github.com/test/proj",
 		Methods:    []Method{{Name: "CancelToolCall", InputType: "CancelToolCallRequest", OutputType: "CancelToolCallResponse"}},
 	}
-	if written, err := GenerateMock(svc, projectDir, filepath.Join(projectDir, "internal", "handlers", "mocks"), nil); err != nil || !written {
+	if written, err := GenerateMock(svc, projectDir, filepath.Join(projectDir, "internal", "handlers", "mocks"), nil); err != nil || !written.Wrote {
 		t.Fatalf("GenerateMock = %v, %v", written, err)
 	}
 	rel := MockRelPath(svc)

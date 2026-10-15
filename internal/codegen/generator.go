@@ -163,10 +163,11 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 
 // GenerateMock generates a mock file for a service.
 // Services with zero RPCs are skipped — there is nothing to mock.
-// Returns (true, nil) if a file was written, (false, nil) if skipped.
-func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.FileChecksums) (written bool, err error) {
+// The result says whether the mock was written, whether that changed its
+// bytes, and why not when it was not.
+func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.FileChecksums) (MockResult, error) {
 	if len(svc.Methods) == 0 {
-		return false, nil
+		return MockResult{Skipped: "no RPCs"}, nil
 	}
 
 	// Prepare template data
@@ -175,12 +176,12 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 	// Parse and execute template
 	tmpl, err := template.New("mock").Parse(mockTemplate)
 	if err != nil {
-		return false, err
+		return MockResult{}, err
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return false, err
+		return MockResult{}, err
 	}
 
 	// Synthesis is safe here: naming.ServicePackage only picks the FILENAME
@@ -194,17 +195,36 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 	relPath := MockRelPath(svc)
 	if projectDir != "" {
 		RetireRenamedGenerated(projectDir, filepath.Join("internal", "handlers", "mocks", naming.ServicePackage(svc.Name)+"_mock.go"), cs)
-		return checksums.WriteGeneratedFile(projectDir, relPath, buf.Bytes(), cs, true)
+		out, err := checksums.WriteGeneratedFileOutcome(projectDir, relPath, buf.Bytes(), cs, true)
+		if err != nil || out.Wrote {
+			return MockResult{Wrote: out.Wrote, Changed: out.Changed}, err
+		}
+		return MockResult{Skipped: "the write guard kept the file on disk (hand-edited, disowned, or a pristine older render awaiting --heal)"}, nil
 	}
 
 	mockFile := filepath.Join(mockDir, filepath.Base(relPath))
 	if err := os.MkdirAll(filepath.Dir(mockFile), 0o755); err != nil {
-		return false, err
+		return MockResult{}, err
 	}
+	prev, readErr := os.ReadFile(mockFile)
 	if err := os.WriteFile(mockFile, buf.Bytes(), 0o644); err != nil {
-		return false, err
+		return MockResult{}, err
 	}
-	return true, nil
+	return MockResult{Wrote: true, Changed: readErr != nil || !bytes.Equal(prev, buf.Bytes())}, nil
+}
+
+// MockResult is what GenerateMock did, so generate's progress line can
+// report it rather than what was asked: every re-run renders every mock,
+// and almost all of them come out byte-identical.
+type MockResult struct {
+	// Wrote is true when the render landed: the mock is current.
+	Wrote bool
+	// Changed is true when the write changed the file's bytes (or
+	// created it). Only a changed mock is news.
+	Changed bool
+	// Skipped, when Wrote is false, says why nothing was written, phrased
+	// to follow "<file> not written — ".
+	Skipped string
 }
 
 // MockRelPath is the project-relative path of svc's generated mock — the

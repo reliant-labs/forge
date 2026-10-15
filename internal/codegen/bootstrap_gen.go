@@ -1040,7 +1040,14 @@ type componentTestHelperData struct {
 	// ConfigImportAlias is "config" when ConfigImport's last segment is not
 	// already config, so the harness can always spell the type config.Config.
 	ConfigImportAlias string
-	NeedsULID         bool
+	// ConfigDefaults is true when ConfigImport's package declares
+	// `func Defaults()` — the generated pkg/config does — and the harness
+	// then defaults to config.Defaults(): the config Load yields with no
+	// file, env or flag, nested blocks allocated and proto defaults applied.
+	// A config package without it (a hand-written one, a CLI's stub) keeps
+	// the zero &config.Config{}, the only value the harness can build there.
+	ConfigDefaults bool
+	NeedsULID      bool
 
 	ConnectServiceGoName   string
 	ProtoConnectImportPath string
@@ -1108,7 +1115,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			UnfilledDeps:           svc.UnfilledDeps,
 		}
 		dir := filepath.Join(projectDir, "internal", "handlers", filepath.FromSlash(svc.ImportPath))
-		d.setConfigImport(dir)
+		d.setConfigImport(dir, projectDir)
 		for _, fd := range svc.FuncDefaults {
 			if fd.NeedsTime {
 				d.NeedsTime = true
@@ -1141,7 +1148,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			HasMigrationsFS: data.HasMigrationsFS,
 		}
 		dir := filepath.Join(projectDir, "internal", filepath.FromSlash(pkg.ImportPath))
-		d.setConfigImport(dir)
+		d.setConfigImport(dir, projectDir)
 		// The helper returns what New returns. A package whose contract
 		// interface is not called Service (keywrap's KeyWrapper) would
 		// otherwise get a helper naming a type that does not exist.
@@ -1157,12 +1164,13 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 
 // setConfigImport records the config the component in dir takes, if any (see
 // componentTestHelperData.ConfigImport).
-func (d *componentTestHelperData) setConfigImport(dir string) {
+func (d *componentTestHelperData) setConfigImport(dir, projectDir string) {
 	d.ConfigImport = DetectDepsConfigImport(dir)
 	d.ConfigImportAlias = ""
 	if d.ConfigImport != "" && path.Base(d.ConfigImport) != "config" {
 		d.ConfigImportAlias = "config"
 	}
+	d.ConfigDefaults = d.ConfigImport != "" && ConfigPackageDeclaresDefaults(projectDir, d.Module, d.ConfigImport)
 }
 
 // renderComponentTestHelpers renders one component's helper file into dir.

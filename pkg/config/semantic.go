@@ -187,6 +187,21 @@ func LoadTyped[T proto.Message](cmd *cobra.Command) (T, error) {
 	return msg.(T), nil
 }
 
+// DefaultsTyped is DefaultsInto's generic convenience, as LoadTyped is
+// LoadInto's: it allocates a fresh T holding only the proto defaults. The
+// generated config.Defaults() wraps it, and the generated test helpers
+// construct components with that — the config Load returns when no file,
+// environment variable or flag is set, rather than an empty message whose
+// nested blocks are nil and whose defaults all read as zero.
+func DefaultsTyped[T proto.Message]() (T, error) {
+	var zero T
+	msg := zero.ProtoReflect().New().Interface()
+	if err := DefaultsInto(msg); err != nil {
+		return zero, err
+	}
+	return msg.(T), nil
+}
+
 // RuntimeMode is the typed runtime mode. The zero value is ModeProduction:
 // a message with no role=MODE field (or one whose mode field is empty)
 // always reports production — dev permissiveness is never the default.

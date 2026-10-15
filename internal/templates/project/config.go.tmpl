@@ -103,6 +103,23 @@ func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.RootConfigMessage}}](cmd)
 }
 
+// Defaults returns the Config Load produces when no config file, environment
+// variable or flag is set: every annotated field at its proto default, nested
+// config blocks allocated, sensitive fields empty. It reads nothing from the
+// process, so it is the config a test constructs components with — the
+// generated test helpers use it — rather than an empty &Config{}, whose
+// nested blocks are nil and whose defaults all read as zero.
+//
+// It panics on a proto default malformed for its field kind, the same
+// generate-time defect in proto/config/v1/config.proto RegisterFlags panics on.
+func Defaults() *Config {
+	cfg, err := forgeconfig.DefaultsTyped[*configv1.{{.RootConfigMessage}}]()
+	if err != nil {
+		panic("config: Defaults: " + err.Error())
+	}
+	return cfg
+}
+
 // ModeOf derives the runtime mode from the field tagged role=MODE.
 func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
 
@@ -131,6 +148,20 @@ func RegisterFlags(cmd *cobra.Command) {
 // variables > proto defaults, recursing into any composed shared block.
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.PrimaryConfigMessage}}](cmd)
+}
+
+// Defaults returns the Config ({{.PrimaryConfigMessage}}) Load produces when no
+// config file, environment variable or flag is set: proto defaults applied,
+// composed blocks allocated, sensitive fields empty. It reads nothing from the
+// process, so it is the config the generated test helpers construct
+// components with. It panics on a malformed proto default, as RegisterFlags
+// does.
+func Defaults() *Config {
+	cfg, err := forgeconfig.DefaultsTyped[*configv1.{{.PrimaryConfigMessage}}]()
+	if err != nil {
+		panic("config: Defaults: " + err.Error())
+	}
+	return cfg
 }
 
 // ModeOf derives the runtime mode from the field tagged role=MODE.

@@ -269,3 +269,120 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 		}
 	}
 }
+
+// TestGenerateBootstrapTesting_ConfigDefaultsToProductionDefaults is the
+// regression test for #749. The harness defaulted every component's config to
+// `&config.Config{}`: nested config blocks nil, every proto default_value
+// zero — a config production never loads. Where the config package offers
+// the generated `Defaults()` (the config Load yields with nothing set), the
+// harness uses it; a config package without one keeps the zero value, the
+// only thing the harness can construct there.
+func TestGenerateBootstrapTesting_ConfigDefaultsToProductionDefaults(t *testing.T) {
+	root := writeHarnessFixture(t, map[string]string{
+		// The generated pkg/config, reduced to what the harness reads.
+		"pkg/config/config_gen.go": `package config
+
+type Config struct{}
+
+func Defaults() *Config { return &Config{} }
+`,
+		"internal/widget/contract.go": `package widget
+
+import "example.com/proj/pkg/config"
+
+type Service interface{ Name() string }
+
+type Deps struct {
+	Config *config.Config
+}
+
+func New(deps Deps) Service { return nil }
+`,
+		// A hand-written config package: Config, but no Defaults.
+		"internal/settings/settings.go": `package settings
+
+type Config struct{}
+
+// Defaults is a method here, not the package-level constructor.
+func (c *Config) Defaults() *Config { return c }
+`,
+		"internal/gadget/contract.go": `package gadget
+
+import "example.com/proj/internal/settings"
+
+type Service interface{ Name() string }
+
+type Deps struct {
+	Config *settings.Config
+}
+
+func New(deps Deps) Service { return nil }
+`,
+		"internal/handlers/api/service.go": `package api
+
+import "example.com/proj/pkg/config"
+
+type Deps struct {
+	Config *config.Config
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+`,
+	})
+	services := []ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}
+	pkgs := []BootstrapPackageData{
+		{Name: "widget", Package: "widget", ImportPath: "widget", FieldName: "Widget", VarName: "widget"},
+		{Name: "gadget", Package: "gadget", ImportPath: "gadget", FieldName: "Gadget", VarName: "gadget"},
+	}
+
+	cases := []struct {
+		rel        string
+		want, deny string
+	}{
+		{"internal/widget", "cfg:    config.Defaults(),", "&config.Config{}"},
+		{"internal/handlers/api", "cfg:    config.Defaults(),", "&config.Config{}"},
+		{"internal/gadget", "cfg:    &config.Config{},", "config.Defaults()"},
+	}
+	for _, c := range cases {
+		got := readHarness(t, root, c.rel, services, pkgs)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s: harness missing %q:\n%s", c.rel, c.want, got)
+		}
+		if strings.Contains(got, c.deny) {
+			t.Errorf("%s: harness must not contain %q:\n%s", c.rel, c.deny, got)
+		}
+	}
+}
+
+// TestConfigPackageDeclaresDefaults pins what counts as the generated
+// constructor: a package-level, parameterless Defaults with one result, in a
+// project package. Anything else would make the harness call a function
+// that is not there.
+func TestConfigPackageDeclaresDefaults(t *testing.T) {
+	root := writeHarnessFixture(t, map[string]string{
+		"pkg/config/config_gen.go":   "package config\n\ntype Config struct{}\n\nfunc Defaults() *Config { return &Config{} }\n",
+		"pkg/stub/stub.go":           "package stub\n\ntype Config struct{}\n",
+		"pkg/method/method.go":       "package method\n\ntype Config struct{}\n\nfunc (c *Config) Defaults() *Config { return c }\n",
+		"pkg/params/params.go":       "package params\n\ntype Config struct{}\n\nfunc Defaults(env string) *Config { return &Config{} }\n",
+		"pkg/testonly/a.go":          "package testonly\n\ntype Config struct{}\n",
+		"pkg/testonly/a_test.go":     "package testonly\n\nfunc Defaults() *Config { return &Config{} }\n",
+		"pkg/twovalues/twovalues.go": "package twovalues\n\ntype Config struct{}\n\nfunc Defaults() (*Config, error) { return &Config{}, nil }\n",
+	})
+	const mod = "example.com/proj"
+	for importPath, want := range map[string]bool{
+		mod + "/pkg/config":    true,
+		mod + "/pkg/stub":      false,
+		mod + "/pkg/method":    false,
+		mod + "/pkg/params":    false,
+		mod + "/pkg/testonly":  false,
+		mod + "/pkg/twovalues": false,
+		mod + "/pkg/missing":   false,
+		"other.com/pkg/config": false,
+	} {
+		if got := ConfigPackageDeclaresDefaults(root, mod, importPath); got != want {
+			t.Errorf("ConfigPackageDeclaresDefaults(%q) = %v, want %v", importPath, got, want)
+		}
+	}
+}

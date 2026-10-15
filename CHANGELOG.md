@@ -375,6 +375,16 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 
 ### Fixed
 
+- **The migrator's directive scan no longer dominates integration tests.**
+  `migratekit` scans every embedded migration for `forge:backward-compatible`,
+  `forge:breaks-rollback` and `forge:adopts` on every start, and ran three
+  regexes over every line of SQL to do it. On control-plane's 170 migrations
+  (12k lines) that was 240ms a scan and 5.3s under `-race`, paid by every
+  integration test that migrates a fresh database: whole packages
+  (`deploystore`, `reconcilestore`) went past their 30-minute budget under
+  load. Only `--` comment lines that mention `forge:` reach the regexes now:
+  24ms a scan, 72ms under `-race`. What is read, and every line number, is
+  unchanged.
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

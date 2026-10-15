@@ -166,7 +166,7 @@ const SessionCookieName = "{{.Name}}_session"
 const APIKeyHeader = "X-API-Key"
 
 // credentialFrom reads the ONE credential a request presents, from the
-// first of these channels that carries one:
+// first of these channels whose header is present (even when empty):
 //
 //  1. "Authorization: Bearer <token>" — another service, a CLI, a test.
 //     A JWT, or an API key from a client that only knows bearer tokens;
@@ -195,11 +195,17 @@ const APIKeyHeader = "X-API-Key"
 // weaken authentication. Point it somewhere else if your session lives
 // elsewhere.
 func credentialFrom(h http.Header) string {
-	if bearer, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer "); ok {
+	// Select by presence, not validity: even an empty or malformed higher
+	// priority header must not fall through to another principal.
+	if len(h.Values("Authorization")) != 0 {
+		bearer, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer ")
+		if !ok {
+			return ""
+		}
 		return strings.TrimSpace(bearer)
 	}
-	if key := strings.TrimSpace(h.Get(APIKeyHeader)); key != "" {
-		return key
+	if len(h.Values(APIKeyHeader)) != 0 {
+		return strings.TrimSpace(h.Get(APIKeyHeader))
 	}
 	cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName)
 	if err != nil {

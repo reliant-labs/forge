@@ -248,6 +248,10 @@ func bootAPIKeyAuthMatrix(t *testing.T, projectDir string) {
 		// One credential per request: the Bearer token is the one checked,
 		// so a valid key beside an invalid token cannot rescue it.
 		{"bad bearer beside a good key", []string{"Authorization", "Bearer forged", "X-API-Key", key}, http.StatusUnauthorized},
+		{"malformed bearer beside a good key", []string{"Authorization", "Bearer", "X-API-Key", key}, http.StatusUnauthorized},
+		{"empty authorization beside a good key", []string{"Authorization", "", "X-API-Key", key}, http.StatusUnauthorized},
+		{"empty key beside a good cookie", []string{"X-API-Key", "", "Cookie", "keyapp_session=" + strings.TrimPrefix(bearer, "Bearer ")}, http.StatusUnauthorized},
+		{"whitespace key beside a good cookie", []string{"X-API-Key", "   ", "Cookie", "keyapp_session=" + strings.TrimPrefix(bearer, "Bearer ")}, http.StatusUnauthorized},
 	}
 	for _, tc := range cases {
 		status, body := call("ListWidgets", `{"pageSize":10}`, tc.header...)

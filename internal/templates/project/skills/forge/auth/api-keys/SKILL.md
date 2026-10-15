@@ -19,7 +19,7 @@ The key validator is installed after `OpenInfra` because checking a key reads th
 
 **The credential's shape picks the validator, not its header.** `auth.Authenticator` sends anything starting with `apikey.KeyPrefix` (`fk_`, the form `apikey.Generate` issues) to the key validator, and everything else to the JWT validator. So `X-API-Key: fk_…` and `Authorization: Bearer fk_…` are the same key. Neither validator ever sees the other's credential.
 
-**One credential per request, no fallback.** A Bearer header is the credential even when an `X-API-Key` is also present. A request with an invalid Bearer token and a valid key is rejected. An explicit header always beats the ambient session cookie.
+**One credential per request, no fallback.** Header presence selects the credential, even when empty or malformed. Any `Authorization` header blocks fallback to `X-API-Key`; any `X-API-Key` header blocks fallback to the session cookie. A request with an invalid Bearer token and a valid key is rejected. An explicit header always beats the ambient session cookie.
 
 ### How each case fails
 

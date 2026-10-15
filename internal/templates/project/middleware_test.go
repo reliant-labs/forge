@@ -105,6 +105,10 @@ func TestAuthWiring_APIKeyAndBearer(t *testing.T) {
 		// One credential per request, and no fallback: the Bearer token is
 		// the credential, so a valid key cannot rescue an invalid token.
 		{"bad bearer beside a good key", []string{"Authorization", "Bearer forged", APIKeyHeader, key}, ""},
+		{"malformed bearer beside a good key", []string{"Authorization", "Bearer", APIKeyHeader, key}, ""},
+		{"empty authorization beside a good key", []string{"Authorization", "", APIKeyHeader, key}, ""},
+		{"empty key beside a good cookie", []string{APIKeyHeader, "", "Cookie", SessionCookieName + "=a.valid.jwt"}, ""},
+		{"whitespace key beside a good cookie", []string{APIKeyHeader, "   ", "Cookie", SessionCookieName + "=a.valid.jwt"}, ""},
 		{"good bearer beside a bad key", []string{"Authorization", "Bearer a.valid.jwt", APIKeyHeader, wrongKey}, "jwt-user"},
 	}
 	type reqKey struct{}
@@ -232,6 +236,10 @@ func TestCredentialFrom_ReadsBearerThenAPIKeyThenTheSessionCookie(t *testing.T) 
 		{"bearer wins over the cookie", []string{"Authorization", "Bearer from-header", "Cookie", cookie}, "from-header"},
 		{"bearer wins over an api key", []string{"Authorization", "Bearer from-header", APIKeyHeader, "fk_k"}, "from-header"},
 		{"api key wins over the cookie", []string{APIKeyHeader, "fk_k", "Cookie", cookie}, "fk_k"},
+		{"malformed authorization blocks key and cookie", []string{"Authorization", "Bearer", APIKeyHeader, "fk_k", "Cookie", cookie}, ""},
+		{"empty authorization blocks key and cookie", []string{"Authorization", "", APIKeyHeader, "fk_k", "Cookie", cookie}, ""},
+		{"empty key blocks cookie", []string{APIKeyHeader, "", "Cookie", cookie}, ""},
+		{"whitespace key blocks cookie", []string{APIKeyHeader, "   ", "Cookie", cookie}, ""},
 		{"another app's cookie is not a credential", []string{"Cookie", "other_session=x"}, ""},
 		{"nothing presented", nil, ""},
 	}

@@ -260,11 +260,12 @@ Otherwise port these edits by hand:
 1. **`pkg/middleware/middleware.go`**
 
    - Declare `const APIKeyHeader = "X-API-Key"`.
-   - In `credentialFrom`, between the Bearer branch and the cookie, add:
+   - Select headers by presence: if `len(h.Values("Authorization")) != 0`, require `Bearer ` or return `""`; never fall through on a malformed header.
+   - Between that branch and the cookie, add:
 
      ```go
-     if key := strings.TrimSpace(h.Get(APIKeyHeader)); key != "" {
-         return key
+     if len(h.Values(APIKeyHeader)) != 0 {
+         return strings.TrimSpace(h.Get(APIKeyHeader))
      }
      ```
 

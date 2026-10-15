@@ -11,7 +11,7 @@ import (
 
 // As in login_test.go, the REFUSALS are the tests that matter. The broker's
 // credential can set any user's password with no code at all (verified
-// against Zitadel v4.16.2), so "a code-less reset never reaches the issuer"
+// against Zitadel v4.19.4), so "a code-less reset never reaches the issuer"
 // is the most load-bearing assertion in this file.
 
 func TestResetPassword_RefusesMissingCodeWithoutCallingTheIssuer(t *testing.T) {
@@ -85,7 +85,7 @@ func TestResetPassword_SendsCodeAndPassword(t *testing.T) {
 }
 
 // The two rejections a reset form must tell apart. Bodies are the ones
-// Zitadel v4.16.2 actually returned.
+// Zitadel v4.19.4 actually returned.
 func TestResetPassword_ClassifiesIssuerRejections(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

@@ -129,7 +129,7 @@ var ErrNoRefreshToken = errors.New("oauth2: refresh token is empty")
 // treat a re-presented old token as theft: they revoke the entire grant, which
 // signs the user out completely rather than merely failing one call.
 //
-// Verified against Zitadel v4.16.2 (the IdP forge scaffolds for local dev): it
+// Verified against Zitadel v4.19.4 (the IdP forge scaffolds for local dev): it
 // rotates on every refresh and rejects a replayed token IMMEDIATELY, with no
 // grace window — though it revokes only that token, leaving the newest one
 // usable. Providers built on node oidc-provider are harsher and kill the whole

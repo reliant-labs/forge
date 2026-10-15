@@ -30,14 +30,26 @@ guard_sel=$(grep -xF -f <(printf '%s\n' "$guards") <<<"$all" || true)
 other_sel=$(grep -vxF -f <(printf '%s\n' "$guards") <<<"$all" || true)
 
 flags=("$@")
-noracefl=()
-for f in "${flags[@]}"; do [[ "$f" == "-race" ]] || noracefl+=("$f"); done
+# The guards get ci.yml's test-guards budget (30m), not the per-package one: a
+# whole-program load or a scan of every file is minutes on a loaded machine.
+guardfl=()
+skip=0
+for f in "${flags[@]}"; do
+  if [[ $skip -eq 1 ]]; then skip=0; continue; fi
+  case "$f" in
+    -race) ;;
+    -timeout) skip=1 ;;
+    -timeout=*) ;;
+    *) guardfl+=("$f") ;;
+  esac
+done
+guardfl+=(-timeout 30m)
 
 status=0
 if [[ -n "$other_sel" ]]; then
   go test "${flags[@]}" $other_sel || status=$?
 fi
 if [[ -n "$guard_sel" ]]; then
-  go test -p 1 "${noracefl[@]}" $guard_sel || status=$?
+  go test -p 1 "${guardfl[@]}" $guard_sel || status=$?
 fi
 exit $status

@@ -57,7 +57,11 @@
 // layer told so by WithExpectedErrors / WithExpectedErrorFunc logs such an
 // error through this policy — the success path, with the error and
 // expected=true attached — instead of as a failure. Only the component knows
-// which of its errors are answers, so nothing is expected by default.
+// which of its errors are answers, so nothing is expected by default — with
+// one exception every layer shares: svcerr.ErrServerDraining. A call this
+// replica ended because a rollout is replacing it is how a deploy is meant to
+// go (its client reconnects to a live replica); logged as a failure it was one
+// ERROR, and one Sentry event, per connected client per rollout.
 
 package observe
 
@@ -140,9 +144,10 @@ func WithSuccessLevel(name string, level slog.Level) LogOption {
 //	observe.LogMiddleware(logger, slog.LevelDebug,
 //	    observe.WithExpectedErrors(ErrNotFound)),
 //
-// Nothing is expected unless declared: forge cannot tell an answer from a
-// fault, so an undeclared not-found stays a failure. Declarations accumulate
-// across options. The declaration scopes to the layer it is passed to — the
+// Nothing is expected unless declared — forge cannot tell an answer from a
+// fault, so an undeclared not-found stays a failure — except a drain
+// (svcerr.ErrServerDraining), which every layer treats as expected without
+// being told. Declarations accumulate across options. The declaration scopes to the layer it is passed to — the
 // error itself is not marked, so a caller that turns the answer into a
 // failure ("the bundle this deploy needs is gone") still logs a failure.
 func WithExpectedErrors(targets ...error) LogOption {
@@ -198,6 +203,8 @@ func newLogPolicy(level slog.Level, opts []LogOption) *logPolicy {
 		slow:      DefaultSlowThreshold,
 		now:       time.Now,
 		userLevel: DefaultUserErrorLevel,
+		// A drain is expected everywhere; see "Expected errors" above.
+		expected: []func(error) bool{svcerr.IsServerDraining},
 	}
 	for _, opt := range opts {
 		if opt != nil {

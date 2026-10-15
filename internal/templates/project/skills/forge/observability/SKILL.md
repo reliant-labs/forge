@@ -99,7 +99,12 @@ not from how the call site spelled its log line:
 | `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error | ERROR | yes |
 | `server` | server-side, but "retry", not "page" | DeadlineExceeded, Aborted, Unimplemented | WARN | no |
 | `user` | the caller or user must act; the system behaved correctly | InvalidArgument, NotFound, AlreadyExists, PermissionDenied, Unauthenticated, FailedPrecondition (InsufficientBalance, Expired), OutOfRange, ResourceExhausted (PlanLimit), or `svcerr.WithClass(err, svcerr.ClassUser)` | INFO (`observe.WithUserErrorLevel`) | no |
-| `canceled` | the caller went away | `context.Canceled`, CodeCanceled | same as `user` | no |
+| `canceled` | one end went away: the caller, or this replica draining for a rollout | `context.Canceled`, CodeCanceled, `svcerr.ErrServerDraining` / `svcerr.Draining(…)` | same as `user` | no |
+
+A drain is also an **expected outcome** in every logging layer without being
+declared: a call this replica ended because it is shutting down (a stream's
+`Unavailable("gateway draining")`) is written like a success, with
+`expected=true`, never at ERROR. See `services/shutdown`.
 
 Nothing is hidden: a user error is still written, with `error`,
 `error_class=user` and `code`, at a level production keeps — it just stops

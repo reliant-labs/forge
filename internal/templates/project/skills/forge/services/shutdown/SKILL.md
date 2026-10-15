@@ -59,6 +59,12 @@ reopen the stream (from its resume cursor) when it ends with the trailer. Use
 `RedialOnDrain` for peers that already redial on Unavailable, such as a daemon
 on a bidi stream. A handler's own error is never rewritten.
 
+A drain is never an incident in the logs: `svcerr.ErrServerDraining` (and
+`svcerr.Draining("your words")`, for a transport that tells its peers itself)
+is classified `error_class=canceled` and is an expected outcome in every
+logging layer — written at INFO with `expected=true`, never forwarded as an
+ERROR, and counted in `rpc.server.errors` under `canceled`.
+
 ### Saying goodbye: the soft signal
 
 A stream with something to say before it goes — a final event, a websocket

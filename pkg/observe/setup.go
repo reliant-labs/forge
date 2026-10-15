@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	goruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
@@ -51,9 +52,15 @@ type Config struct {
 
 	// ProfilesDisabled turns continuous profiling off, like
 	// OTEL_PROFILES_EXPORTER=none. Profiling is ON by default whenever an OTLP
-	// endpoint is configured: a CPU profile for 10s of every minute plus heap and
-	// goroutine snapshots, about 0.15% of one core. See profiler.go.
+	// endpoint is configured: CPU and goroutine profiles about once a minute,
+	// plus a full heap snapshot every ProfilesHeapInterval. See profiler.go.
 	ProfilesDisabled bool
+
+	// ProfilesHeapInterval bounds repeated full heap snapshots. Zero defaults
+	// to 15 minutes; a positive value overrides it (at most once per CPU cycle).
+	// Heap includes BOTH cumulative alloc_* counters and inuse_* gauges, not
+	// deltas. Shortening this interval increases historical-stack ingest cost.
+	ProfilesHeapInterval time.Duration
 
 	// Development makes the declared-metrics registry panic on an attribute a
 	// metric did not declare, where production corrects it and counts it. See

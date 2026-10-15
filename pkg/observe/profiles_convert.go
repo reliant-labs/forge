@@ -82,9 +82,10 @@ func pprofToOTLP(r io.Reader, res *resource.Resource) (pprofile.Profiles, error)
 			for k := 0; k < sp.Profiles().Len(); k++ {
 				prof := sp.Profiles().At(k)
 				prof.SetProfileID(newProfileID())
-				// The translator appends one OTLP sample per pprof sample, in order.
+				// Attach links BEFORE sparsifying: the translator preserves pprof
+				// sample order, but each sample type has different zero rows.
 				if prof.Samples().Len() != len(links) {
-					continue
+					return pprofile.Profiles{}, fmt.Errorf("pprof translator changed sample order/length")
 				}
 				for s := 0; s < prof.Samples().Len(); s++ {
 					ref := links[s]
@@ -101,6 +102,18 @@ func pprofToOTLP(r io.Reader, res *resource.Resource) (pprofile.Profiles, error)
 					}
 					prof.Samples().At(s).SetLinkIndex(idx)
 				}
+				// A zero contributes nothing to a sampled stack distribution.
+				// Keep signed nonzero values (e.g. a legitimate differential
+				// profile); don't mistake an inactive inuse stack for an
+				// inactive alloc stack. Never subtract cumulative counters here.
+				prof.Samples().RemoveIf(func(s pprofile.Sample) bool {
+					for _, v := range s.Values().AsRaw() {
+						if v != 0 {
+							return false
+						}
+					}
+					return true
+				})
 			}
 		}
 	}

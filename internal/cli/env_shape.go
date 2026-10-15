@@ -380,6 +380,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		AlertRoutes:         alertRoutes,
 		ObservabilityPolicy: shapeObservabilityPolicyOf(entities),
 		DeliveryPolicy:      shapeDeliveryPolicyOf(entities),
+		Identity:            shapeIdentityOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
 	})
@@ -566,6 +567,7 @@ func shapeControlPlaneSecretsOf(e *KCLEntities) []release.ShapeControlPlaneSecre
 			ConnectedCluster: c.ConnectedCluster,
 			Kind:             c.Kind,
 			Keys:             c.Keys,
+			Required:         c.Required,
 		})
 	}
 	return out
@@ -593,6 +595,17 @@ func shapeDeliveryPolicyOf(e *KCLEntities) *release.ShapeDeliveryPolicy {
 		return nil
 	}
 	return e.DeliveryPolicy
+}
+
+// shapeIdentityOf projects the env's managed identity. The render already
+// resolved it into the shape's own vocabulary (derived applications and
+// consumers, the deliveries, the reserved managed-secret names), so this is a
+// pass-through that exists to keep the one place a nil means "none declared".
+func shapeIdentityOf(e *KCLEntities) *release.ShapeIdentity {
+	if e == nil {
+		return nil
+	}
+	return e.Identity
 }
 
 // shapeApplierOf projects the env's declared applier. Only a DECLARATION is
@@ -803,6 +816,9 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 			fmt.Fprintf(w, "    %s/%s [%s] on %s via %s\n", c.Namespace, c.Name, c.Kind, c.Cluster, c.ConnectedCluster)
 		}
 	}
+	if id := doc.Shape.Identity; id != nil {
+		writeIdentitySummary(w, id)
+	}
 	if len(doc.Shape.Alerts) > 0 {
 		user := 0
 		for _, a := range doc.Shape.Alerts {
@@ -817,6 +833,45 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 	}
 	fmt.Fprintf(w, "  objects:   %d\n", len(doc.Shape.Objects))
 	fmt.Fprintf(w, "  rendered from: %s\n", describeShapeProvenance(doc.Provenance))
+}
+
+// writeIdentitySummary prints the managed identity the env declares: where it
+// runs, who it serves, and what is delivered. Names only, like the rest of the
+// summary; the issuer is assigned by the control plane when the instance is
+// first provisioned, so `forge env status` is where it appears.
+func writeIdentitySummary(w io.Writer, id *release.ShapeIdentity) {
+	where := id.Runtime
+	switch {
+	case id.ShareWith != "":
+		where += ", sharing " + id.ShareWith + "'s users"
+	case id.Domain != "":
+		where += ", issuer on " + id.Domain
+	}
+	exposure := "private"
+	if id.Public || id.Login.Mode == release.IdentityLoginHosted {
+		exposure = "public"
+	}
+	fmt.Fprintf(w, "  identity:  %s (%s, %s sign-in, %s)\n", id.Name, where, id.Login.Mode, exposure)
+	for _, a := range id.Applications {
+		fmt.Fprintf(w, "    application %s [%s] brokered by %s\n", a.Name, a.Kind, a.Workload)
+	}
+	if len(id.Roles) > 0 {
+		keys := make([]string, 0, len(id.Roles))
+		for _, r := range id.Roles {
+			keys = append(keys, r.Key)
+		}
+		fmt.Fprintf(w, "    roles: %s\n", strings.Join(keys, ", "))
+	}
+	if len(id.Consumers) > 0 {
+		names := make([]string, 0, len(id.Consumers))
+		for _, c := range id.Consumers {
+			names = append(names, c.Workload)
+		}
+		fmt.Fprintf(w, "    consumed by: %s\n", strings.Join(names, ", "))
+	}
+	for _, d := range id.Deliveries {
+		fmt.Fprintf(w, "    delivers %s [%s] on %s via %s\n", d.Namespace+"/"+d.Name, d.Kind, d.Cluster, d.ConnectedCluster)
+	}
 }
 
 // describeShapeProvenance is the one-line "where this came from": the commit,

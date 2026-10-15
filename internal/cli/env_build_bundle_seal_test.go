@@ -27,6 +27,10 @@ func fullyDeclaredShape() release.Shape {
 	replicas := 2
 	policy := release.DefaultDeliveryPolicy()
 	policy.VulnGate.Mode = release.DeliveryEnforce
+	delivery := release.ShapeIdentityDelivery{
+		Kind: release.ControlPlaneSecretIdentity, Name: "forge-identity-identity", Namespace: "app",
+		Cluster: "prod-ctx", ConnectedCluster: "prod",
+	}
 	return release.Shape{
 		Kind:      release.EnvPersistent,
 		Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "prod-ctx", Artifact: "api", Replicas: &replicas}},
@@ -37,6 +41,9 @@ func fullyDeclaredShape() release.Shape {
 		ControlPlaneSecrets: []release.ShapeControlPlaneSecret{{
 			Name: "telemetry", Namespace: "app", Cluster: "prod-ctx", ConnectedCluster: "prod",
 			Kind: release.ControlPlaneSecretTelemetryToken, Keys: []string{"token"},
+		}, {
+			Name: delivery.Name, Namespace: delivery.Namespace, Cluster: delivery.Cluster, ConnectedCluster: delivery.ConnectedCluster,
+			Kind: release.ControlPlaneSecretIdentity, Keys: []string{"ISSUER", "AUDIENCE"}, Required: true,
 		}},
 		Alerts: []release.ShapeAlert{{
 			Alert: "HighErrorRate", Expr: "up == 0", For: "5m",
@@ -50,7 +57,17 @@ func fullyDeclaredShape() release.Shape {
 			Enabled: true, Disabled: []string{release.ObsCategoryLogs}, OptIn: []string{release.ObsOptInReplay},
 		},
 		DeliveryPolicy: &policy,
-		Applier:        release.ApplierForge,
+		Identity: &release.ShapeIdentity{
+			Name: "identity", Runtime: release.IdentityRuntimeHosted,
+			Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
+			Roles: []release.ShapeIdentityRole{{Key: "admin", MembersFrom: release.IdentityMembersConsole}},
+			Applications: []release.ShapeIdentityApplication{
+				{Name: "prod:api", Workload: "api", Kind: release.IdentityAppNativeBroker},
+			},
+			Consumers:  []release.ShapeIdentityConsumer{{Workload: "api", Application: "prod:api"}},
+			Deliveries: []release.ShapeIdentityDelivery{delivery},
+		},
+		Applier: release.ApplierForge,
 		Units: []release.ShapeUnit{
 			{Name: "base", Applier: release.UnitApplierForge},
 			{Name: "reliant", Applier: release.UnitApplierHub},
@@ -113,7 +130,9 @@ func TestBundleSealsEveryShapeField(t *testing.T) {
 			t.Errorf("the bundle does not seal Shape.%s as declared:\n declared %s\n sealed   %s", name, w, g)
 		}
 	}
-	if !strings.Contains(string(built.ConfigBlob()), `"observability_policy"`) {
-		t.Error("the config blob has no observability_policy")
+	for _, key := range []string{`"observability_policy"`, `"identity"`} {
+		if !strings.Contains(string(built.ConfigBlob()), key) {
+			t.Errorf("the config blob has no %s", key)
+		}
 	}
 }

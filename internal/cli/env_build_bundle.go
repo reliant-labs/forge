@@ -383,6 +383,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		AlertRoutes:         doc.Shape.AlertRoutes,
 		ObservabilityPolicy: doc.Shape.ObservabilityPolicy,
 		DeliveryPolicy:      doc.Shape.DeliveryPolicy,
+		Identity:            doc.Shape.Identity,
 		Applier:             doc.Shape.Applier,
 		Units:               doc.Shape.Units,
 	}

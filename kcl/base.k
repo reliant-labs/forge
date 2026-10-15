@@ -128,9 +128,72 @@ OTEL_AGENT_SERVICE: str = "otel-agent"
 #                               format, which a workload reads from a file;
 #   token                       the bare `<jwt>`, which the node agent's
 #                               bearertokenauth extension reads from a file.
+#
+# The identity kinds are DERIVED from Bundle.identity and never declared by
+# hand. `identity`'s keys depend on the applications, so the map holds none and
+# ControlPlaneSecret.keys carries them; the other two have fixed keys.
 CONTROL_PLANE_SECRET_KINDS: {str: [str]} = {
     "telemetry_token" = ["OTEL_EXPORTER_OTLP_HEADERS", "token"]
+    "identity" = []
+    "identity_machine_key" = ["key.json"]
+    "identity_jwks" = ["jwks.json"]
 }
+
+# The kinds forge.ManagedIdentity derives. Declaring one in
+# Bundle.control_plane_secrets is refused: the declaration is the identity.
+IDENTITY_SECRET_KINDS: [str] = ["identity", "identity_machine_key", "identity_jwks"]
+
+# ---------------------------------------------------------------------------
+# forge.ManagedIdentity: the names forge and the control plane agree on.
+# ---------------------------------------------------------------------------
+
+# The Kubernetes Secret a cluster consumer reads an identity's outputs from is
+# `forge-identity-<name>` (+ `-jwks` for the signing-key snapshot); a HOSTED
+# consumer reads managed secrets named `RELIANT_IDENTITY_<NAME>_<KEY>`. Both
+# prefixes are reserved: only the control plane writes them, so forge never
+# asks a person to set one.
+IDENTITY_SECRET_PREFIX: str = "forge-identity-"
+IDENTITY_MANAGED_PREFIX: str = "RELIANT_IDENTITY_"
+IDENTITY_DOMAIN: str = "reliantidentity.com"
+
+# Where a cluster consumer finds the files it re-reads (the broker token and the
+# JWKS snapshot): whole-directory Secret volumes, so a rotation reaches the pod
+# without a restart.
+IDENTITY_DIR: str = "/var/run/secrets/forge/identity"
+
+# What an identity can hand a workload. `client_id`, `redirect_uri`,
+# `login_uri` and `broker_token` belong to an APPLICATION; the rest are the
+# instance's.
+IDENTITY_OUTPUTS: [str] = [
+    "audience", "broker_token", "client_id", "idp_base", "issuer",
+    "jwks", "login_uri", "redirect_uri", "roles_claim", "scopes",
+]
+IDENTITY_APP_OUTPUTS: [str] = ["broker_token", "client_id", "login_uri", "redirect_uri"]
+
+# The typed-config field each output fills, unless a consumer remaps it
+# (IdentityConsumer.fields). The env var is the upper-cased field name, the
+# convention every forge config field follows. The broker token and the JWKS
+# snapshot also have `<field>_file` siblings, which a cluster consumer uses
+# instead (a file is re-read; an env var is not).
+IDENTITY_FIELDS: {str: str} = {
+    "audience" = "jwt_audience"
+    "broker_token" = "idp_broker_token"
+    "client_id" = "oidc_client_id"
+    "idp_base" = "idp_base"
+    "issuer" = "jwt_issuer"
+    "jwks" = "jwt_jwks_snapshot"
+    "login_uri" = "idp_login_uri"
+    "redirect_uri" = "oidc_redirect_uri"
+    "roles_claim" = "jwt_roles_claim"
+    "scopes" = "oidc_scopes"
+}
+
+# The outputs that, when a hand-written literal already fills their field, are a
+# CONFLICT. The others (scopes, roles_claim, login_uri) have non-empty proto
+# defaults, so a literal there is the default and the identity replaces it.
+IDENTITY_CONFLICT_OUTPUTS: [str] = [
+    "audience", "client_id", "idp_base", "issuer", "jwks", "redirect_uri",
+]
 
 # The Secret the node agent reads its ingest token from when the destination is
 # the control plane's (ObservabilityDestination.token_from_control_plane): one

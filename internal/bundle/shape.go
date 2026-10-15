@@ -68,6 +68,9 @@ type ShapeInput struct {
 	ObservabilityPolicy *release.ShapeObservabilityPolicy
 	// DeliveryPolicy is the env's delivery policy, or nil for the defaults.
 	DeliveryPolicy *release.ShapeDeliveryPolicy
+	// Identity is the env's managed identity declaration, or nil when it
+	// declares none.
+	Identity *release.ShapeIdentity
 
 	// Applier is the env's declared applier (release.ApplierForge), or "".
 	Applier string
@@ -120,6 +123,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		AlertRoutes:         in.AlertRoutes,
 		ObservabilityPolicy: in.ObservabilityPolicy,
 		DeliveryPolicy:      in.DeliveryPolicy,
+		Identity:            in.Identity,
 		Applier:             in.Applier,
 		Units:               in.Units,
 	}.Canonical()

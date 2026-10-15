@@ -423,6 +423,13 @@ type Shape struct {
 	// recorded before the field encodes and hashes exactly as it did; a
 	// reader treats absence as [DefaultDeliveryPolicy], never as "off".
 	DeliveryPolicy *ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	// Identity is the env's managed identity as declared
+	// (forge.ManagedIdentity): the instance the control plane's identity
+	// reconciler converges, and which workloads consume it. Names and
+	// destinations only; every issued value is delivered, never recorded.
+	// Omitted when the env declares none, so every shape recorded before the
+	// field encodes and hashes exactly as it did.
+	Identity *ShapeIdentity `json:"identity,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment none of whose delivery units has moved onto the hub yet. It
 	// is a transitional state (see [ApplierForge]). Empty means undeclared, and
@@ -488,7 +495,23 @@ const (
 	// ControlPlaneSecretTelemetryToken is the per-environment OTLP ingest
 	// token.
 	ControlPlaneSecretTelemetryToken = "telemetry_token"
+	// ControlPlaneSecretIdentity is a managed identity's outputs for the
+	// workloads that consume it: issuer, audience, scopes, and per
+	// application the client id, redirect and login URIs and the broker
+	// token. Derived from Bundle.identity; never declared by hand.
+	ControlPlaneSecretIdentity = "identity"
+	// ControlPlaneSecretIdentityMachineKey is a machine user's key.
+	ControlPlaneSecretIdentityMachineKey = "identity_machine_key"
+	// ControlPlaneSecretIdentityJWKS is the snapshot of the instance's public
+	// signing keys a validator falls back to when the issuer is unreachable.
+	ControlPlaneSecretIdentityJWKS = "identity_jwks"
 )
+
+// ControlPlaneSecretKinds is every kind a control-plane secret can have.
+var ControlPlaneSecretKinds = []string{
+	ControlPlaneSecretIdentity, ControlPlaneSecretIdentityJWKS,
+	ControlPlaneSecretIdentityMachineKey, ControlPlaneSecretTelemetryToken,
+}
 
 // ShapeControlPlaneSecret is one Secret the control plane supplies: a
 // DESTINATION and a KIND, never a value. Keys names what the control plane
@@ -507,6 +530,11 @@ type ShapeControlPlaneSecret struct {
 	// (ControlPlaneSecretTelemetryToken).
 	Kind string   `json:"kind"`
 	Keys []string `json:"keys,omitempty"`
+	// Required says a workload reads the Secret without an optional marker,
+	// so its pods wait for the first delivery instead of starting without it.
+	// The control plane reports such an env as waiting on the delivery.
+	// Omitted when false, so a shape recorded before the field is unchanged.
+	Required bool `json:"required,omitempty"`
 }
 
 // Alert rule sources.
@@ -805,13 +833,27 @@ func (s Shape) Validate() error {
 		if strings.TrimSpace(c.ConnectedCluster) == "" {
 			return fmt.Errorf("%w: shape control-plane secret %s names no connected cluster, so the control plane has no credential to deliver it with", ErrInvalid, c.Key())
 		}
-		if c.Kind != ControlPlaneSecretTelemetryToken {
-			return fmt.Errorf("%w: shape control-plane secret %s: kind %q (expected %s)", ErrInvalid, c.Key(), c.Kind, ControlPlaneSecretTelemetryToken)
+		if !containsString(ControlPlaneSecretKinds, c.Kind) {
+			return fmt.Errorf("%w: shape control-plane secret %s: kind %q (expected one of %s)", ErrInvalid, c.Key(), c.Kind, strings.Join(ControlPlaneSecretKinds, ", "))
+		}
+		if c.Kind == ControlPlaneSecretIdentity && len(c.Keys) == 0 {
+			return fmt.Errorf("%w: shape control-plane secret %s: an %s secret names its keys, because they depend on the applications", ErrInvalid, c.Key(), ControlPlaneSecretIdentity)
 		}
 		if delivered[c.Key()] {
 			return fmt.Errorf("%w: shape names control-plane secret %s twice", ErrInvalid, c.Key())
 		}
 		delivered[c.Key()] = true
+	}
+	if s.Identity != nil {
+		if err := s.Identity.validate(s.ControlPlaneSecrets); err != nil {
+			return err
+		}
+	} else {
+		for _, c := range s.ControlPlaneSecrets {
+			if IsIdentityKind(c.Kind) {
+				return fmt.Errorf("%w: shape control-plane secret %s has the identity kind %q, and the shape declares no identity", ErrInvalid, c.Key(), c.Kind)
+			}
+		}
 	}
 	return s.validateAlerts()
 }
@@ -915,6 +957,10 @@ func (s Shape) Canonical() Shape {
 		} else {
 			out.DeliveryPolicy = nil
 		}
+	}
+	if s.Identity != nil {
+		id := s.Identity.canonical()
+		out.Identity = &id
 	}
 	// Alerts sort by name. Routes do NOT sort: first match wins, so their order
 	// is part of their meaning.

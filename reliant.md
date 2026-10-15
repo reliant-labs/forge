@@ -90,7 +90,7 @@ test bodies.
 
 1. **Inner loop — every edit:** `task test:short -- ./internal/<pkg>/...`, naming only the packages you touched (`go test -short`, cached, no `-race`).
 2. **Package-targeted — before committing:** `task test -- ./internal/<pkg>/...`. Full mode (no `-short`, with `-race`) for the packages you touched, so the gated slow tests run too.
-3. **Full gate — once, at the end / CI:** `task test` — the whole module in CI's three lanes from `scripts/ci-test-packages.sh` (unit and `internal/cli` under `-race -count=1`, the guards at `-p 1` without `-race`), each with its own hang budget (15m / 45m / 30m) — plus the e2e corpus: `go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/`. The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so wall-clock is roughly the slowest fixture. Run it in the background: the full lane, `internal/cli` / `internal/tierguard` in full mode, and the e2e corpus all exceed ~2 minutes.
+3. **Full gate — once, at the end / CI:** `task test` — the whole module in CI's three lanes from `scripts/ci-test-packages.sh` (unit and `internal/cli` under `-race -count=1`, the guards at `-p 1` without `-race`), each with its own hang budget (15m / 45m / 30m) — plus the e2e corpus: `task test:e2e` (`go test -tags e2e -count=1 -timeout 60m -run '^TestE2E' ./internal/cli/`; narrow it with `task test:e2e -- -run <regex>`). The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so wall-clock is roughly the slowest fixture. Run it in the background: the full lane, `internal/cli` / `internal/tierguard` in full mode, and the e2e corpus all exceed ~2 minutes.
 
 Rules that keep the tiers honest:
 
@@ -118,11 +118,19 @@ moving a check between lanes.
 - **Windows** — `ci.yml` Windows: build, vet, the windows/arm64 build, the `-short` tier of
   Unit + internal/cli, and a scaffold+render smoke. No `-count=1`: a PR restores main's
   build cache and replays unchanged packages; only a push to main saves the cache.
-- **e2e** — `e2e-suite.yml`: the `-tags e2e` suite in 4 shards, plus a coverage ledger that
-  proves the shards ran every test.
-- **Nightly** — `nightly.yml` (schedule + dispatch): the full windows/arm64 `go vet`. A red
-  nightly on main opens, or comments on, the "Nightly CI is red" issue; the next green one
-  closes it.
+- **e2e** — `e2e-suite.yml`: `prepare` builds the e2e test binary, forge and the codegen
+  plugins once and plans 4 shards by recorded duration (`.github/e2e-timings.json`,
+  `internal/e2eshard`); the shards run only `TestE2E*` tests, minus `TestE2ENightly*`; a
+  coverage ledger proves they ran every selected test. `compile` (build + vet under the tag)
+  runs beside them and gates nothing.
+- **Nightly** — `nightly.yml` (schedule + dispatch): the full windows/arm64 `go vet`, and the
+  whole e2e suite (`select: all`, so `TestE2ENightly*` too). A red nightly on main opens, or
+  comments on, the "Nightly CI is red" issue; the next green one closes it.
+
+e2e naming is load-bearing: a test in an e2e-tagged file must be named `TestE2E*` and no
+untagged test may be — `internal/e2eshard`'s guard fails the Test job otherwise, because
+the shards select by that prefix. A test with no recorded duration is planned at the
+median; `scripts/e2e-timings.sh` refreshes the file from a CI run.
 
 A check moves to nightly only when it is slow AND a failure is rare and cheap to bisect a
 day later. Say why in its job comment.

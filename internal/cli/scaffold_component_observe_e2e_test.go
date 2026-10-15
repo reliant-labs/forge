@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestE2EComponentObserveMarkerAndEnforceLint is the end-to-end proof of
+// TestE2ENightlyComponentObserveMarkerAndEnforceLint is the end-to-end proof of
 // Phase 2 of the component-middleware feature:
 //
 //  1. `scaffold package --type adapter` STAMPS `// forge:constructor` on the
@@ -26,7 +26,15 @@ import (
 //  5. `config.enforce_component_observe: off` → lint clean even with an
 //     unmarked component present.
 //  6. generate ×2 is idempotent; build + vet stay green.
-func TestE2EComponentObserveMarkerAndEnforceLint(t *testing.T) {
+//
+// NIGHTLY (the TestE2ENightly prefix; internal/e2eshard). It is among the
+// suite's slowest single tests (234s median, 490s at worst, on a CI shard),
+// and no commit since it landed names it as the test that caught a
+// regression — the marker decision and the lint are pinned piecewise by
+// unit tests (internal/codegen observe_decision / constructor_ident,
+// internal/cli/lint enforce_component_observe). nightly.yml runs it every
+// day; a regression here is one day's commits to bisect.
+func TestE2ENightlyComponentObserveMarkerAndEnforceLint(t *testing.T) {
 	t.Parallel()
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()

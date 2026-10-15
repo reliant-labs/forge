@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// TestClusterConnect_TokenAgainstARealCluster drives `connect --auth token`
+// TestE2EClusterConnect_TokenAgainstARealCluster drives `connect --auth token`
 // and `disconnect` against a REAL throwaway k3d cluster and a fake control
 // plane, for BOTH apply scopes and TWO bindings of one cluster: the binding's
 // ServiceAccount, its token Secret and the render-derived RBAC are created for
@@ -26,7 +26,7 @@ import (
 // RUN IT ON A DEVELOPER MACHINE (k3d, kubectl and a docker daemon; it is NOT
 // run in the kata sandbox, where nested clusters are impossible):
 //
-//	go test -tags e2e -count=1 -timeout 15m -run TestClusterConnect_TokenAgainstARealCluster ./internal/cli/
+//	go test -tags e2e -count=1 -timeout 15m -run TestE2EClusterConnect_TokenAgainstARealCluster ./internal/cli/
 //
 // WHAT IS STUBBED, AND WHY ONLY THAT. A k3d API server is loopback, which the
 // command refuses on purpose (the hub dials from a pod, where loopback is that
@@ -44,7 +44,7 @@ import (
 // The cluster is named uniquely and deleted by that exact name; no other
 // cluster is read or touched, and the developer's kubeconfig is never
 // modified.
-func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
+func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 	if testing.Short() {
 		t.Skip("creates a real k3d cluster")
 	}
@@ -92,7 +92,7 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		}
 		t.Skipf("skipped: a k3d cluster did not come up with a reachable API server (%v). This sandbox has no nested "+
 			"cluster networking. It is a HARD FAILURE in CI. Run it on a developer machine with k3d, kubectl and docker:\n"+
-			"    go test -tags e2e -count=1 -timeout 15m -run TestClusterConnect_TokenAgainstARealCluster ./internal/cli/", createErr)
+			"    go test -tags e2e -count=1 -timeout 15m -run TestE2EClusterConnect_TokenAgainstARealCluster ./internal/cli/", createErr)
 	}
 
 	// A private kubeconfig for every kubectl forge shells out to.

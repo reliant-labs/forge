@@ -13,6 +13,15 @@
 #                       depends on the target, not the host, so it runs on
 #                       Linux.
 #
+#   e2e (all)           the whole e2e suite through e2e-suite.yml with
+#                       `select: all`: every TestE2E* test, including the
+#                       TestE2ENightly* ones a pull request's run leaves out.
+#                       The other tests run on every PR too; running them
+#                       again here costs only runner time, keeps one code
+#                       path for planning and auditing a run, and records a
+#                       fresh duration for EVERY test, which is what
+#                       scripts/e2e-timings.sh reads by default.
+#
 # A check moves here only when it is slow AND its failure is rare and cheap to
 # bisect a day later. Moving one is a decision about where a regression will
 # be caught, so say why in the job's comment, as above.
@@ -57,9 +66,15 @@ jobs:
           GOARCH: arm64
         run: go vet ./...
 
+  e2e:
+    name: e2e (all)
+    uses: ./.github/workflows/e2e-suite.yml
+    with:
+      select: all
+
   report:
     name: report (issue on red)
-    needs: [windows-arm64-vet]
+    needs: [windows-arm64-vet, e2e]
     # Always: a red job is exactly when this has something to say. Only for
     # main, so a dispatch on a feature branch never files an issue.
     if: ${{ always() && github.ref == 'refs/heads/main' }}

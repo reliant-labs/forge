@@ -630,6 +630,13 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 				"[bundle]   The build continues; recording is idempotent on (env, digest), so the next build or deploy records it.\n",
 			env, shortDigest(placed.Digest), err)
 		return placed.bundleWriteOutcome, nil
+	case bundleRefusalDowngraded(ctx, err, ledger.hubConverged()):
+		// --declare=best-effort over a control plane older than this
+		// forge. Never for a hub-converged env (the decision excludes it):
+		// there the recorded bundle is the only thing that ships.
+		warnRefusedRecord(in.errWriter(), "[bundle]", fmt.Sprintf("env %s's bundle %s", env, shortDigest(placed.Digest)),
+			fmt.Sprintf("the next `forge env deploy %s <version>`", env), err)
+		return placed.bundleWriteOutcome, nil
 	default:
 		return placed.bundleWriteOutcome, fmt.Errorf("record env %s's bundle in %s: %w", env, ledger.Releases.Location(), err)
 	}

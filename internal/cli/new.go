@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -779,8 +781,16 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
 		if err := bootstrapGeneratedCode(in.targetPath); err != nil {
 			fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
-			fmt.Fprintln(os.Stderr, "    The project does NOT build yet: gen/, internal/app/ and the cmd/<bin>/main.go composition root are missing.")
-			fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to complete it.\n", Name(), Name())
+			// A run that reached the end with failed steps kept everything
+			// else it generated; only one that aborted left the tree bare.
+			var stepsFailed *factory.StepsFailedError
+			if errors.As(err, &stepsFailed) {
+				fmt.Fprintln(os.Stderr, "    Everything else was generated; the output of the failed step(s) is missing.")
+				fmt.Fprintf(os.Stderr, "    Fix them, then run '%s generate' to complete it.\n", Name())
+			} else {
+				fmt.Fprintln(os.Stderr, "    The project does NOT build yet: gen/, internal/app/ and the cmd/<bin>/main.go composition root are missing.")
+				fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to complete it.\n", Name(), Name())
+			}
 		}
 	}
 

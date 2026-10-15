@@ -41,6 +41,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -52,6 +53,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -193,8 +195,11 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 			break
 		}
 	}
+	// A run that reached the end with failed steps still wrote the rest,
+	// and its writes stand: finish re-creating the paths, then fail with it.
+	var stepsFailed *factory.StepsFailedError
 	if needsPipeline && gen.pipeline != nil {
-		if err := gen.pipeline(); err != nil {
+		if err := gen.pipeline(); err != nil && !errors.As(err, &stepsFailed) {
 			return fmt.Errorf("forge generate (re-scaffolding %s): %w", strings.Join(paths, ", "), err)
 		}
 	}
@@ -250,6 +255,9 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 		return rescaffoldErr(unrenderable,
 			fmt.Sprintf("forge does not scaffold %s for this project", strings.Join(unrenderable, ", ")),
 			"check the path: rescaffold re-creates files forge writes for this project's forge.yaml (kind, features, frontends, services)")
+	}
+	if stepsFailed != nil {
+		return fmt.Errorf("forge generate (re-scaffolding %s): %w", strings.Join(paths, ", "), stepsFailed)
 	}
 	return nil
 }

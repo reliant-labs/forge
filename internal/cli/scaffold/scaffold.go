@@ -830,8 +830,19 @@ func runService(f *factory.Factory, name string, resume, force bool, batch *serv
 			// whole batch.
 			fmt.Println("\n🔧 Running generation pipeline...")
 			if err := f.Gen.RunPipeline(p.root); err != nil {
-				batch.rollbackAll()
-				return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
+				// A run that aborted rolled its own writes back, so the batch
+				// rewinds too. A run that reached the end with failed steps
+				// did not: its writes — the wiring generated FROM these
+				// services' sources — stand, and deleting the sources would
+				// leave that wiring pointing at nothing. Keep and finish every
+				// service, then fail with the steps that failed.
+				var stepsFailed *factory.StepsFailedError
+				if !errors.As(err, &stepsFailed) {
+					batch.rollbackAll()
+					return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
+				}
+				return errors.Join(batch.runTails(),
+					fmt.Errorf("the service sources were written and kept, but %w; fix the failed step(s), then re-run `forge generate`", stepsFailed))
 			}
 			return batch.runTails()
 		},

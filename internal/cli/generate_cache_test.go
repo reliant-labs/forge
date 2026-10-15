@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
 // cacheFixture is a git project, a sibling module it `replace`s, and a
@@ -617,8 +618,10 @@ func TestGenerateCacheNeverRecordsASoftFailure(t *testing.T) {
 	}})
 	var runErr error
 	out := captureStdout(t, func() { runErr = runGeneratePipelineFlags(f.root, pipelineFlags{Cache: true}) })
-	if runErr != nil {
-		t.Fatalf("a soft failure must not fail the run: %v\n%s", runErr, out)
+	// The run goes on past the failed step, and still fails at the end.
+	var stepsFailed *factory.StepsFailedError
+	if !errors.As(runErr, &stepsFailed) {
+		t.Fatalf("a run with a failed step must fail with *factory.StepsFailedError, got %v\n%s", runErr, out)
 	}
 	if strings.Contains(out, "Recorded as a verified fixed point") || !strings.Contains(out, "not recorded") {
 		t.Fatalf("a run with a soft-failed step must not record, and must say why:\n%s", out)

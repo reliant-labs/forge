@@ -1,10 +1,14 @@
 package scaffold
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
 // TestRunServices_RunsPipelineOnceForTheBatch is the wall-clock claim. The
@@ -103,6 +107,39 @@ func TestRunServices_RollsBackEveryFreshServiceOnPipelineFailure(t *testing.T) {
 		} {
 			if _, err := os.Stat(gone); !os.IsNotExist(err) {
 				t.Errorf("batch rollback did not remove %s (stat err=%v)", gone, err)
+			}
+		}
+	}
+}
+
+// TestRunServices_KeepsTheServicesWhenGenerateStepsFailed is the other kind of
+// pipeline failure: the run reached the end with failed steps, and its writes
+// — the wiring generated from these services' sources — stand. Rolling the
+// sources back would leave that wiring pointing at deleted packages, so every
+// service is kept and finished, and the scaffold still fails, naming the steps.
+func TestRunServices_KeepsTheServicesWhenGenerateStepsFailed(t *testing.T) {
+	dir := withTempProject(t, "name: testproj\nmodule_path: example.com/testproj\n")
+	markServiceProject(t, dir)
+
+	f := testFactory()
+	f.Gen.RunPipeline = func(string) error { return &factory.StepsFailedError{Steps: []string{"ORM generation"}} }
+
+	names := []string{"customers", "sales"}
+	err := runServices(f, names, false, false)
+	var stepsFailed *factory.StepsFailedError
+	if !errors.As(err, &stepsFailed) {
+		t.Fatalf("runServices must fail with the generate run's failed steps, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ORM generation") {
+		t.Errorf("the error must name the failed step: %v", err)
+	}
+	for _, name := range names {
+		for _, kept := range []string{
+			filepath.Join(dir, "internal", "handlers", name),
+			filepath.Join(dir, "proto", "services", name),
+		} {
+			if _, statErr := os.Stat(kept); statErr != nil {
+				t.Errorf("a run whose writes stand must not roll back %s: %v", kept, statErr)
 			}
 		}
 	}

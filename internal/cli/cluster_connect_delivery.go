@@ -150,9 +150,9 @@ func (r connectRBAC) deliveryEnabled() bool { return len(r.DeliverySecrets) > 0 
 // connectSubject is the connect identity as a subject.
 func (r connectRBAC) connectSubject() deliverySubject {
 	if r.Auth == authToken {
-		return deliverySubject{Kind: subjectKindServiceAccount, Namespace: r.TokenNamespace, Name: r.TokenServiceAccount}
+		return deliverySubject{Kind: subjectKindServiceAccount, Namespace: r.TokenNamespace, Name: r.tokenServiceAccount()}
 	}
-	return deliverySubject{Kind: subjectKindUser, Name: r.HubGSA}
+	return deliverySubject{Kind: subjectKindUser, Name: r.BindingGSA}
 }
 
 // deliverySubjects are who the grant binds: the connect identity, plus the
@@ -186,15 +186,16 @@ func (r connectRBAC) validateConnectIdentity() error {
 	return nil
 }
 
-func deliveryObjectName(clusterName string) string {
-	return connectBootstrapName(clusterName) + "-delivery"
+func deliveryObjectName(clusterName, env string) string {
+	return connectBindingName(clusterName, env) + "-delivery"
 }
 
 // deliveryLabels is the label block (already indented as metadata children).
 func (r connectRBAC) deliveryLabels() string {
 	return "  labels:\n" +
 		"    " + forgeManagedLabelKey + ": " + forgeManagedLabelValue + "\n" +
-		"    forge.dev/connected-cluster: " + strconv.Quote(r.ClusterName) + "\n" +
+		"    " + connectClusterLabelKey + ": " + strconv.Quote(r.ClusterName) + "\n" +
+		"    " + connectBindingLabelKey + ": " + strconv.Quote(dnsSegment(r.Env)) + "\n" +
 		"    " + deliveryGrantLabelKey + ": " + deliveryGrantLabelValue + "\n"
 }
 
@@ -213,7 +214,7 @@ func celStringList(items []string) string {
 
 // deliveryGuardManifests is the ValidatingAdmissionPolicy and its binding.
 func (r connectRBAC) deliveryGuardManifests() []string {
-	name := deliveryObjectName(r.ClusterName)
+	name := deliveryObjectName(r.ClusterName, r.Env)
 
 	var usernames []string
 	for _, s := range r.deliverySubjects() {
@@ -270,7 +271,7 @@ func (r connectRBAC) deliveryGrantManifests() []string {
 	}
 	sort.Strings(namespaces)
 
-	name := deliveryObjectName(r.ClusterName)
+	name := deliveryObjectName(r.ClusterName, r.Env)
 	var subjects strings.Builder
 	subjects.WriteString("subjects:\n")
 	for _, s := range r.deliverySubjects() {

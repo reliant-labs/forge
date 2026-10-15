@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,136 +269,6 @@ func TestConnectRequestWire_TokenIsWriteOnlyAndNeverPrinted(t *testing.T) {
 	}
 }
 
-// ── The printed grant ───────────────────────────────────────────────────────
-
-func TestGrantNamesTheHubIdentityAndTheImpersonatedUser(t *testing.T) {
-	var out strings.Builder
-	writeGrantInstructions(&out, connectRBAC{
-		ClusterName: "prod-us",
-		KubeContext: "gke_acme_us-central1_prod",
-		Auth:        authGCP,
-		Org:         "acme",
-	}, gkeContext{Project: "acme", Location: "us-central1", Cluster: "prod"},
-		"control-plane@acme.iam.gserviceaccount.com")
-
-	got := out.String()
-	for _, want := range []string{
-		"gcloud projects add-iam-policy-binding acme",
-		"--member=serviceAccount:control-plane@acme.iam.gserviceaccount.com",
-		"--role=roles/container.clusterViewer",
-		// THE HALF PEOPLE MISS. Granting the hub's cloud identity read
-		// access is not sufficient: Flux presents the impersonated deploy
-		// username, so a grant that omits it leaves every apply Forbidden on
-		// a user nobody bound.
-		"system:serviceaccount:flux-acme:reliant-deploy-tenant",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the printed grant omits %q:\n%s", want, got)
-		}
-	}
-}
-
-// An empty HubIdentity is the NORMAL state in dev. Printing a gcloud command
-// with a blank principal in it is how someone runs a grant that binds nothing.
-func TestGrantRefusesToPrintABlankPrincipal(t *testing.T) {
-	var out strings.Builder
-	writeGrantInstructions(&out, connectRBAC{ClusterName: "c", Auth: authGCP, Org: "acme"}, gkeContext{}, "")
-	got := out.String()
-	if strings.Contains(got, "gcloud") {
-		t.Errorf("printed a gcloud grant with no principal:\n%s", got)
-	}
-	if !strings.Contains(got, "no GCP identity") {
-		t.Errorf("did not say the deployment has no GCP identity:\n%s", got)
-	}
-}
-
-// ── The RBAC forge applies ──────────────────────────────────────────────────
-
-func TestBootstrapManifests_GCPBindsTheHubUserAndImpersonation(t *testing.T) {
-	got := connectRBAC{
-		ClusterName: "prod-us",
-		KubeContext: "gke_acme_us-central1_prod",
-		Auth:        authGCP,
-		Org:         "acme",
-		HubGSA:      "control-plane@acme.iam.gserviceaccount.com",
-	}.bootstrapManifests()
-
-	for _, want := range []string{
-		"kind: ClusterRole",
-		"name: forge-connect-prod-us",
-		// A GCP service account is authenticated by email, as a User.
-		"kind: User",
-		"name: control-plane@acme.iam.gserviceaccount.com",
-		// The impersonation grant, pinned to the one username the hub can
-		// ever present.
-		`verbs: ["impersonate"]`,
-		`resourceNames: ["system:serviceaccount:flux-acme:reliant-deploy-tenant"]`,
-		// The bootstrap writes the control plane makes through this
-		// credential.
-		`resources: ["namespaces"]`,
-		`resources: ["roles", "rolebindings"]`,
-		"escalate",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the gcp bootstrap omits %q:\n%s", want, got)
-		}
-	}
-	// No ServiceAccount is minted on the gcp path: there is no token.
-	if strings.Contains(got, "kind: ServiceAccount\n") {
-		t.Errorf("the gcp bootstrap mints a ServiceAccount, which only the token auth needs:\n%s", got)
-	}
-}
-
-func TestBootstrapManifests_TokenMintsTheCredential(t *testing.T) {
-	got := connectRBAC{
-		ClusterName:         "vke-prod",
-		KubeContext:         "vke-prod",
-		Auth:                authToken,
-		Org:                 "acme",
-		TokenNamespace:      connectTokenNamespace,
-		TokenServiceAccount: connectTokenServiceAccount,
-	}.bootstrapManifests()
-
-	for _, want := range []string{
-		"kind: Namespace",
-		"name: forge-system",
-		"kind: ServiceAccount",
-		"name: forge-connect",
-		// A long-lived Secret token, not a TokenRequest: nothing rotates a
-		// bounded one, so a cluster nobody re-connects would stop deploying.
-		"type: kubernetes.io/service-account-token",
-		"kubernetes.io/service-account.name: forge-connect",
-		// The binding's subject is the minted SA, not a User.
-		"kind: ServiceAccount\n  name: forge-connect\n  namespace: forge-system",
-		`resourceNames: ["system:serviceaccount:flux-acme:reliant-deploy-tenant"]`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the token bootstrap omits %q:\n%s", want, got)
-		}
-	}
-}
-
-// Every object forge creates carries the managed-by label, which is what makes
-// disconnect's cleanup safe to run by name.
-func TestBootstrapManifests_LabelsEverythingForgeCreates(t *testing.T) {
-	got := connectRBAC{
-		ClusterName: "c", Auth: authToken, Org: "o",
-		TokenNamespace: connectTokenNamespace, TokenServiceAccount: connectTokenServiceAccount,
-	}.bootstrapManifests()
-	docs := strings.Split(got, "\n---\n")
-	if len(docs) != 5 {
-		t.Fatalf("got %d objects, want 5 (Namespace, SA, Secret, ClusterRole, ClusterRoleBinding)", len(docs))
-	}
-	for _, doc := range docs {
-		if !strings.Contains(doc, forgeManagedLabelKey+": "+forgeManagedLabelValue) {
-			t.Errorf("an object carries no managed-by label:\n%s", doc)
-		}
-		if !strings.Contains(doc, "forge.dev/connected-cluster: c") {
-			t.Errorf("an object is not attributed to its connected cluster:\n%s", doc)
-		}
-	}
-}
-
 // ── The KCL binding and its refusal ─────────────────────────────────────────
 
 func TestClusterBindingsOf(t *testing.T) {
@@ -597,6 +468,8 @@ const fakeMintedToken = "eyJhbGciOi-FAKE-TOKEN"
 type fakeConnectCaller struct {
 	clusters []wireConnectedCluster
 	requests map[string]map[string]any
+	// noBindingIdentity makes ConnectCluster return no per-binding identity.
+	noBindingIdentity bool
 }
 
 func (f *fakeConnectCaller) Call(_ context.Context, procedure string, req, out any) error {
@@ -617,7 +490,9 @@ func (f *fakeConnectCaller) Call(_ context.Context, procedure string, req, out a
 		if r, ok := out.(*wireConnectClusterResponse); ok {
 			name, _ := f.requests[procedure]["name"].(string)
 			r.Cluster = wireConnectedCluster{ID: "cl_new", Name: name}
-			r.HubIdentity = wireHubIdentity{GCPServiceAccount: "control-plane@acme.iam.gserviceaccount.com"}
+			if !f.noBindingIdentity {
+				r.BindingIdentity = wireBindingIdentity{GCPServiceAccount: "fc-prod-ab12@acme.iam.gserviceaccount.com"}
+			}
 		}
 	default:
 		// Every other procedure decodes an empty object, which is what the
@@ -643,7 +518,10 @@ func recordConnectTo(t *testing.T, out *strings.Builder, kctx, auth string) map[
 	restoreClient := clusterConnectClient
 	restoreApply := connectApply
 	restoreToken := connectReadToken
+	restoreStream := connectEnvStream
+	restoreLive, restoreKubectl := connectReadLive, connectKubectl
 	t.Cleanup(func() {
+		connectEnvStream, connectReadLive, connectKubectl = restoreStream, restoreLive, restoreKubectl
 		kubeconfigClusterOf = restoreKube
 		clusterConnectClient = restoreClient
 		connectApply = restoreApply
@@ -661,6 +539,9 @@ func recordConnectTo(t *testing.T, out *strings.Builder, kctx, auth string) map[
 	connectReadToken = func(context.Context, string, connectRBAC) (string, error) {
 		return fakeMintedToken, nil
 	}
+	stubConnectRender(kctx)
+	connectReadLive = func(context.Context, string, connectRBAC) ([]liveObject, error) { return nil, nil }
+	connectKubectl = func(context.Context, string, ...string) (string, error) { return "", nil }
 
 	if err := runClusterConnect(context.Background(), clusterConnectOptions{
 		Name: "prod-us", KubeContext: kctx, Auth: auth, Env: "prod", Out: out,
@@ -668,6 +549,14 @@ func recordConnectTo(t *testing.T, out *strings.Builder, kctx, auth string) map[
 		t.Fatalf("runClusterConnect: %v", err)
 	}
 	return caller.requests
+}
+
+// stubConnectRender makes the env's render a small app on kctx.
+func stubConnectRender(kctx string) {
+	connectEnvStream = func(context.Context, io.Writer, string) (string, error) {
+		return "# cluster: " + kctx + "\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n  namespace: acme-prod\n---\n" +
+			"# cluster: " + kctx + "\napiVersion: v1\nkind: Service\nmetadata:\n  name: api\n  namespace: acme-prod\n", nil
+	}
 }
 
 // A cluster placed only by a forge.Manifests group (no ClusterTarget names it)

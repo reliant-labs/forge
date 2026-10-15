@@ -116,22 +116,6 @@ var removals = []removal{
 				},
 			},
 			{
-				Name: "the control plane's per-org deploy ServiceAccount, reliant-deploy-tenant",
-				Reason: "Flux's kustomize-controller on the control plane impersonates the Kubernetes " +
-					"ServiceAccount literally named `reliant-deploy-tenant`, so `forge cluster connect` must " +
-					"grant `impersonate` on exactly that username in the owner's cluster. The name is the " +
-					"control plane's identifier and cannot be renamed here; it is a Kubernetes identity, not a " +
-					"tenant column, header, context key or helper in forge. Scoped to that exact literal and to " +
-					"the connect command's files, so any other `tenant` there (a TenantID, a tenant header) " +
-					"still fails.",
-				Token: regexp.MustCompile(`reliant-deploy-tenant`),
-				Paths: []string{
-					"internal/cli/cluster_connect_rbac.go",
-					"internal/cli/cluster_connect_test.go",
-					"internal/templates/project/skills/forge/deploy/cluster-connect/SKILL.md",
-				},
-			},
-			{
 				Name: "Flux's per-namespace controller ClusterRoles in the changelog",
 				Reason: "The changelog entry for the hardened flux_chart() names the two ClusterRoles \n" +
 					"(`flux-tenant-reconciler`, `flux-tenant-source`) and Flux's own `multitenancy` chart \n" +

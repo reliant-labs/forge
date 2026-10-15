@@ -1,7 +1,7 @@
 package cli
 
 // `forge cluster connect` / `forge cluster disconnect` — registering a
-// Kubernetes cluster the control plane may deploy INTO.
+// Kubernetes cluster the control plane may deploy INTO, as one env's binding.
 //
 // THE SIBLING COMMANDS IN THIS NAMESPACE ARE LOCAL k3d LIFECYCLE. These two
 // are the opposite direction: nothing is created, a cluster the owner already
@@ -9,10 +9,14 @@ package cli
 // `ClusterTarget.connected_cluster`. The verb is `connect` rather than `add`
 // because the cluster already exists and keeps existing after `disconnect`.
 //
-// DECLARATIVE AND IDEMPOTENT BY NAME, which is what makes it safe in a
-// script: ConnectCluster UPDATES an existing cluster of the same name rather
-// than colliding, and the in-cluster RBAC is a server-side apply. Re-running
-// after changing a cluster's endpoint is the supported way to fix it.
+// A BINDING IS ONE ENV × ONE CLUSTER. connect grants that binding's own
+// identity exactly what the env's render applies there, in the scope the owner
+// chose (`--apply-scope`): see cluster_connect_scope.go and
+// cluster_connect_rbac.go. Nothing is shared between bindings.
+//
+// DECLARATIVE AND IDEMPOTENT BY NAME: ConnectCluster UPDATES an existing
+// cluster of the same name rather than colliding, the in-cluster RBAC is a
+// server-side apply, and a narrower re-run prunes what it no longer names.
 //
 // forge does not vendor the control plane's protos, so the wire shapes below
 // are the proto3-JSON subset forge reads, declared locally — the same rule the
@@ -23,7 +27,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -39,15 +42,13 @@ const (
 	procRemoveCluster  = "controlplane.v1.ClusterService/RemoveCluster"
 )
 
-// The namespace and ServiceAccount forge mints on the token path.
+// The namespace forge mints the token identity's ServiceAccount in.
 //
 // `forge-system` rather than a name carrying the hub's internals: this object
 // group lives in a CUSTOMER's cluster, so it is named after the tool that
-// created it and is deletable by `disconnect` without a second thought.
-const (
-	connectTokenNamespace      = "forge-system"
-	connectTokenServiceAccount = "forge-connect"
-)
+// created it. The namespace is shared by every binding on the cluster; the
+// ServiceAccount and Secret inside it are one per binding.
+const connectTokenNamespace = "forge-system"
 
 // wireConnectedCluster is the subset of controlplane.v1.Cluster forge reads.
 // A field forge does not use is a field forge cannot break on.
@@ -65,15 +66,17 @@ type wireConnectedCluster struct {
 	EnvironmentIDs []string `json:"environmentIds,omitempty"`
 }
 
-// wireHubIdentity is the principal the CONTROL PLANE acts as — the half a
-// caller cannot derive, and the reason the connect response is read at all.
-type wireHubIdentity struct {
+// wireBindingIdentity is the principal the CONTROL PLANE presents to this
+// cluster for ONE env's binding — the half a caller cannot derive, and the
+// reason the connect response is read at all. There is deliberately no shared
+// identity on the wire: a response without a binding identity cannot be bound.
+type wireBindingIdentity struct {
 	GCPServiceAccount string `json:"gcpServiceAccount,omitempty"`
 }
 
 type wireConnectClusterResponse struct {
-	Cluster     wireConnectedCluster `json:"cluster"`
-	HubIdentity wireHubIdentity      `json:"hubIdentity"`
+	Cluster         wireConnectedCluster `json:"cluster"`
+	BindingIdentity wireBindingIdentity  `json:"bindingIdentity"`
 }
 
 func newClusterConnectCmd() *cobra.Command {
@@ -83,40 +86,67 @@ func newClusterConnectCmd() *cobra.Command {
 		envName     string
 		token       string
 		dryRun      bool
+		applyScope  string
+		liveFrom    string
+		bindingGSA  string
 		delivery    []string
 		deliverySub string
 	)
 	cmd := &cobra.Command{
 		Use:   "connect <name>",
-		Short: "Register a Kubernetes cluster the control plane may deploy into",
-		Long: `Register a cluster you operate, by address, so environments can target it.
-
-Nothing is installed in your cluster beyond the RBAC the platform's apply
-needs, and nothing about the cluster changes. forge reads the API server
-address and CA from your kubectl context, tells the control plane, and applies
-the in-cluster grant.
+		Short: "Register a Kubernetes cluster the control plane may deploy into, as one env's binding",
+		Long: `Register a cluster you operate, by address, and grant ONE env's binding exactly
+what that env's render applies there.
 
   forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
-  forge cluster connect vke-prod --context vke-prod --auth token --env prod
-  forge cluster disconnect prod-us --env prod
+  forge cluster connect prod-us --context ... --env prod --apply-scope namespace:acme-prod,acme-jobs
+  forge cluster connect hub --context ... --env prod --apply-scope cluster
+  forge cluster connect prod-us --context ... --env prod --dry-run
+  forge cluster disconnect prod-us --env prod --context ...
+
+A BINDING is one env on one cluster, and it has its OWN identity: a Google
+service account the control plane allocates for it (gcp), or a ServiceAccount
+token forge mints for it (token). Nothing is shared across bindings, and the
+apply runs AS that identity: no impersonation, no bootstrap writes. The only
+objects connect writes in your cluster are the grant itself.
+
+APPLY SCOPE — YOU choose where the identity may write; the env's render
+chooses what:
+
+  namespace:<ns>[,<ns>…]   a Role and RoleBinding in each named namespace. The
+                           DEFAULT, over every namespace the render targets.
+                           Refused if the render carries cluster-scoped kinds.
+  cluster                  a ClusterRole and ClusterRoleBinding. Equivalent to
+                           cluster-admin (it holds bind and escalate on RBAC),
+                           and forge says so every time.
+
+Either way the rules are derived from the render: one rule per resource it
+applies, nothing else. A release that adds a kind is Forbidden by your
+cluster's own access check until you re-run connect — review it first with
+--dry-run, which prints the exact RBAC diff against what is on the cluster.
 
 AUTH — two values, the two ends of a real trade-off rather than two clouds:
 
-  gcp     GKE workload identity. The hub presents its OWN GCP identity and no
-          secret ever crosses the boundary. forge prints the one-time IAM
-          grant you run; it cannot run it for you.
+  gcp     GKE. The control plane presents the binding's own Google service
+          account; no secret crosses the boundary. forge prints the one-time
+          IAM grant you run; it cannot run it for you.
   token   A scoped ServiceAccount token forge mints in your cluster. Works on
-          ANY Kubernetes cluster — EKS, AKS, VKE, k3s, bare metal — and needs
-          no cloud identity. Strictly worse (a bearer token at rest), bounded
-          by the RBAC forge applies, and revoked by disconnect.
+          ANY Kubernetes cluster and needs no cloud identity. Strictly worse (a
+          bearer token at rest), bounded by the RBAC forge applies, and revoked
+          by disconnect.
 
 --auth auto (the default) picks gcp for a GKE context and token for anything
-else. The token path is a real answer, not a fallback: it is how a cluster
-with no cloud identity to trust becomes a target at all.
+else. Re-running connect UPDATES the cluster of that name and prunes grants the
+new plan no longer names. --env names which control plane to talk to AND whose
+binding this is; the render is read from the project in the current directory.
 
-Re-running connect UPDATES the cluster of that name, so fixing an endpoint is
-the same command again. --env names WHICH control plane to talk to, from that
-env's forge.ControlPlane declaration.
+DRY RUN — contacts no control plane and changes nothing. It renders the env,
+reads the binding's live RBAC through --context (read-only) — or from a capture
+with --live-from <file> (kubectl get clusterrole,clusterrolebinding,role,
+rolebinding -A -l <selector> -o yaml, selector printed by --dry-run) — and
+prints the diff and the permissions this run would newly grant. On gcp the
+subject is unknown until the control plane allocates it; pass --binding-gsa to
+review the exact subject.
 
 SECRET DELIVERY — opt-in, off unless named. A Secret the control plane supplies
 and renews (forge.ControlPlaneSecret) needs write access to exactly that
@@ -130,8 +160,7 @@ update, patch and delete on the named Secrets, plus create — which RBAC cannot
 limit by name, so a ValidatingAdmissionPolicy admits only the named
 namespace/name pairs, only as type Opaque, for the delivery identities only.
 --delivery-subject (user:<name> or serviceaccount:<ns>/<name>) binds a second,
-dedicated delivery identity alongside the connect identity. Re-running connect
-re-converges the grant; --dry-run prints every object.`,
+dedicated delivery identity alongside the binding's identity.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			secrets, err := parseDeliverySecrets(delivery)
@@ -142,6 +171,10 @@ re-converges the grant; --dry-run prints every object.`,
 			if err != nil {
 				return err
 			}
+			scope, err := parseApplyScope(applyScope)
+			if err != nil {
+				return err
+			}
 			return runClusterConnect(cmd.Context(), clusterConnectOptions{
 				Name:            args[0],
 				KubeContext:     kubeContext,
@@ -149,17 +182,24 @@ re-converges the grant; --dry-run prints every object.`,
 				Env:             envName,
 				Token:           token,
 				DryRun:          dryRun,
+				Scope:           scope,
+				LiveFrom:        liveFrom,
+				BindingGSA:      bindingGSA,
 				DeliverySecrets: secrets,
 				DeliverySubject: subject,
 				Out:             cmd.OutOrStdout(),
+				ErrOut:          cmd.ErrOrStderr(),
 			})
 		},
 	}
 	cmd.Flags().StringVar(&kubeContext, "context", "", "kubectl context addressing the cluster (required)")
-	cmd.Flags().StringVar(&authFlag, "auth", "auto", "How the hub authenticates: auto, gcp or token")
-	cmd.Flags().StringVar(&envName, "env", "", "Environment whose control plane to talk to (required)")
+	cmd.Flags().StringVar(&authFlag, "auth", "auto", "How the control plane authenticates: auto, gcp or token")
+	cmd.Flags().StringVar(&envName, "env", "", "Environment whose binding this is, and whose control plane to talk to (required)")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be sent and applied, and contact nothing")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the RBAC diff against the cluster and what would be sent; contact no control plane and change nothing")
+	cmd.Flags().StringVar(&applyScope, "apply-scope", "", "Where the binding's identity may write: namespace:<ns>[,<ns>…] (default: the namespaces the env renders) or cluster (cluster-admin equivalent)")
+	cmd.Flags().StringVar(&liveFrom, "live-from", "", "With --dry-run: diff against this kubectl capture instead of reading the cluster")
+	cmd.Flags().StringVar(&bindingGSA, "binding-gsa", "", "With --dry-run on gcp: the binding's GCP service account, to review the exact subject")
 	cmd.Flags().StringArrayVar(&delivery, "delivery-secret", nil,
 		"<namespace>/<name> of a Secret the control plane may write and renew (repeatable)")
 	cmd.Flags().StringVar(&deliverySub, "delivery-subject", "",
@@ -175,14 +215,16 @@ func newClusterDisconnectCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "disconnect <name>",
-		Short: "Deregister a connected cluster and remove what forge created in it",
+		Short: "Deregister a connected cluster and remove every grant forge created in it",
 		Long: `Deregister the connected cluster of this exact name.
 
 Two halves, and the order matters: the control plane revokes the cluster's
-credential first, then forge deletes the ServiceAccount, token Secret and RBAC
-it created in the cluster. A token revoked server-side is already powerless, so
-a failure to reach the cluster afterwards leaves litter rather than a live
-credential.
+credential first, then forge deletes the grant it created in the cluster — the
+Roles, ClusterRoles and bindings of every binding of this cluster, each
+binding's token ServiceAccount and Secret, and the delivery policy. They are
+found by label, so nothing else in the cluster is touched. A credential revoked
+server-side is already powerless, so a failure to reach the cluster afterwards
+leaves litter rather than a live credential.
 
 REFUSED while any live environment targets the cluster — that check is the
 control plane's, and it is why this is not a local delete.
@@ -190,7 +232,7 @@ control plane's, and it is why this is not a local delete.
   forge cluster disconnect prod-us --env prod --context gke_acme_us-central1_prod
 
 --context is optional and names where to clean up. Without it, forge
-deregisters the cluster and tells you which objects to delete by hand.`,
+deregisters the cluster and prints the commands to delete the grant by hand.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runClusterDisconnect(cmd.Context(), args[0], kubeContext, envName, token, cmd.OutOrStdout())
@@ -209,14 +251,23 @@ type clusterConnectOptions struct {
 	Env         string
 	Token       string
 	DryRun      bool
+	Scope       applyScope
+	// LiveFrom is a `--dry-run` capture of the binding's live RBAC.
+	LiveFrom string
+	// BindingGSA reviews a gcp subject in --dry-run.
+	BindingGSA string
 	// DeliverySecrets / DeliverySubject: see connectRBAC.
 	DeliverySecrets []deliverySecret
 	DeliverySubject *deliverySubject
 	Out             io.Writer
+	ErrOut          io.Writer
 }
 
 // clusterConnectClient resolves the endpoint and credential for an env and
 // builds the client. A var so tests point it at an httptest control plane.
+//
+// The organization it resolves is a preflight, not an input: the credential is
+// proven before anything is written to the owner's cluster.
 var clusterConnectClient = func(ctx context.Context, envName, token string) (cloudCaller, string, error) {
 	envName = strings.TrimSpace(envName)
 	if envName == "" {
@@ -227,10 +278,6 @@ var clusterConnectClient = func(ctx context.Context, envName, token string) (clo
 	if err != nil {
 		return nil, "", err
 	}
-	// The org composes the hub namespace in the impersonated username, so the
-	// RBAC forge applies is wrong without it — and wrong in the quiet way,
-	// authorizing a user that never appears. It is the org the credential acts
-	// for, which only the control plane knows.
 	client := cloud.NewClient(ep, cred)
 	org, err := cloud.ResolveOrganization(ctx, client)
 	if err != nil {
@@ -239,66 +286,104 @@ var clusterConnectClient = func(ctx context.Context, envName, token string) (clo
 	return client, org, nil
 }
 
+// connectEnvStream renders the env's annotated manifest stream: the SAME
+// projection the bundle is built from, so the grant and the bundle cannot
+// disagree about what gets applied. A var so tests supply a stream.
+var connectEnvStream = func(ctx context.Context, errOut io.Writer, envName string) (string, error) {
+	doc, err := projectEnvShapeFn(ctx, errOut, envName)
+	if err != nil {
+		return "", err
+	}
+	return doc.manifests, nil
+}
+
+// planConnectRBAC renders the env, derives what it needs on this cluster and
+// resolves the owner's scope against it. No cluster, no control plane.
+func planConnectRBAC(ctx context.Context, opts clusterConnectOptions, target connectTarget, rbac connectRBAC) (connectRBAC, error) {
+	errOut := opts.ErrOut
+	if errOut == nil {
+		errOut = io.Discard
+	}
+	stream, err := connectEnvStream(ctx, errOut, opts.Env)
+	if err != nil {
+		return rbac, fmt.Errorf("derive the grant from env %q's render: %w\n"+
+			"connect grants exactly what the render applies, so it reads the env's render from the project in the current directory", opts.Env, err)
+	}
+	needs, err := deriveGrantNeeds(stream, target.Context)
+	if err != nil {
+		return rbac, fmt.Errorf("derive the grant from env %q's render: %w", opts.Env, err)
+	}
+	plan, err := planGrant(needs, opts.Scope)
+	if err != nil {
+		return rbac, fmt.Errorf("env %q on context %q: %w", opts.Env, target.Context, err)
+	}
+	rbac.Scope, rbac.Plan = opts.Scope, plan
+	return rbac, nil
+}
+
 func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	name := strings.TrimSpace(opts.Name)
+	if strings.TrimSpace(opts.Env) == "" {
+		return fmt.Errorf("--env is required: it names the env whose binding this is and which control plane to talk to\n" +
+			"fix: re-run with `--env <env>` (the environments under deploy/kcl/)")
+	}
+	if opts.ErrOut == nil {
+		opts.ErrOut = io.Discard
+	}
 	target, err := readConnectTarget(opts.KubeContext, opts.Auth)
 	if err != nil {
 		return err
 	}
 	gke, _ := parseGKEContext(target.Context)
-	probe := connectRBAC{DeliverySecrets: opts.DeliverySecrets, DeliverySubject: opts.DeliverySubject}
-	if err := probe.validateDelivery(); err != nil {
+	rbac := connectRBAC{
+		ClusterName:     name,
+		Env:             opts.Env,
+		KubeContext:     target.Context,
+		Auth:            target.Auth,
+		TokenNamespace:  connectTokenNamespace,
+		DeliverySecrets: opts.DeliverySecrets,
+		DeliverySubject: opts.DeliverySubject,
+	}
+	if err := rbac.validateDelivery(); err != nil {
 		return err
 	}
 	if target.AddressNote != "" {
 		fmt.Fprintf(opts.Out, "registering %s: %s\n", target.Address, target.AddressNote)
 	}
-
-	if opts.DryRun {
-		// Pure: no control plane, no cluster. The one thing it cannot show
-		// is the token, which does not exist until a real run asks for one.
-		return writeConnectDryRun(opts.Out, name, target, connectRBAC{
-			ClusterName:         name,
-			KubeContext:         target.Context,
-			Auth:                target.Auth,
-			HubGSA:              "<the control plane's GCP service account>",
-			Org:                 "<the env's organization>",
-			TokenNamespace:      connectTokenNamespace,
-			TokenServiceAccount: connectTokenServiceAccount,
-			DeliverySecrets:     opts.DeliverySecrets,
-			DeliverySubject:     opts.DeliverySubject,
-		})
+	if rbac, err = planConnectRBAC(ctx, opts, target, rbac); err != nil {
+		return err
 	}
 
-	client, org, err := clusterConnectClient(ctx, opts.Env, opts.Token)
+	if opts.DryRun {
+		return runConnectDryRun(ctx, opts, name, target, rbac)
+	}
+	if opts.LiveFrom != "" || opts.BindingGSA != "" {
+		return fmt.Errorf("--live-from and --binding-gsa review a grant and apply nothing: they are --dry-run only")
+	}
+
+	client, _, err := clusterConnectClient(ctx, opts.Env, opts.Token)
 	if err != nil {
 		return err
 	}
-	rbac := connectRBAC{
-		ClusterName:         name,
-		KubeContext:         target.Context,
-		Auth:                target.Auth,
-		Org:                 org,
-		TokenNamespace:      connectTokenNamespace,
-		TokenServiceAccount: connectTokenServiceAccount,
-		DeliverySecrets:     opts.DeliverySecrets,
-		DeliverySubject:     opts.DeliverySubject,
+	if rbac.Plan.Cluster {
+		fmt.Fprintf(opts.Out, "%s\n\n", clusterAdminWarning)
 	}
+	fmt.Fprintf(opts.Out, "binding %s/%s: scope %s, %s\n", name, opts.Env, rbac.Scope, rbac.Plan.describe())
 
 	// ORDER DEPENDS ON THE AUTH.
 	//
 	// token: the in-cluster write comes first, because the token does not
 	// exist until the SA and its Secret do, so there is nothing to send before it.
 	//
-	// gcp: registration comes first, because the ClusterRoleBinding's subject
-	// is the hub's GSA email and the control plane's response is the only
-	// place it is reported. Applying earlier rendered `name: ` — a binding
-	// that authorizes nobody, with an apply that still "succeeded".
-	applyBootstrap := func() error {
+	// gcp: registration comes first, because the binding's subject is the GSA
+	// email and the control plane's response is the only place it is reported.
+	// Applying earlier rendered `name: ` — a binding that authorizes nobody,
+	// with an apply that still "succeeded".
+	applyGrant := func() error {
 		if err := rbac.validateConnectIdentity(); err != nil {
 			return err
 		}
-		fmt.Fprintf(opts.Out, "applying bootstrap RBAC to %s (server-side, field manager forge)\n", target.Context)
+		fmt.Fprintf(opts.Out, "applying the grant to %s (server-side, field manager forge)\n", target.Context)
 		for _, stage := range rbac.bootstrapStages() {
 			if err := connectApply(ctx, target.Context, stage); err != nil {
 				hint := ""
@@ -306,24 +391,26 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 					hint = "\nThe delivery grant needs each --delivery-secret namespace to exist and the cluster to " +
 						"support ValidatingAdmissionPolicy (Kubernetes 1.30+); nothing past the failed stage was applied"
 				}
-				return fmt.Errorf("apply bootstrap RBAC to context %q: %w\n"+
-					"This needs cluster-admin on the target. It is a one-time bootstrap: it grants the "+
-					"platform the permissions its deploys need, which no deploy can grant itself%s", target.Context, err, hint)
+				return fmt.Errorf("apply the grant to context %q: %w\n"+
+					"This needs cluster-admin on the target. It is the one write only you can make: it gives the "+
+					"binding the permissions its deploys need, which no deploy can grant itself%s", target.Context, err, hint)
 			}
 		}
 		return nil
 	}
 	if target.Auth == authToken {
-		if err := applyBootstrap(); err != nil {
+		if err := applyGrant(); err != nil {
 			return err
 		}
 	}
 
 	req := map[string]any{
-		"name":    name,
-		"auth":    target.Auth,
-		"address": target.Address,
-		"caPem":   target.CAPEM,
+		"name":        name,
+		"auth":        target.Auth,
+		"address":     target.Address,
+		"caPem":       target.CAPEM,
+		"environment": opts.Env,
+		"project":     hostedProjectName(),
 	}
 	if target.Auth == authGCP {
 		req["cloudCluster"] = target.CloudCluster
@@ -352,22 +439,156 @@ func runClusterConnect(ctx context.Context, opts clusterConnectOptions) error {
 	}
 
 	if target.Auth == authGCP {
-		rbac.HubGSA = resp.HubIdentity.GCPServiceAccount
+		rbac.BindingGSA = resp.BindingIdentity.GCPServiceAccount
 		// No GSA means no principal to bind (dev control planes have none);
-		// writeGrantInstructions below says so rather than binding nobody.
-		if strings.TrimSpace(rbac.HubGSA) != "" {
-			if err := applyBootstrap(); err != nil {
+		// writeGrantInstructions below says so rather than binding nobody. A
+		// SHARED identity is never substituted.
+		if strings.TrimSpace(rbac.BindingGSA) != "" {
+			if err := applyGrant(); err != nil {
 				return err
 			}
 		}
 	}
+	if rbac.Auth == authToken || strings.TrimSpace(rbac.BindingGSA) != "" {
+		pruneConnectGrant(ctx, opts, rbac)
+	}
 
 	writeConnectSummary(opts.Out, resp.Cluster, target)
-	writeGrantInstructions(opts.Out, rbac, gke, resp.HubIdentity.GCPServiceAccount)
+	writeGrantInstructions(opts.Out, rbac, gke)
 	fmt.Fprintf(opts.Out, "\nPoint an environment at it in deploy/kcl/<env>/main.k:\n\n"+
 		"    forge.ClusterTarget {\n        cluster = %q\n        namespace = \"...\"\n        connected_cluster = %q\n    }\n",
 		target.Context, name)
 	return nil
+}
+
+// runConnectDryRun prints the RBAC diff and what would be sent. It contacts
+// no control plane and writes nothing; the only cluster contact is the
+// read-only get of the binding's own labelled objects (skipped by --live-from).
+func runConnectDryRun(ctx context.Context, opts clusterConnectOptions, name string, target connectTarget, rbac connectRBAC) error {
+	if target.Auth == authGCP {
+		rbac.BindingGSA = strings.TrimSpace(opts.BindingGSA)
+		if rbac.BindingGSA == "" {
+			rbac.BindingGSA = "<this binding's GCP service account, allocated by the control plane on connect>"
+		}
+	} else if opts.BindingGSA != "" {
+		return fmt.Errorf("--binding-gsa is for --auth gcp; the token auth's subject is the ServiceAccount forge mints")
+	}
+	out := opts.Out
+	fmt.Fprintf(out, "[dry-run] would connect %q for env %q\n", name, opts.Env)
+	fmt.Fprintf(out, "  auth         %s\n", connectAuthLabel(target.Auth))
+	fmt.Fprintf(out, "  address      %s\n", target.Address)
+	if target.CloudCluster != "" {
+		fmt.Fprintf(out, "  cloudCluster %s\n", target.CloudCluster)
+	}
+	fmt.Fprintf(out, "  caPem        %d bytes, read from context %s\n", len(target.CAPEM), target.Context)
+	if target.Auth == authToken {
+		fmt.Fprintf(out, "  token        minted on apply, sent write-only, never printed\n")
+	}
+	fmt.Fprintf(out, "  selector     %s\n\n", rbac.bindingSelector())
+
+	var (
+		live   []liveObject
+		source string
+		err    error
+	)
+	if opts.LiveFrom != "" {
+		live, err = readLiveFile(opts.LiveFrom)
+		source = "capture " + opts.LiveFrom
+	} else {
+		live, err = connectReadLive(ctx, target.Context, rbac)
+		source = "context " + target.Context + " (read-only)"
+	}
+	if err != nil {
+		return err
+	}
+	entries, widened := rbacDiff(rbac.grantObjects(), live)
+	writeRBACDiff(out, rbac, source, entries, widened)
+
+	fmt.Fprintf(out, "\n[dry-run] would apply to %s:\n\n", target.Context)
+	for _, line := range strings.Split(strings.TrimRight(rbac.bootstrapManifests(), "\n"), "\n") {
+		fmt.Fprintf(out, "    %s\n", line)
+	}
+	return nil
+}
+
+// pruneConnectGrant removes this binding's apply-grant objects the new plan no
+// longer names, so narrowing the scope narrows the cluster, and the legacy
+// pre-binding grant (shared identity, impersonation) this one replaces. Best
+// effort: the new grant is already in place, so a failure here leaves litter
+// that is reported rather than a missing permission.
+func pruneConnectGrant(ctx context.Context, opts clusterConnectOptions, rbac connectRBAC) {
+	live, err := connectReadLive(ctx, rbac.KubeContext, rbac)
+	if err != nil {
+		fmt.Fprintf(opts.Out, "note: could not list the binding's live RBAC to prune stale grants: %v\n", err)
+		return
+	}
+	for _, stale := range stalePrune(rbac.grantObjects(), live) {
+		args := []string{"delete", strings.ToLower(stale.Kind), stale.Name, "--ignore-not-found"}
+		if stale.Namespace != "" {
+			args = append(args, "-n", stale.Namespace)
+		}
+		if _, err := connectKubectl(ctx, rbac.KubeContext, args...); err != nil {
+			fmt.Fprintf(opts.Out, "note: could not prune stale %s %s: %v\n", stale.Kind, stale.Name, err)
+			continue
+		}
+		fmt.Fprintf(opts.Out, "pruned %s %s (the new scope no longer names it)\n", stale.Kind, stale.Name)
+	}
+	removeLegacyGrant(ctx, opts, rbac)
+}
+
+// The pre-binding grant: one ClusterRole per cluster name carrying
+// impersonate and bootstrap writes, bound to a shared identity, plus a shared
+// token ServiceAccount per physical cluster. Identified by the absence of the
+// binding label.
+const (
+	legacyTokenServiceAccount = "forge-connect"
+	legacyTokenSecret         = "forge-connect-token"
+)
+
+func legacySelector(clusterName string) string {
+	return forgeManagedLabelKey + "=" + forgeManagedLabelValue + "," + connectClusterLabelKey + "=" + clusterName + ",!" + connectBindingLabelKey
+}
+
+func removeLegacyGrant(ctx context.Context, opts clusterConnectOptions, rbac connectRBAC) {
+	sel := legacySelector(rbac.ClusterName)
+	out, err := connectKubectl(ctx, rbac.KubeContext, "get", "clusterrolebinding,clusterrole,rolebinding,role",
+		"--all-namespaces", "-l", sel, "-o", "name")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return
+	}
+	// The legacy delivery policy goes with its Roles: it names the shared
+	// identity, which this grant replaces.
+	for _, args := range [][]string{
+		{"delete", "validatingadmissionpolicybinding,validatingadmissionpolicy", "-l", sel, "--ignore-not-found"},
+		{"delete", "rolebinding,role", "--all-namespaces", "-l", sel, "--ignore-not-found"},
+		{"delete", "clusterrolebinding,clusterrole", "-l", sel, "--ignore-not-found"},
+	} {
+		if text, err := connectKubectl(ctx, rbac.KubeContext, args...); err != nil {
+			if strings.Contains(args[1], "validatingadmissionpolicy") && strings.Contains(text+err.Error(), "doesn't have a resource type") {
+				continue
+			}
+			fmt.Fprintf(opts.Out, "note: could not remove the legacy shared-identity grant (%s): %v\n", args[1], err)
+			return
+		}
+	}
+	fmt.Fprintf(opts.Out, "removed the legacy grant for %s (shared identity, impersonation, bootstrap writes)\n", rbac.ClusterName)
+	// The shared token ServiceAccount serves every legacy name on this
+	// physical cluster: it goes only when no legacy binding is left.
+	rest, err := connectKubectl(ctx, rbac.KubeContext, "get", "clusterrolebinding", "-l",
+		forgeManagedLabelKey+"="+forgeManagedLabelValue+",!"+connectBindingLabelKey+","+connectClusterLabelKey, "-o", "name")
+	if err != nil || strings.TrimSpace(rest) != "" {
+		return
+	}
+	for _, args := range [][]string{
+		{"delete", "secret", legacyTokenSecret, "-n", rbac.TokenNamespace, "--ignore-not-found"},
+		{"delete", "serviceaccount", legacyTokenServiceAccount, "-n", rbac.TokenNamespace, "--ignore-not-found"},
+	} {
+		if _, err := connectKubectl(ctx, rbac.KubeContext, args...); err != nil {
+			fmt.Fprintf(opts.Out, "note: could not remove the legacy shared token identity: %v\n", err)
+			return
+		}
+	}
+	fmt.Fprintf(opts.Out, "removed the legacy shared token identity %s/%s\n", rbac.TokenNamespace, legacyTokenServiceAccount)
 }
 
 // writeConnectSummary is what the author reads first: the cluster as the
@@ -395,27 +616,8 @@ func connectAuthLabel(wire string) string {
 	}
 }
 
-func writeConnectDryRun(out io.Writer, name string, target connectTarget, rbac connectRBAC) error {
-	fmt.Fprintf(out, "[dry-run] would connect %q\n", name)
-	fmt.Fprintf(out, "  auth         %s\n", connectAuthLabel(target.Auth))
-	fmt.Fprintf(out, "  address      %s\n", target.Address)
-	if target.CloudCluster != "" {
-		fmt.Fprintf(out, "  cloudCluster %s\n", target.CloudCluster)
-	}
-	fmt.Fprintf(out, "  caPem        %d bytes, read from context %s\n", len(target.CAPEM), target.Context)
-	if target.Auth == authToken {
-		fmt.Fprintf(out, "  token        minted on apply, sent write-only, never printed\n")
-	}
-	fmt.Fprintf(out, "\n[dry-run] would apply to %s:\n\n", target.Context)
-	for _, line := range strings.Split(strings.TrimRight(rbac.bootstrapManifests(), "\n"), "\n") {
-		fmt.Fprintf(out, "    %s\n", line)
-	}
-	return nil
-}
-
-// The two cluster-contacting steps, as seams. Tests drive the real command
-// against a fake control plane without a cluster; nothing else substitutes
-// them.
+// The cluster-contacting steps, as seams. Tests drive the real command against
+// a fake control plane without a cluster; nothing else substitutes them.
 var (
 	connectApply     = cluster.KubectlApply
 	connectReadToken = readConnectToken
@@ -474,64 +676,62 @@ func runClusterDisconnect(ctx context.Context, name, kubeContext, envName, token
 	fmt.Fprintf(out, "deregistered %s (%s)\n", name, id)
 
 	if strings.TrimSpace(kubeContext) == "" {
-		fmt.Fprintf(out, "\nNo --context given, so nothing was deleted in the cluster. To clean up:\n\n"+
-			"    kubectl --context <ctx> delete clusterrole,clusterrolebinding %s\n"+
-			"    kubectl --context <ctx> delete validatingadmissionpolicybinding,validatingadmissionpolicy %s --ignore-not-found\n"+
-			"    kubectl --context <ctx> delete rolebinding,role --all-namespaces -l %s=%s --ignore-not-found\n"+
-			"    kubectl --context <ctx> delete namespace %s\n",
-			connectBootstrapName(name), deliveryObjectName(name), deliveryGrantLabelKey, deliveryGrantLabelValue, connectTokenNamespace)
+		fmt.Fprintf(out, "\nNo --context given, so nothing was deleted in the cluster. To clean up, every object forge\n"+
+			"created for this cluster carries the labels %s:\n\n", disconnectSelector(name))
+		for _, args := range disconnectCommands(name) {
+			fmt.Fprintf(out, "    kubectl --context <ctx> %s\n", strings.Join(args, " "))
+		}
 		return nil
 	}
-	rbac := connectRBAC{
-		ClusterName:         name,
-		KubeContext:         kubeContext,
-		TokenNamespace:      connectTokenNamespace,
-		TokenServiceAccount: connectTokenServiceAccount,
-	}
-	if err := deleteConnectObjects(ctx, kubeContext, rbac, out); err != nil {
-		return err
-	}
-	return nil
+	return deleteConnectObjects(ctx, kubeContext, name, out)
 }
 
-// deleteConnectObjects removes what forge created in the target. Deleted by
-// exact name, and a missing object is not an error — a disconnect run twice,
-// or after a partial connect, must converge rather than refuse.
-func deleteConnectObjects(ctx context.Context, kctx string, rbac connectRBAC, out io.Writer) error {
-	name := connectBootstrapName(rbac.ClusterName)
-	for _, target := range []struct{ args []string }{
-		// The delivery grant, if one was ever applied. Selected by label rather
-		// than by namespace, because disconnect is not told which namespaces
-		// were declared. The policy goes first: it only ever narrows.
-		{[]string{"delete", "validatingadmissionpolicybinding", deliveryObjectName(rbac.ClusterName), "--ignore-not-found"}},
-		{[]string{"delete", "validatingadmissionpolicy", deliveryObjectName(rbac.ClusterName), "--ignore-not-found"}},
-		{[]string{"delete", "rolebinding,role", "--all-namespaces", "--ignore-not-found", "-l",
-			deliveryGrantLabelKey + "=" + deliveryGrantLabelValue + ",forge.dev/connected-cluster=" + rbac.ClusterName}},
-		{[]string{"delete", "clusterrolebinding", name, "--ignore-not-found"}},
-		{[]string{"delete", "clusterrole", name, "--ignore-not-found"}},
-		{[]string{"delete", "secret", rbac.tokenSecretName(), "-n", rbac.TokenNamespace, "--ignore-not-found"}},
-		{[]string{"delete", "serviceaccount", rbac.TokenServiceAccount, "-n", rbac.TokenNamespace, "--ignore-not-found"}},
-	} {
-		cmd := exec.CommandContext(ctx, "kubectl", cluster.KubectlArgs(kctx, target.args...)...)
-		scrubSubprocessLogEnv(cmd)
-		if outBytes, err := cmd.CombinedOutput(); err != nil {
+// disconnectSelector selects everything forge created for one connected
+// cluster: every binding's grant and identity, and the delivery grant, plus
+// the legacy pre-binding grant, which carries the same two labels.
+func disconnectSelector(clusterName string) string {
+	return forgeManagedLabelKey + "=" + forgeManagedLabelValue + "," + connectClusterLabelKey + "=" + clusterName
+}
+
+// disconnectCommands are the deletes, in order. The admission policy goes
+// first: it only ever narrows. Cluster-scoped kinds that a cluster too old for
+// ValidatingAdmissionPolicy lacks are tolerated by the caller.
+func disconnectCommands(clusterName string) [][]string {
+	sel := disconnectSelector(clusterName)
+	return [][]string{
+		{"delete", "validatingadmissionpolicybinding,validatingadmissionpolicy", "-l", sel, "--ignore-not-found"},
+		{"delete", "rolebinding,role", "--all-namespaces", "-l", sel, "--ignore-not-found"},
+		{"delete", "clusterrolebinding,clusterrole", "-l", sel, "--ignore-not-found"},
+		{"delete", "secret,serviceaccount", "--all-namespaces", "-l", sel, "--ignore-not-found"},
+	}
+}
+
+// connectKubectl runs kubectl through a context and returns stdout. A var so
+// tests record the commands and answer the reads.
+var connectKubectl = func(ctx context.Context, kctx string, args ...string) (string, error) {
+	return runKubectl(ctx, cluster.KubectlArgs(kctx, args...))
+}
+
+// deleteConnectObjects removes what forge created in the target, found by
+// label rather than by name: disconnect is not told which bindings, scopes or
+// namespaces were ever applied. A missing object is not an error — a
+// disconnect run twice, or after a partial connect, must converge.
+func deleteConnectObjects(ctx context.Context, kctx, clusterName string, out io.Writer) error {
+	for _, args := range disconnectCommands(clusterName) {
+		if outText, err := connectKubectl(ctx, kctx, args...); err != nil {
 			// A cluster too old for ValidatingAdmissionPolicy never had a
 			// delivery policy to delete; that is convergence, not failure.
-			if strings.Contains(target.args[1], "validatingadmissionpolicy") &&
-				strings.Contains(string(outBytes), "doesn't have a resource type") {
+			if strings.Contains(args[1], "validatingadmissionpolicy") && strings.Contains(outText+err.Error(), "doesn't have a resource type") {
 				continue
 			}
-			return fmt.Errorf("delete %s on context %q: %w\n%s",
-				strings.Join(target.args[1:3], " "), kctx, err, strings.TrimSpace(string(outBytes)))
+			return fmt.Errorf("delete %s on context %q: %w", args[1], kctx, err)
 		}
 	}
-	// The NAMESPACE IS LEFT ALONE, deliberately. forge created it only if it
-	// was absent, it is shared by construction (a second connected cluster in
-	// the same checkout uses it), and deleting a namespace deletes everything
-	// anyone else put in it. The two objects forge owns inside it are gone.
-	fmt.Fprintf(out, "deleted forge's ServiceAccount, token and RBAC through context %s\n", kctx)
-	fmt.Fprintf(out, "  namespace %s was left in place (shared; forge deletes only the objects it owns)\n",
-		rbac.TokenNamespace)
+	// THE NAMESPACES ARE LEFT ALONE, deliberately: forge created them only if
+	// absent, they are shared by construction, and deleting a namespace deletes
+	// everything anyone else put in it. The objects forge owns inside them are gone.
+	fmt.Fprintf(out, "deleted every grant, token identity and policy forge created for %s through context %s\n", clusterName, kctx)
+	fmt.Fprintf(out, "  namespaces were left in place (shared; forge deletes only the objects it owns)\n")
 	return nil
 }
 

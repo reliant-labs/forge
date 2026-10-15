@@ -172,8 +172,12 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		{"create", "deployments.apps", appNS, false}, // the TRIPWIRE: a kind the render did not contain
 		{"get", "secrets", appNS, false},             // Secrets never ride a bundle
 		{"create", "clusterroles.rbac.authorization.k8s.io", "", false},
-		{"patch", "namespaces", "", true},             // the rendered Namespace, pinned by name
-		{"delete", "namespaces", "", false},           // a prune can never remove one
+		// The rendered Namespace is pinned by resourceNames, so the question
+		// must NAME it: RBAC never matches a pinned rule to a nameless request,
+		// and `can-i patch namespaces` is "no" by construction.
+		{"patch", "namespaces/" + appNS, "", true},
+		{"patch", "namespaces/" + otherNS, "", false}, // the pin stops at the rendered name
+		{"delete", "namespaces/" + appNS, "", false},  // a prune can never remove one
 		{"impersonate", "serviceaccounts", "", false}, // no impersonation, ever
 	} {
 		if got := canI("prod", tc.verb, tc.res, tc.ns); got != tc.want {

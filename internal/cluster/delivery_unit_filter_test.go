@@ -192,3 +192,37 @@ func TestApply_AllUnitsTheHubsSendsNothing(t *testing.T) {
 		t.Errorf("an env the hub converges whole was applied from here:\n%s", describeCalls(calls()))
 	}
 }
+
+// The superseded-Job prune reads what forge SENT, not the full render: a Job
+// base in a unit the hub converges is "not defined" here, so forge leaves its
+// backlog to Flux instead of deleting Jobs it does not own.
+func TestApply_NeverPrunesTheHubsJobs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	seedBacklog(cl)
+
+	hubJob := strings.Replace(jobRender("control-plane-migrate-h7"),
+		"    forge.dev/env: prod\n", "    forge.dev/env: prod\n    forge.dev/delivery-unit: reliant\n", 1)
+	stream := strings.Join([]string{hubJob, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: " + jobNS}, docDelimiter)
+
+	opts := jobApplyOpts()
+	opts.SkipUnits = []string{"reliant"}
+	if err := applyRendered(context.Background(), opts, stream); err != nil {
+		t.Fatalf("applyRendered: %v", err)
+	}
+	if got := cl.deletes(); len(got) != 0 {
+		t.Errorf("forge pruned Jobs of a unit the hub converges: %v", got)
+	}
+
+	// Control: the same render with nothing skipped does prune that backlog.
+	cl2 := newFakeCluster(t)
+	seedBacklog(cl2)
+	if err := applyRendered(context.Background(), jobApplyOpts(), stream); err != nil {
+		t.Fatalf("applyRendered (control): %v", err)
+	}
+	if len(cl2.deletes()) == 0 {
+		t.Error("control: a forge-applied unit's Job backlog should have been pruned")
+	}
+}

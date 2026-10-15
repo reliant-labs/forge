@@ -697,6 +697,30 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   never when the project's own formatter gate accepts them. `--quiet` and
   `--scope` each say that auto-fix still applies under them and that
   `--no-fix` stops it.
+- **A pin run as `go run .../cmd/forge@<pin>` under `FORGE_NO_HOOKS=1`
+  repairs the merge driver.** reliant's `scripts/pin-forge.sh` runs exactly
+  that. After a pin, the clone's `merge.forge-generated.driver` still named
+  the previous pin's binary until someone ran the new forge from a real path.
+  Two things stopped the repair (#785). First, `FORGE_NO_GIT_HOOKS` /
+  `FORGE_NO_HOOKS` skipped the driver as well as `core.hooksPath`. Second, a
+  `go run` build is ephemeral, so it was never written as the driver.
+  - The hooks opt-out is now about hooks only. The driver is local git
+    config, not a hook, and `FORGE_NO_MERGE_DRIVER=1` is its one opt-out.
+    **Breaking:** a test that runs forge against a developer's checkout and
+    set only `FORGE_NO_GIT_HOOKS` to keep forge out of its git config must
+    also set `FORGE_NO_MERGE_DRIVER=1`.
+  - A `go run` build of the pinned forge installs a durable copy of itself at
+    `<user cache>/forge/merge-driver/<identity>/<name>` and names that. It is
+    a hard link where the filesystem allows one, otherwise a copy. It is
+    written once per identity and reused after that. The copies of the three
+    most recently used identities are kept. A driver that named an evicted
+    copy is unusable, so the next forge command repairs it. A forge that is
+    not the pin never copies itself. Test binaries and builds under the temp
+    directory are still never written.
+  - `go run` builds are recognized by their shape: `<tmp>/go-build*/…`, or
+    the build cache's `<2 hex>/<64 hex>-d/<name>` executable store. The
+    location of `GOCACHE` is not used, because `go env -w` can move it
+    without the environment showing it.
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

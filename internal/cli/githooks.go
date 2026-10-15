@@ -35,13 +35,13 @@ func hookActivationSkipped(cmd *cobra.Command) bool {
 	return ok
 }
 
-// gitHooksOptOutEnv stops forge configuring git in this clone: activating
-// its tracked hooks (core.hooksPath=.githooks) and registering its merge
-// driver for generated files. Any non-empty value opts out.
+// gitHooksOptOutEnv stops forge activating its tracked git hooks in this
+// clone (core.hooksPath=.githooks). Any non-empty value opts out.
 //
 // It is about GIT hooks only. The commands a project declares in forge.yaml
 // `generate.hooks` are part of `forge generate` itself and always run (see
-// generate_hooks.go).
+// generate_hooks.go). The merge driver for generated files is not a hook
+// either, and has its own opt-out, FORGE_NO_MERGE_DRIVER (merge_generated.go).
 const gitHooksOptOutEnv = "FORGE_NO_GIT_HOOKS"
 
 // legacyGitHooksOptOutEnv is gitHooksOptOutEnv's earlier spelling, still

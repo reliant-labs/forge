@@ -103,8 +103,9 @@ Hooks:
   still passes. A run narrowed with --steps or --templates-only does not run
   them, and says so.
   FORGE_NO_GIT_HOOKS=1 is about GIT hooks, not these: it stops forge setting
-  core.hooksPath=.githooks and its merge driver in your clone. FORGE_NO_HOOKS=1
-  is its older name and means the same.
+  core.hooksPath=.githooks in your clone. FORGE_NO_HOOKS=1 is its older name
+  and means the same. Neither stops forge pointing the clone's merge driver
+  for generated files at the pinned forge; FORGE_NO_MERGE_DRIVER=1 does.
 
 Skipping:
   A full run that changes nothing records the tree as a verified fixed point

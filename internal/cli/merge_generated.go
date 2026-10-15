@@ -41,8 +41,8 @@ package cli
 //     the clone's info/attributes (ensureGeneratedMergeDriver). A project
 //     adopted in place, which never got forge's .gitattributes, merges
 //     through the driver all the same. FORGE_NO_MERGE_DRIVER=1 opts out of
-//     the driver alone; FORGE_NO_GIT_HOOKS=1 (or FORGE_NO_HOOKS) keeps forge
-//     out of the clone's git configuration altogether, driver included.
+//     the driver; FORGE_NO_GIT_HOOKS=1 (or FORGE_NO_HOOKS) is about hooks
+//     only and leaves the driver alone.
 //   - a new project's .gitattributes also names the driver, so the routing
 //     is visible in the tree.
 // A clone where forge has not run yet gets git's built-in merge, which is the
@@ -54,13 +54,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -342,18 +345,23 @@ func newMergeGeneratedCmd() *cobra.Command {
 //
 // The command names this binary by absolute path. A bare name resolves on
 // PATH at merge time, which is either nothing (a pinned forge run by path)
-// or a different forge. An ephemeral binary (`go run`, a test's build,
-// anything under the temp directory) is never written, because it is gone by
-// the next merge. The forge the project pins writes itself over any other
-// driver, and records itself under its identity so a driver from another pin
-// can hand it the merge; a forge that is NOT the pin only fills in a missing
-// or unusable command (merge_driver_pin.go).
+// or a different forge. An ephemeral binary (a test's build, anything under
+// the temp directory) is never written, because it is gone by the next
+// merge. A `go run` build is ephemeral too, but it is how a pin script runs
+// the pinned forge (`go run .../cmd/forge@<pin> generate`), so the pinned
+// one installs a durable copy of itself and names that (durableDriverCopy).
+// The forge the project pins writes itself over any other driver, and
+// records itself under its identity so a driver from another pin can hand it
+// the merge; a forge that is NOT the pin only fills in a missing or unusable
+// command (merge_driver_pin.go).
 //
-// FORGE_NO_GIT_HOOKS / FORGE_NO_HOOKS keep forge out of the clone's git
-// configuration altogether (a test suite running forge against a developer's
-// checkout sets it); FORGE_NO_MERGE_DRIVER skips only the driver.
+// FORGE_NO_MERGE_DRIVER=1 is the one opt-out. FORGE_NO_GIT_HOOKS (and
+// FORGE_NO_HOOKS) used to skip the driver as well, and that is how
+// reliant's pin script — which sets FORGE_NO_HOOKS to leave core.hooksPath
+// alone — left the driver naming the previous pin's forge: the driver is
+// local git config, not a hook, and the hooks opt-out no longer touches it.
 func ensureGeneratedMergeDriver(root string) {
-	if gitHooksOptOut() != "" || os.Getenv(mergeDriverOptOutEnv) != "" {
+	if os.Getenv(mergeDriverOptOutEnv) != "" {
 		return
 	}
 	// Any git work tree, including one where the project sits in a
@@ -368,12 +376,13 @@ func ensureGeneratedMergeDriver(root string) {
 	key := "merge." + generatedMergeDriver + ".driver"
 	cur, _ := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--get", key).Output()
 	current := strings.TrimSpace(string(cur))
-	command, ok := mergeDriverCommand()
 	// A forge that is not the project's pin never installs itself, and an
 	// unusable command is replaced by whatever forge runs. The pinned forge
 	// takes the driver over from any other (merge_driver_pin.go): that is
-	// what repairs a driver a pin bump left behind.
+	// what repairs a driver a pin bump left behind. Only the pinned forge
+	// copies a `go run` build of itself somewhere durable.
 	_, _, skewed := mergeDriverPinCheck(root)
+	command, ok := mergeDriverCommand(!skewed)
 	if ok && !skewed {
 		registerPinnedDriver(root, command)
 	}
@@ -418,7 +427,7 @@ func driverCommandUsable(command string) bool {
 // ephemeralExecutable reports whether exe will be gone by the next merge: a
 // `go test` binary, a `go run` build, or anything under the temp directory.
 func ephemeralExecutable(exe string) bool {
-	if strings.HasSuffix(exe, ".test") || strings.Contains(exe, string(filepath.Separator)+"go-build") {
+	if strings.HasSuffix(exe, ".test") || goRunExecutable(exe) {
 		return true
 	}
 	tmp, err := filepath.EvalSymlinks(os.TempDir())
@@ -429,11 +438,38 @@ func ephemeralExecutable(exe string) bool {
 	return err == nil && !strings.HasPrefix(rel, "..")
 }
 
+// goRunExecutable reports whether exe is a `go run` build. go run links
+// into its work directory (<tmp>/go-build<N>/b001/exe/<name>), deleted when
+// it exits, or — since go 1.24 — into the build cache's executable store
+// (<GOCACHE>/<2 hex>/<64 hex>-d/<name>), which `go clean -cache` and cache
+// trimming delete. The shape is matched rather than GOCACHE's location,
+// which `go env -w` can move without the environment saying so.
+func goRunExecutable(exe string) bool {
+	if strings.HasSuffix(exe, ".test") {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(exe), "/")
+	for _, p := range parts {
+		if strings.HasPrefix(p, "go-build") {
+			return true
+		}
+	}
+	n := len(parts)
+	return n >= 3 && goCacheExeDirRE.MatchString(parts[n-2]) && goCacheShardRE.MatchString(parts[n-3])
+}
+
+var (
+	goCacheExeDirRE = regexp.MustCompile(`^[0-9a-f]{64}-d$`)
+	goCacheShardRE  = regexp.MustCompile(`^[0-9a-f]{2}$`)
+)
+
 // mergeDriverCommand is the driver command line for this binary: its
 // absolute path plus the route that reaches merge-generated (`forge`, or
 // `reliant forge` when forge is mounted as a subcommand). ok is false for an
-// ephemeral binary, which must never become a repository's merge driver.
-func mergeDriverCommand() (string, bool) {
+// ephemeral binary, which must never become a repository's merge driver —
+// except a `go run` build of the pinned forge (pinned), which names a
+// durable copy of itself instead (durableDriverCopy).
+func mergeDriverCommand(pinned bool) (string, bool) {
 	exe, err := mergeDriverExecutable()
 	if err != nil {
 		return "", false
@@ -442,11 +478,128 @@ func mergeDriverCommand() (string, bool) {
 		exe = resolved
 	}
 	if ephemeralExecutable(exe) {
-		return "", false
+		if !pinned || !goRunExecutable(exe) {
+			return "", false
+		}
+		durable, derr := durableDriverCopy(exe)
+		if derr != nil {
+			return "", false
+		}
+		exe = durable
 	}
 	words := strings.Fields(cmdutil.Name())
 	words[0] = "'" + strings.ReplaceAll(exe, "'", `'\''`) + "'"
 	return strings.Join(words, " ") + " merge-generated %O %A %B %L %P", true
+}
+
+// mergeDriverCacheDir is where durable copies of `go run` forges live, one
+// directory per forge identity. A seam for tests.
+var mergeDriverCacheDir = func() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "forge", "merge-driver"), nil
+}
+
+// keptDriverCopies is how many forge identities keep a durable copy. A copy
+// is the whole binary, and a pin-per-fix workflow makes several a day. A
+// clone whose driver named an evicted copy has an unusable driver: the next
+// forge command repairs it, and a merge before that falls back to git's
+// plain merge, saying why (merge_driver_pin.go).
+const keptDriverCopies = 3
+
+// durableDriverCopy returns a path that will outlive this process holding
+// exe's bytes: <cache>/<identity>/<name>, written once per identity (a hard
+// link where the filesystem allows it, else a copy) and reused after that.
+//
+// reliant pins forge with `go run .../cmd/forge@<pin> generate`, the one
+// command that runs the pinned forge without installing it, and #785's
+// repair is "the pinned forge points the driver at itself". Refusing the
+// ephemeral path left the driver naming the previous pin's forge until
+// someone happened to run the new one from a real path.
+func durableDriverCopy(exe string) (string, error) {
+	id := mergeDriverIdentity()
+	if id == "" {
+		return "", errors.New("this forge has no identity to file a copy under")
+	}
+	cache, err := mergeDriverCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(cache, id)
+	dst := filepath.Join(dir, filepath.Base(exe))
+	src, err := os.Stat(exe)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	if have, err := os.Stat(dst); err == nil && have.Size() == src.Size() && have.Mode()&0o111 != 0 {
+		_ = os.Chtimes(dir, now, now) // most recently used: kept by pruning
+		return dst, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	tmp := filepath.Join(dir, "."+filepath.Base(exe)+".tmp-"+strconv.Itoa(os.Getpid()))
+	_ = os.Remove(tmp)
+	if err := os.Link(exe, tmp); err != nil {
+		if err := copyExecutable(exe, tmp); err != nil {
+			_ = os.Remove(tmp)
+			return "", err
+		}
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	_ = os.Chtimes(dir, now, now)
+	pruneDriverCopies(cache, id)
+	return dst, nil
+}
+
+// copyExecutable copies src to dst with an executable mode.
+func copyExecutable(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// pruneDriverCopies keeps the keptDriverCopies most recently used identity
+// directories under cache, and always the one named keep.
+func pruneDriverCopies(cache, keep string) {
+	entries, err := os.ReadDir(cache)
+	if err != nil {
+		return
+	}
+	type copyDir struct {
+		name string
+		used time.Time
+	}
+	var dirs []copyDir
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == keep {
+			continue
+		}
+		if info, err := e.Info(); err == nil {
+			dirs = append(dirs, copyDir{e.Name(), info.ModTime()})
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].used.After(dirs[j].used) })
+	for i := keptDriverCopies - 1; i < len(dirs); i++ {
+		_ = os.RemoveAll(filepath.Join(cache, dirs[i].name))
+	}
 }
 
 // mergeDriverExecutable is os.Executable, a seam for tests: an ephemeral

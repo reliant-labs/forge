@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The generated-file merge driver merges only as the forge the project pins.
@@ -25,6 +26,11 @@ func pinTestRepo(t *testing.T) string {
 	for _, env := range []string{"FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS", "FORGE_NO_MERGE_DRIVER", delegatedDriverEnv} {
 		t.Setenv(env, "")
 	}
+	// No test writes a durable driver copy into the real user cache.
+	prev := mergeDriverCacheDir
+	t.Cleanup(func() { mergeDriverCacheDir = prev })
+	cache := t.TempDir()
+	mergeDriverCacheDir = func() (string, error) { return cache, nil }
 	return repo
 }
 
@@ -145,5 +151,142 @@ func TestMergeGenerated_WithoutThePinnedForgeMergesAsGitDoes(t *testing.T) {
 	merged, err = runMergeDriver(t, repo, "svc/x_gen.go", "a\nb\nc\nd\ne\n", "A\nb\nc\nd\ne\n", "a\nb\nc\nd\nE\n")
 	if err != nil || merged != "A\nb\nc\nd\nE\n" {
 		t.Errorf("a non-overlapping change must merge cleanly: %q, %v", merged, err)
+	}
+}
+
+// fakeGoRunForge writes an executable where `go run` links one
+// (<tmp>/go-build<N>/b001/exe/forge) and points the driver wiring at it, at
+// a durable-copy cache of the test's own. It returns the binary and the cache.
+func fakeGoRunForge(t *testing.T, id string) (exe, cache string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "go-build4242", "b001", "exe")
+	exe = filepath.Join(dir, "forge")
+	writeTreeFileT(t, exe, "#!/bin/sh\n# the pinned forge\n")
+	if err := os.Chmod(exe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cache = t.TempDir()
+	prevExe, prevID, prevCache := mergeDriverExecutable, mergeDriverIdentity, mergeDriverCacheDir
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverIdentity, mergeDriverCacheDir = prevExe, prevID, prevCache })
+	mergeDriverExecutable = func() (string, error) { return exe, nil }
+	mergeDriverIdentity = func() string { return id }
+	mergeDriverCacheDir = func() (string, error) { return cache, nil }
+	return exe, cache
+}
+
+// reliant pins forge with `FORGE_NO_HOOKS=1 go run .../cmd/forge@<pin>
+// generate`. That run is the pinned forge, so it must repair a driver the
+// previous pin left — under FORGE_NO_HOOKS (the driver is git config, not a
+// hook) and from a `go run` build, by naming a durable copy of itself rather
+// than the temp path that is gone when go run exits.
+func TestEnsureGeneratedMergeDriver_GoRunPinRepairsTheDriver(t *testing.T) {
+	for _, env := range []string{"", "FORGE_NO_HOOKS", "FORGE_NO_GIT_HOOKS"} {
+		t.Run("env="+env, func(t *testing.T) {
+			repo := pinTestRepo(t)
+			if env != "" {
+				t.Setenv(env, "1")
+			}
+			stale := filepath.Join(t.TempDir(), "old-forge")
+			writeTreeFileT(t, stale, "#!/bin/sh\n")
+			staleCmd := "'" + stale + "' merge-generated %O %A %B %L %P"
+			if out, err := exec.Command("git", "-C", repo, "config", "merge.forge-generated.driver", staleCmd).CombinedOutput(); err != nil {
+				t.Fatalf("seed: %v\n%s", err, out)
+			}
+			exe, cache := fakeGoRunForge(t, "7410e351b23b")
+			setPinCheck(t, false)
+
+			ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+
+			durable := filepath.Join(cache, "7410e351b23b", "forge")
+			want := gitConfig(t, repo, "merge.forge-generated.driver")
+			if !strings.HasPrefix(want, "'"+durable+"' ") || !strings.HasSuffix(want, " merge-generated %O %A %B %L %P") {
+				t.Fatalf("driver = %q, want the durable copy %s", want, durable)
+			}
+			if reg := gitConfig(t, repo, pinnedDriverSection+".7410e351b23b.command"); reg != want {
+				t.Errorf("registered = %q, want %q", reg, want)
+			}
+			body, err := os.ReadFile(durable)
+			if err != nil || string(body) != "#!/bin/sh\n# the pinned forge\n" {
+				t.Fatalf("durable copy = %q, %v", body, err)
+			}
+			// go run deletes its build when it exits; the driver survives.
+			if err := os.RemoveAll(filepath.Dir(filepath.Dir(filepath.Dir(exe)))); err != nil {
+				t.Fatal(err)
+			}
+			if !driverCommandUsable(want) {
+				t.Error("the driver is unusable once the go run build is gone")
+			}
+		})
+	}
+}
+
+// A second `go run` of the same pin reuses the copy; a forge that is not the
+// pin never copies itself.
+func TestEnsureGeneratedMergeDriver_GoRunCopyIsOncePerPinnedIdentity(t *testing.T) {
+	repo := pinTestRepo(t)
+	_, cache := fakeGoRunForge(t, "7410e351b23b")
+	setPinCheck(t, false)
+	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	durable := filepath.Join(cache, "7410e351b23b", "forge")
+	first, err := os.Stat(durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	second, err := os.Stat(durable)
+	if err != nil || !os.SameFile(first, second) {
+		t.Errorf("the second run replaced the copy (%v)", err)
+	}
+
+	other := pinTestRepo(t)
+	_, otherCache := fakeGoRunForge(t, "6f9811cb0000")
+	setPinCheck(t, true)
+	ensureGeneratedMergeDriver(filepath.Join(other, "svc"))
+	if entries, _ := os.ReadDir(otherCache); len(entries) != 0 {
+		t.Errorf("a forge that is not the pin copied itself: %v", entries)
+	}
+	if got := gitConfig(t, other, "merge.forge-generated.driver"); got != "" {
+		t.Errorf("a go run forge that is not the pin became the driver: %q", got)
+	}
+}
+
+// Copies are kept for the keptDriverCopies most recently used identities.
+func TestDurableDriverCopy_KeepsTheMostRecentIdentities(t *testing.T) {
+	exe, cache := fakeGoRunForge(t, "newest000000")
+	old := time.Now().Add(-48 * time.Hour)
+	for i, id := range []string{"aaaa00000000", "bbbb00000000", "cccc00000000", "dddd00000000"} {
+		dir := filepath.Join(cache, id)
+		writeTreeFileT(t, filepath.Join(dir, "forge"), "old\n")
+		at := old.Add(time.Duration(i) * time.Hour) // dddd most recent
+		if err := os.Chtimes(dir, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := durableDriverCopy(exe); err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	entries, _ := os.ReadDir(cache)
+	for _, e := range entries {
+		kept = append(kept, e.Name())
+	}
+	if want := []string{"cccc00000000", "dddd00000000", "newest000000"}; strings.Join(kept, ",") != strings.Join(want, ",") {
+		t.Errorf("kept %v, want %v", kept, want)
+	}
+}
+
+func TestGoRunExecutable(t *testing.T) {
+	hash := strings.Repeat("0a", 32)
+	for exe, want := range map[string]bool{
+		"/tmp/go-build123/b001/exe/forge":                         true,
+		"/var/cache/workspace/go-build/28/" + hash + "-d/forge":   true,
+		"/home/u/.cache/custom-gocache/28/" + hash + "-d/reliant": true,  // GOCACHE moved by go env -w
+		"/tmp/forge-bin-123/forge":                                false, // e2e corpus build
+		"/home/u/go/bin/forge":                                    false,
+		"/tmp/go-build1/b001/cli.test":                            false,
+	} {
+		if got := goRunExecutable(exe); got != want {
+			t.Errorf("goRunExecutable(%q) = %v, want %v", exe, got, want)
+		}
 	}
 }

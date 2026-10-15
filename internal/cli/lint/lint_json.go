@@ -538,7 +538,7 @@ func collectOptionalDepsGuardJSON(projectDir string) ([]lintJSONFinding, error) 
 			Col:      f.Col,
 			Severity: lintSevWarning,
 			Rule:     "forge-optional-deps-guard",
-			Message:  fmt.Sprintf("%s dereferences optional dep Deps.%s (marked `// forge:optional-dep` — may be nil) without a dominating nil-guard in %s", f.Expr, f.Field, f.Method),
+			Message:  optionalDepsGuardMessage(f),
 			FixHint:  optionalDepsGuardFixHint(f),
 		})
 	}

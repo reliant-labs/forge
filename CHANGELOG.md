@@ -646,6 +646,26 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   the component-drift lint, the dev env's API port key and `FindWorkload`
   (`forge doctor parity`). To fix a project scaffolded before this, rename
   the `name` field to its dashed form.
+- **`forge lint --optional-deps-guard` no longer flags reading a map-typed
+  optional dep.** Once deps-are-interfaces accepted a table of collaborators,
+  reliant's trigger handler declared `// forge:optional-dep` fields
+  `Access map[string]IntegrationAccess` and
+  `Senders map[string]SenderDirectory`, and the guard flagged every
+  `s.deps.Access[k]` as a nil dereference. Reading a nil map is safe in Go,
+  so the guard now resolves each optional field's declared type: a map
+  literal type, or a named map type declared in the package. Index reads,
+  comma-ok reads, `len`, `range`, `delete` and methods on a named map type
+  are not flagged. Two shapes still are, because they panic while the dep is
+  nil. A write (`s.deps.M[k] = v`, `+=`, `++`) panics on a nil map. A deref of
+  a looked-up element (`s.deps.M[k].Do()`, or `a := s.deps.M[k]; a.Do()`)
+  panics on every key, because a nil map yields the zero element; this
+  applies only when the element's zero value is nil. Such a deref is guarded
+  by a nil check on the map, a nil check on the element, or a comma-ok read.
+  A key missing from a wired map is not an optional-dep concern, and the fix
+  hint points to the comma-ok read for it. Slices and arrays keep the plain
+  rule: indexing one is a deref. Findings now carry a `Use`
+  (`deref` / `map-write` / `map-element`), and each kind has its own message
+  and fix hint.
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

@@ -32,6 +32,46 @@
 //	Deps{X: w.deps.X}      // composite literal
 //	s.deps.X == nil        // comparison
 //
+// Map-typed optional deps
+//
+// A Deps field may be a table of collaborators (`map[string]Accessor`,
+// accepted by deps-are-interfaces). The walker resolves each optional
+// field's declared type — a map literal type, or a named type declared in
+// the package whose underlying type is one — and asks of a map the only
+// question this lint asks of anything: does this site panic while the dep
+// is nil? A nil map reads as empty, so these are NOT flagged:
+//
+//	v := s.deps.M[k]       // index read: the zero value
+//	v, ok := s.deps.M[k]   // comma-ok read
+//	len(s.deps.M)          // 0
+//	for k := range s.deps.M // zero iterations
+//	delete(s.deps.M, k)    // no-op
+//	s.deps.M.Lookup(k)     // method on a named map type
+//
+// Two shapes panic, and are flagged until a nil-guard dominates them:
+//
+//	s.deps.M[k] = v        // write (also op= and ++/--): assignment into a nil map
+//	s.deps.M[k].Do()       // deref of a looked-up element
+//
+// The second is the decision worth stating. Every lookup in a nil map yields
+// the element type's zero value; when that is nil (interface, pointer, func,
+// chan, map, slice — or a type declared in another package, which the
+// walker cannot see into), the deref panics for EVERY key while the dep is
+// unwired — exactly the failure this lint exists for. An element read into a
+// variable (`a := s.deps.M[k]`) is tracked like an alias, so `a.Do()` is the
+// same finding. What guards it: a nil check on the map, a nil check on the
+// element (`if a == nil { return }` — a non-nil element proves the map
+// non-nil), or a comma-ok read, whose value the walker does not track
+// (`a, ok := s.deps.M[k]; if !ok { return }`). An element whose zero value
+// is not nil (a struct, a number, a string, an array) is never flagged.
+//
+// A missing key in a WIRED map yields the same nil element. That is not an
+// optional-dep concern — a required map dep has it too — so a nil-guard on
+// the map silences element derefs without proving each key present; checking
+// the key is the comma-ok read's job, and the fix hint names it.
+//
+// Slices and arrays keep the plain rule: indexing one is a deref.
+//
 // Guard patterns recognized
 //
 // The walker is a single-function, forward-flow scan — deliberately NOT
@@ -144,14 +184,46 @@ type optionalDepsGuardFinding struct {
 	Field   string // the optional Deps field, e.g. "SvcBillingHandler"
 	Method  string // enclosing func/method name (the RPC for handlers)
 	Expr    string // source text of the dereferenced expression, e.g. "s.deps.SvcBillingHandler"
+	Use     string // how the site uses the field: optionalUseDeref, optionalUseMapWrite or optionalUseMapElement
+}
+
+// The ways a site can use an optional field that panic while it is nil.
+const (
+	// optionalUseDeref is a selector / call / index / slice / star on the
+	// field itself.
+	optionalUseDeref = "deref"
+	// optionalUseMapWrite is an assignment into a map-typed field.
+	optionalUseMapWrite = "map-write"
+	// optionalUseMapElement is a deref of an element looked up in a
+	// map-typed field whose element type's zero value is nil.
+	optionalUseMapElement = "map-element"
+)
+
+// optionalDepsGuardMessage is a finding's one-line diagnosis, shared by the
+// text report and the --json message.
+func optionalDepsGuardMessage(f optionalDepsGuardFinding) string {
+	switch f.Use {
+	case optionalUseMapWrite:
+		return fmt.Sprintf("%s writes into optional map dep Deps.%s (marked `// forge:optional-dep` — may be nil, and assigning into a nil map panics) without a dominating nil-guard in %s", f.Expr, f.Field, f.Method)
+	case optionalUseMapElement:
+		return fmt.Sprintf("%s dereferences an element of optional map dep Deps.%s (marked `// forge:optional-dep` — while it is nil every lookup yields the element's zero value, nil) without checking it in %s", f.Expr, f.Field, f.Method)
+	}
+	return fmt.Sprintf("%s dereferences optional dep Deps.%s (marked `// forge:optional-dep` — may be nil) without a dominating nil-guard in %s", f.Expr, f.Field, f.Method)
 }
 
 // optionalDepsGuardFixHint renders the canonical remediation for a
 // finding — shown in text mode and carried as fix_hint in JSON.
 func optionalDepsGuardFixHint(f optionalDepsGuardFinding) string {
+	const suppress = "if this site is provably safe (invariant established elsewhere), append `// forge:optional-checked` on the line to suppress"
+	switch f.Use {
+	case optionalUseMapWrite:
+		return fmt.Sprintf("guard the write with `if s.deps.%s == nil { return ... }` (or `if ... != nil { ... }`); %s", f.Field, suppress)
+	case optionalUseMapElement:
+		return fmt.Sprintf("read the element with comma-ok and check it (`v, ok := s.deps.%s[k]; if !ok { ... }`), or nil-check the value before use (`if v == nil { ... }`), which also covers a key the wired map lacks; %s", f.Field, suppress)
+	}
 	return fmt.Sprintf(
-		"add an early return `if %s == nil { return ... }` at the top of %s, or wrap the use in `if %s != nil { ... }`; if this site is provably safe (invariant established elsewhere), append `// forge:optional-checked` on the deref line to suppress",
-		f.Expr, f.Method, f.Expr)
+		"add an early return `if %s == nil { return ... }` at the top of %s, or wrap the use in `if %s != nil { ... }`; %s",
+		f.Expr, f.Method, f.Expr, suppress)
 }
 
 // runOptionalDepsGuardLint is the text-mode entry point. Warnings only
@@ -179,7 +251,7 @@ func formatOptionalDepsGuard(w io.Writer, findings []optionalDepsGuardFinding) {
 	}
 	for _, f := range findings {
 		_, _ = fmt.Fprintf(w, "  ⚠ [forge-optional-deps-guard] %s:%d:%d\n", f.File, f.Line, f.Col)
-		_, _ = fmt.Fprintf(w, "      %s dereferences optional dep Deps.%s (marked `// forge:optional-dep` — may be nil) without a dominating nil-guard in %s\n", f.Expr, f.Field, f.Method)
+		_, _ = fmt.Fprintf(w, "      %s\n", optionalDepsGuardMessage(f))
 		_, _ = fmt.Fprintf(w, "      → %s\n", optionalDepsGuardFixHint(f))
 	}
 	_, _ = fmt.Fprintf(w, "\n%d unguarded optional-dep deref(s).\n", len(findings))
@@ -216,10 +288,10 @@ func collectOptionalDepsGuardFindings(projectDir string) ([]optionalDepsGuardFin
 				// to guard; the project's own build reports parse errors.
 				continue
 			}
-			optional := map[string]bool{}
+			var optional []codegen.DepsField
 			for _, d := range deps {
 				if d.Optional {
-					optional[d.Name] = true
+					optional = append(optional, d)
 				}
 			}
 			if len(optional) == 0 {
@@ -245,25 +317,28 @@ func collectOptionalDepsGuardFindings(projectDir string) ([]optionalDepsGuardFin
 	return findings, nil
 }
 
-// scanPackageForUnguardedDerefs parses every non-test, non-generated
-// .go file in pkgDir and runs the guard walker over each function body.
-func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, optional map[string]bool) ([]optionalDepsGuardFinding, error) {
+// scanPackageForUnguardedDerefs parses every non-test .go file in pkgDir,
+// resolves the optional fields' types against the package's own type
+// declarations, and runs the guard walker over each function body of the
+// non-generated files.
+func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, optionalDeps []codegen.DepsField) ([]optionalDepsGuardFinding, error) {
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
 	}
 
-	var findings []optionalDepsGuardFinding
+	type parsedFile struct {
+		path string
+		file *ast.File
+	}
+	var walk []parsedFile
+	types := packageTypeDecls{}
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") {
-			continue
-		}
-		// Tests construct zero-value Deps on purpose; generated files
-		// (_gen.go) are forge-owned and regenerate — flagging either
-		// would be noise the user can't or shouldn't act on.
-		if strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_gen.go") {
+		// Tests construct zero-value Deps on purpose — never scanned, and
+		// their type declarations are not the package's.
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		fp := filepath.Join(pkgDir, name)
@@ -272,7 +347,23 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 			// Don't double-report parse errors — the Go toolchain will.
 			continue
 		}
+		types.collect(file)
+		// Generated files (_gen.go) declare types the fields may name, but
+		// are forge-owned and regenerate — flagging them would be noise
+		// the user can't act on.
+		if !strings.HasSuffix(name, "_gen.go") {
+			walk = append(walk, parsedFile{path: fp, file: file})
+		}
+	}
 
+	optional := make(map[string]optionalFieldShape, len(optionalDeps))
+	for _, d := range optionalDeps {
+		optional[d.Name] = types.shapeOf(d.Type)
+	}
+
+	var findings []optionalDepsGuardFinding
+	for _, pf := range walk {
+		fp, file := pf.path, pf.file
 		rel, relErr := filepath.Rel(projectDir, fp)
 		if relErr != nil {
 			rel = fp
@@ -297,16 +388,17 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 				continue
 			}
 			w := &optionalGuardWalker{
-				fset:       fset,
-				file:       rel,
-				role:       role,
-				pkg:        pkgName,
-				optional:   optional,
-				suppressed: suppressed,
-				funcName:   fn.Name.Name,
-				depsIdents: map[string]bool{},
-				aliases:    map[string]string{},
-				findings:   &findings,
+				fset:        fset,
+				file:        rel,
+				role:        role,
+				pkg:         pkgName,
+				optional:    optional,
+				suppressed:  suppressed,
+				funcName:    fn.Name.Name,
+				depsIdents:  map[string]bool{},
+				aliases:     map[string]string{},
+				elemAliases: map[string]string{},
+				findings:    &findings,
 			}
 			// Receiver / params typed Deps (or *Deps) root the bare
 			// `d.X` form — methods on Deps itself (validateDeps-style
@@ -375,7 +467,7 @@ type optionalGuardWalker struct {
 	file       string
 	role       string
 	pkg        string
-	optional   map[string]bool
+	optional   map[string]optionalFieldShape
 	suppressed map[int]bool
 	funcName   string
 
@@ -390,42 +482,86 @@ type optionalGuardWalker struct {
 	// drops the alias.
 	aliases map[string]string
 
+	// elemAliases maps a local identifier to the map-typed optional field
+	// it holds an ELEMENT of (`a := s.deps.M[k]` → elemAliases["a"] =
+	// "M"), for an element type whose zero value is nil. A deref of the
+	// alias is a deref of a looked-up element; a nil check on it guards
+	// the field, because a non-nil element proves the map non-nil.
+	elemAliases map[string]string
+
 	findings *[]optionalDepsGuardFinding
 }
 
-// fieldKey resolves an expression to the optional field it denotes, or
-// ("", false). Recognized roots:
+// optionalTarget is what an expression denotes, when it denotes an
+// optional field at all: the field itself, or an element looked up in a
+// map-typed field.
+type optionalTarget int
+
+const (
+	targetField optionalTarget = iota
+	targetElement
+)
+
+// fieldKey resolves an expression to the optional field it denotes — the
+// field itself or, for a map-typed field, an element looked up in it — or
+// ("", false). Guards key on the field either way: a nil check on a
+// looked-up element proves the map non-nil.
+func (w *optionalGuardWalker) fieldKey(e ast.Expr) (string, bool) {
+	k, _, ok := w.resolve(e)
+	return k, ok
+}
+
+// resolve resolves an expression to the optional field it denotes, and
+// whether it is the field or one of its elements. Recognized roots:
 //
-//	x              alias previously assigned from the field
+//	x              alias previously assigned from the field (or an element)
 //	d.X            d is a Deps-typed receiver/param ident
 //	s.deps.X       any ident . deps/Deps . field — the conventional
 //	               implementation shape (s *Service holding `deps Deps`)
-func (w *optionalGuardWalker) fieldKey(e ast.Expr) (string, bool) {
+//	s.deps.M[k]    an element of map-typed field M, when M's element type
+//	               has a nil zero value (anything above in place of s.deps.M)
+func (w *optionalGuardWalker) resolve(e ast.Expr) (string, optionalTarget, bool) {
 	e = unparen(e)
 	switch v := e.(type) {
 	case *ast.Ident:
 		if k, ok := w.aliases[v.Name]; ok {
-			return k, true
+			return k, targetField, true
+		}
+		if k, ok := w.elemAliases[v.Name]; ok {
+			return k, targetElement, true
+		}
+	case *ast.IndexExpr:
+		k, target, ok := w.resolve(v.X)
+		if ok && target == targetField && w.optional[k].isMap && w.optional[k].elemNilable {
+			return k, targetElement, true
 		}
 	case *ast.SelectorExpr:
-		if !w.optional[v.Sel.Name] {
-			return "", false
+		if k, ok := w.selectorField(v); ok {
+			return k, targetField, true
 		}
-		switch x := unparen(v.X).(type) {
-		case *ast.Ident:
-			if w.depsIdents[x.Name] {
-				return v.Sel.Name, true
-			}
-		case *ast.SelectorExpr:
-			// Middle hop must literally be the deps-holder field. Any
-			// base ident is accepted (receiver, closure capture, helper
-			// param) — requiring exactly `.deps` / `.Deps` keeps the
-			// false-positive surface to "unrelated struct with a field
-			// named deps that itself has a same-named field", which is
-			// vanishingly rare and warning-severity anyway.
-			if (x.Sel.Name == "deps" || x.Sel.Name == "Deps") && isIdent(x.X) {
-				return v.Sel.Name, true
-			}
+	}
+	return "", targetField, false
+}
+
+// selectorField resolves `d.X` / `s.deps.X` to the optional field X.
+func (w *optionalGuardWalker) selectorField(v *ast.SelectorExpr) (string, bool) {
+	if _, ok := w.optional[v.Sel.Name]; !ok {
+		return "", false
+	}
+	switch x := unparen(v.X).(type) {
+	case *ast.Ident:
+		if w.depsIdents[x.Name] {
+			return v.Sel.Name, true
+		}
+	case *ast.SelectorExpr:
+		// Middle hop must literally be the deps-holder field. Any
+		// base ident is accepted (receiver, closure capture, helper
+		// param) — requiring exactly `.deps` / `.Deps` keeps the
+		// false-positive surface to "unrelated struct with a field
+		// named deps that itself has a same-named field", which is
+		// vanishingly rare and warning-severity anyway.
+		if (x.Sel.Name == "deps" || x.Sel.Name == "Deps") && isIdent(x.X) {
+			return v.Sel.Name, true
 		}
 	}
 	return "", false
@@ -446,9 +582,9 @@ func unparen(e ast.Expr) ast.Expr {
 	}
 }
 
-// report records a finding for the deref of field key at expression
+// report records a finding for the use of field key at expression
 // root, unless the site is suppressed.
-func (w *optionalGuardWalker) report(root ast.Expr, key string) {
+func (w *optionalGuardWalker) report(root ast.Expr, key, use string) {
 	pos := w.fset.Position(root.Pos())
 	if w.suppressed[pos.Line] || w.suppressed[pos.Line-1] {
 		return
@@ -462,18 +598,28 @@ func (w *optionalGuardWalker) report(root ast.Expr, key string) {
 		Field:   key,
 		Method:  w.funcName,
 		Expr:    exprString(root),
+		Use:     use,
 	})
 }
 
 // exprString renders the small selector chains we report (s.deps.X,
-// d.X, alias idents). Hand-rolled instead of go/printer because the
-// shapes are tiny and we don't want printer's fset plumbing here.
+// d.X, s.deps.M[k], alias idents). Hand-rolled instead of go/printer
+// because the shapes are tiny and we don't want printer's fset plumbing
+// here.
 func exprString(e ast.Expr) string {
 	switch v := unparen(e).(type) {
 	case *ast.Ident:
 		return v.Name
+	case *ast.BasicLit:
+		return v.Value
 	case *ast.SelectorExpr:
 		return exprString(v.X) + "." + v.Sel.Name
+	case *ast.IndexExpr:
+		idx := exprString(v.Index)
+		if idx == "<expr>" {
+			idx = "…"
+		}
+		return exprString(v.X) + "[" + idx + "]"
 	default:
 		return "<expr>"
 	}
@@ -522,6 +668,10 @@ func (w *optionalGuardWalker) walkStmt(s ast.Stmt, guarded map[string]bool) {
 		w.walkForStmt(v, guarded)
 	case *ast.RangeStmt:
 		w.scanExpr(v.X, guarded)
+		if v.Tok == token.ASSIGN {
+			w.checkMapWrite(v.Key, guarded)
+			w.checkMapWrite(v.Value, guarded)
+		}
 		w.walkStmts(v.Body.List, copyGuards(guarded, nil))
 	case *ast.SwitchStmt:
 		w.walkSwitchStmt(v, guarded)
@@ -537,6 +687,7 @@ func (w *optionalGuardWalker) walkStmt(s ast.Stmt, guarded map[string]bool) {
 		w.scanExpr(v.Chan, guarded)
 		w.scanExpr(v.Value, guarded)
 	case *ast.IncDecStmt:
+		w.checkMapWrite(v.X, guarded)
 		w.scanExpr(v.X, guarded)
 	case *ast.LabeledStmt:
 		w.walkStmt(v.Stmt, guarded)
@@ -586,10 +737,29 @@ func (w *optionalGuardWalker) walkAssignStmt(v *ast.AssignStmt, guarded map[stri
 	for _, lhs := range v.Lhs {
 		// LHS derefs count too: `s.deps.X.Field = v` derefs X.
 		// Plain `s.deps.X = v` does not (the field itself is the
-		// target) — scanExpr's parent-node rule handles both.
+		// target) — scanExpr's parent-node rule handles both. An index
+		// into a map-typed field is a read to scanExpr, so the write is
+		// checked here.
+		w.checkMapWrite(lhs, guarded)
 		w.scanExpr(lhs, guarded)
 	}
 	w.recordAliases(v.Lhs, v.Rhs)
+}
+
+// checkMapWrite reports an assignment target that writes into a map-typed
+// optional field (`s.deps.M[k] = v`, `m[k] += v`, `m[k]++` through an
+// alias): assigning into a nil map panics, where reading one does not.
+func (w *optionalGuardWalker) checkMapWrite(target ast.Expr, guarded map[string]bool) {
+	ix, ok := unparen(target).(*ast.IndexExpr)
+	if !ok {
+		return
+	}
+	root := unparen(ix.X)
+	k, kind, ok := w.resolve(root)
+	if !ok || kind != targetField || !w.optional[k].isMap || guarded[k] {
+		return
+	}
+	w.report(root, k, optionalUseMapWrite)
 }
 
 // walkDeclStmt scans `var` value expressions and records `var x = s.deps.X`
@@ -610,11 +780,7 @@ func (w *optionalGuardWalker) walkDeclStmt(v *ast.DeclStmt, guarded map[string]b
 		// `var x = s.deps.X` aliases like := does.
 		if len(vs.Names) == len(vs.Values) {
 			for i, n := range vs.Names {
-				if k, ok := w.fieldKey(vs.Values[i]); ok {
-					w.aliases[n.Name] = k
-				} else {
-					delete(w.aliases, n.Name)
-				}
+				w.bindAlias(n.Name, vs.Values[i])
 			}
 		}
 	}
@@ -712,9 +878,11 @@ func (w *optionalGuardWalker) recordAliases(lhs, rhs []ast.Expr) {
 	if len(lhs) != len(rhs) {
 		// Multi-value call (`a, err := f()`) — every plain-ident LHS
 		// stops being an alias.
+		// That includes the comma-ok read `v, ok := s.deps.M[k]`, whose
+		// value is deliberately untracked: `ok` is its guard.
 		for _, l := range lhs {
 			if id, ok := unparen(l).(*ast.Ident); ok {
-				delete(w.aliases, id.Name)
+				w.bindAlias(id.Name, nil)
 			}
 		}
 		return
@@ -724,11 +892,26 @@ func (w *optionalGuardWalker) recordAliases(lhs, rhs []ast.Expr) {
 		if !ok {
 			continue
 		}
-		if k, isField := w.fieldKey(rhs[i]); isField {
-			w.aliases[id.Name] = k
-		} else {
-			delete(w.aliases, id.Name)
-		}
+		w.bindAlias(id.Name, rhs[i])
+	}
+}
+
+// bindAlias records what name holds after `name := value` (or `=` / `var`):
+// the optional field, an element of a map-typed one, or neither (a nil
+// value drops it).
+func (w *optionalGuardWalker) bindAlias(name string, value ast.Expr) {
+	delete(w.aliases, name)
+	delete(w.elemAliases, name)
+	if value == nil {
+		return
+	}
+	k, kind, ok := w.resolve(value)
+	switch {
+	case !ok:
+	case kind == targetField:
+		w.aliases[name] = k
+	default:
+		w.elemAliases[name] = k
 	}
 }
 
@@ -792,14 +975,25 @@ func (w *optionalGuardWalker) scanExpr(e ast.Expr, guarded map[string]bool) {
 }
 
 // checkDeref reports when child (the parent node's operand) denotes an
-// optional field that is not currently guarded.
+// optional field, or an element looked up in a map-typed one, that is not
+// currently guarded.
+//
+// Every deref of a map-typed field itself is safe while it is nil: an
+// index reads the zero value, and a method on a named map type takes the
+// nil map as its receiver. (Writes are checked at the assignment, by
+// checkMapWrite; a call, star or slice of a map does not compile.)
 func (w *optionalGuardWalker) checkDeref(child ast.Expr, guarded map[string]bool) {
 	child = unparen(child)
-	k, ok := w.fieldKey(child)
+	k, kind, ok := w.resolve(child)
 	if !ok || guarded[k] {
 		return
 	}
-	w.report(child, k)
+	switch {
+	case kind == targetElement:
+		w.report(child, k, optionalUseMapElement)
+	case !w.optional[k].isMap:
+		w.report(child, k, optionalUseDeref)
+	}
 }
 
 // nilCheckKeys extracts the optional-field keys nil-compared in cond.
@@ -918,6 +1112,97 @@ func copyGuards(base, extra map[string]bool) map[string]bool {
 		out[k] = true
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Field types — what the walker needs to know about an optional field.
+// ---------------------------------------------------------------------------
+
+// optionalFieldShape is what the walker knows of an optional field's
+// declared type: whether it is a map, and if so whether its element's zero
+// value is nil (so a looked-up element of the nil map is nil).
+type optionalFieldShape struct {
+	isMap       bool
+	elemNilable bool
+}
+
+// packageTypeDecls are the type declarations of one package, by name — the
+// only types the walker resolves. It has no type checker: a type declared
+// in another package is unknown to it.
+type packageTypeDecls map[string]ast.Expr
+
+func (d packageTypeDecls) collect(f *ast.File) {
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			if ts, ok := spec.(*ast.TypeSpec); ok && ts.TypeParams == nil {
+				d[ts.Name.Name] = ts.Type
+			}
+		}
+	}
+}
+
+// shapeOf classifies a Deps field's type expression (DepsField.Type, as
+// printed by the deps parser). An unparseable or unknown type is not a map,
+// which keeps the plain deref rule: the conservative direction.
+func (d packageTypeDecls) shapeOf(typ string) optionalFieldShape {
+	expr, err := parser.ParseExpr(typ)
+	if err != nil {
+		return optionalFieldShape{}
+	}
+	m, ok := d.underlying(expr).(*ast.MapType)
+	if !ok {
+		return optionalFieldShape{}
+	}
+	return optionalFieldShape{isMap: true, elemNilable: d.zeroIsNil(m.Value)}
+}
+
+// underlying follows named types declared in this package (and parens) to
+// the type literal they stand for. A name it cannot follow — a predeclared
+// type, a type from another package, a generic instantiation — is returned
+// as is.
+func (d packageTypeDecls) underlying(t ast.Expr) ast.Expr {
+	seen := map[string]bool{}
+	for {
+		t = unparen(t)
+		id, ok := t.(*ast.Ident)
+		if !ok || seen[id.Name] {
+			return t
+		}
+		next, declared := d[id.Name]
+		if !declared {
+			return t
+		}
+		seen[id.Name] = true
+		t = next
+	}
+}
+
+// predeclaredNonNil are the predeclared types whose zero value is not nil.
+var predeclaredNonNil = map[string]bool{
+	"bool": true, "string": true, "byte": true, "rune": true, "uintptr": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"float32": true, "float64": true, "complex64": true, "complex128": true,
+}
+
+// zeroIsNil reports whether t's zero value is nil — so that dereferencing
+// it (a method call, a field, a call, an index) can panic. A type the
+// walker cannot see into counts as nil: the conservative direction, and the
+// right answer for the interface a table of collaborators usually holds.
+func (d packageTypeDecls) zeroIsNil(t ast.Expr) bool {
+	switch u := d.underlying(t).(type) {
+	case *ast.StructType:
+		return false
+	case *ast.ArrayType:
+		return u.Len == nil // a slice is nil; an array is a value
+	case *ast.Ident:
+		return !predeclaredNonNil[u.Name] // error, any, an unresolved name
+	}
+	return true // pointer, map, func, chan, interface, another package's type
 }
 
 // mergeKeys unions two key sets, tolerating nil receivers.

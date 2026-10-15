@@ -3790,7 +3790,7 @@ schema DeliveryPolicy:
     for the table, what each enforces, and which controls are recorded but not
     enforced yet.
 
-    NOT HERE, because they protect other tenants and are not a customer's
+    NOT HERE, because they protect other users of the platform and are not a customer's
     choice: per-binding apply identity, kubeconfig-ref binding, narrowed
     controller impersonation, ledger and pointer integrity, ingest
     validation, head-of-line fairness, and the hub's PSA/NetworkPolicy

@@ -1410,10 +1410,11 @@ migrate force N` where it has one. The `db` and `db/deploy-migrations`
   are" fatal error as `failed to initialize git repository`, then reported
   success. The repository was in fact initialized, hooks activated and every
   file staged; only the commit was missing. It now prints one warning saying
-  so, with the command to finish it (`git commit --no-verify -m "Initial commit
-  from forge"`, `--no-verify` because the scaffolded commit-msg hook runs
-  commitlint). git's own output is shown under the new `project new
-  --verbose` (`-v`). Other git failures still show git's output (#750).
+  so, with the command to finish it:
+  `git commit --no-verify -m "Initial commit from forge"` (`--no-verify`
+  because the scaffolded commit-msg hook runs commitlint). git's own output
+  is shown under the new `project new --verbose` (`-v`). Other git failures
+  still show git's output (#750).
 
 ### Changed
 

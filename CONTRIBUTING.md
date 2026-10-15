@@ -87,7 +87,7 @@ Keep the feedback loop tight — run these locally and make sure they're green:
 
 ```bash
 task lint   # golangci-lint + buf lint (+ frontend lint if configured)
-task test   # go test -race across the module (excludes e2e by build tag)
+task test   # the module under -race in CI's three lanes: unit, internal/cli, guards (excludes e2e by build tag)
 ```
 
 For changes that touch RPC shapes or data-plane boundaries, also run:

@@ -277,6 +277,16 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   client-streaming RPCs are untouched. The scaffolded `serve.go` is yours, so
   an existing project adds the one line itself: `forge project upgrade list`
   offers v0.1.46 §8.
+- **A websocket open at shutdown closes with a status and runs its cleanup.**
+  `http.Server.Shutdown` neither waits for nor closes a hijacked connection,
+  so the process exit dropped every open websocket — the browser saw a dead
+  TCP connection, and the handler's deferred cleanup (a terminal's PTY) never
+  ran. A connection hijacked under `serverkit.LongLived` is now registered
+  with the drain: `serverkit.AfterDrain(ctx, f)` runs f when the drain begins (a
+  websocket handler blocked in a read sends 1012 "service restart" and sets a
+  read deadline there), the drain waits for the handler, and a handler that
+  ignores the drain has its connection closed by the drain at the end of the
+  reserve (`Streams.CloseHijacked`), so its cleanup still runs.
 - **A rollout's drain no longer logs at ERROR.** `svcerr.ErrServerDraining`
   (and every `svcerr.Draining(…)`) is now `error_class=canceled`, and every
   logging layer — `LoggingInterceptor`, `LogMiddleware`, and so

@@ -61,8 +61,10 @@ const (
 	declareBestEffort declarePolicy = "best-effort"
 )
 
+// The backquoted word is the flag's placeholder in --help (pflag's
+// UnquoteUsage), so it must be `policy` and the values stay unquoted.
 const declareFlagUsage = "What to do when the env's control plane REFUSES a record this command sends " +
-	"(the env declaration, a bundle): `strict` (default) fails; `best-effort` warns, naming each field the " +
+	"(the env declaration, a bundle), as a `policy`: strict (default) fails; best-effort warns, naming each field the " +
 	"server refused, and carries on. For a control plane older than this forge, whose strict decoder refuses " +
 	"fields it does not know yet — the one hop that upgrades a self-deploying control plane. Only a content " +
 	"refusal (InvalidArgument) is downgraded, never for a hub-converged env's bundle; re-run without the flag " +
@@ -144,8 +146,15 @@ func refusedFields(err error) []string {
 // warnRefusedRecord is the loud half of best-effort: what was refused, what
 // the server said, which fields, and the command that records it later.
 func warnRefusedRecord(w io.Writer, prefix, what, retry string, err error) {
+	// The server's own words, not the client's wrapping of the call: the
+	// wrapping names the procedure, which the line above already does.
+	said := err.Error()
+	var cerr *cloud.Error
+	if errors.As(err, &cerr) && cerr.Message != "" {
+		said = cerr.Message
+	}
 	fmt.Fprintf(w, "%s WARNING (--declare=best-effort): the control plane REFUSED %s, and it was NOT recorded.\n", prefix, what)
-	fmt.Fprintf(w, "%s   server said: %v\n", prefix, err)
+	fmt.Fprintf(w, "%s   server said: %s\n", prefix, said)
 	if fields := refusedFields(err); len(fields) > 0 {
 		fmt.Fprintf(w, "%s   refused field(s): %q\n", prefix, fields)
 	} else {

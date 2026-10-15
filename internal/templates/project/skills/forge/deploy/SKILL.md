@@ -286,63 +286,16 @@ release's workloads running declares `deployPhase = "post-rollout"`.
 
 A bundle a reconciler applies states its order as trees per cluster × unit × phase. Declare units with `Bundle.delivery_units`, place objects with `delivery_unit`: `deploy/delivery-units`.
 
-### Frontends bind a runtime too
+### Frontend runtimes and domains
 
-A `forge.Frontend` states where it runs per env, like a workload — there is
-no default, and a frontend with no `runtime` is a render error naming it:
-
-| `runtime =`                                   | `forge env deploy` does                                                       |
-| --------------------------------------------- | ----------------------------------------------------------------------------- |
-| `forge.OnHost {}`                             | nothing (the dev server; `forge env up` runs it)                              |
-| `forge.OnHosted {}`                           | publishes the site to the control plane's static hosting (below)             |
-| `forge.OnBucket {bucket, cdn?, keep_releases}` | uploads to YOUR bucket: `releases/<digest>/` + `live/`, then CDN invalidation |
-| `forge.OnFirebase {project, site, ...}`       | `firebase deploy`                                                             |
-| `forge.BuildOnly {}`                          | builds it for a sibling frontend's `bundle`; ships nothing                    |
-
-Build facts are the frontend's on every runtime: `public_dir` (default `out`
-for Next.js, `dist` otherwise), `asset_dir`, `base_path`, `bundle`,
-`cache_control` (OnBucket, OnFirebase). A Firebase SPA sets `spa_fallback`.
-A static Next.js frontend needs `output: static` in forge.yaml
-(render refuses others; `forge lint --static-export` lists what an export
-can't serve); a server build is a workload (`forge.DockerBuild`).
-
-```kcl
-_web = forge.Frontend {name = "web", path = "frontends/web", public_dir = "out"}
-
-frontends = [_web | {runtime = forge.OnBucket {bucket = "acme-prod-web"}}]
-```
-
-`forge env new cloud --from prod --bind web=bucket` rebinds a scaffolded
-frontend's line (`_hosted_frontend(_web_frontend)` → `_on_bucket(...)`).
-`forge env deploy <env> <version> --frontends-only` ships only the bucket /
-Firebase frontends of a release.
-
-### Hosted static sites
-
-A frontend on `forge.OnHosted {}` publishes into the platform's bucket and
-CDN, as an OCI release with **no `config.js` in it**, so `forge env deploy`
-moves one digest everywhere. `forge env build <env> --push` pushes it. The
-frontend's `runtime_config` becomes the spec's `runtimeConfig`:
-
-```yaml
-runtimeConfig:
-  API_URL: {workloadURL: {name: api}}   # resolved by the control plane to the hosted api's URL
-  APP_NAME: {value: acme}
-```
-
-After every sync the control plane writes `config.js`, resolving references
-against workloads in the same environment.
-
-A site with no backend is a whole project: `deploy/static-site`.
-
-### Custom domains
-
-Every hosted site and exposed hosted port already answers on a hostname the
-platform allocates. To ALSO serve your own, use the `forge domain` commands —
-**a hosted domain is NOT spec**, and a hosted frontend or port carrying
-`domains` is refused at render. `forge.OnCluster` keeps `Port.domains`.
-Domains: `deploy/domains`. Hosted `forge env stop|start|delete`:
-`deploy/lifecycle`.
+Every frontend must bind a runtime: `OnHost`, `OnHosted`, `OnBucket`,
+`OnFirebase`, or `BuildOnly`; missing runtime is a render error. Static Next.js
+frontends require `output: static`. Hosted sites ship one OCI digest without
+`config.js`; the control plane resolves `runtime_config` after sync. Everything
+hosted needs billing. Hosted custom domains use `forge domain`, never spec
+`domains` (cluster port domains stay spec).
+Load `forge skill load deploy/frontends` for bindings, build facts, runtime
+config and domain links; a standalone site starts at `deploy/static-site`.
 
 PDB lint + stale-PDB prune: deploy/pdb.
 

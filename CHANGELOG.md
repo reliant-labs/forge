@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Next.js frontend records a visible 90-day reviewed acceptance for the dev-only
   braces advisory, which has no fixed release.
 
+- **Shipped skills fit Reliant's rendered delivery budget (#808).** The guard
+  measures the production renderer with the longest shipped `reliant forge`
+  prefix and reserves space for collapsed navigation and the completion footer
+  inside the unchanged 24,000-byte limit. Start-here, deploy, DB, proto, CI and
+  two migration guides now link to discoverable subskills for detailed teaching,
+  leaving real room for growth without dropping their rules.
+
 ### Changed
 
 - **`forge env up` converges a host-run managed identity with `pkg/identity`

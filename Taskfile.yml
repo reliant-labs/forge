@@ -170,6 +170,23 @@ tasks:
     cmds:
       - go test -short -timeout 300s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
 
+  test:e2e:
+    # The whole `-tags e2e` suite, TestE2ENightly* included: what CI runs
+    # across e2e-suite.yml's shards and nightly.yml, in one process. The
+    # tests are t.Parallel and share one forge build, so wall-clock is
+    # roughly the slowest fixture — still tens of minutes: run it in the
+    # background. It needs the toolchain CI installs (go, node/npm, buf,
+    # kcl, golangci-lint, the codegen plugins from `forge tools install`,
+    # docker); a missing tool skips its tests here and fails them in CI
+    # (FORGE_E2E_REQUIRE_TOOLS=1 makes it fail here too).
+    #
+    # Selected by name: a test is an e2e test exactly when it is named
+    # TestE2E*, which internal/e2eshard's naming guard enforces. Narrow a
+    # run with a later -run: `task test:e2e -- -run TestE2EFixtureCorpus`.
+    desc: "The e2e suite (-tags e2e, TestE2E*): narrow with task test:e2e -- -run <regex>"
+    cmds:
+      - go test -tags e2e -count=1 -timeout 60m -run '^TestE2E' ./internal/cli/ {{.CLI_ARGS}}
+
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)
     cmds:

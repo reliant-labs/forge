@@ -90,11 +90,16 @@ task lint   # golangci-lint + buf lint (+ frontend lint if configured)
 task test   # the module under -race in CI's three lanes: unit, internal/cli, guards (excludes e2e by build tag)
 ```
 
-For changes that touch RPC shapes or data-plane boundaries, also run:
+For changes to scaffolding, templates or the generate pipeline, also run the
+e2e suite, or the part of it your change reaches:
 
 ```bash
-task test:e2e   # requires docker compose; spins up the full stack
+task test:e2e                                # every TestE2E* test (-tags e2e); tens of minutes
+task test:e2e -- -run TestE2EFixtureCorpus   # a slice of it
 ```
+
+CI runs it sharded in `.github/workflows/e2e-suite.yml`; `reliant.md`
+("CI: what runs where") says what runs in which workflow.
 
 ## Commit messages
 

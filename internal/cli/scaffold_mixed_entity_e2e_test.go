@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// TestE2EScaffoldHandlersFilePlusMarkedEntityCompiles is the regression
+// TestE2ENightlyScaffoldHandlersFilePlusMarkedEntityCompiles is the regression
 // gate for the Deps.DB-injection bug.
 //
 // A service whose handler package already carries a handlers.go (here: a
@@ -31,7 +31,13 @@ import (
 // pipeline, so they never ran real CRUD-ops generation and never caught
 // this; this test runs the REAL pipeline (buf compile, migration
 // shadow-apply, CRUD ops + shim + ORM + pages) and then `go build`.
-func TestE2EScaffoldHandlersFilePlusMarkedEntityCompiles(t *testing.T) {
+//
+// NIGHTLY (the TestE2ENightly prefix; internal/e2eshard). 44s median on a CI
+// shard but 285-299s on a contended one, and no commit since it landed
+// names it as the test that caught a regression: every other e2e test that
+// scaffolds an entity and builds runs the same CRUD-ops path. nightly.yml
+// runs it every day; a regression here is one day's commits to bisect.
+func TestE2ENightlyScaffoldHandlersFilePlusMarkedEntityCompiles(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()

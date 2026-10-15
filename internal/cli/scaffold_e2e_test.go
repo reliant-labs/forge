@@ -423,9 +423,28 @@ var (
 	sharedPGErr  error
 )
 
+// forgeE2EBinaryEnv names a forge binary already built from this checkout,
+// used instead of building one. e2e-suite.yml's prepare job builds forge once
+// — with the same `go build -o <bin> ./cmd/forge` as below, at the same
+// checkout path — and hands it to every shard, so no shard compiles forge.
+// Unset (a developer's run), the binary is built here as always.
+const forgeE2EBinaryEnv = "FORGE_E2E_BINARY"
+
 func buildforgeBinary(t *testing.T) string {
 	t.Helper()
 	forgeBinaryOnce.Do(func() {
+		if bin := os.Getenv(forgeE2EBinaryEnv); bin != "" {
+			fi, err := os.Stat(bin)
+			switch {
+			case err != nil:
+				forgeBinaryErr = fmt.Errorf("%s=%s: %w", forgeE2EBinaryEnv, bin, err)
+			case fi.IsDir():
+				forgeBinaryErr = fmt.Errorf("%s=%s is a directory, not the forge binary", forgeE2EBinaryEnv, bin)
+			default:
+				forgeBinaryPath = bin
+			}
+			return
+		}
 		repoRoot := findRepoRoot(t)
 		dir, err := os.MkdirTemp("", "forge-e2e-bin-")
 		if err != nil {

@@ -2,16 +2,17 @@
 
 // ── Testing tiers (read this before running tests) ─────────────────────────
 //
-// 1. Inner loop (agents, every edit):   go test -short ./...
-//    Must complete the whole repo in <60s. Any test that takes >2s
-//    (subprocesses, network, real scaffolds) must be -short-gated or
-//    have its slow side-effect bypassed under -short, with the slow
-//    path still exercised in full mode.
-// 2. Package-targeted (pre-commit):     go test ./internal/<pkg>/
-//    Full mode, no tag. internal/cli takes ~80s because the
-//    TestRunAddFrontend_* tests run a real `npm install`.
-// 3. Full gate (once per round / CI):
-//    go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/
+// 1. Inner loop (agents, every edit):   task test:short -- ./internal/<pkg>/...
+//    Any test that takes >2s (subprocesses, network, real scaffolds)
+//    must be -short-gated or have its slow side-effect bypassed under
+//    -short, with the slow path still exercised in full mode.
+// 2. Package-targeted (pre-commit):     task test -- ./internal/<pkg>/...
+//    Full mode, no tag.
+// 3. Full gate (once per round / CI):   task test:e2e
+//    (go test -tags e2e -count=1 -timeout 60m -run '^TestE2E' ./internal/cli/)
+//    Every test here is named TestE2E* — internal/e2eshard's guard
+//    enforces it, and CI's shards select by that prefix
+//    (.github/workflows/e2e-suite.yml); TestE2ENightly* run nightly only.
 //    The e2e corpus: this file's five real-project fixtures, the
 //    scaffold suite (scaffold_*_e2e_test.go), and the registration
 //    lifecycle (serve_types_only_e2e_test.go). Each test scaffolds an
@@ -22,7 +23,7 @@
 //    Servers booted by tests must use freePortE2E(t) — never hard-code
 //    a port.
 //
-// See CLAUDE.md "Testing tiers".
+// See reliant.md "Testing tiers".
 // ────────────────────────────────────────────────────────────────────────────
 
 // File: internal/cli/fixture_corpus_e2e_test.go

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins by requiring that the bundle never stamps a Job prune-exempt. The plan's
   `object_removed` detail for a Job now says the apply prunes it, where it said to
   "delete it by hand".
+
 - **`forge ci gate` starts the longest path first.** Host slots used to be
   granted in plan order (forge's static checks, then a project's extras, then
   the test lanes), so a gate's longest checks waited behind every shorter

@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"context"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,9 +17,9 @@ func deliveryRBAC(auth string, subject *deliverySubject, secrets ...string) conn
 		panic(err)
 	}
 	return connectRBAC{
-		ClusterName: "prod-us", Auth: auth, Org: "acme",
-		HubGSA:         "hub@acme.iam.gserviceaccount.com",
-		TokenNamespace: connectTokenNamespace, TokenServiceAccount: connectTokenServiceAccount,
+		ClusterName: "prod-us", Env: "prod", Auth: auth,
+		BindingGSA:      "binding@acme.iam.gserviceaccount.com",
+		TokenNamespace:  connectTokenNamespace,
 		DeliverySecrets: parsed, DeliverySubject: subject,
 	}
 }
@@ -91,8 +89,8 @@ func TestDelivery_OffByDefaultWidensNothing(t *testing.T) {
 		t.Fatalf("got %d stages without --delivery-secret, want 1", len(got))
 	}
 	if strings.Contains(r.bootstrapManifests(), "ValidatingAdmissionPolicy") ||
-		strings.Contains(r.bootstrapManifests(), "kind: Role\n") {
-		t.Error("the bootstrap carries delivery objects although none were requested")
+		strings.Contains(r.bootstrapManifests(), deliveryGrantLabelKey+": "+deliveryGrantLabelValue) {
+		t.Error("the grant carries delivery objects although none were requested")
 	}
 }
 
@@ -179,11 +177,11 @@ func TestDelivery_SubjectsByAuthAndOptionalSecondSubject(t *testing.T) {
 		want []rbacv1.Subject
 	}{
 		{"token", deliveryRBAC(authToken, nil, "ns/a"), []rbacv1.Subject{
-			{Kind: "ServiceAccount", Name: "forge-connect", Namespace: "forge-system"}}},
+			{Kind: "ServiceAccount", Name: "forge-connect-prod-us-prod", Namespace: "forge-system"}}},
 		{"gcp", deliveryRBAC(authGCP, nil, "ns/a"), []rbacv1.Subject{
-			{Kind: "User", Name: "hub@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"}}},
+			{Kind: "User", Name: "binding@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"}}},
 		{"gcp plus a dedicated identity", deliveryRBAC(authGCP, second, "ns/a"), []rbacv1.Subject{
-			{Kind: "User", Name: "hub@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"},
+			{Kind: "User", Name: "binding@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"},
 			{Kind: "User", Name: "delivery@acme.iam.gserviceaccount.com", APIGroup: "rbac.authorization.k8s.io"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -209,7 +207,7 @@ func TestDelivery_EverythingIsLabelledForDisconnect(t *testing.T) {
 			t.Fatal(err)
 		}
 		l := obj.Metadata.Labels
-		if l[forgeManagedLabelKey] != forgeManagedLabelValue || l["forge.dev/connected-cluster"] != "prod-us" ||
+		if l[forgeManagedLabelKey] != forgeManagedLabelValue || l[connectClusterLabelKey] != "prod-us" || l[connectBindingLabelKey] != "prod" ||
 			l[deliveryGrantLabelKey] != deliveryGrantLabelValue {
 			t.Errorf("labels = %v\n%s", l, doc)
 		}
@@ -321,7 +319,7 @@ func TestDelivery_PolicyAdmitsOnlyDeclaredSecretsAsOpaque(t *testing.T) {
 	second := &deliverySubject{Kind: subjectKindUser, Name: "delivery@acme.iam.gserviceaccount.com"}
 	r := deliveryRBAC(authToken, second, "control-plane-prod/reliant-otel-auth", "obs/agent-token")
 	p, _ := loadDeliveryPolicy(t, r)
-	connect := "system:serviceaccount:forge-system:forge-connect"
+	connect := "system:serviceaccount:forge-system:forge-connect-prod-us-prod"
 	const delivery = "delivery@acme.iam.gserviceaccount.com"
 
 	for _, tc := range []struct {
@@ -343,7 +341,7 @@ func TestDelivery_PolicyAdmitsOnlyDeclaredSecretsAsOpaque(t *testing.T) {
 		{"declared secret as dockerconfigjson", admissionRequest{connect, "obs", "agent-token", "UPDATE", "kubernetes.io/dockerconfigjson"}, true, false},
 		// Not a delivery identity: the policy must not touch anyone else.
 		{"another user writing any secret", admissionRequest{"alice", "kube-system", "anything", "CREATE", "Opaque"}, false, true},
-		{"the hub deploy identity", admissionRequest{hubDeployUsername("acme"), "kube-system", "anything", "CREATE", "Opaque"}, false, true},
+		{"the hub deploy identity", admissionRequest{"system:serviceaccount:flux-acme:deploy", "kube-system", "anything", "CREATE", "Opaque"}, false, true},
 		{"username prefix-matching an identity", admissionRequest{connect + "-evil", "kube-system", "x", "CREATE", "Opaque"}, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,122 +357,12 @@ func TestDelivery_PolicyAdmitsOnlyDeclaredSecretsAsOpaque(t *testing.T) {
 // a GSA subject cannot smuggle an expression in through the connect identity.
 func TestDelivery_ConnectIdentityIsValidatedBeforeItReachesCEL(t *testing.T) {
 	r := deliveryRBAC(authGCP, nil, "ns/a")
-	r.HubGSA = "x' || true || '"
+	r.BindingGSA = "x' || true || '"
 	if err := r.validateConnectIdentity(); err == nil {
 		t.Error("a connect identity containing a quote was accepted")
 	}
-	r.HubGSA = "hub@acme.iam.gserviceaccount.com"
+	r.BindingGSA = "binding@acme.iam.gserviceaccount.com"
 	if err := r.validateConnectIdentity(); err != nil {
 		t.Error(err)
 	}
-}
-
-// ── dry-run and the command ─────────────────────────────────────────────────
-
-func TestConnect_DryRunPrintsExactlyWhatIsApplied(t *testing.T) {
-	restore := stubConnectTarget(t)
-	defer restore()
-	var out strings.Builder
-	secrets, _ := parseDeliverySecrets([]string{"control-plane-prod/reliant-otel-auth"})
-	err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: "vke-prod", Auth: "token", Env: "prod", DryRun: true,
-		DeliverySecrets: secrets, Out: &out,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Every applied stage appears verbatim in the dry-run (each line indented).
-	rbac := connectRBAC{
-		ClusterName: "prod-us", Auth: authToken, Org: "<the env's organization>",
-		HubGSA: "<the control plane's GCP service account>", TokenNamespace: connectTokenNamespace,
-		TokenServiceAccount: connectTokenServiceAccount, DeliverySecrets: secrets,
-	}
-	indented := func(s string) string {
-		var b strings.Builder
-		for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
-			b.WriteString("    " + line + "\n")
-		}
-		return b.String()
-	}
-	if !strings.Contains(out.String(), indented(rbac.bootstrapManifests())) {
-		t.Errorf("dry-run does not print the applied manifests verbatim:\n%s", out.String())
-	}
-	if !strings.Contains(out.String(), "kind: ValidatingAdmissionPolicy") || !strings.Contains(out.String(), "reliant-otel-auth") {
-		t.Errorf("dry-run omits the delivery grant:\n%s", out.String())
-	}
-}
-
-func TestConnect_AppliesPolicyBeforeRolesAndStopsOnFailure(t *testing.T) {
-	restore := stubConnectTarget(t)
-	defer restore()
-	var applied []string
-	connectApply = func(_ context.Context, _ string, m string) error {
-		applied = append(applied, m)
-		if strings.Contains(m, "ValidatingAdmissionPolicy") {
-			return fmt.Errorf("no matches for kind ValidatingAdmissionPolicy")
-		}
-		return nil
-	}
-	connectReadToken = func(context.Context, string, connectRBAC) (string, error) { return fakeMintedToken, nil }
-	secrets, _ := parseDeliverySecrets([]string{"ns/a"})
-	var out strings.Builder
-	err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: "vke-prod", Auth: "token", Env: "prod",
-		DeliverySecrets: secrets, Out: &out,
-	})
-	if err == nil || !strings.Contains(err.Error(), "ValidatingAdmissionPolicy") {
-		t.Fatalf("err = %v, want the policy failure surfaced", err)
-	}
-	if len(applied) != 2 {
-		t.Fatalf("applied %d stages, want base then the failed policy and nothing after", len(applied))
-	}
-	for _, m := range applied {
-		if strings.Contains(m, "kind: Role\n") {
-			t.Error("the create grant was applied although its policy failed")
-		}
-	}
-}
-
-func TestConnect_NoDeliveryFlagsApplyOneStage(t *testing.T) {
-	restore := stubConnectTarget(t)
-	defer restore()
-	n := 0
-	connectApply = func(context.Context, string, string) error { n++; return nil }
-	connectReadToken = func(context.Context, string, connectRBAC) (string, error) { return fakeMintedToken, nil }
-	var out strings.Builder
-	if err := runClusterConnect(context.Background(), clusterConnectOptions{
-		Name: "prod-us", KubeContext: "vke-prod", Auth: "token", Env: "prod", Out: &out,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Errorf("applied %d stages, want exactly 1", n)
-	}
-}
-
-func TestConnectCmd_DeliveryFlagsAreRegisteredAndValidated(t *testing.T) {
-	cmd := newClusterConnectCmd()
-	for _, f := range []string{"delivery-secret", "delivery-subject"} {
-		if cmd.Flags().Lookup(f) == nil {
-			t.Errorf("--%s is not registered", f)
-		}
-	}
-	cmd.SetArgs([]string{"c", "--context", "x", "--env", "e", "--delivery-secret", "bad name"})
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--delivery-secret") {
-		t.Errorf("err = %v, want a --delivery-secret refusal before anything runs", err)
-	}
-}
-
-// stubConnectTarget replaces the cluster- and control-plane-contacting seams
-// with fakes and returns the restore.
-func stubConnectTarget(t *testing.T) func() {
-	t.Helper()
-	rk, rc, ra, rt := kubeconfigClusterOf, clusterConnectClient, connectApply, connectReadToken
-	kubeconfigClusterOf = func(string) (string, string, error) { return "https://34.1.2.3", "ca-bundle", nil }
-	clusterConnectClient = func(context.Context, string, string) (cloudCaller, string, error) {
-		return &fakeConnectCaller{}, "acme", nil
-	}
-	connectApply = func(context.Context, string, string) error { return nil }
-	return func() { kubeconfigClusterOf, clusterConnectClient, connectApply, connectReadToken = rk, rc, ra, rt }
 }

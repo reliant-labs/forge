@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,25 +16,30 @@ import (
 
 // TestClusterConnect_TokenAgainstARealCluster drives `connect --auth token`
 // and `disconnect` against a REAL throwaway k3d cluster and a fake control
-// plane: the ServiceAccount, its token Secret and the RBAC are created for
-// real, the minted token is read back from the cluster and sent write-only, and
-// disconnect removes exactly what forge created.
+// plane, for BOTH apply scopes and TWO bindings of one cluster: the binding's
+// ServiceAccount, its token Secret and the render-derived RBAC are created for
+// real, the minted token is read back and sent write-only, and the grant is
+// then EXERCISED AS THAT IDENTITY — what the render applies is allowed, a kind
+// it did not contain is Forbidden (the tripwire), and namespace scope stops at
+// its namespaces. Disconnect removes exactly what forge created, by label.
+//
+// RUN IT ON A DEVELOPER MACHINE (k3d, kubectl and a docker daemon; it is NOT
+// run in the kata sandbox, where nested clusters are impossible):
+//
+//	go test -tags e2e -count=1 -timeout 15m -run TestClusterConnect_TokenAgainstARealCluster ./internal/cli/
 //
 // WHAT IS STUBBED, AND WHY ONLY THAT. A k3d API server is loopback, which the
 // command refuses on purpose (the hub dials from a pod, where loopback is that
-// pod). So the one seam replaced is the kubeconfig ADDRESS read; everything the
-// test exists to prove — the apply, the asynchronous token population, the
-// write-only send, the by-name cleanup — runs for real.
+// pod). So the seams replaced are the kubeconfig ADDRESS read and the env's
+// render (a fixed stream, since there is no project here); everything the test
+// exists to prove — the apply, the asynchronous token population, the
+// write-only send, the grant as the identity experiences it, the by-label
+// cleanup — runs for real.
 //
 // THE e2e TIER, because it needs what only that tier provisions: a live
 // docker daemon with the capacity to boot a k3d cluster (and pull its image).
-// In the plain package run it failed outright on any machine whose daemon
-// was down — the binaries being on PATH said nothing about that — which is
-// how it became a standing red "environment" failure. Here, like the other
-// cluster-creating tests (flux_reconcile_e2e_test.go,
-// internal/cluster/pdb_k3d_test.go), a missing tool or daemon is a named skip
-// on a laptop and a hard failure in CI, where e2e-suite.yml installs k3d and
-// checks the daemon.
+// A missing tool or daemon is a named skip on a laptop and a hard failure in
+// CI, where e2e-suite.yml installs k3d and checks the daemon.
 //
 // The cluster is named uniquely and deleted by that exact name; no other
 // cluster is read or touched, and the developer's kubeconfig is never
@@ -45,33 +51,57 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 	requireTool(t, "k3d", "kubectl")
 	requireDockerDaemon(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	name := fmt.Sprintf("fcc-%d", time.Now().UnixNano()%1_000_000_000)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 	kctx := "k3d-" + name
 
-	runCluster(ctx, t, nil, "k3d", "cluster", "create", name,
-		"--servers", "1", "--agents", "0", "--no-lb",
-		"--wait", "--timeout", "300s",
-		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		// By exact name. Best-effort, but a leak is reported.
+		// By exact name. Best-effort, but a leak is reported. Registered BEFORE
+		// the create, so a create that hangs or half-succeeds is still cleaned up.
 		if out, err := exec.CommandContext(cleanup, "k3d", "cluster", "delete", name).CombinedOutput(); err != nil {
 			t.Logf("cleanup: k3d cluster delete %s: %v\n%s", name, err, out)
 		}
 	})
-	runCluster(ctx, t, nil, "k3d", "kubeconfig", "write", name,
-		"--output", kubeconfig, "--overwrite", "--kubeconfig-switch-context=false")
+
+	// A sandbox without nested networking (kata, gVisor) boots the k3d
+	// containers but resets every connection to their API server, which makes
+	// `--wait` hang for its whole timeout. Bound the create and PROBE the API,
+	// so that environment is a named skip here and a hard failure in CI.
+	createCtx, cancelCreate := context.WithTimeout(ctx, 150*time.Second)
+	defer cancelCreate()
+	createErr := exec.CommandContext(createCtx, "k3d", "cluster", "create", name,
+		"--servers", "1", "--agents", "0", "--no-lb",
+		"--wait", "--timeout", "120s",
+		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false").Run()
+	if createErr == nil {
+		createErr = exec.CommandContext(createCtx, "k3d", "kubeconfig", "write", name,
+			"--output", kubeconfig, "--overwrite", "--kubeconfig-switch-context=false").Run()
+	}
+	if createErr == nil {
+		createErr = exec.CommandContext(createCtx, "kubectl", "--kubeconfig", kubeconfig, "--context", kctx,
+			"--request-timeout=20s", "get", "--raw", "/readyz").Run()
+	}
+	if createErr != nil {
+		if e2eToolsRequired() {
+			t.Fatalf("a k3d cluster did not come up with a reachable API server (%v)", createErr)
+		}
+		t.Skipf("skipped: a k3d cluster did not come up with a reachable API server (%v). This sandbox has no nested "+
+			"cluster networking. It is a HARD FAILURE in CI. Run it on a developer machine with k3d, kubectl and docker:\n"+
+			"    go test -tags e2e -count=1 -timeout 15m -run TestClusterConnect_TokenAgainstARealCluster ./internal/cli/", createErr)
+	}
 
 	// A private kubeconfig for every kubectl forge shells out to.
 	t.Setenv("KUBECONFIG", kubeconfig)
 
-	restoreKube, restoreClient := kubeconfigClusterOf, clusterConnectClient
-	t.Cleanup(func() { kubeconfigClusterOf, clusterConnectClient = restoreKube, restoreClient })
+	restoreKube, restoreClient, restoreStream := kubeconfigClusterOf, clusterConnectClient, connectEnvStream
+	t.Cleanup(func() {
+		kubeconfigClusterOf, clusterConnectClient, connectEnvStream = restoreKube, restoreClient, restoreStream
+	})
 	kubeconfigClusterOf = func(string) (string, string, error) {
 		return "https://203.0.113.10:6443", "ca-bundle", nil
 	}
@@ -80,87 +110,167 @@ func TestClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		return caller, "acme", nil
 	}
 
-	// The delivery grant's namespace is the owner's, so it exists before connect.
-	const deliveryNS = "fcc-delivery"
-	runCluster(ctx, t, nil, "kubectl", "--context", kctx, "create", "namespace", deliveryNS)
+	// The owner's namespaces exist before connect: RBAC cannot pin create.
+	const appNS, otherNS, deliveryNS = "fcc-app", "fcc-other", "fcc-delivery"
+	for _, ns := range []string{appNS, otherNS, deliveryNS} {
+		runCluster(ctx, t, nil, "kubectl", "--context", kctx, "create", "namespace", ns)
+	}
+	render := func(extra string) string {
+		return "# cluster: " + kctx + "\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + appNS + "\n---\n" +
+			"# cluster: " + kctx + "\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: " + appNS + "\n" + extra
+	}
+	connectEnvStream = func(context.Context, io.Writer, string) (string, error) { return render(""), nil }
+
 	deliverySecrets, err := parseDeliverySecrets([]string{deliveryNS + "/reliant-otel-auth"})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	var out strings.Builder
-	if err := runClusterConnect(ctx, clusterConnectOptions{
-		Name: "e2e", KubeContext: kctx, Auth: "token", Env: "prod", Out: &out,
-		DeliverySecrets: deliverySecrets,
-	}); err != nil {
-		t.Fatalf("connect: %v\n%s", err, out.String())
+	connect := func(env string, scope applyScope, secrets []deliverySecret) string {
+		t.Helper()
+		var out strings.Builder
+		if err := runClusterConnect(ctx, clusterConnectOptions{
+			Name: "e2e", KubeContext: kctx, Auth: "token", Env: env, Scope: scope, Out: &out, DeliverySecrets: secrets,
+		}); err != nil {
+			t.Fatalf("connect %s: %v\n%s", env, err, out.String())
+		}
+		return out.String()
+	}
+	asBinding := func(env string) string {
+		return "--as=system:serviceaccount:" + connectTokenNamespace + ":" + connectBindingName("e2e", env)
+	}
+	canI := func(env string, verb, res, ns string) bool {
+		args := []string{"--context", kctx, asBinding(env), "auth", "can-i", verb, res}
+		if ns != "" {
+			args = append(args, "-n", ns)
+		} else {
+			args = append(args, "--all-namespaces")
+		}
+		return tryCluster(ctx, "kubectl", args...) == nil
 	}
 
-	// The objects exist in the cluster.
+	// ── namespace scope: the default ──
+	out := connect("prod", applyScope{Namespaces: []string{appNS}}, deliverySecrets)
 	for _, obj := range [][]string{
 		{"get", "namespace", connectTokenNamespace},
-		{"get", "serviceaccount", connectTokenServiceAccount, "-n", connectTokenNamespace},
-		{"get", "secret", connectTokenServiceAccount + "-token", "-n", connectTokenNamespace},
-		{"get", "clusterrole", "forge-connect-e2e"},
-		{"get", "clusterrolebinding", "forge-connect-e2e"},
+		{"get", "serviceaccount", connectBindingName("e2e", "prod"), "-n", connectTokenNamespace},
+		{"get", "secret", connectBindingName("e2e", "prod") + "-token", "-n", connectTokenNamespace},
+		{"get", "role", connectBindingName("e2e", "prod"), "-n", appNS},
+		{"get", "rolebinding", connectBindingName("e2e", "prod"), "-n", appNS},
 	} {
 		runCluster(ctx, t, nil, "kubectl", append([]string{"--context", kctx}, obj...)...)
 	}
-
-	verifyDeliveryGrant(ctx, t, kctx, deliveryNS)
-
-	// Re-running connect is an idempotent upsert, not a collision.
-	out.Reset()
-	if err := runClusterConnect(ctx, clusterConnectOptions{
-		Name: "e2e", KubeContext: kctx, Auth: "token", Env: "prod", Out: &out,
-		DeliverySecrets: deliverySecrets,
-	}); err != nil {
-		t.Fatalf("a repeated connect failed: %v\n%s", err, out.String())
+	if strings.Contains(out, "cluster-admin") {
+		t.Errorf("a namespace-scope connect printed the cluster-admin warning:\n%s", out)
 	}
+	for _, tc := range []struct {
+		verb, res, ns string
+		want          bool
+	}{
+		{"create", "configmaps", appNS, true},
+		{"patch", "configmaps", appNS, true},
+		{"create", "configmaps", otherNS, false},     // namespace scope stops at its namespaces
+		{"create", "deployments.apps", appNS, false}, // the TRIPWIRE: a kind the render did not contain
+		{"get", "secrets", appNS, false},             // Secrets never ride a bundle
+		{"create", "clusterroles.rbac.authorization.k8s.io", "", false},
+		{"patch", "namespaces", "", true},             // the rendered Namespace, pinned by name
+		{"delete", "namespaces", "", false},           // a prune can never remove one
+		{"impersonate", "serviceaccounts", "", false}, // no impersonation, ever
+	} {
+		if got := canI("prod", tc.verb, tc.res, tc.ns); got != tc.want {
+			t.Errorf("namespace scope: can-i %s %s %q = %v, want %v", tc.verb, tc.res, tc.ns, got, tc.want)
+		}
+	}
+	verifyDeliveryGrantAs(ctx, t, kctx, deliveryNS, asBinding("prod"))
 
-	// The token the control plane received is the one the cluster minted: a
-	// service-account JWT, sent write-only.
+	// The token the control plane received is the one the cluster minted.
 	sent, _ := caller.requests[procConnectCluster]["token"].(string)
 	if !strings.HasPrefix(sent, "eyJ") {
 		t.Fatalf("the token sent to the control plane is not a service-account JWT: %q", sent)
 	}
-	if strings.Contains(out.String(), sent) {
+	if strings.Contains(out, sent) {
 		t.Fatal("the minted token appears in the command's output")
 	}
-	if caller.requests[procConnectCluster]["auth"] != authToken {
-		t.Errorf("auth = %v, want %s", caller.requests[procConnectCluster]["auth"], authToken)
+
+	// ── a second binding of the SAME cluster is a different identity ──
+	connect("staging", applyScope{Namespaces: []string{appNS}}, nil)
+	if tryCluster(ctx, "kubectl", "--context", kctx, "get", "serviceaccount", connectBindingName("e2e", "staging"), "-n", connectTokenNamespace) != nil {
+		t.Error("the second binding has no ServiceAccount of its own")
 	}
 
-	// Disconnect: revoke, then delete by exact name.
+	// ── re-run is an idempotent upsert, and a widened release is Forbidden until re-connected ──
+	connect("prod", applyScope{Namespaces: []string{appNS}}, deliverySecrets)
+	connectEnvStream = func(context.Context, io.Writer, string) (string, error) {
+		return render("---\n# cluster: " + kctx + "\napiVersion: v1\nkind: Service\nmetadata:\n  name: svc\n  namespace: " + appNS + "\n"), nil
+	}
+	if canI("prod", "create", "services", appNS) {
+		t.Error("a new kind was allowed before the owner re-ran connect")
+	}
+	connect("prod", applyScope{Namespaces: []string{appNS}}, deliverySecrets)
+	if !canI("prod", "create", "services", appNS) {
+		t.Error("the new kind is still Forbidden after re-running connect")
+	}
+
+	// ── cluster scope: a ClusterRole derived from the render, bind/escalate on RBAC ──
+	connectEnvStream = func(context.Context, io.Writer, string) (string, error) {
+		return render("---\n# cluster: " + kctx + "\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: fcc-reader\nrules: []\n"), nil
+	}
+	out = connect("prod", applyScope{Cluster: true}, nil)
+	if !strings.Contains(out, "equivalent to cluster-admin") {
+		t.Errorf("cluster scope did not say what it is:\n%s", out)
+	}
+	for _, tc := range []struct {
+		verb, res, ns string
+		want          bool
+	}{
+		{"create", "configmaps", otherNS, true},
+		{"create", "clusterroles.rbac.authorization.k8s.io", "", true},
+		{"escalate", "clusterroles.rbac.authorization.k8s.io", "", true},
+		{"create", "deployments.apps", appNS, false}, // still derived from the render
+		{"impersonate", "serviceaccounts", "", false},
+	} {
+		if got := canI("prod", tc.verb, tc.res, tc.ns); got != tc.want {
+			t.Errorf("cluster scope: can-i %s %s %q = %v, want %v", tc.verb, tc.res, tc.ns, got, tc.want)
+		}
+	}
+	// Widening pruned the namespace Role: the cluster narrowed where the plan did.
+	if tryCluster(ctx, "kubectl", "--context", kctx, "get", "role", connectBindingName("e2e", "prod"), "-n", appNS) == nil {
+		t.Error("the namespace Role survived a re-run at cluster scope")
+	}
+
+	// ── disconnect: revoke, then delete by label ──
 	caller.clusters = []wireConnectedCluster{{ID: "cl_new", Name: "e2e"}}
-	out.Reset()
-	if err := runClusterDisconnect(ctx, "e2e", kctx, "prod", "", &out); err != nil {
-		t.Fatalf("disconnect: %v\n%s", err, out.String())
+	out = ""
+	var dout strings.Builder
+	if err := runClusterDisconnect(ctx, "e2e", kctx, "prod", "", &dout); err != nil {
+		t.Fatalf("disconnect: %v\n%s", err, dout.String())
 	}
 	if _, ok := caller.requests[procRemoveCluster]; !ok {
 		t.Error("disconnect never called RemoveCluster")
 	}
-	for _, obj := range [][]string{
-		{"get", "serviceaccount", connectTokenServiceAccount, "-n", connectTokenNamespace},
-		{"get", "secret", connectTokenServiceAccount + "-token", "-n", connectTokenNamespace},
-		{"get", "clusterrole", "forge-connect-e2e"},
-		{"get", "clusterrolebinding", "forge-connect-e2e"},
-		{"get", "validatingadmissionpolicy", "forge-connect-e2e-delivery"},
-		{"get", "validatingadmissionpolicybinding", "forge-connect-e2e-delivery"},
-		{"get", "role", "forge-connect-e2e-delivery", "-n", deliveryNS},
-		{"get", "rolebinding", "forge-connect-e2e-delivery", "-n", deliveryNS},
-	} {
-		if err := tryCluster(ctx, "kubectl", append([]string{"--context", kctx}, obj...)...); err == nil {
-			t.Errorf("disconnect left %s behind", strings.Join(obj[1:], " "))
+	for _, env := range []string{"prod", "staging"} {
+		for _, obj := range [][]string{
+			{"get", "serviceaccount", connectBindingName("e2e", env), "-n", connectTokenNamespace},
+			{"get", "secret", connectBindingName("e2e", env) + "-token", "-n", connectTokenNamespace},
+			{"get", "clusterrole", connectBindingName("e2e", env)},
+			{"get", "clusterrolebinding", connectBindingName("e2e", env)},
+			{"get", "role", connectBindingName("e2e", env), "-n", appNS},
+			{"get", "rolebinding", connectBindingName("e2e", env), "-n", appNS},
+			{"get", "validatingadmissionpolicy", deliveryObjectName("e2e", env)},
+			{"get", "role", deliveryObjectName("e2e", env), "-n", deliveryNS},
+		} {
+			if err := tryCluster(ctx, "kubectl", append([]string{"--context", kctx}, obj...)...); err == nil {
+				t.Errorf("disconnect left %s behind", strings.Join(obj[1:], " "))
+			}
 		}
 	}
-	// The shared namespace is deliberately left in place.
+	// The shared namespaces are deliberately left in place.
 	runCluster(ctx, t, nil, "kubectl", "--context", kctx, "get", "namespace", connectTokenNamespace)
+	runCluster(ctx, t, nil, "kubectl", "--context", kctx, "get", "namespace", appNS)
 
 	// A second disconnect converges rather than failing on missing objects.
-	out.Reset()
-	if err := runClusterDisconnect(ctx, "e2e", kctx, "prod", "", &out); err != nil {
-		t.Fatalf("a repeated disconnect failed: %v\n%s", err, out.String())
+	dout.Reset()
+	if err := runClusterDisconnect(ctx, "e2e", kctx, "prod", "", &dout); err != nil {
+		t.Fatalf("a repeated disconnect failed: %v\n%s", err, dout.String())
 	}
 
 	if _, err := os.Stat(kubeconfig); err != nil {
@@ -185,9 +295,8 @@ func tryCluster(ctx context.Context, name string, args ...string) error {
 // impersonating it: RBAC through `auth can-i`, and the admission policy by
 // attempting real writes. The policy is enforced asynchronously after its
 // binding appears, so the first denial is polled for.
-func verifyDeliveryGrant(ctx context.Context, t *testing.T, kctx, ns string) {
+func verifyDeliveryGrantAs(ctx context.Context, t *testing.T, kctx, ns, as string) {
 	t.Helper()
-	as := "--as=system:serviceaccount:" + connectTokenNamespace + ":" + connectTokenServiceAccount
 	kube := func(args ...string) error {
 		return tryCluster(ctx, "kubectl", append([]string{"--context", kctx, as}, args...)...)
 	}

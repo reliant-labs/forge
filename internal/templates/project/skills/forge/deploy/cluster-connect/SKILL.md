@@ -48,65 +48,83 @@ tested — and an untested path that *looks* supported is worse than an absent
 one: it gets chosen, fails inside a cloud client, and reports a problem with
 your cluster.
 
-## The one-time grant: two identities, and the half people miss
+## A binding is one env on one cluster, with its own identity and a derived grant
 
-This is the part most likely to be misread. Getting it half right produces a
-cluster that connects fine and refuses every apply.
+`connect` takes `--env`, and that env's binding on this cluster gets **its own
+identity** — nothing is shared across envs or clusters:
 
-1. **The connect identity** authenticates the TLS connection to your API
-   server. On `gcp` that is the hub's GCP service account, which the connect
-   response hands back (`HubIdentity`) because it is a fact about the platform
-   you have no way to know.
-2. **The impersonated identity** authorizes the apply once connected. The hub's
-   kustomize-controller runs with `--default-service-account=reliant-deploy-tenant`,
-   so Flux impersonates
-   `system:serviceaccount:flux-<org>:reliant-deploy-tenant` on **your** cluster
-   — a namespace that does not exist there and does not need to.
+| Auth | The binding's identity |
+|---|---|
+| `gcp` | A Google service account the control plane allocates **for this binding** (the connect response returns it). GKE RBAC accepts it as a `User` subject by email. |
+| `token` | A ServiceAccount forge mints for this binding (`forge-system/forge-connect-<cluster>-<env>`), and its token. |
 
-So **granting the hub's cloud identity read access is not sufficient.** forge
-applies the in-cluster half for you: a ClusterRole/ClusterRoleBinding
-(`forge-connect-<name>`) carrying the bootstrap writes the platform makes
-(Namespace, ServiceAccount, Role, RoleBinding) plus permission to impersonate
-exactly that one username, pinned by `resourceNames`.
+The apply runs **as that identity**: no impersonation and no bootstrap writes.
+The only objects connect writes in your cluster are the grant itself (plus the
+token identity's ServiceAccount and Secret, and the delivery grant if asked).
+If the control plane returns no per-binding identity, forge binds nothing and
+says so — it never falls back to a shared one.
 
-The cloud half forge **cannot** do — it is an IAM write in your project, with
-credentials forge does not hold — so it prints it:
+### You choose where; the render chooses what
+
+`--apply-scope` is the owner's decision. The rules inside it are derived from
+what the env's render applies **on this cluster**: one rule per (apiGroup,
+resource), nothing else. A release that adds a kind is **Forbidden by your
+cluster's own access check** until you re-run connect — a tripwire, not a policy
+engine.
+
+| `--apply-scope` | Grant |
+|---|---|
+| `namespace:<ns>[,<ns>…]` (the default, over the namespaces the render targets) | A **Role + RoleBinding in each namespace**. A rendered `Namespace` object is a name-pinned ClusterRole (`get`, `patch`, `update`; never `create` or `delete`), a RoleBinding to a ClusterRole needs `bind` on exactly that ClusterRole. **Refused** when the render has cluster-scoped kinds (CRDs, ClusterRoles…) or objects outside the list. |
+| `cluster` | A **ClusterRole + ClusterRoleBinding** derived from the render, plus `bind`/`escalate` on RBAC when the render carries RBAC kinds. **This is cluster-admin equivalent**: the identity can grant itself anything. forge prints that every time. |
+
+Every rule set also holds `get/list/watch` on the ReplicaSets and Pods of any
+workload kind in the render, which Flux's health check reads.
+
+### Review before you widen: `--dry-run`
+
+```bash
+forge cluster connect prod-us --context ... --env prod --apply-scope cluster --dry-run
+forge cluster connect prod-us --context ... --env prod --dry-run --live-from live.yaml   # offline
+```
+
+`--dry-run` contacts no control plane and writes nothing. It renders the env,
+reads the binding's live RBAC (read-only, through `--context`, or from a capture
+with `--live-from`; the selector to capture with is printed), and prints
+`+` new, `~` changed, `-` removed (a re-run prunes it), `=` unchanged — one line
+per rule — then **the permissions this run newly grants**, then the exact
+objects it would apply. On gcp pass `--binding-gsa` to review the real subject.
+
+A re-run prunes this binding's grant objects the new plan no longer names, so
+narrowing the scope narrows the cluster. It also removes the legacy
+pre-binding grant (the shared identity with impersonate and bootstrap writes).
+
+### The cloud half (gcp)
+
+forge cannot run an IAM write in your project, so it prints it:
 
 ```
 gcloud projects add-iam-policy-binding acme \
-  --member=serviceAccount:control-plane@acme.iam.gserviceaccount.com \
+  --member=serviceAccount:<this binding's GSA> \
   --role=roles/container.clusterViewer
 ```
 
-A control plane with no GCP identity (normal in dev) makes forge say so rather
-than print a grant with a blank principal in it, which is how someone runs a
-binding that silently grants nothing. Use `--auth token` against a dev cluster.
-
-On the `token` path there is **no cloud grant at all**: forge applied the RBAC
-and minted the credential.
+On the `token` path there is **no cloud grant at all**.
 
 ## The token, and why it is a Secret rather than a TokenRequest
 
-forge creates, server-side-applied in your cluster:
+forge creates, server-side-applied in your cluster, per binding:
 
 ```
-Namespace       forge-system
-ServiceAccount  forge-system/forge-connect
-Secret          forge-system/forge-connect-token   (kubernetes.io/service-account-token)
-ClusterRole     forge-connect-<name>  + its ClusterRoleBinding
+Namespace       forge-system                          (shared, left in place)
+ServiceAccount  forge-system/forge-connect-<cluster>-<env>
+Secret          forge-system/forge-connect-<cluster>-<env>-token   (kubernetes.io/service-account-token)
 ```
 
 The token is **sent write-only and never printed** — not in the summary, not on
-failure, not in `--dry-run`. The control plane has no field to return it in.
-
-A long-lived Secret token, not a bounded `TokenRequest`, and the trade-off is
-worth stating: nothing rotates a bounded token on a schedule, so a cluster
-nobody re-connects for 90 days would stop deploying, and the failure arrives as
-an authentication error during an unrelated release. The Secret token has no
-such deadline, it is revocable by deleting it (which `disconnect` does), and its
-blast radius is bounded by the RBAC above — which is the control that actually
-matters. When rotation infrastructure exists, this is the one decision that
-changes.
+failure, not in `--dry-run`. A long-lived Secret token, not a bounded
+`TokenRequest`: nothing rotates a bounded token, so a cluster nobody re-connects
+for 90 days would stop deploying. It is revocable by deleting it (disconnect
+does), and its blast radius is the grant above.
 
 ## Secret delivery: opt-in, named, least privilege
 
@@ -131,7 +149,7 @@ forge cluster connect prod-us --context ... --env prod \
 - The policy is applied in its own step before the Roles, so a cluster without
   ValidatingAdmissionPolicy (Kubernetes < 1.30) fails before the create grant lands.
 - Re-running connect re-converges it and **only adds**: a narrower re-run
-  replaces the policy at once but leaves old Roles for you to prune.
+  replaces the policy at once but leaves old delivery Roles for you to prune.
   `disconnect` removes all of it. `--dry-run` prints every object.
 
 ## Binding an environment to it
@@ -168,28 +186,26 @@ forge cluster disconnect prod-us --env prod --context gke_acme_us-central1_prod
 ```
 
 Two halves, in this order: the control plane revokes the credential first, then
-forge deletes the ServiceAccount, token Secret and RBAC it created. A token
-revoked server-side is already powerless, so a cleanup that then fails leaves
-litter rather than a live credential.
+forge deletes everything it created for this cluster, **found by label** (every
+binding's Roles, ClusterRoles and bindings, each token ServiceAccount and
+Secret, and the delivery policy). A token revoked server-side is already
+powerless, so a cleanup that then fails leaves litter rather than a live
+credential.
 
 **Refused while any live environment targets the cluster** — that check is the
 control plane's, which is why this is not a local delete.
 
-Deleted by exact name, and a missing object is not an error, so a disconnect run
-twice converges. The `forge-system` **namespace is left in place**: it is shared
-by construction and deleting a namespace deletes whatever else is in it.
+A missing object is not an error, so a disconnect run twice converges. The
+`forge-system` **namespace is left in place**: it is shared by construction and
+deleting a namespace deletes whatever else is in it.
 
 Without `--context`, forge deregisters the cluster and tells you which objects
 to remove by hand.
 
 ## Checking what you would send
 
-`--dry-run` prints the request and every object that would be applied, and
-contacts nothing:
-
-```bash
-forge cluster connect prod-us --context gke_acme_us-central1_prod --dry-run
-```
+See "Review before you widen" above: `--dry-run` prints the RBAC diff and every
+object that would be applied.
 
 ## Refusals you may hit
 
@@ -198,7 +214,9 @@ forge cluster connect prod-us --context gke_acme_us-central1_prod --dry-run
 | `whose host is a loopback or bind address` | The hub dials from a **pod**, where `127.0.0.1` is that pod. The deploy would fail as "connection refused" against a healthy cluster. Connect by an address reachable from outside the cluster. |
 | `https only` | Any other scheme carries the credential in clear text. |
 | `carries no certificate authority` | (token path; on gcp the CA comes from GKE's describe) forge will not connect a cluster whose API server it cannot verify, and never falls back to skipping verification. Re-run your provider's `get-credentials`. |
+| `the env's render does not fit namespace scope` | The render has cluster-scoped kinds or objects outside your namespaces. Widen the list, or choose `--apply-scope cluster` knowing it is cluster-admin equivalent. |
+| `applies nothing to this cluster` | The env's KCL does not bind this context. Set `ClusterTarget.cluster` / `connected_cluster` first. |
 | `--auth gcp needs a GKE context` | Workload identity is GKE-only here. Use `--auth token`. |
-| `resolve the credential's organization` | forge asks the control plane which org your credential acts for — it composes the hub namespace in the impersonated username, so the RBAC would be wrong without it (in the quiet way, authorizing a user that never appears). Authenticate (signed in to Reliant: nothing to do — `reliant forge` / an agent shell uses your session; standalone: `forge login`; CI: the env's `token_env`) and re-run; the token needs `deploy:read`. |
+| `resolve the credential's organization` | forge checks the credential against the control plane before it writes anything to your cluster. Authenticate (signed in to Reliant: nothing to do — `reliant forge` / an agent shell uses your session; standalone: `forge login`; CI: the env's `token_env`) and re-run; the token needs `deploy:read`. |
 
 A Secret the control plane writes and renews INTO a connected cluster (the OTLP ingest token) is declared with `forge.ControlPlaneSecret`: `deploy/control-plane-secret`.

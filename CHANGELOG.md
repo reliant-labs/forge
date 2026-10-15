@@ -45,6 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs the code's nil path. A test of the other path passes
   `With<Svc>Deps(Deps{Field: &Stub<Field>{…}})`. An optional field forge
   cannot stub gets no TODO, since nothing requires it.
+
+- **`forge cluster connect` grants one binding exactly what its env renders, in a scope
+  the owner chooses, as the binding's own identity.** `--env` names the env whose
+  binding this is. `--apply-scope namespace:<ns>[,<ns>…]` (the default, over the
+  namespaces the render targets) writes a Role and RoleBinding per namespace;
+  `--apply-scope cluster` writes a ClusterRole and ClusterRoleBinding and says it
+  is cluster-admin equivalent (it holds `bind` and `escalate` on RBAC). The rules
+  are derived from the env's render, one per resource it applies, so a release that
+  adds a kind is Forbidden by the cluster until connect is re-run. The subject is
+  the binding's own identity: a GCP service account the control plane allocates for
+  it (gcp), or a ServiceAccount forge mints per binding (token) — never a shared
+  one. The grant no longer carries `impersonate` or the namespace, ServiceAccount
+  and Role writes the impersonated identity needed; a re-run prunes what the new
+  plan no longer names and removes the legacy shared-identity grant. `--dry-run`
+  now prints the exact RBAC diff against the cluster (or `--live-from <capture>`)
+  and the permissions it would newly grant. `disconnect` deletes every binding's
+  grant, token identity and delivery policy for the cluster, found by label. The
+  delivery-secret grant is unchanged apart from its per-binding names.
+
 - **A migration can declare that it breaks rollback, and a project can require
   every migration to declare either way.** `-- forge:breaks-rollback <why>` is
   the counterpart of `-- forge:backward-compatible`: the previous release

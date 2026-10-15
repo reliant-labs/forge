@@ -1,11 +1,9 @@
 # Full heap snapshots: semantics and cost
 
-The continuous profiler exports CPU windows and goroutine snapshots about once a
-minute. It now exports full heap snapshots initially and no more often than once
-per 15 minutes (per running profiler). `Config.ProfilesHeapInterval` overrides
-that interval; zero/negative uses the default. Scheduling uses elapsed time since
-the last attempt, including failed attempts, not a catch-up queue. Process
-restart naturally starts a new snapshot series. Other signal cadence is unchanged.
+This change only removes useless zero rows. CPU, heap and goroutine capture
+cadence is unchanged. A separate opt-in typed heap interval is proposed; changing
+the default to 15 minutes requires the owner's fidelity/volume decision. No
+cadence change or silent delta conversion ships in the sparse-only fix.
 
 ## Why this representation
 
@@ -27,13 +25,12 @@ unchanged.
 
 Alternatives and trade-offs:
 
-- **Sparse snapshots at a bounded cadence (chosen):** independent, full-fidelity
-  stack distributions at each capture, no state needed to interpret the next
-  capture after delivery failure. Lower temporal resolution for *all* heap
-  types, explicitly 15m by default. Total per-capture size still scales with
+- **Sparse snapshots at a bounded cadence (proposed separately):** independent,
+  full-fidelity stack distributions at each capture, no state needed to
+  interpret the next capture after delivery failure. Lower temporal resolution
+  for all heap types if enabled. Total per-capture size still scales with
   lifetime allocation sites; this is a rate bound, not a maximum-size promise.
-  CPU/goroutine samples remain frequent, and pprof remains available for an
-  operator needing an immediate heap snapshot.
+  CPU/goroutine samples remain frequent. The sparse-only fix does not enable it.
 - **Allocation deltas:** would avoid repeating unchanged allocation counters,
   but cannot silently reuse cumulative sample-type names/queries. The pinned
   OTLP translator/pdata has no temporality field; existing readers sum profile
@@ -46,11 +43,9 @@ Alternatives and trade-offs:
   outside their window. Not implemented. Value-based deduplication across
   distinct capture times is also incorrect.
 
-A failed heap export is not immediately recaptured; the next scheduled heap
-still contains full cumulative counters and the then-current gauges. There is
-no claim to recover live-heap history missed during an outage. Retrying the
-same captured payload leaves profile IDs/values unchanged. The sender adds no
-retry loop or server-side deduplication guarantee.
+Retrying the same captured payload leaves profile IDs/values unchanged. The
+sender adds no retry loop or server-side deduplication guarantee. Capture/export
+failure behavior is unchanged by the sparse-only fix.
 
 ## Measured fixture, not a production forecast
 
@@ -64,9 +59,10 @@ stack. Per-type totals and identity/link behavior are checked separately in
 |---|---:|---:|
 | Previous converter, every minute | 310,800 | 9,067,104 |
 | Sparse converter only, every minute | 156,888 | 7,847,028 |
-| Sparse converter + 15m heap cadence | 9,892 | 493,954 |
+| Hypothetical sparse + 15m heap cadence (NOT enabled) | 9,892 | 493,954 |
 
-Combined reduction: **96.8% rows, 94.6% wire bytes**. Dictionary tables remain in
+Sparse-only reduction: **49.5% rows, 13.5% wire bytes**. Hypothetical combined
+reduction: **96.8% rows, 94.6% wire bytes**. Dictionary tables remain in
 the wire payload, so zero filtering saves fewer wire bytes than rows. These are
 not ClickHouse logical row widths, compressed disk occupancy or successful
 NewPart accounting bytes; repeated stack/resource expansion can make database

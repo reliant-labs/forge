@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"runtime/pprof"
 	"testing"
 	"time"
 
@@ -142,61 +141,6 @@ func TestHeapSparseSnapshotsPreserveSemantics(t *testing.T) {
 	}
 }
 
-func TestHeapCadenceBoundsSnapshotsIncludingFailedAttempts(t *testing.T) {
-	start := time.Date(2026, 10, 15, 17, 0, 0, 0, time.UTC)
-	for _, tc := range []struct {
-		interval time.Duration
-		want     int
-	}{{0, 4}, {5 * time.Minute, 12}} {
-		p := &profiler{heapInterval: tc.interval}
-		count := 0
-		for minute := 0; minute < 60; minute++ {
-			now := start.Add(time.Duration(minute) * time.Minute)
-			if p.heapDue(now) {
-				count++
-			}
-			// An export error must not cause immediate recapture of lifetime history.
-			if p.heapDue(now) {
-				t.Fatal("retry recaptured heap")
-			}
-		}
-		if count != tc.want {
-			t.Fatalf("interval %s: %d snapshots/hour want %d", tc.interval, count, tc.want)
-		}
-	}
-}
-
-func TestCyclesDoNotRecaptureHeapAfterFailedExport(t *testing.T) {
-	// Avoid burning CPU; production explicitly permits a competing CPU profile.
-	var cpu bytes.Buffer
-	if err := pprof.StartCPUProfile(&cpu); err != nil {
-		t.Skip(err)
-	}
-	defer pprof.StopCPUProfile()
-	p := testProfiler(func(context.Context) error { return nil }, nil)
-	heaps, goroutines := 0, 0
-	p.send = func(_ context.Context, pd pprofile.Profiles) error {
-		profs := pd.ResourceProfiles().At(0).ScopeProfiles().At(0).Profiles()
-		for i := 0; i < profs.Len(); i++ {
-			switch pd.Dictionary().StringTable().At(int(profs.At(i).SampleType().TypeStrindex())) {
-			case "alloc_space":
-				heaps++
-			case "goroutine":
-				goroutines++
-			}
-		}
-		return fmt.Errorf("ambiguous collector failure")
-	}
-	for i := 0; i < 2; i++ {
-		if err := p.safeCycle(context.Background()); err == nil {
-			t.Fatal("expected export failure")
-		}
-	}
-	if heaps != 1 || goroutines != 2 {
-		t.Fatalf("two failed cycles sent %d heaps/%d goroutines, want 1/2", heaps, goroutines)
-	}
-}
-
 // This is a transport replay proof, NOT a claim of ClickHouse exactly-once.
 // An ambiguous response can persist a duplicate; the sender must not regenerate
 // IDs or expand rows when the same captured payload is retried.
@@ -242,7 +186,6 @@ func TestHeapVolumeEvidence(t *testing.T) {
 		t.Skip("60 realistic repeated snapshots and wire encoding; runs in task test")
 	}
 	var beforeRows, afterRows, beforeBytes, afterBytes, sparseRows, sparseBytes int
-	cadence := &profiler{}
 	start := time.Date(2026, 10, 15, 17, 0, 0, 0, time.UTC)
 	for minute := 0; minute < 60; minute++ {
 		p := heapFixture(1000 + minute*10) // growing historical stacks, ~1% live
@@ -274,7 +217,8 @@ func TestHeapVolumeEvidence(t *testing.T) {
 		}
 		sparseRows += pd.SampleCount()
 		sparseBytes += len(b)
-		if cadence.heapDue(start.Add(time.Duration(minute) * time.Minute)) {
+		// Hypothetical 15m cadence only: production cadence is unchanged.
+		if minute%15 == 0 {
 			afterRows += pd.SampleCount()
 			afterBytes += len(b)
 		}

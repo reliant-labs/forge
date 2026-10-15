@@ -76,6 +76,11 @@ func testCandidates(dir string) []string {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
+		// A file behind the e2e or integration tag is not built by the unit
+		// lane; the tagged lanes have their own selection.
+		if len(fileLanes(filepath.Join(dir, e.Name()))) > 0 {
+			continue
+		}
 		src, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue

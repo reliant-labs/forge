@@ -13,10 +13,9 @@
 // set for a given project shape.
 //
 // The warnOrFail helper lives here too because it shares the loud-by-
-// default thesis: --strict promotes the historically-silent
-// "Warning: ... failed" sites to hard errors via a single helper that
-// every per-step body can opt into without per-site code changes beyond
-// "use this helper instead of fmt.Fprintf + return nil".
+// default thesis: a step that routes its failure through it lets the run
+// continue with the steps that do not need it, and the run still exits
+// non-zero; --strict stops the run at that step instead.
 package cli
 
 import (
@@ -26,6 +25,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -202,11 +202,14 @@ func gateName(g func(*pipelineContext) bool) string {
 	return name
 }
 
-// warnOrFail is the loud-by-default helper that every "Warning: X failed"
-// site in the pipeline can adopt. With --strict (ctx.Strict=true) the
-// error becomes fatal; otherwise the function logs the warning to stderr
-// with the nudge "pass --strict to fail the pipeline on this" and returns
-// nil, preserving the historical lenient behavior.
+// warnOrFail is how a step fails without stopping the run: the steps that
+// do not depend on it still run. With --strict (ctx.Strict=true) the error
+// is returned and the run stops (and rolls back) at this step. Otherwise
+// the failure is printed to stderr where it happened, recorded in
+// ctx.SoftFailures, and nil is returned; runGeneratePipelineFlags then
+// names it under the completion line and returns a
+// *factory.StepsFailedError, so the run still exits non-zero. A step that
+// failed is never a success, whichever way the run continues.
 //
 // Usage:
 //
@@ -231,7 +234,11 @@ func (ctx *pipelineContext) warnOrFail(stepName string, err error) error {
 	if ctx.Strict {
 		return fmt.Errorf("%s failed: %w (--strict)", stepName, err)
 	}
-	fmt.Fprintf(os.Stderr, "⚠️  Warning: %s failed: %v — pass --strict to fail the pipeline on this\n", stepName, err)
-	ctx.SoftFailures = append(ctx.SoftFailures, stepName)
+	fmt.Fprintf(os.Stderr, "❌ %s failed: %v — the steps that do not need it still run; this run will exit non-zero (--strict stops it here)\n", stepName, err)
+	// One entry per step: a step may fail several times (one stale
+	// scaffold test per file), and the summary counts steps.
+	if !slices.Contains(ctx.SoftFailures, stepName) {
+		ctx.SoftFailures = append(ctx.SoftFailures, stepName)
+	}
 	return nil
 }

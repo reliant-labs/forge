@@ -25,6 +25,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -176,6 +178,41 @@ func TestRescaffold_ReemitsFilesOnlyProjectNewWrites(t *testing.T) {
 	// every writable file), so the bit is only checked where it exists.
 	if info, err := os.Stat(filepath.Join(root, "scripts/bootstrap.sh")); err == nil && runtime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
 		t.Errorf("scripts/bootstrap.sh came back without its executable bit (mode %v)", info.Mode().Perm())
+	}
+}
+
+// A generate run that reached the end with failed steps kept the rest of what
+// it wrote, so rescaffold still re-creates every path — the pipeline's and the
+// renderers' — and then fails with the failed steps, rather than stopping
+// between the two passes or exiting 0.
+func TestRescaffold_FinishesThePathsWhenGenerateStepsFailed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scaffolds and generates a full project; runs in task test")
+	}
+	root, cfg := scaffoldForRescaffold(t, nil)
+	paths := []string{".github/workflows/ci.yml", "scripts/bootstrap.sh"}
+	for _, rel := range paths {
+		removeRescaffoldFile(t, root, rel)
+	}
+
+	gen := ciStepOnly(root, cfg)
+	ciStep := gen.pipeline
+	gen.pipeline = func() error {
+		if err := ciStep(); err != nil {
+			return err
+		}
+		return &factory.StepsFailedError{Steps: []string{"ORM generation"}}
+	}
+	var w bytes.Buffer
+	err := rescaffoldPaths(&w, root, cfg, paths, gen)
+	var stepsFailed *factory.StepsFailedError
+	if !errors.As(err, &stepsFailed) {
+		t.Fatalf("rescaffold must fail with the generate run's failed steps, got %v\n%s", err, w.String())
+	}
+	for _, rel := range paths {
+		if !rescaffoldFileExists(root, rel) {
+			t.Errorf("%s was not re-created:\n%s", rel, w.String())
+		}
 	}
 }
 

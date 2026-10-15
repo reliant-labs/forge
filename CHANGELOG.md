@@ -543,6 +543,21 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   configuration. So the harness doc, `testkit.Placeholder` and the api skill
   now say this, and tell you to supply the config a row means through
   `With<Svc>Deps`.
+- **A failed `forge generate` step makes the run exit non-zero.** A step that
+  fails without stopping the run (the ORM refusing a name `internal/db`
+  already declares, a frontend page or hooks step, goimports) let the
+  remaining steps run and then exited 0 under "1 step(s) FAILED". Agents,
+  scripts and CI read exit 0 as success, so `forge ci verify-generated`,
+  `generate --check` and every scripted `forge generate` certified a tree
+  that was missing the failed step's output. The run still goes on past the
+  failure, keeps what the other steps wrote, says which dependents it skipped
+  and names the failed steps under the completion line, and now exits 1.
+  `--strict` still stops at the first failed step. `--watch` keeps watching
+  after such a run. `forge env up` and `forge build` refuse to build on it, as
+  they do when generate aborts (`--no-generate` skips the refresh).
+  `forge scaffold service` keeps the services it wrote instead of rolling them
+  back, because the run's writes were generated from them, and then fails.
+  `forge project rescaffold` re-creates every path before it fails.
 - **`forgeconv-deps-are-interfaces` accepts a map or slice of interfaces, and
   says where the seam goes when a dep is only handed on.** Reliant's trigger
   handler has two Deps fields, `map[string]IntegrationAccess` and

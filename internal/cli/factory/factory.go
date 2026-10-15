@@ -141,6 +141,10 @@ type GenAPI struct {
 	// internal/cli generate mutex. The caller must already hold
 	// HoldProjectLock for projectDir — every scaffold command does. Used by
 	// `scaffold service` / `scaffold operator`.
+	//
+	// A run that reached the end with failed steps returns a
+	// *StepsFailedError: its writes stand, so a caller must not undo its
+	// own writes as it would after a run that aborted and rolled back.
 	RunPipeline func(projectDir string) error
 
 	// RunPipelineBootstrapOnly runs the generate pipeline narrowed to the

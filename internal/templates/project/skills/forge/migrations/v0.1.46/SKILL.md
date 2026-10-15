@@ -1,8 +1,8 @@
 ---
 name: v0.1.46
-description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args. (4) A bundle now seals the env's `observability_policy` (behavior change: the bundle digest of an env that opts out of, or into, any observability category changes on its next build). (5) The same-origin dev API proxy: `<basePath>/_api` on the dev server, so a Next.js or Vite frontend works when its dev server is opened through a Reliant workspace preview URL, a tunnel or a LAN IP. Use when deploy/kcl declares `forge.Observability` with `enabled = False`, a disabled signal or an opt-in, and a bundle of that env is already recorded, or when a frontend's `next.config.ts` / `vite.config.ts` has no `FORGE_DEV_API_PROXY`.
+description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args. (4) A bundle now seals the env's `observability_policy` (behavior change: the bundle digest of an env that opts out of, or into, any observability category changes on its next build). (5) The same-origin dev API proxy: `<basePath>/_api` on the dev server, so a Next.js or Vite frontend works when its dev server is opened through a Reliant workspace preview URL, a tunnel or a LAN IP. Use when deploy/kcl declares `forge.Observability` with `enabled = False`, a disabled signal or an opt-in, and a bundle of that env is already recorded, or when a frontend's `next.config.ts` / `vite.config.ts` has no `FORGE_DEV_API_PROXY`. (6) A web frontend's test toolchain moves together to vitest 5, vite 8 and `@vitejs/plugin-react` 6, with `engines.node >=22.12`. Use when a Next.js or Vite SPA frontend's package.json pins vitest ^3 or ^4 or `@vitejs/plugin-react` ^4 or ^5, or `tsc --noEmit` fails vitest.config.ts / vite.config.ts with TS2769 "Property 'rolldownVersion' is missing", or `npm audit` reports `tinypool`.
 version: v0.1.46
-detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k ) || grep -qsE 'forge\.Observability' deploy/kcl/*/*.k || ( for f in frontends/*/next.config.ts frontends/*/vite.config.ts; do test -f "$f" && ! grep -qs FORGE_DEV_API_PROXY "$f" && exit 0; done; exit 1 )
+detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k ) || grep -qsE 'forge\.Observability' deploy/kcl/*/*.k || ( for f in frontends/*/next.config.ts frontends/*/vite.config.ts; do test -f "$f" && ! grep -qs FORGE_DEV_API_PROXY "$f" && exit 0; done; exit 1 ) || grep -qsE '"vitest": "[~^]?[34]\.|"@vitejs/plugin-react": "[~^]?[45]\.' frontends/*/package.json
 ---
 
 # Upgrading to v0.1.46
@@ -202,3 +202,30 @@ The consequence is a one-time digest change. An env whose policy opts out of any
 Use when a Next.js or Vite frontend's `next.config.ts` / `vite.config.ts` has no `FORGE_DEV_API_PROXY`, or the dev app works on localhost but every RPC and sign-in fails through a Reliant workspace preview URL, a tunnel or a LAN IP.
 
 Under the dev server the browser now reaches the API at `<basePath>/_api` on its own origin, and the dev server forwards it to the API; builds still read `API_URL` from `config.js`. `next.config.ts` also sets `allowedDevOrigins` so a non-localhost page can hydrate. The files involved are scaffold-once, so adopting it is a hand merge and touches no generated file: see `migrations/v0.1.46/dev-api-proxy`.
+
+## 6. One vite: vitest 5, vite 8, `@vitejs/plugin-react` 6
+
+Use when a Next.js or Vite SPA frontend's `package.json` pins `vitest` ^3 or ^4 or `@vitejs/plugin-react` ^4 or ^5, when `tsc --noEmit` (or `next build`) fails `vitest.config.ts` / `vite.config.ts` with TS2769 "Property 'rolldownVersion' is missing", or when `npm audit` reports `tinypool`.
+
+### What changed
+
+The config file takes `defineConfig` from vitest's copy of vite and `react()` from the plugin's, so the two must be one copy. The Next.js scaffold left vite to vitest, and once something else in the tree resolved vite 8 (a dev build of forge links web-runtime, whose vitest ^4.1 does), the plugin bound vite 8 while vitest 3 kept vite 7. Both web kinds now scaffold the same three, by one major each, with vite declared directly:
+
+| package | was | now |
+|---|---|---|
+| `vite` | (Next.js: not declared) / Vite SPA: `^6.0.0 \|\| ^7.0.0` | `^8.0.0` |
+| `vitest` | `^3.1.0` | `^5.0.0` |
+| `@vitejs/plugin-react` | `^4.4.0` | `^6.0.0` |
+| `engines.node` | `>=22` | `>=22.12` |
+
+vitest 4.1 is skipped on purpose: the npm that ships with Node 22 (10.x) crashes installing it ("Cannot read properties of null (reading 'edgesOut')"). vitest 5 also drops `tinypool`, which `npm audit` flagged critical. No test or config file changes: the scaffolded `vitest.config.ts`, `vite.config.ts` and tests run unchanged on vitest 5.
+
+### Steps
+
+1. In each Next.js or Vite SPA frontend's `package.json` (yours, so `forge generate` does not touch it), set the three `devDependencies` to the ranges above, adding `"vite": "^8.0.0"` to a Next.js frontend, and set `engines.node` to `>=22.12`. React Native frontends use jest and need nothing.
+2. Run `npm install` where you install (the frontend, or the workspace root).
+3. If your own config or tests use an API vitest 5 removed, the run in Verify names it; fix it there.
+
+### Verify
+
+`npm ls vite` lists one version. `npm run typecheck`, `npm test` and `npm run build` pass in each frontend, and `npm audit` no longer lists `tinypool` or `vitest`.

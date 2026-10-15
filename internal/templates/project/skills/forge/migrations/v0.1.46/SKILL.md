@@ -238,11 +238,7 @@ Use when `grep -n 'authDeps.Validate = authValidate' cmd/*/cmd/serve.go` matches
 
 ### What was wrong
 
-Following the `auth/api-keys` skill did not give a server that accepts API keys:
-
-- `credentialFrom` read `Authorization: Bearer` and the session cookie only. A key sent as `X-API-Key` reached no validator.
-- The skill said to pass `Provider: "both"` and an `auth.KeyValidator` to `SetupAuth`. `SetupAuth` returned a bare `func(token string)` and had no place for either.
-- `serve.go` called `SetupAuth` before `app.OpenInfra`, so a key validator had no database handle. The workaround was a second `sql.Open` pool inside `SetupAuth`.
+`X-API-Key` reached no validator, and the skill described wiring `SetupAuth` did not offer. A DB-backed validator could not use the shared pool because `SetupAuth` ran before `OpenInfra`.
 
 ### What changed
 

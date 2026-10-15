@@ -53,34 +53,6 @@ ci:
     contents: read # default
 ```
 
-### Reviewed vulnerability exemptions
-
-`forge ci vuln-scan` fails on called Go advisories and high/critical npm
-advisories (lower npm severities are printed). Prefer upgrading the dependency;
-for a transitive npm pin, a scoped root `package.json` override can take a fixed
-release. npm ignores overrides in published dependencies and workspace members.
-
-If no fixed release exists and the vulnerable path cannot affect the project,
-accept **one advisory**, not a package, in the same list for both scanners:
-
-```yaml
-ci:
-  vuln_scan:
-    exemptions:
-      - id: GHSA-vfj7-8cjw-p6xm # npm: GHSA id; Go: GO-YYYY-NNNN id
-        reason: >-
-          No fixed braces release exists. Only the dev lint toolchain uses it,
-          with project-owned glob patterns, never untrusted runtime input.
-        expires: "2027-01-12" # example only: choose a real review date
-```
-
-Reason and expiry are required. Expired/incomplete entries fail the gate;
-entries matching nothing are reported for removal. A new advisory in the same
-package still fails. Each scanner considers only its ID namespace, so Go entries
-do not appear stale to npm and vice versa. Scaffolding Next.js records a
-90-day reviewed acceptance for its unfixable dev-only braces advisory in
-`forge.yaml`, visibly, rather than disabling the npm scan.
-
 ### Which forge CI installs
 
 Every job that runs forge installs it from the PROJECT, at run time — no

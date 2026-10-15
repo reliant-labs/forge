@@ -121,8 +121,17 @@ func parseNPMAuditJSON(r io.Reader) ([]vulnFinding, error) {
 		return nil, fmt.Errorf("npm audit report has no vulnerabilities map — refusing an unverified pass")
 	}
 
+	// Walk packages in name order so an advisory filed against several
+	// packages always reports the same package and range.
+	pkgs := make([]string, 0, len(report.Vulnerabilities))
+	for pkg := range report.Vulnerabilities {
+		pkgs = append(pkgs, pkg)
+	}
+	sort.Strings(pkgs)
+
 	byID := map[string]vulnFinding{}
-	for pkg, vuln := range report.Vulnerabilities {
+	for _, pkg := range pkgs {
+		vuln := report.Vulnerabilities[pkg]
 		if len(vuln.Via) == 0 {
 			return nil, fmt.Errorf("npm audit vulnerability %s has no advisory or dependency edges", pkg)
 		}

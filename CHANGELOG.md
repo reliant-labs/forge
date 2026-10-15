@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fresh project with a Next.js frontend passes its own npm vulnerability
+  gate (#754).** Scaffolds require Vitest `^5.0.4`; Vitest 3 brought critical
+  tinypool advisories and Vitest 4 crashes npm 10's installer. Next.js, Vite SPA,
+  the dev web-runtime workspace root and web-runtime's own install now override
+  only HyperDX recorder's exact `fflate` 0.7.4 pin to patched `^0.7.5`; npm does
+  not apply overrides from a published dependency, so no web-runtime release is
+  needed for scaffolds. `ci.vuln_scan.exemptions` now accepts npm GHSA ids with
+  the same required reason and expiry, scope, stale and expired-entry rules as
+  Go ids. The npm gate still fails on high/critical findings, reads npm's JSON
+  report rather than its exit code, and fails closed on malformed output. A new
+  Next.js frontend records a visible 90-day reviewed acceptance for the dev-only
+  braces advisory, which has no fixed release.
+
 ### Added
 
 - **`forge.ManagedIdentity`: an env's users, declared in KCL, with no app code

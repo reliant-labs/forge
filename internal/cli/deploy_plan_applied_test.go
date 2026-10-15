@@ -478,3 +478,58 @@ func TestApplyOutcomeGate_RecordsTheAppliedBundle(t *testing.T) {
 		t.Fatalf("no digests = %v, want no details at all", g.Details)
 	}
 }
+
+// A hash-named one-shot Job is "removed" by every release that changes its
+// spec, and the apply prunes the superseded ones itself. Telling the reviewer to
+// "delete it by hand" there would be wrong advice on every deploy.
+func TestRemovalNote_JobsAreNotToBeDeletedByHand(t *testing.T) {
+	for _, tc := range []struct {
+		subject string
+		wantJob bool
+	}{
+		{"prod-ctx/Job/control-plane-prod/control-plane-migrate-11e21c4446", true},
+		{"gke_proj_us-central1_prod/Job/ns/dbrole-provision-litellm-abcdef0123", true},
+		{"prod-ctx/ConfigMap/app/api-config", false},
+		{"prod-ctx/CronJob/app/nightly", false},
+		{"prod-ctx/Deployment/app/api", false},
+		{"Job", false}, // not an object key
+	} {
+		got := removalNote(tc.subject)
+		if tc.wantJob {
+			if got != directApplyJobRemovalNote || strings.Contains(got, "by hand") {
+				t.Errorf("%s: note = %q, want the Job note (the apply prunes it; no 'by hand')", tc.subject, got)
+			}
+		} else if got != directApplyRemovalNote {
+			t.Errorf("%s: note = %q, want the generic removal note", tc.subject, got)
+		}
+	}
+	if !strings.Contains(directApplyJobRemovalNote, "3") {
+		t.Errorf("the Job note must state how many finished Jobs are kept: %q", directApplyJobRemovalNote)
+	}
+}
+
+func TestLedgerOnlyPlan_RemovedJobIsNotToBeDeletedByHand(t *testing.T) {
+	job := func(name string) release.ShapeObject {
+		o := ledgerOnlyObject("Job", "app", name, "")
+		o.APIVersion = "batch/v1"
+		return o
+	}
+	applied := ledgerOnlyShape()
+	applied.Objects = append(applied.Objects, job("app-migrate-aaaaaaaaaa"))
+	candidateShape := ledgerOnlyShape()
+	candidateShape.Objects = append(candidateShape.Objects, job("app-migrate-bbbbbbbbbb"))
+
+	a := ledgerOnlyBundle("bnd_1", "v1", applied)
+	c := ledgerOnlyBundle("bnd_2", "v2", candidateShape)
+	ledger := ledgerOnlyFixture(t, ledgerOnlyControlPlane(t, a, c),
+		[]release.Promotion{appliedPromotion("p-1", "v1", a)}, nil)
+
+	got := findingsByCode(planLedgerOnly(t, ledger, c))
+	removed := got[release.FindingObjectRemoved]
+	if len(removed) != 1 || removed[0].Subject != "prod-ctx/Job/app/app-migrate-aaaaaaaaaa" {
+		t.Fatalf("object_removed = %+v, want exactly the superseded Job", removed)
+	}
+	if removed[0].Detail != directApplyJobRemovalNote {
+		t.Errorf("removal detail = %q, want the Job note", removed[0].Detail)
+	}
+}

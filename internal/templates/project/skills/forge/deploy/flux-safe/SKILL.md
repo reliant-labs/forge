@@ -14,7 +14,7 @@ build check them.
 
 | Rule | Why it is wrong under Flux | Fix |
 |---|---|---|
-| `flux-job-ttl` — `ttlSecondsAfterFinished` on a Job | the TTL controller deletes the finished Job, the next reconcile creates it again: a migration re-runs every period | remove it. A superseded Job goes away by its spec-hash name plus prune, never by a timer |
+| `flux-job-ttl` — `ttlSecondsAfterFinished` on a Job | the TTL controller deletes the finished Job, the next reconcile creates it again: a migration re-runs every period | remove it. A superseded Job goes away by its spec-hash name plus prune, never by a timer (Flux's inventory prune; a direct apply keeps the newest 3 finished Jobs of each name and deletes the older ones after the apply) |
 | `flux-job-unhashed` — a Job name not ending in `-<6+ hex>` | a Job's spec is immutable, so after any change every reconcile fails instead of creating a new Job | name it `<name>-<hash of its spec>`; a forge `kind = "job"` workload already is |
 | `flux-force-on-data` — `kustomize.toolkit.fluxcd.io/force: enabled` on a PVC, PV, StatefulSet, Secret, Namespace or CRD | Flux would delete and re-create it on an immutable-field change, losing its data | remove it; change the field through a migration |
 

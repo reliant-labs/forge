@@ -10,6 +10,10 @@ import { chooseApiBase } from "./api-base";
 import { BASE_PATH } from "./basepath_gen";
 
 const preview = "https://3000-abc123.workspaces.reliantapi.com";
+// Any mount prefix will do for the pure function. Deliberately not a real
+// one: this project's own base path lives only in basepath_gen.ts, never as a
+// hand-written literal.
+const mount = "/mount";
 
 describe("chooseApiBase", () => {
   it("sends dev traffic to the page's own origin, whatever the config names", () => {
@@ -25,8 +29,8 @@ describe("chooseApiBase", () => {
 
   it("keeps the frontend's base path in front of the proxy path", () => {
     expect(
-      chooseApiBase({ devProxyPath: "/_api", origin: preview, basePath: "/admin", configured: "" }),
-    ).toBe(`${preview}/admin/_api`);
+      chooseApiBase({ devProxyPath: "/_api", origin: preview, basePath: mount, configured: "" }),
+    ).toBe(`${preview}${mount}/_api`);
   });
 
   it("is relative when there is no window to name an origin", () => {

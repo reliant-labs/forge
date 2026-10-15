@@ -612,11 +612,11 @@ AdoptWorktreeDaemon)`; a contract `Service` embedding `io.Closer` produced a
   (`vite.config.ts`: `server.allowedHosts`). `forge lint`'s
   `forgeconv-frontend-process-env` treats `FORGE_DEV_API_PROXY` like
   `NODE_ENV`. Expo is unchanged. **Migration:** the four files are
-  scaffold-once, so existing projects merge by hand: `forge project
-  rescaffold` the new `src/lib/api-base.ts` (and its test), then add the
-  rewrite and `allowedDevOrigins` to `next.config.ts` and route `connect.ts`
-  and `native-login.ts` through `apiBase()`. No generated file changes. See
-  `migrations/v0.1.46/dev-api-proxy`.
+  scaffold-once, so existing projects merge by hand:
+  `forge project rescaffold` the new `src/lib/api-base.ts` (and its test),
+  then add the rewrite and `allowedDevOrigins` to `next.config.ts` and route
+  `connect.ts` and `native-login.ts` through `apiBase()`. No generated file
+  changes. See `migrations/v0.1.46/dev-api-proxy`.
 
 - **A release commit's E2E Scaffold waits out the proxy's negative cache.**
   `release-forge.sh` checks that the version was never published by asking

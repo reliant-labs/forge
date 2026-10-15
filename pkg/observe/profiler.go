@@ -2,11 +2,12 @@
 //
 // Setup starts one background goroutine per process (when an OTLP endpoint is
 // set and OTEL_PROFILES_EXPORTER is not "none"). About once a minute it
-// captures a 10s CPU profile plus a heap and a goroutine snapshot, converts them
-// with profiles_convert.go, and POSTs them to the collector's profiles endpoint.
-// Measured cost: ~90 ms CPU and 1.5 MB allocated per cycle to convert, i.e.
-// ~0.15% of one core, plus the runtime's own ~100 Hz CPU sampling during the
-// 10s window.
+// captures a 10s CPU profile plus a goroutine snapshot. Full heap snapshots run
+// separately, at most once per 15 minutes by default: heap contains lifetime
+// allocation stacks, so exporting it every minute repeats an ever-growing
+// history. ProfilesHeapInterval overrides this resolution/cost trade-off.
+// All four heap sample types retain their runtime/pprof snapshot semantics;
+// alloc_* are cumulative counters and inuse_* are gauges, never implicit deltas.
 //
 // The loop is built so it can never hurt the application:
 //
@@ -48,11 +49,12 @@ import (
 )
 
 const (
-	profilerInterval   = 60 * time.Second
-	profilerCPUWindow  = 10 * time.Second
-	profilerMaxBackoff = 15 * time.Minute
-	profilerProbeWait  = 2 * time.Second
-	profilerJitter     = 0.2
+	profilerInterval     = 60 * time.Second
+	profilerHeapInterval = 15 * time.Minute
+	profilerCPUWindow    = 10 * time.Second
+	profilerMaxBackoff   = 15 * time.Minute
+	profilerProbeWait    = 2 * time.Second
+	profilerJitter       = 0.2
 )
 
 // profilingActive is true while a profiler goroutine runs. The request-side
@@ -63,8 +65,10 @@ var profilingActive atomic.Bool
 type profiler struct {
 	res *resource.Resource
 
-	interval time.Duration
-	window   time.Duration
+	interval     time.Duration
+	window       time.Duration
+	heapInterval time.Duration
+	lastHeap     time.Time // last attempt, not success: errors must not amplify captures
 
 	probe func(context.Context) error
 	send  func(context.Context, pprofile.Profiles) error
@@ -89,13 +93,14 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 		return nil, err
 	}
 	p := &profiler{
-		res:      res,
-		interval: profilerInterval,
-		window:   profilerCPUWindow,
-		probe:    tcpProbe(tgt),
-		send:     send,
-		log:      slog.Default().With("component", "profiler"),
-		sleep:    sleepCtx,
+		res:          res,
+		interval:     profilerInterval,
+		heapInterval: cfg.ProfilesHeapInterval,
+		window:       profilerCPUWindow,
+		probe:        tcpProbe(tgt),
+		send:         send,
+		log:          slog.Default().With("component", "profiler"),
+		sleep:        sleepCtx,
 	}
 	loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
@@ -191,8 +196,10 @@ func (p *profiler) cycle(ctx context.Context) error {
 	}
 
 	var heap, gor bytes.Buffer
-	if err := pprof.Lookup("heap").WriteTo(&heap, 0); err != nil {
-		return fmt.Errorf("heap profile: %w", err)
+	if p.heapDue(time.Now()) {
+		if err := pprof.Lookup("heap").WriteTo(&heap, 0); err != nil {
+			return fmt.Errorf("heap profile: %w", err)
+		}
 	}
 	if err := pprof.Lookup("goroutine").WriteTo(&gor, 0); err != nil {
 		return fmt.Errorf("goroutine profile: %w", err)
@@ -219,6 +226,21 @@ func (p *profiler) cycle(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// heapDue claims a capture slot even if conversion/export subsequently fails.
+// Retrying a full cumulative snapshot sooner would amplify load, not recover
+// interval deltas. The next snapshot still contains cumulative allocations.
+func (p *profiler) heapDue(now time.Time) bool {
+	interval := p.heapInterval
+	if interval <= 0 {
+		interval = profilerHeapInterval
+	}
+	if !p.lastHeap.IsZero() && now.Sub(p.lastHeap) < interval {
+		return false
+	}
+	p.lastHeap = now
+	return true
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

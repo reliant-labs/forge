@@ -51,6 +51,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `object_removed` detail for a Job now says the apply prunes it, where it said to
   "delete it by hand".
 
+- **`forge/pkg/identity` converges the content of a Zitadel instance to a
+  declared spec.** One library for both halves of managed identity: `forge env
+  up` will run it against the dev instance with a bootstrap PAT, and the
+  control plane against each tenant instance with that instance's owner machine
+  key. It reconciles the project (with role assertion), roles, OIDC
+  applications (web, SPA, native and the native-sign-in broker app with its
+  per-app login route), machine users with keys and expiring tokens, the login,
+  password-complexity and lockout policies, SMTP, declared role members as a set
+  (revoke first, other roles in a grant kept) and, for local and ephemeral
+  instances only, seed users. Every step reads first, so a pass against a
+  converged instance writes nothing. It is plain JSON over HTTP with no Zitadel
+  Go import, so it stays on the permissive side of the AGPL boundary. Generated
+  credentials live behind a `KeyStore` seam and the published values (issuer,
+  audience, client ids, a JWKS snapshot, the broker token) behind `Outputs`.
+  `Rotate` replaces a broker token or machine key with an overlap window. For
+  an existing instance, `Options.Adopt` plus `ProjectSpec.AdoptID` and
+  `Application.AdoptClientID` converge it in place and keep the ids other
+  systems hold. A `-short`-gated smoke test runs all of it against the real,
+  unmodified Zitadel v4.19.4 image.
 - **`forge ci gate` starts the longest path first.** Host slots used to be
   granted in plan order (forge's static checks, then a project's extras, then
   the test lanes), so a gate's longest checks waited behind every shorter

@@ -413,7 +413,7 @@ type SeedProjection struct {
 // midnight UTC. See newSeedProjection.
 func BuildSeedProjection(projectDir string, cfg seedplan.Config) (*SeedProjection, error) {
 	migDir := filepath.Join(projectDir, "db", "migrations")
-	tables, err := schemadef.ApplyAndIntrospectAt(migDir, shadowdb.Resolve(projectDir))
+	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
 		var fetchErr *pgtest.FetchError
 		if errors.As(err, &fetchErr) {

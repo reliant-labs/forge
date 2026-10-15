@@ -869,7 +869,7 @@ func markersFromScan(scan *codegen.RawProtoScan, msgName string) entityBirthMark
 func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTable) {
 	out := map[string]bool{}
 	projectDir := filepath.Dir(filepath.Dir(migDir))
-	tables, err := schemadef.ApplyAndIntrospectAt(migDir, shadowdb.Resolve(projectDir))
+	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
 		if parsed, perr := database.ParseMigrationsForSchema(migDir); perr == nil {
 			for _, t := range parsed {

@@ -1,5 +1,7 @@
 // Package shadowdb resolves WHICH postgres server hosts the generate-time
-// schema-introspection shadow database.
+// schema-introspection shadow database, and — inside a generate run — makes
+// every reader of the applied schema share ONE application of the
+// migrations to it (applied.go).
 //
 // # Why this layer exists
 //
@@ -19,7 +21,8 @@
 // pgtest knows how to make an ephemeral database (embedded, or a scratch DB
 // on a given server URL); schemadef applies migrations and introspects
 // against whatever database it is handed. The POLICY of which server to
-// use, and whether one is reachable at all, lives here.
+// use, and whether one is reachable at all, lives here — as does how often
+// one run applies a migration set to it (once: see applied.go).
 package shadowdb
 
 import (

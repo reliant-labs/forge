@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/shadowdb"
 )
 
 // generateMu protects the generation pipeline from concurrent runs.
@@ -507,6 +508,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	if cache.skip(os.Stdout) {
 		return nil
 	}
+
+	// One run applies each migration set to a shadow database once: every
+	// step that reads the applied schema (entities, ORM, CRUD wiring, pages,
+	// nav, test factories, mocks) shares that one application. The template
+	// databases are dropped on the way out. See internal/shadowdb/applied.go.
+	defer shadowdb.BeginRun()()
 
 	if flags.SkipValidate {
 		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")

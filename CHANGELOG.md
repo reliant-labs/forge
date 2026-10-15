@@ -31,6 +31,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kinds `identity` (required: pods wait for the first delivery, and `forge env
   shape` says so), `identity_machine_key` and `identity_jwks`, plus `keys` and
   `required`. See `deploy/managed-identity`.
+
+- **One `forge generate` applies the migrations to a shadow database once.**
+  Every step that reads the applied schema — the entity join behind the
+  frontend pages, nav, service stubs, ORM, CRUD wiring and seed step, the test
+  factories, the frontend mock dataset — used to replay every migration into a
+  fresh shadow database of its own: about eight replays of one unchanged
+  directory per run, close to half of a full run on control-plane (168
+  migrations). A run now applies each migration set once, to a template
+  database (`schemadef.Template`): readers of the model get a deep copy of the
+  introspected tables, and readers that execute SQL get a private copy of the
+  database (`CREATE DATABASE … TEMPLATE`), so nothing one reader writes reaches
+  another. The template is filed under the digest of the exact migration bytes
+  it applied plus the shadow server, so a migration written mid-run (a scaffold
+  birth) is applied afresh, never served stale; the server is resolved once per
+  run, and the templates are dropped when the run ends. `--timings` reports the
+  count: `shadow schema: migrations applied 1× (…), reused by N more
+  reader(s)`. New library surface: `schemadef.ReadMigrationSet`,
+  `MigrationSet.ApplyTemplateAt`, `Template.{Tables,Open,Close,Digest}`, and
+  `pgtest.NewClone` / `pgtest.NewCloneAtURL` (copy a database the caller built).
+
 - **An env moves onto the Flux path one delivery unit at a time.**
   `Bundle.hub_converges = [<unit>, …]` lists the delivery units the control plane's
   hub converges from the recorded bundle; `forge env deploy` applies every other
@@ -79,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   advisories (account takeover, cross-org authz). No config or steps changes were
   needed, and the host-infra suite now downloads the real archive and checks it
   against the pinned checksum. 4.18.0 is broken upstream and was skipped.
+
 - **A direct apply prunes superseded one-shot Jobs, keeping the newest three of
   each.** A standalone Job is named by the hash of its spec, so every release that
   changes one leaves the previous Job behind, and since a reconciler made

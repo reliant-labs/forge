@@ -99,9 +99,13 @@ const SessionCookieName = "{{.Name}}_session"
 func RegisterLoginBroker(mux *http.ServeMux, cfg *config.Config, logger *slog.Logger) {
 	broker := &loginBroker{
 		client: &devidp.Client{
-			Base:  cfg.IdpBase,
-			Host:  cfg.IdpHost,
-			Token: cfg.IdpBrokerToken,
+			Base: cfg.IdpBase,
+			Host: cfg.IdpHost,
+			// The file wins while it yields a token, and is re-read on use,
+			// so a control plane can rotate the credential without a
+			// restart; idp_broker_token is the fallback.
+			Token:     cfg.IdpBrokerToken,
+			TokenFile: cfg.IdpBrokerTokenFile,
 		},
 		flow: devidp.FlowConfig{
 			ClientID:    cfg.OidcClientId,
@@ -338,7 +342,7 @@ func registrationMessage(err error) string {
 
 // errLoginNotConfigured names what is missing, and how to get it.
 var errLoginNotConfigured = errors.New(
-	"native sign-in needs idp_broker_token and oidc_client_id; " +
+	"native sign-in needs idp_broker_token (or idp_broker_token_file) and oidc_client_id; " +
 		"run `{{.Name}} auth idp-provision --login-uri <app>/auth/sign-in` to provision them")
 
 // LoginBrokerConfigured reports whether this deployment can serve sign-in.
@@ -346,7 +350,11 @@ var errLoginNotConfigured = errors.New(
 // the issuer fails at the first attempt, which is a much worse place to
 // discover it.
 func LoginBrokerConfigured(cfg *config.Config) error {
-	if strings.TrimSpace(cfg.IdpBrokerToken) == "" || strings.TrimSpace(cfg.OidcClientId) == "" {
+	hasToken := strings.TrimSpace(cfg.IdpBrokerToken) != ""
+	if !hasToken && cfg.IdpBrokerTokenFile != "" {
+		hasToken = (&devidp.Client{TokenFile: cfg.IdpBrokerTokenFile}).HasBrokerToken()
+	}
+	if !hasToken || strings.TrimSpace(cfg.OidcClientId) == "" {
 		return errLoginNotConfigured
 	}
 	return nil

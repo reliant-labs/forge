@@ -32,6 +32,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `forge-applied`). Promotion is intent and convergence is observed: the binding
   is never moved late to make them agree. A control plane that reports one reading
   per cluster is shown as such; a tree it reports nothing for reads `unobserved`.
+- **A forge app on a shared, operated identity provider (Zitadel) gets its roles,
+  survives an issuer outage at restart, and can rotate the login broker's token
+  without one.** Three typed config fields set the behaviour; all are inert until
+  set, and Clerk, Firebase and generic issuers are unchanged. `jwt_roles_claim`
+  (default `auto`) maps Zitadel's `urn:zitadel:iam:org:project:<id>:roles`
+  role-to-org map into `Claims.Roles` (and `Role`, when there is exactly one),
+  scoped to `jwt_audience`'s project; the flat `roles` array still wins when a token
+  has one. `jwt_jwks_snapshot_file` / `jwt_jwks_snapshot` (+ `_max_age`, default
+  7d) deliver the issuer's last-known public keys with a `delivered_at`, so a server
+  restarted while the issuer is down starts on them, retries the issuer in the
+  background, and switches to live keys on the first success. Live always wins for
+  a `kid` it holds; the snapshot adds a key only in a rotation overlap (delivered
+  after the last live fetch); a stale, absent or malformed snapshot still refuses
+  to start. `idp_broker_token_file` is re-read on every use, with
+  `idp_broker_token` as the fallback. Library: `auth.JWTConfig.{RolesClaim,
+  JWKSSnapshot, JWKSDiscover}`, `auth.JWKSKeyfuncWithSnapshot`,
+  `devidp.Client.TokenFile`. New fields are in the scaffold's `config.proto`, so an
+  existing project adds them by hand (the `auth` skill has the block and the new
+  `SetupAuth`; `Validator.Close` now stops the JWKS refresh).
+- **The dev Zitadel moves to v4.19.4** (was v4.16.2) in host-infra, the compose
+  `idp` service and its per-platform checksums. 4.16.2 carries open critical
+  advisories (account takeover, cross-org authz). No config or steps changes were
+  needed, and the host-infra suite now downloads the real archive and checks it
+  against the pinned checksum. 4.18.0 is broken upstream and was skipped.
 - **A direct apply prunes superseded one-shot Jobs, keeping the newest three of
   each.** A standalone Job is named by the hash of its spec, so every release that
   changes one leaves the previous Job behind, and since a reconciler made

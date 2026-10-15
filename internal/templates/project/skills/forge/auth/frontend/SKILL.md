@@ -65,6 +65,8 @@ The one browser-side config that matters is `API_URL` (empty means same-origin, 
 
 **`idp_broker_token` is a real credential and is the reason this file is server-side.** It carries the issuer's authority to create sessions. It must never reach a bundle, a `NEXT_PUBLIC_*`/`VITE_*` name, or a log line.
 
+**Rotation:** where the issuer's operator rotates it (a managed identity), deliver the token as a file and set `idp_broker_token_file` (`IDP_BROKER_TOKEN_FILE`) instead. The broker's `devidp.Client` reads the file on every call, so a rotated token is used on the next sign-in with no restart; `idp_broker_token` stays supported and is the fallback. See `auth/shared-issuer`.
+
 ## The one thing not to change carelessly
 
 The issuer treats "which credentials were checked" as the **caller's** decision. A session created with a user check and NO password check is valid, completes an auth request, and yields real tokens — for someone who proved nothing. Such a token carries no `amr` claim at all, so a downstream validator cannot even detect it.

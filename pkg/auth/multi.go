@@ -35,6 +35,7 @@ type HMACValidator struct {
 	issuer        string
 	audience      string
 	resolver      UserResolver
+	rolesClaim    string
 }
 
 // HMACValidatorConfig configures an [HMACValidator].
@@ -60,6 +61,9 @@ type HMACValidatorConfig struct {
 	// project provider-specific shapes onto [Claims] (and into Claims.Raw).
 	// Nil means use the built-in shape extraction.
 	Resolver UserResolver
+
+	// RolesClaim names the claim roles are read from; see [JWTConfig.RolesClaim].
+	RolesClaim string
 }
 
 // NewHMACValidator constructs a validator for HMAC-signed JWTs.
@@ -83,6 +87,7 @@ func NewHMACValidator(cfg HMACValidatorConfig) (*HMACValidator, error) {
 		issuer:        cfg.Issuer,
 		audience:      cfg.Audience,
 		resolver:      cfg.Resolver,
+		rolesClaim:    cfg.RolesClaim,
 	}, nil
 }
 
@@ -90,7 +95,7 @@ func NewHMACValidator(cfg HMACValidatorConfig) (*HMACValidator, error) {
 func (v *HMACValidator) ValidateToken(tokenString string) (*Claims, error) {
 	return validateJWTWith(tokenString, v.signingMethod, func(*jwt.Token) (interface{}, error) {
 		return v.secret, nil
-	}, v.issuer, v.audience, v.resolver)
+	}, v.issuer, v.audience, v.resolver, v.rolesClaim)
 }
 
 // JWKSValidator validates JWTs whose signing key comes from a JWKS endpoint
@@ -105,6 +110,7 @@ type JWKSValidator struct {
 	issuer        string
 	audience      string
 	resolver      UserResolver
+	rolesClaim    string
 }
 
 // JWKSValidatorConfig configures a [JWKSValidator].
@@ -123,6 +129,9 @@ type JWKSValidatorConfig struct {
 
 	// Resolver, when non-nil, projects the raw JWT payload onto [Claims].
 	Resolver UserResolver
+
+	// RolesClaim names the claim roles are read from; see [JWTConfig.RolesClaim].
+	RolesClaim string
 }
 
 // NewJWKSValidator constructs a validator that delegates key resolution to
@@ -140,12 +149,13 @@ func NewJWKSValidator(cfg JWKSValidatorConfig) (*JWKSValidator, error) {
 		issuer:        cfg.Issuer,
 		audience:      cfg.Audience,
 		resolver:      cfg.Resolver,
+		rolesClaim:    cfg.RolesClaim,
 	}, nil
 }
 
 // ValidateToken implements [TokenValidator].
 func (v *JWKSValidator) ValidateToken(tokenString string) (*Claims, error) {
-	return validateJWTWith(tokenString, v.signingMethod, v.keyFunc, v.issuer, v.audience, v.resolver)
+	return validateJWTWith(tokenString, v.signingMethod, v.keyFunc, v.issuer, v.audience, v.resolver, v.rolesClaim)
 }
 
 // MultiValidator tries each underlying validator in order and returns the
@@ -193,7 +203,7 @@ func (m *MultiValidator) ValidateToken(tokenString string) (*Claims, error) {
 // TokenValidator implementation. Keeping it in one place ensures parser
 // options (leeway, issuer, audience), claims extraction, and UserResolver
 // dispatch stay consistent across validators.
-func validateJWTWith(tokenString, signingMethod string, keyFunc jwt.Keyfunc, issuer, audience string, resolver UserResolver) (*Claims, error) {
+func validateJWTWith(tokenString, signingMethod string, keyFunc jwt.Keyfunc, issuer, audience string, resolver UserResolver, rolesClaim string) (*Claims, error) {
 	parserOpts := []jwt.ParserOption{
 		jwt.WithValidMethods([]string{signingMethod}),
 		jwt.WithLeeway(5 * time.Second),
@@ -215,5 +225,5 @@ func validateJWTWith(tokenString, signingMethod string, keyFunc jwt.Keyfunc, iss
 		return nil, fmt.Errorf("unexpected claims type")
 	}
 
-	return projectClaims(mapClaims, resolver), nil
+	return projectClaims(mapClaims, resolver, claimOpts{rolesClaim: rolesClaim, audience: audience}), nil
 }

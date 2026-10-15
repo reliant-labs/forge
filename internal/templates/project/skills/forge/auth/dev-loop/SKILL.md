@@ -111,7 +111,7 @@ Zitadel decides this **per application**, not per request: an OIDC app is create
 
 | symptom | cause |
 | --- | --- |
-| Server refuses to start, naming a URL | The issuer or JWKS endpoint is unreachable or wrong. Intended: it fails loudly instead of 401ing every request. |
+| Server refuses to start, naming a URL | The issuer or JWKS endpoint is unreachable or wrong. Intended: it fails loudly instead of 401ing every request. (A fresh `jwt_jwks_snapshot*` is the one thing that lets it start while the issuer is down; `auth/shared-issuer` has the rules.) |
 | `Instance not found` from the IdP | Reaching it by a hostname it does not know — almost always the compose service name from inside the network. Use `localhost:<IDP_PORT>` (above). |
 | Every call 401s, token looks like a random string | Opaque access token — the app is registered with the default token type. Re-run `<project> auth idp-provision` to re-converge it. |
 | Every call 401s, `alg` complaint | `jwt_signing_method` disagrees with the key material (HS\* secret vs RS\*/ES\* JWKS). |

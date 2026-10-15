@@ -30,13 +30,17 @@ const discoveryTimeout = 10 * time.Second
 // SetupAuth returns the bearer-token validator this service authenticates
 // requests with.
 //
-// Default: validate JWTs using the five typed config fields —
+// Default: validate JWTs using the typed config fields —
 //
 //	cfg.JwtSigningMethod  expected alg — HS256, RS256, ES256 (default RS256)
 //	cfg.JwtIssuer         token issuer (iss) to enforce
 //	cfg.JwtAudience       audience (aud) to enforce
 //	cfg.JwtJwksUrl        the issuer's JWKS endpoint — the standard OIDC path
 //	cfg.JwtSecret         HS* shared secret, or a PEM public key (sensitive)
+//	cfg.JwtRolesClaim     where Claims.Roles comes from (default: auto-detect,
+//	                      including Zitadel's project-roles map)
+//	cfg.JwtJwksSnapshot*  optional last-known JWKS, so a restart during an
+//	                      issuer outage still starts (see below)
 //
 // Point jwt_jwks_url at any OIDC issuer and this validator does real RS256
 // validation against its published keys, refreshed in the background. Set
@@ -49,6 +53,16 @@ const discoveryTimeout = 10 * time.Second
 // discovers the JWKS endpoint from the issuer's
 // /.well-known/openid-configuration, so a standards-compliant IdP needs one
 // URL rather than two that have to agree.
+//
+// JWKS SNAPSHOT (optional). The default refuses to start when the issuer is
+// unreachable at boot. For an issuer shared by many apps that turns one outage
+// into a crash-loop of every app that restarts during it. Deliver a snapshot of
+// the issuer's PUBLIC keys (jwt_jwks_snapshot_file, or jwt_jwks_snapshot from
+// the secret store) and an unreachable issuer at boot starts the server on it
+// instead — tokens are still fully verified, the issuer is retried in the
+// background, and live keys take over on the first success. A snapshot older
+// than jwt_jwks_snapshot_max_age (7 days) is ignored, and with no usable keys
+// at all the server still refuses to start. The `auth` skill has the rules.
 //
 // NOTHING HERE IS SPECIFIC TO ANY PROVIDER. There is no vendor name in this
 // function and no default pointing at one: both branches take whatever
@@ -99,6 +113,11 @@ const discoveryTimeout = 10 * time.Second
 // anonymous caller.
 func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error) {
 	jwksURL := cfg.JwtJwksUrl
+	snapshot := auth.JWKSSnapshot{
+		File:   cfg.JwtJwksSnapshotFile,
+		Inline: cfg.JwtJwksSnapshot,
+		MaxAge: cfg.JwtJwksSnapshotMaxAge.AsDuration(),
+	}
 
 	// Convenience, not magic: with an issuer and no explicit JWKS URL,
 	// ask the issuer where its keys are (OIDC Discovery / RFC 8414) so a
@@ -111,32 +130,36 @@ func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), er
 	// is the normal case for a containerized dev IdP (tokens say
 	// localhost, the server-to-server hop says the service name). Those
 	// deployments set both fields explicitly and never reach this branch.
+	var discover func(ctx context.Context) (string, error)
 	if jwksURL == "" && cfg.JwtIssuer != "" && cfg.JwtSecret == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
-		defer cancel()
+		discover = func(ctx context.Context) (string, error) {
+			ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+			defer cancel()
 
-		meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
-		if err != nil {
-			// REFUSE TO START, with the issuer in the message. This is the
-			// same posture an unreachable jwt_jwks_url already has: a
-			// server that cannot learn its issuer's keys cannot
-			// authenticate anyone, so booting anyway would mean 401ing
-			// every request for a reason no log line explains. Do NOT
-			// soften this into a warning — degrading to "accept nothing"
-			// silently converts a typo into a total outage.
-			return nil, fmt.Errorf("discover OIDC issuer %q: %w", cfg.JwtIssuer, err)
+			meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
+			if err != nil {
+				return "", fmt.Errorf("discover OIDC issuer %q: %w", cfg.JwtIssuer, err)
+			}
+			// Discover guarantees the authorization and token endpoints, but
+			// jwks_uri is optional in its validation — and an empty one here
+			// would hand auth.NewValidator no key source at all, which builds
+			// a validator that rejects every token. Name the gap instead.
+			if meta.JWKSURI == "" {
+				return "", fmt.Errorf("OIDC issuer %q publishes no jwks_uri in its discovery document: "+
+					"set jwt_jwks_url explicitly, or jwt_secret for a static key", cfg.JwtIssuer)
+			}
+			return meta.JWKSURI, nil
 		}
-		// Discover guarantees the authorization and token endpoints, but
-		// jwks_uri is optional in its validation — and an empty one here
-		// would hand auth.NewValidator no key source at all, which builds
-		// a validator that rejects every token. Name the gap instead.
-		if meta.JWKSURI == "" {
-			return nil, fmt.Errorf("OIDC issuer %q publishes no jwks_uri in its discovery document: "+
-				"set jwt_jwks_url explicitly, or jwt_secret for a static key", cfg.JwtIssuer)
-		}
-		jwksURL = meta.JWKSURI
 	}
 
+	// REFUSE TO START when the issuer's keys cannot be learned and no usable
+	// JWKS snapshot exists: a server that cannot learn its issuer's keys
+	// cannot authenticate anyone, so booting anyway would mean 401ing every
+	// request for a reason no log line explains. Do NOT soften this into a
+	// warning — degrading to "accept nothing" silently converts a typo into a
+	// total outage. A delivered, fresh snapshot is the one thing that lets
+	// the server start without the issuer: it is real key material, not an
+	// absence of it.
 	validator, err := auth.NewValidator(auth.Config{
 		Provider: "jwt",
 		JWT: auth.JWTConfig{
@@ -144,7 +167,10 @@ func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), er
 			Issuer:        cfg.JwtIssuer,
 			Audience:      cfg.JwtAudience,
 			JWKSURL:       jwksURL,
+			JWKSDiscover:  discover,
+			JWKSSnapshot:  snapshot,
 			Secret:        cfg.JwtSecret,
+			RolesClaim:    cfg.JwtRolesClaim,
 		},
 	})
 	if err != nil {

@@ -1,6 +1,6 @@
 ---
 name: auth
-description: Authentication — the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, api-keys.
+description: Authentication — the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, shared-issuer, api-keys.
 ---
 
 # Authentication
@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the b
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/dev-loop`** (a token locally, the opt-in dev IdP), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**.
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the opt-in dev IdP), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**.
 
 ## Choosing the validator (owned code, not config)
 
@@ -20,21 +20,30 @@ Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds
 `SetupAuth(cfg *config.Config)` is unaffected by per-binary config (`forge skill load binaries`, "Config"): `config.Config` is always a real type, whether it aliases a single project-global `AppConfig` or — in an all-binary-annotated project — the config message bound to the primary server binary. `SetupAuth` never needs to know which.
 
 ```go
-// internal/app/auth.go — YOURS (scaffolded once, never regenerated).
+// internal/app/auth.go — YOURS (scaffolded once, never regenerated). Abridged.
 func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), error) {
-	jwksURL := cfg.JwtJwksUrl
-	// Issuer but no explicit JWKS URL: ask the issuer where its keys are.
-	if jwksURL == "" && cfg.JwtIssuer != "" && cfg.JwtSecret == "" {
-		meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
-		if err != nil { return nil, fmt.Errorf("discover OIDC issuer %q: %w", cfg.JwtIssuer, err) }
-		jwksURL = meta.JWKSURI
+	// Issuer but no explicit JWKS URL: discover where its keys are. Passed as a
+	// func, not resolved here, so it re-runs on every live attempt and a
+	// snapshot can cover an issuer that is down at boot.
+	var discover func(ctx context.Context) (string, error)
+	if cfg.JwtJwksUrl == "" && cfg.JwtIssuer != "" && cfg.JwtSecret == "" {
+		discover = func(ctx context.Context) (string, error) {
+			meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
+			if err != nil { return "", fmt.Errorf("discover OIDC issuer %q: %w", cfg.JwtIssuer, err) }
+			return meta.JWKSURI, nil
+		}
 	}
 	validator, err := auth.NewValidator(auth.Config{
 		Provider: "jwt",
 		JWT: auth.JWTConfig{
 			SigningMethod: cfg.JwtSigningMethod,
 			Issuer: cfg.JwtIssuer, Audience: cfg.JwtAudience,
-			JWKSURL: jwksURL, Secret: cfg.JwtSecret,
+			JWKSURL: cfg.JwtJwksUrl, JWKSDiscover: discover, Secret: cfg.JwtSecret,
+			RolesClaim: cfg.JwtRolesClaim,
+			JWKSSnapshot: auth.JWKSSnapshot{
+				File: cfg.JwtJwksSnapshotFile, Inline: cfg.JwtJwksSnapshot,
+				MaxAge: cfg.JwtJwksSnapshotMaxAge.AsDuration(),
+			},
 		},
 	})
 	if err != nil { return nil, fmt.Errorf("build JWT validator: %w", err) }
@@ -45,7 +54,7 @@ func SetupAuth(cfg *config.Config) (func(token string) (*auth.Claims, error), er
 **Nothing in the scaffold names an identity provider** — no vendor branch, no default endpoint. Every issuer arrives as a URL on the typed config.
 
 - **Set `jwt_issuer` alone and the JWKS endpoint is DISCOVERED** from `/.well-known/openid-configuration` — one URL instead of two that must agree. Set `jwt_jwks_url` too and it WINS, which is what a containerized dev IdP needs.
-- **Keys are fetched at BOOT** and refreshed in the background, so rotation needs no redeploy — and an unreachable issuer or JWKS endpoint REFUSES TO START, naming the URL. Never soften that into a warning: "boots, accepts nothing, reports healthy" is the worst of both.
+- **Keys are fetched at BOOT** and refreshed in the background, so rotation needs no redeploy — and an unreachable issuer or JWKS endpoint REFUSES TO START, naming the URL, **unless a fresh JWKS snapshot was delivered** (`auth/shared-issuer`). Never soften the refusal into a warning: "boots, accepts nothing, reports healthy" is the worst of both.
 - **`jwt_jwks_url` and `jwt_secret` are mutually exclusive** — one validator, one key source; both is rejected at startup, not resolved by precedence. For several issuers at once (an IdP migration), compose `auth.Config.TokenValidators`.
 - **`jwt_secret` is `sensitive`** — it projects as a `secretKeyRef`, never an inline manifest value: an HS\* value both verifies AND mints. The OIDC client fields are NOT secrets (see the `auth/frontend` skill).
 - **`jwt_signing_method` and the key must agree.** Default `RS256`, so a shared-secret `jwt_secret` needs `HS256` — otherwise a correctly-signed token is rejected on `alg` alone, which reads as a bad secret and is not.
@@ -68,6 +77,16 @@ validator, err := auth.Firebase(auth.FirebaseOpts{ProjectIDs: strings.Split(cfg.
 ```
 
 A constructor needing a value the config lacks gets a config field, never an `os.Getenv`. Other non-standard shapes ride `UserResolver`. Point the login broker at the same issuer — both halves must name it, or a session minted by one is rejected by the other.
+
+## Shared-issuer runtime (sub-skill `auth/shared-issuer`)
+
+For an app whose issuer is a shared, operated one (a managed Zitadel), three typed config knobs exist, all inert until set — Clerk, Firebase and generic issuers are unchanged:
+
+- **`jwt_roles_claim`** (default `auto`) maps Zitadel's `urn:zitadel:iam:org:project:<id>:roles` role-to-org map into `Claims.Roles`; the flat `roles` array still wins when present. **Set `jwt_audience` on a Zitadel app** so only your project's roles are read.
+- **`jwt_jwks_snapshot_file` / `jwt_jwks_snapshot`** (+ `jwt_jwks_snapshot_max_age`, default 7d): a delivered, dated copy of the issuer's public keys. An issuer that is down at boot no longer prevents starting when a fresh snapshot exists; live keys win as soon as the issuer answers. No usable keys at all still refuses to start.
+- **`idp_broker_token_file`**: the login broker's token, re-read on every use, so the issuer's operator can rotate it without a restart.
+
+Load `auth/shared-issuer` for the document format, the exact trust rules and the rotation-overlap case.
 
 ## The Claims struct
 
@@ -175,6 +194,7 @@ Inject claims: `middleware.ContextWithClaims(ctx, &middleware.Claims{UserID: "us
 - On an authenticated RPC, `middleware.GetUser` gives you the principal — not proof of authentication, which the interceptor already established.
 - Custom claim DATA rides `enrichClaims`, not a parallel claim type. Hydrate by the IdP `sub`, never by email.
 - **Input validation is protovalidate's job**, via `buf.validate` rules on the proto — not `enrichClaims`, which runs only on authenticated requests and reports failures as auth errors.
+- **`jwt_audience` on Zitadel, always** — it scopes the roles mapping to your project (`auth/shared-issuer`).
 - Pin the dev IdP's image to an exact version; a moving tag makes "login broke today" unattributable. Declare its instance (`idp-steps.yaml`) rather than clicking through a console — a setup step that must be RUN is one a teammate's clone will not have.
 - **Forge validates tokens; it never issues them.** The scaffolded login broker does not mint credentials either — it brokers to the issuer, which is what makes an `/auth/login` route legitimate here. It stays an owned HTTP handler, not an RPC on a service. Provisioning is yours: a public `Register` RPC that trusts the verified `sub`, never a body field.
 - This skill ends at identity. **Forge ships no authorization** — what a caller may do is yours to design and enforce, and nothing in the framework will flag its absence.

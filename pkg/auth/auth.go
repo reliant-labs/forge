@@ -151,6 +151,18 @@ type JWTConfig struct {
 	// one issuer composes them explicitly via [Config.TokenValidators].
 	JWKSURL string
 
+	// JWKSDiscover, when set and JWKSURL is empty, yields the JWKS URL by
+	// asking the issuer (OIDC discovery). It runs on EVERY live attempt, so
+	// with a [JWKSSnapshot] an issuer that is down at boot — discovery
+	// included — still lets the validator start. Same exclusivity as JWKSURL.
+	JWKSDiscover func(ctx context.Context) (string, error)
+
+	// JWKSSnapshot is the optional offline fallback key source. With it,
+	// an issuer that is unreachable at boot no longer prevents startup when a
+	// fresh snapshot exists; see [JWKSSnapshot] for exactly what is trusted.
+	// Requires JWKSURL or JWKSDiscover.
+	JWKSSnapshot JWKSSnapshot
+
 	// Secret is the symmetric secret (HS*) or PEM-encoded public key
 	// (RS*/ES*). Mutually exclusive with JWKSURL.
 	Secret string
@@ -158,6 +170,13 @@ type JWTConfig struct {
 	// KeyFunc, when non-nil, fully overrides key resolution. Useful for tests
 	// and for callers wiring custom JWKS clients.
 	KeyFunc jwt.Keyfunc
+
+	// RolesClaim names the claim [Claims.Roles] is read from. Empty or "auto"
+	// reads the flat `roles` array and, when the token has none, Zitadel's
+	// `urn:zitadel:iam:org:project:<audience>:roles` map (every project's, when
+	// Audience is unset). Set it to read exactly one claim: a flat array, a
+	// space or comma separated string, or a Zitadel-shaped role map.
+	RolesClaim string
 }
 
 // EffectiveSigningMethod returns SigningMethod or the "RS256" default.
@@ -205,6 +224,9 @@ type Validator struct {
 	// JWT.JWKSURL; nil when the only key material is the static JWT.Secret
 	// (resolved per request, since it needs the token's alg).
 	jwtKeyFunc jwt.Keyfunc
+	// stop ends the JWKS refresh and snapshot-retry goroutines; nil when the
+	// validator started none.
+	stop func()
 }
 
 // NewValidator returns a Validator wired for cfg.Provider.
@@ -248,15 +270,17 @@ func NewValidator(cfg Config) (*Validator, error) {
 	switch {
 	case cfg.JWT.KeyFunc != nil:
 		v.jwtKeyFunc = cfg.JWT.KeyFunc
-	case cfg.JWT.JWKSURL != "":
+	case cfg.JWT.JWKSURL != "" || cfg.JWT.JWKSDiscover != nil:
 		if cfg.JWT.Secret != "" {
 			return nil, fmt.Errorf("auth: JWT.JWKSURL and JWT.Secret are both set — a validator has ONE key source; drop one, or compose several issuers explicitly via Config.TokenValidators")
 		}
-		kf, err := JWKSKeyfunc(cfg.JWT.JWKSURL)
+		kf, stop, err := newJWKSKeyfunc(cfg.JWT)
 		if err != nil {
 			return nil, err
 		}
-		v.jwtKeyFunc = kf
+		v.jwtKeyFunc, v.stop = kf, stop
+	case cfg.JWT.JWKSSnapshot.configured():
+		return nil, fmt.Errorf("auth: JWT.JWKSSnapshot is set without JWT.JWKSURL (or JWKSDiscover) — a snapshot is the fallback for a live JWKS source, not a key source of its own")
 	}
 	return v, nil
 }
@@ -268,9 +292,14 @@ func (v *Validator) Provider() string { return v.cfg.Provider }
 // validator is constructed before the storage backend is ready.
 func (v *Validator) SetKeyValidator(kv KeyValidator) { v.keyValidator = kv }
 
-// Close releases any resources held by the Validator. Currently a no-op;
-// kept for forward compatibility with JWKS-cache implementations.
-func (v *Validator) Close() error { return nil }
+// Close stops the background JWKS refresh (and, with a snapshot, the live
+// retry) a JWKS-backed Validator started.
+func (v *Validator) Close() error {
+	if v.stop != nil {
+		v.stop()
+	}
+	return nil
+}
 
 // Validate authenticates a single bearer JWT and returns the parsed claims.
 // Useful outside the interceptor (e.g. webhook auth, CLI tooling).
@@ -500,7 +529,7 @@ func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
 		return nil, fmt.Errorf("unexpected claims type")
 	}
 
-	return projectClaims(mapClaims, v.cfg.UserResolver), nil
+	return projectClaims(mapClaims, v.cfg.UserResolver, claimOpts{rolesClaim: v.cfg.JWT.RolesClaim, audience: v.cfg.JWT.Audience}), nil
 }
 
 // projectClaims turns a decoded JWT payload into [Claims]. When resolver is
@@ -511,26 +540,37 @@ func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
 // A resolver that returns an error or nil claims is treated as a fallback
 // signal: projectClaims falls back to the built-in shape so a stricter
 // resolver can opt out for tokens it doesn't recognize.
-func projectClaims(mc map[string]any, resolver UserResolver) *Claims {
+func projectClaims(mc map[string]any, resolver UserResolver, opts claimOpts) *Claims {
 	if resolver != nil {
 		c, err := resolver.Resolve(mc)
 		if err == nil && c != nil {
 			return c
 		}
 	}
-	return defaultProjectClaims(mc)
+	return defaultProjectClaims(mc, opts)
 }
 
-func defaultProjectClaims(mc map[string]any) *Claims {
+// defaultProjectClaims is the built-in extraction. Roles come from
+// [extractRoles]; when they were derived from a role map (Zitadel) rather
+// than a flat array and the token names no `role` of its own, exactly one
+// role also fills [Claims.Role]. With several roles Role stays empty: the
+// token does not say which one is "the" role, and picking one by sort order
+// would be a guess that grants or denies access.
+func defaultProjectClaims(mc map[string]any, opts claimOpts) *Claims {
 	mapClaims := jwt.MapClaims(mc)
-	return &Claims{
+	c := &Claims{
 		UserID: getStringClaim(mapClaims, "sub"),
 		Email:  getStringClaim(mapClaims, "email"),
 		OrgID:  getStringClaim(mapClaims, "org_id"),
 		Role:   getStringClaim(mapClaims, "role"),
-		Roles:  getStringSliceClaim(mapClaims, "roles"),
 		Raw:    mc,
 	}
+	var derived bool
+	c.Roles, derived = extractRoles(mc, opts)
+	if derived && c.Role == "" && len(c.Roles) == 1 {
+		c.Role = c.Roles[0]
+	}
+	return c
 }
 
 // decodeJWTKey converts a secret string into the type that github.com/golang-jwt/jwt/v5

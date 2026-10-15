@@ -469,6 +469,29 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
 
 ### Fixed
 
+- **A web frontend's test toolchain resolves one vite: vitest 5, vite 8,
+  `@vitejs/plugin-react` 6.** The Next.js scaffold left `vite` to vitest's
+  dependency, so `vitest.config.ts` took `defineConfig` from vitest's vite and
+  `react()` from whatever vite `@vitejs/plugin-react` found. In a dev build's
+  bridged workspace those differed: web-runtime's vitest ^4.1 put vite 8 at
+  the root, the plugin (4.x) resolved it there, and vitest 3 kept a vite 7 of
+  its own, so `tsc --noEmit` and `next build` failed with TS2769 "Property
+  'rolldownVersion' is missing" (red on main in
+  `TestE2EFixtureCorpusFrontendBasePath`). The Next.js and Vite SPA scaffolds
+  now declare `vite ^8.0.0`, `vitest ^5.0.0` and `@vitejs/plugin-react ^6.0.0`
+  — the same three in both kinds, so a project with both hoists one vite — and
+  `engines.node >=22.12`, the floor vite 8 and vitest 5 declare. vitest 4.1 is
+  skipped on purpose: npm 10.x, which ships with Node 22, crashes installing
+  it ("Cannot read properties of null (reading 'edgesOut')"). vitest 5 also
+  drops the `tinypool` that a fresh project's `npm audit` reported as
+  critical (#754): the scaffold's audit goes from 2 critical to none.
+  **Migration:** `package.json` is yours once scaffolded, so a project
+  adopts this by hand: in each Next.js or Vite SPA frontend set `vite`,
+  `vitest` and `@vitejs/plugin-react` to the ranges above (add `vite` to a
+  Next.js frontend's `devDependencies`), raise `engines.node` to `>=22.12`,
+  run `npm install` and check that `npm ls vite` lists one version. See
+  `migrations/v0.1.46` section 6.
+
 - **The migrator's directive scan no longer dominates integration tests.**
   `migratekit` scans every embedded migration for `forge:backward-compatible`,
   `forge:breaks-rollback` and `forge:adopts` on every start, and ran three

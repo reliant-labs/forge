@@ -2,8 +2,9 @@
   "name": "{{.FrontendName}}",
   "version": "0.1.0",
   "private": true,
+  "// vite note": "vite, vitest and @vitejs/plugin-react move together. vitest.config.ts takes defineConfig from vitest's vite and react() from the plugin's vite, so both must be ONE copy, or `tsc --noEmit` fails it with TS2769 (\"Property 'rolldownVersion' is missing\": a vite 7 plugin handed to a vite 8 config, or the reverse). vite is declared here rather than left to vitest's peer so npm places this app's copy where both resolve it, including in a workspace whose other members bring a vite of their own (forge's dev bridge links web-runtime, whose vitest pulls vite 8). Bump the three together; `npm ls vite` should list one version. This note sits at the TOP LEVEL because npm rejects a comment key inside devDependencies with EINVALIDPACKAGENAME.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
     "dev": "next dev --webpack",
@@ -61,8 +62,9 @@
     "tailwindcss": "^4.1.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.30.0",
-    "vitest": "^3.1.0",
-    "@vitejs/plugin-react": "^4.4.0",
+    "vite": "^8.0.0",
+    "vitest": "^5.0.0",
+    "@vitejs/plugin-react": "^6.0.0",
     "@next/bundle-analyzer": "^16.3.5"
   }
 }

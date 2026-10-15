@@ -18,4 +18,3 @@ output = forge.render(forge.Bundle {
 
 assert_customer_key = output.delivery_policy.signing.key == "customer" and output.delivery_policy.signing.key_ref == "gcpkms://projects/p/locations/global/keyRings/r/cryptoKeys/k"
 assert_no_oidc = output.delivery_policy.signing.oidc_issuer == None
-

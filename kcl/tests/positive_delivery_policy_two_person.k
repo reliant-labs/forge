@@ -18,4 +18,3 @@ output = forge.render(forge.Bundle {
 
 assert_two_person = output.delivery_policy.approvals.required == 2 and output.delivery_policy.approvals.mode == "enforce"
 assert_approvers_sorted = output.delivery_policy.approvals.approvers == ["ana@acme.test", "bo@acme.test"]
-

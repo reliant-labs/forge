@@ -38,4 +38,3 @@ assert_builders_sorted = _p.trusted_builder.builders == ["cloudbuild:acme-prod/d
 assert_exemptions_sorted_by_id = [e.id for e in _p.vuln_gate.exemptions] == ["CVE-2026-0001", "GHSA-aaaa-bbbb-cccc"]
 assert_kinds_sorted = _p.bundle_kinds.allow == ["Deployment", "Service", "apps/StatefulSet"]
 assert_one_person_approval = _p.approvals.required == 1 and _p.approvals.approvers == []
-

@@ -29,4 +29,3 @@ assert_bundle_kinds_audits = _p.bundle_kinds.mode == "audit" and _p.bundle_kinds
 assert_approvals_audit_one_person = _p.approvals.mode == "audit" and _p.approvals.required == 1 and _p.approvals.approvers == []
 # the vuln gate's default policy: KEV and fixable criticals block, highs warn
 assert_vuln_default_policy = _p.vuln_gate.block_kev and _p.vuln_gate.fixable_only and _p.vuln_gate.block_severity == "critical" and _p.vuln_gate.warn_severity == "high" and _p.vuln_gate.exemptions == []
-

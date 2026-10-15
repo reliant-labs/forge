@@ -17,4 +17,3 @@ output = forge.render(forge.Bundle {
 
 assert_keyless = output.delivery_policy.signing.key == "keyless" and output.delivery_policy.signing.oidc_issuer == "https://token.actions.githubusercontent.com"
 assert_no_key_ref = output.delivery_policy.signing.key_ref == None
-

@@ -98,6 +98,10 @@ The control plane is the only writer of `forge-identity-*` and `RELIANT_IDENTITY
 
 The primitive the projection is made of; write it yourself for an output the projection does not hand out: `env = {SECOND_ISSUER = forge.IdentityRef {output = "issuer"}}`. Application outputs take `application = "<name>"`.
 
+## Dev: `forge.IdentityOnHost`
+
+`forge env up` converges the declaration on the env's host-run Zitadel (the `HostInfra` named by `infra`) with the library the control plane runs, authenticated by the bootstrap PAT (`idp_pat_path`), in the server's default instance. It writes `.forge/identity/<name>.json` (non-secret) and the env's secret store (broker token, client secrets, `<USER>_MACHINE_KEY`), under the env var each reference resolves to. A seed user's password is the store entry its `password_secret` names (`forge secret set --env dev <NAME>`). `auth/dev-loop` has the rest.
+
 ## Not built yet
 
-`login.mode = "hosted"` (accepted, recorded, unconverged), `social` (refused), the identity reconciler and delivery (control plane), `forge env up` converging the dev instance.
+`login.mode = "hosted"` (accepted, recorded, unconverged), `social` (refused).

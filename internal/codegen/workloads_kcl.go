@@ -21,6 +21,9 @@ import (
 // git — so a fresh clone renders with nothing generated first.
 const WorkloadsKCLRelPath = "deploy/kcl/workloads.k"
 
+// IdentityKCLRelPath is the one ManagedIdentity declaration every env imports.
+const IdentityKCLRelPath = "deploy/kcl/identity.k"
+
 // WorkloadsKCLExists reports whether the project already declares its
 // workloads. Callers use it to decide between scaffolding the file and
 // appending to it; neither path ever overwrites existing content.

@@ -127,7 +127,11 @@ var PlanSections = []string{SectionStateful, SectionLB, SectionTrees, SectionObj
 
 // Plan is one reviewed deploy. Field names match controlplane.v1.DeployPlan.
 type Plan struct {
-	Digest         string        `json:"digest"`
+	Digest string `json:"digest"`
+	// BaseDigest is the digest before chart findings were folded in by
+	// [Plan.WithCharts]; empty when none were. Never serialized: it exists for
+	// the write to a control plane that recomputes the plan without charts.
+	BaseDigest     string        `json:"-"`
 	EnvironmentID  string        `json:"environment_id"`
 	BundleID       string        `json:"bundle_id"`
 	ReleaseVersion string        `json:"release_version,omitempty"`
@@ -160,6 +164,12 @@ type PlanFinding struct {
 	Subject string `json:"subject"`
 	// Detail is human-readable and NEVER a secret value. Not digested.
 	Detail string `json:"detail,omitempty"`
+	// Fingerprint pins the CONTENT a finding is about when no bundle does:
+	// the hash of a chart object's desired document. It is digested, so an
+	// approval of a plan names the exact chart change and not just the
+	// object's name. Empty for every bundle-backed finding, which keeps their
+	// digests what they always were.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // PlanInput is everything [BuildPlan] reads. It is assembled by the caller
@@ -198,6 +208,12 @@ type PlanInput struct {
 	// is a finding only when explicitly false — declared at the last apply,
 	// missing now.
 	SecretPresence map[string]bool
+
+	// Charts is what the env's forge.HelmChart platform deps would change in
+	// their clusters. A chart is applied on its own path and rides no bundle,
+	// so the shapes above cannot see it; the caller observes it and BuildPlan
+	// folds it into the same sections, under the same digest.
+	Charts ChartPlan
 }
 
 // DriftObservation is what an observer saw of the live cluster.
@@ -350,6 +366,8 @@ func BuildPlan(in PlanInput) (Plan, error) {
 		}
 	}
 
+	in.Charts.fold(&p)
+
 	// Secrets. Presence is consulted for EVERY declared secret, not only the
 	// new ones: a secret that was declared at the last apply and has since
 	// been deleted is the deploy that crash-loops on its next restart, and it
@@ -454,6 +472,9 @@ type planDigestFinding struct {
 	Class   FindingClass `json:"class"`
 	Section string       `json:"section"`
 	Subject string       `json:"subject"`
+	// Omitted when empty so a plan without chart findings digests exactly as
+	// it did before the field existed.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 func (p Plan) computeDigest() (string, error) {
@@ -468,7 +489,7 @@ func (p Plan) computeDigest() (string, error) {
 		Findings:        make([]planDigestFinding, len(findings)),
 	}
 	for i, f := range findings {
-		body.Findings[i] = planDigestFinding{Code: f.Code, Class: f.Class, Section: f.Section, Subject: f.Subject}
+		body.Findings[i] = planDigestFinding{Code: f.Code, Class: f.Class, Section: f.Section, Subject: f.Subject, Fingerprint: f.Fingerprint}
 	}
 	b, err := json.Marshal(body)
 	if err != nil {

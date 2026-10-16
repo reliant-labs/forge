@@ -71,8 +71,15 @@ const appliedBaselineMaxPromotions = 200
 // plan's, unless the plan is the actuator's own (a ledger-only env), which the
 // control plane cannot recompute and would refuse as stale.
 func serverPlanDigest(plan *release.Plan, ledger envLedger) string {
-	if ledger.forgePlans() {
+	if ledger.forgePlans() || plan == nil {
 		return ""
+	}
+	// A server recomputes the plan from bundles alone and cannot see chart
+	// findings, so it is sent the digest it can derive. The approval is still
+	// binding on the full digest: forge refuses --approve for any plan but its
+	// own recomputed one (checkPlanApproval), chart findings included.
+	if plan.BaseDigest != "" {
+		return plan.BaseDigest
 	}
 	return deployPlanDigest(plan)
 }

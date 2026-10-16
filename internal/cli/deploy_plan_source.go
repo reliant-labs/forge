@@ -59,7 +59,7 @@ import (
 // transient read failure an outage, and the one thing a missing plan must not
 // do is let a stop finding through silently, which gateDeployOnPlan handles by
 // refusing --approve rather than by admitting the write.
-func planForDeploy(ctx context.Context, projectDir, env, version string, ledger envLedger, errOut io.Writer) *release.Plan {
+func planForDeploy(ctx context.Context, projectDir, env, version string, targets []string, ledger envLedger, errOut io.Writer) *release.Plan {
 	digest, err := bundleDigestForRelease(ctx, projectDir, env, version, ledger)
 	if err != nil || digest == "" {
 		if err != nil {
@@ -74,7 +74,7 @@ func planForDeploy(ctx context.Context, projectDir, env, version string, ledger 
 			"the deploy continues behind the confirmation gate.\n", env, err)
 		return nil
 	}
-	return plan
+	return withChartFindings(ctx, projectDir, env, targets, plan, errOut)
 }
 
 // bundleDigestForRelease is the digest of the bundle a deploy of (env,

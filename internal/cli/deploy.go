@@ -704,7 +704,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		Confirm: newDeployConfirm(p, ""),
 		// The SERVER-BINDING half (O-13): the §8.6 plan this deploy is
 		// judged against, plus what the caller approved.
-		DeployPlan: planForDeploy(ctx, projectDir, envName, p.version, ledger, progressWriter(f.jsonOut)),
+		DeployPlan: planForDeploy(ctx, projectDir, envName, p.version, f.targets, ledger, progressWriter(f.jsonOut)),
 		Approval: deployApproval{
 			Digest:               p.approve,
 			AcknowledgedFindings: p.acknowledgeDestructive,

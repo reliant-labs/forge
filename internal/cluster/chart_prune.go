@@ -177,6 +177,18 @@ type liveChartObject struct {
 		OwnerReferences   []json.RawMessage `json:"ownerReferences"`
 		DeletionTimestamp string            `json:"deletionTimestamp"`
 	} `json:"metadata"`
+	// raw is the whole listed document, for the deploy plan's comparison.
+	raw map[string]any
+}
+
+// UnmarshalJSON decodes the fields the prune decides on and keeps the whole
+// document beside them.
+func (o *liveChartObject) UnmarshalJSON(b []byte) error {
+	type plain liveChartObject
+	if err := json.Unmarshal(b, (*plain)(o)); err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &o.raw)
 }
 
 func (o liveChartObject) ref() chartObjectRef {
@@ -248,20 +260,14 @@ func PruneChartObjects(ctx context.Context, kctx string, rc renderedChart) (prun
 	if strings.TrimSpace(kctx) == "" {
 		return nil, errors.New("chart prune: no kubectl context — a delete is never aimed at the current context")
 	}
-	desired, ok := desiredChartObjects(joinNonEmpty(rc.manifests, rc.extra), spec.Namespace)
-	if !ok {
+	del, kept, readable, err := chartPruneCandidates(ctx, kctx, rc)
+	if err != nil {
+		return nil, err
+	}
+	if !readable {
 		fmt.Printf("  chart %q: skipping prune (its render is empty or unreadable, so nothing can be proven absent)\n", spec.Name)
 		return nil, nil
 	}
-	resources, err := listChartPruneResources(ctx, kctx)
-	if err != nil {
-		return nil, err
-	}
-	live, err := listLiveChartObjects(ctx, kctx, resources, spec)
-	if err != nil {
-		return nil, err
-	}
-	del, kept := planChartPrune(desired, live)
 	for _, k := range kept {
 		fmt.Printf("  chart %q no longer renders %s; keeping it (%s)\n", spec.Name, k.Object, k.Why)
 	}
@@ -284,6 +290,29 @@ func PruneChartObjects(ctx context.Context, kctx string, rc renderedChart) (prun
 		pruned = append(pruned, o.ref().String())
 	}
 	return pruned, nil
+}
+
+// chartPruneCandidates is the prune's decision, without its effect: the live
+// objects the chart no longer renders that a prune would delete, and those a
+// guard keeps. readable is false when the render cannot prove anything absent.
+// Shared by PruneChartObjects and the deploy plan, so what the plan says it
+// will delete is what the apply deletes.
+func chartPruneCandidates(ctx context.Context, kctx string, rc renderedChart) (del []liveChartObject, kept []chartPruneKeep, readable bool, err error) {
+	spec := rc.spec
+	desired, ok := desiredChartObjects(joinNonEmpty(rc.manifests, rc.extra), spec.Namespace)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	resources, err := listChartPruneResources(ctx, kctx)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	live, err := listLiveChartObjects(ctx, kctx, resources, spec)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	del, kept = planChartPrune(desired, live)
+	return del, kept, true, nil
 }
 
 // listChartPruneResources asks the cluster which resource types can be listed

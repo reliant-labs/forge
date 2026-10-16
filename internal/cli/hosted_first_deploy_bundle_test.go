@@ -114,10 +114,14 @@ func TestHostedDeployPlansAgainstTheBundleJustRecorded(t *testing.T) {
 	writeBundlesFn = func(_ context.Context, _ string, _ []string, in bundleBuildInputs) ([]bundleWriteOutcome, error) {
 		return []bundleWriteOutcome{{Env: "prod", Digest: digest, Pushed: true, Recorded: true}}, nil
 	}
-	t.Cleanup(func() { hostedRecordStoreForDeploy, writeBundlesFn = prevStore, prevWrite })
+	prevCharts := observeDeployCharts
+	observeDeployCharts = func(context.Context, string, string, []string) release.ChartPlan { return release.ChartPlan{} }
+	t.Cleanup(func() {
+		hostedRecordStoreForDeploy, writeBundlesFn, observeDeployCharts = prevStore, prevWrite, prevCharts
+	})
 
 	ensureHostedReleaseBundle(context.Background(), dir, "prod", "v1.4.0", ledger, false, io.Discard)
-	got := planForDeploy(context.Background(), dir, "prod", "v1.4.0", ledger, io.Discard)
+	got := planForDeploy(context.Background(), dir, "prod", "v1.4.0", nil, ledger, io.Discard)
 	if got == nil {
 		t.Fatal("no plan computed for a hosted deploy whose bundle was just recorded")
 	}

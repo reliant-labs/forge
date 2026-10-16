@@ -150,7 +150,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		// The SERVER-BINDING half (O-13). The bundle this plan is
 		// computed against was written by step 1's build, which is why
 		// the plan is resolved HERE and not before it.
-		DeployPlan: planForDeploy(ctx, projectDir, envName, cut.Version, ledger, progressWriter(f.jsonOut)),
+		DeployPlan: planForDeploy(ctx, projectDir, envName, cut.Version, f.targets, ledger, progressWriter(f.jsonOut)),
 		Approval: deployApproval{
 			Digest:               p.approve,
 			AcknowledgedFindings: p.acknowledgeDestructive,

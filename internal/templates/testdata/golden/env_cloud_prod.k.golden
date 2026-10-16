@@ -38,6 +38,9 @@ import forge.workloads as fw
 # What this project RUNS — declared once, shared by every env.
 import ..workloads as wl
 
+# The users — declared once, shared by every env; only where they run differs.
+import ..identity as idn
+
 # Per-environment config values (the typed AppConfig instance in config.k).
 import config_gen
 import .config as appcfg
@@ -211,6 +214,12 @@ _bundle = forge.Bundle {
     control_plane = forge.ControlPlane {}
     workloads = _workloads
     databases = [_db]
+    # THE USERS (deploy/kcl/identity.k), hosted: the control plane gives this
+    # env its own identity instance and delivers its issuer, audience, client
+    # id and broker token to the API (forge.IdentityRef): nothing is copied by
+    # hand. Bringing your own issuer instead? Delete this line and set
+    # jwt_issuer / oidc_client_id in config.k.
+    identity = idn.IDENTITY
     # Where each frontend runs here, one binding each — rebind by editing its
     # line, or as an env is created: `forge env new <name> --bind
     # web=bucket`.

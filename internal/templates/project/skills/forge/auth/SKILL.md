@@ -1,6 +1,6 @@
 ---
 name: auth
-description: Authentication — the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, shared-issuer, api-keys.
+description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, shared-issuer, api-keys.
 ---
 
 # Authentication
@@ -11,7 +11,16 @@ Authentication is a **middleware, nothing more**: an interceptor validates the r
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the opt-in dev IdP), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**.
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**.
+
+## The default: managed identity
+
+A project with a frontend declares its users once, in `deploy/kcl/identity.k` (`forge.ManagedIdentity`: roles, machine users, seed users), and every env imports it. Only where it runs differs: the dev IdP in dev (`forge.IdentityOnHost {infra = "idp"}`, converged by `forge env up`), the control plane's identity instance in staging and prod (the default runtime, which needs `control_plane`). From that declaration forge fills the API's `jwt_issuer`, `jwt_audience`, `oidc_scopes`, `oidc_client_id`, `oidc_redirect_uri`, `idp_login_uri`, `idp_base`, `idp_broker_token`, `jwt_jwks_snapshot` and `jwt_roles_claim` (`forge.IdentityRef`). You write no `config.k` line for them, copy no client id, and `SetupAuth` below needs no edit. Roles reach handlers as `Claims.Roles` (`auth/shared-issuer`).
+
+- **A hand-set field is refused.** A workload that sets `JWT_ISSUER`, `JWT_AUDIENCE`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI` or `IDP_BASE` beside `Bundle.identity` fails the render, naming both. One source per field.
+- **Dev:** `forge env up` converges the identity on the host IdP and writes the broker token and ids to the env's secret store; `.forge/identity/<name>.json` holds the non-secret outputs. `auth/dev-loop` has the detail and the failures.
+- **Hosted:** the control plane delivers the same values; `deploy/managed-identity` has the fields, what each runtime receives, and what is refused.
+- **Bring your own issuer** (Auth0, Okta, Keycloak, a Zitadel you run) stays supported and is the escape hatch: declare no `identity` in that env and set `jwt_issuer` / `oidc_client_id` in its `config.k` (see "Swapping the IdP").
 
 ## Choosing the validator (owned code, not config)
 
@@ -60,7 +69,9 @@ func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {
 - **`jwt_signing_method` and the key must agree.** Default `RS256`, so a shared-secret `jwt_secret` needs `HS256` — otherwise a correctly-signed token is rejected on `alg` alone, which reads as a bad secret and is not.
 - **Swap the validator freely** — arbitrary code, not a fixed enum. A nil validator makes the server **refuse to start**.
 
-### Swapping the IdP
+### Swapping the IdP (bring your own issuer)
+
+The escape hatch from managed identity: an env that declares no `identity` takes its issuer from `config.k`.
 
 **Most swaps are a CONFIG change, not a code change.** Any standards-compliant issuer — Auth0, Keycloak, Zitadel, Okta, Supabase, a local dev IdP — needs no constructor: point `jwt_issuer` (plus `jwt_jwks_url` if discovery cannot describe it) at the new issuer and the default validator validates against its keys.
 
@@ -173,7 +184,7 @@ Wired in every scaffold, disabled until you supply a key validator. A key arrive
 
 ## Dev mode
 
-Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge secret set --env dev JWT_SECRET`), or use the dev IdP, which `forge env up` brings up as a host process for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge env up` reproduces it, credential included.
+Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge secret set --env dev JWT_SECRET`), or use the dev IdP, which `forge env up` brings up as a host process and converges (`identity` on the dev Bundle) for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge env up` reproduces it, credential included.
 
 Load `auth/dev-loop` before debugging a local 401: it covers the traps that are not your wiring — the dev IdP answers to ONE hostname (`localhost`, which is why its dev loop is `forge env up`, not a containerized app), and an OIDC app registered with the default token type mints OPAQUE access tokens no JWKS can validate.
 

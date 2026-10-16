@@ -166,6 +166,14 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		return fmt.Errorf("scaffold %s: %w", codegen.WorkloadsKCLRelPath, err)
 	}
 
+	// The users, declared once for every env. Only a project with a frontend
+	// has someone to sign in; a project without one declares no identity.
+	if g.forScaffold().HasFrontend {
+		if err := ScaffoldIdentityKCL(g.Path, g.Name); err != nil {
+			return fmt.Errorf("scaffold %s: %w", codegen.IdentityKCLRelPath, err)
+		}
+	}
+
 	return nil
 }
 
@@ -372,4 +380,22 @@ func (g *ProjectGenerator) generateIDPSteps() error {
 		return fmt.Errorf("render idp-steps.yaml: %w", err)
 	}
 	return os.WriteFile(filepath.Join(g.Path, "idp-steps.yaml"), content, 0644)
+}
+
+// ScaffoldIdentityKCL writes deploy/kcl/identity.k, the one ManagedIdentity
+// declaration every env imports. Write-if-absent: it is the project's from
+// birth, and nothing regenerates it.
+func ScaffoldIdentityKCL(projectDir, projectName string) error {
+	dest := filepath.Join(projectDir, codegen.IdentityKCLRelPath)
+	if _, err := os.Stat(dest); err == nil {
+		return nil
+	}
+	content, err := templates.DeployTemplates().Render("kcl/identity.k.tmpl", struct{ ProjectName string }{projectName})
+	if err != nil {
+		return fmt.Errorf("render identity.k template: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(dest, content, 0644)
 }

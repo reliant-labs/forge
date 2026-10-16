@@ -33,6 +33,11 @@ import kcl_plugin.forge as plugin
 
 # What this project RUNS — declared once, shared by every env.
 import ..workloads as wl
+{{- if .HasFrontend}}
+
+# The users — declared once, shared by every env; only where they run differs.
+import ..identity as idn
+{{- end}}
 
 # Per-environment config values (the typed AppConfig instance in config.k,
 # next to this file); `config_gen.appConfigEnvMap` projects them into each
@@ -390,14 +395,12 @@ _bundle = forge.Bundle {
     }]
 {{- end}}
 {{- if .HasFrontend}}
-    # THE USERS, declared. `forge env up` converges this on the IdP above with
-    # the same library the control plane runs for a hosted env, and fills the
-    # API's issuer, audience, client id, redirect and login URIs, IdP base and
-    # broker token from the result (forge.IdentityRef): nothing is copied by
-    # hand. Roles, machine users and seed users are declared here.
-    identity = forge.ManagedIdentity {
-        runtime = forge.IdentityOnHost {infra = "idp"}
-    }
+    # THE USERS, declared once in deploy/kcl/identity.k and run here on the dev
+    # IdP above. `forge env up` converges them with the same library the
+    # control plane runs for a hosted env, and fills the API's issuer,
+    # audience, client id, redirect and login URIs, IdP base and broker token
+    # from the result (forge.IdentityRef): nothing is copied by hand.
+    identity = idn.IDENTITY | {runtime = forge.IdentityOnHost {infra = "idp"}}
 {{- end}}
     # SECRET VALUES for this env — `_secret_store`, declared above.
     secret_provider = _secret_store

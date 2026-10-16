@@ -74,6 +74,10 @@ var IdentityOutputs = []string{
 	"jwks", "login_uri", "redirect_uri", "roles_claim", "scopes",
 }
 
+// IdentityOmittableOutputs are the outputs a consumer may decline to have
+// projected ([ShapeIdentityConsumer.Omit]). The rest define the identity.
+var IdentityOmittableOutputs = []string{"jwks", "login_uri", "roles_claim", "scopes"}
+
 var (
 	identityNameRE   = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	identityRoleRE   = regexp.MustCompile(`^[a-z][a-z0-9_.:-]{0,63}$`)
@@ -175,6 +179,10 @@ type ShapeIdentityConsumer struct {
 	// DeliverOnly says the control plane delivers this consumer's Secrets but
 	// forge projects nothing into the workload: it still reads its own config.
 	DeliverOnly bool `json:"deliver_only,omitempty"`
+	// Omit lists outputs ([IdentityOmittableOutputs]) forge does not project
+	// into the workload, for an app whose config has no field for them. The
+	// Secrets still carry them.
+	Omit []string `json:"omit,omitempty"`
 }
 
 // ShapeIdentityMachineUser is a non-human account whose key is delivered.
@@ -268,6 +276,7 @@ func (i ShapeIdentity) canonical() ShapeIdentity {
 			if len(c.Fields) == 0 {
 				c.Fields = nil
 			}
+			c.Omit = sortedNonEmpty(c.Omit)
 			out.Consumers[n] = c
 		}
 		sort.Slice(out.Consumers, func(a, b int) bool {
@@ -422,6 +431,19 @@ func (i ShapeIdentity) validate(controlPlaneSecrets []ShapeControlPlaneSecret) e
 			}
 			if !identityFieldRE.MatchString(field) {
 				return bad("consumer %q maps %q to %q, which is not a config field name", c.Workload, output, field)
+			}
+		}
+		omitted := map[string]bool{}
+		for _, output := range c.Omit {
+			if !containsString(IdentityOmittableOutputs, output) {
+				return bad("consumer %q omits output %q (only %s may be omitted; deliver_only projects nothing)", c.Workload, output, strings.Join(IdentityOmittableOutputs, ", "))
+			}
+			if omitted[output] {
+				return bad("consumer %q omits output %q twice", c.Workload, output)
+			}
+			omitted[output] = true
+			if _, mapped := c.Fields[output]; mapped {
+				return bad("consumer %q both maps and omits output %q", c.Workload, output)
 			}
 		}
 	}

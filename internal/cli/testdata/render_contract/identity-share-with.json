@@ -32,7 +32,9 @@
       "consumers": [
         {
           "application": "preview-142:api",
+          "deliver_only": null,
           "fields": null,
+          "omit": null,
           "workload": "api"
         }
       ],

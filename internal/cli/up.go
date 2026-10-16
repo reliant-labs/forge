@@ -1032,7 +1032,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 			}
 		}
 	}
-	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForLaunch(entities), secretStoreLabel(entities)); err != nil {
+	if err := secrets.ValidateDeclaredRefs(prov, withoutHostIdentityRefs(entities, secretRefsForLaunch(entities)), secretStoreLabel(entities)); err != nil {
 		return withEnvInSecretFix(err, opts.env) // already actionable; lists every missing key
 	}
 
@@ -1321,14 +1321,13 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		if err := ensureDevDatabase(cfg, entities, opts.env); err != nil {
 			return err
 		}
-		// Identity needs no SPECIAL step here — the idp-provision job below
-		// IS the convergence step, run through the exact same runHostJobs
-		// path as any other one-shot. The values it publishes (the
-		// generated client_id, the project id) reach both halves of the
-		// app as ordinary per-env config, by importing the committed file
-		// it writes, like every other declared value — there is no
-		// separate bring-up step to skip, reorder, or forget.
-		//
+		// A managed identity on the env's host-run IdP (forge.IdentityOnHost)
+		// is converged HERE, by the same pkg/identity reconciler the control
+		// plane runs against hosted instances: the IdP is up (infra above),
+		// and the services that read its issuer, audience and broker token
+		// have not started. What it publishes lands in the env's secret
+		// store, re-read below.
+		convergeHostIdentity(ctx, entities, p.projectDir, p.prov)
 		// One-shot jobs run to completion BEFORE any host service starts —
 		// that is the ordering the `job` component kind declares, and on
 		// the host there is no orchestrator underneath us to enforce it.
@@ -1338,12 +1337,11 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		if err := runHostJobs(ctx, cfg, entities, p.prov.All(), opts.env); err != nil {
 			return err
 		}
-		// Re-read the secret store for the same reason the config below is
-		// re-read: a job may have PUBLISHED into it. idp-provision stores
-		// the login broker's token there (IDP_BROKER_TOKEN), and the store
-		// was read before it ran — so on a fresh project the API would
-		// start without the token it was just given, and native sign-in
-		// would 404 until a second `forge env up`.
+		// Re-read the secret store: the identity step above (and any job)
+		// may have PUBLISHED into it. The store was read before they ran, so
+		// without this a fresh project's API would start without the broker
+		// token it was just given and native sign-in would 404 until a
+		// second `forge env up`.
 		prov, err := reloadSecretsAfterJobs(p.prov, entities, p.projectDir)
 		if err != nil {
 			return err
@@ -1351,15 +1349,14 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		p.prov = prov
 		// Re-read what those jobs PUBLISHED into the environment's config.
 		//
-		// idp-provision registers the browser application and writes the
-		// generated client_id into deploy/kcl/<env>/idp_identity_gen.k. The
-		// frontend's config.js was rendered by `forge generate`, BEFORE that
-		// file had a real value in it — so on a fresh project the browser
+		// The identity step registers the browser application and the
+		// frontend's config.js was rendered by `forge generate`, BEFORE a
+		// client_id existed — so on a fresh project the browser
 		// would be served an empty OIDC_CLIENT_ID (the frontend's no-auth
 		// posture) until someone ran generate a second time, with nothing on
 		// screen saying so. The value cannot exist any earlier: it is minted
-		// by a running IdP on request. So it is re-read here, once the jobs
-		// that produce it have run and before the frontend serves anything.
+		// by a running IdP on request. So it is re-read here, once the identity
+		// and jobs that produce it have run and before the frontend serves anything.
 		//
 		// A no-op from the second run on, and never fatal — see
 		// refreshFrontendRuntimeConfigs.

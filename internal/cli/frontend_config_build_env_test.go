@@ -46,12 +46,9 @@ func TestRefreshFrontendRuntimeConfigs_OverwritesAnotherEnvsDocument(t *testing.
 	}
 	writeFrontendCfgFile(t, filepath.Join(kclDir, "prod", "config.k"),
 		"app_config = {\n    log_level = \"info\"\n}\n")
-	if err := codegen.EnsureIDPIdentityStub(kclDir, "prod"); err != nil {
-		t.Fatalf("EnsureIDPIdentityStub(prod): %v", err)
-	}
 	fc := identityFrontendConfig()
 	if _, err := codegen.EnsureFrontendConfigInstances(
-		[]codegen.FrontendConfig{fc}, kclDir, "prod", "acme", true, identityBackendFields()); err != nil {
+		[]codegen.FrontendConfig{fc}, kclDir, "prod", "acme"); err != nil {
 		t.Fatalf("EnsureFrontendConfigInstances(prod): %v", err)
 	}
 	// Give prod a client id dev does not have, standing in for any per-env
@@ -118,19 +115,4 @@ func renderValues(t *testing.T, fc codegen.FrontendConfig, values map[string]map
 		t.Fatal(err)
 	}
 	return string(encoded)
-}
-
-// writeConvergedIdentityForEnv is writeConvergedIdentity for an arbitrary env
-// rather than the hardcoded dev, so a test can make two envs genuinely differ.
-func writeConvergedIdentityForEnv(t *testing.T, projectDir, env, clientID string) {
-	t.Helper()
-	path := filepath.Join(projectDir, "deploy", "kcl", env, codegen.IDPIdentityModule+".k")
-	body := "idp_identity = {\n" +
-		"    \"client_id\" = \"" + clientID + "\"\n" +
-		"    \"audience\" = \"generated-project-id\"\n" +
-		"    \"issuer\" = \"http://localhost:8080\"\n" +
-		"}\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("write identity for %s: %v", env, err)
-	}
 }

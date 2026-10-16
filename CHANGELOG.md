@@ -22,6 +22,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Next.js frontend records a visible 90-day reviewed acceptance for the dev-only
   braces advisory, which has no fixed release.
 
+### Changed
+
+- **`forge env up` converges a host-run managed identity with `pkg/identity`
+  (FI4).** An env whose `identity` runtime is `forge.IdentityOnHost {infra}` is
+  converged against its host Zitadel after the infra is up and before any host
+  service starts, with the same library the control plane runs for hosted
+  envs, authenticated by the bootstrap PAT (`idp_pat_path`), in the server's
+  default instance. Non-secret outputs go to `.forge/identity/<name>.json`;
+  the broker token, client secrets and machine keys go to the env's secret
+  store under the env var each `forge.IdentityRef` resolves to, so a host-run
+  API gets `jwt_issuer`, `jwt_audience`, `oidc_*`, `idp_base` and
+  `idp_broker_token` with nothing copied. The launch pre-flight no longer asks
+  for those store keys beforehand.
+- **Removed: the `auth idp-provision` command, the `idp-provision` workload and
+  its env binding, `deploy/kcl/<env>/idp_identity_gen.k`, and the
+  `pkg/devidp` provisioning half** (`Reconcile`, `Spec`, `Identity`, the
+  publishers, `EnsureProject`/`EnsureSPAApplication`, `ProvisionLoginBroker`,
+  `SecretFile`, `RedirectGlob`/`LogoutGlob`). `pkg/devidp` keeps the sign-in
+  broker's client (flow, login, password reset, token file). A project that
+  has the old job migrates by declaring `identity = forge.ManagedIdentity
+  {runtime = forge.IdentityOnHost {infra = "idp"}}` on its dev Bundle.
+
 ### Added
 
 - **`forge.ManagedIdentity`: an env's users, declared in KCL, with no app code

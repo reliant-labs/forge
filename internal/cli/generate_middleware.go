@@ -814,23 +814,8 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 		// write-if-absent would never revisit it — leaving the runtime
 		// projection with no instance to project and the environment
 		// silently on proto defaults.
-		// The dev identity block rides along for the DEV env of a project
-		// that declares an IdP. Both halves of the gate matter: a deployed
-		// environment's issuer is a real one whose applications are
-		// registered out of band, and a project scaffolded without a
-		// frontend declares no IdP-convergence workload to seed a block for.
-		devIdentity := envName == "dev" && projectDeclaresDevIDP(projectDir)
-		if devIdentity {
-			// The stub this config.k's import unconditionally reads from —
-			// see EnsureIDPIdentityStub. Seeded BEFORE the instance below,
-			// so the very first render after the identity fields are added
-			// has something to import.
-			if serr := codegen.EnsureIDPIdentityStub(kclDirAbs, envName); serr != nil {
-				return fmt.Errorf("seed %s idp identity stub: %w", envName, serr)
-			}
-		}
 		if added, ferr := codegen.EnsureFrontendConfigInstances(
-			frontendConfigs, kclDirAbs, envName, cfg.Name, devIdentity, fields); ferr != nil {
+			frontendConfigs, kclDirAbs, envName, cfg.Name); ferr != nil {
 			return fmt.Errorf("scaffold %s frontend config instances: %w", envName, ferr)
 		} else if len(added) > 0 {
 			fmt.Printf("  ✅ deploy/kcl/%s/config.k: added runtime config instance(s) for frontend(s) %s\n",

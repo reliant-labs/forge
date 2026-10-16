@@ -2191,7 +2191,7 @@ func validateAuthMode(ctxLabel, authMode string) error {
 // devIdentityProviderRE matches the dev environment's IdP declaration: the
 // HostInfra engine forge supervises as the dev identity provider. It is the
 // same fact the scaffolded dev/main.k gates its whole sign-in wiring on
-// (the idp workload, IDP_BASE, the idp-provision job's login URI).
+// (the idp infra and the identity declared on it).
 var devIdentityProviderRE = regexp.MustCompile(`(?m)^[^#\n]*engine\s*=\s*"zitadel"`)
 
 // projectDeclaresDevIDP reports whether deploy/kcl/dev/main.k declares a dev

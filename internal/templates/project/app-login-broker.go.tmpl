@@ -343,7 +343,7 @@ func registrationMessage(err error) string {
 // errLoginNotConfigured names what is missing, and how to get it.
 var errLoginNotConfigured = errors.New(
 	"native sign-in needs idp_broker_token (or idp_broker_token_file) and oidc_client_id; " +
-		"run `{{.Name}} auth idp-provision --login-uri <app>/auth/sign-in` to provision them")
+		"declare a forge.ManagedIdentity in deploy/kcl/<env>/main.k and run `forge env up` to converge it (see `forge skill load deploy/managed-identity`)")
 
 // LoginBrokerConfigured reports whether this deployment can serve sign-in.
 // Check it at boot: an app that renders its own login form but cannot reach

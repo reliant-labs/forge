@@ -1654,18 +1654,6 @@ func stepConfigLoader(ctx *pipelineContext) error {
 	}
 	ctx.ConfigFields = configFields
 
-	// cmd/<bin>/cmd/auth.go (`auth idp-provision`) births alongside the
-	// rest of the scaffold-once command tree, gated on the project
-	// actually shipping a frontend — see ScaffoldCmdAuthIfMissing.
-	if ctx.Cfg != nil {
-		frontendName := ""
-		if len(ctx.Cfg.Frontends) > 0 {
-			frontendName = ctx.Cfg.Frontends[0].Name
-		}
-		if err := codegen.ScaffoldCmdAuthIfMissing(len(ctx.Cfg.Frontends) > 0, frontendName, ctx.ProjectDir); err != nil {
-			return fmt.Errorf("scaffold cmd/<bin>/cmd/auth.go: %w", err)
-		}
-	}
 	return nil
 }
 

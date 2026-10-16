@@ -210,9 +210,7 @@ func workloadDeclaredIn(content, name string) bool {
 // by that name, ignoring prose that merely mentions it.
 //
 // Exported for callers that need to ask what a project DECLARES rather than
-// what it has on disk in some other format — the dev-identity gate asks
-// whether `idp-provision` is declared instead of parsing docker-compose.yml
-// for an `idp` service (see internal/cli/devidp_gate.go).
+// what it has on disk in some other format.
 func WorkloadDeclared(content, name string) bool {
 	return workloadDeclaredIn(content, name)
 }

@@ -466,13 +466,6 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		if g.Features.MigrationsEnabled() {
 			files = append(files, struct{ template, dest string }{"cmd-tree-db.go.tmpl", filepath.Join(treeDir, "db.go")})
 		}
-		// cmd/<bin>/cmd/auth.go (`auth idp-provision`) exists to converge
-		// the dev IdP application — an IdP exists to complete a browser
-		// sign-in, so a project with no frontend never gets this command
-		// at all, the same gate docker-compose.yml's `idp` service uses.
-		if g.FrontendName != "" {
-			files = append(files, struct{ template, dest string }{"cmd-tree-auth.go.tmpl", filepath.Join(treeDir, "auth.go")})
-		}
 	}
 
 	// Service-kind scaffolds always get Dockerfile / .dockerignore — see

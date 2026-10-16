@@ -30,11 +30,10 @@ import (
 //     stepping, so its store remains the source of truth).
 //
 // Dev IdP identity is NOT armed here. There is no render-time resolver for
-// it: the `idp-provision` job (deploy/kcl/workloads.k, run as an ordinary
-// one-shot alongside every other job) converges the registration and
-// PUBLISHES the result — a ConfigMap on a cluster target, a committed KCL
-// file on compose/dev — and every render simply reads whatever was last
-// published. See the `auth/dev-loop` skill.
+// it: `forge env up` converges the env's forge.ManagedIdentity against the
+// host IdP and writes the result to .forge/identity/<name>.json and the
+// env's secret store; the render lowers forge.IdentityRef to those store
+// keys. See the `auth/dev-loop` skill.
 //
 // It returns a restore func that reverts the port store to its pre-render
 // bytes — the up path calls it when its already-running guard rejects a

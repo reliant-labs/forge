@@ -1017,7 +1017,7 @@ schema HostInfra:
     release. Its declarative bootstrap is unchanged by running on the host:
     `idp_steps_file` still describes the instance, org, admin user and
     service account, and Zitadel still writes that account's PAT to
-    `idp_pat_path` for the idp-provision job to read. It stores its state in
+    `idp_pat_path`, which `forge env up` reads to converge the env's identity. It stores its state in
     postgres — `idp_database` on the server at `idp_database_port`, which is
     normally the SAME host-native postgres this environment already
     declares, so one server backs both and the IdP's schema still cannot
@@ -1078,8 +1078,8 @@ schema HostInfra:
     # the service account whose PAT forge uses to register the browser app.
     idp_steps_file: str = "idp-steps.yaml"
     # Where Zitadel writes that service account's personal access token on
-    # first boot. Must match what the idp-provision job reads (its
-    # --pat-file default) — the two are ONE declaration.
+    # first boot. `forge env up` reads it to converge the env's
+    # forge.ManagedIdentity.
     idp_pat_path: str = ".forge/idp/pat.txt"
 
     check:

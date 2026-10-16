@@ -144,11 +144,6 @@ func APIWorkloadStanza(modulePath, projectName string, extraSecrets ...string) s
 	return b.String()
 }
 
-// LoginBrokerTokenEnv is the env var the scaffolded server reads the login
-// broker's token from (the `idp_broker_token` config field), and the key the
-// idp-provision job stores it under (devidp.BrokerTokenKey).
-const LoginBrokerTokenEnv = "IDP_BROKER_TOKEN"
-
 // workloadLiteralIdent is workloadLiteral with the declared identifier
 // captured.
 var workloadLiteralIdent = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*fw\.Workload\s*\{`)

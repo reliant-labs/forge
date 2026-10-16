@@ -309,8 +309,8 @@ func runHostJobs(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities,
 		// no dependents to protect, so aborting the whole up on its failure
 		// takes down a stack it was not standing in front of — which is what
 		// happened to every second project on a machine: the dev IdP's port
-		// was already held by another stack, idp-provision could not
-		// converge, and `forge env up` refused to start the app at all. The
+		// was already held by another stack, the IdP could not
+		// start, and `forge env up` refused to start the app at all. The
 		// backend and frontend would have come up perfectly well; only
 		// sign-in was unavailable.
 		//
@@ -388,7 +388,7 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	// The job's output ALSO goes to its log under .forge/logs/<env>/, the
 	// file the `forge env up` summary lists for it beside every other host
 	// process's. Jobs used to print to the terminal only, so the summary
-	// pointed at migrate.log and idp-provision.log files that never existed.
+	// pointed at migrate.log and other job log files that never existed.
 	if env != "" {
 		if logFile, lerr := openJobLog(env, j.Name); lerr == nil {
 			defer func() { _ = logFile.Close() }()
@@ -414,12 +414,8 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
 	// A job's OWN KCL env_vars are the last of the three map layers, so a
 	// value the environment DECLARES for this job beats project config and
-	// secrets alike. That is how the dev IdP's address reaches
-	// idp-provision: deploy/kcl/dev/main.k hands it IDP_BASE /
-	// IDP_BROWSER_ORIGIN composed from the same port it publishes the
-	// container on, so the job dials the IdP that is actually running
-	// rather than the "http://localhost:8080" literal baked into its flag
-	// defaults at project-generation time.
+	// secrets alike. That is how an env hands a job coordinates composed from a port it
+	// declares once, rather than a literal baked in at generation time.
 	// Secrets are scoped to what this job DECLARES, exactly as a host
 	// service's are. Handing a job the whole store was the same wholesale
 	// injection the dotenv provider was removed for — and it did real

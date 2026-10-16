@@ -78,8 +78,8 @@ func declaredWorkloadNames(src string) map[string]bool {
 }
 
 // runsBuiltinCommand reports whether a declared workload is one of the
-// project binary's OWN commands — the scaffolded `db migrate up` job, the
-// `auth idp-provision` job, an all-in-one `server` — rather than a
+// project binary's OWN commands — the scaffolded `db migrate up` job, an
+// all-in-one `server` — rather than a
 // component. Such a workload is neither a component nor drift: nothing in
 // the code is missing, and nothing about it is stale.
 func runsBuiltinCommand(w codegen.DeclaredWorkload, projectName string) bool {

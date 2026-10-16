@@ -77,15 +77,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		envs = append(envs, struct{ env, template string }{env, "kcl/cloud/main.k.tmpl"})
 	}
 	for _, e := range envs {
-		// The dev env runs the dev IdP when there is a frontend, and its
-		// idp-provision job stores the login broker's token in the env's
-		// secret store. The API is the one workload that brokers sign-in,
-		// so it is the one that names the token; without it the server
-		// boots with no broker and /auth/login is a 404.
 		var apiSecrets []string
-		if e.env == codegen.DevEnvName && hasFrontend {
-			apiSecrets = append(apiSecrets, codegen.LoginBrokerTokenEnv)
-		}
 		data := templates.EnvTemplateData{
 			ProjectName: g.Name,
 			EnvName:     e.env,
@@ -183,9 +175,6 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 // is bound only in dev, whose IdP it registers against.
 func scaffoldEnvBindings(env string, components codegen.Inventory, hasFrontend bool) string {
 	lines := []string{codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.MigrateWorkloadName)}
-	if hasFrontend && env == codegen.DevEnvName {
-		lines = append(lines, codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.IDPProvisionWorkloadName))
-	}
 	// Every env runs its services and workers as ONE workload, `_api` (the
 	// binary's `server`), so the browser reaches every service at one origin
 	// — see codegen.APIWorkloadName. It is bound once there is something for
@@ -243,11 +232,6 @@ func (g *ProjectGenerator) bornComponents() codegen.Inventory {
 // inventory rather than write an empty file, or that empty file becomes the
 // one automatic write and the real components never land (see the call in
 // generateKCLDeploy).
-//
-// hasFrontend gates the second scaffolded one-shot, idp-provision — the
-// same gate docker-compose.yml's `idp` service and the `auth.go` command
-// scaffold both use. A project with no browser never gets an IdP to
-// converge, so it never gets a job for converging one either.
 func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components codegen.Inventory, hasFrontend bool) error {
 	if codegen.WorkloadsKCLExists(projectDir) {
 		return nil
@@ -270,15 +254,6 @@ func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components
 	}
 	stanzas.WriteString(codegen.MigrateWorkloadStanza(modulePath, projectName))
 
-	// The dev-IdP convergence step. Not broadcast-gated (see the stanza's
-	// own comment for why), so its position in the file has no ordering
-	// consequence — it is appended after migrate simply because migrate
-	// is the project's oldest one-shot.
-	if hasFrontend {
-		stanzas.WriteString("\n")
-		stanzas.WriteString(codegen.IDPProvisionWorkloadStanza(modulePath, projectName))
-	}
-
 	// The identifier the docstring uses in its worked `wl.<name> | {...}`
 	// example. Naming a workload the project ACTUALLY has makes the example
 	// copy-pasteable; with no workloads yet it falls back to a placeholder
@@ -296,9 +271,6 @@ func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components
 	// every gated pod, so putting the migration ahead of everything is what
 	// makes a later-added one-shot run against a current schema.
 	idents := []string{naming.KCLIdentifier(codegen.MigrateWorkloadName)}
-	if hasFrontend {
-		idents = append(idents, naming.KCLIdentifier(codegen.IDPProvisionWorkloadName))
-	}
 	idents = append(idents, componentIdents...)
 
 	content, err := templates.DeployTemplates().Render("kcl/workloads.k.tmpl", struct {

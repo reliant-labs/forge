@@ -428,13 +428,13 @@ message AppConfig {
   // login-client role, which can complete a sign-in for ANY user in the
   // instance. It belongs to the one service that brokers logins: not in a
   // frontend, not in a build environment, not shared with the provisioning
-  // credential (`auth idp-provision` creates a separate account for it, so
+  // credential (the identity converge creates a separate account for it, so
   // the two can be rotated and revoked independently).
 
   string idp_login_uri = 33 [(forge.v1.config) = {
     env_var: "IDP_LOGIN_URI"
     flag: "idp-login-uri"
-    description: "The app's OWN sign-in route (e.g. http://localhost:3000/auth/login). Set it to run the API-only sign-in flow, where the issuer redirects the authorization request back into this app instead of rendering its own login pages; `auth idp-provision` converges the issuer's login-UI setting to this value. EMPTY (the default) keeps the issuer-hosted login pages, which is the standard OIDC redirect flow and needs no extra credential. Setting this ALSO changes the shape of the auth request the issuer mints (v2 rather than v1), which is what the finalize call requires — so it is not a cosmetic redirect target, it is the switch that makes the whole flow available."
+    description: "The app's OWN sign-in route (e.g. http://localhost:3000/auth/login). Set it to run the API-only sign-in flow, where the issuer redirects the authorization request back into this app instead of rendering its own login pages; the managed identity converges the issuer's login-UI setting to this value. EMPTY (the default) keeps the issuer-hosted login pages, which is the standard OIDC redirect flow and needs no extra credential. Setting this ALSO changes the shape of the auth request the issuer mints (v2 rather than v1), which is what the finalize call requires — so it is not a cosmetic redirect target, it is the switch that makes the whole flow available."
   }];
 
   string idp_base = 34 [(forge.v1.config) = {

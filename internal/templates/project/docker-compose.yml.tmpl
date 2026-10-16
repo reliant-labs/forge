@@ -319,8 +319,8 @@ services:
       #
       # The FRONTEND's port is a different matter and is NOT pinned: the
       # app registered here runs in dev mode, where Zitadel matches
-      # redirect URIs as globs, so the idp-provision job (deploy/kcl/
-      # workloads.k) registers http://localhost:*/auth/callback and the
+      # redirect URIs as globs, so `forge env up` (which converges the env's
+      # forge.ManagedIdentity) registers http://localhost:*/auth/callback and the
       # frontend keeps whatever port the kernel gives it.
       #
       # Zitadel needs ONE port — its console, APIs and OIDC endpoints are

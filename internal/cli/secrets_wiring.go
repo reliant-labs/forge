@@ -88,8 +88,8 @@ func secretProviderFromEntities(e *KCLEntities, projectDir string) (secrets.Prov
 // reloadSecretsAfterJobs re-reads a FILE secret store once the host jobs have
 // run, and returns the provider the host services should start with.
 //
-// A job is allowed to publish into the store — idp-provision keeps the login
-// broker's token there — and `forge env up` read the store before any job
+// A job (or the host-identity step) is allowed to publish into the store — the
+// login broker's token lives there — and `forge env up` read the store before any job
 // ran. Without the re-read, the value a job just wrote reaches the services
 // only on the NEXT run, which on a fresh project means a first `forge env up`
 // whose sign-in does not work. Other providers (external, hosted, none) are

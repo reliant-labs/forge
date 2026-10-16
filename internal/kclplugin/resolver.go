@@ -28,11 +28,10 @@
 // from INSIDE a render by dialing the IdP mid-evaluation. That solved a
 // problem that does not exist: a render never actually needs to LEARN a
 // generated value, because a workload can reference it BY NAME instead. The
-// generated identity is now converged by an ordinary deploy-time Job
-// (`auth idp-provision`, pkg/devidp) that PUBLISHES it — a ConfigMap on a
-// cluster target, a committed KCL file on compose/dev — and every render
-// just reads whatever was last published, the same way it reads any other
-// declared fact. See the `auth/dev-loop` skill.
+// generated identity is now converged by `forge env up` (pkg/identity, the
+// library the control plane runs too), which publishes it to the env's
+// secret store; every render lowers forge.IdentityRef to those keys. See
+// the `auth/dev-loop` skill.
 //
 // The plugin bridge that lets KCL call back into Go is forge's own purego
 // callback (bridge.go) — no cgo, so every forge binary on every OS has it.

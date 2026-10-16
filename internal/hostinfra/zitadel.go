@@ -27,7 +27,7 @@ package hostinfra
 // the instance, the org, the admin human and the service account, still
 // arrives via `--steps`, and Zitadel still writes the service-account PAT to
 // the path ZITADEL_FIRSTINSTANCE_PATPATH names — which is the file the
-// idp-provision job reads. Only the EXECUTION changed from container to host
+// identity step of `forge env up` reads. Only the EXECUTION changed from container to host
 // process; every declaration, every env var and every file path is the same
 // one the compose service used.
 //
@@ -232,7 +232,7 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	}
 	// The PAT the declarative boot writes, which the idp-provision job then
 	// reads. Zitadel does not create the parent directory.
-	patPath := spec.idpPATPath(projectDir)
+	patPath := spec.PATPath(projectDir)
 	if err := os.MkdirAll(filepath.Dir(patPath), 0o755); err != nil {
 		return fmt.Errorf("host-infra %s: create PAT dir: %w", spec.Name, err)
 	}
@@ -737,10 +737,10 @@ func (s Spec) idpStepsPath(projectDir string) string {
 	return filepath.Join(projectDir, p)
 }
 
-// idpPATPath resolves the service-account token path against the project
-// root. It must match what the idp-provision job reads (its --pat-file
+// PATPath resolves the service-account token path against the project
+// root. It must match what the identity step of `forge env up` reads (its --pat-file
 // default, .forge/idp/pat.txt) — the two are the same declaration.
-func (s Spec) idpPATPath(projectDir string) string {
+func (s Spec) PATPath(projectDir string) string {
 	p := s.IDPPATPath
 	if p == "" {
 		p = filepath.Join(".forge", "idp", "pat.txt")

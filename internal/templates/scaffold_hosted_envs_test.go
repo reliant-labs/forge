@@ -434,15 +434,18 @@ func TestDevSignInReachesTheAPI(t *testing.T) {
 	if !ok {
 		t.Fatalf("dev renders no api workload: %v", w)
 	}
-	if !strings.Contains(api, `"IDP_BROKER_TOKEN"`) {
-		t.Errorf("the dev API is not handed IDP_BROKER_TOKEN, so native sign-in never mounts:\n%s", api)
+	// The broker token is an IdentityRef lowered to the identity's output
+	// that `forge env up` writes to the secret store under this name.
+	if !strings.Contains(api, `"name":"IDP_BROKER_TOKEN","secretRef":{"key":"DEV_API_BROKER_TOKEN","name":"forge-identity-identity"}`) {
+		t.Errorf("the dev API is not handed IDP_BROKER_TOKEN from the identity, so native sign-in never mounts:\n%s", api)
 	}
-	job, ok := w["idp-provision"]
-	if !ok {
-		t.Fatalf("dev renders no idp-provision job: %v", w)
+	for _, env := range []string{"JWT_ISSUER", "JWT_AUDIENCE", "OIDC_CLIENT_ID", "OIDC_REDIRECT_URI", "IDP_BASE", "IDP_LOGIN_URI"} {
+		if !strings.Contains(api, `"name":"`+env+`","secretRef":{"key":`) {
+			t.Errorf("the dev API's %s is not filled from the identity:\n%s", env, api)
+		}
 	}
-	if !strings.Contains(job, `"IDP_BROKER_TOKEN_STORE"`) || !strings.Contains(job, `"secrets/dev.yaml"`) {
-		t.Errorf("idp-provision is not told to keep the token in the env's secret store (secrets/dev.yaml):\n%s", job)
+	if _, ok := w["idp-provision"]; ok {
+		t.Errorf("dev still renders the retired idp-provision job: %v", w)
 	}
 
 	// A project with no frontend runs no dev IdP; its API has no broker.

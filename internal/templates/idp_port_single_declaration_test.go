@@ -70,23 +70,16 @@ func TestIdPPort_DeclaredOnceInKCL(t *testing.T) {
 				t.Errorf("the host-run IdP does not bind _idp_port — moving the declaration would move nothing")
 			}
 
-			// 3. The JOB reads it, for both the address it dials and the
-			//    origin it registers.
-			for _, name := range []string{"IDP_BASE", "IDP_BROWSER_ORIGIN"} {
-				pattern := regexp.MustCompile(`(?m)^\s*` + name + `\s*=\s*_idp_origin\s*$`)
-				if !pattern.MatchString(src) {
-					t.Errorf("the idp-provision job does not receive %s from the declared port — "+
-						"it would fall back to the literal http://localhost:8080 baked into its flag "+
-						"defaults at project-generation time, and dial the wrong port for its whole timeout", name)
-				}
+			// 3. The identity runs ON that IdP. `forge env up` converges it
+			//    at the port the IdP binds (HostInfra.port), so there is no
+			//    second address for a job to be handed and get wrong.
+			if !regexp.MustCompile(`runtime\s*=\s*forge\.IdentityOnHost\s*\{\s*infra\s*=\s*"idp"\s*\}`).MatchString(src) {
+				t.Errorf("the dev identity does not run on the host IdP infra \"idp\" — nothing would converge it")
 			}
-
-			// 4. The origin is DERIVED from the port rather than spelled out
-			//    a second time — otherwise the job and the container can
-			//    still disagree, just one level up.
-			if !strings.Contains(src, `_idp_origin = "http://localhost:${_idp_port}"`) {
-				t.Errorf("_idp_origin is not composed from _idp_port — a second literal origin can drift " +
-					"from the port the container actually publishes on")
+			for _, l := range strings.Split(src, "\n") {
+				if strings.Contains(l, "idp-provision") && !strings.HasPrefix(strings.TrimSpace(l), "#") {
+					t.Errorf("the dev env still wires the retired idp-provision job: %s", l)
+				}
 			}
 		})
 	}

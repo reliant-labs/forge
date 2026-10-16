@@ -47,12 +47,10 @@ func generateFrontendConfigModules(
 	}
 
 	// The OIDC client id reaches this render the same way every other
-	// declared value does — by reading deploy/kcl/<env>/config.k, which
-	// (for a project with a dev IdP) imports the committed
-	// idp_identity_gen.k the idp-provision job publishes into. There is no
-	// render-time resolver to arm and no store to read back from: this
-	// render and every other one read the SAME file, so `forge generate`
-	// can never disagree with `forge env up` about what it says.
+	// declared value does — by reading deploy/kcl/<env>/config.k. A dev
+	// identity (forge.ManagedIdentity) is converged by `forge env up` into
+	// the secret store and consumed by the backend; the browser holds no
+	// OIDC config under native sign-in.
 
 	// The dev environment's declared values, when it has any. A project
 	// with no dev env yet (fresh scaffold), no frontend instance in its
@@ -211,11 +209,8 @@ const (
 // readOidcConfig() reads "neither" as the no-auth posture and "both" as real
 // auth, but THROWS on one without the other — from inside the provider that
 // wraps the entire app, so the user sees "Application error" instead of any
-// UI. The scaffolded dev environment produces precisely that pair before the
-// idp-provision job has ever converged: config.k pins oidc_issuer to a
-// literal, while idp_identity_gen.k's client_id is still the empty-string
-// stub EnsureIDPIdentityStub seeds ("empty is a valid answer", chosen so an
-// offline developer is not blocked).
+// UI. A config.k that pins oidc_issuer to a literal while the client id is
+// still empty (nothing has converged an IdP yet) produces precisely that pair.
 //
 // Both halves of that reasoning are right; they were just never true at the
 // same time. Empty selecting "the frontend's no-auth posture" holds only
@@ -240,8 +235,8 @@ func dropHalfConfiguredOIDC(values map[string]any) map[string]any {
 	fmt.Printf("  ⚠️  frontend config: issuer %q has no client id (the dev IdP was "+
 		"unreachable and none is stored), so this render selects the NO-AUTH posture "+
 		"rather than a half-configured one the app cannot start with.\n"+
-		"      For a real sign-in: run `forge env up`, which brings the dev IdP up and runs the "+
-		"idp-provision job — that registers the app and commits the resolved id.\n", issuer)
+		"      For a real sign-in: run `forge env up`, which brings the dev IdP up and converges the "+
+		"env's identity.\n", issuer)
 	return values
 }
 

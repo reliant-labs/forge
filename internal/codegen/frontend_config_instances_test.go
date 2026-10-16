@@ -47,7 +47,7 @@ func TestEnsureFrontendConfigInstances_AppendsToExisting(t *testing.T) {
 	kclDir := filepath.Join(t.TempDir(), "deploy", "kcl")
 	path := writeConfigK(t, kclDir, "prod", backendOnlyConfigK)
 
-	added, err := EnsureFrontendConfigInstances([]FrontendConfig{webFrontendConfig()}, kclDir, "prod", "acme", false, nil)
+	added, err := EnsureFrontendConfigInstances([]FrontendConfig{webFrontendConfig()}, kclDir, "prod", "acme")
 	if err != nil {
 		t.Fatalf("EnsureFrontendConfigInstances: %v", err)
 	}
@@ -79,12 +79,12 @@ func TestEnsureFrontendConfigInstances_Idempotent(t *testing.T) {
 	path := writeConfigK(t, kclDir, "prod", backendOnlyConfigK)
 
 	configs := []FrontendConfig{webFrontendConfig()}
-	if _, err := EnsureFrontendConfigInstances(configs, kclDir, "prod", "acme", false, nil); err != nil {
+	if _, err := EnsureFrontendConfigInstances(configs, kclDir, "prod", "acme"); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	first := readFile(t, path)
 
-	added, err := EnsureFrontendConfigInstances(configs, kclDir, "prod", "acme", false, nil)
+	added, err := EnsureFrontendConfigInstances(configs, kclDir, "prod", "acme")
 	if err != nil {
 		t.Fatalf("second run: %v", err)
 	}
@@ -110,7 +110,7 @@ my_web: fcfg.WebConfig = {
 `
 	path := writeConfigK(t, kclDir, "prod", authored)
 
-	added, err := EnsureFrontendConfigInstances([]FrontendConfig{webFrontendConfig()}, kclDir, "prod", "acme", false, nil)
+	added, err := EnsureFrontendConfigInstances([]FrontendConfig{webFrontendConfig()}, kclDir, "prod", "acme")
 	if err != nil {
 		t.Fatalf("EnsureFrontendConfigInstances: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestEnsureFrontendConfigInstances_DevPinsMode(t *testing.T) {
 	fc.Fields[1].Role = configModeRole
 	path := writeConfigK(t, kclDir, "dev", backendOnlyConfigK)
 
-	if _, err := EnsureFrontendConfigInstances([]FrontendConfig{fc}, kclDir, "dev", "acme", false, nil); err != nil {
+	if _, err := EnsureFrontendConfigInstances([]FrontendConfig{fc}, kclDir, "dev", "acme"); err != nil {
 		t.Fatalf("EnsureFrontendConfigInstances: %v", err)
 	}
 	got := readFile(t, path)
@@ -143,7 +143,7 @@ func TestEnsureFrontendConfigInstances_DevPinsMode(t *testing.T) {
 
 	// A non-dev env inherits the proto default instead of pinning.
 	prodPath := writeConfigK(t, kclDir, "prod", backendOnlyConfigK)
-	if _, err := EnsureFrontendConfigInstances([]FrontendConfig{fc}, kclDir, "prod", "acme", false, nil); err != nil {
+	if _, err := EnsureFrontendConfigInstances([]FrontendConfig{fc}, kclDir, "prod", "acme"); err != nil {
 		t.Fatalf("prod: %v", err)
 	}
 	if strings.Contains(readFile(t, prodPath), "environment = ") {
@@ -156,7 +156,7 @@ func TestEnsureFrontendConfigInstances_DevPinsMode(t *testing.T) {
 // file yet is normal and must not error.
 func TestEnsureFrontendConfigInstances_NoConfigK(t *testing.T) {
 	kclDir := filepath.Join(t.TempDir(), "deploy", "kcl")
-	added, err := EnsureFrontendConfigInstances([]FrontendConfig{webFrontendConfig()}, kclDir, "prod", "acme", false, nil)
+	added, err := EnsureFrontendConfigInstances([]FrontendConfig{webFrontendConfig()}, kclDir, "prod", "acme")
 	if err != nil {
 		t.Fatalf("missing config.k must be a no-op, got: %v", err)
 	}

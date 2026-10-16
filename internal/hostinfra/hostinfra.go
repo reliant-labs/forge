@@ -142,7 +142,7 @@ type Spec struct {
 	// instance's setup.
 	IDPStepsFile string
 	// IDPPATPath is where Zitadel writes the service-account personal
-	// access token on first boot. It must match what the idp-provision job
+	// access token on first boot. It must match what the identity step of `forge env up`
 	// reads — the two are one declaration.
 	IDPPATPath string
 }

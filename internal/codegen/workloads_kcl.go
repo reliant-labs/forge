@@ -184,12 +184,6 @@ func goBuild(cmd, outputName string) string {
 	return fmt.Sprintf("forge.GoBuild {cmd = %q, output_name = %q}", cmd, outputName)
 }
 
-// IDPProvisionArgs returns the subcommand that converges this project's dev
-// IdP application — the identity twin of MigrateArgs.
-func IDPProvisionArgs() []string {
-	return []string{"auth", "idp-provision"}
-}
-
 // ProjectBinaryRuns reports whether a workload declared with build command
 // buildCmd runs the project's primary binary — the `./cmd/<project>` GoBuild
 // every scaffolded stanza names (projectGoBuild).
@@ -200,81 +194,18 @@ func ProjectBinaryRuns(projectName, buildCmd string) bool {
 // RunsBuiltinSubcommand reports whether args, handed to the project binary,
 // select a command the generated cmd tree itself owns rather than a
 // component: `server` (every component in one process), `version`, `db …`
-// (the scaffolded migrate job), `auth …` (the scaffolded idp-provision job).
+// (the scaffolded migrate job),
 //
 // Judged by the FIRST arg, the top-level subcommand, so every leaf under a
 // built-in (`db migrate status`, a later `auth` verb) counts without being
 // listed. The set is derived, not restated: the top-level names the cmd tree
 // reserves (reservedSubcommandNames) plus the command each scaffolded job's
-// args select (MigrateArgs, IDPProvisionArgs).
+// args select (MigrateArgs).
 func RunsBuiltinSubcommand(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	return reservedSubcommandNames[args[0]] || args[0] == MigrateArgs()[0] || args[0] == IDPProvisionArgs()[0]
-}
-
-// IDPProvisionWorkloadName is the name of the scaffolded IdP-convergence
-// workload, and the ConfigMap a cluster target's consumers reference by
-// name (see the Role grant this stanza also declares).
-const IDPProvisionWorkloadName = "idp-provision"
-
-// IDPProvisionConfigMapName is the ConfigMap this job publishes into on a
-// cluster target — deterministic from the project name, so a consumer's
-// configMapKeyRef can be written by hand without reading this job's flags.
-func IDPProvisionConfigMapName(projectName string) string {
-	return projectName + "-idp-identity"
-}
-
-// IDPProvisionWorkloadStanza renders the dev-IdP convergence step as the
-// KCL literal that belongs in deploy/kcl/workloads.k, following the exact
-// precedent MigrateWorkloadStanza sets: `kind = "job"`, the project's own
-// binary, a subcommand in `args`.
-//
-// UNLIKE migrate, this is not broadcast-gated: nothing needs to wait on
-// it, because nothing else reads its output through an ordering
-// dependency — a consumer reads the published ConfigMap (cluster) or the
-// committed KCL file (host dev loop) whenever it next renders, not via an
-// initContainer. `before` therefore stays empty.
-//
-// It is a DEV job: it registers against the dev identity provider the dev
-// env runs. The scaffolded dev env deploys it; staging and prod, whose
-// issuer is a real one registered out of band, leave it out of their
-// workload list.
-//
-// No RBAC on the base declaration. A host process has no Kubernetes
-// identity (the host runtime refuses RBAC rather than dropping it), and the
-// dev env runs this job on the host. An env that runs it on a cluster, where
-// it publishes a ConfigMap, grants the write THERE, where the runtime makes
-// it meaningful (see the stanza's comment).
-func IDPProvisionWorkloadStanza(modulePath, projectName string) string {
-	var b strings.Builder
-	b.WriteString("# The dev-IdP identity convergence step — YOURS to change.\n")
-	b.WriteString("#\n")
-	b.WriteString("# Registers this project's browser application against the dev identity\n")
-	b.WriteString("# provider and PUBLISHES what it generates (the client_id, the project id\n")
-	b.WriteString("# that becomes the token audience) — never returns them through a render-time\n")
-	b.WriteString("# hook. As a host process (the dev env) the output is a committed KCL file\n")
-	b.WriteString("# this project's dev config.k imports; on a cluster it is a ConfigMap,\n")
-	b.WriteString("# referenced by name via configMapKeyRef. See `cmd/" + projectName + "/cmd/auth.go`\n")
-	b.WriteString("# for the convergence logic and pkg/devidp for the two publishers.\n")
-	b.WriteString("#\n")
-	b.WriteString("# Only the dev env deploys it: a deployed env's issuer is a real one whose\n")
-	b.WriteString("# applications are registered out of band. To run it on a cluster instead,\n")
-	b.WriteString("# grant the ConfigMap write where you bind it:\n")
-	b.WriteString("#\n")
-	b.WriteString("#     wl.idp_provision | {\n")
-	b.WriteString("#         runtime = forge.OnCluster {target = _k3d}\n")
-	b.WriteString("#         namespacedRBAC = [fw.PolicyRule {apiGroups = [\"\"], resources = [\"configmaps\"], verbs = [\"get\", \"create\", \"update\", \"patch\"]}]\n")
-	b.WriteString("#     }\n")
-	fmt.Fprintf(&b, "%s = fw.Workload {\n", naming.KCLIdentifier(IDPProvisionWorkloadName))
-	fmt.Fprintf(&b, "    name = %q\n", IDPProvisionWorkloadName)
-	fmt.Fprintf(&b, "    kind = %q\n", WorkloadKindJob)
-	fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
-	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
-	fmt.Fprintf(&b, "    args = %s\n", kclStringList(IDPProvisionArgs()))
-	b.WriteString("}\n")
-	return b.String()
+	return reservedSubcommandNames[args[0]] || args[0] == MigrateArgs()[0]
 }
 
 // WorkloadStanza renders ONE workload as the typed KCL literal that belongs

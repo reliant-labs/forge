@@ -81,7 +81,7 @@ func TestDevFrontendReachesEveryService(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFrontendCfgFile(t, filepath.Join(kclDir, codegen.FrontendConfigModule+".k"), module)
-	if _, err := codegen.EnsureFrontendConfigInstances([]codegen.FrontendConfig{fc}, kclDir, "dev", "acme", false, nil); err != nil {
+	if _, err := codegen.EnsureFrontendConfigInstances([]codegen.FrontendConfig{fc}, kclDir, "dev", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	values, err := loadFrontendRuntimeConfig(dir, "dev", []codegen.FrontendConfig{fc})

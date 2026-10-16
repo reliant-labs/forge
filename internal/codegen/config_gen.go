@@ -715,54 +715,6 @@ const (
 	metricsPackageFile     = "internal/metrics/metrics.go"
 )
 
-// ScaffoldCmdAuthIfMissing births cmd/<bin>/cmd/auth.go — the
-// `auth idp-provision` subcommand — for a project that declares a
-// frontend. Write-if-absent (writeForgeScaffoldOnce), so this is also the
-// upgrade path for a project scaffolded before this command existed: the
-// next `forge generate` births it without touching anything else.
-//
-// A no-op for a project with no frontend: an IdP exists to complete a
-// browser sign-in, so a project with no browser must not be handed a
-// command that registers one it will never call — the same gate
-// docker-compose.yml's `idp` service and the `idp-provision` workload
-// stanza (ScaffoldWorkloadsKCL) both use.
-//
-// Deliberately NOT part of the codegen.Service contract (unlike
-// GenerateCmdServerWithFields): it has no config-field dependency and no
-// caller needs to fake it independently of the rest of the cmd-tree birth
-// pass it runs alongside.
-func ScaffoldCmdAuthIfMissing(hasFrontend bool, frontendName, targetDir string) error {
-	if !hasFrontend {
-		return nil
-	}
-	treeDir := primaryCmdTreeDir(targetDir)
-	if treeDir == "" {
-		return nil
-	}
-	modulePath, err := GetModulePath(targetDir)
-	if err != nil {
-		return fmt.Errorf("read module path: %w", err)
-	}
-	data := struct {
-		Module       string
-		Name         string
-		FrontendName string
-	}{
-		Module:       modulePath,
-		Name:         filepath.Base(filepath.Dir(treeDir)),
-		FrontendName: frontendName,
-	}
-	content, rerr := templates.ProjectTemplates().Render("cmd-tree-auth.go.tmpl", data)
-	if rerr != nil {
-		return fmt.Errorf("render cmd-tree-auth.go.tmpl: %w", rerr)
-	}
-	dest := filepath.Join(treeDir, "auth.go")
-	if _, werr := writeForgeScaffoldOnce(targetDir, dest, content); werr != nil {
-		return fmt.Errorf("write %s: %w", dest, werr)
-	}
-	return nil
-}
-
 // primaryCmdTreeDir returns the project-relative directory of the primary
 // binary's command tree (cmd/<bin>/cmd), discovered by glob so this path
 // doesn't need to re-read forge.yaml for the binary name.
@@ -1044,8 +996,8 @@ func DefaultConfigMessages() []ConfigMessage {
 					Flag:      "idp-broker-token",
 					// Mirrors the scaffolded proto too, for the same reason as
 					// database_url: the dev env with a frontend names it in the
-					// API's config_secrets (the login broker's token, which the
-					// idp-provision job stores), and config_secrets may only name
+					// API's config_secrets (the login broker's token, which `forge env up`
+					// stores), and config_secrets may only name
 					// a sensitive field. A fallback set without it could not
 					// render that env at all.
 					Sensitive:   true,

@@ -325,7 +325,7 @@ func TestZitadelSpecPaths_ResolveAgainstTheProjectRoot(t *testing.T) {
 	if got, want := spec.idpStepsPath(root), filepath.Join(root, "idp-steps.yaml"); got != want {
 		t.Errorf("default steps path = %q, want %q", got, want)
 	}
-	if got, want := spec.idpPATPath(root), filepath.Join(root, ".forge", "idp", "pat.txt"); got != want {
+	if got, want := spec.PATPath(root), filepath.Join(root, ".forge", "idp", "pat.txt"); got != want {
 		t.Errorf("default PAT path = %q, want %q\n"+
 			"this must match the idp-provision job's --pat-file default, or the job cannot authenticate", got, want)
 	}
@@ -338,7 +338,7 @@ func TestZitadelSpecPaths_ResolveAgainstTheProjectRoot(t *testing.T) {
 	if got := abs.idpStepsPath(root); got != stepsAbs {
 		t.Errorf("an absolute steps path must pass through, got %q", got)
 	}
-	if got := abs.idpPATPath(root); got != patAbs {
+	if got := abs.PATPath(root); got != patAbs {
 		t.Errorf("an absolute PAT path must pass through, got %q", got)
 	}
 }

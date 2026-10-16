@@ -50,26 +50,10 @@ const (
 	// prod deploy owns its migration story (a Job/initContainer), never an
 	// implicit on-boot migrate.
 	configAutoMigrateEnvVar = "AUTO_MIGRATE"
-	// configJWTIssuerEnvVar / configJWTJWKSURLEnvVar are the backend's half of
-	// dev identity. The dev scaffold binds them to the SAME published identity
-	// the frontend's oidc_issuer reads, because a dev stack where the browser
-	// signs in and the server cannot verify the resulting token is not a
-	// configuration choice anyone would make on purpose — see
-	// devIdentityBackendLines.
-	configJWTIssuerEnvVar   = "JWT_ISSUER"
-	configJWTJWKSURLEnvVar  = "JWT_JWKS_URL"
-	configJWTAudienceEnvVar = "JWT_AUDIENCE"
-
 	// NATIVE SIGN-IN. The server runs the whole OIDC flow, so the OAuth
 	// client is a BACKEND value: the browser posts credentials to this
-	// app's API and never contacts the issuer. See the login-broker
-	// scaffold and devIdentityBackendLines.
+	// app's API and never contacts the issuer. See the login-broker scaffold.
 	configAPIURLEnvVar = "API_URL"
-
-	configOIDCClientIDEnvVar         = "OIDC_CLIENT_ID"
-	configOIDCRedirectURIEnvVar      = "OIDC_REDIRECT_URI"
-	configIDPBaseEnvVar              = "IDP_BASE"
-	configCORSAllowCredentialsEnvVar = "CORS_ALLOW_CREDENTIALS"
 )
 
 // devDatabaseDSN is the dev DSN the scaffold seeds for a project's database

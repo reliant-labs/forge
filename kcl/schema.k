@@ -4457,6 +4457,12 @@ schema IdentityConsumer:
     workload: str
     application: str = ""
     fields?: IdentityFields
+    # Deliver the outputs (the Secrets the control plane writes) WITHOUT
+    # projecting them into the workload: no env, no volumes, and no refusal of
+    # a hand-set value. For adopting an identity whose workload still reads its
+    # legacy configuration; flip it off once the workload is ready to read the
+    # delivered Secret.
+    deliver_only: bool = False
 
     check:
         workload, "IdentityConsumer needs a workload"

@@ -172,6 +172,9 @@ type ShapeIdentityConsumer struct {
 	// when that is not the standard one (the 20%: an app that validates two
 	// issuers).
 	Fields map[string]string `json:"fields,omitempty"`
+	// DeliverOnly says the control plane delivers this consumer's Secrets but
+	// forge projects nothing into the workload: it still reads its own config.
+	DeliverOnly bool `json:"deliver_only,omitempty"`
 }
 
 // ShapeIdentityMachineUser is a non-human account whose key is delivered.

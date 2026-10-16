@@ -72,6 +72,12 @@ The consumer's typed config fields are filled; the env var is the upper-cased fi
 
 `<APP>` is the application name upper-cased with other runs folded to `_` (`prod:api` is `PROD_API`). A cluster consumer waits (`CreateContainerConfigError`) for the first delivery of the `identity` Secret rather than crash-looping on an empty issuer, and starts by itself when it lands. The JWKS snapshot Secret is optional: it is a fallback.
 
+**Escape hatches on a consumer** (`forge.IdentityConsumer`):
+
+- `fields = forge.IdentityFields {...}` remaps an output to a non-standard config field.
+- `omit = ["scopes", "roles_claim", "login_uri", "jwks"]` declines outputs the app's config has no field for. Without it every standard output is projected under its standard name, as env nothing reads. Only those four may be omitted: issuer, audience and the native-broker outputs define the identity (use `deliver_only` to project none). An output cannot be both mapped in `fields` and omitted, and one omitted twice is refused. The delivered Secrets still carry every key, and the shape records `omit` (absent when empty, so existing shapes hash unchanged).
+- `deliver_only = True` delivers the Secrets and projects nothing, for a workload still on its legacy config.
+
 The control plane is the only writer of `forge-identity-*` and `RELIANT_IDENTITY_*`; nobody sets them, and `forge secret` never asks.
 
 ## Derived control-plane secrets

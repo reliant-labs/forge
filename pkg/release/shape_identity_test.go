@@ -370,3 +370,73 @@ func TestIdentitySlug(t *testing.T) {
 		t.Error("ValidIdentitySlug accepts an invalid label")
 	}
 }
+
+// A consumer that omits nothing encodes exactly as before the field existed,
+// so shapes recorded earlier hash and diff the same.
+func TestShape_IdentityOmitLeavesExistingConsumersByteIdentical(t *testing.T) {
+	id := hostedIdentity()
+	before, err := shapeWithIdentity(id).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(before), `"omit"`) {
+		t.Fatalf("a consumer with no omit must not encode the field: %s", before)
+	}
+	// An empty (non-nil) slice is the same as none.
+	id2 := hostedIdentity()
+	for n := range id2.Consumers {
+		id2.Consumers[n].Omit = []string{}
+	}
+	after, err := shapeWithIdentity(id2).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("an empty omit changed the encoding:\n%s\n%s", before, after)
+	}
+}
+
+func TestShape_IdentityOmitIsSortedRoundTripsAndValidates(t *testing.T) {
+	id := hostedIdentity()
+	id.Consumers[1].Omit = []string{"scopes", "login_uri"}
+	s := shapeWithIdentity(id)
+	b, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"omit":["login_uri","scopes"]`) {
+		t.Errorf("omit is not recorded sorted: %s", b)
+	}
+	var out Shape
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Validate(); err != nil {
+		t.Fatalf("a shape with omit is invalid: %v", err)
+	}
+}
+
+func TestShape_IdentityOmitRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		omit []string
+		want string
+	}{
+		"the issuer defines the identity":     {[]string{"issuer"}, "may be omitted"},
+		"the broker token defines the broker": {[]string{"broker_token"}, "may be omitted"},
+		"not an output":                       {[]string{"nope"}, "may be omitted"},
+		"twice":                               {[]string{"scopes", "scopes"}, "twice"},
+		"both mapped in fields and omitted":   {[]string{"scopes"}, "both maps and omits"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := hostedIdentity()
+			id.Consumers[1].Omit = tc.omit
+			if name == "both mapped in fields and omitted" {
+				id.Consumers[1].Fields = map[string]string{"scopes": "my_scopes"}
+			}
+			err := shapeWithIdentity(id).Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want an error containing %q", err, tc.want)
+			}
+		})
+	}
+}

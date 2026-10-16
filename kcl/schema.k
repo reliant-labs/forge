@@ -4463,9 +4463,32 @@ schema IdentityConsumer:
     # legacy configuration; flip it off once the workload is ready to read the
     # delivered Secret.
     deliver_only: bool = False
+    # Outputs NOT to project into this workload: for an app whose config has no
+    # field for them (a standard output is otherwise always projected, under
+    # its standard name, as env nothing reads). Only jwks, login_uri,
+    # roles_claim and scopes may be omitted: the others define the identity
+    # (use deliver_only to project none). The Secrets still carry every key.
+    omit: [str] = []
 
     check:
         workload, "IdentityConsumer needs a workload"
+        all o in omit { o in IDENTITY_OMITTABLE_OUTPUTS }, \
+            "IdentityConsumer '${workload}': omit ${[o for o in omit if o not in IDENTITY_OMITTABLE_OUTPUTS]} cannot be omitted. Only ${IDENTITY_OMITTABLE_OUTPUTS} may be (issuer, audience and the native-broker outputs define the identity; use deliver_only = True to project nothing)"
+        len(omit) == len({o: 1 for o in omit}), \
+            "IdentityConsumer '${workload}': omit lists an output twice: ${omit}"
+        not fields or all o in omit { not {
+            "audience" = fields.audience
+            "broker_token" = fields.broker_token
+            "client_id" = fields.client_id
+            "idp_base" = fields.idp_base
+            "issuer" = fields.issuer
+            "jwks" = fields.jwks
+            "login_uri" = fields.login_uri
+            "redirect_uri" = fields.redirect_uri
+            "roles_claim" = fields.roles_claim
+            "scopes" = fields.scopes
+        }[o] }, \
+            "IdentityConsumer '${workload}': an output is both mapped in fields and listed in omit: omit says do not project it, fields says which config field it fills"
 
 schema IdentityMachineUser:
     """A non-human account. `key_secret` (a Kubernetes Secret name) and

@@ -782,6 +782,7 @@ _idn_consumers = lambda workloads: [any], id: any, env: str, project: str -> [Id
         if c.fields:
             fields = c.fields
         deliver_only = c.deliver_only
+        omit = c.omit
     } for c in _base]
 }
 
@@ -810,7 +811,7 @@ _idn_outputs = lambda c: any, apps: [any] -> [str] {
     _inst = ["audience", "issuer", "jwks", "roles_claim", "scopes"]
     _web = ["client_id", "redirect_uri"]
     _native = ["broker_token", "idp_base", "login_uri"]
-    _inst + (_web + (_native if _app[0].kind == "native_broker" else []) if _app else [])
+    [o for o in _inst + (_web + (_native if _app[0].kind == "native_broker" else []) if _app else []) if o not in c.omit]
 }
 
 # The config field an output fills for c, and its env var.
@@ -1028,6 +1029,7 @@ _render_identity = lambda b: Bundle -> any {
             "application": c.application if c.application else None
             "fields": ({o: _idn_field(c, o) for o in IDENTITY_OUTPUTS if c.fields and _idn_field(c, o) != IDENTITY_FIELDS[o]} or None) if c.fields else None
             "deliver_only": True if c.deliver_only else None
+            "omit": sorted(c.omit) if c.omit else None
         } for c in _idn_consumers(b.workloads, _id, b.env, b.project)]
         "machine_users": [{
             "name": m.name

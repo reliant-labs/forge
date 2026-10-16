@@ -168,6 +168,12 @@ IDENTITY_OUTPUTS: [str] = [
     "audience", "broker_token", "client_id", "idp_base", "issuer",
     "jwks", "login_uri", "redirect_uri", "roles_claim", "scopes",
 ]
+# The outputs a consumer may decline to have projected (IdentityConsumer.omit).
+# Never the ones that DEFINE the identity: without issuer and audience a
+# validator has nothing to pin tokens to, and a native broker cannot sign in
+# without its token, client id, redirect URI and base. A consumer that does not
+# want those projected is a deliver_only consumer.
+IDENTITY_OMITTABLE_OUTPUTS: [str] = ["jwks", "login_uri", "roles_claim", "scopes"]
 IDENTITY_APP_OUTPUTS: [str] = ["broker_token", "client_id", "login_uri", "redirect_uri"]
 
 # The typed-config field each output fills, unless a consumer remaps it

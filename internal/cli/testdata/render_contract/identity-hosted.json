@@ -46,7 +46,9 @@
       "consumers": [
         {
           "application": "prod:api",
+          "deliver_only": null,
           "fields": null,
+          "omit": null,
           "workload": "api"
         }
       ],

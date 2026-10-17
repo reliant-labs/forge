@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	goruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
@@ -54,6 +55,13 @@ type Config struct {
 	// endpoint is configured: a CPU profile for 10s of every minute plus heap and
 	// goroutine snapshots, about 0.15% of one core. See profiler.go.
 	ProfilesDisabled bool
+
+	// ProfilesHeapInterval optionally bounds repeated full heap snapshots.
+	// Zero/negative preserves capture every CPU/goroutine cycle. A positive
+	// value captures initially then no more often than this interval, including
+	// failed attempts. CPU/goroutine cadence is unaffected. All four heap types
+	// retain cumulative alloc_* counter / inuse_* gauge semantics, not deltas.
+	ProfilesHeapInterval time.Duration
 
 	// Development makes the declared-metrics registry panic on an attribute a
 	// metric did not declare, where production corrects it and counts it. See

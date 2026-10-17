@@ -9,22 +9,25 @@
 // hand-ran `gofmt -w`/`goimports -w` and hand-fixed every finding. Mechanical
 // formatting has no business gating a build.
 //
-// formatGoTree applies the canonical Go formatter IN WRITE MODE across the
-// project's Go source — generated AND owned/hand-edited files alike — before
-// the gating pipeline runs, so import grouping and gofmt whitespace never
-// surface as a gate. It is invoked by runAllLinters unless the caller opted
-// out with `--no-fix` (or is in `--json` detect-only mode).
+// formatGoTree applies the project's Go formatting IN WRITE MODE across its
+// owned Go source before the gating pipeline runs, so import grouping and
+// gofmt whitespace never surface as a gate. It is invoked by runAllLinters
+// unless the caller opted out with `--no-fix` (or is in `--json` detect-only
+// mode).
+//
+// WHICH formatting is the project's gate, read from its golangci-lint config
+// (lint_format_standard.go): gofmt always, plus goimports' import grouping
+// with exactly the local-prefixes the config declares when it enables
+// goimports. A pre-pass that formatted to anything else would rewrite files
+// the project's own gate accepts — reliant's incident, in that file's header.
 //
 // Why the in-process formatter (not the `goimports` binary): CanonicalGoSource
-// is goimports' formatting engine in FormatOnly mode with the project module
-// as the local-import prefix — provably byte-identical to what the scaffolded
-// .golangci.yml's `goimports` formatter (local-prefixes: [<module>]) gates on
+// is goimports' formatting engine in FormatOnly mode — byte-identical to what
+// golangci-lint's `goimports` formatter gates on with the same local-prefixes
 // (see internal/checksums/goformat.go). So the pre-pass fixes exactly what the
 // gate would flag, needs no `goimports` on PATH, and is deterministic and
-// hermetic. It is also idempotent: already-canonical files (every clean
-// generated file — WriteGeneratedFile canonicalizes before it stamps) are a
-// no-op and are never rewritten, so the pre-pass cannot disturb Tier-1
-// forge:hash stamps.
+// hermetic. It is also idempotent: already-canonical files are a no-op and
+// are never rewritten.
 //
 // ── Generated files are OUT of scope ──────────────────────────────────
 //
@@ -57,8 +60,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // goFormatDirs are the source trees the format pre-pass walks — the same set
@@ -107,7 +108,7 @@ func formatGoTree(root string) ([]string, error) {
 // how `forge lint --scope` auto-fixes only its own slice — a scoped run must
 // not reformat a file another agent is in the middle of editing.
 func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, error) {
-	prefix := checksums.GoImportsLocalPrefix(root)
+	std := projectGoFormatStandard(root)
 	var changed []string
 	for _, d := range goFormatDirs {
 		base := filepath.Join(root, d)
@@ -134,7 +135,7 @@ func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, er
 					return nil
 				}
 			}
-			rel, cerr := formatGoFile(root, prefix, path)
+			rel, cerr := formatGoFile(root, std, path)
 			if cerr != nil {
 				return cerr
 			}
@@ -154,12 +155,12 @@ func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, er
 // bytes, preserving the file's existing mode. Returns the repo-relative path
 // when it rewrote the file, or "" when the file was already canonical or
 // could not be parsed (left untouched). Only I/O errors are returned.
-func formatGoFile(root, prefix, path string) (string, error) {
+func formatGoFile(root string, std goFormatStandard, path string) (string, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	formatted, err := checksums.CanonicalGoSource(prefix, path, src)
+	formatted, err := std.format(path, src)
 	if err != nil {
 		// Unparseable (broken edit) — not this pass's job to fix; leave it
 		// for the compiler / gate to report with a real error.

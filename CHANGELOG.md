@@ -666,6 +666,37 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   rule: indexing one is a deref. Findings now carry a `Use`
   (`deref` / `map-write` / `map-element`), and each kind has its own message
   and fix hint.
+- **`forge lint`'s format pre-pass formats to the project's own gate, so it
+  never rewrites a file that gate accepts.** In reliant,
+  `forge lint --quiet --scope internal/handlers/trigger --scope internal/grpc`
+  regrouped the imports of six files under `internal/grpc` that the author
+  never touched. reliant's `.golangci.yml` enables goimports with no
+  `local-prefixes`, and its pre-commit `go fmt` accepted those files. The
+  pre-pass applied goimports with the go.mod module as the local prefix
+  regardless, which is the scaffolded config's setting and not reliant's. So
+  the hook and lint disagreed on every later edit. The pre-pass now reads the
+  golangci-lint config (v1 or v2, YAML, JSON or TOML) a run loads:
+  - gofmt is always applied. It is Go's own formatting, and no gate rejects
+    it.
+  - Import grouping is applied only when the config enables goimports, and it
+    uses exactly the `local-prefixes` the config declares (none declared,
+    none applied).
+  - When gci is enabled, gci owns grouping (golangci-lint `--fix` applies
+    it), and the pre-pass leaves grouping alone.
+  - With no goimports, no config, or a config that does not parse, imports
+    are not regrouped.
+
+  A scaffolded project is unchanged: its gate is goimports with the module
+  as the prefix. Scoped auto-fix already touched only files under `--scope`.
+  The files in the report were under `--scope internal/grpc`, so they were in
+  scope; the pre-pass's standard was the bug. A test now pins the scope
+  boundary too.
+- **`forge lint --help` says that lint rewrites files.** The synopsis now
+  reads "auto-fixes formatting in place first; --no-fix to only check". The
+  long help says files are rewritten in place, only inside `--scope`, and
+  never when the project's own formatter gate accepts them. `--quiet` and
+  `--scope` each say that auto-fix still applies under them and that
+  `--no-fix` stops it.
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

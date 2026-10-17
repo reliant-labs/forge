@@ -81,7 +81,7 @@ func newCmd(_ *factory.Factory) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "lint [paths...]",
-		Short: "Run linters on the project",
+		Short: "Run linters on the project (auto-fixes formatting in place first; --no-fix to only check)",
 		Long: `Run various linters on the Forge project.
 
 This command will:
@@ -96,14 +96,17 @@ This command will:
   --conventions, --tests). Name several to run them all under one verdict:
   forge lint --conventions --contract
 
-By default 'forge lint' AUTO-FIXES deterministic-safe issues first, then
-gates on the residue: it canonicalizes Go formatting (goimports/gofmt import
-grouping + whitespace) across generated AND owned/hand-edited files, applies
-golangci-lint's safe autofixes, runs each frontend's own prettier over the
-src/ files you own (never generated or forge-refreshed ones), and runs
-eslint --fix on frontends — so mechanical formatting never surfaces as a
-gating error. Pass --no-fix to gate only and mutate nothing (CI / read-only
-checks); --json is always detect-only.
+By default 'forge lint' AUTO-FIXES deterministic-safe issues first, REWRITING
+FILES IN PLACE, then gates on the residue: it formats your Go source (never
+generated files) to the project's own gate — gofmt, plus goimports' import
+grouping with the local-prefixes your golangci-lint config declares, only
+when that config enables goimports — applies golangci-lint's safe autofixes,
+runs each frontend's own prettier over the src/ files you own (never
+generated or forge-refreshed ones), and runs eslint --fix on frontends — so
+mechanical formatting never surfaces as a gating error. It never rewrites a
+file the project's own formatter gate accepts. Under --scope it touches only
+files inside the scope. Pass --no-fix to gate only and mutate nothing (CI /
+read-only checks); --json is always detect-only.
 
 Examples:
   forge lint                     # Auto-fix deterministic-safe issues, then gate
@@ -300,8 +303,8 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, frontend prettier, eslint --fix); gate only and mutate nothing (CI / read-only)")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
-	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). Auto-fix still applies; combines with the targeted flags and --scope")
-	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix touches only files under PATH")
+	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). Auto-fix still rewrites files in place, silently (--no-fix to only check); combines with the targeted flags and --scope")
+	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix still rewrites files in place, only those under PATH (--no-fix to only check)")
 	// No backticks: cobra would render the first quoted span as the flag's
 	// argument placeholder (see --optional-deps-guard).
 	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")

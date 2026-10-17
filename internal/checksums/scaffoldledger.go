@@ -70,8 +70,10 @@ package checksums
 import (
 	"encoding/json"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,6 +95,67 @@ type ScaffoldEntry struct {
 	// write-once scaffolds, which never need to know whether the file still
 	// matches what forge produced.
 	BirthHash string `json:"birth_hash,omitempty"`
+}
+
+// IsLocalOnlyScaffold reports whether relPath is a scaffold-once file that is
+// gitignored by construction — a developer's secret store, `secrets/<env>.yaml`
+// (the scaffolded .gitignore ignores `secrets/`; projects that narrow it use
+// `secrets/*.yaml`).
+//
+// The ledger is committed; such a file is not. Recording it would make the
+// committed ledger a function of one checkout's untracked state: a clean
+// clone and a developer's tree would write different bytes from the same
+// commit. And the ledger's "recorded but absent means deliberately deleted"
+// rule is meaningless for a file that never reaches a clone — it would
+// leave a fresh checkout without the store it needs. So these paths are
+// never recorded, never reported absent, and their birth is decided by
+// presence alone.
+func IsLocalOnlyScaffold(relPath string) bool {
+	rel := filepath.ToSlash(relPath)
+	dir, name := path.Split(rel)
+	return dir == "secrets/" && strings.HasSuffix(name, ".yaml") && len(name) > len(".yaml")
+}
+
+func withoutLocalOnly(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		if !IsLocalOnlyScaffold(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// PersistLedgerPrune rewrites root's ledger when the file on disk still
+// carries entries IsLocalOnlyScaffold forbids, so the cleanup of a legacy
+// ledger reaches the committed file even on a run that records no new birth.
+// A ledger with nothing to prune is not touched.
+func PersistLedgerPrune(root string) {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	data, rerr := os.ReadFile(filepath.Join(abs, ScaffoldedFile))
+	if rerr != nil {
+		return
+	}
+	var s scaffoldedJSON
+	if json.Unmarshal(data, &s) != nil {
+		return
+	}
+	dirty := len(withoutLocalOnly(s.AbsentReported)) != len(s.AbsentReported)
+	for p := range s.Files {
+		if IsLocalOnlyScaffold(p) {
+			dirty = true
+		}
+	}
+	if !dirty {
+		return
+	}
+	loadScaffoldLedgerLocked(abs)
+	saveScaffoldLedgerLocked(abs)
 }
 
 // scaffoldedJSON is the wire shape, mirroring disownedJSON / hashesJSON.
@@ -164,7 +227,16 @@ func loadScaffoldLedgerLocked(root string) map[string]ScaffoldEntry {
 			if s.Files != nil {
 				led = s.Files
 			}
-			scaffoldAbsentReported[abs] = s.AbsentReported
+			// Entries an older forge committed for local-only paths are
+			// dropped in memory here and leave the file at the next save
+			// (PersistLedgerPrune forces one), so a project converges on
+			// its next generate.
+			for p := range led {
+				if IsLocalOnlyScaffold(p) {
+					delete(led, p)
+				}
+			}
+			scaffoldAbsentReported[abs] = withoutLocalOnly(s.AbsentReported)
 		}
 	}
 	scaffoldLedgers[abs] = led
@@ -210,6 +282,9 @@ func saveScaffoldLedgerLocked(root string) {
 //	recorded && present  → the user's bytes: leave them
 //	recorded && absent   → the user deleted it: leave it deleted
 func ScaffoldRecorded(root, relPath string) bool {
+	if IsLocalOnlyScaffold(relPath) {
+		return false
+	}
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
 	_, ok := loadScaffoldLedgerLocked(root)[filepath.ToSlash(relPath)]
@@ -231,6 +306,9 @@ func ScaffoldRecorded(root, relPath string) bool {
 // rewrites the file, so a steady-state `forge generate` produces no ledger
 // diff.
 func RecordScaffold(root, relPath string) {
+	if IsLocalOnlyScaffold(relPath) {
+		return
+	}
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)
@@ -454,6 +532,9 @@ func ScaffoldOnceDecision(root, relPath string) (write bool) {
 // is a new birth for this purpose, and the recorded hash has to track the
 // bytes currently on disk or the very next run would read the file as edited.
 func RecordScaffoldWithHash(root, relPath string, content []byte) {
+	if IsLocalOnlyScaffold(relPath) {
+		return
+	}
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)

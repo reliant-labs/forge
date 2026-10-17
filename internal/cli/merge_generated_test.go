@@ -271,17 +271,19 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 
 }
 
-// FORGE_NO_MERGE_DRIVER skips the driver; FORGE_NO_GIT_HOOKS (and its old
-// spelling FORGE_NO_HOOKS) keeps forge out of the clone's git configuration
-// altogether, as a test suite running forge against a developer's checkout
-// needs. An ephemeral binary is never written, because it is gone by the
-// next merge.
+// FORGE_NO_MERGE_DRIVER skips the driver. FORGE_NO_GIT_HOOKS (and its old
+// spelling FORGE_NO_HOOKS) is about hooks and does not: reliant's pin script
+// sets FORGE_NO_HOOKS, and with it skipping the driver the clone kept the
+// previous pin's driver. An ephemeral binary is never written, because it is
+// gone by the next merge.
 func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	prev := mergeDriverExecutable
-	t.Cleanup(func() { mergeDriverExecutable = prev })
+	prev, prevCache := mergeDriverExecutable, mergeDriverCacheDir
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverCacheDir = prev, prevCache })
+	cache := t.TempDir()
+	mergeDriverCacheDir = func() (string, error) { return cache, nil }
 	clone := func() string {
 		dir := t.TempDir()
 		if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
@@ -296,7 +298,7 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 	}
 
 	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
-	for _, env := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
+	for env, wantDriver := range map[string]bool{"FORGE_NO_MERGE_DRIVER": false, "FORGE_NO_GIT_HOOKS": true, "FORGE_NO_HOOKS": true} {
 		t.Run(env, func(t *testing.T) {
 			for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
 				t.Setenv(e, "")
@@ -304,8 +306,8 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 			t.Setenv(env, "1")
 			dir := clone()
 			ensureGeneratedMergeDriver(dir)
-			if got := configured(dir); got != "" {
-				t.Errorf("%s=1 must leave the driver unconfigured, got %q", env, got)
+			if got := configured(dir); (got != "") != wantDriver {
+				t.Errorf("%s=1: driver = %q, want configured=%v", env, got, wantDriver)
 			}
 		})
 	}

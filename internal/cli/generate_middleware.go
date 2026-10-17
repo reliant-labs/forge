@@ -199,7 +199,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		Resolver: contract.NewResolver(contractPathsUnder(internalDir, projectDir, cfg)...),
 	}
 
-	generated := 0
+	generated, changed := 0, 0
 	// Declined contract_test.go scaffolds are collected and reported once
 	// after the walk — see generate_contract_test_declines.go.
 	declines := &contractTestDeclines{}
@@ -278,10 +278,13 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		}
 		mw := codegen.ResolveMiddlewareWrapper(path, ifaceName)
 
+		// The progress line reports what this package's run changed, not
+		// that it ran: every run regenerates every contract package, and
+		// a line per byte-identical one buried the package that changed.
+		before := contract.SnapshotArtifacts(path)
 		if genErr := contract.GenerateWithOptions(contractPath, contractOpts); genErr != nil {
 			return fmt.Errorf("generate contract for %s: %w", rel, genErr)
 		}
-		fmt.Printf("  ✅ Generated mock + middleware for %s/\n", rel)
 
 		// Observability decorator. A package opts in via the `// forge:constructor`
 		// marker on its constructor (the Phase-2 signal) OR the legacy owned
@@ -324,6 +327,12 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			}
 		} else if remErr := contract.RemoveObservedDecorator(path); remErr != nil {
 			return fmt.Errorf("remove stale observability decorator for %s: %w", rel, remErr)
+		}
+		if before.ChangedIn(path) {
+			fmt.Printf("  ✅ Generated mock + middleware for %s/\n", rel)
+			changed++
+		} else {
+			routinef("  ⏭️  %s/ mock + middleware unchanged\n", rel)
 		}
 
 		// Scaffold contract_test.go once. The user owns the file after
@@ -376,8 +385,11 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		return fmt.Errorf("walk internal/ directory: %w", walkErr)
 	}
 
-	if generated > 0 {
-		fmt.Printf("🔧 Generated contracts for %d internal package(s)\n", generated)
+	switch {
+	case changed > 0:
+		fmt.Printf("🔧 Generated contracts for %d internal package(s) (%d changed)\n", generated, changed)
+	case generated > 0:
+		routinef("🔧 Generated contracts for %d internal package(s) (all unchanged)\n", generated)
 	}
 	declines.report()
 

@@ -29,7 +29,7 @@ type Service interface {
 	GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...map[string]bool) error
 	RegenerateServiceFile(svc ServiceDef, targetDir string) error
 	GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, crudMethodNames map[string]bool, cs *checksums.FileChecksums) (*MissingHandlerResult, error)
-	GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.FileChecksums) (bool, error)
+	GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.FileChecksums) (MockResult, error)
 
 	// Auth is owned code now (GenerateAuthSetup scaffolds the editable
 	// internal/app/auth.go, a plain package func that writes once and never

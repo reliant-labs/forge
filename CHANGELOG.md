@@ -721,6 +721,17 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
     the build cache's `<2 hex>/<64 hex>-d/<name>` executable store. The
     location of `GOCACHE` is not used, because `go env -w` can move it
     without the environment showing it.
+- **`forge generate` reports a mock only when its bytes changed.** Every run
+  printed `✅ Updated internal/handlers/mocks/<svc>_mock_gen.go` for every
+  service, and `✅ Generated mock + middleware for internal/<pkg>/` for every
+  contract package. A re-run that changed nothing still printed them, and on
+  forge itself one changed `mock_gen.go` came with eight such lines. The
+  closing summary was already right. Now each line appears only when the file
+  changed. An unchanged file is a `--verbose` line (`… unchanged`). The
+  contract-package count reads `(N changed)`. The write chokepoint gained
+  `checksums.WriteGeneratedFileOutcome`, which reports whether a write changed
+  the file's bytes. `codegen.GenerateMock` returns a `MockResult` (wrote,
+  changed, or why it was skipped) instead of a bool.
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

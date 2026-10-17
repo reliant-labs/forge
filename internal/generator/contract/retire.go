@@ -61,6 +61,7 @@
 package contract
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,6 +81,40 @@ var retirableArtifacts = []string{
 	"middleware_gen.go",
 	"tracing_gen.go",
 	"metrics_gen.go",
+}
+
+// ArtifactSnapshot holds the bytes of the files contract codegen owns in one
+// package directory (a nil entry: the file was absent), taken before a run so
+// the caller can say whether the run changed them. No single write's outcome
+// can: GenerateWithOptions deletes middleware_gen.go and the decorator step
+// writes it back, so a package whose output is byte-identical still sees a
+// delete and a create every run.
+type ArtifactSnapshot map[string][]byte
+
+// SnapshotArtifacts records the current bytes of dir's contract artifacts.
+func SnapshotArtifacts(dir string) ArtifactSnapshot {
+	snap := ArtifactSnapshot{}
+	for _, name := range retirableArtifacts {
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			snap[name] = b
+		} else {
+			snap[name] = nil
+		}
+	}
+	return snap
+}
+
+// ChangedIn reports whether any of dir's contract artifacts now differs from
+// the snapshot: different bytes, created, or deleted.
+func (s ArtifactSnapshot) ChangedIn(dir string) bool {
+	now := SnapshotArtifacts(dir)
+	for _, name := range retirableArtifacts {
+		before, after := s[name], now[name]
+		if (before == nil) != (after == nil) || !bytes.Equal(before, after) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsRetirableArtifact reports whether base (a bare filename) is one of

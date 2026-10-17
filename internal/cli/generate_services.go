@@ -382,15 +382,23 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 }
 
 // mockOutcomeLine is generateServiceMocks' progress line for svc, naming
-// the file GenerateMock writes (codegen.MockRelPath).
-func mockOutcomeLine(svc codegen.ServiceDef, written bool) string {
-	if written {
+// the file GenerateMock writes (codegen.MockRelPath) and saying what the
+// call did with it.
+func mockOutcomeLine(svc codegen.ServiceDef, res codegen.MockResult) string {
+	switch {
+	case res.Changed:
 		return fmt.Sprintf("  ✅ Updated %s\n", codegen.MockRelPath(svc))
+	case res.Wrote:
+		return fmt.Sprintf("  ⏭️  %s unchanged\n", codegen.MockRelPath(svc))
 	}
-	return fmt.Sprintf("  ⏭️  Skipped %s (no RPCs)\n", codegen.MockRelPath(svc))
+	return fmt.Sprintf("  ⏭️  %s not written — %s\n", codegen.MockRelPath(svc), res.Skipped)
 }
 
 // generateServiceMocks always regenerates mocks from proto definitions.
+// Only a mock whose bytes changed is reported by default: every re-run
+// renders every mock, and printing "Updated" for the byte-identical ones
+// buried the one that did change (the run's closing summary already
+// counted them as unchanged).
 func generateServiceMocks(services []codegen.ServiceDef, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating service mocks...")
 
@@ -399,14 +407,14 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string, cs *
 	}
 
 	for _, svc := range services {
-		written, err := codegen.GenerateMock(svc, projectDir, filepath.Join(projectDir, "internal", "handlers", "mocks"), cs)
+		res, err := codegen.GenerateMock(svc, projectDir, filepath.Join(projectDir, "internal", "handlers", "mocks"), cs)
 		if err != nil {
 			return fmt.Errorf("failed to generate mock for %s: %w", svc.Name, err)
 		}
-		if written {
-			fmt.Print(mockOutcomeLine(svc, written))
+		if res.Changed {
+			fmt.Print(mockOutcomeLine(svc, res))
 		} else {
-			routinef("%s", mockOutcomeLine(svc, written))
+			routinef("%s", mockOutcomeLine(svc, res))
 		}
 	}
 

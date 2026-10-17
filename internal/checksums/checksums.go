@@ -630,6 +630,28 @@ func Hash(content []byte) string {
 // remaining caller emits regenerated-every-run output, so both names
 // now share Tier-1 semantics.
 func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
+	out, err := WriteGeneratedFileOutcome(root, relPath, content, cs, force)
+	return out.Wrote, err
+}
+
+// WriteOutcome is what one Tier-1 write did.
+type WriteOutcome struct {
+	// Wrote is true when the render landed on disk: the path is current
+	// and forge-owned this run. A re-run that renders the same bytes still
+	// writes them, so Wrote alone says nothing about change.
+	Wrote bool
+	// Changed is true when Wrote and the file's bytes now differ from what
+	// was on disk before the write (including a file that did not exist).
+	// It is the per-file answer the run's closing WriteSummary gives for
+	// the whole tree, so a progress line built on it agrees with the
+	// summary.
+	Changed bool
+}
+
+// WriteGeneratedFileOutcome is WriteGeneratedFile, reporting whether the
+// write changed the file's bytes as well as whether it landed — what a
+// progress line needs to say "updated" only when something was.
+func WriteGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChecksums, force bool) (WriteOutcome, error) {
 	relPath = slashKey(relPath)
 
 	// Record the Tier-1 emit TARGET before any disown-skip below: forge
@@ -646,7 +668,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	// with the same symbols, which is the exact collision the carry-over
 	// exists to prevent. The conflict was already reported as a runbook.
 	if WriteBlocked(relPath) {
-		return false, nil
+		return WriteOutcome{}, nil
 	}
 
 	// Disowned: user-owned — never overwrite, even with force=true
@@ -657,9 +679,9 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	reAdopting := false
 	if cs.IsDisowned(relPath) {
 		if _, statErr := os.Stat(filepath.Join(root, relPath)); statErr == nil {
-			return false, nil
+			return WriteOutcome{}, nil
 		} else if !os.IsNotExist(statErr) {
-			return false, statErr
+			return WriteOutcome{}, statErr
 		}
 		reAdopting = true
 	}
@@ -682,9 +704,9 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		// (stamped) render for the post-pipeline comparison, leave the
 		// user's on-disk content untouched.
 		if err := WriteSideRenderNoBase(root, relPath, stamped); err != nil {
-			return false, err
+			return WriteOutcome{}, err
 		}
-		return false, nil
+		return WriteOutcome{}, nil
 	}
 
 	onDisk, readErr := os.ReadFile(filepath.Join(root, relPath))
@@ -702,7 +724,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 				// (--heal) for the whole tree, or this file's --force scope.
 				if !AutoHeal && !forceApplies(relPath, force) {
 					noticeHealOnce(relPath)
-					return false, nil
+					return WriteOutcome{}, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
 					pendingHeals[relPath] = pendingHeal{oldBody: oldBody, trigger: healTriggerFor(relPath, force)}
@@ -727,7 +749,7 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 				// user opted in via --heal or this file's --force scope.
 				if !AutoHeal && !forceApplies(relPath, force) {
 					noticeHealOnce(relPath)
-					return false, nil
+					return WriteOutcome{}, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
 					pendingHeals[relPath] = pendingHeal{oldBody: embedded, trigger: healTriggerFor(relPath, force)}
@@ -735,31 +757,32 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 			case !forceApplies(relPath, force):
 				// Hand-edited after forge stamped it: the stomp guard's
 				// territory. Skip unless this run's --force scope covers it.
-				return false, nil
+				return WriteOutcome{}, nil
 			}
 		case NoMarker:
 			// Forge never certified these bytes at a path it owns —
 			// the legacy untracked-path behavior: write.
 		}
 	case !os.IsNotExist(readErr):
-		return false, readErr
+		return WriteOutcome{}, readErr
 	}
 
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		return false, err
+		return WriteOutcome{}, err
 	}
 	// Capture the pre-run bytes BEFORE the first write so a failed run can
 	// be rolled back to a clean pre-regen tree (fr-40f7ec9bd9).
 	recordPreWrite(root, relPath)
 	if err := atomicWriteFile(fullPath, stamped, 0o644); err != nil {
-		return false, err
+		return WriteOutcome{}, err
 	}
 	MarkWrittenThisRun(relPath)
 	if reAdopting && cs != nil {
 		delete(cs.Disowned, relPath)
 	}
-	return true, nil
+	// readErr is nil or not-exist here: any other read error returned above.
+	return WriteOutcome{Wrote: true, Changed: readErr != nil || !bytes.Equal(onDisk, stamped)}, nil
 }
 
 // writeUnstampable is the Tier-1 write path for comment-incapable
@@ -768,18 +791,18 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 // the stamped path: recorded-hash match → regenerate (loud heal when
 // the content actually changes), mismatch → hand-edited (skip unless
 // force), no record → write.
-func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
+func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, force bool) (WriteOutcome, error) {
 	relPath = slashKey(relPath)
 	newBody := BodyHash(content)
 	if sideRenderOnly[relPath] {
 		if err := WriteSideRenderNoBase(root, relPath, content); err != nil {
-			return false, err
+			return WriteOutcome{}, err
 		}
-		return false, nil
+		return WriteOutcome{}, nil
 	}
 	onDisk, readErr := os.ReadFile(filepath.Join(root, relPath))
 	if readErr != nil && !os.IsNotExist(readErr) {
-		return false, readErr
+		return WriteOutcome{}, readErr
 	}
 	if readErr == nil && cs != nil {
 		recorded, tracked := cs.Unstampable[relPath]
@@ -792,7 +815,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 			if onDiskBody != newBody {
 				if !AutoHeal && !forceApplies(relPath, force) {
 					noticeHealOnce(relPath)
-					return false, nil
+					return WriteOutcome{}, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending {
 					pendingHeals[relPath] = pendingHeal{oldBody: onDiskBody, trigger: healTriggerFor(relPath, force)}
@@ -800,17 +823,17 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 			}
 		case tracked: // mismatch → hand-edited
 			if !forceApplies(relPath, force) {
-				return false, nil
+				return WriteOutcome{}, nil
 			}
 		}
 	}
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		return false, err
+		return WriteOutcome{}, err
 	}
 	recordPreWrite(root, relPath)
 	if err := atomicWriteFile(fullPath, content, 0o644); err != nil {
-		return false, err
+		return WriteOutcome{}, err
 	}
 	if cs != nil {
 		if cs.Unstampable == nil {
@@ -819,7 +842,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 		cs.Unstampable[relPath] = newBody
 	}
 	MarkWrittenThisRun(relPath)
-	return true, nil
+	return WriteOutcome{Wrote: true, Changed: readErr != nil || !bytes.Equal(onDisk, content)}, nil
 }
 
 // WriteGeneratedFileTier1 writes a Tier-1 (regenerated-every-run) file.

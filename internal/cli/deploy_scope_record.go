@@ -98,7 +98,7 @@ func refuseConvergedScope(ledger envLedger, plan promotePlan) error {
 		"so recording %s would also move %s, and the promotion's scope (%s) would be false.\n\n"+
 		"NOTHING WAS RECORDED. Either deploy the whole release:\n"+
 		"    forge env deploy %s %s\n"+
-		"  or scope a re-apply of the release %s runs (%s).",
+		"  or scope a re-apply of the release %s runs (%s)",
 		plan.Env, plan.Target.Release, what, strings.Join(plan.Scope, ", "),
 		plan.Env, plan.Target.Release, plan.Env, runs)
 }

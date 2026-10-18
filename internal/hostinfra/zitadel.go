@@ -96,12 +96,12 @@ const EngineZitadel = "zitadel"
 //
 // Pinned MINOR.PATCH, never `latest`: an IdP that silently changes version
 // under a dev stack turns "login broke today" into an archaeology exercise.
-const ZitadelVersion = "v4.19.4"
+const ZitadelVersion = "v4.19.5"
 
 // zitadelChecksums is the sha256 of each published release archive for
 // ZitadelVersion, copied from the release's own checksums.txt:
 //
-//	https://github.com/zitadel/zitadel/releases/download/v4.19.4/checksums.txt
+//	https://github.com/zitadel/zitadel/releases/download/v4.19.5/checksums.txt
 //
 // Verifying against a table pinned HERE rather than against the checksums
 // file fetched alongside the archive is the whole point: a checksum
@@ -114,13 +114,13 @@ const ZitadelVersion = "v4.19.4"
 // Keyed by the archive's own asset name, so adding a platform is adding a
 // line.
 var zitadelChecksums = map[string]string{
-	"zitadel-darwin-amd64.tar.gz": "5e0bc417311c118e5d78fad150388916edd7f95d506ffb6e24f7f481b9b6dc69",
-	"zitadel-darwin-arm64.tar.gz": "25e01928885d4a4a64a1157902809528337a78374ba94f390fd0ef8892149f3f",
-	"zitadel-linux-amd64.tar.gz":  "d61fab2133c546261ea90cd43d2f7b4a5890bc4f9b5407930da1973626c47423",
-	"zitadel-linux-arm64.tar.gz":  "ef7d1ff1f2632cd0cadb9c6d4cb0c2b19045f4599261a5d0df4a654f5175e989",
+	"zitadel-darwin-amd64.tar.gz": "a30f7bb010ccf064d414e3ea98d3a2e5684d5171cd24cb545cba911871b6ea0a",
+	"zitadel-darwin-arm64.tar.gz": "e9de33e9278eed5d16cacc47c3ef5906d6e0bcaf2888b04a257ae0e6dc77f297",
+	"zitadel-linux-amd64.tar.gz":  "6320c9783a807633f98d35d88c0e60e1a783daf7679aca09269da0aba083cd5d",
+	"zitadel-linux-arm64.tar.gz":  "4a0c6429bed5a1c2256856710c4b68a75b571608ee69aaee2353ec278d1a48ed",
 
-	"zitadel-windows-amd64.tar.gz": "362efd292ef5d5593c0a472bc4fd91de79b75f672e5d9d2fec8a091b738365be",
-	"zitadel-windows-arm64.tar.gz": "12ed69fa813243efaa4cc0ac23949b75cb253b43997c7b6d1afc7761fdf216d6",
+	"zitadel-windows-amd64.tar.gz": "d0a50c1279662c14372fe075bf155004f4c9c841c046081e7489cf13988f7c1e",
+	"zitadel-windows-arm64.tar.gz": "d61acd4626ae0b11914d85955455c474252655995fbe047d0491f5813f81e524",
 }
 
 // zitadelAsset names the release archive for a GOOS/GOARCH pair, and
@@ -151,7 +151,7 @@ func zitadelDownloadURL(asset string) string {
 // third-party server, VERSIONED, so two projects on different pins coexist
 // and a bump never has to invalidate anything by hand.
 //
-//	<UserCacheDir>/forge/zitadel/v4.19.4/<goos>-<goarch>/zitadel
+//	<UserCacheDir>/forge/zitadel/v4.19.5/<goos>-<goarch>/zitadel
 //
 // This path is a CONTRACT, not an implementation detail: an image that
 // pre-caches the binary (control-plane's workspace image does) writes to

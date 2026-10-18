@@ -345,7 +345,7 @@ spec:
     spec:
       containers:
         - name: zitadel
-          image: ghcr.io/zitadel/zitadel:v4.19.4
+          image: ghcr.io/zitadel/zitadel:v4.19.5
           env:
             - name: TOKEN
               valueFrom:
@@ -379,7 +379,7 @@ spec:
 		t.Errorf("provisioned-elsewhere is NOT in the stream and must remain required: %v", refs.Secrets)
 	}
 	// Images are never self-provided: an image is satisfied by a registry.
-	if _, ok := refs.Images["ghcr.io/zitadel/zitadel:v4.19.4"]; !ok {
+	if _, ok := refs.Images["ghcr.io/zitadel/zitadel:v4.19.5"]; !ok {
 		t.Errorf("image refs must be unaffected by self-provided subtraction: %v", refs.Images)
 	}
 }

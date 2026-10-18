@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dev Zitadel moves to v4.19.5** (was v4.19.4) in host-infra, the compose
+  `idp` service and its per-platform checksums (taken from the release's
+  `checksums.txt` and re-computed from the downloaded archives). 4.0.0–4.19.4
+  carry three high advisories: GHSA-mchc-246r-6m76, GHSA-84fg-x5h4-w8xv and
+  GHSA-qj3q-235g-qr6w (Login V2 link-host poisoning, a forgeable Login V2
+  verification proof, and device-code approval without consent). The dev IdP
+  serves no Login V2 and registers no device-code app, but a dev pin that lags
+  the deployed one is drift. No config or steps changes are needed. Upgrade
+  notes worth knowing: list endpoints now enforce `DefaultQueryLimit` (100,
+  v2) and `MaxQueryLimit` (1000, v1 and v2), and a malformed
+  `x-zitadel-public-host` is now rejected instead of ignored.
+
 - **Adapter scaffolds use typed configuration from birth (#748).**
   `forge scaffold adapter <name>` (and `scaffold package --type adapter`)
   appends a `<Name>Config` message with a `<NAME>_BASE_URL` leaf to the config

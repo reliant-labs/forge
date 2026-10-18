@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,11 @@ import (
 // count is always exact; past the cap the list says how many it left out, so a
 // whole misrouted cluster does not bury the fix under hundreds of lines.
 const foreignClusterListCap = 12
+
+// ErrNothingApplied marks a refusal that was decided before any object was
+// sent to a cluster. A deploy that fails with it changed nothing, which is a
+// different fact from "failed part-way; some of it may be live".
+var ErrNothingApplied = errors.New("nothing was applied")
 
 // refuseForeignClusterDocs refuses a manifest stream that carries an object
 // stamped for a DIFFERENT cluster than the kubectl context it is about to be
@@ -63,10 +69,10 @@ func refuseForeignClusterDocs(kctx, manifests string) error {
 		shown = shown[:foreignClusterListCap]
 		more = fmt.Sprintf("\n    … and %d more", len(foreign)-foreignClusterListCap)
 	}
-	return fmt.Errorf("refusing to apply to kubectl context %q: %d object(s) in this stream are stamped %s for a different cluster, and nothing was applied:\n    %s%s\n"+
+	return fmt.Errorf("refusing to apply to kubectl context %q: %d object(s) in this stream are stamped %s for a different cluster, and %w:\n    %s%s\n"+
 		"  Each object lands only on the cluster its %s label names. A stream that still carries another cluster's objects at this point means the "+
 		"deploy lost its multi-cluster routing — a forge bug, not something to work around. `forge env render <env> --list` shows where each object should go",
-		kctx, len(foreign), ClusterRoutingLabel, strings.Join(shown, "\n    "), more, ClusterRoutingLabel)
+		kctx, len(foreign), ClusterRoutingLabel, ErrNothingApplied, strings.Join(shown, "\n    "), more, ClusterRoutingLabel)
 }
 
 // describeForeignDoc names one misrouted object as `Kind ns/name → context`.

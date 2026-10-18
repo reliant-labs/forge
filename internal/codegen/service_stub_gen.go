@@ -197,6 +197,9 @@ type MissingHandlerResult struct {
 // once the placeholder is filled in. The canonical handlers_test.go filename
 // is reserved for the user. A nil cs is tolerated.
 func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, crudMethodNames map[string]bool, cs *checksums.FileChecksums) (*MissingHandlerResult, error) {
+	if err := reconcileConnectIdentity(svc, projectDir, targetDir, cs); err != nil {
+		return nil, fmt.Errorf("reconcile Connect service identity: %w", err)
+	}
 	existing, err := ScanExistingMethods(targetDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("scan existing methods: %w", err)

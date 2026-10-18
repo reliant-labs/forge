@@ -283,7 +283,7 @@ func checkServiceDirConsistency(pf parsedProto) []Finding {
 			File:        pf.Path,
 			Line:        svc.Line,
 			Message:     err.Error(),
-			Remediation: "rename the proto service or the proto/services/ directory so pascalCase(dir) + \"Service\" == the proto service name",
+			Remediation: "rename the proto service or the proto/services/ directory so their logical names agree (ignoring separators and casing)",
 		})
 	}
 	return findings

@@ -124,38 +124,20 @@ func ValidateImportablePackageName(name string) error {
 	return nil
 }
 
-// ValidateServiceDirConsistency checks that a proto service name and its
-// containing proto/services/<dir>/ directory name generate the SAME Go
-// identifiers from forge's two independent generators:
-//
-//   - buf (protoc-gen-connect-go) names its Connect stubs from the PROTO
-//     service name: New<ProtoName>Handler, Unimplemented<ProtoName>Handler,
-//     <ProtoName>Name.
-//   - forge names its bootstrap wiring from the DIRECTORY: Mount<Pascal(dir)>,
-//     NewTest<Pascal(dir)>, <Pascal(dir)>TestOption.
-//
-// These agree only when protoName == pascalCase(dir) + "Service" — exactly
-// what `forge scaffold service <dir>` writes into a fresh proto file. Once a
-// proto is hand-edited (e.g. "WorkOrderService" in a directory scaffolded as
-// "workorder"), the two generators silently diverge and the mismatch surfaces
-// three layers downstream as a Go compile error
-// ("undefined: workorderv1connect.UnimplementedWorkOrderServiceHandler (but
-// have UnimplementedWorkorderServiceHandler)") with no indication of the
-// proto/directory naming as the cause. This check catches it at the source.
+// ValidateServiceDirConsistency checks logical service identity, not Go casing.
+// Connect identifiers are derived from the authoritative proto spelling; Forge's
+// own Mount/NewTest names are independent, idiomatic Go identifiers. Separators,
+// word boundaries and initialism casing therefore need not match.
 func ValidateServiceDirConsistency(protoServiceName, dirName string) error {
-	expected := naming.ToPascalCase(dirName) + "Service"
-	if protoServiceName == expected {
+	base := strings.TrimSuffix(protoServiceName, "Service")
+	fold := func(s string) string {
+		return strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(s))
+	}
+	if fold(base) == fold(dirName) {
 		return nil
 	}
-	bufIdentifier := "New" + naming.ConnectServiceGoName(protoServiceName) + "Handler"
-	forgeIdentifier := "Mount" + naming.ToPascalCase(dirName)
-	fixDir := naming.ToSnakeCase(strings.TrimSuffix(protoServiceName, "Service"))
-	return fmt.Errorf(
-		"proto service %q in directory %q generates conflicting Go identifiers:\n"+
-			"  buf (from the proto):      %s\n"+
-			"  forge (from the directory): %s\n"+
-			"Fix: rename the proto service to %q, or rename the directory to %q",
-		protoServiceName, dirName, bufIdentifier, forgeIdentifier, expected, fixDir)
+	return fmt.Errorf("proto service %q does not match directory %q: Fix: rename the proto service to %q, or rename the directory to %q",
+		protoServiceName, dirName, naming.ToPascalCase(dirName)+"Service", naming.ToSnakeCase(base))
 }
 
 // ValidateIdentifier checks that a name is valid for use as a service,

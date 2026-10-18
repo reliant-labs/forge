@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/jinzhu/inflection"
 )
@@ -61,13 +62,38 @@ var goInitialismsSorted = func() []string {
 	return sorted
 }()
 
-// applyGoInitialisms replaces known initialisms with their all-caps form.
-// e.g. "HttpClient" -> "HTTPClient", "ApiId" -> "APIID".
-// Processes longer initialisms first to avoid partial replacements.
+// applyGoInitialisms replaces known initialisms with their all-caps form,
+// but only where the title-cased initialism is a whole PascalCase word: the
+// match must be followed by an upper-case letter, a digit, or the end of the
+// string. A capital letter always starts a word, so no leading check is needed.
+//
+//	"HttpClient" -> "HTTPClient", "ApiId" -> "APIID", "Uuid" -> "UUID"
+//	"Identity" -> "Identity", "Slack" -> "Slack", "Ramp" -> "Ramp"
+//
+// Plurals are deliberately not initialisms: "Ids" stays "Ids", as in
+// staticcheck ST1003 (which tests whole words) and protoc-gen-go (which
+// applies no initialisms at all), so forge's names match buf's stubs.
+// Longer initialisms are processed first so "Uuid" never becomes "UuID".
 func applyGoInitialisms(s string) string {
 	for _, initialism := range goInitialismsSorted {
 		titleCase := strings.ToUpper(initialism[:1]) + strings.ToLower(initialism[1:])
-		s = strings.ReplaceAll(s, titleCase, initialism)
+		var b strings.Builder
+		for {
+			i := strings.Index(s, titleCase)
+			if i < 0 {
+				break
+			}
+			end := i + len(titleCase)
+			b.WriteString(s[:i])
+			if endsWord(s, end) {
+				b.WriteString(initialism)
+			} else {
+				b.WriteString(titleCase)
+			}
+			s = s[end:]
+		}
+		b.WriteString(s)
+		s = b.String()
 	}
 	return s
 }
@@ -79,6 +105,16 @@ func applyGoInitialisms(s string) string {
 // lint instead of renaming.
 func TripsReviveVarNaming(goIdent string) bool {
 	return applyGoInitialisms(goIdent) != goIdent
+}
+
+// endsWord reports whether a PascalCase word ends at s[end]: end of string,
+// or the next rune is upper-case or a digit.
+func endsWord(s string, end int) bool {
+	if end >= len(s) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(s[end:])
+	return unicode.IsUpper(r) || unicode.IsDigit(r)
 }
 
 // ToSnakeCase converts a string (camelCase, PascalCase, UPPER_CASE, etc.) to snake_case.

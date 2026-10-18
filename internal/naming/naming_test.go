@@ -24,6 +24,31 @@ func TestToPascalCase(t *testing.T) {
 		{"llm-gateway", "LLMGateway"},
 		{"jwt-auth", "JWTAuth"},
 		{"io-bound", "IOBound"},
+		// An initialism is replaced only as a whole word. Each of these
+		// used to be mangled by a prefix match ("identity" -> "IDentity").
+		{"identity", "Identity"},
+		{"slack_channel", "SlackChannel"},
+		{"uint_value", "UintValue"},
+		{"ramp", "Ramp"},
+		{"idle", "Idle"},
+		{"ion", "Ion"},
+		{"ipsum", "Ipsum"},
+		{"api_key", "APIKey"},
+		{"http_url", "HTTPURL"},
+		{"https_proxy", "HTTPSProxy"},
+		{"uid_map", "UIDMap"},
+		{"vm2", "VM2"},
+		{"user_id_2", "UserID2"},
+		// Plurals are not initialisms: "Ids" matches no word, as in
+		// staticcheck ST1003 and protoc-gen-go.
+		{"ids", "Ids"},
+		{"user_ids", "UserIds"},
+		{"urls", "Urls"},
+		{"apis", "Apis"},
+		// Already-PascalCase input is word-bounded by its capitals.
+		{"IdentityService", "IdentityService"},
+		{"ApiKeyService", "APIKeyService"},
+		{"UserIdService", "UserIDService"},
 	}
 	for _, tt := range tests {
 		got := ToPascalCase(tt.input)

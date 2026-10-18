@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Go initialisms are replaced only as whole PascalCase words (#795).**
+  `ToPascalCase` matched initialisms by prefix, so `forge scaffold service
+  identity` produced `IDentityService` and an `id-entity` file that `generate`
+  then rejected; `Slack`, `Uint`, `Ramp`, `Idle` and `Ion` were mangled the
+  same way. An initialism now applies only when followed by an upper-case
+  letter, a digit or the end of the name (`identity` -> `Identity`, `user_id` ->
+  `UserID`, `http_url` -> `HTTPURL`). Plurals are not initialisms: `ids` ->
+  `Ids`, as in staticcheck ST1003 and protoc-gen-go. A proto service that
+  spells an initialism as a word (`ApiKeyService`) now matches its directory
+  (`api_key`): the check compares logical names, the Connect selectors in an
+  existing `service.go` follow the proto spelling, and the fix hint never names
+  the current state. Generated identifiers that contained a mangled prefix or
+  an `...IDs`/`...URLs` plural change on the next regenerate.
+
 - **A fresh project with a Next.js frontend passes its own npm vulnerability
   gate (#754).** Scaffolds require Vitest `^5.0.4`; Vitest 3 brought critical
   tinypool advisories and Vitest 4 crashes npm 10's installer. Next.js, Vite SPA,

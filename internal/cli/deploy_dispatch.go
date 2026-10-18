@@ -313,7 +313,17 @@ func dispatchDeployGroupsBeforeClusters(ctx context.Context, registry *deploytar
 	var (
 		pending    []*cluster.PendingRollout
 		pendingIDs []string
+		// reachedCluster is set once any group has been sent to a target. A
+		// later group's "nothing was applied" refusal is then only true of
+		// that group, so it must not mark the whole dispatch as untouched.
+		reachedCluster bool
 	)
+	partial := func(err error) error {
+		if reachedCluster && errors.Is(err, cluster.ErrNothingApplied) {
+			return errors.New(err.Error())
+		}
+		return err
+	}
 	// awaitPending waits on every cluster applied since the last barrier.
 	awaitPending := func() error {
 		if len(pending) == 0 {
@@ -348,8 +358,9 @@ func dispatchDeployGroupsBeforeClusters(ctx context.Context, registry *deploytar
 				// awaited — their rollout may well depend on the cluster
 				// that just failed, and waiting out its timeout would only
 				// delay the error that already decides this deploy.
-				return fmt.Errorf("deploy %s: %w", group.ProviderID, err)
+				return fmt.Errorf("deploy %s: %w", group.ProviderID, partial(err))
 			}
+			reachedCluster = true
 			pending = append(pending, rollout)
 			if !slices.Contains(pendingIDs, group.ProviderID) {
 				pendingIDs = append(pendingIDs, group.ProviderID)
@@ -360,6 +371,7 @@ func dispatchDeployGroupsBeforeClusters(ctx context.Context, registry *deploytar
 			return err
 		}
 		fmt.Printf("\n%s\n", deploytarget.FormatGroupSummary(group))
+		reachedCluster = true
 		if err := p.Deploy(ctx, group); err != nil {
 			return fmt.Errorf("deploy %s: %w", group.ProviderID, err)
 		}

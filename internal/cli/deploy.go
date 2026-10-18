@@ -1276,6 +1276,11 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	if opts.skipClusterApply {
 		hasK8sServices = false
 	}
+	// --frontends-only touches no cluster, whatever the env declares: no
+	// kubectl context, banner, preflight or apply.
+	if opts.frontendsOnly {
+		hasK8sServices = false
+	}
 
 	// WHO APPLIES this env, read from its own declaration. Resolved from
 	// the FULL env for the same reason hasK8sServices is: --target scopes
@@ -1339,7 +1344,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		return err
 	}
 
-	fmt.Printf("Generating manifests from %s...\n", mainK)
+	if !opts.frontendsOnly {
+		fmt.Printf("Generating manifests from %s...\n", mainK)
+	}
 
 	// Build the deploy groups (bucketed by target type) and propagate the
 	// resolved image tag to each. See buildDeployGroupsForEnv.
@@ -1705,6 +1712,16 @@ type deployTagResolution struct {
 	boundRelease string
 }
 
+// releaseTagFor is the image tag a deploy that NAMES a release renders with:
+// the release version, or "" when the deploy names none, an explicit --tag
+// overrides it, or --no-digest asks for the built image directly.
+func releaseTagFor(ctx context.Context, flagTag string, noDigest bool) string {
+	if flagTag != "" || noDigest {
+		return ""
+	}
+	return hostedPinReleaseFrom(ctx)
+}
+
 // resolveDeployTags resolves the image tag (three-tier precedence chain) and
 // the per-image digest map for a deploy. Split out of runDeploy so the
 // precedence logic is testable without stubbing the whole pipeline.
@@ -1723,9 +1740,20 @@ type deployTagResolution struct {
 // resolveDeployImageDigests alone. --no-digest disables both digest paths.
 func resolveDeployTags(ctx context.Context, projectDir, envName string, opts deployOptions) (deployTagResolution, error) {
 	var res deployTagResolution
-	ref, pt, src, terr := resolveDeployImageTag(ctx, projectDir, envName, opts.imageTag, opts.noDigest)
-	if terr != nil {
-		return deployTagResolution{}, terr
+	var ref, pt, src string
+	if named := releaseTagFor(ctx, opts.imageTag, opts.noDigest); named != "" {
+		// A deploy that names a release renders from the release, never from
+		// the build this checkout last made: the tag is the release version
+		// (a --release build pushes under it only), and the local build state
+		// is not read, so neither its tag nor its staleness can change what
+		// the release's bundle contains.
+		ref, pt, src = named, named, "release "+named
+	} else {
+		var terr error
+		ref, pt, src, terr = resolveDeployImageTag(ctx, projectDir, envName, opts.imageTag, opts.noDigest)
+		if terr != nil {
+			return deployTagResolution{}, terr
+		}
 	}
 	res.imageTag = ref
 	res.plainTag = pt
@@ -2931,6 +2959,18 @@ func filterEntitiesToFrontendsOnly(e *KCLEntities) *KCLEntities {
 	out.RequiredSecrets = nil
 	out.RenderedSecrets = nil
 	out.ManifestClusters = nil
+	// The env-wide cluster declaration and everything that only describes
+	// what lands on a cluster. A surviving ClusterTarget alone makes
+	// kclEntitiesHaveK8sCluster true, which sends a "frontends only" deploy
+	// into the unscoped whole-stream cluster apply.
+	out.ClusterTarget = nil
+	out.ConnectedClusters = nil
+	out.RequiredDNS = nil
+	out.ControlPlaneSecrets = nil
+	out.ManifestNamespace = ""
+	out.ManifestServiceNames = nil
+	out.ManifestUnits = nil
+	out.ClusterWork = nil
 	// Frontends carried through unchanged — the Firebase deploy + any
 	// build-only frontends it bundles.
 	return &out

@@ -188,7 +188,9 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if ledger.appliesLocally() {
 		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
 		started := time.Now()
-		err := applySelfManaged(ctx, env, ledger, o)
+		// The apply renders the release this command just recorded, so its
+		// tag comes from the release and not from this checkout's build state.
+		err := applySelfManaged(withHostedPinRelease(ctx, plan.Target.Release), env, ledger, o)
 		// The LEDGER's account of a failed apply names what it shipped
 		// first: "failed" alone reads as "the previous release still runs",
 		// which is false once a cluster has rolled.

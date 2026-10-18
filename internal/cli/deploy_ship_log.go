@@ -20,10 +20,12 @@ package cli
 // runs the identical code path and records nothing.
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
@@ -93,6 +95,11 @@ type shipLog struct {
 func (l *shipLog) run(labels []string, fn func() error) error {
 	err := fn()
 	if l == nil || len(labels) == 0 {
+		return err
+	}
+	// A refusal decided before anything was sent changed nothing: recording
+	// the stage as partly applied would tell the operator it may be live.
+	if errors.Is(err, cluster.ErrNothingApplied) {
 		return err
 	}
 	l.mu.Lock()

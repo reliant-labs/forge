@@ -504,6 +504,9 @@ func renderImageTag(ctx context.Context, projectDir, envName, flagTag string) (t
 	if flagTag != "" {
 		return flagTag, "--tag"
 	}
+	if named := releaseTagFor(ctx, "", false); named != "" {
+		return named, "release " + named
+	}
 	for _, key := range buildStateLookupEnvs(envName) {
 		st, err := ReadBuildState(projectDir, key)
 		if err != nil || st == nil || st.Tag == "" {

@@ -119,6 +119,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   launcher resolver (secrets < env_file < runtime env), not container env:
   declare host-reachable published addresses; no container DNS/DSN rewriting.
 
+- **Release provenance a console can read without a repository (console v3
+  D4/D5).** A cut records its commit's subject and author on the provenance,
+  and the commits the release adds over the newest earlier release whose commit
+  it descends from (`Release.Commits`: newest 100, `truncated`, and a `total`
+  that is unknown in a shallow clone). Every bundle carries a value-free summary
+  line and per-section digests for each object (`BundleDoc.Objects`).
+  `release.CompareCommits`, `CompareArtifacts` and `CompareObjects` diff two
+  releases from those records; ranges compose through their bases, and fall back
+  to the releases cut in between on the same branch when a shallow cut broke the
+  chain. A scoped deploy (`--target`, `--frontends-only`) records the components
+  it moved as `Promotion.Targets`; `release.Decide` treats a promotion of the
+  bound release as a move when it moves something new. A scoped deploy of a new
+  release is refused where the env's control plane converges promotions (a hub
+  or hosted tiers), since it would move more than the scope. A control plane
+  must accept the new bundle fields (`objects`, `provenance.commit_subject`,
+  `provenance.commit_author`) before a forge that writes them records to it.
+
 - **`forge.ManagedIdentity`: an env's users, declared in KCL, with no app code
   change.** `Bundle.identity` names the roles, the applications that sign users
   in (derived from the env's `api` workload) and the consumers (every service

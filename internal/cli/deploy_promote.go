@@ -69,6 +69,9 @@ type promoteOptions struct {
 
 	Gates []string
 	From  promoteFromOptions
+	// Targets is the deploy's scope (deployScopeTargets), recorded on the
+	// promotion as release.Promotion.Targets. Nil for an unscoped deploy.
+	Targets []string
 	// Run is the run identity; resolved against the CI environment.
 	Run runOptions
 
@@ -209,6 +212,13 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	plan.DryRun = opts.DryRun
 	plan.SourceNote = source.Note
+	// The scope rides the plan into the write (applyPromotePlan), and is
+	// refused here — before any preview is approvable — where the env's
+	// control plane would converge more than it names.
+	applyPlanScope(&plan, opts.Targets)
+	if err := refuseConvergedScope(ledger, plan); err != nil {
+		return err
+	}
 	// The §8.6 plan rides the document, so --json carries the digest a
 	// two-stage pipeline passes to --approve and the codes it passes to
 	// --acknowledge-destructive.

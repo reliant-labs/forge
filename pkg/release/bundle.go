@@ -157,6 +157,12 @@ type BundleDoc struct {
 	Pins         BundlePins `json:"pins"`
 	Provenance   Provenance `json:"provenance"`
 	Shape        Shape      `json:"shape"`
+	// Objects describes Shape.Objects for reading — a summary line and a
+	// digest per section of each ([ObjectSummary]) — so two bundles can say
+	// what changed between them without either's manifests. Beside the shape
+	// rather than in it: the shape is bounded and read on every Live page,
+	// these are read on a release page. Empty on a bundle built before it.
+	Objects []ObjectSummary `json:"objects,omitempty"`
 	// ClusterPaths is one entry per path the manifest layer actually
 	// carries: the cluster, and the path under which its documents live.
 	//
@@ -245,6 +251,9 @@ func (d BundleDoc) Validate() error {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	if err := d.Shape.Validate(); err != nil {
+		return fmt.Errorf("bundle: %w", err)
+	}
+	if err := ValidateObjectSummaries(d.Shape, d.Objects); err != nil {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	if err := validateClusterPaths(d.ClusterPaths); err != nil {
@@ -365,14 +374,17 @@ type BundleRecord struct {
 	Digest string `json:"digest"`
 	// Reference is repo@digest, or an OCI-layout reference for a file
 	// ledger.
-	Reference    string     `json:"reference"`
-	ConfigDigest string     `json:"config_digest"`
-	Shape        Shape      `json:"shape"`
-	Provenance   Provenance `json:"provenance"`
-	Run          Run        `json:"run,omitempty"`
-	CreatedBy    string     `json:"created_by,omitempty"`
-	ImportedFrom string     `json:"imported_from,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
+	Reference    string `json:"reference"`
+	ConfigDigest string `json:"config_digest"`
+	Shape        Shape  `json:"shape"`
+	// Objects is the document's [BundleDoc.Objects], kept with the record so
+	// a release comparison reads it without fetching the bundle.
+	Objects      []ObjectSummary `json:"objects,omitempty"`
+	Provenance   Provenance      `json:"provenance"`
+	Run          Run             `json:"run,omitempty"`
+	CreatedBy    string          `json:"created_by,omitempty"`
+	ImportedFrom string          `json:"imported_from,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
 }
 
 // ─── Shape ───────────────────────────────────────────────────────────────────

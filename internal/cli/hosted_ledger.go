@@ -132,6 +132,49 @@ type wireRelease struct {
 	// same clean checkout `forge env build prod --release` had cut from
 	// minutes earlier, rebuilt every image and named a new release.
 	Provenance *wireProvenance `json:"provenance,omitempty"`
+	// Commits is DeployRelease.commits (tag 13): the source history the
+	// release adds over the release it was cut after, recorded at the cut
+	// because no reader of a hosted ledger has the repository.
+	Commits *wireCommitRange `json:"commits,omitempty"`
+}
+
+// wireCommitRange is controlplane.v1.DeployCommitRange.
+type wireCommitRange struct {
+	BaseRelease string       `json:"baseRelease,omitempty"`
+	BaseCommit  string       `json:"baseCommit,omitempty"`
+	Commits     []wireCommit `json:"commits,omitempty"`
+	Total       int          `json:"total,omitempty"`
+	Truncated   bool         `json:"truncated,omitempty"`
+}
+
+// wireCommit is controlplane.v1.DeployCommit.
+type wireCommit struct {
+	SHA     string    `json:"sha"`
+	Subject string    `json:"subject,omitempty"`
+	Author  string    `json:"author,omitempty"`
+	Time    time.Time `json:"time"`
+}
+
+func commitRangeToWire(r release.CommitRange) wireCommitRange {
+	w := wireCommitRange{BaseRelease: r.BaseRelease, BaseCommit: r.BaseCommit, Total: r.Total, Truncated: r.Truncated}
+	for _, c := range r.Commits {
+		w.Commits = append(w.Commits, wireCommit{SHA: c.SHA, Subject: c.Subject, Author: c.Author, Time: c.Time.UTC()})
+	}
+	return w
+}
+
+func commitRangeFromWire(w *wireCommitRange) *release.CommitRange {
+	if w == nil {
+		return nil
+	}
+	r := &release.CommitRange{
+		BaseRelease: w.BaseRelease, BaseCommit: w.BaseCommit,
+		Commits: []release.Commit{}, Total: w.Total, Truncated: w.Truncated,
+	}
+	for _, c := range w.Commits {
+		r.Commits = append(r.Commits, release.Commit{SHA: c.SHA, Subject: c.Subject, Author: c.Author, Time: c.Time.UTC()})
+	}
+	return r
 }
 
 // wireRun is controlplane.v1.DeployRun: the id that joins a release, its
@@ -182,11 +225,14 @@ type wirePromotion struct {
 	FromEnvironmentID string                `json:"fromEnvironmentId,omitempty"`
 	ResolvedArtifacts map[string]string     `json:"resolvedArtifacts,omitempty"`
 	ResolvedSources   map[string]wireSource `json:"resolvedSources,omitempty"`
-	PromotedByUserID  string                `json:"promotedByUserId,omitempty"`
-	PromotedByActor   string                `json:"promotedByActor,omitempty"`
-	Gates             []wireGate            `json:"gates,omitempty"`
-	Note              string                `json:"note,omitempty"`
-	CreatedAt         time.Time             `json:"createdAt"`
+	// Targets is DeployPromotion.targets (tag 26): the components a scoped
+	// deploy moved; empty for a whole-release promotion.
+	Targets          []string   `json:"targets,omitempty"`
+	PromotedByUserID string     `json:"promotedByUserId,omitempty"`
+	PromotedByActor  string     `json:"promotedByActor,omitempty"`
+	Gates            []wireGate `json:"gates,omitempty"`
+	Note             string     `json:"note,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
 
 	// RecordedGates is evidence that arrived AFTER this row was written,
 	// through RecordGate. Kept separate from Gates because the two answer
@@ -606,6 +652,11 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 	if prov, err := provenanceFromWire(w.Provenance); err == nil {
 		r.Provenance = prov
 	}
+	// Dropped when malformed, for the same reason: evidence about the
+	// release, never a reason its ledger cannot be read.
+	if commits := commitRangeFromWire(w.Commits); commits != nil && commits.Validate() == nil {
+		r.Commits = commits
+	}
 	for _, row := range w.Artifacts {
 		a, seen := r.Artifacts[row.Name]
 		if !seen {
@@ -733,6 +784,7 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 		p.FromEnv = w.FromEnvironmentID
 	}
 	p.FromPromotionID = w.FromPromotionID
+	p.Targets = release.NormalizeTargets(w.Targets)
 	p.SupersededInFlight = w.SupersededInFlight
 	p.Run = runFromWire(w.Run)
 	if p.Resolved == nil {
@@ -850,6 +902,12 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	if p.Note != "" {
 		req["note"] = p.Note
 	}
+	// The scope (PromoteReleaseRequest tag 15). The server runs
+	// release.Decide with it under the env row lock, so a scoped promotion
+	// of the bound release is a new entry when it moves something new.
+	if len(p.Targets) > 0 {
+		req["targets"] = p.Targets
+	}
 	if p.FromEnv != "" {
 		fromID, ferr := s.envID(ctx, p.FromEnv)
 		if ferr != nil {
@@ -962,6 +1020,9 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 	// disagree.
 	if r.Provenance != nil {
 		req["provenance"] = deploytarget.ProvenanceWireFields(*r.Provenance)
+	}
+	if r.Commits != nil {
+		req["commits"] = commitRangeToWire(*r.Commits)
 	}
 	// The project the version belongs to. A release's identity on the
 	// control plane is (org, version), so without this a second project in

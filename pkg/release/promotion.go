@@ -3,6 +3,7 @@ package release
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -87,8 +88,19 @@ type Promotion struct {
 	// deploy pins exactly these; nothing re-reads the release later.
 	Resolved map[string]string `json:"resolved"`
 	// Sources is the source-built half of the same snapshot.
-	Sources    map[string]Source `json:"sources,omitempty"`
-	PromotedBy Actor             `json:"promoted_by,omitempty"`
+	Sources map[string]Source `json:"sources,omitempty"`
+	// Targets names the components a SCOPED deploy moved (`--target api`,
+	// `--frontends-only`): workload, frontend or group names as the env
+	// declares them, sorted. Empty means the whole release moved.
+	//
+	// It is what keeps "prod runs v2" honest after `forge env deploy prod v2
+	// --target api`: the entry still binds prod to v2 — the release whose
+	// pins the deploy shipped — and Targets says only api took them, so a
+	// reader asking what a workload runs walks back to the newest entry that
+	// [Promotion.Moved] it. Resolved and Sources stay the release's whole
+	// pin set either way.
+	Targets    []string `json:"targets,omitempty"`
+	PromotedBy Actor    `json:"promoted_by,omitempty"`
 	// Gates is the PRE-promote evidence, frozen into the entry: what had
 	// already passed when the environment was bound.
 	Gates []Gate `json:"gates,omitempty"`
@@ -160,6 +172,9 @@ func (p Promotion) Validate() error {
 	if p.PlanDigest != "" && !ValidDigest(p.PlanDigest) {
 		return fmt.Errorf("%w: promotion of %q: plan digest %q is not canonical", ErrInvalid, p.Env, p.PlanDigest)
 	}
+	if err := validateTargets(p.Targets); err != nil {
+		return fmt.Errorf("promotion of %q: %w", p.Env, err)
+	}
 	// Gates read back from a ledger written before the status set closed
 	// carry a RawStatus, and must still READ. So validation here covers
 	// only what makes a gate uninterpretable rather than merely old: a
@@ -203,14 +218,91 @@ func NewPromotion(env string, r Release, kind PromotionKind) Promotion {
 	}
 }
 
+// MaxTargets bounds a promotion's Targets, and MaxTargetBytes each name.
+const (
+	MaxTargets     = 64
+	MaxTargetBytes = 253
+)
+
+// Scoped reports whether the promotion moved only some components.
+func (p Promotion) Scoped() bool { return len(p.Targets) > 0 }
+
+// Moved reports whether this promotion moved component: every component for a
+// whole-release promotion, only its Targets for a scoped one.
+func (p Promotion) Moved(component string) bool {
+	if !p.Scoped() {
+		return true
+	}
+	for _, t := range p.Targets {
+		if t == component {
+			return true
+		}
+	}
+	return false
+}
+
+// covers reports whether p already moved everything requested would.
+func (p Promotion) covers(requested Promotion) bool {
+	if !p.Scoped() {
+		return true
+	}
+	if !requested.Scoped() {
+		return false
+	}
+	for _, t := range requested.Targets {
+		if !p.Moved(t) {
+			return false
+		}
+	}
+	return true
+}
+
+// NormalizeTargets is the canonical form of a scope: trimmed, empty names
+// dropped, duplicates removed, sorted. Nil for an unscoped deploy.
+func NormalizeTargets(targets []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func validateTargets(targets []string) error {
+	if len(targets) > MaxTargets {
+		return fmt.Errorf("%w: %d targets, over the bound of %d", ErrInvalid, len(targets), MaxTargets)
+	}
+	for i, t := range targets {
+		switch {
+		case t == "" || strings.TrimSpace(t) != t:
+			return fmt.Errorf("%w: target %d (%q) is empty or padded", ErrInvalid, i, t)
+		case len(t) > MaxTargetBytes:
+			return fmt.Errorf("%w: target %q is over %d bytes", ErrInvalid, t, MaxTargetBytes)
+		case strings.ContainsFunc(t, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+			return fmt.Errorf("%w: target %q contains a control character", ErrInvalid, t)
+		case i > 0 && targets[i-1] >= t:
+			return fmt.Errorf("%w: targets must be sorted and unique (%q after %q) — see NormalizeTargets", ErrInvalid, t, targets[i-1])
+		}
+	}
+	return nil
+}
+
 // Decide applies the ledger's append rule to one environment's history
 // (OLDEST FIRST) and a requested entry. It returns:
 //
 //   - (current, nil) when the request is already the current state — the
-//     same release. A CI retry must not append a second entry claiming the
+//     same release, and the current entry already moved every component the
+//     request names. A CI retry must not append a second entry claiming the
 //     environment moved where it already was. The key is the CURRENT
 //     entry, not "ever promoted": v1→v2→v1 is three real moves, and the
-//     third must be recorded.
+//     third must be recorded. So is a scoped v2 followed by v2 for the
+//     rest: the second entry moves components the first did not.
 //   - (nil, nil) when the entry should be appended.
 //
 // Both backends call this inside whatever serializes their appends (the
@@ -220,7 +312,7 @@ func NewPromotion(env string, r Release, kind PromotionKind) Promotion {
 func Decide(history []Promotion, requested Promotion) (*Promotion, error) {
 	if n := len(history); n > 0 {
 		current := history[n-1]
-		if current.Release == requested.Release {
+		if current.Release == requested.Release && current.covers(requested) {
 			return &current, nil
 		}
 	}

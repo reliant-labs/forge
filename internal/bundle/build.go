@@ -340,6 +340,9 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Pins:         in.Pins,
 		Provenance:   in.Provenance,
 		Shape:        shape,
+		// From the SAME parsed, guarded bodies the shape hashed, so a
+		// summary describes exactly the bytes its object's Hash names.
+		Objects:      objectSummaries(docs, shape),
 		ClusterPaths: clusterTrees,
 		Trees:        trees,
 		Secrets:      secretRefs,

@@ -67,6 +67,7 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 		return p, nil
 	}
 	p.Commit = commit
+	p.CommitSubject, p.CommitAuthor = commitIdentity(ctx, top, commit)
 	if b, err := gitOut(ctx, top, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
 		p.Branch = b
 	}
@@ -121,6 +122,19 @@ func commitTime(ctx context.Context, top string) *time.Time {
 	}
 	t := time.Unix(secs, 0).UTC()
 	return &t
+}
+
+// commitIdentity is commit's subject line and author name, each made safe to
+// record (one line, bounded), or empty strings when git cannot say. Read as
+// raw bytes with a unit separator between the two, so neither field's content
+// can shift the other.
+func commitIdentity(ctx context.Context, top, commit string) (subject, author string) {
+	out, err := gitRaw(ctx, top, nil, "log", "-1", "--format=%s%x1f%an", commit)
+	if err != nil {
+		return "", ""
+	}
+	s, a, _ := strings.Cut(strings.TrimRight(string(out), "\n"), "\x1f")
+	return CommitText(s, MaxCommitSubjectBytes), CommitText(a, MaxCommitAuthorBytes)
 }
 
 // dirtyTree hashes exactly what is in the working tree — tracked changes and

@@ -61,6 +61,8 @@ func ProvenanceWireFields(p release.Provenance) map[string]any {
 	putNonEmpty(fields, "tag", p.Tag)
 	putNonEmpty(fields, "tree", p.Tree)
 	putNonEmpty(fields, "forgeVersion", p.ForgeVersion)
+	putNonEmpty(fields, "commitSubject", p.CommitSubject)
+	putNonEmpty(fields, "commitAuthor", p.CommitAuthor)
 	if p.Dirty {
 		fields["dirty"] = true
 	}

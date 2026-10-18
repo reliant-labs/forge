@@ -242,6 +242,25 @@ some would record a release that does not describe what is running. Name the
 version (`forge env deploy prod v1.7.1 --frontends-only`) or deploy
 everything. `--dry-run` / `--explain` cut nothing and are unaffected.
 
+**A scoped deploy records what it moved.** The promotion carries `targets`
+(the `--target` names, or the env's shippable frontends for
+`--frontends-only`), so the ledger never claims the whole env runs a release
+only part of it took; `release.Promotion.Moved(component)` answers per
+workload. Re-deploying the bound release scoped records nothing new; a whole
+deploy after a scoped one is a real move. Where the env's control plane
+converges promotions (a hub, or hosted tiers) a scoped deploy of a NEW release
+is refused before anything is written: the control plane would move more than
+the scope names.
+
+**A release records its source history.** The cut stores its commit's subject
+and author (`provenance.commit_subject` / `commit_author`) and the commits it
+adds over the newest earlier release it descends from (`commits`: at most 100,
+with `truncated` and a `total` that is 0 when a shallow clone could not count
+them). Every bundle also carries a one-line summary and per-section digests for
+each object (`objects`), so `release.CompareCommits` / `CompareArtifacts` /
+`CompareObjects` say what changed between two releases with no repository or
+manifests at hand.
+
 `build` and `deploy` also record that shape on the control plane, so a console
 can read an env with no daemon online.
 

@@ -898,9 +898,7 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		Reverts:      plan.Direction == promoteDirectionBehind,
 	})
 
-	// Evaluated before the return: scopePromotePlan writes the plan.
-	err = scopePromotePlan(&plan, opts.Scope, opts.Ledger)
-	return plan, err
+	return scopePromotePlan(plan, opts.Scope, opts.Ledger)
 }
 
 // applyPromotePlan writes the binding the plan describes.

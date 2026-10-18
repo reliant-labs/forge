@@ -56,10 +56,15 @@ func deployScopeTargets(ctx context.Context, projectDir, env string, targets []s
 }
 
 // scopePromotePlan puts the deploy's scope on the plan and refuses one the
-// env's control plane would widen.
-func scopePromotePlan(plan *promotePlan, scope []string, ledger envLedger) error {
-	applyPlanScope(plan, scope)
-	return refuseConvergedScope(ledger, *plan)
+// env's control plane would widen. It returns the plan rather than writing
+// through a pointer, so computePromotePlan can return it in one expression
+// with no evaluation-order question.
+func scopePromotePlan(plan promotePlan, scope []string, ledger envLedger) (promotePlan, error) {
+	applyPlanScope(&plan, scope)
+	if err := refuseConvergedScope(ledger, plan); err != nil {
+		return plan, err
+	}
+	return plan, nil
 }
 
 // applyPlanScope puts the deploy's scope on the plan, and corrects the

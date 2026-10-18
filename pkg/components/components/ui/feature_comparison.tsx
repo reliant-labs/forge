@@ -62,7 +62,7 @@ export default function FeatureComparison({ products, groups }: FeatureCompariso
               <tr>
                 <td
                   colSpan={products.length + 1}
-                  className="border-b border-border bg-surface-muted px-0 py-3 text-xs font-semibold uppercase tracking-wider text-ink-muted"
+                  className="border-b border-border bg-surface-muted px-0 py-3 text-xs font-medium text-ink-muted"
                 >
                   {group.name}
                 </td>

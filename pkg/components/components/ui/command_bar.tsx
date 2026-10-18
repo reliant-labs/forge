@@ -147,9 +147,7 @@ export default function CommandBar({
           ) : (
             Object.entries(grouped).map(([category, categoryItems]) => (
               <div key={category}>
-                <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
-                  {category}
-                </p>
+                <p className="px-3 py-1.5 text-xs text-ink-muted">{category}</p>
                 {categoryItems.map((item) => {
                   const idx = flatIndex++;
                   return (

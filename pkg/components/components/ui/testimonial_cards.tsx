@@ -1,5 +1,3 @@
-import React from "react";
-
 interface TestimonialCardsProps {
   testimonials: Array<{
     quote: string;

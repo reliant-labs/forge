@@ -1,5 +1,3 @@
-import React from "react";
-
 interface PubSubMatrixProps {
   /** Column headers — typically consumer / subscriber service names. */
   consumers: Array<{ id: string; label: string }>;

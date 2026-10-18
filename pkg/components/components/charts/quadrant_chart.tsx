@@ -1,5 +1,3 @@
-import React from "react";
-
 /**
  * QuadrantChart — A 2x2 quadrant scatter plot.
  *

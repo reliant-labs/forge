@@ -1,5 +1,3 @@
-import React from "react";
-
 /**
  * ConcentricCircles — Nested rings for TAM/SAM/SOM or layered data.
  *

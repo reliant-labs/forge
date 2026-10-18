@@ -83,7 +83,7 @@ export default function DetailView({ title, subtitle, fields, actions }: DetailV
               <button
                 key={action.label}
                 onClick={action.onClick}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
                   buttonStyles[action.variant ?? "secondary"]
                 }`}
               >
@@ -99,11 +99,7 @@ export default function DetailView({ title, subtitle, fields, actions }: DetailV
       <div className="divide-y divide-gray-100">
         {fields.map((group, gi) => (
           <div key={gi} className="px-6 py-5">
-            {group.title && (
-              <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-gray-400">
-                {group.title}
-              </h3>
-            )}
+            {group.title && <h3 className="mb-4 text-sm font-medium text-ink">{group.title}</h3>}
             <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               {group.fields.map((field) => (
                 <div key={field.label}>

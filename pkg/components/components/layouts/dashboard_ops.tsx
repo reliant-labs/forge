@@ -38,7 +38,7 @@ export default function DashboardOps({
           aria-label="Active alerts"
           className="flex min-h-0 flex-col overflow-hidden bg-surface"
         >
-          <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-medium text-ink-muted">
             Alerts
           </div>
           <div className="min-h-0 flex-1 relative overflow-y-auto">{alerts}</div>
@@ -48,7 +48,7 @@ export default function DashboardOps({
           aria-label="System status"
           className="flex min-h-0 flex-col overflow-hidden bg-surface"
         >
-          <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-medium text-ink-muted">
             Status
           </div>
           <div className="min-h-0 flex-1 relative overflow-y-auto p-4">{statusGrid}</div>
@@ -58,7 +58,7 @@ export default function DashboardOps({
           aria-label="Log stream"
           className="flex min-h-0 flex-col overflow-hidden bg-surface"
         >
-          <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="shrink-0 border-b border-border px-4 py-2 text-xs font-medium text-ink-muted">
             Logs
           </div>
           <div className="min-h-0 flex-1 relative overflow-y-auto font-mono text-xs">

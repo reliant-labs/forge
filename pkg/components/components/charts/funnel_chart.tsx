@@ -1,5 +1,3 @@
-import React from "react";
-
 /**
  * FunnelChart — Vertical funnel with tapering stages.
  *

@@ -65,14 +65,15 @@ Every frontend ships low-level primitives under `src/components/ui/`. Compose th
 | `button` | `primary`/`secondary`/`outline`/`ghost`/`danger` variants, sizes, loading state |
 | `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
 | `card` | Generic surface primitive |
-| `avatar`, `tabs`, `chip` | Avatar (image/initials/status), tab nav (underline/pills/boxed), removable filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |
-| `table` | Bare structural table — markup only. For a wired list view use `<Resource>` (see `frontend-runtime`) |
+| `status`, `tag`, `mono` | State (dot + word), kind label, copyable sha |
+| `avatar`, `tabs`, `chip` | Avatar, tab nav (underline/pills/boxed), filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |
+| `table` | Bare structural table. For a wired list view use `<Resource>` (see `frontend-runtime`) |
 | `select` | Options array, sizes, invalid state |
-| `toast_notification` | The toast STACK (default export), rendered once by the owned `providers.tsx`. Never call it directly — fire `emitToast({ message, variant })` from `@/lib/events` |
+| `toast_notification` | The toast STACK, rendered once by the owned `providers.tsx`. Never call it directly — fire `emitToast({ message, variant })` from `@/lib/events` |
 
 Plus auto-installed: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`. All `overwrite: once` — yours after install.
 
-Two carry aliases; write new code against canonical. **`Badge`** — `error`/`success`/`warning`/`info`/`neutral`, aliases `danger→error`, `default→neutral`. **`Modal`** — canonical footer is the **`footer` slot prop**; rewrite footer-in-`children` when you next touch it. (`Button`'s destructive variant is `danger`, not `error`.)
+Two carry aliases; write against canonical. **`Badge`** — `error`/`success`/`warning`/`info`/`neutral`, aliases `danger→error`, `default→neutral`. **`Modal`** — canonical footer is the **`footer` slot prop**; rewrite footer-in-`children` when you next touch it. (`Button`'s destructive variant is `danger`, not `error`.)
 
 ### Owned higher-level components
 

@@ -96,7 +96,7 @@ export default function MetricCard({
   href,
 }: MetricCardProps) {
   const content = (
-    <div className="rounded-lg border border-border bg-surface p-5 shadow-sm transition-shadow hover:shadow-md">
+    <div className="rounded-lg border border-border bg-surface p-5 transition-colors hover:border-ink-subtle">
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">

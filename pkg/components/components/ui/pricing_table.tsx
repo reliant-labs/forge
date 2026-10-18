@@ -1,5 +1,3 @@
-import React from "react";
-
 interface PricingTableProps {
   tiers: Array<{
     name: string;

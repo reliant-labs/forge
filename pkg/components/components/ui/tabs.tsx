@@ -35,7 +35,10 @@ interface TabsProps {
   /** Initial selection when uncontrolled. Ignored if `activeTab` is set. */
   defaultTab?: string;
   onChange?: (tabId: string) => void;
+  /** "underline" (default) for page sections; "pills"/"boxed" for a compact switch inside a panel. */
   variant?: "underline" | "pills" | "boxed";
+  /** The tab strip's accessible name. */
+  ariaLabel?: string;
   children?: (activeTab: string) => React.ReactNode;
 }
 
@@ -45,6 +48,7 @@ export default function Tabs({
   defaultTab,
   onChange,
   variant = "underline",
+  ariaLabel,
   children,
 }: TabsProps) {
   const [uncontrolled, setUncontrolled] = useState(defaultTab ?? tabs[0]?.id ?? "");
@@ -57,17 +61,19 @@ export default function Tabs({
   }
 
   const styles = {
+    // Underline: the console default. The active tab is INK, not accent —
+    // the accent marks the primary action and focus, and a tab strip in
+    // accent competes with the page's one primary button.
     underline: {
-      container: "border-b border-border",
+      container: "flex gap-5 border-b border-border",
       tab: (isActive: boolean, disabled: boolean) =>
-        `relative px-4 py-2.5 text-sm font-medium transition-colors ${
+        `relative -mb-px border-b-2 pb-2.5 pt-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           disabled
-            ? "cursor-not-allowed text-ink-subtle"
+            ? "cursor-not-allowed border-transparent text-ink-subtle"
             : isActive
-              ? "text-accent"
-              : "text-ink-muted hover:text-ink"
+              ? "border-ink font-medium text-ink"
+              : "border-transparent text-ink-muted hover:text-ink"
         }`,
-      indicator: "absolute bottom-0 left-0 right-0 h-0.5 bg-accent",
     },
     pills: {
       container: "flex gap-1 rounded-lg bg-surface-muted p-1",
@@ -76,10 +82,9 @@ export default function Tabs({
           disabled
             ? "cursor-not-allowed text-ink-subtle"
             : isActive
-              ? "bg-surface text-ink shadow-sm"
+              ? "bg-surface text-ink ring-1 ring-border"
               : "text-ink-muted hover:text-ink"
         }`,
-      indicator: "",
     },
     boxed: {
       container: "flex gap-0 rounded-lg border border-border overflow-hidden",
@@ -91,7 +96,6 @@ export default function Tabs({
               ? "bg-accent-surface text-accent-ink"
               : "bg-surface text-ink-muted hover:bg-surface-muted"
         }`,
-      indicator: "",
     },
   };
 
@@ -99,12 +103,13 @@ export default function Tabs({
 
   return (
     <div>
-      <div className={s.container} role="tablist">
+      <div className={s.container} role="tablist" aria-label={ariaLabel}>
         {tabs.map((tab) => {
           const isActive = tab.id === active;
           return (
             <button
               key={tab.id}
+              type="button"
               role="tab"
               aria-selected={isActive}
               disabled={tab.disabled}
@@ -115,16 +120,9 @@ export default function Tabs({
                 {tab.icon}
                 {tab.label}
                 {tab.badge !== undefined && (
-                  <span
-                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
-                      isActive ? "bg-accent-surface text-accent-ink" : "bg-border text-ink-muted"
-                    }`}
-                  >
-                    {tab.badge}
-                  </span>
+                  <span className="text-xs tabular-nums text-ink-muted">{tab.badge}</span>
                 )}
               </span>
-              {variant === "underline" && isActive && <div className={s.indicator} />}
             </button>
           );
         })}

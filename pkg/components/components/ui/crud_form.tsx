@@ -76,7 +76,7 @@ export default function CrudForm({
         {fields.map((field) => {
           const error = errors[field.name];
           const baseInput =
-            "block w-full rounded-lg border px-3 py-2 text-sm shadow-sm transition focus:outline-none focus:ring-1";
+            "block w-full rounded-lg border px-3 py-2 text-sm transition focus:outline-none focus:ring-1";
           const inputClass = error
             ? `${baseInput} border-danger-border focus:border-danger-border focus:ring-danger`
             : `${baseInput} border-border-strong focus:border-accent-border focus:ring-accent`;
@@ -166,7 +166,7 @@ export default function CrudForm({
             type="button"
             onClick={onCancel}
             disabled={loading}
-            className="rounded-lg border border-border-strong bg-surface px-4 py-2 text-sm font-medium text-ink-muted shadow-sm transition hover:bg-surface-muted disabled:opacity-50"
+            className="rounded-lg border border-border-strong bg-surface px-4 py-2 text-sm font-medium text-ink-muted transition hover:bg-surface-muted disabled:opacity-50"
           >
             Cancel
           </button>
@@ -174,7 +174,7 @@ export default function CrudForm({
         <button
           type="submit"
           disabled={loading}
-          className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-sm transition hover:bg-accent-hover disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent transition hover:bg-accent-hover disabled:opacity-50"
         >
           {loading && (
             <svg

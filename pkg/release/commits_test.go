@@ -3,7 +3,6 @@ package release
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -40,8 +39,9 @@ func gitHistory(t *testing.T, n int) (string, []string) {
 func gitDo(t *testing.T, dir, stdin string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
+	// No identity is needed: fast-import states every author and committer,
+	// and nothing else here commits.
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

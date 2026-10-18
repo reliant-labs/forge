@@ -206,19 +206,17 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		Bindings:   ledger.Bindings,
 		Releases:   ledger.Releases,
 		Git:        opts.Git,
+		// The scope rides the plan into the write (applyPromotePlan), and
+		// is refused in the plan — before any preview is approvable —
+		// where the env's control plane would converge more than it names.
+		Scope:  opts.Targets,
+		Ledger: ledger,
 	})
 	if err != nil {
 		return err
 	}
 	plan.DryRun = opts.DryRun
 	plan.SourceNote = source.Note
-	// The scope rides the plan into the write (applyPromotePlan), and is
-	// refused here — before any preview is approvable — where the env's
-	// control plane would converge more than it names.
-	applyPlanScope(&plan, opts.Targets)
-	if err := refuseConvergedScope(ledger, plan); err != nil {
-		return err
-	}
 	// The §8.6 plan rides the document, so --json carries the digest a
 	// two-stage pipeline passes to --approve and the codes it passes to
 	// --acknowledge-destructive.

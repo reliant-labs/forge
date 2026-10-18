@@ -713,6 +713,13 @@ type promotePlanOptions struct {
 	Releases releaseLedger
 	// Git reads the commit range. Nil uses real git.
 	Git promoteGitReader
+	// Scope is the deploy's scope (deployScopeTargets): put on the plan and
+	// recorded on the promotion as its Targets. Nil for an unscoped deploy.
+	Scope []string
+	// Ledger is the env's resolved ledger, read only to refuse a Scope its
+	// control plane would widen (refuseConvergedScope). The zero value
+	// refuses nothing.
+	Ledger envLedger
 }
 
 // computePromotePlan builds the whole change set WITHOUT writing anything.
@@ -891,7 +898,9 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		Reverts:      plan.Direction == promoteDirectionBehind,
 	})
 
-	return plan, nil
+	// Evaluated before the return: scopePromotePlan writes the plan.
+	err = scopePromotePlan(&plan, opts.Scope, opts.Ledger)
+	return plan, err
 }
 
 // applyPromotePlan writes the binding the plan describes.

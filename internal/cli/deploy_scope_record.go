@@ -55,6 +55,13 @@ func deployScopeTargets(ctx context.Context, projectDir, env string, targets []s
 	return release.NormalizeTargets(names), nil
 }
 
+// scopePromotePlan puts the deploy's scope on the plan and refuses one the
+// env's control plane would widen.
+func scopePromotePlan(plan *promotePlan, scope []string, ledger envLedger) error {
+	applyPlanScope(plan, scope)
+	return refuseConvergedScope(ledger, *plan)
+}
+
 // applyPlanScope puts the deploy's scope on the plan, and corrects the
 // direction line for the one case scoping changes it: re-promoting the bound
 // release is "no move" only when the current entry already moved everything

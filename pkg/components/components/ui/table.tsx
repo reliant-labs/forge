@@ -33,7 +33,7 @@ function Table({ bordered = true, className, children, ...rest }: TableProps) {
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-border bg-surface shadow-sm">
+    <div className="overflow-x-auto rounded-lg border border-border bg-surface">
       <table className={tableClass} {...rest}>
         {children}
       </table>
@@ -128,7 +128,7 @@ export interface TableHeadProps extends React.ThHTMLAttributes<HTMLTableCellElem
 
 export function TableHead({ sortable, className, children, scope, ...rest }: TableHeadProps) {
   const composed = [
-    "px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-ink-muted",
+    "h-9 px-4 text-left text-xs font-medium text-ink-muted",
     sortable ? "cursor-pointer select-none" : "",
     className ?? "",
   ]

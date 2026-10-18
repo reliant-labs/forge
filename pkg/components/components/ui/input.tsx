@@ -39,7 +39,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
   const resolvedId = id ?? ctx?.id;
 
   const composed = [
-    "block w-full rounded-md border bg-surface shadow-sm",
+    "block w-full rounded-md border bg-surface",
     "placeholder:text-ink-subtle",
     "focus:outline-none focus:ring-1",
     "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-ink-muted",

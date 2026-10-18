@@ -49,7 +49,7 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(function Select(
   const resolvedId = id ?? ctx?.id;
 
   const composed = [
-    "block w-full appearance-none rounded-md border bg-surface shadow-sm",
+    "block w-full appearance-none rounded-md border bg-surface",
     "focus:outline-none focus:ring-1",
     "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-ink-muted",
     invalid

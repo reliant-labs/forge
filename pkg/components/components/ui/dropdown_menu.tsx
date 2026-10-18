@@ -61,9 +61,7 @@ export default function DropdownMenu({ trigger, groups, align = "right" }: Dropd
             <div key={gi}>
               {gi > 0 && <div className="my-1 border-t border-border" />}
               {group.label && (
-                <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
-                  {group.label}
-                </div>
+                <div className="px-3 py-1.5 text-xs text-ink-muted">{group.label}</div>
               )}
               {group.items.map((item, ii) => {
                 const baseStyle = `flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors ${

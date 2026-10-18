@@ -1,5 +1,3 @@
-import React from "react";
-
 interface KanbanBoardProps {
   columns: Array<{
     title: string;
@@ -21,7 +19,7 @@ export default function KanbanBoard({ columns }: KanbanBoardProps) {
 
           <div className="flex-1 space-y-2 relative overflow-y-auto px-3 pb-3">
             {column.cards.map((card, j) => (
-              <div key={j} className="rounded-lg bg-surface p-3 shadow-sm">
+              <div key={j} className="rounded-lg border border-border bg-surface p-3">
                 <p className="text-sm font-medium text-ink">{card.title}</p>
                 {card.description && (
                   <p className="mt-1 text-xs text-ink-muted">{card.description}</p>

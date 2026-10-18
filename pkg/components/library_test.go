@@ -72,7 +72,7 @@ func TestLibraryCategories(t *testing.T) {
 		CategoryCharts:   3,
 		CategoryDiagrams: 6,
 		CategoryDeck:     7,
-		CategoryUI:       43,
+		CategoryUI:       45,
 	}
 
 	for cat, want := range expected {
@@ -268,8 +268,8 @@ func TestLibraryList(t *testing.T) {
 
 	// List all
 	all := lib.List("", "")
-	if len(all) != 74 {
-		t.Errorf("list all should return 74 components, got %d", len(all))
+	if len(all) != 76 {
+		t.Errorf("list all should return 76 components, got %d", len(all))
 	}
 
 	// List filtered by category
@@ -511,7 +511,7 @@ func jsxRefsInComments(src string) []string {
 // sentence — and the caller's only way out is to rebuild the typography by
 // hand, which three pages in one run did. ReactNode is this library's idiom
 // for a caller-composed slot (CardHeader.title, Chip.label, ProgressBar.label,
-// StatusDot.label) and a plain string still satisfies it, so widening costs
+// Status.label) and a plain string still satisfies it, so widening costs
 // no call site.
 func TestPageChromeTakesComposedContent(t *testing.T) {
 	lib := NewLibrary()

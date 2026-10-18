@@ -21,12 +21,12 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 }
 
 const variantStyles: Record<ButtonVariant, string> = {
-  primary: "bg-accent text-on-accent shadow-sm hover:bg-accent-hover disabled:hover:bg-accent",
-  secondary: "bg-surface-muted text-ink shadow-sm hover:bg-border disabled:hover:bg-surface-muted",
+  primary: "bg-accent text-on-accent hover:bg-accent-hover disabled:hover:bg-accent",
+  secondary: "bg-surface-muted text-ink hover:bg-border disabled:hover:bg-surface-muted",
   outline:
-    "border border-border-strong bg-surface text-ink shadow-sm hover:bg-surface-muted disabled:hover:bg-surface",
+    "border border-border-strong bg-surface text-ink hover:bg-surface-muted disabled:hover:bg-surface",
   ghost: "bg-transparent text-ink hover:bg-surface-muted disabled:hover:bg-transparent",
-  danger: "bg-danger text-on-danger shadow-sm hover:bg-danger-hover disabled:hover:bg-danger",
+  danger: "bg-danger text-on-danger hover:bg-danger-hover disabled:hover:bg-danger",
 };
 
 const sizeStyles: Record<ButtonSize, string> = {

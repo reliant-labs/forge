@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 
 interface FilterOption {
   label: string;
@@ -114,7 +114,7 @@ export default function FilterBar({
               value={values[searchFilter.key] ?? ""}
               onChange={(e) => updateFilter(searchFilter.key, e.target.value)}
               placeholder={searchFilter.placeholder ?? searchPlaceholder}
-              className="w-full rounded-lg border border-border-strong bg-surface py-2 pl-9 pr-3 text-sm shadow-sm placeholder:text-ink-subtle focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
+              className="w-full rounded-lg border border-border-strong bg-surface py-2 pl-9 pr-3 text-sm placeholder:text-ink-subtle focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </div>
         )}
@@ -125,7 +125,7 @@ export default function FilterBar({
             key={filter.key}
             value={values[filter.key] ?? ""}
             onChange={(e) => updateFilter(filter.key, e.target.value)}
-            className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm shadow-sm focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
+            className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm focus:border-accent-border focus:outline-none focus:ring-1 focus:ring-accent"
           >
             <option value="">{filter.label}</option>
             {filter.options?.map((opt) => (

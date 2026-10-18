@@ -1,5 +1,3 @@
-import React from "react";
-
 // Canonical variants. `danger` and `default` are accepted aliases for
 // `error` and `neutral` respectively — many existing codebases (and
 // alternate design systems) name the destructive variant `danger` and
@@ -35,7 +33,7 @@ const dotStyles: Record<BadgeVariant, string> = {
 };
 
 const sizeStyles: Record<BadgeSize, string> = {
-  sm: "px-1.5 py-0.5 text-[11px]",
+  sm: "px-1.5 py-0.5 text-[0.6875rem]",
   md: "px-2 py-0.5 text-xs",
   lg: "px-2.5 py-1 text-sm",
 };

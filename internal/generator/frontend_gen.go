@@ -408,7 +408,9 @@ var coreComponents = []string{
 	"chip",
 	"row_actions_menu",
 	"progress_bar",
-	"status_dot",
+	"status",
+	"tag",
+	"mono",
 
 	// Domain components — higher-level shapes the scaffold ships by default.
 	"sidebar_layout",

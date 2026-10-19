@@ -57,6 +57,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal, or the jsonb `?` / `?|` / `?&` operators, that would consume an
   argument and shift the rest). The `db/crud-overrides` skill documents both
   dialects and the `\?` escape.
+- **`testkit.NewPostgresDB`, `NewMigratedPostgresDB` and `LoadFixture` take
+  `testing.TB`**, so a benchmark gets the same migrated, isolated database a
+  test does. Callers passing `*testing.T` are unchanged.
+- **`pgtest.NewFromTemplate` reaps stale templates.** A template used to live
+  as long as its server, which on an external `FORGE_TEST_POSTGRES_URL` server
+  (shared, never torn down) meant one leaked database per migration edit,
+  forever. Each process that uses a template now stamps it (`COMMENT ON
+  DATABASE`), and a process's first `NewFromTemplate` on a server drops every
+  template unused for longer than `pgtest.DefaultTemplateTTL` (24h;
+  `FORGE_TEST_TEMPLATE_TTL` overrides, `0` disables) and every `*_build`
+  database whose builder is gone, each under its key's advisory lock. An
+  unstamped template from an older forge is adopted, then reaped a TTL later;
+  a template reaped under a process that had cached it is rebuilt.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

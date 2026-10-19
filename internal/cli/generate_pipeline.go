@@ -1990,25 +1990,19 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	svcName := ""
-	for _, e := range entities {
-		if n := codegen.ServiceNameFromProtoFile(e.ProtoFile); n != "" {
-			svcName = n
-			break
-		}
-	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
+	orm := config.ORMPackage(ctx.Cfg)
 	if err := withDeclaredEntityRPCs(ctx,
-		generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums)); err != nil {
+		generator.GeneratePlanORM(ctx.ProjectDir, orm, planEntities, ctx.Checksums)); err != nil {
 		// Recorded whether or not --strict makes it fatal: without --strict
 		// the run continues, and every step that consumes the ORM must say
 		// it was skipped instead of reporting output it never wrote.
 		ctx.ORMFailure = err
 		return ctx.warnOrFail("ORM generation", err)
 	}
-	// GeneratePlanORM retires a forge-written internal/db/types.go (the
-	// proto-entity era's alias file) itself — and only a forge-written one.
-	fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
+	// GeneratePlanORM retires a forge-written types.go (the proto-entity
+	// era's alias file) itself — and only a forge-written one.
+	fmt.Printf("  ✅ Generated %s/ (%d entity ORM files)\n", orm.PackageDir(), len(entities))
 	return nil
 }
 
@@ -2144,16 +2138,17 @@ func stepWebhookRoutes(ctx *pipelineContext) error {
 // output: any *_orm.go file, or the legacy internal/db/types.go from
 // older projects.
 //
-// Returns an error only when the internal/db scan itself fails (e.g.
-// I/O permission). A missing internal/db directory is simply "off".
+// Returns an error only when the ORM package scan itself fails (e.g. I/O
+// permission). A missing directory is simply "off". The directory is
+// database.orm.package (default internal/db).
 func deriveOrmEnabled(projectDir string) (bool, error) {
-	dbDir := filepath.Join(projectDir, "internal", "db")
-	entries, err := os.ReadDir(dbDir)
+	ormDir := codegen.ProjectORMPackage(projectDir).PackageDir()
+	entries, err := os.ReadDir(filepath.Join(projectDir, filepath.FromSlash(ormDir)))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("scan internal/db for ORM output: %w", err)
+		return false, fmt.Errorf("scan %s for ORM output: %w", ormDir, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() {

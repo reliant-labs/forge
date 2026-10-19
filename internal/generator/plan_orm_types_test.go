@@ -145,7 +145,7 @@ func TestGeneratePlanORM_RefusesOutOfVocabularyFieldType(t *testing.T) {
 	for _, bad := range []string{"int32", "uint64", "float", "double", "timestamp", "[]int32", ""} {
 		t.Run("type="+bad, func(t *testing.T) {
 			root := t.TempDir()
-			err := GeneratePlanORM(root, "example.com/app", "api", []config.PlanEntity{{
+			err := GeneratePlanORM(root, config.ORMConfig{}, []config.PlanEntity{{
 				Name: "Counter",
 				Fields: []config.PlanEntityField{
 					{Name: "counter_id", Type: "int64", PrimaryKey: true},
@@ -186,7 +186,7 @@ func TestRenderORMEntity_EmitsNativeArrayFieldTypes(t *testing.T) {
 			{Name: "ids", Type: "[]int64", NotNull: true},
 		},
 	}
-	src := string(renderORMEntity(ent, false))
+	src := string(renderORMEntity("db", ent, false))
 	for _, want := range []string{
 		"Flags []bool `bun:\"flags,array,notnull\"`",
 		"Scores []float64 `bun:\"scores,array,notnull\"`",

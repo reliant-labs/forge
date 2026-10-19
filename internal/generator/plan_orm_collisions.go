@@ -57,7 +57,7 @@ type ormNameCollision struct {
 // A file the ORM itself owns is not the project's: this run's outputs, stale
 // ORM files the sweep reclaims, and the retired forge-written types.go.
 // Internal test files (package db) share the namespace and are read too.
-func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs []ormOutput) error {
+func checkORMNameCollisions(dbDir, relDir string, entities []config.PlanEntity, outputs []ormOutput) error {
 	declaredBy := map[string]ormOutput{} // name → the ORM output declaring it
 	for _, out := range outputs {
 		for _, name := range packageLevelNames(out.src) {
@@ -105,7 +105,7 @@ func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs 
 			}
 			collisions = append(collisions, ormNameCollision{
 				name:   d.Name,
-				at:     fmt.Sprintf("internal/db/%s:%d", name, fset.Position(d.Pos()).Line),
+				at:     fmt.Sprintf("%s/%s:%d", relDir, name, fset.Position(d.Pos()).Line),
 				entity: out.entity,
 				table:  tables[out.entity],
 				file:   out.file,
@@ -116,7 +116,7 @@ func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs 
 		return nil
 	}
 	sort.Slice(collisions, func(i, j int) bool { return collisions[i].at < collisions[j].at })
-	return &ORMCollisionError{collisions: collisions}
+	return &ORMCollisionError{collisions: collisions, dir: relDir}
 }
 
 // ORMCollisionError is the refusal checkORMNameCollisions returns: the names
@@ -131,6 +131,7 @@ func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs 
 // different service than the rest of the list suggested.
 type ORMCollisionError struct {
 	collisions []ormNameCollision
+	dir        string // the ORM package directory, e.g. "internal/db"
 	// EntityRPCs maps an entity to its declared, unmarked CRUD-named rpcs,
 	// each rendered "Service.Rpc (proto/…/x.proto:14)".
 	EntityRPCs map[string][]string
@@ -152,17 +153,18 @@ func (e *ORMCollisionError) Entities() []string {
 
 func (e *ORMCollisionError) Error() string {
 	var b strings.Builder
-	b.WriteString("forge's ORM would redeclare names your internal/db already declares (one Go package, so both cannot compile):\n")
+	fmt.Fprintf(&b, "forge's ORM would redeclare names your %s already declares (one Go package, so both cannot compile):\n", e.dir)
 	tables := map[string]string{}
 	for _, c := range e.collisions {
 		if c.entity == "" {
-			fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in internal/db/%s for every entity\n", c.name, c.at, c.file)
+			fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in %s/%s for every entity\n", c.name, c.at, e.dir, c.file)
 			continue
 		}
-		fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in internal/db/%s for entity %s (table %s)\n", c.name, c.at, c.file, c.entity, c.table)
+		fmt.Fprintf(&b, "  - %s, declared at %s — forge declares it in %s/%s for entity %s (table %s)\n", c.name, c.at, e.dir, c.file, c.entity, c.table)
 		tables[c.entity] = c.table
 	}
-	b.WriteString("Resolve each entity one of three ways:\n")
+	b.WriteString("Resolve it one of these ways:\n")
+	fmt.Fprintf(&b, "  - give the projection a package of its own: `database: {orm: {package: internal/store}}` in forge.yaml — your %s keeps its names, and the generated rows, stores and CRUD wiring move to internal/store;\n", e.dir)
 	entities := e.Entities()
 	if len(entities) == 0 {
 		b.WriteString("  - keep the tables off forge's ORM while your code owns them: put `// forge:custom` above each of their CRUD-named rpcs;\n")
@@ -182,7 +184,7 @@ func (e *ORMCollisionError) Error() string {
 		}
 	}
 	b.WriteString("  - hand the name to forge: delete or rename your declaration (sqlc output: a `rename:` in sqlc.yaml) and use the generated one;\n")
-	b.WriteString("  - or opt the whole data layer out with `//forge:no-orm: <why>` in internal/db's package doc.")
+	fmt.Fprintf(&b, "  - or opt the whole data layer out with `//forge:no-orm: <why>` in %s's package doc.", e.dir)
 	return b.String()
 }
 

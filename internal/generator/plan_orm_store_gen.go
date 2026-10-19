@@ -76,20 +76,20 @@ const storeGenFile = "store_gen.go"
 // entities. Callers pass the same entity slice the ORM render used, so the
 // interfaces cannot describe a different schema than the delegates they
 // abstract.
-func writeStoreInterfaces(root string, entities []config.PlanEntity, cs *FileChecksums) error {
+func writeStoreInterfaces(root string, orm config.ORMConfig, entities []config.PlanEntity, cs *FileChecksums) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	return writeORMFile(root, storeGenFile, renderStoreInterfaces(entities), cs)
+	return writeORMFile(root, orm, storeGenFile, renderStoreInterfaces(orm.PackageName(), entities), cs)
 }
 
 // renderStoreInterfaces builds the store file: one interface per entity,
 // mirroring that entity's generated delegates exactly, then an aggregate
 // embedding them all.
-func renderStoreInterfaces(entities []config.PlanEntity) []byte {
+func renderStoreInterfaces(pkgName string, entities []config.PlanEntity) []byte {
 	var b strings.Builder
 
-	b.WriteString("package db\n\n")
+	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
 
 	b.WriteString("// This file gives the generated CRUD delegates an INTERFACE shape, so a\n")

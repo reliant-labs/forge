@@ -20,7 +20,7 @@ import (
 // "MockService.<Method>Func not set" error.
 type MockService struct {
 	contractkit.Recorder
-	GeneratePlanORMFunc       func(string, string, string, []config.PlanEntity, *FileChecksums) error
+	GeneratePlanORMFunc       func(string, config.ORMConfig, []config.PlanEntity, *FileChecksums) error
 	GeneratePlanProtoFileFunc func(string, string, string, []config.PlanRPC, []config.PlanEntity) error
 	GenerateServiceFilesFunc  func(string, string, string, string) error
 	GenerateWorkerFilesFunc   func(string, string, string, string, string) error
@@ -38,10 +38,10 @@ type MockService struct {
 }
 
 // GeneratePlanORM records the call and delegates to GeneratePlanORMFunc when set.
-func (m *MockService) GeneratePlanORM(root string, modulePath string, serviceName string, entities []config.PlanEntity, cs *FileChecksums) error {
-	m.Recorder.Record("GeneratePlanORM", root, modulePath, serviceName, entities, cs)
+func (m *MockService) GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEntity, cs *FileChecksums) error {
+	m.Recorder.Record("GeneratePlanORM", root, orm, entities, cs)
 	if m.GeneratePlanORMFunc != nil {
-		return m.GeneratePlanORMFunc(root, modulePath, serviceName, entities, cs)
+		return m.GeneratePlanORMFunc(root, orm, entities, cs)
 	}
 	return contractkit.MockNotSet("MockService", "GeneratePlanORM")
 }

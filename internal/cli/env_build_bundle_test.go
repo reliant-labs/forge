@@ -233,7 +233,25 @@ func TestEnvBuildBundle_BundleEnvsWritesOnePerEnv(t *testing.T) {
 // <image_push_base>/bundle.v1/<env>, the recorded reference is that push's,
 // and RecordBundle carried the manifest and config BYTES rather than a
 // description of them.
+//
+// It runs against two control planes, because the document forge sends is
+// built for its reader: one that decodes every optional document feature gets
+// them, and one that predates GetCapabilities — every control plane built
+// before forge#850 — gets none of #850's fields, which its strict decoder
+// would refuse (`unknown field "commit_subject"`).
 func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
+	for _, server := range []struct {
+		name    string
+		decodes bool
+	}{
+		{"a control plane that decodes every document feature", true},
+		{"a control plane that predates GetCapabilities", false},
+	} {
+		t.Run(server.name, func(t *testing.T) { hostedEnvPushesAndRecordsTheBytes(t, server.decodes) })
+	}
+}
+
+func hostedEnvPushesAndRecordsTheBytes(t *testing.T, decodes bool) {
 	dir := newLedgerTestProject(t, "bundle-hosted-project")
 	stubEnvShape(t, "bundle-hosted-project")
 	writeHostedPushBaseFixture(t, dir, "prod", "ghcr.io/acme")
@@ -267,6 +285,11 @@ func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
 		}
 		served["digest"] = bundleDigestOfRequest(t, body)
 		return map[string]any{"bundle": served, "created": true}, true
+	}
+	if decodes {
+		fake.replies[procDeployCapabilities] = map[string]any{"bundleDocumentFeatures": release.BundleDocFeatures()}
+	} else {
+		fake.errs = map[string]error{procDeployCapabilities: &cloud.Error{HTTPStatus: 404, Code: cloud.CodeUnimplemented}}
 	}
 	prevLedger := bundleLedgerFor
 	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
@@ -314,6 +337,29 @@ func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
 		if _, present := body[described]; present {
 			t.Errorf("RecordBundle must not describe the bundle (%q): the server derives it from the bytes", described)
 		}
+	}
+
+	// THE DOCUMENT IS BUILT FOR ITS READER.
+	encoded, _ := body["config"].(string)
+	rawConfig, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("config bytes: %v", err)
+	}
+	var top struct {
+		Objects    *json.RawMessage           `json:"objects"`
+		Provenance map[string]json.RawMessage `json:"provenance"`
+	}
+	if err := json.Unmarshal(rawConfig, &top); err != nil {
+		t.Fatal(err)
+	}
+	_, subject := top.Provenance["commit_subject"]
+	_, author := top.Provenance["commit_author"]
+	switch {
+	case !decodes && (top.Objects != nil || subject || author):
+		t.Errorf("a control plane that names no document feature was sent forge#850 keys (objects=%v subject=%v author=%v); "+
+			"its strict decoder refuses the whole bundle for one of them", top.Objects != nil, subject, author)
+	case decodes && top.Objects == nil:
+		t.Error("a control plane that decodes object summaries was sent none")
 	}
 }
 

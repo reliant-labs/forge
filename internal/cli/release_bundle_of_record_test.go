@@ -167,6 +167,8 @@ func TestWriteEnvBundle_HostedRelease_ReusesTheTaggedBundle(t *testing.T) {
 		served["digest"] = bundleDigestOfRequest(t, body)
 		return map[string]any{"bundle": served, "created": true}, true
 	}
+	// A current control plane: it decodes every optional document feature.
+	fake.replies[procDeployCapabilities] = map[string]any{"bundleDocumentFeatures": release.BundleDocFeatures()}
 	prevLedger := bundleLedgerFor
 	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
 		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true}, nil

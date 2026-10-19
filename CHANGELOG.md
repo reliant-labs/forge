@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A hosted bundle carries only the document fields its control plane
+  decodes.** forge#850 added `provenance.commit_subject`/`commit_author` and the
+  per-object `objects` summaries to the bundle document, and a control plane
+  strict-decodes that document: every control plane built before #850 refused
+  every bundle (`RecordBundle: bundle document: json: unknown field
+  "commit_subject"`), so no release could be recorded — including the one that
+  would ship the control plane that understands them. An optional document
+  field is now a FEATURE (`release.BundleDocFeatures`): `forge env deploy` /
+  `env build` ask `DeployService/GetCapabilities` (`bundleDocumentFeatures`)
+  before building a hosted bundle and leave out every part the server did not
+  name; a server without the RPC or the field gets the document its decoder
+  knew. A control plane advertises `release.BundleDocFeatures()` from the same
+  forge it decodes with. `TestEveryBundleDocAdditionIsAFeature` fails on a new
+  document field until it is mapped to a feature.
 - **`forge env config` reports missing secrets instead of failing.** forge#859
   routed it through `env exec`'s resolver, and with it the fail-closed secret
   check: reading back an env whose secret store lacked one declared key printed

@@ -216,24 +216,6 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{}, err
 	}
 
-	built, err := bundle.Build(ctx, bundle.BuildInput{
-		Project:    doc.Project,
-		Env:        env,
-		Release:    in.Release,
-		Pins:       in.Pins,
-		Provenance: doc.Provenance,
-		Shape:      bundleShapeInputOf(doc),
-		CreatedAt:  createdAt,
-		Units:      doc.units,
-		Reconciled: doc.reconciled(),
-		// The units the hub converges, for an env that splits them.
-		ReconciledUnits: doc.reconciledUnits(),
-		Observability:   observability,
-	})
-	if err != nil {
-		return bundleWriteOutcome{}, err
-	}
-
 	ledger, err := bundleLedgerFor(ctx, projectDir, env)
 	if err != nil {
 		// #404's rule, applied to the bundle: a build never needs a
@@ -250,6 +232,36 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 				env, err)
 			return bundleWriteOutcome{Env: env, Skipped: true}, nil
 		}
+		return bundleWriteOutcome{}, err
+	}
+
+	// WHAT THE RECORDER DECODES, asked before the document is built: the
+	// document is content-addressed, so it is written once, for the backend
+	// that will decode it. A control plane strict-decodes it and refuses a
+	// field it predates (forge#850's commit_subject did exactly that to every
+	// control plane built before it), so a hosted bundle carries only the
+	// optional parts its control plane names (release.BundleReader).
+	reader, err := bundleReaderFor(ctx, projectDir, env, ledger)
+	if err != nil {
+		return bundleWriteOutcome{}, err
+	}
+
+	built, err := bundle.Build(ctx, bundle.BuildInput{
+		Project:    doc.Project,
+		Env:        env,
+		Release:    in.Release,
+		Pins:       in.Pins,
+		Provenance: doc.Provenance,
+		Reader:     reader,
+		Shape:      bundleShapeInputOf(doc),
+		CreatedAt:  createdAt,
+		Units:      doc.units,
+		Reconciled: doc.reconciled(),
+		// The units the hub converges, for an env that splits them.
+		ReconciledUnits: doc.reconciledUnits(),
+		Observability:   observability,
+	})
+	if err != nil {
 		return bundleWriteOutcome{}, err
 	}
 
@@ -705,6 +717,24 @@ func declaredBundlePushBase(ctx context.Context, projectDir, env string) string 
 	// says the bundle was written locally and why.
 	_ = requireOrg(ctx, entities)
 	return platformPushBase(entities)
+}
+
+// bundleReaderFor is what the env's bundle recorder decodes: nil (every
+// feature) for a recorder this forge reads itself, or what a control plane
+// says its decoder accepts.
+func bundleReaderFor(ctx context.Context, projectDir, env string, ledger envLedger) (*release.BundleReader, error) {
+	if !ledger.Hosted {
+		return nil, nil
+	}
+	recorder, err := bundleRecorderForEnv(ctx, projectDir, env, ledger)
+	if err != nil {
+		return nil, err
+	}
+	reporter, ok := recorder.(bundleReaderReporter)
+	if !ok {
+		return nil, nil
+	}
+	return reporter.BundleReader(ctx)
 }
 
 func bundleRecorderFor(ctx context.Context, projectDir, env string, ledger envLedger) (bundleRecorder, error) {

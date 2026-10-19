@@ -526,3 +526,44 @@ func TestBuildSummarizesEveryObject(t *testing.T) {
 		t.Fatal("no object recorded any part digest")
 	}
 }
+
+// A bundle recorded on a control plane that predates forge#850 must carry
+// none of #850's document fields: that control plane strict-decodes the
+// config blob and refuses the whole bundle for one unknown key. The reader
+// is what the recorder said it decodes; the document is built for it.
+func TestBuildWritesOnlyTheDocumentFeaturesItsReaderDecodes(t *testing.T) {
+	in := buildFixture()
+	in.Provenance.CommitSubject = "fix: something"
+	in.Provenance.CommitAuthor = "Reliant"
+
+	full := mustBuild(t, in)
+	if full.Doc.Provenance.CommitSubject == "" || len(full.Doc.Objects) == 0 {
+		t.Fatalf("the fixture must exercise the optional parts: subject %q, %d summaries", full.Doc.Provenance.CommitSubject, len(full.Doc.Objects))
+	}
+
+	in.Reader = &release.BundleReader{} // a control plane that names no feature
+	old := mustBuild(t, in)
+	var top struct {
+		Objects    *json.RawMessage           `json:"objects"`
+		Provenance map[string]json.RawMessage `json:"provenance"`
+	}
+	if err := json.Unmarshal(old.ConfigBlob(), &top); err != nil {
+		t.Fatal(err)
+	}
+	_, subject := top.Provenance["commit_subject"]
+	_, author := top.Provenance["commit_author"]
+	if top.Objects != nil || subject || author {
+		t.Fatalf("a bundle for a reader with no features carries forge#850 keys (objects=%v subject=%v author=%v)", top.Objects != nil, subject, author)
+	}
+	if old.Doc.Provenance.Commit != full.Doc.Provenance.Commit || old.Doc.ConfigDigest != full.Doc.ConfigDigest {
+		t.Fatal("limiting the document changed what it describes")
+	}
+	if old.Digest == full.Digest {
+		t.Fatal("the two documents differ, so the bundles must too: the digest covers the config blob")
+	}
+
+	in.Reader = &release.BundleReader{Features: release.BundleDocFeatures()}
+	if again := mustBuild(t, in); again.Digest != full.Digest {
+		t.Fatalf("a reader of every feature must get the same bundle as the nil reader: %s vs %s", again.Digest, full.Digest)
+	}
+}

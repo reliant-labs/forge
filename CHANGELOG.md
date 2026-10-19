@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `forge cloud identity status|users|invite <env>`: inspect hosted managed identity,
+  page/search users, and email an invitation with explicit `--email` and repeatable
+  `--role`. Uses the authenticated org and exact project/environment lookup;
+  invitations require a human org admin. No passwords or credentials are printed.
+
 ### Fixed
 
 - **Go initialisms are replaced only as whole PascalCase words (#795).**
   `ToPascalCase` matched initialisms by prefix, so `forge scaffold service
-  identity` produced `IDentityService` and an `id-entity` file that `generate`
+identity` produced `IDentityService` and an `id-entity` file that `generate`
   then rejected; `Slack`, `Uint`, `Ramp`, `Idle` and `Ion` were mangled the
   same way. An initialism now applies only when followed by an upper-case
   letter, a digit or the end of the name (`identity` -> `Identity`, `user_id` ->
@@ -78,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SecretFile`, `RedirectGlob`/`LogoutGlob`). `pkg/devidp` keeps the sign-in
   broker's client (flow, login, password reset, token file). A project that
   has the old job migrates by declaring `identity = forge.ManagedIdentity
-  {runtime = forge.IdentityOnHost {infra = "idp"}}` on its dev Bundle.
+{runtime = forge.IdentityOnHost {infra = "idp"}}` on its dev Bundle.
 
 ### Added
 
@@ -712,6 +719,7 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   regardless, which is the scaffolded config's setting and not reliant's. So
   the hook and lint disagreed on every later edit. The pre-pass now reads the
   golangci-lint config (v1 or v2, YAML, JSON or TOML) a run loads:
+
   - gofmt is always applied. It is Go's own formatting, and no gate rejects
     it.
   - Import grouping is applied only when the config enables goimports, and it
@@ -727,6 +735,7 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   The files in the report were under `--scope internal/grpc`, so they were in
   scope; the pre-pass's standard was the bug. A test now pins the scope
   boundary too.
+
 - **`forge lint --help` says that lint rewrites files.** The synopsis now
   reads "auto-fixes formatting in place first; --no-fix to only check". The
   long help says files are rewritten in place, only inside `--scope`, and

@@ -44,6 +44,24 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `share_with` | a bare env name **of the same project**. The owner must declare an identity and not itself be a sharer: no chains. A sharer declares only applications and consumers |
 | `social` | **reserved**; refused at render |
 
+## Onboard a hosted user
+
+After deploying the environment, use the public control-plane management API through Forge:
+
+```bash
+forge cloud identity status prod
+forge cloud identity users prod --query person@example.com --page-size 20 --json
+forge cloud identity invite prod --email person@example.com --role member
+# Multiple roles: --role member --role operator
+# Continue a listing: forge cloud identity users prod --page-token <nextPageToken> --json
+```
+
+Choose the recipient explicitly; never infer the owner's email from the agent's session. The invitation action emails a link so the recipient sets their own credential. There is no password flag, bootstrap password or production seed user. The response reports `userId` and `created` (false for an existing account receiving roles), never a password or token. Status and listings return safe metadata; all three commands accept `--json`.
+
+The endpoint comes from that env's `ControlPlane` KCL. Credentials use the usual precedence: `--token`, declared token env var, stored endpoint login, then the host session helper (so under Reliant, no extra login is needed). The org comes from the authenticated control plane; the env ID is looked up by exact project/name. There is no org override. A **human session** is required: members may read; inviting requires an **org admin**, and machine credentials are refused. Standalone users can authenticate with `forge login`.
+
+`status` reports the current state even while provisioning or refused. Listing and inviting fail closed when the server refuses an identity that is not ready, an unknown role, a declared/read-only role, or insufficient permissions. Fix the reported cause; do not bypass it with an internal reconciler credential. Roles with `members_from = "declared"` must be changed in KCL, not through invitations.
+
 ## The issuer
 
 `https://<slug>.reliantidentity.com`. The control plane assigns the slug **once**, when the instance is first provisioned, stores it, and never recomputes it, so renaming an env or project cannot move an issuer. The rule it assigns by is `release.IdentitySlug`:

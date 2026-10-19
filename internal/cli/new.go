@@ -23,6 +23,8 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 func newNewCmd() *cobra.Command {
@@ -1003,7 +1005,7 @@ func rewriteBufGenYamlToRemote(projectDir string) error {
     opt:
       - paths=source_relative
 `
-	return os.WriteFile(path, []byte(remote), 0o644)
+	return atomicfile.WriteFile(path, []byte(remote), 0o644)
 }
 
 // rewriteFrontendBufGenYamlToRemote switches a frontend's buf.gen.yaml from
@@ -1032,7 +1034,7 @@ plugins:
       - target=ts
       - import_extension=.js
 `, feName, feName)
-	return os.WriteFile(path, []byte(remote), 0o644)
+	return atomicfile.WriteFile(path, []byte(remote), 0o644)
 }
 
 // forgeModulePathForBridge is forge's module path — the single module that
@@ -1104,7 +1106,7 @@ func writeDevForgeGoWork(targetPath string, link bool) {
 		return
 	}
 	wf.Cleanup()
-	if err := os.WriteFile(workPath, modfile.Format(wf.Syntax), 0o644); err != nil {
+	if err := atomicfile.WriteFile(workPath, modfile.Format(wf.Syntax), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write dev forge go.work: %v\n", err)
 		return
 	}

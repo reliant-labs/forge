@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // An env's deploy/kcl/<env>/main.k BINDS each workload to where it runs, one
@@ -279,7 +281,7 @@ func AppendEnvBinding(projectDir, projectName, env, kind, workloadName string) (
 	if kind == WorkloadKindService && ownLine {
 		updated = claimAPIPortKey(updated, body, workloadName)
 	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(updated), 0o644); err != nil {
 		return EnvBindingResult{}, err
 	}
 	res.Applied = true

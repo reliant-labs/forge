@@ -16,6 +16,8 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ReconcileScaffoldTestHelperName re-points the born scaffold tests'
@@ -88,7 +90,7 @@ func ReconcileScaffoldTestHelperName(projectDir, servicePkg, targetDir string) (
 			// did, leave the file untouched rather than write unparseable Go.
 			continue
 		}
-		if werr := os.WriteFile(path, formatted, 0o644); werr != nil {
+		if werr := atomicfile.WriteFile(path, formatted, 0o644); werr != nil {
 			return rewroteAny, werr
 		}
 		rewroteAny = true

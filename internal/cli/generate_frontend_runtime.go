@@ -7,6 +7,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // relocatePrivateDevLogRoute moves a Next.js frontend's dev-log receiver out
@@ -95,7 +97,7 @@ func ensureViteQueryResourceHook(projectDir, feDir string) error {
 		return fmt.Errorf("mkdir for %s: %w", destRel, err)
 	}
 	checksums.RecordPreWriteAbs(dest) // journaled: a failed run removes it
-	if err := os.WriteFile(dest, content, 0o644); err != nil {
+	if err := atomicfile.WriteFile(dest, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", destRel, err)
 	}
 	return nil

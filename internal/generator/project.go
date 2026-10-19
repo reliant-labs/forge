@@ -12,6 +12,8 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // cliName returns the command name users should type to invoke Forge.
@@ -278,7 +280,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 
 	if g.Features.MigrationsEnabled() || g.Features.ORMEnabled() {
 		// Create .gitkeep in db/migrations so the directory is tracked by git
-		if err := os.WriteFile(filepath.Join(g.Path, "db", "migrations", ".gitkeep"), []byte{}, 0644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(g.Path, "db", "migrations", ".gitkeep"), []byte{}, 0644); err != nil {
 			return fmt.Errorf("failed to create db/migrations/.gitkeep: %w", err)
 		}
 
@@ -294,7 +296,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 			"The generated binary exposes `db migrate` subcommands:\n\n" +
 			"```\ngo run ./cmd db migrate up      # apply all pending migrations\ngo run ./cmd db migrate status  # print current version / dirty flag\n```\n\n" +
 			"All subcommands read `DATABASE_URL` (or `--database-url`) from the standard project config.\n"
-		if err := os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0644); err != nil {
 			return fmt.Errorf("failed to create db/README.md: %w", err)
 		}
 	}
@@ -309,7 +311,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 			filepath.Join(g.Path, "proto", "api", "README.md"): "# proto/api\n\nShared API message definitions (e.g. common request/response types)\nreferenced by multiple services. Files placed here are compiled into\n`gen/api/` by `forge generate`.\n",
 		}
 		for p, body := range protoDirReadmes {
-			if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+			if err := atomicfile.WriteFile(p, []byte(body), 0644); err != nil {
 				return fmt.Errorf("failed to create %s: %w", p, err)
 			}
 		}
@@ -713,7 +715,7 @@ package config
 // your CLI grows.
 type Config struct{}
 `
-	return os.WriteFile(filepath.Join(pkgDir, "config.go"), []byte(body), 0o644)
+	return atomicfile.WriteFile(filepath.Join(pkgDir, "config.go"), []byte(body), 0o644)
 }
 
 // generateLibrarySkeleton writes a doc.go under pkg/<libname>/ so that
@@ -734,7 +736,7 @@ func (g *ProjectGenerator) generateLibrarySkeleton() error {
 // package live alongside it (xxx_test.go).
 package %s
 `, pkgName, g.Name, pkgName)
-	return os.WriteFile(filepath.Join(pkgDir, "doc.go"), []byte(doc), 0o644)
+	return atomicfile.WriteFile(filepath.Join(pkgDir, "doc.go"), []byte(doc), 0o644)
 }
 
 // ApplyKindFeatureDefaults is the public entry point invoked by
@@ -809,7 +811,7 @@ func (g *ProjectGenerator) generatePkgAppConventions() error {
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return fmt.Errorf("create pkg/app dir: %w", err)
 	}
-	return os.WriteFile(filepath.Join(appDir, "CONVENTIONS.md"), content, 0o644)
+	return atomicfile.WriteFile(filepath.Join(appDir, "CONVENTIONS.md"), content, 0o644)
 }
 
 func (g *ProjectGenerator) generateFrontendFiles() error {

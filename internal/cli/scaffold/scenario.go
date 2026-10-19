@@ -14,6 +14,8 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // scenarioNameRE constrains scenario names to lowercase-kebab matching
@@ -249,7 +251,7 @@ func writeScenarioFromTemplate(outPath, name, description string) error {
 	if err != nil {
 		return fmt.Errorf("render scenario template: %w", err)
 	}
-	if err := os.WriteFile(outPath, content, 0o644); err != nil {
+	if err := atomicfile.WriteFile(outPath, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	return nil
@@ -287,7 +289,7 @@ func copyScenarioFrom(scenariosDir, from, newName, outPath string) error {
 		return fmt.Errorf("could not find `name: %q` in %s; copy aborted (hand-edit the source's name field to the literal string, then retry)", from, srcPath)
 	}
 
-	if err := os.WriteFile(outPath, []byte(updated), 0o644); err != nil {
+	if err := atomicfile.WriteFile(outPath, []byte(updated), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	return nil

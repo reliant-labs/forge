@@ -9,6 +9,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // E2EMethodInfo holds method metadata for E2E test template rendering:
@@ -111,7 +113,7 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 			return fmt.Errorf("render e2e template %s: %w", tf.tmplName, err)
 		}
 
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
+		if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write e2e file %s: %w", tf.destName, err)
 		}
 	}

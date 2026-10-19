@@ -77,6 +77,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // EngineZitadel is the second engine forge supervises natively. It matches
@@ -450,7 +452,7 @@ const zitadelPIDFile = "zitadel.pid"
 // still this instance, and reporting that clearly is the difference
 // between a fixable message and a mystery.
 func writeZitadelPID(dataDir string, pid, port int) error {
-	return os.WriteFile(filepath.Join(dataDir, zitadelPIDFile),
+	return atomicfile.WriteFile(filepath.Join(dataDir, zitadelPIDFile),
 		[]byte(fmt.Sprintf("%d %d\n", pid, port)), 0o644) // #nosec G306 -- a pid is not a secret
 }
 

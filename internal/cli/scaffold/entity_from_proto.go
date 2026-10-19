@@ -32,6 +32,8 @@ import (
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // crudQuintetOps is the full CRUD verb set `forge scaffold entity`
@@ -1028,7 +1030,7 @@ func writeBirthMigration(migDir, table, upSQL string) (string, error) {
 		return "", err
 	}
 	upPath := filepath.Join(migDir, fmt.Sprintf("%s_create_%s.up.sql", version, table))
-	if err := os.WriteFile(upPath, []byte(upSQL), 0o644); err != nil {
+	if err := atomicfile.WriteFile(upPath, []byte(upSQL), 0o644); err != nil {
 		return "", err
 	}
 	return upPath, nil

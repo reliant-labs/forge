@@ -7,6 +7,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // GenerateBinaryFiles emits the files that make up a non-server
@@ -79,7 +81,7 @@ func GenerateBinaryFiles(root, modulePath, binaryName string) error {
 		if err != nil {
 			return fmt.Errorf("render %s: %w", f.template, err)
 		}
-		if err := os.WriteFile(f.dest, content, 0o644); err != nil {
+		if err := atomicfile.WriteFile(f.dest, content, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
 		}
 	}

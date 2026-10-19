@@ -76,6 +76,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ScaffoldedFile is the birth ledger's project-relative location. Committed
@@ -271,7 +273,7 @@ func saveScaffoldLedgerLocked(root string) {
 	if merr != nil {
 		return
 	}
-	_ = os.WriteFile(full, append(data, '\n'), 0o644)
+	_ = atomicfile.WriteFile(full, append(data, '\n'), 0o644)
 }
 
 // ScaffoldRecorded reports whether forge has EVER scaffolded relPath in

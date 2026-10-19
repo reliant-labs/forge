@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // DirRel is the per-project on-disk location, relative to the project
@@ -90,7 +92,7 @@ func Write(path, label string, v any) error {
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", label, err)
 	}
-	if err := os.WriteFile(path, data, fileMode); err != nil {
+	if err := atomicfile.WriteFile(path, data, fileMode); err != nil {
 		return fmt.Errorf("write %s %s: %w", label, path, err)
 	}
 	return nil

@@ -8,6 +8,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // GeneratePlanProtoFile writes a populated proto file for a service based on
@@ -147,7 +149,7 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 	}
 
 	protoPath := filepath.Join(protoDir, fmt.Sprintf("%s.proto", serviceName))
-	return os.WriteFile(protoPath, []byte(b.String()), 0644)
+	return atomicfile.WriteFile(protoPath, []byte(b.String()), 0644)
 }
 
 // mapProtoType converts a plan field type to a proto3 type string.

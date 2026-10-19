@@ -41,6 +41,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // gateDocument is the union of the fields this parser reads, across every
@@ -635,7 +637,7 @@ func writeGateDocument(path string, gate release.Gate) error {
 		return fmt.Errorf("encode gate document: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write gate document %s: %w", path, err)
 	}
 	return nil

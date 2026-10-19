@@ -60,6 +60,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // goFormatDirs are the source trees the format pre-pass walks — the same set
@@ -173,7 +175,7 @@ func formatGoFile(root string, std goFormatStandard, path string) (string, error
 	if info, statErr := os.Stat(path); statErr == nil {
 		mode = info.Mode().Perm()
 	}
-	if err := os.WriteFile(path, formatted, mode); err != nil {
+	if err := atomicfile.WriteFile(path, formatted, mode); err != nil {
 		return "", err
 	}
 	rel, relErr := filepath.Rel(root, path)

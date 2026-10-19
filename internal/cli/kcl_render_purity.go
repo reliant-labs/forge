@@ -67,6 +67,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // dirtyTrackedFiles returns the project-relative paths of TRACKED files git
@@ -121,7 +123,7 @@ func restoreTrackedFileFromHEAD(projectDir, rel string) error {
 	if info, statErr := os.Stat(abs); statErr == nil {
 		mode = info.Mode().Perm()
 	}
-	return os.WriteFile(abs, blob, mode)
+	return atomicfile.WriteFile(abs, blob, mode)
 }
 
 // renderKCLPure is RenderKCL for the generate path: it runs the render, then

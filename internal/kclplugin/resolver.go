@@ -46,6 +46,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // PortResolver hands out host ports, one per logical name, stable for the
@@ -188,7 +190,7 @@ func (r *PortResolver) assign(name string, port int) int {
 	if r.storePath != "" && !r.readOnly {
 		if data, err := json.MarshalIndent(r.byName, "", "  "); err == nil {
 			_ = os.MkdirAll(filepath.Dir(r.storePath), 0o755)
-			_ = os.WriteFile(r.storePath, data, 0o644)
+			_ = atomicfile.WriteFile(r.storePath, data, 0o644)
 		}
 	}
 	return port
@@ -436,7 +438,7 @@ func UsePortStore(path string) (restore func()) {
 	armResolver(NewPersistentPortResolver(path))
 	return func() {
 		if existed {
-			_ = os.WriteFile(path, snapshot, 0o644)
+			_ = atomicfile.WriteFile(path, snapshot, 0o644)
 		} else {
 			_ = os.Remove(path)
 		}

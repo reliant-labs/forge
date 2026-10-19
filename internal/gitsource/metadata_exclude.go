@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // excludeCacheMetadata keeps resolver-owned state out of git status, including
@@ -33,5 +35,5 @@ func excludeCacheMetadata(entry string) error {
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(file, data, 0o644)
+	return atomicfile.WriteFile(file, data, 0o644)
 }

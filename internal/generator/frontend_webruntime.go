@@ -44,6 +44,8 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime
@@ -303,7 +305,7 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) {
 			WebRuntimePackage, pkgPath)
 		return
 	}
-	if err := os.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
 		return
 	}
@@ -404,7 +406,7 @@ func EnsureBrowserTelemetryDependencies(projectDir, feRelDir, feName string) {
 		fmt.Fprintf(os.Stderr, "warning: declaring %s in %s would have produced invalid JSON; left unchanged\n", browserSDKPackage, pkgPath)
 		return
 	}
-	if err := os.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
 		return
 	}

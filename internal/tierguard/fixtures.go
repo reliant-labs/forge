@@ -14,6 +14,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // FixedProjectName and FixedModulePath are shared by the A and B
@@ -447,7 +449,7 @@ func retargetGatewayListener(root string, port int) error {
 		return fmt.Errorf("%s no longer declares %q — the fixture's anchor moved with the ingress template", path, scaffolded)
 	}
 	out := strings.Replace(string(raw), scaffolded, fmt.Sprintf("port = %d", port), 1)
-	return os.WriteFile(path, []byte(out), 0o644)
+	return atomicfile.WriteFile(path, []byte(out), 0o644)
 }
 
 // binPlaceholder stands in for the binary-name path segment so renders
@@ -510,7 +512,7 @@ func addConfigBlocks(root string, blocks []configBlock) error {
 	}
 
 	out := src[:closing] + fields.String() + src[closing:] + msgs.String()
-	return os.WriteFile(protoPath, []byte(out), 0o644)
+	return atomicfile.WriteFile(protoPath, []byte(out), 0o644)
 }
 
 // configBlockFirstTag is the first proto field tag addConfigBlocks
@@ -551,7 +553,7 @@ func addBinaryConfigs(root string, blocks []binaryConfigBlock) error {
 		}
 		msgs.WriteString("}\n")
 	}
-	return os.WriteFile(protoPath, []byte(msgs.String()), 0o644)
+	return atomicfile.WriteFile(protoPath, []byte(msgs.String()), 0o644)
 }
 
 // addPublicRPCs declares each named RPC on the service with
@@ -588,7 +590,7 @@ func addPublicRPCs(root, svc string, rpcs []string) error {
 	}
 
 	out := src[:closing] + decls.String() + src[closing:] + msgs.String()
-	return os.WriteFile(protoPath, []byte(out), 0o644)
+	return atomicfile.WriteFile(protoPath, []byte(out), 0o644)
 }
 
 // appendEntities appends each entity message to the service's proto,
@@ -612,7 +614,7 @@ func appendEntities(root, svc string, entities []entityMessage) error {
 		}
 		b.WriteString("}\n")
 	}
-	return os.WriteFile(protoPath, []byte(b.String()), 0o644)
+	return atomicfile.WriteFile(protoPath, []byte(b.String()), 0o644)
 }
 
 // forgeIn runs one forge command in-process with dir as the working

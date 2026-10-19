@@ -38,6 +38,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // LegacyEntry mirrors the manifest-era per-file record (structured
@@ -194,7 +196,7 @@ func MigrateLegacyManifest(root string, cs *FileChecksums, currentTier1 func(str
 		if legacyEntryMatches(entry, content) {
 			if Stampable(relPath) {
 				stamped, _ := Stamp(relPath, content)
-				if werr := os.WriteFile(full, stamped, 0o644); werr != nil {
+				if werr := atomicfile.WriteFile(full, stamped, 0o644); werr != nil {
 					return nil, fmt.Errorf("stamp %s: %w", relPath, werr)
 				}
 				out.Stamped = append(out.Stamped, relPath)
@@ -249,7 +251,7 @@ func StampUnverified(root, relPath string) bool {
 	if !ok {
 		return false
 	}
-	return os.WriteFile(full, stamped, 0o644) == nil
+	return atomicfile.WriteFile(full, stamped, 0o644) == nil
 }
 
 // RescueUnverified is the migration's provenance rescue: if a fresh
@@ -276,7 +278,7 @@ func RescueUnverified(root, relPath string) bool {
 	if !ok {
 		return false
 	}
-	return os.WriteFile(full, stamped, 0o644) == nil
+	return atomicfile.WriteFile(full, stamped, 0o644) == nil
 }
 
 // migrateGitignoreNegation rewrites the scaffold-era
@@ -297,5 +299,5 @@ func migrateGitignoreNegation(root string) {
 	content = strings.Replace(content, "!"+LegacyChecksumFile, replacement, 1)
 	// Drop any duplicate negations a previous partial migration left.
 	content = strings.ReplaceAll(content, "!"+LegacyChecksumFile+"\n", "")
-	_ = os.WriteFile(path, []byte(content), 0o644)
+	_ = atomicfile.WriteFile(path, []byte(content), 0o644)
 }

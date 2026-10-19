@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // declareFrontendInKCL adds a freshly-scaffolded frontend to every
@@ -60,7 +62,7 @@ func DeclareFrontendInKCL(root, projectName, frontendName, kclType string, pinne
 		updated, status := spliceFrontendIntoEnvKCL(string(raw), projectName, env.Name(), frontendName, kclType, binding, pinnedPort, routes)
 		switch status {
 		case frontendKCLApplied:
-			if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			if err := atomicfile.WriteFile(path, []byte(updated), 0o644); err != nil {
 				fmt.Printf("\n⚠️  could not update %s: %v\n\n%s\n", rel, err,
 					frontendKCLStanzaHint(projectName, env.Name(), frontendName, kclType, binding, pinnedPort, routes))
 				continue

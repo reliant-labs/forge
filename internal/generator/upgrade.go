@@ -12,6 +12,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // UpgradeStatus describes the outcome for each managed file.
@@ -1111,7 +1113,7 @@ func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) e
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(fullPath, content, 0644); err != nil {
+	if err := atomicfile.WriteFile(fullPath, content, 0644); err != nil {
 		return err
 	}
 	checksums.MarkWrittenThisRun(relPath)

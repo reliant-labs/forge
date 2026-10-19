@@ -27,6 +27,8 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/devpg"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Dev-environment conventions the config.k scaffolder pins so a freshly-forged
@@ -184,7 +186,7 @@ func ReconcileConfigModuleImports(kclDirAbs string) ([]string, error) {
 			if out == string(src) {
 				continue
 			}
-			if werr := os.WriteFile(path, []byte(out), 0o644); werr != nil {
+			if werr := atomicfile.WriteFile(path, []byte(out), 0o644); werr != nil {
 				return rewrote, fmt.Errorf("reconcile %s: %w", path, werr)
 			}
 			rewrote = append(rewrote, filepath.Join(e.Name(), name))

@@ -8,6 +8,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // FrontendConfigModule is the generated KCL module name carrying every
@@ -130,7 +132,7 @@ func EnsureFrontendConfigInstances(configs []FrontendConfig, kclDirAbs, envName,
 		final = kclPluginImport + "\n" + final
 	}
 
-	if err := os.WriteFile(path, []byte(final), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(final), 0o644); err != nil {
 
 		return nil, fmt.Errorf("write %s: %w", path, err)
 	}

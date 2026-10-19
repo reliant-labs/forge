@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/migrationver"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 func newMigrateImportCmd() *cobra.Command {
@@ -198,7 +200,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 	}
 
 	for _, p := range plans {
-		if err := os.WriteFile(p.UpPath(destAbs), []byte(p.UpBody), 0o644); err != nil {
+		if err := atomicfile.WriteFile(p.UpPath(destAbs), []byte(p.UpBody), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", p.UpPath(destAbs), err)
 		}
 		_, _ = fmt.Fprintf(opts.Stdout, "  Wrote %s\n", p.UpPath(destAbs))

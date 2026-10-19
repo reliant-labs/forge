@@ -34,6 +34,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/config"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // scaffoldNPMAdvisory is one no-fix advisory a frontend template carries.
@@ -130,7 +132,7 @@ func EnsureScaffoldNPMExemptions(projectDir, frontendType string, now time.Time)
 	if err != nil {
 		return
 	}
-	if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(path, updated, info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", path, err)
 		return
 	}

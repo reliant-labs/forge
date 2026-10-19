@@ -28,6 +28,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // mintKubeconfigSecrets mints every declared cross-cluster kubeconfig and
@@ -198,7 +200,7 @@ func mintOneKubeconfigSecret(ctx context.Context, k KubeconfigSecretEntity, owne
 		if rerr != nil {
 			return rerr
 		}
-		if err := os.WriteFile(tmpPath, rewritten, 0o600); err != nil {
+		if err := atomicfile.WriteFile(tmpPath, rewritten, 0o600); err != nil {
 			return fmt.Errorf("write rewritten kubeconfig: %w", err)
 		}
 	}

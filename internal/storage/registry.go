@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Tag is a registry alias and its last push timestamp.
@@ -629,7 +631,7 @@ func (r Runner) markRegistryStopped(container string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	return atomicfile.WriteFile(path, append(b, '\n'), 0o600)
 }
 
 func (r Runner) registryMarkedStopped(container string) bool {
@@ -983,7 +985,7 @@ func (r Runner) enableRegistryDelete(ctx context.Context, container string) erro
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(file, next, 0o644); err != nil {
+	if err := atomicfile.WriteFile(file, next, 0o644); err != nil {
 		return err
 	}
 	_, err = r.docker(ctx, "cp", file, container+":"+registryConfigPath)

@@ -36,6 +36,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 func newDeleteCmd() *cobra.Command {
@@ -285,7 +287,7 @@ func rewriteServicesGoForDelete(root, name string, keepTypes bool) (bool, error)
 				// trailing newline) — harmless and read by the registry.
 				body := strings.TrimRight(string(data), "\n")
 				body += fmt.Sprintf("\n\n// %s: retired via `forge project delete service` — types-only (not served here).\n", name)
-				if werr := os.WriteFile(path, []byte(body), 0o644); werr != nil {
+				if werr := atomicfile.WriteFile(path, []byte(body), 0o644); werr != nil {
 					return false, werr
 				}
 				return true, nil
@@ -294,7 +296,7 @@ func rewriteServicesGoForDelete(root, name string, keepTypes bool) (bool, error)
 		return false, nil
 	}
 
-	if werr := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644); werr != nil {
+	if werr := atomicfile.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644); werr != nil {
 		return false, werr
 	}
 	return true, nil

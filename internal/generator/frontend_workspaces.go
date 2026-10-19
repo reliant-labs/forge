@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/components"
 	nativecomponents "github.com/reliant-labs/forge/pkg/components/native"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Frontend-workspaces emitters.
@@ -731,7 +733,7 @@ func writeUIWebBarrel(uiDir string) error {
 		// Keep the file a valid module even when there are no components.
 		b.WriteString("export {};\n")
 	}
-	return os.WriteFile(indexPath, []byte(b.String()), 0o644)
+	return atomicfile.WriteFile(indexPath, []byte(b.String()), 0o644)
 }
 
 // toPascalCase converts snake_case component names (the convention in
@@ -755,7 +757,7 @@ func writeIfMissing(path, content string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return atomicfile.WriteFile(path, []byte(content), 0o644)
 }
 
 // WriteUINativePackageFiles emits the packages/ui-native/ scaffold:

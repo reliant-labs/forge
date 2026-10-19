@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ── Renames must carry a disown with them ─────────────────────────────
@@ -197,7 +199,7 @@ func (cs *FileChecksums) carryDisownIn(root, oldRel, newRel string) bool {
 			refuseCarry(oldRel, newRel)
 			return true
 		}
-		if writeErr := os.WriteFile(newFull, body, oldInfo.Mode().Perm()); writeErr != nil {
+		if writeErr := atomicfile.WriteFile(newFull, body, oldInfo.Mode().Perm()); writeErr != nil {
 			refuseCarry(oldRel, newRel)
 			return true
 		}

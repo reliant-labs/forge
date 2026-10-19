@@ -19,6 +19,8 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/goexec"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // devWorkspaceBridgesExternalModule reports whether the project's go.work
@@ -291,7 +293,7 @@ func ensureGenForgeRequire(projectDir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, out, 0o644); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -9,6 +9,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // GenerateWebhookFiles generates all files for a webhook endpoint within a service:
@@ -47,7 +49,7 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 		return fmt.Errorf("render webhook handler: %w", err)
 	}
 	handlerPath := filepath.Join(svcDir, fmt.Sprintf("webhook_%s.go", webhookName))
-	if err := os.WriteFile(handlerPath, handlerContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(handlerPath, handlerContent, 0644); err != nil {
 		return fmt.Errorf("write webhook handler: %w", err)
 	}
 
@@ -57,7 +59,7 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 		return fmt.Errorf("render webhook test: %w", err)
 	}
 	testPath := filepath.Join(svcDir, fmt.Sprintf("webhook_%s_test.go", webhookName))
-	if err := os.WriteFile(testPath, testContent, 0644); err != nil {
+	if err := atomicfile.WriteFile(testPath, testContent, 0644); err != nil {
 		return fmt.Errorf("write webhook test: %w", err)
 	}
 

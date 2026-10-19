@@ -21,13 +21,14 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // observeLibImport is the forge library the decorator routes through.
@@ -196,7 +197,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		}
 		return true, nil
 	}
-	if err := os.WriteFile(outPath, formatted, 0o644); err != nil {
+	if err := atomicfile.WriteFile(outPath, formatted, 0o644); err != nil {
 		return false, err
 	}
 	return true, nil

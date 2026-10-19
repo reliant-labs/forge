@@ -41,6 +41,8 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // pinnedDriverSection holds, per forge identity (a pseudo-version's commit,
@@ -144,7 +146,7 @@ func pinnedMerge(ctx context.Context, stderr io.Writer, args []string, relPath s
 	if err != nil {
 		return true, false, err
 	}
-	if err := os.WriteFile(args[1], merged, 0o644); err != nil {
+	if err := atomicfile.WriteFile(args[1], merged, 0o644); err != nil {
 		return true, false, err
 	}
 	fmt.Fprintf(stderr, "forge merge-generated %s: this driver is forge %s, but forge.yaml pins %s, and that forge has not run in "+
@@ -185,7 +187,7 @@ func plainMerge(ctx context.Context, base, ours, theirs []byte, marker int) ([]b
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	for name, body := range map[string][]byte{"ours": ours, "base": base, "theirs": theirs} {
-		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
 			return nil, false, err
 		}
 	}

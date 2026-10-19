@@ -432,7 +432,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
 		}
 	}
-	mark = drainer.phase("workers", mark, "drain: workers stopped", "workers", len(srv.Workers))
+	mark = drainer.Phase("workers", mark, "drain: workers stopped", "workers", len(srv.Workers))
 
 	// Wait for the operator/controller-manager goroutine to drain. runCtx
 	// is already cancelled (it's what dropped us out of the serve select),
@@ -448,7 +448,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			"shutdown_timeout", drainer.shutdownTimeout())
 	}
 	if operatorsSupervised {
-		mark = drainer.phase("operators", mark, "drain: operators stopped", "operators", len(srv.Operators))
+		mark = drainer.Phase("operators", mark, "drain: operators stopped", "operators", len(srv.Operators))
 	}
 
 	// OnShutdown is the caller-composed teardown (closing the serving DB
@@ -465,7 +465,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("pprof shutdown error", "error", shutErr)
 		}
 	}
-	drainer.phase("teardown", mark, "drain: teardown done")
+	drainer.Phase("teardown", mark, "drain: teardown done")
 	drainer.Complete()
 
 	// OTel flush — serverkit owns it now (folded out of the cmd shim). LAST,

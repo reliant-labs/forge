@@ -142,7 +142,7 @@ daemon, err := serverkit.NewListener(serverkit.ListenerDeps{
 })
 ```
 
-Drive the listeners with their `Run` / `Drain` / `Close` (`services/shutdown`, "Without `serverkit.Run`").
+Run the listeners under `lifecyclekit.Supervise` (`services/shutdown`, "Without `serverkit.Run`").
 
 ### Publishing one RPC (per-RPC allow-list)
 

@@ -131,7 +131,9 @@
 // listener — or several: Listener (the whole listener component), Drainer
 // (readiness gate, pre-stop, shutdown budget, /readyz), and, below a
 // Listener, NewHTTPServer (an http.Server with its Streams installed),
-// Streams, LongLived and DrainHTTP (a listener's drain).
+// Streams, LongLived and DrainHTTP (a listener's drain). A Listener has the
+// lifecycle lifecyclekit.Supervise runs, so a main with several listeners
+// hands them to it with the Drainer as its policy.
 //
 // # Worker shutdown contract
 //

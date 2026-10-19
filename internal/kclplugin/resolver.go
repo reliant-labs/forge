@@ -46,6 +46,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/devstack"
 )
 
 // PortResolver hands out host ports, one per logical name, stable for the
@@ -75,6 +77,8 @@ type PortResolver struct {
 	storePath string         // when set, byName is saved here for cross-run reuse
 	readOnly  bool           // read the store, never write it (read-only renders)
 	bound     bool           // a store path has been armed (read-only or writable)
+	available func(int) bool // nil uses the real bind+dial probe; tests inject a pure probe
+	scope     string         // exact checkout + env identity in the shared store
 }
 
 // Bound reports whether this resolver has been pointed at a store file. The
@@ -106,6 +110,9 @@ func NewPersistentPortResolver(path string) *PortResolver {
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &r.persisted)
 	}
+	for _, port := range r.persisted {
+		r.claimed[port] = true
+	}
 	return r
 }
 
@@ -131,6 +138,45 @@ func (r *PortResolver) Resolve(name string, preferred int) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.scope != "" {
+		name = r.scope + ":" + name
+	}
+	if r.storePath != "" && !r.readOnly {
+		var port int
+		err := devstack.WithFileLock(r.storePath+".lock", func() error {
+			// Reload INSIDE the cross-process transaction, including roles this
+			// process has not resolved. Persist the union, never just this run.
+			data, err := os.ReadFile(r.storePath)
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			r.persisted = map[string]int{}
+			if err == nil {
+				if err := json.Unmarshal(data, &r.persisted); err != nil {
+					return err
+				}
+			}
+			r.claimed = map[int]bool{}
+			for _, p := range r.persisted {
+				r.claimed[p] = true
+			}
+			if p, ok := r.persisted[name]; ok {
+				port = p
+				return nil
+			}
+			port, err = r.resolve(name, preferred)
+			if err != nil {
+				return err
+			}
+			r.persisted[name] = port
+			return writePorts(r.storePath, r.persisted)
+		})
+		return port, err
+	}
+	return r.resolve(name, preferred)
+}
+
+func (r *PortResolver) resolve(name string, preferred int) (int, error) {
 	if p, ok := r.byName[name]; ok {
 		return p, nil
 	}
@@ -153,7 +199,7 @@ func (r *PortResolver) Resolve(name string, preferred int) (int, error) {
 	//    into a different port whose consequences surface somewhere else.
 	//    A stable port that occasionally collides is a better contract than
 	//    an unstable one that never does.
-	if p, ok := r.persisted[name]; ok && p > 0 && !r.claimed[p] {
+	if p, ok := r.persisted[name]; ok && p > 0 {
 		return r.assign(name, p), nil
 	}
 	// 2. Prefer the requested port, then scan upward from it.
@@ -163,7 +209,7 @@ func (r *PortResolver) Resolve(name string, preferred int) (int, error) {
 			if cand > 65535 {
 				break
 			}
-			if !r.claimed[cand] && portFree(cand) {
+			if !r.claimed[cand] && r.portFree(cand) {
 				return r.assign(name, cand), nil
 			}
 		}
@@ -181,17 +227,40 @@ func (r *PortResolver) Resolve(name string, preferred int) (int, error) {
 	return 0, fmt.Errorf("resolve_port(%q): exhausted free-port search", name)
 }
 
-// assign records the allocation and persists the confirmed map (best-effort).
+// writePorts commits the shared reservation map atomically. Read-only renders
+// do not take the writer lock and must never see a truncated JSON file.
+func writePorts(path string, ports map[string]int) error {
+	data, err := json.MarshalIndent(ports, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".ports-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+// assign records an allocation in this resolver; Resolve commits the union.
 func (r *PortResolver) assign(name string, port int) int {
 	r.byName[name] = port
 	r.claimed[port] = true
-	if r.storePath != "" && !r.readOnly {
-		if data, err := json.MarshalIndent(r.byName, "", "  "); err == nil {
-			_ = os.MkdirAll(filepath.Dir(r.storePath), 0o755)
-			_ = os.WriteFile(r.storePath, data, 0o644)
-		}
-	}
 	return port
+}
+
+func (r *PortResolver) portFree(port int) bool {
+	if r.available != nil {
+		return r.available(port)
+	}
+	return portFree(port)
 }
 
 // portFree reports whether a port can be handed to a process that will
@@ -322,7 +391,14 @@ func allocatePort(base int, key string) (int, error) {
 	if fn == nil {
 		return base, nil
 	}
-	return fn(base, key)
+	port, err := fn(base, key)
+	if err != nil {
+		return 0, err
+	}
+	if err := currentResolver().reserveFixed(base, key, port); err != nil {
+		return 0, err
+	}
+	return port, nil
 }
 
 // devStacksFn backs the kcl_plugin.forge.dev_stacks method: the roster of

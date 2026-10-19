@@ -274,7 +274,15 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 	if target.Hosted {
 		return readHostedEnvRecords(ctx, env, entities, now)
 	}
-	return readMachineEnvRecords(env, projectDir, target, now)
+	out, err := readMachineEnvRecords(env, projectDir, target, now)
+	if target.Report {
+		facts := newOSProcFacts()
+		reconcileLocalPresence(&out, projectDir, env, facts.pidList(), facts)
+		if running, composeErr := ownedComposeRunning(ctx, projectDir, env); composeErr == nil && running {
+			markLocalStackRunning(&out, projectDir)
+		}
+	}
+	return out, err
 }
 
 // readMachineEnvRecords reads the file ledger: provenance and sessions.

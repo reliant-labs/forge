@@ -47,7 +47,12 @@ import (
 // the way a previous `forge env up` would have.
 func writePortStore(t *testing.T, projectDir, env string, ports map[string]int) string {
 	t.Helper()
-	path := filepath.Join(projectDir, ".forge", "ports-"+env+".json")
+	path := filepath.Join(projectDir, ".forge", "host-ports.json")
+	scoped := map[string]int{}
+	for name, port := range ports {
+		scoped[filepath.Clean(projectDir)+":"+env+":"+name] = port
+	}
+	ports = scoped
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

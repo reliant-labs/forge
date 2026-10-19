@@ -2,6 +2,7 @@ package deploytarget
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -317,7 +318,15 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	if err := runner.RunWithEnv(ctx, envOverlay, "docker", pullArgs...); err != nil {
 		return fmt.Errorf("compose %s: pull: %w", svc.Name, err)
 	}
-	if err := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...); err != nil {
+	before, err := outputWithEnv(ctx, runner, envOverlay, "docker", append(composeArgs(spec), "ps", "--all", "--quiet")...)
+	if err != nil {
+		return fmt.Errorf("compose %s: inventory before up: %w", svc.Name, err)
+	}
+	upErr := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...)
+	// Even an unhealthy up can have created containers. Remember them before
+	// returning so env down can clean up a partially started stack.
+	ownedErr := p.recordOwned(ctx, runner, envOverlay, spec, group.Env, target, strings.Fields(string(before)))
+	if err := errors.Join(upErr, ownedErr); upErr != nil {
 		if composeWait(spec) {
 			// With --wait, an `up` failure most often means the
 			// container came up but never became healthy. Say so —
@@ -349,6 +358,10 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// lines past the header.
 	if !composeHasRunningLine(out, target) {
 		return fmt.Errorf("compose %s: service not in running state", svc.Name)
+	}
+
+	if ownedErr != nil {
+		return fmt.Errorf("compose %s: record ownership: %w", svc.Name, ownedErr)
 	}
 
 	// 4. Persist the deployed tag so the reconciler can read back what

@@ -206,6 +206,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge storage` worktree reaping no longer holds a worktree for forge's
+  own scratch, a project's pinned tools or its `tmp/`.** The rebuildable
+  allow-list gains `.forge/tmp`, `.forge/generate-cache.json`, `/.tools` and
+  `/tmp`; a leading `/` anchors an entry to the worktree root (`web/tmp` is
+  still unrecognized data), and the never-list still wins (`tmp/data`,
+  `tmp/.env`, `*.db`). A git-ignored repository that is a direct child of
+  `<worktree>/.tools/pre-commit/` (pre-commit's hook clones, which
+  control-plane's gate creates) no longer makes the worktree a
+  `nested-repository`; every other nested repository, including one inside
+  `tmp/`, still holds. Mirrors reliant's `worktreereclaim` list.
+
 - **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
   Every query on the lease session (the heartbeat, each standby poll, the
   connect) ran under a deadline of `HeartbeatInterval`, and a query that misses

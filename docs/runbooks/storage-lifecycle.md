@@ -353,13 +353,19 @@ A non-main worktree is **removable** only if all hold:
 - `git status --porcelain --untracked-files=normal` is empty;
 - every **ignored** path is on the rebuildable allowlist (`worktree_rebuildable`;
   default `node_modules`, `dist`, `bin`, `.next`, `.turbo`, `coverage`,
-  `.gocache`, `*.tsbuildinfo`, `kcl.mod.lock`, `go.work`, `.forge/logs`, …).
-  `data/`, `.env*`, `.forge/hostinfra/`, `*.db`, `*.sqlite` and `secrets/` are
+  `.gocache`, `*.tsbuildinfo`, `kcl.mod.lock`, `go.work`, `.forge/logs`,
+  `.forge/tmp`, `.forge/generate-cache.json`, …). An entry is path segments
+  matched anywhere in the path, or, with a leading `/`, only from the
+  worktree's root: the defaults `/.tools` (pinned tools) and `/tmp` (scratch)
+  are root-anchored, so `web/tmp` is not covered. `data/`, `.env*`, `.forge/hostinfra/`, `*.db`, `*.sqlite` and `secrets/` are
   never rebuildable, even if a policy lists them;
 - no hidden edits: no `--skip-worktree` / `--assume-unchanged` entries
   (`hidden-changes`), which status and `git worktree remove` cannot see;
 - no nested repository: no `.git` at any depth but the worktree's own
-  (`nested-repository`), since it would be deleted with its commits;
+  (`nested-repository`), since it would be deleted with its commits. The one
+  exception is a clone a tool makes again: a git-ignored repository that is a
+  direct child of `<worktree>/.tools/pre-commit/` (pre-commit's hook clones).
+  Any other repository, including one inside `tmp/`, still holds;
 - no orphaned commits: every commit in the worktree's reflog, per-worktree refs
   (`refs/worktree/*`, `refs/bisect/*`) and detached HEAD is reachable from a
   branch, remote or tag (`unreachable-commits`), because `git worktree remove`

@@ -124,10 +124,13 @@ func (d *Drainer) Complete() {
 	}
 }
 
-// phase logs one of Run's own phases — workers, operators, teardown — begun
-// at start, with the drainer's logger and meter, and returns its end. Before
-// Begin it logs nothing and returns now.
-func (d *Drainer) phase(name string, start time.Time, msg string, attrs ...any) time.Time {
+// Phase records one phase of the shutdown this drainer began — Run's
+// workers, operators and teardown, or a supervisor's own — begun at start:
+// one INFO line, msg plus attrs, with `phase` and its `elapsed`, and the
+// duration in forge.server.drain.duration, through the drainer's Logger and
+// Meter. It returns the phase's end, the next one's start. Before Begin it
+// records nothing and returns now.
+func (d *Drainer) Phase(name string, start time.Time, msg string, attrs ...any) time.Time {
 	d.mu.Lock()
 	p := d.phases
 	d.mu.Unlock()

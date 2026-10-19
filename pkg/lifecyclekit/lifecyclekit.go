@@ -1,4 +1,7 @@
-// Package lifecyclekit owns the uniform worker/operator supervised-component
+// Package lifecyclekit owns process lifecycle: the four single-method
+// component interfaces (Runner, Drainer, Closer, Readier) and Supervise, which
+// starts a list of components in order and stops them in reverse
+// (supervise.go) — plus the uniform worker/operator supervised-component
 // machinery that the generated internal/app/lifecycle_gen.go delegates to.
 //
 // # Status (FORGE_SHAPE_REDESIGN §2 — lib-boundary extraction)

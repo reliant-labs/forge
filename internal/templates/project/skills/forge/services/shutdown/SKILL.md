@@ -155,6 +155,7 @@ Each phase writes one INFO line, `msg` starting `drain:`, with `phase` and its
 | `workers` | `drain: workers stopped` | `workers` |
 | `operators` | `drain: operators stopped` (only with operators) | `operators` |
 | `teardown` | `drain: teardown done` (OnShutdown, pprof) | |
+| `node` | `drain: node stopped` (one per `lifecyclekit.Supervise` node) | `node`, and `drain_error`, `close_error` or `run_still_running` when one went wrong |
 | `total` | `drain: complete` | `shutdown_timeout` |
 
 Each line is written by the piece that runs the phase, so a main without
@@ -188,9 +189,41 @@ l, err := serverkit.NewListener(serverkit.ListenerDeps{
 })
 ```
 
-`serverkit.Run` is exactly this over one listener. The lower-level pieces
-below are what a Listener is built from, for a main that keeps its own
-`http.Server`:
+`lifecyclekit.Supervise` runs any list of such components. A component
+implements whichever of `Run(ctx)`, `Drain(ctx)`, `Close(ctx)` and
+`Ready(ctx)` it has (`lifecyclekit.Runner`, `Drainer`, `Closer`, `Readier`);
+`lifecyclekit.Component(name, c)` turns one into a `Node`, and
+`lifecyclekit.WorkerNode(w)` adapts a `serverkit.Worker` (Run is
+`RunContext`/`Start`, Close is `Stop`). List nodes dependencies first:
+
+```go
+ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+defer stop()
+drainer := serverkit.NewDrainer(cfg)  // readiness gate + PRE_STOP_DELAY + SHUTDOWN_TIMEOUT
+pool := lifecyclekit.Node{Name: "db", Close: func(context.Context) error { return db.Close() },
+    Ready: func(ctx context.Context) error { return db.PingContext(ctx) }}
+// serve drainer.ReadinessHandler(lifecyclekit.ReadyChecks(pool), 0, logger) on a Front "/readyz"
+err := lifecyclekit.Supervise(ctx, lifecyclekit.Policy{Drainer: drainer, Flush: otelShutdown},
+    pool,
+    lifecyclekit.Component("api", apiListener),
+    lifecyclekit.Component("gateway", daemonListener), // listed last: drains first
+)
+```
+
+Start runs in list order, waiting for each node that reports `Ready` before
+the next, so a listener accepts traffic only once what it reads is up; the
+drainer is marked ready after the last. On `ctx` ending (or a runner failing,
+under `Policy.FailurePolicy`): readiness flips and the pre-stop pause runs,
+then in REVERSE order each node is drained, has its `Run` context ended and
+awaited, and is closed — all inside `SHUTDOWN_TIMEOUT` — then `drain:
+complete`, then `Policy.Flush` last. Each node writes a `drain: node stopped`
+line (`phase=node`, `node=<name>`). A `Run` gets a context of its own, ended
+only after its node drained, so a listener keeps serving through the pre-stop
+pause.
+
+`serverkit.Run` is this over one listener plus workers and operators. The
+lower-level pieces below are what a Listener is built from, for a main that
+keeps its own `http.Server`:
 
 ```go
 drainer := serverkit.NewDrainer(cfg)                 // readiness gate + budget

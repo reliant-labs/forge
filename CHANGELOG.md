@@ -35,6 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hand-written route set. The audience is in `gen/forge_descriptor.json`
   (`Audience`), in `forge project annotations`, and readable at runtime with
   `serverkit.ServiceAudience`.
+- **`lifecyclekit.Supervise(ctx, policy, nodes...)` runs a process's
+  components in order and stops them in reverse** (composition graph, PR 2).
+  A component implements whichever of the four single-method interfaces it
+  has — `Runner` (`Run(ctx)`), `Drainer` (`Drain(ctx)`), `Closer`
+  (`Close(ctx)`), `Readier` (`Ready(ctx)`); `lifecyclekit.Component(name, c)`
+  makes it a `Node`, and `lifecyclekit.WorkerNode(w)` adapts today's
+  `serverkit.Worker` (Run is `RunContext` or `Start`, Close is `Stop`). Start
+  runs in list order and waits for each node that reports `Ready` before the
+  next, then marks the process ready. The stop is the root's `Policy`:
+  readiness flips and the pre-stop pause runs (`serverkit.Drainer`), then in
+  reverse order each node drains, has its `Run` context ended and awaited, and
+  closes, inside one shutdown budget; `Policy.Flush` (the telemetry flush) runs
+  last. Each node writes a `drain: node stopped` line and a `phase=node` sample
+  of `forge.server.drain.duration`. A hand-written main can run two
+  `serverkit.Listener`s — a user API and a daemon gateway — under it today.
+  `serverkit.Drainer.Phase` is exported for the same phase lines.
 - `forge doctor`'s payload-cap check reads a `serverkit.NewChain` call as
   capped (it applies the caps itself) and fails a negative cap, which is
   `NewChain`'s spelling of "no cap".

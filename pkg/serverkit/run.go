@@ -16,15 +16,13 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
-
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 // newHTTPServer builds the serving http.Server around the routed handler: the
-// h2c upgrade, the write-stall guard, and the connection timeouts.
+// protocols (HTTP/1.1, HTTP/2 over TLS, and h2c), the write-stall guard, and
+// the connection timeouts.
 //
 // There is deliberately NO WriteTimeout. It is a deadline on the whole
 // response, so it cuts every long-lived response at the same mark — SSE,
@@ -32,24 +30,47 @@ import (
 // websockets. Slow-read protection instead belongs to WriteStallGuard, which
 // bounds a write that cannot complete without capping a response that takes a
 // long time.
+//
+// h2c is net/http's own (Protocols.SetUnencryptedHTTP2), not x/net's
+// h2c.NewHandler. That handler HIJACKS each h2c connection, and a hijacked
+// connection is invisible to http.Server.Shutdown: Run's graceful drain
+// returned at once while every h2c request was still in flight, so a rolling
+// deploy behind an h2c load balancer — every Connect and gRPC call — cut them
+// all. A native h2c connection is the server's own, so Shutdown sends it
+// GOAWAY, waits for its streams, and runs Server.OnDrain. (Native h2c takes
+// prior knowledge, which is what Connect, gRPC and load balancers send; an
+// HTTP/1.1 `Upgrade: h2c` request is served as HTTP/1.1.)
 func newHTTPServer(cfg Config, routed http.Handler) *http.Server {
-	// The guard sits inside h2c so it wraps the real writer on both protocols.
-	handler := WriteStallGuard(routed, cfg.WriteStallTimeout)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           h2c.NewHandler(handler, &http2.Server{}),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		Handler:           WriteStallGuard(routed, cfg.WriteStallTimeout),
+		Protocols:         protocols,
+		HTTP2:             &http.HTTP2Config{MaxConcurrentStreams: cfg.HTTP2MaxConcurrentStreams},
+		ReadHeaderTimeout: serverTimeout(cfg.ReadHeaderTimeout),
+		ReadTimeout:       serverTimeout(cfg.ReadTimeout),
+		IdleTimeout:       serverTimeout(cfg.IdleTimeout),
 		MaxHeaderBytes:    1 << 20,
 	}
+}
+
+// serverTimeout maps a normalized Config timeout onto http.Server's field,
+// where zero means none: a negative Config value disables the timeout.
+func serverTimeout(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
 // error. It takes an ALREADY-COMPOSED Server (handler with services
 // mounted, selected workers/operators, an OnShutdown closure) and owns
 // only the uniform lifecycle: logger init, health probes, the HTTP edge
-// (CORS/security/request-id/h2c driven by Config + Server's factory
+// (CORS/security/request-id driven by Config + Server's factory
 // fields), listener bind, worker supervision, operator-manager gating,
 // graceful shutdown, and pprof.
 //
@@ -163,7 +184,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 
 	// Project-owned outer wrapper. Runs OUTSIDE serverkit's own stack,
-	// INSIDE h2c.
+	// INSIDE the write-stall guard.
 	if srv.HTTPMiddleware != nil {
 		handler = srv.HTTPMiddleware(handler)
 	}
@@ -197,6 +218,11 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	top.Handle("/", handler)
 
 	httpSrv := newHTTPServer(cfg, top)
+	if srv.OnDrain != nil {
+		// net/http calls it when Shutdown begins, before Shutdown waits
+		// for in-flight requests (see Server.OnDrain).
+		httpSrv.RegisterOnShutdown(srv.OnDrain)
+	}
 
 	// Graceful shutdown: serverkit owns the signal context. The caller-
 	// supplied ctx governed composition (mount, migrate, OTel setup)

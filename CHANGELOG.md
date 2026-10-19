@@ -239,6 +239,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   advisories (account takeover, cross-org privilege escalation). No config or steps changes were
   needed, and the host-infra suite now downloads the real archive and checks it
   against the pinned checksum. 4.18.0 is broken upstream and was skipped.
+- **serverkit exposes the listener knobs a streaming server needs, and a
+  drain-start hook.** These come from reliant's API listener (P3c G5), and
+  each one used to be hard-coded:
+  - `Config.ReadHeaderTimeout`, `Config.ReadTimeout` and `Config.IdleTimeout`.
+    Zero keeps the defaults (10s / 30s / 120s), and a negative value disables
+    the timeout. Over HTTP/2, `ReadTimeout` is a deadline on each stream's
+    request body, so the 30s default cuts a client-streaming or bidi call at
+    30 seconds. A server with long client streams sets it negative.
+  - `Config.HTTP2MaxConcurrentStreams` is the number of concurrent streams
+    one HTTP/2 connection may open, over TLS or h2c. Zero keeps net/http's
+    default of 250. reliant uses 1000.
+  - `Server.OnDrain` runs when the HTTP drain begins, before Shutdown waits
+    for in-flight requests (it is registered with
+    `http.Server.RegisterOnShutdown`). A server ends its long-lived streams
+    there, so the drain completes instead of holding Run until
+    `ShutdownTimeout`. `OnShutdown` is unchanged: it is the teardown, and it
+    runs after the drain.
 
 - **A direct apply prunes superseded one-shot Jobs, keeping the newest three of
   each.** A standalone Job is named by the hash of its spec, so every release that
@@ -855,6 +872,19 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   `checksums.WriteGeneratedFileOutcome`, which reports whether a write changed
   the file's bytes. `codegen.GenerateMock` returns a `MockResult` (wrote,
   changed, or why it was skipped) instead of a bool.
+- **serverkit drains h2c requests on shutdown.** serverkit served h2c through
+  x/net's `h2c.NewHandler`, and that handler hijacks each connection.
+  `http.Server.Shutdown` does not track a hijacked connection, so Run's
+  graceful drain returned in about 20ms while every h2c request was still
+  running. A rolling deploy behind an h2c load balancer therefore cut every
+  in-flight Connect and gRPC call. HTTP/1.1 drained correctly. The listener
+  now uses net/http's own h2c (`http.Server.Protocols` with
+  `UnencryptedHTTP2`; x/net deprecated `h2c.NewHandler` for this reason).
+  Shutdown now sends GOAWAY to an h2c connection and waits for its streams,
+  as it does over TLS. Native h2c accepts prior knowledge, which is what
+  Connect, gRPC and load balancers send. An HTTP/1.1 `Upgrade: h2c` request
+  is now served as HTTP/1.1.
+
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

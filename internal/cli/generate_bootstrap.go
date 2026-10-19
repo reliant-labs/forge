@@ -41,6 +41,33 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		return fmt.Errorf("discover operators: %w", err)
 	}
 
+	// The composition graph (docs/design/composition-graph.md): provider
+	// funcs in providers.go, one constructor method per node in compose.go,
+	// the generated accessors and roots in graph_gen.go, the per-audience
+	// route sets in routes_gen.go. A project whose internal/app still holds
+	// the legacy Infra / NewComponents composition keeps the legacy
+	// generators below until it migrates.
+	if codegen.GraphComposition(projectDir) {
+		if err := codegen.GenerateGraphProviders(modulePath, databaseDriver, projectDir); err != nil {
+			return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
+		}
+		if err := generateLoginBroker(modulePath, projectDir); err != nil {
+			return err
+		}
+		if err := codegen.GenerateGraph(codegen.GraphGenInput{
+			GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
+			Services:        services,
+			Packages:        packages,
+			Workers:         workers,
+			Operators:       operators,
+			WebhookServices: webhookServices,
+		}); err != nil {
+			return fmt.Errorf("failed to generate the composition graph (internal/app): %w", err)
+		}
+		fmt.Println("  ✅ Generated internal/app composition graph (compose.go + graph_gen.go + routes_gen.go)")
+		return nil
+	}
+
 	// Owned, scaffold-once (never overwritten after first emit).
 	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
 		return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)

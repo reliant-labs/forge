@@ -54,6 +54,7 @@ func TestCmdServiceItemsFromNames(t *testing.T) {
 // ABSENCE of init()-based self-registration, and that everything parses as Go.
 func TestGenerateCmdGroups(t *testing.T) {
 	dir := t.TempDir()
+	markLegacyComposition(t, dir)
 	writeTestGoMod(t, dir, "github.com/example/proj")
 	if err := GenerateCmdGroups(CmdServiceGroupInput{
 		Bin:      "proj",
@@ -209,6 +210,7 @@ func TestGenerateCmdGroups(t *testing.T) {
 // NOT overwrite the owned file, even as the service set changes.
 func TestGenerateCmdGroups_MainScaffoldOnce(t *testing.T) {
 	dir := t.TempDir()
+	markLegacyComposition(t, dir)
 	writeTestGoMod(t, dir, "github.com/example/proj")
 	mainPath := filepath.Join(dir, "cmd", "proj", "main.go")
 
@@ -311,6 +313,7 @@ func TestScaffoldOperatorCmd(t *testing.T) {
 // subcommand or a per-service file. Files must still parse.
 func TestGenerateCmdGroups_Reserved(t *testing.T) {
 	dir := t.TempDir()
+	markLegacyComposition(t, dir)
 	writeTestGoMod(t, dir, "github.com/example/proj")
 	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj", Services: []string{"db", "billing"}}, dir, nil); err != nil {
 		t.Fatalf("GenerateCmdGroups: %v", err)
@@ -339,6 +342,7 @@ func TestGenerateCmdGroups_Reserved(t *testing.T) {
 // imports — an unused import would not compile). Everything must parse.
 func TestGenerateCmdGroups_ZeroComponents(t *testing.T) {
 	dir := t.TempDir()
+	markLegacyComposition(t, dir)
 	writeTestGoMod(t, dir, "github.com/example/proj")
 	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj"}, dir, nil); err != nil {
 		t.Fatalf("GenerateCmdGroups: %v", err)
@@ -381,6 +385,7 @@ func TestGenerateCmdGroups_ZeroComponents(t *testing.T) {
 // the FieldName from the same ResolveCollisionNaming source, so they agree.
 func TestGenerateCmdGroups_MountNameCollision(t *testing.T) {
 	dir := t.TempDir()
+	markLegacyComposition(t, dir)
 	writeTestGoMod(t, dir, "github.com/example/proj")
 
 	// Handler service: internal/handlers/billing, package billing.
@@ -478,6 +483,7 @@ func assertParses(t *testing.T, name, content string) {
 // keeps the direct typed expression.
 func TestGenerateCmdGroups_HandOwnedMountSurfaceMissingMethod(t *testing.T) {
 	dir := t.TempDir()
+	markLegacyComposition(t, dir)
 	writeTestGoMod(t, dir, "github.com/example/proj")
 	mustWriteFile(t, filepath.Join(dir, "internal", "app", "mounts_services.go"),
 		"package app\n\ntype Components struct{}\n\nfunc (c *Components) MountItem() []string { return nil }\n")
@@ -509,6 +515,7 @@ func TestGenerateCmdGroups_HandOwnedMountSurfaceMissingMethod(t *testing.T) {
 // the forge-emitted surface will declare every method.
 func TestGenerateCmdGroups_NoMountSurfaceYetKeepsMethodExpressions(t *testing.T) {
 	dir := t.TempDir()
+	markLegacyComposition(t, dir)
 	writeTestGoMod(t, dir, "github.com/example/proj")
 	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj", Services: []string{"widget"}}, dir, nil); err != nil {
 		t.Fatalf("GenerateCmdGroups: %v", err)
@@ -516,5 +523,36 @@ func TestGenerateCmdGroups_NoMountSurfaceYetKeepsMethodExpressions(t *testing.T)
 	widget := mustReadFile(t, filepath.Join(dir, "cmd", "proj", "cmd", "services", "widget_mount_gen.go"))
 	if !strings.Contains(widget, "= (*app.Components).MountWidget") {
 		t.Errorf("with no surface yet the direct expression must be emitted:\n%s", widget)
+	}
+}
+
+// markLegacyComposition gives dir the legacy internal/app composition (an
+// owned Infra struct), the mode whose per-component subcommands these tests
+// pin. A project without it composes with the graph.
+func markLegacyComposition(t *testing.T, dir string) {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(dir, "internal", "app", "providers.go"), "package app\n\ntype Infra struct{}\n")
+}
+
+// In graph mode a project has no per-service, per-worker or per-operator
+// subcommands: main.go is the bare composition root and the group
+// directories are not created.
+func TestGenerateCmdGroups_GraphModeWritesOnlyTheBareRoot(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "go.mod"), "module example.com/proj\n\ngo 1.24\n")
+	if err := GenerateCmdGroups(CmdServiceGroupInput{Bin: "proj", Services: []string{"orders"}}, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	main, err := os.ReadFile(filepath.Join(dir, "cmd", "proj", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(main), "cmd.Execute()") || strings.Contains(string(main), "cmd/services") || !strings.Contains(string(main), "server root") {
+		t.Fatalf("main.go:\n%s", main)
+	}
+	for _, group := range []string{"services", "workers", "operators"} {
+		if _, err := os.Stat(filepath.Join(dir, "cmd", "proj", "cmd", group)); !os.IsNotExist(err) {
+			t.Errorf("graph mode created cmd/proj/cmd/%s (%v)", group, err)
+		}
 	}
 }

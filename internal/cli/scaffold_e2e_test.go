@@ -163,10 +163,10 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	// Build
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Verify both services are constructed at the generated §2 composition
-	// site (internal/app/compose.go — the explicit per-binary NewComponents
-	// that replaced the by-type injector and, before it, the name-matched
-	// wire_gen/services_gen path).
+	// Verify both services are constructed at the composition graph's
+	// construction site (internal/app/compose.go — one constructor method per
+	// node, which replaced NewComponents, the by-type injector and, before
+	// it, the name-matched wire_gen/services_gen path).
 	composeContent := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
 	if !strings.Contains(composeContent, "api.New(") {
 		t.Fatal("expected compose.go to construct the api service")

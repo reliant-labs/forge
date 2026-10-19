@@ -38,12 +38,16 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 	}
 
 	fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+	return generateLoginBroker(modPath, projectDir)
+}
 
-	// The server half of the API-only sign-in flow, so a project that wants
-	// its own sign-in screen has the endpoint already written rather than
-	// having to derive it from the issuer's API docs. Inert until wired.
+// generateLoginBroker scaffolds internal/app/login_broker.go: the server half
+// of the API-only sign-in flow, so a project that wants its own sign-in
+// screen has the endpoint already written rather than having to derive it
+// from the issuer's API docs. Inert until wired.
+func generateLoginBroker(modulePath, projectDir string) error {
 	projectName := filepath.Base(projectDir)
-	if err := codegen.GenerateLoginBroker(modPath, projectName, projectDir); err != nil {
+	if err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir); err != nil {
 		return err
 	}
 	fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")

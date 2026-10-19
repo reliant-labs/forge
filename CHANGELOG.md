@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`crud.Repo`'s by-PK statements bind their values, so their text is
+  stable.** bun formats every value into the SQL text, and under pgx's
+  default statement cache (what `serverkit.OpenDB` opens) each distinct text
+  is a new prepared statement: a Get of a new id or an update carrying a new
+  value paid an extra Parse/Describe round trip and churned the connection's
+  512-entry cache. `Get`, `Update`, `UpdateMasked` and `Delete` now build the
+  same bun statement with `$N` markers and run it through `orm.Context`'s raw
+  passthrough with the values as bind parameters (each rendered by the
+  column's bun appender, so arrays, JSON, bytea, times and enums keep bun's
+  semantics): one prepared statement per entity and mask.
+  `BenchmarkRepoByPK` (pgx, one session): statements prepared per call
+  1.0 → 0.003 for `Update`/`UpdateMasked` and 0.21 → 0.003 for `Get` over 64
+  ids; 8.2–9.0 KB → 4.6–5.6 KB per call; allocations 66–79 → 68–86. A model
+  implementing a bun model hook stays on bun's executor; bun query hooks
+  (bunotel) no longer see these statements, and the repo's own
+  `orm.<Op><Entity>` span carries `db.statement` (without values). The `db`
+  skill documents the pool mode: keep pgx's default statement cache.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

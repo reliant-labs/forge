@@ -114,6 +114,17 @@ type meta struct {
 	// that did, so the caller's entity holds what was stored rather than
 	// the zero it sent. See returnDatabaseFilled.
 	insertDefaultable []*schema.Field
+	// fields maps each column to its Bun field, for rendering a SET value
+	// as a bind parameter (see bind.go).
+	fields map[string]*schema.Field
+	// softDeleteColumn is the column Bun's native ,soft_delete owns ("" when
+	// there is none); Delete stamps it itself so the stamp can be a bind
+	// parameter.
+	softDeleteColumn string
+	// bindParams: the by-PK statements run with bind parameters through the
+	// raw passthrough. False only for a model implementing a bun model
+	// hook, which bun's own executor must call. See bind.go.
+	bindParams bool
 }
 
 // sliceCol pairs a NOT NULL slice-typed column's struct-field index with
@@ -225,6 +236,8 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 		r.m.entityName = typ.Name()
 		r.m.columns = make([]string, 0, len(tbl.Fields))
 		r.m.stampFields = map[string]stampField{}
+		r.m.fields = make(map[string]*schema.Field, len(tbl.Fields))
+		r.m.bindParams = !hasModelHooks(typ)
 
 		// Managed timestamps are a property of the COLUMNS, so they are read
 		// off the columns rather than declared: forge stamps created_at and
@@ -252,6 +265,7 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 
 		for _, f := range tbl.Fields {
 			r.m.columns = append(r.m.columns, f.Name)
+			r.m.fields[f.Name] = f
 			if f.NotNull && f.IndirectType.Kind() == reflect.Slice {
 				r.m.nilSliceCols = append(r.m.nilSliceCols, sliceCol{fieldIndex: f.Index[0], column: f.Name})
 			}
@@ -293,6 +307,7 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 		}
 		if tbl.SoftDeleteField != nil {
 			r.m.nativeSoftDel = true
+			r.m.softDeleteColumn = tbl.SoftDeleteField.Name
 		}
 
 		// A deleted_at column Bun's ,soft_delete did NOT claim is the legacy
@@ -536,11 +551,13 @@ func (r *Repo[M]) returnDatabaseFilled(q *bun.InsertQuery, entity *M) *bun.Inser
 // other column holds exactly what the caller sent (updated_at is stamped in
 // Go, the version column is advanced by advanceVersion). The columns the
 // UPDATE does NOT write come back too, via readBackUnwritten.
-func (r *Repo[M]) returnGenerated(q *bun.UpdateQuery) *bun.UpdateQuery {
+//
+// It reports whether it added any RETURNING column.
+func (r *Repo[M]) returnGenerated(q *bun.UpdateQuery) bool {
 	for _, col := range r.m.generatedCols {
-		q = q.Returning("?", bun.Ident(col))
+		q.Returning("?", bun.Ident(col))
 	}
-	return q
+	return len(r.m.generatedCols) > 0
 }
 
 // columnExcludedFromSet mirrors the generator's excludedFromSet: columns
@@ -814,10 +831,11 @@ func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any) (*M, error) {
 	defer span.End()
 
 	entity := new(M)
+	b := r.newBinder(db)
 	q := db.Bun().NewSelect().Model(entity).
-		Where("? = ?", bun.Ident(r.m.pkColumn), id).Limit(1)
+		Where("? = ?", bun.Ident(r.m.pkColumn), b.value(id)).Limit(1)
 	r.scopeRead(q)
-	if err := q.Scan(ctx); err != nil {
+	if err := b.get(ctx, span, db, q, entity); err != nil {
 		recordErr(span, err)
 		return nil, fmt.Errorf("get %s by id: %w", r.m.table, err)
 	}
@@ -964,14 +982,15 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ..
 	if r.m.timestamps && r.m.hasUpdatedAt {
 		cols = appendCol(cols, "updated_at")
 	}
-	q := db.Bun().NewUpdate().Model(entity).
-		Column(cols...).
-		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
+	b := r.newBinder(db)
+	q := db.Bun().NewUpdate().Model(entity)
+	b.setColumns(q, r.m.fields, reflect.ValueOf(entity).Elem(), cols)
+	q.Where("? = ?", bun.Ident(r.m.pkColumn), b.value(r.pkFieldValue(entity).Interface()))
 	r.scopeWrite(q)
-	r.applyVersionGuard(q, entity)
-	r.returnGenerated(q)
-	r.readBackUnwritten(q, cols)
-	res, err := q.Exec(ctx)
+	r.applyVersionGuard(q, b, entity)
+	returning := r.returnGenerated(q)
+	returning = r.readBackUnwritten(q, cols) || returning
+	res, err := b.write(ctx, span, db, q, entity, returning)
 	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("update %s: %w", r.m.table, err)
@@ -1045,20 +1064,21 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 		cols = append(cols, "updated_at")
 	}
 
+	b := r.newBinder(db)
 	q := db.Bun().NewUpdate().Model(entity)
-	if len(cols) > 0 {
-		q = q.Column(cols...)
-	}
 	v := reflect.ValueOf(entity).Elem()
-	for _, f := range forced {
-		q = q.SetColumn(f, "?", v.Field(r.m.skipUpdate[f]).Interface())
+	if len(cols) > 0 {
+		b.setColumns(q, r.m.fields, v, cols)
 	}
-	q = q.Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
+	for _, f := range forced {
+		q.SetColumn(f, "?", b.value(v.Field(r.m.skipUpdate[f]).Interface()))
+	}
+	q.Where("? = ?", bun.Ident(r.m.pkColumn), b.value(r.pkFieldValue(entity).Interface()))
 	r.scopeWrite(q)
-	r.applyVersionGuard(q, entity)
-	r.returnGenerated(q)
-	r.readBackUnwritten(q, slices.Concat(cols, forced))
-	res, err := q.Exec(ctx)
+	r.applyVersionGuard(q, b, entity)
+	returning := r.returnGenerated(q)
+	returning = r.readBackUnwritten(q, slices.Concat(cols, forced)) || returning
+	res, err := b.write(ctx, span, db, q, entity, returning)
 	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("update %s: %w", r.m.table, err)
@@ -1144,14 +1164,19 @@ func (r *Repo[M]) withoutPreserved(cols, preserve []string) ([]string, error) {
 // With RETURNING, Bun scans instead of executing (UpdateQuery.scanOrExec),
 // and the sql.Result it hands back counts scanned rows — so zero rows still
 // reaches requireWriteLanded as zero rows affected, with the entity untouched.
-func (r *Repo[M]) readBackUnwritten(q *bun.UpdateQuery, written []string) {
+//
+// It reports whether it added any RETURNING column.
+func (r *Repo[M]) readBackUnwritten(q *bun.UpdateQuery, written []string) bool {
+	added := false
 	for _, c := range r.m.columns {
 		if c == r.m.pkColumn || c == r.m.versionColumn ||
 			slices.Contains(written, c) || slices.Contains(r.m.generatedCols, c) {
 			continue
 		}
 		q.Returning("?", bun.Ident(c))
+		added = true
 	}
+	return added
 }
 
 // scopeWrite applies the soft-delete guard to an UPDATE.
@@ -1187,12 +1212,12 @@ func (r *Repo[M]) scopeWrite(q *bun.UpdateQuery) {
 // the predicate matches, but writing it as an expression keeps the
 // statement true by construction rather than true by an assumption about
 // what the caller's struct holds.
-func (r *Repo[M]) applyVersionGuard(q *bun.UpdateQuery, entity *M) {
+func (r *Repo[M]) applyVersionGuard(q *bun.UpdateQuery, b *binder, entity *M) {
 	if r.m.versionColumn == "" {
 		return
 	}
 	col := bun.Ident(r.m.versionColumn)
-	q.Where("? = ?", col, r.versionFieldValue(entity).Interface())
+	q.Where("? = ?", col, b.value(r.versionFieldValue(entity).Interface()))
 	q.Set("? = ? + 1", col, col)
 }
 
@@ -1323,12 +1348,13 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 	ctx, span := r.startSpan(ctx, "Delete", attribute.String("id", fmt.Sprint(id)))
 	defer span.End()
 
+	b := r.newBinder(db)
 	if r.m.legacyTextSoftDel {
 		q := db.Bun().NewUpdate().Model((*M)(nil)).
 			Set("? = CURRENT_TIMESTAMP", bun.Ident("deleted_at")).
-			Where("? = ?", bun.Ident(r.m.pkColumn), id).
+			Where("? = ?", bun.Ident(r.m.pkColumn), b.value(id)).
 			Where("? IS NULL", bun.Ident("deleted_at"))
-		res, err := q.Exec(ctx)
+		res, err := b.write(ctx, span, db, q, nil, false)
 		if err != nil {
 			recordErr(span, err)
 			return fmt.Errorf("delete %s: %w", r.m.table, err)
@@ -1340,11 +1366,33 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 		return nil
 	}
 
-	// Native soft delete (Bun rewrites NewDelete → UPDATE deleted_at and
-	// scopes to live rows) AND hard delete share this path.
+	// Native soft delete: Bun rewrites NewDelete to an UPDATE that stamps
+	// deleted_at with a time it formats into the text — a new statement
+	// for every call. In bind mode the repo writes that UPDATE itself, with
+	// the stamp (the same time.Now() bun would use) as a parameter.
+	if r.m.nativeSoftDel && b.bind {
+		col := bun.Ident(r.m.softDeleteColumn)
+		q := db.Bun().NewUpdate().Model((*M)(nil)).
+			Set("? = ?", col, b.value(time.Now())).
+			Where("? = ?", bun.Ident(r.m.pkColumn), b.value(id)).
+			Where("? IS NULL", col)
+		res, err := b.write(ctx, span, db, q, nil, false)
+		if err != nil {
+			recordErr(span, err)
+			return fmt.Errorf("delete %s: %w", r.m.table, err)
+		}
+		if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+			recordErr(span, err)
+			return err
+		}
+		return nil
+	}
+
+	// Hard delete, and native soft delete through bun's executor (Bun
+	// rewrites NewDelete → UPDATE deleted_at and scopes to live rows).
 	q := db.Bun().NewDelete().Model((*M)(nil)).
-		Where("? = ?", bun.Ident(r.m.pkColumn), id)
-	res, err := q.Exec(ctx)
+		Where("? = ?", bun.Ident(r.m.pkColumn), b.value(id))
+	res, err := b.write(ctx, span, db, q, nil, false)
 	if err != nil {
 		recordErr(span, err)
 		return fmt.Errorf("delete %s: %w", r.m.table, err)

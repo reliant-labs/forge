@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -283,10 +284,12 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// a fake that dropped it would hide a client that never
 			// reads it back.
 			Provenance *wireProvenance `json:"provenance"`
+			// Stored and returned the same way (DeployRelease.commits).
+			Commits *wireCommitRange `json:"commits"`
 		}
 		_ = json.Unmarshal(raw, &req)
 		want := wireRelease{ID: "rel-" + req.Version, Version: req.Version, GitCommit: req.GitCommit,
-			Artifacts: req.Artifacts, Provenance: req.Provenance,
+			Artifacts: req.Artifacts, Provenance: req.Provenance, Commits: req.Commits,
 			CreatedAt: time.Date(2026, 9, 23, 0, len(f.releases), 0, 0, time.UTC)}
 		wantRel, err := releaseFromWire(want)
 		if err != nil {
@@ -361,12 +364,16 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.refusePromote(w, reasonEnvironmentPinned, "the environment is pinned", body, list, "")
 			return
 		}
+		var scope struct {
+			Targets []string `json:"targets"`
+		}
+		_ = json.Unmarshal(raw, &scope)
 		var history []release.Promotion
 		for _, p := range list {
 			k, _ := promotionKindFromWire(p.Kind)
-			history = append(history, release.Promotion{Env: envID, Release: p.ReleaseVersion, Kind: k})
+			history = append(history, release.Promotion{Env: envID, Release: p.ReleaseVersion, Kind: k, Targets: p.Targets})
 		}
-		existing, err := release.Decide(history, release.Promotion{Env: envID, Release: version, Kind: kind})
+		existing, err := release.Decide(history, release.Promotion{Env: envID, Release: version, Kind: kind, Targets: scope.Targets})
 		if err != nil {
 			connectErr(w, http.StatusBadRequest, "failed_precondition", err.Error())
 			return
@@ -395,6 +402,7 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// of them, and a `promote --from` compares ids from both.
 			ID: fmt.Sprintf("promo-%d", f.nextPromotionSeq()), EnvironmentID: envID, ReleaseID: rel.ID,
 			ReleaseVersion: version, Kind: wk, ResolvedArtifacts: relDomain.SharedDigests(),
+			Targets:         scope.Targets,
 			PromotedByActor: str("promotedByActor"), Note: str("note"),
 			CreatedAt:          time.Date(2026, 9, 23, 1, len(f.promotions[envID]), 0, 0, time.UTC),
 			SupersededInFlight: supersede && f.inFlightPhase != "",
@@ -985,4 +993,55 @@ func (t tagByDigest) Push(ctx context.Context, desc ocispec.Descriptor, r io.Rea
 		return t.Store.Tag(ctx, desc, desc.Digest.String())
 	}
 	return nil
+}
+
+// D4 + D5 over the wire: a cut sends its commit subject, author and range and
+// reads them back; a scoped promote sends its targets, reads them back, and
+// the server's append rule treats the whole deploy that follows as a move.
+func TestHostedStore_CommitsAndTargetsRoundTrip(t *testing.T) {
+	fake := newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})
+	store, _ := newHostedTestStore(t, fake)
+	ctx := context.Background()
+
+	cut := ociRelease("v2", map[string]string{"registry.test/acme/api": sha("1")})
+	cut.SetProvenance(release.Provenance{
+		Commit: strings.Repeat("d", 40), CommitSubject: "fix(gateway): round per request (#973)", CommitAuthor: "sean",
+	})
+	cut.Commits = &release.CommitRange{
+		BaseRelease: "v1", BaseCommit: strings.Repeat("c", 40), Total: 37, Truncated: true,
+		Commits: []release.Commit{{SHA: strings.Repeat("d", 40), Subject: "fix(gateway): round per request (#973)", Author: "sean",
+			Time: time.Date(2026, 10, 18, 6, 37, 0, 0, time.UTC)}},
+	}
+	if _, err := store.Cut(ctx, cut); err != nil {
+		t.Fatalf("cut: %v", err)
+	}
+	got, err := store.Get(ctx, "v2")
+	if err != nil || got == nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Provenance == nil || got.Provenance.CommitSubject != cut.Provenance.CommitSubject || got.Provenance.CommitAuthor != "sean" {
+		t.Errorf("provenance read back = %+v", got.Provenance)
+	}
+	if got.Commits == nil || !reflect.DeepEqual(*got.Commits, *cut.Commits) {
+		t.Errorf("commits read back = %+v, want %+v", got.Commits, cut.Commits)
+	}
+
+	scoped, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote, Targets: []string{"api"}}, appendGuard{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(scoped.Targets, []string{"api"}) {
+		t.Fatalf("scoped promotion read back with targets %v", scoped.Targets)
+	}
+	retry, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote, Targets: []string{"api"}}, appendGuard{})
+	if err != nil || retry.ID != scoped.ID {
+		t.Fatalf("a retried scoped promote must not append: %v, %s vs %s", err, retry.ID, scoped.ID)
+	}
+	whole, err := store.Append(ctx, release.Promotion{Env: "prod", Release: "v2", Kind: release.KindPromote}, appendGuard{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole.ID == scoped.ID || whole.Scoped() {
+		t.Fatalf("the whole deploy after a scoped one is a new entry: %+v", whole)
+	}
 }

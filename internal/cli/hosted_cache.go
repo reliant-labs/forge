@@ -276,7 +276,7 @@ func (s *hostedStore) replayOne(ctx context.Context, q ledgerfile.QueuedPromotio
 		note = q.Note + " (" + note + ")"
 	}
 	got, err := s.Append(ctx, release.Promotion{
-		Env: q.Env, Release: q.Release, Kind: release.KindPromote, PromotedBy: q.PromotedBy, Note: note,
+		Env: q.Env, Release: q.Release, Kind: release.KindPromote, Targets: q.Targets, PromotedBy: q.PromotedBy, Note: note,
 	}, guard)
 	if err != nil {
 		var refused *promoteRefusedError

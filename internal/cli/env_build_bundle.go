@@ -318,7 +318,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Env: env, Release: in.Release,
 		Digest: built.Digest, Reference: placed.Reference,
 		ConfigDigest: built.Doc.ConfigDigest,
-		Shape:        doc.Shape, Provenance: doc.Provenance,
+		Shape:        doc.Shape, Objects: built.Doc.Objects, Provenance: doc.Provenance,
 		Run: in.Run, CreatedAt: createdAt,
 	}
 	blobs := bundleBlobs{

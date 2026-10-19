@@ -697,7 +697,14 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if p.liveDiff && p.version != "" {
 		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
 	}
+	// What a scoped deploy will record as moved (D5), resolved before the
+	// write so the promotion names it — see deploy_scope_record.go.
+	scope, err := deployScopeTargets(ctx, projectDir, envName, f.targets, f.frontendsOnly)
+	if err != nil {
+		return err
+	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
+		Targets:       scope,
 		Ledger:        ledger,
 		Capacity:      capacity,
 		DryRun:        p.plan,

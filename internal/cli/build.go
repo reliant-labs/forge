@@ -1765,6 +1765,9 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	if err := pinStorageRelease(rel); err != nil {
 		return releaseCutOutcome{}, err
 	}
+	// The source history this release adds, while the checkout is at its
+	// commit — see release_commits.go.
+	rel.Commits = captureReleaseCommits(ctx, projectDir, rel, ledger.Releases, os.Stderr)
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)

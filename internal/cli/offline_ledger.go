@@ -136,7 +136,7 @@ func openOfflineLedger(projectDir, env, endpoint string, base envLedger) (envLed
 			}
 			b.current = release.Promotion{
 				ID: queuedPromotionPrefix + q.Key, Env: env, Release: q.Release, Kind: release.KindPromote,
-				Resolved: rel.SharedDigests(), Sources: rel.Sources(), PromotedBy: q.PromotedBy, Note: q.Note, PromotedAt: q.QueuedAt,
+				Resolved: rel.SharedDigests(), Sources: rel.Sources(), Targets: q.Targets, PromotedBy: q.PromotedBy, Note: q.Note, PromotedAt: q.QueuedAt,
 			}
 			b.afterKey = q.Key
 			break
@@ -273,7 +273,7 @@ func (b *offlineBindings) Append(_ context.Context, p release.Promotion, guard a
 	_, _ = rand.Read(raw[:])
 	q := ledgerfile.QueuedPromotion{
 		Key: hex.EncodeToString(raw[:]), Env: p.Env, Endpoint: b.endpoint, Release: p.Release,
-		ExpectedPromotionID: b.current.ID, PromotedBy: p.PromotedBy, Note: p.Note,
+		ExpectedPromotionID: b.current.ID, PromotedBy: p.PromotedBy, Note: p.Note, Targets: p.Targets,
 		QueuedAt: b.now().UTC().Truncate(time.Second), CacheRefreshedAt: b.snap.RefreshedAt,
 	}
 	if b.afterKey != "" {
@@ -288,7 +288,7 @@ func (b *offlineBindings) Append(_ context.Context, p release.Promotion, guard a
 	}
 	moved := release.Promotion{
 		ID: queuedPromotionPrefix + q.Key, Env: p.Env, Release: p.Release, Kind: release.KindPromote,
-		Resolved: rel.SharedDigests(), Sources: rel.Sources(), PromotedBy: p.PromotedBy, Note: p.Note, PromotedAt: q.QueuedAt,
+		Resolved: rel.SharedDigests(), Sources: rel.Sources(), Targets: p.Targets, PromotedBy: p.PromotedBy, Note: p.Note, PromotedAt: q.QueuedAt,
 	}
 	b.current, b.afterKey = moved, q.Key
 	return moved, nil

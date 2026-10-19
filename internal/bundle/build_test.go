@@ -497,3 +497,32 @@ func TestBuildManifestOrderSurvivesTenDocuments(t *testing.T) {
 		}
 	}
 }
+
+// D4/G11: the document describes every object it hashes, one summary per
+// shape object and joined by key, so a release can be diffed against the
+// previous one without either's manifests — and that description survives the
+// strict decode a backend reads it with.
+func TestBuildSummarizesEveryObject(t *testing.T) {
+	built := mustBuild(t, buildFixture())
+	decoded, err := release.DecodeBundleDoc(built.ConfigBlob())
+	if err != nil {
+		t.Fatalf("the config blob does not strictly decode: %v", err)
+	}
+	if len(decoded.Objects) != len(decoded.Shape.Objects) || len(decoded.Objects) == 0 {
+		t.Fatalf("%d summaries for %d objects", len(decoded.Objects), len(decoded.Shape.Objects))
+	}
+	parts := 0
+	for i, o := range decoded.Shape.Objects {
+		s := decoded.Objects[i]
+		if s.Key != o.Key() {
+			t.Fatalf("summary %d is for %s, object %d is %s: they must be in shape order", i, s.Key, i, o.Key())
+		}
+		parts += len(s.Parts)
+		if o.Kind == "Deployment" && !strings.Contains(s.Summary, "containers") {
+			t.Errorf("deployment %s summary = %q", o.Name, s.Summary)
+		}
+	}
+	if parts == 0 {
+		t.Fatal("no object recorded any part digest")
+	}
+}

@@ -235,6 +235,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nested-repository`; every other nested repository, including one inside
   `tmp/`, still holds. Mirrors reliant's `worktreereclaim` list.
 
+- **`serverkit.Listener` loads its TLS certificate in `Listen`, not `Run`.**
+  `ServeTLS` read the pair only once `Run` started serving, so a missing,
+  malformed or mismatched certificate failed after `Listen` had bound and
+  `Ready` had reported the listener up — `lifecyclekit.Supervise` had already
+  started the next node. `Listen` now loads and validates the pair before it
+  binds and returns an error naming both paths; `Run` serves the loaded
+  certificate. `serverkit.Run` gets the same boot-time failure.
 - **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
   Every query on the lease session (the heartbeat, each standby poll, the
   connect) ran under a deadline of `HeartbeatInterval`, and a query that misses

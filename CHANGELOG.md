@@ -373,6 +373,7 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   adds a machine-wake interceptor to two of its services (P3c G1), and the
   only way to do that on generated mounts was to disown
   `mounts_services_gen.go`.
+
   - `mountkit.WithHandlerOptions(...connect.HandlerOption)` adds options to
     one mount, after the shared chain. Connect runs interceptors in the order
     they were added, so the shared chain (recovery, logging, auth) wraps the
@@ -883,10 +884,10 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   `serverkit.OpenDB`'s `pgx` pool now reports that refusal as
   `driver.ErrBadConn`, and database/sql runs the statement again on another
   connection; the error keeps PgBouncer's message if every replica refuses.
-  Closing a connection the pooler already dropped (`tls: failed to send
-  closeNotify alert (but connection was closed anyway): … broken pipe`) is no
-  longer reported, so `OnShutdown`'s `DB.Close` stops logging an ERROR on
-  every deploy. Other drivers open unchanged.
+  Closing a connection the pooler already dropped
+  (`tls: failed to send closeNotify alert (but connection was closed anyway): … broken pipe`)
+  is no longer reported, so `OnShutdown`'s `DB.Close` stops logging an ERROR
+  on every deploy. Other drivers open unchanged.
 - **The migrator's directive scan no longer dominates integration tests.**
   `migratekit` scans every embedded migration for `forge:backward-compatible`,
   `forge:breaks-rollback` and `forge:adopts` on every start, and ran three

@@ -26,6 +26,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
@@ -130,6 +131,10 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 	if len(services) == 0 {
 		return nil
 	}
+	services, aliases, err := externalBuildUnits(services, opts)
+	if err != nil {
+		return []buildResult{{kind: "external", err: err}}
+	}
 	runner := buildtarget.NewRunner()
 	resultCh := make(chan buildResult, len(services))
 
@@ -147,9 +152,10 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 			// ShellBuild { cmd, cwd, env }). One source, one contract.
 			// The cmd is run verbatim — the render already resolved
 			// everything forge contributes.
-			BuildCmd: svc.EffectiveBuildCmd(),
-			BuildCwd: svc.EffectiveBuildCwd(),
-			BuildEnv: svc.EffectiveBuildEnv(),
+			BuildCmd:       svc.EffectiveBuildCmd(),
+			BuildCwd:       svc.EffectiveBuildCwd(),
+			BuildEnv:       svc.EffectiveBuildEnv(),
+			RequireReceipt: opts.composition != nil,
 		}
 		cwd, err := buildtarget.ResolveCwd(spec)
 		if err == nil {
@@ -165,9 +171,25 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		// The checkout the command is about to run in, captured BEFORE it
 		// runs: what the command was handed, not whatever it leaves behind
 		// (build outputs a sibling's .gitignore misses would read as dirty).
+		if opts.composition != nil && svc.Build.InputsFile != "" {
+			_, expected, err := buildtarget.ReadInputs(resolveProjectPath(projectDir, svc.Build.InputsFile))
+			if err != nil {
+				resultCh <- buildResult{name: svc.Name + " (external)", kind: "external", err: err}
+				return
+			}
+			spec.ExpectedInputDigest = expected
+		}
 		source := captureShellSource(ctx, svc.Name, cwd, projectDir)
 		fmt.Printf("[build] %s: ShellBuild (tag %s)%s\n", svc.Name, svcTag, describeShellSource(source))
 		res := runner.Build(ctx, spec)
+		if res.Err == nil && spec.ExpectedInputDigest != "" {
+			_, after, err := buildtarget.ReadInputs(resolveProjectPath(projectDir, svc.Build.InputsFile))
+			if err != nil {
+				res.Err = err
+			} else if after != spec.ExpectedInputDigest {
+				res.Err = fmt.Errorf("declared build inputs changed during execution")
+			}
+		}
 
 		// Skip-with-warn: the runner returns Skipped=true when the
 		// build_cwd is missing on disk. Surface a clear "skipped: X"
@@ -273,6 +295,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 			kind:     "external",
 			duration: res.Duration,
 			err:      nil,
+			receipt:  res.Receipt, digest: digest, platforms: platforms, repository: externalPushedRepository(svc, opts.pushPlan.pushBase), image: svc.Image, workload: svc.Name,
 		}
 	}
 
@@ -295,8 +318,33 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 	results := make([]buildResult, 0, len(services))
 	for r := range resultCh {
 		results = append(results, r)
+		name := strings.TrimSuffix(r.name, " (external)")
+		for _, alias := range aliases[name] {
+			clone := r
+			clone.name = alias.Name + " (external)"
+			clone.image = alias.Image
+			clone.workload = alias.Name
+			results = append(results, clone)
+		}
 	}
 	return results
+}
+
+func externalBuildUnits(services []WorkloadEntity, opts buildOptions) ([]WorkloadEntity, map[string][]WorkloadEntity, error) {
+	aliases := map[string][]WorkloadEntity{}
+	if opts.composition == nil {
+		return services, aliases, nil
+	}
+	units, err := compositionBuildUnits(&KCLEntities{Workloads: services})
+	if err != nil {
+		return nil, nil, err
+	}
+	services = nil
+	for _, unit := range units {
+		services = append(services, unit[0])
+		aliases[unit[0].Name] = unit[1:]
+	}
+	return services, aliases, nil
 }
 
 // externalBuildTag is one ShellBuild workload's tag: the shared precedence

@@ -346,6 +346,10 @@ type Release struct {
 	// Artifacts maps the bare artifact name (an image name, a package name,
 	// a frontend name) → its identity.
 	Artifacts map[string]Artifact `json:"artifacts"`
+	// Catalog and SnapshotIntents freeze complete composition intent. Absent on
+	// historical releases, which remain readable but are not snapshot candidates.
+	Catalog         map[ArtifactID]SnapshotArtifact `json:"catalog,omitempty"`
+	SnapshotIntents map[string]string               `json:"snapshot_intents,omitempty"`
 	// Run is the pipeline attempt that cut the release, or the zero Run
 	// when a human cut it. It is NOT part of the release's identity:
 	// [Release.SameContent] ignores it, so a CI retry that re-cuts the
@@ -376,7 +380,26 @@ func (r Release) Validate() error {
 	if err := r.Run.Validate(); err != nil {
 		return fmt.Errorf("release %q: %w", r.Version, err)
 	}
-	if len(r.Artifacts) == 0 {
+	if len(r.SnapshotIntents) > 0 || len(r.Catalog) > 0 {
+		if len(r.SnapshotIntents) == 0 || len(r.Catalog) == 0 {
+			return fmt.Errorf("%w: snapshot intents and catalog must both be complete", ErrInvalid)
+		}
+		for env, d := range r.SnapshotIntents {
+			if env == "" || !ValidDigest(d) {
+				return fmt.Errorf("%w: invalid snapshot intent", ErrInvalid)
+			}
+		}
+		for id, a := range r.Catalog {
+			actual, err := ArtifactIdentity(a)
+			if err != nil {
+				return err
+			}
+			if actual != id {
+				return fmt.Errorf("%w: catalog identity mismatch", ErrInvalid)
+			}
+		}
+	}
+	if len(r.Artifacts) == 0 && len(r.Catalog) == 0 {
 		return fmt.Errorf("%w: release %q names no artifacts — a release that names nothing cannot be promoted", ErrInvalid, r.Version)
 	}
 	for _, name := range r.ArtifactNames() {
@@ -392,6 +415,19 @@ func (r Release) Validate() error {
 // compared — a re-cut from CI's retry carries a fresh CreatedAt and is still
 // the same release.
 func (r Release) SameContent(other Release) bool {
+	// Snapshot intent includes binding/spec/policy changes, even with identical
+	// repository pins. Freeze full catalog attestations for snapshot recuts.
+	a, _ := semanticDigest("forge.release-intent/v1", struct {
+		Catalog map[ArtifactID]SnapshotArtifact
+		Intents map[string]string
+	}{canonicalSnapshot(Snapshot{Artifacts: r.Catalog}).Artifacts, r.SnapshotIntents})
+	b, _ := semanticDigest("forge.release-intent/v1", struct {
+		Catalog map[ArtifactID]SnapshotArtifact
+		Intents map[string]string
+	}{canonicalSnapshot(Snapshot{Artifacts: other.Catalog}).Artifacts, other.SnapshotIntents})
+	if a != b {
+		return false
+	}
 	if len(r.Artifacts) != len(other.Artifacts) {
 		return false
 	}

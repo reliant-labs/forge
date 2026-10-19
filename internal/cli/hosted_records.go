@@ -100,7 +100,7 @@ func (s hostedRecordStore) RecordBundle(ctx context.Context, b release.BundleRec
 		return release.BundleRecord{}, false, err
 	}
 	return hostedBundleClient{client: s.client}.RecordBundle(
-		ctx, b.Env, envID, blobs.Repository, blobs.Manifest, blobs.Config, b.Run)
+		ctx, b.Env, envID, blobs.Repository, blobs.Manifest, blobs.Config, b.Run, blobs.ManifestsLayer)
 }
 
 // hostedKindForRecord maps a shape's env kind to the hosted kind an ensure

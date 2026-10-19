@@ -190,17 +190,19 @@ func shapeFromWire(raw json.RawMessage) (*release.Shape, error) {
 // `sourceStatus` (tag 9) is reserved for #516 and has no field here: a
 // verdict nothing computes would read as a guarantee.
 type wireBundle struct {
-	ID             string          `json:"id"`
-	EnvironmentID  string          `json:"environmentId,omitempty"`
-	ReleaseVersion string          `json:"releaseVersion,omitempty"`
-	Digest         string          `json:"digest"`
-	Reference      string          `json:"reference,omitempty"`
-	ConfigDigest   string          `json:"configDigest,omitempty"`
-	Shape          json.RawMessage `json:"shape,omitempty"`
-	Provenance     *wireProvenance `json:"provenance,omitempty"`
-	Run            *wireRun        `json:"run,omitempty"`
-	CreatedBy      string          `json:"createdBy,omitempty"`
-	CreatedAt      time.Time       `json:"createdAt"`
+	Snapshot       *release.Snapshot `json:"snapshot,omitempty"`
+	SnapshotDigest string            `json:"snapshotDigest,omitempty"`
+	ID             string            `json:"id"`
+	EnvironmentID  string            `json:"environmentId,omitempty"`
+	ReleaseVersion string            `json:"releaseVersion,omitempty"`
+	Digest         string            `json:"digest"`
+	Reference      string            `json:"reference,omitempty"`
+	ConfigDigest   string            `json:"configDigest,omitempty"`
+	Shape          json.RawMessage   `json:"shape,omitempty"`
+	Provenance     *wireProvenance   `json:"provenance,omitempty"`
+	Run            *wireRun          `json:"run,omitempty"`
+	CreatedBy      string            `json:"createdBy,omitempty"`
+	CreatedAt      time.Time         `json:"createdAt"`
 }
 
 // bundleFromWire converts one bundle. env is the NAME the caller asked about;
@@ -211,6 +213,14 @@ func bundleFromWire(env string, w wireBundle) (release.BundleRecord, error) {
 		ID: w.ID, Env: env, Release: w.ReleaseVersion,
 		Digest: w.Digest, Reference: w.Reference, ConfigDigest: w.ConfigDigest,
 		Run: runFromWire(w.Run), CreatedBy: w.CreatedBy, CreatedAt: w.CreatedAt,
+	}
+	b.Snapshot = w.Snapshot
+	b.SnapshotDigest = w.SnapshotDigest
+	if b.Snapshot != nil {
+		digest, err := b.Snapshot.Digest()
+		if err != nil || digest != b.SnapshotDigest || b.Snapshot.Environment != env {
+			return release.BundleRecord{}, fmt.Errorf("invalid frozen bundle snapshot")
+		}
 	}
 	shape, err := shapeFromWire(w.Shape)
 	if err != nil {
@@ -254,7 +264,7 @@ type hostedBundleClient struct {
 // state them, which is the intent: a client that can describe a bundle can
 // describe one that disagrees with the bytes it pushed, and every reader
 // downstream then trusts the description over the artifact.
-func (c hostedBundleClient) RecordBundle(ctx context.Context, env, environmentID, repository string, manifest, config []byte, run release.Run) (release.BundleRecord, bool, error) {
+func (c hostedBundleClient) RecordBundle(ctx context.Context, env, environmentID, repository string, manifest, config []byte, run release.Run, layers ...[]byte) (release.BundleRecord, bool, error) {
 	if len(manifest) == 0 || len(config) == 0 {
 		// Refused here rather than sent. A record whose bytes are absent
 		// could only be a description of a bundle, which is the one thing
@@ -272,6 +282,26 @@ func (c hostedBundleClient) RecordBundle(ctx context.Context, env, environmentID
 	if fields := runWireFields(run); fields != nil {
 		req["run"] = fields
 	}
+	if len(layers) > 0 && len(layers[0]) > 0 {
+		req["manifestsLayer"] = layers[0]
+	}
+	var doc struct {
+		Snapshot *release.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(config, &doc); err != nil {
+		return release.BundleRecord{}, false, err
+	}
+	if doc.Snapshot != nil {
+		if err := requireSnapshotCapabilities(ctx, c.client); err != nil {
+			return release.BundleRecord{}, false, err
+		}
+		if len(layers) == 0 || len(layers[0]) == 0 {
+			return release.BundleRecord{}, false, fmt.Errorf("snapshot seal requires complete verified manifest layer")
+		}
+		if err := release.ValidateSnapshotLayer(*doc.Snapshot, layers[0]); err != nil {
+			return release.BundleRecord{}, false, err
+		}
+	}
 	var resp struct {
 		Bundle  wireBundle `json:"bundle"`
 		Created bool       `json:"created"`
@@ -282,6 +312,12 @@ func (c hostedBundleClient) RecordBundle(ctx context.Context, env, environmentID
 	b, err := bundleFromWire(env, resp.Bundle)
 	if err != nil {
 		return release.BundleRecord{}, false, err
+	}
+	if doc.Snapshot != nil {
+		d, err := doc.Snapshot.Digest()
+		if err != nil || b.Snapshot == nil || b.SnapshotDigest != d {
+			return release.BundleRecord{}, false, fmt.Errorf("server did not preserve the sealed snapshot")
+		}
 	}
 	return b, resp.Created, nil
 }

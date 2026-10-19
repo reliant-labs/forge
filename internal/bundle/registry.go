@@ -246,6 +246,9 @@ func Fetch(ctx context.Context, res Resolver, reference string) (Fetched, error)
 		return Fetched{}, fmt.Errorf("bundle %s: %w", digest, err)
 	}
 
+	if len(manifest.Layers) != 1 {
+		return Fetched{}, fmt.Errorf("%w: bundle must carry exactly one manifests layer", ErrNotBundle)
+	}
 	out := Fetched{Digest: digest, Doc: doc}
 	for _, layer := range manifest.Layers {
 		data, lerr := readBlob(ctx, res, layer, MaxLayerBytes)
@@ -266,6 +269,11 @@ func Fetch(ctx context.Context, res Resolver, reference string) (Fetched, error)
 	}
 	if len(out.Manifests) == 0 {
 		return Fetched{}, fmt.Errorf("%w: bundle %s carries no manifest layer", ErrNotBundle, digest)
+	}
+	if doc.Snapshot != nil {
+		if err := release.ValidateSnapshotLayer(*doc.Snapshot, out.Manifests); err != nil {
+			return Fetched{}, err
+		}
 	}
 	return out, nil
 }

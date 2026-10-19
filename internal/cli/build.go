@@ -103,6 +103,8 @@ func appendNamedBuildContexts(dockerArgs []string, contexts map[string]string, p
 type buildOptions struct {
 	outputDir   string
 	buildTarget string
+	composition *compositionRun
+	planJSON    bool
 	parallel    bool
 	// parallelSet records whether the user explicitly passed
 	// --parallel/--no-parallel. When false, forge is free to auto-select
@@ -332,6 +334,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
 	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to 'forge env build <env> --release <version>' — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
 	_ = cmd.Flags().MarkHidden("release")
+	cmd.AddCommand(newBuildReceiptCmd())
 
 	return cmd
 }
@@ -476,7 +479,9 @@ type buildResult struct {
 	// its build state records. Carried on the result rather than recomputed
 	// by the state writer, so the two cannot disagree. Empty for non-image
 	// results.
-	tag string
+	tag      string
+	receipt  *release.BuildReceipt
+	workload string // runtime consumer that requested this result; never inferred from repository
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -655,6 +660,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// discovery every real build runs, and nothing has been written, built
 	// or pushed. See runBuildPlan.
 	if opts.plan {
+		if opts.composition != nil {
+			return runCompositionBuildPlan(ctx, cfg, entities, opts, resolvedTag, projectTag)
+		}
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
 	if err := preflightRealBuild(ctx, entities, opts); err != nil {
@@ -838,7 +846,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// that can't pin anything is useless and almost always means the user
 	// forgot --push (or built against a registry that didn't return a
 	// digest). See writeReleaseLedger.
-	if err := finishReleaseArtifacts(ctx, opts, entities); err != nil {
+	if opts.composition != nil {
+		if err := finishComposition(ctx, cfg, entities, opts, succeeded); err != nil {
+			return err
+		}
+	} else if err := finishReleaseArtifacts(ctx, opts, entities); err != nil {
 		return err
 	}
 
@@ -856,6 +868,9 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
 		return err
 	}
+	if opts.composition != nil {
+		return nil
+	} // actual exported inputs are receipt-attested, not inferred from cwd HEAD
 	return preflightReleaseSources(ctx, projectDirForKCL(), entities, opts)
 }
 
@@ -993,8 +1008,16 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 	// consumer (npm install, `npm run build`, the docker context) sees a
 	// real directory. No-op — no resolver, no cache access — for a project
 	// that declares none.
-	if err := resolveBuildFrontendSources(ctx, cfg, entities); err != nil {
-		return nil, nil, err
+	if !(opts.plan && opts.composition != nil) {
+		var err error
+		if opts.composition != nil {
+			err = resolveFrontendEntitySources(ctx, projectDirForKCL(), entities)
+		} else {
+			err = resolveBuildFrontendSources(ctx, cfg, entities)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	return declared, entities, nil
 }
@@ -1286,6 +1309,17 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// both commands shell into these directories, so neither re-derives it.
 	//
 	frontends := cfg.ToolchainFrontends()
+	if opts.composition != nil && entities != nil {
+		// Composition selects runtime consumers, not the codegen inventory.
+		// Never build an excluded local frontend because filterFrontendsForBuild
+		// historically keeps names missing from the narrowed KCL set.
+		frontends = nil
+		for _, f := range entities.Frontends {
+			if hit := kclFrontendAsBuildTarget(entities, f.Name); hit != nil {
+				frontends = append(frontends, *hit)
+			}
+		}
+	}
 	buildBinary := true
 
 	// `--target external` is the explicit "build ONLY the KCL services
@@ -2935,13 +2969,40 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 // A workload whose build is a GoBuild (handled by the go-build path) or a
 // ShellBuild (handled by buildExternalServices) is skipped here. Failures are captured, not short-circuited, so the summary shows
 // the full set.
+var compositionDockerBuilder = buildServiceDocker
+
 func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, opts buildOptions, cfgArchForDocker, resolvedTag string) []buildResult {
 	var out []buildResult
-	for _, w := range e.Workloads {
+	workloads := e.Workloads
+	aliases := map[string][]WorkloadEntity{}
+	if opts.composition != nil {
+		units, err := compositionBuildUnits(e)
+		if err != nil {
+			return []buildResult{{err: err}}
+		}
+		workloads = nil
+		for _, unit := range units {
+			workloads = append(workloads, unit[0])
+			aliases[unit[0].Name] = unit[1:]
+		}
+	}
+	for _, w := range workloads {
 		switch w.Build.Type {
 		case "docker":
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
-			out = append(out, buildServiceDocker(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag))
+			builder := buildServiceDocker
+			if opts.composition != nil {
+				builder = compositionDockerBuilder
+			}
+			result := builder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+			result.workload = w.Name
+			out = append(out, result)
+			for _, alias := range aliases[w.Name] {
+				clone := result
+				clone.workload = alias.Name
+				clone.name = alias.Name + " (docker)"
+				out = append(out, clone)
+			}
 		case "remote":
 			out = append(out, buildServiceRemote(w.Name))
 		}

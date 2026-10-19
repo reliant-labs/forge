@@ -78,10 +78,14 @@ func WithRelease(ctx context.Context, version string) context.Context {
 // ReleaseDArgs is the `-D release_version=<quoted>` binding for ctx's release,
 // or nil. Quoted so an all-digit version stays a str (see image_tag).
 func ReleaseDArgs(ctx context.Context) []string {
+	var args []string
 	if v := Release(ctx); v != "" {
-		return []string{"release_version=" + strconv.Quote(v)}
+		args = append(args, "release_version="+strconv.Quote(v))
 	}
-	return nil
+	if pins, ok := ctx.Value(snapshotKey{}).([]string); ok {
+		args = append(args, pins...)
+	}
+	return args
 }
 
 // Release is the release version WithRelease bound to ctx, or "" when the

@@ -320,6 +320,13 @@ schema Workload:
     # nothing for it (a third-party image, a compose service, a sibling
     # repo's binary). There is no synthesized default.
     build?: GoBuild | DockerBuild | ShellBuild | RemoteBuild
+    # Conservative release cohorts. Key is a peer workload name, value is the
+    # versioned compatibility contract required to carry that peer unchanged.
+    # Absent = unknown (full cohort required); explicit {} = independent.
+    release_dependencies?: {str: str}
+    # Extra declared immutable consumers (pre-pull, provisioning inputs, etc.).
+    # Values are complete image references, pinned by workload/slot at render.
+    release_inputs: {str: str} = {}
     # WHERE it runs. Required by the time the env renders it: the env binds
     # it (`wl.x | {runtime = ...}`), since the base declaration in
     # workloads.k is runtime-independent.

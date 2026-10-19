@@ -1180,7 +1180,7 @@ _check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
 _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
     _name = w.image if w.image else _artifact(w)
     assert _check_image_names_registry(w, rt, _name)
-    img_lib.image_ref(_name, bundle.image_tag, image_digests()) if rt.type == "cluster" and _name \
+    workload_image_ref_for(w.name, "container:" + w.name, _name, bundle.image_tag) if rt.type == "cluster" and _name \
         else (_name if rt.type == "hosted" else "")
 }
 
@@ -1210,7 +1210,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         leaderElection = w.leaderElection
         serviceAccount = w.serviceAccount
         serviceAccountAnnotations = w.serviceAccountAnnotations
-        sidecars = w.sidecars
+        sidecars = [s | {image = workload_image_ref_for(w.name, "container:" + s.name, s.image, bundle.image_tag)} for s in w.sidecars] if w.sidecars else Undefined
         volumes = ((w.volumes if w.volumes else []) + _cps_volume(w, rt, bundle) + _idn_volumes(w, rt, bundle)) or Undefined
         nodeSelector = w.nodeSelector
         tolerations = w.tolerations
@@ -1281,6 +1281,9 @@ _lower = lambda w: any, bundle: Bundle -> any {
         "image": _artifact(w)
         "build_image": _build_image(w) or None
         "build": _render_build(w.build)
+        if w.release_dependencies is not Undefined:
+            "release_dependencies": w.release_dependencies
+        "release_inputs": {k: workload_image_ref_for(w.name, "input:" + k, v, bundle.image_tag) for k, v in w.release_inputs}
         "runtime": _render_runtime(w, _rt)
         "spec": _spec_json(w, _rt, bundle)
     } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {}) \
@@ -1762,6 +1765,13 @@ render = lambda bundle: Bundle -> any {
             "ingress_namespace": bundle.network_policy.ingress_namespace
         } if bundle.network_policy else None
         "workloads": _entities
+        "release_manifest_consumers": [{
+            "name": g.name
+            "cluster": g.cluster or (_pt.cluster if _pt else "")
+            "release_inputs": g.release_inputs
+            if g.release_dependencies is not Undefined:
+                "release_dependencies": g.release_dependencies
+        } for g in bundle.manifests if g.name and g.release_inputs]
         if bundle.observability:
             "observability": _render_observability(bundle)
         # The resolved delivery policy, every control spelled out, only when the
@@ -2053,6 +2063,8 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     _rc_spec = _runtime_config_spec(f, bundle)
     {
         "name": f.name
+        if f.release_dependencies is not Undefined:
+            "release_dependencies": f.release_dependencies
         "type": f.type
         "path": f.path if f.path else None
         "source": _render_git_source(f.source) if f.source else None
@@ -2121,6 +2133,8 @@ _render_go_build = lambda b: GoBuild -> any {
     {
         "type": "go"
         "output_name": b.output_name if b.output_name else None
+        "unit": b.unit if b.unit else None
+        "inputs_file": b.inputs_file if b.inputs_file else None
         "cmd": b.cmd
         "goos": b.goos if b.goos else None
         "goarch": b.goarch if b.goarch else None
@@ -2135,6 +2149,8 @@ _render_docker_build = lambda b: DockerBuild -> any {
     {
         "type": "docker"
         "output_name": b.output_name if b.output_name else None
+        "unit": b.unit if b.unit else None
+        "inputs_file": b.inputs_file if b.inputs_file else None
         "dockerfile": b.dockerfile
         # The MAIN build context (a project-root-relative dir). None is the
         # project root, which is how every build behaved before this existed.
@@ -2153,6 +2169,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
     {
         "type": "shell"
         "output_name": b.output_name if b.output_name else None
+        "unit": b.unit if b.unit else None
+        "inputs_file": b.inputs_file if b.inputs_file else None
         "cmd": b.cmd
         "cwd": b.cwd if b.cwd else None
         "env": b.env if b.env else {}
@@ -2163,6 +2181,8 @@ _render_remote_build = lambda b: RemoteBuild -> any {
     {
         "type": "remote"
         "output_name": b.output_name if b.output_name else None
+        "unit": b.unit if b.unit else None
+        "inputs_file": b.inputs_file if b.inputs_file else None
         # The source pin is projected as a nested dict rather than
         # flattened, so the Go side decodes the SAME GitSource shape the
         # frontend and image halves already use instead of a second

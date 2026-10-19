@@ -210,6 +210,18 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **A composite-primary-key table gets a store.** It used to get no entity at
+  all, only an info line, so counters and join tables (reliant:
+  `message_order_counters`, `project_daemons`, `connection_secrets`, …) were
+  hand SQL. The entity struct and store now project, addressed by the WHOLE
+  key: `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` take one parameter
+  per key column, `Upsert<E>` resolves a conflict on every key column, and
+  Create/List/Count/Update/UpdateMasked address the row by the struct's key
+  fields. `pkg/crud.Repo` gains `GetByPK` / `DeleteByPK` (a key entity), and
+  its Update, UpdateMasked, Upsert and zero-row classification address a
+  composite key by every column (Bun's `WherePK`); PK columns stay out of the
+  SET list. CRUD wiring still needs a single-column key, and there is no ULID
+  fill or cursor pagination for a composite key.
 - **The ORM projects every applied table, whatever its rpcs.** The store
   (`<entity>_orm_gen.go`, `<Entity>Store`, delegates, the `_repo_ext.go` seam)
   used to exist only for a table some managed service declared a CRUD rpc

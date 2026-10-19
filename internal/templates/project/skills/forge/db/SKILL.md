@@ -42,7 +42,10 @@ any service declares rpcs for it. A table no rpc names is projected under the
 singular of its name (`message_content_blocks` → `MessageContentBlock`). Keep a
 table off the store with `COMMENT ON TABLE t IS 'forge:no-entity'` in a
 migration; `//forge:no-orm` opts out the whole data layer. A table with a
-composite or no primary key is reported and skipped.
+**composite primary key** gets a store addressed by the whole key —
+`Get<E>ByPK(ctx, db, k1, k2)`, `Delete<E>ByPK`, `Upsert<E>` (conflict on every
+key column), plus Create/List/Count/Update/UpdateMasked — but no CRUD wiring,
+which keys on one id. A table with no primary key is reported and skipped.
 
 **CRUD wiring follows the wire.** CRUD handlers, pages and seed roots exist when
 **both halves** exist:

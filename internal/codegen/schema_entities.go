@@ -183,12 +183,10 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 		}
 		e, joined := byTable[t.Name]
 		if !joined {
-			switch {
-			case len(t.PKCols) > 1:
-				notes = append(notes, fmt.Sprintf("%s has a composite primary key (%s) — no entity is projected; query it via db.Bun().",
-					t.Name, strings.Join(t.PKCols, ", ")))
-				continue
-			case len(t.PKCols) == 0:
+			// A composite key projects too: its store addresses a row by
+			// the whole key (Get<E>ByPK / Delete<E>ByPK / Upsert<E>). Only
+			// the CRUD join, whose rpcs take ONE id, leaves it out.
+			if len(t.PKCols) == 0 {
 				notes = append(notes, fmt.Sprintf("%s has no primary key — no entity is projected; query it via db.Bun().", t.Name))
 				continue
 			}
@@ -341,12 +339,17 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 		})
 	}
 
-	// PK: single-column keys only. BuildSchemaEntities filters out
-	// composite-PK tables before calling this function (see there), so
-	// table.PKCols is always length 0 or 1 here. The "id" fallback below
-	// covers only the length-0 case — a table with no declared PK at all.
+	// PK: the CRUD projection keys on ONE column. BuildSchemaEntities
+	// filters composite-PK tables out before calling this function; the
+	// ORM set keeps them (their store takes the whole key, read off the
+	// columns' IsPK), and for those PkField stays empty rather than naming
+	// one key column as if it were the key. The "id" fallback covers only a
+	// table with no declared PK at all.
 	e.PkField = "id"
 	e.PkGoType = "string"
+	if len(table.PKCols) > 1 {
+		e.PkField, e.PkGoType = "", ""
+	}
 	if len(table.PKCols) == 1 {
 		e.PkField = table.PKCols[0]
 		for _, c := range table.Columns {

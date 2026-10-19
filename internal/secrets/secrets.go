@@ -452,6 +452,19 @@ func (r SecretRef) key() string {
 // EnvName must be present in All(). For "external"/"none": returns nil
 // (forge cannot see those values).
 func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error {
+	missing := MissingDeclaredRefs(p, refs)
+	if len(missing) == 0 {
+		return nil
+	}
+	return MissingRefsError(p, missing, storePath)
+}
+
+// MissingDeclaredRefs lists the declared, non-optional refs a
+// value-resolving provider cannot supply, one per env-var name, sorted by
+// name. Nil when there are none, or when the provider cannot see values
+// (external/none), so a read-only caller can REPORT what is missing where
+// ValidateDeclaredRefs refuses.
+func MissingDeclaredRefs(p Provider, refs []SecretRef) []SecretRef {
 	if p == nil {
 		return nil
 	}
@@ -479,12 +492,17 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error 
 			missing = append(missing, r)
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
-	// Deterministic ordering so the error message is stable across runs.
+	// Deterministic ordering so every report of it is stable across runs.
 	sort.Slice(missing, func(i, j int) bool { return missing[i].EnvName < missing[j].EnvName })
+	return missing
+}
 
+// Key returns the in-Secret key the ref reads, defaulting to EnvName.
+func (r SecretRef) Key() string { return r.key() }
+
+// MissingRefsError is ValidateDeclaredRefs' refusal for refs already found
+// missing: the aligned list and the command that fixes it.
+func MissingRefsError(p Provider, missing []SecretRef, storePath string) error {
 	// Column-align the env names for a readable list.
 	width := 0
 	for _, r := range missing {

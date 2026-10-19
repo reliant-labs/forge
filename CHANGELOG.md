@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge env config` reports missing secrets instead of failing.** forge#859
+  routed it through `env exec`'s resolver, and with it the fail-closed secret
+  check: reading back an env whose secret store lacked one declared key printed
+  nothing and exited 1. It now prints everything that resolves, leaves the
+  missing variables out, lists them on stderr and under `missing_secrets` in
+  `--json`, and exits 0. `forge env exec` and `env up` still refuse, since
+  running without a declared secret is the real error; `env config --strict`
+  restores the refusal for a caller that wants it.
+
 - **A dependency outage no longer floods the logs at probe frequency.**
   `Drainer.ReadinessHandler` (and so `serverkit.Run`'s `/readyz`) logged every
   failing check at ERROR on every probe — every few seconds, on every replica,

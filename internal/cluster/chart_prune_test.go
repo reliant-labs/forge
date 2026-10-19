@@ -552,6 +552,42 @@ func TestChartPrune_ConcurrentApplierIsNotPruned(t *testing.T) {
 	}
 }
 
+// Unlike a newly introduced object, a retained object is already in both
+// appliers' snapshots. A stale applier must not delete it after the newer
+// applier successfully retained it. This interleaving needs no goroutines:
+// pause A after its inventory read, let B finish, then resume A's prune.
+func TestChartPrune_StaleApplierCannotDeleteWinnersRetainedObject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	setRelease := fakeHelmReleases(t)
+	spec := fluxLikeSpec()
+	setRelease(stream(docDeployment, docWebhookPolicy))
+	applyRelease(t, spec)
+
+	// A intends to remove the policy and reads the old inventory, then pauses.
+	setRelease(docDeployment)
+	staleRender := renderRelease(t, spec)
+	stale := beginChartPrune(context.Background(), "k3d-test", staleRender, "stale-A")
+	if stale == nil {
+		t.Fatal("fixture: A must have an inventory snapshot")
+	}
+
+	// B retains the policy and completes its apply and inventory write.
+	setRelease(stream(docDeployment, docWebhookPolicy))
+	applyRelease(t, spec)
+
+	// A resumes. Its inventory merge must not just preserve B's entry after
+	// deleting the very object that entry represents.
+	if _, err := stale.afterApply(context.Background()); err != nil {
+		t.Logf("stale applier refused: %v", err)
+	}
+	if !cl.has("NetworkPolicy", "flux-system", "allow-webhooks") {
+		t.Fatalf("stale A deleted the policy B retained; deletes=%v", cl.deletes())
+	}
+}
+
 // A chart that drops a custom resource AND the cluster stops serving its kind
 // (its CRD was removed): no object of the kind can exist, so the entry is
 // forgotten rather than warned about on every deploy forever, and nothing is

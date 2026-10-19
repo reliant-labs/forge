@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture only from a `*pq.Error`, reads `*pgconn.PgError` as well. A test that
   asserted `*pq.Error` from a pgtest database should match `*pgconn.PgError`
   or the driver-neutral `SQLState()` method.
+- **`forge lint` catches SQL written for the wrong placeholder dialect.** The
+  raw passthroughs (`db.Exec` / `Query` / `QueryRow`) take postgres `$N`;
+  everything bun formats (`db.Bun().NewRaw`, the builders' `Where` / `Set` /
+  `ColumnExpr` / …, `bun.SafeQuery`, `db.Bun().ExecContext`) takes `?` / `?N`
+  and treats every unescaped `?` as a placeholder. Two new convention rules,
+  both errors, read string literals and named constants passed to those calls:
+  `forgeconv-bun-dollar-placeholder` (a `$1` bun never binds) and
+  `forgeconv-bun-literal-question-mark` (a `?` in a SQL comment or string
+  literal, or the jsonb `?` / `?|` / `?&` operators, that would consume an
+  argument and shift the rest). The `db/crud-overrides` skill documents both
+  dialects and the `\?` escape.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

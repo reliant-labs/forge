@@ -808,6 +808,17 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		}
 		goFindings = append(goFindings, res.Findings...)
 	}
+	// SQL written for the wrong placeholder dialect: `$N` in a
+	// bun-formatted query (NewRaw, the builders, db.Bun().ExecContext), or
+	// a stray `?` bun will bind — in a comment, a string literal, or the
+	// jsonb ?/?|/?& operators. Every Go file: hand SQL lives in
+	// _repo_ext.go seams, workers and handlers alike.
+	bunRes, err := forgeconv.LintBunPlaceholders(".")
+	if err != nil {
+		return combined, notes, false, fmt.Errorf("forge convention lint (bun placeholders) failed: %w", err)
+	}
+	goFindings = append(goFindings, bunRes.Findings...)
+
 	applied := suppress.ApplyFiles("", goFindings, os.ReadFile)
 	combined.Findings = append(combined.Findings, applied.Kept...)
 	combined.Findings = append(combined.Findings, applied.Violations...)

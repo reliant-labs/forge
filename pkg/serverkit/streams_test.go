@@ -183,6 +183,117 @@ func TestStreams_DrainEndsHeldStreamsAtTheReserve(t *testing.T) {
 	}
 }
 
+// DrainDeadline is the moment Drain actually hard-ends a claimed stream. With
+// a budget under twice DrainReserve the reserve shrinks to half the budget, so
+// "shutdown deadline − DrainReserve" — what a caller had to compute before —
+// names a time that already passed.
+func TestDrainDeadline_IsWhenDrainHardEndsTheStream(t *testing.T) {
+	t.Parallel()
+	streams := serverkit.NewStreams() // DrainReserve zero: DefaultDrainReserve (5s)
+	ctx, release := streams.Bind(context.Background())
+	if _, ok := serverkit.DrainDeadline(ctx); ok {
+		t.Fatal("DrainDeadline must not hold before the drain begins")
+	}
+	soft := serverkit.Draining(ctx)
+	type seen struct {
+		deadline time.Time
+		ok       bool
+		endedAt  time.Time
+	}
+	got := make(chan seen, 1)
+	go func() {
+		defer release()
+		<-soft
+		d, ok := serverkit.DrainDeadline(ctx)
+		<-ctx.Done()
+		got <- seen{d, ok, time.Now()}
+	}()
+
+	const budget = 800 * time.Millisecond // < 2 × DefaultDrainReserve
+	shutdown, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	end, _ := shutdown.Deadline()
+	if err := streams.Drain(shutdown); err != nil {
+		t.Fatalf("Drain = %v", err)
+	}
+	s := <-got
+	if !s.ok {
+		t.Fatal("DrainDeadline must hold for a stream woken by the soft phase")
+	}
+	// The reserve is half the budget left when Drain started: at most
+	// budget/2, and only scheduling jitter less.
+	if want := end.Add(-budget / 2); s.deadline.Before(want) || s.deadline.After(want.Add(50*time.Millisecond)) {
+		t.Fatalf("DrainDeadline = shutdown deadline − %s, want − ~%s", end.Sub(s.deadline), budget/2)
+	}
+	if lag := s.endedAt.Sub(s.deadline); lag < 0 || lag > 100*time.Millisecond {
+		t.Fatalf("the stream was ended %s after DrainDeadline, want at it", lag)
+	}
+}
+
+// Through DrainHTTP the schedule is fixed before Shutdown's hook begins the
+// soft phase, so a stream woken by it never reads "no deadline yet".
+func TestDrainDeadline_HoldsUnderDrainHTTP(t *testing.T) {
+	t.Parallel()
+	streams := serverkit.NewStreams()
+	srv := serverkit.NewHTTPServer(serverkit.Config{Addr: "127.0.0.1:0"}, http.NotFoundHandler(), streams)
+	ctx, release := streams.Bind(context.Background())
+	soft := serverkit.Draining(ctx)
+	ok := make(chan bool, 1)
+	go func() {
+		defer release()
+		<-soft
+		_, held := serverkit.DrainDeadline(ctx)
+		ok <- held
+	}()
+	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := serverkit.DrainHTTP(shutdown, srv, streams); err != nil {
+		t.Fatalf("DrainHTTP = %v", err)
+	}
+	if !<-ok {
+		t.Fatal("DrainDeadline must hold for every stream the soft phase wakes")
+	}
+}
+
+// A budget already spent — a negative ShutdownTimeout is a window over as it
+// opens — puts the hard deadline at the shutdown deadline, never after it.
+func TestDrainDeadline_ASpentBudgetKeepsNoReserve(t *testing.T) {
+	t.Parallel()
+	streams := serverkit.NewStreams()
+	ctx, release := streams.Bind(context.Background())
+	soft := serverkit.Draining(ctx)
+	got := make(chan time.Time, 1)
+	go func() {
+		defer release()
+		<-soft
+		d, _ := serverkit.DrainDeadline(ctx)
+		got <- d
+	}()
+	spent, cancel := context.WithTimeout(context.Background(), -time.Second)
+	defer cancel()
+	end, _ := spent.Deadline()
+	_ = streams.Drain(spent)
+	if d := <-got; !d.Equal(end) {
+		t.Fatalf("DrainDeadline = deadline %+v, want the deadline itself", d.Sub(end))
+	}
+}
+
+// A drain with no deadline has no hard phase to report.
+func TestDrainDeadline_FalseWithoutABudget(t *testing.T) {
+	t.Parallel()
+	streams := serverkit.NewStreams()
+	ctx, release := streams.Bind(context.Background())
+	_ = serverkit.Draining(ctx)
+	streams.BeginDrain()
+	if _, ok := serverkit.DrainDeadline(ctx); ok {
+		t.Fatal("a drain begun without Drain has no schedule")
+	}
+	release()
+	if _, ok := serverkit.DrainDeadline(context.Background()); ok {
+		t.Fatal("a context with no registry has no drain deadline")
+	}
+}
+
 // An unclaimed stream must not wait for the reserve: it ends as the drain
 // begins, so Drain returns as soon as its handler does.
 func TestStreams_DrainDoesNotWaitOnUnclaimedStreams(t *testing.T) {

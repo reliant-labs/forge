@@ -127,6 +127,12 @@ never more than half the budget; `serverkit.Config.DrainReserve`). The reserve
 is what the rest of the teardown runs in. A stream that never asked is ended at
 once — waiting would only delay its client's reconnect.
 
+A stream that tells its peer how long it has (a gateway asking a daemon to
+reconnect elsewhere by a deadline) reads `serverkit.DrainDeadline(ctx)` once
+`soft` closes: the exact moment the drain will end it. Never compute it as
+"shutdown deadline − `DrainReserve`" — the reserve shrinks to half the budget
+when the budget is under twice it, and that arithmetic is then early.
+
 ## Reading a shutdown
 
 Each phase writes one INFO line, `msg` starting `drain:`, with `phase` and its

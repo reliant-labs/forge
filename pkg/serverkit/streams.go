@@ -41,6 +41,7 @@ import (
 //     by waiting, and ending it now sends its client to a live replica now.
 //  2. HARD. At the shutdown deadline minus DrainReserve, every stream still
 //     bound is ended. The reserve is what the rest of the teardown runs in.
+//     DrainDeadline tells a claimed stream exactly when that is.
 //
 // "Ended" is a context cancelled with cause svcerr.ErrServerDraining (Ended
 // reports it), so a handler can end the stream with a status its client
@@ -80,6 +81,13 @@ type Streams struct {
 	bindings map[*binding]struct{}
 	idle     chan struct{} // closed when bindings becomes empty; nil while empty
 	report   DrainReport   // what the drain has done so far; see Report
+
+	// The drain's schedule, fixed once by the first Drain (or DrainHTTP)
+	// BEFORE the soft phase begins, so a stream woken by Draining already
+	// sees it. hard is when End runs; zero for a drain with no deadline.
+	armed   bool
+	hard    time.Time
+	reserve time.Duration
 }
 
 // DrainReport is what a drain did to a registry's streams: the counts the
@@ -343,20 +351,13 @@ func (s *Streams) CloseHijacked() int {
 // It is the long-lived half of a listener's drain; DrainHTTP runs it beside
 // http.Server.Shutdown, which drains the unary half.
 func (s *Streams) Drain(ctx context.Context) error {
+	hard, reserve, bounded := s.arm(ctx)
 	s.BeginDrain()
-	deadline, hasDeadline := ctx.Deadline()
-	reserve := s.DrainReserve
-	if reserve <= 0 {
-		reserve = DefaultDrainReserve
-	}
-	if hasDeadline {
-		reserve = min(reserve, time.Until(deadline)/2)
-	}
-	if s.waitUntil(ctx, deadline.Add(-reserve), hasDeadline) {
+	if s.waitUntil(ctx, hard, bounded) {
 		return nil
 	}
 	s.End()
-	if s.waitUntil(ctx, deadline.Add(-reserve/2), hasDeadline) {
+	if s.waitUntil(ctx, hard.Add(reserve/2), bounded) {
 		return nil
 	}
 	s.CloseHijacked()
@@ -376,6 +377,56 @@ func (s *Streams) waitUntil(ctx context.Context, at time.Time, bounded bool) boo
 	return s.Wait(ctx)
 }
 
+// arm fixes the drain's schedule from ctx's deadline, once: the hard
+// deadline is that deadline minus the reserve, and the reserve is
+// DrainReserve (DefaultDrainReserve when zero) capped at half the budget left
+// now, and never negative. Later calls return the first schedule. bounded is false when ctx has
+// no deadline.
+func (s *Streams) arm(ctx context.Context) (hard time.Time, reserve time.Duration, bounded bool) {
+	s.init()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.armed {
+		s.armed = true
+		s.reserve = s.DrainReserve
+		if s.reserve <= 0 {
+			s.reserve = DefaultDrainReserve
+		}
+		if deadline, ok := ctx.Deadline(); ok {
+			// A budget already spent (a negative ShutdownTimeout) keeps
+			// no reserve: the hard deadline is the deadline, not after it.
+			s.reserve = max(0, min(s.reserve, time.Until(deadline)/2))
+			s.hard = deadline.Add(-s.reserve)
+		}
+	}
+	return s.hard, s.reserve, !s.hard.IsZero()
+}
+
+// DrainDeadline reports when the drain of ctx's registry will end every
+// stream still bound to it — the moment Drain moves from the soft phase to
+// the hard one — so a stream that claimed the soft phase can tell its peer
+// how long it has (a gateway telling a daemon when to have reconnected
+// elsewhere). It is exact: the shutdown deadline minus the reserve Drain
+// actually keeps, which is less than DrainReserve when the budget is under
+// twice it.
+//
+// ok is false until the drain has begun, for a drain with no deadline, for a
+// drain begun without Drain (a bare BeginDrain or srv.Shutdown has no
+// schedule), and for a context with no registry. A stream that did not claim
+// the soft phase has no use for it: the drain ends it as it begins.
+func DrainDeadline(ctx context.Context) (deadline time.Time, ok bool) {
+	s := StreamsFrom(ctx)
+	if s == nil {
+		return time.Time{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.draining || s.hard.IsZero() {
+		return time.Time{}, false
+	}
+	return s.hard, true
+}
+
 // DrainHTTP is a listener's drain: it stops srv accepting and drains its
 // unary requests (http.Server.Shutdown) while streams drain soft-then-hard
 // (Streams.Drain), both inside ctx's deadline. Run calls it after the
@@ -385,6 +436,9 @@ func DrainHTTP(ctx context.Context, srv *http.Server, streams *Streams) error {
 	if streams == nil {
 		return srv.Shutdown(ctx)
 	}
+	// Fix the schedule before Shutdown's OnShutdown hook can begin the soft
+	// phase, so DrainDeadline holds for every stream Draining wakes.
+	streams.arm(ctx)
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- srv.Shutdown(ctx) }()
 	streamsErr := streams.Drain(ctx)

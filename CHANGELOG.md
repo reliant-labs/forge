@@ -277,6 +277,13 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   client-streaming RPCs are untouched. The scaffolded `serve.go` is yours, so
   an existing project adds the one line itself: `forge project upgrade list`
   offers v0.1.46 §8.
+- **A claimed stream can learn exactly when the drain will end it.**
+  `serverkit.DrainDeadline(ctx)` returns the moment `Streams.Drain` moves to
+  its hard phase, once the drain has begun. A gateway telling its peers when
+  to have reconnected used to compute shutdown deadline − `DrainReserve`,
+  which is early whenever the budget is under twice the reserve (the reserve
+  then shrinks to half the budget). `DrainHTTP` fixes the schedule before
+  `Shutdown` begins the soft phase, so every stream it wakes can read it.
 - **A shutdown says where its time went.** `serverkit.Run` used to log
   "server stopping" and then nothing until an error, so a rollout that used
   its whole grace period could not be diagnosed from its own log. Each phase

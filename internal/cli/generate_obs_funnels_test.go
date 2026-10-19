@@ -123,6 +123,19 @@ func TestFrontendTelemetry_DecodesFromRealKCL(t *testing.T) {
 	if web.Sourcemaps != "public" {
 		t.Errorf("Sourcemaps = %q, want public: the KCL knob must reach the deploy", web.Sourcemaps)
 	}
+	// F2's deploy path: the knob must reach the stage input of every target
+	// that stages a build, not a parallel field.
+	if got := frontendToStaticSite(web).Sourcemaps; got != "public" {
+		t.Errorf("StaticSiteFrontend.Sourcemaps = %q, want public", got)
+	}
+	fbWeb := web
+	fbWeb.Runtime.Firebase = &FirebaseRuntime{}
+	if got := frontendToFirebase(fbWeb).Sourcemaps; got != "public" {
+		t.Errorf("FirebaseFrontend.Sourcemaps = %q, want public", got)
+	}
+	if got := frontendToStaticSite(by["plain"]).Sourcemaps; got != "" {
+		t.Errorf("an undeclared frontend must stage with the default (empty = publish), got %q", got)
+	}
 	if web.RuntimeConfig["CONSOLE_CAPTURE"] != "false" || web.RuntimeConfig["REPLAY_SAMPLE_RATE"] != "0.25" {
 		t.Errorf("runtime_config = %v, want the two knobs the browser reads", web.RuntimeConfig)
 	}

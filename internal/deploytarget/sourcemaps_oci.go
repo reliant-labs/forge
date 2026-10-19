@@ -276,7 +276,7 @@ func FileStageSourcemaps(ctx context.Context, pub SourcemapPublisher, kind, proj
 	if err != nil {
 		return fmt.Errorf("%s %s: file source maps: %w.\n"+
 			"  Nothing was published: a build whose maps are not filed cannot be symbolicated, so it does not ship.\n"+
-			"  To ship without maps, set the frontend's sourcemaps to %q", kind, frontend, err, SourcemapsOff)
+			"  To ship without maps, declare telemetry = forge.BrowserTelemetry {sourcemaps = %q} on the frontend", kind, frontend, err, SourcemapsOff)
 	}
 	ReportSourcemapsRecord(kind, frontend, rec)
 	return nil

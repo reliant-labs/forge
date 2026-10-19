@@ -206,6 +206,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`lifecyclekit.Supervise` no longer reports a node as stuck because an
+  earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
+  after its cancel once the budget was gone, so every node behind a slow one
+  logged `node did not stop within the shutdown budget` at ERROR (and
+  `run_still_running`) even when it returned instantly. Each `Run` now gets
+  250ms to return after its cancel; only one that really ignores its context
+  is reported. The walk overruns the budget by at most 250ms per truly stuck
+  node.
 - **`forge storage` worktree reaping no longer holds a worktree for forge's
   own scratch, a project's pinned tools or its `tmp/`.** The rebuildable
   allow-list gains `.forge/tmp`, `.forge/generate-cache.json`, `/.tools` and

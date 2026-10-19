@@ -297,7 +297,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 		}
 
 		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && !allowUnsafeNotNull &&
-			addColumnRe.MatchString(text) && hasNotNull(text) && !hasDefault(text) && !hasGeneratedStored(text) {
+			addColumnRe.MatchString(text) && unsafeAddedNotNull(text) {
 			findings = append(findings, Finding{
 				File:     file,
 				Line:     stmt.Line,
@@ -388,16 +388,15 @@ func hasNotNull(statement string) bool {
 // statement boundary, so a later statement's STORED cannot be borrowed to
 // exempt an earlier plain add.
 var (
-	notNullRe         = regexp.MustCompile(`(?is)\bnot\s+null\b`)
-	defaultRe         = regexp.MustCompile(`(?is)\bdefault\b`)
-	generatedStoredRe = regexp.MustCompile(`(?is)\bgenerated\s+always\s+as\s*\([^;]*?\)[^;]*?\bstored\b`)
+	notNullRe = regexp.MustCompile(`(?is)\bnot\s+null\b`)
+	defaultRe = regexp.MustCompile(`(?is)\bdefault\b`)
 	// addGeneratedStoredRe pulls the COLUMN NAME out of such an add, so a
 	// SET NOT NULL later in the same file can be matched against it.
 	addGeneratedStoredRe = regexp.MustCompile(`(?is)\badd\s+column\s+(?:if\s+not\s+exists\s+)?(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s+[^;]*?\bgenerated\s+always\s+as\s*\([^;]*?\)[^;]*?\bstored\b`)
 )
 
-// hasGeneratedStored reports whether the statement adds a column postgres
-// computes and materializes itself.
+// addedGeneratedStoredColumns reports columns postgres computes and materializes
+// itself, for the later SET NOT NULL backfill exemption.
 //
 // This is the N3 exemption. unsafe-add-not-null-column exists because a plain
 // NOT NULL add has no value for the rows already in the table and the
@@ -413,10 +412,6 @@ var (
 // Go field as a pointer and makes every consumer nil-check a value that
 // arithmetic over NOT NULL columns can never produce. A rule with no
 // satisfiable spelling is worse than no rule: it buys a weaker schema.
-func hasGeneratedStored(statement string) bool {
-	return generatedStoredRe.MatchString(statement)
-}
-
 // addedGeneratedStoredColumns returns the columns this statement adds as
 // GENERATED ALWAYS AS (...) STORED.
 func addedGeneratedStoredColumns(statement string) []string {

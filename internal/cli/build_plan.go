@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
 
@@ -330,21 +329,20 @@ func planExternalBuilds(in planInputs) []buildPlanStep {
 	if len(svcs) == 0 {
 		return nil
 	}
+	artifacts, err := externalBuildArtifacts(svcs, in.opts, in.resolvedTag, in.projectDir)
+	if err != nil {
+		return []buildPlanStep{{kind: "external", name: svcs[0].Name, what: "ShellBuild", problem: err.Error()}}
+	}
 	var out []buildPlanStep
-	for _, svc := range svcs {
-		tag := externalBuildTag(svc, in.resolvedTag, in.opts)
-		spec := buildtarget.Spec{
-			Service:    svc.Name,
-			Image:      svc.Image,
-			Tag:        tag,
-			ProjectDir: in.projectDir,
-			BuildCmd:   svc.EffectiveBuildCmd(),
-			BuildCwd:   svc.EffectiveBuildCwd(),
-			BuildEnv:   svc.EffectiveBuildEnv(),
-		}
-		step := buildPlanStep{kind: "external", name: svc.Name, what: fmt.Sprintf("ShellBuild (tag %s)", tag)}
-		if _, err := buildtarget.ResolveCwd(spec); err != nil {
-			step.problem = err.Error()
+	for _, artifact := range artifacts {
+		spec := artifact.spec
+		step := buildPlanStep{kind: "external", name: spec.Service, what: fmt.Sprintf("ShellBuild (tag %s)", spec.Tag)}
+		if len(artifact.services) > 1 {
+			var names []string
+			for _, svc := range artifact.services {
+				names = append(names, svc.Name)
+			}
+			step.what += "; shared artifact for " + strings.Join(names, ", ")
 		}
 		out = append(out, step)
 	}

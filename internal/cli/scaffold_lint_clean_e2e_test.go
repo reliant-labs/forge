@@ -188,10 +188,15 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 	projectDir := filepath.Join(dir, "complintapp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// The three nouns, each of which was independently red.
+	// The three nouns, each of which was independently red. The adapter is
+	// scaffolded through both of its spellings: each composes its own config
+	// block on AppConfig, so the second must take the next free field number.
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "share_expiry")
-	runCmd(t, projectDir, forgeBin, "scaffold", "package", "blobstore", "--type", "adapter")
+	// The webhook reads the current service descriptor. Add it before the
+	// adapters change config.proto (and make that descriptor stale until generate).
 	runCmd(t, projectDir, forgeBin, "scaffold", "webhook", "scanner", "--service", "documents")
+	runCmd(t, projectDir, forgeBin, "scaffold", "package", "blobstore", "--type", "adapter")
+	runCmd(t, projectDir, forgeBin, "scaffold", "adapter", "pricing")
 
 	// A full generate, then build. The generate matters for more than
 	// tidiness: it is what writes internal/<adapter>/middleware_gen.go,
@@ -202,6 +207,7 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 	// of the assertion rather than incidental setup.
 	runCmd(t, projectDir, forgeBin, "generate")
 	runCmd(t, projectDir, "go", "build", "./...")
+	runCmd(t, projectDir, "go", "test", "./internal/blobstore/", "./internal/pricing/")
 
 	out, err := runLintE2E(t, projectDir, contractlintDir, forgeBin, "lint", "--no-fix")
 	if err != nil {
@@ -210,6 +216,24 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 	}
 	if strings.Contains(out, "❌") {
 		t.Errorf("forge lint printed error findings on freshly scaffolded components:\n%s", out)
+	}
+
+	// An adapter's base URL is a leaf of its own config block, not a scalar
+	// Deps field (#748): the scaffold used to declare `BaseURL string`, which
+	// forge's own forge-config-deps lint reported on every fresh adapter while
+	// compose.go wired it to `BaseURL: "", // TODO`. Zero findings, and both
+	// adapters take their block from the loaded config by type.
+	if !strings.Contains(out, "config-deps clean") || strings.Contains(out, "[forge-config-deps]") {
+		t.Errorf("a freshly scaffolded adapter must not trip forge-config-deps:\n%s", out)
+	}
+	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
+	for _, want := range []string{"infra.Cfg.GetBlobstore()", "infra.Cfg.GetPricing()"} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose.go must fill the adapter's config block from the loaded config (%s):\n%s", want, compose)
+		}
+	}
+	if strings.Contains(compose, "TODO") {
+		t.Errorf("compose.go carries a TODO for a freshly scaffolded component:\n%s", compose)
 	}
 
 	// Each lane that was RED actually ran — a skipped lane makes exit-0

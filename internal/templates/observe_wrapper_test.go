@@ -9,11 +9,13 @@ import (
 // observePkgData mirrors the template data runPackageNew builds for the
 // shared internal-package templates (internal/cli/package.go).
 type observePkgData struct {
-	Name       string
-	ImportPath string
-	Module     string
-	Flavor     string
-	HasConfig  bool
+	Name         string
+	ImportPath   string
+	Module       string
+	Flavor       string
+	HasConfig    bool
+	ConfigBlock  string
+	ConfigEnvVar string
 }
 
 // observeSeamData mirrors the template data runPackageNew builds for the
@@ -180,6 +182,7 @@ func TestAdapterAndClientTemplates_InjectableHTTPClient(t *testing.T) {
 		t.Fatalf("rendered client.go is not gofmt-valid: %v\n%s", ferr, clientOut)
 	}
 
+	data.ConfigBlock, data.ConfigEnvVar = "StripeConfig", "STRIPE_BASE_URL"
 	adapterOut, err := InternalPkgKindTemplates("adapter").Render("adapter.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render adapter.go.tmpl: %v", err)

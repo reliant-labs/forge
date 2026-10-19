@@ -14,11 +14,12 @@
 // `message <Component>Config { ... }` in proto/config/v1/config.proto
 // with (forge.v1.config) leaf annotations, compose it on AppConfig
 // (`<Component>Config <component> = <tag>;`), and take the generated
-// block as ONE typed Deps field (`Cfg config.<Component>Config`).
-// wire_gen resolves the field from the loaded Config by TYPE, env
-// binding / per-env config.<env>.yaml → ConfigMap projection all flow
-// from the same proto annotations, and validateDeps
-// stops seeing phantom nil scalars.
+// block as ONE typed Deps field (`Cfg *config.<Component>Config`).
+// internal/app/compose.go fills the field from the loaded Config by TYPE
+// (infra.Cfg.Get<Component>()), env binding / per-env deploy/kcl/<env>/config.k
+// projection all flow from the same proto annotations, and validateDeps
+// stops seeing phantom nil scalars. `forge scaffold adapter` writes this
+// shape from birth.
 //
 // What it flags
 //
@@ -91,7 +92,7 @@ func configDepsFixHint(f configDepsFinding) string {
 	block := naming.ToPascalCase(f.Package) + "Config"
 	protoField := naming.ToSnakeCase(f.Field)
 	return fmt.Sprintf(
-		"scalar Deps fields are configuration — declare a config block in proto/config/v1/config.proto: `message %s { %s %s = 1 [(forge.v1.config) = {env_var: %q, description: \"...\"}]; }`, compose it on AppConfig (`%s %s = <next tag>;`), run `forge generate`, and replace `%s %s` with `Cfg config.%s` (wire_gen resolves it from cfg by type; per-env values go in config.<env>.yaml as `%s: <value>`)",
+		"scalar Deps fields are configuration — declare a config block in proto/config/v1/config.proto: `message %s { %s %s = 1 [(forge.v1.config) = {env_var: %q, description: \"...\"}]; }`, compose it on AppConfig (`%s %s = <next tag>;`), run `forge generate`, and replace `%s %s` with `Cfg *config.%s` (internal/app/compose.go fills it from the loaded config by type; per-env values go in deploy/kcl/<env>/config.k as `%s = <value>`)",
 		block, protoScalarType(f.Type), protoField,
 		strings.ToUpper(naming.ToSnakeCase(f.Package))+"_"+strings.ToUpper(protoField),
 		block, naming.ToSnakeCase(f.Package),

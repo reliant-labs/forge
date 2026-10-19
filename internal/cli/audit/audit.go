@@ -1367,7 +1367,7 @@ func auditConfigDeps(projectDir string) audittype.Category {
 				func(findingCount, pkgCount int) string {
 					return fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/config", findingCount, pkgCount)
 				},
-				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg config.<Component>Config`)", cmdutil.Name()),
+				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg *config.<Component>Config`)", cmdutil.Name()),
 			)
 		},
 	)

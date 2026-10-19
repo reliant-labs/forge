@@ -145,7 +145,7 @@ A worker's `Deps` are interface-typed fields filled **by type in `internal/app/c
 ```go
 type Deps struct {
     Logger *slog.Logger
-    Cfg    config.CleanupConfig // scalars travel as one typed config block, not naked fields
+    Cfg    *config.CleanupConfig // scalars travel as one typed config block, not naked fields
     Queue  queue.Client         // an interface — the default fill is the real in-process impl
 }
 

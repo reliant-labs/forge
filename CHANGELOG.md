@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Adapter scaffolds use typed configuration from birth (#748).**
+  `forge scaffold adapter <name>` (and `scaffold package --type adapter`)
+  appends a `<Name>Config` message with a `<NAME>_BASE_URL` leaf to the config
+  proto and composes it on `AppConfig` using a free field number. The adapter
+  takes the generated config block; compose.go fills it from the loaded config
+  by type instead of emitting `BaseURL: ""` with a TODO. Its httptest fixture
+  sets the block's base URL to the stub. Re-running is a no-op; reserved tags
+  and existing fields are preserved. Missing `AppConfig` is an actionable
+  refusal before any adapter files are written, not a scalar fallback that
+  violates `forge-config-deps`.
+
 - **Go initialisms are replaced only as whole PascalCase words (#795).**
   `ToPascalCase` matched initialisms by prefix, so `forge scaffold service
 identity` produced `IDentityService` and an `id-entity` file that `generate`

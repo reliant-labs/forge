@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"{{.Module}}/pkg/config"
 )
 
 // TestHealthCheck_OK exercises the adapter against an httptest stub.
 // The pattern: spin up an httptest.Server that returns whatever the
-// downstream would, point Deps.BaseURL at it, and assert the adapter
+// downstream would, point the adapter's base URL at it, and assert the adapter
 // translates the response correctly.
 func TestHealthCheck_OK(t *testing.T) {
 	t.Parallel()
@@ -29,7 +31,7 @@ func TestHealthCheck_OK(t *testing.T) {
 	svc, err := New(Deps{
 		Logger:     slog.Default(),
 		HTTPClient: stub.Client(),
-		BaseURL:    stub.URL,
+		Cfg:        &config.{{.ConfigBlock}}{BaseUrl: stub.URL},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -54,7 +56,7 @@ func TestHealthCheck_Down(t *testing.T) {
 	svc, err := New(Deps{
 		Logger:     slog.Default(),
 		HTTPClient: stub.Client(),
-		BaseURL:    stub.URL,
+		Cfg:        &config.{{.ConfigBlock}}{BaseUrl: stub.URL},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

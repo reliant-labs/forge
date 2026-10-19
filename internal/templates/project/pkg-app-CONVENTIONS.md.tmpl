@@ -69,8 +69,8 @@ needs it (mark it `// forge:optional-dep` on the Deps field).
 Scalar Deps fields (`MaxPerTick int`, `Interval time.Duration`, ...) are
 configuration, not collaborators. Declare a config block in
 `proto/config/v1/config.proto` and take it as one typed field
-(`Cfg config.<Block>Config`) instead of threading naked scalars through
-`Deps`. `forge lint --config-deps` flags naked-scalar Deps fields.
+(`Cfg *config.<Block>Config`, which compose.go fills from the loaded
+config by type) instead of threading naked scalars through `Deps`. `forge lint --config-deps` flags naked-scalar Deps fields.
 
 ## Test wiring
 

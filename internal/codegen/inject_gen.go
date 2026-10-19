@@ -28,7 +28,10 @@
 //     one packages.Load universe. A concrete *db.PostgresRepository on
 //     Infra fills a narrow audit.Repository field (closes the constraint-3
 //     silent-drop). Emitted as `infra.<Field>`.
-//  3. CONVENTIONAL — Logger -> infra.Log, Config -> infra.Cfg.
+//  3. CONVENTIONAL — Logger -> infra.Log, Config -> infra.Cfg; and a field
+//     typed as a config block the loaded Config composes
+//     (`Cfg *config.TraderConfig`) -> infra.Cfg.GetTrader()
+//     (compose_config_blocks.go).
 //  4. MISSING — a required (non `forge:optional-dep`), non-scalar Deps
 //     field that resolves to none of the above is LOUD:
 //       (a) GENERATE-TIME: collected into MissingProvider; GenerateInject
@@ -42,8 +45,9 @@
 //           for a required field.
 //
 // Scalar Deps fields (string/int/bool/duration) are CONFIGURATION, not
-// collaborators — they take the typed-zero with a config-block hint,
-// mirroring wire_gen, and never raise a MissingProvider error.
+// collaborators — they take the typed-zero with a config-block hint and never
+// raise a MissingProvider error. The hint's remedy, a config block, is the
+// by-type case in 3.
 //
 // Each ServiceTypeKey is constructed exactly once (one local var per
 // BuildPlan.Order entry) — per-binary singleton by construction.
@@ -423,6 +427,10 @@ func GenerateCompose(in InjectGenInput) error {
 	// of a bare typed-zero (FIX: kalshi's WTI EIAKey/FREDKey were being
 	// reset to ""+TODO). Empty when config.go hasn't been generated yet.
 	configFields := parseConfigFields(in.ProjectDir)
+	// The component config blocks the loaded Config composes, so a Deps
+	// field typed as one (`Cfg *config.TraderConfig`) is filled from it by
+	// type (compose_config_blocks.go).
+	blocks := parseConfigBlocks(in.ProjectDir, in.ModulePath)
 
 	var (
 		rendered     []InjectComponentData
@@ -454,7 +462,7 @@ func GenerateCompose(in InjectGenInput) error {
 		}
 		for _, df := range c.Deps {
 			needsConfig = needsConfig || df.Name == "Config"
-			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, configFields, matcher, in.RoleRoot(c), storeAccessors)
+			expr, comment, miss := resolveInjectField(df, c, producerVar, resolver, infraFields, configFields, blocks, matcher, in.RoleRoot(c), storeAccessors)
 			if miss != nil {
 				missing = append(missing, *miss)
 			}
@@ -1310,7 +1318,7 @@ func injectBeforeImportClose(content, lines string) string {
 // should emit, following the priority order in the file header. The third
 // return is non-nil when the field is a required collaborator with a
 // PROVEN-missing provider (generate-time loud error).
-func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, configFields map[string]InfraField, matcher *InfraAssignabilityMatcher, roleRoot string, storeAccessors map[string]string) (expr, comment string, miss *MissingProvider) {
+func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]string, resolver TypeResolver, infraFields map[string]InfraField, configFields map[string]InfraField, blocks configBlocks, matcher *InfraAssignabilityMatcher, roleRoot string, storeAccessors map[string]string) (expr, comment string, miss *MissingProvider) {
 	// 1. PRODUCER — another component produces this type (by-type edge).
 	if prodField := resolver.Resolve(c, df.Type); prodField != "" && prodField != c.FieldName {
 		if v, ok := producerVar[prodField]; ok {
@@ -1326,6 +1334,21 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 		return "infra.Log", "", nil
 	case "Config":
 		return "infra.Cfg", "", nil
+	}
+
+	// 3b. CONFIG BLOCK (by TYPE) — a Deps field typed as a component config
+	// block the loaded Config composes (`Cfg *config.TraderConfig`) is that
+	// block: infra.Cfg.GetTrader(). This is the shape forge-config-deps asks
+	// for in place of naked scalars, so it must resolve rather than fall to
+	// a missing provider. Checked before the Infra paths because Cfg, the
+	// conventional field name, is also Infra's whole-config field, and an
+	// exact-name match there would hand the block field the root
+	// *config.Config. An Infra field of the very same type still wins: that
+	// is an explicit override.
+	if expr, ok := blocks.resolve(df.Type, c.compImports); ok {
+		if f, named := infraFields[df.Name]; !named || f.Type != df.Type {
+			return expr, "", nil
+		}
 	}
 
 	// 2.5 FRAMEWORK SEAM (by TYPE) — Clock / IDGen / HTTP client. A required

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
+	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -160,6 +163,10 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// codegen and every reporter discover it from.
 	pkgDir := filepath.Join(root, "internal", name)
 	if dirExists(pkgDir) {
+		if pkgType == "adapter" && fileExists(filepath.Join(pkgDir, "adapter.go")) && codegen.HasOutboundIODirective(pkgDir) {
+			fmt.Printf("Adapter %q already exists at %s; leaving its owned files and config unchanged.\n", name, pkgDir)
+			return nil
+		}
 		return fmt.Errorf("internal package %q already exists at %s", name, pkgDir)
 	}
 
@@ -170,11 +177,6 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Creating internal package '%s'...\n", name)
-
-	// Create directory
-	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
-		return fmt.Errorf("create package directory: %w", err)
-	}
 
 	// Template data. ImportPath mirrors Name for now because `forge package
 	// new` only accepts flat names (validGoPackageName rejects "/"). When
@@ -200,6 +202,13 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		// <module>/pkg/config, only when the project has typed config — the
 		// rule service.go follows. A project adopted in place has none.
 		HasConfig bool
+		// ConfigBlock is the adapter's config block message (AlpacaConfig)
+		// when one is composed on AppConfig — the adapter then takes it as
+		// `Cfg *config.<ConfigBlock>` — and empty when the project has no
+		// AppConfig to compose it on. ConfigEnvVar is its base_url leaf's
+		// env var.
+		ConfigBlock  string
+		ConfigEnvVar string
 	}{
 		Name:       name,
 		ImportPath: name,
@@ -209,6 +218,23 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		// Seed the owned observe_chain.go seam's success-log level from the
 		// project's observability config (default: slog.LevelDebug).
 		LogLevel: cfg.Observability.SlogLevelExpr(),
+	}
+
+	// An adapter's settings are configuration, so its base URL is a leaf of
+	// its own config block in proto/config/v1/config.proto rather than a
+	// scalar Deps field (which forge-config-deps rejects, and which compose.go
+	// could only ever wire to ""). The proto edit runs first because its
+	// outcome decides which Deps shape the templates render.
+	if pkgType == "adapter" {
+		block, envVar, err := ensureAdapterConfigBlock(root, name)
+		if err != nil {
+			return err
+		}
+		data.ConfigBlock, data.ConfigEnvVar = block, envVar
+	}
+
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		return fmt.Errorf("create package directory: %w", err)
 	}
 
 	// Render the scaffold. --type=adapter and --kind both render a full
@@ -282,8 +308,71 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// or observe_chain.go, which is where the scaffold's best guidance
 	// lives.
 	printScaffoldedPackageSummary(pkgDir, name, pkgType)
+	if data.ConfigBlock != "" {
+		// adapter.go names config.<ConfigBlock>, which pkg/config declares
+		// only once generate has compiled the block the proto edit added.
+		fmt.Printf("\n   Run `forge generate` first: it generates config.%s from proto/config/v1 and wires\n", data.ConfigBlock)
+		fmt.Printf("   internal/%s, with its Cfg, into internal/app/compose.go. Set %s per environment.\n", name, data.ConfigEnvVar)
+	}
 
 	return nil
+}
+
+// ensureAdapterConfigBlock composes the adapter's config block on AppConfig
+// in proto/config/v1 — `message <Name>Config { string base_url = 1 [...]; }`
+// plus `<Name>Config <name> = <next tag>;` — and returns the block's message
+// name and its base_url env var. The edit is idempotent (an adapter
+// re-scaffolded after its directory was deleted finds its block in place) and
+// never renumbers (scaffold.EnsureConfigBlock).
+//
+// A project with no AppConfig must declare its config composition explicitly
+// before scaffolding an adapter. Refuse before creating its package rather
+// than emitting the scalar Deps field forge-config-deps rejects.
+func ensureAdapterConfigBlock(root, name string) (block, envVar string, err error) {
+	block = naming.ToPascalCase(name) + "Config"
+	envVar = strings.ToUpper(name) + "_BASE_URL"
+	spec := scaffold.ConfigBlockSpec{
+		Message: block,
+		Field:   name,
+		Doc: []string{
+			fmt.Sprintf("%s configures the %s adapter (internal/%s), composed on", block, name, name),
+			fmt.Sprintf("%s as %#q. internal/app/compose.go hands it to the adapter as", scaffold.ConfigRootMessage, name),
+			"Deps.Cfg, so each leaf reaches the adapter from its env var, a --config",
+			"file, or deploy/kcl/<env>/config.k. Add the adapter's other settings here",
+			"as leaves: account IDs, timeouts, and API keys with `sensitive: true`.",
+		},
+		FieldDoc: fmt.Sprintf("Configuration of the %s adapter (internal/%s).", name, name),
+		Leaves: []scaffold.ConfigBlockLeaf{{
+			Type:        "string",
+			Name:        "base_url",
+			EnvVar:      envVar,
+			Description: fmt.Sprintf("Base URL of the %s downstream, e.g. https://api.example.com (no trailing slash). The adapter's requests are made against it.", name),
+		}},
+	}
+	res, err := scaffold.EnsureConfigBlock(filepath.Join(root, "proto", "config", "v1"), spec)
+	switch {
+	case errors.Is(err, scaffold.ErrNoConfigRoot):
+		return "", "", fmt.Errorf("scaffold adapter %s requires proto/config/v1/config.proto with an AppConfig message; declare the config root before scaffolding the adapter (no adapter files were written)", name)
+	case err != nil:
+		return "", "", fmt.Errorf("compose the %s config block: %w", block, err)
+	}
+	rel, relErr := filepath.Rel(root, res.File)
+	if relErr != nil {
+		rel = res.File
+	}
+	switch {
+	case res.AddedMessage && res.AddedField:
+		fmt.Printf("✅ Declared message %s in %s and composed it on %s as %s = %d (base_url from %s)\n",
+			block, rel, scaffold.ConfigRootMessage, name, res.FieldNumber, envVar)
+	case res.AddedField:
+		fmt.Printf("✅ Composed the existing message %s on %s in %s as %s = %d\n",
+			block, scaffold.ConfigRootMessage, rel, name, res.FieldNumber)
+	case res.AddedMessage:
+		fmt.Printf("✅ Declared message %s in %s (already composed on %s)\n", block, rel, scaffold.ConfigRootMessage)
+	default:
+		fmt.Printf("   %s is already declared and composed on %s in %s\n", block, scaffold.ConfigRootMessage, rel)
+	}
+	return block, envVar, nil
 }
 
 // packageFileRoles describes what each scaffolded file is for, so the

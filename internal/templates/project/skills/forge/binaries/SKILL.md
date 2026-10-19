@@ -82,7 +82,7 @@ Notes:
 - **In-process is the default.** A cross-binary dep is the one-line swap: fill its interface with a Connect client instead of the in-proc instance; the consumer is untouched.
 - **Per-binary singletons are natural.** A dep that must be one instance within *each* process is constructed once in `cmd/<package>/main.go` and passed into `Deps`.
 - **Two-phase wiring is first-class.** Construct, then inject via setters (`x.WithY(z)`) for near-diamonds — plain method calls after both ends exist, in `main.go`.
-- **Scalars are config, not dependencies.** A `string`/`int`/`bool`/`Duration` lives in a `<Component>Config` proto block consumed as one typed `Cfg config.<Component>Config` Deps field — never a naked scalar Deps field.
+- **Scalars are config, not dependencies.** A `string`/`int`/`bool`/`Duration` lives in a `<Component>Config` proto block consumed as one typed `Cfg *config.<Component>Config` Deps field — never a naked scalar Deps field.
 
 ## Lifecycle — Run blocks until ctx is cancelled
 

@@ -183,7 +183,9 @@ service %sService {
 		return err
 	}
 
-	return nil
+	// Read the actual proto after --resume/preservation, not the inferred
+	// candidate: an existing user-owned proto may declare another package.
+	return reconcileSharedPackageBuf(root, protoPath, progress)
 }
 
 // renderAndWriteWithMode renders a service template then delegates the

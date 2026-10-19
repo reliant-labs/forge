@@ -326,7 +326,8 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// Even an unhealthy up can have created containers. Remember them before
 	// returning so env down can clean up a partially started stack.
 	ownedErr := p.recordOwned(ctx, runner, envOverlay, spec, group.Env, target, strings.Fields(string(before)))
-	if err := errors.Join(upErr, ownedErr); upErr != nil {
+	if upErr != nil {
+		err := errors.Join(upErr, ownedErr)
 		if composeWait(spec) {
 			// With --wait, an `up` failure most often means the
 			// container came up but never became healthy. Say so —

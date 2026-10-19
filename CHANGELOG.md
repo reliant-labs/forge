@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--role`. Uses the authenticated org and exact project/environment lookup;
   invitations require a human org admin. No passwords or credentials are printed.
 - **KCL: `forge.Frontend.telemetry = forge.BrowserTelemetry {funnels = [forge.Funnel {...}]}`
-  declares product funnels.** A `forge.Funnel` is `{id, title?, steps, window = "1h",
-  by = "session"}`: 2 to 10 distinct event names (the names the app passes to
+  declares product funnels.** A `forge.Funnel` is
+  `{id, title?, steps, window = "1h", by = "session"}`: 2 to 10 distinct event names (the names the app passes to
   `track()`), a `window` of a number and a unit of s/m/h/d, counted per browser
   `session` or `user`. `forge generate` reads every env's frontends and draws each
   declared funnel as a `funnel-<id>` panel on the project's frontend dashboard
@@ -39,8 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decodes.** forge#850 added `provenance.commit_subject`/`commit_author` and the
   per-object `objects` summaries to the bundle document, and a control plane
   strict-decodes that document: every control plane built before #850 refused
-  every bundle (`RecordBundle: bundle document: json: unknown field
-  "commit_subject"`), so no release could be recorded — including the one that
+  every bundle
+  (`RecordBundle: bundle document: json: unknown field "commit_subject"`), so no release could be recorded — including the one that
   would ship the control plane that understands them. An optional document
   field is now a FEATURE (`release.BundleDocFeatures`): `forge env deploy` /
   `env build` ask `DeployService/GetCapabilities` (`bundleDocumentFeatures`)

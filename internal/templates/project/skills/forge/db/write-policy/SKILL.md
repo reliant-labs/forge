@@ -117,6 +117,15 @@ response and the entity you hold afterwards report the stored values of an
 immutable, read-only or GENERATED column rather than the ones the request
 carried.
 
+A write whose caller discards the entity — a worker stamping `dispatched_at`
+on a wide row — does not need that read-back, and on a one-column write it is
+most of the cost (a 12-column row: 93 → 39 allocations). Pass
+`crud.NoReadBack()` to make one `Update` or `UpdateMasked` exec-only: no
+`RETURNING`, and the entity keeps what you put in it (plus the stamped
+`updated_at` and advanced `forge:version`). From `_repo_ext.go`, call the
+entity's repo directly: `<entity>Repo.UpdateMasked(ctx, db, e,
+[]string{"dispatched_at"}, crud.NoReadBack())`.
+
 **DB-only columns are not automatically protected.** A column with no matching
 proto field says nothing about whether it may be rewritten — an internal rating
 or a denormalized cache is absent from the API and mutable by design. Only

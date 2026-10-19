@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
 
@@ -342,34 +341,23 @@ func planBuildOnlyVariants(ctx context.Context, in planInputs) []buildPlanStep {
 // would hit after every build before it had already run.
 func planExternalBuilds(in planInputs) []buildPlanStep {
 	svcs := externalBuildServices(in.entities)
-	if in.opts.composition != nil {
-		units, err := compositionBuildUnits(&KCLEntities{Workloads: svcs})
-		if err != nil {
-			return []buildPlanStep{{kind: "external", problem: err.Error()}}
-		}
-		svcs = nil
-		for _, unit := range units {
-			svcs = append(svcs, unit[0])
-		}
-	}
 	if len(svcs) == 0 {
 		return nil
 	}
+	units, aliases, err := externalBuildUnits(svcs, in.opts, in.resolvedTag, in.projectDir)
+	if err != nil {
+		return []buildPlanStep{{kind: "external", name: svcs[0].Name, what: "ShellBuild", problem: err.Error()}}
+	}
 	var out []buildPlanStep
-	for _, svc := range svcs {
-		tag := externalBuildTag(svc, in.resolvedTag, in.opts)
-		spec := buildtarget.Spec{
-			Service:    svc.Name,
-			Image:      svc.Image,
-			Tag:        tag,
-			ProjectDir: in.projectDir,
-			BuildCmd:   svc.EffectiveBuildCmd(),
-			BuildCwd:   svc.EffectiveBuildCwd(),
-			BuildEnv:   svc.EffectiveBuildEnv(),
-		}
-		step := buildPlanStep{kind: "external", name: svc.Name, what: fmt.Sprintf("ShellBuild (tag %s)", tag)}
-		if _, err := buildtarget.ResolveCwd(spec); err != nil {
-			step.problem = err.Error()
+	for _, owner := range units {
+		spec := externalBuildSpec(owner, in.opts, in.resolvedTag, in.projectDir)
+		step := buildPlanStep{kind: "external", name: spec.Service, what: fmt.Sprintf("ShellBuild (tag %s)", spec.Tag)}
+		if consumers := aliases[owner.Name]; len(consumers) > 0 {
+			names := []string{owner.Name}
+			for _, svc := range consumers {
+				names = append(names, svc.Name)
+			}
+			step.what += "; shared artifact for " + strings.Join(names, ", ")
 		}
 		out = append(out, step)
 	}

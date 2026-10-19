@@ -669,6 +669,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if err := preflightRealBuild(ctx, entities, opts); err != nil {
 		return err
 	}
+	// Refuse conflicting writers before ANY build or push, not after earlier
+	// lanes have published images. The dispatcher and --plan use this too.
+	if _, _, err := externalBuildUnits(externalBuildServices(entities), opts, resolvedTag, projectDirForKCL()); err != nil {
+		return err
+	}
 	registerBuildStorage(ctx, projectDirForKCL(), entities, push)
 
 	// Create output directory

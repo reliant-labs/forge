@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge/pkg/serverkit/drainbudget`: the one reader of `PRE_STOP_DELAY`
+  and `SHUTDOWN_TIMEOUT`.** `Parse` (a Go duration or bare seconds; empty is
+  unset), `Effective` (zero is the default, negative is none), the env names
+  and defaults, and `FromEnv(getenv)`, which returns a `Budget` whose fields
+  map onto `serverkit.Config` and errors naming a malformed variable. The rule
+  lived unexported in `pkg/deploy`, so a hand-written main copied it, and the
+  copy drifted (reliant read `-1s` as malformed). serverkit's `Drainer` and
+  the rendered `terminationGracePeriodSeconds` both use it now, and a test
+  pins that the grace period equals the budget `FromEnv` reads. Standard
+  library only: `pkg/deploy` imports it without linking serverkit.
 - **`crud.Repo`'s by-PK statements bind their values, so their text is
   stable.** bun formats every value into the SQL text, and under pgx's
   default statement cache (what `serverkit.OpenDB` opens) each distinct text

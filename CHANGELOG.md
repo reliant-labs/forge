@@ -343,6 +343,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **`lifecyclekit` no longer re-exports `operatorkit.Run`, `Controller` and
+  `Options`, so importing it never links controller-runtime.** Every binary
+  that imported lifecyclekit for `Supervise`, `WrapWorker` or `Singleton`
+  linked `sigs.k8s.io/controller-runtime` and its Kubernetes tree (~1.8 MB),
+  operators or not. The three names live only in
+  `forge/pkg/appkit/operatorkit`; the scaffolded `lifecycle.go` names it
+  directly, and a `go list -deps` guard pins that lifecyclekit reaches no
+  `k8s.io` package. An owned `lifecycle.go` that names the removed symbols:
+  `forge skill load migrations/v0.1.46/operatorkit-bridge`.
 - **`PRE_STOP_DELAY` and `SHUTDOWN_TIMEOUT` follow one rule: zero is the
   default, negative is none** — the rule every `serverkit.Config` duration
   already used. `ShutdownTimeout <= 0` always became the 30s default, so "no

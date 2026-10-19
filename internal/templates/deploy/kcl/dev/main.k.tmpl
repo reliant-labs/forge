@@ -59,12 +59,13 @@ import .ingress as ing
 #
 #   plugin.resolve_port(name, preferred) is AVAILABILITY-CHECKED: it takes
 #   `preferred` when free, steps to the next free port when not, and
-#   remembers the answer (.forge/ports-{{.EnvName}}.json). Use it for a port
-#   only this project's own declarations name.
+#   remembers the answer in the primary checkout's .forge/host-ports.json,
+#   scoped to this exact worktree and environment. Concurrent forge processes
+#   reserve under one lock, even before listeners start.
 #
 #   plugin.allocate_port(base, key) is DETERMINISTIC: it does NOT step off a
 #   busy port. Use it when something outside these declarations was already
-#   told the number (the IdP's issuer, baked into every token it mints).
+#   told the number (a cluster's pre-mapped ingress port).
 
 # The dev database. On a machine already running another stack on 5432 this
 # steps to 5433 and stays there, and the DSN below follows it.
@@ -90,11 +91,10 @@ _pprof_port_of = lambda name: str -> int {
 }
 {{- if .HasFrontend}}
 
-# The dev IdP cannot float: Zitadel derives the `iss` of every token it
-# mints from the origin it is reached on. allocate_port keeps it at 8080 for
-# this checkout and gives a second worktree its own stable block (8180, ...).
-# If 8080 is taken on your machine, change the base here.
-_idp_port = plugin.allocate_port(8080, option("worktree") or "")
+# The dev IdP's origin must stay stable BETWEEN runs. resolve_port chooses
+# a free port once, then reuses its reservation even while the IdP answers.
+# Unlike a fixed 100-port offset, it cannot land on another stack's HyperDX.
+_idp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-idp", 8080)
 _idp_origin = "http://localhost:${_idp_port}"
 
 # The frontend's dev-server port. resolve_port: the one external consumer

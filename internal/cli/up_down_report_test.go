@@ -62,7 +62,7 @@ func TestEnvDownEmptyHostStackExplainsDockerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"[down]", "no owned Forge host processes", "Docker containers", "Kubernetes workloads/clusters", "Docker Desktop were not stopped"} {
+	for _, want := range []string{"[down]", "no owned Forge host processes", "owned Compose containers", "Kubernetes workloads/clusters", "Docker Desktop were not stopped"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("empty host stack output lacks %q: %s", want, out)
 		}

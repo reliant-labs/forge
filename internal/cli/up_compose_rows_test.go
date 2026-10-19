@@ -17,7 +17,7 @@ func TestUpSummaryListsWhatComposeWorkloadsPublish(t *testing.T) {
 		{Name: "clickstack", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "clickstack"}}},
 	}}
 	asked := ""
-	fake := func(_ context.Context, _, _, service string) ([]composePublisher, error) {
+	fake := func(_ context.Context, _ string, spec *deploytarget.ComposeSpec, service string) ([]composePublisher, error) {
 		asked = service
 		return []composePublisher{
 			{URL: "127.0.0.1", TargetPort: 4317, PublishedPort: 44317, Protocol: "tcp"},
@@ -26,7 +26,7 @@ func TestUpSummaryListsWhatComposeWorkloadsPublish(t *testing.T) {
 		}, nil
 	}
 
-	rows := composeRows(context.Background(), e, t.TempDir(), nil, fake)
+	rows := composeRows(context.Background(), e, t.TempDir(), "dev", nil, fake)
 	if asked != "clickstack" {
 		t.Fatalf("asked docker about %q, want the compose service clickstack", asked)
 	}

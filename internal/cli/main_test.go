@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/hostslot"
@@ -78,10 +79,11 @@ func TestMain(m *testing.M) {
 	// stacks, and the tripwire failed the whole package on
 	// TestRunUpServices_EndToEnd although every test passed. The answer is
 	// a host with no docker daemon.
+	ownedComposeRunning = func(context.Context, string, string) (bool, error) { return false, nil }
 	doctorCompose = func(context.Context, string, ...string) ([]byte, error) {
 		return nil, errors.New("Cannot connect to the Docker daemon (forge unit-test stand-in)")
 	}
-	composePublishersFn = func(context.Context, string, string, string) ([]composePublisher, error) {
+	composePublishersFn = func(context.Context, string, *deploytarget.ComposeSpec, string) ([]composePublisher, error) {
 		return nil, errors.New("Cannot connect to the Docker daemon (forge unit-test stand-in)")
 	}
 	// Nor does any test reach a deployed site: status probes a cloud env's

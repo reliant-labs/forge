@@ -1560,7 +1560,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	// been asked about. `forge env config dev` reported one DSN while the
 	// running stack was on another, and `forge db reset` got a dead port.
 	// The store is the tie-break, and it only works if everyone reads it.
-	kclplugin.UsePortStoreReadOnly(filepath.Join(projectDir, ".forge", "ports-"+env+".json"))
+	kclplugin.UseStackPortStoreReadOnly(projectDir, env)
 
 	dArgs := append([]string{"env=" + env}, activeRenderOptionDArgs()...)
 	if fo := frontendOutputsDArg(projectDir); fo != "" {

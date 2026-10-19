@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
+
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // composePublisher is one published port of a running compose service, as
@@ -21,7 +26,7 @@ type composePublisher struct {
 
 // composePublishersFunc returns what one compose service publishes to this
 // machine. A seam so the row assembly is testable without docker.
-type composePublishersFunc func(ctx context.Context, projectDir, file, service string) ([]composePublisher, error)
+type composePublishersFunc func(ctx context.Context, projectDir string, spec *deploytarget.ComposeSpec, service string) ([]composePublisher, error)
 
 // composeRows lists, for the env-up summary, every port this env's compose
 // workloads publish to the host — above all the HyperDX UI and OTLP ports of
@@ -31,7 +36,7 @@ type composePublishersFunc func(ctx context.Context, projectDir, file, service s
 // Read from docker at print time, because a dynamic port exists only once
 // the container does. Best-effort like the rest of the box: a service docker
 // cannot describe contributes no row rather than failing the summary.
-func composeRows(ctx context.Context, e *KCLEntities, projectDir string, targets []string, publishers composePublishersFunc) []upServiceRow {
+func composeRows(ctx context.Context, e *KCLEntities, projectDir, env string, targets []string, publishers composePublishersFunc) []upServiceRow {
 	if e == nil || publishers == nil {
 		return nil
 	}
@@ -44,7 +49,7 @@ func composeRows(ctx context.Context, e *KCLEntities, projectDir string, targets
 		if service == "" {
 			service = w.Name
 		}
-		pubs, err := publishers(ctx, projectDir, w.Runtime.Compose.File, service)
+		pubs, err := publishers(ctx, projectDir, composeSpecFor(projectDir, env, w.Runtime.Compose), service)
 		if err != nil {
 			continue
 		}
@@ -83,16 +88,21 @@ var composePublishersFn composePublishersFunc = dockerComposePublishers
 
 // dockerComposePublishers asks docker what a running compose service
 // publishes. It never starts anything.
-func dockerComposePublishers(ctx context.Context, projectDir, file, service string) ([]composePublisher, error) {
+func dockerComposePublishers(ctx context.Context, projectDir string, spec *deploytarget.ComposeSpec, service string) ([]composePublisher, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	args := []string{"compose"}
-	if file != "" {
-		args = append(args, "-f", file)
+	file := spec.ComposeFile
+	if file == "" {
+		file = "docker-compose.yml"
 	}
+	if !filepath.IsAbs(file) {
+		file = filepath.Join(spec.ProjectDirectory, file)
+	}
+	args := []string{"compose", "--project-directory", spec.ProjectDirectory, "-f", file}
 	args = append(args, "ps", "--format", "json", service)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = projectDir
+	cmd.Env = envutil.MergeExtraWins(cmd.Environ(), spec.Env)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

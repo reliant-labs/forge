@@ -141,6 +141,19 @@ var nonDisruptiveGCFn = func(ctx context.Context, r storage.Runner) error {
 // where its output goes. Seamed so a test never spawns a process.
 var startAutoGCFn = startAutoGC
 
+// upReclaimsStorage reports whether a `forge env up` that just finished should
+// start the opportunistic pass: only when the env came up (a run that failed
+// its cluster gate is about to be re-run) and only when it runs something of
+// ours on this machine — a local cluster, host infrastructure, a host or
+// compose workload. Those are what fill the build cache, the image store and
+// the node disks the pass reclaims. An env that runs nothing here but its
+// frontends' dev servers (a frontend-only project) accumulated none of it,
+// and its developer may have no Docker at all: starting a pass that shells
+// out to docker there is infrastructure the declaration never asked for.
+func upReclaimsStorage(e *KCLEntities, clusterErr error) bool {
+	return clusterErr == nil && entitiesTargetThisMachine(e)
+}
+
 // maybeOpportunisticGC is the other half of zero-touch: on a machine where
 // nobody ran `forge storage install`, nothing ever reclaims anything. At the end
 // of a successful `forge env up`, if this pass has not been attempted within

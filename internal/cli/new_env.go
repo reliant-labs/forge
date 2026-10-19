@@ -105,10 +105,7 @@ Examples:
 			if err := validateEnvBinds(binds); err != nil {
 				return err
 			}
-			if err := runNewEnv(cmd.Context(), args[0], fromEnv, check, force); err != nil || check || len(binds) == 0 {
-				return err
-			}
-			return applyEnvBinds(args[0], binds)
+			return runNewEnvWithBinds(cmd.Context(), args[0], fromEnv, check, force, binds)
 		},
 	}
 
@@ -125,6 +122,10 @@ Examples:
 var placeholderRe = regexp.MustCompile(`REPLACE_ME[A-Z_]*`)
 
 func runNewEnv(ctx context.Context, name, fromEnv string, check, force bool) error {
+	return runNewEnvWithBinds(ctx, name, fromEnv, check, force, nil)
+}
+
+func runNewEnvWithBinds(ctx context.Context, name, fromEnv string, check, force bool, binds []string) error {
 	projectDir, err := projectRoot()
 	if err != nil {
 		return err
@@ -173,7 +174,7 @@ func runNewEnv(ctx context.Context, name, fromEnv string, check, force bool) err
 	}
 
 	srcDir := filepath.Join(kclDir, template)
-	written, err := scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name)
+	written, err := scaffoldEnvFromTemplateBinds(projectDir, srcDir, envDir, template, name, binds)
 	if err != nil {
 		return err
 	}
@@ -279,7 +280,7 @@ func looksCloudShaped(body string) bool {
 // is user-owned and env-specific (the template env's values, e.g. its database
 // DSN, would be wrong here), so we point the author at `forge generate`, which
 // scaffolds a fresh config.k for the new env from the proto defaults.
-func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) ([]string, error) {
+func scaffoldEnvFromTemplateBinds(projectDir, srcDir, envDir, template, name string, binds []string) ([]string, error) {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return nil, cliutil.WrapUserErr("forge env new",
@@ -287,10 +288,8 @@ func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) 
 			"confirm the template env directory exists", err)
 	}
 
-	if err := os.MkdirAll(envDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create %s: %w", envDir, err)
-	}
-
+	// Prepare and validate every input before creating or overwriting files.
+	prepared := map[string]string{}
 	var written []string
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".k" {
@@ -307,10 +306,14 @@ func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) 
 			return nil, fmt.Errorf("read %s: %w", e.Name(), err)
 		}
 		transformed := transformEnvFile(string(body), template, name)
-		dst := filepath.Join(envDir, e.Name())
-		if err := os.WriteFile(dst, []byte(transformed), 0o644); err != nil {
-			return nil, fmt.Errorf("write %s: %w", dst, err)
+		if e.Name() == "main.k" && len(binds) > 0 {
+			transformed, err = bindEnvContent(projectDir, name, transformed, binds)
+			if err != nil {
+				return nil, err
+			}
 		}
+		dst := filepath.Join(envDir, e.Name())
+		prepared[dst] = transformed
 		written = append(written, dst)
 	}
 	if len(written) == 0 {
@@ -319,7 +322,18 @@ func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) 
 			"",
 			"pick a --from env whose deploy/kcl/<env>/ contains a main.k")
 	}
+	if _, ok := prepared[filepath.Join(envDir, "main.k")]; !ok {
+		return nil, fmt.Errorf("template env %q has no main.k", template)
+	}
 	sort.Strings(written)
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create %s: %w", envDir, err)
+	}
+	for _, dst := range written {
+		if err := os.WriteFile(dst, []byte(prepared[dst]), 0o644); err != nil {
+			return nil, fmt.Errorf("write %s: %w", dst, err)
+		}
+	}
 	return written, nil
 }
 

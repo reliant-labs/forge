@@ -16,6 +16,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/cli/scaffold"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -32,6 +33,8 @@ func newNewCmd() *cobra.Command {
 		kindFlag        string
 		serviceNames    []string
 		frontendNames   []string
+		frontendOutput  string
+		frontendRoutes  []string
 		goVersion       string
 		inPlace         bool
 		force           bool
@@ -128,7 +131,15 @@ checkout stop being the same source; drop the bridge with
 				}
 				projectName = args[0]
 			}
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose)
+			frontendOutput = strings.ToLower(strings.TrimSpace(frontendOutput))
+			frontendRoutes = scaffold.NormalizeRouteSlugs(frontendRoutes)
+			if (cmd.Flags().Changed("output") || cmd.Flags().Changed("routes")) && len(frontendNames) == 0 {
+				return fmt.Errorf("--output and --routes require --frontend")
+			}
+			if frontendOutput != "" && frontendOutput != "static" && frontendOutput != "standalone" && frontendOutput != "server" {
+				return fmt.Errorf("invalid --output %q: use static, standalone, or server", frontendOutput)
+			}
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, newFrontendOptions{output: frontendOutput, routes: frontendRoutes})
 		},
 	}
 
@@ -137,6 +148,8 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
+	cmd.Flags().StringVar(&frontendOutput, "output", "", "Output for every --frontend: static (default), standalone, or server")
+	cmd.Flags().StringSliceVar(&frontendRoutes, "routes", nil, "CRUD route allowlist for every --frontend; none generates no CRUD pages")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
@@ -257,8 +270,13 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	return kind, plugins, binary, nil
 }
 
-//nolint:revive,cyclop // TODO: collapse into a runNewOptions struct; the cyclomatic complexity comes from cobra flag fan-out (resume/force/in-place/per-feature toggles) and refactoring requires a shared options type — cobra flag wiring is the only call site.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool, verbose bool) error {
+type newFrontendOptions struct {
+	output string
+	routes []string
+}
+
+//nolint:revive,cyclop // Existing cobra flag fan-out; frontend settings travel together.
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool, verbose bool, frontend newFrontendOptions) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
@@ -342,6 +360,8 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			binary:             binaryNormalized,
 			serviceNames:       serviceNames,
 			frontendNames:      frontendNames,
+			frontendOutput:     frontend.output,
+			frontendRoutes:     frontend.routes,
 			goVersion:          goVersion,
 			frontendWorkspaces: frontendWorkspaces,
 			harness:            harness,
@@ -541,7 +561,7 @@ func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
 	if err := generateAdditionalServices(root, cfg.modulePath, cfg.projectName, cfg.serviceNames); err != nil {
 		return inPlaceMergeResult{}, err
 	}
-	if err := generateAdditionalFrontends(root, cfg.modulePath, cfg.projectName, cfg.frontendNames, gen.ServicePort, gen.FrontendPort, cfg.frontendWorkspaces); err != nil {
+	if err := generateAdditionalFrontends(root, cfg.modulePath, cfg.projectName, cfg.frontendNames, gen.ServicePort, gen.FrontendPort, generator.FrontendGenOptions{Workspaces: cfg.frontendWorkspaces, Output: cfg.frontendOutput, Public: !fileExists(filepath.Join(root, "deploy", "kcl", "identity.k"))}, cfg.frontendRoutes); err != nil {
 		return inPlaceMergeResult{}, err
 	}
 
@@ -577,6 +597,8 @@ type newGeneratorConfig struct {
 	binary             string
 	serviceNames       []string
 	frontendNames      []string
+	frontendOutput     string
+	frontendRoutes     []string
 	goVersion          string
 	frontendWorkspaces bool
 	harness            string
@@ -620,6 +642,8 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 		gen.FrontendName = c.frontendNames[0]
 	}
 	gen.FrontendWorkspaces = c.frontendWorkspaces
+	gen.FrontendOutput = c.frontendOutput
+	gen.FrontendRoutes = c.frontendRoutes
 
 	h, err := generator.ParseHarness(c.harness)
 	if err != nil {
@@ -674,7 +698,7 @@ func generateAdditionalServices(targetPath, modulePath, projectName string, serv
 // replaces the old unconditional base+i+1, which — once the primary went
 // ephemeral (base 0) — emitted the nonsensical `port: 1`, `port: 2`, … into
 // the scaffolded forge.yaml.
-func generateAdditionalFrontends(targetPath, modulePath, projectName string, frontendNames []string, servicePort, baseFrontendPort int, frontendWorkspaces bool) error {
+func generateAdditionalFrontends(targetPath, modulePath, projectName string, frontendNames []string, servicePort, baseFrontendPort int, opts generator.FrontendGenOptions, routes []string) error {
 	for i, feName := range frontendNames[min(1, len(frontendNames)):] {
 		fePort := 0
 		if baseFrontendPort > 0 {
@@ -685,11 +709,10 @@ func generateAdditionalFrontends(targetPath, modulePath, projectName string, fro
 		} else {
 			fmt.Printf("\n🔧 Adding additional frontend '%s' (ephemeral port — allocated at launch)...\n", feName)
 		}
-		if err := generator.GenerateFrontendFilesWithOptions(targetPath, modulePath, projectName, feName, servicePort, "", generator.FrontendGenOptions{
-			Workspaces: frontendWorkspaces,
-		}); err != nil {
+		if err := generator.GenerateFrontendFilesWithOptions(targetPath, modulePath, projectName, feName, servicePort, "", opts); err != nil {
 			return fmt.Errorf("failed to generate frontend %s: %w", feName, err)
 		}
+		scaffold.DeclareFrontendInKCL(targetPath, projectName, feName, "nextjs", fePort, routes)
 	}
 	return nil
 }

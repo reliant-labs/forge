@@ -2118,7 +2118,10 @@ func runBinary(name string) error {
 //
 // Tolerating "/users" alongside "users" matters because the value an author
 // has at hand is usually a URL they copied, not the on-disk directory name.
-func normalizeRouteSlugs(in []string) []string {
+func normalizeRouteSlugs(in []string) []string { return NormalizeRouteSlugs(in) }
+
+// NormalizeRouteSlugs canonicalizes the route allowlist for both scaffold entry points.
+func NormalizeRouteSlugs(in []string) []string {
 	seen := make(map[string]bool, len(in))
 	out := make([]string, 0, len(in))
 	for _, r := range in {

@@ -53,10 +53,10 @@ import .config as appcfg
 # declaration never drops the data. Your own Postgres instead? Delete `_db`,
 # `databases` and the DATABASE_URL line in `_hosted`, then
 # `forge secret set --env {{.EnvName}} DATABASE_URL`.
-_db = forge.ManagedDatabase {
+{{if not .DatabaseDisabled}}_db = forge.ManagedDatabase {
     name = "{{.ProjectName}}"
     runtime = forge.OnHosted {}
-}
+}{{end}}
 
 # This env's layer over a workload: the typed config projected into its env
 # (a credential only into the workloads that list it in `config_secrets`).
@@ -83,7 +83,7 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
     _c | {
         image = w.image[w.image.rfind("/") + 1:] if w.image else w.image
         env = _c.env \
-            | ({DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}){{if .HasFrontend}} \
+            | ({{if .DatabaseDisabled}}{}{{else}}{DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}{{end}}){{if .HasFrontend}} \
             | ({CORS_ORIGINS = forge.WorkloadURL {workload = "{{.FrontendName}}"}} if w.kind == "service" else {}){{end}}
         runtime = forge.OnHosted {}
     }
@@ -200,7 +200,8 @@ _on_bucket = lambda f: forge.Frontend -> forge.Frontend {
 _{{.FrontendIdent}}_frontend = forge.Frontend {
     name = "{{.FrontendName}}"
     path = "frontends/{{.FrontendName}}"
-    public_dir = "out"
+{{if .FrontendRoutes}}    routes = [{{range .FrontendRoutes}}{{printf "%q" .}}, {{end}}]
+{{end}}    public_dir = "out"
 }
 {{- end}}
 
@@ -210,7 +211,7 @@ _bundle = forge.Bundle {
     # Reliant cloud (set `endpoint` for another control plane).
     control_plane = forge.ControlPlane {}
     workloads = _workloads
-    databases = [_db]
+{{if not .DatabaseDisabled}}    databases = [_db]{{end}}
 {{- if .HasFrontend}}
     # THE USERS (deploy/kcl/identity.k), hosted: the control plane gives this
     # env its own identity instance and delivers its issuer, audience, client

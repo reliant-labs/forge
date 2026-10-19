@@ -1021,20 +1021,7 @@ const (
 // knows: that the promoted release pins these artifacts, and that the org's
 // image push base admits the image.
 func PreflightHosted(group ServiceGroup) ([]HostedPreflightItem, error) {
-	digests := map[string]string{}
-	registries := map[string]string{}
-	for _, svc := range group.Services {
-		w := svc.Hosted
-		if w == nil || (w.Tier != HostedTierWorkload && w.Tier != HostedTierStatic) {
-			continue
-		}
-		artifact := hostedArtifactOf(svc.Name, w)
-		digests[artifact] = preflightDigest
-		registries[artifact] = preflightRegistry
-	}
-	g := group
-	g.Hosted = &HostedTarget{Release: "(preflight: no release)", Digests: digests, Registries: registries}
-	plan, err := planHostedWith(g, digests)
+	plan, err := preflightHostedPlan(group)
 	if err != nil {
 		return nil, err
 	}
@@ -1052,6 +1039,39 @@ func PreflightHosted(group ServiceGroup) ([]HostedPreflightItem, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// preflightHostedPlan supplies obviously fake release facts for display and
+// author-time validation only. Copy the group so no placeholder can leak into
+// a later live deploy, which still requires the actual, addressed artifact.
+func preflightHostedPlan(group ServiceGroup) ([]hostedPlanItem, error) {
+	group.Services = append([]ResolvedService(nil), group.Services...)
+	for i := range group.Services {
+		svc := &group.Services[i]
+		if svc.Hosted == nil || svc.Hosted.Tier != HostedTierStatic {
+			continue
+		}
+		artifact := hostedArtifactOf(svc.Name, svc.Hosted)
+		if !hostedImageNamesRegistry(artifact) {
+			w := *svc.Hosted
+			w.Artifact = preflightRegistry + "/" + artifact
+			svc.Hosted = &w
+		}
+	}
+	digests := map[string]string{}
+	registries := map[string]string{}
+	for _, svc := range group.Services {
+		w := svc.Hosted
+		if w == nil || (w.Tier != HostedTierWorkload && w.Tier != HostedTierStatic) {
+			continue
+		}
+		artifact := hostedArtifactOf(svc.Name, w)
+		digests[artifact] = preflightDigest
+		registries[artifact] = preflightRegistry
+	}
+	g := group
+	g.Hosted = &HostedTarget{Release: "(preflight: no release)", Digests: digests, Registries: registries}
+	return planHostedWith(g, digests)
 }
 
 // hostedGroupHasPinnedArtifact reports whether any workload ships bytes a

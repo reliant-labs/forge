@@ -68,7 +68,7 @@ import .ingress as ing
 
 # The dev database. On a machine already running another stack on 5432 this
 # steps to 5433 and stays there, and the DSN below follows it.
-_postgres_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-postgres", 5432)
+{{if not .DatabaseDisabled}}_postgres_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-postgres", 5432){{end}}
 
 # The port each long-running host process BINDS (the API's mux, a split-out
 # worker's health endpoint). Host processes share this machine, so each one
@@ -106,7 +106,7 @@ _frontend_origin = "http://localhost:${_frontend_port}"
 
 # The dev database's connection string, composed from the port declared
 # above rather than written out a second time.
-_database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.ProjectName}}?sslmode=disable"
+{{if not .DatabaseDisabled}}_database_url = "postgres://postgres:postgres@localhost:${_postgres_port}/{{.ProjectName}}?sslmode=disable"{{end}}
 
 # This env's SECRET VALUES: the gitignored `secrets/{{.EnvName}}.yaml`, a flat
 # map of env-var name to value. A value reaches only a workload that names it
@@ -192,7 +192,7 @@ _LONG_RUNNING = ["service", "worker", "operator"]
 # own name unless its env sets one.
 _env = lambda w: fw.Workload -> {str:} {
     _machine = {
-        DATABASE_URL = _database_url
+{{if not .DatabaseDisabled}}        DATABASE_URL = _database_url{{end}}
     }
     _port = {
         PORT = str(_port_of(w.name))
@@ -330,6 +330,16 @@ _telemetry_workloads = ([fw.Workload {
     }
 }]) if _observability else []
 
+{{if .HasFrontend}}_{{.FrontendIdent}}_frontend = forge.Frontend {
+    name = "{{.FrontendName}}"
+    path = "frontends/{{.FrontendName}}"
+{{if .FrontendRoutes}}    routes = [{{range .FrontendRoutes}}{{printf "%q" .}}, {{end}}]
+{{end}}    port = _frontend_port
+}
+_on_host_frontend = lambda f: forge.Frontend -> forge.Frontend {
+    f | {runtime = forge.OnHost {}}
+}
+{{end}}
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"
     # WHO APPLIES this env: forge, directly. This is YOUR machine's cluster
@@ -363,11 +373,11 @@ _bundle = forge.Bundle {
     #
     #     fw.Workload {name = "postgres", runtime = forge.OnCompose {service = "postgres"}}
     infra = [
-        forge.HostInfra {
+{{if not .DatabaseDisabled}}        forge.HostInfra {
             name = "postgres"
             port = _postgres_port
             database = "{{.ProjectName}}"
-        }
+        }{{end}}
 {{- if .HasFrontend}}
         # The dev identity provider — a single static binary, supervised the
         # same way. `idp-steps.yaml` is its declarative bootstrap; its state
@@ -387,12 +397,9 @@ _bundle = forge.Bundle {
     # The frontend's dev server (forge.OnHost — the same runtime a workload
     # binds), with its port declared above so everything that must agree on
     # it reads one variable.
-    frontends = [forge.Frontend {
-        name = "{{.FrontendName}}"
-        path = "frontends/{{.FrontendName}}"
-        port = _frontend_port
-        runtime = forge.OnHost {}
-    }]
+    frontends = [
+        _on_host_frontend(_{{.FrontendIdent}}_frontend)
+    ]
 {{- end}}
 {{- if .HasFrontend}}
     # THE USERS, declared once in deploy/kcl/identity.k and run here on the dev

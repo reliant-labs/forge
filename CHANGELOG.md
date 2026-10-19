@@ -41,6 +41,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   the current state. Generated identifiers that contained a mangled prefix or
   an `...IDs`/`...URLs` plural change on the next regenerate.
 
+- **Frontend-only scaffolds need no database or cluster (#401).** Disabled
+  migrations no longer declare a migration job. Database-free frontend projects
+  get host dev servers and hosted static staging/prod, with no database, IdP or
+  unused cluster. `project new --frontend` accepts `--output` and `--routes`;
+  frontends added later use the same named declaration and rebindable line.
+  `env new --bind` validates the entire copy before writing, including under
+  `--force`. Offline static admission uses explicit preflight addresses without
+  relaxing live deployment's requirement for a pullable release artifact.
+
 - **`project upgrade` synchronizes Forge requirements in every project module
   (#762).** Root, `gen/` and other discovered Go modules upgrade before template
   changes; `--check` reports pin drift without running Go. Failed `go get` or

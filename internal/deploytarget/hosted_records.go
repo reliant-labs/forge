@@ -82,20 +82,7 @@ func hostedRecordsOf(plan []hostedPlanItem) ([]HostedRecord, error) {
 // projection only: its digests are obviously fake and a bundle must never
 // seal it (callers refuse to).
 func PreflightHostedRecords(group ServiceGroup) ([]HostedRecord, error) {
-	digests := map[string]string{}
-	registries := map[string]string{}
-	for _, svc := range group.Services {
-		w := svc.Hosted
-		if w == nil || (w.Tier != HostedTierWorkload && w.Tier != HostedTierStatic) {
-			continue
-		}
-		artifact := hostedArtifactOf(svc.Name, w)
-		digests[artifact] = preflightDigest
-		registries[artifact] = preflightRegistry
-	}
-	g := group
-	g.Hosted = &HostedTarget{Release: "(preflight: no release)", Digests: digests, Registries: registries}
-	plan, err := planHostedWith(g, digests)
+	plan, err := preflightHostedPlan(group)
 	if err != nil {
 		return nil, err
 	}

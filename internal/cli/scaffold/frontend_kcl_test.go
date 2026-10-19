@@ -55,12 +55,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 			if status != frontendKCLApplied {
 				t.Fatalf("splice did not apply (status %d) — an anchor moved in %s", status, tc.tmpl)
 			}
-			wantEntry := "frontends += [forge.Frontend {\n        name = \"web\"\n        path = \"frontends/web\""
-			if !dev {
-				// A hosted env binds a later frontend the way it binds the one
-				// it was born with: through its own `_hosted_frontend`.
-				wantEntry = "frontends += [_hosted_frontend(forge.Frontend {\n        name = \"web\"\n        path = \"frontends/web\""
-			}
+			wantEntry := "_web_frontend = forge.Frontend {\n    name = \"web\"\n    path = \"frontends/web\""
 			if !strings.Contains(out, wantEntry) {
 				t.Errorf("frontend entry missing (want %q):\n%s", wantEntry, out)
 			}
@@ -69,7 +64,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 				if !strings.Contains(out, wantPort) || !strings.Contains(out, "port = _web_frontend_port") {
 					t.Errorf("dev env must declare and use a resolve_port for the frontend:\n%s", out)
 				}
-				if strings.Index(out, wantPort) > strings.Index(out, "_database_url = ") {
+				if strings.Index(out, wantPort) > strings.Index(out, "_web_frontend = ") {
 					t.Errorf("port must be declared with the other ports, before _database_url")
 				}
 			} else if strings.Contains(out, "_web_frontend_port") {
@@ -79,7 +74,7 @@ func TestSpliceFrontendIntoEnvKCL_EveryScaffoldedEnv(t *testing.T) {
 			if dev && !strings.Contains(out, "runtime = forge.OnHost {}") {
 				t.Errorf("dev: the spliced frontend binds no dev server:\n%s", out)
 			}
-			if !dev && !strings.Contains(out, "        public_dir = \"out\"\n    })]\n") {
+			if !dev && !strings.Contains(out, "        _hosted_frontend(_web_frontend)\n") {
 				t.Errorf("%s: the hosted frontend entry is not closed by its binder call:\n%s", tc.env, out)
 			}
 			if strings.Contains(out, "REPLACE_ME") {
@@ -210,12 +205,12 @@ func TestSpliceFrontendIntoEnvKCL_CarriesRoutes(t *testing.T) {
 		name    string
 		binding frontendBinding
 	}{{"dev", frontendOnHost}, {"prod", frontendOnBucket}} {
-		entry := frontendKCLEntry("web", "nextjs", env.binding, 0, []string{"none"})
+		entry := frontendKCLDeclaration("web", "nextjs", env.binding, 0, []string{"none"})
 		if !strings.Contains(entry, `routes = ["none"]`) {
 			t.Errorf("%s: the route allowlist must be declared in every env's frontend:\n%s", env.name, entry)
 		}
 	}
-	if strings.Contains(frontendKCLEntry("web", "nextjs", frontendOnHost, 0, nil), "routes") {
+	if strings.Contains(frontendKCLDeclaration("web", "nextjs", frontendOnHost, 0, nil), "routes") {
 		t.Error("no routes requested: none must be emitted")
 	}
 }
@@ -223,11 +218,11 @@ func TestSpliceFrontendIntoEnvKCL_CarriesRoutes(t *testing.T) {
 func TestFrontendKCLEntry_DeclaresANonDefaultType(t *testing.T) {
 	cases := map[string]string{"vite-spa": `type = "vite"`, "react-native": `type = "rn"`}
 	for scaffoldType, want := range cases {
-		if got := frontendKCLEntry("spa", kclFrontendType(scaffoldType), frontendOnHost, 0, nil); !strings.Contains(got, want) {
+		if got := frontendKCLDeclaration("spa", kclFrontendType(scaffoldType), frontendOnHost, 0, nil); !strings.Contains(got, want) {
 			t.Errorf("%s: the stanza must declare %s so it is not read as the nextjs default:\n%s", scaffoldType, want, got)
 		}
 	}
-	if got := frontendKCLEntry("web", kclFrontendType("nextjs"), frontendOnHost, 0, nil); strings.Contains(got, "type =") {
+	if got := frontendKCLDeclaration("web", kclFrontendType("nextjs"), frontendOnHost, 0, nil); strings.Contains(got, "type =") {
 		t.Errorf("a Next.js frontend is the schema default and must not declare a type:\n%s", got)
 	}
 }

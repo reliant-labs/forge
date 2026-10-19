@@ -52,7 +52,7 @@ func NewFromTemplate(key string, build func(*sql.DB) error) (*sql.DB, func(), er
 		_, _ = baseDB.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name)
 		_, _ = baseDB.Exec("DROP DATABASE IF EXISTS " + name)
 	}
-	db, err := sql.Open("postgres", replaceDBName(s.baseURL, name))
+	db, err := open(replaceDBName(s.baseURL, name))
 	if err != nil {
 		drop()
 		return nil, nil, err
@@ -107,7 +107,7 @@ func ensureTemplate(s *server, key string, build func(*sql.DB) error) (string, e
 			_, _ = conn.ExecContext(ctx, "DROP DATABASE IF EXISTS "+building+" WITH (FORCE)")
 			return "", err
 		}
-		bdb, err := sql.Open("postgres", replaceDBName(s.baseURL, building))
+		bdb, err := open(replaceDBName(s.baseURL, building))
 		if err != nil {
 			return fail(err)
 		}

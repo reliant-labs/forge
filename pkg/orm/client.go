@@ -9,7 +9,7 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/extra/bunotel"
 
-	_ "github.com/lib/pq" // PostgreSQL driver (database/sql registration)
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 )
 
 // Client is the forge ORM handle. Post-Phase-2 it is a thin wrapper over
@@ -23,12 +23,14 @@ type Client struct {
 	dialect Dialect
 }
 
-// NewClient opens a new ORM client. dialectName must be "postgres".
+// NewClient opens a new ORM client on jackc/pgx, the driver forge's
+// servers open their pool with (serverkit.OpenDB). dialectName must be
+// "postgres".
 func NewClient(dialectName, dsn string) (*Client, error) {
 	if err := requirePostgres(dialectName); err != nil {
 		return nil, err
 	}
-	sqldb, err := sql.Open("postgres", dsn)
+	sqldb, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

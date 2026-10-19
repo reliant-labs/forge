@@ -388,6 +388,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   used to add 0 while the server spent its default (a SIGKILL mid-drain), a
   negative adds nothing, and any Go duration (`1m30s`, `500ms`, rounded up)
   is read instead of falling back to the default.
+- **`forge generate` refreshes a stale vendored `proto/forge/v1/forge.proto`
+  (and `proto/buf/validate/validate.proto`).** It vendored them only when
+  missing, so a project kept the forge.proto of the forge it was scaffolded
+  on: reliant could not write `(forge.v1.service).audience` until it
+  hand-synced the file. A copy that differs from the running forge's (after
+  the go_package/CRLF normalization `forge lint --vendored-protos` uses — now
+  one shared `assets.NormalizeVendoredProto`) is re-copied and reported as
+  `🔄 Refreshed <path>`. A disowned copy (`forge project disown <path>`) is
+  kept, and so is forge's own source copy in forge's repository.
 - **`forge env up` converges a host-run managed identity with `pkg/identity`
   (FI4).** An env whose `identity` runtime is `forge.IdentityOnHost {infra}` is
   converged against its host Zitadel after the infra is up and before any host

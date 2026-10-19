@@ -106,6 +106,17 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **`PRE_STOP_DELAY` and `SHUTDOWN_TIMEOUT` follow one rule: zero is the
+  default, negative is none** — the rule every `serverkit.Config` duration
+  already used. `ShutdownTimeout <= 0` always became the 30s default, so "no
+  shutdown window" could not be said, while "no pre-stop pause" had to be
+  written negative. A negative `ShutdownTimeout` (config, env, or
+  `serverkit.Drainer`) is now a window over as it opens; "none" is never
+  "unbounded", since the kubelet ends the shutdown at the grace period anyway.
+  The rendered `terminationGracePeriodSeconds` reads both the same way: `0s`
+  used to add 0 while the server spent its default (a SIGKILL mid-drain), a
+  negative adds nothing, and any Go duration (`1m30s`, `500ms`, rounded up)
+  is read instead of falling back to the default.
 - **`forge env up` converges a host-run managed identity with `pkg/identity`
   (FI4).** An env whose `identity` runtime is `forge.IdentityOnHost {infra}` is
   converged against its host Zitadel after the infra is up and before any host

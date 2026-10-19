@@ -233,7 +233,10 @@ func TestProbesSplit(t *testing.T) {
 	}
 }
 
-// TestGracePeriod ports expand.k:239-253 and its _duration_seconds parser.
+// TestGracePeriod: PRE_STOP_DELAY + SHUTDOWN_TIMEOUT + a 5s margin, each read
+// by serverkit's rule — zero is the default, negative is none — so the grace
+// period is exactly what the server will spend. "0s" used to render 0 while
+// the server spent its 30s default, and the kubelet SIGKILLed mid-drain.
 func TestGracePeriod(t *testing.T) {
 	for _, c := range []struct {
 		env  []v1alpha1.EnvVar
@@ -242,8 +245,13 @@ func TestGracePeriod(t *testing.T) {
 		{nil, 40},
 		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "10s"}, {Name: "SHUTDOWN_TIMEOUT", Value: "1m"}}, 75},
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1h"}}, 3610},
-		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1m30s"}}, 40}, // not <int><unit>: fallback
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1m30s"}}, 100},
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1500ms"}}, 12}, // rounded up
 		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "7"}}, 42},
+		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "0s"}, {Name: "SHUTDOWN_TIMEOUT", Value: "0s"}}, 40},   // zero: the defaults
+		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "-1s"}}, 35},                                           // negative: no pause
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "-1s"}}, 10},                                         // negative: no window
+		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "${X}"}}, 40},                                        // not a duration: the default
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "X"}}}, 40}, // a reference has no literal
 	} {
 		w := svc("api")

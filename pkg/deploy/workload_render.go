@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jinzhu/inflection"
 	appsv1 "k8s.io/api/apps/v1"
@@ -931,27 +932,29 @@ func envLiteral(env []v1alpha1.EnvVar, key, fallback string) string {
 	return v
 }
 
-// durationSeconds ports expand.k:159-163 _duration_seconds: seconds from a
-// plain <int><s|m|h> Go duration literal. Anything else ("1m30s", "500ms")
-// falls back rather than rendering a nonsense number.
-func durationSeconds(raw string, fallback int64) int64 {
-	num, mult := raw, int64(1)
-	switch {
-	case strings.HasSuffix(raw, "s"):
-		num = raw[:len(raw)-1]
-	case strings.HasSuffix(raw, "m"):
-		num, mult = raw[:len(raw)-1], 60
-	case strings.HasSuffix(raw, "h"):
-		num, mult = raw[:len(raw)-1], 3600
-	}
-	if num == "" || strings.Trim(num, "0123456789") != "" {
-		return fallback
-	}
-	n, err := strconv.ParseInt(num, 10, 64)
+// drainSeconds is one drain knob's share of the grace period, in whole
+// seconds rounded up so the grace period never undercuts the server. It reads
+// the value the way the server does — a Go duration ("30s", "1m30s",
+// "500ms"), or a bare count of seconds — and applies serverkit's rule for
+// both drain durations: unset or zero is the default, negative is none.
+// Anything else (an interpolation, a typo) takes the default, which the
+// server's own config loader would have refused anyway.
+func drainSeconds(raw string, fallback int64) int64 {
+	d, err := time.ParseDuration(raw)
 	if err != nil {
-		return fallback
+		n, nerr := strconv.ParseInt(raw, 10, 64)
+		if nerr != nil {
+			return fallback
+		}
+		d = time.Duration(n) * time.Second
 	}
-	return n * mult
+	switch {
+	case d == 0:
+		return fallback
+	case d < 0:
+		return 0
+	}
+	return int64((d + time.Second - 1) / time.Second)
 }
 
 // gracePeriodSeconds ports expand.k:239-253 _grace_period. On SIGTERM
@@ -961,8 +964,8 @@ func durationSeconds(raw string, fallback int64) int64 {
 // from the workload's OWN env, so retuning either knob cannot reintroduce
 // the truncation. No preStop hook: the app owns the drain.
 func gracePeriodSeconds(env []v1alpha1.EnvVar) int64 {
-	pre := durationSeconds(envLiteral(env, "PRE_STOP_DELAY", ""), defaultPreStopDelaySeconds)
-	shutdown := durationSeconds(envLiteral(env, "SHUTDOWN_TIMEOUT", ""), defaultShutdownTimeoutSeconds)
+	pre := drainSeconds(envLiteral(env, "PRE_STOP_DELAY", ""), defaultPreStopDelaySeconds)
+	shutdown := drainSeconds(envLiteral(env, "SHUTDOWN_TIMEOUT", ""), defaultShutdownTimeoutSeconds)
 	return pre + shutdown + graceMarginSeconds
 }
 

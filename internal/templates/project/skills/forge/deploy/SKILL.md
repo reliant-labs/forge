@@ -110,8 +110,10 @@ unit at a time. See deploy/shape.
   on every runtime. That is what the scaffolded server serves. Declare
   `probes` only to change them. A third-party image with ports gets TCP on
   its first port; a worker or job gets none unless it declares one.
-- **Grace period** from the drain env (`PRE_STOP_DELAY + SHUTDOWN_TIMEOUT`),
-  so a rollout never SIGKILLs a pod mid-drain;
+- **Grace period** from the drain env (`PRE_STOP_DELAY + SHUTDOWN_TIMEOUT`
+  + 5s), so a rollout never SIGKILLs a pod mid-drain. Each is read the way
+  the server reads it: unset or zero is the default (5s / 30s), negative is
+  none (no pause; no shutdown window) and adds nothing;
   `terminationGracePeriodSeconds` overrides it. What the server does inside
   it: `services/shutdown`.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft

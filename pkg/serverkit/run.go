@@ -417,7 +417,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	workerCancel()
 	if len(srv.Workers) > 0 && !waitWithin(shutdownCtx, &workerWg) {
 		logger.Error("workers did not drain within the shutdown budget",
-			"shutdown_timeout", cfg.ShutdownTimeout)
+			"shutdown_timeout", drainer.shutdownTimeout())
 	}
 	for _, w := range srv.Workers {
 		if stopErr := w.Stop(shutdownCtx); stopErr != nil {
@@ -437,7 +437,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// clean-ish exit beats being shot mid-flush.
 	if operatorsSupervised && !waitWithin(shutdownCtx, &operatorWg) {
 		logger.Error("controller manager did not drain within the shutdown budget",
-			"shutdown_timeout", cfg.ShutdownTimeout)
+			"shutdown_timeout", drainer.shutdownTimeout())
 	}
 	if operatorsSupervised {
 		mark = drainer.phase("operators", mark, "drain: operators stopped", "operators", len(srv.Operators))

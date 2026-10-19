@@ -97,6 +97,25 @@ func TestDrainer_ShutdownContextIsItsOwnBudget(t *testing.T) {
 	if zctx.Err() != nil {
 		t.Fatal("a zero ShutdownTimeout must take the default budget, not expire at once")
 	}
+
+	// Negative is none, as for PreStopDelay: a window over as it opens.
+	none := serverkit.Drainer{ShutdownTimeout: -1}
+	nctx, ncancel := none.ShutdownContext()
+	defer ncancel()
+	if nctx.Err() == nil {
+		t.Fatal("a negative ShutdownTimeout must be no shutdown window, not the default budget")
+	}
+}
+
+// A negative PreStopDelay is no pause — the same rule as ShutdownTimeout.
+func TestDrainer_NegativePreStopDelayIsNoPause(t *testing.T) {
+	t.Parallel()
+	d := &serverkit.Drainer{PreStopDelay: -1}
+	start := time.Now()
+	d.Begin()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Begin paused %s for a negative PreStopDelay, want no pause", elapsed)
+	}
 }
 
 // serveOwnListener is a process that runs its own listener without Run: it

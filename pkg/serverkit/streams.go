@@ -1,0 +1,320 @@
+package serverkit
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
+)
+
+// streams.go — ending long-lived streams when the server starts shutting down.
+//
+// http.Server.Shutdown stops accepting connections and then WAITS for every
+// active request to finish. A long-lived stream — a server-streaming RPC that
+// pushes updates for as long as the client stays, a Server-Sent Events
+// response, an MCP event stream — never finishes on its own. So Shutdown
+// waited out the whole ShutdownTimeout, returned context.DeadlineExceeded
+// ("server shutdown error" at ERROR, on every rollout, from every replica),
+// and the process exited cutting those streams with no status at all: a torn
+// connection instead of a clean end the client could act on. Every forge app
+// with one open server stream paid that on every deploy.
+//
+// Streams is the registry that fixes it. It belongs to a listener: Run makes
+// one, NewHTTPServer installs it into every request's context, and long-lived
+// handlers bind to it — LongLived for an SSE or websocket route, Bind by hand.
+// Draining it is two phases inside the shutdown budget:
+//
+//  1. SOFT. The drain begins: every bound stream's Draining(ctx) channel
+//     closes. A stream that asked for that channel before the drain (it has
+//     something to say goodbye with — a websocket close frame, a gateway
+//     handing its peer to a live replica) is left running to finish on its
+//     own terms. Every other bound stream ends at once: it has nothing to add
+//     by waiting, and ending it now sends its client to a live replica now.
+//  2. HARD. At the shutdown deadline minus DrainReserve, every stream still
+//     bound is ended. The reserve is what the rest of the teardown runs in.
+//
+// "Ended" is a context cancelled with cause svcerr.ErrServerDraining (Ended
+// reports it), so a handler can end the stream with a status its client
+// reconnects on. The soft phase runs AFTER the
+// readiness flip and the pre-stop pause, when this replica is already out of
+// rotation, so those reconnects land on a live replica.
+//
+// Only LONG-LIVED handlers may be bound. A unary request is drained the normal
+// way — http.Server.Shutdown waits for it — and must never be cut short by a
+// rollout.
+
+// DefaultDrainReserve is the part of the shutdown budget kept back after the
+// long-lived streams are ended, when Streams.DrainReserve is zero.
+const DefaultDrainReserve = 5 * time.Second
+
+// Streams is a listener's registry of long-lived streams. The zero value is
+// ready to use; every method is safe for concurrent use.
+type Streams struct {
+	// DrainReserve is how much of the shutdown budget Drain keeps back after
+	// it ends the streams that are still open: streams that claimed the soft
+	// phase run until the deadline minus this. Zero means
+	// DefaultDrainReserve; it is never more than half the budget left when
+	// Drain starts, so a soft phase always exists.
+	DrainReserve time.Duration
+
+	once sync.Once
+	soft chan struct{} // closed when the drain begins
+
+	mu       sync.Mutex
+	draining bool // BeginDrain has run: new bindings end at once
+	bindings map[*binding]struct{}
+	idle     chan struct{} // closed when bindings becomes empty; nil while empty
+}
+
+// binding is one bound stream.
+type binding struct {
+	cancel context.CancelCauseFunc
+	// claimed: the handler asked for Draining(ctx) before the drain began,
+	// so the soft phase leaves it running.
+	claimed atomic.Bool
+}
+
+type (
+	streamsKey struct{}
+	bindingKey struct{}
+)
+
+// NewStreams returns an empty registry.
+func NewStreams() *Streams {
+	s := &Streams{}
+	s.init()
+	return s
+}
+
+func (s *Streams) init() {
+	s.once.Do(func() {
+		s.soft = make(chan struct{})
+		s.bindings = make(map[*binding]struct{})
+	})
+}
+
+// Install makes s the registry for every request h serves: the one LongLived
+// routes bind to, found through the request's context. NewHTTPServer installs its Streams this way; a process with its own
+// server stack wraps its handler with it.
+func (s *Streams) Install(h http.Handler) http.Handler {
+	s.init()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), streamsKey{}, s)))
+	})
+}
+
+// StreamsFrom returns the registry installed for the request ctx belongs to,
+// or nil.
+func StreamsFrom(ctx context.Context) *Streams {
+	s, _ := ctx.Value(streamsKey{}).(*Streams)
+	return s
+}
+
+// Bind binds a long-lived handler's context to the drain. The returned context
+// is cancelled, with cause svcerr.ErrServerDraining, when the drain ends this
+// stream (see the phases above); a stream bound after the drain began is ended
+// at once rather than pinning a server that is going away. release frees the
+// binding and must be called when the handler returns; calling it more than
+// once is harmless.
+func (s *Streams) Bind(parent context.Context) (ctx context.Context, release context.CancelFunc) {
+	s.init()
+	b := &binding{}
+	var cancel context.CancelCauseFunc
+	ctx, cancel = context.WithCancelCause(context.WithValue(parent, streamsKey{}, s))
+	ctx = context.WithValue(ctx, bindingKey{}, b)
+	b.cancel = cancel
+
+	s.mu.Lock()
+	if s.draining {
+		s.mu.Unlock()
+		cancel(svcerr.ErrServerDraining)
+		return ctx, func() { cancel(context.Canceled) }
+	}
+	if len(s.bindings) == 0 {
+		s.idle = make(chan struct{})
+	}
+	s.bindings[b] = struct{}{}
+	s.mu.Unlock()
+
+	var once sync.Once
+	return ctx, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.bindings, b)
+			if len(s.bindings) == 0 && s.idle != nil {
+				close(s.idle)
+				s.idle = nil
+			}
+			s.mu.Unlock()
+		})
+		cancel(context.Canceled)
+	}
+}
+
+// Active reports how many streams are bound: the long-lived handlers still
+// running.
+func (s *Streams) Active() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.bindings)
+}
+
+// BeginDrain starts the soft phase: every Draining channel closes, every bound
+// stream that did not claim the soft phase is ended now, and every stream bound
+// from now on is ended at once. It returns how many streams it ended and how
+// many it left running. Idempotent; NewHTTPServer registers it to run at the
+// start of http.Server.Shutdown.
+func (s *Streams) BeginDrain() (ended, left int) {
+	s.init()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.draining {
+		s.draining = true
+		close(s.soft)
+	}
+	for b := range s.bindings {
+		if b.claimed.Load() {
+			left++
+			continue
+		}
+		b.cancel(svcerr.ErrServerDraining)
+		ended++
+	}
+	return ended, left
+}
+
+// End ends every bound stream now, claimed or not — the hard phase. It
+// returns how many it ended. Idempotent.
+func (s *Streams) End() int {
+	s.BeginDrain()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for b := range s.bindings {
+		b.cancel(svcerr.ErrServerDraining)
+	}
+	return len(s.bindings)
+}
+
+// Wait blocks until no stream is bound or ctx is done, and reports whether the
+// registry emptied.
+func (s *Streams) Wait(ctx context.Context) bool {
+	s.mu.Lock()
+	idle := s.idle
+	s.mu.Unlock()
+	if idle == nil {
+		return true
+	}
+	select {
+	case <-idle:
+		return true
+	case <-ctx.Done():
+	}
+	return s.Active() == 0
+}
+
+// Drain runs both phases inside ctx's deadline: BeginDrain, wait for the
+// claimed streams until the deadline minus DrainReserve, End whatever is still
+// bound, then wait for those handlers to return. It returns an error naming
+// how many were still running when ctx ended. Without a deadline the soft
+// phase lasts until every stream has returned or ctx is cancelled.
+//
+// It is the long-lived half of a listener's drain; DrainHTTP runs it beside
+// http.Server.Shutdown, which drains the unary half.
+func (s *Streams) Drain(ctx context.Context) error {
+	s.BeginDrain()
+	soft, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); ok {
+		reserve := s.DrainReserve
+		if reserve <= 0 {
+			reserve = DefaultDrainReserve
+		}
+		reserve = min(reserve, time.Until(deadline)/2)
+		soft, cancel = context.WithDeadline(ctx, deadline.Add(-reserve))
+		defer cancel()
+	}
+	if s.Wait(soft) {
+		return nil
+	}
+	s.End()
+	if s.Wait(ctx) {
+		return nil
+	}
+	return fmt.Errorf("%d long-lived stream(s) still running at the end of the shutdown budget: their handlers ignore their context", s.Active())
+}
+
+// DrainHTTP is a listener's drain: it stops srv accepting and drains its
+// unary requests (http.Server.Shutdown) while streams drain soft-then-hard
+// (Streams.Drain), both inside ctx's deadline. Run calls it after the
+// readiness flip and the pre-stop pause; a process that runs its own listener
+// calls it in place of srv.Shutdown. A nil streams is plain Shutdown.
+func DrainHTTP(ctx context.Context, srv *http.Server, streams *Streams) error {
+	if streams == nil {
+		return srv.Shutdown(ctx)
+	}
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- srv.Shutdown(ctx) }()
+	streamsErr := streams.Drain(ctx)
+	return errors.Join(<-shutdown, streamsErr)
+}
+
+// LongLived marks h's requests as long-lived streams — Server-Sent Events, a
+// websocket, a long poll, an MCP GET event stream — by binding each one to the
+// registry of the listener serving it. Never wrap a unary route: a rollout
+// would cut it short instead of draining it.
+//
+// A request no registry was installed for (a server not built by
+// NewHTTPServer or Streams.Install) is served unbound, and the first one is
+// logged, because nothing will end it at shutdown.
+func LongLived(h http.Handler) http.Handler {
+	var warn sync.Once
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := StreamsFrom(r.Context())
+		if s == nil {
+			warn.Do(func() {
+				slog.WarnContext(r.Context(), "serverkit.LongLived: no drain registry installed for this server; the stream will not be ended at shutdown",
+					"path", r.URL.Path, "hint", "serve it through serverkit.NewHTTPServer, or wrap the handler with Streams.Install")
+			})
+			h.ServeHTTP(w, r)
+			return
+		}
+		ctx, release := s.Bind(r.Context())
+		defer release()
+		h.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// Draining returns a channel that is closed when the drain of ctx's registry
+// begins: this replica is going away, and a stream that has something to say
+// goodbye with should say it now. Asking for it is how a bound stream CLAIMS
+// the soft phase: the drain then leaves it running until it returns or the
+// hard deadline ends it, instead of ending it at once. Ask before the drain —
+// at the top of the handler — not after.
+//
+// For a context with no registry the channel never closes.
+func Draining(ctx context.Context) <-chan struct{} {
+	if b, ok := ctx.Value(bindingKey{}).(*binding); ok {
+		b.claimed.Store(true)
+	}
+	s := StreamsFrom(ctx)
+	if s == nil {
+		return nil
+	}
+	s.init()
+	return s.soft
+}
+
+// Ended reports whether ctx was ended by the drain — as opposed to the client
+// going away or the handler finishing on its own. A handler checks it to
+// choose how to say goodbye: a status its client reconnects on, rather than
+// one that reads as "the stream is over". It holds for every context derived
+// from a bound one.
+func Ended(ctx context.Context) bool {
+	return ctx.Err() != nil && svcerr.IsServerDraining(context.Cause(ctx))
+}

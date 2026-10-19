@@ -84,10 +84,29 @@
 //  4. Listener binds, readiness flips true.
 //  5. Workers start; the operator manager starts when len(Operators) > 0,
 //     which is the caller's decision and the only one.
-//  6. SIGINT/SIGTERM → readiness flips false → pre-stop sleep →
-//     http.Server drains (Server.OnDrain runs as it begins, to end
-//     long-lived streams) → workers stop → Server.OnShutdown → pprof shuts
-//     down → telemetry flushes.
+//  6. SIGINT/SIGTERM → readiness flips to "draining" → pre-stop sleep →
+//     the listener drains (DrainHTTP: stop accepting, unary requests
+//     finish, long-lived streams end soft-then-hard) → workers stop →
+//     operators stop → Server.OnShutdown → pprof shuts down → telemetry
+//     flushes.
+//
+// # Long-lived streams
+//
+// A stream that never finishes on its own — a server-streaming RPC, an SSE
+// response, a websocket — would hold http.Server.Shutdown for the whole
+// ShutdownTimeout and then be cut without a status. The listener owns a
+// Streams registry (streams.go) that ends them inside the budget instead,
+// with cause svcerr.ErrServerDraining: at once when the drain begins, or —
+// for a stream that asked for serverkit.Draining(ctx) to say goodbye —
+// when it returns or at the deadline minus Config.DrainReserve. Mark an SSE
+// or websocket route with serverkit.LongLived.
+//
+// # Without Run
+//
+// Every piece of the sequence is exported for a main that runs its own
+// listener: Drainer (readiness gate, pre-stop, shutdown budget, /readyz),
+// NewHTTPServer (the listener, with its Streams installed), Streams,
+// LongLived and DrainHTTP (the listener's drain).
 //
 // # Worker shutdown contract
 //

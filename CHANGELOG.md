@@ -239,9 +239,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   advisories (account takeover, cross-org privilege escalation). No config or steps changes were
   needed, and the host-infra suite now downloads the real archive and checks it
   against the pinned checksum. 4.18.0 is broken upstream and was skipped.
-- **serverkit exposes the listener knobs a streaming server needs, and a
-  drain-start hook.** These come from reliant's API listener (P3c G5), and
-  each one used to be hard-coded:
+- **serverkit exposes the listener knobs a streaming server needs.** These
+  come from reliant's API listener (P3c G5), and each one used to be
+  hard-coded:
   - `Config.ReadHeaderTimeout`, `Config.ReadTimeout` and `Config.IdleTimeout`.
     Zero keeps the defaults (10s / 30s / 120s), and a negative value disables
     the timeout. Over HTTP/2, `ReadTimeout` is a deadline on each stream's
@@ -250,13 +250,30 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   - `Config.HTTP2MaxConcurrentStreams` is the number of concurrent streams
     one HTTP/2 connection may open, over TLS or h2c. Zero keeps net/http's
     default of 250. reliant uses 1000.
-  - `Server.OnDrain` runs when the HTTP drain begins, before Shutdown waits
-    for in-flight requests (it is registered with
-    `http.Server.RegisterOnShutdown`). A server ends its long-lived streams
-    there, so the drain completes instead of holding Run until
-    `ShutdownTimeout`. `OnShutdown` is unchanged: it is the teardown, and it
-    runs after the drain.
-
+- **An open stream no longer holds a forge server's shutdown for the whole
+  budget.** `http.Server.Shutdown` waits for every active request, and a
+  long-lived one (an SSE response, a websocket, a server stream) never
+  finishes on its own: every rollout of an app with one open stream waited out
+  `SHUTDOWN_TIMEOUT`, logged `server shutdown error: context deadline exceeded`
+  at ERROR from every replica, and exited cutting the stream without a status
+  (reliant #773). `serverkit.Run`'s listener now owns a drain registry,
+  `serverkit.Streams`, and ends its streams inside the budget with cause
+  `svcerr.ErrServerDraining`, while unary requests drain as before. Mark a
+  plain-HTTP streaming route with `serverkit.LongLived(h)`; it ends as the
+  drain begins, after the pre-stop pause, so its client reconnects to a live
+  replica. A stream with something to say first asks for
+  `serverkit.Draining(ctx)` — a soft signal while its context is still live —
+  and runs until it returns or the deadline minus `Config.DrainReserve` (5s by
+  default). `svcerr.Draining(detail)` / `svcerr.ErrServerDraining` is the
+  drain's identity (wire code Unavailable), distinct from `ErrUnavailable`.
+  `/readyz` now answers `{"status":"draining"}` during shutdown.
+- **The shutdown sequence is usable without `serverkit.Run`.** A main that runs
+  its own listener (a worker with a health port, a gateway) uses the same
+  pieces: `serverkit.Drainer` (readiness gate, pre-stop pause, shutdown budget,
+  `ReadinessHandler`), `serverkit.NewHTTPServer(cfg, handler, streams)` (the
+  listener Run builds, with its drain registry installed) and
+  `serverkit.DrainHTTP(ctx, srv, streams)` (the listener's drain). See
+  `forge skill load services/shutdown`.
 - **A direct apply prunes superseded one-shot Jobs, keeping the newest three of
   each.** A standalone Job is named by the hash of its spec, so every release that
   changes one leaves the previous Job behind, and since a reconciler made

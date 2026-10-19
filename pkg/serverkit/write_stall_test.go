@@ -18,7 +18,7 @@ const testStall = 100 * time.Millisecond
 func serveWriteStallTest(t *testing.T, cfg Config, handler http.Handler) string {
 	t.Helper()
 	cfg.Normalize()
-	server := newHTTPServer(cfg, handler)
+	server := NewHTTPServer(cfg, handler, nil)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -159,7 +159,7 @@ func TestNewHTTPServerNoWholeResponseWriteTimeout(t *testing.T) {
 	t.Parallel()
 	cfg := Config{Addr: ":0"}
 	cfg.Normalize()
-	server := newHTTPServer(cfg, http.NewServeMux())
+	server := NewHTTPServer(cfg, http.NewServeMux(), nil)
 	if server.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %s; use WriteStallTimeout instead", server.WriteTimeout)
 	}
@@ -223,7 +223,7 @@ func TestNewHTTPServerTimeoutsFromConfig(t *testing.T) {
 		cfg := tc.in
 		cfg.Addr = ":0"
 		cfg.Normalize()
-		s := newHTTPServer(cfg, http.NewServeMux())
+		s := NewHTTPServer(cfg, http.NewServeMux(), nil)
 		if s.ReadHeaderTimeout != tc.header || s.ReadTimeout != tc.read || s.IdleTimeout != tc.idle {
 			t.Errorf("%s: header/read/idle = %v/%v/%v, want %v/%v/%v", tc.name, s.ReadHeaderTimeout, s.ReadTimeout, s.IdleTimeout, tc.header, tc.read, tc.idle)
 		}

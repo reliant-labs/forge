@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page/search users, and email an invitation with explicit `--email` and repeatable
   `--role`. Uses the authenticated org and exact project/environment lookup;
   invitations require a human org admin. No passwords or credentials are printed.
+- **`forge/pkg/dashspec`: the dashboard spec and its validator are public.**
+  The `forge.dashboards/v1` types (`Dashboard`, `Panel`, `Series`, the kinds,
+  aggregates, operators and units), `ParseDashboard` (every problem located by
+  line, column and path), `ProblemsOf`, `CheckField` and `IsConsoleKind` moved
+  out of `internal/obsdash`, which aliases them and is otherwise unchanged. A
+  module that reads forge's dashboards validates with forge's own rules
+  instead of a hand-kept copy: the control plane's copy rejected every
+  dashboard forge#880 generated until it was patched by hand.
+  `internal/obsdash`'s HyperDX renderer refuses a field through `CheckField`,
+  and a test holds the two to the same vocabulary.
 
 ### Fixed
 

@@ -65,7 +65,7 @@ func TestSnapshotFrontendFrozenPublishSelectedOnly(t *testing.T) {
 		},
 		preflight: func(_ context.Context, f FrontendEntity) error {
 			preflights++
-			if f.Path != "/pinned/web" {
+			if f.Path != filepath.FromSlash("/pinned/web") {
 				t.Fatal("current checkout leaked")
 			}
 			return nil
@@ -252,7 +252,7 @@ func TestSnapshotFrontendInRepoPinnedRecipe(t *testing.T) {
 			return gitsource.Resolution{Dir: "/pinned/repo", Commit: src.Commit}, nil, nil
 		},
 		preflight: func(_ context.Context, f FrontendEntity) error {
-			if f.Path != "/pinned/repo/frontends/web" {
+			if f.Path != filepath.FromSlash("/pinned/repo/frontends/web") {
 				t.Fatalf("wrong pinned recipe path %s", f.Path)
 			}
 			return nil

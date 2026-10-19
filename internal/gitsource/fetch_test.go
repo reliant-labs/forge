@@ -93,6 +93,13 @@ func TestGitFetcher_FetchesTagIntoCache(t *testing.T) {
 		t.Errorf("fetched content = %q", data)
 	}
 
+	// The completion marker is resolver metadata, not source dirt. ShellBuild
+	// release provenance must see an unchanged fetched checkout as clean.
+	status, err := exec.Command("git", "-C", filepath.Dir(res.Dir), "status", "--porcelain").Output()
+	if err != nil || len(status) != 0 {
+		t.Fatalf("fetched cache checkout is dirty: %s (%v)", status, err)
+	}
+
 	// Second resolve is a cache hit — no second clone.
 	again, err := r.Resolve(context.Background(), src)
 	if err != nil {

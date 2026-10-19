@@ -68,7 +68,6 @@ type releaseSourceCheck struct {
 	projectDir   string
 	env          string
 	version      string
-	frontends    []FrontendEntity
 	buildSources []sourceDeclaration
 	// recorded is true at the cut, where the checkouts judged are the ones
 	// the build state RECORDS rather than the ones on disk now. The refusal
@@ -85,7 +84,6 @@ func newReleaseSourceCheck(projectDir, env, version string, recorded bool, entit
 		projectDir:   projectDir,
 		env:          env,
 		version:      version,
-		frontends:    entitiesOrEmpty(entities).Frontends,
 		buildSources: buildSourceDeclarations(nil, entities),
 		recorded:     recorded,
 		resolver: func() (pinResolver, error) {
@@ -357,13 +355,7 @@ func (c releaseSourceCheck) gitSourcePins(ctx context.Context, src *buildtarget.
 	}
 	var pins []sourcePin
 	var resolver pinResolver
-	declarations := append([]sourceDeclaration{}, c.buildSources...)
-	if len(declarations) == 0 {
-		for _, fe := range c.frontends {
-			declarations = append(declarations, sourceDeclaration{name: fmt.Sprintf("frontend %q", fe.Name), source: fe.Source})
-		}
-	}
-	for _, d := range declarations {
+	for _, d := range c.buildSources {
 		if d.source == nil || d.source.Repo == "" || release.CanonicalRepo(d.source.Repo) != src.Repo {
 			continue
 		}

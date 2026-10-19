@@ -2328,7 +2328,8 @@ schema DockerBuild(Build):
     # `docker buildx --build-context name=value` entry (a sibling-checkout
     # path the Dockerfile `COPY --from=name`s, a `docker-image://` override,
     # …). Declare ONLY what this Dockerfile actually consumes. Empty falls
-    # back to forge.yaml docker.build_contexts.
+    # back to forge.yaml docker.build_contexts. A GitSource value resolves
+    # through the same repo+ref cache and local overrides as a frontend.
     build_contexts: {str: str | GitSource} = {}
 
     check:

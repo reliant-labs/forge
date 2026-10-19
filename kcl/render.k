@@ -2155,7 +2155,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "cmd": b.cmd
         "cwd": b.cwd if b.cwd else None
-        "source": {"repo": b.source.repo, "ref": b.source.ref, "subdir": b.source.subdir} if b.source else None
+        if b.source:
+            "source": {"repo": b.source.repo, "ref": b.source.ref, "subdir": b.source.subdir}
         "env": b.env if b.env else {}
     }
 }

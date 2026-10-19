@@ -390,6 +390,11 @@ func (r *Resolver) Resolve(ctx context.Context, src Source) (Resolution, error) 
 		}
 	}
 
+	// Also runs on older cache hits: the resolver's marker is not source
+	// dirt. Never touch an override checkout's excludes (returned above).
+	if err := excludeCacheMetadata(entry); err != nil {
+		return Resolution{}, err
+	}
 	full := entry
 	if src.Subdir != "" {
 		full = filepath.Join(entry, filepath.FromSlash(src.Subdir))

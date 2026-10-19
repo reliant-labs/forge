@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
 )
@@ -106,6 +107,30 @@ func TestShellBuildGitSourceRunsInFetchedSubdir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(project, "built-in.txt")); !os.IsNotExist(err) {
 		t.Fatalf("source build ran in project root: %v", err)
+	}
+}
+
+func TestShellBuildGitSourceReleasePin(t *testing.T) {
+	commit := strings.Repeat("c", 40)
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{Name: "lib", Build: BuildConfigEntity{Type: "shell", Shell: &ShellBuild{Cmd: "true", Source: &config.GitSource{Repo: "github.com/acme/lib", Ref: commit}}}}}}
+	check := newReleaseSourceCheck(t.TempDir(), "prod", "v1", false, entities)
+	pins, err := check.gitSourcePins(context.Background(), &buildtarget.Source{Repo: "github.com/acme/lib"})
+	if err != nil || len(pins) != 1 || !pins[0].admits(commit) {
+		t.Fatalf("ShellBuild pin not enforced by release guard: %+v, %v", pins, err)
+	}
+}
+
+func TestBuildGitSourceCommandWiring(t *testing.T) {
+	// Like the existing #144 guard, a resolver-only test cannot prove the
+	// command calls it. Read the inputs so this test remains cache-sound.
+	for file, call := range map[string]string{"build.go": "resolveBuildSources(ctx, projectDirForKCL(), cfg, entities)", "deploy.go": "resolveNamedBuildContexts(ctx, projectDirForKCL(), cfg.Docker.BuildContexts)", "doctor.go": "runSourceDoctorChecks(ctx, cfg, projectDir, signal)"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), call) {
+			t.Fatalf("%s no longer wires %s", file, call)
+		}
 	}
 }
 

@@ -123,13 +123,13 @@ func (s refTableResolver) Resolve(_ context.Context, src gitsource.Source) (gits
 func TestGitSourcePins(t *testing.T) {
 	commit := strings.Repeat("c", 40)
 	check := releaseSourceCheck{
-		frontends: []FrontendEntity{
+		buildSources: buildSourceDeclarations(nil, &KCLEntities{Frontends: []FrontendEntity{
 			{Name: "web", Source: &config.GitSource{Repo: "https://github.com/example/sib.git", Ref: commit}},
 			{Name: "docs", Source: &config.GitSource{Repo: "github.com/example/sib", Ref: "v1.0.0"}},
 			{Name: "local", Source: &config.GitSource{Repo: "github.com/example/sib", Ref: "main"}},
 			{Name: "gone", Source: &config.GitSource{Repo: "github.com/example/sib", Ref: "nope"}},
 			{Name: "other", Source: &config.GitSource{Repo: "github.com/example/other", Ref: commit}},
-		},
+		}}),
 		resolver: func() (pinResolver, error) {
 			return refTableResolver{
 				"v1.0.0": {Commit: strings.Repeat("d", 40)},

@@ -32,7 +32,7 @@ func buildSourceDeclarations(cfg *config.ProjectConfig, entities *KCLEntities) [
 		return out
 	}
 	for _, fe := range entities.Frontends {
-		out = append(out, sourceDeclaration{name: "frontend " + fe.Name, path: fe.Path, source: fe.Source})
+		out = append(out, sourceDeclaration{name: fmt.Sprintf("frontend %q", fe.Name), path: fe.Path, source: fe.Source})
 	}
 	for _, w := range entities.Workloads {
 		if sh := w.Build.Shell; sh != nil {

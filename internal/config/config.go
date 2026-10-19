@@ -1184,6 +1184,8 @@ type DockerConfig struct {
 	//     Dockerfile `FROM <name>` can be overridden with a specific image
 	//     at build time (local override of a base image during dev,
 	//     pin-by-digest in CI, etc.).
+	//   - A GitSource mapping (repo, ref, optional subdir). The CLI resolves
+	//     it through the shared source cache and explicit local overrides.
 	//   - Any other scheme buildkit understands (e.g. `oci-layout://`,
 	//     `https://`). Anything containing `://` is passed through
 	//     unchanged.

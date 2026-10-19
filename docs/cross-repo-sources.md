@@ -196,20 +196,54 @@ building.
 
 ## What is covered today
 
-**Frontends**, end to end: schema (KCL), resolver, cache,
-overrides, and the build and deploy paths.
+**Frontends**, end to end: schema (KCL), resolver, cache, overrides, and
+build, deploy, and `env up`.
 
-**Not yet covered** — both are noted as follow-ups on the tracking issue:
+**Shell builds** (the successor to `External.cwd`) declare a pin instead of
+requiring a sibling checkout:
 
-- `External.cwd`, whose schema still documents "a `cwd` that doesn't exist
-  on disk is a HARD build failure".
-- `forge.yaml docker.build_contexts`, still a map to local directories.
+```python
+build = forge.ShellBuild {
+    source = forge.GitSource {repo = "github.com/acme/api", ref = "v1.2.3", subdir = "server"}
+    cmd = "make image"
+}
+```
 
-Both are the same resolver applied at a different call site, but each has
-its own consumers to thread and its own tests to write. They were left out
-rather than half-done.
+`source` and `cwd` are mutually exclusive. The command runs in the resolved
+subdirectory; fetch failures are errors, never a fallback to the project
+root. The same resolution feeds build plans and the release-source check.
 
-### Until then: a release holds a sibling checkout to its pin
+**Named Docker contexts** accept either a path/BuildKit reference string or
+`GitSource`, in per-workload KCL and in the project-image defaults:
+
+```python
+build = forge.DockerBuild {
+    build_contexts = {
+        lib = forge.GitSource {repo = "github.com/acme/lib", ref = "v2.0.0", subdir = "src"}
+        base = "docker-image://alpine:3.22"
+    }
+}
+```
+
+```yaml
+docker:
+  build_contexts:
+    lib:
+      repo: github.com/acme/lib
+      ref: v2.0.0
+      subdir: src
+```
+
+Both use the same cache and explicit local overrides as frontends. Per-workload
+contexts still replace (not merge with) the project defaults. Resolving code
+never rewrites a declaration into a machine-local path. `forge doctor --verbose`
+reports pins versus filesystem/BuildKit references across environments without
+fetching any sources.
+
+The Forge KCL module itself is supplied by the rendering binary; projects no
+longer need a sibling `forge/kcl` dependency in `kcl.mod`.
+
+### A release holds a filesystem sibling checkout to its pin
 
 A `ShellBuild` whose `cwd` is a sibling checkout still builds whatever that
 checkout holds. So a release refuses to cut while it is not at the commit

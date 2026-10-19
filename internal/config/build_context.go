@@ -19,6 +19,7 @@ type BuildContext struct {
 	SourceDir string
 }
 
+// Validate rejects empty contexts, conflicting alternatives and malformed pins.
 func (c BuildContext) Validate() error {
 	if c.Source == nil {
 		if c.Path == "" {
@@ -49,6 +50,7 @@ func (s GitSource) Validate() error {
 	return nil
 }
 
+// UnmarshalYAML decodes a string reference or a strict GitSource mapping.
 func (c *BuildContext) UnmarshalYAML(node *yaml.Node) error {
 	*c = BuildContext{}
 	switch node.Kind {
@@ -75,6 +77,7 @@ func (c *BuildContext) UnmarshalYAML(node *yaml.Node) error {
 	return c.Validate()
 }
 
+// MarshalYAML preserves the declaration, never the resolved local directory.
 func (c BuildContext) MarshalYAML() (any, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
@@ -85,6 +88,7 @@ func (c BuildContext) MarshalYAML() (any, error) {
 	return c.Path, nil
 }
 
+// UnmarshalJSON decodes the same string-or-pin union emitted by KCL.
 func (c *BuildContext) UnmarshalJSON(data []byte) error {
 	*c = BuildContext{}
 	if len(data) > 0 && data[0] == '"' {
@@ -103,6 +107,7 @@ func (c *BuildContext) UnmarshalJSON(data []byte) error {
 	return c.Validate()
 }
 
+// MarshalJSON preserves the pin or path instead of serializing resolver state.
 func (c BuildContext) MarshalJSON() ([]byte, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err

@@ -152,7 +152,11 @@ func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, er
 	if len(tables) == 0 {
 		return nil, nil
 	}
-	entities, notes, err := ormEntitiesForTables(tables, services)
+	views, err := shadowdb.Views(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	if err != nil {
+		return nil, err
+	}
+	entities, notes, err := ormEntitiesForTables(append(tables, views...), services)
 	for _, n := range notes {
 		fmt.Println("ℹ️  " + n)
 	}
@@ -169,8 +173,14 @@ func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, er
 // names two tables that would project to the same Go name, which cannot
 // both be declared in one package.
 func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (entities []EntityDef, notes []string, err error) {
+	var baseTables []schemadef.Table
+	for _, t := range tables {
+		if !t.IsView { // a view is never a CRUD entity
+			baseTables = append(baseTables, t)
+		}
+	}
 	byTable := map[string]EntityDef{}
-	for _, e := range entitiesForTables(tables, services) {
+	for _, e := range entitiesForTables(baseTables, services) {
 		byTable[e.TableName] = e
 	}
 
@@ -179,6 +189,20 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, t := range sorted {
 		if t.NoEntity() {
+			continue
+		}
+		if t.IsView {
+			e, ok := viewEntityDef(t)
+			if !ok {
+				continue
+			}
+			key := strings.ToLower(e.Name)
+			if prev, dup := owner[key]; dup {
+				return nil, notes, fmt.Errorf("%s and the view %s both project to the entity %s, and one package cannot declare it twice: rename one",
+					prev, t.Name, e.Name)
+			}
+			owner[key] = t.Name
+			entities = append(entities, e)
 			continue
 		}
 		e, joined := byTable[t.Name]
@@ -205,6 +229,41 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
 	return entities, notes, nil
+}
+
+// viewEntityDef projects a VIEW opted in with `forge:entity` as a read-only
+// entity, ok=false for one that did not opt in. Its key is the column
+// `forge:entity key=<column>` names, else `id` when the view has one, else
+// none (List/Count only). The catalog cannot say whether a view column is
+// nullable, so every column but the key is — its Go field a pointer.
+func viewEntityDef(v schemadef.Table) (EntityDef, bool) {
+	declared, key := v.DeclaresEntity()
+	if !declared {
+		return EntityDef{}, false
+	}
+	if key == "" {
+		for _, c := range v.Columns {
+			if c.Name == "id" {
+				key = "id"
+			}
+		}
+	}
+	for i := range v.Columns {
+		if v.Columns[i].Name == key {
+			v.Columns[i].IsPK, v.Columns[i].NotNull = true, true
+			v.PKCols = []string{key}
+		}
+	}
+	e := buildEntityDef(TableEntityName(v.Name), v, ServiceDef{})
+	e.ReadOnly = true
+	// A view is a derived read: no managed timestamps to stamp, no soft
+	// delete to scope by (a deleted_at the view exposes is just a column).
+	e.SoftDelete, e.Timestamps, e.AppendOnly = false, false, false
+	e.Constraints = nil
+	if len(v.PKCols) == 0 {
+		e.PkField, e.PkGoType = "", ""
+	}
+	return e, true
 }
 
 // TableEntityName is the Go name of the entity a table projects to when no

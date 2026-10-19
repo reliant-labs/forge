@@ -394,6 +394,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "COMMENT ON TABLE goose_db_version IS 'forge:no-entity — goose owns it';",
 		},
 		{
+			Name:      schemadef.ViewMarkerEntity,
+			AppliesTo: "table", // on a VIEW — the table-level catalog comment of a relation that is not a base table
+			Effect:    "Opts a VIEW (regular or materialized) into the generated data layer as a READ-ONLY entity: the row struct (named from the view: `chats_with_activity` → ChatsWithActivity), List<E>/Count<E>, and Get<E>ByID by its key column — `id` when the view has one, or the column `forge:entity key=<column>` names; a keyless view gets List/Count only. Nothing writes: no Create/Update/Delete delegate or store method is generated, so a write through a view is a compile error. The catalog cannot say whether a view column is nullable, so every column but the key projects as a pointer (the key must never be NULL). Views without the marker are not projected — most are reporting conveniences nothing in Go reads.",
+			Placement: "COMMENT ON VIEW <view> IS 'forge:entity'; (or COMMENT ON MATERIALIZED VIEW) in a migration, optionally 'forge:entity key=<column>'.",
+			Example:   "COMMENT ON VIEW chats_with_activity IS 'forge:entity — the sidebar row';",
+		},
+		{
 			Name:      schemadef.ColumnMarkerOwner,
 			AppliesTo: "column",
 			Effect:    "Declares this column as the one naming WHO a row belongs to. Changes NO codegen — forge ships no ownership of its own and never injects a WHERE clause for you, because only your app knows how a caller's claims map onto this column's values. What it changes is what forge lets ship: it ARMS the `unscoped_auth` audit category for this table, so an authenticated RPC over this entity whose handler never resolves the caller stops being a warning and becomes an ERROR, failing `forge project audit`. Declare nothing and the category behaves exactly as before (warn, exit 0), which is why a fresh scaffold is unaffected. The gate arms PER TABLE — declaring an owner on customers does not fail an unscoped RPC over a global product catalog — and `// forge:auth-unscoped-ok: <reason>` above the handler suppresses the error for a legitimately global RPC (the reason is mandatory; a bare directive does not count). Pairs naturally with forge:immutable on the same column, since an owner column is exactly the kind a full-replace Update must not zero.",

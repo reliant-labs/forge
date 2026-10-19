@@ -321,6 +321,10 @@ type EntityDef struct {
 	// notably the store interface, whose UpdateX/DeleteX otherwise
 	// type-check against a table postgres will refuse at runtime.
 	AppendOnly bool `json:",omitempty"`
+	// ReadOnly marks a VIEW opted into the data layer (`COMMENT ON VIEW v
+	// IS 'forge:entity'`): its store reads — List, Count, and Get by its key
+	// column when it has one — and writes nothing.
+	ReadOnly bool `json:",omitempty"`
 	// Constraints are the table's named UNIQUE / CHECK / FOREIGN KEY
 	// constraints. They project to per-entity name constants so a service
 	// can branch on orm.ConstraintName(err) against something the

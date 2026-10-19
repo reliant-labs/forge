@@ -129,3 +129,38 @@ func TestTableEntityName(t *testing.T) {
 		}
 	}
 }
+
+// Views are opt-in read-only entities (F12.7): `forge:entity` on the view,
+// keyed by `key=<column>`, else `id`, else keyless; never a CRUD entity.
+func TestORMEntities_OptedInViewsAreReadOnly(t *testing.T) {
+	view := func(name, comment string, cols ...string) schemadef.Table {
+		v := schemadef.Table{Name: name, Comment: comment, IsView: true}
+		for _, c := range cols {
+			v.Columns = append(v.Columns, schemadef.Column{Name: c, Type: schemadef.CanonicalType("string")})
+		}
+		return v
+	}
+	tables := []schemadef.Table{
+		view("chats_with_activity", "forge:entity", "id", "title"),
+		view("ledger_rows", "forge:entity key=entry_id", "entry_id", "amount"),
+		view("totals", "forge:entity", "n"),
+		view("report_rows", "a reporting view", "x"),
+	}
+	got, _, err := ormEntitiesForTables(tables, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := strings.Join(entityNames(got), ","); s != "ChatsWithActivity=chats_with_activity,LedgerRow=ledger_rows,Total=totals" {
+		t.Fatalf("view entities = %s", s)
+	}
+	keys := map[string]string{}
+	for _, e := range got {
+		if !e.ReadOnly {
+			t.Errorf("%s: a view entity must be ReadOnly", e.Name)
+		}
+		keys[e.Name] = e.PkField
+	}
+	if keys["ChatsWithActivity"] != "id" || keys["LedgerRow"] != "entry_id" || keys["Total"] != "" {
+		t.Errorf("view keys = %v, want id / entry_id (declared) / none", keys)
+	}
+}

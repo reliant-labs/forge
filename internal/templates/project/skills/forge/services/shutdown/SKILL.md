@@ -219,7 +219,10 @@ awaited, and is closed — all inside `SHUTDOWN_TIMEOUT` — then `drain:
 complete`, then `Policy.Flush` last. Each node writes a `drain: node stopped`
 line (`phase=node`, `node=<name>`). A `Run` gets a context of its own, ended
 only after its node drained, so a listener keeps serving through the pre-stop
-pause.
+pause. When one node spends the whole budget, each node after it still gets
+250ms for its `Run` to return once cancelled, so only a `Run` that really
+ignores its context logs `node did not stop within the shutdown budget`
+(`run_still_running`).
 
 `serverkit.Run` is this over one listener plus workers and operators. The
 lower-level pieces below are what a Listener is built from, for a main that

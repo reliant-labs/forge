@@ -104,6 +104,18 @@ type FirebaseFrontend struct {
 	// (NEXT_PUBLIC_* / VITE_*). Layered on top of os.Environ().
 	BuildEnv map[string]string
 
+	// Project is the forge project name (recorded in the source map manifest).
+	Project string
+
+	// VersionEnvVar is the variable the bundle reads service.version from
+	// (NEXT_PUBLIC_APP_VERSION / VITE_APP_VERSION); forge injects the build id
+	// into it unless BuildEnv sets it. Empty injects nothing.
+	VersionEnvVar string
+
+	// Sourcemaps is "publish" (default), "public" or "off". See the
+	// Sourcemaps* constants.
+	Sourcemaps string
+
 	// RuntimeConfigJS is this ENVIRONMENT's rendered runtime config
 	// document — the `window.__FORGE_CONFIG__ = {...}` script the browser
 	// loads before any bundle code runs, produced from the environment's
@@ -264,6 +276,9 @@ func (p FirebaseProvider) stageInput(fe FirebaseFrontend) StageInput {
 		RuntimeConfigJS: fe.RuntimeConfigJS,
 		ProjectDir:      p.ProjectDir,
 		StagingRoot:     staging,
+		Project:         fe.Project,
+		VersionEnvVar:   fe.VersionEnvVar,
+		Sourcemaps:      fe.Sourcemaps,
 	}
 }
 
@@ -320,14 +335,20 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
 
 	// Build + assemble — the shared static staging step.
-	if err := runStagePlan(ctx, runner, plan.Stage); err != nil {
+	res, err := runStagePlan(ctx, runner, plan.Stage)
+	if err != nil {
 		return err
 	}
+	reportStageResult("firebase", plan.Stage.Name, res)
 
 	// Retain — put the previous releases' hashed assets back into the
 	// tree, so a tab opened before this deploy can still load its chunks.
 	if err := p.retainAssets(ctx, plan.Stage.Name, plan.Stage.StagingDir, plan.Retention); err != nil {
 		return err
+	}
+	// Retention adds files after the stage's own guard ran.
+	if err := guardNoSourceMaps(plan.Stage.StagingDir, plan.Stage.Sourcemaps); err != nil {
+		return fmt.Errorf("firebase %s: %w", plan.Stage.Name, err)
 	}
 
 	// Configure phase — firebase.json + .firebaserc next to the staging

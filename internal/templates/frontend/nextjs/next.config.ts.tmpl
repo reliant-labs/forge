@@ -211,6 +211,10 @@ const nextConfig: NextConfig = {
   // Development: full Next.js dev server (HMR, rewrites). The conditional
   // below keeps `next dev` unchanged when NODE_ENV !== "production".
   ...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),
+  // forge asks for browser source maps when IT builds for a deploy
+  // (FORGE_SOURCEMAPS=1) and then moves them out of the exported site, so they
+  // can symbolicate errors without being served. Any other build emits none.
+  productionBrowserSourceMaps: process.env.FORGE_SOURCEMAPS === "1",
   // next/image's default loader is an optimizing SERVER route, which an
   // export does not have — `next build` refuses an <Image> without this.
   // Size images for the web before they go in public/.

@@ -197,6 +197,11 @@ func planAssetCarry(prev *assetManifest, built map[string]string, assetRel strin
 		if _, rebuilt := built[rel]; rebuilt {
 			continue
 		}
+		// A release that predates map extraction may have served maps. They
+		// are never carried forward: carrying one would publish it again.
+		if strings.HasSuffix(rel, ".map") {
+			continue
+		}
 		if !safeAssetPath(rel, assetRel) || !validSHA256(rec.SHA256) {
 			continue
 		}

@@ -95,6 +95,18 @@ type StaticSiteFrontend struct {
 	// (NEXT_PUBLIC_* / VITE_*).
 	BuildEnv map[string]string
 
+	// Project is the forge project name (recorded in the source map manifest).
+	Project string
+
+	// VersionEnvVar is the variable the bundle reads service.version from
+	// (NEXT_PUBLIC_APP_VERSION / VITE_APP_VERSION); forge injects the build id
+	// into it unless BuildEnv sets it. Empty injects nothing.
+	VersionEnvVar string
+
+	// Sourcemaps is "publish" (default), "public" or "off". See the
+	// Sourcemaps* constants.
+	Sourcemaps string
+
 	// RuntimeConfigJS is this ENVIRONMENT's rendered runtime config
 	// document, written into the assembled tree after every copy. See
 	// FirebaseFrontend.RuntimeConfigJS — identical semantics, and the
@@ -270,6 +282,9 @@ func (p StaticSiteProvider) stageInput(fe StaticSiteFrontend) StageInput {
 		StripRuntimeConfig: fe.StripRuntimeConfig,
 		ProjectDir:         p.ProjectDir,
 		StagingRoot:        staging,
+		Project:            fe.Project,
+		VersionEnvVar:      fe.VersionEnvVar,
+		Sourcemaps:         fe.Sourcemaps,
 	}
 }
 
@@ -297,9 +312,11 @@ func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend
 		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
 
 	// Build + assemble — the shared static staging step.
-	if err := runStagePlan(ctx, runner, plan.Stage); err != nil {
+	res, err := runStagePlan(ctx, runner, plan.Stage)
+	if err != nil {
 		return err
 	}
+	reportStageResult("static-site", plan.Stage.Name, res)
 
 	// The artifact's content-addressed identity, computed from the tree
 	// that now exists on disk. Everything downstream keys on it.

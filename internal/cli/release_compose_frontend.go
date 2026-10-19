@@ -463,6 +463,7 @@ func snapshotPublishFrontendsWith(ctx context.Context, s release.Snapshot, dryRu
 		f.Path = filepath.Join(res.Dir, filepath.FromSlash(entry.Source.Subdir), filepath.FromSlash(entry.CodeSubdir))
 		f.SourceCommit = entry.Source.Commit
 		f.Release = entry.Release
+		f.Project = s.Project
 		if err := a.preflight(ctx, f); err != nil {
 			return err
 		}

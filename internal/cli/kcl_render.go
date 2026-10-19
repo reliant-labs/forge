@@ -1136,6 +1136,14 @@ type FrontendEntity struct {
 	// Release is the release version this build ships under (the deploy's
 	// bound release), "" when there is none.
 	Release string `json:"-"`
+	// Project is the forge project name, handed to the build so the source
+	// map manifest names it. Not rendered per frontend.
+	Project string `json:"-"`
+
+	// Sourcemaps is "publish" (the default when empty), "public" or "off":
+	// whether the built source maps leave the served tree for a sidecar, are
+	// served, or are dropped. See deploytarget.Sourcemaps*.
+	Sourcemaps string `json:"sourcemaps,omitempty"`
 }
 
 // FrontendConfigEntity mirrors the kcl/schema.k FrontendConfig — the

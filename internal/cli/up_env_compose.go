@@ -323,6 +323,17 @@ func frontendMockEnvVar(frontendType string) string {
 	return frontendEnvPrefix(frontendType) + "MOCK_API"
 }
 
+// frontendVersionEnvVar is the variable a frontend's bundle reads its
+// service.version from, which forge sets to the build id (see
+// deploytarget.StageInput.VersionEnvVar). Empty for a frontend type whose
+// scaffold reads none.
+func frontendVersionEnvVar(frontendType string) string {
+	if frontendEnvPrefix(frontendType) == "EXPO_PUBLIC_" {
+		return ""
+	}
+	return frontendEnvPrefix(frontendType) + "APP_VERSION"
+}
+
 func frontendOTELEnvVar(frontendType string) string {
 	return frontendEnvPrefix(frontendType) + "OTEL_ENDPOINT"
 }

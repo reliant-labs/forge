@@ -27,8 +27,9 @@ import (
 //
 // Streams is the registry that fixes it. It belongs to a listener: Run makes
 // one, NewHTTPServer installs it into every request's context, and long-lived
-// handlers bind to it — LongLived for an SSE or websocket route, Bind by hand.
-// Draining it is two phases inside the shutdown budget:
+// handlers bind to it — LongLived for an SSE or websocket route,
+// StreamDrainInterceptor for Connect streams, Bind by hand. Draining it is two
+// phases inside the shutdown budget:
 //
 //  1. SOFT. The drain begins: every bound stream's Draining(ctx) channel
 //     closes. A stream that asked for that channel before the drain (it has
@@ -62,6 +63,12 @@ type Streams struct {
 	// DefaultDrainReserve; it is never more than half the budget left when
 	// Drain starts, so a soft phase always exists.
 	DrainReserve time.Duration
+
+	// RedialOnDrain names the Connect procedures ("/pkg.v1.Svc/Method") or
+	// whole services ("pkg.v1.Svc") whose streams the drain ends with
+	// Unavailable instead of OK — for peers that redial on Unavailable. See
+	// StreamDrainInterceptor for the client contract.
+	RedialOnDrain []string
 
 	once sync.Once
 	soft chan struct{} // closed when the drain begins
@@ -100,7 +107,8 @@ func (s *Streams) init() {
 }
 
 // Install makes s the registry for every request h serves: the one LongLived
-// routes bind to, found through the request's context. NewHTTPServer installs its Streams this way; a process with its own
+// routes and StreamDrainInterceptor bind to, found through the request's
+// context. NewHTTPServer installs its Streams this way; a process with its own
 // server stack wraps its handler with it.
 func (s *Streams) Install(h http.Handler) http.Handler {
 	s.init()

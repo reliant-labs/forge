@@ -1,6 +1,6 @@
 ---
 name: services/shutdown
-description: Graceful shutdown of a forge server — the drain sequence (readiness flip, pre-stop, listener drain, teardown), long-lived streams (SSE, websockets, Connect streams) ended inside the budget instead of holding it, the soft "say goodbye" signal, DrainReserve, and using the same pieces from a main that runs its own listener.
+description: Graceful shutdown of a forge server — the drain sequence (readiness flip, pre-stop, listener drain, teardown), long-lived streams (SSE, websockets, Connect streams) ended inside the budget instead of holding it, the client contract for a drained Connect stream (OK + x-forge-drained, or Unavailable via RedialOnDrain), the soft "say goodbye" signal, DrainReserve, and using the same pieces from a main that runs its own listener.
 ---
 
 # Graceful shutdown
@@ -40,6 +40,24 @@ pause, when this replica is already out of rotation, so the client's reconnect
 lands on a live one. `serverkit.Ended(ctx)` tells a drain apart from the client
 leaving. Never wrap a unary route: a rollout would cut it short instead of
 draining it.
+
+### Connect streaming RPCs
+
+The scaffolded `serve.go` puts `serverkit.StreamDrainInterceptor()` in the
+interceptor chain. It binds every server-streaming and bidi handler (unary and
+client-streaming RPCs are drained normally, never cut). **The client contract**
+for a stream the drain ends:
+
+| Procedure | Client receives |
+|---|---|
+| default | every message sent, then **OK** with trailer `x-forge-drained: true` |
+| listed in `serverkit.Config.RedialOnDrain` (a procedure `"/pkg.v1.Svc/Method"` or a whole service `"pkg.v1.Svc"`) | every message sent, then **Unavailable** ("server draining…") with the same trailer |
+
+OK is the default because a browser client treats Unavailable as "the network
+died" and may abandon every read on that connection; a watch client should
+reopen the stream (from its resume cursor) when it ends with the trailer. Use
+`RedialOnDrain` for peers that already redial on Unavailable, such as a daemon
+on a bidi stream. A handler's own error is never rewritten.
 
 ### Saying goodbye: the soft signal
 

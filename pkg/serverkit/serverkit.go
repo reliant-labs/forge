@@ -479,6 +479,15 @@ type Config struct {
 	// DefaultDrainReserve (5s); never more than half the budget.
 	DrainReserve time.Duration
 
+	// RedialOnDrain names the Connect procedures ("/pkg.v1.Svc/Method", the
+	// generated <Svc><Method>Procedure constant) or whole services
+	// ("pkg.v1.Svc", the generated <Svc>Name constant) whose streams the
+	// drain ends with Unavailable instead of OK — for a peer that redials on
+	// Unavailable, such as a daemon holding a bidi stream. Empty: every
+	// drained stream ends OK, with the x-forge-drained trailer. See
+	// StreamDrainInterceptor.
+	RedialOnDrain []string
+
 	// ReadMaxBytes caps the size of a single Connect request payload.
 	// Zero falls back to 4 MiB — but ONLY after Normalize has run. A
 	// zero reaching connect.WithReadMaxBytes means UNLIMITED, so any

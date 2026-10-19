@@ -87,12 +87,11 @@ func TestCmdServer_DurationViaAsDuration(t *testing.T) {
 		t.Errorf("cmd serve scaffold re-parses durations (Load owns parsing)\n%s", got)
 	}
 
-	// Validate is a FREE FUNC over the proto message, never a method on a
-	// generated struct. Checked as a call shape: `config.Validate(cfg)` takes
-	// the config as an ARGUMENT, `cfg.Validate()` as a receiver.
-	if !callsFreeFuncWithArg(file, "Validate", "cfg") {
-		t.Errorf("cmd serve scaffold must call the free func config.Validate(cfg) — passing the "+
-			"message as an argument, not invoking a method on it\n%s", got)
+	// Validation is part of Load, exactly as duration parsing is: a second
+	// Validate call here would be a step the scaffold implies a caller can
+	// skip, which is how an out-of-set value used to boot.
+	if calls := serveCalls(file); calls["Validate"] {
+		t.Errorf("cmd serve scaffold calls Validate after Load (Load owns validation)\n%s", got)
 	}
 
 	// The scaffold must also stay valid Go for the full default field set,
@@ -167,40 +166,6 @@ func serveCalls(file *ast.File) map[string]bool {
 	return called
 }
 
-// callsFreeFuncWithArg reports whether the file calls a function named name
-// passing the identifier arg — i.e. `pkg.name(arg)`, the free-function shape,
-// as opposed to `arg.name()`.
-func callsFreeFuncWithArg(file *ast.File, name, arg string) bool {
-	found := false
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 {
-			return true
-		}
-		switch fn := call.Fun.(type) {
-		case *ast.Ident:
-			if fn.Name != name {
-				return true
-			}
-		case *ast.SelectorExpr:
-			// Reject the method shape: `cfg.Validate()` has the config as
-			// the receiver, which is exactly what this must not be.
-			if fn.Sel.Name != name {
-				return true
-			}
-			if id, isIdent := fn.X.(*ast.Ident); isIdent && id.Name == arg {
-				return true
-			}
-		default:
-			return true
-		}
-		if id, isIdent := call.Args[0].(*ast.Ident); isIdent && id.Name == arg {
-			found = true
-		}
-		return true
-	})
-	return found
-}
 
 // TestCmdServer_DatabaseStartupRetries pins the order that stops a database
 // which is not up YET from crash-looping the process: the boot probes bind

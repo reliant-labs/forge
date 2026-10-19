@@ -96,12 +96,10 @@ type ServeSpec struct {
 // Serve is the canonical server pipeline shared by every server-shaped
 // subcommand.
 func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
+	// Load validates: a value the config's annotations reject fails here.
 	cfg, err := config.Load(deps.Cmd)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
-	}
-	if verr := config.Validate(cfg); verr != nil {
-		return fmt.Errorf("invalid configuration: %w", verr)
 	}
 
 	skCfg, err := serverkitConfig(cfg)

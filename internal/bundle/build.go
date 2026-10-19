@@ -119,6 +119,12 @@ type BuildInput struct {
 	// (release.CaptureProvenance), never by this package: provenance is a
 	// property of a checkout and this package never sees one.
 	Provenance release.Provenance
+	// Reader is what the backend this bundle is recorded in decodes. The
+	// document leaves out every optional part it does not name
+	// (release.BundleReader.Limit): a control plane strict-decodes the
+	// document, so a field it predates fails the whole record. Nil writes
+	// every part — the machine ledger is read by this same forge.
+	Reader *release.BundleReader
 	// Shape is the declaration half of the projection, exactly as
 	// [ProjectShape] takes it. Build runs the projection ITSELF, from the
 	// same parse it packages, rather than accepting a finished shape —
@@ -365,6 +371,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Secrets:      secretRefs,
 		CreatedAt:    in.CreatedAt.UTC(),
 	}
+	doc = in.Reader.Limit(doc)
 	if in.Snapshot != nil {
 		doc.Schema = release.SnapshotBundleSchema
 		doc.Snapshot = in.Snapshot

@@ -100,6 +100,16 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Added
 
+- **`forge env exec <env> --workload <name> -- <argv...>` (#758)** runs a
+  local command with the selected workload's resolved configuration, inherited
+  stdio/cwd, literal argv, signal forwarding and the child's exit status. The
+  default is exactly `api` (the scaffold's `_api.name`); no first-service guess.
+  Only OnHost/OnCompose are accepted, before accessing secret providers. Config
+  readback and exec share the same local resolution and launched-coordinate
+  overlay; host config layers also drive `env up`. Compose shares its host-side
+  launcher resolver (secrets < env_file < runtime env), not container env:
+  declare host-reachable published addresses; no container DNS/DSN rewriting.
+
 - **`forge.ManagedIdentity`: an env's users, declared in KCL, with no app code
   change.** `Bundle.identity` names the roles, the applications that sign users
   in (derived from the env's `api` workload) and the consumers (every service

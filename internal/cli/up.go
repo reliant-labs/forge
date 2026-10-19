@@ -2926,25 +2926,13 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	// this workload DECLARES: the provider map is the whole store, and a
 	// workload receives only the keys it names via a secretRef. An
 	// undeclared secret reaches nothing.
-	secretVals := scopeSecretsToService(secretsLayer, &w)
 	envVars := withoutDerivedOTLPIfShellSet(w.HostEnv(), os.Environ())
 	// projectConfig layer: forge.yaml environments[<env>].config projected
 	// to env-var strings. Same source the cluster ConfigMap projection
 	// uses; layering it here keeps `forge env up` host workloads in sync
 	// with `forge run <svc>`. nil cfg / empty env collapses to an empty map.
-	var projectConfigEnv map[string]string
-	if cfg != nil && env != "" {
-		projectConfigEnv = loadProjectConfigEnv(cfg, env)
-	}
-	// Dev-run defaults: on a dev env, `forge env up` marks the runtime as
-	// development AND auto-applies migrations on boot, so a fresh dev DB
-	// comes up with its schema without any hand-set env vars. Lowest
-	// precedence — overridden by project config, secrets, the declared env
-	// and the shell (see withDevRunDefaults).
-	dev, _ := seedTargetIsDev(env)
-	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
-	projectConfigEnv = withAirRunDefaults(projectConfigEnv, spec.Runner)
-	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), projectConfigEnv, secretVals, envVars)
+	declared := hostWorkloadConfig(cfg, w, secretsLayer, env)
+	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostEnv
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)

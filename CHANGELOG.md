@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `forge doctor`'s payload-cap check reads a `serverkit.NewChain` call as
   capped (it applies the caps itself) and fails a negative cap, which is
   `NewChain`'s spelling of "no cap".
+- **`pkg/identity` sign-in codes converge instead of churning.** With
+  `Options.SignInCodes`, every pass used to mint a fresh password-reset code for
+  each credential-less member, which invalidated the code the caller had just
+  delivered and made no pass quiet. `Options.HeldSignInCode` now tells the
+  library which members still hold a live code, and those keep it.
+  `SignInCode.ExpiresAt` (minting time plus `SignInCodeLifetime`, Zitadel's
+  default one hour) says when to re-issue, and `Report.Credentialed` names the
+  members confirmed to hold a credential, so a caller can drop their codes.
 - **A StatefulSet's declared volume size can grow, and the deploy converges it.**
   `volumeClaimTemplates` are immutable, so raising a declared size (a
   `clickhouse_disk = "100Gi"` that was `"50Gi"`) used to fail every apply with

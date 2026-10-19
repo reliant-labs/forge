@@ -302,25 +302,10 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// only forwards values to *containers*; the compose file itself
 	// reads from the docker-compose process env. Layering both keeps
 	// the two cases in sync.
-	envOverlay, ferr := loadEnvFile(envFile)
+	envOverlay, ferr := ComposeProcessEnv(spec, svc.Secrets)
 	if ferr != nil {
 		return fmt.Errorf("compose %s: env_file: %w", svc.Name, ferr)
 	}
-
-	// Merge resolved secrets (from a dotenv secret_provider) as the BASE
-	// layer, then let env_file entries override on conflict — the explicit
-	// file wins.
-	envOverlay = mergeSecretsUnderEnvFile(svc.Secrets, envOverlay)
-
-	// The KCL-declared `env` goes on TOP, and this is the one layer that
-	// also beats the inherited shell environment (RunWithEnv merges
-	// extra-wins over os.Environ). That is deliberate, and it is the
-	// difference between a value the environment DECLARES and a default
-	// buried in the compose file: a shell `IDP_PORT=…` would move the
-	// container while every KCL reference to that port — the provisioning
-	// job's target, the issuer both halves of auth enforce — stayed
-	// pointing at the old one. See Compose.env in kcl/schema.k.
-	envOverlay = mergeComposeEnv(envOverlay, spec.Env)
 
 	// 0. Ownership — refuse to take over containers another checkout is
 	//    running, BEFORE anything can recreate them. See

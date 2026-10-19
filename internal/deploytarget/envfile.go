@@ -8,6 +8,18 @@ import (
 	"github.com/reliant-labs/forge/internal/envutil"
 )
 
+// ComposeProcessEnv resolves the HOST-side Compose launcher overlay, not a
+// container's environment: secrets < env_file < declared runtime env. Callers
+// merge this over their inherited environment. No container DNS or port rewrite
+// is possible for arbitrary application values; declare host-reachable values.
+func ComposeProcessEnv(spec *ComposeSpec, secrets map[string]string) (map[string]string, error) {
+	fileEnv, err := loadEnvFile(composeEnvFile(spec))
+	if err != nil {
+		return nil, err
+	}
+	return mergeComposeEnv(mergeSecretsUnderEnvFile(secrets, fileEnv), spec.Env), nil
+}
+
 // mergeSecretsUnderEnvFile layers resolved secrets (from a dotenv
 // secret_provider) as the BASE env map, then lets envFile entries
 // override on conflict — the explicit file wins. It is a no-op (returns

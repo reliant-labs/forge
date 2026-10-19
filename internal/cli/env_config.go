@@ -81,36 +81,13 @@ which variables a project uses, so pick the one you want:
 			envName := args[0]
 			projectDir := projectDirForKCL()
 
-			// The values `forge env up` passes are the ones THIS checkout's
-			// stack gets: its option("worktree") and the port blocks its
-			// keys hold. Without arming that context a linked worktree
-			// reported the PRIMARY checkout's namespace and ports. Inspect
-			// only — a readback registers no block (see blockClaim).
-			_, restore := activateDevStack(cmd.Context(), projectDir, envName, renderToLaunch, inspectBlocks)
-			entities, err := RenderKCL(cmd.Context(), projectDir, envName)
-			restore()
+			entities, err := readEnvConfigEntities(cmd.Context(), projectDir, envName)
 			if err != nil {
-				return fmt.Errorf("read deploy/kcl/%s/: %w", envName, err)
+				return err
 			}
-			if entities == nil {
-				return fmt.Errorf("deploy/kcl/%s/ rendered no workloads", envName)
-			}
-
-			report := envConfigReport{
-				Env:       envName,
-				Workloads: collectEnvConfigWorkloads(entities),
-			}
-			// Launch-time values win over a fresh render: an ephemeral port
-			// that moved when the stack came up lives in the persist and
-			// nowhere in the KCL, so reporting the render here would hand
-			// back a coordinate nothing is listening on.
-			overlayLaunchedEnv(&report, projectDir, envName)
-
-			if nameFilter != "" {
-				report.Workloads = filterEnvConfigWorkloads(report.Workloads, nameFilter)
-				if len(report.Workloads) == 0 {
-					return fmt.Errorf("environment %q declares no workload named %q", envName, nameFilter)
-				}
+			report, err := resolvedEnvConfigReport(cmd.Context(), projectDir, envName, entities, nameFilter)
+			if err != nil {
+				return err
 			}
 
 			if jsonOut {

@@ -26,6 +26,12 @@ is no pause; `-1s` shutdown is a window over as it opens (in-flight requests and
 streams are cut, teardown runs on an expired context). It is never "unbounded":
 the kubelet would end an unbounded shutdown at the grace period anyway.
 
+A main that reads the two variables itself, without the generated config,
+uses `drainbudget.FromEnv(os.Getenv)` (`forge/pkg/serverkit/drainbudget`) —
+the reader the grace-period renderer uses — and passes the result's
+`PreStopDelay` / `ShutdownTimeout` to `serverkit.Config`. Never parse them by
+hand: a private copy is how `-1s` came to be read as malformed.
+
 ## Long-lived streams
 
 `http.Server.Shutdown` waits for every active request. A stream that never ends

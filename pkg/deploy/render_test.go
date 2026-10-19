@@ -7,11 +7,13 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 var ctx = Context{Namespace: "acme-prod", PartOf: "proj"}
@@ -259,6 +261,37 @@ func TestGracePeriod(t *testing.T) {
 		pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/api"])
 		if got := get(pod, "terminationGracePeriodSeconds"); got != c.want {
 			t.Errorf("env %v: grace = %v, want %v", c.env, got, c.want)
+		}
+	}
+}
+
+// TestGracePeriodAgreesWithTheServersReader pins that the grace period is
+// derived from the same reading of PRE_STOP_DELAY / SHUTDOWN_TIMEOUT a server
+// main gets from drainbudget.FromEnv: for every value a server accepts, the
+// pod's grace is the server's effective pre-stop + shutdown, each rounded up,
+// plus the margin. A private copy of the rule drifted once (it read "-1s" as
+// malformed); this is the check that the two readers cannot.
+func TestGracePeriodAgreesWithTheServersReader(t *testing.T) {
+	ceil := func(d time.Duration) float64 { return float64((d + time.Second - 1) / time.Second) }
+	for _, pair := range [][2]string{
+		{"", ""}, {"0", "0s"}, {"10s", "1m"}, {"7", "45"}, {"-1s", "30s"}, {"-1", "-1"},
+		{"500ms", "1500ms"}, {"1m30s", "1h"},
+	} {
+		m := map[string]string{drainbudget.EnvPreStopDelay: pair[0], drainbudget.EnvShutdownTimeout: pair[1]}
+		b, err := drainbudget.FromEnv(func(k string) string { return m[k] })
+		if err != nil {
+			t.Fatalf("FromEnv(%v): %v", m, err)
+		}
+		w := svc("api")
+		for k, v := range m {
+			if v != "" {
+				w.Spec.Env = append(w.Spec.Env, v1alpha1.EnvVar{Name: k, Value: v})
+			}
+		}
+		pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/api"])
+		want := ceil(b.PreStop()) + ceil(b.Shutdown()) + graceMarginSeconds
+		if got := get(pod, "terminationGracePeriodSeconds"); got != want {
+			t.Errorf("env %v: grace = %v, the server's budget implies %v", m, got, want)
 		}
 	}
 }

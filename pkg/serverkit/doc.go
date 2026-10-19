@@ -99,7 +99,9 @@
 // with cause svcerr.ErrServerDraining: at once when the drain begins, or —
 // for a stream that asked for serverkit.Draining(ctx) to say goodbye —
 // when it returns or at the deadline minus Config.DrainReserve. Mark an SSE
-// or websocket route with serverkit.LongLived.
+// or websocket route with serverkit.LongLived; a websocket handler closes
+// with 1012 from serverkit.AfterDrain, and one that ignores the drain has its
+// hijacked connection closed for it, so its cleanup still runs.
 //
 // # Without Run
 //

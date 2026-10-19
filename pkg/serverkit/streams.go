@@ -1,10 +1,12 @@
 package serverkit
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -85,6 +87,31 @@ type binding struct {
 	// claimed: the handler asked for Draining(ctx) before the drain began,
 	// so the soft phase leaves it running.
 	claimed atomic.Bool
+
+	mu sync.Mutex
+	// conns are the connections the handler took over with Hijack (a
+	// websocket). http.Server.Shutdown neither waits for nor closes them, so
+	// they are the drain's to close if the handler outlives the budget.
+	conns []net.Conn
+}
+
+// track records a connection the stream's handler hijacked.
+func (b *binding) track(c net.Conn) {
+	b.mu.Lock()
+	b.conns = append(b.conns, c)
+	b.mu.Unlock()
+}
+
+// closeConns closes the hijacked connections and reports how many there were.
+func (b *binding) closeConns() int {
+	b.mu.Lock()
+	conns := b.conns
+	b.conns = nil
+	b.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	return len(conns)
 }
 
 type (
@@ -226,35 +253,67 @@ func (s *Streams) Wait(ctx context.Context) bool {
 	return s.Active() == 0
 }
 
-// Drain runs both phases inside ctx's deadline: BeginDrain, wait for the
-// claimed streams until the deadline minus DrainReserve, End whatever is still
-// bound, then wait for those handlers to return. It returns an error naming
-// how many were still running when ctx ended. Without a deadline the soft
-// phase lasts until every stream has returned or ctx is cancelled.
+// CloseHijacked closes every connection a still-bound handler took over with
+// Hijack (a websocket), and reports how many it closed. It is the last resort
+// for a handler that ignores its ended context: its blocked read returns, so
+// it unwinds and its deferred cleanup runs before the process exits, instead
+// of the exit dropping the TCP connection with the cleanup never run.
+// http.Server.Shutdown does not touch hijacked connections.
+func (s *Streams) CloseHijacked() int {
+	s.mu.Lock()
+	bound := make([]*binding, 0, len(s.bindings))
+	for b := range s.bindings {
+		bound = append(bound, b)
+	}
+	s.mu.Unlock()
+	closed := 0
+	for _, b := range bound {
+		closed += b.closeConns()
+	}
+	return closed
+}
+
+// Drain runs the drain inside ctx's deadline: BeginDrain; wait for the claimed
+// streams until the deadline minus DrainReserve; End whatever is still bound;
+// give those handlers half the reserve to return; CloseHijacked for the ones
+// that did not; then wait for them until the deadline. It returns an error
+// naming how many were still running when ctx ended. Without a deadline the
+// soft phase lasts until every stream has returned or ctx is cancelled.
 //
 // It is the long-lived half of a listener's drain; DrainHTTP runs it beside
 // http.Server.Shutdown, which drains the unary half.
 func (s *Streams) Drain(ctx context.Context) error {
 	s.BeginDrain()
-	soft, cancel := context.WithCancel(ctx)
-	defer cancel()
-	if deadline, ok := ctx.Deadline(); ok {
-		reserve := s.DrainReserve
-		if reserve <= 0 {
-			reserve = DefaultDrainReserve
-		}
-		reserve = min(reserve, time.Until(deadline)/2)
-		soft, cancel = context.WithDeadline(ctx, deadline.Add(-reserve))
-		defer cancel()
+	deadline, hasDeadline := ctx.Deadline()
+	reserve := s.DrainReserve
+	if reserve <= 0 {
+		reserve = DefaultDrainReserve
 	}
-	if s.Wait(soft) {
+	if hasDeadline {
+		reserve = min(reserve, time.Until(deadline)/2)
+	}
+	if s.waitUntil(ctx, deadline.Add(-reserve), hasDeadline) {
 		return nil
 	}
 	s.End()
+	if s.waitUntil(ctx, deadline.Add(-reserve/2), hasDeadline) {
+		return nil
+	}
+	s.CloseHijacked()
 	if s.Wait(ctx) {
 		return nil
 	}
 	return fmt.Errorf("%d long-lived stream(s) still running at the end of the shutdown budget: their handlers ignore their context", s.Active())
+}
+
+// waitUntil is Wait bounded additionally by at, when bounded is set.
+func (s *Streams) waitUntil(ctx context.Context, at time.Time, bounded bool) bool {
+	if !bounded {
+		return s.Wait(ctx)
+	}
+	ctx, cancel := context.WithDeadline(ctx, at)
+	defer cancel()
+	return s.Wait(ctx)
 }
 
 // DrainHTTP is a listener's drain: it stops srv accepting and drains its
@@ -277,6 +336,14 @@ func DrainHTTP(ctx context.Context, srv *http.Server, streams *Streams) error {
 // registry of the listener serving it. Never wrap a unary route: a rollout
 // would cut it short instead of draining it.
 //
+// A connection the handler takes over with Hijack — a websocket upgrade — is
+// registered with the drain too. http.Server.Shutdown neither waits for nor
+// closes a hijacked connection, so without this the process exit would drop
+// it mid-session; the drain instead waits for the handler (which should close
+// it with a status its client reconnects on, from AfterDrain) and closes the
+// connection itself only if the handler is still running at the end of the
+// reserve, so the handler unwinds and its deferred cleanup runs.
+//
 // A request no registry was installed for (a server not built by
 // NewHTTPServer or Streams.Install) is served unbound, and the first one is
 // logged, because nothing will end it at shutdown.
@@ -294,8 +361,96 @@ func LongLived(h http.Handler) http.Handler {
 		}
 		ctx, release := s.Bind(r.Context())
 		defer release()
-		h.ServeHTTP(w, r.WithContext(ctx))
+		b, _ := ctx.Value(bindingKey{}).(*binding)
+		h.ServeHTTP(&longLivedWriter{ResponseWriter: w, binding: b}, r.WithContext(ctx))
 	})
+}
+
+// longLivedWriter registers a hijacked connection with its stream's binding.
+// It implements the optional interfaces handlers and websocket libraries
+// assert for directly (Hijacker, Flusher) and Unwrap, so
+// http.ResponseController reaches everything else on the real writer.
+type longLivedWriter struct {
+	http.ResponseWriter
+	binding *binding
+}
+
+var (
+	_ http.Hijacker = (*longLivedWriter)(nil)
+	_ http.Flusher  = (*longLivedWriter)(nil)
+)
+
+// Hijack hands the connection to the handler and to the drain.
+func (w *longLivedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, brw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil && w.binding != nil {
+		w.binding.track(conn)
+	}
+	return conn, brw, err
+}
+
+// Flush implements http.Flusher for SSE handlers that assert it directly.
+func (w *longLivedWriter) Flush() { _ = http.NewResponseController(w.ResponseWriter).Flush() }
+
+// FlushError is what http.ResponseController.Flush prefers.
+func (w *longLivedWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (w *longLivedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// AfterDrain arranges for f to run, in its own goroutine, when the drain of
+// ctx's registry begins — the hook a websocket handler blocked in a read uses
+// to close with "service restart" (1012) and set a short read deadline, so its
+// read returns and its deferred cleanup runs while the context is still live.
+// Like Draining, it claims the soft phase for the stream: the drain waits for
+// the handler to return (until the deadline minus DrainReserve) instead of
+// ending it at once.
+//
+// stop unregisters f and reports whether it did so before f started; call it
+// when the handler returns (defer stop()). f never runs after the handler's
+// context ends for another reason — the client leaving, the handler finishing.
+//
+// It is context.AfterFunc for the drain signal: scoped to one stream's
+// context, not a server-wide hook. A server has no drain hook; what runs
+// before http.Server.Shutdown waits is the listener's registry, and each
+// stream reacts to it here.
+func AfterDrain(ctx context.Context, f func()) (stop func() bool) {
+	soft := Draining(ctx)
+	if soft == nil {
+		return func() bool { return false }
+	}
+	const (
+		pending int32 = iota
+		started
+		stopped
+	)
+	var state atomic.Int32
+	stopCh := make(chan struct{})
+	go func() {
+		select {
+		case <-soft:
+		case <-stopCh:
+			return
+		case <-ctx.Done():
+			select {
+			case <-soft: // the drain began in the same instant
+			default:
+				return
+			}
+		}
+		if state.CompareAndSwap(pending, started) {
+			f()
+		}
+	}()
+	return func() bool {
+		if !state.CompareAndSwap(pending, stopped) {
+			return false
+		}
+		close(stopCh)
+		return true
+	}
 }
 
 // Draining returns a channel that is closed when the drain of ctx's registry

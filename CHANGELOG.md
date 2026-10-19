@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (bunotel) no longer see these statements, and the repo's own
   `orm.<Op><Entity>` span carries `db.statement` (without values). The `db`
   skill documents the pool mode: keep pgx's default statement cache.
+- **`orm.InTx(ctx)` and `orm.Context.BeginDetached`: probe for, and hold, a
+  transaction outside `RunTx`'s closure.** `InTx` reports whether ctx carries
+  an active transaction (replacing the `AfterCommit(ctx, noop) == nil` probe).
+  `BeginDetached(ctx, orm.TxOptions)` — on `*Client`, `*Tx` and the injected
+  `orm.Context` interface — opens a new, caller-owned transaction at the given
+  isolation that outlives the call that opened it, which a transaction-scoped
+  advisory lock released later needs. It never joins the ctx's transaction,
+  never retries, and is rolled back when its ctx is cancelled. A hand-written
+  `orm.Context` fake must add the method. Documented in the
+  `service-layer/transactions` skill.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

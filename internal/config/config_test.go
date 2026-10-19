@@ -279,8 +279,8 @@ func TestDockerConfig_BuildContextsYAMLRoundTrip(t *testing.T) {
 		t.Fatalf("BuildContexts len = %d, want %d (got %v)", len(got), len(want), got)
 	}
 	for k, v := range want {
-		if cfg.Docker.BuildContexts[k] != v {
-			t.Errorf("BuildContexts[%q] = %q, want %q", k, cfg.Docker.BuildContexts[k], v)
+		if cfg.Docker.BuildContexts[k].Path != v {
+			t.Errorf("BuildContexts[%q] = %q, want %q", k, cfg.Docker.BuildContexts[k].Path, v)
 		}
 	}
 
@@ -294,8 +294,8 @@ func TestDockerConfig_BuildContextsYAMLRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal round-trip: %v", err)
 	}
 	for k, v := range want {
-		if cfg2.Docker.BuildContexts[k] != v {
-			t.Errorf("round-trip BuildContexts[%q] = %q, want %q", k, cfg2.Docker.BuildContexts[k], v)
+		if cfg2.Docker.BuildContexts[k].Path != v {
+			t.Errorf("round-trip BuildContexts[%q] = %q, want %q", k, cfg2.Docker.BuildContexts[k].Path, v)
 		}
 	}
 }

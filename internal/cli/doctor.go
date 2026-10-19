@@ -147,6 +147,7 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	// against that checkout; this binary must have been built from it. See
 	// forge_bridge.go.
 	appendIngressChecksToReport(&report, runBridgeDoctorCheck(projectDir, signal))
+	appendIngressChecksToReport(&report, runSourceDoctorChecks(ctx, cfg, projectDir, signal))
 
 	// Docker daemon proxy check: warns when the Docker daemon is
 	// configured with an HTTP(S) proxy. A TLS-intercepting proxy

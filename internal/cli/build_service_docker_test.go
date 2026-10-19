@@ -83,13 +83,13 @@ func TestServiceDockerBuildArgs_PerServiceBuildContextsWin(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name: "control-plane",
 		Docker: config.DockerConfig{
-			BuildContexts: map[string]string{"projectwide": "../should-not-appear"},
+			BuildContexts: map[string]config.BuildContext{"projectwide": {Path: "../should-not-appear"}},
 		},
 	}
 	d := &DockerBuild{
-		BuildContexts: map[string]string{
-			"forge":   "../forge",
-			"reliant": "../reliant",
+		BuildContexts: map[string]config.BuildContext{
+			"forge":   {Path: "../forge"},
+			"reliant": {Path: "../reliant"},
 		},
 	}
 
@@ -118,7 +118,7 @@ func TestServiceDockerBuildArgs_BuildContextsFallToProject(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Name: "control-plane",
 		Docker: config.DockerConfig{
-			BuildContexts: map[string]string{"forge": "../forge"},
+			BuildContexts: map[string]config.BuildContext{"forge": {Path: "../forge"}},
 		},
 	}
 	args, _ := serviceDockerBuildArgs(cfg, "svc", "Dockerfile", &DockerBuild{}, buildOptions{}, "", "")

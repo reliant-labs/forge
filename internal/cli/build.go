@@ -29,7 +29,7 @@ import (
 
 // sortedKeys returns map keys in deterministic order. Used so docker
 // build args are stable across runs (relevant for layer caching).
-func sortedKeys(m map[string]string) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -79,9 +79,6 @@ func resolveBuildContext(value, projectRoot string) string {
 // No-ops when cfg.Docker.BuildContexts is empty, so existing projects
 // see no change in behaviour or output.
 func appendBuildContexts(dockerArgs []string, cfg *config.ProjectConfig, projectRoot string) []string {
-	if len(cfg.Docker.BuildContexts) == 0 {
-		return dockerArgs
-	}
 	return appendNamedBuildContexts(dockerArgs, cfg.Docker.BuildContexts, projectRoot)
 }
 
@@ -90,9 +87,13 @@ func appendBuildContexts(dockerArgs []string, cfg *config.ProjectConfig, project
 // deterministic order, each value resolved against projectRoot). It backs both
 // the project-level appendBuildContexts and the per-service DockerBuild
 // build_contexts, so the two share identical resolution + logging.
-func appendNamedBuildContexts(dockerArgs []string, contexts map[string]string, projectRoot string) []string {
+func appendNamedBuildContexts(dockerArgs []string, contexts map[string]config.BuildContext, projectRoot string) []string {
 	for _, name := range sortedKeys(contexts) {
-		value := resolveBuildContext(contexts[name], projectRoot)
+		c := contexts[name]
+		value := resolveBuildContext(c.Path, projectRoot)
+		if c.Source != nil {
+			value = c.SourceDir
+		}
 		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
 		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
 	}
@@ -994,6 +995,9 @@ func renderBuildEntities(ctx context.Context, cfg *config.ProjectConfig, opts bu
 	// real directory. No-op — no resolver, no cache access — for a project
 	// that declares none.
 	if err := resolveBuildFrontendSources(ctx, cfg, entities); err != nil {
+		return nil, nil, err
+	}
+	if err := resolveBuildSources(ctx, projectDirForKCL(), cfg, entities); err != nil {
 		return nil, nil, err
 	}
 	return declared, entities, nil

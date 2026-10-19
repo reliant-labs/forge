@@ -2328,8 +2328,9 @@ schema DockerBuild(Build):
     # `docker buildx --build-context name=value` entry (a sibling-checkout
     # path the Dockerfile `COPY --from=name`s, a `docker-image://` override,
     # …). Declare ONLY what this Dockerfile actually consumes. Empty falls
-    # back to forge.yaml docker.build_contexts.
-    build_contexts: {str: str} = {}
+    # back to forge.yaml docker.build_contexts. A GitSource value resolves
+    # through the same repo+ref cache and local overrides as a frontend.
+    build_contexts: {str: str | GitSource} = {}
 
     check:
         type == "docker", "DockerBuild.type must be 'docker'"
@@ -2420,6 +2421,9 @@ schema ShellBuild(Build):
     # against the project root; absolute pass through. Unset => the
     # project root. A missing-on-disk cwd is a hard build failure.
     cwd: str = ""
+    # Pinned cross-repo working directory. Uses the shared source cache and
+    # explicit local overrides; mutually exclusive with cwd.
+    source?: GitSource
     # Extra env vars merged onto the command's process environment
     # (declared keys win). Forge substitutes nothing into `cmd`, so this is
     # also how a `${NAME}` spelling in the command gets resolved — by the
@@ -2429,6 +2433,7 @@ schema ShellBuild(Build):
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
         cmd, "ShellBuild.cmd is required"
+        not (cwd and source), "ShellBuild.cwd and source are mutually exclusive"
 
 schema RemoteBuild(Build):
     """Build this service's image on a HOSTED build service rather than on

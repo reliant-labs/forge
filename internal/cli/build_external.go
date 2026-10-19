@@ -134,6 +134,10 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 	resultCh := make(chan buildResult, len(services))
 
 	dispatch := func(svc WorkloadEntity) {
+		if err := resolveShellBuildSource(ctx, projectDir, svc.Build.Shell); err != nil {
+			resultCh <- buildResult{name: svc.Name + " (external)", kind: "external", err: err}
+			return
+		}
 		// Per-service tag — see externalBuildTag for the precedence and for
 		// why a release build overrides it with the release version.
 		svcTag := externalBuildTag(svc, tag, opts)

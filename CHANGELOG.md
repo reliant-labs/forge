@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two migration guides now link to discoverable subskills for detailed teaching,
   leaving real room for growth without dropping their rules.
 
+- **Cross-repo build sources no longer require sibling checkouts (#107).**
+  `ShellBuild.source` and named Docker `build_contexts` accept `GitSource`
+  pins through the frontend source cache and explicit local overrides. Shell
+  source/cwd ambiguity and malformed pins fail rather than running in the
+  project root; `forge doctor --verbose` distinguishes pins from filesystem
+  references. The release-source check includes shell pins, and cache metadata
+  no longer makes fetched checkouts appear dirty.
+
 ### Changed
 
 - **`forge env up` converges a host-run managed identity with `pkg/identity`

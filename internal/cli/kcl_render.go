@@ -925,7 +925,7 @@ type DockerBuild struct {
 	// `COPY --from=name`s, a `docker-image://` override, …). Same value shapes
 	// as config.DockerConfig.BuildContexts. Empty falls back to the
 	// project-level forge.yaml docker.build_contexts.
-	BuildContexts map[string]string `json:"build_contexts,omitempty"`
+	BuildContexts map[string]config.BuildContext `json:"build_contexts,omitempty"`
 }
 
 // ShellBuild mirrors the kcl/schema.k ShellBuild — the SINGLE shell
@@ -955,7 +955,10 @@ type ShellBuild struct {
 	OutputName string            `json:"output_name,omitempty"`
 	Cmd        string            `json:"cmd"`
 	Cwd        string            `json:"cwd,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
+	Source     *config.GitSource `json:"source,omitempty"`
+	// SourceDir is invocation-local; the declaration stays intact for provenance.
+	SourceDir string            `json:"-"`
+	Env       map[string]string `json:"env,omitempty"`
 }
 
 // RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears
@@ -1837,6 +1840,9 @@ func (w WorkloadEntity) EffectiveBuildCmd() string {
 // project root). "" for a non-shell build.
 func (w WorkloadEntity) EffectiveBuildCwd() string {
 	if sh := w.shell(); sh != nil {
+		if sh.Source != nil && sh.SourceDir != "" {
+			return sh.SourceDir
+		}
 		return sh.Cwd
 	}
 	return ""

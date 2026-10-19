@@ -734,7 +734,7 @@ func TestLoadProject_DockerBuildContextsStay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("docker.build_contexts alone must load: %v", err)
 	}
-	if cfg.Docker.BuildContexts["shared"] != "../shared" {
+	if cfg.Docker.BuildContexts["shared"].Path != "../shared" {
 		t.Errorf("BuildContexts = %v, want the declared context", cfg.Docker.BuildContexts)
 	}
 }

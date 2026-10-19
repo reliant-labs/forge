@@ -3959,6 +3959,9 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 	// the build.go helper so the path-resolution + scheme passthrough
 	// semantics stay in lockstep across `forge build --docker` and
 	// `forge env deploy`.
+	if err := resolveNamedBuildContexts(ctx, projectDirForKCL(), cfg.Docker.BuildContexts); err != nil {
+		return err
+	}
 	buildArgs = appendBuildContexts(buildArgs, cfg, "")
 	buildArgs = append(buildArgs, "-f", dockerfile, ".")
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {

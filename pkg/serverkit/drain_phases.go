@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
@@ -21,46 +22,53 @@ import (
 // `elapsed`, and the listener's carries what the drain did to its streams. The
 // same durations go to forge.server.drain.duration, exported by the telemetry
 // flush that ends the shutdown.
+//
+// Each piece of the sequence writes its own phases, with the Logger and Meter
+// it was configured with: Drainer the readiness flip, the pre-stop pause and
+// the total (Begin, Complete); DrainHTTP the listener (through its Streams).
+// So a main that drains with those pieces gets the same lines as Run, and Run,
+// which adds only the workers, operators and teardown phases, writes none of
+// the others itself.
 
 // drainMetric is the built-in histogram of shutdown phase durations.
 const drainMetric = "forge.server.drain.duration"
 
+// meterName is the instrumentation scope of serverkit's own metrics.
+const meterName = "github.com/reliant-labs/forge/pkg/serverkit"
+
 // drainPhases logs and measures the phases of one shutdown.
 type drainPhases struct {
 	logger *slog.Logger
-	hist   metric.Float64Histogram // nil: no meter
-	start  time.Time
-	last   time.Time
+	hist   metric.Float64Histogram // nil: the meter refused the instrument
 }
 
-// newDrainPhases starts timing a shutdown now. A nil meter measures nothing.
+// newDrainPhases resolves where phases go: a nil logger is slog.Default(), a
+// nil meter the global OpenTelemetry meter (which Run's observe.Setup, or the
+// caller's own, installs).
 func newDrainPhases(logger *slog.Logger, meter metric.Meter) *drainPhases {
-	now := time.Now()
-	p := &drainPhases{logger: logger, start: now, last: now}
-	if meter != nil {
-		s := metrics.BuiltinSpec(drainMetric)
-		if h, err := meter.Float64Histogram(s.Name, metric.WithUnit(s.Unit), metric.WithDescription(s.Description)); err == nil {
-			p.hist = h
-		}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if meter == nil {
+		meter = otel.Meter(meterName)
+	}
+	p := &drainPhases{logger: logger}
+	s := metrics.BuiltinSpec(drainMetric)
+	if h, err := meter.Float64Histogram(s.Name, metric.WithUnit(s.Unit), metric.WithDescription(s.Description)); err == nil {
+		p.hist = h
 	}
 	return p
 }
 
-// done records that phase has finished: one INFO line, msg plus attrs, with
-// the phase's name and how long it took.
-func (p *drainPhases) done(phase, msg string, attrs ...any) {
+// done records that phase, begun at start, has finished: one INFO line, msg
+// plus attrs, with the phase's name and how long it took. It returns the end,
+// which is the next phase's start.
+func (p *drainPhases) done(phase string, start time.Time, msg string, attrs ...any) time.Time {
 	now := time.Now()
-	elapsed := now.Sub(p.last)
-	p.last = now
+	elapsed := now.Sub(start)
 	p.record(phase, elapsed)
 	p.logger.Info(msg, append([]any{"phase", phase, "elapsed", elapsed.Round(time.Millisecond)}, attrs...)...)
-}
-
-// complete records the whole shutdown against its budget.
-func (p *drainPhases) complete(budget time.Duration) {
-	total := time.Since(p.start)
-	p.record("total", total)
-	p.logger.Info("drain: complete", "phase", "total", "elapsed", total.Round(time.Millisecond), "shutdown_timeout", budget)
+	return now
 }
 
 func (p *drainPhases) record(phase string, d time.Duration) {

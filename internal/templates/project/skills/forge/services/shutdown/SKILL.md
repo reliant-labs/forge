@@ -141,13 +141,20 @@ Each phase writes one INFO line, `msg` starting `drain:`, with `phase` and its
 
 | `phase` | line | carries |
 |---|---|---|
-| `readiness` | `drain: readiness flipped to draining` | `pre_stop_delay`, `streams_open` |
-| `pre_stop` | `drain: pre-stop pause over; draining the listener` | `streams_open` |
-| `listener` | `drain: listener drained` | `streams_ended`, `streams_claimed`, `streams_hard_ended`, `hijacked_conns_closed`, `streams_still_running` |
+| `readiness` | `drain: readiness flipped to draining` | `pre_stop_delay` |
+| `pre_stop` | `drain: pre-stop pause over; draining the listener` | |
+| `listener` | `drain: listener drained` | `addr`, `streams_ended`, `streams_claimed`, `streams_hard_ended`, `hijacked_conns_closed`, `streams_still_running` |
 | `workers` | `drain: workers stopped` | `workers` |
 | `operators` | `drain: operators stopped` (only with operators) | `operators` |
 | `teardown` | `drain: teardown done` (OnShutdown, pprof) | |
 | `total` | `drain: complete` | `shutdown_timeout` |
+
+Each line is written by the piece that runs the phase, so a main without
+`serverkit.Run` gets the same ones: `Drainer.Begin` writes `readiness` and
+`pre_stop`, `DrainHTTP` writes `listener` (one per listener, to its
+`Streams.Logger`), `Drainer.Complete` writes `total`; `Run` adds only
+`workers`, `operators` and `teardown`. Each takes a `Logger` (nil:
+`slog.Default()`) and a `Meter` (nil: the global OpenTelemetry meter) field.
 
 A non-zero `streams_hard_ended` is a stream that asked to say goodbye and did
 not finish within the soft phase; `hijacked_conns_closed` or
@@ -162,8 +169,9 @@ health port, a gateway):
 
 ```go
 drainer := serverkit.NewDrainer(cfg)                 // readiness gate + budget
+drainer.Logger = logger                              // phase lines (nil: slog.Default())
 mux.HandleFunc("/readyz", drainer.ReadinessHandler(checks, cfg.ReadinessTimeout, logger))
-streams := serverkit.NewStreams()
+streams := &serverkit.Streams{Logger: logger}
 srv := serverkit.NewHTTPServer(cfg, mux, streams)    // installs streams into every request
 // ... serve; mark ready once bound:
 drainer.MarkReady()
@@ -172,6 +180,8 @@ drainer.Begin()                                      // 503 "draining", then PRE
 ctx, cancel := drainer.ShutdownContext()             // from Background, SHUTDOWN_TIMEOUT
 defer cancel()
 err := serverkit.DrainHTTP(ctx, srv, streams)        // Shutdown + streams, soft then hard
+// ... your own teardown, then, before flushing telemetry:
+drainer.Complete()                                   // "drain: complete", the total
 ```
 
 A bare `srv.Shutdown` still ends the streams that did not claim the soft phase;

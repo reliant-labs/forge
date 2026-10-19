@@ -3,12 +3,16 @@ package serverkit_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
@@ -49,33 +53,109 @@ func TestRun_LogsEachDrainPhase(t *testing.T) {
 		t.Fatalf("Run returned %v", err)
 	}
 
-	var phases []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		var rec map[string]any
-		if json.Unmarshal([]byte(line), &rec) == nil && strings.HasPrefix(rec["msg"].(string), "drain: ") {
-			phases = append(phases, rec)
-		}
-	}
-	var order []string
-	for _, rec := range phases {
-		order = append(order, rec["phase"].(string))
-		if _, ok := rec["elapsed"]; !ok && rec["phase"] != "readiness" {
-			t.Errorf("%q has no elapsed: %v", rec["msg"], rec)
-		}
-	}
-	want := []string{"readiness", "pre_stop", "listener", "workers", "teardown", "total"}
-	if strings.Join(order, ",") != strings.Join(want, ",") {
-		t.Fatalf("drain phases logged = %v, want %v\n%s", order, want, logs.String())
-	}
-	if open := phases[0]["streams_open"]; open != float64(1) {
-		t.Errorf("readiness line streams_open = %v, want 1", open)
-	}
+	// Run drains with the same Drainer and DrainHTTP a hand-built main uses,
+	// so each phase is written exactly once — by whichever piece owns it.
+	phases := drainPhaseLines(t, logs.String())
+	assertPhaseOrder(t, phases, logs.String(), "readiness", "pre_stop", "listener", "workers", "teardown", "total")
 	listener := phases[2]
 	if listener["streams_ended"] != float64(1) || listener["streams_still_running"] != float64(0) {
 		t.Errorf("listener line = %v, want streams_ended=1 streams_still_running=0", listener)
 	}
 	if phases[3]["workers"] != float64(1) {
 		t.Errorf("workers line = %v, want workers=1", phases[3])
+	}
+}
+
+// A main that drains its own listener with Drainer and DrainHTTP — not Run —
+// gets the same phase lines and forge.server.drain.duration points, written
+// to the logger and meter it configured them with.
+func TestDrainerAndDrainHTTP_LogAndMeasureTheirPhasesOutsideRun(t *testing.T) {
+	t.Parallel()
+	var logs syncBuf
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	reader := sdkmetric.NewManualReader()
+	meter := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")
+
+	cfg := serverkit.Config{Addr: "127.0.0.1:0", PreStopDelay: 10 * time.Millisecond, ShutdownTimeout: 2 * time.Second}
+	drainer := serverkit.NewDrainer(cfg)
+	drainer.Logger, drainer.Meter = logger, meter
+	streams := &serverkit.Streams{Logger: logger, Meter: meter}
+	srv := serverkit.NewHTTPServer(cfg, http.NotFoundHandler(), streams)
+	ctx, release := streams.Bind(context.Background()) // an open stream, ended by the drain
+	go func() { <-ctx.Done(); release() }()
+
+	drainer.Begin()
+	shutdown, cancel := drainer.ShutdownContext()
+	defer cancel()
+	if err := serverkit.DrainHTTP(shutdown, srv, streams); err != nil {
+		t.Fatalf("DrainHTTP = %v", err)
+	}
+	drainer.Complete()
+	drainer.Complete() // a second call writes nothing
+
+	phases := drainPhaseLines(t, logs.String())
+	assertPhaseOrder(t, phases, logs.String(), "readiness", "pre_stop", "listener", "total")
+	if phases[2]["streams_ended"] != float64(1) {
+		t.Errorf("listener line = %v, want streams_ended=1", phases[2])
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	points := map[string]uint64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "forge.server.drain.duration" {
+				continue
+			}
+			if m.Unit != "s" {
+				t.Errorf("unit = %q, want s (the declaration's)", m.Unit)
+			}
+			hist, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("drain duration is a %T, want a float64 histogram", m.Data)
+			}
+			for _, dp := range hist.DataPoints {
+				v, _ := dp.Attributes.Value("phase")
+				points[v.AsString()] += dp.Count
+			}
+		}
+	}
+	want := map[string]uint64{"pre_stop": 1, "listener": 1, "total": 1}
+	if fmt.Sprint(points) != fmt.Sprint(want) {
+		t.Fatalf("forge.server.drain.duration counts by phase = %v, want %v", points, want)
+	}
+}
+
+// drainPhaseLines returns the "drain: ..." records of a JSON log.
+func drainPhaseLines(t *testing.T, logs string) []map[string]any {
+	t.Helper()
+	var phases []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) == nil {
+			if msg, _ := rec["msg"].(string); strings.HasPrefix(msg, "drain: ") {
+				phases = append(phases, rec)
+			}
+		}
+	}
+	return phases
+}
+
+// assertPhaseOrder fails unless the phase lines are exactly want, in order —
+// so each once — and every one but readiness carries its elapsed.
+func assertPhaseOrder(t *testing.T, phases []map[string]any, logs string, want ...string) {
+	t.Helper()
+	var order []string
+	for _, rec := range phases {
+		order = append(order, fmt.Sprint(rec["phase"]))
+		if _, ok := rec["elapsed"]; !ok && rec["phase"] != "readiness" {
+			t.Errorf("%q has no elapsed: %v", rec["msg"], rec)
+		}
+	}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("drain phases logged = %v, want %v\n%s", order, want, logs)
 	}
 }
 

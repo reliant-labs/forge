@@ -294,6 +294,16 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   complete — and records the new built-in histogram
   `forge.server.drain.duration` by `phase`. `Streams.Report()` returns the
   listener's counts for a main that drains its own listener.
+- **A main that drains without `serverkit.Run` gets the drain's phase lines
+  and metric too.** They used to be written only inside `Run`, so a main
+  using `Drainer` + `DrainHTTP` had to hand-log `Streams.Report()`. Each piece
+  now writes its own phases to the `Logger` and `Meter` fields it is given
+  (nil: `slog.Default()` and the global OpenTelemetry meter): `Drainer.Begin`
+  readiness and pre_stop, `DrainHTTP` the listener (via `Streams.Logger` /
+  `Streams.Meter`, now with `addr`), the new `Drainer.Complete` the total.
+  `Run` uses the same path and adds only workers, operators and teardown, so
+  nothing is written twice. The readiness and pre_stop lines no longer carry
+  `streams_open` (the listener line's counts cover it).
 - **A websocket open at shutdown closes with a status and runs its cleanup.**
   `http.Server.Shutdown` neither waits for nor closes a hijacked connection,
   so the process exit dropped every open websocket — the browser saw a dead

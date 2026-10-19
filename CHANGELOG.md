@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A StatefulSet's declared volume size can grow, and the deploy converges it.**
+  `volumeClaimTemplates` are immutable, so raising a declared size (a
+  `clickhouse_disk = "100Gi"` that was `"50Gi"`) used to fail every apply with
+  `updates to statefulset spec for fields other than ... are forbidden`, and the
+  only way out was a hand-patched PVC with the KCL left at the old value. Direct
+  apply now recovers that rejection the production way: it grows each existing
+  claim of the grown template (grow-only, after checking the claim's StorageClass
+  has `allowVolumeExpansion`; claims already at or above the size are left
+  alone, including ones expanded by hand ahead of the declaration), deletes the
+  StatefulSet with `--cascade=orphan` so its pods and claims keep running, and
+  re-applies, which recreates the object and adopts the pods — no restart when
+  the pod template is unchanged. A shrink, a changed storage class, access mode
+  or label, an added or removed template, or a change to another immutable field
+  (judged by a server-side dry run with the live templates swapped in) is
+  refused with the reason and writes nothing. The logic is the new public
+  `pkg/stsresize` (`Decide` is pure; `Converge` runs it over a small `Cluster`
+  interface), so a reconciler's converger can run the same procedure before it
+  hands a revision to Flux: kustomize-controller dry-runs every object of a
+  Kustomization before applying any, so one such StatefulSet otherwise stops the
+  whole unit converging, and its per-object force would delete the pods.
 - `forge cloud identity status|users|invite <env>`: inspect hosted managed identity,
   page/search users, and email an invitation with explicit `--email` and repeatable
   `--role`. Uses the authenticated org and exact project/environment lookup;

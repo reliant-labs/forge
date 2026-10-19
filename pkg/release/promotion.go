@@ -73,6 +73,11 @@ type Actor struct {
 // most recent entry; there is no separate pointer that could disagree with
 // the history.
 type Promotion struct {
+	// Frozen complete desired state; absent only on historical promotions.
+	Snapshot       *Snapshot `json:"snapshot,omitempty"`
+	SnapshotDigest string    `json:"snapshot_digest,omitempty"`
+	BundleID       string    `json:"bundle_id,omitempty"`
+	BundleDigest   string    `json:"bundle_digest,omitempty"`
 	// ID is assigned by the backend that recorded the entry.
 	ID string `json:"id,omitempty"`
 	// Env is the environment name.
@@ -137,6 +142,18 @@ type Promotion struct {
 // Validate checks a promotion before it is appended, and every entry read
 // back.
 func (p Promotion) Validate() error {
+	if p.Snapshot != nil || p.SnapshotDigest != "" {
+		if p.Snapshot == nil || !ValidDigest(p.BundleDigest) || p.BundleID == "" {
+			return fmt.Errorf("%w: incomplete frozen promotion snapshot/bundle", ErrInvalid)
+		}
+		d, err := p.Snapshot.Digest()
+		if err != nil {
+			return err
+		}
+		if d != p.SnapshotDigest || p.Snapshot.Environment != p.Env {
+			return fmt.Errorf("%w: promotion snapshot mismatch", ErrInvalid)
+		}
+	}
 	switch {
 	case p.Env == "":
 		return fmt.Errorf("%w: promotion environment is required", ErrInvalid)

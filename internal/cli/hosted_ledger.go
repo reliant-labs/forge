@@ -110,14 +110,15 @@ type wireArtifact struct {
 }
 
 type wireRelease struct {
-	ID              string         `json:"id"`
-	Version         string         `json:"version"`
-	GitCommit       string         `json:"gitCommit,omitempty"`
-	GitTag          string         `json:"gitTag,omitempty"`
-	GitDirty        bool           `json:"gitDirty,omitempty"`
-	Artifacts       []wireArtifact `json:"artifacts"`
-	CreatedByUserID string         `json:"createdByUserId,omitempty"`
-	CreatedAt       time.Time      `json:"createdAt"`
+	SnapshotRelease json.RawMessage `json:"snapshotRelease,omitempty"`
+	ID              string          `json:"id"`
+	Version         string          `json:"version"`
+	GitCommit       string          `json:"gitCommit,omitempty"`
+	GitTag          string          `json:"gitTag,omitempty"`
+	GitDirty        bool            `json:"gitDirty,omitempty"`
+	Artifacts       []wireArtifact  `json:"artifacts"`
+	CreatedByUserID string          `json:"createdByUserId,omitempty"`
+	CreatedAt       time.Time       `json:"createdAt"`
 	// Run is the CI run that cut this release (DeployRelease.run, tag 9).
 	Run *wireRun `json:"run,omitempty"`
 	// Provenance is DeployRelease.provenance (tag 10): the tree hash, forge
@@ -174,6 +175,10 @@ type wireGate struct {
 }
 
 type wirePromotion struct {
+	Snapshot          *release.Snapshot     `json:"snapshot,omitempty"`
+	SnapshotDigest    string                `json:"snapshotDigest,omitempty"`
+	BundleID          string                `json:"bundleId,omitempty"`
+	BundleDigest      string                `json:"bundleDigest,omitempty"`
 	ID                string                `json:"id"`
 	EnvironmentID     string                `json:"environmentId"`
 	ReleaseID         string                `json:"releaseId"`
@@ -589,6 +594,9 @@ func releaseToWire(r release.Release) []wireArtifact {
 // validates the result — a hosted release is held to the same closed enums
 // as one read from disk.
 func releaseFromWire(w wireRelease) (release.Release, error) {
+	if len(w.SnapshotRelease) > 0 && string(w.SnapshotRelease) != "null" {
+		return snapshotReleaseFromJSON(w.SnapshotRelease, w.Version)
+	}
 	r := release.Release{
 		Version:   w.Version,
 		Git:       release.Git{Commit: w.GitCommit, Tag: w.GitTag, Dirty: w.GitDirty},
@@ -731,6 +739,19 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 		// the id. Kept verbatim rather than dropped, so the promotion
 		// path stays auditable even when the name is unknown.
 		p.FromEnv = w.FromEnvironmentID
+	}
+	p.Snapshot = w.Snapshot
+	p.SnapshotDigest = w.SnapshotDigest
+	p.BundleID = w.BundleID
+	p.BundleDigest = w.BundleDigest
+	if p.Snapshot != nil {
+		digest, err := p.Snapshot.Digest()
+		if err != nil || digest != p.SnapshotDigest || !release.ValidDigest(p.BundleDigest) || p.BundleID == "" {
+			return release.Promotion{}, fmt.Errorf("invalid frozen promotion snapshot")
+		}
+		if p.Snapshot.Environment != env {
+			return release.Promotion{}, fmt.Errorf("promotion snapshot environment mismatch")
+		}
 	}
 	p.FromPromotionID = w.FromPromotionID
 	p.SupersededInFlight = w.SupersededInFlight
@@ -970,6 +991,14 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 	// with different artifacts", which is true and useless.
 	if r.Project != "" {
 		req["project"] = r.Project
+	}
+	if len(r.Catalog) > 0 || len(r.SnapshotIntents) > 0 {
+		if err := requireSnapshotCapabilities(ctx, s.client); err != nil {
+			return false, err
+		}
+		// Exclusive typed document: no lossy legacy artifact flattening or
+		// duplicated provenance/run fields against the strict server adapter.
+		req = map[string]any{"version": r.Version, "project": r.Project, "snapshotRelease": r}
 	}
 	var resp struct {
 		Created bool `json:"created"`

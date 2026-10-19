@@ -61,7 +61,15 @@ import (
 // env-wide. Callers (`forge build`, `forge env deploy`, `forge env up`,
 // `forge env up`) read this rather than reaching back into forge.yaml,
 // because placement is a per-env decision that lives in the KCL layer.
+type releaseManifestConsumer struct {
+	Name                string            `json:"name"`
+	Cluster             string            `json:"cluster"`
+	ReleaseInputs       map[string]string `json:"release_inputs"`
+	ReleaseDependencies map[string]string `json:"release_dependencies"`
+}
+
 type KCLEntities struct {
+	ReleaseManifestConsumers []releaseManifestConsumer
 	// Project and Env are the bundle's project name and the env it was
 	// rendered for. ImageTag is the env's RESOLVED image tag — the tag the
 	// Cluster workload records' images carry, and therefore the tag
@@ -728,7 +736,9 @@ type WorkloadEntity struct {
 	Spec deployv1alpha1.WorkloadSpec
 	// DeliveryUnit is the delivery unit the workload's objects belong to ("" =
 	// the default unit). Authoring-only: it never reaches the wire spec.
-	DeliveryUnit string
+	DeliveryUnit        string
+	ReleaseDependencies map[string]string
+	ReleaseInputs       map[string]string
 }
 
 // Runtime discriminators (RuntimeEntity.Type).
@@ -876,11 +886,13 @@ type HostInfraEntity struct {
 // Type=="" means the KCL `build` block was absent (null): forge does not
 // build the workload, and nothing is synthesized.
 type BuildConfigEntity struct {
-	Type   string       // "go" | "docker" | "shell" | "remote" | "" (absent)
-	Go     *GoBuild     // populated when Type=="go"
-	Docker *DockerBuild // populated when Type=="docker"
-	Shell  *ShellBuild  // populated when Type=="shell"
-	Remote *RemoteBuild // populated when Type=="remote"
+	Unit       string
+	InputsFile string
+	Type       string       // "go" | "docker" | "shell" | "remote" | "" (absent)
+	Go         *GoBuild     // populated when Type=="go"
+	Docker     *DockerBuild // populated when Type=="docker"
+	Shell      *ShellBuild  // populated when Type=="shell"
+	Remote     *RemoteBuild // populated when Type=="remote"
 }
 
 // GoBuild mirrors the kcl/schema.k GoBuild. Cmd is the go-build target
@@ -1045,8 +1057,9 @@ type BuildVariant struct {
 // BasePath, Bundle, CacheControl) are the frontend's own, identical on every
 // runtime that publishes a build.
 type FrontendEntity struct {
-	Name string `json:"name"`
-	Type string `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
+	ReleaseDependencies map[string]string `json:"release_dependencies,omitempty"`
+	Name                string            `json:"name"`
+	Type                string            `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
 	// Path is the frontend's directory in THIS repository. Empty exactly
 	// when Source is set — a cross-repo frontend has no directory here
 	// until the source resolver materializes one.
@@ -1276,34 +1289,35 @@ type ObservabilityPolicyEntity struct {
 // decoded in a second step (kclWorkloadRaw) because their build and runtime
 // are tagged unions and their spec is decoded strictly.
 type kclRenderRaw struct {
-	Project             string                       `json:"project,omitempty"`
-	Env                 string                       `json:"env,omitempty"`
-	ImageTag            string                       `json:"image_tag,omitempty"`
-	Lifecycle           string                       `json:"lifecycle,omitempty"`
-	Applier             string                       `json:"applier,omitempty"`
-	DeliveryUnits       []deliveryUnitRaw            `json:"delivery_units,omitempty"`
-	HubConverges        *[]string                    `json:"hub_converges,omitempty"`
-	Clusters            []ClusterEntity              `json:"clusters,omitempty"`
-	ClusterTarget       *ClusterTargetEntity         `json:"cluster_target,omitempty"`
-	KubeconfigSecrets   []KubeconfigSecretEntity     `json:"kubeconfig_secrets,omitempty"`
-	ConnectedClusters   map[string]string            `json:"connected_clusters,omitempty"`
-	Workloads           []kclWorkloadRaw             `json:"workloads,omitempty"`
-	Observability       *ObservabilityEntity         `json:"observability,omitempty"`
-	DeliveryPolicy      *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
-	Identity            *release.ShapeIdentity       `json:"identity,omitempty"`
-	Infra               []HostInfraEntity            `json:"infra,omitempty"`
-	Frontends           []FrontendEntity             `json:"frontends,omitempty"`
-	Gateways            []GatewayEntity              `json:"gateways,omitempty"`
-	HTTPRoutes          []HTTPRouteEntity            `json:"http_routes,omitempty"`
-	GRPCRoutes          []GRPCRouteEntity            `json:"grpc_routes,omitempty"`
-	Databases           []DatabaseEntity             `json:"databases,omitempty"`
-	HelmCharts          []HelmChartEntity            `json:"helm_charts,omitempty"`
-	SecretProvider      *SecretProviderEntity        `json:"secret_provider,omitempty"`
-	RenderedSecrets     []RenderedSecretEntity       `json:"rendered_secrets,omitempty"`
-	ControlPlane        *ControlPlaneEntity          `json:"control_plane,omitempty"`
-	RequiredSecrets     []ExternalSecretEntity       `json:"required_secrets,omitempty"`
-	RequiredDNS         []DNSRecordEntity            `json:"required_dns,omitempty"`
-	ControlPlaneSecrets []ControlPlaneSecretEntity   `json:"control_plane_secrets,omitempty"`
+	ReleaseManifestConsumers []releaseManifestConsumer    `json:"release_manifest_consumers,omitempty"`
+	Project                  string                       `json:"project,omitempty"`
+	Env                      string                       `json:"env,omitempty"`
+	ImageTag                 string                       `json:"image_tag,omitempty"`
+	Lifecycle                string                       `json:"lifecycle,omitempty"`
+	Applier                  string                       `json:"applier,omitempty"`
+	DeliveryUnits            []deliveryUnitRaw            `json:"delivery_units,omitempty"`
+	HubConverges             *[]string                    `json:"hub_converges,omitempty"`
+	Clusters                 []ClusterEntity              `json:"clusters,omitempty"`
+	ClusterTarget            *ClusterTargetEntity         `json:"cluster_target,omitempty"`
+	KubeconfigSecrets        []KubeconfigSecretEntity     `json:"kubeconfig_secrets,omitempty"`
+	ConnectedClusters        map[string]string            `json:"connected_clusters,omitempty"`
+	Workloads                []kclWorkloadRaw             `json:"workloads,omitempty"`
+	Observability            *ObservabilityEntity         `json:"observability,omitempty"`
+	DeliveryPolicy           *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
+	Identity                 *release.ShapeIdentity       `json:"identity,omitempty"`
+	Infra                    []HostInfraEntity            `json:"infra,omitempty"`
+	Frontends                []FrontendEntity             `json:"frontends,omitempty"`
+	Gateways                 []GatewayEntity              `json:"gateways,omitempty"`
+	HTTPRoutes               []HTTPRouteEntity            `json:"http_routes,omitempty"`
+	GRPCRoutes               []GRPCRouteEntity            `json:"grpc_routes,omitempty"`
+	Databases                []DatabaseEntity             `json:"databases,omitempty"`
+	HelmCharts               []HelmChartEntity            `json:"helm_charts,omitempty"`
+	SecretProvider           *SecretProviderEntity        `json:"secret_provider,omitempty"`
+	RenderedSecrets          []RenderedSecretEntity       `json:"rendered_secrets,omitempty"`
+	ControlPlane             *ControlPlaneEntity          `json:"control_plane,omitempty"`
+	RequiredSecrets          []ExternalSecretEntity       `json:"required_secrets,omitempty"`
+	RequiredDNS              []DNSRecordEntity            `json:"required_dns,omitempty"`
+	ControlPlaneSecrets      []ControlPlaneSecretEntity   `json:"control_plane_secrets,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -1340,7 +1354,9 @@ type kclWorkloadRaw struct {
 	Runtime    json.RawMessage   `json:"runtime"`
 	Spec       json.RawMessage   `json:"spec"`
 	// DeliveryUnit is the unit the workload's objects are delivered in.
-	DeliveryUnit string `json:"delivery_unit,omitempty"`
+	DeliveryUnit        string            `json:"delivery_unit,omitempty"`
+	ReleaseDependencies map[string]string `json:"release_dependencies,omitempty"`
+	ReleaseInputs       map[string]string `json:"release_inputs,omitempty"`
 }
 
 // rawManifest is a minimal view of one rendered k8s object — just enough
@@ -1601,38 +1617,39 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
-		Project:              raw.Project,
-		Env:                  raw.Env,
-		ImageTag:             raw.ImageTag,
-		Lifecycle:            raw.Lifecycle,
-		Applier:              raw.Applier,
-		DeliveryUnits:        deliveryUnitsOf(raw.DeliveryUnits),
-		HubConverges:         hubConvergesOf(raw.HubConverges),
-		Clusters:             raw.Clusters,
-		ClusterTarget:        raw.ClusterTarget,
-		KubeconfigSecrets:    raw.KubeconfigSecrets,
-		ConnectedClusters:    raw.ConnectedClusters,
-		Infra:                raw.Infra,
-		Frontends:            raw.Frontends,
-		Gateways:             raw.Gateways,
-		HTTPRoutes:           raw.HTTPRoutes,
-		GRPCRoutes:           raw.GRPCRoutes,
-		HelmCharts:           raw.HelmCharts,
-		Databases:            raw.Databases,
-		SecretProvider:       raw.SecretProvider,
-		Observability:        raw.Observability,
-		DeliveryPolicy:       raw.DeliveryPolicy,
-		Identity:             raw.Identity,
-		RenderedSecrets:      raw.RenderedSecrets,
-		ControlPlane:         raw.ControlPlane,
-		RequiredSecrets:      raw.RequiredSecrets,
-		RequiredDNS:          raw.RequiredDNS,
-		ControlPlaneSecrets:  raw.ControlPlaneSecrets,
-		ManifestNamespace:    manifestNamespace(raw.Manifests),
-		ManifestServiceNames: manifestServiceNames(raw.Manifests),
-		ManifestClusters:     manifestClusters(raw.Manifests),
-		ManifestUnits:        manifestUnits(raw.Manifests),
-		ClusterWork:          manifestClusterWork(raw.Manifests, raw.Gateways),
+		Project:                  raw.Project,
+		Env:                      raw.Env,
+		ImageTag:                 raw.ImageTag,
+		Lifecycle:                raw.Lifecycle,
+		Applier:                  raw.Applier,
+		DeliveryUnits:            deliveryUnitsOf(raw.DeliveryUnits),
+		ReleaseManifestConsumers: raw.ReleaseManifestConsumers,
+		HubConverges:             hubConvergesOf(raw.HubConverges),
+		Clusters:                 raw.Clusters,
+		ClusterTarget:            raw.ClusterTarget,
+		KubeconfigSecrets:        raw.KubeconfigSecrets,
+		ConnectedClusters:        raw.ConnectedClusters,
+		Infra:                    raw.Infra,
+		Frontends:                raw.Frontends,
+		Gateways:                 raw.Gateways,
+		HTTPRoutes:               raw.HTTPRoutes,
+		GRPCRoutes:               raw.GRPCRoutes,
+		HelmCharts:               raw.HelmCharts,
+		Databases:                raw.Databases,
+		SecretProvider:           raw.SecretProvider,
+		Observability:            raw.Observability,
+		DeliveryPolicy:           raw.DeliveryPolicy,
+		Identity:                 raw.Identity,
+		RenderedSecrets:          raw.RenderedSecrets,
+		ControlPlane:             raw.ControlPlane,
+		RequiredSecrets:          raw.RequiredSecrets,
+		RequiredDNS:              raw.RequiredDNS,
+		ControlPlaneSecrets:      raw.ControlPlaneSecrets,
+		ManifestNamespace:        manifestNamespace(raw.Manifests),
+		ManifestServiceNames:     manifestServiceNames(raw.Manifests),
+		ManifestClusters:         manifestClusters(raw.Manifests),
+		ManifestUnits:            manifestUnits(raw.Manifests),
+		ClusterWork:              manifestClusterWork(raw.Manifests, raw.Gateways),
 	}
 	for _, c := range raw.BundledCharts {
 		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)
@@ -1684,7 +1701,7 @@ func decodeWorkload(w kclWorkloadRaw) (WorkloadEntity, error) {
 	if w.Kind != "" && w.Kind != kind {
 		return WorkloadEntity{}, fmt.Errorf("workload %q: kind %q disagrees with spec.kind %q", w.Name, w.Kind, kind)
 	}
-	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec, DeliveryUnit: w.DeliveryUnit}, nil
+	return WorkloadEntity{Name: w.Name, Kind: kind, Image: w.Image, BuildImage: w.BuildImage, Build: build, Runtime: rt, FlowChecks: w.FlowChecks, Spec: spec, DeliveryUnit: w.DeliveryUnit, ReleaseDependencies: w.ReleaseDependencies, ReleaseInputs: w.ReleaseInputs}, nil
 }
 
 // manifestNamespace returns the namespace that dominates the rendered
@@ -1774,7 +1791,17 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 // value (Type==""): the workload is not built by forge, and nothing is
 // synthesized. Unrecognised non-empty types fail loud — a bad KCL render
 // should not silently fall back.
-func dispatchBuild(svcName string, raw json.RawMessage) (BuildConfigEntity, error) {
+func dispatchBuild(svcName string, raw json.RawMessage) (result BuildConfigEntity, err error) {
+	var identity struct {
+		Unit       string `json:"unit"`
+		InputsFile string `json:"inputs_file"`
+	}
+	defer func() {
+		if err == nil {
+			result.Unit = identity.Unit
+			result.InputsFile = identity.InputsFile
+		}
+	}()
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
 		return BuildConfigEntity{}, nil
@@ -1784,6 +1811,9 @@ func dispatchBuild(svcName string, raw json.RawMessage) (BuildConfigEntity, erro
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return BuildConfigEntity{}, fmt.Errorf("workload %q: parse build.type: %w", svcName, err)
+	}
+	if err := json.Unmarshal(raw, &identity); err != nil {
+		return BuildConfigEntity{}, err
 	}
 	switch strings.ToLower(strings.TrimSpace(probe.Type)) {
 	case "go":

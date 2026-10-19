@@ -69,10 +69,10 @@ func externalBuildArtifacts(services []WorkloadEntity, opts buildOptions, tag, p
 			env = map[string]string{}
 		}
 		identity, err := json.Marshal(struct {
-			Cmd, Cwd, Platform string
-			Env                map[string]string
-			Source             any
-		}{spec.BuildCmd, cwd, platform, env, externalDeclaredSource(svc)})
+			Cmd, Cwd, Platform, InputsFile string
+			Env                            map[string]string
+			Source                         any
+		}{spec.BuildCmd, cwd, platform, svc.Build.InputsFile, env, externalDeclaredSource(svc)})
 		if err != nil {
 			return nil, err
 		}

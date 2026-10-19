@@ -208,16 +208,6 @@ func parseClusters(line string) []string {
 
 // ─── Identity ───────────────────────────────────────────────────────────────
 
-// Annotation keys that pin an object to a reserved external address. Closed,
-// because [release.IdentityKeys] is closed: the identity map exists to carry
-// the few attributes a deploy can silently take away, and an open map would
-// become somewhere a value hides.
-const (
-	gkeGlobalStaticIPAnnotation   = "kubernetes.io/ingress.global-static-ip-name"
-	gkeRegionalStaticIPAnnotation = "kubernetes.io/ingress.regional-static-ip-name"
-	gkeGatewayStaticIPAnnotation  = "networking.gke.io/static-ip"
-)
-
 // identityOf reads the attributes that give an object an EXTERNAL identity —
 // an address the world already points at, which a deploy can release without
 // looking like it changed anything.
@@ -236,39 +226,7 @@ const (
 // carry an empty map: nil and "{}" would read alike to a diff and the plan's
 // stop rules key on presence.
 func identityOf(kind string, body any) map[string]string {
-	doc, ok := body.(map[string]any)
-	if !ok {
-		return nil
-	}
-	id := map[string]string{}
-	switch kind {
-	case "Service":
-		spec, _ := doc["spec"].(map[string]any)
-		put(id, release.IdentityType, stringAt(spec, "type"))
-		put(id, release.IdentityLoadBalancerIP, stringAt(spec, "loadBalancerIP"))
-		put(id, release.IdentityLoadBalancerClass, stringAt(spec, "loadBalancerClass"))
-	case "EnvoyProxy":
-		put(id, release.IdentityLoadBalancerIP, stringAt(
-			mapAt(mapAt(mapAt(doc, "spec"), "provider"), "kubernetes"), "envoyService", "loadBalancerIP"))
-	case "Ingress", "Gateway":
-		annotations := mapAt(mapAt(doc, "metadata"), "annotations")
-		for _, key := range []string{gkeGlobalStaticIPAnnotation, gkeRegionalStaticIPAnnotation, gkeGatewayStaticIPAnnotation} {
-			put(id, release.IdentityStaticIP, stringAt(annotations, key))
-		}
-	}
-	if len(id) == 0 {
-		return nil
-	}
-	return id
-}
-
-// put records a non-empty value, and never overwrites one already recorded:
-// the first annotation of a closed key wins, so two spellings of "pin this to
-// a reserved address" cannot make the identity depend on map iteration order.
-func put(id map[string]string, key, value string) {
-	if value != "" && id[key] == "" {
-		id[key] = value
-	}
+	return release.ObjectExternalIdentity(kind, body)
 }
 
 // ─── Decoding helpers ───────────────────────────────────────────────────────

@@ -12,6 +12,9 @@ import (
 // BundleSchema is the BundleDoc schema this package reads and writes.
 const BundleSchema = "forge.dev/bundle/v1"
 
+// SnapshotBundleSchema embeds a full immutable desired-state snapshot.
+const SnapshotBundleSchema = "forge.dev/bundle/v2"
+
 // Bundle OCI media types. One bundle is one OCI image manifest whose config
 // blob is the [BundleDoc] and whose single layer is the manifest stream.
 //
@@ -75,6 +78,8 @@ const (
 	BundleObservabilityPrefix = "observability"
 	BundleDashboardsPath      = BundleObservabilityPrefix + "/dashboards"
 	BundleMetricsSchemaPath   = BundleObservabilityPrefix + "/metrics-schema.json"
+	// BundleFrontendDeclarationsPath is bounded non-applied frozen frontend metadata.
+	BundleFrontendDeclarationsPath = "forge/frontend-declarations.json"
 )
 
 // BundleClusterPath is the path, within the extracted manifests layer, that
@@ -143,9 +148,11 @@ const MaxShapeBytes = 256 << 10
 // that records a bundle reads the shape and provenance out of these verified
 // bytes rather than trusting a request field that describes them.
 type BundleDoc struct {
-	Schema  string `json:"schema"`
-	Project string `json:"project"`
-	Env     string `json:"env"`
+	Schema         string    `json:"schema"`
+	Snapshot       *Snapshot `json:"snapshot,omitempty"`
+	SnapshotDigest string    `json:"snapshot_digest,omitempty"`
+	Project        string    `json:"project"`
+	Env            string    `json:"env"`
 	// Release is the version the bundle pins, or "" for an unreleased
 	// bundle (dev, or a Preview deploy) pinned to a build's own digests.
 	Release string `json:"release"`
@@ -226,8 +233,25 @@ type BundlePins struct {
 // Validate checks the document. It is the check a backend runs on bytes it
 // was handed, so it is strict about everything it can be strict about.
 func (d BundleDoc) Validate() error {
+	if d.Schema == SnapshotBundleSchema {
+		if d.Snapshot == nil {
+			return fmt.Errorf("%w: v2 bundle requires full snapshot", ErrInvalid)
+		}
+		hash, err := d.Snapshot.Digest()
+		if err != nil {
+			return err
+		}
+		if hash != d.SnapshotDigest || d.Snapshot.Project != d.Project || d.Snapshot.Environment != d.Env {
+			return fmt.Errorf("%w: bundle snapshot digest/scope mismatch", ErrInvalid)
+		}
+		if err := validateSnapshotBundleLayout(d); err != nil {
+			return err
+		}
+	} else if d.Snapshot != nil || d.SnapshotDigest != "" {
+		return fmt.Errorf("%w: snapshot requires v2 bundle schema", ErrInvalid)
+	}
 	switch {
-	case d.Schema != BundleSchema:
+	case d.Schema != BundleSchema && d.Schema != SnapshotBundleSchema:
 		return fmt.Errorf("%w: bundle schema %q (expected %s)", ErrInvalid, d.Schema, BundleSchema)
 	case strings.TrimSpace(d.Env) == "":
 		return fmt.Errorf("%w: bundle env is required", ErrInvalid)
@@ -326,8 +350,10 @@ func DecodeBundleDoc(data []byte) (BundleDoc, error) {
 // BundleRecord is a bundle as a LEDGER holds it: the document's indexable
 // half plus where the bytes are and who recorded them. Immutable.
 type BundleRecord struct {
-	ID  string `json:"id"`
-	Env string `json:"env"`
+	Snapshot       *Snapshot `json:"snapshot,omitempty"`
+	SnapshotDigest string    `json:"snapshot_digest,omitempty"`
+	ID             string    `json:"id"`
+	Env            string    `json:"env"`
 	// Release is the version pinned, "" for an unreleased bundle.
 	Release string `json:"release,omitempty"`
 	// Digest is the OCI MANIFEST digest: the bundle's identity, and the

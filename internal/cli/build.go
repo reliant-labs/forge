@@ -567,6 +567,26 @@ func resolveBuildImageTag(ctx context.Context, entities *KCLEntities, opts build
 	return t, "git describe --tags --always --dirty", nil
 }
 
+// refreshBuildRuntimeConfigs renders the frontend runtime config documents a
+// build ships (see the comment at its call site in runBuild): this env's when
+// one is named, otherwise the dev document if it is missing. Best-effort: a
+// failure warns and the build proceeds on the existing document.
+func refreshBuildRuntimeConfigs(cfg *config.ProjectConfig, entities *KCLEntities, env string) {
+	if env == "" {
+		if n, err := ensureDevRuntimeConfigs(cfg, projectDirForKCL()); err != nil {
+			fmt.Printf("[build]   Warning: frontend runtime config: %v\n", err)
+		} else if n > 0 {
+			fmt.Printf("[build]   Rendered %d missing dev frontend runtime config(s)\n", n)
+		}
+		return
+	}
+	if changed, err := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), env, frontendRuntimeOverlays(entities)); err != nil {
+		fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", err)
+	} else if changed > 0 {
+		fmt.Printf("[build]   Refreshed %d frontend runtime config(s) from env %q\n", changed, env)
+	}
+}
+
 func runBuild(ctx context.Context, opts buildOptions) error {
 	cfg, err := prepareBuild(opts)
 	if err != nil {
@@ -712,19 +732,8 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// gitignored), so render just that file rather than the whole generate
 	// pipeline a missing config.js used to trigger (see
 	// generatedCodeNeedsRefresh).
-	if opts.env == "" && len(frontends) > 0 {
-		if n, ferr := ensureDevRuntimeConfigs(cfg, projectDirForKCL()); ferr != nil {
-			fmt.Printf("[build]   Warning: frontend runtime config: %v\n", ferr)
-		} else if n > 0 {
-			fmt.Printf("[build]   Rendered %d missing dev frontend runtime config(s)\n", n)
-		}
-	}
-	if opts.env != "" && len(frontends) > 0 {
-		if changed, ferr := refreshFrontendRuntimeConfigs(cfg, projectDirForKCL(), opts.env, frontendRuntimeOverlays(entities)); ferr != nil {
-			fmt.Printf("[build]   Warning: frontend runtime config: %v (building with the previously generated config.js)\n", ferr)
-		} else if changed > 0 {
-			fmt.Printf("[build]   Refreshed %d frontend runtime config(s) from env %q\n", changed, opts.env)
-		}
+	if len(frontends) > 0 {
+		refreshBuildRuntimeConfigs(cfg, entities, opts.env)
 	}
 
 	start := time.Now()

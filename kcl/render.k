@@ -2092,7 +2092,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # as the StaticSite spec's runtimeConfig.
         "runtime_config": _rc
         "runtime_config_spec": _rc_spec
-    } | ({"routes": f.routes} if f.routes else {})
+    } | ({"routes": f.routes} if f.routes else {}) | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string
@@ -2244,6 +2244,21 @@ _render_frontend_config = lambda c: FrontendConfig -> any {
         "otel_endpoint": c.otel_endpoint if c.otel_endpoint else None
         "environment": c.environment if c.environment else None
         "telemetry_disabled": c.telemetry_disabled
+    }
+}
+
+# Render a BrowserTelemetry to its stable dict form. An unset `telemetry` is
+# omitted from the frontend (see _render_frontend), so a frontend that declares
+# none renders exactly as it did before the field.
+_render_browser_telemetry = lambda t: BrowserTelemetry -> any {
+    {
+        "funnels": [{
+            "id": f.id
+            "title": f.title if f.title else None
+            "steps": f.steps
+            "window": f.window
+            "by": f.by
+        } for f in t.funnels]
     }
 }
 

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -71,33 +70,6 @@ func validateEnvBinds(binds []string) error {
 			return cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "", bindUsage)
 		}
 	}
-	return nil
-}
-
-// applyEnvBinds rebinds workloads and frontends in a freshly derived env's
-// main.k: each `<name>=<target>` rewrites that name's one binding line — a
-// workload's `_<binder>(wl.<name>)` or a frontend's
-// `_<binder>(_<name>_frontend)`, whichever the env declares. Binding anything
-// to hosted also declares the env's control plane (Reliant cloud) when it has
-// none, since that is where a hosted workload or frontend is published.
-func applyEnvBinds(env string, binds []string) error {
-	projectDir, err := projectRoot()
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(projectDir, "deploy", "kcl", env, "main.k")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	content, err := bindEnvContent(projectDir, env, string(raw), binds)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	fmt.Printf("\nRebound in deploy/kcl/%s/main.k: %s\n", env, strings.Join(binds, ", "))
 	return nil
 }
 

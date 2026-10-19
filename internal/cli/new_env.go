@@ -280,10 +280,6 @@ func looksCloudShaped(body string) bool {
 // is user-owned and env-specific (the template env's values, e.g. its database
 // DSN, would be wrong here), so we point the author at `forge generate`, which
 // scaffolds a fresh config.k for the new env from the proto defaults.
-func scaffoldEnvFromTemplate(projectDir, srcDir, envDir, template, name string) ([]string, error) {
-	return scaffoldEnvFromTemplateBinds(projectDir, srcDir, envDir, template, name, nil)
-}
-
 func scaffoldEnvFromTemplateBinds(projectDir, srcDir, envDir, template, name string, binds []string) ([]string, error) {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {

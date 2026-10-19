@@ -55,7 +55,12 @@ func fullyDeclaredShape() release.Shape {
 		},
 		ObservabilityPolicy: &release.ShapeObservabilityPolicy{
 			Enabled: true, Disabled: []string{release.ObsCategoryLogs}, OptIn: []string{release.ObsOptInReplay},
+			Retention: &release.ShapeRetention{ReplayDays: 7, ErrorsDays: 60, ProductEventsDays: 120},
 		},
+		FrontendTelemetry: []release.ShapeFrontendTelemetry{{
+			Frontend: "web", Sourcemaps: release.SourcemapsOff, ErrorsIgnore: []string{"AbortError", "re:^Failed"},
+			Funnels: []release.ShapeFunnel{{ID: "onboarding", Title: "Onboarding", Steps: []string{"signup", "first_chat"}, Window: "7d", By: "user"}},
+		}},
 		DeliveryPolicy: &policy,
 		Identity: &release.ShapeIdentity{
 			Name: "identity", Runtime: release.IdentityRuntimeHosted,

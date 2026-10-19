@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -78,5 +79,76 @@ func TestDeclaredFunnels_FromRealKCL(t *testing.T) {
 	co, ok := panels["funnel-checkout"]
 	if !ok || co.Title != "checkout" || co.Funnel == nil || co.Funnel.Window != obsdash.DefaultFunnelWindow || co.Funnel.By != obsdash.DefaultFunnelBy {
 		t.Errorf("funnel-checkout = %+v, want the KCL defaults", co)
+	}
+}
+
+// TestFrontendTelemetry_DecodesFromRealKCL: every knob of
+// forge.BrowserTelemetry reaches the entity the deploy reads, including
+// `sourcemaps`, which FrontendEntity carried but no KCL could set.
+func TestFrontendTelemetry_DecodesFromRealKCL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL; runs in the full tier")
+	}
+	dir := workloadURLProject(t, "dev", `    project = "acme"
+    frontends = [
+        forge.Frontend {
+            name = "web", path = "frontends/web", type = "vite", port = 5173
+            runtime = forge.OnHost {}
+            telemetry = forge.BrowserTelemetry {
+                console_capture = False
+                replay_sample_rate = 0.25
+                sourcemaps = "public"
+                errors = forge.FrontendErrors {ignore = ["AbortError", "re:^Failed to fetch"]}
+            }
+        }
+        forge.Frontend {name = "plain", path = "frontends/plain", type = "vite", port = 5174, runtime = forge.OnHost {}}
+    ]
+    observability = forge.Observability {
+        local_port = 4318
+        retention = forge.ObservabilityRetention {replay_days = 7}
+    }`)
+	entities, err := RenderKCL(t.Context(), dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]FrontendEntity{}
+	for _, f := range entities.Frontends {
+		by[f.Name] = f
+	}
+	web := by["web"]
+	if web.Telemetry == nil || web.Telemetry.ConsoleCapture || web.Telemetry.ReplaySampleRate != 0.25 ||
+		!reflect.DeepEqual(web.Telemetry.Errors.Ignore, []string{"AbortError", "re:^Failed to fetch"}) {
+		t.Errorf("telemetry = %+v", web.Telemetry)
+	}
+	if web.Sourcemaps != "public" {
+		t.Errorf("Sourcemaps = %q, want public: the KCL knob must reach the deploy", web.Sourcemaps)
+	}
+	// F2's deploy path: the knob must reach the stage input of every target
+	// that stages a build, not a parallel field.
+	if got := frontendToStaticSite(web).Sourcemaps; got != "public" {
+		t.Errorf("StaticSiteFrontend.Sourcemaps = %q, want public", got)
+	}
+	fbWeb := web
+	fbWeb.Runtime.Firebase = &FirebaseRuntime{}
+	if got := frontendToFirebase(fbWeb).Sourcemaps; got != "public" {
+		t.Errorf("FirebaseFrontend.Sourcemaps = %q, want public", got)
+	}
+	if got := frontendToStaticSite(by["plain"]).Sourcemaps; got != "" {
+		t.Errorf("an undeclared frontend must stage with the default (empty = publish), got %q", got)
+	}
+	if web.RuntimeConfig["CONSOLE_CAPTURE"] != "false" || web.RuntimeConfig["REPLAY_SAMPLE_RATE"] != "0.25" {
+		t.Errorf("runtime_config = %v, want the two knobs the browser reads", web.RuntimeConfig)
+	}
+	if plain := by["plain"]; plain.Telemetry != nil || plain.Sourcemaps != "" || len(plain.RuntimeConfig) != 0 {
+		t.Errorf("a frontend that declares nothing must render nothing extra: %+v", plain)
+	}
+	if r := entities.Observability.Retention; r.ReplayDays != 7 || r.ErrorsDays != 30 || r.ProductEventsDays != 90 {
+		t.Errorf("retention = %+v, want replay 7 with the stated defaults for the rest", r)
+	}
+	if got := shapeFrontendTelemetryOf(entities); len(got) != 1 || got[0].Frontend != "web" || got[0].Sourcemaps != "public" || len(got[0].ErrorsIgnore) != 2 {
+		t.Errorf("shape telemetry = %+v", got)
+	}
+	if r := shapeRetentionOf(entities); r == nil || r.ReplayDays != 7 {
+		t.Errorf("shape retention = %+v", r)
 	}
 }

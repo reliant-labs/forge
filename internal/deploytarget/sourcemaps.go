@@ -332,7 +332,7 @@ func guardNoSourceMaps(stagingDir, mode string) error {
 	return fmt.Errorf("refusing to publish %d source map(s): %s.\n"+
 		"Source maps contain the app's original sources and are never served by default; the stage step "+
 		"moves them to %s. One in the served tree means something added it after that. "+
-		"A frontend that means to serve its maps declares sourcemaps = %q",
+		"A frontend that means to serve its maps declares telemetry = forge.BrowserTelemetry {sourcemaps = %q}",
 		len(found), strings.Join(shown, ", "), filepath.Base(SourcemapsDir(stagingDir)), SourcemapsPublic)
 }
 

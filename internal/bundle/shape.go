@@ -66,6 +66,9 @@ type ShapeInput struct {
 	// ObservabilityPolicy is the env's observability opt-out, or nil when it
 	// opts out of nothing.
 	ObservabilityPolicy *release.ShapeObservabilityPolicy
+	// FrontendTelemetry is what each frontend declares about its browser
+	// telemetry, or nil.
+	FrontendTelemetry []release.ShapeFrontendTelemetry
 	// DeliveryPolicy is the env's delivery policy, or nil for the defaults.
 	DeliveryPolicy *release.ShapeDeliveryPolicy
 	// Identity is the env's managed identity declaration, or nil when it
@@ -122,6 +125,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Alerts:              in.Alerts,
 		AlertRoutes:         in.AlertRoutes,
 		ObservabilityPolicy: in.ObservabilityPolicy,
+		FrontendTelemetry:   in.FrontendTelemetry,
 		DeliveryPolicy:      in.DeliveryPolicy,
 		Identity:            in.Identity,
 		Applier:             in.Applier,

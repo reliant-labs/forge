@@ -38,13 +38,19 @@ const (
 	// BundleFeatureObjectSummaries is BundleDoc.Objects, the per-object
 	// summaries (forge#850).
 	BundleFeatureObjectSummaries = "object-summaries"
+	// BundleFeatureFrontendTelemetry is Shape.FrontendTelemetry and
+	// ShapeObservabilityPolicy.Retention: what a frontend declares about its
+	// browser telemetry, and how long the platform keeps it. The shape is
+	// strict-decoded on two paths, the bundle document and the environment
+	// declaration, so both are limited by it ([BundleReader.LimitShape]).
+	BundleFeatureFrontendTelemetry = "shape-frontend-telemetry"
 )
 
 // BundleDocFeatures is every optional bundle-document feature this version's
 // [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
 // what it claims to decode and what its decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -71,5 +77,23 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 	if !r.Supports(BundleFeatureObjectSummaries) {
 		d.Objects = nil
 	}
+	d.Shape = r.LimitShape(d.Shape)
 	return d
+}
+
+// LimitShape returns s without every optional part the reader does not decode.
+// Limit applies it to a bundle document's shape; the environment declaration,
+// which a control plane strict-decodes into the same Shape, applies it to the
+// shape it sends. A copy: s is not modified.
+func (r *BundleReader) LimitShape(s Shape) Shape {
+	if r.Supports(BundleFeatureFrontendTelemetry) {
+		return s
+	}
+	s.FrontendTelemetry = nil
+	if s.ObservabilityPolicy != nil && s.ObservabilityPolicy.Retention != nil {
+		pol := *s.ObservabilityPolicy
+		pol.Retention = nil
+		s.ObservabilityPolicy = &pol
+	}
+	return s
 }

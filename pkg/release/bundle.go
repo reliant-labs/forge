@@ -454,6 +454,16 @@ type Shape struct {
 	// env declares no observability or opts out of nothing, so every shape
 	// recorded before the field encodes and hashes exactly as it did.
 	ObservabilityPolicy *ShapeObservabilityPolicy `json:"observability_policy,omitempty"`
+	// FrontendTelemetry is what each frontend declares about its browser
+	// telemetry beyond the env's observability policy (forge.BrowserTelemetry):
+	// the error filters the issue worker applies, the funnels, and what becomes
+	// of the build's source maps. One entry per frontend that declares
+	// something other than the defaults, sorted by frontend. Omitted when no
+	// frontend does, so every shape recorded before the field encodes and
+	// hashes exactly as it did. A control plane that predates it refuses the
+	// whole shape, so it is a bundle-document feature
+	// ([BundleFeatureFrontendTelemetry]).
+	FrontendTelemetry []ShapeFrontendTelemetry `json:"frontend_telemetry,omitempty"`
 	// DeliveryPolicy is what the env's releases must prove before they ship
 	// (forge.DeliveryPolicy): one control per hardening control, each with a
 	// mode and its parameters. It is how the control plane learns what to
@@ -656,6 +666,147 @@ type ShapeObservabilityPolicy struct {
 	// OptIn lists the categories the env turned ON that default off (only
 	// [ObsOptInReplay] today). Absent = none opted in.
 	OptIn []string `json:"opt_in,omitempty"`
+	// Retention is the browser-telemetry retention the env declared, present
+	// only when it moves any of the defaults (see [ShapeRetention.IsDefault]).
+	// A control plane that predates it refuses the shape, so it is part of
+	// [BundleFeatureFrontendTelemetry].
+	Retention *ShapeRetention `json:"retention,omitempty"`
+}
+
+// Browser telemetry retention defaults and bounds, in days. The defaults are
+// forge.ObservabilityRetention's (kcl/schema.k); the bounds are its checks.
+const (
+	DefaultReplayDays        = 14
+	DefaultErrorsDays        = 30
+	DefaultProductEventsDays = 90
+
+	MaxReplayDays        = 30
+	MaxErrorsDays        = 365
+	MaxProductEventsDays = 365
+)
+
+// ShapeRetention is how long the platform keeps each browser-telemetry table
+// (forge.ObservabilityRetention). All three are always set: a retention is a
+// decision, and a half-set one would leave a table's TTL to be guessed.
+type ShapeRetention struct {
+	ReplayDays        int `json:"replay_days"`
+	ErrorsDays        int `json:"errors_days"`
+	ProductEventsDays int `json:"product_events_days"`
+}
+
+// IsDefault reports whether r keeps every default. A nil r does.
+func (r *ShapeRetention) IsDefault() bool {
+	return r == nil || (r.ReplayDays == DefaultReplayDays && r.ErrorsDays == DefaultErrorsDays && r.ProductEventsDays == DefaultProductEventsDays)
+}
+
+func (r *ShapeRetention) validate() error {
+	switch {
+	case r.ReplayDays < 1 || r.ReplayDays > MaxReplayDays:
+		return fmt.Errorf("%w: shape retention replay_days %d (expected 1..%d)", ErrInvalid, r.ReplayDays, MaxReplayDays)
+	case r.ErrorsDays < 1 || r.ErrorsDays > MaxErrorsDays:
+		return fmt.Errorf("%w: shape retention errors_days %d (expected 1..%d)", ErrInvalid, r.ErrorsDays, MaxErrorsDays)
+	case r.ProductEventsDays < 1 || r.ProductEventsDays > MaxProductEventsDays:
+		return fmt.Errorf("%w: shape retention product_events_days %d (expected 1..%d)", ErrInvalid, r.ProductEventsDays, MaxProductEventsDays)
+	}
+	return nil
+}
+
+// Source map handling, [ShapeFrontendTelemetry.Sourcemaps].
+const (
+	SourcemapsPublish = "publish"
+	SourcemapsPublic  = "public"
+	SourcemapsOff     = "off"
+)
+
+// ShapeFrontendTelemetry is one frontend's browser telemetry declaration. It
+// carries NAMES and definitions only: no endpoint, no key.
+type ShapeFrontendTelemetry struct {
+	// Frontend is the forge frontend's name (the forge.frontend resource
+	// attribute its telemetry carries).
+	Frontend string `json:"frontend"`
+	// Sourcemaps is what becomes of the build's source maps: "public" or
+	// "off". Omitted for the default, [SourcemapsPublish].
+	Sourcemaps string `json:"sourcemaps,omitempty"`
+	// ErrorsIgnore are the declared error filters, in declaration order: a
+	// plain entry matches an exception type exactly or a message substring, a
+	// "re:" entry is a regular expression over the message. An issue that
+	// matches is born ignored.
+	ErrorsIgnore []string `json:"errors_ignore,omitempty"`
+	// Funnels are the declared product funnels, sorted by id.
+	Funnels []ShapeFunnel `json:"funnels,omitempty"`
+}
+
+// ShapeFunnel is one declared product funnel (forge.Funnel).
+type ShapeFunnel struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	// Steps are product event names, in order.
+	Steps []string `json:"steps"`
+	// Window and By are always set; the KCL schema defaults them.
+	Window string `json:"window"`
+	By     string `json:"by"`
+}
+
+// IsDefault reports whether the entry declares nothing a reader would act on.
+func (t ShapeFrontendTelemetry) IsDefault() bool {
+	return (t.Sourcemaps == "" || t.Sourcemaps == SourcemapsPublish) && len(t.ErrorsIgnore) == 0 && len(t.Funnels) == 0
+}
+
+// HasFrontendTelemetry reports whether the shape carries any part of the
+// frontend-telemetry feature: a frontend entry or a non-default retention.
+func (s Shape) HasFrontendTelemetry() bool {
+	return len(s.FrontendTelemetry) > 0 || (s.ObservabilityPolicy != nil && !s.ObservabilityPolicy.Retention.IsDefault())
+}
+
+// frontendTelemetryLimits bound a declaration so a shape stays small and a
+// funnel stays a funnel.
+const (
+	maxShapeErrorsIgnore = 100
+	maxShapeFunnels      = 50
+	minShapeFunnelSteps  = 2
+	maxShapeFunnelSteps  = 10
+)
+
+func (t ShapeFrontendTelemetry) validate() error {
+	if strings.TrimSpace(t.Frontend) == "" {
+		return fmt.Errorf("%w: shape frontend telemetry with no frontend name", ErrInvalid)
+	}
+	switch t.Sourcemaps {
+	case "", SourcemapsPublish, SourcemapsPublic, SourcemapsOff:
+	default:
+		return fmt.Errorf("%w: shape frontend %q sourcemaps %q (expected %s, %s or %s)", ErrInvalid, t.Frontend, t.Sourcemaps, SourcemapsPublish, SourcemapsPublic, SourcemapsOff)
+	}
+	if len(t.ErrorsIgnore) > maxShapeErrorsIgnore {
+		return fmt.Errorf("%w: shape frontend %q declares %d error filters (at most %d)", ErrInvalid, t.Frontend, len(t.ErrorsIgnore), maxShapeErrorsIgnore)
+	}
+	for _, e := range t.ErrorsIgnore {
+		if strings.TrimSpace(e) == "" || len(e) > 256 {
+			return fmt.Errorf("%w: shape frontend %q has an empty or over-long error filter", ErrInvalid, t.Frontend)
+		}
+	}
+	if len(t.Funnels) > maxShapeFunnels {
+		return fmt.Errorf("%w: shape frontend %q declares %d funnels (at most %d)", ErrInvalid, t.Frontend, len(t.Funnels), maxShapeFunnels)
+	}
+	ids := map[string]bool{}
+	for _, f := range t.Funnels {
+		switch {
+		case strings.TrimSpace(f.ID) == "":
+			return fmt.Errorf("%w: shape frontend %q has a funnel with no id", ErrInvalid, t.Frontend)
+		case ids[f.ID]:
+			return fmt.Errorf("%w: shape frontend %q names funnel %q twice", ErrInvalid, t.Frontend, f.ID)
+		case len(f.Steps) < minShapeFunnelSteps || len(f.Steps) > maxShapeFunnelSteps:
+			return fmt.Errorf("%w: shape funnel %q has %d steps (expected %d..%d)", ErrInvalid, f.ID, len(f.Steps), minShapeFunnelSteps, maxShapeFunnelSteps)
+		case strings.TrimSpace(f.Window) == "" || (f.By != "session" && f.By != "user"):
+			return fmt.Errorf("%w: shape funnel %q needs a window and a by of session or user", ErrInvalid, f.ID)
+		}
+		ids[f.ID] = true
+		for _, step := range f.Steps {
+			if strings.TrimSpace(step) == "" || len(step) > 128 {
+				return fmt.Errorf("%w: shape funnel %q has an empty or over-long step", ErrInvalid, f.ID)
+			}
+		}
+	}
+	return nil
 }
 
 // ObsOptInReplay is session replay: the browser SDK's recorded DOM events,
@@ -857,6 +1008,21 @@ func (s Shape) Validate() error {
 		if !p.Enabled && len(p.Disabled) != len(ObsCategories) {
 			return fmt.Errorf("%w: shape observability_policy is disabled as a whole and must list every category", ErrInvalid)
 		}
+		if p.Retention != nil {
+			if err := p.Retention.validate(); err != nil {
+				return err
+			}
+		}
+	}
+	seenFE := map[string]bool{}
+	for _, t := range s.FrontendTelemetry {
+		if err := t.validate(); err != nil {
+			return err
+		}
+		if seenFE[t.Frontend] {
+			return fmt.Errorf("%w: shape names frontend telemetry for %q twice", ErrInvalid, t.Frontend)
+		}
+		seenFE[t.Frontend] = true
 	}
 	if s.DeliveryPolicy != nil {
 		if err := s.DeliveryPolicy.canonical().validate(); err != nil {
@@ -985,8 +1151,33 @@ func (s Shape) Canonical() Shape {
 		pol := *s.ObservabilityPolicy
 		pol.Disabled = sortedStrings(pol.Disabled)
 		pol.OptIn = sortedStrings(pol.OptIn)
+		// Default retention is the absence of one: a producer that spells the
+		// defaults out must hash the same as one that declares nothing.
+		if pol.Retention.IsDefault() {
+			pol.Retention = nil
+		} else {
+			r := *pol.Retention
+			pol.Retention = &r
+		}
 		out.ObservabilityPolicy = &pol
 	}
+	out.FrontendTelemetry = nil
+	for _, t := range s.FrontendTelemetry {
+		if t.IsDefault() {
+			continue
+		}
+		if t.Sourcemaps == SourcemapsPublish {
+			t.Sourcemaps = ""
+		}
+		t.ErrorsIgnore = append([]string(nil), t.ErrorsIgnore...)
+		t.Funnels = append([]ShapeFunnel(nil), t.Funnels...)
+		for i := range t.Funnels {
+			t.Funnels[i].Steps = append([]string(nil), t.Funnels[i].Steps...)
+		}
+		sort.Slice(t.Funnels, func(i, j int) bool { return t.Funnels[i].ID < t.Funnels[j].ID })
+		out.FrontendTelemetry = append(out.FrontendTelemetry, t)
+	}
+	sort.Slice(out.FrontendTelemetry, func(i, j int) bool { return out.FrontendTelemetry[i].Frontend < out.FrontendTelemetry[j].Frontend })
 	// The default policy is the absence of one: a producer that spells every
 	// default out must hash the same as one that declares nothing.
 	if s.DeliveryPolicy != nil {

@@ -50,6 +50,9 @@
             "workloadURL": {
               "name": "api"
             }
+          },
+          "OTEL_ENDPOINT": {
+            "value": "/_otel"
           }
         },
         "source": null,

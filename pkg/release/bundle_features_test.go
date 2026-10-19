@@ -13,8 +13,9 @@ import (
 
 // bundleFeatureKeys is the document key paths each optional feature adds.
 var bundleFeatureKeys = map[string][]string{
-	BundleFeatureCommitIdentity:  {"provenance.commit_subject", "provenance.commit_author"},
-	BundleFeatureObjectSummaries: {"objects"},
+	BundleFeatureCommitIdentity:    {"provenance.commit_subject", "provenance.commit_author"},
+	BundleFeatureObjectSummaries:   {"objects"},
+	BundleFeatureFrontendTelemetry: {"shape.frontend_telemetry", "shape.observability_policy.retention"},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated
@@ -91,7 +92,14 @@ func fullBundleDoc() BundleDoc {
 			Commit: strings.Repeat("a", 40), Tree: strings.Repeat("b", 40), ForgeVersion: "v0.1.46",
 			CommitSubject: "fix(boot): shared state converges in admin-server only", CommitAuthor: "Reliant",
 		},
-		Shape:     Shape{Kind: EnvSelfManaged, Objects: []ShapeObject{api}},
+		Shape: Shape{
+			Kind: EnvSelfManaged, Objects: []ShapeObject{api},
+			ObservabilityPolicy: &ShapeObservabilityPolicy{Enabled: true, Retention: &ShapeRetention{ReplayDays: 7, ErrorsDays: 30, ProductEventsDays: 90}},
+			FrontendTelemetry: []ShapeFrontendTelemetry{{
+				Frontend: "web", Sourcemaps: SourcemapsOff, ErrorsIgnore: []string{"AbortError"},
+				Funnels: []ShapeFunnel{{ID: "onboarding", Steps: []string{"a", "b"}, Window: "1h", By: "session"}},
+			}},
+		},
 		Objects:   []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		CreatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC),
 	}
@@ -114,8 +122,14 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"objects", "provenance.commit_author", "provenance.commit_subject"}; !slices.Equal(strays, want) {
-		t.Fatalf("the full document strays at %v, want %v: the fixture or the doc helper no longer exercises the forge#850 fields", strays, want)
+	strayRoots := map[string]bool{}
+	for _, p := range strays {
+		strayRoots[p] = true
+	}
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention"} {
+		if !strayRoots[want] {
+			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
+		}
 	}
 
 	limited := (&BundleReader{}).Limit(full)
@@ -144,8 +158,16 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	if _, err := DecodeBundleDoc(raw); err != nil {
 		t.Fatalf("the limited document no longer decodes: %v", err)
 	}
-	if limited.Provenance.Commit != full.Provenance.Commit || !reflect.DeepEqual(limited.Shape, full.Shape) {
-		t.Fatal("Limit removed more than the optional features")
+	wantShape := full.Shape
+	wantShape.FrontendTelemetry = nil
+	pol := *wantShape.ObservabilityPolicy
+	pol.Retention = nil
+	wantShape.ObservabilityPolicy = &pol
+	if limited.Provenance.Commit != full.Provenance.Commit || !reflect.DeepEqual(limited.Shape, wantShape) {
+		t.Fatalf("Limit removed more than the optional features:\n got %+v\nwant %+v", limited.Shape, wantShape)
+	}
+	if full.Shape.FrontendTelemetry == nil || full.Shape.ObservabilityPolicy.Retention == nil {
+		t.Fatal("Limit modified the document it was given")
 	}
 }
 
@@ -164,5 +186,9 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	partial := (&BundleReader{Features: []string{BundleFeatureObjectSummaries}}).Limit(full)
 	if len(partial.Objects) != 1 || partial.Provenance.CommitSubject != "" || partial.Provenance.CommitAuthor != "" {
 		t.Errorf("a reader of object summaries only: %+v", partial)
+	}
+	telemetry := (&BundleReader{Features: []string{BundleFeatureFrontendTelemetry}}).Limit(full)
+	if len(telemetry.Shape.FrontendTelemetry) != 1 || telemetry.Shape.ObservabilityPolicy.Retention == nil || telemetry.Objects != nil {
+		t.Errorf("a reader of frontend telemetry only: %+v", telemetry)
 	}
 }

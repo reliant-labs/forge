@@ -10,12 +10,42 @@ package deploytarget
 // copy would be a second opinion about what a field is called.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
 )
+
+// ProcDeployCapabilities is the RPC a control plane names what it decodes on.
+const ProcDeployCapabilities = "controlplane.v1.DeployService/GetCapabilities"
+
+// HostedBundleReader is what a control plane's strict decoders accept: the
+// optional document features its DeployService/GetCapabilities names.
+//
+// A control plane that does not serve the RPC (it predates it, so it predates
+// every feature) and one that serves it without the field both name NO
+// feature, and get the document their decoder knew. Any other failure is an
+// error rather than a guess: a server that answered nothing about what it
+// decodes is not evidence that it decodes nothing, and the write that follows
+// would meet the same failure.
+func HostedBundleReader(ctx context.Context, c HostedCaller) (*release.BundleReader, error) {
+	var caps struct {
+		Features []string `json:"bundleDocumentFeatures"`
+	}
+	if err := c.Call(ctx, ProcDeployCapabilities, map[string]any{}, &caps); err != nil {
+		var cerr *cloud.Error
+		if errors.As(err, &cerr) && (cerr.HasCode(cloud.CodeUnimplemented) || cerr.HTTPStatus == http.StatusNotFound) {
+			return &release.BundleReader{}, nil
+		}
+		return nil, fmt.Errorf("ask the control plane which bundle-document features it decodes (GetCapabilities): %w", err)
+	}
+	return &release.BundleReader{Features: caps.Features}, nil
+}
 
 // shapeWireFields is DeployEnvironmentSpec.shape: a google.protobuf.Struct,
 // whose proto3-JSON form is the object itself.

@@ -260,7 +260,9 @@ func TestFrontendRuntime_HostedPublishesTheSameStaticSiteSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const before = `{"basePath":"/app","keepReleases":10,"runtimeConfig":{"API_URL":{"workloadURL":{"name":"api"}},"APP_NAME":{"value":"acme"}}}`
+	// The one thing a hosted frontend gains over what it declares: the
+	// platform's browser-telemetry ingest, on its own origin.
+	const before = `{"basePath":"/app","keepReleases":10,"runtimeConfig":{"API_URL":{"workloadURL":{"name":"api"}},"APP_NAME":{"value":"acme"},"OTEL_ENDPOINT":{"value":"/_otel"}}}`
 	if string(got) != before {
 		t.Errorf("hosted StaticSite spec changed:\n got %s\nwant %s", got, before)
 	}

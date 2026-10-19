@@ -112,7 +112,6 @@ func TestConverge_AgainstTheRealHostZitadel(t *testing.T) {
 		StorePath:   store,
 		OutputsPath: filepath.Join(dir, ".forge", "identity", "identity.json"),
 		KeysDir:     filepath.Join(dir, ".forge", "identity", "identity.keys"),
-		Wait:        2 * time.Minute,
 	}
 
 	first, err := Converge(ctx, in)

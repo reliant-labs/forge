@@ -27,13 +27,13 @@ a plain `index.html` is fine, and forge is the wrong shape for it.
 ## 1. Scaffold a static frontend
 
 ```bash
-forge project new site --mod github.com/acme/site --disable orm,migrations
+forge project new site --mod github.com/acme/site --disable orm,migrations \
+  --frontend web --output static --routes none
 cd site
-forge scaffold frontend web --routes none
 ```
 
 - `npm run build` is a static export into `out/`. That is the scaffold default
-  (`output: static` in `forge.yaml`). A static runtime publishes a directory,
+  (`output: "export"` in `next.config.ts`). A static runtime publishes a directory,
   and `out/` is that directory.
 - `--routes none` generates no CRUD pages, because a site with no backend has
   no entities. A site that has entities keeps its generated pages, which are
@@ -72,27 +72,25 @@ output = forge.render(forge.Bundle {
         name = "web"
         path = "frontends/web"
         public_dir = "out"                    # where the static export lands
-        image = "ghcr.io/acme/site-web"       # a hosted site's release is an OCI artifact
+        image = "web"                        # platform resolves its registry/org/project
         runtime = forge.OnHosted {}
     }]
 })
 ```
 
-`image` is required on `OnHosted`: the release is pushed to a registry, and the
-registry is part of the reference. forge appends the platform's own `static.v1`
-layout segment, so `forge env build` pushes
-`ghcr.io/acme/site-web/static.v1`.
+A hosted `image` names the artifact, not an invented external registry.
+At build time forge resolves it under the platform registry, your credential's
+organization and this project, then appends `static.v1`. The release records
+that full pullable address; live deployment refuses an unresolved address.
+Offline render/admission uses explicitly fake `preflight.forge.invalid`
+release facts when no credential or release exists; those records cannot ship.
 
-> **Scaffold gaps (forge #401).** A frontend-only project still scaffolds a
-> `migrate` workload, a cluster and a `database_url` secret into its envs, and
-> `forge scaffold frontend` writes an inline frontend that
-> `forge env new --bind web=hosted` cannot rebind. Until #401 lands, replace
-> each env file with a frontends-only Bundle: the shape above for `staging`
-> and `prod`, and for `dev` the same Bundle with no `control_plane`, plus
-> `port = plugin.resolve_port("site-dev-web", 3000)` (after
-> `import kcl_plugin.forge as plugin`) and `runtime = forge.OnHost {}` on the
-> frontend. `forge env render prod` should then report `0 object(s)` and
-> `hosted: web (static)`.
+With ORM and migrations disabled and no backend components, the scaffold
+contains no migration job, database, identity provider or cluster. Frontends
+added later with `forge scaffold frontend docs --routes none` get the same
+named declaration plus one binder line, so `forge env new preview --from prod
+--bind docs=hosted` works for either entry point. Invalid bindings leave the
+new environment unwritten (and `--force` leaves existing files unchanged).
 
 ## Run it locally
 
@@ -100,8 +98,8 @@ layout segment, so `forge env build` pushes
 forge env up dev    # the frontend's dev server; prints its URL
 ```
 
-No cluster is needed: nothing in the dev env runs in one, so `env up` leaves
-its declared `k3d-<project>` cluster alone and says so.
+No database or cluster is needed: the dev env declares only frontend dev
+servers, and `env up` starts each in its actual frontend directory.
 
 ## 3. Ship it
 

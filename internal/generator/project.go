@@ -36,6 +36,8 @@ type ProjectGenerator struct {
 	AdditionalServices []string // additional service names beyond ServiceName — only consumed by binary=shared scaffolds; per-service mode adds these post-scaffold
 	ServicePort        int      // scaffold artifact port (devcontainer/vscode); the dev backend's real bind port is allocated at runtime — see resolveEphemeralHostPorts
 	FrontendName       string   // optional initial Next.js frontend name
+	FrontendOutput     string   // static (default), standalone, or server
+	FrontendRoutes     []string // CRUD allowlist; none disables generated pages
 	FrontendPort       int      // frontend port; 0 = ephemeral (forge run/up allocates a free port at launch and reports it)
 	// FrontendWorkspaces opts the project into the pnpm-workspaces
 	// layout: emit a root pnpm-workspace.yaml + packages/api +
@@ -851,6 +853,8 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 
 	if err := GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
 		Workspaces:  g.FrontendWorkspaces,
+		Output:      g.FrontendOutput,
+		Public:      len(g.bornComponents()) == 0 && !g.Features.MigrationsEnabled() && !g.Features.ORMEnabled(),
 		TypedConfig: typedConfig,
 	}); err != nil {
 		return err

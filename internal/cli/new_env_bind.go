@@ -90,7 +90,19 @@ func applyEnvBinds(env string, binds []string) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	content := string(raw)
+	content, err := bindEnvContent(projectDir, env, string(raw), binds)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Printf("\nRebound in deploy/kcl/%s/main.k: %s\n", env, strings.Join(binds, ", "))
+	return nil
+}
+
+// bindEnvContent validates and transforms the entire binding set before writing.
+func bindEnvContent(projectDir, env, content string, binds []string) (string, error) {
 	// The project name tells the env's own API workload (the project
 	// binary's `server`) from any other; an unreadable forge.yaml only costs
 	// the more specific refusal below.
@@ -102,11 +114,11 @@ func applyEnvBinds(env string, binds []string) error {
 	for _, b := range binds {
 		name, target, ok := strings.Cut(b, "=")
 		if !ok || name == "" || !bindTargetKnown(target) {
-			return cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "", bindUsage)
+			return "", cliutil.UserErr("forge env new", fmt.Sprintf("--bind %q", b), "", bindUsage)
 		}
 		rebound, err := rebindOne(content, projectName, env, b, naming.KCLIdentifier(name), target)
 		if err != nil {
-			return err
+			return "", err
 		}
 		content = rebound
 		hosted = hosted || target == "hosted"
@@ -114,7 +126,7 @@ func applyEnvBinds(env string, binds []string) error {
 	if hosted && !controlPlaneField.MatchString(content) {
 		loc := bundleProjectLine.FindStringSubmatchIndex(content)
 		if loc == nil {
-			return cliutil.UserErr("forge env new",
+			return "", cliutil.UserErr("forge env new",
 				fmt.Sprintf("deploy/kcl/%s/main.k binds something hosted but has no Bundle `project = ` line to add control_plane after", env),
 				"", "add `control_plane = forge.ControlPlane {}` to the env's Bundle by hand")
 		}
@@ -126,11 +138,7 @@ func applyEnvBinds(env string, binds []string) error {
 			indent + "control_plane = forge.ControlPlane {}"
 		content = content[:loc[1]] + decl + content[loc[1]:]
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	fmt.Printf("\nRebound in deploy/kcl/%s/main.k: %s\n", env, strings.Join(binds, ", "))
-	return nil
+	return content, nil
 }
 
 // rebindOne rewrites the ONE binding line that binds ident — a workload's or

@@ -23,12 +23,15 @@ type EnvTemplateData struct {
 	// operate.
 	IngressEnabled bool
 	HasFrontend    bool
-	FrontendName   string
+	// DatabaseDisabled omits database infrastructure in a database-free project.
+	DatabaseDisabled bool
+	FrontendName     string
 	// FrontendIdent is the KCL identifier of that frontend: the cloud env
 	// declares it once as `_<ident>_frontend` and binds it on one line
 	// (`_hosted_frontend(_<ident>_frontend)`), the line `forge env new
 	// --bind` rewrites.
-	FrontendIdent string
+	FrontendIdent  string
+	FrontendRoutes []string
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string

@@ -2523,7 +2523,7 @@ func observabilityOutputsExist(root string) bool {
 
 func stepWorkloadsKCL(ctx *pipelineContext) error {
 	return ctx.warnOrFail("workloads.k scaffold",
-		generator.ScaffoldWorkloadsKCL(ctx.AbsPath, ctx.Cfg.ModulePath, ctx.Cfg.Name, ctx.Components, len(ctx.Cfg.Frontends) > 0))
+		generator.ScaffoldWorkloadsKCL(ctx.AbsPath, ctx.Cfg.ModulePath, ctx.Cfg.Name, ctx.Components, ctx.Cfg.Features.MigrationsEnabled()))
 }
 
 // stepPerEnvDeployConfig — was Step 8d-0.

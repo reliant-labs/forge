@@ -72,6 +72,8 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// IngressEnabled() at call time.
 	born := g.bornComponents()
 	hasFrontend := g.forScaffold().HasFrontend
+	hasBackend := len(born) > 0 || g.Features.MigrationsEnabled()
+	hasDatabase := g.Features.MigrationsEnabled() || g.Features.ORMEnabled() || (hasBackend && hasFrontend)
 	envs := []struct{ env, template string }{{codegen.DevEnvName, "kcl/dev/main.k.tmpl"}}
 	for _, env := range hostedEnvNames() {
 		envs = append(envs, struct{ env, template string }{env, "kcl/cloud/main.k.tmpl"})
@@ -89,9 +91,15 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			HasFrontend:     hasFrontend,
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
-			Bindings:        scaffoldEnvBindings(e.env, born, hasFrontend),
+			FrontendRoutes:  g.FrontendRoutes,
+			Bindings:        scaffoldEnvBindings(e.env, born, g.Features.MigrationsEnabled()),
 			APIWorkload:     codegen.APIWorkloadStanza(g.ModulePath, g.Name, apiSecrets...),
 		}
+		if !hasBackend && !hasDatabase {
+			e.template = "kcl/frontend-only/main.k.tmpl"
+		}
+		data.DatabaseDisabled = !hasDatabase
+		data.IngressEnabled = hasBackend
 		content, err := templates.DeployTemplates().Render(e.template, data)
 		if err != nil {
 			return fmt.Errorf("render deploy template %s for %s: %w", e.template, e.env, err)
@@ -107,7 +115,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			g.hostedEnvs = append(g.hostedEnvs, e.env)
 		}
 	}
-	ingressOn := true
+	ingressOn := hasBackend
 	templateData := struct{ ProjectName string }{ProjectName: g.Name}
 
 	// Gateway API ingress scaffolding. The base topology
@@ -162,13 +170,13 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// nothing would ever fill it in and the project could not deploy the
 	// service it was created with.
 	if err := ScaffoldWorkloadsKCL(g.Path, g.ModulePath, g.Name,
-		g.bornComponents(), g.forScaffold().HasFrontend); err != nil {
+		g.bornComponents(), g.Features.MigrationsEnabled()); err != nil {
 		return fmt.Errorf("scaffold %s: %w", codegen.WorkloadsKCLRelPath, err)
 	}
 
 	// The users, declared once for every env. Only a project with a frontend
 	// has someone to sign in; a project without one declares no identity.
-	if g.forScaffold().HasFrontend {
+	if g.forScaffold().HasFrontend && hasBackend {
 		if err := ScaffoldIdentityKCL(g.Path, g.Name); err != nil {
 			return fmt.Errorf("scaffold %s: %w", codegen.IdentityKCLRelPath, err)
 		}
@@ -181,8 +189,11 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 // one binding per workload workloads.k declares, in the same order as its
 // ALL list (migrate first — it gates the rest). The dev-IdP convergence job
 // is bound only in dev, whose IdP it registers against.
-func scaffoldEnvBindings(env string, components codegen.Inventory, hasFrontend bool) string {
-	lines := []string{codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.MigrateWorkloadName)}
+func scaffoldEnvBindings(env string, components codegen.Inventory, migrations bool) string {
+	var lines []string
+	if migrations {
+		lines = append(lines, codegen.EnvBinding(env, codegen.WorkloadKindJob, codegen.MigrateWorkloadName))
+	}
 	// Every env runs its services and workers as ONE workload, `_api` (the
 	// binary's `server`), so the browser reaches every service at one origin
 	// — see codegen.APIWorkloadName. It is bound once there is something for
@@ -240,7 +251,7 @@ func (g *ProjectGenerator) bornComponents() codegen.Inventory {
 // inventory rather than write an empty file, or that empty file becomes the
 // one automatic write and the real components never land (see the call in
 // generateKCLDeploy).
-func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components codegen.Inventory, hasFrontend bool) error {
+func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components codegen.Inventory, migrations bool) error {
 	if codegen.WorkloadsKCLExists(projectDir) {
 		return nil
 	}
@@ -257,10 +268,12 @@ func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components
 	// k8s runs initContainers in declaration order, so a project that later
 	// adds a second one-shot (seed data, provision an IdP) gets it ordered
 	// after the migration, and that job sees a current schema.
-	if len(components) > 0 {
-		stanzas.WriteString("\n")
+	if migrations {
+		if len(components) > 0 {
+			stanzas.WriteString("\n")
+		}
+		stanzas.WriteString(codegen.MigrateWorkloadStanza(modulePath, projectName))
 	}
-	stanzas.WriteString(codegen.MigrateWorkloadStanza(modulePath, projectName))
 
 	// The identifier the docstring uses in its worked `wl.<name> | {...}`
 	// example. Naming a workload the project ACTUALLY has makes the example
@@ -278,7 +291,10 @@ func ScaffoldWorkloadsKCL(projectDir, modulePath, projectName string, components
 	// migrate FIRST in ALL. The list order is the init-container order on
 	// every gated pod, so putting the migration ahead of everything is what
 	// makes a later-added one-shot run against a current schema.
-	idents := []string{naming.KCLIdentifier(codegen.MigrateWorkloadName)}
+	var idents []string
+	if migrations {
+		idents = append(idents, naming.KCLIdentifier(codegen.MigrateWorkloadName))
+	}
 	idents = append(idents, componentIdents...)
 
 	content, err := templates.DeployTemplates().Render("kcl/workloads.k.tmpl", struct {

@@ -15,11 +15,8 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 
-	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -116,17 +113,7 @@ func (s hostedRecordStore) RecordBundle(ctx context.Context, b release.BundleRec
 // decodes is not evidence that it decodes nothing, and the RecordBundle that
 // follows would meet the same failure.
 func (s hostedRecordStore) BundleReader(ctx context.Context) (*release.BundleReader, error) {
-	var caps struct {
-		Features []string `json:"bundleDocumentFeatures"`
-	}
-	if err := s.client.Call(ctx, procDeployCapabilities, map[string]any{}, &caps); err != nil {
-		var cerr *cloud.Error
-		if errors.As(err, &cerr) && (cerr.HasCode(cloud.CodeUnimplemented) || cerr.HTTPStatus == http.StatusNotFound) {
-			return &release.BundleReader{}, nil
-		}
-		return nil, fmt.Errorf("ask the control plane which bundle-document features it decodes (GetCapabilities): %w", err)
-	}
-	return &release.BundleReader{Features: caps.Features}, nil
+	return deploytarget.HostedBundleReader(ctx, s.client)
 }
 
 // bundleReaderReporter is a recorder that can say what its decoder accepts.

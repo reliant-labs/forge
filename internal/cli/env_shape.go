@@ -381,6 +381,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Alerts:              alerts,
 		AlertRoutes:         alertRoutes,
 		ObservabilityPolicy: shapeObservabilityPolicyOf(entities),
+		FrontendTelemetry:   shapeFrontendTelemetryOf(entities),
 		DeliveryPolicy:      shapeDeliveryPolicyOf(entities),
 		Identity:            shapeIdentityOf(entities),
 		Applier:             shapeApplierOf(entities),
@@ -583,10 +584,66 @@ func shapeObservabilityPolicyOf(e *KCLEntities) *release.ShapeObservabilityPolic
 		return nil
 	}
 	p := e.Observability.Policy
-	if p.Enabled && len(p.Disabled) == 0 && len(p.OptIn) == 0 {
+	retention := shapeRetentionOf(e)
+	if p.Enabled && len(p.Disabled) == 0 && len(p.OptIn) == 0 && retention == nil {
 		return nil
 	}
-	return &release.ShapeObservabilityPolicy{Enabled: p.Enabled, Disabled: p.Disabled, OptIn: p.OptIn}
+	return &release.ShapeObservabilityPolicy{Enabled: p.Enabled, Disabled: p.Disabled, OptIn: p.OptIn, Retention: retention}
+}
+
+// shapeRetentionOf is the browser-telemetry retention the env declared, or nil
+// when it keeps every default (the shape then encodes as it did before the
+// field).
+func shapeRetentionOf(e *KCLEntities) *release.ShapeRetention {
+	if e == nil || e.Observability == nil {
+		return nil
+	}
+	r := e.Observability.Retention
+	// The schema never renders 0 (each is checked >= 1), so a 0 is a render
+	// that predates the field, and means the default.
+	orDefault := func(days, def int) int {
+		if days == 0 {
+			return def
+		}
+		return days
+	}
+	ret := &release.ShapeRetention{
+		ReplayDays:        orDefault(r.ReplayDays, release.DefaultReplayDays),
+		ErrorsDays:        orDefault(r.ErrorsDays, release.DefaultErrorsDays),
+		ProductEventsDays: orDefault(r.ProductEventsDays, release.DefaultProductEventsDays),
+	}
+	if ret.IsDefault() {
+		return nil
+	}
+	return ret
+}
+
+// shapeFrontendTelemetryOf projects what each frontend declares about its
+// browser telemetry. A frontend that declares nothing beyond the defaults
+// contributes nothing.
+func shapeFrontendTelemetryOf(e *KCLEntities) []release.ShapeFrontendTelemetry {
+	if e == nil {
+		return nil
+	}
+	var out []release.ShapeFrontendTelemetry
+	for _, f := range e.Frontends {
+		t := f.Telemetry
+		if t == nil {
+			continue
+		}
+		item := release.ShapeFrontendTelemetry{
+			Frontend:     f.Name,
+			Sourcemaps:   t.Sourcemaps,
+			ErrorsIgnore: t.Errors.Ignore,
+		}
+		for _, fn := range t.Funnels {
+			item.Funnels = append(item.Funnels, release.ShapeFunnel{ID: fn.ID, Title: fn.Title, Steps: fn.Steps, Window: fn.Window, By: fn.By})
+		}
+		if !item.IsDefault() {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // shapeDeliveryPolicyOf projects the env's delivery policy. Nil when the env

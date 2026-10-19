@@ -187,8 +187,14 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 				}
 				spec, _ := f["runtime_config_spec"].(map[string]any)
 				if len(tc.services) == 0 {
-					if len(spec) != 0 {
+					// A site with no API names none, but a hosted frontend
+					// ships browser telemetry to the platform's own-origin
+					// ingest by default.
+					if _, hasAPI := spec["API_URL"]; hasAPI || len(spec) != 1 {
 						t.Errorf("%s: a site with no API names one: %#v", env, spec)
+					}
+					if ep, _ := spec["OTEL_ENDPOINT"].(map[string]any); ep["value"] != "/_otel" {
+						t.Errorf("%s: a hosted frontend must default OTEL_ENDPOINT to /_otel, got %#v", env, spec)
 					}
 					continue
 				}

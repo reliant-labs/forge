@@ -206,3 +206,57 @@ func stripTelemetryComments(s string) string {
 	s = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(s, "")
 	return regexp.MustCompile(`(?m)^\s*//.*$`).ReplaceAllString(s, "")
 }
+
+// TestTelemetryConfigWiresTheFrontendKnobs pins what `forge.Frontend.telemetry`
+// and the frontend's identity reach the browser through: the frontend's name
+// (the forge.frontend resource attribute that joins a page's telemetry to its
+// source maps) is baked in, and console_capture / replay_sample_rate are read
+// from the runtime config document — never from a build variable, which would
+// freeze them into one environment's bundle.
+func TestTelemetryConfigWiresTheFrontendKnobs(t *testing.T) {
+	for name, tmpl := range map[string]string{
+		"nextjs":   "nextjs/src/lib/otel_gen.ts.tmpl",
+		"vite-spa": "vite-spa/src/lib/otel_gen.ts.tmpl",
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := telemetryData("static")
+			data.FrontendName = "storefront"
+			raw := renderTelemetryTmpl(t, tmpl, data)
+			s := stripTelemetryComments(raw)
+
+			for _, want := range []string{
+				`frontend: 'storefront'`,
+				`consoleCapture: text(cfg.CONSOLE_CAPTURE) !== "false"`,
+				`replaySampleRate: rate(cfg.REPLAY_SAMPLE_RATE)`,
+			} {
+				if !strings.Contains(s, want) {
+					t.Errorf("missing %q:\n%s", want, s)
+				}
+			}
+			for _, buildVar := range []string{"CONSOLE_CAPTURE", "REPLAY_SAMPLE_RATE"} {
+				if regexp.MustCompile(`(process\.env|import\.meta\.env)\.[A-Z_]*` + buildVar).MatchString(raw) {
+					t.Errorf("%s is read from a build variable; it must come from config.js so one build promotes across envs", buildVar)
+				}
+			}
+			// An unset or malformed rate must reach the runtime as undefined
+			// ("every session"), never as NaN or 0 (which would record nobody).
+			if !strings.Contains(raw, `text(value) !== "" && Number.isFinite(n) ? n : undefined`) {
+				t.Errorf("a malformed REPLAY_SAMPLE_RATE must become undefined:\n%s", raw)
+			}
+		})
+	}
+}
+
+// TestTelemetryHeaderNamesTheHostedDefault keeps the explanation honest: a
+// hosted frontend gets /_otel from forge, and the comment says so.
+func TestTelemetryHeaderNamesTheHostedDefault(t *testing.T) {
+	for _, tmpl := range []string{"nextjs/src/lib/otel_gen.ts.tmpl", "vite-spa/src/lib/otel_gen.ts.tmpl"} {
+		s := renderTelemetryTmpl(t, tmpl, telemetryData("static"))
+		if !strings.Contains(s, "forge.OnHosted") || !strings.Contains(s, `OTEL_ENDPOINT = "/_otel"`) {
+			t.Errorf("%s: the header must say a forge.OnHosted frontend defaults OTEL_ENDPOINT to /_otel", tmpl)
+		}
+		if strings.Contains(s, "must route") && !strings.Contains(s, "any other") {
+			t.Errorf("%s: the ingress paragraph must be scoped to the non-hosted runtimes", tmpl)
+		}
+	}
+}

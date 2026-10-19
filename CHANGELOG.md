@@ -22,6 +22,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`deploy/observability/dashboard-spec_gen.json`, and the release bundle's
   dashboards). A funnel id declared by several envs is one funnel if the definitions
   match, and an error if they differ. Not allowed on a `rn` frontend.
+- **KCL: browser telemetry knobs (frontend-observability F4a).**
+  `forge.Frontend.telemetry = forge.BrowserTelemetry {...}` gains
+  `console_capture` (default `True`; `False` renders `CONSOLE_CAPTURE = "false"`
+  into the runtime config), `replay_sample_rate` (default `1.0`, 0..1; below 1
+  renders `REPLAY_SAMPLE_RATE`), `sourcemaps` (`"publish"` | `"public"` | `"off"`,
+  default `"publish"`: the frontend's source map handling, previously
+  unreachable from KCL) and `errors = forge.FrontendErrors {ignore = [...]}`
+  (exact exception type, message substring, or `re:` RE2 over the message; an
+  issue that matches is born ignored). `forge.ObservabilityRetention` gains
+  `replay_days` (14, max 30), `errors_days` (30) and `product_events_days` (90).
+  The generated `otel_gen.ts` of both web scaffolds sends the frontend's name
+  (`forge.frontend`) and reads the two runtime knobs from `config.js`, so one
+  build promotes across envs.
+- **A `forge.OnHosted` frontend ships browser telemetry by default.** Its
+  runtime config gets `OTEL_ENDPOINT = "/_otel"` (the platform answers it on the
+  site's own origin) unless the author named an endpoint (`runtime_config`,
+  `config.otel_endpoint`, or the build variable) or switched `signals.browser`
+  off. Before, a deployed build sent nothing until the endpoint was declared by
+  hand. Other runtimes are unchanged.
+- **The release shape records the telemetry declaration.**
+  `Shape.FrontendTelemetry` (per frontend: source map handling, error filters,
+  funnels) and `ShapeObservabilityPolicy.Retention` are written only when they
+  differ from the defaults, so no existing shape or config digest moves. A
+  control plane strict-decodes the shape, so both are one negotiated bundle
+  feature (`shape-frontend-telemetry`, `BundleFeatureFrontendTelemetry`), and
+  `release.BundleReader.LimitShape` leaves them out for a control plane that
+  does not name it: on the bundle document, and on the environment declaration
+  `forge env build|deploy` send, which asks `GetCapabilities` only when there
+  is something to withhold.
 - **`forge/pkg/dashspec`: the dashboard spec and its validator are public.**
   The `forge.dashboards/v1` types (`Dashboard`, `Panel`, `Series`, the kinds,
   aggregates, operators and units), `ParseDashboard` (every problem located by

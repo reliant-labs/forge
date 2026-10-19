@@ -1609,6 +1609,9 @@ _render_observability = lambda b: Bundle -> any {
             "traces_days": _o.retention.traces_days
             "metrics_days": _o.retention.metrics_days
             "logs_days": _o.retention.logs_days
+            "replay_days": _o.retention.replay_days
+            "errors_days": _o.retention.errors_days
+            "product_events_days": _o.retention.product_events_days
         }
         "agent": {
             "namespace": _o.agent.namespace
@@ -2002,7 +2005,39 @@ _frontend_violations = lambda f: Frontend -> [str] {
 # when browser telemetry is off the SDK's ingest path is forced to "off", over
 # anything the author set, because the opt-out is the author's explicit word.
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
-    (f.runtime_config | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else f.runtime_config
+    # What forge derives from the frontend's own declarations comes FIRST, so
+    # an author's runtime_config entry for the same key always wins.
+    _merged = _telemetry_runtime_config(f, bundle) | f.runtime_config
+    (_merged | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else _merged
+}
+
+# The ingest path the platform answers on a hosted site's own origin.
+_HOSTED_OTEL_PATH = "/_otel"
+
+# True when the author already decided where this frontend's telemetry goes:
+# a runtime_config entry, the typed config's otel_endpoint, or the build
+# variable. The runtime config outranks the build variable in the browser, so
+# deriving a default over any of these would override the author.
+_otel_endpoint_declared = lambda f: Frontend -> bool {
+    "OTEL_ENDPOINT" in f.runtime_config or bool(f.config and f.config.otel_endpoint) \
+        or any e in f.env_vars { e.name == _otel_endpoint_var(f) }
+}
+
+# The runtime config keys derived from `telemetry` and from where the
+# frontend runs. They reach the browser as window.__FORGE_CONFIG__ (a hosted
+# frontend's through the StaticSite spec, which the control plane writes), so
+# one build promotes across envs and each env sets its own.
+#
+#   OTEL_ENDPOINT        a hosted frontend defaults to the platform's /_otel
+#                        unless the author named one (or browser telemetry is
+#                        off, which _runtime_config_declared handles)
+#   CONSOLE_CAPTURE      "false" only; unset means capture
+#   REPLAY_SAMPLE_RATE   only when it is not every session
+_telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    _t = f.telemetry
+    ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
+        | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
+        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
 }
 
 # The framework's build/dev variable for the browser ingest path.
@@ -2092,7 +2127,9 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # as the StaticSite spec's runtimeConfig.
         "runtime_config": _rc
         "runtime_config_spec": _rc_spec
-    } | ({"routes": f.routes} if f.routes else {}) | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {})
+    } | ({"routes": f.routes} if f.routes else {}) \
+      | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
+      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string
@@ -2252,6 +2289,10 @@ _render_frontend_config = lambda c: FrontendConfig -> any {
 # none renders exactly as it did before the field.
 _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
     {
+        "console_capture": t.console_capture
+        "replay_sample_rate": t.replay_sample_rate
+        "sourcemaps": t.sourcemaps
+        "errors": {"ignore": t.errors.ignore}
         "funnels": [{
             "id": f.id
             "title": f.title if f.title else None

@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-const procDeployCapabilities = "controlplane.v1.DeployService/GetCapabilities"
+const procDeployCapabilities = deploytarget.ProcDeployCapabilities
 
 // requireSnapshotCapabilities is deliberately live and fail-closed. Older
 // servers silently discard unknown JSON fields; a successful legacy RPC is not

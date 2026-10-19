@@ -2856,7 +2856,9 @@ schema FrontendConfig:
     # normally "/_otel", which the dev server proxies (and a deployed
     # environment's ingress must route) to a collector's OTLP/HTTP port. The
     # browser holds no collector address and no secret. In dev, unset =>
-    # "/_otel"; in a deployed environment, unset or "off" => telemetry is off.
+    # "/_otel". On forge.OnHosted, unset => "/_otel" too: the platform answers
+    # it on the site's own origin. On any other deployed runtime, unset or
+    # "off" => telemetry is off. "off" always turns it off.
     otel_endpoint?: str
     # The environment name the browser reports as
     # deployment.environment.name, the key the backend uses. Unset => the forge
@@ -3009,6 +3011,28 @@ schema Funnel:
         by in ["session", "user"], \
             "Funnel '${id}'.by must be 'session' | 'user'"
 
+schema FrontendErrors:
+    """Which browser errors a frontend does not want as issues.
+
+        forge.FrontendErrors {ignore = ["AbortError", "re:^Failed to fetch"]}
+
+    An entry is matched against the error's type and its message. A plain
+    entry is an exact match on the type, or a substring of the message; an
+    entry beginning `re:` is a regular expression (RE2 syntax) matched against
+    the message. An issue that matches is created IGNORED: the raw events are
+    still stored, so the filter is reversible.
+    """
+    ignore: [str] = []
+
+    check:
+        len(ignore) <= 100, "FrontendErrors.ignore allows at most 100 entries"
+        all e in ignore { e.strip() != "" and len(e) <= 256 }, \
+            "FrontendErrors.ignore entries must be non-empty and at most 256 characters"
+        all e in ignore { not e.startswith("re:") or (len(e) > 3 and regex.compile(e[3:])) }, \
+            "FrontendErrors.ignore has a 're:' entry that is not a valid regular expression"
+        len({e: True for e in ignore}) == len(ignore), \
+            "FrontendErrors.ignore lists an entry twice"
+
 schema BrowserTelemetry:
     """What a frontend declares about its browser telemetry beyond the
     environment's observability signals (Observability.signals.browser and
@@ -3017,15 +3041,38 @@ schema BrowserTelemetry:
         forge.Frontend {
             name = "web"
             telemetry = forge.BrowserTelemetry {
+                console_capture = False
+                errors = forge.FrontendErrors {ignore = ["AbortError"]}
                 funnels = [forge.Funnel {id = "onboarding", steps = ["signup_started", "first_chat"]}]
             }
         }
+
+    `console_capture` and `replay_sample_rate` reach the browser through the
+    runtime config document (config.js), so one build promotes across
+    environments and each environment sets its own.
     """
+    # Ship `console.*` output as spans. False for an app whose console is
+    # noisy or carries data that must not leave the browser.
+    console_capture: bool = True
+    # The share of SESSIONS recorded when session replay is on (the env opts
+    # in with Observability.signals.replay), 0..1. The decision is made once
+    # per session in the browser.
+    replay_sample_rate: float = 1.0
+    # What happens to the build's source maps. "publish" moves them out of the
+    # served tree and keeps them for symbolicating errors; "public" serves
+    # them (an open-source app that wants that); "off" drops them.
+    sourcemaps: str = "publish"
+    # Errors that are not issues.
+    errors: FrontendErrors = FrontendErrors {}
     # Product funnels rendered as `funnel` panels on the project's frontend
     # dashboard. A funnel id is unique within a frontend.
     funnels: [Funnel] = []
 
     check:
+        replay_sample_rate >= 0.0 and replay_sample_rate <= 1.0, \
+            "BrowserTelemetry.replay_sample_rate must be between 0.0 and 1.0"
+        sourcemaps in ["publish", "public", "off"], \
+            "BrowserTelemetry.sourcemaps must be 'publish' | 'public' | 'off'"
         len({f.id: True for f in funnels}) == len(funnels), \
             "BrowserTelemetry.funnels declares a funnel id twice: each funnel needs its own id"
 
@@ -4081,9 +4128,20 @@ schema ObservabilityRetention:
     traces_days: int = 0
     metrics_days: int = 0
     logs_days: int = 0
+    # Browser telemetry on the hosted platform, in days (the platform's browser
+    # telemetry tables' TTLs). Unlike the hints above these are never "backend default": each
+    # has a stated default, recorded in the release shape only when it moves.
+    # Session replay is the heaviest and the most sensitive, so it is capped
+    # lowest.
+    replay_days: int = 14
+    errors_days: int = 30
+    product_events_days: int = 90
 
     check:
         traces_days >= 0 and metrics_days >= 0 and logs_days >= 0, "ObservabilityRetention days must be >= 0"
+        replay_days >= 1 and replay_days <= 30, "ObservabilityRetention.replay_days must be 1..30 (session replay is retained at most 30 days)"
+        errors_days >= 1 and errors_days <= 365, "ObservabilityRetention.errors_days must be 1..365"
+        product_events_days >= 1 and product_events_days <= 365, "ObservabilityRetention.product_events_days must be 1..365"
 
 schema ObservabilityAgent:
     """The per-node collector forge renders on cluster runtimes (a

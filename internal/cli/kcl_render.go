@@ -1167,6 +1167,12 @@ type FrontendConfigEntity struct {
 
 // FrontendTelemetryEntity mirrors kcl/schema.k BrowserTelemetry.
 type FrontendTelemetryEntity struct {
+	ConsoleCapture   bool    `json:"console_capture"`
+	ReplaySampleRate float64 `json:"replay_sample_rate"`
+	Sourcemaps       string  `json:"sourcemaps,omitempty"`
+	Errors           struct {
+		Ignore []string `json:"ignore,omitempty"`
+	} `json:"errors"`
 	Funnels []FunnelEntity `json:"funnels,omitempty"`
 }
 
@@ -1261,6 +1267,11 @@ type ObservabilityEntity struct {
 		TracesDays  int `json:"traces_days"`
 		MetricsDays int `json:"metrics_days"`
 		LogsDays    int `json:"logs_days"`
+		// The browser-telemetry tables' TTLs, in days (always rendered,
+		// defaulted by the schema).
+		ReplayDays        int `json:"replay_days"`
+		ErrorsDays        int `json:"errors_days"`
+		ProductEventsDays int `json:"product_events_days"`
 	} `json:"retention"`
 	Agent struct {
 		Namespace      string `json:"namespace"`

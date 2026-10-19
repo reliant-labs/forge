@@ -19,6 +19,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/shellrun"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Migration metadata + state lives alongside the existing template-drift
@@ -553,7 +555,7 @@ func writeMigrationsState(projectRoot string, state migrationsState) error {
 	}
 	// Trailing newline keeps the file POSIX-friendly.
 	data = append(data, '\n')
-	return os.WriteFile(p, data, 0o644)
+	return atomicfile.WriteFile(p, data, 0o644)
 }
 
 // runUpgradeApply is the body of `forge project upgrade apply <id>`.

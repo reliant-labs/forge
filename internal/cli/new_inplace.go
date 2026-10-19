@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // `forge project new --in-place` scaffolds into a directory the user already
@@ -118,7 +120,7 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 			forgeBody, skipped := dropTrackedIgnores(string(content), gitTrackedIgnoreMatcher(target))
 			res.gitignoreSkipped = skipped
 			if readErr != nil {
-				return os.WriteFile(dest, []byte(forgeBody), info.Mode().Perm())
+				return atomicfile.WriteFile(dest, []byte(forgeBody), info.Mode().Perm())
 			}
 			merged, added := mergeGitignore(string(existing), forgeBody)
 			res.gitignoreMerged = true
@@ -126,7 +128,7 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 			if merged == string(existing) {
 				return nil
 			}
-			return os.WriteFile(dest, []byte(merged), 0o644)
+			return atomicfile.WriteFile(dest, []byte(merged), 0o644)
 		}
 		switch {
 		case readErr == nil && !overwrite:
@@ -142,7 +144,7 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 			}
 			return fmt.Errorf("read %s: %w", dest, readErr)
 		}
-		return os.WriteFile(dest, content, info.Mode().Perm())
+		return atomicfile.WriteFile(dest, content, info.Mode().Perm())
 	})
 	sort.Strings(res.kept)
 	sort.Strings(res.overwritten)

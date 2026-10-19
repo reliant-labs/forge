@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // This file owns the part of "ship a static frontend" that is the SAME
@@ -264,7 +266,7 @@ func assembleStaging(plan StagePlan) error {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("create runtime config dir: %w", err)
 		}
-		if err := os.WriteFile(dst, []byte(plan.RuntimeConfigJS), 0o644); err != nil {
+		if err := atomicfile.WriteFile(dst, []byte(plan.RuntimeConfigJS), 0o644); err != nil {
 			return fmt.Errorf("write runtime config %s: %w", dst, err)
 		}
 	}

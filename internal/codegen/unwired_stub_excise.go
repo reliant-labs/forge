@@ -37,6 +37,8 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ExciseUnwiredStubs removes, from the user-owned handler files in dir,
@@ -302,5 +304,5 @@ func formatAndRewriteGo(projectDir, absPath string, content []byte) error {
 	if ferr != nil {
 		return ferr
 	}
-	return os.WriteFile(absPath, formatted, 0o644)
+	return atomicfile.WriteFile(absPath, formatted, 0o644)
 }

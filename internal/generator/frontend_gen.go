@@ -13,6 +13,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // refreshedByNavGenerator reports whether a frontend scaffold file is one of
@@ -271,7 +273,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
+		if err := atomicfile.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write frontend file %s: %w", destFile, err)
 		}
 		// Record the birth hash for the files the nav generator keeps
@@ -309,7 +311,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		"// skips node_modules and other frontend assets. This frontend has no\n"+
 		"// first-party Go code; the module exists solely as a boundary marker.\n"+
 		"module %s/frontends/%s\n\ngo %s\n", modulePath, frontendName, goVersion)
-	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
+	if err := atomicfile.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
 		return fmt.Errorf("write frontend go.mod: %w", err)
 	}
 
@@ -466,7 +468,7 @@ func installCoreComponents(frontendDir string) error {
 			content = c
 		}
 		dest := filepath.Join(componentsDir, name+".tsx")
-		if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
+		if err := atomicfile.WriteFile(dest, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write component %s: %w", name, err)
 		}
 	}
@@ -496,7 +498,7 @@ func EnsureCoreComponents(frontendDir string) error {
 			}
 			content = c
 		}
-		if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
+		if err := atomicfile.WriteFile(dest, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write component %s: %w", name, err)
 		}
 	}

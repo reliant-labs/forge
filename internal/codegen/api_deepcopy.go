@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-tools/pkg/loader"
 
 	"github.com/reliant-labs/forge/internal/goexec"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // DeepCopyFile is the file controller-tools' object generator owns in each
@@ -65,7 +67,7 @@ func GenerateAPIDeepCopy(projectDir string) ([]string, error) {
 	}
 	restore := func() {
 		for p, b := range saved {
-			_ = os.WriteFile(p, b, 0o644)
+			_ = atomicfile.WriteFile(p, b, 0o644)
 		}
 	}
 	for _, p := range stale {
@@ -99,7 +101,7 @@ func GenerateAPIDeepCopy(projectDir string) ([]string, error) {
 
 	var written []string
 	for path, buf := range out.files {
-		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		if err := atomicfile.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 			restore()
 			return nil, err
 		}

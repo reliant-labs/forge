@@ -11,6 +11,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // runBufGenerateGo runs buf generate using the project's buf.gen.yaml for Go stubs.
@@ -103,7 +105,7 @@ func writeDefaultBufGenYaml(projectDir string) error {
     opt:
       - paths=source_relative
 `
-	return os.WriteFile(filepath.Join(projectDir, "buf.gen.yaml"), []byte(config), 0644)
+	return atomicfile.WriteFile(filepath.Join(projectDir, "buf.gen.yaml"), []byte(config), 0644)
 }
 
 // runBufGenerateTypeScript runs buf generate for TypeScript stubs in a Next.js frontend.
@@ -163,7 +165,7 @@ plugins:
       - target=ts
       - import_extension=.js
 `, feSlash, feSlash, feSlash)
-		if err := os.WriteFile(feBufGen, []byte(tsConfig), 0644); err != nil {
+		if err := atomicfile.WriteFile(feBufGen, []byte(tsConfig), 0644); err != nil {
 			return fmt.Errorf("failed to write TypeScript buf config: %w", err)
 		}
 	}
@@ -321,7 +323,7 @@ plugins:
       - target=ts
       - import_extension=.js
 `, feSlash, feSlash)
-		if err := os.WriteFile(bufGenPath, []byte(body), 0o644); err != nil {
+		if err := atomicfile.WriteFile(bufGenPath, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write packages/api/buf.gen.yaml: %w", err)
 		}
 	}

@@ -40,6 +40,8 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // newLibraryCmd is the cobra surface for `forge scaffold library <name>`.
@@ -177,7 +179,7 @@ package %s
 // service via 'forge scaffold package %s' instead.
 `, pkgIdent, pkgIdent, name)
 
-	if err := os.WriteFile(starterPath, []byte(starter), 0o644); err != nil {
+	if err := atomicfile.WriteFile(starterPath, []byte(starter), 0o644); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "write starter file", starterPath,
 			"check filesystem permissions", err)
 	}
@@ -292,7 +294,7 @@ func appendToContractsExclude(configPath, entry string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("marshal project config: %w", err)
 	}
-	if err := os.WriteFile(configPath, out, 0o644); err != nil {
+	if err := atomicfile.WriteFile(configPath, out, 0o644); err != nil {
 		return false, fmt.Errorf("write project config: %w", err)
 	}
 	return true, nil

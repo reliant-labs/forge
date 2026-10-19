@@ -52,6 +52,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 func main() {
@@ -236,5 +238,5 @@ func writeLines(path string, lines []string) error {
 		b.WriteString(l)
 		b.WriteByte('\n')
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return atomicfile.WriteFile(path, []byte(b.String()), 0o644)
 }

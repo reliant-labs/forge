@@ -28,6 +28,8 @@ import (
 	"unicode"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // InterfaceDef represents a parsed Go interface.
@@ -824,7 +826,7 @@ func writeMock(cf *File, dir string, opts Options) error {
 	// Legacy path: no manifest in scope (e.g. `forge scaffold package` stub
 	// emit). Raw write; the file is adopted into the manifest by the
 	// next full `forge generate`.
-	return os.WriteFile(mockPath, formatted, 0644)
+	return atomicfile.WriteFile(mockPath, formatted, 0644)
 }
 
 // addImport adds an import path if not already present.

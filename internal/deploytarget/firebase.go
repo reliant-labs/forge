@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // FrontendConfigJSName is the filename of the runtime config document
@@ -330,10 +332,10 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 
 	// Configure phase — firebase.json + .firebaserc next to the staging
 	// tree (in its parent, which is the firebase deploy workdir).
-	if err := os.WriteFile(filepath.Join(plan.DeployWorkdir, "firebase.json"), []byte(plan.FirebaseJSON), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(plan.DeployWorkdir, "firebase.json"), []byte(plan.FirebaseJSON), 0o644); err != nil {
 		return fmt.Errorf("firebase %s: write firebase.json: %w", plan.Stage.Name, err)
 	}
-	if err := os.WriteFile(filepath.Join(plan.DeployWorkdir, ".firebaserc"), []byte(plan.FirebaseRC), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(plan.DeployWorkdir, ".firebaserc"), []byte(plan.FirebaseRC), 0o644); err != nil {
 		return fmt.Errorf("firebase %s: write .firebaserc: %w", plan.Stage.Name, err)
 	}
 

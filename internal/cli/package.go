@@ -18,6 +18,8 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // validGoPackageName matches a valid Go package name: lowercase letters, digits, underscores.
@@ -285,7 +287,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("render observe_chain.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "observe_chain.go"), observeContent, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(pkgDir, "observe_chain.go"), observeContent, 0o644); err != nil {
 		return fmt.Errorf("write observe_chain.go: %w", err)
 	}
 
@@ -461,7 +463,7 @@ func renderPackageKindTree(pkgDir, kindOrType string, data any, requireNonEmpty 
 		}
 		// Strip .tmpl suffix for the output filename.
 		outName := strings.TrimSuffix(tmplFile, ".tmpl")
-		if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(pkgDir, outName), content, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", outName, err)
 		}
 	}
@@ -477,7 +479,7 @@ func renderDefaultPackageScaffold(pkgDir string, data any) error {
 	if err != nil {
 		return fmt.Errorf("render contract.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0o644); err != nil {
 		return fmt.Errorf("write contract.go: %w", err)
 	}
 
@@ -485,7 +487,7 @@ func renderDefaultPackageScaffold(pkgDir string, data any) error {
 	if err != nil {
 		return fmt.Errorf("render service.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0o644); err != nil {
 		return fmt.Errorf("write service.go: %w", err)
 	}
 
@@ -493,7 +495,7 @@ func renderDefaultPackageScaffold(pkgDir string, data any) error {
 	if err != nil {
 		return fmt.Errorf("render contract_test.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0o644); err != nil {
 		return fmt.Errorf("write contract_test.go: %w", err)
 	}
 

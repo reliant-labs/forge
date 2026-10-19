@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/openfiles"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Runner executes maintenance using injectable process operations.
@@ -387,5 +389,5 @@ func NodeConfigPath(policyPath string, p Policy) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return "", err
 	}
-	return path, os.WriteFile(path, p.KubeletConfig(), 0644)
+	return path, atomicfile.WriteFile(path, p.KubeletConfig(), 0644)
 }

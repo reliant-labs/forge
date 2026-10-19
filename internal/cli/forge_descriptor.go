@@ -19,6 +19,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // descriptorStageDir is the per-invocation staging directory under the
@@ -216,7 +218,7 @@ func MergeDescriptorFragments(descriptorOut string) error {
 	outPath := filepath.Join(descriptorOut, "forge_descriptor.json")
 	// A text file ends in a newline; without one every end-of-file fixer
 	// rewrites the generated file and the next generate rewrites it back.
-	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+	if err := atomicfile.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write forge_descriptor.json: %w", err)
 	}
 

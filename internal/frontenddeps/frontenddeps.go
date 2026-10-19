@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/envutil"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Ensure is the install step shared by `forge env up`, `forge build` and
@@ -226,5 +228,5 @@ func installStamp(dir string) string {
 // markInstallOK records a completed install. Best-effort: a tree that
 // cannot be stamped just falls back to the mtime heuristic next time.
 func markInstallOK(dir string) {
-	_ = os.WriteFile(installStamp(dir), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	_ = atomicfile.WriteFile(installStamp(dir), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
 }

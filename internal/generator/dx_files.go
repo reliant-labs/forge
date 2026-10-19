@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generateDXFiles writes developer-experience and operations scaffolding:
@@ -152,10 +154,10 @@ func (g *ProjectGenerator) generateVSCodeConfig() error {
 	if err := os.MkdirAll(vscodeDir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(vscodeDir, "settings.json"), []byte(settings), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(vscodeDir, "settings.json"), []byte(settings), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(vscodeDir, "extensions.json"), []byte(extensions), 0o644)
+	return atomicfile.WriteFile(filepath.Join(vscodeDir, "extensions.json"), []byte(extensions), 0o644)
 }
 
 // generateDevcontainer writes .devcontainer/devcontainer.json. The base
@@ -246,7 +248,7 @@ func (g *ProjectGenerator) generateDevcontainer() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "devcontainer.json"), []byte(content), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "devcontainer.json"), []byte(content), 0o644)
 }
 
 // generateBootstrapScript writes scripts/bootstrap.sh, a one-shot
@@ -332,7 +334,7 @@ main "$@"
 	}
 	// Mode 0755: executable so contributors can run it directly; `bash
 	// scripts/bootstrap.sh` in devcontainer.json still works regardless.
-	return os.WriteFile(filepath.Join(dir, "bootstrap.sh"), []byte(content), 0o755)
+	return atomicfile.WriteFile(filepath.Join(dir, "bootstrap.sh"), []byte(content), 0o755)
 }
 
 // generateSecurityPolicy writes SECURITY.md at the repo root. We derive
@@ -405,7 +407,7 @@ For bug reports, feature requests, or general contribution questions,
 see [CONTRIBUTING.md](CONTRIBUTING.md).
 `, g.Name, contact)
 
-	return os.WriteFile(filepath.Join(g.Path, "SECURITY.md"), []byte(content), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, "SECURITY.md"), []byte(content), 0o644)
 }
 
 // forgeGeneratedPathPattern matches every path `forge generate` writes (and
@@ -544,14 +546,14 @@ repos:
         stages: [commit-msg]
         additional_dependencies: ["@commitlint/config-conventional"]
 `
-	if err := os.WriteFile(filepath.Join(g.Path, ".pre-commit-config.yaml"), []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(g.Path, ".pre-commit-config.yaml"), []byte(content), 0o644); err != nil {
 		return err
 	}
 
 	// commitlint config so the pre-commit hook knows which ruleset to use.
 	commitlintRC := `module.exports = { extends: ['@commitlint/config-conventional'] };
 `
-	return os.WriteFile(filepath.Join(g.Path, ".commitlintrc.js"), []byte(commitlintRC), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, ".commitlintrc.js"), []byte(commitlintRC), 0o644)
 }
 
 // generateGitHooks writes the committed, tracked git hooks under
@@ -623,7 +625,7 @@ if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
 	exec pre-commit run --hook-stage pre-commit
 fi
 `
-	if err := os.WriteFile(filepath.Join(dir, "pre-commit"), []byte(preCommit), 0o755); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "pre-commit"), []byte(preCommit), 0o755); err != nil {
 		return err
 	}
 
@@ -642,7 +644,7 @@ set -e
 forge lint
 forge project audit
 `
-	if err := os.WriteFile(filepath.Join(dir, "pre-push"), []byte(prePush), 0o755); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "pre-push"), []byte(prePush), 0o755); err != nil {
 		return err
 	}
 
@@ -657,7 +659,7 @@ if command -v pre-commit >/dev/null 2>&1 && [ -f .pre-commit-config.yaml ]; then
 	exec pre-commit run --hook-stage commit-msg --commit-msg-filename "$1"
 fi
 `
-	return os.WriteFile(filepath.Join(dir, "commit-msg"), []byte(commitMsg), 0o755)
+	return atomicfile.WriteFile(filepath.Join(dir, "commit-msg"), []byte(commitMsg), 0o755)
 }
 
 // forgeManagedHookHeader starts the second line (the one after the shebang)
@@ -691,7 +693,7 @@ func (g *ProjectGenerator) generatePreCommitWorkflow() error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, []byte(preCommitWorkflow), 0o644)
+	return atomicfile.WriteFile(dest, []byte(preCommitWorkflow), 0o644)
 }
 
 // preCommitWorkflowPath is where generatePreCommitWorkflow writes, and the
@@ -864,7 +866,7 @@ The task loads every file in ` + "`db/seeds/`" + ` in lexicographic order via
 ` + "`psql $DATABASE_URL`" + `. Write each seed with ` + "`ON CONFLICT DO NOTHING`" + ` (or
 the equivalent) so re-running is safe.
 `
-	return os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(readme), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(readme), 0o644)
 }
 
 // generateSeeds documents the runtime seed model and scaffolds the
@@ -917,7 +919,7 @@ This directory is yours: forge scaffolds it once and never regenerates it.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
 		return err
 	}
 
@@ -1113,13 +1115,13 @@ func BenchmarkHealthz(b *testing.B) {
 	}
 }
 `
-	if err := os.WriteFile(filepath.Join(dir, "k6", "smoke.js"), []byte(k6), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "k6", "smoke.js"), []byte(k6), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "healthz_bench_test.go"), []byte(goBench), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "healthz_bench_test.go"), []byte(goBench), 0o644)
 }
 
 // generateRunbookAndSLO writes docs/runbook.md and docs/slo.md starter
@@ -1217,10 +1219,10 @@ Review SLOs quarterly. Adjust targets based on actual traffic patterns
 and business requirements.
 `, g.Name)
 
-	if err := os.WriteFile(filepath.Join(dir, "runbook.md"), []byte(runbook), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "runbook.md"), []byte(runbook), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "slo.md"), []byte(slo), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "slo.md"), []byte(slo), 0o644)
 }
 
 // generatePrometheusRules writes deploy/observability/prometheus-rules.yaml
@@ -1278,7 +1280,7 @@ groups:
           description: "Blackbox probe has been failing for 2 minutes."
 `, g.Name)
 
-	return os.WriteFile(filepath.Join(dir, "prometheus-rules.yaml"), []byte(rules), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "prometheus-rules.yaml"), []byte(rules), 0o644)
 }
 
 // generateDBReadme writes db/README.md: where the schema lives, what forge
@@ -1290,7 +1292,7 @@ func (g *ProjectGenerator) generateDBReadme() error {
 	if err := os.MkdirAll(filepath.Join(g.Path, "db"), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0o644)
+	return atomicfile.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0o644)
 }
 
 // dbReadme is the scaffolded db/README.md.

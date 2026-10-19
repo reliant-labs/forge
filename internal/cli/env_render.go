@@ -69,6 +69,8 @@ import (
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // renderedObject is one document of the env's rendered manifest stream,
@@ -903,7 +905,7 @@ func pinFile(path string) func() {
 		after, aerr := os.ReadFile(path)
 		switch {
 		case existed && aerr == nil && !bytes.Equal(before, after):
-			if werr := os.WriteFile(path, before, info.Mode().Perm()); werr == nil {
+			if werr := atomicfile.WriteFile(path, before, info.Mode().Perm()); werr == nil {
 				_ = os.Chtimes(path, time.Now(), info.ModTime())
 			}
 		case !existed && aerr == nil:

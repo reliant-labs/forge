@@ -10,6 +10,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/kclrender"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // kclEnvSource is one entry of the config projection
@@ -94,7 +96,7 @@ func loadProjectConfigEnvMap(projectDir, env string) (map[string]kclEnvSource, e
 		return nil, perr
 	}
 	probePath := filepath.Join(envDir, fmt.Sprintf("zz_forge_config_probe_%d.k", os.Getpid()))
-	if err := os.WriteFile(probePath, []byte(probe), 0o644); err != nil {
+	if err := atomicfile.WriteFile(probePath, []byte(probe), 0o644); err != nil {
 		return nil, fmt.Errorf("write config probe: %w", err)
 	}
 	defer func() { _ = os.Remove(probePath) }()

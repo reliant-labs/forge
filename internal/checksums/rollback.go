@@ -60,6 +60,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // rollbackEntry is one journaled path's pre-run state. existed=false
@@ -370,7 +372,7 @@ func SnapshotJournalTargets(root, preserveDir string) []string {
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			continue
 		}
-		if err := os.WriteFile(dest, current, 0o644); err != nil {
+		if err := atomicfile.WriteFile(dest, current, 0o644); err != nil {
 			continue
 		}
 		preserved = append(preserved, relPath)
@@ -530,7 +532,7 @@ func RestoreRollbackReport(root string) (restored, failed []string) {
 				failed = append(failed, relPath)
 				continue
 			}
-			if err := os.WriteFile(full, entry.content, mode); err != nil {
+			if err := atomicfile.WriteFile(full, entry.content, mode); err != nil {
 				failed = append(failed, relPath)
 				continue
 			}

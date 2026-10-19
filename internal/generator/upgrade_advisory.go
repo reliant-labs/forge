@@ -70,6 +70,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // AdvisoryStatus is the verdict for one scaffold-once file.
@@ -539,7 +541,7 @@ func writeAdvisoryFile(root, relPath string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return fmt.Errorf("create dir for %s: %w", relPath, err)
 	}
-	if err := os.WriteFile(full, content, 0o644); err != nil {
+	if err := atomicfile.WriteFile(full, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}
 	checksums.MarkWrittenThisRun(relPath)

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // secretFile is a FileSecrets store — the gitignored YAML file a local
@@ -69,7 +71,7 @@ func (s secretFile) set(key, value string) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(s.Path), err)
 	}
-	if err := os.WriteFile(s.Path, []byte(buf.String()), 0o600); err != nil {
+	if err := atomicfile.WriteFile(s.Path, []byte(buf.String()), 0o600); err != nil {
 		return err
 	}
 	// WriteFile keeps an existing file's mode; a store is a credential

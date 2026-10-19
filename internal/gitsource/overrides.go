@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // OverridesDirName / OverridesFileName locate the machine-local source
@@ -80,7 +82,7 @@ func WriteOverrides(projectDir string, sources map[string]string) error {
 		"# traveled with a change would un-pin CI. Maps a repo declared as a\n" +
 		"# forge.GitSource to a local working copy to build instead.\n"
 	path := filepath.Join(dir, OverridesFileName)
-	if err := os.WriteFile(path, append([]byte(header), data...), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, append([]byte(header), data...), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

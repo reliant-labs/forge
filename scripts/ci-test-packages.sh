@@ -47,6 +47,7 @@ guards=(
   github.com/reliant-labs/forge/internal/deadcodeguard
   github.com/reliant-labs/forge/internal/removalguard
   github.com/reliant-labs/forge/internal/tierguard
+  github.com/reliant-labs/forge/internal/writeguard
 )
 
 # The package that gets a job of its own.

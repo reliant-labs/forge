@@ -12,6 +12,8 @@ import (
 	"unicode/utf16"
 
 	"github.com/reliant-labs/forge/internal/storage"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Task Scheduler folder + name; the folder keeps forge's task out of the
@@ -156,7 +158,7 @@ func installWindowsTask(ctx context.Context, executable string, args []string, h
 	if err := os.MkdirAll(filepath.Dir(marker), 0700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(marker, data, 0600); err != nil {
+	if err := atomicfile.WriteFile(marker, data, 0600); err != nil {
 		return err
 	}
 	if _, err := storage.Exec(ctx, "schtasks", "/Create", "/TN", name, "/XML", marker, "/F"); err != nil {

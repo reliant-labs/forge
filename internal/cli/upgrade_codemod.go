@@ -2,10 +2,11 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // upgrade_codemod.go — generic per-version codemod runner.
@@ -256,5 +257,5 @@ func writeUpgradeNotes(projectDir, fromVersion, toVersion string, report Codemod
 	sb.WriteString("Clean compile + green tests + clean lint = upgrade done. Run `" + Name() +
 		" project upgrade list` for the per-release migration skills this project still needs — they carry the intent-level story the codemod cannot.\n")
 
-	return os.WriteFile(path, []byte(sb.String()), 0o644)
+	return atomicfile.WriteFile(path, []byte(sb.String()), 0o644)
 }

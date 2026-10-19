@@ -69,6 +69,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generatedMergeDriver is the driver's name in .gitattributes and .git/config.
@@ -141,7 +143,7 @@ func mergeGenerated(ctx context.Context, base, ours, theirs []byte, markerSize i
 	defer func() { _ = os.RemoveAll(dir) }()
 	paths := map[string][]byte{"ours": nOurs, "base": nBase, "theirs": nTheirs}
 	for name, body := range paths {
-		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
 			return nil, false, err
 		}
 	}
@@ -316,7 +318,7 @@ func newMergeGeneratedCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(args[1], merged, 0o644); err != nil {
+			if err := atomicfile.WriteFile(args[1], merged, 0o644); err != nil {
 				return err
 			}
 			if note != "" {
@@ -644,7 +646,7 @@ func writeMergeAttributes(root string) bool {
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return false
 	}
-	return os.WriteFile(file, []byte(updated), 0o644) == nil
+	return atomicfile.WriteFile(file, []byte(updated), 0o644) == nil
 }
 
 // mergeAttributesBlock renders the block for a project at prefix (git's

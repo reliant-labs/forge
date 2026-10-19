@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // reconcileConnectIdentity updates only equivalent service-name selectors on
@@ -102,5 +104,5 @@ func reconcileConnectIdentity(svc ServiceDef, root, dir string, cs *checksums.Fi
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, src, info.Mode().Perm())
+	return atomicfile.WriteFile(path, src, info.Mode().Perm())
 }

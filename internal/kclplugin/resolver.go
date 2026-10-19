@@ -47,6 +47,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/devstack"
 )
 
@@ -512,7 +513,7 @@ func UsePortStore(path string) (restore func()) {
 	armResolver(NewPersistentPortResolver(path))
 	return func() {
 		if existed {
-			_ = os.WriteFile(path, snapshot, 0o644)
+			_ = atomicfile.WriteFile(path, snapshot, 0o644)
 		} else {
 			_ = os.Remove(path)
 		}

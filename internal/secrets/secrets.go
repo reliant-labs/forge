@@ -48,6 +48,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Provider resolves declared secret references to values for one env.
@@ -414,7 +416,7 @@ func WriteSecretFile(path string, values map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	return atomicfile.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 // SecretRef is a declared reference extracted from the entities: the

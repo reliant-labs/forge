@@ -56,6 +56,8 @@ import (
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // upOptions bundles flags for `forge env up`.
@@ -3550,7 +3552,7 @@ func (p *procRegistry) persist() {
 	// truncated/corrupt ledger that `forge env down` would misparse. The temp
 	// lives in the same dir so the rename is a same-filesystem atomic swap.
 	tmp := statePath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	if err := atomicfile.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
 		fmt.Printf("[up] warning: write state: %v\n", err)
 		return
 	}
@@ -3609,7 +3611,7 @@ func persistResolvedEnv(projectID, env string, entities *KCLEntities, cfg *confi
 	}
 	// Atomic temp+rename so a status read never sees a half-written file.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := atomicfile.WriteFile(tmp, data, 0o644); err != nil {
 		fmt.Printf("[up] warning: write env state: %v\n", err)
 		return
 	}

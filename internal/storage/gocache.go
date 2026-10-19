@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Go-toolchain cache layer: the shared build cache, the golangci-lint cache,
@@ -362,7 +364,7 @@ func (r Runner) saveGoCacheCursor(label string, next int) {
 	m[label] = next
 	b, _ := json.Marshal(m)
 	tmp := path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
+	if atomicfile.WriteFile(tmp, b, 0o600) == nil {
 		_ = os.Rename(tmp, path)
 	}
 }

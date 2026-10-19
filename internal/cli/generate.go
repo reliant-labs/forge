@@ -26,6 +26,8 @@ import (
 	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generateMu protects the generation pipeline from concurrent runs.
@@ -1100,7 +1102,7 @@ func writeFailedGenerateErrorFile(absPath string, stepErr error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return
 	}
-	_ = os.WriteFile(dest, []byte(b.String()), 0o644)
+	_ = atomicfile.WriteFile(dest, []byte(b.String()), 0o644)
 }
 
 // validateBuildError is the error returned by runGoBuildValidate. It

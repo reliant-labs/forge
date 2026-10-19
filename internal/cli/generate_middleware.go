@@ -13,6 +13,8 @@ import (
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // generateAuthSetup scaffolds the OWNED internal/app/auth.go (SetupAuth)
@@ -461,7 +463,7 @@ func birthContractTest(b contractTestBirth, declines *contractTestDeclines) erro
 	// Unjournaled, a refused generate left it behind; the post-revert
 	// verification caught exactly that in the cp-forge fixture.
 	checksums.RecordPreWriteAbs(b.TestPath)
-	if writeErr := os.WriteFile(b.TestPath, content, 0644); writeErr != nil {
+	if writeErr := atomicfile.WriteFile(b.TestPath, content, 0644); writeErr != nil {
 		return fmt.Errorf("write contract_test.go for %s: %w", b.Rel, writeErr)
 	}
 	if b.TestLedger {
@@ -881,5 +883,5 @@ func scaffoldObserveChainSeam(projectDir, pkgDir, rel string, cfg *config.Projec
 		return err
 	}
 	checksums.RecordPreWriteAbs(target) // journaled: a failed run removes it
-	return os.WriteFile(target, content, 0o644)
+	return atomicfile.WriteFile(target, content, 0o644)
 }

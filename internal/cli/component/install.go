@@ -10,6 +10,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/pkg/components"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 func newInstallCmd(_ *factory.Factory) *cobra.Command {
@@ -48,7 +50,7 @@ auto-detects the nearest frontend directory.`,
 					return fmt.Errorf("component %q not found", name)
 				}
 				dest := filepath.Join(dir, name+".tsx")
-				if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
+				if err := atomicfile.WriteFile(dest, []byte(content), 0o644); err != nil {
 					return fmt.Errorf("write component %s: %w", name, err)
 				}
 				fmt.Printf("  Installed %s -> %s\n", name, dest)
@@ -63,7 +65,7 @@ auto-detects the nearest frontend directory.`,
 			if _, statErr := os.Stat(linkDest); os.IsNotExist(statErr) {
 				linkContent, err := lib.Get("link")
 				if err == nil {
-					if err := os.WriteFile(linkDest, []byte(linkContent), 0o644); err != nil {
+					if err := atomicfile.WriteFile(linkDest, []byte(linkContent), 0o644); err != nil {
 						return fmt.Errorf("write link primitive: %w", err)
 					}
 					fmt.Printf("  Installed link -> %s (navigation primitive dependency)\n", linkDest)

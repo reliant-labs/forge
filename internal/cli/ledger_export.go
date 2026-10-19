@@ -47,6 +47,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // exportNormalizations are the ways an export of an imported ledger differs
@@ -382,7 +384,7 @@ func writeJSONLines(path string, records []any) error {
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
-	if err := os.WriteFile(path, []byte(buf.String()), 0o600); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(buf.String()), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

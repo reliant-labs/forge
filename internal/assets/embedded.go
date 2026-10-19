@@ -7,6 +7,8 @@ import (
 	"regexp"
 
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // EmbeddedFiles bundles the proto annotation definitions shipped
@@ -171,5 +173,5 @@ func writeFile(path string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, content, 0o644)
+	return atomicfile.WriteFile(path, content, 0o644)
 }

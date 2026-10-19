@@ -9,6 +9,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ScaffoldMode controls how scaffolding functions handle pre-existing output
@@ -244,7 +246,7 @@ func writeBytesWithMode(path string, content []byte, mode ScaffoldMode, progress
 			return nil
 		}
 	}
-	return os.WriteFile(path, content, 0644)
+	return atomicfile.WriteFile(path, content, 0644)
 }
 
 // progressOrDiscard lets a nil progress writer be passed straight to Fprintf.

@@ -16,6 +16,8 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // mutationMarkerRE matches the `forge:mutation` comment convention. The
@@ -434,7 +436,7 @@ func writeHooksIndex(path string, hookFiles []hookFileEntry) error {
 	}
 
 	checksums.RecordPreWriteAbs(path) // journaled: a failed run restores it
-	return os.WriteFile(path, buf.Bytes(), 0o644)
+	return atomicfile.WriteFile(path, buf.Bytes(), 0o644)
 }
 
 // indexCollision records one symbol that is exported by 2+ hook files.
@@ -630,7 +632,7 @@ func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, dat
 		return fmt.Errorf("render hook test for %s: %w", svc.Name, err)
 	}
 	checksums.RecordPreWriteAbs(testPath) // journaled: a failed run removes it
-	if err := os.WriteFile(testPath, templates.CanonicalTSImportOrder(buf.Bytes()), 0o644); err != nil {
+	if err := atomicfile.WriteFile(testPath, templates.CanonicalTSImportOrder(buf.Bytes()), 0o644); err != nil {
 		return fmt.Errorf("write hook test %s: %w", testPath, err)
 	}
 	// The template is prettier-clean at the scaffold's own printWidth for

@@ -3,11 +3,15 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The chart prune, proven against a stateful fake cluster (fake_cluster_test.go).
@@ -293,6 +297,21 @@ func TestChartPrune_NamespaceIsNeverDeleted(t *testing.T) {
 			t.Errorf("the prune issued %q", d)
 		}
 	}
+	// The inventory moved with the chart: the old one was found in the old
+	// namespace (that is how the old Deployment was a candidate at all), folded
+	// into the new one and deleted. The kept Namespace stays tracked.
+	invs := cl.inventories()
+	if len(invs) != 1 {
+		t.Fatalf("want exactly one inventory after the move, got %v", invs)
+	}
+	want := []string{
+		"Deployment/flux-system-2/source-controller",
+		"Namespace/flux-system",
+		"Namespace/flux-system-2",
+	}
+	if got := cl.inventory("flux-system-2"); !reflect.DeepEqual(got, want) {
+		t.Errorf("inventory after the move = %v, want %v", got, want)
+	}
 }
 
 // `prune = false` turns the step off for a chart whose live objects are
@@ -326,15 +345,19 @@ func TestChartPrune_DisabledAndOwnerlessChartsDeleteNothing(t *testing.T) {
 	}
 }
 
-// Another env's, another chart's and a hand-made object are never candidates:
-// the listing is label-selected on the owner AND the chart.
-func TestChartPrune_OnlyTouchesThisChartForThisOwner(t *testing.T) {
+// Only an object an earlier apply of THIS chart recorded is ever a candidate.
+// Another env's, another chart's, a hand-made object, one dropped before forge
+// stamped an owner, and a CLONE carrying exactly this chart's stamp (a manifest
+// copied with `kubectl get -o yaml`) all survive: none was in the inventory.
+func TestChartPrune_OnlyTouchesWhatTheInventoryRecorded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
 	}
 	cl := newFakeCluster(t)
 	setRelease := fakeHelmReleases(t)
 	spec := fluxLikeSpec()
+	setRelease(stream(docDeployment))
+	applyRelease(t, spec)
 
 	mk := func(name string, labels map[string]any) map[string]any {
 		return map[string]any{
@@ -346,19 +369,74 @@ func TestChartPrune_OnlyTouchesThisChartForThisOwner(t *testing.T) {
 	cl.seed(mk("other-chart", map[string]any{ChartOwnerLabel: chartOwnerFixture, WorkloadLabel: "cert-manager"}))
 	cl.seed(mk("hand-made", map[string]any{"app": "x"}))
 	cl.seed(mk("pre-stamp", map[string]any{WorkloadLabel: "flux"})) // dropped before forge stamped an owner
+	cl.seed(mk("clone", map[string]any{ChartOwnerLabel: chartOwnerFixture, WorkloadLabel: "flux"}))
+
+	applyRelease(t, spec)
+
+	for _, name := range []string{"other-env", "other-chart", "hand-made", "pre-stamp", "clone"} {
+		if !cl.has("NetworkPolicy", "flux-system", name) {
+			t.Errorf("NetworkPolicy %s was never recorded in this chart's inventory and must be left alone", name)
+		}
+	}
+	if got := cl.deletes(); len(got) != 0 {
+		t.Errorf("deleted %v", got)
+	}
+}
+
+// The FIRST apply that finds no inventory (the first deploy under this version)
+// deletes nothing. It does not even delete objects that carry this chart's
+// stamp but that the render no longer has, which is exactly what an env stamped
+// by an earlier forge holds. It records an inventory, and pruning starts from
+// the next apply.
+func TestChartPrune_FirstApplyWithoutInventoryDeletesNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	setRelease := fakeHelmReleases(t)
+	spec := fluxLikeSpec()
+
+	// What an earlier forge left live: every object stamped, no inventory.
+	setRelease(stream(docDeployment, docWebhookPolicy, docImpersonator))
+	for _, doc := range splitDocs(renderRelease(t, spec).manifests) {
+		var o map[string]any
+		if err := yaml.Unmarshal([]byte(doc), &o); err != nil {
+			t.Fatal(err)
+		}
+		if md := strMap(o["metadata"]); md["namespace"] == nil && o["kind"] != "Namespace" && o["kind"] != "ClusterRole" {
+			md["namespace"] = "flux-system"
+		}
+		cl.seed(o)
+	}
+	if len(cl.inventories()) != 0 {
+		t.Fatal("fixture: the cluster must start with no inventory")
+	}
 
 	setRelease(stream(docDeployment))
 	applyRelease(t, spec)
 
-	for _, name := range []string{"other-env", "other-chart", "hand-made", "pre-stamp"} {
-		if !cl.has("NetworkPolicy", "flux-system", name) {
-			t.Errorf("NetworkPolicy %s is not this chart's for this owner and must be left alone", name)
+	if got := cl.deletes(); len(got) != 0 {
+		t.Fatalf("the first apply without an inventory deleted %v", got)
+	}
+	for _, o := range [][3]string{{"NetworkPolicy", "flux-system", "allow-webhooks"}, {"ClusterRole", "", "cluster-reconciler-impersonator"}} {
+		if !cl.has(o[0], o[1], o[2]) {
+			t.Errorf("%v was deleted on the first apply without an inventory", o)
 		}
+	}
+	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("recorded inventory = %v, want %v (what this apply sent)", got, want)
+	}
+
+	// The objects it found were never recorded, so the next apply leaves them too.
+	applyRelease(t, spec)
+	if got := cl.deletes(); len(got) != 0 {
+		t.Errorf("an object no inventory recorded was deleted on a later apply: %v", got)
 	}
 }
 
-// A failed apply proves nothing about what the render declares, so it prunes
-// nothing, however much has left the render.
+// A failed apply proves nothing about the render's unconfirmed UIDs. It prunes
+// nothing, preserves the prior inventory, and retains the lock until explicit
+// recovery. A later successful retry can then reconcile the prior inventory.
 func TestChartPrune_FailedApplyPrunesNothing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
@@ -370,7 +448,8 @@ func TestChartPrune_FailedApplyPrunesNothing(t *testing.T) {
 	setRelease(stream(docDeployment, docWebhookPolicy, docImpersonator))
 	applyRelease(t, spec)
 
-	setRelease(stream(docDeployment))
+	docExtra := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: introduced-then-failed\ndata: {}"
+	setRelease(stream(docDeployment, docExtra))
 	t.Setenv("FORGE_FAKE_FAIL_APPLY", "1")
 	rc := renderRelease(t, spec)
 	if err := applyRenderedCharts(context.Background(), "k3d-test", []renderedChart{rc}, true); err == nil {
@@ -381,6 +460,202 @@ func TestChartPrune_FailedApplyPrunesNothing(t *testing.T) {
 	}
 	if !cl.has("NetworkPolicy", "flux-system", "allow-webhooks") {
 		t.Error("a failed apply deleted a departed object")
+	}
+	inv := strings.Join(cl.inventory("flux-system"), " ")
+	if strings.Contains(inv, "introduced-then-failed") {
+		t.Fatalf("failed apply recorded an unconfirmed UID: %s", inv)
+	}
+	if !strings.Contains(inv, "NetworkPolicy/flux-system/allow-webhooks") {
+		t.Fatalf("failed apply forgot prior inventory: %s", inv)
+	}
+
+	// The apply recovers: everything that left the render goes, and an entry
+	// for an object the failed apply never created is simply forgotten.
+	t.Setenv("FORGE_FAKE_FAIL_APPLY", "")
+	// The failed command retained its lock. In this fake all requests are
+	// synchronous and finished, so explicitly attest the terminated holder.
+	lock, err := getChartObject(context.Background(), "k3d-test", chartStateEntry(chartLockName(spec)))
+	if err != nil || lock == nil {
+		t.Fatalf("failed apply did not retain lock: %v", err)
+	}
+	holder := strMap(lock.raw["data"])["holder"].(string)
+	if err := RecoverChartLock(context.Background(), "k3d-test", spec.Owner, spec.Name, lock.Metadata.UID, lock.Metadata.ResourceVersion, "terminated:"+holder); err != nil {
+		t.Fatal(err)
+	}
+	setRelease(stream(docDeployment))
+	applyRelease(t, spec)
+	if cl.has("NetworkPolicy", "flux-system", "allow-webhooks") || cl.has("ClusterRole", "", "cluster-reconciler-impersonator") {
+		t.Error("the successful apply after a failed one did not prune the departed objects")
+	}
+	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("inventory after recovery = %v, want %v", got, want)
+	}
+}
+
+// Two applies of one chart at once. This apply (release N+1, which drops the
+// NetworkPolicy) reads its inventory, and while it applies, a CONCURRENT
+// applier lands a new ClusterRole carrying this chart's exact stamp. The new
+// object was not in the inventory this apply read, so this apply must not
+// delete it, though it is stamped and absent from this render. Then, between
+// this apply's read and write of the inventory, the concurrent applier records
+// its object in violation of the lock. The compare-and-swap must refuse to
+// overwrite that foreign inventory write, and no deletion may follow.
+func TestChartPrune_ConcurrentApplierIsNotPruned(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	setRelease := fakeHelmReleases(t)
+	spec := fluxLikeSpec()
+
+	setRelease(stream(docDeployment, docWebhookPolicy))
+	applyRelease(t, spec)
+	invKey := chartStateNamespace + "/" + chartInventoryName(spec.Name, spec.Owner)
+	before := cl.state()
+
+	concurrentRole := map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
+		"metadata": map[string]any{"name": "added-concurrently", "labels": map[string]any{
+			ChartOwnerLabel: chartOwnerFixture, WorkloadLabel: "flux",
+		}},
+	}
+	cl.injectOn("apply", concurrentRole)
+
+	// The concurrent applier's inventory write: everything it read, plus its
+	// new ClusterRole.
+	var invObj map[string]any
+	for _, o := range before.Objects {
+		md := strMap(o["metadata"])
+		if o["kind"] == "ConfigMap" && fmt.Sprintf("%v/%v", md["namespace"], md["name"]) == invKey {
+			invObj = o
+		}
+	}
+	if invObj == nil {
+		t.Fatalf("release N recorded no inventory at %s", invKey)
+	}
+	theirs, err := decodeChartInventory(fmt.Sprint(strMap(invObj["data"])[chartInventoryDataKey]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs[inventoryEntry{Group: "rbac.authorization.k8s.io", Kind: "ClusterRole", Namespace: "flux-system", Name: "added-concurrently"}] = "their-apply"
+	data, _ := theirs.encode()
+	concurrentInv := jsonRoundTrip(invObj)
+	strMap(concurrentInv["data"])[chartInventoryDataKey] = data
+	cl.injectOn("replace", concurrentInv)
+
+	setRelease(stream(docDeployment))
+	rc := renderRelease(t, spec)
+	if err := applyRenderedCharts(context.Background(), "k3d-test", []renderedChart{rc}, true); err == nil {
+		t.Fatal("foreign inventory write must fail CAS, never overwrite or prune")
+	}
+	if !cl.has("ClusterRole", "", "added-concurrently") || !cl.has("NetworkPolicy", "flux-system", "allow-webhooks") {
+		t.Fatal("inventory conflict deleted an object")
+	}
+	if got := cl.deletes(); len(got) != 0 {
+		t.Fatalf("pruned after inventory conflict: %v", got)
+	}
+}
+
+// Unlike a newly introduced object, a retained object is already in both
+// appliers' snapshots. A stale applier must not delete it after the newer
+// applier successfully retained it. This interleaving needs no goroutines:
+// pause A after its inventory read, let B finish, then resume A's prune.
+func TestChartPrune_StaleApplierCannotDeleteWinnersRetainedObject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl through subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	setRelease := fakeHelmReleases(t)
+	spec := fluxLikeSpec()
+	setRelease(stream(docDeployment, docWebhookPolicy))
+	applyRelease(t, spec)
+
+	// A intends to remove the policy and reads the old inventory, then pauses.
+	setRelease(docDeployment)
+	staleRender := renderRelease(t, spec)
+	stale, err := beginChartPrune(context.Background(), "k3d-test", staleRender, "stale-A")
+	if err != nil || stale == nil {
+		t.Fatalf("fixture: A must hold its lock and inventory: %v", err)
+	}
+
+	// B cannot overlap A. A's lock cannot expire, even if A is suspended.
+	setRelease(stream(docDeployment, docWebhookPolicy))
+	winner := renderRelease(t, spec)
+	if err := applyRenderedCharts(context.Background(), "k3d-test", []renderedChart{winner}, true); err == nil {
+		t.Fatal("B overlapped A's non-expiring lock")
+	}
+	// A stops before explicit recovery, then B completes. Model a stale
+	// callback resuming after recovery: it must reject its obsolete lock UID.
+	if err := stale.release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	applyRelease(t, spec)
+
+	// A resumes. Its inventory merge must not just preserve B's entry after
+	// deleting the very object that entry represents.
+	if _, err := stale.afterApply(context.Background()); err != nil {
+		t.Logf("stale applier refused: %v", err)
+	}
+	if !cl.has("NetworkPolicy", "flux-system", "allow-webhooks") {
+		t.Fatalf("stale A deleted the policy B retained; deletes=%v", cl.deletes())
+	}
+}
+
+// A chart that drops a custom resource AND the cluster stops serving its kind
+// (its CRD was removed): no object of the kind can exist, so the entry is
+// forgotten rather than warned about on every deploy forever, and nothing is
+// deleted.
+func TestChartPrune_EntryOfAnUnservedKindIsForgotten(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	setRelease := fakeHelmReleases(t)
+	spec := fluxLikeSpec()
+	docWidget := "apiVersion: acme.dev/v1\nkind: Widget\nmetadata:\n  name: w\nspec: {}"
+	setRelease(stream(docDeployment, docWidget))
+	applyRelease(t, spec)
+
+	t.Setenv("FORGE_FAKE_UNSERVED_KIND", "Widget")
+	setRelease(stream(docDeployment))
+	applyRelease(t, spec)
+	if got := cl.deletes(); len(got) != 0 {
+		t.Errorf("deleted %v", got)
+	}
+	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("inventory = %v, want %v (the unserved kind's entry forgotten)", got, want)
+	}
+}
+
+// An inventoried object whose stamp was taken off (someone adopted it) is left
+// alone when the chart drops it, and is no longer tracked.
+func TestChartPrune_DisownedObjectIsLeftAndForgotten(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	setRelease := fakeHelmReleases(t)
+	spec := fluxLikeSpec()
+	setRelease(stream(docDeployment, docWebhookPolicy))
+	applyRelease(t, spec)
+
+	state := cl.state()
+	for _, o := range state.Objects {
+		if objKey(o) == fakeKey("NetworkPolicy", "flux-system", "allow-webhooks") {
+			delete(strMap(strMap(o["metadata"])["labels"]), ChartOwnerLabel)
+		}
+	}
+	saveFakeState(cl.path, state)
+
+	setRelease(stream(docDeployment))
+	applyRelease(t, spec)
+	if !cl.has("NetworkPolicy", "flux-system", "allow-webhooks") {
+		t.Error("an object that no longer carries this chart's stamp was deleted")
+	}
+	for _, e := range cl.inventory("flux-system") {
+		if strings.Contains(e, "allow-webhooks") {
+			t.Errorf("a disowned object is still tracked: %v", cl.inventory("flux-system"))
+		}
 	}
 }
 
@@ -404,56 +679,108 @@ func TestDesiredChartObjects_UnreadableOrEmptyRenderIsNotUsable(t *testing.T) {
 	}
 }
 
-// planChartPrune's guards, one row each, without a cluster.
-func TestPlanChartPrune_Guards(t *testing.T) {
-	obj := func(kind, name string, mod func(*liveChartObject)) liveChartObject {
+// decideChartPrune's guards, one row each, without a cluster. Every live object
+// here is a departed inventory entry; the verdict is what the prune does.
+func TestDecideChartPrune_Guards(t *testing.T) {
+	spec := fluxLikeSpec()
+	stamped := func(kind, ns, name string, mod func(*liveChartObject)) liveChartObject {
 		var o liveChartObject
-		o.APIVersion, o.Kind, o.Metadata.Name, o.Metadata.Namespace = "v1", kind, name, "ns"
+		o.APIVersion, o.Kind, o.Metadata.Name, o.Metadata.Namespace = "v1", kind, name, ns
+		o.Metadata.Labels = map[string]string{ChartOwnerLabel: spec.Owner, WorkloadLabel: spec.Name}
 		if mod != nil {
 			mod(&o)
 		}
 		return o
 	}
-	desired := chartDesiredSet{
-		namespaced:   map[chartObjectRef]bool{{"ConfigMap", "ns", "current"}: true},
-		anyNamespace: map[chartObjectRef]bool{{"ConfigMap", "", "current"}: true},
-	}
-	live := []liveChartObject{
-		obj("ConfigMap", "current", nil),
-		obj("ConfigMap", "gone", nil),
-		obj("PersistentVolumeClaim", "data", nil),
-		obj("Secret", "s", nil),
-		obj("StatefulSet", "db", nil),
-		obj("PersistentVolume", "pv", nil),
-		obj("Namespace", "n", nil),
-		obj("CustomResourceDefinition", "c", nil),
-		obj("ConfigMap", "pinned", func(o *liveChartObject) {
-			o.Metadata.Annotations = map[string]string{PruneAnnotation: PruneDisabled}
-		}),
-		obj("ConfigMap", "owned", func(o *liveChartObject) { o.Metadata.OwnerReferences = []json.RawMessage{[]byte(`{}`)} }),
-		obj("ConfigMap", "dying", func(o *liveChartObject) { o.Metadata.DeletionTimestamp = "2026-01-01T00:00:00Z" }),
-		obj("ConfigMap", "other-annotation", func(o *liveChartObject) {
+	desired, _ := desiredChartObjects(stream(
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: current",
+		docImpersonator,
+	), "flux-system")
+
+	for _, tc := range []struct {
+		name string
+		live liveChartObject
+		want chartPruneVerdict
+	}{
+		{"departed and stamped", stamped("ConfigMap", "flux-system", "gone", nil), pruneDelete},
+		{"another prune annotation value", stamped("ConfigMap", "flux-system", "x", func(o *liveChartObject) {
 			o.Metadata.Annotations = map[string]string{PruneAnnotation: "enabled"}
-		}),
-	}
-	del, kept := planChartPrune(desired, live)
-	var delNames, keptNames []string
-	for _, o := range del {
-		delNames = append(delNames, o.Metadata.Name)
-	}
-	for _, k := range kept {
-		keptNames = append(keptNames, k.Object.Name)
-	}
-	if want := []string{"gone", "other-annotation"}; !reflect.DeepEqual(delNames, want) {
-		t.Errorf("delete = %v, want %v", delNames, want)
-	}
-	for _, name := range []string{"data", "s", "db", "pv", "n", "c", "pinned", "owned"} {
-		found := false
-		for _, k := range keptNames {
-			found = found || k == name
+		}), pruneDelete},
+		{"cluster-scoped, recorded under the chart's old namespace, still rendered",
+			stamped("ClusterRole", "", "cluster-reconciler-impersonator", nil), pruneForget},
+		{"stamp removed", stamped("ConfigMap", "flux-system", "x", func(o *liveChartObject) { o.Metadata.Labels = nil }), pruneForget},
+		{"another env's stamp now", stamped("ConfigMap", "flux-system", "x", func(o *liveChartObject) {
+			o.Metadata.Labels[ChartOwnerLabel] = "acme.staging"
+		}), pruneForget},
+		{"another chart's stamp now", stamped("ConfigMap", "flux-system", "x", func(o *liveChartObject) {
+			o.Metadata.Labels[WorkloadLabel] = "cert-manager"
+		}), pruneForget},
+		{"already being deleted", stamped("ConfigMap", "flux-system", "x", func(o *liveChartObject) {
+			o.Metadata.DeletionTimestamp = "2026-01-01T00:00:00Z"
+		}), pruneForget},
+		{"prune: disabled", stamped("ConfigMap", "flux-system", "x", func(o *liveChartObject) {
+			o.Metadata.Annotations = map[string]string{PruneAnnotation: PruneDisabled}
+		}), pruneKeep},
+		{"ownerReferences", stamped("ConfigMap", "flux-system", "x", func(o *liveChartObject) {
+			o.Metadata.OwnerReferences = []json.RawMessage{[]byte(`{}`)}
+		}), pruneKeep},
+		{"PersistentVolumeClaim", stamped("PersistentVolumeClaim", "flux-system", "data", nil), pruneKeep},
+		{"StatefulSet", stamped("StatefulSet", "flux-system", "db", nil), pruneKeep},
+		{"Secret", stamped("Secret", "flux-system", "s", nil), pruneKeep},
+		{"PersistentVolume", stamped("PersistentVolume", "", "pv", nil), pruneKeep},
+		{"Namespace", stamped("Namespace", "", "n", nil), pruneKeep},
+		{"CustomResourceDefinition", stamped("CustomResourceDefinition", "", "c", nil), pruneKeep},
+	} {
+		got, why := decideChartPrune(tc.live, desired, spec)
+		if got != tc.want {
+			t.Errorf("%s: verdict %d, want %d (%s)", tc.name, got, tc.want, why)
 		}
-		if !found {
-			t.Errorf("%s should be reported as kept; kept = %v", name, keptNames)
+		if got == pruneKeep && why == "" {
+			t.Errorf("%s: a kept object must say why", tc.name)
+		}
+	}
+}
+
+// The inventory round-trips through its ConfigMap data, sorted by object, and
+// a corrupt one is an error rather than an empty inventory: an empty one would
+// read as "nothing was ever applied" and silently forget every object.
+func TestChartInventory_EncodeDecode(t *testing.T) {
+	inv := chartInventory{
+		{Group: "rbac.authorization.k8s.io", Kind: "ClusterRole", Namespace: "flux-system", Name: "b"}: "run-2",
+		{Kind: "ConfigMap", Namespace: "flux-system", Name: "a"}:                                       "run-1",
+	}
+	data, err := inv.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Index(data, `"ClusterRole"`) > strings.Index(data, `"ConfigMap"`) {
+		t.Errorf("entries are not sorted by object:\n%s", data)
+	}
+	back, err := decodeChartInventory(data)
+	if err != nil || !reflect.DeepEqual(back, inv) {
+		t.Errorf("round trip = %v, %v; want %v", back, err, inv)
+	}
+	for _, bad := range []string{"", "{", `[{"kind":"","name":"x"}]`} {
+		if _, err := decodeChartInventory(bad); err == nil {
+			t.Errorf("decodeChartInventory(%q) accepted a corrupt inventory", bad)
+		}
+	}
+}
+
+// One inventory per chart AND per (project, env), with a name a ConfigMap can
+// carry whatever characters the chart or owner hold.
+func TestChartInventoryName(t *testing.T) {
+	a := chartInventoryName("flux", "acme.prod")
+	if a != chartInventoryName("flux", "acme.prod") {
+		t.Error("the name must be stable across applies")
+	}
+	if a == chartInventoryName("flux", "acme.staging") || a == chartInventoryName("cert-manager", "acme.prod") {
+		t.Error("two owners or two charts must not share an inventory")
+	}
+	dns := regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	for _, n := range []string{a, chartInventoryName("Weird_Chart.Name", "Acme_X.prod"), chartInventoryName(strings.Repeat("x", 200), "o")} {
+		if !dns.MatchString(n) || len(n) > 253 {
+			t.Errorf("%q is not a valid ConfigMap name", n)
 		}
 	}
 }

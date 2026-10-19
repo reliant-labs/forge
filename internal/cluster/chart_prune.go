@@ -1,117 +1,62 @@
 package cluster
 
-// Chart prune — removing the objects a helm-rendered platform dependency
-// STOPPED rendering.
+// Chart pruning uses a durable inventory and a non-expiring, cluster-side
+// mutex. The mutex spans inventory read -> apply -> inventory commit -> prune.
+// A second applier fails closed, never steals a lock based on wall-clock time.
+// After a crash, an operator must terminate the old writer (including kubectl
+// children) before removing its lock; see deploy/flux. A suspended writer must
+// not be allowed to resume after manual recovery.
 //
-// `kubectl apply` adds and updates; it never deletes. A chart whose rendered
-// set shrinks between two versions (the Flux chart's ClusterRoles and NetworkPolicies
-// are the case that surfaced it) therefore left the departed objects live
-// forever: a ClusterRole that grants impersonation, a NetworkPolicy that
-// opens an ingress path, long after the declaration that justified them was
-// deleted. The Deployment prune and the CRD prune never covered them — they
-// look at one kind each.
+// Both records live in kube-system, so changing a chart's target namespace
+// cannot fork its lock or lose its prior inventory. They are keyed by the
+// entire owner + chart, not an app-label selector. The inventory records UIDs
+// from successful server-side-apply RESPONSES, not a later GET of a name that
+// another actor could have replaced. A failed apply leaves the inventory
+// unchanged and prunes nothing. Partial writes are conservatively untracked
+// until a successful retry; this prefers retention over deleting a foreign UID.
 //
-// So a chart apply now ends with a prune, and it is deliberately narrow. An
-// object is deleted only when ALL hold:
-//
-//  1. forge stamped it as THIS chart's, for THIS (project, env):
-//     `forge.dev/chart-owner=<project>.<env>` plus
-//     `forge.dev/workload=<chart>`. The listing is SERVER-SIDE
-//     label-selected on both, so an object forge did not apply, another
-//     env's, another chart's, or a hand-made one is never even a candidate.
-//     The stamp is written by stampDocAppLabel on the render path and
-//     nowhere else.
-//  2. it is absent from the stream this apply just sent (the chart's own
-//     templates plus the manifests that ride it).
-//  3. it is not a kind that holds data or owns everything under it
-//     ([release.StatefulKind]: PersistentVolume, PersistentVolumeClaim,
-//     StatefulSet, Secret, Namespace, CustomResourceDefinition). Those are
-//     kept (and reported, except a Secret, which is never even listed so its
-//     contents are never read), exactly as the CRD prune keeps a CRD that
-//     still has instances. Removing one is a human decision.
-//  4. it carries no `kustomize.toolkit.fluxcd.io/prune: disabled`
-//     annotation, the same escape hatch a Flux bundle honours, so one
-//     spelling protects an object on both delivery paths.
-//  5. no controller owns it (`ownerReferences`): the owner garbage-collects
-//     it, and deleting it here would only start a fight.
-//
-// It runs only after the chart's apply fully succeeded (a partial apply
-// proves nothing about what the render contains), only when the chart did not
-// declare `prune = false`, and never on a render it cannot read in full.
-//
-// The same semantics Flux gives the bundle path, with the same escape hatch:
-// the migration design's §4.3 relies on a reconciler pruning by inventory, and
-// that later path must not surprise an env that already lives with this one.
+// Before deletion we GET the inventoried object, check its UID and ownership,
+// apply the shared stateful and Flux prune-exemption guards, then DELETE with
+// BOTH UID and resourceVersion preconditions. A replacement or an intervening
+// annotation/ownership change cannot be deleted with the stale decision.
+// Inventory commit precedes deletion and retains failed/guarded candidates, so
+// a crash or failed DELETE can be retried without forgetting the old objects.
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
+// Chart ownership and inventory keys. PruneAnnotation/PruneDisabled use the
+// Flux spelling so the direct and reconciler delivery paths share one guard.
 const (
-	// ChartOwnerLabel names the (project, env) that applied a chart's object.
-	// It is the chart prune's ownership proof; see the file comment.
-	ChartOwnerLabel = "forge.dev/chart-owner"
-
-	// PruneAnnotation is Flux's prune-exemption annotation. Spelled here (and
-	// in internal/bundle, which cannot import this package) because the string
-	// is Flux's, not forge's: published and stable across Flux's v1 API. An
-	// object carrying it with the value PruneDisabled is never pruned,
-	// whichever delivery path would have pruned it.
-	PruneAnnotation = "kustomize.toolkit.fluxcd.io/prune"
-
-	// PruneDisabled is the PruneAnnotation value that exempts an object.
-	PruneDisabled = "disabled"
+	ChartOwnerLabel          = "forge.dev/chart-owner"
+	PruneAnnotation          = "kustomize.toolkit.fluxcd.io/prune"
+	PruneDisabled            = "disabled"
+	ChartInventoryLabel      = "forge.dev/chart-inventory"
+	ChartInventoryOwnerLabel = "forge.dev/chart-inventory-owner"
+	chartInventoryDataKey    = "inventory"
+	chartStateNamespace      = "kube-system"
 )
 
-// ChartOwner is the ChartOwnerLabel value for a (project, env): "<project>.<env>",
-// sanitized to a legal label value. Empty when either half is unknown, which
-// disables both the stamp and the prune — an owner that cannot be named cannot
-// be proven. It is CRDOwner's value on purpose: one spelling of "this env".
+// ChartOwner names the project/env that owns the chart, or disables ownership
+// when either component is unknown, using the same spelling as CRDOwner.
 func ChartOwner(project, env string) string { return CRDOwner(project, env) }
 
-// chartPruneSkippedResources are API resources the prune never lists. They are
-// derived or churned by controllers, so a forge label on one means a
-// controller copied it, and none can be something a chart renders.
-//
-// Secrets are skipped for a different reason: they are never deleted (a Secret
-// is a stateful kind), so listing them would read credentials into this
-// process for no decision they could change.
-var chartPruneSkippedResources = map[string]bool{
-	"secrets":                         true,
-	"events":                          true,
-	"events.events.k8s.io":            true,
-	"pods":                            true,
-	"replicasets.apps":                true,
-	"endpoints":                       true,
-	"endpointslices.discovery.k8s.io": true,
-	"controllerrevisions.apps":        true,
-	"leases.coordination.k8s.io":      true,
-	"nodes":                           true,
-	"componentstatuses":               true,
-}
-
-// chartObjectRef is one object by the three things that identify it in both a
-// rendered stream and a live listing.
-//
-// Kind and name, with the namespace, and NOT the API group: a chart written
-// against `extensions/v1beta1` renders an Ingress the apiserver serves as
-// `networking.k8s.io`, and treating the group as identity would read a live
-// object the render still declares as one it dropped. The cost of ignoring
-// the group is a collision between two same-kind same-name objects of
-// different groups inside one chart's label scope, which does not occur and
-// which errs toward keeping an object.
-type chartObjectRef struct {
-	Kind, Namespace, Name string
-}
+type chartObjectRef struct{ Kind, Namespace, Name string }
 
 func (r chartObjectRef) String() string {
 	if r.Namespace == "" {
@@ -119,70 +64,102 @@ func (r chartObjectRef) String() string {
 	}
 	return r.Kind + "/" + r.Namespace + "/" + r.Name
 }
-
-// chartDesiredSet is what a chart's apply sent, indexed for the live
-// comparison.
-type chartDesiredSet struct {
-	// namespaced holds kind/effective-namespace/name. The effective namespace
-	// of a document that names none is the chart's own: the apply passed it as
-	// `-n`, which is where kubectl put every namespace-less object (flux2's
-	// 40 objects carry no metadata.namespace at all).
-	namespaced map[chartObjectRef]bool
-	// anyNamespace holds kind/name alone, for matching a live CLUSTER-scoped
-	// object. Scope is not in the manifest, so a document is indexed both
-	// ways and the live object's own namespace picks the lookup.
-	anyNamespace map[chartObjectRef]bool
-}
-
-// desiredChartObjects indexes a chart's stream. ok is false when the stream
-// cannot be read in full or holds no object: a prune computed from a partial
-// view would delete everything the unread part declared.
-func desiredChartObjects(stream, chartNamespace string) (set chartDesiredSet, ok bool) {
-	set = chartDesiredSet{namespaced: map[chartObjectRef]bool{}, anyNamespace: map[chartObjectRef]bool{}}
-	n := 0
-	for _, doc := range splitDocs(stream) {
-		m, parsed := parseDoc(doc)
-		if !parsed {
-			return set, false
-		}
-		if m.Kind == "" || m.Metadata.Name == "" {
-			continue
-		}
-		ns := m.Metadata.Namespace
-		if ns == "" {
-			ns = chartNamespace
-		}
-		set.namespaced[chartObjectRef{m.Kind, ns, m.Metadata.Name}] = true
-		set.anyNamespace[chartObjectRef{m.Kind, "", m.Metadata.Name}] = true
-		n++
+func apiGroup(version string) string {
+	if g, _, ok := strings.Cut(version, "/"); ok {
+		return g
 	}
-	return set, n > 0
+	return ""
 }
-
-func (s chartDesiredSet) contains(live chartObjectRef) bool {
-	if live.Namespace == "" {
-		return s.anyNamespace[live]
+func kubectlResource(kind, group string) string {
+	if group != "" {
+		return strings.ToLower(kind) + "." + group
 	}
-	return s.namespaced[live]
+	return strings.ToLower(kind)
 }
 
-// liveChartObject is the part of a listed object the prune decides on.
+type inventoryEntry struct {
+	Group     string `json:"group,omitempty"`
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+}
+
+func (e inventoryEntry) ref() chartObjectRef { return chartObjectRef{e.Kind, e.Namespace, e.Name} }
+func (e inventoryEntry) resource() string    { return kubectlResource(e.Kind, e.Group) }
+func (e inventoryEntry) String() string      { return e.ref().String() }
+
+// Values are Kubernetes UIDs, never apply/run ids.
+type chartInventory map[inventoryEntry]string
+type inventoryRecord struct {
+	inventoryEntry
+	UID string `json:"uid"`
+}
+
+func (inv chartInventory) encode() (string, error) {
+	records := make([]inventoryRecord, 0, len(inv))
+	for e, uid := range inv {
+		records = append(records, inventoryRecord{e, uid})
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].String() != records[j].String() {
+			return records[i].String() < records[j].String()
+		}
+		return records[i].Group < records[j].Group
+	})
+	b, err := json.Marshal(records)
+	return string(b), err
+}
+func decodeChartInventory(data string) (chartInventory, error) {
+	var records []inventoryRecord
+	if err := json.Unmarshal([]byte(data), &records); err != nil {
+		return nil, err
+	}
+	if records == nil {
+		return nil, errors.New("inventory must be a JSON array")
+	}
+	inv := chartInventory{}
+	for _, r := range records {
+		if r.Kind == "" || r.Name == "" || r.UID == "" {
+			return nil, errors.New("inventory entry needs kind, name and UID")
+		}
+		if _, ok := inv[r.inventoryEntry]; ok {
+			return nil, errors.New("duplicate inventory entry")
+		}
+		inv[r.inventoryEntry] = r.UID
+	}
+	return inv, nil
+}
+func chartInventoryName(chart, owner string) string {
+	sum := sha256.Sum256([]byte(owner + "/" + chart))
+	return "forge-chart-inventory-" + hex.EncodeToString(sum[:])[:32]
+}
+func chartLockName(spec HelmChartSpec) string {
+	return strings.Replace(chartInventoryName(spec.Name, spec.Owner), "inventory", "lock", 1)
+}
+func newChartApplyID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b[:])
+}
+
 type liveChartObject struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
 	Metadata   struct {
 		Name              string            `json:"name"`
 		Namespace         string            `json:"namespace"`
+		UID               string            `json:"uid"`
+		ResourceVersion   string            `json:"resourceVersion"`
+		Labels            map[string]string `json:"labels"`
 		Annotations       map[string]string `json:"annotations"`
 		OwnerReferences   []json.RawMessage `json:"ownerReferences"`
 		DeletionTimestamp string            `json:"deletionTimestamp"`
 	} `json:"metadata"`
-	// raw is the whole listed document, for the deploy plan's comparison.
 	raw map[string]any
 }
 
-// UnmarshalJSON decodes the fields the prune decides on and keeps the whole
-// document beside them.
 func (o *liveChartObject) UnmarshalJSON(b []byte) error {
 	type plain liveChartObject
 	if err := json.Unmarshal(b, (*plain)(o)); err != nil {
@@ -190,177 +167,449 @@ func (o *liveChartObject) UnmarshalJSON(b []byte) error {
 	}
 	return json.Unmarshal(b, &o.raw)
 }
-
 func (o liveChartObject) ref() chartObjectRef {
 	return chartObjectRef{o.Kind, o.Metadata.Namespace, o.Metadata.Name}
 }
-
-// group is the object's API group, "" for the core group.
-func (o liveChartObject) group() string {
-	if g, _, found := strings.Cut(o.APIVersion, "/"); found {
-		return g
-	}
-	return ""
+func (o liveChartObject) resource() string { return kubectlResource(o.Kind, apiGroup(o.APIVersion)) }
+func (o liveChartObject) entry() inventoryEntry {
+	return inventoryEntry{apiGroup(o.APIVersion), o.Kind, o.Metadata.Namespace, o.Metadata.Name}
 }
 
-// resource is the argument `kubectl delete` takes: kind.group, or the bare
-// kind in the core group. A kind alone is ambiguous across groups.
-func (o liveChartObject) resource() string {
-	if g := o.group(); g != "" {
-		return strings.ToLower(o.Kind) + "." + g
-	}
-	return strings.ToLower(o.Kind)
+type chartDesiredSet struct {
+	namespaced   map[chartObjectRef]bool
+	anyNamespace map[chartObjectRef]bool
+	entries      []inventoryEntry
 }
 
-// chartPruneKeep says why a departed object was left alone.
+func desiredChartObjects(stream, namespace string) (s chartDesiredSet, ok bool) {
+	s = chartDesiredSet{namespaced: map[chartObjectRef]bool{}, anyNamespace: map[chartObjectRef]bool{}}
+	for _, doc := range splitDocs(stream) {
+		m, parsed := parseDoc(doc)
+		if !parsed {
+			return s, false
+		}
+		if m.Kind == "" || m.Metadata.Name == "" {
+			continue
+		}
+		ns := m.Metadata.Namespace
+		if ns == "" {
+			ns = namespace
+		}
+		ref := chartObjectRef{m.Kind, ns, m.Metadata.Name}
+		if !s.namespaced[ref] {
+			s.entries = append(s.entries, inventoryEntry{apiGroup(m.APIVersion), m.Kind, ns, m.Metadata.Name})
+		}
+		s.namespaced[ref] = true
+		s.anyNamespace[chartObjectRef{m.Kind, "", m.Metadata.Name}] = true
+	}
+	return s, len(s.entries) > 0
+}
+func (s chartDesiredSet) contains(ref chartObjectRef) bool {
+	if ref.Namespace == "" {
+		return s.anyNamespace[ref]
+	}
+	return s.namespaced[ref]
+}
+
+type chartPruneVerdict int
+
+const (
+	pruneDelete chartPruneVerdict = iota
+	pruneKeep
+	pruneForget
+)
+
+func decideChartPrune(o liveChartObject, desired chartDesiredSet, spec HelmChartSpec) (chartPruneVerdict, string) {
+	switch {
+	case desired.contains(o.ref()):
+		return pruneForget, ""
+	case o.Metadata.Labels[ChartOwnerLabel] != spec.Owner || o.Metadata.Labels[WorkloadLabel] != spec.Name:
+		return pruneForget, "ownership stamp changed"
+	case release.StatefulKind(o.Kind):
+		return pruneKeep, "stateful kind; delete by hand only"
+	case o.Metadata.Annotations[PruneAnnotation] == PruneDisabled:
+		return pruneKeep, "prune: disabled"
+	case len(o.Metadata.OwnerReferences) > 0:
+		return pruneKeep, "owned by a controller"
+	case o.Metadata.DeletionTimestamp != "":
+		return pruneForget, ""
+	default:
+		return pruneDelete, ""
+	}
+}
+
+func runChartJSON(ctx context.Context, kctx string, args []string, body any) ([]byte, error) {
+	cmd := kubectlCmd(ctx, kctx, args...)
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		cmd.Stdin = bytes.NewReader(b)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+func getChartObject(ctx context.Context, kctx string, e inventoryEntry) (*liveChartObject, error) {
+	args := []string{"get", e.resource(), e.Name, "-o", "json", "--ignore-not-found"}
+	if e.Namespace != "" {
+		args = append(args, "-n", e.Namespace)
+	}
+	b, err := runChartJSON(ctx, kctx, args, nil)
+	if err != nil {
+		if kindNotServed(err.Error()) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, nil
+	}
+	var o liveChartObject
+	if err := json.Unmarshal(b, &o); err != nil {
+		return nil, err
+	}
+	if o.Kind == "" || o.Metadata.Name == "" {
+		return nil, errors.New("read returned no object identity")
+	}
+	return &o, nil
+}
+func kindNotServed(s string) bool {
+	return strings.Contains(s, "the server doesn't have a resource type")
+}
+
+// DELETE --raw -f - sends the DeleteOptions body verbatim through kubectl's
+// kubeconfig transport. Unlike ordinary kubectl delete, it DOES enforce both
+// preconditions. Discovery resolves the plural (never guess kind + "s").
+func deleteChartObject(ctx context.Context, kctx string, o liveChartObject) error {
+	if o.Metadata.UID == "" || o.Metadata.ResourceVersion == "" {
+		return errors.New("refusing delete without UID and resourceVersion")
+	}
+	prefix := "/api/" + o.APIVersion
+	if apiGroup(o.APIVersion) != "" {
+		prefix = "/apis/" + o.APIVersion
+	}
+	b, err := runChartJSON(ctx, kctx, []string{"get", "--raw", prefix}, nil)
+	if err != nil {
+		return err
+	}
+	var discovery struct {
+		Resources []struct {
+			Name, Kind string
+			Namespaced bool
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(b, &discovery); err != nil {
+		return err
+	}
+	resource := ""
+	for _, r := range discovery.Resources {
+		if r.Kind == o.Kind && !strings.Contains(r.Name, "/") && r.Namespaced == (o.Metadata.Namespace != "") {
+			resource = r.Name
+			break
+		}
+	}
+	if resource == "" {
+		return fmt.Errorf("no API resource for %s %s", o.APIVersion, o.Kind)
+	}
+	path := prefix
+	if o.Metadata.Namespace != "" {
+		path += "/namespaces/" + url.PathEscape(o.Metadata.Namespace)
+	}
+	path += "/" + resource + "/" + url.PathEscape(o.Metadata.Name)
+	_, err = runChartJSON(ctx, kctx, []string{"delete", "--raw", path, "-f", "-"}, map[string]any{
+		"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": map[string]string{"uid": o.Metadata.UID, "resourceVersion": o.Metadata.ResourceVersion},
+	})
+	return err
+}
+
+type chartPrune struct {
+	kctx      string
+	rc        renderedChart
+	applyID   string
+	lock      *liveChartObject
+	inventory *liveChartObject
+	prior     chartInventory
+	applied   chartInventory
+}
+type chartPruneContextKey struct{}
+
+func chartStateEntry(name string) inventoryEntry {
+	return inventoryEntry{Kind: "ConfigMap", Namespace: chartStateNamespace, Name: name}
+}
+func stateManifest(spec HelmChartSpec, name string, data map[string]string) map[string]any {
+	return map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{
+		"name": name, "namespace": chartStateNamespace, "labels": map[string]string{ChartInventoryLabel: spec.Name, ChartInventoryOwnerLabel: spec.Owner},
+	}, "data": data}
+}
+
+// beginChartPrune must succeed before ANY chart write, including Namespace
+// creation. kube-system is the stable coordination namespace across chart moves.
+func beginChartPrune(ctx context.Context, kctx string, rc renderedChart, id string) (*chartPrune, error) {
+	if rc.spec.Owner == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(kctx) == "" {
+		return nil, errors.New("chart apply requires an explicit context")
+	}
+	p := &chartPrune{kctx: kctx, rc: rc, applyID: id, prior: chartInventory{}, applied: chartInventory{}}
+	name := chartLockName(rc.spec)
+	body := stateManifest(rc.spec, name, map[string]string{"holder": id, "started": time.Now().UTC().Format(time.RFC3339)})
+	body["metadata"].(map[string]any)["labels"] = map[string]string{"forge.dev/chart-lock": rc.spec.Name, ChartInventoryOwnerLabel: rc.spec.Owner}
+	b, err := runChartJSON(ctx, kctx, []string{"create", "-f", "-", "-o", "json"}, body)
+	if err != nil {
+		return nil, fmt.Errorf("chart %q lock %s/%s: %w; no timeout takeover is allowed; after a crash terminate the old forge process AND its kubectl children before explicitly removing the lock (see deploy/flux)", rc.spec.Name, chartStateNamespace, name, err)
+	}
+	var lock liveChartObject
+	if err := json.Unmarshal(b, &lock); err != nil {
+		return nil, fmt.Errorf("read created chart lock (leave it for explicit recovery): %w", err)
+	}
+	p.lock = &lock
+	if lock.Metadata.UID == "" || lock.Metadata.ResourceVersion == "" {
+		return nil, errors.New("created chart lock has no UID/resourceVersion; explicit recovery required")
+	}
+	inv, err := getChartObject(ctx, kctx, chartStateEntry(chartInventoryName(rc.spec.Name, rc.spec.Owner)))
+	if err != nil {
+		return p, err
+	}
+	p.inventory = inv
+	if inv != nil {
+		data, _ := inv.raw["data"].(map[string]any)
+		text, _ := data[chartInventoryDataKey].(string)
+		p.prior, err = decodeChartInventory(text)
+		if err != nil {
+			return p, fmt.Errorf("unreadable chart inventory; refusing apply: %w", err)
+		}
+	}
+	return p, nil
+}
+func (p *chartPrune) checkLock(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	o, err := getChartObject(ctx, p.kctx, chartStateEntry(chartLockName(p.rc.spec)))
+	if err != nil {
+		return err
+	}
+	if o == nil || o.Metadata.UID != p.lock.Metadata.UID || o.Metadata.ResourceVersion != p.lock.Metadata.ResourceVersion {
+		return errors.New("chart lock lost or modified; refusing further writes; stop this writer before recovery")
+	}
+	return nil
+}
+func (p *chartPrune) release(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	if err := p.checkLock(ctx); err != nil {
+		return err
+	}
+	return deleteChartObject(ctx, p.kctx, *p.lock)
+}
+
+// RecoverChartLock removes exactly the lock an operator inspected. Confirmation
+// must name its holder after the operator has terminated/fenced that writer and
+// its children on every host. It never checks an age or automatically recovers.
+// UID and resourceVersion prevent this approval being reused for a newer lock.
+func RecoverChartLock(ctx context.Context, kctx, owner, chart, uid, rv, confirmation string) error {
+	if kctx == "" || owner == "" || chart == "" || uid == "" || rv == "" || !strings.HasPrefix(confirmation, "terminated:") {
+		return errors.New("recovery requires explicit context, owner, chart, inspected lock UID/resourceVersion and --confirm-terminated=terminated:<holder>")
+	}
+	spec := HelmChartSpec{Name: chart, Owner: owner}
+	o, err := getChartObject(ctx, kctx, chartStateEntry(chartLockName(spec)))
+	if err != nil {
+		return err
+	}
+	if o == nil {
+		return errors.New("lock no longer exists; nothing recovered")
+	}
+	data, _ := o.raw["data"].(map[string]any)
+	holder, _ := data["holder"].(string)
+	if holder == "" || confirmation != "terminated:"+holder || o.Metadata.UID != uid || o.Metadata.ResourceVersion != rv || o.Metadata.Labels["forge.dev/chart-lock"] != chart || o.Metadata.Labels[ChartInventoryOwnerLabel] != owner {
+		return errors.New("lock identity/holder changed or confirmation does not match; inspect again, never clear a live writer's lock")
+	}
+	return deleteChartObject(ctx, kctx, *o)
+}
+
+// collectApply reads only the SSA response, including its actual UID. Returning
+// status lines preserves the existing completeness/recovery checks. Secret
+// payloads are NOT printed or persisted in the inventory.
+func (p *chartPrune) collectApply(data []byte) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	var out strings.Builder
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return "", err
+		}
+		var list struct {
+			Kind  string            `json:"kind"`
+			Items []json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return "", err
+		}
+		objects := []json.RawMessage{raw}
+		if list.Kind == "List" {
+			objects = list.Items
+		}
+		for _, b := range objects {
+			var o liveChartObject
+			if err := json.Unmarshal(b, &o); err != nil {
+				return "", err
+			}
+			if o.Kind == "" || o.Metadata.Name == "" || o.Metadata.UID == "" {
+				return "", errors.New("apply response needs kind, name and UID")
+			}
+			p.applied[o.entry()] = o.Metadata.UID
+			fmt.Fprintf(&out, "%s/%s serverside-applied\n", o.resource(), o.Metadata.Name)
+		}
+	}
+	return out.String(), nil
+}
+func (p *chartPrune) writeInventory(ctx context.Context, inv chartInventory) error {
+	if err := p.checkLock(ctx); err != nil {
+		return err
+	}
+	data, err := inv.encode()
+	if err != nil {
+		return err
+	}
+	body := stateManifest(p.rc.spec, chartInventoryName(p.rc.spec.Name, p.rc.spec.Owner), map[string]string{chartInventoryDataKey: data})
+	verb := "create"
+	if p.inventory != nil {
+		verb = "replace"
+		body["metadata"].(map[string]any)["resourceVersion"] = p.inventory.Metadata.ResourceVersion
+	}
+	b, err := runChartJSON(ctx, p.kctx, []string{verb, "-f", "-", "-o", "json"}, body)
+	if err != nil {
+		return err
+	}
+	var o liveChartObject
+	if err := json.Unmarshal(b, &o); err != nil {
+		return err
+	}
+	p.inventory = &o
+	return nil
+}
+func (p *chartPrune) afterApply(ctx context.Context) ([]string, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if err := p.checkLock(ctx); err != nil {
+		return nil, err
+	}
+	desired, ok := desiredChartObjects(joinNonEmpty(p.rc.manifests, p.rc.extra), p.rc.spec.Namespace)
+	if !ok {
+		return nil, nil
+	}
+	// Commit confirmed UIDs before deleting. Retain absent old entries until
+	// their delete succeeds, so crashes/failures never make grants untrackable.
+	next := chartInventory{}
+	for e, uid := range p.prior {
+		next[e] = uid
+	}
+	for e, uid := range p.applied {
+		next[e] = uid
+	}
+	if err := p.writeInventory(ctx, next); err != nil {
+		return nil, err
+	}
+	if !p.rc.spec.Prune {
+		return nil, nil
+	}
+	var pruned []string
+	var errs []error
+	for e, uid := range p.prior {
+		if desired.contains(e.ref()) || release.StatefulKind(e.Kind) {
+			continue
+		}
+		o, err := getChartObject(ctx, p.kctx, e)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if o == nil || o.Metadata.UID != uid {
+			delete(next, e)
+			continue
+		}
+		verdict, _ := decideChartPrune(*o, desired, p.rc.spec)
+		if verdict == pruneKeep {
+			continue
+		}
+		if verdict == pruneForget {
+			delete(next, e)
+			continue
+		}
+		if err := p.checkLock(ctx); err != nil {
+			return pruned, err
+		}
+		if err := deleteChartObject(ctx, p.kctx, *o); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		delete(next, e)
+		pruned = append(pruned, o.ref().String())
+	}
+	if err := p.writeInventory(ctx, next); err != nil {
+		errs = append(errs, err)
+	}
+	sort.Strings(pruned)
+	return pruned, errors.Join(errs...)
+}
+
 type chartPruneKeep struct {
 	Object chartObjectRef
 	Why    string
 }
 
-// planChartPrune splits the live objects carrying a chart's stamp into those
-// to delete and those departed objects that a guard keeps. An object the
-// render still declares is neither: it is simply current.
-func planChartPrune(desired chartDesiredSet, live []liveChartObject) (del []liveChartObject, kept []chartPruneKeep) {
-	for _, o := range live {
-		ref := o.ref()
-		if desired.contains(ref) {
-			continue
-		}
-		switch {
-		case release.StatefulKind(o.Kind):
-			kept = append(kept, chartPruneKeep{ref, "a " + o.Kind + " holds data or owns everything under it; delete it by hand if it should go"})
-		case o.Metadata.Annotations[PruneAnnotation] == PruneDisabled:
-			kept = append(kept, chartPruneKeep{ref, "annotated " + PruneAnnotation + ": " + PruneDisabled})
-		case len(o.Metadata.OwnerReferences) > 0:
-			kept = append(kept, chartPruneKeep{ref, "owned by another object, which garbage-collects it"})
-		case o.Metadata.DeletionTimestamp != "":
-			// Already going. Deleting again only waits on its finalizers.
-		default:
-			del = append(del, o)
-		}
-	}
-	sort.Slice(del, func(i, j int) bool { return del[i].ref().String() < del[j].ref().String() })
-	sort.Slice(kept, func(i, j int) bool { return kept[i].Object.String() < kept[j].Object.String() })
-	return del, kept
-}
-
-// PruneChartObjects deletes the objects rc's chart applied before and no
-// longer renders, per the file comment. It returns the objects it deleted. A
-// failure to LIST is an error and deletes nothing; a failure to delete one
-// object is reported on stdout and does not stop the rest.
-//
-// It does nothing for a chart without an Owner, one that declared
-// `prune = false`, or one whose stream it cannot read in full.
-func PruneChartObjects(ctx context.Context, kctx string, rc renderedChart) (pruned []string, err error) {
-	spec := rc.spec
-	if !spec.Prune || spec.Owner == "" {
-		return nil, nil
-	}
-	if strings.TrimSpace(kctx) == "" {
-		return nil, errors.New("chart prune: no kubectl context — a delete is never aimed at the current context")
-	}
-	del, kept, readable, err := chartPruneCandidates(ctx, kctx, rc)
-	if err != nil {
-		return nil, err
-	}
-	if !readable {
-		fmt.Printf("  chart %q: skipping prune (its render is empty or unreadable, so nothing can be proven absent)\n", spec.Name)
-		return nil, nil
-	}
-	for _, k := range kept {
-		fmt.Printf("  chart %q no longer renders %s; keeping it (%s)\n", spec.Name, k.Object, k.Why)
-	}
-	if len(del) == 0 {
-		return nil, nil
-	}
-	fmt.Printf("Pruning %d object(s) chart %q no longer renders (owner %s):\n", len(del), spec.Name, spec.Owner)
-	for _, o := range del {
-		args := []string{"delete", o.resource(), o.Metadata.Name, "--ignore-not-found=true"}
-		if o.Metadata.Namespace != "" {
-			args = append(args, "-n", o.Metadata.Namespace)
-		}
-		fmt.Printf("  - %s\n", o.ref())
-		cmd := kubectlCmd(ctx, kctx, args...)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if derr := cmd.Run(); derr != nil {
-			fmt.Printf("  Warning: delete %s: %v\n", o.ref(), derr)
-			continue
-		}
-		pruned = append(pruned, o.ref().String())
-	}
-	return pruned, nil
-}
-
-// chartPruneCandidates is the prune's decision, without its effect: the live
-// objects the chart no longer renders that a prune would delete, and those a
-// guard keeps. readable is false when the render cannot prove anything absent.
-// Shared by PruneChartObjects and the deploy plan, so what the plan says it
-// will delete is what the apply deletes.
+// Plan and apply use the same inventory membership, UID and policy guards.
+// A preview never acquires a lock or changes cluster state.
 func chartPruneCandidates(ctx context.Context, kctx string, rc renderedChart) (del []liveChartObject, kept []chartPruneKeep, readable bool, err error) {
-	spec := rc.spec
-	desired, ok := desiredChartObjects(joinNonEmpty(rc.manifests, rc.extra), spec.Namespace)
+	desired, ok := desiredChartObjects(joinNonEmpty(rc.manifests, rc.extra), rc.spec.Namespace)
 	if !ok {
 		return nil, nil, false, nil
 	}
-	resources, err := listChartPruneResources(ctx, kctx)
+	inv, err := getChartObject(ctx, kctx, chartStateEntry(chartInventoryName(rc.spec.Name, rc.spec.Owner)))
 	if err != nil {
 		return nil, nil, true, err
 	}
-	live, err := listLiveChartObjects(ctx, kctx, resources, spec)
+	if inv == nil {
+		return nil, nil, true, nil
+	}
+	data, _ := inv.raw["data"].(map[string]any)
+	text, _ := data[chartInventoryDataKey].(string)
+	entries, err := decodeChartInventory(text)
 	if err != nil {
 		return nil, nil, true, err
 	}
-	del, kept = planChartPrune(desired, live)
+	for e, uid := range entries {
+		if desired.contains(e.ref()) {
+			continue
+		}
+		if release.StatefulKind(e.Kind) {
+			kept = append(kept, chartPruneKeep{e.ref(), "stateful kind"})
+			continue
+		}
+		o, err := getChartObject(ctx, kctx, e)
+		if err != nil {
+			return nil, nil, true, err
+		}
+		if o == nil || o.Metadata.UID != uid {
+			continue
+		}
+		verdict, why := decideChartPrune(*o, desired, rc.spec)
+		if verdict == pruneDelete {
+			del = append(del, *o)
+		} else if verdict == pruneKeep {
+			kept = append(kept, chartPruneKeep{o.ref(), why})
+		}
+	}
+	sort.Slice(del, func(i, j int) bool { return del[i].ref().String() < del[j].ref().String() })
 	return del, kept, true, nil
-}
-
-// listChartPruneResources asks the cluster which resource types can be listed
-// and deleted. Discovered rather than listed here because the prune's whole
-// job is to find a kind the NEW render no longer mentions: when the last
-// NetworkPolicy leaves a chart, no document of that kind remains to name it.
-func listChartPruneResources(ctx context.Context, kctx string) ([]string, error) {
-	out, err := kubectlCmd(ctx, kctx, "api-resources", "--verbs=list,delete", "-o", "name").Output()
-	if err != nil {
-		return nil, fmt.Errorf("chart prune: discover API resources: %w", err)
-	}
-	var resources []string
-	for _, line := range strings.Split(string(out), "\n") {
-		r := strings.TrimSpace(line)
-		if r != "" && !chartPruneSkippedResources[r] {
-			resources = append(resources, r)
-		}
-	}
-	if len(resources) == 0 {
-		return nil, errors.New("chart prune: the cluster reported no listable API resources")
-	}
-	return resources, nil
-}
-
-// listLiveChartObjects lists every object across the given resource types
-// that carries this chart's stamp, in every namespace.
-//
-// kubectl exits non-zero when ANY listed type fails (an aggregated API that is
-// down) while still printing the rest. Listing fewer objects can only keep
-// more of them, so partial output is used; output that does not parse is an
-// error.
-func listLiveChartObjects(ctx context.Context, kctx string, resources []string, spec HelmChartSpec) ([]liveChartObject, error) {
-	selector := fmt.Sprintf("%s=%s,%s=%s", ChartOwnerLabel, spec.Owner, WorkloadLabel, spec.Name)
-	cmd := kubectlCmd(ctx, kctx, "get", strings.Join(resources, ","), "-A", "-l", selector, "-o", "json", "--ignore-not-found")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr := cmd.Run()
-	var list struct {
-		Items []liveChartObject `json:"items"`
-	}
-	if perr := json.Unmarshal(stdout.Bytes(), &list); perr != nil {
-		if runErr != nil {
-			return nil, fmt.Errorf("chart prune: list objects owned by %s: %w: %s", spec.Owner, runErr, strings.TrimSpace(stderr.String()))
-		}
-		return nil, fmt.Errorf("chart prune: parse listing: %w", perr)
-	}
-	if runErr != nil {
-		fmt.Printf("  Warning: chart %q prune: some resource types could not be listed (%v); pruning what was found\n", spec.Name, runErr)
-	}
-	return list.Items, nil
 }

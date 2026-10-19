@@ -10,7 +10,7 @@ Use when an env declares a `forge.HelmChart` and a chart version ever dropped an
 ## What changed
 
 - **Behavior change: a chart apply now prunes.** forge stamps every object a `forge.HelmChart` renders with `forge.dev/chart-owner=<project>.<env>` and, once the chart's apply has fully succeeded, deletes the objects carrying that stamp that the new render no longer contains. Before, an object a chart stopped rendering stayed live forever. Kept, never deleted: CRDs, Namespaces, PersistentVolumes, PersistentVolumeClaims, StatefulSets and Secrets; an object annotated `kustomize.toolkit.fluxcd.io/prune: disabled`; an object with `ownerReferences`; anything from a chart whose render is empty or unreadable. A `--target` apply of something other than the chart prunes nothing.
-- **Objects dropped before this version carry no stamp and are never deleted.** The first apply under this version stamps what the chart renders now; only objects dropped AFTER that are pruned.
+- **Current inventory safety:** chart pruning now requires UIDs recorded from successful SSA responses, a non-expiring per-chart lock in kube-system, and UID/resourceVersion-conditional deletes. The first inventory run deletes nothing. Previously dropped, untracked objects still need one-time manual deletion. Failed/cancelled commands retain their lock; see `deploy/flux` for the mandatory termination/fencing and explicit `forge cluster recover-chart-lock` procedure. Never clear a live writer's lock or infer death from its age.
 - `forge.HelmChart` gained `namespace_labels`, `namespace_annotations` (written onto the Namespace forge creates for the chart) and `prune` (default `True`).
 - `forge.KubeconfigPolicyRule` gained `resource_names`.
 

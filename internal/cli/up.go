@@ -1190,7 +1190,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// re-run, which is the worst moment to spend two minutes pruning caches.
 	// Non-disruptive layers only (no registry GC, no node restarts), gated on
 	// a 24h timestamp, and never fatal. See storage_converge.go.
-	if clusterErr == nil {
+	if upReclaimsStorage(entities, clusterErr) {
 		maybeOpportunisticGC(ctx, os.Stdout)
 	}
 

@@ -245,82 +245,85 @@ func TestCmdServe_DefaultScaffoldWiresDevCORS(t *testing.T) {
 // "this click, end to end" has no answer. Found live: ClickHouse held the
 // browser's and the API's spans under different trace ids although the request
 // carried a valid traceparent.
+//
+// serverkit.NewChain's default Trace is otelconnect with WithTrustRemote
+// (pkg/serverkit's TestNewChain_DefaultTraceTrustsRemoteParent proves it), so
+// the scaffold keeps it by leaving the slot unset — or, if it fills the slot
+// itself, by building otelconnect with the option.
 func TestServeScaffoldTrustsTheBrowsersTraceContext(t *testing.T) {
-	file := parseServeFields(t, nil)
-	found := false
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "NewInterceptor" {
-			return true
-		}
-		if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "otelconnect" {
-			return true
-		}
-		found = true
-		trusted := false
-		for _, arg := range call.Args {
-			if c, ok := arg.(*ast.CallExpr); ok {
-				if s, ok := c.Fun.(*ast.SelectorExpr); ok && s.Sel.Name == "WithTrustRemote" {
-					trusted = true
-				}
-			}
-		}
-		if !trusted {
-			t.Error("otelconnect.NewInterceptor is built without WithTrustRemote: browser and API spans land in different traces")
+	deps := serveChainDeps(t, parseServeFields(t, nil))
+	trace, set := deps["Trace"]
+	if !set {
+		return
+	}
+	if isSel(trace, "serverkit", "NoTrace") {
+		t.Fatal("the serve scaffold drops the chain's trace span (serverkit.NoTrace)")
+	}
+	trusted := false
+	ast.Inspect(trace, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok && isSel(c.Fun, "otelconnect", "WithTrustRemote") {
+			trusted = true
 		}
 		return true
 	})
-	if !found {
-		t.Fatal("the serve scaffold builds no otelconnect interceptor (the assertion above would be vacuous)")
+	if !trusted {
+		t.Error("ChainDeps.Trace is built without otelconnect.WithTrustRemote: browser and API spans land in different traces")
 	}
 }
 
 // Tracing must wrap auth: a call auth rejects is exactly the one you want a
 // span for, and the logs written for it must carry the span's trace_id. The
-// scaffold used to PREPEND otelconnect to Deps.Extras, which observe.Chain
-// appends after auth, so a 401 produced no span and its "rpc failed" line had
-// no trace_id. It belongs in Deps.Trace, the chain's outermost slot.
+// scaffold used to PREPEND otelconnect to Deps.Extras, which run after auth,
+// so a 401 produced no span and its "rpc failed" line had no trace_id. The
+// span belongs in the chain's outermost slot — ChainDeps.Trace, whose default
+// is the trusted otelconnect interceptor — and never among the Extras.
 func TestServeScaffoldOpensTheTraceSpanOutsideAuth(t *testing.T) {
-	file := parseServeFields(t, nil)
-	assignedToTrace := false
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.AssignStmt:
-			for _, lhs := range x.Lhs {
-				sel, ok := lhs.(*ast.SelectorExpr)
-				if ok && sel.Sel.Name == "Trace" {
-					assignedToTrace = true
-				}
+	deps := serveChainDeps(t, parseServeFields(t, nil))
+	if extras, ok := deps["Extras"]; ok {
+		ast.Inspect(extras, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Name == "otelconnect" {
+				t.Error("an otelconnect interceptor is among ChainDeps.Extras, which run after auth: a rejected call has no span")
 			}
-			// otelconnect must never be appended to Extras (it would run after auth).
-			for _, rhs := range x.Rhs {
-				if usesIdent(rhs, "otelInt") {
-					for _, lhs := range x.Lhs {
-						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Extras" {
-							t.Error("the otelconnect interceptor is added to Deps.Extras, which runs after auth: a rejected call has no span")
-						}
-					}
-				}
-			}
-		}
-		return true
-	})
-	if !assignedToTrace {
-		t.Error("the serve scaffold never sets observe.Deps.Trace: the otelconnect span would open after auth")
+			return true
+		})
 	}
 }
 
-func usesIdent(e ast.Expr, name string) bool {
-	found := false
-	ast.Inspect(e, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok && id.Name == name {
-			found = true
+// serveChainDeps returns the fields of the one serverkit.ChainDeps literal
+// passed to serverkit.NewChain in the scaffolded serve.go.
+func serveChainDeps(t *testing.T, file *ast.File) map[string]ast.Expr {
+	t.Helper()
+	var lits []*ast.CompositeLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isSel(call.Fun, "serverkit", "NewChain") || len(call.Args) != 1 {
+			return true
 		}
-		return !found
+		if lit, ok := call.Args[0].(*ast.CompositeLit); ok && isSel(lit.Type, "serverkit", "ChainDeps") {
+			lits = append(lits, lit)
+		}
+		return true
 	})
-	return found
+	if len(lits) != 1 {
+		t.Fatalf("the serve scaffold builds %d serverkit.NewChain(serverkit.ChainDeps{...}) chains, want exactly 1", len(lits))
+	}
+	fields := map[string]ast.Expr{}
+	for _, elt := range lits[0].Elts {
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			if key, ok := kv.Key.(*ast.Ident); ok {
+				fields[key.Name] = kv.Value
+			}
+		}
+	}
+	return fields
+}
+
+// isSel reports whether e is the selector pkg.name.
+func isSel(e ast.Expr, pkg, name string) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != name {
+		return false
+	}
+	x, ok := sel.X.(*ast.Ident)
+	return ok && x.Name == pkg
 }

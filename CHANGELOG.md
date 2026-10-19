@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`serverkit.Listener` and `serverkit.Chain`: the listener and the
+  interceptor chain are components, and a process can run several of each**
+  (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the
+  chain the scaffolded `serve.go` used to spell inline — trace → recovery →
+  request-id → logging → metrics → auth → audit → rate-limit → extras →
+  stream-drain → protovalidate, plus the 4 MiB payload caps. Every slot has a
+  working default except `Auth`, which is required (nil is a boot error); a
+  default is dropped only by its `Omit` constant (`serverkit.NoAudit`,
+  `NoTrace`, `NoStreamDrain`, `NoValidate`). `Auth` is a
+  `serverkit.Authenticator` — the interceptor plus the audience it admits
+  (`serverkit.AuthFor(serverkit.AudienceUser, interceptor)`).
+  `serverkit.NewListener(ListenerDeps{Config, Chain, Routes, Edge, Front, REST})`
+  is one address with its own `ListenerConfig` (TLS, timeouts, HTTP/2 stream
+  cap, `DrainReserve`, `RedialOnDrain`), its own `Streams`, and the lifecycle
+  `Run` / `Drain` / `Close` / `Ready`. `serverkit.Run` is now one `Listener`
+  plus the process policy around it, with no behaviour change: an existing
+  `serve.go` keeps working untouched, and `Server.Chain` is the new optional
+  field a new one sets.
+- **`option (forge.v1.service) = {audience: "daemon"}` declares which kind of
+  caller a service serves** (default `"user"`), and a listener refuses to
+  start when it mounts a service whose audience differs from its chain's
+  `Auth.Audience()` — `serverkit.Run` checks the same over `Server.Chain`. A
+  daemon credential can no longer reach a user RPC, even through a
+  hand-written route set. The audience is in `gen/forge_descriptor.json`
+  (`Audience`), in `forge project annotations`, and readable at runtime with
+  `serverkit.ServiceAudience`.
+- `forge doctor`'s payload-cap check reads a `serverkit.NewChain` call as
+  capped (it applies the caps itself) and fails a negative cap, which is
+  `NewChain`'s spelling of "no cap".
 - **A StatefulSet's declared volume size can grow, and the deploy converges it.**
   `volumeClaimTemplates` are immutable, so raising a declared size (a
   `clickhouse_disk = "100Gi"` that was `"50Gi"`) used to fail every apply with

@@ -8,13 +8,14 @@ description: The in-process middleware chain — RPC-edge interceptors, the gene
 Forge instruments three boundaries, so a request is observable end to end:
 
 1. **The RPC edge** — every Connect handler runs the interceptor chain built by
-   `observe.Chain(observe.Deps{…})` in `cmd/<bin>/cmd/serve.go` (recovery →
-   request-id → logging → tracing → metrics, then auth → audit → rate-limit,
-   with otelconnect). One span, one metric sample and one log record per RPC:
+   `serverkit.NewChain(serverkit.ChainDeps{…})` in `cmd/<bin>/cmd/serve.go`
+   (otelconnect → recovery → request-id → logging → tracing → metrics, then
+   auth → audit → rate-limit → stream-drain → protovalidate). One span, one
+   metric sample and one log record per RPC:
    `rpc failed` for every failure, `rpc completed` for every success, and
    `slow=true` on any success over 1s. Success logging can be SAMPLED — see
    [Success-log sampling](#success-log-sampling) below. Tune the layer
-   through `observe.Deps.LogOptions` —
+   through `serverkit.ChainDeps.LogOptions` —
    `observe.WithSuccessLevel(<svc>connect.<Svc><Method>Procedure, slog.LevelDebug)`
    silences one poll, `observe.WithSuccessSampling(d)` fixes this layer's
    sampling window, `observe.WithSlowThreshold(d)` moves the slow line.
@@ -129,10 +130,10 @@ a `--config` file). The scaffolded `serve.go` passes the loaded value to the
 RPC edge's logging interceptor:
 
 ```go
-chainDeps := observe.Deps{
+chain, err := serverkit.NewChain(serverkit.ChainDeps{
     // ...
     LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())},
-}
+})
 ```
 
 forge's `observe` package reads no environment — the window is only ever

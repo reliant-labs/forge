@@ -50,9 +50,10 @@ draining it.
 
 ### Connect streaming RPCs
 
-The scaffolded `serve.go` puts `serverkit.StreamDrainInterceptor()` in the
-interceptor chain. It binds every server-streaming and bidi handler (unary and
-client-streaming RPCs are drained normally, never cut). **The client contract**
+Every `serverkit.NewChain` installs `serverkit.StreamDrainInterceptor()` by
+default (drop it only with `serverkit.NoStreamDrain`). It binds every
+server-streaming and bidi handler to the drain of the listener serving it
+(unary and client-streaming RPCs are drained normally, never cut). **The client contract**
 for a stream the drain ends:
 
 | Procedure | Client receives |
@@ -171,8 +172,25 @@ long.
 
 ## Without `serverkit.Run`
 
-Every piece is exported for a main that runs its own listener (a worker with a
-health port, a gateway):
+A main that serves more than one listener (a gateway's daemon port beside the
+API), or a worker with a health port, builds `serverkit.Listener`s — each with
+its own address, TLS, timeouts, `Streams` and chain — and drives their
+`Run`/`Drain`/`Close`/`Ready`: graceful is `Drain` (stop accepting, unary
+finish, streams soft-then-hard, the `listener` phase line), then cancel `Run`'s
+context, then `Close`. Cancelling `Run`'s context first is a hard stop.
+
+```go
+l, err := serverkit.NewListener(serverkit.ListenerDeps{
+    Config: serverkit.ListenerConfig{Addr: ":9090", RedialOnDrain: []string{"acme.v1.ToolsDaemonService"}},
+    Chain:  daemonChain,                       // required; its audience is checked against every mounted service
+    Routes: routes,                            // serverkit.Routes: mounts with the chain's handler options
+    Front:  map[string]http.Handler{"/healthz": healthz}, // served in front of the chain, no credentials
+})
+```
+
+`serverkit.Run` is exactly this over one listener. The lower-level pieces
+below are what a Listener is built from, for a main that keeps its own
+`http.Server`:
 
 ```go
 drainer := serverkit.NewDrainer(cfg)                 // readiness gate + budget

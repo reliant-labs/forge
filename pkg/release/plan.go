@@ -250,7 +250,10 @@ var statefulKinds = map[string]bool{
 // no data and nothing is garbage-collected through it. A kind that holds data
 // (PersistentVolumeClaim, PersistentVolume, StatefulSet) or cascades to
 // everything inside it (Namespace, CustomResourceDefinition) is deliberately
-// absent — an immutable conflict there fails the deploy loudly.
+// absent — an immutable conflict there fails the deploy loudly. The one
+// immutable StatefulSet change that converges, a larger volume, does not
+// recreate through this list: pkg/stsresize grows the claims and
+// orphan-deletes the object, so its pods keep running.
 //
 // ONE list, read by both the recovery (internal/cluster) and the plan, so the
 // plan can never promise less than the apply is allowed to do.

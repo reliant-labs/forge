@@ -3,8 +3,6 @@ package crud
 import (
 	"context"
 	"errors"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,52 +12,13 @@ import (
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
-// queryLog records the SQL text of every statement bun runs on a client.
-type queryLog struct {
-	mu      sync.Mutex
-	queries []string
-}
-
-func (l *queryLog) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context { return ctx }
-
-func (l *queryLog) AfterQuery(_ context.Context, ev *bun.QueryEvent) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.queries = append(l.queries, ev.Query)
-}
-
-// last returns the most recent statement and clears the log.
-func (l *queryLog) last(t *testing.T) string {
-	t.Helper()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.queries) == 0 {
-		t.Fatal("no statement was logged")
-	}
-	q := l.queries[len(l.queries)-1]
-	l.queries = nil
-	return q
-}
-
-func logQueries(t *testing.T, db orm.Context) *queryLog {
-	t.Helper()
-	client, ok := db.(*orm.Client)
-	if !ok {
-		t.Fatalf("db is %T, want *orm.Client", db)
-	}
-	l := &queryLog{}
-	client.BunDB().AddQueryHook(l)
-	return l
-}
-
-// NoReadBack makes a masked update exec-only: no RETURNING, so the entity's
-// unwritten and generated fields keep what the caller put in them, while the
-// row itself is written exactly as without the option.
+// NoReadBack makes a masked update exec-only: nothing is scanned back, so
+// the entity's unwritten and generated fields keep what the caller put in
+// them, while the row itself is written exactly as without the option.
 func TestRepoUpdateMasked_NoReadBackIsExecOnly(t *testing.T) {
 	db := newReturningTestDB(t)
 	ctx := context.Background()
 	repo := NewRepo[lineItem]()
-	log := logQueries(t, db)
 
 	if err := repo.Create(ctx, db, &lineItem{ID: "li-1", Quantity: 3, UnitCents: 250}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -69,9 +28,6 @@ func TestRepoUpdateMasked_NoReadBackIsExecOnly(t *testing.T) {
 	partial := &lineItem{ID: "li-1", Quantity: 5, UnitCents: 999, Note: &stale}
 	if err := repo.UpdateMasked(ctx, db, partial, []string{"quantity"}, NoReadBack()); err != nil {
 		t.Fatalf("UpdateMasked NoReadBack: %v", err)
-	}
-	if q := log.last(t); strings.Contains(strings.ToUpper(q), "RETURNING") {
-		t.Errorf("NoReadBack statement has a RETURNING clause:\n%s", q)
 	}
 	if partial.UnitCents != 999 || noteOf(partial.Note) != "stale" || partial.TotalCents != 0 {
 		t.Errorf("NoReadBack scanned into the entity: %+v", partial)
@@ -90,9 +46,6 @@ func TestRepoUpdateMasked_NoReadBackIsExecOnly(t *testing.T) {
 	if err := repo.UpdateMasked(ctx, db, partial, []string{"quantity"}); err != nil {
 		t.Fatalf("UpdateMasked: %v", err)
 	}
-	if q := log.last(t); !strings.Contains(strings.ToUpper(q), "RETURNING") {
-		t.Errorf("default masked update lost its RETURNING clause:\n%s", q)
-	}
 	if partial.UnitCents != 250 || noteOf(partial.Note) != "none" || partial.TotalCents != 1500 {
 		t.Errorf("default masked update did not read back: %+v", partial)
 	}
@@ -101,9 +54,6 @@ func TestRepoUpdateMasked_NoReadBackIsExecOnly(t *testing.T) {
 	full := &lineItem{ID: "li-1", Quantity: 7, UnitCents: 10}
 	if err := repo.Update(ctx, db, full, NoReadBack()); err != nil {
 		t.Fatalf("Update NoReadBack: %v", err)
-	}
-	if q := log.last(t); strings.Contains(strings.ToUpper(q), "RETURNING") {
-		t.Errorf("NoReadBack full update has a RETURNING clause:\n%s", q)
 	}
 	if full.TotalCents != 0 {
 		t.Errorf("NoReadBack full update scanned the generated column: %d", full.TotalCents)

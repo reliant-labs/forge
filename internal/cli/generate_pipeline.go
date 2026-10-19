@@ -259,6 +259,11 @@ type pipelineContext struct {
 	EntityDefs       []codegen.EntityDef
 	ConfigFields     map[string]bool
 
+	// rendered caches renderedFrontends for the run: the frontends each
+	// environment's KCL declares, read once however many steps ask.
+	rendered     []renderedEnvFrontend
+	renderedRead bool
+
 	// registry is the memoized parse of the user-owned
 	// pkg/app/services.go registration file (what this binary serves —
 	// see generate_serve.go). Lazily populated via
@@ -2474,6 +2479,11 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 	}
 	announceDerivedObservability(os.Stdout, ctx)
 	return ctx.warnOrFail("observability dashboards", func() error {
+		funnels, err := declaredFunnels(ctx.renderedFrontends())
+		if err != nil {
+			return err
+		}
+		in.Funnels = funnels
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
 			return err

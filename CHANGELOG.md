@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page/search users, and email an invitation with explicit `--email` and repeatable
   `--role`. Uses the authenticated org and exact project/environment lookup;
   invitations require a human org admin. No passwords or credentials are printed.
+- **KCL: `forge.Frontend.telemetry = forge.BrowserTelemetry {funnels = [forge.Funnel {...}]}`
+  declares product funnels.** A `forge.Funnel` is `{id, title?, steps, window = "1h",
+  by = "session"}`: 2 to 10 distinct event names (the names the app passes to
+  `track()`), a `window` of a number and a unit of s/m/h/d, counted per browser
+  `session` or `user`. `forge generate` reads every env's frontends and draws each
+  declared funnel as a `funnel-<id>` panel on the project's frontend dashboard
+  (`deploy/observability/dashboard-spec_gen.json`, and the release bundle's
+  dashboards). A funnel id declared by several envs is one funnel if the definitions
+  match, and an error if they differ. Not allowed on a `rn` frontend.
 - **`forge/pkg/dashspec`: the dashboard spec and its validator are public.**
   The `forge.dashboards/v1` types (`Dashboard`, `Panel`, `Series`, the kinds,
   aggregates, operators and units), `ParseDashboard` (every problem located by

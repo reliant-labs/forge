@@ -2967,6 +2967,68 @@ schema WorkloadURL(tiers.WorkloadURLRef):
     check:
         name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
 
+schema Funnel:
+    """A product funnel: the ordered events a user journey passes through.
+
+        forge.Funnel {
+            id = "onboarding"
+            title = "Onboarding"
+            steps = ["signup_started", "workspace_created", "first_chat"]
+            window = "7d"
+            by = "user"
+        }
+
+    `steps` are the event names the app passes to `track()` (forge-web-runtime),
+    in order. forge renders each declared funnel as one `funnel` panel on the
+    project's frontend dashboard: how many journeys reached each step within
+    `window` of their first one, counted per browser `session` or per `user`.
+    """
+    # The panel's stable id (the panel is `funnel-<id>`).
+    id: str
+    # The panel's title. Unset: the id.
+    title?: str
+    # The event names, in order: 2 to 10, each distinct.
+    steps: [str]
+    # How long a journey may take from its first step to its last: a number
+    # and a unit of s, m, h or d ("30m", "1h", "7d").
+    window: str = "1h"
+    # What identifies one journey: the browser "session" or the "user".
+    by: str = "session"
+
+    check:
+        regex.match(id, r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"), \
+            "Funnel.id '${id}' is not a valid id: letters, digits, '-', '_' and '.', starting with a letter or digit"
+        len(steps) >= 2 and len(steps) <= 10, \
+            "Funnel '${id}' has ${len(steps)} steps: a funnel has 2 to 10"
+        all s in steps { s.strip() != "" and len(s) <= 128 }, \
+            "Funnel '${id}'.steps must be non-empty event names of at most 128 characters"
+        len({s: True for s in steps}) == len(steps), \
+            "Funnel '${id}'.steps repeats a step: each event name may appear once"
+        regex.match(window, r"^[1-9][0-9]{0,3}[smhd]$"), \
+            "Funnel '${id}'.window '${window}' is not a window: a number and a unit of s, m, h or d, like \"1h\" or \"7d\""
+        by in ["session", "user"], \
+            "Funnel '${id}'.by must be 'session' | 'user'"
+
+schema BrowserTelemetry:
+    """What a frontend declares about its browser telemetry beyond the
+    environment's observability signals (Observability.signals.browser and
+    .replay still decide whether anything is collected at all).
+
+        forge.Frontend {
+            name = "web"
+            telemetry = forge.BrowserTelemetry {
+                funnels = [forge.Funnel {id = "onboarding", steps = ["signup_started", "first_chat"]}]
+            }
+        }
+    """
+    # Product funnels rendered as `funnel` panels on the project's frontend
+    # dashboard. A funnel id is unique within a frontend.
+    funnels: [Funnel] = []
+
+    check:
+        len({f.id: True for f in funnels}) == len(funnels), \
+            "BrowserTelemetry.funnels declares a funnel id twice: each funnel needs its own id"
+
 schema Frontend:
     """A web or mobile frontend: a dev server, or a static build forge
     publishes. WHERE it runs is its `runtime`, chosen per frontend exactly
@@ -3047,6 +3109,10 @@ schema Frontend:
     # SAME env stream as env_vars; an explicit env_vars entry wins on the
     # same variable (forge warns). See FrontendConfig.
     config?: FrontendConfig
+    # Browser telemetry beyond the env's observability signals: product
+    # funnels today. See BrowserTelemetry. Not for a `rn` frontend, which has
+    # no browser SDK.
+    telemetry?: BrowserTelemetry
     # Which entities this frontend gets generated CRUD pages for: route
     # SLUGS as they appear on disk and in the URL — the plural, kebab-cased
     # entity name ("llm-keys", "usage-events"). Empty (the default) means
@@ -3160,6 +3226,8 @@ schema Frontend:
         dev_runner in ["npm", "pnpm", "yarn"], \
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
         port > 0 and port < 65536, "Frontend.port must be 1..65535"
+        telemetry == Undefined or type != "rn", \
+            "Frontend '${name}'.telemetry is for a browser frontend; a 'rn' frontend runs no browser SDK"
         "none" not in routes or len(routes) == 1, \
             "Frontend '${name}'.routes combines \"none\" with route slugs ${routes}: use [\"none\"] for no generated pages, OR list the slugs you want — not both"
         not public_dir or not public_dir.startswith("/"), \

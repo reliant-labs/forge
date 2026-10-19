@@ -1080,6 +1080,10 @@ type FrontendEntity struct {
 	// with explicit EnvVars winning on a variable collision. See
 	// EffectiveEnvVars.
 	Config *FrontendConfigEntity `json:"config,omitempty"`
+	// Telemetry is the browser telemetry the frontend declares beyond the
+	// env's observability signals (kcl/schema.k BrowserTelemetry). nil when
+	// it declares none.
+	Telemetry *FrontendTelemetryEntity `json:"telemetry,omitempty"`
 	// Routes is the CRUD-page allowlist (kcl/schema.k Frontend.routes): route
 	// slugs, or the single value "none". Empty means every CRUD entity.
 	Routes []string `json:"routes,omitempty"`
@@ -1159,6 +1163,20 @@ type FrontendConfigEntity struct {
 	OTELEndpoint      string `json:"otel_endpoint,omitempty"`
 	Environment       string `json:"environment,omitempty"`
 	TelemetryDisabled bool   `json:"telemetry_disabled,omitempty"`
+}
+
+// FrontendTelemetryEntity mirrors kcl/schema.k BrowserTelemetry.
+type FrontendTelemetryEntity struct {
+	Funnels []FunnelEntity `json:"funnels,omitempty"`
+}
+
+// FunnelEntity mirrors kcl/schema.k Funnel, window and by already defaulted.
+type FunnelEntity struct {
+	ID     string   `json:"id"`
+	Title  string   `json:"title,omitempty"`
+	Steps  []string `json:"steps"`
+	Window string   `json:"window"`
+	By     string   `json:"by"`
 }
 
 // EffectiveEnvVars is the frontend's env-var stream forge injects at dev

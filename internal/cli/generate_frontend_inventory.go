@@ -67,7 +67,7 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) error {
 		return nil
 	}
 
-	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.ProjectDir))
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.renderedFrontends()))
 	if len(fromKCL) == 0 {
 		return nil
 	}
@@ -91,8 +91,10 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) error {
 	return nil
 }
 
-// kclDeclaredFrontends collects the frontends every renderable
-// environment declares, as the narrow view the inventory rules consume.
+// renderedFrontends reads the frontends every renderable environment
+// declares, in environment order. It is the one KCL read both the inventory
+// and the observability dashboards draw on, so a generate run renders each
+// environment once for them.
 //
 // Every environment is read, not just dev: a frontend may be declared in
 // prod alone (control-plane's internal-console is), and generating for it
@@ -107,8 +109,8 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) error {
 // silently — the deploy checks in `forge doctor` are what report an
 // unrenderable environment, and duplicating that here would put a KCL
 // stack trace in front of every generate on a project mid-edit.
-func kclDeclaredFrontends(projectDir string) []config.KCLFrontend {
-	var out []config.KCLFrontend
+func renderedFrontends(projectDir string) []renderedEnvFrontend {
+	var out []renderedEnvFrontend
 	for _, env := range deployEnvNames(projectDir) {
 		entities, restored, err := renderKCLPure(context.Background(), projectDir, env)
 		if err != nil || entities == nil {
@@ -116,17 +118,43 @@ func kclDeclaredFrontends(projectDir string) []config.KCLFrontend {
 		}
 		reportImpureRender(env, restored)
 		for _, fe := range entities.Frontends {
-			out = append(out, config.KCLFrontend{
-				Name:      fe.Name,
-				Type:      fe.Type,
-				Path:      fe.Path,
-				HasSource: fe.Source != nil && fe.Source.Repo != "",
-				Port:      fe.Port,
-				DevRunner: fe.DevRunner,
-				BasePath:  fe.BasePath,
-				Routes:    fe.Routes,
-			})
+			out = append(out, renderedEnvFrontend{Env: env, Frontend: fe})
 		}
+	}
+	return out
+}
+
+// renderedFrontends is renderedFrontends(ctx.ProjectDir), read once per run.
+func (ctx *pipelineContext) renderedFrontends() []renderedEnvFrontend {
+	if !ctx.renderedRead {
+		ctx.rendered = renderedFrontends(ctx.ProjectDir)
+		ctx.renderedRead = true
+	}
+	return ctx.rendered
+}
+
+// renderedEnvFrontend is a frontend as one environment declares it.
+type renderedEnvFrontend struct {
+	Env      string
+	Frontend FrontendEntity
+}
+
+// kclDeclaredFrontends is the narrow view of renderedFrontends the inventory
+// rules consume.
+func kclDeclaredFrontends(rendered []renderedEnvFrontend) []config.KCLFrontend {
+	var out []config.KCLFrontend
+	for _, r := range rendered {
+		fe := r.Frontend
+		out = append(out, config.KCLFrontend{
+			Name:      fe.Name,
+			Type:      fe.Type,
+			Path:      fe.Path,
+			HasSource: fe.Source != nil && fe.Source.Repo != "",
+			Port:      fe.Port,
+			DevRunner: fe.DevRunner,
+			BasePath:  fe.BasePath,
+			Routes:    fe.Routes,
+		})
 	}
 	return out
 }

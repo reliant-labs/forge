@@ -121,7 +121,9 @@ yours — including `UpdateJobStatus`, `CreateInvoiceFromEstimate` and
 `ListJobsByCrew`, so never rename an rpc to dodge CRUD detection. When an rpc
 is CRUD in name only (`CreateTask` also wires dependencies), put `// forge:custom`
 above it: it gets a stub instead of CRUD wiring, and once every CRUD-named rpc of
-a table carries it, the table is no entity at all (no ORM struct, no page). A
+a table carries it, the table gets no CRUD wiring or page — but it keeps its
+store: the ORM projects EVERY table, rpcs or not (`COMMENT ON TABLE t IS
+'forge:no-entity'` is the per-table store opt-out). A
 custom mutation's generated hook invalidates every query on its service. Depth:
 `proto`.
 

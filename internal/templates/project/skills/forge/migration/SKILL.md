@@ -146,8 +146,10 @@ Copy the migrations over as-is, then decide per table:
   (`Create<X>`/`Get<X>`/`Update<X>`/`Delete<X>`/`List<Xs>`) in the
   service proto — the table plus the RPCs make an entity, and
   `forge generate` projects the ORM, conversions, and frontend pages.
-- **Hand-rolled access?** Declare nothing. Tables without CRUD RPCs are
-  plain schema, invisible to the CRUD/frontend projections.
+- **Hand-rolled access?** Declare no CRUD rpcs. The table still gets its
+  generated store (`<Entity>Store`, delegates, `_repo_ext.go`), and stays
+  invisible to the CRUD/frontend projections. `COMMENT ON TABLE t IS
+  'forge:no-entity'` keeps it off the store too.
 
 One gotcha: the shadow apply (and your project's tests via
 `pkg/testkit`) run the migrations on a real ephemeral postgres, so just

@@ -314,14 +314,16 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	// per-object ConfigHash is unaffected either way — it normalizes
 	// release-bound digests away by construction.
 	var digests map[string]string
-	if ledger, lerr := ledgerFor(ctx, projectDir, envName); lerr == nil {
-		if d, _, derr := resolveDeployDigests(ctx, projectDir, envName, false, ledger.Bindings, ledger.Releases); derr == nil {
-			digests = d
-		} else {
-			fmt.Fprintf(errOut, "warning: image digests unresolved (%v) — projecting on tag %q instead\n", derr, imageTag)
+	if compositionSnapshotFrom(ctx) == nil {
+		if ledger, lerr := ledgerFor(ctx, projectDir, envName); lerr == nil {
+			if d, _, derr := resolveDeployDigests(ctx, projectDir, envName, false, ledger.Bindings, ledger.Releases); derr == nil {
+				digests = d
+			} else {
+				fmt.Fprintf(errOut, "warning: image digests unresolved (%v) — projecting on tag %q instead\n", derr, imageTag)
+			}
 		}
-	}
 
+	}
 	manifests, rerr := cluster.RenderManifests(ctx, mainK, imageTag, namespace, envName, loadDeployEnvConfigKV(projectDir, envName), digests)
 	if rerr != nil {
 		return envShapeDoc{}, fmt.Errorf("render %s: %w", mainK, rerr)

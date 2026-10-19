@@ -270,6 +270,9 @@ func importReleaseRows(in []importRelease) []map[string]any {
 		if r.Release.Provenance != nil {
 			row["provenance"] = deploytarget.ProvenanceWireFields(*r.Release.Provenance)
 		}
+		if r.Release.Commits != nil {
+			row["commits"] = commitRangeToWire(*r.Release.Commits)
+		}
 		if r.ImportedFrom != "" {
 			row["importedFrom"] = r.ImportedFrom
 		}
@@ -320,6 +323,9 @@ func importPromotionRows(in []importPromotion) ([]map[string]any, error) {
 		}
 		if p.Promotion.FromEnv != "" {
 			row["fromEnvironment"] = p.Promotion.FromEnv
+		}
+		if len(p.Promotion.Targets) > 0 {
+			row["targets"] = p.Promotion.Targets
 		}
 		if len(p.Promotion.Gates) > 0 {
 			// The STRICT write path, as a live promote uses: a gate whose

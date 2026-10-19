@@ -318,7 +318,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Env: env, Release: in.Release,
 		Digest: built.Digest, Reference: placed.Reference,
 		ConfigDigest: built.Doc.ConfigDigest,
-		Shape:        doc.Shape, Provenance: doc.Provenance,
+		Shape:        doc.Shape, Objects: built.Doc.Objects, Provenance: doc.Provenance,
 		Run: in.Run, CreatedAt: createdAt,
 	}
 	blobs := bundleBlobs{
@@ -804,6 +804,14 @@ func hostedPinReleaseFrom(ctx context.Context) string {
 // so a plan digest) to promote against.
 func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version string, ledger envLedger, rerecord bool, errOut io.Writer) error {
 	if !ledger.Hosted || version == "" {
+		return nil
+	}
+	if r, err := ledger.Releases.Get(ctx, version); err != nil {
+		return err
+	} else if r != nil && len(r.SnapshotIntents) > 0 {
+		if rerecord {
+			return fmt.Errorf("sealed snapshot cannot be re-recorded from the current checkout")
+		}
 		return nil
 	}
 	// THE MACHINE LEDGER IS NOT EVIDENCE ABOUT A HOSTED ENV. A bundle row

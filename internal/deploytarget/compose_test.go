@@ -46,7 +46,9 @@ func TestCompose_Deploy_HappyPath(t *testing.T) {
 		"docker compose -f docker-compose.yml pull edge",
 		// --wait by default: the deploy blocks on the service's
 		// healthcheck rather than returning at container-create time.
+		"docker compose -f docker-compose.yml ps --all --quiet",
 		"docker compose -f docker-compose.yml up -d --wait edge",
+		"docker compose -f docker-compose.yml ps --all --quiet",
 		"docker compose -f docker-compose.yml ps --status running edge",
 	}
 	if len(r.calls) != len(wantPrefixes) {

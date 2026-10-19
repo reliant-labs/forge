@@ -232,3 +232,54 @@ func TestCaptureProvenance_CommitTime(t *testing.T) {
 		t.Fatalf("non-git dir: %+v %v", plain, err)
 	}
 }
+
+// D4: a release names its commit's subject and author, dirty or not — a dirty
+// build's commit is still the base it was built on.
+func TestCaptureProvenanceRecordsCommitSubjectAndAuthor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	dir, shas := gitHistory(t, 2)
+	ctx := context.Background()
+	clean, err := CaptureProvenance(ctx, dir, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean.Commit != shas[1] || clean.CommitSubject != "c2" || clean.CommitAuthor != "bob" {
+		t.Fatalf("clean capture: commit %s subject %q author %q", clean.Commit, clean.CommitSubject, clean.CommitAuthor)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := CaptureProvenance(ctx, dir, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirty.Dirty || dirty.CommitSubject != "c2" || dirty.CommitAuthor != "bob" || dirty.CommitTime != nil {
+		t.Fatalf("dirty capture: dirty %v subject %q author %q commit time %v", dirty.Dirty, dirty.CommitSubject, dirty.CommitAuthor, dirty.CommitTime)
+	}
+	if err := dirty.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProvenanceValidateCommitText(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	for _, tc := range []struct {
+		name string
+		p    Provenance
+		ok   bool
+	}{
+		{"subject and author", Provenance{Commit: commit, CommitSubject: "fix: x", CommitAuthor: "alice"}, true},
+		{"subject without commit", Provenance{CommitSubject: "fix: x"}, false},
+		{"author without commit", Provenance{CommitAuthor: "alice"}, false},
+		{"two-line subject", Provenance{Commit: commit, CommitSubject: "fix\nmore"}, false},
+		{"over-long author", Provenance{Commit: commit, CommitAuthor: strings.Repeat("a", MaxCommitAuthorBytes+1)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.p.Validate(); (err == nil) != tc.ok {
+				t.Fatalf("Validate() = %v, want ok=%v", err, tc.ok)
+			}
+		})
+	}
+}

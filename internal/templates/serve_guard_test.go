@@ -475,3 +475,42 @@ func assignedFromCall(file *ast.File, name, callee string) bool {
 	})
 	return found
 }
+
+// TestServeTemplate_StreamingRPCsAreBoundToTheDrain pins the #773 fix into
+// every scaffolded server: a server-streaming or bidi RPC never finishes on
+// its own, so a chain without serverkit.StreamDrainInterceptor leaves each
+// open stream to hold the shutdown for the whole SHUTDOWN_TIMEOUT and then be
+// cut without a status. The interceptor must be an Extra of the chain the
+// handler options are built from — not merely mentioned in the file.
+func TestServeTemplate_StreamingRPCsAreBoundToTheDrain(t *testing.T) {
+	for name, fields := range serveRenderCases() {
+		t.Run(name, func(t *testing.T) {
+			file := renderServe(t, fields)
+			bound := false
+			ast.Inspect(file, func(n ast.Node) bool {
+				assign, ok := n.(*ast.AssignStmt)
+				if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+					return true
+				}
+				lhs, ok := assign.Lhs[0].(*ast.SelectorExpr)
+				if !ok || lhs.Sel.Name != "Extras" {
+					return true
+				}
+				call, ok := assign.Rhs[0].(*ast.CallExpr)
+				if !ok || calleeName(call.Fun) != "append" {
+					return true
+				}
+				for _, arg := range call.Args[1:] {
+					if inner, isCall := arg.(*ast.CallExpr); isCall && isSelector(inner.Fun, "serverkit", "StreamDrainInterceptor") {
+						bound = true
+					}
+				}
+				return true
+			})
+			if !bound {
+				t.Error("rendered serve.go never appends serverkit.StreamDrainInterceptor() to the chain's Extras — " +
+					"every open server stream would hold the shutdown for the whole budget and be cut without a status")
+			}
+		})
+	}
+}

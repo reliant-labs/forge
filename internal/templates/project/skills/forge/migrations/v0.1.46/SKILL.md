@@ -1,8 +1,8 @@
 ---
 name: v0.1.46
-description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args. (4) A bundle now seals the env's `observability_policy` (behavior change: the bundle digest of an env that opts out of, or into, any observability category changes on its next build). (5) The same-origin dev API proxy: `<basePath>/_api` on the dev server, so a Next.js or Vite frontend works when its dev server is opened through a Reliant workspace preview URL, a tunnel or a LAN IP. Use when deploy/kcl declares `forge.Observability` with `enabled = False`, a disabled signal or an opt-in, and a bundle of that env is already recorded, or when a frontend's `next.config.ts` / `vite.config.ts` has no `FORGE_DEV_API_PROXY`. (6) A web frontend's test toolchain moves together to vitest 5, vite 8 and `@vitejs/plugin-react` 6, with `engines.node >=22.12`. Use when a Next.js or Vite SPA frontend's package.json pins vitest ^3 or ^4 or `@vitejs/plugin-react` ^4 or ^5, or `tsc --noEmit` fails vitest.config.ts / vite.config.ts with TS2769 "Property 'rolldownVersion' is missing", or `npm audit` reports `tinypool`. (7) API keys: the owned APIKeyValidator seam is installed after OpenInfra on the shared DB pool; middleware reads X-API-Key.
+description: Upgrade a project to forge v0.1.46. One section per change — (1) host-wide heavy slots: `forge slot run` / `forge slot status` (pkg/hostslot) queue heavy work machine-wide, `forge generate` and `forge lint` take a slot on their own, and the scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix; (2) `forge ci gate` runs checks concurrently (after / mutates_tree / heavy), caches PASS verdicts by tree hash, and unit-tests only the affected packages on a branch — with a wider ci.gate.extra_checks schema (lane, group, after, heavy, mutates_tree, cache, probe, skip_exit_code, env, replaces) for moving a hand-written gate script onto it. Use when Taskfile.yml has a `test` task but no `SLOT:` var, or when several agents or worktrees share one machine and builds and test runs slow each other down. (3) `forge.flux_chart()` is hardened and sized by default (behavior change: per-namespace controller RBAC replaces the chart's cluster-wide Secret read and impersonate-any-ServiceAccount grants, NetworkPolicies narrowed, concurrency and resources raised, a PriorityClass, Pod Security restricted on flux-system) and gains `rbac`, `placement`, `scrape_namespaces`. Use also when deploy/kcl declares `forge.flux_chart(`, or a chart override re-declares Flux's ClusterRoles, NetworkPolicies or controller args. (4) A bundle now seals the env's `observability_policy` (behavior change: the bundle digest of an env that opts out of, or into, any observability category changes on its next build). (5) The same-origin dev API proxy: `<basePath>/_api` on the dev server, so a Next.js or Vite frontend works when its dev server is opened through a Reliant workspace preview URL, a tunnel or a LAN IP. Use when deploy/kcl declares `forge.Observability` with `enabled = False`, a disabled signal or an opt-in, and a bundle of that env is already recorded, or when a frontend's `next.config.ts` / `vite.config.ts` has no `FORGE_DEV_API_PROXY`. (6) A web frontend's test toolchain moves together to vitest 5, vite 8 and `@vitejs/plugin-react` 6, with `engines.node >=22.12`. Use when a Next.js or Vite SPA frontend's package.json pins vitest ^3 or ^4 or `@vitejs/plugin-react` ^4 or ^5, or `tsc --noEmit` fails vitest.config.ts / vite.config.ts with TS2769 "Property 'rolldownVersion' is missing", or `npm audit` reports `tinypool`. (7) API keys: the owned APIKeyValidator seam is installed after OpenInfra on the shared DB pool; middleware reads X-API-Key. (8) Streaming RPCs end inside the shutdown budget: the owned serve.go adds `serverkit.StreamDrainInterceptor()` to the interceptor chain. Use when cmd/<bin>/cmd/serve.go builds `observe.Chain` without `StreamDrainInterceptor`.
 version: v0.1.46
-detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k ) || grep -qsE 'forge\.Observability' deploy/kcl/*/*.k || ( for f in frontends/*/next.config.ts frontends/*/vite.config.ts; do test -f "$f" && ! grep -qs FORGE_DEV_API_PROXY "$f" && exit 0; done; exit 1 ) || grep -qsE '"vitest": "[~^]?[34]\.|"@vitejs/plugin-react": "[~^]?[45]\.' frontends/*/package.json || grep -qsF 'authDeps.Validate = authValidate' cmd/*/cmd/serve.go || grep -qsF 'func SetupAuth(cfg *config.Config) (func(token string)' internal/app/auth.go || grep -qsF idp-provision deploy/kcl/workloads.k deploy/kcl/dev/main.k || test -f deploy/kcl/dev/idp_identity_gen.k
+detection: ( test -f Taskfile.yml && grep -qs '^  test:' Taskfile.yml && ! grep -qs 'forge slot run' Taskfile.yml ) || ( grep -qsE 'forge\.flux_chart\(|flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k ) || grep -qsE 'forge\.Observability' deploy/kcl/*/*.k || ( for f in frontends/*/next.config.ts frontends/*/vite.config.ts; do test -f "$f" && ! grep -qs FORGE_DEV_API_PROXY "$f" && exit 0; done; exit 1 ) || grep -qsE '"vitest": "[~^]?[34]\.|"@vitejs/plugin-react": "[~^]?[45]\.' frontends/*/package.json || grep -qsF 'authDeps.Validate = authValidate' cmd/*/cmd/serve.go || grep -qsF 'func SetupAuth(cfg *config.Config) (func(token string)' internal/app/auth.go || grep -qsF idp-provision deploy/kcl/workloads.k deploy/kcl/dev/main.k || test -f deploy/kcl/dev/idp_identity_gen.k || ( grep -qsF 'observe.Chain(' cmd/*/cmd/serve.go && ! grep -qsF 'StreamDrainInterceptor' cmd/*/cmd/serve.go )
 ---
 
 # Upgrading to v0.1.46
@@ -238,3 +238,41 @@ upgrading untouched middleware alone can break that old assignment. Validators
 returning `(nil, nil)` now fail closed. Load
 `forge skill load migrations/v0.1.46/api-keys` for every edit and verification
 step before upgrading this wiring.
+
+## 8. Streaming RPCs end inside the shutdown budget
+
+Use when `cmd/<bin>/cmd/serve.go` builds `observe.Chain` and never mentions `StreamDrainInterceptor`.
+
+### What changed
+
+`http.Server.Shutdown` waits for every active request, and a server-streaming
+or bidi RPC never finishes on its own. So every rollout of a server with an
+open stream waited out the whole `SHUTDOWN_TIMEOUT`, logged `server shutdown
+error: context deadline exceeded` at ERROR from every replica, and exited
+cutting the stream without a status. serverkit's listener now ends its
+long-lived streams inside the budget (`forge skill load services/shutdown`).
+Plain-HTTP routes opt in with `serverkit.LongLived(h)`; Connect streams are
+bound by an interceptor, which has to be in the chain your serve.go owns.
+
+### Steps
+
+1. In `cmd/<bin>/cmd/serve.go`, before the protovalidate interceptor is
+   appended to `chainDeps.Extras`, add:
+
+   ```go
+   chainDeps.Extras = append(chainDeps.Extras, serverkit.StreamDrainInterceptor())
+   ```
+
+   A drained stream then ends OK with the `x-forge-drained: true` trailer, and
+   the client reopens it against a live replica.
+2. A peer that should redial on Unavailable instead (a daemon on a bidi
+   stream): list its procedure or service in `skCfg.RedialOnDrain` in
+   `serverkitConfig`, e.g. `skCfg.RedialOnDrain = []string{daemonv1connect.DaemonServiceName}`.
+3. A plain-HTTP stream (SSE, websocket, long poll) mounted on the mux: wrap its
+   handler in `serverkit.LongLived(...)`.
+
+### Verify
+
+Open a stream against a running server and send it SIGTERM: the stream ends
+(OK, trailer `x-forge-drained: true`) right after `PRE_STOP_DELAY`, and the log
+has no `server shutdown error`.

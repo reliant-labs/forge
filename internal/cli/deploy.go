@@ -673,7 +673,18 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if err != nil {
 		return err
 	}
+	isSnapshot := false
 	if p.version != "" {
+		r, err := ledger.Releases.Get(ctx, p.version)
+		if err != nil {
+			return err
+		}
+		isSnapshot = r != nil && len(r.SnapshotIntents) > 0
+	}
+	if isSnapshot && (len(f.targets) > 0 || f.frontendsOnly) {
+		return fmt.Errorf("sealed snapshot is a complete desired decision; --target repair cannot promote it")
+	}
+	if p.version != "" && !isSnapshot {
 		// Before the bundle is recorded: a release that cannot run on the
 		// platform's nodes must not cause any registry write, --plan-only included.
 		if err := checkReleaseHostedPlatforms(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger.Releases); err != nil {
@@ -686,7 +697,14 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if p.liveDiff && p.version != "" {
 		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
 	}
+	// What a scoped deploy will record as moved (D5), resolved before the
+	// write so the promotion names it — see deploy_scope_record.go.
+	scope, err := deployScopeTargets(ctx, projectDir, envName, f.targets, f.frontendsOnly)
+	if err != nil {
+		return err
+	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
+		Targets:       scope,
 		Ledger:        ledger,
 		Capacity:      capacity,
 		DryRun:        p.plan,

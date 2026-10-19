@@ -43,6 +43,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -274,7 +275,15 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 	if target.Hosted {
 		return readHostedEnvRecords(ctx, env, entities, now)
 	}
-	return readMachineEnvRecords(env, projectDir, target, now)
+	out, err := readMachineEnvRecords(env, projectDir, target, now)
+	if target.Report {
+		facts := newOSProcFacts()
+		reconcileLocalPresence(&out, projectDir, env, facts.pidList(), facts)
+		if running, composeErr := ownedComposeRunning(ctx, projectDir, env); composeErr == nil && running {
+			markLocalStackRunning(&out, projectDir)
+		}
+	}
+	return out, err
 }
 
 // readMachineEnvRecords reads the file ledger: provenance and sessions.
@@ -323,6 +332,11 @@ func readMachineEnvRecords(env, projectDir string, target sessionTarget, now tim
 	}
 	if target.Report {
 		for _, s := range doc.Sessions {
+			// The ledger is project-wide, but this command describes THIS
+			// checkout/env. A sibling worktree's heartbeat is not ours.
+			if s.Session.Env != env || s.Session.Worktree.Key != devstack.Worktree(projectDir) || s.Session.Worktree.Host != release.HostID() {
+				continue
+			}
 			out.Sessions = append(out.Sessions, sessionOf(s.Session, now))
 		}
 	}

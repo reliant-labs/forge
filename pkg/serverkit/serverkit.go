@@ -24,7 +24,7 @@ type Server struct {
 	// applied via connect.HandlerOption at mount time), plus any
 	// REST-transcoder swap already resolved by the caller, plus any
 	// /metrics handle the caller mounted. serverkit wraps it with its
-	// OWN edge (CORS/security/request-id/h2c from Config + the factory
+	// OWN edge (CORS/security/request-id from Config + the factory
 	// fields below) and routes /healthz + /readyz to its own probes
 	// IN FRONT of that edge, but never re-mounts services. Required.
 	//
@@ -68,9 +68,10 @@ type Server struct {
 	Workers   []Worker
 	Operators []Operator
 
-	// OnShutdown runs during graceful shutdown after workers stop and
-	// before the http.Server shuts down — the old Application.Shutdown
-	// plus (folded in by the caller) the OTel flush. Optional; nil is a
+	// OnShutdown is the caller's teardown (closing the serving DB pool,
+	// flushing app-owned buffers). Run calls it after in-flight HTTP has
+	// drained and workers and operators have stopped, so nothing it closes
+	// is still in use, and before the telemetry flush. Optional; nil is a
 	// no-op.
 	OnShutdown func(context.Context) error
 
@@ -470,6 +471,23 @@ type Config struct {
 	// share this budget). Zero falls back to 30s.
 	ShutdownTimeout time.Duration
 
+	// DrainReserve is the part of ShutdownTimeout kept back after the
+	// long-lived streams are ended (Streams.DrainReserve): a stream that
+	// claimed the soft phase (serverkit.Draining) may run until the deadline
+	// minus this, and the rest of the teardown — workers, OnShutdown, the
+	// telemetry flush — runs in what remains. Zero falls back to
+	// DefaultDrainReserve (5s); never more than half the budget.
+	DrainReserve time.Duration
+
+	// RedialOnDrain names the Connect procedures ("/pkg.v1.Svc/Method", the
+	// generated <Svc><Method>Procedure constant) or whole services
+	// ("pkg.v1.Svc", the generated <Svc>Name constant) whose streams the
+	// drain ends with Unavailable instead of OK — for a peer that redials on
+	// Unavailable, such as a daemon holding a bidi stream. Empty: every
+	// drained stream ends OK, with the x-forge-drained trailer. See
+	// StreamDrainInterceptor.
+	RedialOnDrain []string
+
 	// ReadMaxBytes caps the size of a single Connect request payload.
 	// Zero falls back to 4 MiB — but ONLY after Normalize has run. A
 	// zero reaching connect.WithReadMaxBytes means UNLIMITED, so any
@@ -486,6 +504,28 @@ type Config struct {
 	// inside a kubelet probe's timeoutSeconds no matter how many checks
 	// are registered. Zero falls back to 2s.
 	ReadinessTimeout time.Duration
+
+	// ReadHeaderTimeout bounds reading a request's headers (slowloris).
+	// Zero falls back to 10s; negative disables it.
+	ReadHeaderTimeout time.Duration
+
+	// ReadTimeout bounds reading a whole request, body included — over
+	// HTTP/2 it is a deadline on each stream's request body. So it caps how
+	// long a client-streaming or bidirectional Connect/gRPC call may keep
+	// sending: a server with long-lived client streams sets it negative.
+	// Zero falls back to 30s; negative disables it.
+	ReadTimeout time.Duration
+
+	// IdleTimeout is how long a keep-alive connection may sit idle (HTTP/1.1
+	// and HTTP/2). Zero falls back to 120s; negative disables it, which
+	// leaves idle connections open until the client closes them.
+	IdleTimeout time.Duration
+
+	// HTTP2MaxConcurrentStreams caps the concurrent streams one HTTP/2
+	// connection (TLS or h2c) may open. A client multiplexing many
+	// long-lived streams over one connection needs it raised. Zero leaves
+	// net/http's default (250 at the time of writing).
+	HTTP2MaxConcurrentStreams int
 
 	// WriteStallTimeout bounds how long ONE write to a response may stay
 	// blocked on a client that is not reading, after which the response is
@@ -525,16 +565,28 @@ type Config struct {
 // it can observe a zero.
 func (c *Config) Normalize() {
 	if c.PreStopDelay == 0 {
-		c.PreStopDelay = 5 * time.Second
+		c.PreStopDelay = defaultPreStopDelay
 	}
 	if c.ShutdownTimeout == 0 {
-		c.ShutdownTimeout = 30 * time.Second
+		c.ShutdownTimeout = defaultShutdownTimeout
+	}
+	if c.DrainReserve == 0 {
+		c.DrainReserve = DefaultDrainReserve
 	}
 	if c.ReadinessTimeout == 0 {
-		c.ReadinessTimeout = 2 * time.Second
+		c.ReadinessTimeout = defaultReadinessTimeout
 	}
 	if c.WriteStallTimeout == 0 {
 		c.WriteStallTimeout = DefaultWriteStallTimeout
+	}
+	if c.ReadHeaderTimeout == 0 {
+		c.ReadHeaderTimeout = 10 * time.Second
+	}
+	if c.ReadTimeout == 0 {
+		c.ReadTimeout = 30 * time.Second
+	}
+	if c.IdleTimeout == 0 {
+		c.IdleTimeout = 120 * time.Second
 	}
 	if c.ReadMaxBytes == 0 {
 		c.ReadMaxBytes = 4 << 20
@@ -549,6 +601,14 @@ func (c *Config) Normalize() {
 		c.DBConnectTimeout = DefaultDBConnectTimeout
 	}
 }
+
+// The drain and probe defaults Normalize applies, shared with Drainer so a
+// hand-built main and Run agree on the grace arithmetic.
+const (
+	defaultPreStopDelay     = 5 * time.Second
+	defaultShutdownTimeout  = 30 * time.Second
+	defaultReadinessTimeout = 2 * time.Second
+)
 
 // EnvDevelopment is the one Environment value that unlocks permissive edge
 // defaults. It is compared exactly: "dev", "Development" and "" are all

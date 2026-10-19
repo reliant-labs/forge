@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -24,10 +23,10 @@ import (
 //     keyed port resolves to the SAME deterministic base+block*100 under up
 //     and deploy. This is the up-vs-deploy port fix, now via the block
 //     registry instead of a per-instance port store.
-//   - kclplugin.UsePortStore — keeps the GENERAL resolve_port primitive
-//     stable across runs and identical under up/deploy via the historical
-//     .forge/ports-<env>.json store (resolve_port is still availability-
-//     stepping, so its store remains the source of truth).
+//   - kclplugin.UseStackPortStore — reserves GENERAL resolve_port ports in
+//     the primary checkout's shared host-ports registry, keyed by exact
+//     checkout + env + role. Writers serialize across processes; read-only
+//     renders reuse reservations without moving a running stack's ports.
 //
 // Dev IdP identity is NOT armed here. There is no render-time resolver for
 // it: `forge env up` converges the env's forge.ManagedIdentity against the
@@ -35,10 +34,9 @@ import (
 // env's secret store; the render lowers forge.IdentityRef to those store
 // keys. See the `auth/dev-loop` skill.
 //
-// It returns a restore func that reverts the port store to its pre-render
-// bytes — the up path calls it when its already-running guard rejects a
-// render, so a rejected attempt can't drift the stable resolve_port
-// assignments. Deploy ignores it (an applied render's values ARE the truth).
+// The returned restore is inert: a rejected render cannot erase another
+// process's concurrent reservations. Existing names never drift, and unused
+// first-launch reservations remain stable for the next retry.
 //
 // On the primary checkout with no worktree, option("worktree") is "" so a
 // KCL that keys on it composes the DEFAULT stack — historical names and
@@ -97,7 +95,7 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 		return devstack.ListStacks(projectDir)
 	})
 
-	storePath := filepath.Join(projectDir, ".forge", "ports-"+env+".json")
+	kclplugin.UseStackPortStore(projectDir, env, true)
 	lastActivatedRunsHere = true
 	if purpose == renderDeclaration {
 		if runsHere, probed := envRunsOnThisMachine(ctx, projectDir, env); !runsHere {
@@ -106,7 +104,6 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 			// allocate_port to protect: it resolves to base, deterministically,
 			// and neither port store is written.
 			kclplugin.UseBlockAllocator(nil)
-			kclplugin.UsePortStoreReadOnly(storePath)
 			fmt.Fprintf(os.Stderr, "[devstack] env %q declares no local cluster or host process: "+
 				"allocate_port resolves to its base port and no port block is claimed\n", env)
 			return opts, func() {}, probed
@@ -119,7 +116,6 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 		// holds; a key with none renders as a labelled preview. Neither the
 		// block registry nor the resolve_port store is written.
 		kclplugin.UseBlockAllocator(inspectBlockAllocator(projectDir, env, os.Stderr))
-		kclplugin.UsePortStoreReadOnly(storePath)
 		return opts, func() {}, nil
 	}
 
@@ -152,8 +148,8 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 	})
 
 	// Keep resolve_port stable + up==deploy via the per-env store.
-	restore := kclplugin.UsePortStore(storePath)
-	return opts, restore, nil
+	kclplugin.UseStackPortStore(projectDir, env, false)
+	return opts, func() {}, nil
 }
 
 // armMaterializer lets the KCL fp.write_file builtin write files for the rest

@@ -20,7 +20,9 @@
 // # What it does NOT do
 //
 // mountkit adds no interceptors of its own: RegisterService threads the
-// caller's opts straight through to Register.
+// caller's opts through to Register, followed by any options the caller
+// gave this one mount with WithHandlerOptions (a per-service interceptor on
+// top of the shared chain).
 //
 // mountkit does not build the HTTP middleware stack the optional
 // registrars consume — that stack (recovery / logging / audit, e.g.

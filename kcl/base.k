@@ -406,6 +406,23 @@ image_tag = lambda env: str -> str {
 #
 # Empty / unset (the local-registry e2e path and a plain `kcl run` with no
 # digest binding) returns `{}`, so every image stays on its tag — unchanged.
+# Complete per-workload/slot references. This map is never flattened by repo.
+workload_image_digests = lambda -> {str: {str: str}} {
+    _raw = option("forge_workload_image_digests") or ""
+    json.decode(_raw) if _raw else {}
+}
+
+# Explicit helper for main, sidecar, init, pre-pull and build-only consumers.
+# Immutable composition renders refuse ANY missing/mutable reference.
+workload_image_ref_for = lambda workload: str, slot: str, image: str, tag: str -> str {
+    _pins = workload_image_digests()
+    _slots = _pins[workload] if workload in _pins else {}
+    _ref = _slots[slot] if slot in _slots else ""
+    _immutable = option("forge_immutable_release") or False
+    assert not _immutable or (_ref and regex.match(_ref, r"^.+@sha256:[a-f0-9]{64}$")), "immutable release requires workload/slot pin ${workload}/${slot}"
+    _ref if _ref else img_lib.image_ref(image, tag, image_digests())
+}
+
 image_digests = lambda -> {str:str} {
     _raw = option("image_digests") or ""
     json.decode(_raw) if _raw else {}

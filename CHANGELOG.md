@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dev Zitadel moves to v4.19.5** (was v4.19.4) in host-infra, the compose
+  `idp` service and its per-platform checksums (taken from the release's
+  `checksums.txt` and re-computed from the downloaded archives). 4.0.0–4.19.4
+  carry three high advisories: GHSA-mchc-246r-6m76, GHSA-84fg-x5h4-w8xv and
+  GHSA-qj3q-235g-qr6w (Login V2 link-host poisoning, a forgeable Login V2
+  verification proof, and device-code approval without consent). The dev IdP
+  serves no Login V2 and registers no device-code app, but a dev pin that lags
+  the deployed one is drift. No config or steps changes are needed. Upgrade
+  notes worth knowing: list endpoints now enforce `DefaultQueryLimit` (100,
+  v2) and `MaxQueryLimit` (1000, v1 and v2), and a malformed
+  `x-zitadel-public-host` is now rejected instead of ignored.
+
 - **Adapter scaffolds use typed configuration from birth (#748).**
   `forge scaffold adapter <name>` (and `scaffold package --type adapter`)
   appends a `<Name>Config` message with a `<NAME>_BASE_URL` leaf to the config
@@ -119,6 +131,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   launcher resolver (secrets < env_file < runtime env), not container env:
   declare host-reachable published addresses; no container DNS/DSN rewriting.
 
+- **Release provenance a console can read without a repository (console v3
+  D4/D5).** A cut records its commit's subject and author on the provenance,
+  and the commits the release adds over the newest earlier release whose commit
+  it descends from (`Release.Commits`: newest 100, `truncated`, and a `total`
+  that is unknown in a shallow clone). Every bundle carries a value-free summary
+  line and per-section digests for each object (`BundleDoc.Objects`).
+  `release.CompareCommits`, `CompareArtifacts` and `CompareObjects` diff two
+  releases from those records; ranges compose through their bases, and fall back
+  to the releases cut in between on the same branch when a shallow cut broke the
+  chain. A scoped deploy (`--target`, `--frontends-only`) records the components
+  it moved as `Promotion.Targets`; `release.Decide` treats a promotion of the
+  bound release as a move when it moves something new. A scoped deploy of a new
+  release is refused where the env's control plane converges promotions (a hub
+  or hosted tiers), since it would move more than the scope. A control plane
+  must accept the new bundle fields (`objects`, `provenance.commit_subject`,
+  `provenance.commit_author`) before a forge that writes them records to it.
+
 - **`forge.ManagedIdentity`: an env's users, declared in KCL, with no app code
   change.** `Bundle.identity` names the roles, the applications that sign users
   in (derived from the env's `api` workload) and the consumers (every service
@@ -210,7 +239,80 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   advisories (account takeover, cross-org privilege escalation). No config or steps changes were
   needed, and the host-infra suite now downloads the real archive and checks it
   against the pinned checksum. 4.18.0 is broken upstream and was skipped.
-
+- **serverkit exposes the listener knobs a streaming server needs.** These
+  come from reliant's API listener (P3c G5), and each one used to be
+  hard-coded:
+  - `Config.ReadHeaderTimeout`, `Config.ReadTimeout` and `Config.IdleTimeout`.
+    Zero keeps the defaults (10s / 30s / 120s), and a negative value disables
+    the timeout. Over HTTP/2, `ReadTimeout` is a deadline on each stream's
+    request body, so the 30s default cuts a client-streaming or bidi call at
+    30 seconds. A server with long client streams sets it negative.
+  - `Config.HTTP2MaxConcurrentStreams` is the number of concurrent streams
+    one HTTP/2 connection may open, over TLS or h2c. Zero keeps net/http's
+    default of 250. reliant uses 1000.
+- **An open stream no longer holds a forge server's shutdown for the whole
+  budget.** `http.Server.Shutdown` waits for every active request, and a
+  long-lived one (an SSE response, a websocket, a server stream) never
+  finishes on its own: every rollout of an app with one open stream waited out
+  `SHUTDOWN_TIMEOUT`, logged `server shutdown error: context deadline exceeded`
+  at ERROR from every replica, and exited cutting the stream without a status
+  (reliant #773). `serverkit.Run`'s listener now owns a drain registry,
+  `serverkit.Streams`, and ends its streams inside the budget with cause
+  `svcerr.ErrServerDraining`, while unary requests drain as before. Mark a
+  plain-HTTP streaming route with `serverkit.LongLived(h)`; it ends as the
+  drain begins, after the pre-stop pause, so its client reconnects to a live
+  replica. A stream with something to say first asks for
+  `serverkit.Draining(ctx)` — a soft signal while its context is still live —
+  and runs until it returns or the deadline minus `Config.DrainReserve` (5s by
+  default). `svcerr.Draining(detail)` / `svcerr.ErrServerDraining` is the
+  drain's identity (wire code Unavailable), distinct from `ErrUnavailable`.
+  `/readyz` now answers `{"status":"draining"}` during shutdown.
+- **Connect streaming RPCs end cleanly when a server drains.**
+  `serverkit.StreamDrainInterceptor()`, now in the scaffolded interceptor
+  chain, binds every server-streaming and bidi handler to the listener's drain.
+  A drained stream ends **OK** with the trailer `x-forge-drained: true` — a
+  browser client treats Unavailable as a dead connection and may abandon every
+  read on it — or **Unavailable** for procedures and services listed in
+  `serverkit.Config.RedialOnDrain`, for peers that redial on it. Unary and
+  client-streaming RPCs are untouched. The scaffolded `serve.go` is yours, so
+  an existing project adds the one line itself: `forge project upgrade list`
+  offers v0.1.46 §8.
+- **A shutdown says where its time went.** `serverkit.Run` used to log
+  "server stopping" and then nothing until an error, so a rollout that used
+  its whole grace period could not be diagnosed from its own log. Each phase
+  now writes one `drain: …` INFO line with `phase` and `elapsed` — readiness
+  flipped, pre-stop over, listener drained (with `streams_ended`,
+  `streams_claimed`, `streams_hard_ended`, `hijacked_conns_closed`,
+  `streams_still_running`), workers stopped, operators stopped, teardown done,
+  complete — and records the new built-in histogram
+  `forge.server.drain.duration` by `phase`. `Streams.Report()` returns the
+  listener's counts for a main that drains its own listener.
+- **A websocket open at shutdown closes with a status and runs its cleanup.**
+  `http.Server.Shutdown` neither waits for nor closes a hijacked connection,
+  so the process exit dropped every open websocket — the browser saw a dead
+  TCP connection, and the handler's deferred cleanup (a terminal's PTY) never
+  ran. A connection hijacked under `serverkit.LongLived` is now registered
+  with the drain: `serverkit.AfterDrain(ctx, f)` runs f when the drain begins (a
+  websocket handler blocked in a read sends 1012 "service restart" and sets a
+  read deadline there), the drain waits for the handler, and a handler that
+  ignores the drain has its connection closed by the drain at the end of the
+  reserve (`Streams.CloseHijacked`), so its cleanup still runs.
+- **A rollout's drain no longer logs at ERROR.** `svcerr.ErrServerDraining`
+  (and every `svcerr.Draining(…)`) is now `error_class=canceled`, and every
+  logging layer — `LoggingInterceptor`, `LogMiddleware`, and so
+  `observe.Chain` with no options — treats it as an expected outcome: written
+  like a success, with `expected=true`, never at ERROR or to Sentry. A gateway
+  that ends each connected client's stream with `Unavailable("draining")` used
+  to page once per client per deploy; apps had to know to declare
+  `WithExpectedErrors` themselves. The error counter still counts it, under
+  `canceled`.
+- **The shutdown sequence is usable without `serverkit.Run`.** A main that runs
+  its own listener (a worker with a health port, a gateway) uses the same
+  pieces: `serverkit.Drainer` (readiness gate, pre-stop pause, shutdown budget,
+  `ReadinessHandler`), `serverkit.NewHTTPServer(cfg, handler, streams)` (the
+  listener Run builds, with its drain registry installed) and
+  `serverkit.DrainHTTP(ctx, srv, streams)` (the listener's drain). See
+  `forge skill load services/shutdown`.
 - **A direct apply prunes superseded one-shot Jobs, keeping the newest three of
   each.** A standalone Job is named by the hash of its spec, so every release that
   changes one leaves the previous Job behind, and since a reconciler made
@@ -229,6 +331,31 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   pins by requiring that the bundle never stamps a Job prune-exempt. The plan's
   `object_removed` detail for a Job now says the apply prunes it, where it said to
   "delete it by hand".
+- **Per-service Connect handler options: `mountkit.WithHandlerOptions`, and
+  a generated `app.MountOptions` value with one field per service.** Before
+  this, `serverkit.Server.HandlerOpts` was a single chain shared by every
+  service, and `mountkit.Option` could only change the HTTP stack. reliant
+  adds a machine-wake interceptor to two of its services (P3c G1), and the
+  only way to do that on generated mounts was to disown
+  `mounts_services_gen.go`.
+  - `mountkit.WithHandlerOptions(...connect.HandlerOption)` adds options to
+    one mount, after the shared chain. Connect runs interceptors in the order
+    they were added, so the shared chain (recovery, logging, auth) wraps the
+    per-mount interceptor. Where Connect lets the last option win (read and
+    send limits), the per-mount option overrides the shared one. It works
+    with `mountkit.RegisterService` and `serverkit.Server.Mount`. Each mount
+    gets a fresh slice, so one mount's options never leak into another's.
+  - `mountkit.Resolve(shared, defaultStack, opts...)` is the same rule for a
+    caller that registers through its own methods.
+  - `mounts_services_gen.go` generates `type MountOptions struct` with one
+    `[]mountkit.Option` field per service (the zero value is none). Its
+    methods are the mounts, and each is a `MountFunc` as a method value, so
+    owned serve code passes the options explicitly:
+    `Mount: app.MountOptions{Worktree: wake}.MountAll` for the server, or
+    `.MountWorktree` for one service's subcommand. Nothing is discovered by
+    name. `(*Components).Mount<Svc>` and `MountAll` are the same mounts with
+    no options, so the generated `server` and per-service commands compile
+    unchanged.
 
 - **`forge/pkg/identity` converges the content of a Zitadel instance to a
   declared spec.** One library for both halves of managed identity:
@@ -713,6 +840,18 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   run `npm install` and check that `npm ls vite` lists one version. See
   `migrations/v0.1.46` section 6.
 
+- **A pooler rollout no longer fails statements or the pool's close.**
+  On SIGTERM PgBouncer refuses every client that needs a server connection
+  with `FATAL: server shutting down` (08P01) — before forwarding the
+  statement — so every pooled client failed its next statement on each idle
+  connection to the draining pod, although the other replica was serving.
+  `serverkit.OpenDB`'s `pgx` pool now reports that refusal as
+  `driver.ErrBadConn`, and database/sql runs the statement again on another
+  connection; the error keeps PgBouncer's message if every replica refuses.
+  Closing a connection the pooler already dropped (`tls: failed to send
+  closeNotify alert (but connection was closed anyway): … broken pipe`) is no
+  longer reported, so `OnShutdown`'s `DB.Close` stops logging an ERROR on
+  every deploy. Other drivers open unchanged.
 - **The migrator's directive scan no longer dominates integration tests.**
   `migratekit` scans every embedded migration for `forge:backward-compatible`,
   `forge:breaks-rollback` and `forge:adopts` on every start, and ran three
@@ -826,6 +965,19 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   `checksums.WriteGeneratedFileOutcome`, which reports whether a write changed
   the file's bytes. `codegen.GenerateMock` returns a `MockResult` (wrote,
   changed, or why it was skipped) instead of a bool.
+- **serverkit drains h2c requests on shutdown.** serverkit served h2c through
+  x/net's `h2c.NewHandler`, and that handler hijacks each connection.
+  `http.Server.Shutdown` does not track a hijacked connection, so Run's
+  graceful drain returned in about 20ms while every h2c request was still
+  running. A rolling deploy behind an h2c load balancer therefore cut every
+  in-flight Connect and gRPC call. HTTP/1.1 drained correctly. The listener
+  now uses net/http's own h2c (`http.Server.Protocols` with
+  `UnencryptedHTTP2`; x/net deprecated `h2c.NewHandler` for this reason).
+  Shutdown now sends GOAWAY to an h2c connection and waits for its streams,
+  as it does over TLS. Native h2c accepts prior knowledge, which is what
+  Connect, gRPC and load balancers send. An HTTP/1.1 `Upgrade: h2c` request
+  is now served as HTTP/1.1.
+
 - **Flag synopses name a value, not a quoted example.** pflag treats the first
   back-quoted span of a flag's usage as the name of its value. So
   `forge db migration new --help` printed

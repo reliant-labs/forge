@@ -1,6 +1,6 @@
 // Package serverkit runs an already-composed forge server: HTTP/Connect
-// listener, healthz/readyz probes, the HTTP edge (CORS / security-headers
-// / request-id / h2c), worker supervisor, operator manager, and graceful
+// listener (HTTP/1.1, HTTP/2, h2c), healthz/readyz probes, the HTTP edge
+// (CORS / security-headers / request-id), worker supervisor, operator manager, and graceful
 // shutdown sequence.
 //
 // # Why a library
@@ -77,14 +77,38 @@
 //  2. A tiny top mux routes /healthz + /readyz to serverkit's own probes
 //     (IN FRONT of the edge wrap, so probes are never behind CORS/auth)
 //     and everything else to Server.Handler.
-//  3. CORS, security-headers, request-id, and h2c are layered over that
-//     top mux from Config gating + the Server factory fields.
+//  3. CORS, security-headers and request-id are layered over that top mux
+//     from Config gating + the Server factory fields. The listener speaks
+//     HTTP/1.1, HTTP/2 over TLS and h2c (net/http's own, so its streams
+//     drain on shutdown).
 //  4. Listener binds, readiness flips true.
 //  5. Workers start; the operator manager starts when len(Operators) > 0,
 //     which is the caller's decision and the only one.
-//  6. SIGINT/SIGTERM → readiness flips false → pre-stop sleep →
-//     workers stop → Server.OnShutdown → http.Server shuts down →
-//     pprof shuts down.
+//  6. SIGINT/SIGTERM → readiness flips to "draining" → pre-stop sleep →
+//     the listener drains (DrainHTTP: stop accepting, unary requests
+//     finish, long-lived streams end soft-then-hard) → workers stop →
+//     operators stop → Server.OnShutdown → pprof shuts down → telemetry
+//     flushes.
+//
+// # Long-lived streams
+//
+// A stream that never finishes on its own — a server-streaming RPC, an SSE
+// response, a websocket — would hold http.Server.Shutdown for the whole
+// ShutdownTimeout and then be cut without a status. The listener owns a
+// Streams registry (streams.go) that ends them inside the budget instead,
+// with cause svcerr.ErrServerDraining: at once when the drain begins, or —
+// for a stream that asked for serverkit.Draining(ctx) to say goodbye —
+// when it returns or at the deadline minus Config.DrainReserve. Mark an SSE
+// or websocket route with serverkit.LongLived; a websocket handler closes
+// with 1012 from serverkit.AfterDrain, and one that ignores the drain has its
+// hijacked connection closed for it, so its cleanup still runs.
+//
+// # Without Run
+//
+// Every piece of the sequence is exported for a main that runs its own
+// listener: Drainer (readiness gate, pre-stop, shutdown budget, /readyz),
+// NewHTTPServer (the listener, with its Streams installed), Streams,
+// LongLived and DrainHTTP (the listener's drain).
 //
 // # Worker shutdown contract
 //

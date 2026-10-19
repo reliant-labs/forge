@@ -46,6 +46,7 @@ func TestSentinel_MapsToConnectCode(t *testing.T) {
 		{"PlanLimit", svcerr.ErrPlanLimit, svcerr.PlanLimit, connect.CodeResourceExhausted},
 		{"InsufficientBalance", svcerr.ErrInsufficientBalance, svcerr.InsufficientBalance, connect.CodeFailedPrecondition},
 		{"Expired", svcerr.ErrExpired, svcerr.Expired, connect.CodeFailedPrecondition},
+		{"Draining", svcerr.ErrServerDraining, svcerr.Draining, connect.CodeUnavailable},
 	}
 
 	for _, tc := range cases {
@@ -390,5 +391,36 @@ func TestWithReason_NilAndEmpty(t *testing.T) {
 	ce := svcerr.ToConnect(got)
 	if v := ce.Meta().Get(svcerr.ReasonHeader); v != "" {
 		t.Fatalf("empty-code path set %s = %q, want empty", svcerr.ReasonHeader, v)
+	}
+}
+
+// TestDraining_IsItsOwnIdentity pins what lets a drain be told apart from an
+// outage: a transport's drain in its own words still matches
+// ErrServerDraining through any wrapping, reads Unavailable with exactly its
+// detail on the wire, and is NOT the generic ErrUnavailable — that one is a
+// dependency down, and the two must not be confused by anything that decides
+// how loud an error is.
+func TestDraining_IsItsOwnIdentity(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("daemon stream ended: %w", svcerr.Draining("gateway draining: reconnect"))
+	if !svcerr.IsServerDraining(err) {
+		t.Fatal("a wrapped Draining error must match ErrServerDraining")
+	}
+	if svcerr.IsUnavailable(err) {
+		t.Fatal("a drain is not the generic Unavailable sentinel")
+	}
+	ce := svcerr.ToConnect(err)
+	if ce.Code() != connect.CodeUnavailable {
+		t.Fatalf("code = %v, want Unavailable (the code a client retries on)", ce.Code())
+	}
+	if ce.Message() != "gateway draining: reconnect" {
+		t.Fatalf("wire message = %q, want the detail alone", ce.Message())
+	}
+	if !svcerr.IsServerDraining(ce) {
+		t.Fatal("the Connect error the client gets must still carry the drain identity server-side")
+	}
+	if svcerr.IsServerDraining(errors.New(svcerr.ErrServerDraining.Error())) {
+		t.Fatal("matching is by identity, never by message")
 	}
 }

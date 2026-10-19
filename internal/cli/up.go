@@ -437,7 +437,7 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		// The compose rows (HyperDX, when observability is on) are added
 		// for display only: the runtime checks below resolve their targets
 		// from the host rows, and a container is not a forge-owned process.
-		compose := composeRows(ctx, entities, read.projectDir, nil, composePublishersFn)
+		compose := composeRows(ctx, entities, read.projectDir, env, nil, composePublishersFn)
 		probeRowsListening(compose, portInUse)
 		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, nil, nil)
 	}
@@ -544,9 +544,11 @@ Everything else is stopped as usual, and the command still succeeds. The
 per-environment form also leaves that environment's host infrastructure up,
 because the server it backs is still running. To stop such a stack, run the
 command from a shell outside it.
-Docker Compose containers, Kubernetes workloads/clusters, and Docker Desktop
-are not stopped by this command. The per-environment form also stops declared
-host infrastructure servers while preserving their data.
+The per-environment form removes only its recorded, ownership-verified Docker
+Compose containers, preserving all volumes. Shared compose infrastructure is
+left running. Kubernetes workloads/clusters and Docker Desktop are not stopped.
+The per-environment form also stops declared host infrastructure servers while
+preserving their data.
 
 This command never touches a HOSTED environment (one the control plane runs):
 suspend/resume it with ` + "`forge env stop`" + ` / ` + "`forge env start`" + `, tear it down with
@@ -1946,7 +1948,7 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 // exit code used to keep.
 func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary) {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
-	compose := composeRows(context.Background(), e, projectDirForKCL(), targets, composePublishersFn)
+	compose := composeRows(context.Background(), e, projectDirForKCL(), env, targets, composePublishersFn)
 	probeRowsListening(compose, portInUse)
 	rows = append(rows, compose...)
 	if len(rows) == 0 && cluster == nil {
@@ -3813,8 +3815,10 @@ func runUpStop(env string) error {
 	// Its DATA survives; this stops the server, it does not reset the
 	// database. All declared servers are attempted, and a failure is returned
 	// rather than reporting a successful empty teardown.
+	activateDevStack(context.Background(), projectDir, env, renderToLaunch, inspectBlocks)
+	composeErr := (deploytarget.ComposeProvider{ProjectDir: projectDir}).StopOwned(context.Background(), env)
 	infraStopped, err := stopHostInfra(env)
-	return reportUpStop(env, projectDir, res, infraStopped, err)
+	return reportUpStop(env, projectDir, res, infraStopped, errors.Join(err, composeErr))
 }
 
 func reportUpStop(env, projectDir string, res stackStop, infraStopped int, infraErr error) error {
@@ -3831,7 +3835,7 @@ func reportUpStop(env, projectDir string, res stackStop, infraStopped int, infra
 	if infraStopped > 0 {
 		fmt.Printf("[down] stopped %d host infrastructure server(s) for env=%s (data preserved).\n", infraStopped, env)
 	}
-	fmt.Println("[down] Docker containers, Kubernetes workloads/clusters, and Docker Desktop were not stopped.")
+	fmt.Println("[down] Only recorded owned Compose containers were selected; volumes and shared containers preserved. Kubernetes workloads/clusters and Docker Desktop were not stopped.")
 	if infraErr != nil {
 		return fmt.Errorf("environment shutdown incomplete: host infrastructure: %w", infraErr)
 	}

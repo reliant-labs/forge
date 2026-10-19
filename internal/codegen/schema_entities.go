@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -64,23 +65,15 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 // itself, with the schema already introspected. Split out so the join's
 // rules can be tested without a shadow database.
 func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []EntityDef {
-	tableByName := make(map[string]schemadef.Table, len(tables))
-	for _, t := range tables {
-		// `forge:no-entity` makes the table plain schema on both sides:
-		// no store, and no CRUD wiring over a store that does not exist.
-		if t.NoEntity() {
-			continue
-		}
-		tableByName[t.Name] = t
-	}
+	idx := indexEntityTables(tables)
 
 	seen := map[string]bool{}
 	var entities []EntityDef
 	for _, svc := range services {
 		for _, m := range svc.Methods {
-			// A `// forge:custom` rpc claims no entity: when every
-			// CRUD-named rpc of a table carries it, the table stays plain
-			// schema — no ORM struct, page or seed root.
+			// A `// forge:custom` rpc claims no CRUD entity: when every
+			// CRUD-named rpc of a table carries it, the table gets no CRUD
+			// wiring, page or seed root (its store is BuildORMEntities').
 			op, name := CRUDShape(m)
 			if op == "" {
 				continue
@@ -92,7 +85,7 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 			if seen[key] {
 				continue
 			}
-			table, ok := tableByName[naming.Pluralize(naming.ToSnakeCase(name))]
+			table, ok := idx.lookup(name)
 			if !ok {
 				continue
 			}
@@ -192,7 +185,7 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 				notes = append(notes, fmt.Sprintf("%s has no primary key — no entity is projected; query it via db.Bun().", t.Name))
 				continue
 			}
-			e = buildEntityDef(TableEntityName(t.Name), t, ServiceDef{})
+			e = buildEntityDef(TableEntityName(t), t, ServiceDef{})
 		}
 		key := strings.ToLower(e.Name)
 		if prev, dup := owner[key]; dup {
@@ -214,8 +207,131 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 // ProviderBackoff). Spelled like a wire message on purpose: the day a
 // service adds `Get<E>` over the table, the CRUD join names the entity
 // after that message, and the two spellings must already agree.
-func TableEntityName(table string) string {
-	return naming.GoCamelCase(inflection.Singular(table))
+//
+// A `forge:entity-name=<Name>` declaration in the table's COMMENT wins
+// (schemadef.TableMarkerEntityName): it is how a table whose name derives
+// to the wrong thing says what it holds.
+func TableEntityName(t schemadef.Table) string {
+	if declared := t.DeclaredEntityName(); declared != "" {
+		return declared
+	}
+	return naming.GoCamelCase(inflection.Singular(t.Name))
+}
+
+// entityTables resolves a CRUD rpc's entity name to the table behind it.
+type entityTables struct {
+	byTable map[string]schemadef.Table
+	byName  map[string]schemadef.Table // lower-cased TableEntityName → table
+}
+
+// indexEntityTables indexes every table that can be an entity — all but
+// `forge:no-entity` ones, which are plain schema on both sides: no store,
+// and no CRUD wiring over a store that does not exist.
+func indexEntityTables(tables []schemadef.Table) entityTables {
+	idx := entityTables{byTable: map[string]schemadef.Table{}, byName: map[string]schemadef.Table{}}
+	sorted := append([]schemadef.Table(nil), tables...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	for _, t := range sorted {
+		if t.NoEntity() {
+			continue
+		}
+		idx.byTable[t.Name] = t
+		key := strings.ToLower(TableEntityName(t))
+		if _, dup := idx.byName[key]; !dup || t.DeclaredEntityName() != "" {
+			idx.byName[key] = t
+		}
+	}
+	return idx
+}
+
+// lookup finds the table an entity name means. The table's own entity name
+// decides first — a `forge:entity-name` declaration, else the singular of
+// the table, which is what matches a singular-named table such as
+// `daemon_attachment` to DaemonAttachment. The conventional plural and the
+// literal singular of the name follow, for an entity whose spelling differs
+// from its table's derivation only by initialism case (`APIKey` over
+// `api_keys`).
+func (idx entityTables) lookup(entity string) (schemadef.Table, bool) {
+	if t, ok := idx.byName[strings.ToLower(entity)]; ok {
+		return t, true
+	}
+	for _, cand := range EntityTableCandidates(entity) {
+		if t, ok := idx.byTable[cand]; ok {
+			return t, true
+		}
+	}
+	return schemadef.Table{}, false
+}
+
+// EntityTableCandidates are the table names an entity name maps to by
+// convention, in order: the plural (`Bookmark` → `bookmarks`, what forge
+// births) and the singular (`daemon_attachment`). A consumer that holds
+// table names but not the catalog — the seed scope, the ownership audit —
+// tries these; the join itself also honors `forge:entity-name`.
+func EntityTableCandidates(entity string) []string {
+	snake := naming.ToSnakeCase(entity)
+	plural := naming.Pluralize(snake)
+	if plural == snake {
+		return []string{snake}
+	}
+	return []string{plural, snake}
+}
+
+// UnmatchedCRUDRPC is a CRUD-named rpc that names a wire message but no
+// table: forge would stub it, and nothing in the tree would say why.
+type UnmatchedCRUDRPC struct {
+	Service, RPC, Entity string
+	Looked               []string // the table names it looked for
+}
+
+// UnmatchedCRUDRPCs lists every unary, unmarked CRUD-named rpc on a managed
+// service whose entity has a wire message but matches no table.
+//
+// It used to be silence: the rpc fell through to a pb-through stub and
+// served Unimplemented, which is how six of reliant's `Get<E>` rpcs over
+// singular-named tables (`daemon_attachment`, `provider_backoff`) became
+// stubs nobody asked for. An rpc whose entity has no wire message is not
+// listed (the name alone is no evidence of an entity — see
+// declaresWireMessage), nor is one on a descriptor with no message
+// inventory, which cannot tell.
+func UnmatchedCRUDRPCs(tables []schemadef.Table, services []ServiceDef) []UnmatchedCRUDRPC {
+	idx := indexEntityTables(tables)
+	var out []UnmatchedCRUDRPC
+	for _, svc := range services {
+		if svc.Unmanaged || (len(svc.SchemaFiles) == 0 && len(svc.Schemas) == 0 && len(svc.Messages) == 0) {
+			continue
+		}
+		for _, m := range svc.Methods {
+			op, name := CRUDShape(m)
+			if op == "" {
+				continue
+			}
+			if op == "list" {
+				name = inflection.Singular(name)
+			}
+			if _, ok := idx.lookup(name); ok || !declaresWireMessage(svc, name) {
+				continue
+			}
+			out = append(out, UnmatchedCRUDRPC{Service: svc.Name, RPC: m.Name, Entity: name, Looked: EntityTableCandidates(name)})
+		}
+	}
+	return out
+}
+
+// UnmatchedCRUDRPCsError renders UnmatchedCRUDRPCs as one refusal, nil for
+// none.
+func UnmatchedCRUDRPCsError(unmatched []UnmatchedCRUDRPC) error {
+	if len(unmatched) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("CRUD-named rpcs whose entity has a wire message but no table — forge would stub them with nothing saying why:\n")
+	for _, u := range unmatched {
+		fmt.Fprintf(&b, "  - %s.%s: entity %s, no table %s\n", u.Service, u.RPC, u.Entity, strings.Join(u.Looked, " or "))
+	}
+	b.WriteString("Resolve each one: write the table's migration (or birth it with `forge scaffold`); if the table exists under another name, " +
+		"declare what it holds with `COMMENT ON TABLE <table> IS 'forge:entity-name=<Entity>'`; or, if the rpc is not CRUD, put `// forge:custom` above it.")
+	return errors.New(b.String())
 }
 
 // FrontendEntities is the subset of entities the frontend projections (CRUD

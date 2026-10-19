@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/shadowdb"
 )
 
 // ForgeDescriptor is the JSON structure written by protoc-gen-forge --mode=descriptor.
@@ -275,6 +276,21 @@ func ParseORMEntities(projectDir string) ([]EntityDef, error) {
 		services = ManagedServices(desc.Services)
 	}
 	return BuildORMEntities(projectDir, services)
+}
+
+// ParseUnmatchedCRUDRPCs lists the managed services' CRUD-named rpcs whose
+// entity has a wire message but no table (UnmatchedCRUDRPCs). Empty when the
+// descriptor or the migrations do not exist yet.
+func ParseUnmatchedCRUDRPCs(projectDir string) ([]UnmatchedCRUDRPC, error) {
+	desc, err := loadDescriptor(projectDir)
+	if err != nil || desc == nil {
+		return nil, err
+	}
+	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	if err != nil {
+		return nil, err
+	}
+	return UnmatchedCRUDRPCs(tables, ManagedServices(desc.Services)), nil
 }
 
 // ParseConfigProto reads config messages from the forge descriptor,

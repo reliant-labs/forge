@@ -110,6 +110,54 @@ it cannot show that:
 ⚠️  forge skew: reliant (built 2026-10-01 01:31) records no forge commit, and go.work bridges /src/forge, which changed after it was built (now 750833054b78) — generated code and library differ. Fix: rebuild reliant from that checkout, or unbridge: go work edit -dropuse=/src/forge
 ```
 
+## A forge that is not the project's hands the command over
+
+The forge on PATH is routinely not the forge a project pins: a Reliant
+workspace bundles one at image-build time, a laptop keeps whatever was last
+installed, and every project pins its own `forge_version`. forge's templates,
+KCL schemas and analyzers live inside the binary, so the wrong forge either
+rewrites a project with the wrong output or fails with an error that blames
+the project (`Cannot add member 'release_dependencies' to schema ...`).
+
+So forge does not refuse and print a recipe. It runs the right forge. Before a
+command that writes the project (`generate`, `scaffold`, `package new`,
+`component install`, `env new`, `project rescaffold`/`delete`/`migrate`, and
+the build/deploy commands) or renders its KCL (`env render|shape|config|diff|up`,
+`kcl`, `doctor`) runs under a forge other than the project's, it execs the
+project's forge with the same arguments, environment, stdio and exit status, and
+prints one line on stderr saying so:
+
+```
+forge: this forge is v0.1.45-…, but the project wants forge_version v0.1.46-… — running forge v0.1.46-… (just built) instead (--allow-version-skew, or FORGE_ALLOW_VERSION_SKEW=1, to run this one)
+```
+
+Which forge is "the project's", in order:
+
+1. **A linked checkout.** A project whose go.work `use`s a forge checkout or whose
+   go.mod directory-`replace`s it (the dev link) compiles against that source, so
+   the forge it runs is a build of that checkout, rebuilt only when HEAD or its
+   edits change. (If this binary already was built from it, nothing is done.)
+2. **`.tools/bin/forge`**, when it reports the pinned version (what `task tools`
+   and `scripts/install-tools.sh` install).
+3. **The pinned module version**, built with `go install
+github.com/reliant-labs/forge/cmd/forge@<forge_version>` into a
+   content-addressed cache, `<user cache dir>/forge/pinned/<version>/<os>-<arch>/`.
+   A pseudo-version names one commit, so an entry never goes stale; the build
+   happens once (about a minute), is renamed into place only when complete, and
+   the cache keeps the newest few versions.
+
+Read-only runs (`--dry-run`, `--check`, `lint`, `project audit`, `env list`,
+every inspection verb) stay on the forge you ran and only warn, as before.
+
+The explicit "run THIS forge" is `--allow-version-skew` or
+`FORGE_ALLOW_VERSION_SKEW=1`: no hand-off, and the old warn/refuse rules apply
+(a rewriting command under the wrong forge is refused with the exact
+`go run …@<pin>` line, which now also carries the reason the pinned forge could
+not be used, if that is why: offline, or a version nobody published). A
+delegated forge sets `FORGE_VERSION_DELEGATED=1` and never hands off again, so
+the two cannot loop. On Windows, which has no `exec`, the old process stays as
+the parent and relays the exit status.
+
 ## The compatibility gate
 
 `forge generate` checks, before writing anything, that the forge the project

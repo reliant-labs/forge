@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A forge that is not the project's pinned forge now hands the command to the
+  pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
+  bundles one) is routinely older than a project's `forge_version`, and
+  `generate`, `scaffold`, `component install` and friends refused with a
+  recipe, or a render failed with KCL schema errors (`release_dependencies`,
+  `ShellBuild.unit`) that blame the project; agents had to run `task tools` or
+  `go run …@<pin>` by hand. Now the command is exec'd under the right forge
+  with the same arguments, environment, stdio and exit status, and one line on
+  stderr says so. The pinned forge is the project's `.tools/bin/forge` when it
+  reports that version, else a one-time `go install` of the pinned module
+  version into a cache under `<user cache dir>/forge/pinned/` (a project linked
+  to a forge checkout by go.work `use` or a directory `replace` gets a build of
+  that checkout instead). The KCL-reading commands (`env render`, `env shape`, `env config`,
+  `env diff`, `env up`, `kcl`, `doctor`) are handed over too. Read-only runs stay local;
+  `--allow-version-skew` / `FORGE_ALLOW_VERSION_SKEW=1` runs this forge as
+  before; if the pinned forge cannot be had (offline, an unpublished version)
+  the old refusal returns, now carrying the reason. See `docs/versioning.md`.
 - **A StatefulSet's declared volume size can grow, and the deploy converges it.**
   `volumeClaimTemplates` are immutable, so raising a declared size (a
   `clickhouse_disk = "100Gi"` that was `"50Gi"`) used to fail every apply with

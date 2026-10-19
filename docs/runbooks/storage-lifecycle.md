@@ -21,7 +21,7 @@ anonymous ones only under the rules in
 | Cross-repo source cache (`<UserCacheDir>/forge/sources`)                                                 | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`)                                                                                      |
 | Temp scratch (`$TMPDIR`)                                                                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
 | Host images tagged for a dead local registry                                                             | Untag `localhost:<port>`, `registry.localhost:<port>` and `k3d-*:<port>` images when no running registry backs that alias and no container (running or stopped) uses the image                       |
-| Shared Go build cache (`go env GOCACHE`) and golangci-lint cache                                         | Remove entries unused for 48h (`go_cache_unused`), then oldest-first toward 60 GiB (`go_cache_gib`); never an entry touched in the last 2h; top-level files are never touched                        |
+| Shared Go build cache (`go env GOCACHE`) and golangci-lint cache                                         | Remove entries unused for 48h (`go_cache_unused`), then oldest-first toward 60 GiB (`go_cache_gib`) or 15% of the cache's volume (`go_cache_volume_percent`), whichever is smaller; never an entry touched in the last 2h; top-level files are never touched |
 | goimports/gopls module index (`<UserCacheDir>/goimports`)                                                | Keep the generation each `index-name-*` link names, anything touched in the last 24h; remove older generations                                                                                       |
 | Orphaned private Go caches (`.gocache-*`, `*-gocache`, `$WORKTREE/.gocache`, `/tmp/scratchpad/gocache*`) | Remove a recognised build/module cache idle 24h that no live process environment names and no process holds open; never the shared cache                                                             |
 | Worktrees                                                                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removed only by an explicit `forge storage gc --apply` under `worktree_reap` (see Worktrees)                        |
@@ -75,8 +75,13 @@ logs — goes through one per-pass governor:
   shared build cache 60%), so the temp sweep and source cache always have some.
   What is left is retained, and the next pass continues where this one stopped:
   a budget is reached over several passes, never in one burst. A capped layer is
-  recorded as cut off, which is not a failure. Raise the cap on a machine whose
-  caches grow faster than the hourly pass can trim.
+  recorded as cut off, which is not a failure. The exception is a Go cache over
+  its SIZE budget: it may unlink what the sample says it takes to get back under
+  the budget, beyond its share and without spending the cap the later layers
+  share. Under agent load the cache outgrows any fixed cap (one pass estimated
+  62 GiB against a 20 GiB budget and freed 6.1 GiB before stopping), so a cap
+  there means it never converges; pacing, back-off and the layer's time slice
+  still bound every one of those unlinks.
 - **Paced.** Unlinks are granted in batches of 200, and a batch may not finish
   faster than `delete_rate_per_sec` allows (default 1,000/s). Unlinks are
   serial across workers.

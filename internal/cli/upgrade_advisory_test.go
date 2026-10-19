@@ -185,7 +185,7 @@ func TestAdvisoryReport_PreFixCIConcurrencySurfaces(t *testing.T) {
 
 	withCwd(t, dir, func() {
 		_ = captureStdout(t, func() {
-			if err := runUpgrade(false, true, []string{rel}, ""); err != nil {
+			if err := runUpgrade(false, true, []string{rel}, rootForgeVersion(dir)); err != nil {
 				t.Fatalf("runUpgrade --force %s: %v", rel, err)
 			}
 		})
@@ -347,7 +347,7 @@ func TestRunUpgrade_AdoptsANamedScaffoldOnceFile(t *testing.T) {
 
 	withCwd(t, dir, func() {
 		_ = captureStdout(t, func() {
-			if err := runUpgrade(false, true, []string{adopted}, ""); err != nil {
+			if err := runUpgrade(false, true, []string{adopted}, rootForgeVersion(dir)); err != nil {
 				t.Fatalf("runUpgrade --force %s: %v", adopted, err)
 			}
 		})

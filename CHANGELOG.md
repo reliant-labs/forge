@@ -64,6 +64,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
+  Every query on the lease session (the heartbeat, each standby poll, the
+  connect) ran under a deadline of `HeartbeatInterval`, and a query that misses
+  its deadline makes pgx close the connection, so the server drops the session
+  and every advisory lock on it. A round trip longer than one heartbeat interval
+  (a CPU-starved process, a throttled pod, a busy database) therefore dropped
+  every lease the Locker held and forced a failover. It flaked
+  `TestManyLeasesOnOneLockerSurviveConcurrentPollingAndHeartbeats` on loaded CI
+  runners (`leader holds 0 of 20 leases`), and with control-plane-workers' 5s/5s
+  timing a 5s stall did the same to its ~15 leases. The new
+  `lease.Options.QueryTimeout` (default `DefaultQueryTimeout`, 10s) bounds each
+  query separately from how often the heartbeat runs. Overlap after a partition
+  is now bounded by `HeartbeatInterval + QueryTimeout`.
 - **A hosted bundle carries only the document fields its control plane
   decodes.** forge#850 added `provenance.commit_subject`/`commit_author` and the
   per-object `objects` summaries to the bundle document, and a control plane

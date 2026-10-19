@@ -37,9 +37,22 @@
 // are never leaders while the first holder's connection is alive. If the
 // holder's connection is lost the server drops the lock, a standby can take
 // it at once, and the old holder only learns of it at its next heartbeat. The
-// jobs run under a lease therefore see at most [Options.HeartbeatInterval] of
-// overlap after a partition, the same guarantee as a Kubernetes Lease, and
-// must stay correct (if inefficient) under that window.
+// jobs run under a lease therefore see at most [Options.HeartbeatInterval]
+// plus [Options.QueryTimeout] of overlap after a partition (the next check,
+// and the time it may take to give up on a silent network), the same kind of
+// guarantee as a Kubernetes Lease, and must stay correct (if inefficient)
+// under that window.
+//
+// # A slow reply is not a lost session
+//
+// Every query on the session runs under [Options.QueryTimeout], not the
+// heartbeat interval. A query that outlives its deadline cannot be abandoned
+// politely: the driver closes the connection, the server drops the session and
+// every lock on it, so a timeout does not merely report a lost lease, it
+// causes one. A deadline as short as the heartbeat interval turned local
+// scheduling delay (a CPU-starved process, a stalled pod, a slow round trip)
+// into dropped leases on a perfectly healthy session. How OFTEN to check and
+// how LONG to wait for an answer are separate questions with separate knobs.
 //
 // # Key space
 //
@@ -70,8 +83,15 @@ const (
 	DefaultRetryInterval = 5 * time.Second
 
 	// DefaultHeartbeatInterval is how often the holder re-checks that its
-	// session still owns its locks, and the bound on post-partition overlap.
+	// session still owns its locks.
 	DefaultHeartbeatInterval = 5 * time.Second
+
+	// DefaultQueryTimeout is how long one query on the lease session may take
+	// before the session is declared lost. It is deliberately generous: a
+	// query that times out closes the connection and drops every lease on it,
+	// so it must only fire on a network or server that has stopped answering,
+	// never on a slow reply.
+	DefaultQueryTimeout = 10 * time.Second
 )
 
 // ErrAlreadyRunning is returned by [Locker.Run] when this Locker is already
@@ -95,9 +115,16 @@ type Options struct {
 	// that start together do not poll in lockstep.
 	RetryInterval time.Duration
 	// HeartbeatInterval is the holder's session check interval (default
-	// [DefaultHeartbeatInterval]). A check that fails or times out within one
-	// interval loses every lease held on the session.
+	// [DefaultHeartbeatInterval]). A check that fails loses every lease held
+	// on the session.
 	HeartbeatInterval time.Duration
+	// QueryTimeout bounds every query on the session, the heartbeat's
+	// included (default [DefaultQueryTimeout]). It is independent of
+	// HeartbeatInterval: a short interval checks often, it does not demand a
+	// faster answer. A query that times out loses every lease on the session
+	// (see the package doc), so keep it well above the worst round trip a
+	// healthy database and a busy process can produce.
+	QueryTimeout time.Duration
 	// Logger receives acquire / lose / session events (default slog.Default()).
 	Logger *slog.Logger
 }
@@ -108,6 +135,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.HeartbeatInterval <= 0 {
 		o.HeartbeatInterval = DefaultHeartbeatInterval
+	}
+	if o.QueryTimeout <= 0 {
+		o.QueryTimeout = DefaultQueryTimeout
 	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
@@ -274,7 +304,7 @@ func (l *Locker) tryLock(ctx context.Context, name string, key int64) (*session,
 		return nil, false, err
 	}
 	var got bool
-	if err := sess.scan(ctx, l.opt.HeartbeatInterval, []any{&got}, `SELECT pg_try_advisory_lock($1)`, key); err != nil {
+	if err := sess.scan(ctx, []any{&got}, `SELECT pg_try_advisory_lock($1)`, key); err != nil {
 		if ctx.Err() == nil {
 			sess.fail(err)
 		}
@@ -294,7 +324,7 @@ func (l *Locker) release(sess *session, name string, key int64) {
 		return
 	}
 	var ok bool
-	if err := sess.scan(context.Background(), l.opt.HeartbeatInterval, []any{&ok}, `SELECT pg_advisory_unlock($1)`, key); err != nil || !ok {
+	if err := sess.scan(context.Background(), []any{&ok}, `SELECT pg_advisory_unlock($1)`, key); err != nil || !ok {
 		// A lock we cannot unlock must not outlive this call: drop the whole
 		// session so the server releases it.
 		sess.fail(fmt.Errorf("unlock %q: ok=%v err=%v", name, ok, err))
@@ -310,18 +340,20 @@ func (l *Locker) session(ctx context.Context) (*session, error) {
 	if l.sess != nil && !l.sess.isLost() {
 		return l.sess, nil
 	}
-	conn, err := l.db.Conn(ctx)
+	// The query timeout bounds the dial too: this runs under l.mu, and a
+	// database that stopped answering must not park Held and Close behind it.
+	qctx, qcancel := context.WithTimeout(ctx, l.opt.QueryTimeout)
+	defer qcancel()
+	conn, err := l.db.Conn(qctx)
 	if err != nil {
 		return nil, err
 	}
 	var pid int
-	qctx, qcancel := context.WithTimeout(ctx, l.opt.HeartbeatInterval)
-	defer qcancel()
 	if err := conn.QueryRowContext(qctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	s := &session{conn: conn, pid: pid, lost: make(chan struct{}), held: map[string]struct{}{}}
+	s := &session{conn: conn, pid: pid, timeout: l.opt.QueryTimeout, lost: make(chan struct{}), held: map[string]struct{}{}}
 	l.sess = s
 	go s.heartbeat(l.opt.HeartbeatInterval)
 	return s, nil
@@ -329,9 +361,10 @@ func (l *Locker) session(ctx context.Context) (*session, error) {
 
 // session is one dedicated connection and the leases riding on it.
 type session struct {
-	conn *sql.Conn
-	pid  int
-	lost chan struct{}
+	conn    *sql.Conn
+	pid     int
+	timeout time.Duration // per query: Options.QueryTimeout
+	lost    chan struct{}
 
 	// qmu serializes every query on conn. A *sql.Conn is one driver
 	// connection, and pgx refuses a second query while the first's result is
@@ -348,12 +381,13 @@ type session struct {
 }
 
 // scan runs one single-row query on the session and scans it into dest, under
-// qmu and a deadline, so a dead network cannot park a goroutine (and qmu) for
-// longer than one interval.
-func (s *session) scan(ctx context.Context, timeout time.Duration, dest []any, query string, args ...any) error {
+// qmu and the query timeout, so a dead network cannot park a goroutine (and
+// qmu) for longer than that. The deadline starts once qmu is held: waiting
+// behind the session's other queries is not the database being slow.
+func (s *session) scan(ctx context.Context, dest []any, query string, args ...any) error {
 	s.qmu.Lock()
 	defer s.qmu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	return s.conn.QueryRowContext(ctx, query, args...).Scan(dest...)
 }
@@ -426,7 +460,7 @@ func (s *session) heartbeat(interval time.Duration) {
 		case <-t.C:
 		}
 		var pid, n int
-		err := s.scan(context.Background(), interval, []any{&pid, &n},
+		err := s.scan(context.Background(), []any{&pid, &n},
 			`SELECT pg_backend_pid(),
 			        (SELECT count(*) FROM pg_locks
 			          WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted)`)

@@ -129,6 +129,7 @@ type bundleBlobs struct {
 	// Config is the bundle document blob the manifest's config descriptor
 	// names.
 	Manifest, Config []byte
+	ManifestsLayer   []byte
 }
 
 // bundleRecorder records a built bundle and reads one back. A bundle IS its

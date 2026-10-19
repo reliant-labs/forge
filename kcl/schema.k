@@ -2265,6 +2265,12 @@ schema Build:
     the produced artifact's basename (default: the service name)."""
     type: str
     output_name: str = ""
+    # Stable recipe name. It does not authorize reuse by itself: the builder
+    # emits release.BuildReceipt with actual effective sources/tools/inputs.
+    unit: str = ""
+    # JSON file consumed by the native planner/receipt helper. Paths relative
+    # to the project. Missing/dynamic inputs cannot authorize build reuse.
+    inputs_file: str = ""
 
 schema GoBuild(Build):
     """Build the service with `go build`. `cmd` is the build target
@@ -3008,6 +3014,8 @@ schema Frontend:
     """
     name: str
     type: str = "nextjs"
+    # Release compatibility cohorts: absent unknown, explicit {} independent.
+    release_dependencies?: {str: str}
     # WHERE it runs. Required by the time the env renders it (the Bundle
     # names every unbound frontend).
     runtime?: FrontendRuntime
@@ -4277,6 +4285,10 @@ schema Manifests:
     # Unset: `base`. Every object of the group is stamped with it.
     delivery_unit?: str
     objects: [any] = []
+    # Non-Deployment consumer declarations, serialized beside workload entities.
+    # Slot keys are exact container:NAME, init:NAME, input:NAME or build-only.
+    release_inputs: {str: str} = {}
+    release_dependencies?: {str: str}
 
     check:
         not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"

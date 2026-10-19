@@ -806,6 +806,14 @@ func ensureHostedReleaseBundle(ctx context.Context, projectDir, env, version str
 	if !ledger.Hosted || version == "" {
 		return nil
 	}
+	if r, err := ledger.Releases.Get(ctx, version); err != nil {
+		return err
+	} else if r != nil && len(r.SnapshotIntents) > 0 {
+		if rerecord {
+			return fmt.Errorf("sealed snapshot cannot be re-recorded from the current checkout")
+		}
+		return nil
+	}
 	// THE MACHINE LEDGER IS NOT EVIDENCE ABOUT A HOSTED ENV. A bundle row
 	// there says "this machine rendered one", usually at cut time under a
 	// different declaration (a direct-apply KCL, before the env declared its

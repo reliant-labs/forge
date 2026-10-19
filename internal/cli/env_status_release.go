@@ -300,7 +300,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	if !bound {
 		return reportUnboundEnv(declaredLifecycle(ctx, opts.Resolver, projectDir, envName), envName, opts.JSON, opts.Runtime, ledger, staleErr, records, offline)
 	}
-	if len(binding.Resolved) == 0 {
+	if len(binding.Resolved) == 0 && binding.Snapshot == nil {
 		// A binding with no resolved digests is a defective binding: it
 		// names a release but froze no artifacts, so it cannot be checked
 		// against anything. Reporting "0 drifted" would read as success.
@@ -336,7 +336,10 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		source                 string
 		queued                 *deployQueuedError
 	)
-	if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
+	if binding.Snapshot != nil {
+		source = "snapshot consumer-slot observation"
+		results = snapshotStatusImages(ctx, *binding.Snapshot, opts)
+	} else if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
 		// A HOSTED env: forge cannot read its cluster, so the control
 		// plane's observer is the witness (env_verify_hosted.go). The
 		// verdict below and the exit codes are the cluster path's own.

@@ -125,6 +125,21 @@ type promoteOptions struct {
 	Capacity *promotePlanCapacity
 }
 
+// preparePromoteFollow validates follow-through and keeps one JSON owner for
+// both promotion and apply output.
+func preparePromoteFollow(follow *promoteFollowOptions, jsonOut bool) error {
+	if follow == nil {
+		return nil
+	}
+	if err := validatePromoteFollow(*follow); err != nil {
+		return err
+	}
+	if jsonOut {
+		follow.jsonOut = true
+	}
+	return nil
+}
+
 // runPromote computes the change set and — unless --plan was passed — applies
 // it.
 //
@@ -149,18 +164,8 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if opts.Follow != nil {
-		if err := validatePromoteFollow(*opts.Follow); err != nil {
-			return err
-		}
-		// One --json for the whole command. The follow stage decides where
-		// its progress lines go from its own jsonOut, and a caller that set
-		// JSON here but left that false would put the apply's human output
-		// on the stdout the document owns. Every production caller states
-		// both; folding them here means none of them can state only one.
-		if opts.JSON {
-			opts.Follow.jsonOut = true
-		}
+	if err := preparePromoteFollow(opts.Follow, opts.JSON); err != nil {
+		return err
 	}
 	gates, err := resolvePromoteGates(opts.Gates)
 	if err != nil {
@@ -189,6 +194,9 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			"(the caller must pass promoteOptions.Ledger — see resolveReleaseLedger)", env)
 	}
 
+	if handled, err := dispatchSnapshotPromotion(ctx, env, version, ledger, opts); handled || err != nil {
+		return err
+	}
 	// A read, so it runs for --plan / --plan-only too: a release whose hosted
 	// images cannot run on the platform's nodes is refused before any plan
 	// is shown as approvable.

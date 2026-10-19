@@ -38,8 +38,11 @@ import (
 // code path for "cut a release", differing only in whether it builds first.
 
 func newEnvBuildCmd() *cobra.Command {
-	var opts buildOptions
+	opts := buildOptions{buildTarget: "all"}
 	var noBuild bool
+	var basePromotion string
+	var snapshotBootstrap bool
+	var selectors []string
 
 	cmd := &cobra.Command{
 		Use:   "build <environment>",
@@ -105,6 +108,20 @@ Examples:
 				return err
 			}
 			opts.env = args[0]
+			composing := basePromotion != "" || snapshotBootstrap
+			if len(selectors) > 0 {
+				opts.buildTarget = selectors[0]
+			}
+			if composing {
+				if noBuild {
+					return fmt.Errorf("snapshot composition cannot harvest --no-build state; use captured base and invocation outputs")
+				}
+				if err := prepareComposition(cmd.Context(), &opts, basePromotion, snapshotBootstrap, selectors); err != nil {
+					return err
+				}
+			} else if len(selectors) > 1 {
+				return fmt.Errorf("repeatable --target requires --base-promotion or --snapshot-bootstrap")
+			}
 			// The build feature gate applies to BUILDING. A --no-build cut
 			// records a release over digests an earlier build already
 			// produced, so it is not gated on `features.build` — gating it
@@ -155,12 +172,26 @@ Examples:
 			if noBuild {
 				return runEnvBuildCutOnly(cmd.Context(), opts)
 			}
+			if opts.planJSON {
+				if !opts.plan || opts.composition == nil {
+					return fmt.Errorf("--json requires snapshot composition --plan")
+				}
+				_, err := captureProcessStdout(func() error { return runBuild(cmd.Context(), opts) })
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(opts.composition.PlanDocument))
+				return nil
+			}
 			return runBuild(cmd.Context(), opts)
 		},
 	}
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
-	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd.")
+	cmd.Flags().BoolVar(&opts.planJSON, "json", false, "With --plan and snapshot composition: emit a machine-readable pending pre-build plan")
+	cmd.Flags().StringArrayVarP(&selectors, "target", "t", nil, "Build target; repeatable for snapshot composition (default all)")
+	cmd.Flags().StringVar(&basePromotion, "base-promotion", "", "Compose from this exact desired promotion (or resolve current once before builds)")
+	cmd.Flags().BoolVar(&snapshotBootstrap, "snapshot-bootstrap", false, "Build a complete sealed snapshot selecting all consumers; never use legacy state as a partial base")
 	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services (implied by --push and --release)")

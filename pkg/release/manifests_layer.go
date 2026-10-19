@@ -393,6 +393,8 @@ func dirInGrammar(segs []string) bool {
 		case 4:
 			return layerPhases[segs[3]]
 		}
+	case "forge":
+		return len(segs) == 1
 	case "observability":
 		return len(segs) == 1 || (len(segs) == 2 && segs[1] == "dashboards")
 	}
@@ -484,6 +486,12 @@ func (v *layerValidator) file(hdr *tar.Header, body io.Reader) bool {
 func (v *layerValidator) classifyFile(name string, segs []string) (place, bool) {
 	base := segs[len(segs)-1]
 	switch segs[0] {
+	case "forge":
+		if name != BundleFrontendDeclarationsPath {
+			v.fail(name, "only the dedicated frozen frontend declaration asset is permitted under forge/")
+			return place{}, false
+		}
+		return place{artifact: true}, true
 	case "observability":
 		isDash := len(segs) == 3 && segs[1] == "dashboards" && strings.HasSuffix(base, ".json") && base != ".json"
 		isSchema := len(segs) == 2 && base == "metrics-schema.json"

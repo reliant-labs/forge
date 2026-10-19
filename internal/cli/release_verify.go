@@ -267,8 +267,25 @@ const (
 // runs over the same ledger produce byte-identical output, which is what makes
 // the command diffable in CI.
 func verifyReleaseArtifacts(ctx context.Context, f httpFetcher, rel release.Release, concurrency int) []artifactVerification {
-	names := make([]string, 0, len(rel.Artifacts))
-	for name := range rel.Artifacts {
+	// Snapshot catalogs are content-addressed, so the verifier's work key must
+	// be the artifact ID, not repository (which may have two active digests).
+	artifacts := rel.Artifacts
+	if len(rel.Catalog) > 0 {
+		artifacts = map[string]release.Artifact{}
+		for id, a := range rel.Catalog {
+			converted := release.Artifact{Kind: a.Kind, Platforms: a.Platforms, URI: a.Location}
+			if a.Kind == release.KindOCI {
+				converted.Digests = map[string]string{"": a.Content}
+			} else if a.Kind == release.KindGit {
+				converted.Source = &release.Source{Repo: a.Location, Commit: a.Content}
+			} else {
+				converted.Integrity = a.Content
+			}
+			artifacts[string(id)] = converted
+		}
+	}
+	names := make([]string, 0, len(artifacts))
+	for name := range artifacts {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -286,7 +303,7 @@ func verifyReleaseArtifacts(ctx context.Context, f httpFetcher, rel release.Rele
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[idx] = verifyOneArtifact(ctx, f, artName, rel.Artifacts[artName])
+			results[idx] = verifyOneArtifact(ctx, f, artName, artifacts[artName])
 		}(i, name)
 	}
 	wg.Wait()
@@ -635,7 +652,11 @@ func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art rele
 	// needs no second field — but a ledger entry with no host is still
 	// unverifiable (a local/compose build that pushed nowhere), and says so
 	// rather than guessing Docker Hub and reporting a spurious failure.
-	host, repo := ociManifestCoordinates(name)
+	location := name
+	if art.URI != "" {
+		location = art.URI
+	}
+	host, repo := ociManifestCoordinates(location)
 	if host == "" {
 		res.Status = verifyUnverifiable
 		res.Detail = bareRepositoryDetail(name, digest)

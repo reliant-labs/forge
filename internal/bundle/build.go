@@ -101,6 +101,9 @@ const (
 
 // BuildInput is one env's render plus the facts that identify it.
 type BuildInput struct {
+	// Snapshot is a complete composition. Its recorded object bytes, never a
+	// new checkout render, are packaged verbatim and checked against the layer.
+	Snapshot *release.Snapshot
 	// Project and Env name the bundle. Both required: a bundle is one
 	// env's render, and a reader that could not tell which env it
 	// described would have an artifact it could not place.
@@ -177,7 +180,7 @@ func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
 		switch {
 		case clean != f.Path || strings.HasPrefix(clean, "/") || strings.Contains(clean, ".."):
 			return nil, fmt.Errorf("%w: observability path %q is not a clean relative path", release.ErrInvalid, f.Path)
-		case !strings.HasPrefix(clean, release.BundleObservabilityPrefix+"/"):
+		case clean != release.BundleFrontendDeclarationsPath && !strings.HasPrefix(clean, release.BundleObservabilityPrefix+"/"):
 			return nil, fmt.Errorf("%w: observability path %q is not under %s/", release.ErrInvalid, f.Path, release.BundleObservabilityPrefix)
 		case seen[clean]:
 			return nil, fmt.Errorf("%w: observability path %q appears twice", release.ErrInvalid, f.Path)
@@ -267,6 +270,11 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("%w: bundle created_at is required; Build never reads a clock", release.ErrInvalid)
 	}
 
+	var inputErr error
+	in, inputErr = snapshotBuildInput(in)
+	if inputErr != nil {
+		return Bundle{}, inputErr
+	}
 	// ONE parse, feeding both halves — see parse.go.
 	docs, err := parseStream(in.Shape.Manifests)
 	if err != nil {
@@ -308,6 +316,12 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 	shape := in.Shape.shapeWith(objects)
+	if in.Snapshot != nil {
+		shape, err = release.ProjectSnapshotShape(*in.Snapshot)
+		if err != nil {
+			return Bundle{}, err
+		}
+	}
 	if err := shape.Validate(); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
@@ -317,6 +331,9 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 	manifestsLayer, clusterTrees, trees, err := packManifests(docs, in.Units, extra...)
+	if err == nil && in.Snapshot != nil {
+		manifestsLayer, clusterTrees, trees, err = packSnapshot(*in.Snapshot, docs, in.Units, extra)
+	}
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
 	}
@@ -345,6 +362,17 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		Secrets:      secretRefs,
 		CreatedAt:    in.CreatedAt.UTC(),
 	}
+	if in.Snapshot != nil {
+		doc.Schema = release.SnapshotBundleSchema
+		doc.Snapshot = in.Snapshot
+		doc.SnapshotDigest, err = in.Snapshot.Digest()
+		if err != nil {
+			return Bundle{}, err
+		}
+		if err := release.ValidateSnapshotLayer(*in.Snapshot, manifestsLayer); err != nil {
+			return Bundle{}, err
+		}
+	}
 	if err := doc.Validate(); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
@@ -363,6 +391,9 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 
+	if int64(len(configBlob)) > MaxManifestBytes {
+		return Bundle{}, fmt.Errorf("%w: bundle config exceeds %d bytes", release.ErrInvalid, MaxManifestBytes)
+	}
 	configDesc := content.NewDescriptorFromBytes(release.BundleConfigMediaType, configBlob)
 	manifestsDesc := content.NewDescriptorFromBytes(release.BundleManifestsLayer, manifestsLayer)
 	blobs := []blob{{configDesc, configBlob}, {manifestsDesc, manifestsLayer}}

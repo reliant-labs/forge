@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"syscall"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -185,7 +184,13 @@ func dropPeerClosedErrors(err error) (kept error, dropped bool) {
 // the other end had already torn down. crypto/tls wraps the failed
 // close_notify write with %w, so the syscall error is reachable through it.
 func isPeerClosedError(err error) bool {
-	return errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, syscall.ECONNRESET)
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	for _, errno := range peerClosedErrnos {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }

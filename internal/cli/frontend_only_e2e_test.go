@@ -67,6 +67,15 @@ func TestE2EFrontendOnlyLifecycle(t *testing.T) {
 	must(root, "project", "new", "landing", "--mod", "example.com/landing", "--frontend", "web", "--output", "static", "--routes", "none", "--disable", "orm,migrations,codegen,observability,ci,contracts", "--skip-tools", "--link-forge")
 	project := filepath.Join(root, "landing")
 	for _, envName := range []string{"dev", "staging", "prod"} {
+		body := readFileE2E(t, filepath.Join(project, "deploy", "kcl", envName, "main.k"))
+		if !strings.Contains(body, `routes = ["none",`) || !strings.Contains(body, "(_web_frontend)\n") {
+			t.Fatalf("%s lost the project-new route policy or rebindable shape:\n%s", envName, body)
+		}
+	}
+	if !strings.Contains(readFileE2E(t, filepath.Join(project, "frontends", "web", "next.config.ts")), `output: "export"`) {
+		t.Fatal("project-new static frontend is not a static export")
+	}
+	for _, envName := range []string{"dev", "staging", "prod"} {
 		out := must(project, "env", "render", envName)
 		if (envName == "dev" && !strings.Contains(out, "0 object(s)")) || strings.Contains(out, "kind: Namespace") || strings.Contains(out, "kind: Deployment") || strings.Contains(out, "kind: ManagedDatabase") || strings.Contains(out, "kind: Job") {
 			t.Fatalf("%s renders cluster objects:\n%s", envName, out)
@@ -93,16 +102,18 @@ func TestE2EFrontendOnlyLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	web := filepath.Join(project, "frontends/web")
-	writeFileE2E(t, filepath.Join(web, "forge-dev-fixture.cjs"), `require('http').createServer((q,s)=>s.end(process.cwd())).listen(Number(process.env.PORT),'127.0.0.1');`)
-	// --no-build avoids compiling the project's unused Go shell; deploy is NOT
-	// disabled: the declaration must prove there is no deploy phase to run.
+	for _, name := range []string{"web", "docs"} {
+		writeFileE2E(t, filepath.Join(project, "frontends", name, "forge-dev-fixture.cjs"), `require('http').createServer((q,s)=>s.end(process.cwd())).listen(Number(process.env.PORT),'127.0.0.1');`)
+	}
+	// Neither build nor deploy is disabled: selection and the declaration must
+	// prove this frontend needs no Go image or infrastructure phase.
 	t.Cleanup(func() {
 		out, err := run(project, "env", "down", "dev")
 		if err != nil {
 			t.Errorf("cleanup own dev process: %v\n%s", err, out)
 		}
 	})
-	must(project, "env", "up", "dev", "--background", "--no-build", "--no-generate", "--no-install", "--no-seed", "--target", "web")
+	must(project, "env", "up", "dev", "--background", "--no-generate", "--no-install", "--no-seed")
 	client := &http.Client{Timeout: time.Second}
 	deadline := time.Now().Add(10 * time.Second)
 	for {

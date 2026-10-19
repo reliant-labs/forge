@@ -43,6 +43,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -331,6 +332,11 @@ func readMachineEnvRecords(env, projectDir string, target sessionTarget, now tim
 	}
 	if target.Report {
 		for _, s := range doc.Sessions {
+			// The ledger is project-wide, but this command describes THIS
+			// checkout/env. A sibling worktree's heartbeat is not ours.
+			if s.Session.Env != env || s.Session.Worktree.Key != devstack.Worktree(projectDir) || s.Session.Worktree.Host != release.HostID() {
+				continue
+			}
 			out.Sessions = append(out.Sessions, sessionOf(s.Session, now))
 		}
 	}

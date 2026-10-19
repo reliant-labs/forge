@@ -357,14 +357,21 @@ func TestReadMachineEnvRecordsReadsWhatTheLedgerHolds(t *testing.T) {
 		PromotedBy: release.Actor{User: "alice"}, PromotedAt: now.Add(-30 * time.Minute),
 	})
 	if err := store.ReportSession(release.LocalSession{
-		ID: sessionIDFor("dev", "host-abc", "wt-1"), Env: "dev",
-		Worktree:   release.Worktree{Key: "wt-1", Label: "feat-x", Host: "host-abc"},
+		ID: sessionIDFor("dev", release.HostID(), ""), Env: "dev",
+		Worktree:   release.Worktree{Key: "", Label: "feat-x", Host: release.HostID()},
 		Provenance: release.Provenance{Branch: "feat-x", Dirty: true},
 		StartedAt:  now.Add(-time.Hour), LastSeenAt: now.Add(-30 * time.Second),
 	}); err != nil {
 		t.Fatalf("report session: %v", err)
 	}
 
+	if err := store.ReportSession(release.LocalSession{
+		ID: sessionIDFor("dev", release.HostID(), "sibling"), Env: "dev",
+		Worktree:  release.Worktree{Key: "sibling", Host: release.HostID()},
+		StartedAt: now.Add(-time.Hour), LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	got, err := readMachineEnvRecords("dev", dir, sessionTarget{Report: true}, now)
 	if err != nil {
 		t.Fatalf("readMachineEnvRecords: %v", err)

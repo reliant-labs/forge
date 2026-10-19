@@ -84,6 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `wireRelease.Commits` comment in `internal/cli/hosted_ledger.go` named
+  `DeployRelease.commits` as tag 13; the control plane's proto declares it as tag 14.
 - **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
   Every query on the lease session (the heartbeat, each standby poll, the
   connect) ran under a deadline of `HeartbeatInterval`, and a query that misses

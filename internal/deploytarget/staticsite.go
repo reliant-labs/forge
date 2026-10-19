@@ -122,6 +122,12 @@ type StaticSiteFrontend struct {
 	// non-empty RuntimeConfigJS.
 	StripRuntimeConfig bool
 
+	// SourcemapPublisher files the source maps the build extracts (F1) so
+	// errors can be symbolicated: pushed to the platform registry when the
+	// env's observability is hosted, kept on disk otherwise. nil files nothing
+	// (the maps are still extracted, and never served).
+	SourcemapPublisher SourcemapPublisher
+
 	// Spec is the StaticSite deploy config.
 	Spec StaticSiteSpec
 }
@@ -317,6 +323,12 @@ func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend
 		return err
 	}
 	reportStageResult("static-site", plan.Stage.Name, res)
+
+	// File the source maps before the release is uploaded or goes live: a
+	// build whose maps could not be filed must not ship unsymbolicatable.
+	if err := FileStageSourcemaps(ctx, fe.SourcemapPublisher, "static-site", plan.Stage.Project, plan.Stage.Name, res); err != nil {
+		return err
+	}
 
 	// The artifact's content-addressed identity, computed from the tree
 	// that now exists on disk. Everything downstream keys on it.

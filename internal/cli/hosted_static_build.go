@@ -25,6 +25,11 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 		fmt.Printf("[build] %s: %d source map(s) extracted (build id %s) to %s, not part of the site\n",
 			fe.Name, res.Sourcemaps, res.BuildID, res.SourcemapsDir)
 	}
+	// The maps are filed BEFORE the site is pushed: a site that reaches the
+	// registry without its maps filed could be promoted unsymbolicatable.
+	if err := deploytarget.FileStageSourcemaps(ctx, fe.SourcemapPublisher, "build", fe.Project, fe.Name, res); err != nil {
+		return "", err
+	}
 	return deploytarget.PushStaticSiteArtifact(ctx, repository, layer)
 }
 
@@ -76,6 +81,11 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		// any travelling in the built bundle removed.
 		fe.RuntimeConfigJS = ""
 		fe.StripRuntimeConfig = true
+		// A record left by an earlier build must not be mistaken for this one's.
+		if err := deploytarget.ClearSourcemapsState(projectDir, opts.env, f.Name); err != nil {
+			return fmt.Errorf("hosted static site %s: %w", f.Name, err)
+		}
+		fe.SourcemapPublisher = sourcemapPublisherFor(projectDir, opts.env, entities)
 		// THE REPOSITORY COMES FROM THE RESOLVED PUSH PLAN, not from the
 		// declaration. They agree for a host-bearing reference and differ for
 		// a bare one, which ADR-0003 F1 now permits: a bare hosted image

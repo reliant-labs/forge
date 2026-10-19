@@ -278,6 +278,9 @@ authored protos, in one call.`,
 	// that clears the refusal in ledger_unimported.go.
 	rootCmd.AddCommand(newLedgerCmd())
 	rootCmd.AddCommand(newGateCmd())
+	// `frontend` operates on built frontends; today its one noun is the source
+	// maps of a build forge did not run (`forge frontend sourcemaps push`).
+	rootCmd.AddCommand(newFrontendGroupCmd())
 	// `project` is the project-structure noun: the commands that create,
 	// retire, or INSPECT a project as a whole (new/delete/disown/migrate/
 	// upgrade/map/graph/introspect/features/annotations). The flat members

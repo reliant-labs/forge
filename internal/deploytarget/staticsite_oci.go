@@ -101,6 +101,13 @@ func BuildStaticSiteTree(ctx context.Context, projectDir string, fe StaticSiteFr
 // the build machine; preserved, it would ask the platform to materialize a
 // link it must never write into a shared bucket.
 func PackStaticSiteTree(dir string) ([]byte, error) {
+	return packTree(dir, "static site release", "the assembled site is empty; refusing to publish a release that would serve nothing")
+}
+
+// packTree is the deterministic tar.gz both the site and the source map
+// artifacts are packed with. what names the artifact in the symlink refusal;
+// emptyMsg is the whole refusal for an empty tree.
+func packTree(dir, what, emptyMsg string) ([]byte, error) {
 	type entry struct{ rel, path string }
 	var files []entry
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -115,7 +122,7 @@ func PackStaticSiteTree(dir string) ([]byte, error) {
 			return rerr
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%s is not a regular file (mode %s); a static site release carries only files", filepath.ToSlash(rel), info.Mode())
+			return fmt.Errorf("%s is not a regular file (mode %s); a %s carries only files", filepath.ToSlash(rel), info.Mode(), what)
 		}
 		files = append(files, entry{rel: filepath.ToSlash(rel), path: path})
 		return nil
@@ -124,7 +131,7 @@ func PackStaticSiteTree(dir string) ([]byte, error) {
 		return nil, fmt.Errorf("pack %s: %w", dir, err)
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("pack %s: the assembled site is empty; refusing to publish a release that would serve nothing", dir)
+		return nil, fmt.Errorf("pack %s: %s", dir, emptyMsg)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
 
@@ -161,17 +168,27 @@ const fixedCreated = "1970-01-01T00:00:00Z"
 // manifest digest. Credentials come from the ambient docker credential store
 // — the same one `docker push` of a backend image to the same push base uses.
 func PushStaticSiteArtifact(ctx context.Context, repository string, layer []byte) (string, error) {
+	repo, err := newRegistryRepository("static site", repository)
+	if err != nil {
+		return "", err
+	}
+	return pushStaticSite(ctx, repo, layer)
+}
+
+// newRegistryRepository opens repository with the ambient docker credential
+// store, over plain HTTP for the loopback registries a local k3d publishes.
+func newRegistryRepository(what, repository string) (*remote.Repository, error) {
 	repo, err := remote.NewRepository(repository)
 	if err != nil {
-		return "", fmt.Errorf("static site repository %q: %w", repository, err)
+		return nil, fmt.Errorf("%s repository %q: %w", what, repository, err)
 	}
 	repo.PlainHTTP = plainHTTPRegistry(repo.Reference.Registry)
 	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
 	if err != nil {
-		return "", fmt.Errorf("read docker credentials: %w", err)
+		return nil, fmt.Errorf("read docker credentials: %w", err)
 	}
 	repo.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
-	return pushStaticSite(ctx, repo, layer)
+	return repo, nil
 }
 
 // pushStaticSite is the transport-agnostic half, so it runs against any
@@ -180,29 +197,47 @@ func PushStaticSiteArtifact(ctx context.Context, repository string, layer []byte
 // layer: a re-push of an unchanged site returns the same release digest even
 // when the target answers "already exists".
 func pushStaticSite(ctx context.Context, target content.Pusher, layer []byte) (string, error) {
-	layerDesc := content.NewDescriptorFromBytes(StaticSiteLayerMediaType, layer)
-	manifest := ocispec.Manifest{
-		Versioned:    specs.Versioned{SchemaVersion: 2},
-		MediaType:    ocispec.MediaTypeImageManifest,
-		ArtifactType: StaticSiteArtifactType,
-		Config:       ocispec.DescriptorEmptyJSON,
-		Layers:       []ocispec.Descriptor{layerDesc},
-		Annotations:  map[string]string{ocispec.AnnotationCreated: fixedCreated},
-	}
-	raw, err := json.Marshal(manifest)
+	desc, err := pushArtifact(ctx, target, StaticSiteArtifactType, StaticSiteLayerMediaType, nil, layer)
 	if err != nil {
 		return "", err
 	}
+	return desc.Digest.String(), nil
+}
+
+// pushArtifact pushes a one-layer OCI artifact: the layer blob, the empty
+// config, and a manifest whose bytes are a pure function of (artifactType,
+// layer media type, annotations, layer). Nothing time- or host-dependent is
+// in it, so the same inputs always produce the same manifest digest. The
+// manifest descriptor is returned so a caller can tag it.
+func pushArtifact(ctx context.Context, target content.Pusher, artifactType, layerMediaType string, annotations map[string]string, layer []byte) (ocispec.Descriptor, error) {
+	layerDesc := content.NewDescriptorFromBytes(layerMediaType, layer)
+	all := map[string]string{ocispec.AnnotationCreated: fixedCreated}
+	for k, v := range annotations {
+		all[k] = v
+	}
+	manifest := ocispec.Manifest{
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		MediaType:    ocispec.MediaTypeImageManifest,
+		ArtifactType: artifactType,
+		Config:       ocispec.DescriptorEmptyJSON,
+		Layers:       []ocispec.Descriptor{layerDesc},
+		Annotations:  all,
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
 	manifestDesc := content.NewDescriptorFromBytes(ocispec.MediaTypeImageManifest, raw)
+	manifestDesc.ArtifactType = artifactType
 	for _, blob := range []struct {
 		desc ocispec.Descriptor
 		data []byte
 	}{{layerDesc, layer}, {ocispec.DescriptorEmptyJSON, ocispec.DescriptorEmptyJSON.Data}, {manifestDesc, raw}} {
 		if err := target.Push(ctx, blob.desc, bytes.NewReader(blob.data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
-			return "", fmt.Errorf("push %s: %w", blob.desc.MediaType, err)
+			return ocispec.Descriptor{}, fmt.Errorf("push %s: %w", blob.desc.MediaType, err)
 		}
 	}
-	return manifestDesc.Digest.String(), nil
+	return manifestDesc, nil
 }
 
 // plainHTTPRegistry reports the registries reached over plain HTTP: the

@@ -129,6 +129,12 @@ type FirebaseFrontend struct {
 	// nothing is written and the assembled layout is unchanged.
 	RuntimeConfigJS string
 
+	// SourcemapPublisher files the source maps the build extracts (F1) so
+	// errors can be symbolicated: pushed to the platform registry when the
+	// env's observability is hosted, kept on disk otherwise. nil files nothing
+	// (the maps are still extracted, and never served).
+	SourcemapPublisher SourcemapPublisher
+
 	// Spec is the FirebaseHosting deploy config.
 	Spec FirebaseHostingSpec
 }
@@ -340,6 +346,13 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 		return err
 	}
 	reportStageResult("firebase", plan.Stage.Name, res)
+
+	// File the source maps BEFORE anything goes live: a build whose maps could
+	// not be filed would reach production unsymbolicatable, so a failure here
+	// stops the deploy with the previous release still serving.
+	if err := FileStageSourcemaps(ctx, fe.SourcemapPublisher, "firebase", plan.Stage.Project, plan.Stage.Name, res); err != nil {
+		return err
+	}
 
 	// Retain — put the previous releases' hashed assets back into the
 	// tree, so a tab opened before this deploy can still load its chunks.

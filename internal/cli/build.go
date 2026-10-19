@@ -1719,6 +1719,9 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 			"  A release built without --push has only a local tag, which can't be promoted across envs", version, env, version)
 	}
 
+	// The source maps each hosted site's last build filed, beside the site.
+	harvestSourcemapsArtifacts(projectDir, env, entities, artifacts)
+
 	// Source-pinned frontends (Firebase SPAs fetched via forge.GitSource)
 	// carry no image and so contribute no build state. Record each one's
 	// resolved commit so the release covers the whole environment, not just

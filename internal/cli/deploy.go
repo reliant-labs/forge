@@ -2412,6 +2412,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			builtDirs = append(builtDirs, f.Path)
 			fb := frontendToFirebase(f)
 			fb.RuntimeConfigJS = runtimeConfigs[f.Name]
+			fb.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
 			fes = append(fes, fb)
 
 		case FrontendRuntimeBucket:
@@ -2421,6 +2422,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			builtDirs = append(builtDirs, f.Path)
 			ss := frontendToStaticSite(f)
 			ss.RuntimeConfigJS = runtimeConfigs[f.Name]
+			ss.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
 			sites = append(sites, ss)
 		}
 	}
@@ -3393,7 +3395,7 @@ func expandLegacyLedgerKeys(resolved, uris map[string]string) map[string]string 
 		uri, known := uris[name]
 		// Already a full reference (it names a registry host, so it carries a
 		// path separator), or no URI to place it under: keep it verbatim.
-		if strings.Contains(name, "/") || !known || uri == "" {
+		if _, maps := release.SourcemapsFrontend(name); maps || strings.Contains(name, "/") || !known || uri == "" {
 			out[name] = digest
 			continue
 		}

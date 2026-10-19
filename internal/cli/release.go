@@ -477,7 +477,10 @@ func releaseCoverageGaps(entities *KCLEntities, artifacts map[string]release.Art
 // different answers.
 func countOCIArtifacts(r release.Release) int {
 	n := 0
-	for _, art := range r.Artifacts {
+	for name, art := range r.Artifacts {
+		if _, maps := release.SourcemapsFrontend(name); maps {
+			continue // a frontend's source maps are an OCI artifact, not an image
+		}
 		if art.Kind == release.KindOCI {
 			n++
 		}

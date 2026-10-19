@@ -24,7 +24,7 @@ type Server struct {
 	// applied via connect.HandlerOption at mount time), plus any
 	// REST-transcoder swap already resolved by the caller, plus any
 	// /metrics handle the caller mounted. serverkit wraps it with its
-	// OWN edge (CORS/security/request-id/h2c from Config + the factory
+	// OWN edge (CORS/security/request-id from Config + the factory
 	// fields below) and routes /healthz + /readyz to its own probes
 	// IN FRONT of that edge, but never re-mounts services. Required.
 	//
@@ -68,11 +68,21 @@ type Server struct {
 	Workers   []Worker
 	Operators []Operator
 
-	// OnShutdown runs during graceful shutdown after workers stop and
-	// before the http.Server shuts down — the old Application.Shutdown
-	// plus (folded in by the caller) the OTel flush. Optional; nil is a
-	// no-op.
+	// OnShutdown is the caller's teardown (closing the serving DB pool,
+	// flushing app-owned buffers). It runs after the HTTP drain has
+	// finished and workers have stopped, so nothing it closes is still in
+	// use. Optional; nil is a no-op.
 	OnShutdown func(context.Context) error
+
+	// OnDrain runs when the HTTP drain BEGINS, in its own goroutine, while
+	// http.Server.Shutdown waits for in-flight requests (it is registered
+	// with RegisterOnShutdown). It is where a server ends its long-lived
+	// streams — subscriptions, SSE, bidi Connect streams — so they return
+	// and the drain completes, rather than holding Shutdown until
+	// ShutdownTimeout and being cut when the process exits. A stream that
+	// never ends on its own is exactly the request the drain would wait on.
+	// It must not block: Shutdown does not wait for it. Optional.
+	OnDrain func()
 
 	// RunOperators starts the controller-runtime manager and blocks
 	// until ctx is done. serverkit calls it in a goroutine when
@@ -487,6 +497,28 @@ type Config struct {
 	// are registered. Zero falls back to 2s.
 	ReadinessTimeout time.Duration
 
+	// ReadHeaderTimeout bounds reading a request's headers (slowloris).
+	// Zero falls back to 10s; negative disables it.
+	ReadHeaderTimeout time.Duration
+
+	// ReadTimeout bounds reading a whole request, body included — over
+	// HTTP/2 it is a deadline on each stream's request body. So it caps how
+	// long a client-streaming or bidirectional Connect/gRPC call may keep
+	// sending: a server with long-lived client streams sets it negative.
+	// Zero falls back to 30s; negative disables it.
+	ReadTimeout time.Duration
+
+	// IdleTimeout is how long a keep-alive connection may sit idle (HTTP/1.1
+	// and HTTP/2). Zero falls back to 120s; negative disables it, which
+	// leaves idle connections open until the client closes them.
+	IdleTimeout time.Duration
+
+	// HTTP2MaxConcurrentStreams caps the concurrent streams one HTTP/2
+	// connection (TLS or h2c) may open. A client multiplexing many
+	// long-lived streams over one connection needs it raised. Zero leaves
+	// net/http's default (250 at the time of writing).
+	HTTP2MaxConcurrentStreams int
+
 	// WriteStallTimeout bounds how long ONE write to a response may stay
 	// blocked on a client that is not reading, after which the response is
 	// abandoned (see WriteStallGuard). It is not a cap on how long a response
@@ -535,6 +567,15 @@ func (c *Config) Normalize() {
 	}
 	if c.WriteStallTimeout == 0 {
 		c.WriteStallTimeout = DefaultWriteStallTimeout
+	}
+	if c.ReadHeaderTimeout == 0 {
+		c.ReadHeaderTimeout = 10 * time.Second
+	}
+	if c.ReadTimeout == 0 {
+		c.ReadTimeout = 30 * time.Second
+	}
+	if c.IdleTimeout == 0 {
+		c.IdleTimeout = 120 * time.Second
 	}
 	if c.ReadMaxBytes == 0 {
 		c.ReadMaxBytes = 4 << 20

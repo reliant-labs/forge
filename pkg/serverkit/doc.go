@@ -1,6 +1,6 @@
 // Package serverkit runs an already-composed forge server: HTTP/Connect
-// listener, healthz/readyz probes, the HTTP edge (CORS / security-headers
-// / request-id / h2c), worker supervisor, operator manager, and graceful
+// listener (HTTP/1.1, HTTP/2, h2c), healthz/readyz probes, the HTTP edge
+// (CORS / security-headers / request-id), worker supervisor, operator manager, and graceful
 // shutdown sequence.
 //
 // # Why a library
@@ -77,14 +77,17 @@
 //  2. A tiny top mux routes /healthz + /readyz to serverkit's own probes
 //     (IN FRONT of the edge wrap, so probes are never behind CORS/auth)
 //     and everything else to Server.Handler.
-//  3. CORS, security-headers, request-id, and h2c are layered over that
-//     top mux from Config gating + the Server factory fields.
+//  3. CORS, security-headers and request-id are layered over that top mux
+//     from Config gating + the Server factory fields. The listener speaks
+//     HTTP/1.1, HTTP/2 over TLS and h2c (net/http's own, so its streams
+//     drain on shutdown).
 //  4. Listener binds, readiness flips true.
 //  5. Workers start; the operator manager starts when len(Operators) > 0,
 //     which is the caller's decision and the only one.
 //  6. SIGINT/SIGTERM → readiness flips false → pre-stop sleep →
-//     workers stop → Server.OnShutdown → http.Server shuts down →
-//     pprof shuts down.
+//     http.Server drains (Server.OnDrain runs as it begins, to end
+//     long-lived streams) → workers stop → Server.OnShutdown → pprof shuts
+//     down → telemetry flushes.
 //
 // # Worker shutdown contract
 //

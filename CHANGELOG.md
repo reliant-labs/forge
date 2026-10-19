@@ -815,6 +815,18 @@ FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
   run `npm install` and check that `npm ls vite` lists one version. See
   `migrations/v0.1.46` section 6.
 
+- **A pooler rollout no longer fails statements or the pool's close.**
+  On SIGTERM PgBouncer refuses every client that needs a server connection
+  with `FATAL: server shutting down` (08P01) — before forwarding the
+  statement — so every pooled client failed its next statement on each idle
+  connection to the draining pod, although the other replica was serving.
+  `serverkit.OpenDB`'s `pgx` pool now reports that refusal as
+  `driver.ErrBadConn`, and database/sql runs the statement again on another
+  connection; the error keeps PgBouncer's message if every replica refuses.
+  Closing a connection the pooler already dropped (`tls: failed to send
+  closeNotify alert (but connection was closed anyway): … broken pipe`) is no
+  longer reported, so `OnShutdown`'s `DB.Close` stops logging an ERROR on
+  every deploy. Other drivers open unchanged.
 - **The migrator's directive scan no longer dominates integration tests.**
   `migratekit` scans every embedded migration for `forge:backward-compatible`,
   `forge:breaks-rollback` and `forge:adopts` on every start, and ran three

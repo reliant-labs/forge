@@ -37,9 +37,12 @@
 //	logger, mux := serverkit.Boot(skCfg)  // logger + slog.SetDefault + mux
 //	_ = serverkit.AutoMigrate(skCfg, logger, pkgapp.AutoMigrate)
 //
-//	// … the owner's decisions: auth, interceptor chain, payload caps …
+//	// … the owner's decisions: auth posture, chain slots, payload caps …
+//	chain, _ := serverkit.NewChain(serverkit.ChainDeps{
+//	    Auth: serverkit.AuthFor(serverkit.AudienceUser, authInterceptor), …})
+//	opts := chain.HandlerOptions()
 //
-//	srv := serverkit.Server{Mux: mux, HandlerOpts: opts, Logger: logger, …}
+//	srv := serverkit.Server{Mux: mux, Chain: chain, Logger: logger, …}
 //	srv.AddReadyCheck(serverkit.DBReadyCheck("database", infra.DB))
 //	srv.OnShutdown = func(context.Context) error { return infra.DB.Close() }
 //
@@ -69,6 +72,25 @@
 // they stay fields rather than collapsing to Config). Config still owns the
 // GATING for the edge layers (CORSOrigins, SecurityHeaders, Environment).
 //
+// # Components: Chain and Listener
+//
+// The interceptor chain and the HTTP listener are components — structs built
+// from their Deps — so a process can hold more than one of each:
+//
+//   - NewChain(ChainDeps{Auth, …}) is the ordered interceptor stack and the
+//     payload caps. Every slot is defaulted except Auth, which is required;
+//     an Omit constant (NoAudit, NoTrace, …) drops a default. Auth is an
+//     Authenticator: an interceptor plus the audience it admits.
+//   - NewListener(ListenerDeps{Config, Chain, Routes, …}) is one address with
+//     its own TLS, timeouts, HTTP/2 stream cap and Streams registry. It
+//     mounts its Routes with its Chain and refuses to start when a mounted
+//     proto service declares an audience (`(forge.v1.service).audience`,
+//     default "user") other than the chain's. Its lifecycle is Run, Drain,
+//     Close and Ready.
+//
+// Run is one Listener plus the process policy around it: readiness, the
+// pre-stop pause, workers, operators, pprof, teardown and telemetry.
+//
 // # Lifecycle
 //
 // Run owns the uniform lifecycle:
@@ -85,7 +107,7 @@
 //  5. Workers start; the operator manager starts when len(Operators) > 0,
 //     which is the caller's decision and the only one.
 //  6. SIGINT/SIGTERM → readiness flips to "draining" → pre-stop sleep →
-//     the listener drains (DrainHTTP: stop accepting, unary requests
+//     the listener drains (Listener.Drain: stop accepting, unary requests
 //     finish, long-lived streams end soft-then-hard) → workers stop →
 //     operators stop → Server.OnShutdown → pprof shuts down → telemetry
 //     flushes.
@@ -106,9 +128,10 @@
 // # Without Run
 //
 // Every piece of the sequence is exported for a main that runs its own
-// listener: Drainer (readiness gate, pre-stop, shutdown budget, /readyz),
-// NewHTTPServer (the listener, with its Streams installed), Streams,
-// LongLived and DrainHTTP (the listener's drain).
+// listener — or several: Listener (the whole listener component), Drainer
+// (readiness gate, pre-stop, shutdown budget, /readyz), and, below a
+// Listener, NewHTTPServer (an http.Server with its Streams installed),
+// Streams, LongLived and DrainHTTP (a listener's drain).
 //
 // # Worker shutdown contract
 //
@@ -128,7 +151,7 @@
 //
 // The line is OWNERSHIP, not size. Anything an application author has a
 // legitimate reason to change stays in their serve.go: the auth posture,
-// the interceptor chain and its order, the payload caps, the CORS and
+// what fills each chain slot, the payload caps, the CORS and
 // security-header policy, which readiness checks are registered, what
 // teardown closes, and which services/workers/operators this process runs.
 // Absorbing any of those into serverkit would take a decision away from the

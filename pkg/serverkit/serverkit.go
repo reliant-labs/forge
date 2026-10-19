@@ -55,6 +55,15 @@ type Server struct {
 	// themselves and may leave this nil.
 	HandlerOpts []connect.HandlerOption
 
+	// Chain is the interceptor chain the services were mounted with
+	// (NewChain). Set, it does two things: the Mount helpers build each
+	// service with its HandlerOptions when HandlerOpts is nil, and Run's
+	// Listener checks every recorded service's declared
+	// `(forge.v1.service).audience` against the chain's Authenticator and
+	// refuses to serve a mismatch. nil — a Server mounted with hand-built
+	// HandlerOpts — skips the audience check.
+	Chain *Chain
+
 	// Logger is the root logger the caller already built (the same one
 	// it passed into bootstrap so mount-time logs and run-time logs
 	// agree). When nil, serverkit builds one from Config (newLogger) and
@@ -590,13 +599,13 @@ func (c *Config) Normalize() {
 		c.WriteStallTimeout = DefaultWriteStallTimeout
 	}
 	if c.ReadHeaderTimeout == 0 {
-		c.ReadHeaderTimeout = 10 * time.Second
+		c.ReadHeaderTimeout = defaultReadHeaderTimeout
 	}
 	if c.ReadTimeout == 0 {
-		c.ReadTimeout = 30 * time.Second
+		c.ReadTimeout = defaultReadTimeout
 	}
 	if c.IdleTimeout == 0 {
-		c.IdleTimeout = 120 * time.Second
+		c.IdleTimeout = defaultIdleTimeout
 	}
 	if c.ReadMaxBytes == 0 {
 		c.ReadMaxBytes = 4 << 20

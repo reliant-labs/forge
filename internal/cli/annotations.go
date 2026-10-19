@@ -752,6 +752,7 @@ var serviceOptionMeta = map[string]optionMeta{
 	"visibility":   {"How the service is exposed: SERVICE_VISIBILITY_API (Connect/HTTP gateway) or SERVICE_VISIBILITY_INTERNAL (inter-service only).", "SERVICE_VISIBILITY_UNSPECIFIED (defaults to API)"},
 	"dependencies": {"Other services this service depends on.", "[]"},
 	"auth":         {"Service-wide authentication defaults (AuthConfig.auth_required / auth_provider); individual methods override via (forge.v1.method).auth_required.", ""},
+	"audience":     {"The trust domain whose callers the service serves (\"user\", or a project-chosen name such as \"daemon\" or \"operator\"). A serverkit.Listener refuses to start when it mounts a service whose audience differs from its chain's Authenticator.Audience().", "\"user\""},
 }
 
 func optionSpecsFromDescriptor(fields protoreflect.FieldDescriptors, meta map[string]optionMeta) []OptionSpec {

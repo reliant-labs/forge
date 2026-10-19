@@ -211,7 +211,12 @@ func drainDuration(d, def time.Duration) time.Duration {
 // gRPC and load balancers send; an HTTP/1.1 `Upgrade: h2c` request is served
 // as HTTP/1.1.)
 func NewHTTPServer(cfg Config, handler http.Handler, streams *Streams) *http.Server {
-	cfg.Normalize()
+	return newHTTPServer(cfg.Listener(), handler, streams)
+}
+
+// newHTTPServer is NewHTTPServer over one listener's block, which a Listener
+// carries; cfg must be normalized.
+func newHTTPServer(cfg ListenerConfig, handler http.Handler, streams *Streams) *http.Server {
 	if streams != nil {
 		handler = streams.Install(handler)
 	}

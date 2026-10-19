@@ -70,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database whose builder is gone, each under its key's advisory lock. An
   unstamped template from an older forge is adopted, then reaped a TTL later;
   a template reaped under a process that had cached it is rebuilt.
+- **`crud.NoReadBack()`: an exec-only `Update` / `UpdateMasked`.** Every
+  update reads back, via `RETURNING`, each column it did not write plus every
+  GENERATED column, so the entity holds the stored row. For a write whose
+  caller discards the entity that is most of the cost: stamping one column of
+  a 12-column row went 93 → 39 allocations and 9.5 → 6.5 KB with the option
+  (`BenchmarkRepoUpdateMasked_OneColumnStamp`). `Repo.UpdateMasked` now takes
+  `...UpdateOption` (Preserve is rejected there: a mask already names what is
+  written). The default is unchanged.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

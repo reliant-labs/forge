@@ -955,9 +955,9 @@ func (r *Repo[M]) scopeRead(q *bun.SelectQuery) {
 // Every column the SET clause does not name is read back into entity (see
 // readBackUnwritten), so after a nil return the caller holds the row as
 // stored — a held-back column reports its stored value, not whatever the
-// caller's struct carried for it.
+// caller's struct carried for it. NoReadBack turns that off for one call.
 //
-// opts tune this one call; see Preserve.
+// opts tune this one call; see Preserve and NoReadBack.
 func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ...UpdateOption) error {
 	r.ensureMeta(db)
 	var o updateOptions
@@ -988,8 +988,11 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ..
 	q.Where("? = ?", bun.Ident(r.m.pkColumn), b.value(r.pkFieldValue(entity).Interface()))
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, b, entity)
-	returning := r.returnGenerated(q)
-	returning = r.readBackUnwritten(q, cols) || returning
+	returning := false
+	if !o.noReadBack {
+		returning = r.returnGenerated(q)
+		returning = r.readBackUnwritten(q, cols) || returning
+	}
 	res, err := b.write(ctx, span, db, q, entity, returning)
 	if err != nil {
 		recordErr(span, err)
@@ -1024,9 +1027,21 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ..
 //
 // Like Update, every column the write did not set is read back, so the
 // unmasked fields of entity hold the stored row afterwards rather than
-// whatever the caller's struct carried.
-func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string) error {
+// whatever the caller's struct carried. For a narrow write — stamping one
+// column of a wide row — that read-back is most of the statement's cost;
+// pass NoReadBack to make it exec-only.
+//
+// opts tune this one call. Preserve is a full-replace option and is
+// rejected here: the mask already names exactly what is written.
+func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string, opts ...UpdateOption) error {
 	r.ensureMeta(db)
+	var o updateOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if len(o.preserve) > 0 {
+		return fmt.Errorf("update %s: Preserve applies to a full-replace Update; a masked update writes only its mask", r.m.table)
+	}
 	if len(fields) == 0 {
 		return nil
 	}
@@ -1076,8 +1091,11 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	q.Where("? = ?", bun.Ident(r.m.pkColumn), b.value(r.pkFieldValue(entity).Interface()))
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, b, entity)
-	returning := r.returnGenerated(q)
-	returning = r.readBackUnwritten(q, slices.Concat(cols, forced)) || returning
+	returning := false
+	if !o.noReadBack {
+		returning = r.returnGenerated(q)
+		returning = r.readBackUnwritten(q, slices.Concat(cols, forced)) || returning
+	}
 	res, err := b.write(ctx, span, db, q, entity, returning)
 	if err != nil {
 		recordErr(span, err)
@@ -1091,11 +1109,35 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	return nil
 }
 
-// UpdateOption tunes one full-replace Update. See Preserve.
+// UpdateOption tunes one Update or UpdateMasked call. See Preserve and
+// NoReadBack.
 type UpdateOption func(*updateOptions)
 
 type updateOptions struct {
-	preserve []string
+	preserve   []string
+	noReadBack bool
+}
+
+// NoReadBack makes ONE Update or UpdateMasked exec-only: the statement
+// carries no RETURNING clause, so nothing is scanned back into the entity.
+//
+// By default a write reads back every column it did not set, plus every
+// generated column (see readBackUnwritten), so the caller holds the stored
+// row afterwards. That is the right default for a CRUD response packed from
+// the entity, and the wrong cost for a write whose caller discards the
+// entity — a worker stamping dispatched_at on a 20-column row paid for 19
+// columns of RETURNING and their scan on every call (10 → 102 allocations,
+// 360 B → 9.8 KB, against the hand-written UPDATE it replaced).
+//
+// With NoReadBack, after a nil return the entity holds exactly what the
+// caller put in it, plus what the repository computes in Go: the stamped
+// updated_at and, for a forge:version entity, the advanced version. The
+// columns the write did not set, and any GENERATED column, are NOT
+// refreshed — re-read the row if you need them. Everything else is
+// unchanged: the soft-delete guard, the version check, and a zero-row
+// write returning orm.ErrNoRows (or Aborted on a version conflict).
+func NoReadBack() UpdateOption {
+	return func(o *updateOptions) { o.noReadBack = true }
 }
 
 // Preserve keeps the named columns out of ONE full-replace Update's SET

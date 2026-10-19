@@ -71,6 +71,20 @@ type Service interface { CreateCharge(ctx context.Context, in CreateChargeInput)
 type charger interface { CreateCharge(ctx context.Context, in CreateChargeInput) (CreateChargeResult, error) }
 ```
 
+## Configuration
+
+An adapter's settings — base URL, account IDs, API keys, timeouts — are configuration, not dependencies. `forge scaffold adapter <name>` declares a `<Name>Config` message with a `base_url` leaf (env `<NAME>_BASE_URL`) in `proto/config/v1/config.proto`, composes it on `AppConfig`, and the adapter takes the whole block as ONE Deps field:
+
+```go
+type Deps struct {
+    Logger     *slog.Logger
+    HTTPClient *http.Client
+    Cfg        *config.StripeConfig // compose.go fills it by type: infra.Cfg.GetStripe()
+}
+```
+
+Add a setting as another leaf on that message (`sensitive: true` for a secret), run `forge generate`, and read it through its getter (`s.deps.Cfg.GetApiKey()`). Each leaf then comes from its env var, a `--config` file or `deploy/kcl/<env>/config.k`. Never add a scalar Deps field instead: `forge lint` reports it (forge-config-deps), and compose.go has no type to wire it by.
+
 ## How to test
 
 Adapter tests use an in-process HTTP test server (or the SDK's record-and-replay equivalent) to stand in for the vendor. The point is to exercise the *adapter's* translation logic — request construction, header injection, response parsing, error mapping — against a controlled downstream.
@@ -86,7 +100,7 @@ func TestCreateCharge_OK(t *testing.T) {
     }))
     defer stub.Close()
 
-    svc := New(Deps{HTTPClient: stub.Client(), BaseURL: stub.URL})
+    svc := New(Deps{HTTPClient: stub.Client(), Cfg: &config.StripeConfig{BaseUrl: stub.URL}})
 
     res, err := svc.CreateCharge(context.Background(), CreateChargeInput{...})
     if err != nil { t.Fatalf("CreateCharge: %v", err) }

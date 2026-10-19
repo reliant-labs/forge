@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"{{.Module}}/pkg/config"
 )
 
 // Deps holds the {{.Name}} adapter's dependencies. Keep this list shallow:
@@ -25,13 +27,14 @@ type Deps struct {
 	// layer a retrying transport on top here if the downstream needs it.
 	HTTPClient *http.Client
 
-	// BaseURL is the downstream service base. Read from your project's
-	// pkg/config in Setup() and pass it through.
-	BaseURL string
-
-	// TODO: Add adapter-specific config (API keys, account IDs, etc.) by
-	// extending Deps; keep secrets behind interface methods if you want
-	// the test setup to avoid threading them through.
+	// Cfg is this adapter's configuration: message {{.ConfigBlock}} in
+	// proto/config/v1/config.proto, composed on AppConfig. The composition
+	// site fills it from the loaded config by type, so base_url arrives
+	// from {{.ConfigEnvVar}}, a --config file or deploy/kcl/<env>/config.k.
+	// Add settings (API keys with `sensitive: true`, account IDs) as more
+	// leaves on that message, not as fields here: a scalar Deps field is
+	// configuration with no type to wire it by.
+	Cfg *config.{{.ConfigBlock}}
 }
 
 // service is the concrete {{.Name}} adapter. The type is unexported —
@@ -69,7 +72,7 @@ func New(deps Deps) (Service, error) {
 // endpoint. Replace the path / response interpretation with whatever
 // the actual {{.Name}} downstream exposes.
 func (s *service) HealthCheck(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.deps.BaseURL+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.deps.Cfg.GetBaseUrl()+"/health", nil)
 	if err != nil {
 		return fmt.Errorf("{{.Name}}: build health request: %w", err)
 	}

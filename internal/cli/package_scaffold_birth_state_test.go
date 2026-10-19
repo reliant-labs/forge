@@ -70,6 +70,7 @@ func TestScaffoldedPackagesPassTheirOwnConventionRules(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			writeAdapterConfigFixture(t, dir)
 			cmd := &cobra.Command{Use: "new <name>", Args: cobra.ExactArgs(1), RunE: runPackageNew}
 			cmd.Flags().String("kind", "", "")
 			cmd.Flags().String("type", "service", "")

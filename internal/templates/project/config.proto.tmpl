@@ -25,8 +25,10 @@ option go_package = "{{.Module}}/gen/config/v1;configv1";
 //   // inside AppConfig (no annotation needed on the field):
 //   //   TraderConfig trader = <next tag>;
 //
-// The component then takes `Cfg config.TraderConfig` in its Deps and
-// internal/app/compose.go (NewComponents) wires it from the loaded Config.
+// The component then takes `Cfg *config.TraderConfig` in its Deps and
+// internal/app/compose.go (NewComponents) fills it from the loaded Config by
+// type (infra.Cfg.GetTrader()). `forge scaffold adapter <name>` writes this
+// shape for you: a <Name>Config block with a base_url leaf, composed here.
 // Per-env values go in deploy/kcl/<env>/config.k under the leaf name (max_per_tick = 50).
 // Never put scalars (string/int/bool/duration) directly in Deps.
 //

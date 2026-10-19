@@ -296,7 +296,7 @@ the `AppConfig` line, and the Go replacement:
         env_var: "EMAIL_API_KEY" }]; }`,
       compose it on AppConfig (`EmailConfig email = <next tag>;`),
       run `forge generate`, and replace `APIKey string`
-      with `Cfg config.EmailConfig`
+      with `Cfg *config.EmailConfig`
 ```
 
 **`--optional-deps-guard`** finds dereferences of a `forge:optional-dep`

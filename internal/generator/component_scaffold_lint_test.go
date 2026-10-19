@@ -196,12 +196,14 @@ func TestScaffoldedWebhookTest_UsesContextualHTTPTestRequest(t *testing.T) {
 func renderAdapterScaffold(t *testing.T) string {
 	t.Helper()
 	data := struct {
-		Name       string
-		ImportPath string
-		Module     string
-		Flavor     string
-		LogLevel   string
-	}{"blobstore", "blobstore", "example.com/lintapp", "adapter", "slog.LevelDebug"}
+		Name         string
+		ImportPath   string
+		Module       string
+		Flavor       string
+		LogLevel     string
+		ConfigBlock  string
+		ConfigEnvVar string
+	}{"blobstore", "blobstore", "example.com/lintapp", "adapter", "slog.LevelDebug", "BlobstoreConfig", "BLOBSTORE_BASE_URL"}
 	content, err := templates.InternalPkgKindTemplates("adapter").Render("adapter.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render adapter.go.tmpl: %v", err)

@@ -228,6 +228,7 @@ func TestRunPackageNewTypeIsReadOffTheSourceMarker(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			writeAdapterConfigFixture(t, dir)
 			cmd := &cobra.Command{Use: "new <name>", Args: cobra.ExactArgs(1), RunE: runPackageNew}
 			cmd.Flags().String("kind", "", "")
 			cmd.Flags().String("type", tc.pkgType, "")
@@ -467,6 +468,7 @@ version: "0.1.0"
 	}
 	assertSeam("cache")
 
+	writeAdapterConfigFixture(t, dir)
 	adapterCmd := newTestPackageNewCmd("")
 	adapterCmd.Flags().String("type", "adapter", "")
 	if err := adapterCmd.RunE(adapterCmd, []string{"stripe"}); err != nil {

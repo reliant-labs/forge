@@ -50,6 +50,7 @@ func scaffoldAdapterCapturingSummary(t *testing.T, name string) (summary string,
 		t.Fatal(err)
 	}
 	markServiceProject(t, dir)
+	writeAdapterConfigFixture(t, dir)
 
 	cmd := &cobra.Command{Use: "new <name>", Args: cobra.ExactArgs(1), RunE: runPackageNew}
 	cmd.Flags().String("kind", "", "")

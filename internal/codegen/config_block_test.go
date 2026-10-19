@@ -158,6 +158,11 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	if !strings.Contains(content, "type Config = configv1.AppConfig") {
 		t.Errorf("config.go should be the thin alias shim\n%s", content)
 	}
+	// The block is re-exported under its own name, so a component takes it
+	// as `Cfg *config.TraderConfig` (#748) — an alias, never a second struct.
+	if !strings.Contains(content, "type TraderConfig = configv1.TraderConfig") {
+		t.Errorf("config.go must alias the composed block type\n%s", content)
+	}
 	for _, banned := range []string{"type TraderConfig struct", "Trader TraderConfig", "loadField("} {
 		if strings.Contains(content, banned) {
 			t.Errorf("config.go must NOT re-declare the block struct or per-field loader (%q)\n%s", banned, content)

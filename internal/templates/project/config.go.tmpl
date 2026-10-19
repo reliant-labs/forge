@@ -48,6 +48,19 @@ import (
 // generated from proto/config/v1/config.proto. Holding a *config.Config is
 // holding a *configv1.{{.RootConfigMessage}} — there is no second struct to drift from it.
 type Config = configv1.{{.RootConfigMessage}}
+{{- if .BlockAliases}}
+
+// Component config blocks composed on {{.RootConfigMessage}}, each a second name
+// for its proto message. A component takes its block as one Deps field —
+// `Cfg *config.<Block>` — and internal/app/compose.go fills it from the
+// loaded Config by type, so its leaves arrive from env, flags, the config
+// file or per-env deploy config like every other setting.
+{{- range .BlockAliases}}
+
+// {{.}} is a config block composed on {{$.RootConfigMessage}} (proto/config/v1).
+type {{.}} = configv1.{{.}}
+{{- end}}
+{{- end}}
 {{else if .PrimaryConfigMessage}}
 // Config is a SECOND name for {{.PrimaryConfigMessage}} — the config message bound to this
 // project's primary binary (see {{.PrimaryConfigMessage}} below) — not a distinct type.

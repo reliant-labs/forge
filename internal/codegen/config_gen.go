@@ -97,6 +97,13 @@ type ConfigTemplateData struct {
 	// the struct type declarations and the Config fields holding them.
 	BlockTypes  []ConfigTemplateBlockType
 	BlockFields []ConfigTemplateBlockField
+	// BlockAliases are the block types pkg/config re-exports under their own
+	// names (`type TraderConfig = configv1.TraderConfig`), so a component
+	// takes its block as `Cfg *config.TraderConfig` and compose.go fills it
+	// from the loaded Config by type. A block whose name pkg/config already
+	// declares for something else (Mode, a per-binary config) is left out
+	// rather than redeclared.
+	BlockAliases []string
 	// RoleModeField is the Go field name of the field tagged
 	// role=CONFIG_FIELD_ROLE_MODE, or "" when no field carries it. The
 	// generated Mode() reads THIS field — selected by
@@ -475,7 +482,36 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 			break
 		}
 	}
+	data.BlockAliases = configBlockAliases(data)
 	return data
+}
+
+// configPackageIdentifiers are the names config.go.tmpl declares in
+// pkg/config regardless of the project's messages.
+var configPackageIdentifiers = map[string]bool{
+	"Config": true, "Mode": true, "ModeProduction": true, "ModeDevelopment": true,
+	"ConfigPathEnv": true, "RegisterFlags": true, "Load": true, "Defaults": true,
+	"ModeOf": true, "Validate": true,
+}
+
+// configBlockAliases returns the block type names pkg/config can alias
+// without colliding with an identifier it already declares.
+func configBlockAliases(data ConfigTemplateData) []string {
+	taken := make(map[string]bool, len(configPackageIdentifiers)+len(data.BinaryConfigs))
+	for name := range configPackageIdentifiers {
+		taken[name] = true
+	}
+	for _, bc := range data.BinaryConfigs {
+		taken[bc.MessageName] = true
+	}
+	var out []string
+	for _, bt := range data.BlockTypes {
+		if !taken[bt.TypeName] {
+			taken[bt.TypeName] = true
+			out = append(out, bt.TypeName)
+		}
+	}
+	return out
 }
 
 // isDurationField reports whether a string config field carries a Go

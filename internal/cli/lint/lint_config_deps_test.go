@@ -113,9 +113,9 @@ func TestConfigDepsFixHint_CarriesSnippet(t *testing.T) {
 		"message TraderConfig",
 		"int64 wti_persist_max_per_tick = 1",
 		"(forge.v1.config)",
-		"Cfg config.TraderConfig",
-		"config.<env>.yaml",
-		"wti_persist_max_per_tick: <value>",
+		"Cfg *config.TraderConfig",
+		"deploy/kcl/<env>/config.k",
+		"wti_persist_max_per_tick = <value>",
 	} {
 		if !strings.Contains(hint, want) {
 			t.Errorf("fix hint missing %q:\n%s", want, hint)

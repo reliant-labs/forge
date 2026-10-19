@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jinzhu/inflection"
@@ -12,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // ownerMarkerTokenRE matches a `forge:owner` declaration as a WHOLE
@@ -229,6 +232,8 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	}
 
 	// Columns: the applied schema, verbatim.
+	pools := seedplan.PoolsFromTables([]schemadef.Table{table})[table.Name]
+	bounds := seedplan.BoundsFromTables([]schemadef.Table{table})[table.Name]
 	for _, c := range table.Columns {
 		fillStrategy, _ := c.FillStrategy()
 		e.Columns = append(e.Columns, EntityColumn{
@@ -244,6 +249,7 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 			Version:      c.HasMarker(schemadef.ColumnMarkerVersion),
 			FillStrategy: fillStrategy,
 			Owner:        declaresOwnerMarker(c.Comment),
+			ZeroRejected: checkRejectsZero(c, pools[c.Name], bounds[c.Name]),
 		})
 	}
 
@@ -271,6 +277,32 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	// the secret value. Drop any secret field's column from SearchColumns.
 	e.SearchColumns = dropSecretSearchColumns(e.SearchColumns, e.Fields)
 	return e
+}
+
+// checkRejectsZero reports whether the table's single-column CHECKs keep c
+// from ever holding its Go zero: an enum vocabulary (`col IN (...)`) that
+// lacks the empty string or 0, or a numeric bound that excludes 0. Only scalar columns
+// are judged; anything the CHECK parsers do not read answers false — the
+// zero is then presumed storable, which is the safe side (a pointer field).
+func checkRejectsZero(c schemadef.Column, pool []string, bound seedplan.NumBound) bool {
+	if c.IsArray {
+		return false
+	}
+	switch c.Type {
+	case schemadef.TypeString:
+		return len(pool) > 0 && !slices.Contains(pool, "")
+	case schemadef.TypeInt, schemadef.TypeFloat:
+		if len(pool) > 0 {
+			for _, v := range pool {
+				if f, err := strconv.ParseFloat(v, 64); err != nil || f == 0 {
+					return false
+				}
+			}
+			return true
+		}
+		return (bound.Min != nil && *bound.Min > 0) || (bound.Max != nil && *bound.Max < 0)
+	}
+	return false
 }
 
 // dropSecretSearchColumns removes columns backed by a `// forge:secret` wire

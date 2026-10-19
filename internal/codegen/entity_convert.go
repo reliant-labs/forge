@@ -58,6 +58,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 			Immutable:    c.Immutable,
 			Version:      c.Version,
 			FillStrategy: c.FillStrategy,
+			ZeroRejected: c.ZeroRejected,
 		}
 		pe.Fields = append(pe.Fields, pf)
 	}

@@ -114,6 +114,14 @@ type meta struct {
 	// that did, so the caller's entity holds what was stored rather than
 	// the zero it sent. See returnDatabaseFilled.
 	insertDefaultable []*schema.Field
+	// unsettable are the NOT NULL fields whose TYPE can say "unset": a
+	// pointer (nil), or a ,nullzero field (its zero). The generator emits
+	// those for a column whose DEFAULT is not its Go zero, or whose zero is
+	// never a stored value (codegen.ColumnInsertDefault). Unset means the
+	// same thing on every write: Create omits the column so its DEFAULT
+	// fires (Bun's own rule), a full-replace Update and an Upsert's
+	// conflict branch leave the stored value alone. See unsetColumns.
+	unsettable []*schema.Field
 }
 
 // sliceCol pairs a NOT NULL slice-typed column's struct-field index with
@@ -252,7 +260,9 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 
 		for _, f := range tbl.Fields {
 			r.m.columns = append(r.m.columns, f.Name)
-			if f.NotNull && f.IndirectType.Kind() == reflect.Slice {
+			// A ,nullzero slice's empty value is "unset" (its DEFAULT, or
+			// the stored value), not the empty array, so it is left alone.
+			if f.NotNull && f.IndirectType.Kind() == reflect.Slice && !f.NullZero {
 				r.m.nilSliceCols = append(r.m.nilSliceCols, sliceCol{fieldIndex: f.Index[0], column: f.Name})
 			}
 			if f.Name == "updated_at" {
@@ -359,6 +369,9 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 			}
 			if f.IsPtr || f.NullZero || f.SQLDefault != "" {
 				r.m.insertDefaultable = append(r.m.insertDefaultable, f)
+			}
+			if f.NotNull && (f.IsPtr || f.NullZero) {
+				r.m.unsettable = append(r.m.unsettable, f)
 			}
 		}
 
@@ -769,7 +782,9 @@ func (r *Repo[M]) Upsert(ctx context.Context, db orm.Context, entity *M) error {
 
 	q := r.excludeGeneratedColumns(db.Bun().NewInsert().Model(entity)).
 		On("CONFLICT (?) DO UPDATE", bun.Ident(r.m.pkColumn))
-	for _, col := range r.m.updatable {
+	// An unset column (unsettable) took its DEFAULT on the insert branch;
+	// on the conflict branch it keeps the stored value, as Update does.
+	for _, col := range r.withoutUnset(r.m.updatable, entity) {
 		q = q.Set("? = EXCLUDED.?", bun.Ident(col), bun.Ident(col))
 	}
 	if r.m.timestamps && r.m.hasUpdatedAt {
@@ -950,6 +965,7 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ..
 	if err != nil {
 		return err
 	}
+	cols = r.withoutUnset(cols, entity)
 	if len(cols) == 0 {
 		return nil // no updatable fields
 	}
@@ -1098,6 +1114,36 @@ type updateOptions struct {
 // GENERATED column, a ,skipupdate column) is accepted and changes nothing.
 func Preserve(columns ...string) UpdateOption {
 	return func(o *updateOptions) { o.preserve = append(o.preserve, columns...) }
+}
+
+// withoutUnset returns cols minus the unsettable columns entity leaves
+// unset (a nil pointer, a ,nullzero zero), as a fresh slice when it drops
+// any — cols may be the shared r.m.updatable allowlist.
+//
+// Writing them would store NULL into a NOT NULL column (a loud failure at
+// best) or reset a defaulted column to its DEFAULT; leaving them out keeps
+// the stored value, and readBackUnwritten reports it.
+func (r *Repo[M]) withoutUnset(cols []string, entity *M) []string {
+	if len(r.m.unsettable) == 0 {
+		return cols
+	}
+	v := reflect.ValueOf(entity).Elem()
+	var unset []string
+	for _, f := range r.m.unsettable {
+		if (f.IsPtr && f.HasNilValue(v)) || (f.NullZero && f.HasZeroValue(v)) {
+			unset = append(unset, f.Name)
+		}
+	}
+	if len(unset) == 0 {
+		return cols
+	}
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if !slices.Contains(unset, c) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // withoutPreserved returns cols minus preserve, as a fresh slice — cols is

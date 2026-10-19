@@ -65,10 +65,11 @@ type sourceUse struct {
 // releaseSourceCheck is what a set of checkouts is judged against: the
 // project's go.mod and the env's GitSource declarations.
 type releaseSourceCheck struct {
-	projectDir string
-	env        string
-	version    string
-	frontends  []FrontendEntity
+	projectDir   string
+	env          string
+	version      string
+	frontends    []FrontendEntity
+	buildSources []sourceDeclaration
 	// recorded is true at the cut, where the checkouts judged are the ones
 	// the build state RECORDS rather than the ones on disk now. The refusal
 	// then says "built from", and its remedy is a rebuild: resetting the
@@ -81,11 +82,12 @@ type releaseSourceCheck struct {
 
 func newReleaseSourceCheck(projectDir, env, version string, recorded bool, entities *KCLEntities) releaseSourceCheck {
 	return releaseSourceCheck{
-		projectDir: projectDir,
-		env:        env,
-		version:    version,
-		frontends:  entitiesOrEmpty(entities).Frontends,
-		recorded:   recorded,
+		projectDir:   projectDir,
+		env:          env,
+		version:      version,
+		frontends:    entitiesOrEmpty(entities).Frontends,
+		buildSources: buildSourceDeclarations(nil, entities),
+		recorded:     recorded,
 		resolver: func() (pinResolver, error) {
 			r, err := frontendSourceResolver(projectDir)
 			if err != nil {
@@ -355,13 +357,19 @@ func (c releaseSourceCheck) gitSourcePins(ctx context.Context, src *buildtarget.
 	}
 	var pins []sourcePin
 	var resolver pinResolver
-	for _, fe := range c.frontends {
-		if fe.Source == nil || fe.Source.Repo == "" || release.CanonicalRepo(fe.Source.Repo) != src.Repo {
+	declarations := append([]sourceDeclaration{}, c.buildSources...)
+	if len(declarations) == 0 {
+		for _, fe := range c.frontends {
+			declarations = append(declarations, sourceDeclaration{name: fmt.Sprintf("frontend %q", fe.Name), source: fe.Source})
+		}
+	}
+	for _, d := range declarations {
+		if d.source == nil || d.source.Repo == "" || release.CanonicalRepo(d.source.Repo) != src.Repo {
 			continue
 		}
-		declared := fmt.Sprintf("deploy/kcl: frontend %q GitSource ref %s", fe.Name, fe.Source.Ref)
-		if release.ValidObjectID(fe.Source.Ref) {
-			pins = append(pins, sourcePin{declared: declared, commit: fe.Source.Ref})
+		declared := fmt.Sprintf("deploy/kcl: %s GitSource ref %s", d.name, d.source.Ref)
+		if release.ValidObjectID(d.source.Ref) {
+			pins = append(pins, sourcePin{declared: declared, commit: d.source.Ref})
 			continue
 		}
 		if resolver == nil {
@@ -371,7 +379,7 @@ func (c releaseSourceCheck) gitSourcePins(ctx context.Context, src *buildtarget.
 			}
 			resolver = r
 		}
-		res, err := resolver.Resolve(ctx, toGitSource(fe.Source))
+		res, err := resolver.Resolve(ctx, toGitSource(d.source))
 		switch {
 		case err != nil:
 			pins = append(pins, sourcePin{declared: declared, unresolved: fmt.Sprintf("the ref does not resolve: %v", err)})

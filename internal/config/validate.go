@@ -581,6 +581,11 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	// BuildContext owns its scalar-or-GitSource union decoding, including
+	// strict key and pin validation; its internal fields are not YAML keys.
+	if t == reflect.TypeFor[BuildContext]() {
+		return nil
+	}
 	// We only descend into struct mappings here. Map[string]X with a
 	// declared key type just accepts anything (user-chosen keys), so
 	// no unknown-key warning at that layer.

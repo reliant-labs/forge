@@ -311,8 +311,8 @@ func projectRepos(projectDir string) []string {
 	}
 	if cfg, err := config.LoadProjectDir(projectDir); err == nil && cfg != nil {
 		for _, value := range cfg.Docker.BuildContexts {
-			if !strings.Contains(value, "://") {
-				dirs = append(dirs, resolve(value))
+			if value.Source == nil && !strings.Contains(value.Path, "://") {
+				dirs = append(dirs, resolve(value.Path))
 			}
 		}
 	}

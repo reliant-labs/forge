@@ -1192,7 +1192,7 @@ type DockerConfig struct {
 	// build`, letting Dockerfiles consume it via `FROM <name>` or
 	// `COPY --from=<name>`. Empty when not set; existing projects with no
 	// contexts see no change in build behaviour or output.
-	BuildContexts map[string]string `yaml:"build_contexts,omitempty"`
+	BuildContexts map[string]BuildContext `yaml:"build_contexts,omitempty"`
 }
 
 // Typed-access enforcement levels for [ConfigGuardConfig.EnforceTypedAccess].

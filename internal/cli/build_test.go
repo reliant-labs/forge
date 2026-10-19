@@ -415,10 +415,10 @@ func TestAppendBuildContexts(t *testing.T) {
 		absCtx := filepath.Join(t.TempDir(), "already-absolute")
 		cfg := &config.ProjectConfig{
 			Docker: config.DockerConfig{
-				BuildContexts: map[string]string{
-					"shared": "../shared-libs",
-					"base":   "docker-image://my-base:latest",
-					"abs":    absCtx,
+				BuildContexts: map[string]config.BuildContext{
+					"shared": {Path: "../shared-libs"},
+					"base":   {Path: "docker-image://my-base:latest"},
+					"abs":    {Path: absCtx},
 				},
 			},
 		}

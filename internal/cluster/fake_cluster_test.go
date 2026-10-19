@@ -72,6 +72,17 @@ type fakeClusterState struct {
 func (s *fakeClusterState) stamp(o map[string]any) {
 	s.RV++
 	md := strMap(o["metadata"])
+	if md["uid"] == nil {
+		for _, existing := range s.Objects {
+			if objKey(existing) == objKey(o) {
+				md["uid"] = strMap(existing["metadata"])["uid"]
+				break
+			}
+		}
+		if md["uid"] == nil {
+			md["uid"] = fmt.Sprintf("uid-%d", s.RV)
+		}
+	}
 	md["resourceVersion"] = strconv.Itoa(s.RV)
 	o["metadata"] = md
 }
@@ -206,6 +217,7 @@ func runFakeKubectl(statePath string, args []string, stdin io.Reader, stdout, st
 			return 1
 		}
 		state.Applies++
+		var applied []map[string]any
 		defaultNS := flag("-n")
 		dec := yaml.NewDecoder(stdin)
 		for {
@@ -231,9 +243,36 @@ func runFakeKubectl(statePath string, args []string, stdin io.Reader, stdout, st
 			doc["metadata"] = md
 			applyFakeObject(&state, doc)
 			name, _ := md["name"].(string)
-			fmt.Fprintf(stdout, "%s/%s serverside-applied\n", strings.ToLower(kind), name)
+			if flag("-o") == "json" {
+				applied = append(applied, doc)
+			} else {
+				fmt.Fprintf(stdout, "%s/%s serverside-applied\n", strings.ToLower(kind), name)
+			}
+		}
+		if flag("-o") == "json" {
+			b, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": applied})
+			fmt.Fprintln(stdout, string(b))
 		}
 	case "get":
+		if raw := flag("--raw"); raw != "" {
+			var resources []map[string]any
+			seen := map[string]bool{}
+			for _, o := range state.Objects {
+				kind, _ := o["kind"].(string)
+				if seen[kind] {
+					continue
+				}
+				seen[kind] = true
+				name := strings.ToLower(kind) + "s"
+				if strings.HasSuffix(kind, "Policy") {
+					name = strings.TrimSuffix(strings.ToLower(kind), "y") + "ies"
+				}
+				resources = append(resources, map[string]any{"name": name, "kind": kind, "namespaced": !fakeClusterScoped[kind]})
+			}
+			b, _ := json.Marshal(map[string]any{"resources": resources})
+			fmt.Fprintln(stdout, string(b))
+			return 0
+		}
 		// A kind whose CRD is gone: the server no longer serves it at all.
 		if unserved := os.Getenv("FORGE_FAKE_UNSERVED_KIND"); unserved != "" && fakeResourceMatches(args[1], unserved) {
 			fmt.Fprintf(stderr, "error: the server doesn't have a resource type %q\n", args[1])
@@ -331,8 +370,52 @@ func runFakeKubectl(statePath string, args []string, stdin io.Reader, stdout, st
 			}
 		}
 		state.upsert(doc)
-		fmt.Fprintf(stdout, "%s/%s %sd\n", strings.ToLower(kind), md["name"], args[0])
+		if flag("-o") == "json" {
+			b, _ := json.Marshal(doc)
+			fmt.Fprintln(stdout, string(b))
+		} else {
+			fmt.Fprintf(stdout, "%s/%s %sd\n", strings.ToLower(kind), md["name"], args[0])
+		}
 	case "delete":
+		if raw := flag("--raw"); raw != "" {
+			var options struct {
+				Preconditions struct {
+					UID             string `json:"uid"`
+					ResourceVersion string `json:"resourceVersion"`
+				} `json:"preconditions"`
+			}
+			if err := json.NewDecoder(stdin).Decode(&options); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			parts := strings.Split(strings.Trim(raw, "/"), "/")
+			res, name := parts[len(parts)-2], parts[len(parts)-1]
+			ns := ""
+			for i, p := range parts {
+				if p == "namespaces" && i < len(parts)-2 {
+					ns = parts[i+1]
+				}
+			}
+			for i, o := range state.Objects {
+				md := strMap(o["metadata"])
+				kind, _ := o["kind"].(string)
+				oNS, _ := md["namespace"].(string)
+				if !fakeResourceMatches(res, kind) || md["name"] != name || oNS != ns {
+					continue
+				}
+				if md["uid"] != options.Preconditions.UID || md["resourceVersion"] != options.Preconditions.ResourceVersion {
+					fmt.Fprintln(stderr, "Error from server (Conflict): delete preconditions failed")
+					return 1
+				}
+				// Keep the existing tests' resource/name/namespace delete log.
+				group := apiGroup(fmt.Sprint(o["apiVersion"]))
+				state.Deletes = append(state.Deletes, strings.TrimSpace(kubectlResource(kind, group)+" "+name+" "+ns))
+				state.Objects = append(state.Objects[:i], state.Objects[i+1:]...)
+				return 0
+			}
+			fmt.Fprintln(stderr, "Error from server (NotFound): object absent")
+			return 1
+		}
 		res, name, ns := args[1], args[2], flag("-n")
 		state.Deletes = append(state.Deletes, strings.TrimSpace(res+" "+name+" "+ns))
 		want, _, _ := strings.Cut(res, ".")
@@ -440,6 +523,7 @@ func newFakeCluster(t *testing.T) *fakeCluster {
 		t.Fatalf("symlink fake kubectl: %v", err)
 	}
 	path := filepath.Join(dir, "cluster.json")
+	saveFakeState(path, fakeClusterState{Objects: []map[string]any{{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": "kube-system"}}}})
 	t.Setenv(fakeClusterEnv, path)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return &fakeCluster{t: t, path: path}
@@ -493,7 +577,16 @@ func (c *fakeCluster) labels(kind, ns, name string) map[string]any {
 	return strMap(strMap(o["metadata"])["labels"])
 }
 
-func (c *fakeCluster) deletes() []string { return c.state().Deletes }
+func (c *fakeCluster) deletes() []string {
+	var objects []string
+	for _, d := range c.state().Deletes {
+		if strings.HasPrefix(d, "configmap forge-chart-lock-") {
+			continue
+		}
+		objects = append(objects, d)
+	}
+	return objects
+}
 
 // injectOn makes the fake upsert objs the first time it serves verb: another
 // client's write, landing mid-run.
@@ -538,7 +631,7 @@ func (c *fakeCluster) inventories() map[string][]string {
 func (c *fakeCluster) inventory(ns string) []string {
 	c.t.Helper()
 	for k, entries := range c.inventories() {
-		if strings.HasPrefix(k, ns+"/") {
+		if strings.HasPrefix(k, chartStateNamespace+"/") {
 			return entries
 		}
 	}

@@ -731,37 +731,64 @@ func applyRenderedCharts(ctx context.Context, kctx string, charts []renderedChar
 				fmt.Printf("Applying platform dependency %q (helm-rendered)...\n", rc.spec.Name)
 			}
 		}
-		// The chart's inventory is read BEFORE its apply: the prune deletes
-		// only from what an earlier apply recorded, never from what a
-		// concurrent apply is introducing now. nil when the prune is off.
-		prune := beginChartPrune(ctx, chartCtx, rc, applyID)
-		// rc.spec.Namespace is the chart's DECLARED namespace, threaded into
-		// the apply as `-n` so a chart object with no `metadata.namespace`
-		// lands there instead of in `default` (see KubectlApplyNamespaced).
-		if err := applyCRDsThenRest(ctx, chartCtx, rc.spec.Namespace, rc.crds, rc.manifests); err != nil {
-			// Nothing is pruned after a failed apply; what it sent is still
-			// recorded, so an object it did create is tracked.
-			prune.afterFailedApply(ctx)
-			return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
+		// Serialize owned charts across apply, inventory commit and prune.
+		// Another writer fails before ANY chart write; locks never expire.
+		if err := applyLockedChart(ctx, chartCtx, rc, applyID, quiet); err != nil {
+			return err
 		}
-		// Consumer-declared manifests riding this chart's --target
-		// (GatewayClass / ClusterIssuers) — applied AFTER the chart's
-		// controllers so the controller (envoy-gateway / cert-manager) is up
-		// before the instances it reconciles. applyCRDsThenRest two-passes
-		// any CRD-then-rest within them too (harmless: these carry none).
-		if strings.TrimSpace(rc.extra) != "" {
-			if err := applyChartRidingManifests(ctx, chartCtx, rc, quiet); err != nil {
-				prune.afterFailedApply(ctx)
-				return err
+	}
+	return nil
+}
+
+// One chart owns its non-expiring lock until all child commands have exited.
+// An abnormal exit leaves the lock for explicit, operator-controlled recovery.
+func applyLockedChart(ctx context.Context, chartCtx string, rc renderedChart, applyID string, quiet bool) (result error) {
+	prune, err := beginChartPrune(ctx, chartCtx, rc, applyID)
+	if prune != nil {
+		defer func() {
+			if result != nil || ctx.Err() != nil {
+				// A transport error/cancellation may leave an API request in
+				// flight. Never admit another writer by automatically unlocking
+				// an uncertain outcome. Recovery requires the operator to stop
+				// this writer and reconcile its outstanding requests first.
+				result = errors.Join(result, fmt.Errorf("chart lock retained: %s/%s; explicit recovery required (see deploy/flux)", chartStateNamespace, chartLockName(rc.spec)))
+				return
 			}
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			result = errors.Join(result, prune.release(cleanup))
+		}()
+	}
+	if err != nil {
+		return err
+	}
+	if prune != nil {
+		ctx = context.WithValue(ctx, chartPruneContextKey{}, prune)
+	}
+	// rc.spec.Namespace is the chart's DECLARED namespace, threaded into
+	// the apply as `-n` so a chart object with no `metadata.namespace`
+	// lands there instead of in `default` (see KubectlApplyNamespaced).
+	if err := applyCRDsThenRest(ctx, chartCtx, rc.spec.Namespace, rc.crds, rc.manifests); err != nil {
+		// Never record intended but unconfirmed UIDs after a failed apply.
+		// The prior inventory remains intact; retain the lock for recovery.
+		return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
+	}
+	// Consumer-declared manifests riding this chart's --target
+	// (GatewayClass / ClusterIssuers) — applied AFTER the chart's
+	// controllers so the controller (envoy-gateway / cert-manager) is up
+	// before the instances it reconciles. applyCRDsThenRest two-passes
+	// any CRD-then-rest within them too (harmless: these carry none).
+	if strings.TrimSpace(rc.extra) != "" {
+		if err := applyChartRidingManifests(ctx, chartCtx, rc, quiet); err != nil {
+			return err
 		}
-		// The chart is fully applied: only now is its render a proven account
-		// of what it declares, so only now can an object it dropped be pruned.
-		// A failed prune never fails the deploy (it is housekeeping, like the
-		// Deployment and CRD prunes), but it is never silent.
-		if _, err := prune.afterApply(ctx); err != nil {
-			fmt.Printf("Warning: platform dependency %q: %v\n", rc.spec.Name, err)
-		}
+	}
+	// The chart is fully applied: only now is its render a proven account
+	// of what it declares, so only now can an object it dropped be pruned.
+	// A failed security-object prune fails the deploy and retains its lock;
+	// success must not hide an outstanding grant that should have been removed.
+	if _, err := prune.afterApply(ctx); err != nil {
+		return fmt.Errorf("platform dependency %q prune: %w", rc.spec.Name, err)
 	}
 	return nil
 }
@@ -2060,12 +2087,33 @@ func kubectlApplyArgs(namespace string) []string {
 }
 
 func applyOnce(ctx context.Context, kctx, namespace, manifests string) (applyStdout, applyStderr string, err error) {
-	cmd := kubectlCmd(ctx, kctx, kubectlApplyArgs(namespace)...)
+	args := kubectlApplyArgs(namespace)
+	collector, _ := ctx.Value(chartPruneContextKey{}).(*chartPrune)
+	if collector != nil {
+		if err := collector.checkLock(ctx); err != nil {
+			return "", "", err
+		}
+		args = append(args, "-o", "json")
+	}
+	cmd := kubectlCmd(ctx, kctx, args...)
 	cmd.Stdin = strings.NewReader(manifests)
 	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
+	if collector == nil {
+		cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
+	} else {
+		cmd.Stdout = &outBuf
+	}
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 	err = cmd.Run()
+	if collector != nil && err == nil {
+		var status string
+		status, err = collector.collectApply(outBuf.Bytes())
+		if err != nil {
+			return "", errBuf.String(), err
+		}
+		fmt.Print(status)
+		return status, errBuf.String(), nil
+	}
 	return outBuf.String(), errBuf.String(), err
 }
 

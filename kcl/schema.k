@@ -3316,35 +3316,39 @@ schema HelmChart:
     PRUNING. forge applies a chart's objects but a plain `kubectl apply`
     never deletes, so an object a chart version stops rendering (a
     NetworkPolicy, a ClusterRole) used to stay live forever. forge now
-    records every object a chart's apply sends in the chart's INVENTORY (a
-    ConfigMap `forge-chart-inventory-<name>-<hash>` in the chart's namespace,
-    one per env) and stamps each with `forge.dev/chart-owner =
-    <project>.<env>`. After a successful apply it deletes the objects the
-    inventory recorded BEFORE that apply which the new render no longer
-    contains. Nothing outside the inventory is ever a candidate, not even an
-    object carrying the stamp (a copied manifest). It never deletes:
+    records successful apply response UIDs in the chart's INVENTORY (a
+    ConfigMap `forge-chart-inventory-<hash>` in kube-system, one per owner
+    and chart) and stamps each with `forge.dev/chart-owner = <project>.<env>`.
+    After a successful apply it deletes only prior inventoried UIDs the new
+    render no longer contains. DELETE uses UID and resourceVersion
+    preconditions: a replacement or an intervening policy/ownership change
+    cannot be deleted with a stale decision. It never deletes:
 
       * a CRD, a Namespace, or a kind that holds data (PersistentVolume,
-        PersistentVolumeClaim, StatefulSet, Secret) — kept, and reported
-        (only their existence is read, never a Secret's contents);
+        PersistentVolumeClaim, StatefulSet, Secret) — never queried for
+        pruning, and never deleted;
       * an object that no longer carries this chart's stamp (forge stops
         tracking it);
       * an object another controller owns (`ownerReferences`);
       * an object annotated `kustomize.toolkit.fluxcd.io/prune: disabled`
         (the SAME escape hatch a Flux bundle honours);
-      * anything after a FAILED apply (what it sent is still recorded), or
+      * anything after a FAILED apply (inventory stays unchanged), or
         from a chart whose render came out empty or unparseable.
 
-    The first apply that finds no inventory (the first deploy under this
-    version) prunes nothing and records one; pruning starts with the next.
-    Two concurrent applies of one chart each prune only from the inventory
-    they read before applying, so neither deletes what the other is adding,
-    and their inventory writes merge (compare-and-swap) rather than
-    overwrite. `prune = False` turns the step off for a chart whose live
-    objects are hand-managed. A `--target` apply of another workload renders
-    no chart and prunes nothing. An object a chart dropped before its
-    inventory existed was never recorded and is never deleted: remove it by
-    hand once.
+    The first apply without an inventory prunes nothing and records one.
+    Every owned chart apply acquires a NON-EXPIRING lock in kube-system,
+    before any chart write, covering apply through inventory and prune.
+    Another applier fails closed; no clock expiry or automatic takeover may
+    admit a stale writer. Failed/cancelled applies retain the lock because
+    an API request may still be in flight. Crash recovery requires explicitly
+    terminating/fencing the former writer and its kubectl children, resolving
+    outstanding requests, then `forge cluster recover-chart-lock` with the
+    inspected UID, resourceVersion and holder confirmation. See deploy/flux.
+    This trades automatic crash recovery for safe security-object deletion.
+    The applier needs ConfigMap get/create/update/delete in kube-system.
+    `prune = False` disables deletion, not locking or inventory tracking.
+    A `--target` apply of another workload prunes nothing. An object dropped
+    before the inventory existed was never recorded: remove it by hand once.
     """
     name: str
     chart: str = ""

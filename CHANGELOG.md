@@ -465,25 +465,24 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   reaches it some other way is refused too. Drop the key: forge's values are the
   chart's `name` and `forge`.
 
-- **A chart prune deletes only what the chart's INVENTORY recorded.** The
-  chart prune (below) chose its candidates by listing every object that carried
-  the chart's `forge.dev/chart-owner` stamp. That deleted two kinds of object
-  forge's own apply never sent. One was a stamped object a concurrent apply of
-  the same chart had just created. The other was a copy someone made of a
-  chart object, which carries the stamp too. Every chart apply now records what
-  it sent in a per-chart inventory, a ConfigMap
-  `forge-chart-inventory-<name>-<hash>` in the chart's namespace, one per
-  (project, env). The candidates are the objects that inventory recorded BEFORE
-  the apply which the render no longer contains, and each is still deleted only
-  while it carries the stamp. A **failed** apply deletes nothing but records
-  what it sent. The **first** apply that finds no inventory deletes nothing and
-  records one, so the first deploy under this version prunes nothing. **Two
-  applies at once** each prune only from the inventory they read, and their
-  writes merge by compare-and-swap instead of overwriting each other. The
-  prune no longer lists every resource type in the cluster: it reads only its
-  candidates, and a stateful kind only by name, so a Secret's contents are
-  never read. An inventory ConfigMap a chart left in its old namespace is folded
-  into the new one when the chart moves.
+- **Chart pruning uses recorded UIDs and a non-expiring apply/prune lock.**
+  Label-only enumeration could delete a copied object or a concurrent applier's
+  resources. Owned charts now atomically lock before any chart write and record
+  successful SSA-response UIDs in `kube-system/forge-chart-inventory-<hash>`.
+  Only prior inventory UIDs are prune candidates; UID/resourceVersion-conditional
+  DELETE protects replacements and intervening ownership/prune-policy changes.
+  The first run deletes nothing; failed applies leave inventory unchanged and
+  prune nothing. CRDs, Namespaces, PV/PVC, StatefulSet and Secret remain protected,
+  as do Flux prune-disabled annotations and controller-owned objects. Plans use
+  the same inventory/UID guards. Inventory and prune errors fail the deploy.
+  **Operational change:** the applier needs ConfigMap access in kube-system.
+  The lock never expires or admits automatic takeover. Failed/cancelled/crashed
+  commands retain it; terminate/fence the old writer and children, resolve
+  outstanding writes, then use `forge cluster recover-chart-lock` with explicit
+  context, owner/chart, inspected UID/resourceVersion and holder confirmation.
+  See `deploy/flux` for the safety procedure. Previously untracked stale objects
+  still require one-time manual deletion. `prune = False` disables deletion,
+  not serialization or inventory tracking.
 
 - **BEHAVIOR CHANGE: a re-apply of a `forge.HelmChart` now deletes the objects
   the chart stopped rendering.** forge applies a chart with `kubectl apply`,

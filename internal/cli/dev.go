@@ -84,6 +84,7 @@ Examples:
 	// lifecycle above: nothing is created, and the cluster outlives the
 	// registration.
 	cmd.AddCommand(clusterConnectCommands()...)
+	cmd.AddCommand(newChartLockRecoverCmd())
 
 	// Dev-state introspection, promoted unchanged.
 	cmd.AddCommand(newDevLogsCmd())

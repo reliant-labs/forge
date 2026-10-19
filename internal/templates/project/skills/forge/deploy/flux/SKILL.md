@@ -129,19 +129,57 @@ refused: every `forge.dev/*` key, `app.kubernetes.io/name` (the chart's `name`),
 `app.kubernetes.io/managed-by` (`forge`), and the apiserver's
 `kubernetes.io/metadata.name`. Every other key, PSA included, is yours.
 
-A re-apply also **deletes the objects the chart stopped rendering**. Every apply
-records what it sent in the chart's inventory (a ConfigMap
-`forge-chart-inventory-<name>-<hash>` in the chart's namespace) and stamps each
-object `forge.dev/chart-owner=<project>.<env>`. After the chart's apply
-succeeds, the objects the inventory recorded before it that the new render
-lacks are removed, and only while they still carry the stamp. It keeps (and
-reports) CRDs, Namespaces and stateful kinds (PV, PVC, StatefulSet, Secret);
-anything annotated `kustomize.toolkit.fluxcd.io/prune: disabled`; and anything
-with `ownerReferences`. A failed apply prunes nothing. The first apply without
-an inventory prunes nothing and records one. A concurrent apply of the same
-chart never has its new objects pruned. `prune = False` turns it off for a
-chart. An object dropped before the chart had an inventory was never recorded
-and is never deleted: remove it by hand once.
+A re-apply **deletes objects the chart stopped rendering**, but only UIDs an
+earlier successful apply recorded. Inventory ConfigMap
+`kube-system/forge-chart-inventory-<hash>` is keyed by project/env owner and
+chart (moving target namespaces cannot fork it). UIDs come from SSA responses,
+not a later name lookup. The live UID and ownership stamp must still match.
+Deletion sends UID **and resourceVersion** preconditions, so a concurrent
+replacement, prune annotation or ownership change is protected.
+
+CRDs, Namespaces, PV/PVC, StatefulSets and Secrets are never deleted or queried
+for prune. `kustomize.toolkit.fluxcd.io/prune: disabled` and `ownerReferences`
+keep an object. Failed applies leave inventory unchanged and prune nothing;
+partial writes remain conservatively untracked until a successful retry.
+The first run without an inventory deletes nothing. Previously dropped objects
+still need manual deletion once. `prune = False` disables deletion, not locking
+or inventory tracking. Prune/inventory errors fail the deploy, not just warn.
+
+### Chart lock and explicit crash recovery
+
+Every owned chart apply first atomically creates a non-expiring ConfigMap lock
+`kube-system/forge-chart-lock-<hash>`, holding it through apply, inventory commit
+and prune. Another applier fails before chart writes. The applier requires
+ConfigMap get/create/update/delete in kube-system. There is no automatic expiry,
+stealing, `--force`, or age-based unlock. This intentionally trades automatic
+recovery for protection against a suspended writer resuming after lease expiry.
+
+A clean successful apply conditionally releases its own lock. A failed or
+cancelled command retains it: an API write may still be in flight. Recovery is
+an operator action, **never a deploy retry loop**:
+
+1. Read the lock named in the error with an explicit kubectl context. Inspect
+   its owner/chart labels, `data.holder`, `data.started`, metadata UID and
+   resourceVersion. Check the originating host/process and deployment logs.
+2. **Terminate or fence that holder's forge process AND its kubectl children on
+   every host.** A suspended process is not dead. Resolve outstanding API writes
+   or revoke their credential and establish they cannot complete later. Do not
+   recover merely because a process is slow or a timestamp is old. If you cannot
+   prove the old writer cannot resume, leave the lock and investigate.
+3. Only then explicitly attest the inspected holder (the CLI does not claim to
+   prove remote process termination):
+
+   ```sh
+   forge cluster recover-chart-lock --context <explicit-context> \
+     --owner <project.env> --chart <chart-name> \
+     --uid <inspected-lock-uid> --resource-version <inspected-lock-rv> \
+     --confirm-terminated 'terminated:<inspected-data.holder>'
+   ```
+
+   The command refuses missing/mismatched confirmation and conditionally deletes
+   only that exact lock UID/resourceVersion. It never deletes the inventory.
+4. Re-run the declarative apply. Old/untracked objects need inspection; never
+   manufacture inventory entries or remove a lock while its writer is live.
 
 Detection of "this env already provides Flux" is **by chart reference, never by
 name**: a chart's `name` is the `--target` selector its author picks freely, so a

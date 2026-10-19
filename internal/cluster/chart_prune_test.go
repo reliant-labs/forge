@@ -306,8 +306,8 @@ func TestChartPrune_NamespaceIsNeverDeleted(t *testing.T) {
 	}
 	want := []string{
 		"Deployment/flux-system-2/source-controller",
-		"Namespace/flux-system-2/flux-system-2",
-		"Namespace/flux-system/flux-system",
+		"Namespace/flux-system",
+		"Namespace/flux-system-2",
 	}
 	if got := cl.inventory("flux-system-2"); !reflect.DeepEqual(got, want) {
 		t.Errorf("inventory after the move = %v, want %v", got, want)
@@ -423,7 +423,7 @@ func TestChartPrune_FirstApplyWithoutInventoryDeletesNothing(t *testing.T) {
 			t.Errorf("%v was deleted on the first apply without an inventory", o)
 		}
 	}
-	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system/flux-system"}; !reflect.DeepEqual(got, want) {
+	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("recorded inventory = %v, want %v (what this apply sent)", got, want)
 	}
 
@@ -434,10 +434,9 @@ func TestChartPrune_FirstApplyWithoutInventoryDeletesNothing(t *testing.T) {
 	}
 }
 
-// A failed apply proves nothing about what the render declares, so it prunes
-// nothing, however much has left the render. It still RECORDS what it sent: an
-// object a partial apply created must be prunable later. The next successful
-// apply prunes as usual.
+// A failed apply proves nothing about the render's unconfirmed UIDs. It prunes
+// nothing, preserves the prior inventory, and retains the lock until explicit
+// recovery. A later successful retry can then reconcile the prior inventory.
 func TestChartPrune_FailedApplyPrunesNothing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
@@ -463,21 +462,32 @@ func TestChartPrune_FailedApplyPrunesNothing(t *testing.T) {
 		t.Error("a failed apply deleted a departed object")
 	}
 	inv := strings.Join(cl.inventory("flux-system"), " ")
-	for _, want := range []string{"ConfigMap/flux-system/introduced-then-failed", "NetworkPolicy/flux-system/allow-webhooks"} {
-		if !strings.Contains(inv, want) {
-			t.Errorf("after a failed apply the inventory must hold %s (what it sent, and what it did not prune): %s", want, inv)
-		}
+	if strings.Contains(inv, "introduced-then-failed") {
+		t.Fatalf("failed apply recorded an unconfirmed UID: %s", inv)
+	}
+	if !strings.Contains(inv, "NetworkPolicy/flux-system/allow-webhooks") {
+		t.Fatalf("failed apply forgot prior inventory: %s", inv)
 	}
 
 	// The apply recovers: everything that left the render goes, and an entry
 	// for an object the failed apply never created is simply forgotten.
 	t.Setenv("FORGE_FAKE_FAIL_APPLY", "")
+	// The failed command retained its lock. In this fake all requests are
+	// synchronous and finished, so explicitly attest the terminated holder.
+	lock, err := getChartObject(context.Background(), "k3d-test", chartStateEntry(chartLockName(spec)))
+	if err != nil || lock == nil {
+		t.Fatalf("failed apply did not retain lock: %v", err)
+	}
+	holder := strMap(lock.raw["data"])["holder"].(string)
+	if err := RecoverChartLock(context.Background(), "k3d-test", spec.Owner, spec.Name, lock.Metadata.UID, lock.Metadata.ResourceVersion, "terminated:"+holder); err != nil {
+		t.Fatal(err)
+	}
 	setRelease(stream(docDeployment))
 	applyRelease(t, spec)
 	if cl.has("NetworkPolicy", "flux-system", "allow-webhooks") || cl.has("ClusterRole", "", "cluster-reconciler-impersonator") {
 		t.Error("the successful apply after a failed one did not prune the departed objects")
 	}
-	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system/flux-system"}; !reflect.DeepEqual(got, want) {
+	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("inventory after recovery = %v, want %v", got, want)
 	}
 }
@@ -488,8 +498,8 @@ func TestChartPrune_FailedApplyPrunesNothing(t *testing.T) {
 // object was not in the inventory this apply read, so this apply must not
 // delete it, though it is stamped and absent from this render. Then, between
 // this apply's read and write of the inventory, the concurrent applier records
-// its object. The compare-and-swap loses, retries, and MERGES: the concurrent
-// entry survives beside this apply's.
+// its object in violation of the lock. The compare-and-swap must refuse to
+// overwrite that foreign inventory write, and no deletion may follow.
 func TestChartPrune_ConcurrentApplierIsNotPruned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
@@ -500,7 +510,7 @@ func TestChartPrune_ConcurrentApplierIsNotPruned(t *testing.T) {
 
 	setRelease(stream(docDeployment, docWebhookPolicy))
 	applyRelease(t, spec)
-	invKey := "flux-system/" + chartInventoryName(spec.Name, spec.Owner)
+	invKey := chartStateNamespace + "/" + chartInventoryName(spec.Name, spec.Owner)
 	before := cl.state()
 
 	concurrentRole := map[string]any{
@@ -534,21 +544,15 @@ func TestChartPrune_ConcurrentApplierIsNotPruned(t *testing.T) {
 	cl.injectOn("replace", concurrentInv)
 
 	setRelease(stream(docDeployment))
-	applyRelease(t, spec)
-
-	if !cl.has("ClusterRole", "", "added-concurrently") {
-		t.Error("an object a concurrent applier introduced was pruned; it was in no inventory this apply read")
+	rc := renderRelease(t, spec)
+	if err := applyRenderedCharts(context.Background(), "k3d-test", []renderedChart{rc}, true); err == nil {
+		t.Fatal("foreign inventory write must fail CAS, never overwrite or prune")
 	}
-	if cl.has("NetworkPolicy", "flux-system", "allow-webhooks") {
-		t.Error("the object this apply's inventory recorded and its render dropped was not pruned")
+	if !cl.has("ClusterRole", "", "added-concurrently") || !cl.has("NetworkPolicy", "flux-system", "allow-webhooks") {
+		t.Fatal("inventory conflict deleted an object")
 	}
-	got := cl.inventory("flux-system")
-	if want := []string{
-		"ClusterRole/flux-system/added-concurrently",
-		"Deployment/flux-system/source-controller",
-		"Namespace/flux-system/flux-system",
-	}; !reflect.DeepEqual(got, want) {
-		t.Errorf("inventory after the conflicting write = %v, want %v (the concurrent entry merged, the pruned one gone)", got, want)
+	if got := cl.deletes(); len(got) != 0 {
+		t.Fatalf("pruned after inventory conflict: %v", got)
 	}
 }
 
@@ -569,13 +573,22 @@ func TestChartPrune_StaleApplierCannotDeleteWinnersRetainedObject(t *testing.T) 
 	// A intends to remove the policy and reads the old inventory, then pauses.
 	setRelease(docDeployment)
 	staleRender := renderRelease(t, spec)
-	stale := beginChartPrune(context.Background(), "k3d-test", staleRender, "stale-A")
-	if stale == nil {
-		t.Fatal("fixture: A must have an inventory snapshot")
+	stale, err := beginChartPrune(context.Background(), "k3d-test", staleRender, "stale-A")
+	if err != nil || stale == nil {
+		t.Fatalf("fixture: A must hold its lock and inventory: %v", err)
 	}
 
-	// B retains the policy and completes its apply and inventory write.
+	// B cannot overlap A. A's lock cannot expire, even if A is suspended.
 	setRelease(stream(docDeployment, docWebhookPolicy))
+	winner := renderRelease(t, spec)
+	if err := applyRenderedCharts(context.Background(), "k3d-test", []renderedChart{winner}, true); err == nil {
+		t.Fatal("B overlapped A's non-expiring lock")
+	}
+	// A stops before explicit recovery, then B completes. Model a stale
+	// callback resuming after recovery: it must reject its obsolete lock UID.
+	if err := stale.release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	applyRelease(t, spec)
 
 	// A resumes. Its inventory merge must not just preserve B's entry after
@@ -609,7 +622,7 @@ func TestChartPrune_EntryOfAnUnservedKindIsForgotten(t *testing.T) {
 	if got := cl.deletes(); len(got) != 0 {
 		t.Errorf("deleted %v", got)
 	}
-	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system/flux-system"}; !reflect.DeepEqual(got, want) {
+	if got, want := cl.inventory("flux-system"), []string{"Deployment/flux-system/source-controller", "Namespace/flux-system"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("inventory = %v, want %v (the unserved kind's entry forgotten)", got, want)
 	}
 }

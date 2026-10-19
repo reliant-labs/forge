@@ -4,8 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/metric"
 )
 
 // drain.go — the graceful-shutdown sequence, as pieces a hand-built main can
@@ -41,6 +44,9 @@ import (
 // and a negative PreStopDelay skips the pause. It is safe for concurrent use:
 // readiness handlers read it from request goroutines while the shutdown path
 // writes it.
+//
+// It writes the shutdown's own phase lines (drain_phases.go): Begin the
+// readiness flip and the pre-stop pause, Complete the total.
 type Drainer struct {
 	// PreStopDelay is how long the process keeps serving after readiness
 	// flips. See Config.PreStopDelay.
@@ -48,9 +54,18 @@ type Drainer struct {
 	// ShutdownTimeout bounds every teardown step after the pre-stop pause.
 	// See Config.ShutdownTimeout.
 	ShutdownTimeout time.Duration
+	// Logger receives the phase lines; nil is slog.Default().
+	Logger *slog.Logger
+	// Meter records the phases in forge.server.drain.duration; nil is the
+	// global OpenTelemetry meter.
+	Meter metric.Meter
 
 	ready    atomic.Bool
 	draining atomic.Bool
+
+	mu     sync.Mutex
+	phases *drainPhases // set by Begin; nil again once Complete has run
+	begun  time.Time    // when Begin ran
 }
 
 // NewDrainer returns a Drainer carrying cfg's drain budget.
@@ -74,11 +89,51 @@ func (d *Drainer) Draining() bool { return d.draining.Load() }
 // listener stays open for the whole pause — that is the point: requests
 // already in flight, and requests a balancer has not yet stopped sending, are
 // still answered normally.
+//
+// It logs the flip ("drain: readiness flipped to draining", phase readiness)
+// and the end of the pause (phase pre_stop, with its elapsed).
 func (d *Drainer) Begin() {
+	p := newDrainPhases(d.Logger, d.Meter)
+	start := time.Now()
+	d.mu.Lock()
+	d.phases, d.begun = p, start
+	d.mu.Unlock()
+
 	d.draining.Store(true)
-	if delay := d.preStopDelay(); delay > 0 {
+	delay := max(d.preStopDelay(), 0)
+	p.logger.Info("drain: readiness flipped to draining", "phase", "readiness", "pre_stop_delay", delay)
+	if delay > 0 {
 		time.Sleep(delay)
 	}
+	p.done("pre_stop", start, "drain: pre-stop pause over; draining the listener")
+}
+
+// Complete ends the shutdown's log: one "drain: complete" line with the
+// total since Begin and the ShutdownTimeout it ran against, recorded as the
+// phase total. Call it when the teardown is done and before telemetry is
+// flushed, so the point is exported. It does nothing before Begin or after
+// the first call.
+func (d *Drainer) Complete() {
+	d.mu.Lock()
+	p, begun := d.phases, d.begun
+	d.phases = nil
+	d.mu.Unlock()
+	if p != nil {
+		p.done("total", begun, "drain: complete", "shutdown_timeout", d.shutdownTimeout())
+	}
+}
+
+// phase logs one of Run's own phases — workers, operators, teardown — begun
+// at start, with the drainer's logger and meter, and returns its end. Before
+// Begin it logs nothing and returns now.
+func (d *Drainer) phase(name string, start time.Time, msg string, attrs ...any) time.Time {
+	d.mu.Lock()
+	p := d.phases
+	d.mu.Unlock()
+	if p == nil {
+		return time.Now()
+	}
+	return p.done(name, start, msg, attrs...)
 }
 
 // ShutdownContext returns the context that bounds every teardown step after

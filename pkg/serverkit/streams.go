@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
@@ -72,6 +74,13 @@ type Streams struct {
 	// Unavailable instead of OK — for peers that redial on Unavailable. See
 	// StreamDrainInterceptor for the client contract.
 	RedialOnDrain []string
+
+	// Logger receives the "drain: listener drained" line DrainHTTP writes
+	// for this listener; nil is slog.Default().
+	Logger *slog.Logger
+	// Meter records that phase (listener) in forge.server.drain.duration;
+	// nil is the global OpenTelemetry meter.
+	Meter metric.Meter
 
 	once sync.Once
 	soft chan struct{} // closed when the drain begins
@@ -431,8 +440,13 @@ func DrainDeadline(ctx context.Context) (deadline time.Time, ok bool) {
 // unary requests (http.Server.Shutdown) while streams drain soft-then-hard
 // (Streams.Drain), both inside ctx's deadline. Run calls it after the
 // readiness flip and the pre-stop pause; a process that runs its own listener
-// calls it in place of srv.Shutdown. A nil streams is plain Shutdown.
+// calls it in place of srv.Shutdown.
+//
+// It logs the listener phase — "drain: listener drained", with its elapsed
+// and the streams' DrainReport — to streams.Logger and records it in
+// streams.Meter. A nil streams is plain Shutdown, and logs nothing.
 func DrainHTTP(ctx context.Context, srv *http.Server, streams *Streams) error {
+	start := time.Now()
 	if streams == nil {
 		return srv.Shutdown(ctx)
 	}
@@ -442,7 +456,14 @@ func DrainHTTP(ctx context.Context, srv *http.Server, streams *Streams) error {
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- srv.Shutdown(ctx) }()
 	streamsErr := streams.Drain(ctx)
-	return errors.Join(<-shutdown, streamsErr)
+	err := errors.Join(<-shutdown, streamsErr)
+	report := streams.Report()
+	newDrainPhases(streams.Logger, streams.Meter).done("listener", start, "drain: listener drained",
+		"addr", srv.Addr,
+		"streams_ended", report.Ended, "streams_claimed", report.Claimed,
+		"streams_hard_ended", report.HardEnded, "hijacked_conns_closed", report.ConnsClosed,
+		"streams_still_running", report.StillRunning)
+	return err
 }
 
 // LongLived marks h's requests as long-lived streams — Server-Sent Events, a

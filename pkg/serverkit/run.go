@@ -17,7 +17,6 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
-	"go.opentelemetry.io/otel"
 )
 
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
@@ -102,13 +101,16 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// ln/Serve below) and flipped to draining at the top of shutdown. It is
 	// only the FIRST half of /readyz's answer — the dependency checks in
 	// srv.ReadyChecks are the other half, and they run per request.
+	// Its Meter, and the Streams' below, stay nil: the global meter that
+	// observe.Setup installed above.
 	drainer := NewDrainer(cfg)
+	drainer.Logger = logger
 
 	// The listener's registry of long-lived streams. Installed into every
 	// request's context by NewHTTPServer, so a LongLived route binds to it
 	// without the composition root handing it around; drained soft-then-hard
 	// by DrainHTTP below.
-	streams := &Streams{DrainReserve: cfg.DrainReserve, RedialOnDrain: cfg.RedialOnDrain}
+	streams := &Streams{DrainReserve: cfg.DrainReserve, RedialOnDrain: cfg.RedialOnDrain, Logger: logger}
 
 	// serverkit no longer owns the service mux, so it can't MOUNT its
 	// probes on it. Instead it applies the edge wrap to the CALLER's
@@ -382,13 +384,11 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Without step 1 + 2, httpSrv.Shutdown stops accepting new conns
 	// immediately but the LB keeps sending them until it next polls
 	// /readyz — producing brief but real 502s on every rollout.
-	// Each phase below writes one "drain: ..." INFO line carrying `phase` and
-	// its `elapsed`, and records forge.server.drain.duration (drain_phases.go).
-	phases := newDrainPhases(logger, otel.Meter("github.com/reliant-labs/forge/pkg/serverkit"))
-	logger.Info("drain: readiness flipped to draining", "phase", "readiness",
-		"pre_stop_delay", cfg.PreStopDelay, "streams_open", streams.Active())
+	// Each phase writes one "drain: ..." INFO line carrying `phase` and its
+	// `elapsed`, and records forge.server.drain.duration (drain_phases.go):
+	// readiness, pre_stop and total from the drainer, listener from
+	// DrainHTTP, and only workers, operators and teardown from here.
 	drainer.Begin()
-	phases.done("pre_stop", "drain: pre-stop pause over; draining the listener", "streams_open", streams.Active())
 
 	shutdownCtx, cancel := drainer.ShutdownContext()
 	defer cancel()
@@ -412,11 +412,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	if shutErr := DrainHTTP(shutdownCtx, httpSrv, streams); shutErr != nil {
 		logger.Error("server shutdown error", "error", shutErr)
 	}
-	report := streams.Report()
-	phases.done("listener", "drain: listener drained",
-		"streams_ended", report.Ended, "streams_claimed", report.Claimed,
-		"streams_hard_ended", report.HardEnded, "hijacked_conns_closed", report.ConnsClosed,
-		"streams_still_running", report.StillRunning)
+	mark := time.Now()
 
 	workerCancel()
 	if len(srv.Workers) > 0 && !waitWithin(shutdownCtx, &workerWg) {
@@ -428,7 +424,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
 		}
 	}
-	phases.done("workers", "drain: workers stopped", "workers", len(srv.Workers))
+	mark = drainer.phase("workers", mark, "drain: workers stopped", "workers", len(srv.Workers))
 
 	// Wait for the operator/controller-manager goroutine to drain. runCtx
 	// is already cancelled (it's what dropped us out of the serve select),
@@ -444,7 +440,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			"shutdown_timeout", cfg.ShutdownTimeout)
 	}
 	if operatorsSupervised {
-		phases.done("operators", "drain: operators stopped", "operators", len(srv.Operators))
+		mark = drainer.phase("operators", mark, "drain: operators stopped", "operators", len(srv.Operators))
 	}
 
 	// OnShutdown is the caller-composed teardown (closing the serving DB
@@ -461,8 +457,8 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("pprof shutdown error", "error", shutErr)
 		}
 	}
-	phases.done("teardown", "drain: teardown done")
-	phases.complete(cfg.ShutdownTimeout)
+	drainer.phase("teardown", mark, "drain: teardown done")
+	drainer.Complete()
 
 	// OTel flush — serverkit owns it now (folded out of the cmd shim). LAST,
 	// so it exports everything the steps above produced.

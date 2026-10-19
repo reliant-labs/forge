@@ -49,7 +49,13 @@ Four rules every run obeys:
    tool cache (`$FORGE_TOOLS_CACHE` or the user cache dir) and put first on that
    command's PATH. A copy on PATH at another version is not used, and neither is
    a golangci-lint built with a Go older than your `go.mod`. Your PATH and GOBIN
-   are never touched.
+   are never touched. `forge tools pins [tool]` prints these versions (`--json`
+   for all), so a hand-written workflow reads them from the forge it runs.
+   `forge lint` outside the gate does the same for golangci-lint: with none on
+   PATH it builds the pin into the tool cache once, and when it cannot, the
+   golangci-lint lane FAILS naming `forge tools install golangci-lint`. Likewise
+   a missing buf fails the buf lint lane. A gating lane that did not run is
+   never a pass.
 4. **The table reaches the job summary.** When `$GITHUB_STEP_SUMMARY` is set the
    table is appended to it as Markdown.
 

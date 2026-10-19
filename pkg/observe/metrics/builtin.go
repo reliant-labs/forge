@@ -7,6 +7,8 @@ const (
 	builtinSince = "v0.1.45"
 	// predates the registry: the metric existed, the declaration did not.
 	legacySince = "v0.1.0"
+	// drainSince is the release serverkit's shutdown phases were first measured in.
+	drainSince = "v0.1.46"
 )
 
 const rejectedName = "forge.metrics.rejected_attributes"
@@ -56,6 +58,8 @@ func builtinSpecs() []Spec {
 		{Name: "go.sql.connections_closed_max_idle", Type: Counter, Unit: "{connection}", Description: "Connections closed because of SetMaxIdleConns.", Attributes: []Attribute{attr("db.system")}, Stability: Stable, Since: legacySince},
 		{Name: "go.sql.connections_closed_max_idle_time", Type: Counter, Unit: "{connection}", Description: "Connections closed because of SetConnMaxIdleTime.", Attributes: []Attribute{attr("db.system")}, Stability: Stable, Since: legacySince},
 		{Name: "go.sql.connections_closed_max_lifetime", Type: Counter, Unit: "{connection}", Description: "Connections closed because of SetConnMaxLifetime.", Attributes: []Attribute{attr("db.system")}, Stability: Stable, Since: legacySince},
+
+		{Name: "forge.server.drain.duration", Type: Histogram, Unit: "s", Description: "How long each phase of a graceful shutdown took: the pre-stop pause, the listener drain (unary requests and long-lived streams), stopping workers and operators, the caller's teardown, and the whole shutdown (total).", Attributes: []Attribute{attr("phase", "pre_stop", "listener", "workers", "operators", "teardown", "total")}, Stability: Experimental, Since: drainSince},
 
 		{Name: rejectedName, Type: Counter, Unit: "{attribute}", Description: "Measurements whose attribute was not in the metric's declaration, corrected before export. A rising value means code records an attribute the schema does not list.", Attributes: []Attribute{attr("metric"), attr("reason", RejectUndeclaredKey, RejectUndeclaredValue)}, Stability: Experimental, Since: builtinSince},
 	}

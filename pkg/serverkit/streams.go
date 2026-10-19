@@ -79,6 +79,37 @@ type Streams struct {
 	draining bool // BeginDrain has run: new bindings end at once
 	bindings map[*binding]struct{}
 	idle     chan struct{} // closed when bindings becomes empty; nil while empty
+	report   DrainReport   // what the drain has done so far; see Report
+}
+
+// DrainReport is what a drain did to a registry's streams: the counts the
+// shutdown log reports for the listener phase.
+type DrainReport struct {
+	// Ended counts the streams the soft phase ended at once: every stream
+	// that had not claimed it, and every stream that arrived after the drain
+	// began.
+	Ended int
+	// Claimed counts the streams the soft phase left running because they
+	// asked to say goodbye (Draining, OnDrain).
+	Claimed int
+	// HardEnded counts the claimed streams still running at the deadline
+	// minus DrainReserve, and so ended by the drain.
+	HardEnded int
+	// ConnsClosed counts the hijacked connections the drain closed for
+	// handlers that ignored their ended context.
+	ConnsClosed int
+	// StillRunning counts the streams whose handlers had not returned when
+	// the report was taken; after Drain, the ones the budget ran out on.
+	StillRunning int
+}
+
+// Report returns what the drain has done so far.
+func (s *Streams) Report() DrainReport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.report
+	r.StillRunning = len(s.bindings)
+	return r
 }
 
 // binding is one bound stream.
@@ -87,12 +118,24 @@ type binding struct {
 	// claimed: the handler asked for Draining(ctx) before the drain began,
 	// so the soft phase leaves it running.
 	claimed atomic.Bool
+	// ended: the drain has ended this stream; it is counted once.
+	ended atomic.Bool
 
 	mu sync.Mutex
 	// conns are the connections the handler took over with Hijack (a
 	// websocket). http.Server.Shutdown neither waits for nor closes them, so
 	// they are the drain's to close if the handler outlives the budget.
 	conns []net.Conn
+}
+
+// end ends the stream with the drain cause and reports whether this call was
+// the one that ended it.
+func (b *binding) end() bool {
+	if !b.ended.CompareAndSwap(false, true) {
+		return false
+	}
+	b.cancel(svcerr.ErrServerDraining)
+	return true
 }
 
 // track records a connection the stream's handler hijacked.
@@ -167,7 +210,9 @@ func (s *Streams) Bind(parent context.Context) (ctx context.Context, release con
 
 	s.mu.Lock()
 	if s.draining {
+		s.report.Ended++
 		s.mu.Unlock()
+		b.ended.Store(true)
 		cancel(svcerr.ErrServerDraining)
 		return ctx, func() { cancel(context.Canceled) }
 	}
@@ -202,38 +247,50 @@ func (s *Streams) Active() int {
 
 // BeginDrain starts the soft phase: every Draining channel closes, every bound
 // stream that did not claim the soft phase is ended now, and every stream bound
-// from now on is ended at once. It returns how many streams it ended and how
-// many it left running. Idempotent; NewHTTPServer registers it to run at the
-// start of http.Server.Shutdown.
+// from now on is ended at once. It returns how many streams this call ended
+// and how many claimed streams it left running. Idempotent; NewHTTPServer
+// registers it to run at the start of http.Server.Shutdown.
 func (s *Streams) BeginDrain() (ended, left int) {
 	s.init()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.draining {
+	first := !s.draining
+	if first {
 		s.draining = true
 		close(s.soft)
 	}
 	for b := range s.bindings {
 		if b.claimed.Load() {
-			left++
+			if !b.ended.Load() {
+				left++
+			}
 			continue
 		}
-		b.cancel(svcerr.ErrServerDraining)
-		ended++
+		if b.end() {
+			ended++
+		}
+	}
+	s.report.Ended += ended
+	if first {
+		s.report.Claimed = left
 	}
 	return ended, left
 }
 
 // End ends every bound stream now, claimed or not — the hard phase. It
-// returns how many it ended. Idempotent.
+// returns how many streams this call ended. Idempotent.
 func (s *Streams) End() int {
 	s.BeginDrain()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ended := 0
 	for b := range s.bindings {
-		b.cancel(svcerr.ErrServerDraining)
+		if b.end() {
+			ended++
+		}
 	}
-	return len(s.bindings)
+	s.report.HardEnded += ended
+	return ended
 }
 
 // Wait blocks until no stream is bound or ctx is done, and reports whether the
@@ -270,6 +327,9 @@ func (s *Streams) CloseHijacked() int {
 	for _, b := range bound {
 		closed += b.closeConns()
 	}
+	s.mu.Lock()
+	s.report.ConnsClosed += closed
+	s.mu.Unlock()
 	return closed
 }
 

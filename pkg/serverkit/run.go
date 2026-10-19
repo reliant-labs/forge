@@ -17,6 +17,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
+	"go.opentelemetry.io/otel"
 )
 
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
@@ -381,10 +382,13 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Without step 1 + 2, httpSrv.Shutdown stops accepting new conns
 	// immediately but the LB keeps sending them until it next polls
 	// /readyz — producing brief but real 502s on every rollout.
-	if cfg.PreStopDelay > 0 {
-		logger.Info("readiness flipped, waiting for LB drain", "pre_stop_delay", cfg.PreStopDelay)
-	}
+	// Each phase below writes one "drain: ..." INFO line carrying `phase` and
+	// its `elapsed`, and records forge.server.drain.duration (drain_phases.go).
+	phases := newDrainPhases(logger, otel.Meter("github.com/reliant-labs/forge/pkg/serverkit"))
+	logger.Info("drain: readiness flipped to draining", "phase", "readiness",
+		"pre_stop_delay", cfg.PreStopDelay, "streams_open", streams.Active())
 	drainer.Begin()
+	phases.done("pre_stop", "drain: pre-stop pause over; draining the listener", "streams_open", streams.Active())
 
 	shutdownCtx, cancel := drainer.ShutdownContext()
 	defer cancel()
@@ -408,6 +412,11 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	if shutErr := DrainHTTP(shutdownCtx, httpSrv, streams); shutErr != nil {
 		logger.Error("server shutdown error", "error", shutErr)
 	}
+	report := streams.Report()
+	phases.done("listener", "drain: listener drained",
+		"streams_ended", report.Ended, "streams_claimed", report.Claimed,
+		"streams_hard_ended", report.HardEnded, "hijacked_conns_closed", report.ConnsClosed,
+		"streams_still_running", report.StillRunning)
 
 	workerCancel()
 	if len(srv.Workers) > 0 && !waitWithin(shutdownCtx, &workerWg) {
@@ -419,6 +428,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
 		}
 	}
+	phases.done("workers", "drain: workers stopped", "workers", len(srv.Workers))
 
 	// Wait for the operator/controller-manager goroutine to drain. runCtx
 	// is already cancelled (it's what dropped us out of the serve select),
@@ -432,6 +442,9 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	if operatorsSupervised && !waitWithin(shutdownCtx, &operatorWg) {
 		logger.Error("controller manager did not drain within the shutdown budget",
 			"shutdown_timeout", cfg.ShutdownTimeout)
+	}
+	if operatorsSupervised {
+		phases.done("operators", "drain: operators stopped", "operators", len(srv.Operators))
 	}
 
 	// OnShutdown is the caller-composed teardown (closing the serving DB
@@ -448,6 +461,8 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("pprof shutdown error", "error", shutErr)
 		}
 	}
+	phases.done("teardown", "drain: teardown done")
+	phases.complete(cfg.ShutdownTimeout)
 
 	// OTel flush — serverkit owns it now (folded out of the cmd shim). LAST,
 	// so it exports everything the steps above produced.

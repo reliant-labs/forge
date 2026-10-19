@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A dependency outage no longer floods the logs at probe frequency.**
+  `Drainer.ReadinessHandler` (and so `serverkit.Run`'s `/readyz`) logged every
+  failing check at ERROR on every probe — every few seconds, on every replica,
+  for the length of the outage, into the log pipeline and the error tracker.
+  A check is now logged once at WARN when it starts failing and once at INFO
+  when it recovers (with `failed_for`); probes in between log at DEBUG. Never
+  ERROR: readiness failing is the probe doing its job.
 - **The dev Zitadel moves to v4.19.5** (was v4.19.4) in host-infra, the compose
   `idp` service and its per-platform checksums (taken from the release's
   `checksums.txt` and re-computed from the downloaded archives). 4.0.0–4.19.4

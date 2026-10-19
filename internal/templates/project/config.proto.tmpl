@@ -163,14 +163,14 @@ message AppConfig {
     env_var: "PRE_STOP_DELAY"
     flag: "pre-stop-delay"
     default_value: "5s"
-    description: "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration)."
+    description: "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration; 0 is the default, negative is no pause)."
   }];
 
   google.protobuf.Duration shutdown_timeout = 19 [(forge.v1.config) = {
     env_var: "SHUTDOWN_TIMEOUT"
     flag: "shutdown-timeout"
     default_value: "30s"
-    description: "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration)."
+    description: "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration; 0 is the default, negative is no window)."
   }];
 
   string log_format = 20 [(forge.v1.config) = {

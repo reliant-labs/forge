@@ -40,8 +40,9 @@ import (
 // Run uses one; a main that runs its own listener (a worker, a gateway)
 // uses the same type so its probes and budget behave identically.
 //
-// The zero value is usable; zero durations take Config's defaults (5s / 30s),
-// and a negative PreStopDelay skips the pause. It is safe for concurrent use:
+// The zero value is usable. Both durations follow Config's rule: zero is the
+// default (5s / 30s), negative is none — no pause, or a shutdown window that
+// is over as it opens. It is safe for concurrent use:
 // readiness handlers read it from request goroutines while the shutdown path
 // writes it.
 //
@@ -161,17 +162,23 @@ func (d *Drainer) ReadinessHandler(checks []ReadyCheck, timeout time.Duration, l
 }
 
 func (d *Drainer) preStopDelay() time.Duration {
-	if d.PreStopDelay == 0 {
-		return defaultPreStopDelay
-	}
-	return d.PreStopDelay
+	return drainDuration(d.PreStopDelay, defaultPreStopDelay)
 }
 
 func (d *Drainer) shutdownTimeout() time.Duration {
-	if d.ShutdownTimeout <= 0 {
-		return defaultShutdownTimeout
+	return drainDuration(d.ShutdownTimeout, defaultShutdownTimeout)
+}
+
+// drainDuration is the length of a shutdown phase by Config's rule for
+// durations: zero is the default, negative is none.
+func drainDuration(d, def time.Duration) time.Duration {
+	switch {
+	case d == 0:
+		return def
+	case d < 0:
+		return 0
 	}
-	return d.ShutdownTimeout
+	return d
 }
 
 // NewHTTPServer builds the serving http.Server Run uses around handler: the

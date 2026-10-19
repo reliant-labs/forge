@@ -462,13 +462,23 @@ type Config struct {
 	SecurityHeaders bool
 
 	// PreStopDelay is the readiness-flip drain pause. Zero falls back
-	// to 5s. Operators tune this to match their load-balancer probe
-	// interval — too short causes brief 502s on rollout.
+	// to 5s; negative is no pause. Operators tune this to match their
+	// load-balancer probe interval — too short causes brief 502s on
+	// rollout.
+	//
+	// PreStopDelay and ShutdownTimeout follow the rule every Config
+	// duration does — zero is the default, negative is none — and "none"
+	// for both is a phase that takes no time: no pause, and a shutdown
+	// window that is over as it opens (in-flight requests and streams are
+	// cut, teardown runs on an expired context). It is never "unbounded":
+	// forge derives the pod's grace period from the two, and the kubelet
+	// would end an unbounded shutdown at it anyway.
 	PreStopDelay time.Duration
 
 	// ShutdownTimeout bounds the post-readiness-flip shutdown window
 	// (worker Stop, Server.OnShutdown, http.Server.Shutdown all
-	// share this budget). Zero falls back to 30s.
+	// share this budget). Zero falls back to 30s; negative is no window
+	// (see PreStopDelay).
 	ShutdownTimeout time.Duration
 
 	// DrainReserve is the part of ShutdownTimeout kept back after the

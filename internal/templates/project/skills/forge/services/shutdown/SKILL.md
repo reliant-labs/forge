@@ -19,6 +19,13 @@ description: Graceful shutdown of a forge server — the drain sequence (readine
 forge derives `terminationGracePeriodSeconds` from `PRE_STOP_DELAY +
 SHUTDOWN_TIMEOUT`, so both are honoured exactly.
 
+Both follow the rule every `serverkit.Config` duration does — **zero is the
+default** (5s / 30s), **negative is none** — in config, env and on
+`serverkit.Drainer` alike. "None" is a phase that takes no time: `-1s` pre-stop
+is no pause; `-1s` shutdown is a window over as it opens (in-flight requests and
+streams are cut, teardown runs on an expired context). It is never "unbounded":
+the kubelet would end an unbounded shutdown at the grace period anyway.
+
 ## Long-lived streams
 
 `http.Server.Shutdown` waits for every active request. A stream that never ends

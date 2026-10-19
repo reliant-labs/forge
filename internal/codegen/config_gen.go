@@ -1084,7 +1084,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					EnvVar:       "PRE_STOP_DELAY",
 					Flag:         "pre-stop-delay",
 					DefaultValue: "5s",
-					Description:  "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration).",
+					Description:  "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration; 0 is the default, negative is no pause).",
 				},
 				{
 					Name:         "shutdown_timeout",
@@ -1094,7 +1094,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					EnvVar:       "SHUTDOWN_TIMEOUT",
 					Flag:         "shutdown-timeout",
 					DefaultValue: "30s",
-					Description:  "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration).",
+					Description:  "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration; 0 is the default, negative is no window).",
 				},
 				{
 					Name:         "log_format",

@@ -210,6 +210,24 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **The merge driver is set up per worktree, and forge says what it changed.**
+  Any forge command run in a project (`forge db migration rebase` was the one
+  noticed) pointed the repository's `merge.forge-generated.driver` at a forge
+  binary and routed forge's generated and state files to it in
+  `info/attributes`, silently, in the repository's common git directory that
+  every linked worktree reads. The command names one forge binary, and
+  worktrees are on different branches with different pins, so the last forge to
+  run decided how every other agent's rebase merged. The command now goes in
+  the worktree's own `config.worktree` (forge enables `extensions.worktreeConfig`
+  once, which git has honoured since 2.20 and go-git accepts; it declines for a
+  bare repository or an explicit `core.worktree`, and
+  `FORGE_MERGE_DRIVER_SHARED=1` keeps the old shared placement), so a worktree
+  merges with the forge its own commands run. The routes are no longer copied
+  into the shared `info/attributes` when the project's committed
+  `.gitattributes` already declares them, as every scaffolded project's does.
+  What is still written is reported: each setting with its scope and old value,
+  the git directory, how many worktrees share it, and the undo. A run that
+  changes nothing stays silent, and `FORGE_NO_MERGE_DRIVER=1` still opts out.
 - **`PRE_STOP_DELAY` and `SHUTDOWN_TIMEOUT` follow one rule: zero is the
   default, negative is none** — the rule every `serverkit.Config` duration
   already used. `ShutdownTimeout <= 0` always became the 30s default, so "no

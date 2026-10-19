@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -215,5 +217,59 @@ func TestConfigNormalize_FillsReadinessTimeout(t *testing.T) {
 	cfg.Normalize()
 	if cfg.ReadinessTimeout != 2*time.Second {
 		t.Errorf("ReadinessTimeout = %s, want 2s", cfg.ReadinessTimeout)
+	}
+}
+
+// A dependency outage is logged once on the way in and once on the way out,
+// not on every probe: the kubelet probes every few seconds on every replica,
+// and a line per failing probe — at ERROR, as it was — flooded the logs and
+// the error tracker for the length of the outage. Readiness failing is the
+// probe working, so it is never ERROR.
+func TestReadyz_LogsAFailingCheckOnTransitionsNotPerProbe(t *testing.T) {
+	t.Parallel()
+	var logs syncBuf
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	dep := &failingDependency{}
+	drainer := &serverkit.Drainer{}
+	drainer.MarkReady()
+	readyz := drainer.ReadinessHandler([]serverkit.ReadyCheck{{Name: "database", Check: dep.check}}, time.Second, logger)
+	probe := func(want int) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		readyz(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if rec.Code != want {
+			t.Fatalf("readyz = %d, want %d", rec.Code, want)
+		}
+	}
+	levels := func() map[string]int {
+		n := map[string]int{}
+		for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var rec map[string]any
+			if json.Unmarshal([]byte(line), &rec) == nil && rec["check"] == "database" {
+				n[rec["level"].(string)]++
+			}
+		}
+		return n
+	}
+
+	probe(http.StatusOK)
+	dep.down.Store(true)
+	for range 10 {
+		probe(http.StatusServiceUnavailable)
+	}
+	if got := levels(); got["WARN"] != 1 || got["ERROR"] != 0 || got["INFO"] != 0 {
+		t.Fatalf("10 probes during one outage logged %v, want exactly one WARN and no ERROR\n%s", got, logs.String())
+	}
+	dep.down.Store(false)
+	for range 3 {
+		probe(http.StatusOK)
+	}
+	if got := levels(); got["WARN"] != 1 || got["INFO"] != 1 || got["ERROR"] != 0 {
+		t.Fatalf("recovery logged %v, want one WARN then one INFO\n%s", got, logs.String())
+	}
+	dep.down.Store(true) // a second outage is a second transition
+	probe(http.StatusServiceUnavailable)
+	if got := levels(); got["WARN"] != 2 {
+		t.Fatalf("a second outage logged %v, want a second WARN", got)
 	}
 }

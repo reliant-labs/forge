@@ -122,19 +122,7 @@ func appendBufExceptions(raw []byte, rules []string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		prefix := ""
-		if len(except.Content) > 0 {
-			prefix = ", "
-			// Multiline YAML flow lists may already have a trailing comma.
-			last := except.Content[len(except.Content)-1]
-			tail := lines[last.Line-1][last.Column-1:]
-			if comment := strings.Index(tail, "#"); comment >= 0 {
-				tail = tail[:comment]
-			}
-			if strings.HasSuffix(strings.TrimSpace(tail), ",") {
-				prefix = ""
-			}
-		}
+		prefix := bufFlowAppendPrefix(lines, except)
 		lines[end] = lines[end][:close] + prefix + strings.Join(missing, ", ") + lines[end][close:]
 	} else {
 		at := blockEndLine(except)
@@ -146,6 +134,22 @@ func appendBufExceptions(raw []byte, rules []string) ([]byte, error) {
 		lines = append(lines[:at], append(additions, lines[at:]...)...)
 	}
 	return []byte(strings.Join(lines, "\n")), nil
+}
+
+func bufFlowAppendPrefix(lines []string, sequence *yaml.Node) string {
+	if len(sequence.Content) == 0 {
+		return ""
+	}
+	// Multiline YAML flow lists may already have a trailing comma.
+	last := sequence.Content[len(sequence.Content)-1]
+	tail := lines[last.Line-1][last.Column-1:]
+	if comment := strings.Index(tail, "#"); comment >= 0 {
+		tail = tail[:comment]
+	}
+	if strings.HasSuffix(strings.TrimSpace(tail), ",") {
+		return ""
+	}
+	return ", "
 }
 
 func bufFlowSequenceEnd(lines []string, startLine, startColumn int) (int, int, error) {

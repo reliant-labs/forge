@@ -93,6 +93,19 @@ type StageInput struct {
 	// StagingRoot overrides where the assembled tree is written. Empty
 	// means a temp dir under os.TempDir().
 	StagingRoot string
+
+	// Project is the forge project name, recorded in the source map manifest.
+	Project string
+
+	// VersionEnvVar is the framework-scoped variable the bundle reads its
+	// service.version from (NEXT_PUBLIC_APP_VERSION / VITE_APP_VERSION).
+	// forge sets it to the build id unless BuildEnv already sets it. Empty
+	// means the frontend has no such variable and no id is injected.
+	VersionEnvVar string
+
+	// Sourcemaps is "publish" (default: maps leave the served tree for a
+	// sidecar), "public" (maps are served) or "off" (maps are dropped).
+	Sourcemaps string
 }
 
 // StagePlan is the resolved, side-effect-free description of one
@@ -122,6 +135,31 @@ type StagePlan struct {
 	// StripRuntimeConfig removes RuntimeConfigRel from the tree after the
 	// copies rather than writing it.
 	StripRuntimeConfig bool
+
+	// Project, VersionEnvVar, Sourcemaps and BasePath are the StageInput
+	// fields the build-identity and source map steps need. Sourcemaps is
+	// already resolved (never empty).
+	Project       string
+	VersionEnvVar string
+	Sourcemaps    string
+	BasePath      string
+
+	// BuildID is the build's identity, set by runStagePlan before the build
+	// runs. Empty in a plan that has not run (a dry-run) or has no
+	// VersionEnvVar.
+	BuildID string
+}
+
+// StageResult is what a stage run learned that the plan could not know.
+type StageResult struct {
+	// BuildID is injected into the bundle as service.version and keys the
+	// source maps. Empty when the frontend has no version variable.
+	BuildID string
+	// SourcemapsDir is the sidecar holding the extracted maps and
+	// manifest.json; empty when none were extracted.
+	SourcemapsDir string
+	// Sourcemaps is how many maps were extracted.
+	Sourcemaps int
 }
 
 type stageCopy struct {
@@ -187,6 +225,10 @@ func buildStagePlan(in StageInput) (StagePlan, error) {
 	if in.StripRuntimeConfig && in.RuntimeConfigJS != "" {
 		return StagePlan{}, fmt.Errorf("%s: a runtime config document cannot be both written and stripped", in.Name)
 	}
+	sourcemaps, err := resolveSourcemapsMode(in.Sourcemaps)
+	if err != nil {
+		return StagePlan{}, fmt.Errorf("%s: %w", in.Name, err)
+	}
 	runtimeConfigRel := ""
 	if in.RuntimeConfigJS != "" || in.StripRuntimeConfig {
 		runtimeConfigRel = filepath.Join(basePathToDestRel(in.BasePath), FrontendConfigJSName)
@@ -203,20 +245,68 @@ func buildStagePlan(in StageInput) (StagePlan, error) {
 		RuntimeConfigJS:    in.RuntimeConfigJS,
 		RuntimeConfigRel:   runtimeConfigRel,
 		StripRuntimeConfig: in.StripRuntimeConfig,
+		Project:            in.Project,
+		VersionEnvVar:      in.VersionEnvVar,
+		Sourcemaps:         sourcemaps,
+		BasePath:           in.BasePath,
 	}, nil
 }
 
-// runStagePlan executes a StagePlan: install, build, then assemble the
-// staging tree. After it returns nil, plan.StagingDir holds the complete
-// artifact any target can publish.
-func runStagePlan(ctx context.Context, runner commandRunner, plan StagePlan) error {
-	if err := runFrontendBuild(ctx, runner, plan.Name, plan.FrontendDir, plan.InstallCmd, plan.BuildCmd, plan.BuildEnv); err != nil {
-		return err
+// runStagePlan executes a StagePlan: derive the build id, install, build,
+// then assemble the staging tree. After it returns nil, plan.StagingDir holds
+// the complete artifact any target can publish, with no source map in it; the
+// maps are in the result's SourcemapsDir.
+func runStagePlan(ctx context.Context, runner commandRunner, plan StagePlan) (StageResult, error) {
+	buildEnv, err := withBuildIdentity(&plan)
+	if err != nil {
+		return StageResult{}, fmt.Errorf("%s: %w", plan.Name, err)
+	}
+	if err := runFrontendBuild(ctx, runner, plan.Name, plan.FrontendDir, plan.InstallCmd, plan.BuildCmd, buildEnv); err != nil {
+		return StageResult{}, err
 	}
 	if err := assembleStaging(plan); err != nil {
-		return fmt.Errorf("%s: assemble: %w", plan.Name, err)
+		return StageResult{}, fmt.Errorf("%s: assemble: %w", plan.Name, err)
 	}
-	return nil
+	res := StageResult{BuildID: plan.BuildID}
+	if plan.Sourcemaps != SourcemapsPublic {
+		n, err := extractSourcemaps(plan)
+		if err != nil {
+			return StageResult{}, fmt.Errorf("%s: extract source maps: %w", plan.Name, err)
+		}
+		res.Sourcemaps = n
+		if n > 0 && plan.Sourcemaps == SourcemapsPublish {
+			res.SourcemapsDir = SourcemapsDir(plan.StagingDir)
+		}
+	}
+	if err := guardNoSourceMaps(plan.StagingDir, plan.Sourcemaps); err != nil {
+		return StageResult{}, fmt.Errorf("%s: %w", plan.Name, err)
+	}
+	return res, nil
+}
+
+// withBuildIdentity records the build id on the plan and returns the env the
+// build runs with: the plan's env plus the id (as the frontend's version
+// variable, unless the project set one) and the switch that asks the bundler
+// for source maps.
+func withBuildIdentity(plan *StagePlan) (map[string]string, error) {
+	env := make(map[string]string, len(plan.BuildEnv)+2)
+	for k, v := range plan.BuildEnv {
+		env[k] = v
+	}
+	if plan.VersionEnvVar != "" {
+		id, err := computeBuildID(plan.FrontendDir, plan.VersionEnvVar, env)
+		if err != nil {
+			return nil, err
+		}
+		plan.BuildID = id
+		env[plan.VersionEnvVar] = id
+	}
+	if plan.Sourcemaps == SourcemapsOff {
+		env[SourcemapsEnvVar] = "0"
+	} else {
+		env[SourcemapsEnvVar] = "1"
+	}
+	return env, nil
 }
 
 // assembleStaging realises plan.Copies into a fresh staging tree. It
@@ -287,6 +377,17 @@ func printStagePlanBuild(w io.Writer, plan StagePlan) {
 			mount = "/" + c.DestRel
 		}
 		_, _ = fmt.Fprintf(w, "      %-18s -> %s   (%s)\n", c.Src, mount, c.Label)
+	}
+	switch plan.Sourcemaps {
+	case SourcemapsPublic:
+		_, _ = fmt.Fprintf(w, "    source maps:  served publicly (sourcemaps = %q)\n", SourcemapsPublic)
+	case SourcemapsOff:
+		_, _ = fmt.Fprintf(w, "    source maps:  dropped (sourcemaps = %q)\n", SourcemapsOff)
+	default:
+		_, _ = fmt.Fprintf(w, "    source maps:  moved to %s, never served\n", SourcemapsDir(plan.StagingDir))
+	}
+	if plan.VersionEnvVar != "" {
+		_, _ = fmt.Fprintf(w, "    build id:     injected as %s (content hash of source + build env, unless the env sets it)\n", plan.VersionEnvVar)
 	}
 	if plan.StripRuntimeConfig {
 		_, _ = fmt.Fprintf(w, "      %-18s -> /%s   (removed: the control plane writes it per environment)\n",
@@ -508,4 +609,15 @@ func formatBuildEnv(env map[string]string) string {
 		parts = append(parts, k+"="+env[k])
 	}
 	return strings.Join(parts, " ")
+}
+
+// reportStageResult prints the one line a deploy owes about build identity and
+// source maps, so "where did my maps go" has an answer in the log.
+func reportStageResult(kind, name string, res StageResult) {
+	if res.BuildID != "" {
+		fmt.Printf("  [%s] %s: build id %s\n", kind, name, res.BuildID)
+	}
+	if res.SourcemapsDir != "" {
+		fmt.Printf("  [%s] %s: %d source map(s) kept out of the served tree: %s\n", kind, name, res.Sourcemaps, res.SourcemapsDir)
+	}
 }

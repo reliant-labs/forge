@@ -2394,6 +2394,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	var builtDirs []string
 	for _, f := range entities.Frontends {
 		f.Release = release
+		f.Project = entities.Project
 		switch f.Runtime.Type {
 		case FrontendRuntimeBuildOnly:
 			// Built (env-injected) so its output exists on disk before
@@ -2634,10 +2635,13 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 	fb := f.Runtime.Firebase
 	buildEnv := frontendBuildEnv(f)
 	return deploytarget.FirebaseFrontend{
-		Name:      f.Name,
-		Path:      f.Path,
-		DevRunner: f.DevRunner,
-		BuildEnv:  buildEnv,
+		Name:          f.Name,
+		Path:          f.Path,
+		DevRunner:     f.DevRunner,
+		BuildEnv:      buildEnv,
+		Project:       f.Project,
+		VersionEnvVar: frontendVersionEnvVar(f.Type),
+		Sourcemaps:    f.Sourcemaps,
 		Spec: deploytarget.FirebaseHostingSpec{
 			Project:           fb.Project,
 			Site:              fb.Site,
@@ -2700,11 +2704,14 @@ func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
 		}
 	}
 	return deploytarget.StaticSiteFrontend{
-		Name:      f.Name,
-		Path:      f.Path,
-		DevRunner: f.DevRunner,
-		BuildEnv:  frontendBuildEnv(f),
-		Spec:      spec,
+		Name:          f.Name,
+		Path:          f.Path,
+		DevRunner:     f.DevRunner,
+		BuildEnv:      frontendBuildEnv(f),
+		Project:       f.Project,
+		VersionEnvVar: frontendVersionEnvVar(f.Type),
+		Sourcemaps:    f.Sourcemaps,
+		Spec:          spec,
 	}
 }
 

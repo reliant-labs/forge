@@ -13,13 +13,17 @@ import (
 // returns the release digest. A var so the CLI tests state the registry's
 // answer (an in-memory push) instead of needing a registry.
 var hostedStaticPusher = func(ctx context.Context, projectDir, repository string, fe deploytarget.StaticSiteFrontend) (string, error) {
-	tree, err := deploytarget.BuildStaticSiteTree(ctx, projectDir, fe)
+	tree, res, err := deploytarget.BuildStaticSiteTree(ctx, projectDir, fe)
 	if err != nil {
 		return "", err
 	}
 	layer, err := deploytarget.PackStaticSiteTree(tree)
 	if err != nil {
 		return "", err
+	}
+	if res.SourcemapsDir != "" {
+		fmt.Printf("[build] %s: %d source map(s) extracted (build id %s) to %s, not part of the site\n",
+			fe.Name, res.Sourcemaps, res.BuildID, res.SourcemapsDir)
 	}
 	return deploytarget.PushStaticSiteArtifact(ctx, repository, layer)
 }
@@ -66,6 +70,7 @@ func buildHostedStaticSites(ctx context.Context, projectDir string, entities *KC
 		if err := checkDeployableFrontendMock(f); err != nil {
 			return err
 		}
+		f.Project = entities.Project
 		fe := frontendToStaticSite(f)
 		// Environment-agnostic by construction: no document written, and
 		// any travelling in the built bundle removed.

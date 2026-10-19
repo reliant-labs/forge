@@ -326,7 +326,7 @@ production bundle sends nothing, rather than POSTing to a 404.
 | Knob | Next.js | Vite | Default |
 |---|---|---|---|
 | ingest path (`off` or empty disables) | `NEXT_PUBLIC_OTEL_ENDPOINT` | `VITE_OTEL_ENDPOINT` | `/_otel` in dev, **empty in a production build** |
-| `service.version` | `NEXT_PUBLIC_APP_VERSION` | `VITE_APP_VERSION` | none |
+| `service.version` | `NEXT_PUBLIC_APP_VERSION` | `VITE_APP_VERSION` | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 | `deployment.environment` | `NEXT_PUBLIC_ENVIRONMENT` | `VITE_ENVIRONMENT` | none |
 | session replay | `NEXT_PUBLIC_OTEL_REPLAY=true` | `VITE_OTEL_REPLAY=true` | **off** |
 
@@ -339,6 +339,16 @@ passes it as the build-time variable above. `api_url` feeds
 `environment` (KCL `config.environment`) is the build-time variable and is
 emitted as both `deployment.environment.name` and the legacy
 `deployment.environment` that HyperDX's default sources key on.
+
+### Source maps are extracted, never served
+
+A deploy builds with `FORGE_SOURCEMAPS=1` (the scaffolded `vite.config.ts` /
+`next.config.ts` emit maps only then), then the static stage moves every map out
+of the tree it publishes into `<staging>.sourcemaps/` (same relative paths, plus
+`manifest.json` naming the project, frontend and build id) and strips the
+`sourceMappingURL` trailers. The release digest excludes them, and a guard fails
+a deploy whose served tree still holds one. Firebase asset retention never
+carries a `.map` forward.
 
 ### Replay is shipped, off, and always masked
 

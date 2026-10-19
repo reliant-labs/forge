@@ -75,16 +75,20 @@ func HostedStaticRepository(image string) string {
 // BuildStaticSiteTree builds and assembles one frontend with the shared
 // StagePlan and returns the assembled directory — the exact tree the
 // self-hosted executor would upload.
-func BuildStaticSiteTree(ctx context.Context, projectDir string, fe StaticSiteFrontend) (string, error) {
+//
+// The tree holds no source map. The StageResult says what the build id was and
+// where the extracted maps went, so a caller can file them under it.
+func BuildStaticSiteTree(ctx context.Context, projectDir string, fe StaticSiteFrontend) (string, StageResult, error) {
 	p := StaticSiteProvider{ProjectDir: projectDir}
 	plan, err := p.buildPlan(fe)
 	if err != nil {
-		return "", err
+		return "", StageResult{}, err
 	}
-	if err := runStagePlan(ctx, p.runner(), plan.Stage); err != nil {
-		return "", err
+	res, err := runStagePlan(ctx, p.runner(), plan.Stage)
+	if err != nil {
+		return "", StageResult{}, err
 	}
-	return plan.Stage.StagingDir, nil
+	return plan.Stage.StagingDir, res, nil
 }
 
 // PackStaticSiteTree packs an assembled tree into a DETERMINISTIC tar.gz:

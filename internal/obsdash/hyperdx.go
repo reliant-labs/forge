@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/dashspec"
 )
 
 // PinnedHyperDX is the HyperDX / ClickStack version the rendered JSON is
@@ -225,7 +227,7 @@ func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 	return hd, nil
 }
 
-const gridColumns = 24
+const gridColumns = dashspec.GridColumns
 
 func renderChart(p Panel) (HyperDXChart, error) {
 	where, err := predicatesSQL(p.Signal, p.Where)
@@ -371,6 +373,11 @@ func isNumericField(f string) bool { return f == "span.duration" }
 
 // fieldSQL maps a semantic field to the ClickStack column expression for sig.
 func fieldSQL(sig Signal, f string) (string, error) {
+	// The vocabulary is dashspec's: a field it refuses is refused here with
+	// the same error, so the validator and this renderer cannot disagree.
+	if err := dashspec.CheckField(sig, f); err != nil {
+		return "", err
+	}
 	switch {
 	case f == FieldService:
 		return "ServiceName", nil

@@ -1,4 +1,4 @@
-package obsdash
+package dashspec
 
 import (
 	"bytes"
@@ -328,7 +328,7 @@ func (v *validator) fieldOn(path string, obj map[string]any, key string, sig Sig
 	if field == "" {
 		return
 	}
-	if _, err := fieldSQL(sig, field); err != nil {
+	if err := CheckField(sig, field); err != nil {
 		v.add(childPath(path, key), "%v", err)
 	}
 }
@@ -348,7 +348,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 		if sig == "" {
 			continue
 		}
-		if _, err := fieldSQL(sig, s); err != nil {
+		if err := CheckField(sig, s); err != nil {
 			v.add(p, "%v", err)
 		}
 	}
@@ -371,8 +371,8 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	sigName := v.oneOf(path, o, "signal", true, string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
 	v.oneOf(path, o, "unit", false, string(UnitCount), string(UnitMillis), string(UnitBytes), string(UnitPercent), string(UnitSeconds))
-	if w, ok := v.number(path, o, "width"); ok && (w < 0 || w > gridColumns || w != float64(int(w))) {
-		v.add(childPath(path, "width"), "must be a whole number of grid columns from 1 to %d", gridColumns)
+	if w, ok := v.number(path, o, "width"); ok && (w < 0 || w > GridColumns || w != float64(int(w))) {
+		v.add(childPath(path, "width"), "must be a whole number of grid columns from 1 to %d", GridColumns)
 	}
 	if h, ok := v.number(path, o, "height"); ok && (h < 0 || h > maxGridHeight || h != float64(int(h))) {
 		v.add(childPath(path, "height"), "must be a whole number of grid rows up to %d", maxGridHeight)
@@ -574,7 +574,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 			v.add(path, "aggregate %q needs a \"field\"", agg)
 		}
 		if field != "" {
-			if _, err := fieldSQL(sig, field); err != nil {
+			if err := CheckField(sig, field); err != nil {
 				v.add(childPath(path, "field"), "%v", err)
 			}
 		}
@@ -624,7 +624,7 @@ func (v *validator) predicates(parent string, obj map[string]any, key string, si
 		v.known(p, o, "field", "op", "value", "values")
 		field := v.str(p, o, "field", true)
 		if field != "" && sig != "" {
-			if _, err := fieldSQL(sig, field); err != nil {
+			if err := CheckField(sig, field); err != nil {
 				v.add(childPath(p, "field"), "%v", err)
 			}
 		}

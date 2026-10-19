@@ -2,7 +2,6 @@ package obsdash
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -188,87 +187,5 @@ func TestEveryGeneratedFrontendPanelValidatesAndRoundTrips(t *testing.T) {
 	}
 	if th := by["vitals-by-route"].Series[0].Thresholds; th == nil || th.Poor != 4000 {
 		t.Errorf("thresholds lost in the round trip: %+v", th)
-	}
-}
-
-func TestValidationKnowsTheConsoleKindsAndRejectsUnknownOnes(t *testing.T) {
-	panel := func(extra string) string {
-		return `{"id":"x","title":"X","panels":[{"id":"p","title":"P",` + extra + `}]}`
-	}
-	ok := []struct{ name, src string }{
-		{"issues", panel(`"kind":"issues","signal":"traces"`)},
-		{"issues with a scope", panel(`"kind":"issues","signal":"traces","where":[{"field":"resource.attr.rum.sessionId","op":"exists"}]`)},
-		{"sessions", panel(`"kind":"sessions","signal":"traces"`)},
-		{"sessions with errors", panel(`"kind":"sessions","signal":"traces","hasError":true`)},
-		{"funnel", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"]}`)},
-		{"funnel full", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b","c"],"window":"7d","by":"user"}`)},
-		{"graded series", panel(`"kind":"table","signal":"traces","series":[{"label":"lcp","agg":"quantile","quantile":0.75,"field":"span.attr.lcp","thresholds":{"good":2500,"poor":4000}}]`)},
-	}
-	for _, tc := range ok {
-		t.Run("accepts "+tc.name, func(t *testing.T) {
-			if _, err := ParseDashboard("f.json", []byte(tc.src)); err != nil {
-				t.Errorf("rejected: %v", err)
-			}
-		})
-	}
-
-	bad := []struct{ name, src, want string }{
-		{"unknown kind", panel(`"kind":"replay","signal":"traces"`), `"replay" is not one of`},
-		{"heatmap is still unknown", panel(`"kind":"heatmap","signal":"traces"`), `"heatmap" is not one of`},
-		{"issues with series", panel(`"kind":"issues","signal":"traces","series":[{"label":"a","agg":"count"}]`), `takes no "series"`},
-		{"sessions with columns", panel(`"kind":"sessions","signal":"traces","columns":["timestamp"]`), `takes no "columns"`},
-		{"funnel with group by", panel(`"kind":"funnel","signal":"traces","groupBy":["service.name"],"funnel":{"steps":["a","b"]}`), `takes no "groupBy"`},
-		{"issues on logs", panel(`"kind":"issues","signal":"logs"`), "reads browser spans"},
-		{"funnel without a definition", panel(`"kind":"funnel","signal":"traces"`), `needs a "funnel"`},
-		{"funnel on a line", panel(`"kind":"line","signal":"traces","funnel":{"steps":["a","b"]},"series":[{"label":"a","agg":"count"}]`), `only a funnel panel takes "funnel"`},
-		{"funnel on issues", panel(`"kind":"issues","signal":"traces","funnel":{"steps":["a","b"]}`), `only a funnel panel takes "funnel"`},
-		{"hasError on issues", panel(`"kind":"issues","signal":"traces","hasError":true`), `only a sessions panel takes "hasError"`},
-		{"hasError on a table", panel(`"kind":"table","signal":"traces","hasError":true,"series":[{"label":"a","agg":"count"}]`), `only a sessions panel takes "hasError"`},
-		{"hasError not a bool", panel(`"kind":"sessions","signal":"traces","hasError":"yes"`), "must be true or false"},
-		{"one step", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a"]}`), "2 to 10 steps"},
-		{"eleven steps", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b","c","d","e","f","g","h","i","j","k"]}`), "2 to 10 steps"},
-		{"repeated step", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b","a"]}`), `repeats an earlier step`},
-		{"empty step", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a"," "]}`), "must not be empty"},
-		{"step not a string", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a",7]}`), "must be a string"},
-		{"bad window", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"],"window":"1 hour"}`), "not a window"},
-		{"zero window", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"],"window":"0h"}`), "not a window"},
-		{"bad by", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"],"by":"device"}`), `"device" is not one of: session, user`},
-		{"unknown funnel field", panel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"],"order":"any"}`), `unknown field "order"`},
-		{"thresholds without poor", panel(`"kind":"table","signal":"traces","series":[{"label":"a","agg":"count","thresholds":{"good":1}}]`), `need both "good" and "poor"`},
-		{"thresholds inverted", panel(`"kind":"table","signal":"traces","series":[{"label":"a","agg":"count","thresholds":{"good":9,"poor":3}}]`), "need 0 <= good < poor"},
-		{"unknown thresholds field", panel(`"kind":"table","signal":"traces","series":[{"label":"a","agg":"count","thresholds":{"good":1,"poor":2,"ok":3}}]`), `unknown field "ok"`},
-	}
-	for _, tc := range bad {
-		t.Run("rejects "+tc.name, func(t *testing.T) {
-			_, err := ParseDashboard("f.json", []byte(tc.src))
-			if err == nil {
-				t.Fatalf("validated; want an error containing %q", tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("err = %v, want it to contain %q", err, tc.want)
-			}
-		})
-	}
-}
-
-func TestEveryPanelKindTheSpecDeclaresIsKnownToTheValidator(t *testing.T) {
-	// A kind added to spec.go but not to validate.go would be a panel the
-	// console is sent and the validator rejects in a user's file.
-	for _, k := range []PanelKind{KindNumber, KindLine, KindTable, KindSearch, KindIssues, KindSessions, KindFunnel} {
-		var src string
-		switch k {
-		case KindSearch:
-			src = `"kind":"search","signal":"logs","columns":["timestamp"]`
-		case KindFunnel:
-			src = `"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"]}`
-		case KindIssues, KindSessions:
-			src = `"kind":"` + string(k) + `","signal":"traces"`
-		default:
-			src = `"kind":"` + string(k) + `","signal":"traces","series":[{"label":"a","agg":"count"}]`
-		}
-		doc := `{"id":"x","title":"X","panels":[{"id":"p","title":"P",` + src + `}]}`
-		if _, err := ParseDashboard("f.json", []byte(doc)); err != nil {
-			t.Errorf("kind %q: %v", k, err)
-		}
 	}
 }

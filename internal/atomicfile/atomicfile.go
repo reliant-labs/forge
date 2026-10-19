@@ -40,26 +40,16 @@ var (
 //
 // On any error the target is untouched and the temp file is removed.
 func WriteFile(path string, data []byte, perm fs.FileMode) error {
-	target := path
-	existing := false
-	if fi, err := os.Lstat(path); err == nil {
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
-				target = resolved
-			}
-			if fi, err = os.Stat(target); err != nil {
-				fi = nil
-			}
-		}
-		if fi != nil {
-			if !fi.Mode().IsRegular() {
-				return os.WriteFile(target, data, perm)
-			}
-			perm = fi.Mode().Perm()
-			existing = true
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	target, fi, err := resolveTarget(path)
+	if err != nil {
 		return err
+	}
+	existing := fi != nil
+	if existing {
+		if !fi.Mode().IsRegular() {
+			return os.WriteFile(target, data, perm)
+		}
+		perm = fi.Mode().Perm()
 	}
 
 	tmp, err := createTemp(filepath.Dir(target), perm)
@@ -98,6 +88,31 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 	}
 	committed = true
 	return nil
+}
+
+// resolveTarget is the file a write to path lands in, with its current info.
+// A symlink resolves to its target, so the link survives the rename. A nil
+// FileInfo means nothing is there yet (or a dangling link); any other Lstat
+// failure is returned.
+func resolveTarget(path string) (string, fs.FileInfo, error) {
+	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return path, nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if fi.Mode()&fs.ModeSymlink == 0 {
+		return path, fi, nil
+	}
+	target := path
+	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
+		target = resolved
+	}
+	if fi, err = os.Stat(target); err != nil {
+		return target, nil, nil
+	}
+	return target, fi, nil
 }
 
 func createTemp(dir string, perm fs.FileMode) (*os.File, error) {

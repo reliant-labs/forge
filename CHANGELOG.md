@@ -277,6 +277,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   client-streaming RPCs are untouched. The scaffolded `serve.go` is yours, so
   an existing project adds the one line itself: `forge project upgrade list`
   offers v0.1.46 §8.
+- **A rollout's drain no longer logs at ERROR.** `svcerr.ErrServerDraining`
+  (and every `svcerr.Draining(…)`) is now `error_class=canceled`, and every
+  logging layer — `LoggingInterceptor`, `LogMiddleware`, and so
+  `observe.Chain` with no options — treats it as an expected outcome: written
+  like a success, with `expected=true`, never at ERROR or to Sentry. A gateway
+  that ends each connected client's stream with `Unavailable("draining")` used
+  to page once per client per deploy; apps had to know to declare
+  `WithExpectedErrors` themselves. The error counter still counts it, under
+  `canceled`.
 - **The shutdown sequence is usable without `serverkit.Run`.** A main that runs
   its own listener (a worker with a health port, a gateway) uses the same
   pieces: `serverkit.Drainer` (readiness gate, pre-stop pause, shutdown budget,

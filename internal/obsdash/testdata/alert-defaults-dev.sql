@@ -1,6 +1,9 @@
 -- DeployFailed (deploy-failed) severity=critical for=5m interval=1m
 SELECT 1 AS value WHERE 0 /* reliant:platform deploy-failed env:{reliant_env_id:String} */
 
+-- FrontendIssueRegressed (frontend-issue-regressed) severity=warning for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform frontend-issue-regressed env:{reliant_env_id:String} */
+
 -- FrontendJSErrorSpike (frontend-js-errors) severity=warning for=10m interval=1m
 SELECT ServiceName AS service,
        countIf(Timestamp >= now() - INTERVAL 10 MINUTE) AS value
@@ -11,10 +14,29 @@ WHERE ServiceName = 'shop-frontend'
   AND ResourceAttributes['rum.sessionId'] != ''
   AND lower(StatusCode) = 'error'
   AND SpanAttributes['component'] NOT IN ('fetch', 'xml-http-request')
+  AND (SpanName != 'console.error' OR has(Events.Name, 'exception'))
 GROUP BY ServiceName
 HAVING value >= 10
    AND value > 3 * countIf(Timestamp < now() - INTERVAL 10 MINUTE) * 10 / 60
 ORDER BY service
+
+-- FrontendLCPPoor (frontend-lcp-poor) severity=info for=10m interval=5m
+SELECT ServiceName AS service,
+       quantile(0.75)(toFloat64OrZero(SpanAttributes['lcp'])) AS value,
+       count() AS samples
+FROM otel_traces
+WHERE ServiceName = 'shop-frontend'
+  AND Timestamp >= now() - INTERVAL 30 MINUTE
+  AND ResourceAttributes['deployment.environment.name'] = 'dev'
+  AND ResourceAttributes['rum.sessionId'] != ''
+  AND SpanName = 'webvitals'
+  AND SpanAttributes['lcp'] != ''
+GROUP BY ServiceName
+HAVING samples >= 100 AND value > 4000
+ORDER BY service
+
+-- FrontendNewIssue (frontend-new-issue) severity=warning for=0s interval=1m
+SELECT 1 AS value WHERE 0 /* reliant:platform frontend-new-issue env:{reliant_env_id:String} */
 
 -- ObservabilityQuotaOver100 (observability-quota) severity=warning for=0s interval=1m
 SELECT 1 AS value WHERE 0 /* reliant:platform observability-quota:over_100 env:{reliant_env_id:String} */

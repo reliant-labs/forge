@@ -110,6 +110,52 @@
       ]
     },
     {
+      "id": "frontend-lcp-poor",
+      "alert": "FrontendLCPPoor",
+      "title": "Frontend Largest Contentful Paint p75 is poor",
+      "severity": "info",
+      "for": "10m",
+      "interval": "5m",
+      "signal": "traces",
+      "params": [
+        {
+          "name": "threshold_ms",
+          "default": 4000,
+          "doc": "p75 LCP in milliseconds that fires (Core Web Vitals call above 4000 poor)"
+        },
+        {
+          "name": "window_minutes",
+          "default": 30,
+          "doc": "minutes the percentile is computed over"
+        },
+        {
+          "name": "min_samples",
+          "default": 100,
+          "doc": "fewer LCP measurements than this in the window never fire"
+        }
+      ]
+    },
+    {
+      "id": "frontend-new-issue",
+      "alert": "FrontendNewIssue",
+      "title": "A new frontend issue appeared (5 or more events, or 3 or more sessions, within 30 minutes)",
+      "severity": "warning",
+      "for": "0s",
+      "interval": "1m",
+      "signal": "platform",
+      "params": []
+    },
+    {
+      "id": "frontend-issue-regressed",
+      "alert": "FrontendIssueRegressed",
+      "title": "A resolved frontend issue came back in a later release",
+      "severity": "warning",
+      "for": "0s",
+      "interval": "1m",
+      "signal": "platform",
+      "params": []
+    },
+    {
       "id": "crash-loop",
       "alert": "WorkloadCrashLooping",
       "title": "A container keeps restarting",

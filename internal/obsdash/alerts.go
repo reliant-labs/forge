@@ -137,6 +137,7 @@ type platformRule struct{ key, alert, severity string }
 const (
 	pWindow      = "window_minutes"
 	pMinRequests = "min_requests"
+	pMinSamples  = "min_samples"
 )
 
 // Platform default ids: alerts the control plane raises from events it owns (a
@@ -145,6 +146,10 @@ const (
 const (
 	PlatformDeployFailed = "deploy-failed"
 	PlatformQuota        = "observability-quota"
+	// The frontend issue alerts need the issue registry (new / regressed are
+	// state transitions, not queries), which the control plane owns.
+	PlatformFrontendNewIssue       = "frontend-new-issue"
+	PlatformFrontendIssueRegressed = "frontend-issue-regressed"
 )
 
 func hasServices(in AlertInput) bool { return len(in.Services) > 0 }
@@ -214,6 +219,40 @@ var alertDefs = []alertDef{
 		annotations: map[string]string{"summary": "{{ $labels.service }} reported {{ $value }} JS errors in the current window, over the spike factor times its baseline"},
 		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
 		sql:         frontendErrorsSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: "frontend-lcp-poor", Alert: "FrontendLCPPoor", Title: "Frontend Largest Contentful Paint p75 is poor",
+			Severity: SeverityInfo, For: "10m", Interval: "5m", Signal: "traces",
+			Params: []AlertParam{
+				{"threshold_ms", 4000, "p75 LCP in milliseconds that fires (Core Web Vitals call above 4000 poor)"},
+				{pWindow, 30, "minutes the percentile is computed over"},
+				{pMinSamples, 100, "fewer LCP measurements than this in the window never fire"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.service }} p75 LCP is {{ $value }} ms, over the poor threshold"},
+		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
+		sql:         frontendLCPSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformFrontendNewIssue, Alert: "FrontendNewIssue", Title: "A new frontend issue appeared (5 or more events, or 3 or more sessions, within 30 minutes)",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "New frontend issue in {{ $labels.service }}: {{ $labels.title }} ({{ $value }} events), first seen in {{ $labels.release }}"},
+		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
+		platform:    []platformRule{{PlatformFrontendNewIssue, "FrontendNewIssue", SeverityWarning}},
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: PlatformFrontendIssueRegressed, Alert: "FrontendIssueRegressed", Title: "A resolved frontend issue came back in a later release",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
+			Params: []AlertParam{},
+		},
+		annotations: map[string]string{"summary": "Regressed frontend issue in {{ $labels.service }}: {{ $labels.title }}, back in {{ $labels.release }}"},
+		applies:     func(in AlertInput) bool { return in.FrontendService != "" },
+		platform:    []platformRule{{PlatformFrontendIssueRegressed, "FrontendIssueRegressed", SeverityWarning}},
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
@@ -681,10 +720,32 @@ WHERE ServiceName = %[2]s
   AND ResourceAttributes['rum.sessionId'] != ''
   AND lower(StatusCode) = 'error'
   AND SpanAttributes['component'] NOT IN ('fetch', 'xml-http-request')
+  AND (SpanName != 'console.error' OR has(Events.Name, 'exception'))
 GROUP BY ServiceName
 HAVING value >= %[5]s
    AND value > %[6]s * countIf(Timestamp < now() - INTERVAL %[1]s MINUTE) * %[1]s / %[3]s
 ORDER BY service`, num(p[pWindow]), sqlQuote(in.FrontendService), num(p["baseline_minutes"]), sqlQuote(env), num(p["min_errors"]), num(p["spike_factor"]))
+}
+
+// frontendLCPSQL fires per frontend when the p75 of its LCP web-vitals spans
+// (the SDK emits one `webvitals` span per measurement, with the metric as an
+// attribute named for it) is over the poor threshold. It reads the p75 the
+// Core Web Vitals program grades by, not an average, and needs a minimum
+// sample so a handful of slow loads never fires it.
+func frontendLCPSQL(env string, in AlertInput, p map[string]float64) string {
+	return fmt.Sprintf(`SELECT ServiceName AS service,
+       quantile(0.75)(toFloat64OrZero(SpanAttributes['lcp'])) AS value,
+       count() AS samples
+FROM otel_traces
+WHERE ServiceName = %[1]s
+  AND Timestamp >= now() - INTERVAL %[2]s MINUTE
+  AND ResourceAttributes['deployment.environment.name'] = %[3]s
+  AND ResourceAttributes['rum.sessionId'] != ''
+  AND SpanName = 'webvitals'
+  AND SpanAttributes['lcp'] != ''
+GROUP BY ServiceName
+HAVING samples >= %[4]s AND value > %[5]s
+ORDER BY service`, sqlQuote(in.FrontendService), num(p[pWindow]), sqlQuote(env), num(p[pMinSamples]), num(p["threshold_ms"]))
 }
 
 // ── customer metadata ────────────────────────────────────────────────────────

@@ -197,6 +197,11 @@ func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 			return hd, fmt.Errorf("duplicate panel id %q", p.ID)
 		}
 		seen[p.ID] = true
+		// HyperDX cannot draw the console's own kinds; its UI already plays
+		// replay and searches spans.
+		if IsConsoleKind(p.Kind) {
+			continue
+		}
 		w, h := p.Width, p.Height
 		if w <= 0 || w > gridColumns {
 			w = gridColumns

@@ -138,6 +138,21 @@ export {
 } from "./error-reporter.js";
 
 /**
+ * Product events, the signed-in user and the consent kill-switch for browser
+ * telemetry. Like reportException these are safe to call anywhere — no-ops on
+ * the server and when telemetry is off — and calls made while the SDK is still
+ * loading are held and replayed. The SDK itself arrives through the
+ * "/telemetry" subpath, never the barrel.
+ */
+export {
+  disableTelemetry,
+  setTelemetryUser,
+  track,
+  type TrackProps,
+  type TrackValue,
+} from "./track.js";
+
+/**
  * Dev-only browser log forwarding: mirrors console output and uncaught errors
  * to the dev server, which prints them into
  * `.forge/logs/<env>/frontend_<name>.log`. No-ops unless `dev: true`, and the

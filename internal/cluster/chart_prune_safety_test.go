@@ -77,15 +77,22 @@ func TestChartPrune_DeletePreconditionsProtectConcurrentReplacementAndAnnotation
 }
 func TestChartPrune_FailedApplyLeavesInventoryByteIdentical(t *testing.T) {
 	cl, spec, set := safetyFixture(t)
-	before := cl.inventories()
+	inventoryData := func() any {
+		o := cl.find("ConfigMap", chartStateNamespace, chartInventoryName(spec.Name, spec.Owner))
+		if o == nil {
+			t.Fatal("fixture: inventory missing")
+		}
+		return strMap(o["data"])[chartInventoryDataKey]
+	}
+	before := inventoryData()
 	set(docDeployment)
 	t.Setenv("FORGE_FAKE_FAIL_APPLY", "1")
 	rc := renderRelease(t, spec)
 	if err := applyRenderedCharts(context.Background(), "k3d-test", []renderedChart{rc}, true); err == nil {
 		t.Fatal("apply unexpectedly succeeded")
 	}
-	if !reflect.DeepEqual(before, cl.inventories()) {
-		t.Fatal("failed apply changed inventory")
+	if !reflect.DeepEqual(before, inventoryData()) {
+		t.Fatal("failed apply changed serialized inventory payload or recorded UIDs")
 	}
 	if len(cl.deletes()) != 0 {
 		t.Fatal("failed apply pruned")

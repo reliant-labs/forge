@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/activity"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -247,6 +248,25 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	// enforces fail-closed. Authorization stays handler logic.
 }
 
+// methodActivity records md's activity declaration through
+// forge/pkg/activity — the resolver the runtime interceptor uses — so the
+// lint (forgeconv-activity-declared) reads the runtime's own verdict rather
+// than re-deriving the rules.
+func methodActivity(md protoreflect.MethodDescriptor) *codegen.MethodActivity {
+	a := &codegen.MethodActivity{Mutating: activity.IsMutating(md)}
+	decl, err := activity.Resolve(md)
+	switch {
+	case err != nil:
+		a.Error = err.Error()
+	case decl == nil:
+	case decl.None != "":
+		a.Declared, a.None = true, decl.None
+	default:
+		a.Declared, a.Verb, a.TargetKind, a.Implied, a.Writer = true, decl.Verb, decl.TargetKind, decl.Implied, decl.Writer.String()
+	}
+	return a
+}
+
 // serviceAudience reads `(forge.v1.service).audience`, defaulting to "user"
 // — the same default serverkit.ServiceAudience applies at boot.
 func serviceAudience(svc *protogen.Service) string {
@@ -324,6 +344,8 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 				}
 			}
 		}
+
+		method.Activity = methodActivity(m.Desc)
 
 		sd.Methods = append(sd.Methods, method)
 

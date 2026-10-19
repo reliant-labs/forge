@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     target, env, via and time, and pages by keyset. The store writes through
     `*orm.Client`, so a write inside `RunTx` joins the transaction.
   - **Docs.** The new `activity` skill covers all of the above.
+  - **The lint.** `forgeconv-activity-declared` (`forge lint --conventions`,
+    error) fails a mutating rpc with no declaration and any malformed
+    declaration, such as a path that does not resolve. `forge generate` records
+    each rpc's verdict from `activity.IsMutating` and `activity.Resolve` in
+    `gen/forge_descriptor.json` (`Activity`), and the lint reads it there, so
+    the lint and the interceptor apply the same rules. **Upgrading:** every
+    custom mutating rpc in an existing project needs an `activity` declaration
+    or `activity: { none: "<why>" }`.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

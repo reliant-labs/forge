@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never retries, and is rolled back when its ctx is cancelled. A hand-written
   `orm.Context` fake must add the method. Documented in the
   `service-layer/transactions` skill.
+- **`pkg/pgtest` hands out pgx handles, the driver production runs.** Every
+  `*sql.DB` from `pgtest.New`, `NewClone`, `NewFromTemplate`, `NewAtURL` and
+  the template build callback is now opened with `pgtest.DriverName`
+  (`"pgx"`, jackc/pgx's stdlib adapter) instead of lib/pq, so a DB test runs
+  the same array/time scanning, statement cache and error types
+  (`*pgconn.PgError`, not `*pq.Error`) as `serverkit.OpenDB`. `orm.NewClient`
+  opens pgx too. `forge lint --fixture-drift`, which classified a rejected
+  fixture only from a `*pq.Error`, reads `*pgconn.PgError` as well. A test that
+  asserted `*pq.Error` from a pgtest database should match `*pgconn.PgError`
+  or the driver-neutral `SQLState()` method.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

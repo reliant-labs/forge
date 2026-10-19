@@ -6,15 +6,16 @@
 //
 // # Status (FORGE_SHAPE_REDESIGN §2 — lib-boundary extraction)
 //
-// The generated lifecycle_gen.go is the SUPERVISED-component surface: the
+// The generated lifecycle file is the SUPERVISED-component surface: the
 // workers and operators serverkit runs over the constructed *Services. Per
 // the "generated files are tables, not programs" rule, all the uniform
-// machinery lives HERE and the generated file shrinks to thin per-app DATA:
+// worker machinery lives HERE and the generated file shrinks to thin per-app
+// DATA:
 //
 //   - WorkerList(s) returns explicit lifecyclekit.WrapWorker("name", s.Field)
 //     rows;
 //   - OperatorList(s) returns one row per operator;
-//   - RunOperators(s, ...) is a single delegation to lifecyclekit.Run with one
+//   - RunOperators(s, ...) is a single delegation to operatorkit.Run with one
 //     dumb Controller row per operator.
 //
 // What lives here:
@@ -28,27 +29,26 @@
 //     legacy Start wrapper.
 //   - [WorkerLifecycle] — the Start/Stop shape every generated worker exposes.
 //   - [Worker] / [Operator] — re-exports of the serverkit contracts the
-//     generated lists return, so the generated file imports only lifecyclekit.
-//   - [Controller] / [Options] / [Run] — the controller-manager bridge over
-//     operatorkit the generated RunOperators delegates to.
+//     generated lists return.
 //   - [HasOperators] — the predicate over a serverkit.Operator slice.
 //
 // Adding a worker needs no `forge generate` change to this package — the
 // type-switch detects RunContext at runtime.
 //
-// The operator bridge ([Run], [Controller], [Options]) is a thin pass-through
-// to forge/pkg/appkit/operatorkit so projects WITHOUT operators never compile
-// controller-runtime and its Kubernetes dependency tree: the generated import
-// of the operatorkit-backed Run is conditional on the project having
-// operators (the template only references RunOperators' operatorkit path when
-// .Operators is non-empty).
+// # No controller-runtime here
+//
+// The controller-manager bridge is NOT in this package: it is
+// forge/pkg/appkit/operatorkit ([operatorkit.Run], Controller, Options), and
+// only a project that runs operators imports it. lifecyclekit used to
+// re-export those three names, which made every importer of lifecyclekit —
+// including a binary that only wanted [Supervise] — link
+// sigs.k8s.io/controller-runtime and its Kubernetes dependency tree.
+// deps_test.go pins that this package's import graph reaches neither.
 package lifecyclekit
 
 import (
 	"context"
-	"log/slog"
 
-	"github.com/reliant-labs/forge/pkg/appkit/operatorkit"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
 
@@ -154,25 +154,6 @@ func WrapWorker(name string, w WorkerLifecycle) serverkit.Worker {
 // HasOperators reports whether the supplied operator list is non-empty. The
 // generated HasOperators(s) delegates here over OperatorList(s).
 func HasOperators(operators []Operator) bool { return len(operators) > 0 }
-
-// Controller is one generated operator row: the CRD scheme installer and the
-// controller's manager hookup. It is a re-export of operatorkit.Controller so
-// the generated RunOperators references a lifecyclekit type.
-type Controller = operatorkit.Controller
-
-// Options carries the per-project controller-manager configuration the
-// generated RunOperators supplies — a re-export of operatorkit.Options.
-type Options = operatorkit.Options
-
-// Run creates a controller manager, registers every controller's scheme and
-// setup, and starts the manager. It is the bridge the generated RunOperators
-// delegates to; behaviour (kubeconfig resolution with graceful no-cluster
-// degrade, leader election, scheme / controller registration, health probe)
-// lives in operatorkit.Run. Blocks until ctx is cancelled — the caller runs
-// it in a goroutine.
-func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []Controller) error {
-	return operatorkit.Run(ctx, logger, opts, controllers)
-}
 
 // Leader is the one thing [Singleton] needs from a lease implementation: run
 // fn only while this process holds the named lease, cancel fn's context when

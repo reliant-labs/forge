@@ -84,6 +84,18 @@ type InventoryServiceData struct {
 	Version     string
 	// HasWebhooks gates the webhook-route registration in the Mount body.
 	HasWebhooks bool
+	// Audience is the trust domain the service declares (`(forge.v1.service)
+	// .audience`), "user" when it declares none: which route set mounts it.
+	Audience string
+}
+
+// serviceAudienceOrUser is a service's audience, defaulting to "user" the way
+// serverkit.ServiceAudience does at boot.
+func serviceAudienceOrUser(a string) string {
+	if a == "" {
+		return "user"
+	}
+	return a
 }
 
 // InventoryGenData is the rendered template input for mounts_services_gen.go.tmpl.
@@ -111,13 +123,44 @@ func GenerateInventory(in InventoryGenInput) error {
 
 	restEnabled := projectAPIRESTEnabled(in.ProjectDir)
 
+	rows, imports, err := inventoryRows(in)
+	if err != nil {
+		return err
+	}
+
+	data := InventoryGenData{
+		Module:         in.ModulePath,
+		RESTEnabled:    restEnabled,
+		Services:       rows,
+		ConnectImports: imports,
+	}
+
+	content, err := templates.ProjectTemplates().Render("mounts_services_gen.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render mounts_services_gen.go.tmpl: %w", err)
+	}
+	// Renamed to _gen so the name states the tier: this file is a pure
+	// projection of the discovered service set, rewritten on every run, and a
+	// reader could not tell that from the old spelling without opening it.
+	RetireRenamedGenerated(in.ProjectDir, filepath.Join("internal", "app", "mounts_services.go"), in.Checksums)
+	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "mounts_services_gen.go"), content, in.Checksums); err != nil {
+		return fmt.Errorf("write internal/app/mounts_services_gen.go: %w", err)
+	}
+	return nil
+}
+
+// inventoryRows derives one row per service — the collision-aware field
+// name, its mount method, its Connect identity and audience — plus the
+// *connect imports those rows name. Shared by the legacy mount surface and
+// the composition graph's route sets, so both name every service alike.
+func inventoryRows(in InventoryGenInput) ([]InventoryServiceData, []string, error) {
 	// Service field naming must agree with inject_gen / bootstrap, so reuse
 	// the same collision counts (services + packages + workers + operators).
 	svcResolved := make([]ResolvedComponent, 0, len(in.Services))
 	for _, svc := range in.Services {
 		res, err := ResolveServiceComponent(in.ProjectDir, svc.Name)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		svcResolved = append(svcResolved, res)
 	}
@@ -188,6 +231,7 @@ func GenerateInventory(in InventoryGenInput) error {
 			BaseService:      runtimeName,
 			Version:          protoVersion,
 			HasWebhooks:      in.WebhookServices[naming.ServicePackage(svc.Name)],
+			Audience:         serviceAudienceOrUser(svc.Audience),
 		})
 	}
 
@@ -196,26 +240,7 @@ func GenerateInventory(in InventoryGenInput) error {
 		imports = append(imports, imp)
 	}
 	sort.Strings(imports)
-
-	data := InventoryGenData{
-		Module:         in.ModulePath,
-		RESTEnabled:    restEnabled,
-		Services:       rows,
-		ConnectImports: imports,
-	}
-
-	content, err := templates.ProjectTemplates().Render("mounts_services_gen.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render mounts_services_gen.go.tmpl: %w", err)
-	}
-	// Renamed to _gen so the name states the tier: this file is a pure
-	// projection of the discovered service set, rewritten on every run, and a
-	// reader could not tell that from the old spelling without opening it.
-	RetireRenamedGenerated(in.ProjectDir, filepath.Join("internal", "app", "mounts_services.go"), in.Checksums)
-	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "mounts_services_gen.go"), content, in.Checksums); err != nil {
-		return fmt.Errorf("write internal/app/mounts_services_gen.go: %w", err)
-	}
-	return nil
+	return rows, imports, nil
 }
 
 // InventoryGenInput carries everything GenerateInventory needs. Mirrors the

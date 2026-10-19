@@ -2072,6 +2072,9 @@ type InjectGenInput struct {
 	Packages  []BootstrapPackageData
 	Workers   []BootstrapWorkerData
 	Operators []BootstrapOperatorData
+	// Graph assembles the components for the composition graph, whose
+	// generated files name identifiers of their own.
+	Graph bool
 	// Warnings receives GenerateCompose's advisory lines — a construction
 	// compose.go keeps that the project no longer composes. Nil means
 	// os.Stderr.
@@ -2143,6 +2146,11 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	taken := appPackageNames(in.ProjectDir)
 	for name := range appTemplateIdentifiers() {
 		taken[name] = true
+	}
+	if in.Graph {
+		for name := range graphTemplateIdentifiers() {
+			taken[name] = true
+		}
 	}
 
 	var comps []BuildComponent

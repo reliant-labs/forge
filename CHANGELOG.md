@@ -88,6 +88,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`BenchmarkRepoUpdateMasked_OneColumnStamp`). `Repo.UpdateMasked` now takes
   `...UpdateOption` (Preserve is rejected there: a mask already names what is
   written). The default is unchanged.
+- **The composition graph: a new project's `internal/app` is typed, generated
+  Go in which every part of the process is a node** (composition graph, PR 3).
+  A provider is any `func New<X>(<X>Deps) (T, error)` in the owned
+  `providers.go` — the scaffold ships the database pool and ORM, the outbound
+  HTTP client, the user audience's `UserAuth` / `UserChain` / `APIListener`,
+  and pprof — and it is a node exactly like a handler, package, worker or
+  operator. Every Deps field resolves **by type** at generate time (a graph
+  input, a config block, a framework seam, or the one node whose value is
+  assignable; identity is the Go type, never a name). The owned `compose.go`
+  is one constructor method per node, `func (g *Graph) newX() (T, error)`,
+  whose value expressions are the graph's edges: forge adds a missing method
+  and a missing Deps key and never touches a value. The generated
+  `graph_gen.go` holds a memoized accessor per node (`g.X()`), and per root a
+  `Build<Root>` that constructs exactly the closure the root's fields reach
+  and then seals the graph, and a `Run<Root>` that supervises it under
+  `lifecyclekit.Supervise` — each node's Run/Drain/Close/Ready bound in a
+  `lifecyclekit.Node` literal read off its type by go/types at generate time.
+  A root is a `//forge:root <name>` struct in `internal/app`; with none
+  declared, forge generates `Server` — every runnable node nothing depends on
+  (the API listener, the workers, the operators) — which is what
+  `<bin> server` runs. A missing provider, an ambiguous match (until
+  `compose.go` names one), a dependency cycle (named edge by edge; a
+  `func() T` field is a lazy edge that breaks it) and a root field nothing
+  produces are generate errors. The generated `routes_gen.go` replaces
+  `mounts_services_gen.go`'s `MountAll`: one `<Audience>Routes` route set per
+  audience (`UserRoutes`, `DaemonRoutes`, …), each a node whose Deps are its
+  services, with `MountOptions` per-service options set in `compose.go`.
+  New runtime packages: `forge/pkg/graphkit` (`Get`, `Memo`, `Builder.Build`,
+  `Builder.Nodes`, `Builder.Supervise`, `Catch`) and, in `serverkit`,
+  `Probes` (`/healthz`, `/readyz` over a Drainer and checks that may be
+  added after the handler is built, `/metrics`), `Edge` (the CORS /
+  security-headers / request-id layers, fail-closed), `Pprof` and
+  `SetupTelemetry`.
+- **A project scaffolded before the graph keeps generating exactly as
+  before.** forge treats an `internal/app` that declares `type Infra struct`
+  or `func NewComponents` as the legacy composition and runs the legacy
+  generators unchanged (proven byte-identical on control-plane). To migrate by
+  hand: move each `OpenInfra` field into a provider func, delete
+  `compose.go`, `lifecycle.go` and the `Infra` struct, and re-run
+  `forge generate`; the scripted migration is composition graph PR 7.
+- **A new project has no per-service, per-worker or per-operator
+  subcommands** (design §9.5): `cmd/<bin>/main.go` is a bare `cmd.Execute()`,
+  `server` runs the graph's server root, and `serve.go` is the process policy
+  around it (config, logger, boot probes, migrate, telemetry, the readiness
+  gate and stop budget). Splitting a process is a new root, not a new
+  subcommand; one cobra command per root is composition graph PR 4.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the

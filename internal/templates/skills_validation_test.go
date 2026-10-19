@@ -1481,7 +1481,10 @@ func TestSkillsAuthSymbolReferencesExist(t *testing.T) {
 // validator. Every `Provider: "<name>"` an auth skill shows must therefore be
 // one the scaffolded file actually sets.
 func TestAuthSkillsProviderClaimsMatchTheScaffold(t *testing.T) {
-	authGo, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", struct{ Module string }{Module: "example.com/demo"})
+	authGo, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", struct {
+		Module             string
+		Graph, HasDatabase bool
+	}{Module: "example.com/demo"})
 	if err != nil {
 		t.Fatalf("render app-auth.go.tmpl: %v", err)
 	}

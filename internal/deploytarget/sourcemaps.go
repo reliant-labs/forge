@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Source maps are build output a deploy must never serve by default.
@@ -258,7 +260,7 @@ func extractSourcemaps(plan StagePlan) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := os.WriteFile(filepath.Join(sidecar, SourcemapManifestName), append(b, '\n'), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(sidecar, SourcemapManifestName), append(b, '\n'), 0o644); err != nil {
 		return 0, fmt.Errorf("write sourcemap manifest: %w", err)
 	}
 	return n, nil
@@ -389,7 +391,7 @@ func stripTrailer(stagingDir, sidecar, rel string) error {
 			return err
 		}
 	}
-	if err := os.WriteFile(path, []byte(body), info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(body), info.Mode().Perm()); err != nil {
 		return fmt.Errorf("strip source map trailer from %s: %w", rel, err)
 	}
 	return nil
@@ -410,7 +412,7 @@ func extractInlineMap(sidecar, rel, ref string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, mapJSON, 0o644); err != nil {
+	if err := atomicfile.WriteFile(dst, mapJSON, 0o644); err != nil {
 		return fmt.Errorf("write inline source map for %s: %w", rel, err)
 	}
 	return nil

@@ -244,8 +244,8 @@ func ComposeSnapshot(in CompositionInput) (Snapshot, error) {
 			out.Resources = append(out.Resources, r)
 		}
 	}
-	// Resource edges carry transitive operational dependencies (config, RBAC,
-	// migration and routes). A changed endpoint cannot silently affect a carried
+	// Resource edges carry transitive operational dependencies (config,
+	// Kubernetes RBAC, migration and routes). A changed endpoint cannot silently affect a carried
 	// owner's resource, even if the changed object is singly owned.
 	for _, inventory := range []Snapshot{b, c} {
 		for _, r := range inventory.Resources {

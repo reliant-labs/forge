@@ -56,4 +56,3 @@ verify-generated` refuses to run when a frontend's protoc-gen-es is missing
 rather than certify a tree whose TypeScript stubs it skipped, and refuses
 to regenerate over a tree an earlier step already modified — naming those
 paths as changed before `forge generate` ran, not as generated-code drift.
-

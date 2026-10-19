@@ -83,7 +83,7 @@ func TestCloudIdentityWire(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
-				case "/controlplane.v1.DeployService/Get" + "Tenant":
+				case "/" + cloud.ProcGetOrganization:
 					if len(body) != 0 {
 						t.Errorf("org lookup must not choose an org: %v", body)
 					}
@@ -150,7 +150,7 @@ func TestCloudIdentityRefusals(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				stage := "identity"
 				reply := `{"userId":"u1","created":true}`
-				if strings.HasSuffix(r.URL.Path, "/Get"+"Tenant") {
+				if r.URL.Path == "/"+cloud.ProcGetOrganization {
 					stage = "org"
 					reply = fmt.Sprintf(`{"%s":{"orgId":"org"}}`, orgResponseKey)
 				} else if strings.HasSuffix(r.URL.Path, "/ListEnvironments") {

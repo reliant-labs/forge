@@ -55,11 +55,11 @@ stack. Per-type totals and identity/link behavior are checked separately in
 `TestHeapSparseSnapshotsPreserveSemantics` and
 `TestProfileRetryKeepsIdentityAndRows`.
 
-| One simulated hour | Rows | Uncompressed OTLP protobuf bytes |
-|---|---:|---:|
-| Previous converter, every minute | 310,800 | 9,067,104 |
-| Sparse converter only, every minute | 156,888 | 7,847,028 |
-| Hypothetical sparse + 15m heap cadence (NOT enabled) | 9,892 | 493,954 |
+| One simulated hour                                   |    Rows | Uncompressed OTLP protobuf bytes |
+| ---------------------------------------------------- | ------: | -------------------------------: |
+| Previous converter, every minute                     | 310,800 |                        9,067,104 |
+| Sparse converter only, every minute                  | 156,888 |                        7,847,028 |
+| Hypothetical sparse + 15m heap cadence (NOT enabled) |   9,892 |                          493,954 |
 
 Sparse-only reduction: **49.5% rows, 13.5% wire bytes**. Hypothetical combined
 reduction: **96.8% rows, 94.6% wire bytes**. Dictionary tables remain in

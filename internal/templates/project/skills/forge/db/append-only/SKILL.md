@@ -48,4 +48,3 @@ vocabulary one level up:
   "some trigger fires on UPDATE": an `updated_at` stamper is also `BEFORE
   UPDATE` and means the opposite. A hand-written guard under a different name
   declares itself with the comment.
-

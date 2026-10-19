@@ -80,11 +80,12 @@ type Input struct {
 	// KeysDir is the library's own memory of the credentials it issued.
 	KeysDir string
 
-	// Wait bounds the wait for the IdP to answer (default 3m: a first boot
-	// runs the whole declarative setup before it serves).
-	Wait   time.Duration
 	Logger *slog.Logger
 }
+
+// readyTimeout bounds the wait for the IdP to answer: a first boot runs the
+// whole declarative setup before it serves.
+const readyTimeout = 3 * time.Minute
 
 // Result is what a convergence did.
 type Result struct {
@@ -103,10 +104,6 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 		return nil, err
 	}
 	keys := identity.DirKeyStore{Dir: in.KeysDir}
-	wait := in.Wait
-	if wait <= 0 {
-		wait = 3 * time.Minute
-	}
 	rec, err := identity.New(identity.Options{
 		BaseURL:        in.BaseURL,
 		Issuer:         in.BaseURL,
@@ -115,7 +112,7 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 		Outputs:        identity.FileOutputs{Path: in.OutputsPath},
 		AllowSeedUsers: true,
 		SignInCodes:    hasDeclaredMembers(spec),
-		ReadyTimeout:   wait,
+		ReadyTimeout:   readyTimeout,
 		Logger:         in.Logger,
 	})
 	if err != nil {

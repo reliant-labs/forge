@@ -253,6 +253,7 @@
     "network_policy": null,
     "overrides": {},
     "project": "acme",
+    "release_manifest_consumers": [],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],
@@ -265,16 +266,19 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "ghcr.io/acme/acme",
         "delivery_unit": "reliant",
         "image": "ghcr.io/acme/acme",
         "kind": "service",
         "name": "api",
+        "release_inputs": {},
         "runtime": {
           "cluster": "gke_acme_prod",
           "connected_cluster": "acme-prod",
@@ -336,6 +340,7 @@
         "image": "",
         "kind": "service",
         "name": "nats",
+        "release_inputs": {},
         "runtime": {
           "cluster": "gke_acme_prod",
           "connected_cluster": "acme-prod",
@@ -379,15 +384,18 @@
           "flags": [],
           "goarch": null,
           "goos": null,
+          "inputs_file": null,
           "ldflags": [],
           "output_name": "acme",
           "tags": [],
-          "type": "go"
+          "type": "go",
+          "unit": null
         },
         "build_image": "ghcr.io/acme/acme",
         "image": "ghcr.io/acme/acme",
         "kind": "service",
         "name": "admin",
+        "release_inputs": {},
         "runtime": {
           "cluster": "gke_acme_prod",
           "connected_cluster": "acme-prod",

@@ -49,6 +49,24 @@ func TestDefaultAlertSQLOnClickHouse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// FrontendService is one name per project; the SQL is parameterized on it, so
+	// each frontend-* case below re-resolves with the seeded service it is about.
+	frontendFired := func(service, id string) bool {
+		t.Helper()
+		fin := in
+		fin.FrontendService = service
+		rs, err := ResolveAlertDefaults(fin, "dev", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rs {
+			if r.ID == id {
+				return run(r.Expr) != ""
+			}
+		}
+		t.Fatalf("no default %s", id)
+		return false
+	}
 	fired := map[string][]string{}
 	for _, r := range rules {
 		if !strings.Contains(r.Expr, "otel_traces") && !strings.Contains(r.Expr, "otel_metrics_sum") && !strings.Contains(r.Expr, "otel_metrics_histogram") {
@@ -73,6 +91,21 @@ func TestDefaultAlertSQLOnClickHouse(t *testing.T) {
 	for id, w := range want {
 		if strings.Join(fired[id], ",") != strings.Join(w, ",") {
 			t.Errorf("%s fired for %v, want %v", id, fired[id], w)
+		}
+	}
+
+	// FrontendJSErrorSpike: a string-only console.error is not a JS error, but
+	// console.error(err) (which carries an exception event) is.
+	for service, want := range map[string]bool{"shop-strings": false, "shop-errobj": true} {
+		if got := frontendFired(service, "frontend-js-errors"); got != want {
+			t.Errorf("frontend-js-errors for %s = %v, want %v", service, got, want)
+		}
+	}
+	// FrontendLCPPoor: the p75 of LCP measurements, with a minimum sample, and
+	// other web-vitals spans (INP) do not enter the percentile.
+	for service, want := range map[string]bool{"shop-slow": true, "shop-fast": false, "shop-few": false, "shop-mixed": false} {
+		if got := frontendFired(service, "frontend-lcp-poor"); got != want {
+			t.Errorf("frontend-lcp-poor for %s = %v, want %v", service, got, want)
 		}
 	}
 

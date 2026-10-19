@@ -355,7 +355,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "where", "groupBy", "columns", "unit", "width", "height")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -367,7 +367,7 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
-	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch))
+	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindIssues), string(KindSessions), string(KindFunnel))
 	sigName := v.oneOf(path, o, "signal", true, string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
 	v.oneOf(path, o, "unit", false, string(UnitCount), string(UnitMillis), string(UnitBytes), string(UnitPercent), string(UnitSeconds))
@@ -390,6 +390,16 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 		v.add(childPath(path, "groupBy"), "groups by %d fields, over the %d allowed", len(gs), maxGroupByPerPanel)
 	}
 	v.stringList(path, o, "groupBy", sig)
+
+	if IsConsoleKind(PanelKind(kind)) {
+		v.consolePanel(path, o, PanelKind(kind), sig)
+		return
+	}
+	for _, only := range []string{"funnel", "hasError"} {
+		if _, has := o[only]; has {
+			v.add(childPath(path, only), "only a %s panel takes %q", consoleKindFor(only), only)
+		}
+	}
 
 	if kind == string(KindSearch) {
 		v.searchPanel(path, o, sig)
@@ -428,6 +438,87 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 }
 
+func consoleKindFor(field string) PanelKind {
+	if field == "funnel" {
+		return KindFunnel
+	}
+	return KindSessions
+}
+
+// consolePanel validates the kinds the console draws from its own services
+// (issues, sessions, funnel). They carry no query: a series, a ratio, columns
+// or a group-by would be silently ignored, so each is refused.
+func (v *validator) consolePanel(path string, o map[string]any, kind PanelKind, sig Signal) {
+	for _, no := range []string{"series", "ratio", "columns", "groupBy", "unit"} {
+		if _, has := o[no]; has {
+			v.add(childPath(path, no), "a %s panel is drawn by the console and takes no %q", kind, no)
+		}
+	}
+	if sig != "" && sig != Traces {
+		v.add(childPath(path, "signal"), "a %s panel reads browser spans: its signal is %q", kind, Traces)
+	}
+	if _, has := o["hasError"]; has {
+		if kind != KindSessions {
+			v.add(childPath(path, "hasError"), "only a sessions panel takes \"hasError\"")
+		} else if _, ok := o["hasError"].(bool); !ok {
+			v.add(childPath(path, "hasError"), "must be true or false")
+		}
+	}
+	fn, has := o["funnel"]
+	if kind != KindFunnel {
+		if has {
+			v.add(childPath(path, "funnel"), "only a funnel panel takes \"funnel\"")
+		}
+		return
+	}
+	if !has {
+		v.add(path, "a funnel panel needs a \"funnel\"")
+		return
+	}
+	f, ok := v.object(childPath(path, "funnel"), fn)
+	if !ok {
+		return
+	}
+	v.funnel(childPath(path, "funnel"), f)
+}
+
+var funnelWindowPattern = regexp.MustCompile(`^[1-9][0-9]{0,3}[smhd]$`)
+
+func (v *validator) funnel(path string, f map[string]any) {
+	v.known(path, f, "steps", "window", "by")
+	steps, ok := v.list(path, f, "steps")
+	if !ok {
+		if _, present := f["steps"]; !present {
+			v.add(path, "a funnel needs \"steps\"")
+		}
+	} else {
+		if len(steps) < minFunnelSteps || len(steps) > maxFunnelSteps {
+			v.add(childPath(path, "steps"), "a funnel has %d to %d steps, has %d", minFunnelSteps, maxFunnelSteps, len(steps))
+		}
+		seen := map[string]bool{}
+		for i, raw := range steps {
+			p := indexPath(childPath(path, "steps"), i)
+			name, ok := raw.(string)
+			switch {
+			case !ok:
+				v.add(p, "must be a string")
+			case strings.TrimSpace(name) == "":
+				v.add(p, "must not be empty")
+			case len(name) > 128:
+				v.add(p, "is longer than 128 characters")
+			case seen[name]:
+				v.add(p, "step %q repeats an earlier step", name)
+			default:
+				seen[name] = true
+			}
+		}
+	}
+	if w := v.str(path, f, "window", false); w != "" && !funnelWindowPattern.MatchString(w) {
+		v.add(childPath(path, "window"), "%q is not a window: a number and a unit of s, m, h or d, like \"1h\" or \"7d\"", w)
+	}
+	v.oneOf(path, f, "by", false, string(FunnelBySession), string(FunnelByUser))
+}
+
 func (v *validator) searchPanel(path string, o map[string]any, sig Signal) {
 	if _, has := o["series"]; has {
 		v.add(childPath(path, "series"), "a search panel shows rows and takes no series; use columns")
@@ -440,7 +531,7 @@ func (v *validator) searchPanel(path string, o map[string]any, sig Signal) {
 }
 
 func (v *validator) series(path string, s map[string]any, sig Signal, labels map[string]bool) {
-	v.known(path, s, "label", "agg", "quantile", "field", "metricType", "where")
+	v.known(path, s, "label", "agg", "quantile", "field", "metricType", "where", "thresholds")
 	if l := v.str(path, s, "label", true); l != "" {
 		if labels[l] {
 			v.add(childPath(path, "label"), "duplicate series label %q in this panel", l)
@@ -459,6 +550,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 		v.add(childPath(path, "quantile"), "only a quantile series takes a quantile")
 	}
 	v.predicates(path, s, "where", sig)
+	v.thresholds(path, s)
 
 	switch sig {
 	case Metrics:
@@ -489,6 +581,28 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 		if agg == string(AggLast) {
 			v.add(childPath(path, "agg"), "last is defined for metrics; use max or avg over a %s field", sig)
 		}
+	}
+}
+
+func (v *validator) thresholds(path string, s map[string]any) {
+	raw, present := s["thresholds"]
+	if !present {
+		return
+	}
+	tp := childPath(path, "thresholds")
+	t, ok := v.object(tp, raw)
+	if !ok {
+		return
+	}
+	v.known(tp, t, "good", "poor")
+	good, hasGood := v.number(tp, t, "good")
+	poor, hasPoor := v.number(tp, t, "poor")
+	if !hasGood || !hasPoor {
+		v.add(tp, "thresholds need both \"good\" and \"poor\"")
+		return
+	}
+	if good < 0 || poor <= good {
+		v.add(tp, "need 0 <= good < poor, got good %v and poor %v", good, poor)
 	}
 }
 

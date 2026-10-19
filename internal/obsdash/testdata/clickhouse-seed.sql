@@ -58,3 +58,22 @@ INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, Service
 SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('d', toString(n)), 'HTTP GET', 'Client', 'shop-frontend', map('deployment.environment.name','dev','rum.sessionId','s'), map('component','fetch'), 1, 'Error' FROM (SELECT number n FROM numbers(100));
 INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
 SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('e', toString(n)), 'documentLoad', 'Internal', 'shop-frontend', map('deployment.environment.name','dev','rum.sessionId','s'), map(), 1, 'Unset' FROM (SELECT number n FROM numbers(500));
+
+-- string-only console.error: the SDK records console.error("text") as an error span with NO exception event.
+-- 40 of them in the current window must not count towards the JS error spike (shop-strings has no real errors).
+INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
+SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('s', toString(n)), 'console.error', 'Internal', 'shop-strings', map('deployment.environment.name','dev','rum.sessionId','s'), map('error.object','String'), 1, 'Error' FROM (SELECT number n FROM numbers(40));
+-- ... while console.error(err) carries an exception event and does count (shop-errobj).
+INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode, Events.Timestamp, Events.Name, Events.Attributes)
+SELECT now() - INTERVAL 1 MINUTE - INTERVAL n SECOND, 't', concat('x', toString(n)), 'console.error', 'Internal', 'shop-errobj', map('deployment.environment.name','dev','rum.sessionId','s'), map('error.object','TypeError'), 1, 'Error', [now()], ['exception'], [map('exception.type','TypeError')] FROM (SELECT number n FROM numbers(40));
+
+-- web vitals: one webvitals span per measurement, the metric as an attribute named for it.
+-- shop-slow: 150 LCP samples at 5000 ms (p75 poor). shop-fast: 150 at 1200 ms. shop-few: 20 at 9000 ms (too few samples).
+-- shop-mixed: 150 LCP at 1000 ms plus 400 INP spans, which carry no lcp and must not pull the p75.
+INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
+SELECT now() - INTERVAL 2 MINUTE - INTERVAL n SECOND, 't', concat('l', svc, toString(n)), 'webvitals', 'Internal', svc, map('deployment.environment.name','dev','rum.sessionId','s'), map('lcp', toString(v)), 1, 'Unset'
+FROM (SELECT number n FROM numbers(150)) AS a, (SELECT arrayJoin([('shop-slow', 5000), ('shop-fast', 1200), ('shop-mixed', 1000)]) AS p, p.1 AS svc, p.2 AS v) AS b;
+INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
+SELECT now() - INTERVAL 2 MINUTE - INTERVAL n SECOND, 't', concat('lf', toString(n)), 'webvitals', 'Internal', 'shop-few', map('deployment.environment.name','dev','rum.sessionId','s'), map('lcp', '9000'), 1, 'Unset' FROM (SELECT number n FROM numbers(20));
+INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
+SELECT now() - INTERVAL 2 MINUTE - INTERVAL n SECOND, 't', concat('i', toString(n)), 'webvitals', 'Internal', 'shop-mixed', map('deployment.environment.name','dev','rum.sessionId','s'), map('inp', '90000'), 1, 'Unset' FROM (SELECT number n FROM numbers(400));

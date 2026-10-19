@@ -58,7 +58,73 @@ const (
 	KindTable PanelKind = "table"
 	// KindSearch is a log or span search (no aggregate): the rows themselves.
 	KindSearch PanelKind = "search"
+
+	// The kinds below are drawn by the Reliant console from its own services,
+	// not from a query over the panel's series, so they take no series,
+	// columns or group-by. They cannot be drawn by HyperDX, whose renderer
+	// skips them (see IsConsoleKind).
+
+	// KindIssues is the grouped-errors list: new and regressed issues first,
+	// then the most frequent. Served by RumService ListIssues.
+	KindIssues PanelKind = "issues"
+	// KindSessions is a list of browser sessions, with replay links. Served by
+	// RumService ListSessions; HasError narrows it to sessions with an error.
+	KindSessions PanelKind = "sessions"
+	// KindFunnel is a product-event funnel over Panel.Funnel. Served from the
+	// product_events table with ClickHouse windowFunnel.
+	KindFunnel PanelKind = "funnel"
 )
+
+// IsConsoleKind reports whether k is drawn only by the Reliant console, so the
+// HyperDX renderer has nothing to emit for it.
+func IsConsoleKind(k PanelKind) bool {
+	switch k {
+	case KindIssues, KindSessions, KindFunnel:
+		return true
+	}
+	return false
+}
+
+// FunnelBy is what a funnel counts: how events are tied into one journey.
+type FunnelBy string
+
+// The funnel journeys.
+const (
+	FunnelBySession FunnelBy = "session"
+	FunnelByUser    FunnelBy = "user"
+)
+
+// Funnel is the definition a KindFunnel panel draws: the ordered event names
+// a journey passes through, within Window, counted per session or per user.
+type Funnel struct {
+	// Steps are product event names (the names passed to track()), in order.
+	Steps []string `json:"steps"`
+	// Window is how long a journey may take from its first step to its last:
+	// a number and a unit of s, m, h or d ("1h", "7d"). Empty is "1h".
+	Window string `json:"window,omitempty"`
+	// By is the journey's identity. Empty is FunnelBySession.
+	By FunnelBy `json:"by,omitempty"`
+}
+
+// Funnel defaults, applied where a panel leaves a field empty.
+const (
+	DefaultFunnelWindow = "1h"
+	DefaultFunnelBy     = FunnelBySession
+)
+
+// Funnel bounds.
+const (
+	minFunnelSteps = 2
+	maxFunnelSteps = 10
+)
+
+// Thresholds colour a series' values the way Core Web Vitals do: at or below
+// Good is good, above Poor is poor, between is "needs improvement". Renderers
+// that cannot colour ignore it.
+type Thresholds struct {
+	Good float64 `json:"good"`
+	Poor float64 `json:"poor"`
+}
 
 // Agg is an aggregate function.
 type Agg string
@@ -141,6 +207,8 @@ type Series struct {
 	MetricType string `json:"metricType,omitempty"`
 	// Where narrows this series alone (e.g. only the failed requests).
 	Where []Predicate `json:"where,omitempty"`
+	// Thresholds grade the series' values good / needs improvement / poor.
+	Thresholds *Thresholds `json:"thresholds,omitempty"`
 }
 
 // Panel is one tile.
@@ -159,7 +227,12 @@ type Panel struct {
 	GroupBy []string    `json:"groupBy,omitempty"`
 	// Columns are the fields a KindSearch panel shows.
 	Columns []string `json:"columns,omitempty"`
-	Unit    Unit     `json:"unit,omitempty"`
+	// Funnel is what a KindFunnel panel draws; only that kind takes it.
+	Funnel *Funnel `json:"funnel,omitempty"`
+	// HasError narrows a KindSessions panel to sessions that hit an error;
+	// only that kind takes it.
+	HasError bool `json:"hasError,omitempty"`
+	Unit     Unit `json:"unit,omitempty"`
 	// Width is in grid columns out of 24; Height in rows. Zero takes the
 	// default for the kind.
 	Width  int `json:"width,omitempty"`
@@ -268,6 +341,16 @@ type Input struct {
 	// HasDatabase adds the database panels: true once the project has a
 	// migration, since the panels read spans the ORM's query hook emits.
 	HasDatabase bool
+	// Funnels are the declared product funnels. Each becomes one panel on the
+	// frontend dashboard, so they only matter when Frontends is non-empty.
+	Funnels []FrontendFunnel
+}
+
+// FrontendFunnel is one declared funnel (forge.Funnel in KCL).
+type FrontendFunnel struct {
+	ID    string
+	Title string
+	Funnel
 }
 
 // maxPerRPCRows bounds the per-rpc RED rows: past this a service gets the
@@ -535,10 +618,18 @@ func buildFrontend(in Input) Dashboard {
 	}
 	js := scoped(browserSpans, errorSpans, notAjax)
 	loads := scoped(browserSpans, Predicate{Field: "span.name", Op: OpEq, Value: "documentLoad"})
+	webvitals := Predicate{Field: "span.name", Op: OpEq, Value: "webvitals"}
 	vital := func(id, title, key string, mantissa Unit) Panel {
 		return Panel{ID: id, Title: title, Kind: KindNumber, Signal: Traces,
-			Where:  scoped(browserSpans, Predicate{Field: "span.name", Op: OpEq, Value: "webvitals"}, Predicate{Field: "span.attr." + key, Op: OpExists}),
+			Where:  scoped(browserSpans, webvitals, Predicate{Field: "span.attr." + key, Op: OpExists}),
 			Series: []Series{{Label: key + " p75", Agg: AggQuantile, Quantile: 0.75, Field: "span.attr." + key}}, Unit: mantissa, Width: 6, Height: 4}
+	}
+	// p75 per route, graded against the Core Web Vitals thresholds. Each
+	// webvitals span carries one metric, so a series' own "exists" keeps the
+	// other metrics' spans out of its quantile.
+	routeVital := func(key string, good, poor float64) Series {
+		return Series{Label: key + " p75", Agg: AggQuantile, Quantile: 0.75, Field: "span.attr." + key,
+			Where: []Predicate{{Field: "span.attr." + key, Op: OpExists}}, Thresholds: &Thresholds{Good: good, Poor: poor}}
 	}
 	d.Panels = []Panel{
 		{ID: "js-errors", Title: "JS errors", Kind: KindNumber, Signal: Traces, Where: js, Series: []Series{{Label: "errors", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
@@ -546,12 +637,17 @@ func buildFrontend(in Input) Dashboard {
 		{ID: "page-views", Title: "Page views", Kind: KindNumber, Signal: Traces, Where: scoped(browserSpans, pageLoads), Series: []Series{{Label: "views", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
 		{ID: "api-failures", Title: "Failed API calls", Description: "fetch / XHR spans with an HTTP status of 400 or more.", Kind: KindNumber, Signal: Traces, Where: scoped(browserSpans, ajax, ajaxFailed), Series: []Series{{Label: "failures", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
 		{ID: "errors-over-time", Title: "JS errors over time", Kind: KindLine, Signal: Traces, Where: js, Series: []Series{{Label: "errors", Agg: AggCount}}, Unit: UnitCount, Width: 24, Height: 6},
-		{ID: "top-js-errors", Title: "Top JS errors", Kind: KindTable, Signal: Traces, Where: js, Series: []Series{{Label: "occurrences", Agg: AggCount}, {Label: "sessions", Agg: AggCountDistinct, Field: "resource.attr.rum.sessionId"}}, GroupBy: []string{"span.attr.error.message"}, Width: 24, Height: 8},
+		{ID: "issues", Title: "Issues", Description: "Errors grouped by cause (type, message and the top in-app frames): new and regressed first, then the most frequent. A string-only console.error is not an issue.", Kind: KindIssues, Signal: Traces, Where: browserSpans, Width: 24, Height: 9},
+		{ID: "sessions-with-errors", Title: "Sessions with errors", Description: "Sessions that hit an error, newest first; a session that was recorded links to its replay.", Kind: KindSessions, Signal: Traces, Where: browserSpans, HasError: true, Width: 24, Height: 8},
 		vital("lcp", "LCP p75", "lcp", UnitMillis),
 		vital("inp", "INP p75", "inp", UnitMillis),
 		vital("cls", "CLS p75", "cls", UnitNone),
 		vital("fcp", "FCP p75", "fcp", UnitMillis),
 		vital("ttfb", "TTFB p75", "ttfb", UnitMillis),
+		{ID: "vitals-by-route", Title: "Web vitals by route", Description: "p75 per page. LCP good at 2500 ms or less and poor above 4000 ms; INP 200 / 500 ms; CLS 0.1 / 0.25.", Kind: KindTable, Signal: Traces, Where: scoped(browserSpans, webvitals),
+			Series:  []Series{routeVital("lcp", 2500, 4000), routeVital("inp", 200, 500), routeVital("cls", 0.1, 0.25), {Label: "samples", Agg: AggCount, Where: []Predicate{{Field: "span.attr.lcp", Op: OpExists}}}},
+			GroupBy: []string{"span.attr.location.href"}, Width: 24, Height: 8},
+		{ID: "errors-by-release", Title: "JS errors by release", Description: "The same error spans as above, one line per service.version (the build id), so a release that introduced a regression shows as its own line. Release markers are drawn from the ledger.", Kind: KindLine, Signal: Traces, Where: js, Series: []Series{{Label: "errors", Agg: AggCount}}, GroupBy: []string{"resource.attr.service.version"}, Unit: UnitCount, Width: 24, Height: 7},
 		{ID: "page-load", Title: "Page load p50 / p90 / p99", Kind: KindLine, Signal: Traces, Where: loads, Series: []Series{
 			{Label: "p50", Agg: AggQuantile, Quantile: 0.5, Field: "span.duration"},
 			{Label: "p90", Agg: AggQuantile, Quantile: 0.9, Field: "span.duration"},
@@ -564,6 +660,20 @@ func buildFrontend(in Input) Dashboard {
 			{Label: "p95", Agg: AggQuantile, Quantile: 0.95, Field: "span.duration"},
 		}, GroupBy: []string{"span.attr.http.url"}, Width: 12, Height: 7},
 		{ID: "browser-console", Title: "Browser console and error events", Description: "The HyperDX SDK ships console output and uncaught errors as spans (console.*, onerror, unhandledrejection), not as OTLP logs.", Kind: KindSearch, Signal: Traces, Where: scoped(browserSpans, Predicate{Field: "span.name", Op: OpIn, Values: []string{"console.error", "console.warn", "onerror", "unhandledrejection"}}), Columns: []string{"timestamp", FieldService, "span.name", "span.attr.error.message"}, Width: 24, Height: 9},
+	}
+	for _, f := range in.Funnels {
+		fn := f.Funnel
+		if fn.Window == "" {
+			fn.Window = DefaultFunnelWindow
+		}
+		if fn.By == "" {
+			fn.By = DefaultFunnelBy
+		}
+		title := f.Title
+		if title == "" {
+			title = f.ID
+		}
+		d.Panels = append(d.Panels, Panel{ID: "funnel-" + f.ID, Title: title, Description: fmt.Sprintf("Product events in order, within %s, counted per %s.", fn.Window, fn.By), Kind: KindFunnel, Signal: Traces, Funnel: &fn, Width: 24, Height: 8})
 	}
 	return d
 }

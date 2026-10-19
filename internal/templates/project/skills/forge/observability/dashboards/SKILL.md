@@ -42,6 +42,33 @@ Panels are keyed on what the runtime really emits, not on a convention:
   service, so on a service dashboard narrow with the `service.name` filter.
 - Browser: spans from the HyperDX SDK carry the `rum.sessionId` resource
   attribute; `documentLoad`, `webvitals` and fetch/XHR spans (`component`).
+  An uncaught error, an unhandled rejection and `console.error(err)` are
+  **error spans** (`onerror`, `unhandledrejection`, `console.error`) with an
+  `exception` event; `console.error("text")` is an error span with **no**
+  exception event, so it is searchable but is neither an issue nor counted by
+  `FrontendJSErrorSpike`. `webvitals` spans carry one metric each, as an
+  attribute named for it (`lcp`, `inp`, `cls`, `fcp`, `ttfb`).
+
+## Panel kinds
+
+`number`, `line`, `table` and `search` are queries and draw anywhere. Three
+more are drawn **only by the Reliant console**, from its own services rather
+than a query over series, so they take no `series`, `columns` or `groupBy` and
+read browser spans (`signal: traces`):
+
+| kind | extra field | draws |
+|---|---|---|
+| `issues` | | grouped errors, new and regressed first |
+| `sessions` | `hasError: true` narrows to sessions that hit an error | browser sessions, with a replay link when one was recorded |
+| `funnel` | `funnel: {steps: [event, ...], window: "1h", by: "session"}` | product events (`track()` names) in order; 2 to 10 distinct steps, a window like `30m` / `1h` / `7d`, counted per `session` or `user` |
+
+The HyperDX renderer **skips** them (HyperDX's own UI already plays replay and
+searches spans), so a local `forge env up` stack shows the frontend dashboard
+without them. A `table` or `number` series may carry `thresholds: {good, poor}`
+to grade its value like Core Web Vitals do; renderers that cannot colour ignore
+it. The frontend dashboard's **Web vitals by route** table uses it for the p75
+of LCP, INP and CLS, and **JS errors by release** splits the error spans by
+`service.version` (the build id).
 
 ## Overriding
 
@@ -64,7 +91,7 @@ They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so 
 
 A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/service-<svc>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
-Every file is validated at the cut, and `forge observe dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search`.
+Every file is validated at the cut, and `forge observe dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, issues, sessions, funnel`.
 
 `annotations: [{"source": "releases"}]` on a dashboard asks the console to draw a marker for every promotion on its time-series panels. Generated dashboards declare it.
 

@@ -137,36 +137,9 @@
       }
     },
     {
-      "id": "t-top-js-errors",
-      "x": 0,
-      "y": 10,
-      "w": 24,
-      "h": 8,
-      "config": {
-        "name": "Top JS errors",
-        "source": "Traces",
-        "displayType": "table",
-        "select": [
-          {
-            "aggFn": "count",
-            "valueExpression": "",
-            "alias": "occurrences"
-          },
-          {
-            "aggFn": "count_distinct",
-            "valueExpression": "ResourceAttributes['rum.sessionId']",
-            "alias": "sessions"
-          }
-        ],
-        "where": "ResourceAttributes['rum.sessionId'] != '' AND lower(StatusCode) = 'error' AND SpanAttributes['component'] NOT IN ('fetch', 'xml-http-request')",
-        "whereLanguage": "sql",
-        "groupBy": "SpanAttributes['error.message']"
-      }
-    },
-    {
       "id": "t-lcp",
       "x": 0,
-      "y": 18,
+      "y": 10,
       "w": 6,
       "h": 4,
       "config": {
@@ -194,7 +167,7 @@
     {
       "id": "t-inp",
       "x": 6,
-      "y": 18,
+      "y": 10,
       "w": 6,
       "h": 4,
       "config": {
@@ -222,7 +195,7 @@
     {
       "id": "t-cls",
       "x": 12,
-      "y": 18,
+      "y": 10,
       "w": 6,
       "h": 4,
       "config": {
@@ -244,7 +217,7 @@
     {
       "id": "t-fcp",
       "x": 18,
-      "y": 18,
+      "y": 10,
       "w": 6,
       "h": 4,
       "config": {
@@ -272,7 +245,7 @@
     {
       "id": "t-ttfb",
       "x": 0,
-      "y": 22,
+      "y": 14,
       "w": 6,
       "h": 4,
       "config": {
@@ -298,9 +271,85 @@
       }
     },
     {
-      "id": "t-page-load",
+      "id": "t-vitals-by-route",
+      "x": 0,
+      "y": 18,
+      "w": 24,
+      "h": 8,
+      "config": {
+        "name": "Web vitals by route",
+        "source": "Traces",
+        "displayType": "table",
+        "select": [
+          {
+            "aggFn": "quantile",
+            "level": 0.75,
+            "valueExpression": "toFloat64OrZero(SpanAttributes['lcp'])",
+            "aggCondition": "SpanAttributes['lcp'] != ''",
+            "aggConditionLanguage": "sql",
+            "alias": "lcp p75"
+          },
+          {
+            "aggFn": "quantile",
+            "level": 0.75,
+            "valueExpression": "toFloat64OrZero(SpanAttributes['inp'])",
+            "aggCondition": "SpanAttributes['inp'] != ''",
+            "aggConditionLanguage": "sql",
+            "alias": "inp p75"
+          },
+          {
+            "aggFn": "quantile",
+            "level": 0.75,
+            "valueExpression": "toFloat64OrZero(SpanAttributes['cls'])",
+            "aggCondition": "SpanAttributes['cls'] != ''",
+            "aggConditionLanguage": "sql",
+            "alias": "cls p75"
+          },
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "aggCondition": "SpanAttributes['lcp'] != ''",
+            "aggConditionLanguage": "sql",
+            "alias": "samples"
+          }
+        ],
+        "where": "ResourceAttributes['rum.sessionId'] != '' AND SpanName = 'webvitals'",
+        "whereLanguage": "sql",
+        "groupBy": "SpanAttributes['location.href']"
+      }
+    },
+    {
+      "id": "t-errors-by-release",
       "x": 0,
       "y": 26,
+      "w": 24,
+      "h": 7,
+      "config": {
+        "name": "JS errors by release",
+        "source": "Traces",
+        "displayType": "line",
+        "select": [
+          {
+            "aggFn": "count",
+            "valueExpression": "",
+            "alias": "errors"
+          }
+        ],
+        "where": "ResourceAttributes['rum.sessionId'] != '' AND lower(StatusCode) = 'error' AND SpanAttributes['component'] NOT IN ('fetch', 'xml-http-request')",
+        "whereLanguage": "sql",
+        "groupBy": "ResourceAttributes['service.version']",
+        "granularity": "auto",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 0,
+          "thousandSeparated": true
+        }
+      }
+    },
+    {
+      "id": "t-page-load",
+      "x": 0,
+      "y": 33,
       "w": 24,
       "h": 7,
       "config": {
@@ -341,7 +390,7 @@
     {
       "id": "t-api-latency",
       "x": 0,
-      "y": 33,
+      "y": 40,
       "w": 12,
       "h": 7,
       "config": {
@@ -382,7 +431,7 @@
     {
       "id": "t-api-calls",
       "x": 12,
-      "y": 33,
+      "y": 40,
       "w": 12,
       "h": 7,
       "config": {
@@ -417,7 +466,7 @@
     {
       "id": "t-browser-console",
       "x": 0,
-      "y": 40,
+      "y": 47,
       "w": 24,
       "h": 9,
       "config": {

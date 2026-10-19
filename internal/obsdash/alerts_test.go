@@ -31,8 +31,8 @@ func TestGoldenDefaultAlertSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 12 {
-		t.Fatalf("got %d default rules, want the 4 telemetry rules, the 5 customer-metadata rules, DeployFailed and the two quota levels", len(rules))
+	if len(rules) != 15 {
+		t.Fatalf("got %d default rules, want the 5 telemetry rules (error rate, latency, silent, JS errors, LCP), the 5 customer-metadata rules, the two frontend issue markers, DeployFailed and the two quota levels", len(rules))
 	}
 	var b strings.Builder
 	for _, r := range rules {
@@ -158,7 +158,7 @@ func TestDefaultsFollowTheProject(t *testing.T) {
 	}
 	feOnly := AlertInput{Project: "x", FrontendService: "x-frontend"}
 	rules, _ = ResolveAlertDefaults(feOnly, "dev", nil)
-	if got := ids(rules); got != "deploy-failed,frontend-js-errors,observability-quota" {
+	if got := ids(rules); got != "deploy-failed,frontend-issue-regressed,frontend-js-errors,frontend-lcp-poor,frontend-new-issue,observability-quota" {
 		t.Errorf("a frontend-only project: %q", got)
 	}
 }
@@ -272,7 +272,7 @@ func TestOptingOutOfMetadataSkipsTheMetadataDefaults(t *testing.T) {
 	}
 	// A different category changes nothing here.
 	rules, skipped, _ = ResolveAlertDefaultsFor(in, "dev", nil, []string{"logs", "profiles"})
-	if len(skipped) != 0 || len(rules) != 12 {
+	if len(skipped) != 0 || len(rules) != 15 {
 		t.Errorf("opting out of logs skipped %v and left %d rules", skipped, len(rules))
 	}
 }
@@ -405,6 +405,124 @@ func TestPlatformDefaultsAreExactlyWhatTheControlPlaneInjects(t *testing.T) {
 		got := pinned{r.Labels["severity"], r.For, r.Interval, r.Expr, r.Annotations["summary"]}
 		if got != w {
 			t.Errorf("%s = %+v, want %+v", name, got, w)
+		}
+	}
+}
+
+// The two issue alerts are platform markers like deploy-failed: "new" and
+// "regressed" are state transitions in the control plane's issue registry, so
+// forge records only how the env tuned them and the control plane evaluates
+// them. They exist only for a project that has a frontend.
+func TestFrontendIssueAlertsArePlatformMarkers(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	by := byAlert(rules)
+	for name, key := range map[string]string{
+		"FrontendNewIssue":       "frontend-new-issue",
+		"FrontendIssueRegressed": "frontend-issue-regressed",
+	} {
+		r, ok := by[name]
+		if !ok {
+			t.Fatalf("%s missing", name)
+		}
+		want := "SELECT 1 AS value WHERE 0 /* reliant:platform " + key + " env:{reliant_env_id:String} */"
+		if r.Expr != want || r.ID != key || r.Labels["severity"] != SeverityWarning {
+			t.Errorf("%s = id %s severity %s expr %q", name, r.ID, r.Labels["severity"], r.Expr)
+		}
+		if !IsPlatformExpr(r.Expr) {
+			t.Errorf("%s is not recognized as a platform marker", name)
+		}
+		if err := validateExprForTest(BindEnvID(r.Expr, "env-1")); err != nil {
+			t.Errorf("%s once bound is not an acceptable expr: %v", name, err)
+		}
+	}
+
+	noFrontend := AlertInputOf(Input{Project: "x", Services: fixture().Services})
+	rules, _ = ResolveAlertDefaults(noFrontend, "dev", nil)
+	for _, r := range rules {
+		if strings.HasPrefix(r.Alert, "Frontend") {
+			t.Errorf("%s applies to a project with no frontend", r.Alert)
+		}
+	}
+}
+
+func TestFrontendIssueAlertsAreTunedAndDisabledByID(t *testing.T) {
+	in := AlertInputOf(fixture())
+	rules, _ := ResolveAlertDefaults(in, "dev", map[string]AlertTuning{
+		"frontend-new-issue":       {Enabled: true, For: "2m", Labels: map[string]string{"severity": "critical"}},
+		"frontend-issue-regressed": {Enabled: false},
+	})
+	by := byAlert(rules)
+	if r := by["FrontendNewIssue"]; r.For != "2m" || r.Labels["severity"] != "critical" || strings.Contains(r.Expr, " off") {
+		t.Errorf("tuned FrontendNewIssue = %+v", r)
+	}
+	// A disabled platform default is still recorded, marked off, so the control
+	// plane does not inject it back.
+	if r := by["FrontendIssueRegressed"]; !strings.HasSuffix(r.Expr, " off */") {
+		t.Errorf("disabled FrontendIssueRegressed = %q, want it recorded as off", r.Expr)
+	}
+
+	// Params are refused: a platform default has none to tune.
+	if err := ValidateAlertTuning(map[string]AlertTuning{"frontend-new-issue": {Enabled: true, Params: map[string]float64{"events": 9}}}); err == nil {
+		t.Error("a param on a platform default must be refused")
+	}
+}
+
+func TestFrontendLCPPoorDefault(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	r, ok := byAlert(rules)["FrontendLCPPoor"]
+	if !ok {
+		t.Fatal("FrontendLCPPoor missing")
+	}
+	if r.ID != "frontend-lcp-poor" || r.Labels["severity"] != SeverityInfo || r.For != "10m" {
+		t.Errorf("FrontendLCPPoor = id %s severity %s for %s", r.ID, r.Labels["severity"], r.For)
+	}
+	// p75 over 30 minutes, more than 4000 ms, with at least 100 samples.
+	for _, want := range []string{
+		"quantile(0.75)(toFloat64OrZero(SpanAttributes['lcp']))",
+		"INTERVAL 30 MINUTE",
+		"SpanName = 'webvitals'",
+		"ServiceName = 'shop-frontend'",
+		"ResourceAttributes['deployment.environment.name'] = 'dev'",
+		"HAVING samples >= 100 AND value > 4000",
+	} {
+		if !strings.Contains(r.Expr, want) {
+			t.Errorf("FrontendLCPPoor expr lacks %q:\n%s", want, r.Expr)
+		}
+	}
+	if err := validateExprForTest(r.Expr); err != nil {
+		t.Errorf("FrontendLCPPoor is not an acceptable expr: %v", err)
+	}
+
+	tuned, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "prod", map[string]AlertTuning{
+		"frontend-lcp-poor": {Enabled: true, Params: map[string]float64{"threshold_ms": 2500, "window_minutes": 60, "min_samples": 300}},
+	})
+	if e := byAlert(tuned)["FrontendLCPPoor"].Expr; !strings.Contains(e, "HAVING samples >= 300 AND value > 2500") || !strings.Contains(e, "INTERVAL 60 MINUTE") || !strings.Contains(e, "= 'prod'") {
+		t.Errorf("tuned FrontendLCPPoor expr:\n%s", e)
+	}
+}
+
+func TestJSErrorSpikeIgnoresStringOnlyConsoleErrors(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	e := byAlert(rules)["FrontendJSErrorSpike"].Expr
+	// console.error("text") makes an error span with no exception event; only
+	// console.error(err) does. The other error sources always carry one.
+	if !strings.Contains(e, "(SpanName != 'console.error' OR has(Events.Name, 'exception'))") {
+		t.Errorf("FrontendJSErrorSpike does not exclude string-only console errors:\n%s", e)
+	}
+	// The fetch / XHR exclusion that was there stays.
+	if !strings.Contains(e, "NOT IN ('fetch', 'xml-http-request')") {
+		t.Error("the fetch/xhr exclusion was lost")
+	}
+}
+
+func TestFrontendDefaultsTakeNoneOfTheNamesAUserRuleMayUse(t *testing.T) {
+	names := map[string]bool{}
+	for _, n := range AlertDefaultAlertNames() {
+		names[n] = true
+	}
+	for _, n := range []string{"FrontendNewIssue", "FrontendIssueRegressed", "FrontendLCPPoor", "FrontendJSErrorSpike"} {
+		if !names[n] {
+			t.Errorf("%s is not reserved", n)
 		}
 	}
 }

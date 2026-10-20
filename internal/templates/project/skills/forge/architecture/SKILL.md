@@ -140,6 +140,23 @@ type Worker struct {
 
 Declaring a root named `server` keeps the `server` command; once any root is declared, the generated default stops being generated. A project whose `serve.go` predates the per-root commands (no `runRoot`) keeps its own `server` command, and generate tells you to add `runRoot` before it writes `roots_gen.go`.
 
+### Checking the whole graph, and what each node knows
+
+`forge lint --graph` judges the graph as `forge generate` assembles it, and fails on an error:
+
+- **Reach.** Every service, package, worker and operator, and every provider, is reached by some root — a node no root reaches is never constructed, so a service in that position is served by no process. A provider kept ready for components to come carries `//forge:standby` on its func (the scaffolded `NewORM` and `NewHTTPClient` do). A sibling binary's service is `// forge:unmanaged` in its proto.
+- **Audience.** Every service a listener's routes reach declares the audience of the authenticator its chain reaches: the provider func that builds it carries `//forge:audience <name>` (the scaffolded `NewUserAuth` is `//forge:audience user`). A daemon service on the user listener is an error before anything boots; the listener refuses the same mismatch at boot.
+
+`forge lint --conventions` reads every component's `Deps` against what the package calls through it (least knowledge — warnings; `--strict` makes the first an error for a foreign interface of more than ten methods, and the other two errors):
+
+| Rule | Flags |
+|---|---|
+| `forgeconv-deps-surface` | an interface field declaring methods the package never calls through it |
+| `forgeconv-no-container-deps` | a field holding a container: an `internal/app` type, `cmd.Deps`, a `map[string]any` locator, `any` |
+| `forgeconv-deps-no-downcast` | a type assertion turning a field back into a concrete type |
+
+`forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go`), an interface holding exactly the methods the package calls, retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
+
 A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: move each `OpenInfra` field into a provider func, delete `compose.go`, `lifecycle.go` and the `Infra` struct, and re-run `forge generate`.
 
 ## Files NOT to Edit

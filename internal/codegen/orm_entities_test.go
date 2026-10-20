@@ -83,11 +83,18 @@ func TestORMEntities_OptOutsAndUnkeyedTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := strings.Join(entityNames(got), ","); s != "Thread=threads" {
-		t.Errorf("ORM entities = %s, want only Thread=threads", s)
+	// A composite key projects (its store takes the whole key, F12.3); a
+	// table with no key at all, and an opted-out one, do not.
+	if s := strings.Join(entityNames(got), ","); s != "MessageOrderCounter=message_order_counters,Thread=threads" {
+		t.Errorf("ORM entities = %s, want MessageOrderCounter and Thread", s)
+	}
+	for _, e := range got {
+		if e.TableName == "message_order_counters" && e.PkField != "" {
+			t.Errorf("a composite key must not name one of its columns as THE key: PkField = %q", e.PkField)
+		}
 	}
 	joined := strings.Join(notes, "\n")
-	for _, want := range []string{"message_order_counters has a composite primary key", "audit_events has no primary key"} {
+	for _, want := range []string{"audit_events has no primary key"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("notes do not say %q:\n%s", want, joined)
 		}

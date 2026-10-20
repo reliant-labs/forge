@@ -243,8 +243,17 @@ func (s *verifyScratch) copyIgnoredInputs(topFiles []string) error {
 			})
 		}
 	}
+	// The sources overlap — an output the manifest names is often also under
+	// one of its output dirs, or a gitignored input generate reads (a
+	// frontend's public/config.js is both) — and the copies run in parallel
+	// with O_EXCL, so a path listed twice fails the copy with "file exists".
 	var copyList []string
+	listed := make(map[string]bool, len(want))
 	for _, rel := range want {
+		if listed[rel] {
+			continue
+		}
+		listed[rel] = true
 		if path.Base(rel) == "forge.lock" {
 			continue // holds a pid; the scratch has its own
 		}

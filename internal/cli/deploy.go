@@ -691,20 +691,28 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 			return err
 		}
 	}
-	if err := ensureHostedReleaseBundle(ctx, projectDir, envName, p.version, ledger, p.rerecordBundle, progressWriter(f.jsonOut)); err != nil {
-		return err
-	}
-	if p.liveDiff && p.version != "" {
-		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
-	}
-	// What a scoped deploy will record as moved (D5), resolved before the
-	// write so the promotion names it — see deploy_scope_record.go.
-	scope, err := deployScopeTargets(ctx, projectDir, envName, f.targets, f.frontendsOnly)
+	// What a scoped deploy will record as moved (D5), and whether it applies
+	// any bundle object at all — resolved before the bundle step, which it
+	// sizes, and before the write, so the promotion names it. See
+	// deploy_scope_record.go.
+	scope, err := resolveDeployScope(ctx, projectDir, envName, f.targets, f.frontendsOnly)
 	if err != nil {
 		return err
 	}
+	// The bundle step, sized to what the scope applies, and the §8.6 plan
+	// computed from the bundle it records.
+	deployPlan, err := releaseBundleAndPlan(ctx, releaseBundleStep{
+		ProjectDir: projectDir, Env: envName, Version: p.version, Targets: f.targets,
+		Ledger: ledger, Rerecord: p.rerecordBundle, ErrOut: progressWriter(f.jsonOut),
+	}, scope)
+	if err != nil {
+		return err
+	}
+	if p.liveDiff && p.version != "" && scope.AppliesBundle {
+		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
+	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
-		Targets:       scope,
+		Targets:       scope.Targets,
 		Ledger:        ledger,
 		Capacity:      capacity,
 		DryRun:        p.plan,
@@ -722,7 +730,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		Confirm: newDeployConfirm(p, ""),
 		// The SERVER-BINDING half (O-13): the §8.6 plan this deploy is
 		// judged against, plus what the caller approved.
-		DeployPlan: planForDeploy(ctx, projectDir, envName, p.version, f.targets, ledger, progressWriter(f.jsonOut)),
+		DeployPlan: deployPlan,
 		Approval: deployApproval{
 			Digest:               p.approve,
 			AcknowledgedFindings: p.acknowledgeDestructive,
@@ -1737,7 +1745,10 @@ func releaseTagFor(ctx context.Context, flagTag string, noDigest bool) string {
 	if flagTag != "" || noDigest {
 		return ""
 	}
-	return hostedPinReleaseFrom(ctx)
+	if named := hostedPinReleaseFrom(ctx); named != "" {
+		return releaseVersionTag(named)
+	}
+	return ""
 }
 
 // resolveDeployTags resolves the image tag (three-tier precedence chain) and
@@ -3450,7 +3461,8 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 	// and applying it would have bound the ledger to a release whose code never
 	// ran. Reading the release's own pins here is the same layering a bound
 	// promotion gets, applied to the version the deploy is about to bind.
-	if named := hostedPinReleaseFrom(ctx); named != "" {
+	named := hostedPinReleaseFrom(ctx)
+	if named != "" {
 		rel, rerr := releases.Get(ctx, named)
 		if rerr != nil {
 			return nil, "", fmt.Errorf("read release %q (%s) to pin its images: %w", named, releases.Location(), rerr)
@@ -3486,9 +3498,32 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		}
 		base[image] = digest
 		overrideTaggedKeys(base, image, digest)
+		// Only for a NAMED release: its render binds image_tag to the
+		// release version (releaseTagFor), so that is the key a
+		// hand-composed ref looks up. See releaseVersionTag.
+		if named != "" {
+			base[image+":"+releaseVersionTag(named)] = digest
+		}
 	}
 	return base, binding.Release, nil
 }
+
+// releaseVersionTag is the tag a release's images are pushed under, and so the
+// image_tag every render of that release binds: the release version. ONE rule,
+// read by the build that pushes (releaseImageTag), the render that names the
+// release (releaseTagFor), and the pins that render resolves
+// (resolveDeployDigests).
+//
+// A NAMED RELEASE IS PINNED UNDER IT, from the release alone. The digest a
+// release records for a repository is the digest of `<repo>:<version>`, so a
+// hand-composed `forge.image_ref_for(<repo>, image_tag)` must resolve to
+// `<repo>:<version>@<digest>` in every render of the release. The cut's render
+// got that key from the build state its own build had just written; a
+// redeploy from another checkout, or after a later build, had no such key and
+// rendered `<repo>@<digest>` — so the release's bundle of record could not be
+// reproduced from its own commit and forge (2026-10-19, control-plane prod's
+// otel gateway).
+func releaseVersionTag(version string) string { return version }
 
 // releasePinsByRepository is a release's shared digests keyed the way a
 // promotion records them (the artifact's repository, registry host included),

@@ -203,13 +203,31 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 	}
 	for _, h := range handles {
 		if err := windows.TerminateProcess(h, 1); err != nil {
-			if ev, werr := windows.WaitForSingleObject(h, 0); werr == nil && ev == waitObject0 {
+			if exitedAfterFailedTerminate(h) {
 				continue
 			}
 			failures = append(failures, fmt.Errorf("terminate: %w", err))
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// terminateExitGrace bounds how long a failed TerminateProcess waits for the
+// process to finish exiting before the failure counts.
+const terminateExitGrace = 2 * time.Second
+
+// exitedAfterFailedTerminate reports whether a process TerminateProcess just
+// refused is in fact gone. Windows answers ERROR_ACCESS_DENIED for a process
+// that is already EXITING — the kernel has begun tearing it down, but its
+// handle is not signaled yet. Killing a tree hits that constantly: the
+// CTRL_BREAK a SIGTERM sent, or killing the root, starts a child's exit a
+// moment before we reach it. An instant WaitForSingleObject(h, 0) races that
+// window (TestKillProcessTree failed on it in CI), so wait for the exit
+// instead; a process that is truly protected stays unsignaled and the
+// failure stands.
+func exitedAfterFailedTerminate(h windows.Handle) bool {
+	ev, err := windows.WaitForSingleObject(h, uint32(terminateExitGrace/time.Millisecond))
+	return err == nil && ev == waitObject0
 }
 
 // openForKill opens a terminate-capable handle to pid, returning (0, nil) when

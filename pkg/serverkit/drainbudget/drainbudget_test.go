@@ -20,9 +20,9 @@ func TestParseAndEffective(t *testing.T) {
 		configured time.Duration
 		effective  time.Duration
 	}{
-		{"", 0, def},                   // unset: the default
-		{"0", 0, def},                  // zero: the default
-		{"0s", 0, def},                 // zero as a duration: the default
+		{"", 0, def},   // unset: the default
+		{"0", 0, def},  // zero: the default
+		{"0s", 0, def}, // zero as a duration: the default
 		{"30s", 30 * time.Second, 30 * time.Second},
 		{"1m30s", 90 * time.Second, 90 * time.Second},
 		{"500ms", 500 * time.Millisecond, 500 * time.Millisecond},

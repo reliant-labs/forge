@@ -32,7 +32,9 @@ package config
 //     Map fields are rejected with a diagnostic naming the field. See
 //     parseValue/parseList.
 //   - A malformed value is an error that aborts loading — never a silent
-//     fallback to the default.
+//     fallback to the default. So is a value the field's annotations reject
+//     (allowed_values, the TLS/CORS role invariants): LoadInto ends with
+//     Validate, so no caller has to remember a second call.
 //   - Durations: a Go duration is recognized ONLY when the proto field is a
 //     google.protobuf.Duration message (no name heuristic — declare the
 //     field as Duration to get typed-duration behavior). String fields stay
@@ -373,10 +375,13 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // into the message, and consumers read it with .AsDuration(). (A plain
 // string field stays a string; the descriptor has no name heuristic.)
 //
-// The companion semantics — Mode (role=MODE) and Validate
-// (TLS/CORS roles + allowed_values) — live in this package too (semantic.go),
-// as FREE FUNCTIONS over the message. There is no parallel generated struct:
-// a project holds the proto config type and calls these directly.
+// After the layers it checks required fields and then runs Validate (the
+// TLS/CORS role invariants and allowed_values), so a loaded config has
+// already passed every declared check: an out-of-set value fails the load,
+// naming the field. Mode (role=MODE) and Validate live in this package too
+// (semantic.go), as FREE FUNCTIONS over the message; Validate is for a
+// message built by hand, which no load has checked. There is no parallel
+// generated struct: a project holds the proto config type.
 func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	m := msg.ProtoReflect()
 
@@ -401,7 +406,15 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	}
 
 	// Required fields must be satisfied by SOME layer (default/file/env/flag).
-	return checkRequired(m)
+	if err := checkRequired(m); err != nil {
+		return err
+	}
+
+	// The declared invariants (allowed_values, the TLS pair, CORS wildcard +
+	// credentials) are part of loading, not a second step a caller may skip:
+	// a config whose annotations reject its resolved values never reaches the
+	// process. Validate stays exported for a message built by hand.
+	return validateMessage(m)
 }
 
 // DefaultsInto populates msg with the defaults layer alone — the base LoadInto

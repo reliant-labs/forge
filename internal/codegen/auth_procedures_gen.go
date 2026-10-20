@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -43,10 +44,21 @@ type OpenProcedureEntry struct {
 	Method  string // "GetStatus"
 }
 
+// ProcedureDeadlineEntry is one RPC that declared its own server-side
+// deadline, `(forge.v1.method).timeout`.
+type ProcedureDeadlineEntry struct {
+	Const    string // "demov1connect.DemoServiceExportProcedure"
+	Service  string // "demo.v1.DemoService"
+	Method   string // "Export"
+	Budget   string // the Go expression: "2 * time.Minute"
+	Declared string // as the proto said it: "2m0s"
+}
+
 // OpenProceduresTemplateData drives middleware-procedures.go.tmpl.
 type OpenProceduresTemplateData struct {
-	Imports []OpenProcedureImport
-	Open    []OpenProcedureEntry
+	Imports   []OpenProcedureImport
+	Open      []OpenProcedureEntry
+	Deadlines []ProcedureDeadlineEntry
 }
 
 // BuildOpenProcedures projects the services' auth_required declarations onto
@@ -58,18 +70,25 @@ type OpenProceduresTemplateData struct {
 //
 // Streaming RPCs are included on the same terms as unary ones: the
 // interceptor gates the procedure, and a stream is a procedure.
+//
+// The same pass projects `(forge.v1.method).timeout` onto ProcedureDeadlines,
+// the per-procedure budgets of the chain's Deadline slot. An rpc that declares
+// none is absent, and gets the slot's default.
 func BuildOpenProcedures(services []ServiceDef, modulePath string) OpenProceduresTemplateData {
 	var data OpenProceduresTemplateData
 	seenImport := map[string]string{} // path -> alias
 
 	for _, svc := range services {
-		var open []Method
+		var open, timed []Method
 		for _, m := range svc.Methods {
 			if !m.AuthRequired {
 				open = append(open, m)
 			}
+			if m.Timeout != 0 {
+				timed = append(timed, m)
+			}
 		}
-		if len(open) == 0 {
+		if len(open) == 0 && len(timed) == 0 {
 			continue
 		}
 		alias, path := connectPackageFor(svc, modulePath)
@@ -88,13 +107,44 @@ func BuildOpenProcedures(services []ServiceDef, modulePath string) OpenProcedure
 				Method:  m.Name,
 			})
 		}
+		for _, m := range timed {
+			data.Deadlines = append(data.Deadlines, ProcedureDeadlineEntry{
+				Const:    alias + "." + naming.ConnectProcedureConst(svc.Name, m.Name),
+				Service:  svc.Package + "." + svc.Name,
+				Method:   m.Name,
+				Budget:   durationExpr(m.Timeout),
+				Declared: m.Timeout.String(),
+			})
+		}
 	}
 
 	// Deterministic output: the same project renders the same bytes, so a
 	// re-run is not a diff.
 	sort.Slice(data.Imports, func(i, j int) bool { return data.Imports[i].Path < data.Imports[j].Path })
 	sort.Slice(data.Open, func(i, j int) bool { return data.Open[i].Const < data.Open[j].Const })
+	sort.Slice(data.Deadlines, func(i, j int) bool { return data.Deadlines[i].Const < data.Deadlines[j].Const })
 	return data
+}
+
+// durationExpr spells d as the Go expression a reader would write: the
+// largest unit that divides it exactly ("90 * time.Second", "-1 *
+// time.Second"), or a raw count of nanoseconds.
+func durationExpr(d time.Duration) string {
+	for _, u := range []struct {
+		d    time.Duration
+		name string
+	}{
+		{time.Hour, "time.Hour"},
+		{time.Minute, "time.Minute"},
+		{time.Second, "time.Second"},
+		{time.Millisecond, "time.Millisecond"},
+		{time.Microsecond, "time.Microsecond"},
+	} {
+		if d%u.d == 0 {
+			return fmt.Sprintf("%d * %s", int64(d/u.d), u.name)
+		}
+	}
+	return fmt.Sprintf("time.Duration(%d)", int64(d))
 }
 
 // connectPackageFor resolves the Go import path and package alias of a

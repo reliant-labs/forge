@@ -23,9 +23,9 @@
 //
 //   - `after` dependencies: a check starts once the checks it names have
 //     finished (whatever their verdict — rule 1 still holds);
-//   - tree mutation: a check that writes tracked files (verify-generated's
-//     regenerate, a formatter) runs alone, before every check that only reads
-//     the tree;
+//   - tree mutation: a check that writes tracked files (a formatter, an extra
+//     declared `mutates_tree`) runs alone, before every check that only reads
+//     the tree. verify-generated is not one: it regenerates a scratch copy;
 //   - host slots: a heavy check (a whole-module build, test run or render)
 //     holds one of the machine's heavy slots (pkg/hostslot) while it runs, so
 //     the gate never adds more heavy jobs than the host has room for, and a

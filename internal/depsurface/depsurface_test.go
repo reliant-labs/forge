@@ -151,8 +151,8 @@ func TestAnalyze_UsedMethodsEscapesContainersAndDowncasts(t *testing.T) {
 	if got := len(Unused(repo)); got != 10 {
 		t.Fatalf("Repo unused = %d", got)
 	}
-	if c := fieldNamed(t, p, "Config").Container; !strings.Contains(c, "root config") {
-		t.Errorf("Config container = %q", c)
+	if c := fieldNamed(t, p, "Config").Container; c != "" {
+		t.Errorf("the root config is not flagged until the scaffold gives components config blocks (K3): %q", c)
 	}
 	if c := fieldNamed(t, p, "Bag").Container; !strings.Contains(c, "any") {
 		t.Errorf("Bag container = %q", c)
@@ -174,9 +174,8 @@ func TestNarrow_WritesTheConsumerInterfaceAndRetypesTheField(t *testing.T) {
 	if res.File != "internal/handlers/tools/deps.go" || len(res.Narrowed) != 1 || res.Narrowed[0].To != "Repository" {
 		t.Fatalf("result = %+v", res)
 	}
-	// Other is only downcast (an escape-free field with no calls): left
-	// alone, with the reason.
-	if len(res.Skipped) != 1 || res.Skipped[0].Field != "Other" {
+	// Other is only downcast: left alone, with the reason.
+	if len(res.Skipped) != 1 || res.Skipped[0].Field != "Other" || !strings.Contains(res.Skipped[0].Reason, "type-asserts") {
 		t.Fatalf("skipped = %+v", res.Skipped)
 	}
 	deps, err := os.ReadFile(filepath.Join(dir, res.File))

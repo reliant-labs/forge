@@ -90,6 +90,9 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 			continue
 		case len(Unused(f)) == 0:
 			continue
+		case f.Downcast:
+			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "the package type-asserts it to a concrete type (forgeconv-deps-no-downcast): declare what it needs from that type first"})
+			continue
 		case f.Escapes:
 			res.Skipped = append(res.Skipped, Skipped{f.Name, f.Type, "its value is passed on or stored, so the calls in this package are not everything it needs"})
 			continue

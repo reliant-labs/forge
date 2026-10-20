@@ -9,8 +9,12 @@
 //
 //   - deps-surface: an interface field declares methods the package never
 //     calls through it;
-//   - no-container-deps: a field holds a container — the composition graph,
-//     the root config, the command tree's Deps, a locator, `any`;
+//   - no-container-deps: a field holds a container — the composition root's
+//     types, the command tree's Deps, a locator, `any`. (The root config
+//     joins the list with K3, when the scaffold gives each component a
+//     config block of its own: until then the scaffold itself writes
+//     `Config *config.Config`, and a lint that flags forge's own output on
+//     every fresh service is noise);
 //   - deps-no-downcast: a type assertion turns a field back into a concrete
 //     type, undoing the capability its interface granted.
 //
@@ -69,6 +73,9 @@ type Field struct {
 	// on, stored, returned), so its used set is not the whole story.
 	Used    map[string]bool
 	Escapes bool
+	// Downcast is true when the package type-asserts the field to a
+	// concrete type (Package.Downcasts says where).
+	Downcast bool
 	// Container names the container the field holds ("" for none).
 	Container string
 
@@ -290,8 +297,6 @@ func containerKind(module string, t types.Type) string {
 	switch {
 	case path == module+"/internal/app":
 		return fmt.Sprintf("the composition root's %s (internal/app)", name)
-	case path == module+"/pkg/config" && name == "Config":
-		return "the root config (*config.Config): take the component's own config block"
 	case strings.HasPrefix(path, module+"/cmd/") && name == "Deps":
 		return "the command tree's Deps (cmd.Deps)"
 	}
@@ -429,13 +434,13 @@ func (r *useReader) classify(i int, e ast.Expr, stack []ast.Node) {
 		if ast.Unparen(parent.X) != e {
 			break
 		}
+		before := len(r.out.Downcasts)
 		if parent.Type != nil {
 			r.downcast(f.Name, parent, r.info.TypeOf(parent.Type))
-			return
-		}
-		if k > 0 {
+		} else if k > 0 {
 			r.typeSwitch(f.Name, stack[:k])
 		}
+		f.Downcast = f.Downcast || len(r.out.Downcasts) > before
 		return
 	case *ast.BinaryExpr:
 		if isNil(r.info, parent.X) || isNil(r.info, parent.Y) {

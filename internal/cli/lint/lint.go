@@ -813,6 +813,17 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		}
 		goFindings = append(goFindings, res.Findings...)
 	}
+	// Least knowledge (composition graph §2): what every component's Deps
+	// declares against what the package uses through it — wide foreign
+	// interfaces, containers, downcasts. Warnings; --strict applies the
+	// design's severities.
+	if _, err := os.Stat("internal"); err == nil {
+		res, err := forgeconv.LintLeastKnowledge(".", opts)
+		if err != nil {
+			return combined, notes, false, fmt.Errorf("forge convention lint (least knowledge) failed: %w", err)
+		}
+		goFindings = append(goFindings, res.Findings...)
+	}
 	// SQL written for the wrong placeholder dialect: `$N` in a
 	// bun-formatted query (NewRaw, the builders, db.Bun().ExecContext), or
 	// a stray `?` bun will bind — in a comment, a string literal, or the

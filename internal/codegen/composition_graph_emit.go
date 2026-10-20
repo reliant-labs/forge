@@ -31,6 +31,9 @@ type GraphGenInput struct {
 	WebhookServices map[string]bool
 	// Warnings receives advisory lines; nil is os.Stderr.
 	Warnings io.Writer
+	// Roots, when set, receives the roots as processes — the reach the
+	// deploy config (config_gen.k's ROOTS) projects.
+	Roots *[]GraphRoot
 }
 
 func (in GraphGenInput) warnings() io.Writer {
@@ -75,6 +78,10 @@ type graphRootView struct {
 	Migrate bool
 	// Command is the cobra command path that runs the root.
 	Command []string
+	// Config is every config field the root reaches; HasConfig is false
+	// when the project has no root config message to read reach against.
+	Config    []ConfigLeaf
+	HasConfig bool
 }
 
 type graphOperatorView struct{ Field, Type, Alias, Label string }
@@ -152,6 +159,9 @@ func GenerateGraph(in GraphGenInput) error {
 		if err := writeUserScaffold(filepath.Join(in.ProjectDir, "internal", "app", "compose.go"), []byte(m.compose)); err != nil {
 			return fmt.Errorf("write internal/app/compose.go: %w", err)
 		}
+	}
+	if in.Roots != nil {
+		*in.Roots = graphRoots(m.rootViews)
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
 	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, in.Checksums, in.warnings())
@@ -277,6 +287,7 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 		return nil, err
 	}
 	markRootReach(m.rootViews, graphComposeInputReads(m.compose, m.nodes), m.byName, m.u)
+	markRootConfig(m.rootViews, loadConfigModel(in.ProjectDir), graphComposeConfigReads(m.compose, m.nodes))
 	return m, nil
 }
 

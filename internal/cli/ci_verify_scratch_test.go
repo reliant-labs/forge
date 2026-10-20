@@ -27,6 +27,14 @@ func verifyRepo(t *testing.T) (parent, repo string) {
 	}
 	repo = filepath.Join(parent, "app")
 	gitOut(t, parent, "init", "-q", "app")
+	// No background maintenance. `git commit` starts `git maintenance run
+	// --auto`, which git >= 2.47 DETACHES by default (maintenance.autoDetach):
+	// it can write under .git after commit returns — after treeHash took its
+	// "before" — and the test then blames verify-generated for a write it
+	// never made. CI's git detaches; an older local git runs it in the
+	// foreground, which is why this only ever failed in CI.
+	gitOut(t, repo, "config", "maintenance.auto", "false")
+	gitOut(t, repo, "config", "gc.auto", "0")
 	for rel, body := range map[string]string{
 		"forge.yaml":                          "name: app\nmodule_path: example.com/app\nfeatures:\n  ci: true\n",
 		".gitignore":                          "node_modules/\n.env\n.forge/generate-cache.json\n.forge/forge.lock\ntmp/\n",

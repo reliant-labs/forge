@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **forge's control-plane client names itself in `Forge-Via`.** Every call
+  sends `cli`, or `ci` under a CI runner, so a server's activity stream
+  (`forge/pkg/activity`) records how a change arrived, as in "sean promoted
+  v1.7.44 via CLI".
 - **One command per root** (composition graph, PR 4). In a graph-mode
   project every root — each `//forge:root` struct in `internal/app`, or the
   generated default `Server` — gets one cobra command in the forge-owned

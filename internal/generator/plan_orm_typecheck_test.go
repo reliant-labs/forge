@@ -131,6 +131,22 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 				{Name: "amount", Type: "int64", NotNull: true},
 			},
 		},
+		// Read-only view entities (F12.7): keyed, and keyless.
+		{
+			Name: "ChatsWithActivity", TableName: "chats_with_activity", ReadOnly: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true, NotNull: true},
+				{Name: "title", Type: "string"},
+				{Name: "last_seen", Type: "time"},
+				{Name: "has_unread", Type: "bool"},
+			},
+		},
+		{
+			Name: "ChatCount", TableName: "chat_counts", ReadOnly: true,
+			Fields: []config.PlanEntityField{
+				{Name: "n", Type: "int64"},
+			},
+		},
 	}
 
 	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {

@@ -25,8 +25,9 @@
 # each add a service also both change forge's state files under .forge/
 # (merged key by key) and its aggregated renders (when both sides are forge's
 # renders, the driver keeps this side's and `forge generate` renders both).
-# forge writes the driver's command into .git/config and these same routes
-# into .git/info/attributes; a clone where forge has not run merges as before.
+# forge writes the driver's command into the worktree's own git config (it
+# names one forge binary, and worktrees pin different forges); a clone where
+# forge has not run merges as before.
 *_gen.go merge=forge-generated
 *_gen.ts merge=forge-generated
 *_gen.test.ts merge=forge-generated

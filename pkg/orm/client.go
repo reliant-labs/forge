@@ -8,6 +8,9 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/extra/bunotel"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 )
@@ -30,7 +33,7 @@ func NewClient(dialectName, dsn string) (*Client, error) {
 	if err := requirePostgres(dialectName); err != nil {
 		return nil, err
 	}
-	sqldb, err := sql.Open("pgx", dsn)
+	sqldb, err := dbtrace.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -58,10 +61,16 @@ func NewClientWithDB(db *sql.DB, dialectName string) (*Client, error) {
 	// The resolver is what makes a transaction carried in ctx (RunTx) reach
 	// every query built off this handle — see ambientResolver in tx.go.
 	bdb := bun.NewDB(db, pgdialect.New(), bun.WithConnResolver(ambientResolver{db: db}))
-	// Trace ORM SQL onto the active OTel span (forge's observability
-	// convention). The generated layer also opens per-op spans; this adds
-	// the SQL statement attributes.
-	bdb.AddQueryHook(bunotel.NewQueryHook())
+	// bunotel records the ORM's query histogram (go.sql.query_timing) and, on
+	// a pool not traced at the driver, a span per query. A pool that is
+	// (serverkit.OpenDB, NewClient — pkg/observe/dbtrace) already has its span
+	// for every statement, ORM or hand-written, so bunotel's would be a
+	// duplicate: keep its metric, drop its spans.
+	var hookOpts []bunotel.Option
+	if dbtrace.IsTraced(db) {
+		hookOpts = append(hookOpts, bunotel.WithTracerProvider(tracenoop.NewTracerProvider()))
+	}
+	bdb.AddQueryHook(bunotel.NewQueryHook(hookOpts...))
 	return &Client{bun: bdb, dialect: dialect}, nil
 }
 

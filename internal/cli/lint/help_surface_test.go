@@ -148,6 +148,13 @@ func TestLintHelpSurface(t *testing.T) {
 		// the backend without paying for the Node toolchain", and it mirrors
 		// the frontend-skipping vocabulary `forge build` already uses.
 		"skip-frontends",
+		// A continuous rule about the user's own tests: one that execs a
+		// toolchain, drives containers or dials an external host without
+		// being marked slow sits in the blocking -short tier, and a file its
+		// child process reads is invisible to Go's test cache. Opt-in until
+		// forge's and reliant's suites are migrated (both still report
+		// findings, mostly git fixture repos).
+		"slow-tests",
 		// Visible: a static runtime (hosted, bucket, firebase) serves files
 		// only, and `next dev` serves everything a static export cannot —
 		// so without this the first signal is the export failing in CI, or

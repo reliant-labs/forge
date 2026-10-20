@@ -32,16 +32,28 @@ import (
 // isolateGit gives git a hermetic identity and no user/system config, so
 // the fresh-directory case can commit on any machine (and CI) and no
 // global commit.gpgsign or hook setting leaks in.
+//
+// Its one setting turns off automatic maintenance. Every `git commit` starts
+// `git maintenance run --auto`, and current git runs it DETACHED
+// (maintenance.autoDetach, default true): commit returns while a background
+// process still holds .git/objects/maintenance.lock, which it removes some
+// milliseconds later. Any test that snapshots, diffs or deletes the repository
+// after a commit then races that process. Measured on git 2.55 (CI's version):
+// TestVerifyGenerated_LeavesTheCheckoutByteIdentical failed 59 of 90 subtests,
+// each reporting .git/objects/maintenance.lock present before and absent
+// after, or vanishing mid-walk; with this setting, 0 of 90. git 2.43 runs it in
+// the foreground (GIT_TRACE shows `maintenance run --auto` without `--detach`),
+// which is why it never failed locally.
 func isolateGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	emptyCfg := filepath.Join(t.TempDir(), "gitconfig")
-	if err := os.WriteFile(emptyCfg, nil, 0o644); err != nil {
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(cfg, []byte("[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("GIT_CONFIG_GLOBAL", emptyCfg)
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_AUTHOR_NAME", "forge-test")
 	t.Setenv("GIT_AUTHOR_EMAIL", "forge-test@example.com")

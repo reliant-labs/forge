@@ -110,6 +110,24 @@ jobs:
             exit 1
           fi
 
+      # Judge the forge under test against forge/pkg from the SAME commit.
+      # A forge built from this checkout cannot prove its commit is fetchable
+      # (on a pull request it is an ephemeral merge commit), so the scaffold
+      # pins the newest release the checkout descends from
+      # (buildinfo.PublishedFloor) and bridges to the checkout with go.work.
+      # That release predates every package added since, and `go mod tidy`
+      # ignores go.work — so tidy fell back to the retired forge/pkg module at
+      # @latest (v0.1.15) and failed for any new pkg/* import (pkg/graphkit,
+      # #923). A replace is what tidy honors. A user's forge, installed by tag
+      # or by commit, pins its own version and needs none of this.
+      - name: Bridge the scaffold to this checkout's forge module
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          for mod in . gen; do
+            (cd "$mod" && go mod edit -replace "github.com/reliant-labs/forge=$GITHUB_WORKSPACE")
+          done
+          echo "✅ forge replaced with $GITHUB_WORKSPACE in go.mod and gen/go.mod"
+
       - name: forge generate
         working-directory: ${{ env.E2E_DIR }}/e2e-test
         run: |

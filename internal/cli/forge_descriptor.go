@@ -247,6 +247,17 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	// enforces fail-closed. Authorization stays handler logic.
 }
 
+// serviceAudience reads `(forge.v1.service).audience`, defaulting to "user"
+// — the same default serverkit.ServiceAudience applies at boot.
+func serviceAudience(svc *protogen.Service) string {
+	if opts := svc.Desc.Options(); opts != nil {
+		if so, ok := proto.GetExtension(opts, forgev1.E_Service).(*forgev1.ServiceOptions); ok && so.GetAudience() != "" {
+			return so.GetAudience()
+		}
+	}
+	return "user"
+}
+
 // extractService builds a codegen.ServiceDef from a protogen.Service.
 // goPkgName derives the short Go package name from a protogen.File.
 // For a go_package like "github.com/example/gen/services/api/v1;apiv1" it
@@ -275,6 +286,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		ProtoFile: file.Desc.Path(),
 		Messages:  make(map[string][]codegen.MessageFieldDef),
 		Unmanaged: codegen.CommentMarksUnmanaged(serviceMarkerComments(svc)),
+		Audience:  serviceAudience(svc),
 	}
 
 	for _, m := range svc.Methods {

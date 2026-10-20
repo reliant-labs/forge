@@ -252,8 +252,11 @@ func (s StaticSiteSpec) invalidationPolicy() string {
 // frontends off group.StaticSites and the dry-run knob off group.DryRun
 // so this provider dispatches through the registry like every other one.
 func (p StaticSiteProvider) Deploy(ctx context.Context, group ServiceGroup) error {
-	for _, fe := range group.StaticSites {
+	for i, fe := range group.StaticSites {
 		if err := p.deployOne(ctx, fe, group.Env, group.DryRun); err != nil {
+			if i > 0 {
+				return afterShipping(err)
+			}
 			return err
 		}
 	}
@@ -305,7 +308,7 @@ func (p StaticSiteProvider) buildPlan(fe StaticSiteFrontend) (staticSitePlan, er
 func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend, env string, dryRun bool) error {
 	plan, err := p.buildPlan(fe)
 	if err != nil {
-		return err
+		return shippedNothing(err)
 	}
 
 	if dryRun {
@@ -317,24 +320,28 @@ func (p StaticSiteProvider) deployOne(ctx context.Context, fe StaticSiteFrontend
 	fmt.Printf("  [static-site] %s: building (%s) in %s...\n",
 		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
 
+	// Everything before the first upload is local: the bucket is untouched
+	// until it runs, so a failure up to there shipped nothing
+	// (frontend_not_shipped.go).
+	//
 	// Build + assemble — the shared static staging step.
 	res, err := runStagePlan(ctx, runner, plan.Stage)
 	if err != nil {
-		return err
+		return shippedNothing(err)
 	}
 	reportStageResult("static-site", plan.Stage.Name, res)
 
 	// File the source maps before the release is uploaded or goes live: a
 	// build whose maps could not be filed must not ship unsymbolicatable.
 	if err := FileStageSourcemaps(ctx, fe.SourcemapPublisher, "static-site", plan.Stage.Project, plan.Stage.Name, res); err != nil {
-		return err
+		return shippedNothing(err)
 	}
 
 	// The artifact's content-addressed identity, computed from the tree
 	// that now exists on disk. Everything downstream keys on it.
 	digest, err := stagingDigest(plan.Stage.StagingDir)
 	if err != nil {
-		return fmt.Errorf("static-site %s: %w", fe.Name, err)
+		return shippedNothing(fmt.Errorf("static-site %s: %w", fe.Name, err))
 	}
 
 	// The digest currently live, read BEFORE this deploy overwrites the

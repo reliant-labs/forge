@@ -34,7 +34,10 @@ frontends = [_web | {runtime = forge.OnBucket {bucket = "acme-prod-web"}}]
 `forge env new cloud --from prod --bind web=bucket` rebinds a scaffolded
 frontend's line (`_hosted_frontend(_web_frontend)` → `_on_bucket(...)`).
 `forge env deploy <env> <version> --frontends-only` ships only the bucket /
-Firebase frontends of a release.
+Firebase frontends of a release. It applies no bundle object, so it neither
+renders nor compares the env's bundle, and computes no k8s plan: it ships a
+release's frontend from any checkout, even one whose workloads have moved on.
+A `--target` naming only such frontends behaves the same.
 
 ### Hosted static sites
 

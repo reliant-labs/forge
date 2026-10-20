@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 // Server carries the already-composed inputs serverkit runs. Service
@@ -54,6 +56,15 @@ type Server struct {
 	// Callers that mount via mountkit.RegisterService directly pass it
 	// themselves and may leave this nil.
 	HandlerOpts []connect.HandlerOption
+
+	// Chain is the interceptor chain the services were mounted with
+	// (NewChain). Set, it does two things: the Mount helpers build each
+	// service with its HandlerOptions when HandlerOpts is nil, and Run's
+	// Listener checks every recorded service's declared
+	// `(forge.v1.service).audience` against the chain's Authenticator and
+	// refuses to serve a mismatch. nil — a Server mounted with hand-built
+	// HandlerOpts — skips the audience check.
+	Chain *Chain
 
 	// Logger is the root logger the caller already built (the same one
 	// it passed into bootstrap so mount-time logs and run-time logs
@@ -590,13 +601,13 @@ func (c *Config) Normalize() {
 		c.WriteStallTimeout = DefaultWriteStallTimeout
 	}
 	if c.ReadHeaderTimeout == 0 {
-		c.ReadHeaderTimeout = 10 * time.Second
+		c.ReadHeaderTimeout = defaultReadHeaderTimeout
 	}
 	if c.ReadTimeout == 0 {
-		c.ReadTimeout = 30 * time.Second
+		c.ReadTimeout = defaultReadTimeout
 	}
 	if c.IdleTimeout == 0 {
-		c.IdleTimeout = 120 * time.Second
+		c.IdleTimeout = defaultIdleTimeout
 	}
 	if c.ReadMaxBytes == 0 {
 		c.ReadMaxBytes = 4 << 20
@@ -613,10 +624,12 @@ func (c *Config) Normalize() {
 }
 
 // The drain and probe defaults Normalize applies, shared with Drainer so a
-// hand-built main and Run agree on the grace arithmetic.
+// hand-built main and Run agree on the grace arithmetic. The drain pair is
+// drainbudget's, the same values pkg/deploy derives the pod's grace period
+// from.
 const (
-	defaultPreStopDelay     = 5 * time.Second
-	defaultShutdownTimeout  = 30 * time.Second
+	defaultPreStopDelay     = drainbudget.DefaultPreStopDelay
+	defaultShutdownTimeout  = drainbudget.DefaultShutdownTimeout
 	defaultReadinessTimeout = 2 * time.Second
 )
 

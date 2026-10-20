@@ -42,7 +42,6 @@ package lint
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -131,16 +130,16 @@ func lintPipeline() []linterStep {
 			// Takes package arguments, so --scope narrows what it RUNS on
 			// (the slow lane), not just what it reports.
 			scope: scopeByPackages,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if _, err := exec.LookPath("golangci-lint"); err != nil {
-					return false, "golangci-lint not found on PATH — skipping"
-				}
-				return true, ""
-			},
+			// Always runs. A golangci-lint missing from PATH is NOT a skip:
+			// it used to be, and `forge lint` passed on a machine that had
+			// never run golangci-lint (reliant's CI). The resolution builds
+			// forge's pin instead, or fails this lane naming the fix.
+			shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
 			// The binary is chosen per module (golangci_toolchain.go): the
-			// one on PATH may be built with a Go older than the module's go
-			// directive, or unable to read the export data the module's
-			// toolchain writes, and either way golangci-lint cannot lint it.
+			// one on PATH may be missing, built with a Go older than the
+			// module's go directive, or unable to read the export data the
+			// module's toolchain writes, and each way golangci-lint cannot
+			// lint it.
 			runText:   runGolangciLint,
 			errFormat: "❌ golangci-lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
@@ -174,9 +173,8 @@ func lintPipeline() []linterStep {
 				if rc.cfg == nil || rc.cfg.Config.EffectiveEnforceTypedAccess() != config.EnforceTypedAccessWarn {
 					return false, ""
 				}
-				if _, err := exec.LookPath("golangci-lint"); err != nil {
-					return false, "golangci-lint not found on PATH — skipping typed-config guardrail"
-				}
+				// No PATH check: it shares the gating lane's resolution,
+				// which provisions a missing golangci-lint.
 				return true, ""
 			},
 			runText:   runTypedAccessGuardAdvisory,
@@ -212,12 +210,11 @@ func lintPipeline() []linterStep {
 			name:  "buf lint",
 			gates: true,
 			scope: scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if _, err := exec.LookPath("buf"); err != nil {
-					return false, "buf not found on PATH — skipping buf lint"
-				}
-				return true, ""
-			},
+			// Always runs: with no buf.yaml there is nothing to lint and the
+			// lane passes trivially; with one and no buf on PATH the lane
+			// FAILS (errBufMissing) rather than skipping — a gating lane
+			// that did not run must never let `forge lint` pass.
+			shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
 			runText: func(rc *lintRunCtx) error {
 				return runBufLint(rc.ctx)
 			},

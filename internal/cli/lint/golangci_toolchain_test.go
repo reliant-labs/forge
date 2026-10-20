@@ -138,7 +138,7 @@ func TestResolveGolangciLint_OlderThanModuleBuildsWithModuleToolchain(t *testing
 	dir := moduleDir(t, "1.27")
 
 	res := resolveGolangciLint(context.Background(), dir, f.toolchainFor())
-	if res.err != nil || res.missing {
+	if res.err != nil {
 		t.Fatalf("resolution failed: %+v", res)
 	}
 	want := filepath.Join(f.cache, "v2.14.0-go1.27.0", golangciExeName())
@@ -221,16 +221,10 @@ func TestResolveGolangciLint_ToolchainOlderThanModule(t *testing.T) {
 	}
 }
 
-// TestResolveGolangciLint_NothingToCompare: no golangci-lint skips the lane
-// as before; no go directive, or a binary forge cannot read, defers to PATH.
+// TestResolveGolangciLint_NothingToCompare: no go directive, or a binary
+// forge cannot read, defers to PATH.
 func TestResolveGolangciLint_NothingToCompare(t *testing.T) {
 	f := newFakeToolchain(t)
-	f.onPath = ""
-	if res := resolveGolangciLint(context.Background(), moduleDir(t, "1.27"), f.toolchainFor()); !res.missing {
-		t.Errorf("no golangci-lint on PATH must stay a skip, got %+v", res)
-	}
-
-	f = newFakeToolchain(t)
 	if res := resolveGolangciLint(context.Background(), moduleDir(t, ""), f.toolchainFor()); res.path != f.onPath {
 		t.Errorf("no go directive: want the PATH binary, got %+v", res)
 	}
@@ -239,6 +233,80 @@ func TestResolveGolangciLint_NothingToCompare(t *testing.T) {
 	delete(f.builtWith, f.onPath) // a wrapper script, say
 	if res := resolveGolangciLint(context.Background(), moduleDir(t, "1.27"), f.toolchainFor()); res.path != f.onPath || len(f.installs) != 0 {
 		t.Errorf("unreadable build info: want the PATH binary, got %+v installs=%q", res, f.installs)
+	}
+}
+
+// ── no golangci-lint on PATH ────────────────────────────────────────────────
+//
+// The bug these pin: reliant's CI runner had no golangci-lint, `forge lint`
+// skipped the gating lane, and the job passed — golangci-lint had never run
+// there. A missing golangci-lint must be provisioned like a mismatched one,
+// or fail the lane; it must never be a skip.
+
+// TestResolveGolangciLint_MissingBuildsThePin: no golangci-lint on PATH
+// builds forge's pin with the module's toolchain, says so, and a second run
+// reuses the build.
+func TestResolveGolangciLint_MissingBuildsThePin(t *testing.T) {
+	f := newFakeToolchain(t)
+	f.onPath = ""
+	dir := moduleDir(t, "1.27")
+
+	res := resolveGolangciLint(context.Background(), dir, f.toolchainFor())
+	want := filepath.Join(f.cache, "v2.14.0-go1.27.0", golangciExeName())
+	if res.err != nil || res.path != want {
+		t.Fatalf("no golangci-lint on PATH: want forge's pinned build at %s, got %+v", want, res)
+	}
+	if !slices.Equal(f.installs, []string{"go1.27.0 v2.14.0"}) {
+		t.Errorf("want one build of the pin with the module's toolchain, got %q", f.installs)
+	}
+	if len(f.notices) != 1 || !strings.Contains(f.notices[0], "not on PATH") {
+		t.Errorf("the one-time build must say why it happens, got %q", f.notices)
+	}
+
+	if again := resolveGolangciLint(context.Background(), dir, f.toolchainFor()); again.path != want || len(f.installs) != 1 {
+		t.Errorf("a cached build must be reused, got %+v installs=%q", again, f.installs)
+	}
+}
+
+// TestResolveGolangciLint_MissingAndUnbuildableFails: when forge cannot build
+// the pin either, the resolution is a gating error naming the lane and both
+// fixes — never a skip.
+func TestResolveGolangciLint_MissingAndUnbuildableFails(t *testing.T) {
+	f := newFakeToolchain(t)
+	f.onPath = ""
+	f.installErr = errors.New("dial tcp: proxy.golang.org: no route to host")
+
+	res := resolveGolangciLint(context.Background(), moduleDir(t, "1.27"), f.toolchainFor())
+	if res.err == nil {
+		t.Fatalf("no golangci-lint and no build: want a gating error, got %+v", res)
+	}
+	for _, want := range []string{
+		"golangci-lint lane cannot run", "no route to host", "forge tools install",
+		"GOTOOLCHAIN=go1.27.0 go install " + golangciModulePath + "@v2.14.0",
+	} {
+		if !strings.Contains(res.err.Error(), want) {
+			t.Errorf("error missing %q:\n%v", want, res.err)
+		}
+	}
+
+	rc := f.runCtx(moduleDir(t, "1.27"))
+	gate := findStep(t, "golangci-lint")
+	if err := gate.runText(rc); err == nil || !strings.Contains(err.Error(), "forge tools install") {
+		t.Errorf("text gate: want the lane to fail with the fix, got %v", err)
+	}
+	fs, gated, err := gate.collect(rc)
+	if err != nil || !gated || len(fs) != 1 || fs[0].Severity != lintSevError {
+		t.Errorf("json gate: want one gating error finding, got gated=%v err=%v %+v", gated, err, fs)
+	}
+}
+
+// TestGolangciLaneRunsWithoutGolangciOnPath: the lane's shouldRun no longer
+// skips when PATH has no golangci-lint — that skip is what let `forge lint`
+// pass having run nothing.
+func TestGolangciLaneRunsWithoutGolangciOnPath(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if run, skip := findStep(t, "golangci-lint").shouldRun(&lintRunCtx{}); !run {
+		t.Fatalf("golangci-lint lane skipped with no golangci-lint on PATH (%q): a gating lane must never skip for a missing tool", skip)
 	}
 }
 

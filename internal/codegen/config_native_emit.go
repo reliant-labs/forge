@@ -96,6 +96,9 @@ func GenerateConfigNativeSharedRoots(fields []ConfigField, roots []GraphRoot, pr
 	if err != nil {
 		return fmt.Errorf("generate config module: %w", err)
 	}
+	if roots == nil && GraphComposition(projectDir) {
+		roots = []GraphRoot{DefaultServerRoot(fields)}
+	}
 	return writeConfigNativeShared(body+RootsKCL(roots), projectDir, kclDirAbs, cs)
 }
 

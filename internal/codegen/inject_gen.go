@@ -1878,6 +1878,10 @@ func GenerateLifecycle(in InjectGenInput) error {
 	}
 }
 
+// lifecycleKitImport is the package every Worker<X>() accessor calls
+// (lifecyclekit.WrapWorker) and nothing else in lifecycle.go does.
+const lifecycleKitImport = "github.com/reliant-labs/forge/pkg/lifecyclekit"
+
 // lifecycleWorkerAccessor / lifecycleOperatorAccessor render exactly ONE
 // accessor for injection into an existing lifecycle.go. They mirror
 // lifecycle.go.tmpl's per-component range bodies; the shared gofmt pass in
@@ -1971,6 +1975,11 @@ func reconcileLifecycleAddComponents(existing, freshRender string, data lifecycl
 			return existing, false
 		}
 		out = lifecycleInsertAccessor(out, "func (c *Components) AllWorkers() []serverkit.Worker {", buf.String())
+		// The template imports lifecyclekit only alongside a worker, so the
+		// first accessor added to a worker-less file brings the import too.
+		if !strings.Contains(out, `"`+lifecycleKitImport+`"`) && !strings.Contains(strings.Join(imports, "\n"), lifecycleKitImport) {
+			imports = append(imports, "\t\""+lifecycleKitImport+"\"")
+		}
 		changed = true
 	}
 	for _, o := range data.Operators {

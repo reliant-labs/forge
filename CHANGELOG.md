@@ -474,6 +474,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
+  finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
+  that one rule's findings and ignored for every other, so
+  `lint.rules: {forgeconv-activity-declared: warn}` was accepted by the config
+  loader and then did nothing: the rule stayed an error, and there was no way
+  to adopt it incrementally. `off`, `warn`, `error` and the `*` wildcard now
+  behave the same for every proto and Go-tree convention rule, after
+  `forge:lint-disable` suppression.
+
 - **Parallel `forge cluster up`s no longer lose each other's kubectl
   context.** `k3d cluster create`, `k3d kubeconfig merge`,
   `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default

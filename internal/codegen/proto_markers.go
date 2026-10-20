@@ -163,10 +163,11 @@ const (
 	// CreateTask also wires the task's dependencies, or that ListTasks reads a
 	// join. Marked, the rpc is custom on both sides of the wire: it gets a
 	// pb-through stub and a scaffold test row, no CRUD shim or op, no entity
-	// page, its hook invalidates at service scope, and it makes no entity — so
-	// when every CRUD-named rpc of an entity carries it, there is no entity
-	// at all (no ORM struct, no page, no seed root), which is the per-entity
-	// opt-out, spelled one rpc at a time.
+	// page, its hook invalidates at service scope, and it makes no CRUD
+	// entity — so when every CRUD-named rpc of an entity carries it, the table
+	// gets no CRUD wiring, page or seed root. It KEEPS its store: the ORM
+	// projects every table whatever its rpcs (BuildORMEntities), and the
+	// store opt-out is `forge:no-entity` on the table.
 	//
 	// It exists because the alternative the framework guide forbids —
 	// renaming the rpc to dodge detection — was the only way to say this. A

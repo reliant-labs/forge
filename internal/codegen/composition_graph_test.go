@@ -396,3 +396,65 @@ func TestLazyEdge_BreaksTheCycleAndIsBuiltAtBoot(t *testing.T) {
 		t.Fatalf("Build does not force the lazily-used Beta: %+v", v)
 	}
 }
+
+// TestReconcileGraphComposeFile_DropsStaleKeyOfAConstructionNoLongerANode is
+// #747 in graph mode. compose.go is owned and only ever added to, so a
+// newAlpaca method outlives alpaca's node when the package is marked
+// //forge:external-component. The reconcile measured only the nodes'
+// literals, so a Deps field removed afterwards left a key naming nothing, and
+// every generate failed its validate build and rolled back:
+//
+//	internal/app/compose.go:108:3: unknown field Region in struct literal of type alpaca.Deps
+//
+// The dead key goes, the author's construction and its other values stay,
+// and the construction is reported with the graph's remedy.
+func TestReconcileGraphComposeFile_DropsStaleKeyOfAConstructionNoLongerANode(t *testing.T) {
+	cases := []struct {
+		name, header, warning string
+	}{
+		{
+			name:    "external-component",
+			header:  "//forge:external-component\n",
+			warning: "internal/app/compose.go still constructs internal/alpaca, which is now //forge:external-component — delete its new<X> method and import, and supply the instance from a New<X>(<X>Deps) provider func in internal/app/providers.go",
+		},
+		{
+			name:    "not-a-component",
+			header:  "//forge:not-a-component: the CLI builds it\n",
+			warning: "internal/app/compose.go still constructs internal/alpaca, which is now //forge:not-a-component — delete its new<X> method and import: the server does not have it",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newInjectProject(t)
+			writeContract(t, dir, "internal/alpaca", tc.header+"package alpaca\n\nimport \"log/slog\"\n\ntype Service interface{ Do() }\n\n"+
+				"type Deps struct {\n\tLogger *slog.Logger\n}\n\nfunc New(d Deps) (Service, error) { return nil, nil }\n")
+			writeAppFile(t, dir, "compose.go", `package app
+
+import "example.com/proj/internal/alpaca"
+
+// newAlpaca constructs the alpaca package (internal/alpaca).
+func (g *Graph) newAlpaca() (alpaca.Service, error) {
+	return alpaca.New(alpaca.Deps{
+		Logger: g.AuditLog,
+		Region: "us-east-1",
+	})
+}
+`)
+			var warnings strings.Builder
+			in := GraphGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"}, Warnings: &warnings}
+			_, out, disowned, err := reconcileGraphComposeFile(in, nil, &graphResolver{module: "example.com/proj"})
+			if err != nil || disowned {
+				t.Fatalf("reconcileGraphComposeFile: disowned=%v err=%v", disowned, err)
+			}
+			if strings.Contains(out, "Region") {
+				t.Fatalf("compose.go still keys the removed Region field — the project cannot build:\n%s", out)
+			}
+			if !strings.Contains(squash(out), "Logger: g.AuditLog,") || !strings.Contains(out, "alpaca.New(alpaca.Deps{") {
+				t.Fatalf("the construction and its surviving value are the author's and must be kept:\n%s", out)
+			}
+			if got := strings.TrimSpace(warnings.String()); got != "⚠️  "+tc.warning {
+				t.Errorf("warning:\n got: %q\nwant: %q", got, "⚠️  "+tc.warning)
+			}
+		})
+	}
+}

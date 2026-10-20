@@ -9,6 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A typed activity stream: an rpc declares the activity event it records,
+  and one interceptor writes it** (`forge/pkg/activity`).
+  - **Declaring.** An rpc declares its event with
+    `(forge.v1.method).activity`, giving
+    `verb`, `target {kind, id, label}`, `env`, `scope` and `detail`. Field
+    paths resolve against the request, or against the response when they start
+    with `response.`.
+  - **Opting out.** `activity: { none: "<why>" }` records that a mutating rpc
+    changes nothing worth an event.
+  - **CRUD needs no option.** A `Create<E>`, `Update<E>` or `Delete<E>` rpc with
+    forge's CRUD shape implies `create`, `update` or `delete` on `snake(E)`.
+  - **One resolver.** `activity.Resolve` is the only code that interprets a
+    declaration. `activity.IsMutating` decides which rpcs must declare one:
+    every rpc except those named with a read verb (`Get`, `List`, `Watch`,
+    `Search`, `Query`, `Count`, `Describe`, `BatchGet`) and those marked
+    `idempotency_level = NO_SIDE_EFFECTS`.
+  - **The interceptor.** `activity.Interceptor` fills the new
+    `serverkit.ChainDeps.Activity` slot, after auth and next to the handler. It
+    reads the declaration from the method descriptor. When the handler
+    succeeds, it writes the event best-effort, taking the actor from the
+    caller's claims and `via` from the `Forge-Via` header.
+  - **Failures and defaults.** A failed write is logged and counted
+    (`forge_activity_write_failures_total`) and never fails the rpc. The default
+    slot logs events without storing them. `serverkit.NoActivity` drops the
+    slot.
+  - **Transactional writes.** `writer: ACTIVITY_WRITER_HANDLER` hands the write
+    to the handler: it calls `activity.Record` inside its `RunTx`, so the event
+    commits or rolls back with the mutation. `activity.Record` is also the
+    explicit write for actors that are not rpcs: a converger, an alert
+    transition, CI.
+  - **Storage.** `activity.NewStore(db)` writes and lists the `activity_events`
+    table, whose DDL is `activity.SchemaSQL`. `List` filters by actor, verb,
+    target, env, via and time, and pages by keyset. The store writes through
+    `*orm.Client`, so a write inside `RunTx` joins the transaction.
+  - **Docs.** The new `activity` skill covers all of the above.
+- **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
+  `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
+  per `groupBy` value, the `limit` largest by the first series, default 10);
+  `heatmap` buckets one numeric field's values over time (one `count` series
+  naming the field); `sql` carries one read-only SELECT in `sql`, checked by
+  the new `CheckSQL`, which is the alert-rule guard (`alerting.ValidateExpr`),
+  and may bind the dashboard's scope through the `SQLParam*` ClickHouse
+  parameters (`{from:DateTime64(9)}`, `{to:…}`, `{step:UInt32}`,
+  `{env_ids|envs|services:Array(String)}`). `formula` makes a line or number
+  panel plot `A / B * 100` over its series (by position, A to J), parsed and
+  evaluated by `ParseFormula` / `Formula.Eval` so every reader computes the
+  same value (`x / 0` is 0, as in `ratio`). `limit` (1 to 200) keeps the top
+  rows of a table or bar. The validator locates every misuse, and a `sql`
+  panel's `signal` is optional (`Panel.Signal` is now `omitempty`; every other
+  kind still requires it, so existing output is unchanged). HyperDX has no
+  equivalent for any of them, so `RenderHyperDX` leaves those panels out, as
+  it does the console kinds. `CheckField` now also requires an attribute
+  field's key to be 1 to 128 characters (`span.attr.` alone was accepted),
+  the rule the Reliant control plane's copy enforced.
 - **`forge/pkg/serverkit/drainbudget`: the one reader of `PRE_STOP_DELAY`
   and `SHUTDOWN_TIMEOUT`.** `Parse` (a Go duration or bare seconds; empty is
   unset), `Effective` (zero is the default, negative is none), the env names
@@ -73,9 +127,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pgtest.NewFromTemplate` reaps stale templates.** A template used to live
   as long as its server, which on an external `FORGE_TEST_POSTGRES_URL` server
   (shared, never torn down) meant one leaked database per migration edit,
-  forever. Each process that uses a template now stamps it (`COMMENT ON
-  DATABASE`), and a process's first `NewFromTemplate` on a server drops every
-  template unused for longer than `pgtest.DefaultTemplateTTL` (24h;
+  forever. Each process that uses a template now stamps it
+  (`COMMENT ON DATABASE`), and a process's first `NewFromTemplate` on a server
+  drops every template unused for longer than `pgtest.DefaultTemplateTTL` (24h;
   `FORGE_TEST_TEMPLATE_TTL` overrides, `0` disables) and every `*_build`
   database whose builder is gone, each under its key's advisory lock. An
   unstamped template from an older forge is adopted, then reaped a TTL later;
@@ -262,6 +316,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge ci verify-generated` and `forge generate --check` never write the
+  checkout.** Both regenerated the caller's own tree and then read
+  `git status`, so a concurrent gate held every reader of the tree back for
+  30-50s, and a run that found drift, crashed or was killed left the
+  regenerated files behind. They now regenerate a scratch copy made beside
+  the repository (`.<repo>.forge-verify-<pid>-*`: its own git repository
+  borrowing the checkout's objects, holding the checkout's index and working
+  tree byte for byte, plus the gitignored files generate reads) and diff the
+  copy against itself; output and exit codes are unchanged. They judge the
+  working tree as `git add -A` would commit it — HEAD on a clean checkout — so
+  a dirty tree now gets a verdict instead of a refusal, and every change
+  reported is generate's. The generate cache is shared both ways: the
+  checkout's record is copied in, and a fixed point the scratch run verifies
+  is copied back to `.forge/generate-cache.json`. The cache key also stops
+  including `FORGE_SLOT_HELD`, a fresh token per slot holder, which made every
+  run inside the gate a miss. `forge ci gate` no longer runs verify-generated
+  alone, skips it on a dirty tree, or resets the tree after it fails.
+- **`forge slot run` and read-only commands no longer edit `.git/config`.**
+  Every forge command pointed the generated-file merge driver at itself
+  (`.git/config`, `info/attributes`) and activated forge's hooks
+  (`core.hooksPath`) as a side effect, so `forge slot run`, `env status`,
+  `env render` and `env deploy --dry-run` rewrote the config every linked
+  worktree shares. Only commands that write generated or state files do it
+  now (`generate` without `--check`/`--plan`, `scaffold`, `project disown`,
+  `project delete service`, `package new`). And two copies of the pinned forge
+  at different paths (each worktree's tool-cache install, a `go install`ed one)
+  no longer take the driver from each other on every run: the copy already
+  registered keeps it while it exists.
+- **`forge env deploy <env> <version> --frontends-only` no longer renders or
+  compares the env's bundle.** It applies no bundle object, yet it rendered
+  the whole env and refused when a newer checkout's workloads differed from
+  the release's bundle of record — so a release's frontend could not ship
+  after its backend had (control-plane prod, 2026-10-19). It now records no
+  bundle and computes no k8s plan; its promotion is still confirmed and
+  scoped, and the frontend still builds from the release's recorded sources.
+  A `--target` naming only frontends shipped to Firebase or a bucket is
+  treated the same; any target that renders cluster objects keeps the check.
+- **A release's bundle reproduces from its own commit and forge.** A
+  hand-composed `forge.image_ref_for(<repo>, image_tag)` rendered
+  `<repo>:<release>@<digest>` at the cut, whose build state held a digest
+  under `<repo>:<release>`, and `<repo>@<digest>` on any later redeploy,
+  whose build state did not — so the versioned deploy refused its own
+  release's bundle. A named release now pins its images under the release
+  tag from the release alone (`releaseVersionTag`, the one rule the build's
+  push tag, the render's `image_tag` and the pins share).
+- **A Firebase or bucket frontend that fails before its upload reports
+  nothing shipped.** A failed `npm run build` (or assemble, source-map
+  filing, asset retention, config write) was reported as
+  `PARTLY … failed part-way; some of it may be live`, although the host was
+  never written. Those failures now carry `cluster.ErrNothingApplied`, which
+  the deploy's ship log reads, unless an earlier frontend of the same group
+  already shipped.
 - **`lifecyclekit.Supervise` no longer reports a node as stuck because an
   earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
   after its cancel once the budget was gone, so every node behind a slow one

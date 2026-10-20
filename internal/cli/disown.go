@@ -34,6 +34,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 )
 
@@ -80,7 +81,8 @@ Example:
 	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/disowned.json")
 
-	return cmd
+	// Writes .forge/disowned.json, one of the state files the merge driver merges.
+	return cmdutil.ConfiguresClone(cmd)
 }
 
 // isVendoredProtoPath reports whether path is one of the files forge

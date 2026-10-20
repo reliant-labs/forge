@@ -37,9 +37,11 @@ package cli
 //     into the render itself.
 //
 // Wiring is per clone, like core.hooksPath, and needs nothing committed:
-//   - every forge command run in the project (re)writes the driver's command
-//     into .git/config and the attributes that route forge's files to it into
-//     the clone's info/attributes (ensureGeneratedMergeDriver). A project
+//   - every forge command that writes generated or state files (generate,
+//     scaffold, disown, …: cmdutil.ConfiguresClone) (re)writes the driver's
+//     command into .git/config and the attributes that route forge's files to
+//     it into the clone's info/attributes (ensureGeneratedMergeDriver), and
+//     only when they differ. Read-only and slot commands never write there. A project
 //     adopted in place, which never got forge's .gitattributes, merges
 //     through the driver all the same. FORGE_NO_MERGE_DRIVER=1 opts out of
 //     the driver; FORGE_NO_GIT_HOOKS=1 (or FORGE_NO_HOOKS) is about hooks
@@ -400,9 +402,21 @@ func ensureGeneratedMergeDriver(root string) {
 	// what repairs a driver a pin bump left behind. Only the pinned forge
 	// copies a `go run` build of itself somewhere durable.
 	_, _, skewed := mergeDriverPinCheck(root)
-	command, ok := mergeDriverCommand(!skewed)
-	if ok && !skewed {
-		registerPinnedDriver(root, command)
+	var command string
+	var ok bool
+	if registered, have := pinnedDriverCommand(root, mergeDriverIdentity()); have && !skewed {
+		// A binary of this same pinned identity already registered itself
+		// and is still on disk: it IS the pinned forge, so keep it. Without
+		// this, every copy of the pin at a different path — each worktree's
+		// tool-cache install, a `go install`ed one, a durable `go run` copy
+		// — rewrote .git/config to name itself, and two of them alternating
+		// rewrote it on every run.
+		command, ok = registered, true
+	} else {
+		command, ok = mergeDriverCommand(!skewed)
+		if ok && !skewed {
+			registerPinnedDriver(root, command)
+		}
 	}
 	if ok && current != command && (!driverCommandUsable(current) || !skewed) {
 		_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",

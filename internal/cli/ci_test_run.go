@@ -93,7 +93,7 @@ func newCIVerifyTestRunCmd() *cobra.Command {
 				return err
 			}
 
-			in, closeIn, err := openTestRunInput(cmd, from)
+			in, closeIn, err := openTestRunInput(cmd, "forge ci verify-test-run", from)
 			if err != nil {
 				return err
 			}
@@ -259,11 +259,11 @@ func resolveTestSkipPolicy(cmd *cobra.Command, maxRatio float64, minTests int) (
 // The TTY guard matters more than it looks: with no --from and no pipe, the
 // command would block on an interactive terminal forever, which reads as a
 // hang rather than as a mistake. Naming the mistake costs one stat call.
-func openTestRunInput(cmd *cobra.Command, from string) (io.Reader, func(), error) {
+func openTestRunInput(cmd *cobra.Command, name, from string) (io.Reader, func(), error) {
 	if from != "" {
 		f, err := os.Open(from)
 		if err != nil {
-			return nil, func() {}, cliutil.WrapUserErr("forge ci verify-test-run",
+			return nil, func() {}, cliutil.WrapUserErr(name,
 				"could not open "+from, from,
 				"check the path — it should hold the output of `go test -json ...`", err)
 		}
@@ -277,10 +277,10 @@ func openTestRunInput(cmd *cobra.Command, from string) (io.Reader, func(), error
 		return in, func() {}, nil
 	}
 	if stat, err := os.Stdin.Stat(); err == nil && stat.Mode()&os.ModeCharDevice != 0 {
-		return nil, func() {}, cliutil.UserErr("forge ci verify-test-run",
-			"nothing is piped in, so there is no test run to verify",
+		return nil, func() {}, cliutil.UserErr(name,
+			"nothing is piped in, so there is no test run to read",
 			"",
-			"pipe a stream (`go test -json ./... | forge ci verify-test-run`) or point at a saved one (`--from test.json`)")
+			"pipe a stream (`go test -json ./... | "+name+"`) or point at a saved one (`--from test.json`)")
 	}
 	return in, func() {}, nil
 }

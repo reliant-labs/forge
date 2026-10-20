@@ -94,6 +94,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 	"github.com/reliant-labs/forge/internal/projectstore"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // Severity values used in the JSON report. These now match the canonical
@@ -1077,6 +1078,10 @@ func collectContractLintJSON(ctx context.Context, paths []string, excludes []str
 func collectBufLintJSON(ctx context.Context) ([]lintJSONFinding, bool) {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
 		return nil, false
+	}
+	if _, err := exec.LookPath("buf"); err != nil {
+		return []lintJSONFinding{{Severity: lintSevError, Rule: "buf", Message: bufMissingError().Error(),
+			FixHint: "run `forge tools install buf`, or install buf " + templates.BufVersion + " onto PATH"}}, true
 	}
 	cmd := exec.CommandContext(ctx, "buf", "lint")
 	var buf strings.Builder

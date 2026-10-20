@@ -39,6 +39,10 @@ var emittedAppLayerFiles = map[string]string{
 	"internal/app/auth.go":                "project/app-auth.go.tmpl",
 	"internal/app/login_broker.go":        "project/app-login-broker.go.tmpl",
 	"internal/app/inject_gen.go":          "", // internal/codegen/inject_gen.go, no template
+	// The composition graph (graph mode): providers.go and compose.go are
+	// the graph-mode renders of the same owned files.
+	"internal/app/graph_gen.go":  "project/graph_gen.go.tmpl",
+	"internal/app/routes_gen.go": "project/routes_gen.go.tmpl",
 	// The per-component harness is no longer an app-layer file: it lives at
 	// internal/handlers/<svc>/helpers_gen_test.go (a _test.go file, so
 	// package `testing` stays out of the production binary).

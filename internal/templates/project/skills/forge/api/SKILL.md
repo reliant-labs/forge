@@ -22,7 +22,7 @@ RPCs are defined in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions tr
 - **`optional` filter fields** on List requests → query filters auto-generated (`search`/`query`/`q` → ILIKE across text columns; any other filter must name a real column or `forge generate` fails loudly). Filter fields must be `optional` in proto, else codegen can't distinguish "not set" from zero.
 - **`auth_required` annotation** → enforced fail-closed by the auth interceptor: unset or `true` rejects a caller without a valid token, and `false` publishes that one rpc (`pkg/middleware/procedures_gen.go`; also shown by `forge project map`/`graph`). It decides only whether a caller is signed in; what a caller may then do is handler logic you write against `middleware.GetUser(ctx)`. See `auth`.
 
-**Hand-written methods always take priority** — the generator skips any method you've implemented. After any proto change run `forge generate`; never hand-edit `gen/` or `*_gen.go`. Cross-cutting concerns (auth, logging, recovery, request IDs) live in the interceptor chain (`observe.Chain`), not in handlers.
+**Hand-written methods always take priority** — the generator skips any method you've implemented. After any proto change run `forge generate`; never hand-edit `gen/` or `*_gen.go`. Cross-cutting concerns (auth, logging, recovery, request IDs) live in the interceptor chain (`serverkit.NewChain`), not in handlers.
 
 ## The canonical handler
 

@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -545,6 +546,8 @@ func smokeConverge(t *testing.T, env *smokeEnv) {
 	wantRole(t, opsClaims, out.RolesClaim, "admin")
 	if rep7, err := withCodes.Reconcile(ctx, smokeSpec()); err != nil || len(rep7.SignInCodes) != 0 {
 		t.Fatalf("a member who set a password must not be issued another code: err=%v codes=%v", err, rep7.SignInCodes)
+	} else if !slices.Contains(rep7.Credentialed, "ops@acme.test") {
+		t.Fatalf("a member who set a password is not reported credentialed: %v", rep7.Credentialed)
 	}
 
 	// 6. rotate the broker credential with an overlap window.

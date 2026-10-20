@@ -342,6 +342,11 @@ type InjectGenData struct {
 	// to read that package's composition markers (composeStaleConstructions).
 	// Empty disables both reads.
 	ProjectDir string
+	// Graph is set when the composition graph (GenerateGraph) owns
+	// compose.go: a construction there is a new<X> method, not a Components
+	// field, so composeStaleConstructions names that remedy instead.
+	// Template-invisible.
+	Graph bool
 }
 
 // GenerateCompose emits internal/app/compose.go: the EXPLICIT per-binary
@@ -1084,18 +1089,33 @@ func composeStaleConstructions(existing string, data InjectGenData) []string {
 			return true
 		}
 		rel := strings.TrimPrefix(path, data.Module+"/")
-		switch composition, _ := internalPackageComposition(dir); composition {
-		case CompositionExternal:
-			warnings = append(warnings, fmt.Sprintf(
-				"internal/app/compose.go still constructs %s, which is now //forge:external-component — delete its import, Components field and construction, and put the instance on Infra", rel))
-		case CompositionNotAComponent:
-			warnings = append(warnings, fmt.Sprintf(
-				"internal/app/compose.go still constructs %s, which is now //forge:not-a-component — delete its import, Components field and construction: the server does not have it", rel))
+		composition, _ := internalPackageComposition(dir)
+		if remedy := staleConstructionRemedy(composition, data.Graph); remedy != "" {
+			warnings = append(warnings, fmt.Sprintf("internal/app/compose.go still constructs %s, which is now %s", rel, remedy))
 		}
 		return true
 	})
 	sort.Strings(warnings)
 	return warnings
+}
+
+// staleConstructionRemedy is the marker a package's composition names and
+// what to do about the construction compose.go still holds — "" when the
+// composition does not take the package out of the server. graph selects the
+// composition graph's wording, where a construction is a new<X> method and
+// an instance the server has but does not build comes from a provider func.
+func staleConstructionRemedy(composition string, graph bool) string {
+	switch {
+	case composition == CompositionExternal && graph:
+		return "//forge:external-component — delete its new<X> method and import, and supply the instance from a New<X>(<X>Deps) provider func in internal/app/providers.go"
+	case composition == CompositionExternal:
+		return "//forge:external-component — delete its import, Components field and construction, and put the instance on Infra"
+	case composition == CompositionNotAComponent && graph:
+		return "//forge:not-a-component — delete its new<X> method and import: the server does not have it"
+	case composition == CompositionNotAComponent:
+		return "//forge:not-a-component — delete its import, Components field and construction: the server does not have it"
+	}
+	return ""
 }
 
 // widenDepsElementCut widens one Deps-literal element's byte range so removing
@@ -2099,6 +2119,9 @@ type InjectGenInput struct {
 	Packages  []BootstrapPackageData
 	Workers   []BootstrapWorkerData
 	Operators []BootstrapOperatorData
+	// Graph assembles the components for the composition graph, whose
+	// generated files name identifiers of their own.
+	Graph bool
 	// Warnings receives GenerateCompose's advisory lines — a construction
 	// compose.go keeps that the project no longer composes. Nil means
 	// os.Stderr.
@@ -2170,6 +2193,11 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	taken := appPackageNames(in.ProjectDir)
 	for name := range appTemplateIdentifiers() {
 		taken[name] = true
+	}
+	if in.Graph {
+		for name := range graphTemplateIdentifiers() {
+			taken[name] = true
+		}
 	}
 
 	var comps []BuildComponent

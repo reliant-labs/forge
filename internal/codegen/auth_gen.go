@@ -13,6 +13,10 @@ import (
 // scaffold (app-auth.go.tmpl).
 type AuthSetupTemplateData struct {
 	Module string
+	// Graph renders the composition-graph form: APIKeyValidator takes the
+	// serving pool (*DB), not the legacy *Infra.
+	Graph       bool
+	HasDatabase bool
 }
 
 // GenerateAuthSetup scaffolds internal/app/auth.go ONCE — the OWNED,
@@ -27,6 +31,12 @@ type AuthSetupTemplateData struct {
 // user owns the bytes. The generated cmd serve wiring calls app.SetupAuth
 // and threads the returned validator into the auth interceptor.
 func GenerateAuthSetup(modulePath, projectDir string) error {
+	return GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath})
+}
+
+// GenerateAuthSetupData is GenerateAuthSetup with the whole template input:
+// a project in graph mode passes Graph and HasDatabase.
+func GenerateAuthSetupData(projectDir string, data AuthSetupTemplateData) error {
 	appDir := filepath.Join(projectDir, "internal", "app")
 	path := filepath.Join(appDir, "auth.go")
 	rel := filepath.Join("internal", "app", "auth.go")
@@ -40,7 +50,7 @@ func GenerateAuthSetup(modulePath, projectDir string) error {
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return fmt.Errorf("create internal/app dir: %w", err)
 	}
-	content, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", AuthSetupTemplateData{Module: modulePath})
+	content, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render app-auth.go.tmpl: %w", err)
 	}

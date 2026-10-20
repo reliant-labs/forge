@@ -97,8 +97,11 @@ type CmdCtorRef struct {
 // from the project-level scaffold data — which is why GenerateCmdGroups owns it
 // and the upgrade managed-file list does not.
 type CmdMainTemplateData struct {
-	Module    string
-	Bin       string
+	Module string
+	Bin    string
+	// Graph renders the composition-graph composition root: no command
+	// groups, `server` runs the server root.
+	Graph     bool
 	Services  []CmdCtorRef
 	Workers   []CmdCtorRef
 	Operators []CmdCtorRef
@@ -216,6 +219,16 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 
 	groupDir := func(group string) string {
 		return filepath.Join("cmd", in.Bin, "cmd", group)
+	}
+
+	// The composition graph retires the per-service, per-worker and
+	// per-operator subcommands (design §9.5): a process is a ROOT, and
+	// `server` runs the default one. main.go is the bare composition root.
+	if GraphComposition(targetDir) {
+		if err := generateCmdMain(targetDir, modulePath, in.Bin, nil); err != nil {
+			return err
+		}
+		return SyncLegacyRootGen(targetDir, modulePath, in.Bin, cs)
 	}
 
 	// Derive the collision-aware MOUNT method name for each service from the
@@ -400,7 +413,7 @@ func GenerateCmdMainRoot(targetDir, bin string, cs *checksums.FileChecksums) err
 // component set yields a bare `cmd.Execute()`). Written write-if-absent: forge
 // emits it once, then never overwrites the owned file.
 func generateCmdMain(targetDir, modulePath, bin string, svcItems []CmdGroupItem) error {
-	data := CmdMainTemplateData{Module: modulePath, Bin: bin}
+	data := CmdMainTemplateData{Module: modulePath, Bin: bin, Graph: GraphComposition(targetDir)}
 	for _, item := range svcItems {
 		data.Services = append(data.Services, CmdCtorRef{Ctor: "New" + item.FieldName + "Cmd"})
 	}

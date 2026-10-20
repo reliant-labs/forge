@@ -100,16 +100,20 @@ func TestPromote_ScopedDeployIsRefusedWhereTheControlPlaneWouldWidenIt(t *testin
 
 func TestDeployScopeTargets(t *testing.T) {
 	ctx := context.Background()
-	got, err := deployScopeTargets(ctx, t.TempDir(), "prod", []string{"web", "api", "web"}, false)
-	if err != nil || !reflect.DeepEqual(got, []string{"api", "web"}) {
-		t.Fatalf("--target scope = %v, %v", got, err)
-	}
-	if got, _ := deployScopeTargets(ctx, t.TempDir(), "prod", nil, false); got != nil {
-		t.Fatalf("an unscoped deploy records no targets, got %v", got)
-	}
-
 	prev := renderEntitiesForScope
 	t.Cleanup(func() { renderEntitiesForScope = prev })
+	// A --target scope is recorded whether or not the declaration renders.
+	renderEntitiesForScope = func(context.Context, string, string) (*KCLEntities, error) {
+		return nil, errors.New("no declaration here")
+	}
+	got, err := resolveDeployScope(ctx, t.TempDir(), "prod", []string{"web", "api", "web"}, false)
+	if err != nil || !reflect.DeepEqual(got.Targets, []string{"api", "web"}) {
+		t.Fatalf("--target scope = %v, %v", got.Targets, err)
+	}
+	if got, _ := resolveDeployScope(ctx, t.TempDir(), "prod", nil, false); got.Targets != nil || !got.AppliesBundle {
+		t.Fatalf("an unscoped deploy records no targets and applies the bundle, got %+v", got)
+	}
+
 	renderEntitiesForScope = func(context.Context, string, string) (*KCLEntities, error) {
 		return &KCLEntities{Frontends: []FrontendEntity{
 			{Name: "site", Runtime: FrontendRuntime{Type: FrontendRuntimeFirebase}},
@@ -117,12 +121,12 @@ func TestDeployScopeTargets(t *testing.T) {
 			{Name: "storybook", Runtime: FrontendRuntime{Type: FrontendRuntimeBuildOnly}},
 		}}, nil
 	}
-	got, err = deployScopeTargets(ctx, t.TempDir(), "prod", nil, true)
-	if err != nil || !reflect.DeepEqual(got, []string{"admin-web", "site"}) {
-		t.Fatalf("--frontends-only scope = %v, %v; want the shippable frontends by name", got, err)
+	got, err = resolveDeployScope(ctx, t.TempDir(), "prod", nil, true)
+	if err != nil || !reflect.DeepEqual(got.Targets, []string{"admin-web", "site"}) {
+		t.Fatalf("--frontends-only scope = %v, %v; want the shippable frontends by name", got.Targets, err)
 	}
 	renderEntitiesForScope = func(context.Context, string, string) (*KCLEntities, error) { return &KCLEntities{}, nil }
-	if _, err := deployScopeTargets(ctx, t.TempDir(), "prod", nil, true); err == nil {
+	if _, err := resolveDeployScope(ctx, t.TempDir(), "prod", nil, true); err == nil {
 		t.Fatal("--frontends-only with no shippable frontend must be refused")
 	}
 }

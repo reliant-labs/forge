@@ -35,12 +35,13 @@ internal/                     # the application: components, DI, data access
   <name>/                     #   standalone domain package: contract.go (yours) + mock_gen.go
   workers/<name>/             #   workers (NOT top-level): worker.go + worker_test.go
   operators/<name>/           #   operators (NOT top-level): controller + types
-  app/                        #   the LIVE dependency-injection composition root:
-    providers.go              #     yours: Infra + OpenInfra(ctx, cfg, logger) — the owned provider set
+  app/                        #   the composition graph — the LIVE composition root:
+    providers.go              #     yours: provider funcs New<X>(<X>Deps) (T, error) — DB, ORM, auth, chain, listener, …
     auth.go                   #     yours: SetupAuth() over forge/pkg/auth
-    compose.go                #     yours: Components + NewComponents(infra) — reconciled: component set + Deps keys only
-    mounts_services_gen.go    #     generated: typed Mount<Svc> methods + the data-only Inventory
-    lifecycle.go              #     yours: start/stop supervision — reconciled: Worker<X>()/Operator<X>() accessors appended
+    compose.go                #     yours: one constructor method per node — reconciled: missing methods + Deps keys only
+    roots.go                  #     yours (optional): //forge:root structs — what a process builds
+    graph_gen.go              #     generated: memoized accessors g.<X>(), Build<Root>/Run<Root>, the default Server root
+    routes_gen.go             #     generated: <Audience>Routes route sets, MountOptions, the data-only Inventory
   db/                         #   <entity>_orm.go (generated from schema) + <entity>_repo_ext.go (yours)
 pkg/app/                      # substrate: testing.go (per-component test harness) + migrate.go
 pkg/config/                   # typed config projected from proto/config/v1/config.proto
@@ -64,7 +65,7 @@ Config ownership follows the PROCESS: one project-global `AppConfig` by default,
 |---|---|
 | `gen/` — Go stubs, TS clients, mocks | `internal/handlers/<svc>/service.go`, `rpc_<name>.go` — business logic |
 | `internal/handlers/<svc>/handlers_crud_ops_gen.go` | `internal/handlers/<svc>/handlers_crud.go` — CRUD delegations (access-control WHERE) |
-| `internal/app/mounts_services_gen.go` (disown to hand-own) | `internal/app/providers.go`, `auth.go` — the `Infra`/`OpenInfra`/`SetupAuth` seams; `compose.go` + `lifecycle.go` — yours, with only the component set / Deps keys / accessors reconciled |
+| `internal/app/graph_gen.go`, `routes_gen.go` (disown to hand-own) | `internal/app/providers.go`, `auth.go`, `roots.go` — providers, `SetupAuth`, roots; `compose.go` — yours, with only missing methods / Deps keys reconciled |
 | `internal/db/<entity>_orm.go` — entity struct + ORM (from schema) | `db/migrations/` — schema truth; `internal/db/<entity>_repo_ext.go` — custom queries |
 | `pkg/config/`, `pkg/app/testing.go`, frontend `*-hooks.ts`, `gen/forge_descriptor.json` | `pkg/middleware/` — policy; `cmd/<binary>.go` — owned subcommands |
 
@@ -100,28 +101,27 @@ generate:
 
 `forge generate` is always safe — it only touches infrastructure, never your handlers, migrations, or business logic. In the DB layer it rewrites only `internal/db/<entity>_orm.go`. Observability is applied by `forge/pkg/observe` interceptors on the serve path, not per-package `_gen.go` wrappers — see `observability`.
 
-## The composition root (`internal/app/providers.go` + `internal/app/compose.go`)
+## The composition graph (`internal/app`)
 
-Wiring is **explicit, typed Go** — no registration file, no god-hook, no string-keyed lookup. The owned `providers.go` declares an `Infra` set + `OpenInfra` (pools, clients, adapters, interface bindings). The owned `compose.go` declares `NewComponents`, which builds the closure in type-topological order and hands each component its `Deps` as **interface-typed fields, resolved by type**:
+Every part of a process is a **component built from its Deps** — a handler, a package, a worker, an operator, and the things the owned `providers.go` declares: a DB pool, a client, an authenticator, an interceptor chain, a listener. A provider is any `func New<X>(<X>Deps) (T, error)` in `internal/app`; instance identity is the Go type (`type DaemonListener struct{ *serverkit.Listener }`), so **every Deps field resolves by type**, at generate time, never by name. The owned `compose.go` holds one constructor method per node, and its value expressions are the graph's edges:
 
 ```go
-// internal/app/compose.go (yours; only the component set + Deps keys are reconciled)
-func NewComponents(infra *Infra) (*Components, error) {
-    c := &Components{}
-    c.Users = user.New(user.Deps{DB: infra.DB})
-    c.Bill  = billing.New(billing.Deps{
-        Users: c.Users,          // interface seam, resolved BY TYPE
-        Cfg:   infra.Cfg.Billing, // typed config, never a naked scalar Dep
+// internal/app/compose.go (yours; generate adds missing methods and Deps keys, never touches a value)
+func (g *Graph) newBilling() (*billing.Service, error) {
+    return billing.New(billing.Deps{
+        Users:  g.Users(),          // another node, resolved BY TYPE
+        Store:  g.LedgerRepo(),     // a provider func's value
+        Config: g.Cfg,              // a graph input
     })
-    return c, nil
 }
 ```
 
-- **The `Deps` interface is the seam.** A component depends on each dep's *interface* — the field is `Users user.Service`, never the concrete type — so it can't tell the real in-process service from a Connect client or a mock. Splitting a service out later is a one-line swap here (`Users: userclient.New(conn)`), consumer untouched.
-- **Resolution is compile-time, by type — never by name.** If `infra.Repo` doesn't satisfy `things.Repository`, it doesn't compile — no name-match layer to silently drop a narrow-interface mismatch as a nil field. Runtime typed containers (reflection/generics) are rejected for exactly this reason.
-- **Two-phase wiring is first-class.** Post-construction setters and near-diamonds are plain method calls after both ends exist — write them straight into `NewComponents`, which is yours; reconciliation keeps them.
+- **Accessors are memoized** (`graph_gen.go`): `g.Users()` constructs once. A **root** — a `//forge:root <name>` struct in `internal/app` — selects what a process builds: `Build<Root>` forces only the closure its fields reach, then seals the graph; `Run<Root>` supervises it (start in construction order, drain and close in reverse; field order is the stop order among siblings). With no declared root, forge generates `Server`: every runnable node nothing depends on — the API listener, the workers, the operators — which is what `<bin> server` runs.
+- **The `Deps` interface is the seam.** A component depends on each dep's *interface*, so it cannot tell the in-process node from a Connect client or a mock. Splitting a service out later is a one-line change of the value expression.
+- **Shape errors fail generate, named.** A required field nothing produces, a field two nodes could fill (ambiguous — write the key yourself in compose.go and forge keeps your choice), and a dependency cycle (break it with a `func() T` field: forge wires the accessor's method value, a lazy edge) each stop the generate with the node, field and type.
+- **Route sets are per audience** (`routes_gen.go`): `UserRoutes` mounts every service whose proto declares the user audience (the default), `DaemonRoutes` every `audience: "daemon"` one; per-service mount options go in `compose.go` as `Options: MountOptions{…}`.
 
-The cmd serve path calls `app.OpenInfra(...)` → `app.NewComponents(infra)`, mounts each service through the typed `Mount<Svc>` methods, and calls `serverkit.Run`. The `Inventory` beside them is data-only, for `forge project map`/`audit` — names are display-only, never a construction key.
+A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: move each `OpenInfra` field into a provider func, delete `compose.go`, `lifecycle.go` and the `Infra` struct, and re-run `forge generate`.
 
 ## Files NOT to Edit
 
@@ -162,8 +162,8 @@ This skill is the map. For depth, load: **proto** (annotations, CRUD naming, fie
 
 - Never hand-edit anything under `gen/` or any `*_gen.go`. Fix the proto or contract, then regenerate.
 - The app lives under `internal/`, by role; `pkg/` is generated substrate (config, middleware, test harness); top-level is otherwise `cmd/` + `api/`.
-- Wiring is the explicit composition (`NewComponents`) off the owned `providers.go` `Infra`/`OpenInfra` — `Deps` are interfaces resolved by type, never by name.
-- `forge generate` never touches `providers.go`/`auth.go`/`cmd/<binary>.go`, and in `compose.go`/`lifecycle.go` it reconciles only the projection — the component set, the Deps literal's keys, the worker/operator accessors — never your value expressions (`forge project disown` to stop even that).
+- Wiring is the composition graph: provider funcs in `providers.go`, one constructor per node in `compose.go`, roots that select a process's subgraph — `Deps` resolve by type, never by name.
+- `forge generate` never touches `providers.go`/`auth.go`/`roots.go`/`cmd/<binary>.go`, and in `compose.go` it reconciles only the projection — missing constructor methods and Deps keys — never your value expressions (`forge project disown` to stop even that).
 - One service per proto package; one `internal/handlers/<svc>/` per service. Field numbers are forever — mark removed fields `reserved`.
 - DB schema evolves via migrations, not proto; wire messages evolve independently and conversions map the intersection by name. An entity needs both halves.
 

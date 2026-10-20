@@ -34,7 +34,7 @@ Go heap pprof has four useful types:
 
 Because the allocation counters are cumulative, every snapshot repeats every
 allocation site the process has ever had, so a snapshot's size grows with
-uptime. Measured in a production tenant (ClickHouse, 2026-10-20, 48h window,
+uptime. Measured in a production ClickHouse (2026-10-20, 48h window,
 254.6 M raw rows, the previous default of every heap type every minute):
 
 | Sample type                     | Share of rows | Share of uncompressed bytes (6h) |

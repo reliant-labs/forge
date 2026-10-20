@@ -32,7 +32,7 @@ An explicit value wins either way: `signals = forge.ObservabilitySignals {profil
 | `mutex` | `contentions`, `delay` | off | every cycle; sets `runtime.SetMutexProfileFraction(10)` while on |
 | `block` | `contentions`, `delay` | off | every cycle; sets `runtime.SetBlockProfileRate(10000)` while on |
 
-Why allocation counters are off: Go's `alloc_*` values are cumulative since process start, so every snapshot repeats every allocation site the process ever had and grows with uptime. In one production tenant they were 97.7% of stored profile rows, and one service's alloc profile grew from 11k to 39k rows per snapshot over 8 hours of uptime. When you opt in they are exported cumulative, never as deltas (`pkg/observe/PROFILES.md` says why).
+Why allocation counters are off: Go's `alloc_*` values are cumulative since process start, so every snapshot repeats every allocation site the process ever had and grows with uptime. In one production deployment they were 97.7% of stored profile rows, and one service's alloc profile grew from 11k to 39k rows per snapshot over 8 hours of uptime. When you opt in they are exported cumulative, never as deltas (`pkg/observe/PROFILES.md` says why).
 
 Turn a type on, or the heap cadence up, for one workload in KCL, and turn it back off when you are done:
 

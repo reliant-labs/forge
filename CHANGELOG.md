@@ -498,9 +498,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   heap every 15 minutes and exports only `inuse_space` / `inuse_objects`. Go's
   `alloc_space` / `alloc_objects` are cumulative since process start, so each
   snapshot repeated every allocation site the process ever had and grew with
-  uptime: in a production tenant they were 97.7% of stored profile rows (99.2%
+  uptime: in a production deployment they were 97.7% of stored profile rows (99.2%
   of bytes), and one service's grew from 11k to 39k rows per snapshot over 8
-  hours. The new defaults keep about 0.3% of that tenant's rows (PROFILES.md
+  hours. The new defaults keep about 0.3% of that deployment's rows (PROFILES.md
   has the measurements). Choose the set with `observe.Config.Profiles`
   (`ProfilesConfig{Types, HeapInterval}`), or per deploy with `FORGE_PROFILES`
   (`cpu,heap,alloc,goroutine,mutex,block`, or `none`) and

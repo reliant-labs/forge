@@ -73,7 +73,7 @@ report() {
     echo "| seconds | package | test |"
     echo "| ---: | --- | --- |"
     jq -r "$top | select(.Action != \"skip\") | [.Elapsed, (.Package | sub(\"^github.com/reliant-labs/forge/\"; \"\")), .Test] | @tsv" "$f" |
-      sort -rn | head -n 15 | awk -F'\t' '{printf "| %.2f | %s | `%s` |\n", $1, $2, $3}'
+      sort -rn | awk -F'\t' 'NR <= 15 {printf "| %.2f | %s | `%s` |\n", $1, $2, $3}'
     echo
     echo "</details>"
     echo

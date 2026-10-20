@@ -86,6 +86,9 @@ type ConfigTemplateBlockField struct {
 
 // ConfigTemplateData is the top-level data passed to the config.go template.
 type ConfigTemplateData struct {
+	// Graph is a composition-graph project: the loader gains LoadReach, the
+	// load each root's process runs (cmd/<bin>/cmd/roots_gen.go).
+	Graph bool
 	// Fields is every leaf field — root fields plus component config-block
 	// leaves — in declaration order, with GoPath set. Drives RegisterFlags
 	// and Load so block leaves get the exact same env/flag/default
@@ -980,6 +983,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	}
 	data.Module = modulePath
 	data.ProjectConfigPathEnv = forgeconfig.ConfigPathEnvFor(projectConfigName(targetDir, modulePath))
+	data.Graph = GraphComposition(targetDir)
 
 	if err := validateConfigPathEnvs(data); err != nil {
 		return err

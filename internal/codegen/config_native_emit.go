@@ -85,11 +85,21 @@ func devDatabaseDSN(projectName string) string {
 // the absolute deploy/kcl directory; cs is the checksum ledger. When cs is nil
 // or the path can't be made relative, the files are still written (untracked).
 func GenerateConfigNativeShared(fields []ConfigField, projectName, projectDir, kclDirAbs string, cs *checksums.FileChecksums) error {
+	return GenerateConfigNativeSharedRoots(fields, nil, projectName, projectDir, kclDirAbs, cs)
+}
+
+// GenerateConfigNativeSharedRoots is GenerateConfigNativeShared for a
+// composition-graph project: the module also carries ROOTS and the lambdas
+// that bind a workload to a root (RootsKCL). nil roots is the plain module.
+func GenerateConfigNativeSharedRoots(fields []ConfigField, roots []GraphRoot, projectName, projectDir, kclDirAbs string, cs *checksums.FileChecksums) error {
 	body, err := GenerateConfigKCL(fields, projectName)
 	if err != nil {
 		return fmt.Errorf("generate config module: %w", err)
 	}
-	return writeConfigNativeShared(body, projectDir, kclDirAbs, cs)
+	if roots == nil && GraphComposition(projectDir) {
+		roots = []GraphRoot{DefaultServerRoot(fields)}
+	}
+	return writeConfigNativeShared(body+RootsKCL(roots), projectDir, kclDirAbs, cs)
 }
 
 // GenerateConfigNativeSharedPerBinary is the per-binary form of

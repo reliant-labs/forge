@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/naming"
@@ -360,12 +358,23 @@ func dbBaseGoType(col EntityColumn) string {
 	return canonicalGoTypeMust(col.Type, col.IsArray)
 }
 
-// dbNullable reports whether the column maps to a pointer struct field.
+// dbNullable reports whether the column maps to a pointer struct field: a
+// nullable column, or a NOT NULL one whose DEFAULT a nil leaves to the
+// database (ColumnInsertDefault).
 func dbNullable(col EntityColumn) bool {
 	if col.IsArray || col.Type == "bytes" {
 		return false
 	}
-	return !col.NotNull && !col.IsPK
+	return (!col.NotNull && !col.IsPK) || columnInsertDefault(col) == InsertDefaultPointer
+}
+
+// columnInsertDefault is ColumnInsertDefault for an EntityColumn.
+func columnInsertDefault(col EntityColumn) InsertDefault {
+	return ColumnInsertDefault(InsertDefaultColumn{
+		Canonical: col.Type, IsArray: col.IsArray, NotNull: col.NotNull, IsPK: col.IsPK,
+		Generated: col.IsGenerated, Version: col.Version, Default: col.Default,
+		ZeroRejected: col.ZeroRejected,
+	})
 }
 
 // jsonVarName spells the local the write path binds the marshalled
@@ -670,18 +679,19 @@ func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, stri
 // birth wrote beside the CHECK could never fire. The schema declared what
 // an unsaid value means and the app made the declaration unreachable.
 //
-// So the zero routes to whatever the schema says unset means:
+// So the zero leaves the field unset, and the schema says what unset means:
 //
-//   - NOT NULL column with a literal DEFAULT → that DEFAULT, assigned
-//     visibly in code (the same choice, for the same reasons, that
-//     schemaDefaultAssigns makes for columns the request never carried —
-//     no `nullzero`/`default:` tag magic, because Bun cannot tell "unset"
-//     from "zero" and this code can).
-//   - nullable column → left alone, so it stores NULL, which is that
+//   - NOT NULL column with a DEFAULT that is not the zero → the entity
+//     field is left unset (ColumnInsertDefault: a nil pointer, or "" on the
+//     ,nullzero field a born enum column is, its CHECK refusing ""), so the
+//     INSERT omits the column and the DEFAULT fires — and a full-replace
+//     Update keeps the stored value rather than resetting it.
+//   - nullable column → left nil, so it stores NULL, which is that
 //     column's own spelling for unset.
-//   - NOT NULL column with NO literal default → unchanged. The schema
-//     declined to say what unset means, so forge invents nothing: the
-//     value goes as sent and the CHECK rejects the sentinel loudly.
+//   - NOT NULL column with NO default (or one equal to the zero) →
+//     unchanged. The schema declined to say what unset means, so forge
+//     invents nothing: the value goes as sent and the CHECK rejects the
+//     sentinel loudly.
 //
 // An `optional` wire field has presence, so it adds one more way to say
 // unset (absent) — both it and an explicit zero take the same route.
@@ -693,23 +703,20 @@ func enumSingularAssign(d, s string, optional, nullable bool, col EntityColumn) 
 	if nullable {
 		return fmt.Sprintf("if %s {\n\t\tv := %s.String()\n\t\t%s = &v\n\t}", set, s, d)
 	}
-	store := fmt.Sprintf("if %s {\n\t\t%s = %s.String()\n\t}", set, d, s)
-	lit, ok := pgDefaultGoLiteral(col)
-	if !ok { // no DEFAULT, or one no Go literal can spell
-		if optional {
-			return store
-		}
-		return fmt.Sprintf("%s = %s.String()", d, s)
+	// A born enum column (a DEFAULT, and a CHECK vocabulary without '') is
+	// a ,nullzero field: its "" is unset, so the INSERT omits it.
+	if optional || columnInsertDefault(col) == InsertDefaultNullZero {
+		return fmt.Sprintf("if %s {\n\t\t%s = %s.String()\n\t}", set, d, s)
 	}
-	return fmt.Sprintf("%s = %s // %s: an unset enum stores the column DEFAULT\n%s", d, lit, col.Name, store)
+	return fmt.Sprintf("%s = %s.String()", d, s)
 }
 
 // enumNumberAssign is enumSingularAssign for an INTEGER column, which stores
 // the wire number rather than the value name. The unset (zero) routing is the
-// same and for the same reasons: a NOT NULL column with a literal DEFAULT
-// takes the DEFAULT, a nullable column stores NULL, and a column that
-// declares neither gets the value as sent — with no CHECK vocabulary to
-// refuse the zero, it stores 0, which is what the schema allowed.
+// same and for the same reasons: a pointer column (a DEFAULT that is not the
+// zero, or nullable) is left nil, and a column that declares neither gets the
+// value as sent — with no CHECK vocabulary to refuse the zero, it stores 0,
+// which is what the schema allowed.
 func enumNumberAssign(d, s string, optional, nullable bool, col EntityColumn) string {
 	set, val := s+" != 0", "int64("+s+")"
 	if optional {
@@ -718,15 +725,10 @@ func enumNumberAssign(d, s string, optional, nullable bool, col EntityColumn) st
 	if nullable {
 		return fmt.Sprintf("if %s {\n\t\tv := %s\n\t\t%s = &v\n\t}", set, val, d)
 	}
-	store := fmt.Sprintf("if %s {\n\t\t%s = %s\n\t}", set, d, val)
-	lit, ok := pgDefaultGoLiteral(col)
-	if !ok {
-		if optional {
-			return store
-		}
-		return fmt.Sprintf("%s = %s", d, val)
+	if optional || columnInsertDefault(col) == InsertDefaultNullZero {
+		return fmt.Sprintf("if %s {\n\t\t%s = %s\n\t}", set, d, val)
 	}
-	return fmt.Sprintf("%s = %s // %s: an unset enum stores the column DEFAULT\n%s", d, lit, col.Name, store)
+	return fmt.Sprintf("%s = %s", d, val)
 }
 
 // enumFromNumberAssign is enumFromDBAssign for an INTEGER column: the stored
@@ -1069,8 +1071,10 @@ func elemType(sliceType string) string {
 // struct. Request fields are matched to columns by name; unmatched
 // fields are dropped with a comment so the generated code says why.
 // Columns the request does NOT carry — `// forge:read-only` fields, and
-// anything in the table the wire message never had — are then filled from
-// the schema's own DEFAULT (see schemaDefaultAssigns).
+// anything in the table the wire message never had — are left unset, and
+// a NOT NULL column's DEFAULT then applies: the entity field of one whose
+// DEFAULT is not its Go zero is nil (or the json/array zero) until set,
+// and the INSERT omits it (ColumnInsertDefault).
 func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, []UnmappedField) {
 	wireFields := requestWireFields(svc, m)
 	colByName := map[string]EntityColumn{}
@@ -1097,122 +1101,7 @@ func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, [
 		out = append(out, a)
 		assigned[wf.Name] = true
 	}
-	return append(out, schemaDefaultAssigns(entity, assigned)...), unmapped
-}
-
-// schemaDefaultAssigns fills the entity columns the create request does not
-// carry with the value the SCHEMA says they start at.
-//
-// A `// forge:read-only` column is, by construction, absent from the create
-// request — so the op left the Go field at its zero value and Bun wrote that
-// zero. For a column whose default is NOT the Go zero the row is then
-// invalid on arrival: an enum column born as
-//
-//	tone TEXT NOT NULL DEFAULT 'TONE_WARM' CHECK (tone IN (...))
-//
-// received the empty string and violated the CHECK forge derived from the
-// same proto. (Spelled out rather than as a doubled-apostrophe SQL literal:
-// gofmt normalizes a bare ” in a doc comment into a closing quote.)
-// Every create failed, out of the box, on a marker forge documents.
-//
-// This is also why the birth migration's enum DEFAULT matters and is not
-// cosmetic: whatever literal the schema declares is the literal pasted here.
-// scaffold.bornEnumDefault picks the first REAL enum member for exactly that
-// reason — a read-only column starting at the proto zero would start every
-// row in a state the domain does not have.
-//
-// The obvious-looking fix — `nullzero` / `default:` on the bun tag, letting
-// the DB default fire — is wrong, and plan_orm_gen.go already says why: Bun
-// treats a zero value as "unset" whenever the field carries a default, so a
-// hand-written `active BOOLEAN NOT NULL DEFAULT true` would silently store
-// true for an explicit false. The ORM cannot tell "unset" from "zero"; the
-// create op CAN, because it knows which columns the request never carried.
-// So the value is written here, visibly, in code you can read — no tag magic.
-//
-// Only plain literal defaults project. now() / gen_random_uuid() / nextval()
-// must be produced by the DB; forge has nothing to write for those, and says
-// so in a comment rather than inventing a value.
-func schemaDefaultAssigns(entity EntityDef, assigned map[string]bool) []string {
-	var out []string
-	for _, col := range entity.Columns {
-		if assigned[col.Name] || col.IsPK || col.IsGenerated || !col.NotNull {
-			continue
-		}
-		// Managed timestamps: pkg/crud stamps created_at/updated_at, and the
-		// ORM tag carries `default:` for the rest — a zero time.Time is
-		// already the DB's cue there.
-		if col.Type == "time" || strings.TrimSpace(col.Default) == "" {
-			continue
-		}
-		lit, ok := pgDefaultGoLiteral(col)
-		if !ok {
-			out = append(out, fmt.Sprintf("// %s: not set here — the column DEFAULT (%s) is the DB's to produce",
-				col.Name, strings.TrimSpace(col.Default)))
-			continue
-		}
-		if lit == goZeroLiteral(dbBaseGoType(col)) {
-			continue // Bun writes exactly this anyway
-		}
-		out = append(out, fmt.Sprintf("e.%s = %s // %s: column DEFAULT (not on the create request)",
-			naming.ColumnGoName(col.Name), lit, col.Name))
-	}
-	return out
-}
-
-// pgDefaultCastRE strips the trailing `::type` cast postgres renders on a
-// literal default (`'DRAFT'::text`, `'{}'::jsonb`, `'{}'::text[]`).
-var pgDefaultCastRE = regexp.MustCompile(`::[\w ]+(\[\])?$`)
-
-// pgDefaultGoLiteral renders a column's DEFAULT expression as a Go literal
-// of the column's struct type. ok=false for anything that is not a plain
-// literal, or whose literal does not fit the type.
-func pgDefaultGoLiteral(col EntityColumn) (string, bool) {
-	raw := strings.TrimSpace(pgDefaultCastRE.ReplaceAllString(strings.TrimSpace(col.Default), ""))
-	base := dbBaseGoType(col)
-
-	if len(raw) >= 2 && strings.HasPrefix(raw, "'") && strings.HasSuffix(raw, "'") {
-		s := strings.ReplaceAll(raw[1:len(raw)-1], "''", "'")
-		switch base {
-		case "string": // TEXT, and JSON/JSONB (which project to string)
-			return strconv.Quote(s), true
-		case "[]string", "[]int64":
-			if s == "{}" { // the only array literal worth mechanizing
-				return base + "{}", true
-			}
-		}
-		return "", false
-	}
-	switch base {
-	case "int64":
-		if _, err := strconv.ParseInt(raw, 10, 64); err == nil {
-			return raw, true
-		}
-	case "float64":
-		if _, err := strconv.ParseFloat(raw, 64); err == nil {
-			return raw, true
-		}
-	case "bool":
-		if raw == "true" || raw == "false" {
-			return raw, true
-		}
-	}
-	return "", false
-}
-
-// goZeroLiteral spells the zero value of a struct field type, as the
-// literals pgDefaultGoLiteral produces spell it.
-func goZeroLiteral(base string) string {
-	switch base {
-	case "string":
-		return `""`
-	case "int64":
-		return "0"
-	case "float64":
-		return "0"
-	case "bool":
-		return "false"
-	}
-	return "" // slices/bytes/time: no literal spelling collides with a zero
+	return out, unmapped
 }
 
 // requestWireFields extracts a request message's fields, preferring the

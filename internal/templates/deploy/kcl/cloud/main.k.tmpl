@@ -63,7 +63,7 @@ import .config as appcfg
 # OTEL_SERVICE_NAME is not set here: forge.render gives every workload its
 # own name unless its env sets one.
 _configured = lambda w: fw.Workload -> fw.Workload {
-    w | {env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env}
+    w | {env = {{if .Roots}}config_gen.workloadEnvMap(appcfg.app_config, w){{else}}config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets){{end}} | w.env}
 }
 
 # ---------------------------------------------------------------------------

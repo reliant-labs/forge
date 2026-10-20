@@ -406,6 +406,14 @@ schema Workload:
     # scaffold` does not declare a second workload for one. Nothing renders
     # from it: it never changes what deploys.
     serves?: [str]
+    # The composition-graph ROOT this forge-built workload's process runs: a
+    # //forge:root struct in internal/app, or the default `server`. Bind it
+    # with `| config_gen.root_of("<root>")`, which sets this and the `args`
+    # that run it (an unknown root fails the render), and project the env
+    # with `config_gen.workloadEnvMap(cfg, w)`: exactly the config the root
+    # reaches, so a worker root is never handed the API's credentials.
+    # Authoring-only: nothing renders from it but that env.
+    root?: str
     # GOMEMLIMIT, derived from the container's memory limit. The Go runtime
     # does not read its cgroup limit: left alone, its heap grows toward
     # GOGC's target and the kernel OOM-kills the pod before the collector
@@ -507,6 +515,12 @@ schema Workload:
         kind != "cron" or schedule, "Workload '${name}': kind='cron' requires a schedule"
         not schedule or schedule in ["@hourly", "@daily", "@weekly", "@monthly", "@yearly"] or len(schedule.split(" ")) == 5, \
             "Workload.schedule must be a named expression (@hourly, @daily, ...) or a 5-field cron expression — got '${schedule}'"
+
+        # --- root ---
+        not root or build, \
+            "Workload '${name}': root '${root}' names a root of a forge-built binary — a workload with no build runs no root"
+        not root or not command, \
+            "Workload '${name}': root '${root}' is run by the binary's own entrypoint and the root's args; drop `command`"
 
         # --- job ---
         kind != "job" or command or args, \

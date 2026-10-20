@@ -82,21 +82,35 @@ func generateLockedInSlot(cmd *cobra.Command, fn func() error) error {
 
 // generateLongHelp is `forge generate --help`'s body. A const, so the
 // command constructor stays about flags and wiring.
-const generateLongHelp = `Generate code from proto files based on project configuration or directory conventions.
+const generateLongHelp = `Re-project the project from its sources of truth: the .proto files under
+proto/ (the API), the migrations under db/migrations/ (the schema), and
+forge.yaml plus deploy/kcl/ (features, frontends, environments).
 
-When forge.yaml exists, generation is driven by the config:
-  - buf generate for Go stubs (protoc-gen-go + protoc-gen-connect-go)
-  - protoc-gen-forge for entity protos in proto/db/
-  - buf generate for TypeScript stubs for Next.js frontends
-  - Service stubs and mocks for new services
-  - pkg/app/bootstrap.go with explicit service bootstrapping
-  - go mod tidy in gen/
+What it writes, in order:
+  - gen/: Go + Connect stubs (buf generate) and gen/forge_descriptor.json,
+    the services, rpcs and config messages extracted from the protos
+  - each frontend's TypeScript stubs, hooks, CRUD pages, nav and mocks
+  - pkg/config/ from proto/config/, the typed config loader
+  - internal/handlers/<svc>/: a stub for every rpc no handler implements yet,
+    and the CRUD wiring of every entity (an entity is a table in the APPLIED
+    schema that a service's CRUD rpcs name; the schema comes from running
+    db/migrations against a throwaway Postgres)
+  - internal/db/: the ORM stores projected from that schema
+  - mocks for services and for every internal/<pkg>/contract.go
+  - internal/app/: the composition graph (graph_gen.go, routes_gen.go, and
+    the components and Deps keys reconciled into compose.go); cmd/<bin>/
+    commands and roots
+  - pkg/middleware/procedures_gen.go, the per-rpc auth and deadline table
+  - deploy/: KCL config, observability dashboards and alert defaults, CI
+    workflows, seed data
+then go mod tidy, goimports, and a validating go build of the whole tree.
 
-Without forge.yaml, falls back to directory convention scanning:
-  proto/           - Root proto directory (for buf generate)
-  proto/services/  - Service definitions (stubs + mocks)
-  proto/api/       - API messages
-  proto/db/        - Database models (protoc-gen-forge)
+Hand-written code is never overwritten. Files that are yours from birth
+(handlers' rpc_<name>.go, internal/app/providers.go, compose.go) are written
+once and afterwards only reconciled; a generated file you edited is refused
+as drift until you disown it ('forge project disown') or pass --force.
+Without forge.yaml, generate still compiles proto/ and runs the steps that
+need no config, and says so.
 
 Hooks:
   Generate hooks are the commands forge.yaml declares under generate.hooks

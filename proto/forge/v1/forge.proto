@@ -304,7 +304,12 @@ message ConfigFieldOptions {
   // CLI flag name, without leading dashes (e.g., "database-url").
   string flag = 2;
 
-  // Default value as a string. Applied when neither env var nor flag is set.
+  // Default value as a string: what the SOURCE says. A build can override
+  // it — the generated pkg/config.BuildDefaults, stamped with -ldflags -X in
+  // URL query form keyed by env_var ("SERVER_URL=https://api&REGION=eu") —
+  // and the config file, env var and flag override both:
+  //   default_value < build default < config file < env var < flag.
+  // A sensitive field takes neither (a secret in a binary is published).
   string default_value = 3;
 
   // Whether this field must be provided. Startup fails if missing.

@@ -897,7 +897,12 @@ type ConfigFieldOptions struct {
 	EnvVar string `protobuf:"bytes,1,opt,name=env_var,json=envVar,proto3" json:"env_var,omitempty"`
 	// CLI flag name, without leading dashes (e.g., "database-url").
 	Flag string `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
-	// Default value as a string. Applied when neither env var nor flag is set.
+	// Default value as a string: what the SOURCE says. A build can override
+	// it — the generated pkg/config.BuildDefaults, stamped with -ldflags -X in
+	// URL query form keyed by env_var ("SERVER_URL=https://api&REGION=eu") —
+	// and the config file, env var and flag override both:
+	//   default_value < build default < config file < env var < flag.
+	// A sensitive field takes neither (a secret in a binary is published).
 	DefaultValue string `protobuf:"bytes,3,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
 	// Whether this field must be provided. Startup fails if missing.
 	Required bool `protobuf:"varint,4,opt,name=required,proto3" json:"required,omitempty"`

@@ -14,7 +14,8 @@ package config
 //
 // The resolution semantics:
 //
-//   - Precedence: defaults → config file → env (LookupEnv) → flag (only if
+//   - Precedence: defaults → build defaults (stamped with -ldflags, see
+//     builddefaults.go) → config file → env (LookupEnv) → flag (only if
 //     cmd.Flags().Changed), then a required-field check. The file layer
 //     (filelayer.go) loads only when a path is EXPLICITLY given and fails
 //     loudly on a missing/invalid explicit path. See LoadInto.
@@ -348,11 +349,15 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // LoadInto populates msg in place using the full forge config precedence —
 // later layers OVERRIDE earlier ones:
 //
-//		defaults  →  config file  →  environment  →  flags
-//		(earliest)                                   (wins)
+//		defaults  →  build defaults  →  config file  →  environment  →  flags
+//		(earliest)                                                      (wins)
 //
 //	  - defaults: every annotated field's proto default (sensitive fields get
 //	    none — an inline secret default would be a leak).
+//	  - build defaults: the values this BUILD was stamped with (-ldflags -X
+//	    into the generated pkg/config.BuildDefaults; builddefaults.go), keyed
+//	    by env_var. A stamp that names no field, a sensitive field, or a value
+//	    that does not parse fails the load.
 //	  - config file: when a path is EXPLICITLY given via the --config flag or
 //	    the binary's <BINARY>_CONFIG env var, the file is proto-native
 //	    unmarshaled INTO msg, overlaying the defaults (see filelayer.go). A
@@ -382,6 +387,12 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 
 	// Layer 1: defaults (the base every later layer overlays).
 	if err := applyDefaults(m); err != nil {
+		return err
+	}
+
+	// Layer 1b: build-time defaults stamped into the binary
+	// (builddefaults.go): what one BUILD says, above what the source says.
+	if err := applyBuildDefaults(m); err != nil {
 		return err
 	}
 

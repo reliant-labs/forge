@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/projectstore"
@@ -168,5 +169,39 @@ func TestConventionLane_ContractNamesAnchorsOnTheDeclaration(t *testing.T) {
 	}
 	if filepath.Base(names.File) != "client.go" {
 		t.Errorf("finding should point at client.go where New is declared, got %s:%d", names.File, names.Line)
+	}
+}
+
+// forge.yaml's lint.rules re-grades every rule of the convention lane: a
+// rule set to warn stops gating, one set to off is dropped, and an unnamed
+// rule keeps its own severity. Red before: the dial reached only
+// forgeconv-frontend-process-env, so `forgeconv-activity-declared: warn` in
+// reliant's forge.yaml changed nothing and its 189 findings kept gating.
+func TestConventionLane_HonorsLintRules(t *testing.T) {
+	writeConventionTree(t, noDirective)
+	unconfigured := conventionFindings(t, true)
+	if deps, ok := findingFor(unconfigured, "forgeconv-deps-are-interfaces"); !ok || deps.Severity != forgeconv.SeverityError {
+		t.Fatalf("fixture must produce a gating deps-are-interfaces finding: %+v", unconfigured)
+	}
+	if _, ok := findingFor(unconfigured, "forgeconv-internal-package-contract-names"); !ok {
+		t.Fatalf("fixture must produce a contract-names finding: %+v", unconfigured)
+	}
+
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		return projectstore.New(&config.ProjectConfig{Lint: config.LintConfig{Rules: map[string]string{
+			"forgeconv-deps-are-interfaces":             "warn",
+			"forgeconv-internal-package-contract-names": "off",
+		}}}), nil
+	})
+	fs := conventionFindings(t, true)
+	deps, ok := findingFor(fs, "forgeconv-deps-are-interfaces")
+	if !ok || deps.Severity != forgeconv.SeverityWarning {
+		t.Errorf("lint.rules warn must downgrade deps-are-interfaces: %+v", deps)
+	}
+	if names, ok := findingFor(fs, "forgeconv-internal-package-contract-names"); ok {
+		t.Errorf("lint.rules off must drop contract-names: %+v", names)
+	}
+	if (forgeconv.Result{Findings: fs}).HasErrors() {
+		t.Errorf("no rule left at error, yet the lane gates: %+v", fs)
 	}
 }

@@ -878,11 +878,16 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		// other forge rule — no second implementation of the same
 		// three-state dial to drift out of step.
 		peRes := forgeconv.LintFrontendProcessEnv(".", feDirs, forgeconv.SeverityWarning)
-		peFindings := peRes.Findings
-		if store, err := loadProjectStore(); err == nil && store != nil {
-			peFindings = store.Lint().EffectiveRules().ApplyAll(peFindings)
-		}
-		combined.Findings = append(combined.Findings, peFindings...)
+		combined.Findings = append(combined.Findings, peRes.Findings...)
+	}
+
+	// forge.yaml's lint.rules — the repo-wide off|warn|error dial — re-grades
+	// every finding of this lane, proto and Go rules alike. It used to reach
+	// only forgeconv-frontend-process-env, so `forgeconv-activity-declared:
+	// warn` (or any other forgeconv rule) was silently ignored and kept
+	// gating.
+	if store, err := loadProjectStore(); err == nil && store != nil {
+		combined.Findings = store.Lint().EffectiveRules().ApplyAll(combined.Findings)
 	}
 
 	// If none of proto/, internal/, handlers/, workers/, operators/, or a

@@ -22,11 +22,20 @@ wire-driven projection described in `db`.
 
 ## Naming
 
-A table no CRUD rpc claims is named from the table: the singular,
-camel-cased the way protoc-gen-go spells a message (`message_content_blocks` →
-`MessageContentBlock`, `api_keys` → `ApiKey`). A table a CRUD rpc claims keeps
-the wire message's name, so the store and the wiring agree. Two tables that
-project to one name fail generate, naming both.
+A table is named from itself: the singular, camel-cased the way protoc-gen-go
+spells a message (`message_content_blocks` → `MessageContentBlock`,
+`daemon_attachment` → `DaemonAttachment`). `COMMENT ON TABLE t IS
+'forge:entity-name=<Name>'` declares another name for a table whose name
+derives to the wrong thing. Two tables that project to one name fail
+generate, naming both.
+
+A CRUD rpc's entity `<E>` finds its table by that name, then by the plural
+(`bookmarks`) and the singular (`daemon_attachment`) of `<E>`; the claimed
+table keeps the wire message's name, so the store and the wiring agree. A
+unary, unmarked CRUD-named rpc whose entity has a wire message but matches no
+table, and whose only implementation is forge's unwired stub (or none), fails
+generate naming the rpc and the tables it looked for: write the migration,
+declare `forge:entity-name`, or mark the rpc `// forge:custom`.
 
 ## Opting out
 

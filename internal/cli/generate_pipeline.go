@@ -2053,6 +2053,17 @@ func stepCRUDHandlers(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
+	// A CRUD-named rpc whose entity has a wire message but no table would
+	// fall through to a pb-through stub with nothing saying why. Refused by
+	// name here, under the CRUD step's own gate: with the ORM off every
+	// CRUD-named rpc is a stub by design.
+	unmatched, err := codegen.ParseUnmatchedCRUDRPCs(ctx.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("CRUD handler generation failed: match CRUD rpcs to tables: %w", err)
+	}
+	if err := codegen.UnmatchedCRUDRPCsError(unmatched); err != nil {
+		return fmt.Errorf("CRUD handler generation failed: %w", err)
+	}
 	if err := generateCRUDHandlers(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("CRUD handler generation failed: %w", err)
 	}

@@ -90,6 +90,8 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"graph_gen.go":  {},
 		"routes_gen.go": {},
 		"root_gen.go":   {},
+		// One command per root (cmd/<bin>/cmd, graph mode).
+		"roots_gen.go": {},
 		// Generic suffix references like `*_gen.go` are valid family-level
 		// references (not specific filenames) — handled below by the regex.
 	}

@@ -2,7 +2,9 @@
 
 Why Forge is shaped the way it is. Read this after
 [getting started](getting-started.md), when you want the reasoning rather
-than the steps.
+than the steps. For how to use it — deploys, environments, observability,
+troubleshooting — see the
+[Forge user guide](https://docs.reliantlabs.io/forge/overview).
 
 Most of what follows exists because the alternative was tried and something
 broke. Where that is true, the incident is named.
@@ -481,6 +483,13 @@ code; `forge.OnCompose` hands it to docker compose; `forge.BuildOnly`
 builds and never runs it. A field a runtime cannot honour — `namespacedRBAC` on a
 host process, sidecars on the hosted runtime — fails at render, naming the
 workload and field, rather than being silently dropped.
+
+Deploying is one verb for every runtime: `forge env deploy <env>` builds,
+cuts an immutable release, prints a plan of what changes, and writes nothing
+until the plan is approved; promotion moves a release between environments by
+digest, and there is no rollback command, because recovery is a roll forward.
+The [environments and deploys](https://docs.reliantlabs.io/forge/environments-and-deploys)
+guide walks it.
 
 Maturity is not uniform, and the docs should not pretend otherwise:
 

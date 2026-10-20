@@ -891,7 +891,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 
 		var aliases []codegen.EnvVarAlias
 		for _, a := range cf.GetEnvVarAliases() {
-			aliases = append(aliases, codegen.EnvVarAlias{Name: a.GetName(), Deprecated: a.GetDeprecated()})
+			aliases = append(aliases, codegen.EnvVarAlias{Name: a.GetName(), Deprecated: a.GetDeprecated(), Values: a.GetValues()})
 		}
 		configFields = append(configFields, codegen.ConfigField{
 			Name:          string(f.Desc.Name()),
@@ -900,6 +900,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			ProtoType:     protoKindToString(f.Desc.Kind()),
 			EnvVar:        cf.GetEnvVar(),
 			EnvVarAliases: aliases,
+			AllowedValues: cf.GetAllowedValues(),
 			Flag:          cf.GetFlag(),
 			DefaultValue:  cf.GetDefaultValue(),
 			Required:      cf.GetRequired(),

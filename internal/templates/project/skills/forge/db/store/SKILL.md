@@ -1,6 +1,6 @@
 ---
 name: store
-description: Which tables (and views) get a generated store and how it is shaped — every applied table is projected whatever its rpcs, the forge:no-entity opt-out, entity names derived from the table, and where CRUD wiring differs.
+description: Which tables (and opted-in views) get a generated store and how it is shaped — every applied table is projected whatever its rpcs, the forge:no-entity opt-out, entity names derived from the table, and where CRUD wiring differs.
 ---
 
 # The generated store
@@ -53,3 +53,12 @@ per key column), `Upsert<E>` (conflict on every key column), plus
 Create/List/Count/Update/UpdateMasked addressing the row by the struct's key
 fields — but no CRUD wiring, which keys on one id, and no ULID fill or cursor
 pagination. A table with no primary key is reported and skipped.
+
+## Views
+
+A VIEW (regular or materialized) is projected only when it opts in —
+`COMMENT ON VIEW v IS 'forge:entity'` (`key=<column>` to name its key, else
+`id`) — as a read-only entity: the row struct, `List<E>` / `Count<E>` and
+`Get<E>ByID` when it has a key, and a read-only `<E>Store`. Nothing writes. Its
+non-key columns are pointers, because the catalog cannot say a view column is
+NOT NULL.

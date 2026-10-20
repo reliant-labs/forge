@@ -171,7 +171,7 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 
 ## Generated ORM semantics
 
-- **Struct types are Go's, and as wide as the column.** Field names spell initialisms in capitals (`id` → `ID`, `org_id` → `OrgID`, `api_key` → `APIKey`; constants follow: `TaskFieldOrgID`). `INTEGER` is `int32`, `SMALLINT` `int16`, `BIGINT` `int64`; `JSONB`/`JSON` is `json.RawMessage` (nil for NULL; `jsonb[]` stays `[]string`). `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares another type for one column — a named enum, `map[string]any` over json, `<import path>[;<pkg>].<Type>` for a qualified one (`forge project annotations --kind column`).
+- **Struct types are Go's, and as wide as the column**: `ID`/`OrgID` field names, `INTEGER` → `int32`, `JSONB` → `json.RawMessage`, and `forge:go-type` for one column (`db/orm-and-safety`, "Entity field types").
 
 - `Create<Entity>` is a plain `INSERT`, never an upsert. Unset string PKs are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back via `RETURNING` — any caller-provided value is ignored.
 - Writes scan database-computed values back via `RETURNING` — generated columns on every write, DB defaults on insert, unwritten columns on update — so never re-read a row you just wrote.

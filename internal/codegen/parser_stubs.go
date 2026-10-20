@@ -260,6 +260,23 @@ func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 	return BuildSchemaEntities(projectDir, ManagedServices(desc.Services))
 }
 
+// ParseORMEntities returns the data layer's entities: every applied BASE
+// TABLE (see BuildORMEntities), with the CRUD join's name and wire markers
+// where a managed service claims the table. Unlike ParseEntityProtos it
+// needs no descriptor — a project whose protos have not been compiled yet
+// still has a schema, and the store is a projection of the schema alone.
+func ParseORMEntities(projectDir string) ([]EntityDef, error) {
+	desc, err := loadDescriptor(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	var services []ServiceDef
+	if desc != nil {
+		services = ManagedServices(desc.Services)
+	}
+	return BuildORMEntities(projectDir, services)
+}
+
 // ParseConfigProto reads config messages from the forge descriptor,
 // filtering to those from a specific proto file path.
 func ParseConfigProto(protoPath string) ([]ConfigMessage, error) {

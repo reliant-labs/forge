@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Trace context through Temporal and NATS: `forge/pkg/observe/temporalotel`
+  and `forge/pkg/observe/natsotel`.** `temporalotel.NewInterceptor` is
+  Temporal's `contrib/opentelemetry` interceptor with forge's defaults: the
+  global W3C propagator (the same context Connect, HTTP and NATS carry), the
+  global tracer provider read at span time, and `AllowInvalidParentSpans`, so
+  workflows already in flight keep running. Installed once on `client.Dial`,
+  it also applies to the client's workers, so the request that starts a
+  workflow, the workflow and its activities are one trace; before this,
+  Reliant's hand-rolled interceptor made every activity a root. `natsotel` is
+  Reliant's NATS propagation, lifted: `NewMsg`/`Inject` on publish,
+  `StartConsumerSpan(ctx, subject, header, name)` on consume (core NATS or
+  JetStream), `StartProducerSpan` where the publish deserves a span, with
+  `messaging.*` attributes.
+
 - **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
   `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
   opened through `otelsql`, so each statement run under a span gets a CLIENT

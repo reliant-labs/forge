@@ -135,6 +135,13 @@ rolls back with it. If such a handler succeeds without recording, the
 interceptor writes the event itself and logs a warning. A streaming rpc must
 use `ACTIVITY_WRITER_HANDLER` or `none`.
 
+## When a call changes nothing
+
+A declaration says what an rpc records when it changes something. An
+idempotent "ensure" rpc that found its object already there, a dry run or a
+no-op update calls `activity.Skip(ctx)`, and the interceptor writes no event for
+that call.
+
 ## Actors that are not rpcs
 
 A converger, an alert transition, or a CI ingestion job writes with the same
@@ -194,6 +201,12 @@ page, err := s.deps.Activity.List(ctx, activity.Filter{
     TargetID: req.Msg.GetTargetId(), PageSize: int(req.Msg.GetPageSize()), PageToken: req.Msg.GetPageToken(),
 })
 ```
+
+**Scopes are paths.** Scope an event `org_1` for something org-wide and
+`org_1/billing` for something in project billing (`activity.ScopeSeparator`).
+`Filter.IncludeAncestors` then reads a project's feed together with its org's
+events, and `Filter.IncludeDescendants` reads an org's feed together with every
+project's. `Filter.Envs` matches any of several environments.
 
 `List` returns the newest events first and pages by keyset, so a page never
 repeats or skips a row while new events arrive. `Filter.Scope` is matched

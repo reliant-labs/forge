@@ -143,6 +143,56 @@ func CheckCommandPath(cmd *cobra.Command, configName string, want ...string) err
 		configName, configName, strings.Join(want, " "))
 }
 
+// RegisterInheritedFlags registers EVERY config-bound leaf of msg — its own
+// and those of the blocks it composes — as PERSISTENT flags on cmd, and NOT
+// the --config file flag.
+//
+// It is the registration for a SUBTREE config ((forge.v1.binary_config)
+// .subtrees) whose binary also has a root config: called on each subtree's
+// command, every command beneath inherits the flags, while --config stays the
+// root config's (persistent on the binary's root, inherited everywhere). A
+// subtree config with no root config beside it registers with
+// RegisterPersistentFlags, which adds --config itself.
+func RegisterInheritedFlags(cmd *cobra.Command, msg proto.Message) error {
+	recordFileMessage(cmd, msg)
+	return RegisterFlagsScoped(cmd.PersistentFlags(), msg, ScopeAll)
+}
+
+// CheckCommandSubtree refuses to load a subtree config from a command that
+// lies under none of its subtrees. configName names the config message and
+// subtrees are its (forge.v1.binary_config).subtrees paths, each below the
+// binary's root ([]string{"daemon"} covers `daemon` and every command under
+// it).
+//
+// It is CheckCommandPath's twin for a config several commands load: its
+// flags are persistent on each subtree's command, so a command outside every
+// subtree would load it without them. A detached or nil cmd is not checked,
+// as for CheckCommandPath.
+func CheckCommandSubtree(cmd *cobra.Command, configName string, subtrees ...[]string) error {
+	if cmd == nil || !cmd.HasParent() {
+		return nil
+	}
+	var got []string
+	for c := cmd; c.HasParent(); c = c.Parent() {
+		got = append([]string{c.Name()}, got...)
+	}
+	for _, want := range subtrees {
+		if len(want) <= len(got) && strings.Join(got[:len(want)], " ") == strings.Join(want, " ") {
+			return nil
+		}
+	}
+	paths := make([]string, len(subtrees))
+	for i, p := range subtrees {
+		paths[i] = fmt.Sprintf("%q", strings.Join(p, " "))
+	}
+	return fmt.Errorf(
+		"config: %s is declared for the commands at or below %s ((forge.v1.binary_config).subtrees), "+
+			"but `%s` loaded it. Its flags are registered on those commands (Register%sFlags), so a command "+
+			"outside them would load it without them: call Load%s from a command under one of them, "+
+			"or add this command's path to the annotation in proto/config",
+		configName, strings.Join(paths, ", "), cmd.CommandPath(), configName, configName)
+}
+
 // quoteJoin renders a command path as the annotation's list elements.
 func quoteJoin(items []string) string {
 	q := make([]string, len(items))
@@ -330,6 +380,13 @@ func validateMessage(m protoreflect.Message) error {
 
 		// allowed_values closed-set check. A repeated string field is a
 		// closed set PER ELEMENT — every element must be in the set.
+		if vals := opt.GetAllowedValues(); len(vals) > 0 && isEnvFamily(opt) && fd.IsMap() && fd.MapValue().Kind() == protoreflect.StringKind {
+			for _, got := range familyValues(m, fd) {
+				if got != "" && !containsStr(vals, got) {
+					return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+				}
+			}
+		}
 		if vals := opt.GetAllowedValues(); len(vals) > 0 && isStringField(fd) {
 			for _, got := range stringValues(m, fd) {
 				if got != "" && !containsStr(vals, got) {

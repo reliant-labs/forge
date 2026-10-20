@@ -1168,7 +1168,12 @@ type ConfigFieldOptions struct {
 	EnvVar string `protobuf:"bytes,1,opt,name=env_var,json=envVar,proto3" json:"env_var,omitempty"`
 	// CLI flag name, without leading dashes (e.g., "database-url").
 	Flag string `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
-	// Default value as a string. Applied when neither env var nor flag is set.
+	// Default value as a string: what the SOURCE says. A build can override
+	// it — the generated pkg/config.BuildDefaults, stamped with -ldflags -X in
+	// URL query form keyed by env_var ("SERVER_URL=https://api&REGION=eu") —
+	// and the config file, env var and flag override both:
+	//   default_value < build default < config file < env var < flag.
+	// A sensitive field takes neither (a secret in a binary is published).
 	DefaultValue string `protobuf:"bytes,3,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
 	// Whether this field must be provided. Loading fails if no layer (default,
 	// config file, env var, flag) gives it a value. It is the ONE runtime
@@ -1284,6 +1289,41 @@ type ConfigFieldOptions struct {
 	// no aliases: its values come from the rendered config document, not
 	// from an environment.
 	EnvVarAliases []*EnvVarAlias `protobuf:"bytes,11,rep,name=env_var_aliases,json=envVarAliases,proto3" json:"env_var_aliases,omitempty"`
+	// EnvPrefix (with EnvSuffix) binds a `map<string, V>` field, V a scalar,
+	// to a FAMILY of environment variables: every variable named
+	// <env_prefix><KEY><env_suffix> with a non-empty KEY is one entry,
+	// map[KEY] = value parsed as V. KEY is taken verbatim.
+	//
+	//   map<string, string> oauth_client_ids = 1 [(forge.v1.config) = {
+	//     env_prefix: "APP_OAUTH_", env_suffix: "_CLIENT_ID"
+	//   }];
+	//   map<string, string> oauth_client_secrets = 2 [(forge.v1.config) = {
+	//     env_prefix: "APP_OAUTH_", env_suffix: "_CLIENT_SECRET", sensitive: true
+	//   }];
+	//   map<string, bool> features = 3 [(forge.v1.config) = {env_prefix: "APP_FEATURE_"}];
+	//
+	// APP_OAUTH_GITHUB_CLIENT_ID=abc loads oauth_client_ids["GITHUB"] = "abc".
+	// It is for a set of keys the PROCESS does not know at build time (an
+	// integration catalog, feature names an operator invents); a set the proto
+	// can name is fields.
+	//
+	// The prefix is OWNED: a variable that starts with a family's env_prefix
+	// and matches no family and no env_var of the process fails the load,
+	// naming it — APP_OAUTH_GITHUB_CLIENT_SECERT is a typo, never an entry
+	// silently missing. Env entries overlay the config file's map key by key.
+	// `required: true` means at least one entry; allowed_values constrains
+	// every value; `sensitive` keeps the values off flags and inline manifests.
+	// A family takes no env_var, env_var_aliases, flag or default_value, and
+	// `forge generate` refuses two families (or a family and an env_var) of one
+	// process that could claim the same variable.
+	//
+	// Families are read from the environment and the config file; the KCL
+	// config schema does not project them — set a family's variables in a
+	// workload's `env` (or its secrets, for a sensitive one).
+	EnvPrefix string `protobuf:"bytes,12,opt,name=env_prefix,json=envPrefix,proto3" json:"env_prefix,omitempty"`
+	// EnvSuffix is the fixed tail of an env_prefix family's variable names
+	// ("_CLIENT_ID"); empty when the KEY runs to the end of the name.
+	EnvSuffix     string `protobuf:"bytes,13,opt,name=env_suffix,json=envSuffix,proto3" json:"env_suffix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1395,6 +1435,20 @@ func (x *ConfigFieldOptions) GetEnvVarAliases() []*EnvVarAlias {
 	return nil
 }
 
+func (x *ConfigFieldOptions) GetEnvPrefix() string {
+	if x != nil {
+		return x.EnvPrefix
+	}
+	return ""
+}
+
+func (x *ConfigFieldOptions) GetEnvSuffix() string {
+	if x != nil {
+		return x.EnvSuffix
+	}
+	return ""
+}
+
 // EnvVarAlias is one fallback environment variable of a config field. See
 // ConfigFieldOptions.env_var_aliases.
 type EnvVarAlias struct {
@@ -1407,7 +1461,28 @@ type EnvVarAlias struct {
 	// value or was shadowed by an earlier name. A permanent alias (the
 	// default) is read silently: NODE_ENV is somebody else's convention, not
 	// a migration in flight, and a notice at every start would be noise.
-	Deprecated    bool `protobuf:"varint,2,opt,name=deprecated,proto3" json:"deprecated,omitempty"`
+	Deprecated bool `protobuf:"varint,2,opt,name=deprecated,proto3" json:"deprecated,omitempty"`
+	// Values maps the alias's values onto the FIELD's: the alias is read only
+	// when it is set to one of the keys, and the field takes the mapped value.
+	// Any other value — and unset, and "" — reads as the alias being unset, so
+	// the next name is tried.
+	//
+	//   string level = 1 [(forge.v1.config) = {
+	//     env_var: "APP_LOG_LEVEL"
+	//     env_var_aliases: [{name: "DEBUG", values: [{key: "true", value: "debug"}, {key: "1", value: "debug"}]}]
+	//   }];
+	//
+	// It is for a variable whose CONVENTION implies one of this field's values
+	// without carrying it: DEBUG=true meaning a debug log level, CI=true a
+	// non-interactive mode. Such a variable is not this field's to parse —
+	// DEBUG=express:* belongs to another tool — so a value outside the map is
+	// ignored rather than refused, which is the one place the config loader
+	// ignores a value it was handed. Keys match exactly (no trimming, no case
+	// folding: the convention decides its spelling). Each mapped value must be
+	// valid for the field (its kind and allowed_values); `forge generate`
+	// refuses one that is not. A variable your own project owns needs no map:
+	// name its values after the field's and make it env_var or a plain alias.
+	Values        map[string]string `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1456,6 +1531,13 @@ func (x *EnvVarAlias) GetDeprecated() bool {
 	return false
 }
 
+func (x *EnvVarAlias) GetValues() map[string]string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
 // BinaryConfigOptions binds a config message to the BINARY that loads it,
 // giving each binary its own config surface instead of one project-global
 // AppConfig every process ships.
@@ -1491,16 +1573,38 @@ func (x *EnvVarAlias) GetDeprecated() bool {
 //   - The ROOT config (no `command`) is the binary-wide surface: every
 //     process of the binary loads it, and its flags register as PERSISTENT
 //     flags on the binary's root command, so every subcommand inherits them.
+//
 //   - A COMMAND config is loaded by exactly the process running that
 //     subcommand. Its leaves — composed blocks included — register as LOCAL
 //     flags on that subcommand, and its loader refuses to load from any
 //     other command.
 //
-// A process therefore reads the root config plus the ONE config declared for
-// its exact command path; command configs do not nest (a config for
-// ["server"] is not inherited by `server api`). The root config and a command
-// config of the same binary may not declare the same env var or flag: one
-// process would read the value twice, from two declarations that can drift.
+//   - A SUBTREE config (`subtrees`) is loaded by every process running a
+//     command AT OR BELOW one of its paths. Its leaves register as
+//     PERSISTENT flags on each path's command, so the commands beneath
+//     inherit them. It is how a setting that several commands read — but not
+//     every process of the binary — is declared once: the CLI connection
+//     every end-user command needs (server URL, token) without the server
+//     roles' workloads carrying it, or the guard policy `daemon start` and
+//     `open` both run.
+//
+// A process therefore reads the root config, every subtree config whose path
+// prefixes its command path, and the ONE config declared for its exact path
+// — and nothing else: least knowledge, by declaration. Two configs one
+// process can load together (the root and anything; a subtree config and a
+// command config or another subtree config below or above it) may not
+// declare the same env var, flag or top-level field: that process would read
+// one value from two declarations that can drift. Configs no process loads
+// together (sibling commands) may compose the same block freely: that is one
+// definition, two values.
+//
+//	message CLIConfig {
+//	  option (forge.v1.binary_config) = {
+//	    binary: "reliant"
+//	    subtrees: [{path: ["auth"]}, {path: ["daemon"]}, {path: ["open"]}]
+//	  };
+//	  string server_url = 1 [(forge.v1.config) = {env_var: "RELIANT_SERVER_URL", flag: "server"}];
+//	}
 type BinaryConfigOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Binary is the cmd/<name> leaf whose process loads this config — the same
@@ -1520,7 +1624,16 @@ type BinaryConfigOptions struct {
 	// would be a guess that is wrong in both directions — and a wrong refusal
 	// blocks generate. The exact check runs where the tree is real: the
 	// generated Load<Msg>(cmd) refuses a command whose path is not this one.
-	Command       []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
+	Command []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
+	// Subtrees binds this config to every command AT OR BELOW each path:
+	// [{path: ["daemon"]}] is loaded by `daemon start`, `daemon status` and
+	// every other command under `daemon`, and by `daemon` itself. Exclusive
+	// with `command` (a config is one process's, or a subtree's); both empty
+	// binds the binary's root config. Each path is shaped like `command`, and
+	// no path may lie below another of the same message (the outer one already
+	// covers it). Register<Msg>Flags is called on each path's command; the
+	// generated Load<Msg>(cmd) refuses a command under none of them.
+	Subtrees      []*CommandPath `protobuf:"bytes,3,rep,name=subtrees,proto3" json:"subtrees,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1565,6 +1678,59 @@ func (x *BinaryConfigOptions) GetBinary() string {
 func (x *BinaryConfigOptions) GetCommand() []string {
 	if x != nil {
 		return x.Command
+	}
+	return nil
+}
+
+func (x *BinaryConfigOptions) GetSubtrees() []*CommandPath {
+	if x != nil {
+		return x.Subtrees
+	}
+	return nil
+}
+
+// CommandPath is one cobra command path below a binary's root, one command
+// name per element: ["daemon", "start"]. See BinaryConfigOptions.subtrees.
+type CommandPath struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          []string               `protobuf:"bytes,1,rep,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommandPath) Reset() {
+	*x = CommandPath{}
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommandPath) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommandPath) ProtoMessage() {}
+
+func (x *CommandPath) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommandPath.ProtoReflect.Descriptor instead.
+func (*CommandPath) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *CommandPath) GetPath() []string {
+	if x != nil {
+		return x.Path
 	}
 	return nil
 }
@@ -1616,7 +1782,7 @@ type FrontendConfigOptions struct {
 
 func (x *FrontendConfigOptions) Reset() {
 	*x = FrontendConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	mi := &file_forge_v1_forge_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1628,7 +1794,7 @@ func (x *FrontendConfigOptions) String() string {
 func (*FrontendConfigOptions) ProtoMessage() {}
 
 func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	mi := &file_forge_v1_forge_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1641,7 +1807,7 @@ func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FrontendConfigOptions.ProtoReflect.Descriptor instead.
 func (*FrontendConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{12}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *FrontendConfigOptions) GetFrontend() string {
@@ -1830,7 +1996,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x0eActivityTarget\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x14\n" +
-	"\x05label\x18\x03 \x01(\tR\x05label\"\x8f\x03\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\"\xcd\x03\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +
 	"\x04flag\x18\x02 \x01(\tR\x04flag\x12#\n" +
@@ -1843,15 +2009,26 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues\x12\x1a\n" +
 	"\boptional\x18\n" +
 	" \x01(\bR\boptional\x12=\n" +
-	"\x0fenv_var_aliases\x18\v \x03(\v2\x15.forge.v1.EnvVarAliasR\renvVarAliases\"A\n" +
+	"\x0fenv_var_aliases\x18\v \x03(\v2\x15.forge.v1.EnvVarAliasR\renvVarAliases\x12\x1d\n" +
+	"\n" +
+	"env_prefix\x18\f \x01(\tR\tenvPrefix\x12\x1d\n" +
+	"\n" +
+	"env_suffix\x18\r \x01(\tR\tenvSuffix\"\xb7\x01\n" +
 	"\vEnvVarAlias\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
 	"\n" +
 	"deprecated\x18\x02 \x01(\bR\n" +
-	"deprecated\"G\n" +
+	"deprecated\x129\n" +
+	"\x06values\x18\x03 \x03(\v2!.forge.v1.EnvVarAlias.ValuesEntryR\x06values\x1a9\n" +
+	"\vValuesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"z\n" +
 	"\x13BinaryConfigOptions\x12\x16\n" +
 	"\x06binary\x18\x01 \x01(\tR\x06binary\x12\x18\n" +
-	"\acommand\x18\x02 \x03(\tR\acommand\"3\n" +
+	"\acommand\x18\x02 \x03(\tR\acommand\x121\n" +
+	"\bsubtrees\x18\x03 \x03(\v2\x15.forge.v1.CommandPathR\bsubtrees\"!\n" +
+	"\vCommandPath\x12\x12\n" +
+	"\x04path\x18\x01 \x03(\tR\x04path\"3\n" +
 	"\x15FrontendConfigOptions\x12\x1a\n" +
 	"\bfrontend\x18\x01 \x01(\tR\bfrontend*q\n" +
 	"\aStoreAs\x12\x18\n" +
@@ -1896,7 +2073,7 @@ func file_forge_v1_forge_proto_rawDescGZIP() []byte {
 }
 
 var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_forge_v1_forge_proto_goTypes = []any{
 	(StoreAs)(0),                        // 0: forge.v1.StoreAs
 	(ServiceVisibility)(0),              // 1: forge.v1.ServiceVisibility
@@ -1914,12 +2091,14 @@ var file_forge_v1_forge_proto_goTypes = []any{
 	(*ConfigFieldOptions)(nil),          // 13: forge.v1.ConfigFieldOptions
 	(*EnvVarAlias)(nil),                 // 14: forge.v1.EnvVarAlias
 	(*BinaryConfigOptions)(nil),         // 15: forge.v1.BinaryConfigOptions
-	(*FrontendConfigOptions)(nil),       // 16: forge.v1.FrontendConfigOptions
-	(*durationpb.Duration)(nil),         // 17: google.protobuf.Duration
-	(*descriptorpb.MessageOptions)(nil), // 18: google.protobuf.MessageOptions
-	(*descriptorpb.FieldOptions)(nil),   // 19: google.protobuf.FieldOptions
-	(*descriptorpb.ServiceOptions)(nil), // 20: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),  // 21: google.protobuf.MethodOptions
+	(*CommandPath)(nil),                 // 16: forge.v1.CommandPath
+	(*FrontendConfigOptions)(nil),       // 17: forge.v1.FrontendConfigOptions
+	nil,                                 // 18: forge.v1.EnvVarAlias.ValuesEntry
+	(*durationpb.Duration)(nil),         // 19: google.protobuf.Duration
+	(*descriptorpb.MessageOptions)(nil), // 20: google.protobuf.MessageOptions
+	(*descriptorpb.FieldOptions)(nil),   // 21: google.protobuf.FieldOptions
+	(*descriptorpb.ServiceOptions)(nil), // 22: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),  // 23: google.protobuf.MethodOptions
 }
 var file_forge_v1_forge_proto_depIdxs = []int32{
 	5,  // 0: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
@@ -1927,31 +2106,33 @@ var file_forge_v1_forge_proto_depIdxs = []int32{
 	7,  // 2: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
 	1,  // 3: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
 	9,  // 4: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
-	17, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
+	19, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
 	11, // 6: forge.v1.MethodOptions.activity:type_name -> forge.v1.ActivityOptions
 	12, // 7: forge.v1.ActivityOptions.target:type_name -> forge.v1.ActivityTarget
 	2,  // 8: forge.v1.ActivityOptions.writer:type_name -> forge.v1.ActivityWriter
 	3,  // 9: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
 	14, // 10: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
-	18, // 11: forge.v1.entity:extendee -> google.protobuf.MessageOptions
-	18, // 12: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
-	18, // 13: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
-	19, // 14: forge.v1.field:extendee -> google.protobuf.FieldOptions
-	19, // 15: forge.v1.config:extendee -> google.protobuf.FieldOptions
-	20, // 16: forge.v1.service:extendee -> google.protobuf.ServiceOptions
-	21, // 17: forge.v1.method:extendee -> google.protobuf.MethodOptions
-	4,  // 18: forge.v1.entity:type_name -> forge.v1.EntityOptions
-	15, // 19: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
-	16, // 20: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
-	6,  // 21: forge.v1.field:type_name -> forge.v1.FieldOptions
-	13, // 22: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
-	8,  // 23: forge.v1.service:type_name -> forge.v1.ServiceOptions
-	10, // 24: forge.v1.method:type_name -> forge.v1.MethodOptions
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	18, // [18:25] is the sub-list for extension type_name
-	11, // [11:18] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	18, // 11: forge.v1.EnvVarAlias.values:type_name -> forge.v1.EnvVarAlias.ValuesEntry
+	16, // 12: forge.v1.BinaryConfigOptions.subtrees:type_name -> forge.v1.CommandPath
+	20, // 13: forge.v1.entity:extendee -> google.protobuf.MessageOptions
+	20, // 14: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
+	20, // 15: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
+	21, // 16: forge.v1.field:extendee -> google.protobuf.FieldOptions
+	21, // 17: forge.v1.config:extendee -> google.protobuf.FieldOptions
+	22, // 18: forge.v1.service:extendee -> google.protobuf.ServiceOptions
+	23, // 19: forge.v1.method:extendee -> google.protobuf.MethodOptions
+	4,  // 20: forge.v1.entity:type_name -> forge.v1.EntityOptions
+	15, // 21: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
+	17, // 22: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
+	6,  // 23: forge.v1.field:type_name -> forge.v1.FieldOptions
+	13, // 24: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
+	8,  // 25: forge.v1.service:type_name -> forge.v1.ServiceOptions
+	10, // 26: forge.v1.method:type_name -> forge.v1.MethodOptions
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	20, // [20:27] is the sub-list for extension type_name
+	13, // [13:20] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_forge_v1_forge_proto_init() }
@@ -1966,7 +2147,7 @@ func file_forge_v1_forge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_v1_forge_proto_rawDesc), len(file_forge_v1_forge_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 7,
 			NumServices:   0,
 		},

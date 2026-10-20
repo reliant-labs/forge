@@ -96,6 +96,10 @@ type Table struct {
 	Indexes []Index
 	// ForeignKeys lists declared REFERENCES constraints.
 	ForeignKeys []ForeignKey
+	// IsView marks a VIEW (IntrospectViews), not a BASE TABLE. A view has
+	// columns and a comment and nothing else: no key, no constraints, and
+	// every column nullable as far as the catalog can tell.
+	IsView bool
 	// Checks lists the table's CHECK constraints, read back through
 	// postgres's own catalog (pg_get_constraintdef). Because both the
 	// applied migration dir and any freshly-projected DDL are introspected
@@ -269,11 +273,71 @@ const ColumnMarkerOwner = "forge:owner"
 // migration made it so, with no proto marker anywhere.
 const TableMarkerAppendOnly = "forge:append-only"
 
+// TableMarkerNoEntity opts one table out of the generated data layer: no
+// entity struct, no store, no delegates, no factory. Every other applied
+// BASE TABLE is projected, whether or not a service declares CRUD rpcs for
+// it — SQL is the schema truth, and the store follows the schema, not the
+// wire. A table carrying it is plain schema reached through hand-written
+// SQL (a migration bookkeeping table, a partition parent, a table another
+// tool owns).
+//
+// It is the per-table twin of the project-level `//forge:no-orm`, and it
+// removes the table from the CRUD join too: a CRUD-named rpc over it is
+// custom, as if the table did not exist.
+const TableMarkerNoEntity = "forge:no-entity"
+
+// TableMarkerEntityName declares the Go/wire name of the entity a table
+// projects to: `COMMENT ON TABLE daemon_attachment IS
+// 'forge:entity-name=DaemonAttachment'`. Without it the name is derived from
+// the table (the singular, camel-cased), and a CRUD rpc's entity finds its
+// table by that name, its plural or its singular. The declaration is for a
+// table whose name derives to something else — an irregular plural, a
+// prefix, a legacy spelling — so the entity, its store and any `Get<E>`
+// rpc over it are named for what the table holds.
+const TableMarkerEntityName = "forge:entity-name"
+
 // KnownTableMarkers is the complete set of `forge:*` marker NAMES a
 // COMMENT ON TABLE may carry — the table-level twin of
 // KnownColumnMarkers, and registered for the same reason: a vocabulary
 // nothing enumerates is a vocabulary a typo silently leaves inert.
-var KnownTableMarkers = []string{TableMarkerAppendOnly}
+var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity}
+
+// DeclaredEntityName returns the name a TableMarkerEntityName declaration
+// gives the table's entity, "" when it declares none.
+func (t Table) DeclaredEntityName() string {
+	if m := entityNameTableMarkerRE.FindStringSubmatch(t.Comment); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+var entityNameTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerEntityName) + `=([A-Za-z_][A-Za-z0-9_]*)`)
+
+// ViewMarkerEntity opts a VIEW into the generated data layer as a READ-ONLY
+// entity: `COMMENT ON VIEW chats_with_activity IS 'forge:entity'`. It gets
+// the row struct plus List/Count, and Get<E>ByID by its key column — `id`
+// when the view has one, or the one `forge:entity key=<column>` names. No
+// write is generated: a view is a derived read. Views are opt-in because
+// most are reporting conveniences nothing in Go reads.
+const ViewMarkerEntity = "forge:entity"
+
+// DeclaresEntity reports whether a view's comment opts it in with
+// ViewMarkerEntity, and the key column a `key=<column>` names ("" for none).
+func (t Table) DeclaresEntity() (ok bool, key string) {
+	m := viewEntityMarkerRE.FindStringSubmatch(t.Comment)
+	if m == nil {
+		return false, ""
+	}
+	return true, m[1]
+}
+
+var viewEntityMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ViewMarkerEntity) + `(?:\s+key=([A-Za-z_][A-Za-z0-9_]*))?(?:[^\w:=-]|$)`)
+
+// NoEntity reports whether the table declares TableMarkerNoEntity in its
+// catalog comment, matched as a whole token.
+func (t Table) NoEntity() bool { return noEntityTableMarkerRE.MatchString(t.Comment) }
+
+var noEntityTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerNoEntity) + `(?:[^\w:-]|$)`)
 
 // AppendOnly reports whether the table is an append-only ledger: INSERT and
 // SELECT only, no UPDATE and no DELETE.
@@ -987,6 +1051,85 @@ type Queryer interface {
 // stays the generator's path, because a generator starts from files on disk
 // and has no database yet.
 func Introspect(db Queryer) ([]Table, error) { return introspect(db) }
+
+// IntrospectViews returns every user VIEW (regular and materialized) of the
+// database, each as a Table with IsView set: its columns, in ordinal order,
+// and its catalog comment, where an opt-in (ViewMarkerEntity) lives.
+func IntrospectViews(db Queryer) ([]Table, error) {
+	ctx := context.Background()
+	rows, err := db.QueryContext(ctx, `
+		SELECT n.nspname, c.relname
+		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.relkind IN ('v', 'm')
+		  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+		  AND n.nspname NOT LIKE 'pg_toast%'
+		ORDER BY n.nspname, c.relname`)
+	if err != nil {
+		return nil, fmt.Errorf("list shadow views: %w", err)
+	}
+	type ref struct{ schema, name string }
+	var refs []ref
+	for rows.Next() {
+		var r ref
+		if err := rows.Scan(&r.schema, &r.name); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		refs = append(refs, r)
+	}
+	cerr := rows.Err()
+	_ = rows.Close()
+	if cerr != nil {
+		return nil, cerr
+	}
+	var views []Table
+	for _, r := range refs {
+		v, err := introspectView(ctx, db, r.schema, r.name)
+		if err != nil {
+			return nil, fmt.Errorf("introspect view %s.%s: %w", r.schema, r.name, err)
+		}
+		views = append(views, v)
+	}
+	return views, nil
+}
+
+// introspectView reads a view's comment and columns. pg_attribute rather
+// than information_schema.columns, which omits materialized views.
+func introspectView(ctx context.Context, db Queryer, schema, name string) (Table, error) {
+	v := Table{Name: name, Schema: schema, IsView: true}
+	comment, err := introspectTableComment(ctx, db, schema, name)
+	if err != nil {
+		return v, err
+	}
+	v.Comment = comment
+	rows, err := db.QueryContext(ctx, `
+		SELECT a.attname, t.typname, a.attndims > 0 OR t.typcategory = 'A',
+		       COALESCE(col_description(a.attrelid, a.attnum), '')
+		FROM pg_attribute a
+		JOIN pg_type t ON t.oid = a.atttypid
+		WHERE a.attrelid = format('%I.%I', $1::text, $2::text)::regclass
+		  AND a.attnum > 0 AND NOT a.attisdropped
+		ORDER BY a.attnum`, schema, name)
+	if err != nil {
+		return v, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var col, udt, colComment string
+		var isArray bool
+		if err := rows.Scan(&col, &udt, &isArray, &colComment); err != nil {
+			return v, err
+		}
+		dataType := ""
+		if isArray {
+			dataType = "ARRAY"
+		}
+		c := Column{Name: col, DeclType: pgDeclType(dataType, udt), Comment: colComment}
+		c.Type, c.IsArray, c.TypeKnown = MapDeclaredType(c.DeclType)
+		v.Columns = append(v.Columns, c)
+	}
+	return v, rows.Err()
+}
 
 // introspect reads the full table model out of the real-postgres shadow
 // through the postgres catalog (information_schema / pg_catalog). It

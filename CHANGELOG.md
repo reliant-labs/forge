@@ -9,6 +9,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
+  `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
+  opened through `otelsql`, so each statement run under a span gets a CLIENT
+  child span named `<OP> <table>` (`SELECT chats`), plus `BEGIN`, `COMMIT`,
+  `ROLLBACK` and `db.connect`. `db.query.text` is the statement with every
+  literal replaced by `?` (`dbtrace.SanitizeSQL`); bind arguments are never
+  recorded. Ping, session-reset, prepare and per-row spans are off, and a
+  statement with no span in its context opens none, so an un-rooted poller
+  does not produce one-span traces. Before this, the only query spans came
+  from bun's hook, which hand-written `database/sql` never reaches: prod had
+  none in 24 hours. `orm.NewClientWithDB` keeps bunotel's query histogram but
+  drops its spans when `dbtrace.IsTraced(db)`, so ORM queries are not spanned
+  twice. `serverkit.PgxConn` reaches the `*pgx.Conn` under a `sql.Conn.Raw`
+  driver connection through the tracing and pooler-drain wrappers.
+
+- **`observe.NewTraceHandler` records WARN and ERROR lines on the span, and
+  `forge/pkg/observe/observetest.AssertLogCorrelation` pins log↔trace joins.**
+  A record at WARN or above, logged with a recording span in its context, is
+  added to that span as a `log.warn` / `log.error` event (`observe.LogEventWarn`,
+  `observe.LogEventError`) with `log.message`, `log.severity` and the error's
+  `exception.message`, each capped at 512 bytes. The tail sampler can then keep
+  a trace whose logs complained instead of keeping its log lines and dropping
+  the trace (in prod only 10% of logged trace ids resolved to a stored trace).
+  The handler sits inside `NewErrorClassHandler` in serverkit's logger, so a
+  user error lowered to INFO adds no event.
+  `AssertLogCorrelation(t, logger, output)` logs through an application's real
+  logger under a span and fails unless the lines carry its
+  `trace_id`/`span_id` and the WARN became an event: the regression test for
+  an app that builds its own logger.
+
+- **One command per root** (composition graph, PR 4). In a graph-mode
+  project every root — each `//forge:root` struct in `internal/app`, or the
+  generated default `Server` — gets one cobra command in the forge-owned
+  `cmd/<bin>/cmd/roots_gen.go`, named after the root or after its new
+  `command=` option (`//forge:root api command=server,api` runs as
+  `<bin> server api`). Each command runs its root through `runRoot`, the
+  owned process policy `serve.go` now holds — config, logger, boot probes,
+  migrate, telemetry, the readiness gate and stop budget, for every root at
+  once — handing it two facts read off the root's reach at generate time: a
+  root that reaches the database migrates first (a worker root that never
+  opens it never runs a migration), and a root whose closure serves no
+  probes gets a probe-only listener on the server address
+  (`serverkit.NewProbeListener`), so every process answers `/healthz` and
+  `/readyz`. A config without `pre_stop_delay` / `shutdown_timeout` reads the
+  drain budget through `drainbudget.FromEnv`. `graphkit.Builder.Supervise`
+  takes nodes to start before the graph and stop after it. A root whose
+  command collides with `version`, `db` or `metrics`, or two roots with one
+  command, are generate errors. Declaring roots no longer breaks the build:
+  the scaffolded `server.go` is gone (its command is generated), and a
+  `serve.go` from before this change — no `runRoot` — keeps its own commands
+  while generate says what to add.
+
+- **`forge lint --graph`: the composition graph, judged whole** (composition
+  graph, PR 5). It assembles the graph exactly as `forge generate` does and
+  fails on an error: a service, package, worker, operator or provider no
+  root reaches (never constructed, so a service there is served by no
+  process — what the boot-time `RequireComplete` gate caught before the
+  graph), and a listener serving a service whose `(forge.v1.service).audience`
+  differs from its chain's authenticator's — the authenticator's provider
+  func declares it with the new `//forge:audience <name>` (the scaffolded
+  `NewUserAuth` is `//forge:audience user`). A provider kept for components
+  to come carries `//forge:standby` (the scaffolded `NewORM` and
+  `NewHTTPClient` do). The lane runs in the full sweep and is whole-project
+  under `--scope`; a legacy-composition project skips it.
+- **Least-knowledge rules in `forge lint --conventions`** (composition graph
+  §2): `forgeconv-deps-surface` (a Deps interface field declaring methods
+  the package never calls through it, read with go/types),
+  `forgeconv-no-container-deps` (an `internal/app` type, `cmd.Deps`, a
+  `map[string]any` locator or `any` in Deps) and
+  `forgeconv-deps-no-downcast` (a type assertion from a Deps field to a
+  concrete type). They land as warnings; under `--strict`, deps-surface is
+  an error for a foreign interface of more than ten methods with unused
+  ones, and the other two are errors.
+- **`forge fix narrow-deps <pkg>`** declares, in the package (`contract.go`,
+  or a new `deps.go`), the interface holding exactly the methods the package
+  calls through each wide foreign Deps field, retypes the field, and writes
+  its mock; `forge generate` keeps a `deps.go`'s `mock_gen.go` in step.
+  `compose.go` needs no change. A field whose value the package passes on,
+  type-asserts, or never calls is left alone, with the reason.
+
+### Fixed
+
+- **A freshly scaffolded operator passes `forge lint --contract`.** An
+  `internal/operators/<name>` package declaring `SetupWithManager` is exempt
+  from `requirecontract` structurally, as a worker is.
+- **`serverkit.Run` serves pprof through the `Pprof` component** instead of
+  its own copy.
+
+### Removed
+
+- **Graph-mode projects no longer scaffold `cmd/<bin>/cmd/server.go`**, and
+  `cmd/<bin>/main.go` / `root.go` take no command-group constructors
+  (`Execute()`, `newRootCmd(deps)`). The per-service, per-worker and
+  per-operator subcommands and `Serve` / `ServeSpec` / `MountFunc` /
+  `MountNone` stay only in projects on the legacy `Infra` / `NewComponents`
+  composition, which generate exactly as before.
+
+### Added
+
+- **`fw.Workload.profiling` (`forge.Profiling`): a typed per-workload
+  profiling override.** `wl.worker | {profiling = fw.Profiling {alloc = True, heap_interval = "1m"}}`
+  turns a type on or the heap cadence up for one workload; the schema defaults
+  to the runtime's set, and `heap_interval` is whole minutes or hours from
+  `1m` to `24h`. It renders `FORGE_PROFILES` and `FORGE_PROFILES_HEAP_INTERVAL`
+  on every runtime that runs a process; a value the workload's own `env` sets
+  wins, and it never turns profiling on where the env has it off.
 - **Fast/slow test tiers: `testkit.Slow`, `forge lint --slow-tests`,
   `forge ci test-budget`.** A test is fast (it runs in the blocking
   `go test -short` tier) unless it declares otherwise:
@@ -88,6 +194,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     target, env, via and time, and pages by keyset. The store writes through
     `*orm.Client`, so a write inside `RunTx` joins the transaction.
   - **Docs.** The new `activity` skill covers all of the above.
+  - **The lint.** `forgeconv-activity-declared` (`forge lint --conventions`,
+    error) fails a mutating rpc with no declaration and any malformed
+    declaration, such as a path that does not resolve. `forge generate` records
+    each rpc's verdict from `activity.IsMutating` and `activity.Resolve` in
+    `gen/forge_descriptor.json` (`Activity`), and the lint reads it there, so
+    the lint and the interceptor apply the same rules. **Upgrading:** every
+    custom mutating rpc in an existing project needs an `activity` declaration
+    or `activity: { none: "<why>" }`.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);
@@ -360,6 +474,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
+  finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
+  that one rule's findings and ignored for every other, so
+  `lint.rules: {forgeconv-activity-declared: warn}` was accepted by the config
+  loader and then did nothing: the rule stayed an error, and there was no way
+  to adopt it incrementally. `off`, `warn`, `error` and the `*` wildcard now
+  behave the same for every proto and Go-tree convention rule, after
+  `forge:lint-disable` suppression.
+
 - **Parallel `forge cluster up`s no longer lose each other's kubectl
   context.** `k3d cluster create`, `k3d kubeconfig merge`,
   `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
@@ -584,6 +707,96 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **A view can be a read-only entity.** forge projected BASE TABLEs only, so
+  a view's row type was hand-written (reliant: `chats_with_activity`, the one
+  definition of a chat's activity). `COMMENT ON VIEW v IS 'forge:entity'`
+  (regular or materialized; `key=<column>` names the key, else `id`) projects
+  it: the row struct, `List<E>` / `Count<E>`, `Get<E>ByID` when it has a key,
+  and the matching read-only store — no write is generated. Non-key columns
+  are pointers (the catalog cannot say a view column is NOT NULL). Views
+  without the marker are not projected. `schemadef.IntrospectViews` and
+  `shadowdb.Views` read them from the same shadow apply as the tables.
+- **The merge driver is set up per worktree, and forge says what it changed.**
+  Any forge command run in a project (`forge db migration rebase` was the one
+  noticed) pointed the repository's `merge.forge-generated.driver` at a forge
+  binary and routed forge's generated and state files to it in
+  `info/attributes`, silently, in the repository's common git directory that
+  every linked worktree reads. The command names one forge binary, and
+  worktrees are on different branches with different pins, so the last forge to
+  run decided how every other agent's rebase merged. The command now goes in
+  the worktree's own `config.worktree` (forge enables `extensions.worktreeConfig`
+  once, which git has honoured since 2.20 and go-git accepts; it declines for a
+  bare repository or an explicit `core.worktree`, and
+  `FORGE_MERGE_DRIVER_SHARED=1` keeps the old shared placement), so a worktree
+  merges with the forge its own commands run. The routes are no longer copied
+  into the shared `info/attributes` when the project's committed
+  `.gitattributes` already declares them, as every scaffolded project's does.
+  What is still written is reported: each setting with its scope and old value,
+  the git directory, how many worktrees share it, and the undo. A run that
+  changes nothing stays silent, and `FORGE_NO_MERGE_DRIVER=1` still opts out.
+- **A composite-primary-key table gets a store.** It used to get no entity at
+  all, only an info line, so counters and join tables (reliant:
+  `message_order_counters`, `project_daemons`, `connection_secrets`, …) were
+  hand SQL. The entity struct and store now project, addressed by the WHOLE
+  key: `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` take one parameter
+  per key column, `Upsert<E>` resolves a conflict on every key column, and
+  Create/List/Count/Update/UpdateMasked address the row by the struct's key
+  fields. `pkg/crud.Repo` gains `GetByPK` / `DeleteByPK` (a key entity), and
+  its Update, UpdateMasked, Upsert and zero-row classification address a
+  composite key by every column (Bun's `WherePK`); PK columns stay out of the
+  SET list. CRUD wiring still needs a single-column key, and there is no ULID
+  fill or cursor pagination for a composite key.
+- **Entities are named from their table, and a CRUD rpc that matches no table
+  is refused.** A CRUD rpc's entity found its table only as
+  `Pluralize(snake(<E>))`, so a singular-named table (`daemon_attachment`,
+  `provider_backoff`) matched nothing and its `Get<E>` silently became a
+  pb-through stub. The join now matches a table by its own entity name (its
+  singular, camel-cased), then the plural and the singular of `<E>`; a table
+  whose name derives to the wrong thing declares what it holds with
+  `COMMENT ON TABLE t IS 'forge:entity-name=<Name>'`, which also names its
+  store. A unary, unmarked CRUD-named rpc whose entity has a wire message but
+  matches no table, and that no handler implements by hand (its only method
+  is forge's unwired stub, or none), now fails `forge generate` (under the
+  CRUD step's gate), naming the rpc and the tables it looked for. The seed scope and the
+  ownership audit look for the singular too. **Upgrading:** a project with
+  such an rpc gets the refusal on its next generate: write the migration,
+  declare `forge:entity-name`, or mark the rpc `// forge:custom` (what it
+  already was in effect).
+- **Continuous profiling captures CPU and the live heap by default; allocation,
+  goroutine, mutex and block profiles are opt-in (`forge/pkg/observe`).** The
+  profiler still takes a 10s CPU profile every minute, but now snapshots the
+  heap every 15 minutes and exports only `inuse_space` / `inuse_objects`. Go's
+  `alloc_space` / `alloc_objects` are cumulative since process start, so each
+  snapshot repeated every allocation site the process ever had and grew with
+  uptime: in a production deployment they were 97.7% of stored profile rows (99.2%
+  of bytes), and one service's grew from 11k to 39k rows per snapshot over 8
+  hours. The new defaults keep about 0.3% of that deployment's rows (PROFILES.md
+  has the measurements). Choose the set with `observe.Config.Profiles`
+  (`ProfilesConfig{Types, HeapInterval}`), or per deploy with `FORGE_PROFILES`
+  (`cpu,heap,alloc,goroutine,mutex,block`, or `none`) and
+  `FORGE_PROFILES_HEAP_INTERVAL`, which win over the config; invalid values
+  are logged and ignored. Mutex and block profiles set the runtime's sampling
+  rates only while selected and restore them on shutdown. Opted-in allocation
+  counters stay cumulative, at the heap cadence. A live-heap snapshot also no
+  longer carries the locations and functions of allocation-only stacks.
+- **The ORM projects every applied table, whatever its rpcs.** The store
+  (`<entity>_orm_gen.go`, `<Entity>Store`, delegates, the `_repo_ext.go` seam)
+  used to exist only for a table some managed service declared a CRUD rpc
+  for, so a project whose CRUD-named rpcs are all `// forge:custom` — or whose
+  tables have no rpc at all — got no data layer from `forge generate` (reliant:
+  zero of 55 tables). The store now follows the schema: every BASE TABLE with a
+  single-column primary key is projected, a table no rpc names under the
+  singular of its name (`message_content_blocks` → `MessageContentBlock`).
+  CRUD wiring, pages and seed roots still key on CRUD rpcs.
+  `COMMENT ON TABLE t IS 'forge:no-entity'` keeps one table off the store (and
+  off CRUD wiring);
+  `//forge:no-orm` still opts out the whole data layer. The ORM step no longer
+  needs a service, only an entrypoint, and a name collision's advice now names
+  the table opt-out (`// forge:custom` no longer takes a table off the store).
+  **Upgrading:** the next `forge generate` writes a store for each table that
+  had none. If one of them redeclares a name your `internal/db` already
+  declares, generate refuses and names it: rename yours, or add
+  `COMMENT ON TABLE <t> IS 'forge:no-entity'` in a migration.
 - **`lifecyclekit` no longer re-exports `operatorkit.Run`, `Controller` and
   `Options`, so importing it never links controller-runtime.** Every binary
   that imported lifecyclekit for `Supervise`, `WrapWorker` or `Singleton`

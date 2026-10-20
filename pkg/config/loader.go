@@ -14,7 +14,8 @@ package config
 //
 // The resolution semantics:
 //
-//   - Precedence: defaults → config file → env (LookupEnv) → flag (only if
+//   - Precedence: defaults → build defaults (stamped with -ldflags, see
+//     builddefaults.go) → config file → env (LookupEnv) → flag (only if
 //     cmd.Flags().Changed), then a required-field check. The file layer
 //     (filelayer.go) loads only when a path is EXPLICITLY given and fails
 //     loudly on a missing/invalid explicit path. See LoadInto.
@@ -77,7 +78,7 @@ func fieldOptions(fd protoreflect.FieldDescriptor) *forgepb.ConfigFieldOptions {
 	// same way the generator skips fields with no annotation. A field is
 	// considered config-bound if it names any binding source.
 	if cfg.GetEnvVar() == "" && len(cfg.GetEnvVarAliases()) == 0 && cfg.GetFlag() == "" &&
-		cfg.GetDefaultValue() == "" && !cfg.GetRequired() {
+		cfg.GetDefaultValue() == "" && !cfg.GetRequired() && cfg.GetEnvPrefix() == "" {
 		return nil
 	}
 	return cfg
@@ -350,11 +351,15 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // LoadInto populates msg in place using the full forge config precedence —
 // later layers OVERRIDE earlier ones:
 //
-//		defaults  →  config file  →  environment  →  flags
-//		(earliest)                                   (wins)
+//		defaults  →  build defaults  →  config file  →  environment  →  flags
+//		(earliest)                                                      (wins)
 //
 //	  - defaults: every annotated field's proto default (sensitive fields get
 //	    none — an inline secret default would be a leak).
+//	  - build defaults: the values this BUILD was stamped with (-ldflags -X
+//	    into the generated pkg/config.BuildDefaults; builddefaults.go), keyed
+//	    by env_var. A stamp that names no field, a sensitive field, or a value
+//	    that does not parse fails the load.
 //	  - config file: when a path is EXPLICITLY given via the --config flag or
 //	    the binary's <BINARY>_CONFIG env var, the file is proto-native
 //	    unmarshaled INTO msg, overlaying the defaults (see filelayer.go). A
@@ -390,6 +395,12 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 		return err
 	}
 
+	// Layer 1b: build-time defaults stamped into the binary
+	// (builddefaults.go): what one BUILD says, above what the source says.
+	if err := applyBuildDefaults(m); err != nil {
+		return err
+	}
+
 	// Layer 2: config file, ONLY when an explicit path is given (--config
 	// flag or the binary's <BINARY>_CONFIG env). A missing/invalid explicit
 	// file aborts LOUDLY here; no path given means this layer is skipped (not
@@ -402,6 +413,11 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 
 	// Layers 3 + 4: env then flags overlay onto whatever defaults/file set.
 	if err := applyEnvAndFlags(cmd, m); err != nil {
+		return err
+	}
+	// An env family's prefix is owned: a variable under it that nothing
+	// claims is a typo, refused rather than silently dropped (envfamily.go).
+	if err := checkFamilyPrefixes(cmd, msg); err != nil {
 		return err
 	}
 
@@ -490,6 +506,9 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 // take env (Secret mount) but NEVER a flag — no flag is ever registered for
 // them, and we defensively skip the flag branch even if one were.
 func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
+	if isEnvFamily(opt) {
+		return overlayFamily(m, fd, opt) // env only: a family has no flag
+	}
 	// Env layer: env_var, then its aliases in order — the first one set wins
 	// (envnames.go). A malformed value in the name that wins is an error; it
 	// never falls through to the next name.

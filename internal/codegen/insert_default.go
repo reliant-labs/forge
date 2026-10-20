@@ -119,7 +119,7 @@ func pgDefaultIsZero(def, base string) bool {
 		}
 	}
 	switch base {
-	case "int64", "float64":
+	case "int64", "int32", "int16", "float64":
 		f, err := strconv.ParseFloat(raw, 64)
 		return err == nil && f == 0
 	case "bool":

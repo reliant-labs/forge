@@ -355,14 +355,14 @@ func enumRepeatedWireFields(svc ServiceDef, entityName string) map[string]bool {
 // the SAME projection internal/generator declares the struct field with, so
 // a pairing this file blesses is one the compiler can typecheck.
 func dbBaseGoType(col EntityColumn) string {
-	return canonicalGoTypeMust(col.Type, col.IsArray)
+	return ColumnGoType(col.Type, col.DeclType, col.IsArray)
 }
 
 // dbNullable reports whether the column maps to a pointer struct field: a
 // nullable column, or a NOT NULL one whose DEFAULT a nil leaves to the
 // database (ColumnInsertDefault).
 func dbNullable(col EntityColumn) bool {
-	if col.IsArray || col.Type == "bytes" {
+	if col.IsArray || col.Type == "bytes" || col.Type == "json" {
 		return false
 	}
 	return (!col.NotNull && !col.IsPK) || columnInsertDefault(col) == InsertDefaultPointer
@@ -453,25 +453,40 @@ func pbFieldRef(v string, wf EntityField) string { return v + "." + wf.GoName }
 
 func dbFieldRef(v string, col EntityColumn) string { return v + "." + naming.ColumnGoName(col.Name) }
 
+// goTypeOverrideUnmapped is the reason a column declaring `forge:go-type`
+// has no generated wire conversion, "" for a column without one. The
+// declared type is the author's (an enum, a map, a domain type) and forge
+// cannot see its shape at generate time, so pairing it with a wire field is
+// refused by name rather than guessed at.
+func goTypeOverrideUnmapped(col EntityColumn) string {
+	if col.GoType == "" {
+		return ""
+	}
+	return fmt.Sprintf("column %s declares forge:go-type=%s, which forge does not convert to or from the wire — "+
+		"convert it in the owned shim (handlers_crud.go), or leave the field off the wire message", col.Name, col.GoType)
+}
+
 // assignJSONBToDB emits the write half of a json/jsonb pairing: marshal the
-// wire value, then store the text. A NULLABLE column stores SQL NULL for an
-// absent value rather than a fabricated empty document, so "no value" and
-// "empty value" stay distinguishable in the table.
+// wire value, then store the document (the entity field is a
+// json.RawMessage, assigned from the encoder's text as bytes). A NULLABLE
+// column stores SQL NULL for an absent value rather than a fabricated empty
+// document, so "no value" and "empty value" stay distinguishable in the
+// table.
 func assignJSONBToDB(dst, src string, wf EntityField, col EntityColumn) string {
 	d, s := dbFieldRef(dst, col), pbFieldRef(src, wf)
 	marshal, _ := jsonbPair(wf)
 	v := jsonVarName(wf.GoName)
 	fail := fmt.Sprintf("return nil, fmt.Errorf(%q, err)", wf.Name+": %w")
 
-	if dbNullable(col) {
+	if !col.NotNull {
 		// An absent message / empty list is SQL NULL. `%s != nil` reads the
 		// same for a pointer message and for a nil slice.
 		return fmt.Sprintf(
-			"if %s != nil {\n\t\t%s, err := %s(%s)\n\t\tif err != nil {\n\t\t\t%s\n\t\t}\n\t\t%s = &%s\n\t}",
+			"if %s != nil {\n\t\t%s, err := %s(%s)\n\t\tif err != nil {\n\t\t\t%s\n\t\t}\n\t\t%s = []byte(%s)\n\t}",
 			s, v, marshal, s, fail, d, v)
 	}
 	return fmt.Sprintf(
-		"%s, err := %s(%s)\n\tif err != nil {\n\t\t%s\n\t}\n\t%s = %s",
+		"%s, err := %s(%s)\n\tif err != nil {\n\t\t%s\n\t}\n\t%s = []byte(%s)",
 		v, marshal, s, fail, d, v)
 }
 
@@ -483,14 +498,41 @@ func assignJSONBToProto(dst, src string, wf EntityField, col EntityColumn) strin
 	_, unmarshal := jsonbPair(wf)
 	fail := fmt.Sprintf("return nil, fmt.Errorf(%q, err)", wf.Name+": %w")
 
-	if dbNullable(col) {
+	if !col.NotNull {
 		return fmt.Sprintf(
-			"if %s != nil {\n\t\tif err := %s(*%s, &%s); err != nil {\n\t\t\t%s\n\t\t}\n\t}",
+			"if %s != nil {\n\t\tif err := %s(string(%s), &%s); err != nil {\n\t\t\t%s\n\t\t}\n\t}",
 			s, unmarshal, s, d, fail)
 	}
 	return fmt.Sprintf(
-		"if err := %s(%s, &%s); err != nil {\n\t\t%s\n\t}",
+		"if err := %s(string(%s), &%s); err != nil {\n\t\t%s\n\t}",
 		unmarshal, s, d, fail)
+}
+
+// jsonTextPairing reports a plain string wire field (or its wrapper) over a
+// json column: the app owns the document and passes its text straight
+// through, now converted between the wire's string and the entity's
+// json.RawMessage bytes.
+func jsonTextPairing(wf EntityField, col EntityColumn) bool {
+	return isJSONColumn(col) && ((wf.Kind == FieldKindScalar && wf.GoType == "string") ||
+		(wf.Kind == FieldKindWrapper && wf.GoType == "*string"))
+}
+
+func assignJSONTextToDB(d, s string, wf EntityField, col EntityColumn) string {
+	if wf.Kind == FieldKindWrapper {
+		return fmt.Sprintf("if %s != nil {\n\t\t%s = []byte(*%s)\n\t}", s, d, s)
+	}
+	if !col.NotNull {
+		// Unset is SQL NULL, not an empty (invalid) document.
+		return fmt.Sprintf("if %s != \"\" {\n\t\t%s = []byte(%s)\n\t}", s, d, s)
+	}
+	return fmt.Sprintf("%s = []byte(%s)", d, s)
+}
+
+func assignJSONTextToProto(d, s string, wf EntityField) string {
+	if wf.Kind == FieldKindWrapper {
+		return fmt.Sprintf("if %s != nil {\n\t\tv := string(%s)\n\t\t%s = &v\n\t}", s, s, d)
+	}
+	return fmt.Sprintf("%s = string(%s)", d, s)
 }
 
 // legacyTextTimestamp reports the pairing of a google.protobuf.Timestamp
@@ -559,6 +601,9 @@ func legacyTextTimestampToProto(d, s, col string, nullable bool) string {
 // unmappable pairing fails the generate (see UnmappedField); it never
 // ships as a comment.
 func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, string) {
+	if why := goTypeOverrideUnmapped(col); why != "" {
+		return "", why
+	}
 	d, s := dbFieldRef(dst, col), pbFieldRef(src, wf)
 	base := dbBaseGoType(col)
 	nullable := dbNullable(col)
@@ -570,6 +615,8 @@ func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, stri
 	// a json column is a JSON array, not a postgres ARRAY.
 	case isJSONColumn(col) && jsonbPairable(wf):
 		return assignJSONBToDB(dst, src, wf, col), ""
+	case jsonTextPairing(wf, col):
+		return assignJSONTextToDB(d, s, wf, col), ""
 
 	case wf.Kind == FieldKindTimestamp && col.Type == "time":
 		if nullable {
@@ -650,12 +697,14 @@ func assignToDB(dst, src string, wf EntityField, col EntityColumn) (string, stri
 			}
 			return enumSingularAssign(d, s, optional, nullable, col), ""
 		case "int64":
-			// An integer column (any width: the canonical type is int64)
-			// stores the WIRE NUMBER — the schema the author declared,
-			// e.g. a project that kept its enums as integers. int32 →
-			// int64 widens, so nothing can be lost on the way in.
+			// An integer column (any width) stores the WIRE NUMBER — the
+			// schema the author declared, e.g. a project that kept its
+			// enums as integers. The wire number is an int32: an int32 or
+			// int64 column holds every one, a smallint column is guarded.
 			if repeated {
-				return fmt.Sprintf("for _, v := range %s {\n\t\t%s = append(%s, int64(v))\n\t}", s, d, d), ""
+				elem := elemType(base)
+				guard := numericGuardStmt("v", "int32", elem, wf.Name, col, true)
+				return fmt.Sprintf("for _, v := range %s {\n\t\t%s%s = append(%s, %s(v))\n\t}", s, indentBlock(guard), d, d, elem), ""
 			}
 			return enumNumberAssign(d, s, optional, nullable, col), ""
 		}
@@ -718,9 +767,10 @@ func enumSingularAssign(d, s string, optional, nullable bool, col EntityColumn) 
 // value as sent — with no CHECK vocabulary to refuse the zero, it stores 0,
 // which is what the schema allowed.
 func enumNumberAssign(d, s string, optional, nullable bool, col EntityColumn) string {
-	set, val := s+" != 0", "int64("+s+")"
+	goInt := dbBaseGoType(col)
+	set, val := s+" != 0", goInt+"("+s+")"
 	if optional {
-		set, val = s+" != nil && *"+s+" != 0", "int64(*"+s+")"
+		set, val = s+" != nil && *"+s+" != 0", goInt+"(*"+s+")"
 	}
 	if nullable {
 		return fmt.Sprintf("if %s {\n\t\tv := %s\n\t\t%s = &v\n\t}", set, val, d)
@@ -739,7 +789,9 @@ func enumNumberAssign(d, s string, optional, nullable bool, col EntityColumn) st
 // be, is refused with numericGuardStmt's error (a row written by a
 // migration, an import or another service).
 func enumFromNumberAssign(d, s, pbType, field string, col EntityColumn, repeated, optional, nullable bool) string {
-	guard := func(expr string) string { return numericGuardStmt(expr, "int64", "int32", field, col, false) }
+	guard := func(expr string) string {
+		return numericGuardStmt(expr, elemType(dbBaseGoType(col)), "int32", field, col, false)
+	}
 	switch {
 	case repeated:
 		return fmt.Sprintf("for _, v := range %s {\n\t\t%s%s = append(%s, %s(v))\n\t}",
@@ -760,6 +812,9 @@ func enumFromNumberAssign(d, s, pbType, field string, col EntityColumn, repeated
 // onto the wire message. src is the entity variable. The second return is
 // the REASON the pairing has no conversion, or "" when it mapped.
 func assignToProto(dst, src string, wf EntityField, col EntityColumn) (string, string) {
+	if why := goTypeOverrideUnmapped(col); why != "" {
+		return "", why
+	}
 	d, s := pbFieldRef(dst, wf), dbFieldRef(src, col)
 	base := dbBaseGoType(col)
 	nullable := dbNullable(col)
@@ -768,6 +823,8 @@ func assignToProto(dst, src string, wf EntityField, col EntityColumn) (string, s
 	// See the matching branch in assignToDB.
 	case isJSONColumn(col) && jsonbPairable(wf):
 		return assignJSONBToProto(dst, src, wf, col), ""
+	case jsonTextPairing(wf, col):
+		return assignJSONTextToProto(d, s, wf), ""
 
 	case wf.Kind == FieldKindTimestamp && col.Type == "time":
 		if nullable {
@@ -941,6 +998,7 @@ type goNumeric struct {
 }
 
 var goNumericTypes = map[string]goNumeric{
+	"int16":   {bits: 16},
 	"int32":   {bits: 32},
 	"int64":   {bits: 64},
 	"uint32":  {unsigned: true, bits: 32},

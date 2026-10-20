@@ -25,6 +25,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but off; the full sweep only where the rule is at error, so a repo that
   sets a rule to warn in `lint.rules` while it migrates is not rewritten by a
   forge pin. Worker scaffolds log with their context.
+- **A trace per unit of background work: `observe.RunRoot`,
+  `lifecyclekit.Every`, and a root span per reconcile in
+  `forge/pkg/controller`.** A loop iteration or a reconcile has no Connect
+  edge to start its trace, so the decorated methods, queries and calls it made
+  were each a one-span trace, or nothing (`dbtrace` opens spans only under a
+  parent). `observe.RunRoot(ctx, name, fn)` runs `fn` under a new root span,
+  never the caller's trace, and records `fn`'s error or panic (the panic is
+  re-raised). `lifecyclekit.Every(name, EveryOptions{Interval}, fn)` is the
+  hand-written ticker worker with that built in: one `worker.<name>.run` root
+  per run, a failed or panicking run logged and the cadence kept.
+  `controller.Reconciler.Run` opens `reconcile <Kind>` around every reconcile,
+  with `k8s.namespace.name` / `k8s.object.name` and the error recorded.
+- **Trace context through Temporal and NATS: `forge/pkg/observe/temporalotel`
+  and `forge/pkg/observe/natsotel`.** `temporalotel.NewInterceptor` is
+  Temporal's `contrib/opentelemetry` interceptor with forge's defaults: the
+  global W3C propagator (the same context Connect, HTTP and NATS carry), the
+  global tracer provider read at span time, and `AllowInvalidParentSpans`, so
+  workflows already in flight keep running. Installed once on `client.Dial`,
+  it also applies to the client's workers, so the request that starts a
+  workflow, the workflow and its activities are one trace; before this,
+  Reliant's hand-rolled interceptor made every activity a root. `natsotel` is
+  Reliant's NATS propagation, lifted: `NewMsg`/`Inject` on publish,
+  `StartConsumerSpan(ctx, subject, header, name)` on consume (core NATS or
+  JetStream), `StartProducerSpan` where the publish deserves a span, with
+  `messaging.*` attributes.
+
+- **Root reach for binary-config projects.** A composition-graph project whose
+  primary binary binds config per command (`(forge.v1.binary_config)`
+  `command` / `subtrees`) used to get no per-root reach: no `LoadReach`
+  narrowing, and no `ROOTS` in `config_gen.k`, so the scaffolded envs'
+  `workloadEnvMap` call did not render. Now each of the binary's configs
+  beside the root config is an `app.Graph` input, `g.<Message>`. A Deps field
+  typed `*config.<Message>` resolves to it. A root's process loads the root
+  config, the subtree configs over its command and its exact command config,
+  and its reach is still per field: the leaves its closure reads of each.
+  `roots_gen.go` loads each config with the new `config.Load<Msg>Reach`
+  (only reached `required` fields are demanded), sets it on the graph, and
+  registers its flags (command configs on their command, subtree configs on
+  their path's command). `Build<Root>` refuses a nil input its closure reads.
+  `ROOTS` carries the union of every loaded config's reached env and projects
+  it through `<bin>ProcessEnvMap`, so `workloadEnvMap(appcfg.<bin>_process, w)`
+  gives each root exactly its env. Generate refuses a closure that reads a
+  config its root's process never loads, and an env var that two loaded
+  configs both declare. Single-AppConfig and legacy projects generate
+  byte-identical output.
+
+- **Release codemods, and `forge fix operatorkit`.** A codemod
+  (`internal/codemod`) is keyed to the release that broke the shape it
+  rewrites, exactly as a migration skill is, and decides from the tree, so it
+  is a no-op on a project without the old shape. `forge project upgrade` runs
+  every rename-class codemod whose release the baseline predates — under
+  `--check` it lists what it would rewrite — and each is also
+  `forge fix <name> [--dry-run]`. The first is `operatorkit` (v0.1.46): every
+  `lifecyclekit.Run` / `Controller` / `Options` reference becomes
+  `operatorkit.*`, the operatorkit import is added and an unused lifecyclekit
+  import dropped. `forge generate` no longer holds the forge pin back over a
+  codemod that has nothing to rewrite in the project. The previous registry
+  was keyed by minor hop, which a patch-release breaking change could never
+  use, and was empty.
+
+- **A forge that is not the project's pinned forge now hands the command to the
+  pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
+  bundles one) is routinely older than a project's `forge_version`, and
+  `generate`, `scaffold`, `component install` and friends refused with a
+  recipe, or a render failed with KCL schema errors (`release_dependencies`,
+  `ShellBuild.unit`) that blame the project; agents had to run `task tools` or
+  `go run …@<pin>` by hand. Now the command is exec'd under the right forge
+  with the same arguments, environment, stdio and exit status, and one line on
+  stderr says so. The pinned forge is the project's `.tools/bin/forge` when it
+  reports that version, else a one-time `go install` of the pinned module
+  version into a cache under `<user cache dir>/forge/pinned/` (a project linked
+  to a forge checkout by go.work `use` or a directory `replace` gets a build of
+  that checkout instead). The KCL-reading commands (`env render`, `env shape`, `env config`,
+  `env diff`, `env up`, `kcl`, `doctor`) are handed over too. Read-only runs stay local;
+  `--allow-version-skew` / `FORGE_ALLOW_VERSION_SKEW=1` runs this forge as
+  before; if the pinned forge cannot be had (offline, an unpublished version)
+  the old refusal returns, now carrying the reason. See `docs/versioning.md`.
 
 - **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
   only when the caller is an authenticated internal service.** otelconnect
@@ -836,6 +913,36 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **Least-knowledge lint: the design's severities by default, and the two K3
+  checks.** `forgeconv-deps-surface` (a foreign interface of more than ten
+  methods with unused ones), `forgeconv-no-container-deps` and
+  `forgeconv-deps-no-downcast` are now errors without `--strict`, as
+  composition graph §7 planned one release after they landed as warnings; a
+  fresh scaffold has none. New: `forgeconv-no-getenv` (a component package
+  reading `os.Getenv` / `LookupEnv` / `Environ` — configuration its root's
+  config reach cannot see) is a warning, an error under `--strict`; and
+  `forgeconv-deps-root-config` (a Deps field holding the root
+  `*config.Config`) is reported only under `--strict`, as a warning, because
+  the scaffold still hands every component the root config. `--strict` makes
+  every other least-knowledge finding an error.
+
+- **The entity struct's types are idiomatic and lossless.** Field names spell
+  Go initialisms in capitals (`ID`, `OrgID`, `APIKey`; the `<E>Field*` and
+  `<E>Constraint*` constants follow); an integer column is as wide as it is
+  declared (`INTEGER` → `int32`, `SMALLINT` → `int16`, `BIGINT` → `int64` —
+  it was always `int64`); a `jsonb`/`json` column is `json.RawMessage` (nil
+  for NULL), not `string`.
+  `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares the Go type of
+  one column — a named enum
+  over an integer, `map[string]any` over json, `<path>[;<pkg>].<Type>` —
+  with no generated wire conversion (a CRUD rpc carrying it fails generate
+  by name). The CRUD conversions follow: the wire's int32 enum number is
+  stored at the column's width, json pairs through `[]byte`/`string`.
+  **Upgrading:** regenerate; then rename references to the projected fields in
+  hand-written code — `.Id` → `.ID`, `.UserId` → `.UserID`,
+  `TaskFieldId` → `TaskFieldID` (`gopls rename`, or `gofmt -r` per name) — and
+  adjust code that read an `integer` column as `int64` or a json column as
+  `string` (`string(row.Payload)`, `json.RawMessage(s)`).
 - **A `NOT NULL` column's `DEFAULT` applies when the field is unset — and an
   explicit zero is still stored.** The generated store wrote the Go zero for
   every defaulted column a caller left unset, so the DEFAULT never fired:

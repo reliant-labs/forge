@@ -100,6 +100,23 @@ func (s *Service) Raw() *store.Impl {
 	return impl
 }
 `,
+		"internal/handlers/tools/env.go": `package tools
+
+import (
+	stdos "os"
+)
+
+type os struct{}
+
+func (os) Getenv(string) string { return "" }
+
+func region() string {
+	if v, ok := stdos.LookupEnv("REGION"); ok {
+		return v
+	}
+	return os{}.Getenv("not the process env")
+}
+`,
 	}
 	for name, src := range files {
 		p := filepath.Join(dir, filepath.FromSlash(name))
@@ -152,7 +169,13 @@ func TestAnalyze_UsedMethodsEscapesContainersAndDowncasts(t *testing.T) {
 		t.Fatalf("Repo unused = %d", got)
 	}
 	if c := fieldNamed(t, p, "Config").Container; c != "" {
-		t.Errorf("the root config is not flagged until the scaffold gives components config blocks (K3): %q", c)
+		t.Errorf("the root config is no container (K3 is its own rule): %q", c)
+	}
+	if !fieldNamed(t, p, "Config").RootConfig || fieldNamed(t, p, "Logger").RootConfig {
+		t.Errorf("RootConfig: Config=%v Logger=%v, want only Config", fieldNamed(t, p, "Config").RootConfig, fieldNamed(t, p, "Logger").RootConfig)
+	}
+	if len(p.EnvReads) != 1 || p.EnvReads[0].Call != "os.LookupEnv" || p.EnvReads[0].File != "internal/handlers/tools/env.go" {
+		t.Errorf("env reads = %+v, want the aliased os.LookupEnv only (a local type named os is not the package)", p.EnvReads)
 	}
 	if c := fieldNamed(t, p, "Bag").Container; !strings.Contains(c, "any") {
 		t.Errorf("Bag container = %q", c)

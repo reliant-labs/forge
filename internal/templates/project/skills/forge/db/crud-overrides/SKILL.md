@@ -124,7 +124,7 @@ them:
 // opts — see "Where a per-caller policy attaches" above.)
 op.PersistMasked = func(ctx context.Context, e *db.Job, fields []string, _ ...orm.QueryOption) error {
     return s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
-        stored, err := db.GetJobByID(ctx, s.deps.DB, e.Id) // inside the transaction
+        stored, err := db.GetJobByID(ctx, s.deps.DB, e.ID) // inside the transaction
         if err != nil {
             return err
         }

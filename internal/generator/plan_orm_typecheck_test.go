@@ -102,6 +102,23 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true},
 			},
 		},
+		// Idiomatic, lossless types (F12.6): width-refined integers, a json
+		// document, and forge:go-type overrides — builtin, stdlib and a
+		// qualified package with its own name.
+		{
+			Name: "Block", TableName: "blocks",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "int32", PrimaryKey: true, NotNull: true},
+				{Name: "position", Type: "int32", NotNull: true},
+				{Name: "priority", Type: "int16"},
+				{Name: "seqs", Type: "[]int32"},
+				{Name: "payload", Type: "json", NotNull: true},
+				{Name: "extra", Type: "json"},
+				{Name: "attrs", Type: "json", GoType: "map[string]any"},
+				{Name: "ttl", Type: "int64", NotNull: true, GoType: "time.Duration"},
+				{Name: "kind", Type: "int32", GoType: "github.com/reliant-labs/forge/pkg/orm;orm.Isolation"},
+			},
+		},
 		// Composite primary keys (F12.3): a counter, a join table whose
 		// key column is a Go keyword, and an append-only one.
 		{

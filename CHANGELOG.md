@@ -746,9 +746,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   `_repo_ext.go` seam in that directory, declaring its package; the
   collision refusal and `//forge:no-orm` read that package. Every consumer
   follows it: CRUD wiring and test factories import it (as `db`), compose.go
-  provides `<pkg>.Store` / `<pkg>.<Entity>Store` Deps fields, `forge project
-  shapes --kind store`, and the drift guard and its hints. Moving
-  the key reclaims forge's previous projection from the old directory (the
+  provides `<pkg>.Store` / `<pkg>.<Entity>Store` Deps fields,
+  `forge project shapes --kind store`, and the drift guard and its hints.
+  Moving the key reclaims forge's previous projection from the old directory (the
   `_repo_ext.go` seams are yours and stay). Default unchanged: `internal/db`.
   The collision refusal now offers the key. `generator.GeneratePlanORM` takes
   a `config.ORMConfig` in place of its two unused module/service arguments.

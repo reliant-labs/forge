@@ -24,7 +24,10 @@ var bundleTokenRead = regexp.MustCompile(`(?:process\.env|import\.meta\.env)\.[A
 // TYPED CONFIG, and always returns a real JWT validator so a fresh project
 // does real auth out of the box (no dev-auth bypass).
 func TestRenderAppAuthTemplate(t *testing.T) {
-	data := struct{ Module string }{Module: "example.com/myproject"}
+	data := struct {
+		Module             string
+		Graph, HasDatabase bool
+	}{Module: "example.com/myproject"}
 
 	content, err := ProjectTemplates().Render("app-auth.go.tmpl", data)
 	if err != nil {
@@ -353,7 +356,10 @@ func TestAPIKeysSkillDescribesTheScaffold(t *testing.T) {
 	}
 	files := map[string]string{
 		"pkg/middleware/middleware.go": render("middleware.go.tmpl", struct{ Name string }{Name: "demo"}),
-		"internal/app/auth.go":         render("app-auth.go.tmpl", struct{ Module string }{Module: "example.com/demo"}),
+		"internal/app/auth.go": render("app-auth.go.tmpl", struct {
+			Module             string
+			Graph, HasDatabase bool
+		}{Module: "example.com/demo"}),
 		"cmd/<bin>/cmd/serve.go": render("cmd-tree-serve.go.tmpl", struct {
 			Module       string
 			ConfigFields map[string]bool

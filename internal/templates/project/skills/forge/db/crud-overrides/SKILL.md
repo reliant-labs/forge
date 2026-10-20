@@ -177,6 +177,43 @@ them instead, because a 200 that silently changed nothing is the failure this
 exists to prevent. An override that wants the AIP behaviour sets
 `op.ReadOnly = nil` and filters the paths in `op.PersistMasked`.
 
+## Hand SQL: two placeholder dialects on one handle
+
+An override, a custom rpc or a `_repo_ext.go` query that drops to hand SQL
+reaches it through the same `orm.Context`, and the two paths take
+**different placeholders**:
+
+| Path | Placeholders | Who binds the arguments |
+|---|---|---|
+| `db.Exec` / `db.Query` / `db.QueryRow` (raw passthrough) | postgres `$1`, `$2`, … | the server (a real bind parameter) |
+| `db.Bun().NewRaw(…)`, every builder method (`Where`, `Set`, `ColumnExpr`, `OrderExpr`, …), `bun.SafeQuery`, `db.Bun().ExecContext` / `QueryContext` / `QueryRowContext` | bun `?` (in order) or `?0`, `?1`, … (0-based, reusable) | bun, interpolating the values into the SQL text client-side |
+
+```go
+// raw passthrough: native $N
+db.Exec(ctx, `UPDATE run_events SET dispatched_at = now() WHERE id = $1`, id)
+
+// bun: ? / ?N — a ported sqlc query has its $N rewritten to ?N-1
+db.Bun().NewRaw(`INSERT INTO messages (id, chat_id) VALUES (?0, ?1)`, id, chatID).Exec(ctx)
+```
+
+In bun-formatted SQL **every unescaped `?` is a placeholder** — one in a
+`-- comment`, one inside a `'string literal'`, and the jsonb operators `?`,
+`?|` and `?&`. Each consumes the next argument and shifts the rest onto the
+wrong placeholders. Escape a literal one as `\?` (`"\\?"` in an interpreted Go
+string, `\?` in a raw one) — `payload \? 'tool'`, `tags \?| ?` — or use the
+function forms `jsonb_exists`, `jsonb_exists_any`, `jsonb_exists_all`.
+Conversely, a `$1` left in bun-formatted SQL reaches postgres literally with
+nothing bound (`there is no parameter $1`).
+
+`forge lint` catches both in string literals and named constants:
+`forgeconv-bun-dollar-placeholder` and `forgeconv-bun-literal-question-mark`.
+A query assembled at run time is not judged — keep hand SQL in a constant.
+
+Pick by what the statement is: a fixed, hand-tuned statement whose text never
+varies is fine either way; prefer the raw passthrough when its argument values
+vary per call on a hot path, because bun's interpolated text differs for every
+value and so is a new prepared statement under pgx's default statement cache.
+
 ## Errors from an override must be classified
 
 Return `svcerr` sentinels (or a `*connect.Error`) from any op closure —

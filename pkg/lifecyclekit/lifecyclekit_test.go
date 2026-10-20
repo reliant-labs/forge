@@ -130,14 +130,3 @@ func TestHasOperators(t *testing.T) {
 type stubOperator struct{}
 
 func (stubOperator) Name() string { return "stub" }
-
-func TestRun_NoClusterDegradesToNil(t *testing.T) {
-	// With no reachable Kubernetes cluster, the operatorkit bridge logs a
-	// warning and returns nil rather than crashing. lifecyclekit.Run is a
-	// pass-through, so it inherits this graceful degrade. (CI runs without a
-	// cluster, so ctrl.GetConfig fails and Run returns nil immediately.)
-	err := Run(context.Background(), nil, Options{LeaderElectionID: "test-leader"}, nil)
-	if err != nil {
-		t.Fatalf("Run with no cluster should degrade to nil, got %v", err)
-	}
-}

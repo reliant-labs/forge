@@ -209,16 +209,12 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	}
 	if g.isService() {
 		dirs = append(dirs, "internal/handlers", "internal/handlers/mocks", "pkg/app", "pkg/middleware")
-		// The command tree lives under cmd/<bin>/cmd, dir-nested by category
-		// (devspace idiom). Pre-create the group subpackage dirs so main.go's
-		// blank imports resolve even before any service/worker/operator exists.
+		// The command tree lives under cmd/<bin>/cmd. A new project composes
+		// with the composition graph, which has no per-service, per-worker or
+		// per-operator command groups — `server` runs the server root — so
+		// no group directories are created.
 		bin := g.binaryName()
-		dirs = append(dirs,
-			filepath.Join("cmd", bin, "cmd"),
-			filepath.Join("cmd", bin, "cmd", "services"),
-			filepath.Join("cmd", bin, "cmd", "workers"),
-			filepath.Join("cmd", bin, "cmd", "operators"),
-		)
+		dirs = append(dirs, filepath.Join("cmd", bin, "cmd"))
 	}
 	if g.hasCmd() {
 		dirs = append(dirs, "cmd")
@@ -463,7 +459,9 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		bin := g.binaryName()
 		treeDir := filepath.Join("cmd", bin, "cmd")
 		files = append(files,
-			struct{ template, dest string }{"cmd-tree-server.go.tmpl", filepath.Join(treeDir, "server.go")},
+			// A new project composes with the composition graph: `server`
+			// runs the graph's server root.
+			struct{ template, dest string }{"cmd-tree-server-graph.go.tmpl", filepath.Join(treeDir, "server.go")},
 		)
 		// cmd/<bin>/cmd/db.go (the `db migrate` commands) depends on both
 		// pkg/config and pkg/migratekit; skip when migrations are also disabled.

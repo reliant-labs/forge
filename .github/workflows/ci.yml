@@ -33,12 +33,13 @@ permissions:
 #   flake-gate      tests the change adds or edits, -race -count=3
 #   windows-cross   GOOS=windows build + vet, from Linux
 #   e2e-compile     `go vet -tags e2e` over the e2e-tagged packages
-#   lint, build, verify-generated, validate-kcl, vuln-scan, license-check
+#   lint, verify-generated (+ KCL), vuln-scan
 #
 # A PUSH TO MAIN (and workflow_dispatch) gets everything the pull request got
 # except the sharded and flake lanes, plus the slow tier:
 #
 #   test, test-cli, test-guards   full mode (no -short) under -race; guards at -p 1
+#   build, license-check          the -trimpath release build; go-licenses
 #   test-short-warm               the whole -short tier in one job; saves the
 #                                 build cache the pull-request shards restore
 #   windows                       native Windows: build, vet, -short tests, smoke
@@ -158,12 +159,16 @@ jobs:
 
   # ── The pull-request test tier: -short, no -race, sharded ───────────────
   #
-  # Each shard is one invocation of scripts/ci-test-shard.sh; the partition
-  # is scripts/ci-test-packages.sh's (`short I N` deals every package except
-  # the split ones round-robin; `split` names the packages whose TESTS are
-  # divided, because each is one serial test binary no package shard can
-  # shorten). internal/ciguard fails if this matrix misses an index of any
-  # shard count, or splits a package the script does not.
+  # Each shard is one invocation of scripts/ci-test-shard.sh over
+  # scripts/ci-test-packages.sh's `short I N`: every package, dealt
+  # round-robin. internal/ciguard fails if this matrix misses an index.
+  #
+  # TWO SHARDS, because the cost is compile and link, not test bodies.
+  # Measured on this PR's first runs: internal/cli's ~3,200 tests take 16-18s
+  # per third on a runner and internal/generator's ~370 take ~6s, while a
+  # shard's `go test` step is ~50-75s and setup ~45s. Splitting packages by
+  # test name (tried first, 8 shards) bought nothing a package boundary does
+  # not, and every extra job queues: the org runs at most 20 jobs at once.
   #
   # No -race: it multiplies compile and run time several-fold, and the
   # race-detected run of every package happens on each push to main (`test`,
@@ -180,29 +185,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { shard: "packages 1/3", args: "pkgs 0 3" }
-          - { shard: "packages 2/3", args: "pkgs 1 3" }
-          - { shard: "packages 3/3", args: "pkgs 2 3" }
-          - {
-              shard: "internal/cli 1/3",
-              args: "split github.com/reliant-labs/forge/internal/cli 0 3",
-            }
-          - {
-              shard: "internal/cli 2/3",
-              args: "split github.com/reliant-labs/forge/internal/cli 1 3",
-            }
-          - {
-              shard: "internal/cli 3/3",
-              args: "split github.com/reliant-labs/forge/internal/cli 2 3",
-            }
-          - {
-              shard: "internal/generator 1/2",
-              args: "split github.com/reliant-labs/forge/internal/generator 0 2",
-            }
-          - {
-              shard: "internal/generator 2/2",
-              args: "split github.com/reliant-labs/forge/internal/generator 1 2",
-            }
+          - { shard: "1/2", args: "0 2" }
+          - { shard: "2/2", args: "1 2" }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -284,9 +268,10 @@ jobs:
         run: scripts/ci-changed-tests.sh HEAD^1
 
   # Windows, cross-checked from Linux on every pull request: the whole module
-  # and its tests must still COMPILE for windows (vet type-checks test files),
-  # and cmd/forge must build for windows/arm64. vet's verdict depends on the
-  # target, not the host. The native Windows job — which RUNS the -short tier
+  # and its tests must still COMPILE for windows/amd64 (vet type-checks test
+  # files). vet's verdict depends on the target, not the host. The
+  # windows/arm64 build (~2 min more, cold) is in the native job and the
+  # arm64 vet in nightly.yml: only GOARCH-specific files differ. The native Windows job — which RUNS the -short tier
   # and the scaffold + render smoke — is push-to-main only: at 17-19 minutes it
   # was the slowest job on every pull request, and the failures only it finds
   # (path separators, file locking, the KCL DLL load) are rare and cheap to
@@ -318,10 +303,6 @@ jobs:
         run: go build ./...
       - name: Vet (windows/amd64, includes tests)
         run: go vet ./...
-      - name: Cross-compile cmd/forge (windows/arm64)
-        env:
-          GOARCH: arm64
-        run: go build -o "$RUNNER_TEMP/forge-arm64.exe" ./cmd/forge
       # Main only; see "Build-cache note" at the top of this file.
       - name: Save Go build cache
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -736,11 +717,14 @@ jobs:
           path: ${{ steps.gocache.outputs.dir }}
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
-  # No `needs:`. It used to wait for lint and every test job, which put a
-  # one-minute build behind a fifteen-minute test lane for no data
-  # dependency: it consumes nothing they produce.
+  # PUSH TO MAIN ONLY. On a pull request every package is already compiled
+  # by the test shards and windows-cross; what this adds is the release
+  # flags (-trimpath -buildvcs), which a code change almost never breaks
+  # differently. No `needs:`: it used to wait for lint and every test job,
+  # for no data dependency.
   build:
     name: Build
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -777,7 +761,7 @@ jobs:
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   verify-generated:
-    name: Verify Generated Code
+    name: Verify Generated Code + Validate KCL
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -785,11 +769,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # verify-generated, validate-kcl and vuln-scan all run
-      # `go install ./cmd/forge` with identical flags, so they share ONE
-      # cache scope: whichever job finishes first warms the other two on
-      # the next run, instead of three jobs each compiling forge from
-      # cold in parallel.
+      # verify-generated and vuln-scan both run `go install ./cmd/forge`
+      # with identical flags, so they share ONE cache scope: whichever job
+      # finishes first warms the other on the next run, instead of each
+      # compiling forge from cold in parallel.
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -833,34 +816,9 @@ jobs:
         run: forge tools install --force
       - name: Verify generated code
         run: forge ci verify-generated
-      # Main only; see "Build-cache note" at the top of this file.
-      - name: Save Go build cache
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
-
-  validate-kcl:
-    name: Validate KCL
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-      # Shares the tools scope with verify-generated and vuln-scan — same
-      # `go install ./cmd/forge`, same flags, same artifacts.
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/go-build
-          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-tools-${{ runner.os }}-
+      # Validate KCL used to be a job of its own; it shares this job's forge
+      # install and cache scope, and a second runner bought only a second
+      # minute of setup.
       # KCL_VERSION is pinned deliberately. Left unset, the installer
       # resolves "latest" through an UNAUTHENTICATED api.github.com call,
       # which is rate-limited to 60/hour per runner IP and shared across
@@ -885,10 +843,6 @@ jobs:
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl
           kcl --version
-      - name: Install forge
-        # Same reason as verify-generated: this step runs `forge`, and in
-        # forge's own repo the forge that must run is the one being tested.
-        run: go install ./cmd/forge
       - name: Validate KCL manifests
         run: forge ci validate-kcl
       # Main only; see "Build-cache note" at the top of this file.
@@ -909,7 +863,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # Shares the tools scope with verify-generated and validate-kcl.
+      # Shares the tools scope with verify-generated.
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -947,8 +901,13 @@ jobs:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
+  # PUSH TO MAIN ONLY. license-gate.yml's permissive-licenses-only job
+  # checks every Go dependency's license on each pull request in ~40s; this
+  # go-licenses pass (~2 min, most of it compiling go-licenses) is the second
+  # opinion, kept on main.
   license-check:
     name: License Compliance
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1004,7 +963,6 @@ jobs:
       - windows
       - build
       - verify-generated
-      - validate-kcl
       - vuln-scan
       - license-check
     runs-on: ubuntu-latest

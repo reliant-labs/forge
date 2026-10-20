@@ -114,9 +114,8 @@ run — watch it when you add a test.
 
 **Pull request** (`ci.yml`, plus `pre-commit.yml`, `library-lint.yml`, `license-gate.yml`):
 
-- **Test (-short)** — the `-short` tier, no `-race`, as 8 shards (`scripts/ci-test-shard.sh`):
-  3 package shards (`scripts/ci-test-packages.sh short I N`) and `internal/cli` (3) and
-  `internal/generator` (2) split by test name, because each is one serial test binary.
+- **Test (-short)** — the `-short` tier, no `-race`, as 2 package shards
+  (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`).
   `internal/ciguard` fails if the matrix misses an index. No `-count=1`: unchanged packages
   replay main's cached results.
 - **Flake gate** — each test the change adds or edits runs three times under the race
@@ -124,7 +123,7 @@ run — watch it when you add a test.
 - **Windows (cross-compile + vet)** — `GOOS=windows` build and vet (tests included) from
   Linux, and the windows/arm64 build of `cmd/forge`.
 - **compile (-tags e2e)** — `go vet -tags e2e` over the e2e-tagged packages.
-- Lint, Build, Verify Generated Code, Validate KCL, Vulnerability Scan, License Compliance.
+- Lint, Verify Generated Code + Validate KCL, Vulnerability Scan.
 - A pull request that touches only `docs/**`, root `*.md` or skills skips `ci.yml` and
   `library-lint.yml`; `docs-skills.yml` runs the `-short` tests that read those files.
 
@@ -139,6 +138,8 @@ run — watch it when you add a test.
   half only.
 - **Test (-short, whole tier)** — the pull-request tier in one job; it saves the
   `go-build-short` cache the shards restore.
+- **Build** (`-trimpath -buildvcs`) and **License Compliance** (go-licenses);
+  `license-gate.yml` checks dependency licenses on every pull request.
 - **Windows** — native: build, vet, the `-short` tier of Unit + internal/cli, and a
   scaffold+render smoke.
 - **e2e** — `e2e-suite.yml`: `prepare` builds the e2e test binary, forge and the codegen

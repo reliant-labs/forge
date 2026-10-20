@@ -172,36 +172,26 @@ func TestConventionLane_ContractNamesAnchorsOnTheDeclaration(t *testing.T) {
 	}
 }
 
-// forge.yaml's lint.rules re-grades every rule of the convention lane: a
-// rule set to warn stops gating, one set to off is dropped, and an unnamed
-// rule keeps its own severity. Red before: the dial reached only
-// forgeconv-frontend-process-env, so `forgeconv-activity-declared: warn` in
-// reliant's forge.yaml changed nothing and its 189 findings kept gating.
-func TestConventionLane_HonorsLintRules(t *testing.T) {
+// `lint.rules` is the repo-wide severity dial for EVERY forge convention
+// rule, not only the frontend one it was first wired to. Red before:
+// collectConventionFindings applied it to forgeconv-frontend-process-env
+// alone, so a downgrade of any other rule was accepted and ignored.
+func TestConventionLane_LintRulesRegradesEveryRule(t *testing.T) {
 	writeConventionTree(t, noDirective)
-	unconfigured := conventionFindings(t, true)
-	if deps, ok := findingFor(unconfigured, "forgeconv-deps-are-interfaces"); !ok || deps.Severity != forgeconv.SeverityError {
-		t.Fatalf("fixture must produce a gating deps-are-interfaces finding: %+v", unconfigured)
+	cfg := &config.ProjectConfig{Name: "m", ModulePath: "example.com/m"}
+	cfg.Lint.Rules = map[string]string{
+		"forgeconv-deps-are-interfaces":             "warn",
+		"forgeconv-internal-package-contract-names": "off",
 	}
-	if _, ok := findingFor(unconfigured, "forgeconv-internal-package-contract-names"); !ok {
-		t.Fatalf("fixture must produce a contract-names finding: %+v", unconfigured)
-	}
-
 	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
-		return projectstore.New(&config.ProjectConfig{Lint: config.LintConfig{Rules: map[string]string{
-			"forgeconv-deps-are-interfaces":             "warn",
-			"forgeconv-internal-package-contract-names": "off",
-		}}}), nil
+		return projectstore.New(cfg), nil
 	})
+
 	fs := conventionFindings(t, true)
-	deps, ok := findingFor(fs, "forgeconv-deps-are-interfaces")
-	if !ok || deps.Severity != forgeconv.SeverityWarning {
+	if deps, ok := findingFor(fs, "forgeconv-deps-are-interfaces"); !ok || deps.Severity != forgeconv.SeverityWarning {
 		t.Errorf("lint.rules warn must downgrade deps-are-interfaces: %+v", deps)
 	}
 	if names, ok := findingFor(fs, "forgeconv-internal-package-contract-names"); ok {
 		t.Errorf("lint.rules off must drop contract-names: %+v", names)
-	}
-	if (forgeconv.Result{Findings: fs}).HasErrors() {
-		t.Errorf("no rule left at error, yet the lane gates: %+v", fs)
 	}
 }

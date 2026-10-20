@@ -881,11 +881,12 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		combined.Findings = append(combined.Findings, peRes.Findings...)
 	}
 
-	// forge.yaml's lint.rules — the repo-wide off|warn|error dial — re-grades
-	// every finding of this lane, proto and Go rules alike. It used to reach
-	// only forgeconv-frontend-process-env, so `forgeconv-activity-declared:
-	// warn` (or any other forgeconv rule) was silently ignored and kept
-	// gating.
+	// `lint.rules` re-grades EVERY convention finding, once, here — not rule
+	// by rule at each call site. It used to be applied to the frontend
+	// process-env rule alone, so `lint.rules: {forgeconv-activity-declared:
+	// warn}` (and any other proto or Go-tree rule) was accepted by the config
+	// loader and then silently ignored: the one dial meant for adopting a
+	// newly added rule incrementally did nothing for the rules that need it.
 	if store, err := loadProjectStore(); err == nil && store != nil {
 		combined.Findings = store.Lint().EffectiveRules().ApplyAll(combined.Findings)
 	}

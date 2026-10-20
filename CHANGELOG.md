@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
+  `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
+  opened through `otelsql`, so each statement run under a span gets a CLIENT
+  child span named `<OP> <table>` (`SELECT chats`), plus `BEGIN`, `COMMIT`,
+  `ROLLBACK` and `db.connect`. `db.query.text` is the statement with every
+  literal replaced by `?` (`dbtrace.SanitizeSQL`); bind arguments are never
+  recorded. Ping, session-reset, prepare and per-row spans are off, and a
+  statement with no span in its context opens none, so an un-rooted poller
+  does not produce one-span traces. Before this, the only query spans came
+  from bun's hook, which hand-written `database/sql` never reaches: prod had
+  none in 24 hours. `orm.NewClientWithDB` keeps bunotel's query histogram but
+  drops its spans when `dbtrace.IsTraced(db)`, so ORM queries are not spanned
+  twice. `serverkit.PgxConn` reaches the `*pgx.Conn` under a `sql.Conn.Raw`
+  driver connection through the tracing and pooler-drain wrappers.
+
 - **`observe.NewTraceHandler` records WARN and ERROR lines on the span, and
   `forge/pkg/observe/observetest.AssertLogCorrelation` pins log↔trace joins.**
   A record at WARN or above, logged with a recording span in its context, is
@@ -459,6 +474,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
+  finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
+  that one rule's findings and ignored for every other, so
+  `lint.rules: {forgeconv-activity-declared: warn}` was accepted by the config
+  loader and then did nothing: the rule stayed an error, and there was no way
+  to adopt it incrementally. `off`, `warn`, `error` and the `*` wildcard now
+  behave the same for every proto and Go-tree convention rule, after
+  `forge:lint-disable` suppression.
+
 - **Parallel `forge cluster up`s no longer lose each other's kubectl
   context.** `k3d cluster create`, `k3d kubeconfig merge`,
   `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
@@ -683,6 +707,24 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **The merge driver is set up per worktree, and forge says what it changed.**
+  Any forge command run in a project (`forge db migration rebase` was the one
+  noticed) pointed the repository's `merge.forge-generated.driver` at a forge
+  binary and routed forge's generated and state files to it in
+  `info/attributes`, silently, in the repository's common git directory that
+  every linked worktree reads. The command names one forge binary, and
+  worktrees are on different branches with different pins, so the last forge to
+  run decided how every other agent's rebase merged. The command now goes in
+  the worktree's own `config.worktree` (forge enables `extensions.worktreeConfig`
+  once, which git has honoured since 2.20 and go-git accepts; it declines for a
+  bare repository or an explicit `core.worktree`, and
+  `FORGE_MERGE_DRIVER_SHARED=1` keeps the old shared placement), so a worktree
+  merges with the forge its own commands run. The routes are no longer copied
+  into the shared `info/attributes` when the project's committed
+  `.gitattributes` already declares them, as every scaffolded project's does.
+  What is still written is reported: each setting with its scope and old value,
+  the git directory, how many worktrees share it, and the undo. A run that
+  changes nothing stays silent, and `FORGE_NO_MERGE_DRIVER=1` still opts out.
 - **A composite-primary-key table gets a store.** It used to get no entity at
   all, only an info line, so counters and join tables (reliant:
   `message_order_counters`, `project_daemons`, `connection_secrets`, …) were

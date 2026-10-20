@@ -55,7 +55,7 @@ func assertFixtureVerdict(t *testing.T, stream []byte) {
 // module (regenerate with the command in TestCheckLiveRun).
 func TestCheckRecordedShortRun(t *testing.T) {
 	t.Parallel()
-	stream, err := os.ReadFile("testdata/short.json")
+	stream, err := os.ReadFile("testdata/short.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestCheckLiveRun(t *testing.T) {
 
 func TestCheckBudgetIsConfigurable(t *testing.T) {
 	t.Parallel()
-	stream, err := os.ReadFile("testdata/short.json")
+	stream, err := os.ReadFile("testdata/short.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,7 +23,7 @@ func runTestBudget(t *testing.T, stdin string, args ...string) (string, error) {
 // A real -short run (internal/testbudget's fixture module) with one unmarked
 // 2.5s test and a 2.4s table: the command fails, names both with file:line.
 func TestCITestBudget_FlagsUnmarkedSlowTestsWithFileAndLine(t *testing.T) {
-	stream, err := os.ReadFile("../testbudget/testdata/short.json")
+	stream, err := os.ReadFile("../testbudget/testdata/short.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestCITestBudget_FlagsUnmarkedSlowTestsWithFileAndLine(t *testing.T) {
 }
 
 func TestCITestBudget_WithinBudgetPasses(t *testing.T) {
-	stream, err := os.ReadFile(filepath.Join("..", "testbudget", "testdata", "short.json"))
+	stream, err := os.ReadFile(filepath.Join("..", "testbudget", "testdata", "short.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

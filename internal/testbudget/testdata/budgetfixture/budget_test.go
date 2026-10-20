@@ -1,5 +1,5 @@
 // Package budgetfixture is a real suite for the test-budget guard to judge:
-// testdata/short.json is its `go test -short -json` output.
+// testdata/short.jsonl is its `go test -short -json` output.
 package budgetfixture
 
 import (

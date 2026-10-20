@@ -138,10 +138,10 @@ message Ping%[2]sResponse {
 			t.Errorf("compose.go after generate lacks %s", want)
 		}
 	}
-	body := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "mounts_services_gen.go"))
+	body := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "routes_gen.go"))
 	for _, svc := range []string{"alpha", "beta"} {
 		if !strings.Contains(strings.ToLower(body), svc) {
-			t.Errorf("mounts_services_gen.go after generate does not carry %s", svc)
+			t.Errorf("routes_gen.go after generate does not carry %s", svc)
 		}
 		readFileE2E(t, filepath.Join(projectDir, "deploy", "observability", "spec", "service-"+svc+"_gen.json"))
 	}

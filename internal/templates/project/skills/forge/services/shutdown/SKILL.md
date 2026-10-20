@@ -26,6 +26,12 @@ is no pause; `-1s` shutdown is a window over as it opens (in-flight requests and
 streams are cut, teardown runs on an expired context). It is never "unbounded":
 the kubelet would end an unbounded shutdown at the grace period anyway.
 
+A main that reads the two variables itself, without the generated config,
+uses `drainbudget.FromEnv(os.Getenv)` (`forge/pkg/serverkit/drainbudget`) —
+the reader the grace-period renderer uses — and passes the result's
+`PreStopDelay` / `ShutdownTimeout` to `serverkit.Config`. Never parse them by
+hand: a private copy is how `-1s` came to be read as malformed.
+
 ## Long-lived streams
 
 `http.Server.Shutdown` waits for every active request. A stream that never ends
@@ -50,9 +56,10 @@ draining it.
 
 ### Connect streaming RPCs
 
-The scaffolded `serve.go` puts `serverkit.StreamDrainInterceptor()` in the
-interceptor chain. It binds every server-streaming and bidi handler (unary and
-client-streaming RPCs are drained normally, never cut). **The client contract**
+Every `serverkit.NewChain` installs `serverkit.StreamDrainInterceptor()` by
+default (drop it only with `serverkit.NoStreamDrain`). It binds every
+server-streaming and bidi handler to the drain of the listener serving it
+(unary and client-streaming RPCs are drained normally, never cut). **The client contract**
 for a stream the drain ends:
 
 | Procedure | Client receives |
@@ -154,6 +161,7 @@ Each phase writes one INFO line, `msg` starting `drain:`, with `phase` and its
 | `workers` | `drain: workers stopped` | `workers` |
 | `operators` | `drain: operators stopped` (only with operators) | `operators` |
 | `teardown` | `drain: teardown done` (OnShutdown, pprof) | |
+| `node` | `drain: node stopped` (one per `lifecyclekit.Supervise` node) | `node`, and `drain_error`, `close_error` or `run_still_running` when one went wrong |
 | `total` | `drain: complete` | `shutdown_timeout` |
 
 Each line is written by the piece that runs the phase, so a main without
@@ -171,8 +179,60 @@ long.
 
 ## Without `serverkit.Run`
 
-Every piece is exported for a main that runs its own listener (a worker with a
-health port, a gateway):
+A main that serves more than one listener (a gateway's daemon port beside the
+API), or a worker with a health port, builds `serverkit.Listener`s — each with
+its own address, TLS, timeouts, `Streams` and chain — and drives their
+`Run`/`Drain`/`Close`/`Ready`: graceful is `Drain` (stop accepting, unary
+finish, streams soft-then-hard, the `listener` phase line), then cancel `Run`'s
+context, then `Close`. Cancelling `Run`'s context first is a hard stop.
+
+```go
+l, err := serverkit.NewListener(serverkit.ListenerDeps{
+    Config: serverkit.ListenerConfig{Addr: ":9090", RedialOnDrain: []string{"acme.v1.ToolsDaemonService"}},
+    Chain:  daemonChain,                       // required; its audience is checked against every mounted service
+    Routes: routes,                            // serverkit.Routes: mounts with the chain's handler options
+    Front:  map[string]http.Handler{"/healthz": healthz}, // served in front of the chain, no credentials
+})
+```
+
+`lifecyclekit.Supervise` runs any list of such components. A component
+implements whichever of `Run(ctx)`, `Drain(ctx)`, `Close(ctx)` and
+`Ready(ctx)` it has (`lifecyclekit.Runner`, `Drainer`, `Closer`, `Readier`);
+`lifecyclekit.Component(name, c)` turns one into a `Node`, and
+`lifecyclekit.WorkerNode(w)` adapts a `serverkit.Worker` (Run is
+`RunContext`/`Start`, Close is `Stop`). List nodes dependencies first:
+
+```go
+ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+defer stop()
+drainer := serverkit.NewDrainer(cfg)  // readiness gate + PRE_STOP_DELAY + SHUTDOWN_TIMEOUT
+pool := lifecyclekit.Node{Name: "db", Close: func(context.Context) error { return db.Close() },
+    Ready: func(ctx context.Context) error { return db.PingContext(ctx) }}
+// serve drainer.ReadinessHandler(lifecyclekit.ReadyChecks(pool), 0, logger) on a Front "/readyz"
+err := lifecyclekit.Supervise(ctx, lifecyclekit.Policy{Drainer: drainer, Flush: otelShutdown},
+    pool,
+    lifecyclekit.Component("api", apiListener),
+    lifecyclekit.Component("gateway", daemonListener), // listed last: drains first
+)
+```
+
+Start runs in list order, waiting for each node that reports `Ready` before
+the next, so a listener accepts traffic only once what it reads is up; the
+drainer is marked ready after the last. On `ctx` ending (or a runner failing,
+under `Policy.FailurePolicy`): readiness flips and the pre-stop pause runs,
+then in REVERSE order each node is drained, has its `Run` context ended and
+awaited, and is closed — all inside `SHUTDOWN_TIMEOUT` — then `drain:
+complete`, then `Policy.Flush` last. Each node writes a `drain: node stopped`
+line (`phase=node`, `node=<name>`). A `Run` gets a context of its own, ended
+only after its node drained, so a listener keeps serving through the pre-stop
+pause. When one node spends the whole budget, each node after it still gets
+250ms for its `Run` to return once cancelled, so only a `Run` that really
+ignores its context logs `node did not stop within the shutdown budget`
+(`run_still_running`).
+
+`serverkit.Run` is this over one listener plus workers and operators. The
+lower-level pieces below are what a Listener is built from, for a main that
+keeps its own `http.Server`:
 
 ```go
 drainer := serverkit.NewDrainer(cfg)                 // readiness gate + budget

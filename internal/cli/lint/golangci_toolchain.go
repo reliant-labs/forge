@@ -90,15 +90,23 @@ const golangciModulePath = "github.com/golangci/golangci-lint/v2/cmd/golangci-li
 // directories and test isolation.
 const golangciCacheEnv = "FORGE_TOOLS_CACHE"
 
+// # No golangci-lint at all
+//
+// A machine with no golangci-lint on PATH used to SKIP the gating lane, and
+// `forge lint` still exited 0. reliant's CI lint job had never run
+// golangci-lint: its runner had none, forge skipped the lane, and the job was
+// green. A gating lane that did not run is not a lane that passed, so the
+// missing case is provisioned exactly like the mismatch case: forge builds
+// its pinned golangci-lint with the module's toolchain into the same cache
+// (once per pin and toolchain), and when it cannot, the lane FAILS with the
+// command that fixes it (provisionMissingGolangci).
+
 // golangciResolution is the outcome of choosing a golangci-lint for a module.
 type golangciResolution struct {
 	// path is the binary to run. Empty when none is available.
 	path string
-	// missing is true when no golangci-lint is on PATH at all — the lane
-	// is skipped, exactly as before toolchain matching existed.
-	missing bool
-	// err is a gating failure: a golangci-lint exists but cannot analyze
-	// this module, and forge could not provision one that can.
+	// err is a gating failure: no golangci-lint that can analyze this
+	// module exists, and forge could not provision one.
 	err error
 }
 
@@ -285,7 +293,7 @@ func (rc *lintRunCtx) execGolangci(args []string) (golangciOutput, error) {
 func resolveGolangciLint(ctx context.Context, dir string, tc golangciToolchain) golangciResolution {
 	onPath, err := tc.lookPath("golangci-lint")
 	if err != nil {
-		return golangciResolution{missing: true}
+		return provisionMissingGolangci(ctx, dir, tc)
 	}
 
 	// The language the module is written in, from go.mod. No go.mod (or
@@ -336,6 +344,59 @@ func resolveGolangciLint(ctx context.Context, dir string, tc golangciToolchain) 
 			fmt.Errorf("the build produced no usable binary at %s", built))}
 	}
 	return golangciResolution{path: built}
+}
+
+// provisionMissingGolangci resolves a module whose machine has no
+// golangci-lint on PATH: forge's pinned build with the module's toolchain,
+// reused from the cache or built into it, and otherwise a gating failure
+// naming the fix. Never a skip (see the file comment).
+func provisionMissingGolangci(ctx context.Context, dir string, tc golangciToolchain) golangciResolution {
+	modLang := moduleGoDirective(dir)
+	toolchain, err := tc.moduleGoVersion(ctx, dir)
+	if err != nil || !version.IsValid(toolchain) {
+		return golangciResolution{err: golangciMissingError(tc.pin, "", modLang,
+			fmt.Errorf("could not determine the Go toolchain for this module: %w", errOrInvalid(err, toolchain)))}
+	}
+	root, gobin, built, err := tc.pinBuild(toolchain)
+	if err != nil {
+		return golangciResolution{err: golangciMissingError(tc.pin, toolchain, modLang, err)}
+	}
+	usable := func() bool {
+		b, berr := tc.readBuild(built)
+		return berr == nil && (modLang == "" || langAtLeast(b.goVersion, modLang))
+	}
+	if usable() {
+		return golangciResolution{path: built}
+	}
+
+	tc.notify(fmt.Sprintf("🔧 golangci-lint is not on PATH — building forge's pinned golangci-lint %s with %s into %s (one time)…",
+		tc.pin, toolchain, gobin))
+	if err := installAtomically(ctx, tc, root, gobin, toolchain); err != nil {
+		return golangciResolution{err: golangciMissingError(tc.pin, toolchain, modLang, err)}
+	}
+	if !usable() {
+		return golangciResolution{err: golangciMissingError(tc.pin, toolchain, modLang,
+			fmt.Errorf("the build produced no usable binary at %s", built))}
+	}
+	return golangciResolution{path: built}
+}
+
+// golangciMissingError is the failure of a gating lane that could not run
+// because there is no golangci-lint: it names the lane, why forge could not
+// build one, and both commands that fix it.
+func golangciMissingError(pin, toolchain, modLang string, cause error) error {
+	fixTC := toolchain
+	if fixTC == "" && modLang != "" {
+		fixTC = releaseFor(modLang)
+	}
+	install := "go install " + golangciModulePath + "@" + pin
+	if fixTC != "" {
+		install = "GOTOOLCHAIN=" + fixTC + " " + install
+	}
+	return fmt.Errorf("golangci-lint is not on PATH, so the golangci-lint lane cannot run — and a gating lane that did not run cannot pass. "+
+		"forge could not build its pinned golangci-lint %s: %v. "+
+		"Fix: run `forge tools install golangci-lint` (it installs golangci-lint %s), or `%s` with its GOBIN on PATH, then re-run `forge lint`",
+		pin, cause, pin, install)
 }
 
 // pinBuild locates forge's build of its pinned golangci-lint with toolchain:
@@ -670,6 +731,6 @@ func golangciUnresolvedFinding(err error, sev string) lintJSONFinding {
 		Severity: sev,
 		Rule:     "external",
 		Message:  err.Error(),
-		FixHint:  "install a golangci-lint that can analyze this module and put it first on PATH (the message names the binary, the Go versions and the command)",
+		FixHint:  "run `forge tools install golangci-lint`, or install a golangci-lint that can analyze this module and put it first on PATH (the message names the binary, the Go versions and the command)",
 	}
 }

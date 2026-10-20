@@ -357,7 +357,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 // nothing references it until the ledger that records its digest exists, and
 // the ledger (not the tag) is what every promote and deploy reads.
 func releaseImageTag(opts buildOptions) string {
-	return opts.release
+	return releaseVersionTag(opts.release)
 }
 
 // validateReleaseFlags enforces that `forge env build <env> --release <ver>` is

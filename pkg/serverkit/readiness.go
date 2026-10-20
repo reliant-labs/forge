@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -129,8 +130,28 @@ type readyzCheckStatus struct {
 // endpoint's worst-case latency stays bounded as checks are added — a
 // probe with a timeoutSeconds cannot be asked to wait N × timeout.
 func readyzHandler(gate *Drainer, checks []ReadyCheck, timeout time.Duration, logger *slog.Logger) http.HandlerFunc {
-	states := make([]checkState, len(checks))
+	return readyzHandlerFunc(gate, func() []ReadyCheck { return checks }, timeout, logger)
+}
+
+// readyzHandlerFunc is readyzHandler over a check set read per request, for
+// Probes, whose checks can grow after the handler is built. Each check's
+// transition state is keyed by its position, which is stable because the set
+// only ever grows at the end.
+func readyzHandlerFunc(gate *Drainer, source func() []ReadyCheck, timeout time.Duration, logger *slog.Logger) http.HandlerFunc {
+	var (
+		statesMu sync.Mutex
+		states   []*checkState
+	)
+	stateFor := func(i int) *checkState {
+		statesMu.Lock()
+		defer statesMu.Unlock()
+		for len(states) <= i {
+			states = append(states, &checkState{})
+		}
+		return states[i]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		checks := source()
 		if gate.Draining() {
 			writeReadyz(w, http.StatusServiceUnavailable, readyzResponse{Status: "draining"})
 			return
@@ -152,7 +173,7 @@ func readyzHandler(gate *Drainer, checks []ReadyCheck, timeout time.Duration, lo
 			}
 			// The operator's copy of the truth. The client's copy is the
 			// check name and `"ok": false`.
-			states[i].observe(ctx, logger, c.Name, err)
+			stateFor(i).observe(ctx, logger, c.Name, err)
 			resp.Checks = append(resp.Checks, readyzCheckStatus{Name: c.Name, OK: err == nil})
 		}
 

@@ -9,26 +9,26 @@ anonymous ones only under the rules in
 
 ## Defaults
 
-| Storage                                                                                                  | Policy                                                                                                                                                                                               |
-| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Physical host filesystem                                                                                 | Refuse a build below 20 GiB available                                                                                                                                                                |
-| BuildKit                                                                                                 | Remove cache unused for 7 days toward 20 GiB per registered local builder                                                                                                                            |
-| k3d node images                                                                                          | Kubelet removes unused images after 7 days; pressure GC at 80%, down to 70%                                                                                                                          |
-| Node container logs                                                                                      | 10 MiB × 3 files per container                                                                                                                                                                       |
-| Registered local registry repositories                                                                   | Keep 14 days and newest 5 distinct digests; protect workloads, release pins and stable aliases                                                                                                       |
-| Forge dev logs (`forge env up` foreground tee)                                                           | Rotate at 50 MiB (`FORGE_LOG_ROTATE_BYTES`; `0` disables); the current stream keeps its path                                                                                                         |
-| Rotated Forge logs                                                                                       | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment                                                                                                                |
-| Cross-repo source cache (`<UserCacheDir>/forge/sources`)                                                 | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`)                                                                                      |
-| Temp scratch (`$TMPDIR`)                                                                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata |
-| Host images tagged for a dead local registry                                                             | Untag `localhost:<port>`, `registry.localhost:<port>` and `k3d-*:<port>` images when no running registry backs that alias and no container (running or stopped) uses the image                       |
-| Shared Go build cache (`go env GOCACHE`) and golangci-lint cache                                         | Remove entries unused for 48h (`go_cache_unused`), then oldest-first toward 60 GiB (`go_cache_gib`); never an entry touched in the last 2h; top-level files are never touched                        |
-| goimports/gopls module index (`<UserCacheDir>/goimports`)                                                | Keep the generation each `index-name-*` link names, anything touched in the last 24h; remove older generations                                                                                       |
-| Orphaned private Go caches (`.gocache-*`, `*-gocache`, `$WORKTREE/.gocache`, `/tmp/scratchpad/gocache*`) | Remove a recognised build/module cache idle 24h that no live process environment names and no process holds open; never the shared cache                                                             |
-| Worktrees                                                                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removed only by an explicit `forge storage gc --apply` under `worktree_reap` (see Worktrees)                        |
-| Every unlink a pass makes                                                                                | At most 50,000 per pass (`max_deletes_per_pass`), paced to 1,000/s (`delete_rate_per_sec`); the pass backs off at the first EMFILE/ENFILE/ENOTCONN/EIO (see Bounded deletion)                        |
-| Dangling images (untagged)                                                                               | Remove an image untagged, used by no container (running or stopped) and built over 1h ago; full and automatic passes; at most 100 Docker removals per pass (`max_docker_removals_per_pass`)          |
-| Anonymous Docker volumes                                                                                 | Remove a labelled, 64-hex-named, plain `local` volume no container uses, seen unused for 14 days (`anonymous_volume_unused`, `off` disables); only by an explicit `forge storage gc --apply`         |
-| Named Docker volumes, database/PVC/workspace volumes                                                     | Never removed by storage GC                                                                                                                                                                          |
+| Storage                                                                                                  | Policy                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Physical host filesystem                                                                                 | Refuse a build below 20 GiB available                                                                                                                                                                                                                        |
+| BuildKit                                                                                                 | Remove cache unused for 7 days toward 20 GiB per registered local builder                                                                                                                                                                                    |
+| k3d node images                                                                                          | Kubelet removes unused images after 7 days; pressure GC at 80%, down to 70%                                                                                                                                                                                  |
+| Node container logs                                                                                      | 10 MiB × 3 files per container                                                                                                                                                                                                                               |
+| Registered local registry repositories                                                                   | Keep 14 days and newest 5 distinct digests; protect workloads, release pins and stable aliases                                                                                                                                                               |
+| Forge dev logs (`forge env up` foreground tee)                                                           | Rotate at 50 MiB (`FORGE_LOG_ROTATE_BYTES`; `0` disables); the current stream keeps its path                                                                                                                                                                 |
+| Rotated Forge logs                                                                                       | Keep newest 5 per stream; expire after 7 days or toward 1 GiB per project/environment                                                                                                                                                                        |
+| Cross-repo source cache (`<UserCacheDir>/forge/sources`)                                                 | Evict clones unused for 14 days beyond the newest 2 per repository (`source_cache_unused`, `source_cache_keep`)                                                                                                                                              |
+| Temp scratch (`$TMPDIR`)                                                                                 | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata                                                         |
+| Host images tagged for a dead local registry                                                             | Untag `localhost:<port>`, `registry.localhost:<port>` and `k3d-*:<port>` images when no running registry backs that alias and no container (running or stopped) uses the image                                                                               |
+| Shared Go build cache (`go env GOCACHE`) and golangci-lint cache                                         | Remove entries unused for 48h (`go_cache_unused`), then oldest-first toward 60 GiB (`go_cache_gib`) or 15% of the cache's volume (`go_cache_volume_percent`), whichever is smaller; never an entry touched in the last 2h; top-level files are never touched |
+| goimports/gopls module index (`<UserCacheDir>/goimports`)                                                | Keep the generation each `index-name-*` link names, anything touched in the last 24h; remove older generations                                                                                                                                               |
+| Orphaned private Go caches (`.gocache-*`, `*-gocache`, `$WORKTREE/.gocache`, `/tmp/scratchpad/gocache*`) | Remove a recognised build/module cache idle 24h that no live process environment names and no process holds open; never the shared cache                                                                                                                     |
+| Worktrees                                                                                                | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removed only by an explicit `forge storage gc --apply` under `worktree_reap` (see Worktrees)                                                                                |
+| Every unlink a pass makes                                                                                | At most 50,000 per pass (`max_deletes_per_pass`), paced to 1,000/s (`delete_rate_per_sec`); the pass backs off at the first EMFILE/ENFILE/ENOTCONN/EIO (see Bounded deletion)                                                                                |
+| Dangling images (untagged)                                                                               | Remove an image untagged, used by no container (running or stopped) and built over 1h ago; full and automatic passes; at most 100 Docker removals per pass (`max_docker_removals_per_pass`)                                                                  |
+| Anonymous Docker volumes                                                                                 | Remove a labelled, 64-hex-named, plain `local` volume no container uses, seen unused for 14 days (`anonymous_volume_unused`, `off` disables); only by an explicit `forge storage gc --apply`                                                                 |
+| Named Docker volumes, database/PVC/workspace volumes                                                     | Never removed by storage GC                                                                                                                                                                                                                                  |
 
 The cache and log budgets are targets: recent/in-use cache and the diagnostic
 floor can exceed them. No budget overrides release or workload protection. The
@@ -75,8 +75,13 @@ logs — goes through one per-pass governor:
   shared build cache 60%), so the temp sweep and source cache always have some.
   What is left is retained, and the next pass continues where this one stopped:
   a budget is reached over several passes, never in one burst. A capped layer is
-  recorded as cut off, which is not a failure. Raise the cap on a machine whose
-  caches grow faster than the hourly pass can trim.
+  recorded as cut off, which is not a failure. The exception is a Go cache over
+  its SIZE budget: it may unlink what the sample says it takes to get back under
+  the budget, beyond its share and without spending the cap the later layers
+  share. Under agent load the cache outgrows any fixed cap (one pass estimated
+  62 GiB against a 20 GiB budget and freed 6.1 GiB before stopping), so a cap
+  there means it never converges; pacing, back-off and the layer's time slice
+  still bound every one of those unlinks.
 - **Paced.** Unlinks are granted in batches of 200, and a batch may not finish
   faster than `delete_rate_per_sec` allows (default 1,000/s). Unlinks are
   serial across workers.
@@ -348,13 +353,19 @@ A non-main worktree is **removable** only if all hold:
 - `git status --porcelain --untracked-files=normal` is empty;
 - every **ignored** path is on the rebuildable allowlist (`worktree_rebuildable`;
   default `node_modules`, `dist`, `bin`, `.next`, `.turbo`, `coverage`,
-  `.gocache`, `*.tsbuildinfo`, `kcl.mod.lock`, `go.work`, `.forge/logs`, …).
-  `data/`, `.env*`, `.forge/hostinfra/`, `*.db`, `*.sqlite` and `secrets/` are
+  `.gocache`, `*.tsbuildinfo`, `kcl.mod.lock`, `go.work`, `.forge/logs`,
+  `.forge/tmp`, `.forge/generate-cache.json`, …). An entry is path segments
+  matched anywhere in the path, or, with a leading `/`, only from the
+  worktree's root: the defaults `/.tools` (pinned tools) and `/tmp` (scratch)
+  are root-anchored, so `web/tmp` is not covered. `data/`, `.env*`, `.forge/hostinfra/`, `*.db`, `*.sqlite` and `secrets/` are
   never rebuildable, even if a policy lists them;
 - no hidden edits: no `--skip-worktree` / `--assume-unchanged` entries
   (`hidden-changes`), which status and `git worktree remove` cannot see;
 - no nested repository: no `.git` at any depth but the worktree's own
-  (`nested-repository`), since it would be deleted with its commits;
+  (`nested-repository`), since it would be deleted with its commits. The one
+  exception is a clone a tool makes again: a git-ignored repository that is a
+  direct child of `<worktree>/.tools/pre-commit/` (pre-commit's hook clones).
+  Any other repository, including one inside `tmp/`, still holds;
 - no orphaned commits: every commit in the worktree's reflog, per-worktree refs
   (`refs/worktree/*`, `refs/bisect/*`) and detached HEAD is reachable from a
   branch, remote or tag (`unreachable-commits`), because `git worktree remove`

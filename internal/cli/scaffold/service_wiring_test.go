@@ -46,6 +46,7 @@ func main() {
 func TestWireServiceIntoTree_EditsPristineMain(t *testing.T) {
 	dir := withTempProject(t, "name: testproj\nmodule_path: example.com/testproj\n")
 	markServiceProject(t, dir)
+	markLegacyComposition(t, dir)
 	seedCmdTree(t, dir, "testproj", wiringMain, "orders")
 
 	cfg := readTestConfig(t, dir)
@@ -90,6 +91,7 @@ func main() {
 func TestWireServiceIntoTree_ReservedNameIsSkipped(t *testing.T) {
 	dir := withTempProject(t, "name: testproj\nmodule_path: example.com/testproj\n")
 	markServiceProject(t, dir)
+	markLegacyComposition(t, dir)
 	seedCmdTree(t, dir, "testproj", wiringMain)
 
 	cfg := readTestConfig(t, dir)
@@ -105,6 +107,7 @@ func TestWireServiceIntoTree_ReservedNameIsSkipped(t *testing.T) {
 func TestWireServiceIntoTree_IsIdempotent(t *testing.T) {
 	dir := withTempProject(t, "name: testproj\nmodule_path: example.com/testproj\n")
 	markServiceProject(t, dir)
+	markLegacyComposition(t, dir)
 	seedCmdTree(t, dir, "testproj", wiringMain, "orders")
 
 	cfg := readTestConfig(t, dir)
@@ -139,4 +142,18 @@ func readTestConfig(t *testing.T, root string) *config.ProjectConfig {
 		t.Fatalf("read forge.yaml: %v", err)
 	}
 	return cfg
+}
+
+// markLegacyComposition gives dir the legacy internal/app composition — the
+// mode whose per-service subcommands main.go names. A project without it
+// composes with the graph and has no per-service subcommands to wire.
+func markLegacyComposition(t *testing.T, dir string) {
+	t.Helper()
+	app := filepath.Join(dir, "internal", "app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "providers.go"), []byte("package app\n\ntype Infra struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

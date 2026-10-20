@@ -91,8 +91,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// edge so scrapers bypass CORS/auth) and a shutdown fn (flushed in the graceful-shutdown sequence). A setup
 	// error is logged, not fatal — projects depending on OTLP fail config
 	// validation before Run.
-	instanceID, _ := os.Hostname()
-	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observeConfig(cfg, instanceID))
+	otelShutdown, metricsHandler, otelErr := SetupTelemetry(ctx, cfg)
 	if otelErr != nil {
 		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
@@ -106,80 +105,70 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	drainer := NewDrainer(cfg)
 	drainer.Logger = logger
 
-	// The listener's registry of long-lived streams. Installed into every
-	// request's context by NewHTTPServer, so a LongLived route binds to it
-	// without the composition root handing it around; drained soft-then-hard
-	// by DrainHTTP below.
-	streams := &Streams{DrainReserve: cfg.DrainReserve, RedialOnDrain: cfg.RedialOnDrain, Logger: logger}
-
-	// serverkit no longer owns the service mux, so it can't MOUNT its
-	// probes on it. Instead it applies the edge wrap to the CALLER's
-	// handler only, then builds a tiny top mux that routes /healthz +
-	// /readyz to its own probes and everything else to the edge-wrapped
-	// handler. The probes therefore sit IN FRONT of the edge — they are
+	// The edge: serverkit no longer owns the service mux, so it wraps the
+	// CALLER's handler only. The Listener routes /healthz + /readyz (and
+	// /flow-health, /metrics) to their own handlers IN FRONT of it — they are
 	// never gated behind CORS, auth, or security-headers middleware.
-	var handler http.Handler = srv.Handler
-
-	// CORS: project-supplied middleware factory keeps the existing
-	// pkg/middleware.CORSMiddleware in charge of the actual matching
-	// logic. serverkit only owns the gating (cfg.CORSEnabled: origins
-	// named, OR development — see the method's doc for why dev needs no
-	// origins). A configured-but-unwired factory was already rejected
-	// above (fail closed), so a non-nil CORSMiddleware here is guaranteed.
-	if cfg.CORSEnabled() {
-		handler = srv.CORSMiddleware(cfg.CORSOrigins, cfg.CORSAllowCredentials)(handler)
+	//
+	// CORS and security headers are project-supplied factories (the matching
+	// logic stays in pkg/middleware); serverkit owns only the gating, and a
+	// configured-but-unwired factory was already rejected above (fail
+	// closed). The request id is outermost of serverkit's layers, and the
+	// project's HTTPMiddleware wraps them all, inside the write-stall guard.
+	edge, err := Edge{
+		CORS:            srv.CORSMiddleware,
+		SecurityHeaders: srv.SecurityHeadersMiddleware,
+		RequestID:       srv.RequestIDMiddleware,
+		Outer:           srv.HTTPMiddleware,
+	}.Wrap(cfg)
+	if err != nil {
+		return err
 	}
 
-	// Security headers — OWASP defaults via project middleware. HSTS is
-	// only emitted in production (Environment != "development"). As with
-	// CORS, a configured-but-unwired factory was rejected above.
-	if cfg.SecurityHeaders {
-		handler = srv.SecurityHeadersMiddleware(!cfg.IsDevelopment())(handler)
+	front := map[string]http.Handler{
+		"/healthz": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "ok\n")
+		}),
+		// /readyz is the ROUTABILITY answer: listener bound, not draining, and
+		// every registered dependency reachable. It is what a rolling deploy
+		// believes, so it runs the checks live on each request rather than
+		// reporting a value latched at boot. See readiness.go.
+		"/readyz": drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger),
 	}
-
-	// RequestID runs at the outermost layer so every subsequent
-	// middleware (CORS, security headers, logging) can see the
-	// correlation ID on both inbound context and outbound response
-	// header.
-	if srv.RequestIDMiddleware != nil {
-		handler = srv.RequestIDMiddleware()(handler)
-	}
-
-	// Project-owned outer wrapper. Runs OUTSIDE serverkit's own stack,
-	// INSIDE the write-stall guard.
-	if srv.HTTPMiddleware != nil {
-		handler = srv.HTTPMiddleware(handler)
-	}
-
-	// Top mux: probes bypass the edge; all other paths hit the
-	// edge-wrapped caller handler.
-	top := http.NewServeMux()
-	top.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	// /readyz is the ROUTABILITY answer: listener bound, not draining, and
-	// every registered dependency reachable. It is what a rolling deploy
-	// believes, so it runs the checks live on each request rather than
-	// reporting a value latched at boot. See readiness.go.
-	top.HandleFunc("/readyz", drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger))
 	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
 	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
 	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check
 	// passes, 503 when any fails, plus a terse non-sensitive aggregate. This
 	// is what `forge env smoke` curls to catch green-while-broken app flows.
 	if len(srv.FlowChecks) > 0 {
-		top.HandleFunc("/flow-health", flowHealthHandler(srv.FlowChecks))
+		front["/flow-health"] = flowHealthHandler(srv.FlowChecks)
 	}
-	// /metrics is mounted on the top mux (in front of the edge) so Prometheus
-	// scrapers reach it without CORS/auth/security-headers. serverkit owns it
-	// now that it owns OTel setup.
+	// /metrics is mounted in front of the edge so Prometheus scrapers reach
+	// it without CORS/auth/security-headers. serverkit owns it now that it
+	// owns OTel setup.
 	if metricsHandler != nil {
-		top.Handle("/metrics", metricsHandler)
+		front["/metrics"] = metricsHandler
 	}
-	top.Handle("/", handler)
 
-	httpSrv := NewHTTPServer(cfg, top, streams)
+	// The process's one Listener: the address, TLS and timeouts from cfg, its
+	// own Streams registry (installed into every request's context, so a
+	// LongLived route or StreamDrainInterceptor binds to it without the
+	// composition root handing it around, and drained soft-then-hard by
+	// Listener.Drain below), and the caller's already-mounted handler. With a
+	// Server.Chain the listener also checks every mounted service's declared
+	// audience against the chain's, and refuses to serve a mismatch.
+	listener, err := newListener(ListenerDeps{
+		Config: cfg.Listener(),
+		Chain:  srv.Chain,
+		Routes: &handlerRoutes{handler: srv.Handler, services: srv.MountedNames()},
+		Logger: logger,
+		Edge:   edge,
+		Front:  front,
+	})
+	if err != nil {
+		return err
+	}
 
 	// Graceful shutdown: serverkit owns the signal context. The caller-
 	// supplied ctx governed composition (mount, migrate, OTel setup)
@@ -219,28 +208,27 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	boot := BootProbesFrom(ctx)
 	boot.release()
 
-	ln, err := listenAfterHandoff(runCtx, cfg.Addr, boot != nil)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
+	listenCtx := runCtx
+	if boot != nil {
+		listenCtx = context.WithValue(runCtx, bootKey{}, boot)
+	}
+	if err := listener.Listen(listenCtx); err != nil {
+		return err
 	}
 
 	// The listener is bound and accepting connections; flip readiness
-	// so /readyz starts returning 200. Serve below hands off to the
+	// so /readyz starts returning 200. Run below hands off to the
 	// accept loop without a second bind step.
 	drainer.MarkReady()
 
-	tls := cfg.TLSCertPath != "" && cfg.TLSKeyPath != ""
-	logger.Info("server listening", "addr", cfg.Addr, "tls", tls)
-
+	// The listener's Run context ends only AFTER its Drain (below): ending
+	// it first is a hard stop, and the signal that ends runCtx is what
+	// STARTS the graceful drain.
+	listenerCtx, listenerCancel := context.WithCancel(context.WithoutCancel(runCtx))
+	defer listenerCancel()
 	errCh := make(chan error, 1)
 	go func() {
-		var serveErr error
-		if tls {
-			serveErr = httpSrv.ServeTLS(ln, cfg.TLSCertPath, cfg.TLSKeyPath)
-		} else {
-			serveErr = httpSrv.Serve(ln)
-		}
-		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		if serveErr := listener.Run(listenerCtx); serveErr != nil {
 			errCh <- serveErr
 		}
 	}()
@@ -387,7 +375,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Each phase writes one "drain: ..." INFO line carrying `phase` and its
 	// `elapsed`, and records forge.server.drain.duration (drain_phases.go):
 	// readiness, pre_stop and total from the drainer, listener from
-	// DrainHTTP, and only workers, operators and teardown from here.
+	// Listener.Drain, and only workers, operators and teardown from here.
 	drainer.Begin()
 
 	shutdownCtx, cancel := drainer.ShutdownContext()
@@ -409,9 +397,10 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	//     everything up to that instant and then discarded whatever the
 	//     shutdown itself produced — precisely the window an operator reads
 	//     when a deploy goes wrong.
-	if shutErr := DrainHTTP(shutdownCtx, httpSrv, streams); shutErr != nil {
+	if shutErr := listener.Drain(shutdownCtx); shutErr != nil {
 		logger.Error("server shutdown error", "error", shutErr)
 	}
+	listenerCancel()
 	mark := time.Now()
 
 	workerCancel()
@@ -424,7 +413,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
 		}
 	}
-	mark = drainer.phase("workers", mark, "drain: workers stopped", "workers", len(srv.Workers))
+	mark = drainer.Phase("workers", mark, "drain: workers stopped", "workers", len(srv.Workers))
 
 	// Wait for the operator/controller-manager goroutine to drain. runCtx
 	// is already cancelled (it's what dropped us out of the serve select),
@@ -440,7 +429,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			"shutdown_timeout", drainer.shutdownTimeout())
 	}
 	if operatorsSupervised {
-		mark = drainer.phase("operators", mark, "drain: operators stopped", "operators", len(srv.Operators))
+		mark = drainer.Phase("operators", mark, "drain: operators stopped", "operators", len(srv.Operators))
 	}
 
 	// OnShutdown is the caller-composed teardown (closing the serving DB
@@ -457,7 +446,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			logger.Error("pprof shutdown error", "error", shutErr)
 		}
 	}
-	drainer.phase("teardown", mark, "drain: teardown done")
+	drainer.Phase("teardown", mark, "drain: teardown done")
 	drainer.Complete()
 
 	// OTel flush — serverkit owns it now (folded out of the cmd shim). LAST,
@@ -477,20 +466,6 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	}
 	componentMu.Unlock()
 	return runErr
-}
-
-// listenAfterHandoff binds addr. Taking an address over from the boot probes
-// can lose a race with the kernel releasing it, so in that case an in-use
-// error is retried for a couple of seconds; a first-time bind is not.
-func listenAfterHandoff(ctx context.Context, addr string, handoff bool) (net.Listener, error) {
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
-		if err == nil || !handoff || !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
-			return ln, err
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 }
 
 // waitWithin blocks until wg drains or ctx expires, reporting whether the

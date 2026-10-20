@@ -4,7 +4,8 @@ package serverkit
 //
 // Every request a Connect handler answers passes through the same ordered
 // stack: a trace span, panic recovery, a request id, logging, metrics,
-// authentication, audit, rate limiting, the stream drain and protovalidate.
+// authentication, audit, rate limiting, the activity stream, the stream drain
+// and protovalidate.
 // The order is a decision, and it used to be re-derived inline in every
 // project's serve.go. NewChain is that stack as a library: every slot has a
 // working default except Auth, which a caller must name, so a chain that
@@ -23,6 +24,7 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 
+	"github.com/reliant-labs/forge/pkg/activity"
 	"github.com/reliant-labs/forge/pkg/authn"
 	"github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/observe"
@@ -76,6 +78,9 @@ const (
 	NoTrace Omit = "trace"
 	// NoAudit writes no audit event for the chain's RPCs.
 	NoAudit Omit = "audit"
+	// NoActivity writes no activity event for the chain's RPCs, whatever
+	// they declare.
+	NoActivity Omit = "activity"
 	// NoStreamDrain leaves server and bidi streams unbound to the listener's
 	// drain: a rollout then waits for them for the whole shutdown budget and
 	// cuts them without a status.
@@ -138,8 +143,17 @@ type ChainDeps struct {
 	LogOptions []observe.LogOption
 
 	// Extras are the project's own interceptors, run after RateLimit and
-	// before the stream drain and protovalidate.
+	// before Activity, the stream drain and protovalidate.
 	Extras []connect.Interceptor
+
+	// Activity writes the typed activity event each rpc declares in
+	// `(forge.v1.method).activity` (forge/pkg/activity), after the handler
+	// succeeds. It runs after Auth, so it knows the caller, and next to the
+	// handler, so it judges the handler's own outcome. nil is
+	// activity.Interceptor with no store: declared events are logged, not
+	// persisted. Pass activity.Interceptor(activity.Deps{Writer:
+	// activity.NewStore(db)}) to keep them. NoActivity drops it.
+	Activity connect.Interceptor
 
 	// StreamDrain binds every server-streaming and bidi RPC to the drain of
 	// the listener serving it, so a rollout ends it with a status its client
@@ -171,7 +185,7 @@ type Chain struct {
 
 // NewChain builds the chain, outermost first: trace → recovery → request-id →
 // logging → tracing → metrics → auth → audit → rate-limit → extras →
-// stream-drain → protovalidate. Every slot but Auth is defaulted; see
+// activity → stream-drain → protovalidate. Every slot but Auth is defaulted; see
 // ChainDeps for each default and how to drop it. It fails when Auth is
 // missing or names no audience, when an Omit is given for the wrong slot, and
 // when a default cannot be built — a chain missing a layer it was meant to
@@ -197,6 +211,12 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
+	activityIC, err := chainSlot(deps.Activity, NoActivity, func() (connect.Interceptor, error) {
+		return activity.Interceptor(activity.Deps{Logger: logger}), nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	streamDrain, err := chainSlot(deps.StreamDrain, NoStreamDrain, func() (connect.Interceptor, error) {
 		return StreamDrainInterceptor(), nil
 	})
@@ -208,8 +228,11 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 		return nil, err
 	}
 
-	extras := make([]connect.Interceptor, 0, len(deps.Extras)+2)
+	extras := make([]connect.Interceptor, 0, len(deps.Extras)+3)
 	extras = append(extras, deps.Extras...)
+	if activityIC != nil {
+		extras = append(extras, activityIC)
+	}
 	if streamDrain != nil {
 		extras = append(extras, streamDrain)
 	}
@@ -255,6 +278,7 @@ func validateChainDeps(deps ChainDeps) error {
 	}{
 		{"Trace", deps.Trace, NoTrace},
 		{"Audit", deps.Audit, NoAudit},
+		{"Activity", deps.Activity, NoActivity},
 		{"StreamDrain", deps.StreamDrain, NoStreamDrain},
 		{"Validate", deps.Validate, NoValidate},
 		{"RateLimit", deps.RateLimit, ""},
@@ -298,6 +322,8 @@ func omitName(o Omit) string {
 		return "NoTrace"
 	case NoAudit:
 		return "NoAudit"
+	case NoActivity:
+		return "NoActivity"
 	case NoStreamDrain:
 		return "NoStreamDrain"
 	case NoValidate:

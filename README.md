@@ -147,12 +147,14 @@ security scanning at all; it enforces architecture and migration safety.
 
 Environments are not a thing you graduate to. A new project declares them as
 KCL under `deploy/kcl/<env>/`, and the same source renders dev, staging, and
-prod. Our own control plane runs `dev`, `dev-k8s`, `e2e`, `staging`, `preprod`,
-and `prod` across k3d, Vultr, and two GKE clusters, from one definition.
+prod. Our own control plane runs `dev`, `dev-k8s`, `e2e` and `prod` across local
+k3d clusters and two GKE clusters, from one definition.
 
-- **Build once, promote by digest.** `forge env build staging --release v1.4.0` captures
-  content-addressed digests; `forge env deploy prod v1.4.0` ships the
-  exact bytes that passed staging.
+- **Build once, promote by digest.** `forge env deploy staging` builds,
+  cuts an immutable release and deploys it; `forge env deploy prod --from
+staging` ships the exact bytes that passed staging. Every deploy prints a
+  plan first and writes nothing until it is approved (`--yes` in CI, or
+  `--plan-only` then `--approve <digest>` for a reviewed two-stage pipeline).
 - **Preflight before apply.** On remote clusters, Forge verifies every
   referenced Secret key and every image against the live target and reports
   all failures up front, rather than discovering them as a mid-rollout
@@ -174,9 +176,9 @@ wrong in two places. Forge's answer is that there isn't one: the environment is
 declared in the same KCL that renders staging and prod, so "how do I run this"
 has a command instead of a wiki page.
 
-- **One command, whole stack.** `forge env up` starts every host service and
-  frontend with no cluster involved. `forge env up dev` does the full loop —
-  build, deploy, host, frontend.
+- **One command, whole stack.** `forge env up dev` starts the dev
+  infrastructure, every host service (under hot reload) and every frontend,
+  with no cluster involved unless something in `dev` is bound to one.
 - **The database is not empty.** On first boot against a dev env, Forge seeds
   deterministic, foreign-key-coherent data **introspected from your applied
   schema**, in one transaction, only when every seedable table is empty.
@@ -256,6 +258,16 @@ every log line — so a log entry is one click from the trace that produced it.
 ClickStack (ClickHouse, the HyperDX UI and an OTLP collector) runs locally in
 Docker Compose, on by default, with traces, metrics and logs already flowing.
 No external accounts, no signup, no sampling surprises.
+
+`forge generate` also derives dashboards from your services and frontends (an
+overview, one per service with a row per RPC, a frontend dashboard) and a set
+of default alerts (error rate, p95 latency, a silent service, browser error
+spikes, crash loops, OOM kills, failed deploys), tuned per environment in KCL.
+Both ride in every release, so a deployed environment's console shows the set
+its release carries. Frontends ship with browser telemetry (errors, sessions,
+web vitals), and their source maps are filed privately with the release
+rather than served. Details:
+[Observability](https://docs.reliantlabs.io/forge/observability).
 
 ### Checks that refuse to lie to you
 
@@ -501,17 +513,23 @@ cd my-app
 forge scaffold service billing
 forge generate
 
-# The triple gate before you call a change done:
-forge generate && forge lint && go build ./... && go test ./...
+# The gate before you call a change done:
+forge generate && forge lint && go build ./... && task test
 
-# Run the inner loop (host services + frontends, no cluster)
+# Run the whole dev stack: Postgres, the API under hot reload, frontends, ClickStack
 forge env up dev
-# Or bring the whole stack up (build + deploy + host + frontend)
-forge env up dev
+
+# Ship it (staging and prod are hosted on Reliant by default)
+forge env deploy staging
 ```
 
-[**docs/getting-started.md**](docs/getting-started.md) walks this end to end —
-service, entity, CRUD, running stack — and explains which files are yours.
+The **[Forge user guide](https://docs.reliantlabs.io/forge/overview)** covers
+the journeys end to end: quick start, project anatomy, adding a feature,
+environments and deploys, hosting, secrets, domains, observability and
+troubleshooting.
+[**docs/getting-started.md**](docs/getting-started.md) walks the first one
+from a checkout — service, entity, CRUD, running stack — and explains which
+files are yours.
 [**docs/concepts.md**](docs/concepts.md) covers why Forge is shaped this way.
 
 Run `forge --help` for the full command surface, or `forge <command> --help`

@@ -36,12 +36,14 @@ package cli
 //     into the render itself.
 //
 // Wiring is per worktree and needs nothing committed:
-//   - every forge command run in the project (re)writes the driver's command
-//     into that worktree's own config (ensureGeneratedMergeDriver). The
-//     command names ONE forge binary, and a repository's worktrees are on
-//     different branches with different forge pins, so it is not a shared
-//     fact: in the shared .git/config the last forge to run decided the
-//     driver for every other worktree. It goes in config.worktree, which
+//   - every forge command that writes generated or state files (generate,
+//     scaffold, disown, …: cmdutil.ConfiguresClone) (re)writes the driver's
+//     command into that worktree's own config (ensureGeneratedMergeDriver),
+//     and only when it differs. Read-only and slot commands never write
+//     there. The command names ONE forge binary, and a repository's worktrees
+//     are on different branches with different forge pins, so it is not a
+//     shared fact: in the shared .git/config the last forge to run decided
+//     the driver for every other worktree. It goes in config.worktree, which
 //     needs extensions.worktreeConfig; forge enables that once and says so.
 //   - the attributes that route forge's files to the driver are a committed
 //     .gitattributes in a scaffolded project. A project adopted in place,
@@ -404,7 +406,6 @@ func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 	// what repairs a driver a pin bump left behind. Only the pinned forge
 	// copies a `go run` build of itself somewhere durable.
 	_, _, skewed := mergeDriverPinCheck(root)
-	command, ok := mergeDriverCommand(!skewed)
 	var scope configScope
 	scoped := false
 	needScope := func() configScope {
@@ -417,6 +418,19 @@ func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 			}
 		}
 		return scope
+	}
+	var command string
+	var ok bool
+	if registered, have := pinnedDriverCommand(root, mergeDriverIdentity()); have && !skewed {
+		// A binary of this same pinned identity already registered itself
+		// and is still on disk: it IS the pinned forge, so keep it. Without
+		// this, every copy of the pin at a different path — each worktree's
+		// tool-cache install, a `go install`ed one, a durable `go run` copy
+		// — rewrote the config to name itself, and two of them alternating
+		// rewrote it on every run.
+		command, ok = registered, true
+	} else {
+		command, ok = mergeDriverCommand(!skewed)
 	}
 	if ok && !skewed {
 		if sc := needScope(); registerPinnedDriver(root, command, sc) {

@@ -285,6 +285,41 @@ func TestVerifyScratch_CopiesTheWorkingTreeAndTheInputsGenerateReads(t *testing.
 	}
 }
 
+// The ignored files the scratch copies come from overlapping lists: an output
+// the cache manifest names can also sit under one of its output dirs, or be an
+// input generate reads (control-plane's frontends/<fe>/public/config.js is
+// both). Each must be copied once; copying one twice, in parallel and with
+// O_EXCL, failed every verify with "file exists".
+func TestVerifyScratch_CopiesAFileListedTwiceOnce(t *testing.T) {
+	_, repo := verifyRepo(t)
+	writeTestFile(t, filepath.Join(repo, "tmp", "out", "config.js"), "window.cfg = {}\n")
+	body, err := json.Marshal(generateCacheManifest{
+		Version:    generateCacheVersion,
+		Env:        map[string]string{},
+		Files:      map[string]string{},
+		Outputs:    []string{".env", "tmp/out/config.js"},
+		OutputDirs: []string{"tmp/out"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(repo, ".forge", "generate-cache.json"), string(body))
+
+	s, err := newVerifyScratch(context.Background(), repo, io.Discard)
+	if err != nil {
+		t.Fatalf("scratch copy: %v", err)
+	}
+	defer s.Remove()
+	for rel, want := range map[string]string{
+		".env":              "DATABASE_URL=postgres://x\n",
+		"tmp/out/config.js": "window.cfg = {}\n",
+	} {
+		if got, err := os.ReadFile(filepath.Join(s.root, rel)); err != nil || string(got) != want {
+			t.Errorf("%s = %q (%v), want %q", rel, got, err, want)
+		}
+	}
+}
+
 // A scratch copy whose process was SIGKILLed — so it never removed its own —
 // is removed by the next check; a live process's copy is left alone.
 func TestVerifyScratch_PrunesCopiesOfDeadProcesses(t *testing.T) {

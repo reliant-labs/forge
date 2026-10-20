@@ -219,8 +219,14 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 //     and a sibling subcommand rejects it. Load<Msg> refuses to load from
 //     any other command, which is where a mistyped `command` surfaces.
 //
-// A process running a subcommand loads its binary's root config AND its
-// command config (two Load calls); precedence is unchanged for both
+//   - A SUBTREE config (`subtrees: [{path: ["daemon"]}]`) is the surface of
+//     every command at or below its paths: Register<Msg>Flags puts every leaf
+//     on each path's command as a PERSISTENT flag, so the commands beneath
+//     inherit them. Load<Msg> refuses a command under none of them.
+//
+// A process running a subcommand loads its binary's root config, each
+// subtree config over its path, AND its command config (one Load call each);
+// precedence is unchanged for all of them
 // (flags > env > config file > proto defaults). Every process of a binary
 // reads its config file from --config or that binary's own <BINARY>_CONFIG
 // variable — never another binary's. It is ONE file per process, flat across
@@ -255,6 +261,39 @@ func Register{{.MessageName}}Flags(cmd *cobra.Command) {
 // "{{.CommandLine}}" subcommand: its flags are registered there alone.
 func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 	if err := forgeconfig.CheckCommandPath(cmd, "{{.MessageName}}", {{.CommandGoArgs}}); err != nil {
+		return nil, err
+	}
+	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
+}
+{{- else if .Subtrees}}
+
+// {{.MessageName}} is the configuration of every {{.Binary}} process running a
+// command at or below {{range $i, $l := .SubtreeLines}}{{if $i}}, {{end}}"{{$l}}"{{end}}. That process also loads its
+// binary's root config, when it declares one, and its own command config.
+type {{.MessageName}} = configv1.{{.MessageName}}
+
+// Register{{.MessageName}}Flags registers every leaf {{.MessageName}}
+// resolves — its own and those of the blocks it composes — as PERSISTENT
+// flags on cmd: call it on the command of EACH subtree ({{range $i, $l := .SubtreeLines}}{{if $i}}, {{end}}"{{$l}}"{{end}}), so
+// every command beneath inherits them. Sensitive fields are skipped (env /
+// Secret only).
+{{- if .BinaryHasRootConfig}} The --config file flag is the {{.Binary}}
+// binary's root config's to register, persistent on the root.
+{{- else}} Also registers the --config file flag (or
+// {{.PathEnv}}): the {{.Binary}} binary binds no root config to carry it.
+{{- end}}
+func Register{{.MessageName}}Flags(cmd *cobra.Command) {
+	if err := forgeconfig.{{if .BinaryHasRootConfig}}RegisterInheritedFlags{{else}}RegisterPersistentFlags{{end}}(cmd, &configv1.{{.MessageName}}{}); err != nil {
+		panic("config: Register{{.MessageName}}Flags: " + err.Error())
+	}
+}
+
+// Load{{.MessageName}} populates the config from CLI flags > environment
+// variables > config file > proto defaults, including the block(s) it
+// composes, then validates it. It refuses a cmd under none of its subtrees:
+// its flags are registered there alone.
+func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
+	if err := forgeconfig.CheckCommandSubtree(cmd, "{{.MessageName}}", {{.SubtreesGoArgs}}); err != nil {
 		return nil, err
 	}
 	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)

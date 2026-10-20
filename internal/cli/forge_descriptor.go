@@ -922,12 +922,13 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	}
 
 	protoFile, line := configMessageLocation(msg)
-	binary, command := configMessageBinary(msg)
+	binary, command, subtrees := configMessageBinary(msg)
 	return codegen.ConfigMessage{
 		Name:      string(msg.Desc.Name()),
 		Fields:    configFields,
 		Binary:    binary,
 		Command:   command,
+		Subtrees:  subtrees,
 		Frontend:  configMessageFrontend(msg),
 		ProtoFile: protoFile,
 		Line:      line,
@@ -979,20 +980,25 @@ func configMessageFrontend(msg *protogen.Message) string {
 
 // configMessageBinary reads the message-level (forge.v1.binary_config)
 // annotation — the cmd/<name> leaf whose process loads this config, and the
-// cobra command path below it (empty for the binary's root config). Both
-// empty when the message carries no annotation, which is the common
-// single-AppConfig project and also every shared block (BaseConfig) composed
-// onto the per-binary configs.
-func configMessageBinary(msg *protogen.Message) (string, []string) {
+// cobra command path below it (empty for the binary's root config), and the
+// subtree paths a subtree config is loaded at or below. All empty when the
+// message carries no annotation, which is the common single-AppConfig
+// project and also every shared block (BaseConfig) composed onto the
+// per-binary configs.
+func configMessageBinary(msg *protogen.Message) (string, []string, [][]string) {
 	opts := msg.Desc.Options()
 	if opts == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	bc, ok := proto.GetExtension(opts, forgev1.E_BinaryConfig).(*forgev1.BinaryConfigOptions)
 	if !ok || bc == nil {
-		return "", nil
+		return "", nil, nil
 	}
-	return bc.GetBinary(), bc.GetCommand()
+	var subtrees [][]string
+	for _, p := range bc.GetSubtrees() {
+		subtrees = append(subtrees, p.GetPath())
+	}
+	return bc.GetBinary(), bc.GetCommand(), subtrees
 }
 
 // messageHasConfigFields reports whether any DIRECT field of msg

@@ -246,7 +246,8 @@ func skipBlockComment(q string, i int) int {
 }
 
 // skipString returns the index just past the string literal opening at i.
-// '' is an escaped quote; with backslashes (E'…') so is \'.
+// A doubled quote is an escaped quote; with backslashes (an E-string) so is
+// a backslash-quote.
 func skipString(q string, i int, backslashes bool) int {
 	i++ // opening quote
 	for i < len(q) {

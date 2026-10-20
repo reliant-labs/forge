@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"io"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -141,8 +142,12 @@ func TestIsTraced(t *testing.T) {
 	}
 }
 
+// registerFake registers the fake driver once per test binary: sql.Register
+// panics on a second registration, which -count=N would otherwise make.
+var registerFake = sync.OnceFunc(func() { sql.Register("dbtrace-fake", fakeDriver{}) })
+
 func TestOpenByDriverName(t *testing.T) {
-	sql.Register("dbtrace-fake", fakeDriver{})
+	registerFake()
 	db, err := Open("dbtrace-fake", "dsn")
 	if err != nil {
 		t.Fatal(err)

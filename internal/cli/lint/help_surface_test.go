@@ -103,6 +103,10 @@ func TestLintHelpSurface(t *testing.T) {
 		// is the adoption failure the flag exists to avoid.
 		"gate-json",
 		"generated-drift",
+		// A continuous rule about the user's own composition: a service no
+		// root reaches is a service no process serves, and a listener over
+		// the wrong audience's chain lets one trust domain reach another.
+		"graph",
 		// Visible because it is the ONLY signal for a defect regenerating
 		// cannot reach: scaffolded pages are write-if-absent, so an edit
 		// page that predates a `forge:guards` marker keeps writing the

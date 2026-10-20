@@ -191,6 +191,12 @@ type CmdServiceGroupInput struct {
 	Bin      string
 	Services []string               // raw service-name spellings
 	Packages []BootstrapPackageData // internal packages — for cross-role collision counts
+	// Workers and Operators get no subcommand here (theirs are owned code
+	// `forge scaffold` writes), but they take part in the collision counts:
+	// compose.go names a service SvcX when a worker or operator shares its
+	// package, and the mount this group calls has to be that one.
+	Workers   []BootstrapWorkerData
+	Operators []BootstrapOperatorData
 }
 
 // GenerateCmdGroups renders the dir-nested command groups under
@@ -464,11 +470,11 @@ func cmdServiceMountOverrides(targetDir string, in CmdServiceGroupInput) map[str
 		svcComponents = append(svcComponents, BootstrapServiceData{Package: res.PackageName})
 	}
 
-	// Workers/operators are not counted: they carry no Mount<Svc> method, so
-	// they never collide with a service's mount name — and GenerateInventory
-	// (the source of the actual Mount methods) likewise no longer counts them,
-	// so both stay consistent.
-	counts := CollisionCounts(svcComponents, in.Packages, nil, nil)
+	// Every role is counted, as compose.go (assembleBuildComponents) and
+	// GenerateInventory count them. A worker has no Mount method, but sharing
+	// a service's package still renames the service's field to SvcX in
+	// compose.go, and the inventory's mount follows the field.
+	counts := CollisionCounts(svcComponents, in.Packages, in.Workers, in.Operators)
 
 	overrides := map[string]string{}
 	for _, rs := range resolved {

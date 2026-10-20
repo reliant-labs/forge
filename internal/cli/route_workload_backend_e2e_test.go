@@ -91,7 +91,6 @@ func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
 	cluster := e2eClusterName(t)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 	createK3dClusterF2(t, ctx, cluster, gatewayHostPort, listenerPort, kubeconfig)
-	defer deleteK3dClusterF2(t, cluster)
 
 	installEnvoyGateway(t, ctx, kubeconfig)
 
@@ -152,7 +151,6 @@ func TestE2ERouteTrafficHealthCheckExpects401(t *testing.T) {
 	cluster := e2eClusterName(t)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 	createK3dClusterF2(t, ctx, cluster, gatewayHostPort, listenerPort, kubeconfig)
-	defer deleteK3dClusterF2(t, cluster)
 
 	installEnvoyGateway(t, ctx, kubeconfig)
 	kubectlApplyManifests(t, ctx, kubeconfig, manifests)
@@ -476,8 +474,11 @@ func e2eClusterName(t *testing.T) string {
 
 func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort, listenerPort int, kubeconfig string) {
 	t.Helper()
+	// Registered BEFORE the create, so a create that fails (and, with
+	// --no-rollback, leaves its nodes behind) is still deleted by name.
+	t.Cleanup(func() { deleteK3dClusterF2(t, name) })
 
-	runE2E(t, ctx, "", nil, "k3d", "cluster", "create", name,
+	createArgs := []string{"cluster", "create", name,
 		"--servers", "1", "--agents", "0",
 		"--port", fmt.Sprintf("%d:%d@loadbalancer", hostPort, listenerPort),
 		// k3s bundles Traefik, whose svclb claims the loadbalancer's port 80
@@ -486,7 +487,20 @@ func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort
 		"--k3s-arg", "--disable=traefik@server:0",
 		"--wait", "--timeout", "300s",
 		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
-	)
+		// Keep a failed server for its logs: k3d's rollback deletes the
+		// node, and with it the only record of why k3s exited (CI saw a
+		// server go to status=restarting two seconds into boot, with
+		// nothing left to read). deleteK3dClusterF2 removes it either way.
+		"--no-rollback",
+	}
+	if out, err := runE2ESoft(ctx, "", nil, "k3d", createArgs...); err != nil {
+		server := "k3d-" + name + "-server-0"
+		logs, _ := runE2ESoft(context.Background(), "", nil, "docker", "logs", "--tail", "80", server)
+		inspect, _ := runE2ESoft(context.Background(), "", nil, "docker", "inspect", "--format",
+			"status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} err={{.State.Error}}", server)
+		t.Fatalf("k3d %s: %v\n%s\n--- %s: %s--- last k3s log lines:\n%s",
+			strings.Join(createArgs, " "), err, out, server, inspect, logs)
+	}
 
 	// A private kubeconfig: this test must never mutate the developer's
 	// current context (k3d switches it by default, which is why both

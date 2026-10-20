@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `controller.Reconciler.Run` opens `reconcile <Kind>` around every reconcile,
   with `k8s.namespace.name` / `k8s.object.name` and the error recorded.
 
+- **`observe.NewHTTPClient`: the traced client for plain outbound HTTP.**
+  A call to a third-party REST API goes through a plain `*http.Client`, which
+  no Connect interceptor sees; built by hand it had no client span, no
+  traceparent and no `X-Request-Id`, so the caller's trace ended at the
+  process boundary. `NewHTTPClient(HTTPClientOptions{Timeout, Base})` returns
+  a fresh client over one shared traced transport, with spans named
+  `<METHOD> <host>` instead of `HTTP POST`. `NewHTTPTransport(base)` wraps a
+  transport you do not construct yourself. The scaffolded `DefaultClient()`
+  transport, the composition graph's `NewHTTPClient` provider, and the
+  adapter and client scaffolds' nil-`HTTPClient` defaults all use it, so a
+  minimal wiring is no longer the one untraced outbound path. Connect clients
+  keep `NewClientStack`, whose otelconnect interceptor already opens the span.
+
 - **forge's control-plane client names itself in `Forge-Via`.** Every call
   sends `cli`, or `ci` under a CI runner, so a server's activity stream
   (`forge/pkg/activity`) records how a change arrived, as in "sean promoted
@@ -501,6 +514,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `wireRelease.Commits` comment in `internal/cli/hosted_ledger.go` named
+  `DeployRelease.commits` as tag 13; the control plane's proto declares it as tag 14.
 - **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
   finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
   that one rule's findings and ignored for every other, so

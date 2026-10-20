@@ -283,10 +283,7 @@ func inferableDep(df DepsField, store storeSeam) bool {
 	case frameworkClockType, frameworkIDGenType, frameworkHTTPClientType:
 		return false
 	}
-	if store.owns(df.Type) {
-		return false
-	}
-	return true
+	return !store.owns(df.Type)
 }
 
 // constructedType returns the first result type of the package-level func

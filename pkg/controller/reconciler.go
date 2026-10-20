@@ -7,6 +7,10 @@ import (
 	"reflect"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -123,6 +127,38 @@ func (r *Reconciler[T]) Run(
 	start := time.Now()
 	key := req.NamespacedName
 	var none T
+
+	// Every reconcile is a trace of its own: a root span named for the kind,
+	// so the client calls, queries and decorated methods it makes nest under
+	// it instead of each being a one-span trace. A reconcile is caused by a
+	// watch event, not a request, so it never joins ctx's span.
+	ctx, span := otel.Tracer(reconcileTracerName).Start(ctx, "reconcile "+kindOf(blank),
+		trace.WithNewRoot(),
+		trace.WithAttributes(
+			attribute.String("k8s.namespace.name", req.Namespace),
+			attribute.String("k8s.object.name", req.Name),
+		))
+	defer span.End()
+	result, err := r.run(ctx, req, blank, reconcile, finalize, logger, start, key, none)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return result, err
+}
+
+// run is Run's body, under the reconcile span.
+func (r *Reconciler[T]) run(
+	ctx context.Context,
+	req ctrl.Request,
+	blank T,
+	reconcile ReconcileFunc[T],
+	finalize FinalizeFunc[T],
+	logger *slog.Logger,
+	start time.Time,
+	key types.NamespacedName,
+	none T,
+) (Result, error) {
 
 	// 1. Fetch.
 	if err := r.Client.Get(ctx, key, blank); err != nil {
@@ -341,4 +377,24 @@ func (r *Reconciler[T]) recordEvent(obj client.Object, reason, msg string) {
 		return
 	}
 	r.Recorder.Event(obj, "Normal", reason, msg)
+}
+
+// reconcileTracerName is the instrumentation scope of the reconcile spans.
+const reconcileTracerName = "github.com/reliant-labs/forge/pkg/controller"
+
+// kindOf names obj's kind for a span: its GVK kind when the object carries
+// one (typed objects fetched from the cache usually do not), else its Go type
+// name.
+func kindOf(obj client.Object) string {
+	if k := obj.GetObjectKind().GroupVersionKind().Kind; k != "" {
+		return k
+	}
+	t := reflect.TypeOf(obj)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return "object"
+	}
+	return t.Name()
 }

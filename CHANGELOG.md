@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A trace per unit of background work: `observe.RunRoot`,
+  `lifecyclekit.Every`, and a root span per reconcile in
+  `forge/pkg/controller`.** A loop iteration or a reconcile has no Connect
+  edge to start its trace, so the decorated methods, queries and calls it made
+  were each a one-span trace, or nothing (`dbtrace` opens spans only under a
+  parent). `observe.RunRoot(ctx, name, fn)` runs `fn` under a new root span,
+  never the caller's trace, and records `fn`'s error or panic (the panic is
+  re-raised). `lifecyclekit.Every(name, EveryOptions{Interval}, fn)` is the
+  hand-written ticker worker with that built in: one `worker.<name>.run` root
+  per run, a failed or panicking run logged and the cadence kept.
+  `controller.Reconciler.Run` opens `reconcile <Kind>` around every reconcile,
+  with `k8s.namespace.name` / `k8s.object.name` and the error recorded.
+
 - **forge's control-plane client names itself in `Forge-Via`.** Every call
   sends `cli`, or `ci` under a CI runner, so a server's activity stream
   (`forge/pkg/activity`) records how a change arrived, as in "sean promoted

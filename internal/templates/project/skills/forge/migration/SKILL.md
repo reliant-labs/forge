@@ -97,7 +97,7 @@ Same shape for both `service` and `cli` targets:
 ## Cross-cutting concerns (auth, audit, interceptors)
 
 - Auth, audit, and API keys are code + `forge/pkg/*` libraries, not installable packs. Auth lives in owned `internal/app/auth.go` (`SetupAuth()`) over `forge/pkg/auth` + `forge/pkg/apikey`; audit is the `forge/pkg/audit` library; the frontend auth UI is owned scaffold under `frontends/<name>/src/`. See the `auth` and `frontend` skills. Third-party clients (Stripe, Twilio, NATS) are a thin wrapper you write under `internal/<name>/` — see the `adapter` skill.
-- Build the interceptor chain with `serverkit.NewChain(serverkit.ChainDeps{…})` in the generated `cmd serve.go`, handing your `Auth` (required — `serverkit.AuthFor(audience, interceptor)`) / `Audit` / `RateLimit` interceptors in by named field; every other slot has a working default. Order is load-bearing and lives in `NewChain` (trace → recovery → request-id → logging → tracing → metrics, then auth → audit → rate-limit → extras → stream-drain → protovalidate) — it is never implied by registration order, so don't hand-roll a `connect.WithInterceptors(...)` sequence of your own. A second kind of caller (daemons, operators) gets its own chain and `serverkit.Listener` (`auth`, "Audiences").
+- Build the interceptor chain with `serverkit.NewChain(serverkit.ChainDeps{…})` in the generated `cmd serve.go`, handing your `Auth` (required — `serverkit.AuthFor(audience, interceptor)`) / `Audit` / `RateLimit` interceptors in by named field; every other slot has a working default. Order is load-bearing and lives in `NewChain` (trace → recovery → request-id → logging → tracing → metrics, then deadline → auth → audit → rate-limit → extras → activity → stream-drain → protovalidate) — it is never implied by registration order, so don't hand-roll a `connect.WithInterceptors(...)` sequence of your own. A second kind of caller (daemons, operators) gets its own chain and `serverkit.Listener` (`auth`, "Audiences").
 - Add the host component before the code that extends it (a webhook receiver needs its service first), then `forge generate`.
 
 ## Per-package porting recipe (source-copy approach)
@@ -146,8 +146,10 @@ Copy the migrations over as-is, then decide per table:
   (`Create<X>`/`Get<X>`/`Update<X>`/`Delete<X>`/`List<Xs>`) in the
   service proto — the table plus the RPCs make an entity, and
   `forge generate` projects the ORM, conversions, and frontend pages.
-- **Hand-rolled access?** Declare nothing. Tables without CRUD RPCs are
-  plain schema, invisible to the CRUD/frontend projections.
+- **Hand-rolled access?** Declare no CRUD rpcs. The table still gets its
+  generated store (`<Entity>Store`, delegates, `_repo_ext.go`), and stays
+  invisible to the CRUD/frontend projections. `COMMENT ON TABLE t IS
+  'forge:no-entity'` keeps it off the store too.
 
 One gotcha: the shadow apply (and your project's tests via
 `pkg/testkit`) run the migrations on a real ephemeral postgres, so just

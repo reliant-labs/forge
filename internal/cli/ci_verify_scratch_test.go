@@ -48,9 +48,10 @@ func verifyRepo(t *testing.T) (parent, repo string) {
 	return parent, repo
 }
 
-// treeHash hashes every file under dir — the checkout AND its .git — by
-// path, mode and content, so any write at all changes it.
-func treeHash(t *testing.T, dir string) string {
+// treeLines is one line per path under dir — its mode and content hash, or
+// its link target — sorted, so a test can tell the checkout was not written
+// and, when it was, name the paths that changed.
+func treeLines(t *testing.T, dir string) []string {
 	t.Helper()
 	var lines []string
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -82,8 +83,27 @@ func treeHash(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	sort.Strings(lines)
-	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
-	return hex.EncodeToString(sum[:])
+	return lines
+}
+
+// treeDiff names the lines only one of two treeLines listings has.
+func treeDiff(before, after []string) string {
+	var b strings.Builder
+	in := func(list []string, s string) bool {
+		i := sort.SearchStrings(list, s)
+		return i < len(list) && list[i] == s
+	}
+	for _, l := range before {
+		if !in(after, l) {
+			b.WriteString("  - " + l + "\n")
+		}
+	}
+	for _, l := range after {
+		if !in(before, l) {
+			b.WriteString("  + " + l + "\n")
+		}
+	}
+	return b.String()
 }
 
 // fakeRegenerate stands in for the child `forge generate`, which a test
@@ -149,13 +169,13 @@ func TestVerifyGenerated_LeavesTheCheckoutByteIdentical(t *testing.T) {
 			}
 			clearProjectDir(t)
 			seen := fakeRegenerate(t, tc.edit)
-			before := treeHash(t, repo)
+			before := treeLines(t, repo)
 
 			var stderr strings.Builder
 			err := runVerifyGeneratedIn(t, repo, &stderr)
 
-			if after := treeHash(t, repo); after != before {
-				t.Errorf("verify-generated wrote the checkout (tree hash %s -> %s)", before, after)
+			if after := treeLines(t, repo); strings.Join(after, "\n") != strings.Join(before, "\n") {
+				t.Errorf("verify-generated wrote the checkout:\n%s", treeDiff(before, after))
 			}
 			if len(*seen) != 1 || strings.HasPrefix((*seen)[0], repo) {
 				t.Fatalf("regenerate ran in %v, want once, in a scratch copy outside %s (err=%v)\n%s", *seen, repo, err, stderr.String())

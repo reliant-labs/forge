@@ -28,7 +28,7 @@ func TestPlanORM_NotNullDefaultsSayUnsetWithTheirType(t *testing.T) {
 			{Name: "tone", Type: "string", NotNull: true, Default: "'TONE_WARM'::text", ZeroRejected: true},
 		},
 	}
-	src := string(renderORMEntity(ent, false))
+	src := string(renderORMEntity("db", ent, false))
 	for field, want := range map[string]string{
 		"Status":    "*int64 `bun:\"status,notnull\"`",
 		"Pinned":    "*bool `bun:\"pinned,notnull\"`",

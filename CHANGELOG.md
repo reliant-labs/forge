@@ -750,8 +750,8 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   `threads.status INTEGER NOT NULL DEFAULT 2` was stored as 0 by
   `CreateThread`, and `jsonb NOT NULL DEFAULT '{}'` failed the insert with
   `""` (reliant P5b). Bun's `default:` tag was never the answer — it reads
-  every zero as unset and would turn an explicit `false` into a `DEFAULT
-  true`. The entity type now carries the distinction
+  every zero as unset and would turn an explicit `false` into a
+  `DEFAULT true`. The entity type now carries the distinction
   (`codegen.ColumnInsertDefault`): a scalar whose DEFAULT is not its Go zero
   is a **pointer** field (`nil` = unset), and a column whose zero it can never
   hold keeps its type with `,nullzero` (a json document; an array with a

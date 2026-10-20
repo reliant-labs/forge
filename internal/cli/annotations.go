@@ -741,6 +741,7 @@ var methodOptionMeta = map[string]optionMeta{
 	"timeout":         {"Server-side per-method timeout; zero means use the service default.", "0s (service default)"},
 	"idempotency_key": {"Convention marker advising callers to supply an idempotency key; forge does not enforce or inspect it.", "false"},
 	"errors":          {"Declared Connect/gRPC error codes the method may return (e.g. NotFound, InvalidArgument); informational, surfaced to handler authors.", "[] (no declared errors)"},
+	"activity":        {"The typed activity event a successful call records: verb, target {kind, id, label} (field paths into the request, or the response with a response. prefix), env, scope, detail, writer; or none: \"<why>\" for a mutation that records nothing. forge/pkg/activity's interceptor writes it. CRUD-shaped Create/Update/Delete rpcs imply theirs.", "unset (CRUD implied, or nothing recorded)"},
 }
 
 // Source: internal/assets/proto/forge/v1/forge.proto (ServiceOptions) +

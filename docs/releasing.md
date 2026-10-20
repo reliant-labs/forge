@@ -69,53 +69,29 @@ A single module cannot require itself, so there is no unpushed version to
 resolve, no second tag to order, and no hand-maintained pin to drift.
 `scripts/release-pkg.sh` and `task release:pkg` are deleted.
 
-## 2. Bump reliant — PR
+## 2. Bump the consumers
+
+Pre-launch, reliant and control-plane pin forge by **commit**, not by tag
+(reliant `dev-docs/pinning.md` records why, and the switch back at launch). A
+release tag is still a valid pin: both pin scripts take any ref.
 
 ```sh
 cd reliant
-git checkout -b chore/forge-vX.Y.Z
-go get github.com/reliant-labs/forge@vX.Y.Z
-go mod edit -droprequire=github.com/reliant-labs/forge/pkg   # first bump only
-go mod tidy        # if it errors on the //go:build manual dev/fork_context_test.go
-                   # (a known debug artifact with a broken import), use: go mod tidy -e
-go build ./...
+make pin-forge REF=vX.Y.Z          # go.mod, go.sum, forge.yaml forge_version, regenerated output
+go build ./...                     # then open the PR
+
+cd ../control-plane                # AFTER reliant: control-plane depends on it
+task pin:forge REF=vX.Y.Z          # go.mod, gen/go.mod and forge.yaml forge_version together
 ```
 
-The `-droprequire` matters on the FIRST bump past the merge, and only then.
-Leaving the retired module in the graph does not degrade gracefully: both it and
-the merged module serve `github.com/reliant-labs/forge/pkg/*`, so every such
-import becomes `ambiguous import: found package ... in multiple modules`.
-Confirm it is gone with `go list -m github.com/reliant-labs/forge/pkg` — it
-should report nothing.
+Each script resolves the ref against forge's remote rather than the local
+`../forge` checkout, edits every pin together (a partial bump is the failure
+they exist to prevent), and stops without committing. Commit and open the PR yourself.
 
-## 3. Bump control-plane + pin its CI — PR
-
-Do this AFTER reliant, which control-plane depends on: while reliant still
-requires the retired `forge/pkg`, control-plane inherits it transitively and
-nothing it does locally can resolve the resulting ambiguity.
-
-```sh
-cd control-plane
-git checkout -b chore/forge-vX.Y.Z
-go get github.com/reliant-labs/forge@vX.Y.Z
-go mod edit -droprequire=github.com/reliant-labs/forge/pkg   # first bump only
-go mod tidy && go build ./...
-# and the same two edits in gen/, which has its own go.mod
-(cd gen && go get github.com/reliant-labs/forge@vX.Y.Z && \
-  go mod edit -droprequire=github.com/reliant-labs/forge/pkg && go mod tidy)
-```
-
-Also bump `forge_version` in `forge.yaml`. That is the only other edit:
-control-plane's workflows install forge through `.github/actions/setup-forge`,
-which reads `forge_version` out of `forge.yaml` at run time, so there are no
-per-workflow `go install ...@vX.Y.Z` pins to chase. (An earlier revision of
-this document said there were two — there are none.)
-
-`forge_version` and the `go.mod` require are now necessarily the **same
-number** — one module, one version — and control-plane's `setup-forge` hard-fails
-when they disagree. It used to only warn, on the reasoning that the CLI could
-legitimately lead the last published `forge/pkg`; that cannot happen with one
-module.
+`forge_version` in `forge.yaml` and the `go.mod` require are necessarily the
+**same version** — one module, one version — and both repos' CI installs the
+forge CLI from `forge_version` and fails when the two disagree, so there are no
+per-workflow `go install ...@vX.Y.Z` pins to chase.
 
 ### The KCL module needs no tag
 
@@ -127,7 +103,7 @@ Forge once scaffolded a published KCL git tag on release builds; the tag was
 never pushed, and every project a released forge created could not resolve its
 deploy manifests.
 
-## 4. Forge's own CI needs no pin
+## 3. Forge's own CI needs no pin
 
 Nothing to do here — this step is listed only because it used to exist.
 
@@ -136,7 +112,7 @@ forge under test from the working tree. That is deliberate: installing a tag
 would validate every PR against the LAST release, so no change to a template or
 an emitter could ever go green until after it shipped.
 
-## 5. Rebuild the daemon image
+## 4. Rebuild the daemon image
 
 Once reliant's `go.mod` is on the new forge, the next daemon-image build (the
 reliant binary → `Dockerfile.reliant.dev`) picks it up automatically. No manual

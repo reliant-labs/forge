@@ -16,9 +16,9 @@ import (
 
 const pin = "v0.1.46-0.20261018032013-ee3bded463bc"
 
-func fakeInstall(t *testing.T, calls *[]string) func(context.Context, string, string, []string) error {
+func fakeInstall(t *testing.T, calls *[]string) func(context.Context, string, string) error {
 	t.Helper()
-	return func(_ context.Context, pkg, gobin string, _ []string) error {
+	return func(_ context.Context, pkg, gobin string) error {
 		*calls = append(*calls, pkg)
 		return atomicfile.WriteFile(filepath.Join(gobin, exeName()), []byte("#!/bin/sh\n"), 0o755)
 	}
@@ -65,7 +65,7 @@ func TestPinned_BuildsOnceThenHitsCache(t *testing.T) {
 // A failed build leaves nothing the next request would trust as a hit.
 func TestPinned_FailedBuildLeavesNoBinary(t *testing.T) {
 	r, _, _ := newResolver(t)
-	r.Install = func(context.Context, string, string, []string) error {
+	r.Install = func(context.Context, string, string) error {
 		return errors.New("dial tcp: lookup proxy.golang.org: no such host")
 	}
 	_, err := r.Pinned(context.Background(), t.TempDir(), pin)
@@ -159,7 +159,7 @@ func TestBridge_BuildsCheckoutPerStamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	var builds []string
-	r.Build = func(_ context.Context, dir, out string, _ []string) error {
+	r.Build = func(_ context.Context, dir, out string) error {
 		builds = append(builds, dir)
 		return atomicfile.WriteFile(out, []byte("#!/bin/sh\n"), 0o755)
 	}

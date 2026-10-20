@@ -87,9 +87,9 @@ type Resolver struct {
 	// Same reports whether version got is the forge want names.
 	Same func(want, got string) bool
 	// Install runs `go install pkg` with GOBIN=gobin.
-	Install func(ctx context.Context, pkg, gobin string, env []string) error
+	Install func(ctx context.Context, pkg, gobin string) error
 	// Build runs `go build` of cmd/forge in checkout dir, writing out.
-	Build func(ctx context.Context, dir, out string, env []string) error
+	Build func(ctx context.Context, dir, out string) error
 }
 
 func (r *Resolver) logw() io.Writer {
@@ -157,7 +157,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	if install == nil {
 		install = goInstall
 	}
-	if err := install(ctx, cmdPackage+"@"+pin, tmp, installEnv()); err != nil {
+	if err := install(ctx, cmdPackage+"@"+pin, tmp); err != nil {
 		return Result{}, fmt.Errorf("could not build forge %s (offline, or the version is not published?): %w", pin, err)
 	}
 	if err := publish(filepath.Join(tmp, exeName()), bin); err != nil {
@@ -202,7 +202,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 		build = goBuild
 	}
 	out := filepath.Join(tmp, exeName())
-	if err := build(ctx, dir, out, installEnv()); err != nil {
+	if err := build(ctx, dir, out); err != nil {
 		return Result{}, fmt.Errorf("could not build forge from %s: %w", dir, err)
 	}
 	if err := publish(out, bin); err != nil {
@@ -277,12 +277,12 @@ func safeName(v string) string {
 	}, v)
 }
 
-// installEnv is the environment for building forge. It is the recipe
+// buildEnvExtra is what building forge adds to goexec.Env. It is the recipe
 // scripts/install-tools.sh uses for the project's own pin: forge's modules are
 // fetched straight from GitHub because the module proxy lags a fresh commit by
 // ~20 minutes, and the checksum database cannot know a commit that new.
 // GOWORK=off keeps a go.work above the temp directory from being consulted.
-func installEnv() []string {
+func buildEnvExtra(more ...string) []string {
 	extra := []string{"GOWORK=off"}
 	if os.Getenv("GOPRIVATE") == "" {
 		extra = append(extra, "GOPRIVATE=github.com/reliant-labs/*")
@@ -290,10 +290,10 @@ func installEnv() []string {
 	if os.Getenv("GONOSUMDB") == "" {
 		extra = append(extra, "GONOSUMDB=github.com/reliant-labs/*")
 	}
-	return goexec.Env(extra...)
+	return append(extra, more...)
 }
 
-func goInstall(ctx context.Context, pkg, gobin string, env []string) error {
+func goInstall(ctx context.Context, pkg, gobin string) error {
 	cwd, err := os.MkdirTemp("", "forge-install-")
 	if err != nil {
 		return err
@@ -301,16 +301,16 @@ func goInstall(ctx context.Context, pkg, gobin string, env []string) error {
 	defer func() { _ = os.RemoveAll(cwd) }()
 	cmd := exec.CommandContext(ctx, "go", "install", pkg)
 	cmd.Dir = cwd
-	cmd.Env = append(append([]string(nil), env...), "GOBIN="+gobin)
+	cmd.Env = goexec.Env(buildEnvExtra("GOBIN=" + gobin)...)
 	return runCaptured(cmd)
 }
 
-func goBuild(ctx context.Context, dir, out string, env []string) error {
+func goBuild(ctx context.Context, dir, out string) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=true",
 		"-ldflags", "-X "+modulePath+"/internal/buildinfo.DevForgeRoot="+dir,
 		"-o", out, "./cmd/forge")
 	cmd.Dir = dir
-	cmd.Env = env
+	cmd.Env = goexec.Env(buildEnvExtra()...)
 	return runCaptured(cmd)
 }
 

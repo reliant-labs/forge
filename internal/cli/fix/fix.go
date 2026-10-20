@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator/contract"
@@ -30,7 +31,7 @@ func newCmd(f *factory.Factory) *cobra.Command {
 		Long:  "Codemods that rewrite the project's own code to what a forge lint rule asks for. Each runs only when you name it, and edits files that are yours: review the diff.",
 	}
 	cmd.AddCommand(newNarrowDepsCmd(f))
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func newNarrowDepsCmd(f *factory.Factory) *cobra.Command {

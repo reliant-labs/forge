@@ -97,7 +97,7 @@ What it keeps and what it drops:
 | `middleware_gen.go` decorator | kept when `New` carries `// forge:constructor`; whoever constructs it wraps it: `pkg.New<Iface>WithForgeMiddleware(pkg.New(deps))` |
 | a `compose.go` field and construction, an `Infra` field, `Deps` resolution | **none** |
 | `helpers_gen_test.go` (`NewTest<Pkg>`) | none — there is no forge-built instance for it to stand in for; test against `New(Deps{…})` with the mocks |
-| `enforce-component-observe` | not demanded — forge does not construct it, so it does not decide the wrap |
+| the decorator wrap at the construction site | yours — forge generates `middleware_gen.go`, but whoever constructs the package decides whether to call it |
 | `forge project audit` / `forge project graph` | listed, with `composition: not-a-component` and the reason |
 
 The three package markers answer different questions — pick by what is true:

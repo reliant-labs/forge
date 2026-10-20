@@ -6,7 +6,7 @@ import (
 
 const observeContractSrc = "package x\n\ntype Service interface{\n\t// forge:no-observe\n\tSkip() error\n\tKeep() error\n}\n"
 
-// TestHasConstructorMarker_OnNewDoc: the marker on func New's doc opts in.
+// TestHasConstructorMarker_OnNewDoc: the marker on func New's doc is detected.
 func TestHasConstructorMarker_OnNewDoc(t *testing.T) {
 	dir := writeObserveDir(t, map[string]string{
 		"contract.go": "package x\n\ntype Service interface{ Do() error }\n",
@@ -62,19 +62,22 @@ func TestShouldInstrumentComponent(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "marker opts in",
+			name:  "marker",
 			files: map[string]string{"contract.go": contract, "service.go": markerService},
 			ctor:  "Service", iface: "Service", want: true,
 		},
 		{
-			name:  "legacy seam opts in (no marker)",
+			name:  "seam, no marker",
 			files: map[string]string{"contract.go": contract, "service.go": plainService, "observe_chain.go": seam},
 			ctor:  "Service", iface: "Service", want: true,
 		},
 		{
-			name:  "neither marker nor seam → not instrumented",
+			// The default: instrumentation needs no opt-in. A package that
+			// predates the scaffold has neither, and was silently untraced
+			// while one was required.
+			name:  "neither marker nor seam → instrumented by default",
 			files: map[string]string{"contract.go": contract, "service.go": plainService},
-			ctor:  "Service", iface: "Service", want: false,
+			ctor:  "Service", iface: "Service", want: true,
 		},
 		{
 			name:  "package no-observe wins over marker+seam",

@@ -891,38 +891,6 @@ func lintPipeline() []linterStep {
 			},
 		},
 
-		// 13e. Enforce-component-observe — every wired component with a Service
-		// interface + a canonical New(Deps) Service constructor must make an
-		// observability decision: `// forge:constructor` to instrument, or
-		// `// forge:no-observe` to opt out. Undecided components are aggregated
-		// into ONE gating error naming all three escapes. ERROR-gated; the
-		// kill-switch is config.enforce_component_observe: off. Mirrors the
-		// enforce_typed_access plumbing (config + gate), but always gates (no
-		// warn arm — the point is a forcing-function).
-		{
-			name:  "enforce-component-observe lint",
-			gates: true,
-			scope: scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				// off → silent skip (no message), like the typed-config guard's
-				// non-warn skip.
-				if rc.cfg != nil && !rc.cfg.Config.ComponentObserveGuardEnabled() {
-					return false, ""
-				}
-				if !dirExists("internal") {
-					return false, ""
-				}
-				return rc.cwd != "", ""
-			},
-			runText: func(rc *lintRunCtx) error {
-				return runEnforceComponentObserveLint(rc.cwd)
-			},
-			errFormat: "❌ enforce-component-observe lint: %v\n",
-			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectEnforceComponentObserveJSON(rc.cwd)
-			},
-		},
-
 		// 14b. No-dotenv — forge projects declare config in KCL and keep
 		// secret VALUES in the secret store. A .env file bypasses
 		// both (it is injected wholesale, so nothing has to be

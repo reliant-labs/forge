@@ -418,14 +418,14 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:constructor",
 			AppliesTo: "constructor",
-			Effect:    "Names this function as the package's component constructor when it is not the canonical `New`, and opts the package IN to the generated observability decorator (middleware_gen.go), so every component-to-component call on the interface gets a span, a metric and panic recovery. Scaffolds stamp it by default, so a generated package is born instrumented.",
+			Effect:    "Names this function as the package's component constructor when it is not the canonical `New`. (It no longer decides instrumentation: every package whose constructor returns its contract gets the generated observability decorator, middleware_gen.go, unless it carries `forge:no-observe`.)",
 			Placement: "on the constructor's doc comment",
 			Example:   "// NewClient builds the client.\n// forge:constructor\nfunc NewClient(d Deps) (Service, error)",
 		},
 		{
 			Name:      "forge:no-observe",
 			AppliesTo: "constructor",
-			Effect:    "Opts out of the generated observability decorator. On the constructor it exempts the whole package; on a single interface method it routes just that method around the chain. The opt-out wins over every opt-in.",
+			Effect:    "Opts out of the generated observability decorator, which every package whose constructor returns its contract gets by default. On the constructor it exempts the whole package (no middleware_gen.go, and compose.go constructs it unwrapped); on a single interface method it routes just that method around the chain.",
 			Placement: "on the constructor's doc comment (whole package), or above one interface method",
 			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
 		},

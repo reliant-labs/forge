@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every contract package is instrumented by default.** A package whose
+  constructor returns its `Service` interface now gets `middleware_gen.go`
+  (one span, the call metrics and a failure log per method), and compose.go
+  constructs it wrapped, with no `// forge:constructor` marker and no
+  `observe_chain.go` seam. The gate on those two had left every package that
+  predated the scaffold silently untraced: 26 of the control plane's 46,
+  including its hottest business paths, so most of its traces were a single
+  span. Without a seam the decorator builds the new
+  `observe.DefaultComponentChain(scope, name, level)`, which is what the
+  scaffolded seam assembles. Nothing is scaffolded into the package, and the
+  seam is now an optional override. `forge generate` also brings an existing
+  compose.go construction in line when the decision changes: it wraps a
+  component that is now instrumented, and unwraps one that gained
+  `// forge:no-observe`. `// forge:no-observe` on the package or on one method
+  remains the opt-out. Constructions written by hand (`providers.go`,
+  `*_wire.go`) are yours to wrap.
+
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);
@@ -278,6 +295,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dashboard forge#880 generated until it was patched by hand.
   `internal/obsdash`'s HyperDX renderer refuses a field through `CheckField`,
   and a test holds the two to the same vocabulary.
+
+### Removed
+
+- **The `enforce-component-observe` lint and `config.enforce_component_observe`.**
+  It failed a package that had made no observability decision. Being
+  instrumented is now the default decision, so there is nothing left for it
+  to enforce. Delete the key if your forge.yaml sets it.
 
 ### Fixed
 

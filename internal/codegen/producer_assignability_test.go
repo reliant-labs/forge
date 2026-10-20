@@ -84,7 +84,7 @@ func New(d Deps) Service { return service{d: d} }
 		t.Fatalf("narrow consumer interface must resolve by assignability: %v", err)
 	}
 	out := readInject(t, dir)
-	if !containsNormalized(out, "Payments: stripeInst,") {
+	if !containsNormalized(out, "Payments: c.Stripe,") {
 		t.Fatalf("Enrollment.Payments should be wired to the stripe producer:\n%s", out)
 	}
 	if si, ei := strings.Index(out, "stripe.New("), strings.Index(out, "enrollment.New("); si < 0 || ei < 0 || si > ei {
@@ -120,7 +120,7 @@ func New(d Deps) Service { return service{} }
 	if err := composeWith(t, dir, "enrollment", "stripe"); err != nil {
 		t.Fatalf("alias dep must resolve: %v", err)
 	}
-	if out := readInject(t, dir); !containsNormalized(out, "Payments: stripeInst,") {
+	if out := readInject(t, dir); !containsNormalized(out, "Payments: c.Stripe,") {
 		t.Fatalf("aliased dep should be wired to the stripe producer:\n%s", out)
 	}
 }

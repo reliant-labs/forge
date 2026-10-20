@@ -207,8 +207,8 @@ by `serverkit.NewChain` in `cmd/<bin>/cmd/serve.go`: one span, one metric sample
 one log record per RPC), every internal component→component call (a
 generated `middleware_gen.go` decorator routed through the owned
 `observe_chain.go` seam), and the ORM (`pkg/orm` registers the `bunotel` hook,
-so each query is a child span). Success-log sampling, opting a component in or
-out, and the `enforce-component-observe` lint: `observability/component-chain`.
+so each query is a child span). Every contract package is decorated by default.
+Success-log sampling and opting a component out: `observability/component-chain`.
 
 ## Audit log
 

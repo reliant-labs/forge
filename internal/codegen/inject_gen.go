@@ -617,10 +617,15 @@ func reconcileComposeAddComponents(existing, freshRender string, data InjectGenD
 	// and converges wholesale.
 	existing, dropped := composeDropStaleDepsKeys(existing, data)
 	out, changed := reconcileComposeAddComponentsAfterDrop(existing, freshRender, data)
-	if changed {
-		return out, true
+	if !changed {
+		out, changed = existing, dropped
 	}
-	return existing, dropped
+	// Last, so it also corrects a construction an additive pass kept as it
+	// was: an existing component whose instrument decision changed.
+	if synced, wrapChanged := composeSyncWrapping(out, data); wrapChanged {
+		return synced, true
+	}
+	return out, changed
 }
 
 func reconcileComposeAddComponentsAfterDrop(existing, freshRender string, data InjectGenData) (string, bool) {

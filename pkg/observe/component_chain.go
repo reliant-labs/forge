@@ -17,12 +17,13 @@
 //	    })
 //	}
 //
-// The chain itself is assembled in the OWNED per-package seam
-// observe_chain.go (newObserveChain) from the middlewares below plus any the
-// user adds. The generated decorator is uniform: it never names a middleware
-// or bakes a parameter (log level, sampling) — those live in the owned seam
-// and in forge.yaml. Middleware selection and configuration is a runtime /
-// composition concern, exactly like the Connect chain.
+// Every contract package whose constructor returns its Service interface gets
+// the decorator unless it opts out with `// forge:no-observe`. Its chain is
+// DefaultComponentChain, or — when the package declares the optional owned
+// seam observe_chain.go (newObserveChain) — whatever that seam assembles from
+// the middlewares below plus any the user adds. The generated decorator never
+// names a middleware itself: the chain is a runtime / composition concern,
+// exactly like the Connect chain.
 package observe
 
 import (
@@ -32,6 +33,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -68,6 +70,27 @@ type ComponentMiddleware interface {
 // ordering.
 type ComponentChain struct {
 	mw []ComponentMiddleware
+}
+
+// DefaultComponentChain is the chain a generated decorator uses when its
+// package declares no observe_chain.go seam of its own: panic recovery, one
+// span per call (tracer named scope), the <name>.calls/.errors/.duration
+// metrics, and a log line per failed call — successes at successLevel, which
+// forge renders from forge.yaml's observability.log_level (default Debug, so
+// quiet under a production Info handler). It is exactly what the scaffolded
+// seam assembles; write the seam only to change it.
+//
+// The logger is slog.Default() as of the call, and the tracer and meter come
+// from the global providers, which delegate to whatever the process installs
+// later — so a decorator built before observe.Setup still reports.
+func DefaultComponentChain(scope, name string, successLevel slog.Level) *ComponentChain {
+	logger := slog.Default()
+	return NewComponentChain(
+		RecoverMiddleware(logger),
+		TraceMiddleware(otel.Tracer(scope)),
+		MetricsMiddleware(otel.Meter(scope), name),
+		LogMiddleware(logger, successLevel),
+	)
 }
 
 // NewComponentChain builds a ComponentChain from mw in outer-to-inner order.

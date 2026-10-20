@@ -99,9 +99,10 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 	if ui > bi {
 		t.Fatalf("User must be constructed before Billing:\n%s", out)
 	}
-	// Billing's Users field is filled by the producer's local var (suffixed
-	// "Inst" so it never shadows the package import alias), not infra.
-	if !strings.Contains(out, "Users: userInst,") {
+	// Billing's Users field is filled by the producer's Components field —
+	// the decorated instance, since every contract package is instrumented by
+	// default — not infra.
+	if !strings.Contains(out, "Users: c.User,") {
 		t.Fatalf("Billing.Users should be wired to the user producer var:\n%s", out)
 	}
 }
@@ -524,7 +525,7 @@ func TestGenerateCompose_ReconcileWiresDBOnFallibleService(t *testing.T) {
 		t.Fatalf("reconcile did not wire the gained DB dep into the fallible construction:\n%s", out)
 	}
 	// Existing wiring must remain intact.
-	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = ordersInst"} {
+	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = orders.NewServiceWithForgeMiddleware(ordersInst)"} {
 		if !strings.Contains(flat(out), want) {
 			t.Fatalf("reconcile disturbed existing wiring (missing %q):\n%s", want, out)
 		}
@@ -1026,10 +1027,8 @@ func TestGenerateCompose_ReconcileAddsWrappedPackage(t *testing.T) {
 //
 // — the decorator was assigned to a Components field nothing reads, while the
 // one real caller got the undecorated instance. Every call through the
-// producer bypassed the observability chain the package was opted into, and
-// `forge lint --enforce-component-observe` still reported "every wired
-// component has an observability decision" because a decorator HAD been
-// constructed. Silent capability loss with a green guard.
+// producer bypassed the observability chain the package was opted into,
+// although a decorator HAD been constructed. Silent capability loss.
 func TestGenerateCompose_WrappedProducerInjectsDecorated(t *testing.T) {
 	dir := newInjectProject(t)
 	writeObservedPackage(t, dir, "stripe", "stripe", false)
@@ -1103,7 +1102,7 @@ func TestGenerateCompose_ReconcileDropsRemovedDepsField(t *testing.T) {
 	if strings.Contains(flat(out), "DB:") {
 		t.Fatalf("compose.go still constructs the REMOVED Deps field — the project cannot build:\n%s", out)
 	}
-	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = ordersInst"} {
+	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = orders.NewServiceWithForgeMiddleware(ordersInst)"} {
 		if !strings.Contains(flat(out), want) {
 			t.Fatalf("drop disturbed the surviving wiring (missing %q):\n%s", want, out)
 		}

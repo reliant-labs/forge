@@ -617,6 +617,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **The ORM projects every applied table, whatever its rpcs.** The store
+  (`<entity>_orm_gen.go`, `<Entity>Store`, delegates, the `_repo_ext.go` seam)
+  used to exist only for a table some managed service declared a CRUD rpc
+  for, so a project whose CRUD-named rpcs are all `// forge:custom` — or whose
+  tables have no rpc at all — got no data layer from `forge generate` (reliant:
+  zero of 55 tables). The store now follows the schema: every BASE TABLE with a
+  single-column primary key is projected, a table no rpc names under the
+  singular of its name (`message_content_blocks` → `MessageContentBlock`).
+  CRUD wiring, pages and seed roots still key on CRUD rpcs. `COMMENT ON TABLE t
+  IS 'forge:no-entity'` keeps one table off the store (and off CRUD wiring);
+  `//forge:no-orm` still opts out the whole data layer. The ORM step no longer
+  needs a service, only an entrypoint, and a name collision's advice now names
+  the table opt-out (`// forge:custom` no longer takes a table off the store).
+  **Upgrading:** the next `forge generate` writes a store for each table that
+  had none. If one of them redeclares a name your `internal/db` already
+  declares, generate refuses and names it: rename yours, or add
+  `COMMENT ON TABLE <t> IS 'forge:no-entity'` in a migration.
 - **`lifecyclekit` no longer re-exports `operatorkit.Run`, `Controller` and
   `Options`, so importing it never links controller-runtime.** Every binary
   that imported lifecyclekit for `Supervise`, `WrapWorker` or `Singleton`

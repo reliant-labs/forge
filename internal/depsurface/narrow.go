@@ -188,7 +188,7 @@ func (w *ifaceWriter) qualifier(pkg *types.Package) string {
 func (w *ifaceWriter) declare(f Field) (string, error) {
 	named, ok := f.typ.(*types.Named)
 	if !ok {
-		return "", fmt.Errorf("Deps.%s: %s is not a named interface", f.Name, f.Type)
+		return "", fmt.Errorf("field Deps.%s: %s is not a named interface", f.Name, f.Type)
 	}
 	iface := named.Underlying().(*types.Interface)
 	name := named.Obj().Name()
@@ -196,7 +196,7 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 		name = f.Name + named.Obj().Name()
 	}
 	if w.taken[name] {
-		return "", fmt.Errorf("Deps.%s: both %s and %s are taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), name, w.p.pkg.Name)
+		return "", fmt.Errorf("field Deps.%s: both %s and %s are taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), name, w.p.pkg.Name)
 	}
 	w.taken[name] = true
 	fmt.Fprintf(&w.decls, "\n// %s is the part of %s.%s that this package calls through Deps.%s:\n", name, named.Obj().Pkg().Name(), named.Obj().Name(), f.Name)
@@ -206,7 +206,7 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 		obj, _, _ := types.LookupFieldOrMethod(iface, false, nil, m)
 		fn, ok := obj.(*types.Func)
 		if !ok {
-			return "", fmt.Errorf("Deps.%s: %s has no method %s", f.Name, f.Type, m)
+			return "", fmt.Errorf("field Deps.%s: %s has no method %s", f.Name, f.Type, m)
 		}
 		var sig bytes.Buffer
 		types.WriteSignature(&sig, fn.Type().(*types.Signature), w.qualifier)

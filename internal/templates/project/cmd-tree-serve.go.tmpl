@@ -32,15 +32,15 @@ import (
 {{- end}}
 
 	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
 
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
 {{- if index .ConfigFields "AutoMigrate"}}
 	"github.com/reliant-labs/forge/pkg/migratekit"
 {{- end}}
+{{- if index .ConfigFields "LogSuccessSampleWindow"}}
 	"github.com/reliant-labs/forge/pkg/observe"
+{{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
-	"github.com/reliant-labs/forge/pkg/validate"
 
 {{- if index .ConfigFields "AutoMigrate"}}
 	forgedb "{{.Module}}/db"
@@ -176,19 +176,48 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	}
 {{- end}}
 
-	// INTERCEPTOR CHAIN — the order requests pass through, outermost first.
-	// observe.Chain fixes it: trace → recovery → request-id → logging →
-	// tracing → metrics, and then the application interceptors named below:
-	// auth → audit → rate-limit → extras (protovalidate last, right before
-	// the handler). The trace span is outermost, so a request auth rejects
-	// still has a span, and every log line written for it — the "rpc failed"
-	// line, the audit event — carries its trace_id. Recovery is next, so a
-	// panic anywhere inside still produces a response; auth precedes audit so
-	// the audit log knows who called.
-	chainDeps := observe.Deps{
+	// INTERCEPTOR CHAIN — serverkit.NewChain, the order requests pass
+	// through, outermost first: trace → recovery → request-id → logging →
+	// metrics → auth → audit → rate-limit → stream-drain → protovalidate.
+	// The trace span is outermost, so a request auth rejects still has a span
+	// and every log line written for it carries its trace_id; recovery is
+	// next, so a panic anywhere inside still produces a response; auth
+	// precedes audit so the audit log knows who called; protovalidate is
+	// innermost, right before the handler.
+	//
+	// Every slot has forge's default except Auth, which NewChain REQUIRES —
+	// a chain with no authenticator is a boot error, never a running server.
+	// A field you set replaces that slot's default; serverkit.NoAudit,
+	// NoTrace, NoStreamDrain and NoValidate drop one. The defaults:
+	//
+	//   - Trace: otelconnect with WithTrustRemote, so the browser's
+	//     traceparent is the PARENT of this span and a click's spans and the
+	//     API spans it caused share one trace. The browser is first-party
+	//     here; pass your own otelconnect interceptor without the option if
+	//     this server is reachable by callers you do not want choosing your
+	//     trace ids.
+	//   - Audit: fmw.AuditInterceptor over the claims auth stashed.
+	//   - StreamDrain: binds every server-streaming and bidi RPC to the
+	//     listener's drain, so a rollout ends it OK with the x-forge-drained
+	//     trailer after the pre-stop pause and the client reopens it against a
+	//     live replica. A procedure whose peer should redial on Unavailable
+	//     instead goes in skCfg.RedialOnDrain.
+	//   - Validate: protovalidate rejects a request whose buf.validate rules
+	//     fail with InvalidArgument BEFORE the handler runs.
+	//
+	// AUDIENCE. serverkit.AudienceUser names who this chain authenticates:
+	// your product's signed-in users. Every service it mounts must declare
+	// the same audience (`option (forge.v1.service) = {audience: ...}` in the
+	// proto; unset is "user"), or serverkit.Run refuses to start — a service
+	// for another kind of caller belongs on a listener of its own.
+	//
+	// PAYLOAD CAPS. connect-go reads and decodes a whole body BEFORE any
+	// interceptor — auth, rate limit, protovalidate — can reject it, so an
+	// uncapped handler turns one anonymous request into an OOMKill. These
+	// come from the typed config; zero is 4 MiB.
+	chain, err := serverkit.NewChain(serverkit.ChainDeps{
+		Auth:   serverkit.AuthFor(serverkit.AudienceUser, authInterceptor),
 		Logger: logger,
-		Auth:   authInterceptor,
-		Audit:  fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
 		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(cfg.RateLimitRps), Burst: int(cfg.RateLimitBurst)}, middleware.ClaimsFromContext),
 {{- end}}
@@ -198,51 +227,13 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 		// how log_success_sample_window reaches the logging interceptor.
 		LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())},
 {{- end}}
+		ReadMaxBytes: skCfg.ReadMaxBytes,
+		SendMaxBytes: skCfg.SendMaxBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("interceptor chain: %w", err)
 	}
-	// DRAIN. A server-streaming or bidi RPC never finishes on its own, so at
-	// shutdown it would hold the drain for the whole SHUTDOWN_TIMEOUT and then
-	// be cut without a status. This binds every one to the listener's drain:
-	// it ends OK, with the x-forge-drained trailer, after the pre-stop pause —
-	// the client reopens it against a live replica. A procedure whose peer
-	// should redial on Unavailable instead goes in skCfg.RedialOnDrain. Inner
-	// to logging and metrics, so they record the status the client received.
-	chainDeps.Extras = append(chainDeps.Extras, serverkit.StreamDrainInterceptor())
-	// protovalidate rejects requests whose buf.validate field rules fail
-	// with CodeInvalidArgument BEFORE the handler runs. Appended LAST, so it
-	// is the innermost extra: it runs right before the handler, after auth.
-	if validateInt, verr := validate.Interceptor(); verr == nil {
-		chainDeps.Extras = append(chainDeps.Extras, validateInt)
-	} else {
-		logger.Error("failed to create protovalidate interceptor", "error", verr)
-	}
-	// otelconnect goes in Deps.Trace, NOT Extras: Trace is the OUTERMOST slot
-	// of the chain, so the span covers auth rejections (exactly the requests
-	// you want to see) and every layer's log lines carry its trace_id. Extras
-	// run AFTER auth — an interceptor there never sees a rejected call.
-	//
-	// WithTrustRemote makes the browser's traceparent the PARENT of this span.
-	// Without it otelconnect treats every inbound trace context as untrusted
-	// and only LINKS to it, so a page's spans and the API spans it caused land
-	// in two traces and "show me this click end to end" has no answer. The
-	// browser is first-party here. Drop the option if this server is reachable
-	// by callers you do not want choosing your trace ids.
-	if otelInt, oerr := otelconnect.NewInterceptor(otelconnect.WithTrustRemote()); oerr == nil {
-		chainDeps.Trace = otelInt
-	} else {
-		logger.Error("failed to create otelconnect interceptor", "error", oerr)
-	}
-
-	// PAYLOAD CAPS. connect-go documents a ZERO cap as UNLIMITED, and it
-	// reads and decodes the whole body BEFORE any interceptor — auth, rate
-	// limit, protovalidate — can reject it. So an uncapped handler turns one
-	// anonymous request into an OOMKill, and rate limiting cannot help
-	// because it counts requests, not bytes. serverkitConfig normalizes
-	// skCfg before returning it, so these are guaranteed non-zero here.
-	opts := []connect.HandlerOption{
-		connect.WithInterceptors(observe.Chain(chainDeps)...),
-		connect.WithReadMaxBytes(skCfg.ReadMaxBytes),
-		connect.WithSendMaxBytes(skCfg.SendMaxBytes),
-	}
+	opts := chain.HandlerOptions()
 
 	// EXPLICIT COMPOSITION: open owned infra (internal/app/providers.go,
 	// yours), then construct the component graph — no by-type injector.
@@ -269,9 +260,9 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	}
 
 	srv := serverkit.Server{
-		Mux:         mux,
-		HandlerOpts: opts,
-		Logger:      logger,
+		Mux:    mux,
+		Chain:  chain,
+		Logger: logger,
 {{- if or (index .ConfigFields "CorsOrigins") (index .ConfigFields "Environment")}}
 		CORSMiddleware: func(origins []string, allowCredentials bool) func(http.Handler) http.Handler {
 			// The project's own request/response headers, on top of

@@ -34,6 +34,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # Prose only: nothing to lint. Same filter as ci.yml.
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "internal/templates/project/skills/**"
 
 permissions:
   contents: read
@@ -54,6 +59,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # golangci-lint type-checks what it lints; ci.yml's lint job saves the
+      # same compile artifacts from main. Restore only: that job owns the scope.
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-lint-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-lint-${{ runner.os }}-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:

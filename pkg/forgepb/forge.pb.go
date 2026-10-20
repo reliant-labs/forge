@@ -630,7 +630,15 @@ type ServiceOptions struct {
 	// Other services this service depends on (for dependency injection).
 	Dependencies []string `protobuf:"bytes,5,rep,name=dependencies,proto3" json:"dependencies,omitempty"`
 	// Authentication configuration for the service.
-	Auth          *AuthConfig `protobuf:"bytes,6,opt,name=auth,proto3" json:"auth,omitempty"`
+	Auth *AuthConfig `protobuf:"bytes,6,opt,name=auth,proto3" json:"auth,omitempty"`
+	// The trust domain whose callers this service serves: "user" (the
+	// default, when empty) for the product's own signed-in users, or a name
+	// the project chooses for another kind of caller ("daemon", "operator").
+	// A serverkit.Listener refuses to start when it mounts a service whose
+	// audience differs from its chain's Authenticator.Audience(), so a
+	// listener authenticating one kind of caller can never serve another
+	// kind's RPCs.
+	Audience      string `protobuf:"bytes,7,opt,name=audience,proto3" json:"audience,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -705,6 +713,13 @@ func (x *ServiceOptions) GetAuth() *AuthConfig {
 		return x.Auth
 	}
 	return nil
+}
+
+func (x *ServiceOptions) GetAudience() string {
+	if x != nil {
+		return x.Audience
+	}
+	return ""
 }
 
 // AuthConfig defines service-wide authentication defaults.
@@ -1482,7 +1497,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x03min\x18\x06 \x01(\x01R\x03min\x12\x10\n" +
 	"\x03max\x18\a \x01(\x01R\x03max\x12%\n" +
 	"\x0eallowed_values\x18\b \x03(\tR\rallowedValues\x12\x16\n" +
-	"\x06custom\x18\t \x01(\tR\x06custom\"\xeb\x01\n" +
+	"\x06custom\x18\t \x01(\tR\x06custom\"\x87\x02\n" +
 	"\x0eServiceOptions\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -1491,7 +1506,8 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"visibility\x18\x04 \x01(\x0e2\x1b.forge.v1.ServiceVisibilityR\n" +
 	"visibility\x12\"\n" +
 	"\fdependencies\x18\x05 \x03(\tR\fdependencies\x12(\n" +
-	"\x04auth\x18\x06 \x01(\v2\x14.forge.v1.AuthConfigR\x04auth\"V\n" +
+	"\x04auth\x18\x06 \x01(\v2\x14.forge.v1.AuthConfigR\x04auth\x12\x1a\n" +
+	"\baudience\x18\a \x01(\tR\baudience\"V\n" +
 	"\n" +
 	"AuthConfig\x12#\n" +
 	"\rauth_required\x18\x01 \x01(\bR\fauthRequired\x12#\n" +

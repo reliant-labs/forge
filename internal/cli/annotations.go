@@ -446,7 +446,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:exclude-contract",
 			AppliesTo: "package",
-			Effect:    "Opts the package out of contract codegen entirely — no canonical-shape check, no wiring, and NO generated mock. The per-package equivalent of listing it in forge.yaml `contracts.exclude`. REQUIRES a reason (`forge:exclude-contract: <why>`); a bare marker is a `forge lint` error. Refused outright on a package that does outbound I/O (make it an adapter) or owns a multi-implementation interface (that interface is the contract). Legitimate for pure functions, test-support, API/CRD types, a strategy registry.",
+			Effect:    "Opts the package out of contract codegen entirely — no canonical-shape check, no wiring, and NO generated mock. The per-package equivalent of listing it in forge.yaml `contracts.exclude`. REQUIRES a reason (`forge:exclude-contract: <why>`); a bare marker is a `forge lint` error. Refused outright on a package that does outbound I/O (make it an adapter) or owns a multi-implementation interface it offers (that interface is the contract — a seam the package itself consumes, as a field or parameter, does not count). Legitimate for pure functions, test-support, API/CRD types, a strategy registry.",
 			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
 			Example:   "//forge:exclude-contract: strategy registry — one constructor per algorithm\npackage strategyregistry",
 		},
@@ -759,6 +759,7 @@ var serviceOptionMeta = map[string]optionMeta{
 	"visibility":   {"How the service is exposed: SERVICE_VISIBILITY_API (Connect/HTTP gateway) or SERVICE_VISIBILITY_INTERNAL (inter-service only).", "SERVICE_VISIBILITY_UNSPECIFIED (defaults to API)"},
 	"dependencies": {"Other services this service depends on.", "[]"},
 	"auth":         {"Service-wide authentication defaults (AuthConfig.auth_required / auth_provider); individual methods override via (forge.v1.method).auth_required.", ""},
+	"audience":     {"The trust domain whose callers the service serves (\"user\", or a project-chosen name such as \"daemon\" or \"operator\"). A serverkit.Listener refuses to start when it mounts a service whose audience differs from its chain's Authenticator.Audience().", "\"user\""},
 }
 
 func optionSpecsFromDescriptor(fields protoreflect.FieldDescriptors, meta map[string]optionMeta) []OptionSpec {

@@ -1,6 +1,8 @@
 package operatorkit
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -218,5 +220,19 @@ func TestWithLabelScopes(t *testing.T) {
 	}
 	if got := withLabelScopes(nil, map[client.Object]labels.Selector{pod: nil}); got != nil {
 		t.Errorf("a nil selector must not create a row, got %v", got)
+	}
+}
+
+// TestRun_NoClusterDegradesToNil pins the graceful degrade: with no reachable
+// Kubernetes cluster, Run logs a warning and returns nil rather than crashing
+// the binary. KUBECONFIG and HOME point at an empty directory so a developer's
+// own kubeconfig cannot make the test reach a real cluster.
+func TestRun_NoClusterDegradesToNil(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KUBECONFIG", filepath.Join(dir, "no-kubeconfig"))
+	t.Setenv("HOME", dir)
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	if err := Run(context.Background(), nil, Options{LeaderElectionID: "test-leader"}, nil); err != nil {
+		t.Fatalf("Run with no cluster should degrade to nil, got %v", err)
 	}
 }

@@ -98,8 +98,9 @@ task test:e2e                                # every TestE2E* test (-tags e2e); 
 task test:e2e -- -run TestE2EFixtureCorpus   # a slice of it
 ```
 
-CI runs it sharded in `.github/workflows/e2e-suite.yml`; `reliant.md`
-("CI: what runs where") says what runs in which workflow.
+CI runs it sharded in `.github/workflows/e2e-suite.yml` on every push to main and nightly,
+and on a pull request labelled `ci:e2e`; `reliant.md` ("CI: what runs where") says what runs
+in which workflow.
 
 ## Commit messages
 

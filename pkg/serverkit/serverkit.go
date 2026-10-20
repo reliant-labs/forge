@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 // Server carries the already-composed inputs serverkit runs. Service
@@ -622,10 +624,12 @@ func (c *Config) Normalize() {
 }
 
 // The drain and probe defaults Normalize applies, shared with Drainer so a
-// hand-built main and Run agree on the grace arithmetic.
+// hand-built main and Run agree on the grace arithmetic. The drain pair is
+// drainbudget's, the same values pkg/deploy derives the pod's grace period
+// from.
 const (
-	defaultPreStopDelay     = 5 * time.Second
-	defaultShutdownTimeout  = 30 * time.Second
+	defaultPreStopDelay     = drainbudget.DefaultPreStopDelay
+	defaultShutdownTimeout  = drainbudget.DefaultShutdownTimeout
 	defaultReadinessTimeout = 2 * time.Second
 )
 

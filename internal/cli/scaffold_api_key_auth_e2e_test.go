@@ -38,7 +38,7 @@ import (
 //     second sql.Open pool inside SetupAuth.
 //
 // So the test walks the user's path — project new → entity → scaffold → own
-// an api_keys table → fill in the APIKeyValidator seam over infra.DB →
+// an api_keys table → fill in the APIKeyValidator seam over the serving pool →
 // generate → build → boot → call — and ends on real HTTP. Nothing in it
 // reaches past the seams the skill names.
 func TestE2EScaffoldAPIKeyAuth(t *testing.T) {
@@ -69,9 +69,9 @@ message Widget {
 	if !strings.Contains(mw, `const APIKeyHeader = "X-API-Key"`) || !strings.Contains(mw, "h.Get(APIKeyHeader)") {
 		t.Fatalf("pkg/middleware/middleware.go must declare APIKeyHeader and read it in credentialFrom:\n%s", mw)
 	}
-	serve := readFileE2E(t, filepath.Join(projectDir, "cmd", "keyapp", "cmd", "serve.go"))
-	if !strings.Contains(serve, "authenticator.UseKeyValidator(app.APIKeyValidator(infra))") {
-		t.Fatalf("serve.go must install app.APIKeyValidator(infra) on the authenticator after OpenInfra:\n%s", serve)
+	providers := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "providers.go"))
+	if !strings.Contains(providers, "authenticator.UseKeyValidator(APIKeyValidator(d.DB))") {
+		t.Fatalf("providers.go's UserAuth must install APIKeyValidator over the serving pool on the authenticator:\n%s", providers)
 	}
 
 	// The project's own policy tests: credential precedence, key + bearer
@@ -96,20 +96,20 @@ message Widget {
 
 	authPath := filepath.Join(projectDir, "internal", "app", "auth.go")
 	authGo := readFileE2E(t, authPath)
-	const seam = "func APIKeyValidator(_ *Infra) auth.KeyValidator {\n\treturn nil\n}"
+	const seam = "func APIKeyValidator(_ *DB) auth.KeyValidator {\n\treturn nil\n}"
 	if !strings.Contains(authGo, seam) {
 		t.Fatalf("internal/app/auth.go must scaffold the APIKeyValidator seam returning nil (keys disabled):\n%s", authGo)
 	}
 	// The validator the skill describes: one indexed read by lookup prefix
 	// on the handlers' own pool, then a constant-time hash compare.
-	authGo = strings.Replace(authGo, seam, `func APIKeyValidator(infra *Infra) auth.KeyValidator {
+	authGo = strings.Replace(authGo, seam, `func APIKeyValidator(db *DB) auth.KeyValidator {
 	return auth.KeyValidatorFunc(func(ctx context.Context, key string) (*auth.Claims, error) {
 		prefix, err := apikey.LookupPrefix(key)
 		if err != nil {
 			return nil, err
 		}
 		var hash, userID string
-		err = infra.DB.QueryRowContext(ctx,
+		err = db.QueryRowContext(ctx,
 			"SELECT key_hash, user_id FROM api_keys WHERE prefix = $1 AND revoked_at IS NULL",
 			prefix).Scan(&hash, &userID)
 		if err != nil {

@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
@@ -16,7 +14,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/observe"
-	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
@@ -244,48 +241,16 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	//
 	//	go tool pprof http://localhost:6060/debug/pprof/heap
 	//	kubectl port-forward <pod> 6060:6060   # then the line above
-	var pprofSrv *http.Server
-	if cfg.PprofAddr != "" {
-		pprofMux := http.NewServeMux()
-		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
-		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-		// The declared-metrics schema rides the same loopback listener: it is
-		// introspection of this process, not product surface.
-		pprofMux.Handle(metrics.SchemaPath, metrics.SchemaHandler(metrics.Default(), cfg.ServiceName, schemaVersion(cfg.ServiceVersion)))
-		pprofSrv = &http.Server{
-			Addr:              cfg.PprofAddr,
-			Handler:           pprofMux,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		pprofLn, lnErr := (&net.ListenConfig{}).Listen(runCtx, "tcp", cfg.PprofAddr)
-		if lnErr != nil {
-			// LOG AND CARRY ON — never a component failure, whatever the
-			// FailurePolicy says. pprof is a DEBUG surface, and a debug
-			// surface that can take the service down is worse than no debug
-			// surface at all. Now that it is on by default, the ordinary way
-			// to hit this is banal: a second copy of the binary on the same
-			// dev box, or anything else already holding :6060. That must cost
-			// you the profiler, not the process.
-			//
-			// (The main httpSrv goroutine is already serving by this point, so
-			// there is nothing to unwind either: leaving pprofSrv nil keeps it
-			// out of the shutdown sequence below.)
-			pprofSrv = nil // nothing to Shutdown — Serve never ran
-			logger.Error("pprof listener unavailable — continuing without it",
-				"addr", cfg.PprofAddr, "error", lnErr,
-				"hint", "another process is probably bound there; set PPROF_ADDR to a free port, or pass --pprof-addr= to disable pprof")
-		} else {
-			go func() {
-				logger.Info("pprof server starting", "addr", cfg.PprofAddr)
-				if serveErr := pprofSrv.Serve(pprofLn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-					logger.Error("pprof server error", "error", serveErr)
-				}
-			}()
-		}
-	}
+	//
+	// It is the same component a composition graph runs (Pprof): a bind
+	// failure is logged and survived, never a component failure, whatever
+	// the FailurePolicy says — a debug surface that can take the service
+	// down is worse than none. Its context outlives the drain, so the
+	// teardown below shuts it down gracefully, last.
+	pprofSrv := NewPprof(cfg, logger)
+	pprofCtx, pprofCancel := context.WithCancel(context.WithoutCancel(runCtx))
+	defer pprofCancel()
+	go func() { _ = pprofSrv.Run(pprofCtx) }()
 
 	// Start workers in background goroutines. Each worker gets its own
 	// context derived from the shared supervisor context: cancelling
@@ -441,11 +406,10 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		}
 	}
 
-	if pprofSrv != nil {
-		if shutErr := pprofSrv.Shutdown(shutdownCtx); shutErr != nil {
-			logger.Error("pprof shutdown error", "error", shutErr)
-		}
+	if shutErr := pprofSrv.Close(shutdownCtx); shutErr != nil {
+		logger.Error("pprof shutdown error", "error", shutErr)
 	}
+	pprofCancel()
 	drainer.Phase("teardown", mark, "drain: teardown done")
 	drainer.Complete()
 

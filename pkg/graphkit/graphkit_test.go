@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -229,5 +230,65 @@ func TestSupervise_BeforeBuildIsAnError(t *testing.T) {
 	var b graphkit.Builder
 	if err := b.Supervise(context.Background(), lifecyclekit.Policy{}, nil); err == nil {
 		t.Fatal("Supervise before Build succeeded")
+	}
+}
+
+func TestSupervise_FirstNodesStartBeforeAndStopAfterTheGraph(t *testing.T) {
+	g := newGraph()
+	if err := g.b.Build("worker", func() { g.Listener() }); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var mu sync.Mutex
+	var events []string
+	record := func(e string) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+	probe := lifecyclekit.Node{
+		Name: "probe_listener",
+		Run: func(ctx context.Context) error {
+			record("probe run")
+			<-ctx.Done()
+			return nil
+		},
+		Close: func(context.Context) error {
+			mu.Lock()
+			poolClosed := g.Pool().closed
+			mu.Unlock()
+			if !poolClosed {
+				t.Error("the first node stopped before the graph's pool")
+			}
+			record("probe close")
+			return nil
+		},
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- g.b.Supervise(ctx, lifecyclekit.Policy{Logger: logger, Drainer: &serverkit.Drainer{PreStopDelay: -1, Logger: logger}}, nil, probe)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		started := len(events) > 0
+		mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first node never ran")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(events, ", "); got != "probe run, probe close" {
+		t.Fatalf("events = %s", got)
 	}
 }

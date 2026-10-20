@@ -66,6 +66,11 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []EntityDef {
 	tableByName := make(map[string]schemadef.Table, len(tables))
 	for _, t := range tables {
+		// `forge:no-entity` makes the table plain schema on both sides:
+		// no store, and no CRUD wiring over a store that does not exist.
+		if t.NoEntity() {
+			continue
+		}
 		tableByName[t.Name] = t
 	}
 
@@ -122,6 +127,95 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
 	return entities
+}
+
+// BuildORMEntities is the DATA LAYER's entity set: every applied BASE
+// TABLE, projected whether or not a service declares CRUD rpcs for it.
+//
+// It is deliberately wider than BuildSchemaEntities. That join decides
+// what gets CRUD wiring, pages and seed roots — wire-facing projections
+// that need a wire message. The store needs nothing from the wire: its
+// struct is the table's columns, its delegates are keyed by the table's
+// primary key. Gating it on CRUD rpcs made a project whose rpcs are all
+// custom (`// forge:custom`), or whose tables have no rpc at all, get no
+// data layer whatsoever — the schema was the truth and nothing projected
+// it.
+//
+// A table opts out with `COMMENT ON TABLE t IS 'forge:no-entity'`
+// (schemadef.TableMarkerNoEntity); the project opts out with
+// `//forge:no-orm`.
+func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, error) {
+	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	if err != nil {
+		return nil, err
+	}
+	if len(tables) == 0 {
+		return nil, nil
+	}
+	entities, notes, err := ormEntitiesForTables(tables, services)
+	for _, n := range notes {
+		fmt.Println("ℹ️  " + n)
+	}
+	return entities, err
+}
+
+// ormEntitiesForTables is the pure half of BuildORMEntities. A table the
+// CRUD join claims keeps that entity verbatim (its name is the wire
+// message's, and its wire fields carry `forge:secret`), so the ORM and the
+// CRUD wiring that compiles against it agree on every name. Every other
+// table is named from the table itself (TableEntityName).
+//
+// notes are one-line reasons for tables left out of the projection; err
+// names two tables that would project to the same Go name, which cannot
+// both be declared in one package.
+func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (entities []EntityDef, notes []string, err error) {
+	byTable := map[string]EntityDef{}
+	for _, e := range entitiesForTables(tables, services) {
+		byTable[e.TableName] = e
+	}
+
+	owner := map[string]string{} // entity name (lowercased) → table
+	sorted := append([]schemadef.Table(nil), tables...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	for _, t := range sorted {
+		if t.NoEntity() {
+			continue
+		}
+		e, joined := byTable[t.Name]
+		if !joined {
+			switch {
+			case len(t.PKCols) > 1:
+				notes = append(notes, fmt.Sprintf("%s has a composite primary key (%s) — no entity is projected; query it via db.Bun().",
+					t.Name, strings.Join(t.PKCols, ", ")))
+				continue
+			case len(t.PKCols) == 0:
+				notes = append(notes, fmt.Sprintf("%s has no primary key — no entity is projected; query it via db.Bun().", t.Name))
+				continue
+			}
+			e = buildEntityDef(TableEntityName(t.Name), t, ServiceDef{})
+		}
+		key := strings.ToLower(e.Name)
+		if prev, dup := owner[key]; dup {
+			return nil, notes, fmt.Errorf("tables %s and %s both project to the entity %s, and one package cannot declare it twice: "+
+				"opt one out with `COMMENT ON TABLE %s IS '%s'`, or rename it",
+				prev, t.Name, e.Name, t.Name, schemadef.TableMarkerNoEntity)
+		}
+		owner[key] = t.Name
+		entities = append(entities, e)
+	}
+	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
+	return entities, notes, nil
+}
+
+// TableEntityName is the Go name of the entity a table projects to when no
+// CRUD rpc names it: the singular of the table, camel-cased the way
+// protoc-gen-go camel-cases a message name (`message_content_blocks` →
+// MessageContentBlock, `api_keys` → ApiKey, `provider_backoff` →
+// ProviderBackoff). Spelled like a wire message on purpose: the day a
+// service adds `Get<E>` over the table, the CRUD join names the entity
+// after that message, and the two spellings must already agree.
+func TableEntityName(table string) string {
+	return naming.GoCamelCase(inflection.Singular(table))
 }
 
 // FrontendEntities is the subset of entities the frontend projections (CRUD

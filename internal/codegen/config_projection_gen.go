@@ -246,12 +246,15 @@ type ProcessSelector struct {
 	Binary   string
 	Root     *BinaryConfigFields
 	Commands []BinaryConfigFields
+	// Subtrees are the binary's subtree configs, in declaration order: each
+	// one a process loads when one of its paths prefixes the process's path.
+	Subtrees []BinaryConfigFields
 }
 
 // ProcessSelectorsFrom groups per-binary configs into one ProcessSelector per
-// binary that declares at least one command config, in first-declaration
-// order. A binary with only a root config needs no selector: its one env map
-// is the process's env.
+// binary that declares at least one command or subtree config, in
+// first-declaration order. A binary with only a root config needs no
+// selector: its one env map is the process's env.
 func ProcessSelectorsFrom(perBinary []BinaryConfigFields) []ProcessSelector {
 	var order []string
 	byBinary := map[string]*ProcessSelector{}
@@ -262,6 +265,10 @@ func ProcessSelectorsFrom(perBinary []BinaryConfigFields) []ProcessSelector {
 			ps = &ProcessSelector{Binary: bc.Binary}
 			byBinary[bc.Binary] = ps
 			order = append(order, bc.Binary)
+		}
+		if len(bc.Subtrees) > 0 {
+			ps.Subtrees = append(ps.Subtrees, bc)
+			continue
 		}
 		if len(bc.Command) == 0 {
 			if ps.Root == nil {
@@ -274,7 +281,7 @@ func ProcessSelectorsFrom(perBinary []BinaryConfigFields) []ProcessSelector {
 	var out []ProcessSelector
 	for _, b := range order {
 		ps := byBinary[b]
-		if len(ps.Commands) == 0 {
+		if len(ps.Commands) == 0 && len(ps.Subtrees) == 0 {
 			continue
 		}
 		sort.SliceStable(ps.Commands, func(i, j int) bool {
@@ -330,6 +337,10 @@ func renderProcessSelector(ps ProcessSelector) string {
 		fmt.Fprintf(&b, "    # Every `%s` process: the binary-wide root config.\n", ps.Binary)
 		fmt.Fprintf(&b, "    %s?: %s\n", InstanceName(ps.Root.MessageName), ps.Root.MessageName)
 	}
+	for _, c := range ps.Subtrees {
+		fmt.Fprintf(&b, "    # Every process at or below %s.\n", subtreeList(ps.Binary, c.Subtrees))
+		fmt.Fprintf(&b, "    %s?: %s\n", InstanceName(c.MessageName), c.MessageName)
+	}
 	for _, c := range ps.Commands {
 		fmt.Fprintf(&b, "    # `%s`\n", process(c))
 		fmt.Fprintf(&b, "    %s?: %s\n", InstanceName(c.MessageName), c.MessageName)
@@ -345,7 +356,8 @@ func renderProcessSelector(ps ProcessSelector) string {
 	b.WriteString("# names it (an image whose ENTRYPOINT is the binary, run with `args`). The\n")
 	b.WriteString("# path ends at the first flag, so put flags after the subcommand. The\n")
 	b.WriteString("# LONGEST declared command that prefixes the path wins; a process running\n")
-	b.WriteString("# none of them gets the root config alone.\n")
+	b.WriteString("# none of them gets the root config alone. Every subtree config one of whose\n")
+	b.WriteString("# paths prefixes the path is added too.\n")
 	b.WriteString("#\n")
 	b.WriteString("# config_secrets names the sensitive fields the workload reads, across both\n")
 	b.WriteString("# configs; each is routed to the config that declares it.\n")
@@ -372,14 +384,23 @@ func renderProcessSelector(ps ProcessSelector) string {
 		rootSensitive = KCLAllSensitiveName(ps.Root.MessageName)
 	}
 	fmt.Fprintf(&b, "    _root_sensitive: [str] = %s\n", rootSensitive)
+	for _, c := range ps.Subtrees {
+		inst := InstanceName(c.MessageName)
+		fmt.Fprintf(&b, "    _in_%s = any _p in %s { _path[:len(_p)] == _p }\n", inst, kclPathList(c.Subtrees))
+	}
+	b.WriteString("    _sub_sensitive: [str] = []")
+	for _, c := range ps.Subtrees {
+		fmt.Fprintf(&b, " + (%s if _in_%s else [])", KCLAllSensitiveName(c.MessageName), InstanceName(c.MessageName))
+	}
+	b.WriteString("\n")
 	b.WriteString("    _cmd_sensitive: [str] = ")
 	for _, c := range ps.Commands {
 		fmt.Fprintf(&b, "%s if _cmd == %q else ", KCLAllSensitiveName(c.MessageName), InstanceName(c.MessageName))
 	}
 	b.WriteString("[]\n")
 
-	b.WriteString("    assert all _n in config_secrets { _n in _root_sensitive or _n in _cmd_sensitive }, \\\n")
-	fmt.Fprintf(&b, "        \"%s: config_secrets names ${[_n for _n in config_secrets if _n not in _root_sensitive and _n not in _cmd_sensitive]}, which is not a `sensitive` field of the config(s) a `%s` process running ${_path} loads. Sensitive fields: ${sorted(_root_sensitive + _cmd_sensitive)}.\"\n", lambda, ps.Binary)
+	b.WriteString("    assert all _n in config_secrets { _n in _root_sensitive or _n in _sub_sensitive or _n in _cmd_sensitive }, \\\n")
+	fmt.Fprintf(&b, "        \"%s: config_secrets names ${[_n for _n in config_secrets if _n not in _root_sensitive and _n not in _sub_sensitive and _n not in _cmd_sensitive]}, which is not a `sensitive` field of the config(s) a `%s` process running ${_path} loads. Sensitive fields: ${sorted(_root_sensitive + _sub_sensitive + _cmd_sensitive)}.\"\n", lambda, ps.Binary)
 
 	rootEnv := "{}"
 	if ps.Root != nil {
@@ -389,12 +410,25 @@ func renderProcessSelector(ps ProcessSelector) string {
 			inst, lambda, ps.Binary, ps.Root.MessageName, inst, schema)
 		rootEnv = fmt.Sprintf("%s(p.%s, [_n for _n in config_secrets if _n in _root_sensitive])", rootLambda, inst)
 	}
+	for _, c := range ps.Subtrees {
+		inst := InstanceName(c.MessageName)
+		fmt.Fprintf(&b, "    assert not _in_%s or p.%s not in [None, Undefined], \"%s: this workload runs `%s ${' '.join(_path)}`, at or below %s, which loads %s — set `%s` on the %s.\"\n",
+			inst, inst, lambda, ps.Binary, subtreeList(ps.Binary, c.Subtrees), c.MessageName, inst, schema)
+	}
 	for _, c := range ps.Commands {
 		inst := InstanceName(c.MessageName)
 		fmt.Fprintf(&b, "    assert _cmd != %q or p.%s not in [None, Undefined], \"%s: this workload runs `%s`, which loads %s — set `%s` on the %s.\"\n",
 			inst, inst, lambda, process(c), c.MessageName, inst, schema)
 	}
 	fmt.Fprintf(&b, "    _root_env = %s\n", rootEnv)
+	b.WriteString("    _sub_env = {}")
+	for _, c := range ps.Subtrees {
+		inst := InstanceName(c.MessageName)
+		_, subLambda := KCLConfigName(c.MessageName)
+		fmt.Fprintf(&b, " | (%s(p.%s, [_n for _n in config_secrets if _n in %s]) if _in_%s else {})",
+			subLambda, inst, KCLAllSensitiveName(c.MessageName), inst)
+	}
+	b.WriteString("\n")
 	b.WriteString("    _cmd_env = ")
 	for _, c := range ps.Commands {
 		inst := InstanceName(c.MessageName)
@@ -402,12 +436,32 @@ func renderProcessSelector(ps ProcessSelector) string {
 		fmt.Fprintf(&b, "%s(p.%s, [_n for _n in config_secrets if _n in _cmd_sensitive]) if _cmd == %q else ", cmdLambda, inst, inst)
 	}
 	b.WriteString("{}\n")
-	// Root first, then the command config. Their keys are disjoint —
-	// generate refuses a leaf both declare (ValidateBinaryConfigBindings) —
-	// so `|` only adds keys and keeps insertion order.
-	b.WriteString("    _root_env | _cmd_env\n")
+	// Root first, then the subtree configs, then the command config. Their
+	// keys are disjoint — generate refuses a leaf two configs one process
+	// loads both declare (ValidateBinaryConfigBindings) — so `|` only adds
+	// keys and keeps insertion order.
+	b.WriteString("    _root_env | _sub_env | _cmd_env\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// kclPathList renders command paths as a KCL list of string lists.
+func kclPathList(paths [][]string) string {
+	q := make([]string, len(paths))
+	for i, p := range paths {
+		q[i] = kclStrList(p)
+	}
+	return "[" + strings.Join(q, ", ") + "]"
+}
+
+// subtreeList renders subtree paths as shell commands for a comment:
+// "`reliant daemon`, `reliant open`".
+func subtreeList(binary string, paths [][]string) string {
+	q := make([]string, len(paths))
+	for i, p := range paths {
+		q[i] = "`" + strings.TrimSpace(binary+" "+strings.Join(p, " ")) + "`"
+	}
+	return strings.Join(q, ", ")
 }
 
 // kclStrList renders a string list as a KCL list literal.
@@ -427,7 +481,10 @@ type BinaryConfigFields struct {
 	Binary string
 	// Command is the subcommand path whose process loads this config; empty
 	// for the binary's root config. See ConfigMessage.Command.
-	Command     []string
+	Command []string
+	// Subtrees are the command paths at or below which this config is
+	// loaded; empty unless it is a subtree config. See ConfigMessage.Subtrees.
+	Subtrees    [][]string
 	MessageName string
 	Fields      []ConfigField
 }
@@ -444,6 +501,7 @@ func BinaryConfigFieldsFrom(messages []ConfigMessage) []BinaryConfigFields {
 		out = append(out, BinaryConfigFields{
 			Binary:      m.Binary,
 			Command:     m.Command,
+			Subtrees:    m.Subtrees,
 			MessageName: m.Name,
 			Fields:      ConfigFieldsForMessage(messages, m.Name),
 		})

@@ -63,9 +63,14 @@ func TestE2EClusterConnect_TokenAgainstARealCluster(t *testing.T) {
 		defer cancel()
 		// By exact name. Best-effort, but a leak is reported. Registered BEFORE
 		// the create, so a create that hangs or half-succeeds is still cleaned up.
-		if out, err := exec.CommandContext(cleanup, "k3d", "cluster", "delete", name).CombinedOutput(); err != nil {
-			t.Logf("cleanup: k3d cluster delete %s: %v\n%s", name, err, out)
-		}
+		// Under forge's kubeconfig lock: the delete rewrites the default
+		// kubeconfig (kubeconfig_lock.go).
+		_ = withKubeconfigLock(func() error {
+			if out, err := exec.CommandContext(cleanup, "k3d", "cluster", "delete", name).CombinedOutput(); err != nil {
+				t.Logf("cleanup: k3d cluster delete %s: %v\n%s", name, err, out)
+			}
+			return nil
+		})
 	})
 
 	// A sandbox without nested networking (kata, gVisor) boots the k3d

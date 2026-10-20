@@ -60,7 +60,6 @@ import (
 // control plane gets a cluster with no Flux in it, and a deploy that forge
 // applies itself.
 func TestE2EDirectApplyEnvInstallsNoFlux(t *testing.T) {
-	requirePublishedForgePkg(t)
 	requireTool(t, "k3d", "kubectl", "helm", "docker")
 	t.Parallel() // its own uniquely-named cluster, its own t.TempDir
 
@@ -202,7 +201,12 @@ func commitFluxE2EFixture(t *testing.T, projectDir string) {
 	if strings.TrimSpace(gitE2E(t, projectDir, "status", "--porcelain")) == "" {
 		return
 	}
-	gitE2E(t, projectDir, "commit", "-q", "-m", "fixture")
+	// --no-verify: `forge project new` installs the scaffold's git hooks
+	// whenever pre-commit is on PATH, and they are not this fixture's
+	// subject. They fetch hook environments over the network and lint the
+	// message (commitlint rejects "fixture"), so the commit passed or failed
+	// with the machine's pre-commit setup rather than with forge.
+	gitE2E(t, projectDir, "commit", "-q", "--no-verify", "-m", "fixture")
 }
 
 // runForgeFluxE2E runs forge with the ledger pointed at a temp dir.
@@ -428,9 +432,15 @@ func firstSHA256InFluxE2E(s string) string {
 // address pools have been fully subnetted".
 func teardownFluxE2ECluster(t *testing.T, clusterName, registryName string) {
 	t.Helper()
-	if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
-		t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
-	}
+	// The delete rewrites the default kubeconfig, while a parallel test's
+	// forge may be merging its own context into it: take forge's kubeconfig
+	// lock, or this teardown can erase that context (kubeconfig_lock.go).
+	_ = withKubeconfigLock(func() error {
+		if out, err := exec.Command("k3d", "cluster", "delete", clusterName).CombinedOutput(); err != nil {
+			t.Logf("teardown: k3d cluster delete %s: %v\n%s", clusterName, err, out)
+		}
+		return nil
+	})
 	if out, err := exec.Command("k3d", "registry", "delete", "k3d-"+registryName).CombinedOutput(); err != nil {
 		t.Logf("teardown: k3d registry delete %s: %v\n%s", registryName, err, out)
 	}
@@ -487,7 +497,6 @@ func writeFluxE2EFile(t *testing.T, path, content string) {
 // installed it and the first pointer write failed on `no matches for kind
 // OCIRepository`.
 func TestE2EClusterUpInstallsADeclaredFluxChart(t *testing.T) {
-	requirePublishedForgePkg(t)
 	requireTool(t, "k3d", "kubectl", "helm", "docker")
 	t.Parallel()
 
@@ -536,7 +545,6 @@ func TestE2EClusterUpInstallsADeclaredFluxChart(t *testing.T) {
 // that listed Secrets to sync). That path is unreachable since #461; those
 // assertions are gone and every property above is kept.
 func TestE2EDirectApplySecretsLandAndStayOutOfTheBundle(t *testing.T) {
-	requirePublishedForgePkg(t)
 	requireTool(t, "k3d", "kubectl", "helm", "docker")
 	t.Parallel()
 

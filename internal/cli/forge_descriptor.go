@@ -242,9 +242,13 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	if len(mo.Errors) > 0 {
 		method.Errors = append([]string(nil), mo.Errors...)
 	}
+	if mo.Timeout != nil {
+		method.Timeout = mo.Timeout.AsDuration()
+	}
 	// auth_required (above) is the one access annotation forge reads: it
 	// feeds pkg/middleware/procedures_gen.go, which the auth interceptor
-	// enforces fail-closed. Authorization stays handler logic.
+	// enforces fail-closed. Authorization stays handler logic. timeout feeds
+	// the same file's ProcedureDeadlines, the chain's Deadline slot.
 }
 
 // serviceAudience reads `(forge.v1.service).audience`, defaulting to "user"

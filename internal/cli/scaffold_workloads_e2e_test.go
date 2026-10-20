@@ -19,7 +19,6 @@ import (
 // The predecessor design read its component list from a gitignored generated
 // file, and so rendered ZERO manifests SILENTLY at that point.
 func TestE2EComponentsKCLDeclaredFromSources(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel()
 
 	forgeBin := buildforgeBinary(t)
@@ -35,6 +34,7 @@ func TestE2EComponentsKCLDeclaredFromSources(t *testing.T) {
 		"--service", "intake",
 	)
 	projectDir := filepath.Join(dir, "multiapp")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Re-run the pipeline explicitly so the assertion covers `forge generate`,
 	// not only the one-shot scaffold path.

@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // DepsFileName is where Narrow declares the interfaces of a package that has
@@ -128,11 +130,11 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 		return nil, err
 	}
 	if depsFile != target {
-		if err := os.WriteFile(depsFile, retyped, 0o644); err != nil {
+		if err := atomicfile.WriteFile(depsFile, retyped, 0o644); err != nil {
 			return nil, err
 		}
 	}
-	if err := os.WriteFile(target, decls, 0o644); err != nil {
+	if err := atomicfile.WriteFile(target, decls, 0o644); err != nil {
 		return nil, err
 	}
 	return res, nil

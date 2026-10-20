@@ -1,0 +1,235 @@
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// THE PROCESS AROUND THE SERVER ROOT — and, deliberately, nothing else.
+//
+// What this process RUNS is the composition graph's `server` root
+// (internal/app/graph_gen.go): the API listener serving every user-audience
+// service, plus every worker and operator — each constructed once, from its
+// own Deps, in internal/app/compose.go. What it is CONFIGURED with is the
+// providers in internal/app/providers.go (auth, chain, listener, database).
+// This file is the process policy around the root: load and validate config,
+// build the logger, hold the port with boot probes while dependencies come up,
+// migrate, install telemetry, then run the root until a signal — readiness
+// flips to draining, the pre-stop pause runs, and every node drains and closes
+// in reverse dependency order inside the shutdown budget, telemetry flushed
+// last. Those are yours; change them here.
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os/signal"
+{{- if index .ConfigFields "CorsOrigins"}}
+	"strings"
+{{- end}}
+	"syscall"
+
+	"github.com/reliant-labs/forge/pkg/lifecyclekit"
+{{- if index .ConfigFields "AutoMigrate"}}
+	"github.com/reliant-labs/forge/pkg/migratekit"
+{{- end}}
+	"github.com/reliant-labs/forge/pkg/serverkit"
+
+{{- if index .ConfigFields "AutoMigrate"}}
+	forgedb "{{.Module}}/db"
+{{- end}}
+	"{{.Module}}/internal/app"
+	"{{.Module}}/pkg/config"
+{{- if index .ConfigFields "AutoMigrate"}}
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" sql driver for DATABASE_URL
+{{- end}}
+)
+
+// Serve runs the `server` root: every node it reaches, supervised until a
+// signal or a failing node.
+func Serve(ctx context.Context, deps Deps) error {
+	cfg, err := config.Load(deps.Cmd)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	if verr := config.Validate(cfg); verr != nil {
+		return fmt.Errorf("invalid configuration: %w", verr)
+	}
+
+	skCfg, err := serverkitConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	logger := serverkit.NewLogger(skCfg)
+	slog.SetDefault(logger)
+	if skCfg.IsDevelopment() {
+		logger.Warn("running in development mode — permissive edge defaults are enabled (CORS reflects any origin, HSTS off). NEVER set ENVIRONMENT=development in production.")
+	}
+
+	// SIGINT/SIGTERM begin the stop. The same context is the graph's boot
+	// context, so a signal during boot also abandons a dependency still
+	// being waited on.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// BOOT PROBES. Bind the API port NOW, before any dependency is touched:
+	// until the API listener takes the address over, /healthz answers 200 and
+	// /readyz 503 naming the dependency being waited on (the database connect
+	// retries for up to DB_CONNECT_TIMEOUT instead of failing the process).
+	ctx, bootProbes, err := serverkit.StartBootProbes(ctx, skCfg, logger)
+	if err != nil {
+		return err
+	}
+	defer bootProbes.Close()
+{{- if index .ConfigFields "AutoMigrate"}}
+
+	// Migrate BEFORE building the graph: a service that starts serving
+	// against a schema its migrations have not reached answers requests
+	// with errors that look like bugs.
+	if merr := serverkit.AutoMigrateContext(ctx, skCfg, logger,
+		migratekit.AutoMigrate(forgedb.Source(), forgedb.SourceDir)); merr != nil {
+		return merr
+	}
+{{- end}}
+
+	// TELEMETRY before the graph, so every instrumented client is created
+	// against the installed providers; flushed LAST on the way down, so the
+	// shutdown's own spans and metrics are exported.
+	otelShutdown, metrics, oerr := serverkit.SetupTelemetry(ctx, skCfg)
+	if oerr != nil {
+		logger.Error("failed to initialize OpenTelemetry", "error", oerr)
+	}
+
+	// THE ROOT POLICY: the readiness gate and stop budget (PRE_STOP_DELAY,
+	// SHUTDOWN_TIMEOUT), and the probes the API listener serves in front of
+	// its edge. Every node that reports Ready joins /readyz.
+	drainer := serverkit.NewDrainer(skCfg)
+	drainer.Logger = logger
+	g := &app.Graph{
+		Ctx:       ctx,
+		Cfg:       cfg,
+		Log:       logger,
+		ServerCfg: skCfg,
+		Probes:    &serverkit.Probes{Drainer: drainer, Metrics: metrics, Timeout: skCfg.ReadinessTimeout, Logger: logger},
+	}
+	return g.RunServer(ctx, lifecyclekit.Policy{
+		Drainer:       drainer,
+		Logger:        logger,
+		FailurePolicy: skCfg.FailurePolicy,
+		Flush:         otelShutdown,
+	})
+}
+
+// serverkitConfig projects this project's typed *config.Config onto the
+// vendor-neutral serverkit.Config, so serverkit needs no compile-time
+// dependency on pkg/config.
+func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
+	skCfg := serverkit.Config{
+{{- if index .ConfigFields "Port"}}
+		Addr: fmt.Sprintf(":%d", cfg.Port),
+{{- else}}
+		Addr: ":8080",
+{{- end}}
+		// ServiceName is APP IDENTITY (the project name baked into a
+		// generated constant), NOT a config field. serverkit reports it on
+		// OTel traces/metrics (semconv service.name).
+		ServiceName: ServiceName,
+{{- if index .ConfigFields "OtlpEndpoint"}}
+		OTLPEndpoint: cfg.OtlpEndpoint,
+{{- end}}
+{{- if index .ConfigFields "PprofAddr"}}
+		// pprof, ON BY DEFAULT, on its own listener — never the app port.
+		// Defaults to 127.0.0.1:6060 (proto/config/v1/config.proto), so it is
+		// live in every environment and routable from none: no k8s Service,
+		// no route, no published container port. Grab a profile with
+		//
+		//	go tool pprof http://localhost:6060/debug/pprof/heap
+		//	kubectl port-forward <pod> 6060:6060   # then the line above
+		//
+		// Override with PPROF_ADDR / --pprof-addr; --pprof-addr= turns it off
+		// (an empty PPROF_ADDR is unset, so it keeps the default). A failed
+		// bind is logged and skipped, never fatal.
+		PprofAddr: cfg.PprofAddr,
+{{- end}}
+{{- if and (index .ConfigFields "TlsCertPath") (index .ConfigFields "TlsKeyPath")}}
+		TLSCertPath: cfg.TlsCertPath,
+		TLSKeyPath:  cfg.TlsKeyPath,
+{{- end}}
+{{- if index .ConfigFields "LogFormat"}}
+		LogFormat: cfg.LogFormat,
+{{- end}}
+{{- if index .ConfigFields "Environment"}}
+		Environment: cfg.Environment,
+{{- end}}
+{{- if index .ConfigFields "AutoMigrate"}}
+		AutoMigrate: cfg.AutoMigrate,
+{{- end}}
+{{- if index .ConfigFields "DatabaseUrl"}}
+		DatabaseURL: cfg.DatabaseUrl,
+{{- end}}
+{{- if index .ConfigFields "ReadMaxBytes"}}
+		ReadMaxBytes: int(cfg.ReadMaxBytes),
+{{- end}}
+{{- if index .ConfigFields "SendMaxBytes"}}
+		SendMaxBytes: int(cfg.SendMaxBytes),
+{{- end}}
+{{- if index .ConfigFields "SecurityHeadersEnabled"}}
+		SecurityHeaders: cfg.SecurityHeadersEnabled,
+{{- end}}
+{{- if index .ConfigFields "CorsAllowCredentials"}}
+		CORSAllowCredentials: cfg.CorsAllowCredentials,
+{{- end}}
+	}
+
+{{- if index .ConfigFields "LogLevel"}}
+
+	if uerr := skCfg.LogLevel.UnmarshalText([]byte(cfg.LogLevel)); uerr != nil {
+		return serverkit.Config{}, fmt.Errorf("invalid log level %q: %w", cfg.LogLevel, uerr)
+	}
+{{- end}}
+
+{{- if index .ConfigFields "CorsOrigins"}}
+
+	if cfg.CorsOrigins != "" {
+		for _, o := range strings.Split(cfg.CorsOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				skCfg.CORSOrigins = append(skCfg.CORSOrigins, o)
+			}
+		}
+	}
+{{- end}}
+
+{{- if index .ConfigFields "PreStopDelay"}}
+
+	skCfg.PreStopDelay = cfg.PreStopDelay.AsDuration()
+{{- end}}
+{{- if index .ConfigFields "ShutdownTimeout"}}
+	skCfg.ShutdownTimeout = cfg.ShutdownTimeout.AsDuration()
+{{- end}}
+
+{{- if index .ConfigFields "DbMaxOpenConns"}}
+
+	skCfg.DBPoolTuning.MaxOpenConns = int(cfg.DbMaxOpenConns)
+{{- end}}
+{{- if index .ConfigFields "DbMaxIdleConns"}}
+	skCfg.DBPoolTuning.MaxIdleConns = int(cfg.DbMaxIdleConns)
+{{- end}}
+{{- if index .ConfigFields "DbConnMaxIdleTime"}}
+	skCfg.DBPoolTuning.ConnMaxIdleTime = cfg.DbConnMaxIdleTime.AsDuration()
+{{- end}}
+{{- if index .ConfigFields "DbConnMaxLifetime"}}
+	skCfg.DBPoolTuning.ConnMaxLifetime = cfg.DbConnMaxLifetime.AsDuration()
+{{- end}}
+{{- if index .ConfigFields "DbConnectTimeout"}}
+	skCfg.DBConnectTimeout = cfg.DbConnectTimeout.AsDuration()
+{{- end}}
+
+	// Normalize LAST, so nothing downstream can observe a zero-valued
+	// cap/timeout/driver. Serve reads several of these fields — the Connect
+	// payload caps, the auto-migrate sql.Open driver — BEFORE serverkit.Run
+	// is entered, and Run's own normalization is far too late to help those
+	// reads: a zero ReadMaxBytes/SendMaxBytes already reached connect as
+	// UNLIMITED, and a zero DBDriver already reached sql.Open as `unknown
+	// driver ""`. Normalizing here makes that whole class of ordering bug
+	// unreachable.
+	skCfg.Normalize()
+
+	return skCfg, nil
+}

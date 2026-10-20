@@ -19,7 +19,7 @@ import (
 //     startup, and generates the KCL schema + env projection a deployment
 //     sets it through (deploy/kcl/<env>/config.k).
 //   - the scaffolded serve.go hands the LOADED value to the RPC edge's
-//     logging layer, as observe.WithSuccessSampling in observe.Deps'
+//     logging layer, as observe.WithSuccessSampling in serverkit.ChainDeps'
 //     LogOptions. forge/pkg/observe reads no environment, so this is the
 //     only way the setting reaches it.
 //
@@ -74,13 +74,13 @@ func TestScaffoldLogSuccessSampleWindowDeclaration(t *testing.T) {
 }
 
 // TestServeScaffoldPassesSuccessSampleWindow: when the config declares the
-// field, serve.go's observe.Deps literal carries
+// field, serve.go's serverkit.ChainDeps literal carries
 // LogOptions: observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration()).
 // When it does not, the scaffold names no such field — a reference to it
 // would not compile.
 //
 // It reads the PARSED scaffold: the option is found as the LogOptions key of
-// the observe.Deps literal, the only position observe.Chain reads it from,
+// the serverkit.ChainDeps literal, the only position serverkit.NewChain reads it from,
 // so a mention in a comment or a dead assignment cannot satisfy it.
 func TestServeScaffoldPassesSuccessSampleWindow(t *testing.T) {
 	t.Parallel()
@@ -88,22 +88,22 @@ func TestServeScaffoldPassesSuccessSampleWindow(t *testing.T) {
 
 	got, found := chainLogOptions(t, parseServeScaffold(t, "LogSuccessSampleWindow"))
 	if !found {
-		t.Fatalf("serve.go's observe.Deps sets no LogOptions although the config declares " +
+		t.Fatalf("serve.go's serverkit.ChainDeps sets no LogOptions although the config declares " +
 			"log_success_sample_window — the window a deployment configured never reaches the " +
 			"logging interceptor, and every success is logged whatever config.k says")
 	}
 	if got != want {
-		t.Fatalf("observe.Deps.LogOptions = %s, want %s", got, want)
+		t.Fatalf("serverkit.ChainDeps.LogOptions = %s, want %s", got, want)
 	}
 
 	if got, found := chainLogOptions(t, parseServeScaffold(t)); found {
 		t.Fatalf("with no log_success_sample_window in the config, serve.go must not reference "+
-			"it, but observe.Deps.LogOptions = %s", got)
+			"it, but serverkit.ChainDeps.LogOptions = %s", got)
 	}
 }
 
 // chainLogOptions returns the source of the LogOptions value in the
-// scaffold's observe.Deps literal, and whether it is set at all.
+// scaffold's serverkit.ChainDeps literal, and whether it is set at all.
 func chainLogOptions(t *testing.T, file *ast.File) (string, bool) {
 	t.Helper()
 	var literals int
@@ -111,7 +111,7 @@ func chainLogOptions(t *testing.T, file *ast.File) (string, bool) {
 	var found bool
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.CompositeLit)
-		if !ok || !isQualifiedType(lit.Type, "observe", "Deps") {
+		if !ok || !isQualifiedType(lit.Type, "serverkit", "ChainDeps") {
 			return true
 		}
 		literals++
@@ -131,7 +131,7 @@ func chainLogOptions(t *testing.T, file *ast.File) (string, bool) {
 		return true
 	})
 	if literals != 1 {
-		t.Fatalf("rendered serve.go builds %d observe.Deps literals, want exactly 1 — the "+
+		t.Fatalf("rendered serve.go builds %d serverkit.ChainDeps literals, want exactly 1 — the "+
 			"interceptor chain this guard inspects", literals)
 	}
 	return value, found

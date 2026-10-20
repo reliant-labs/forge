@@ -35,6 +35,9 @@ stays real at every tier.
   (`pgtest.NewFromTemplate`, keyed by a hash of the migration files), so a
   few hundred tests do not replay the chain a few hundred times.
   `FORGE_TEST_POSTGRES_URL` points it at a server instead of the embedded binary.
+  It takes `testing.TB`, so a benchmark gets the same database a test does.
+  A template unused for a day (`FORGE_TEST_TEMPLATE_TTL`) is dropped by the next
+  run, so a long-lived shared server does not keep one per migration edit.
 - **One server per run, not one per package.** Every `go test` binary of a
   fan-out shares one Postgres (embedded, or the `FORGE_TEST_POSTGRES_URL` one).
   Do not start a Postgres container per package with testcontainers: N containers

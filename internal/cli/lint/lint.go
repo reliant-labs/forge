@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/projectstore"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // lintFlags holds the flag values for the lint command.
@@ -810,6 +811,17 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		}
 		goFindings = append(goFindings, res.Findings...)
 	}
+	// SQL written for the wrong placeholder dialect: `$N` in a
+	// bun-formatted query (NewRaw, the builders, db.Bun().ExecContext), or
+	// a stray `?` bun will bind — in a comment, a string literal, or the
+	// jsonb ?/?|/?& operators. Every Go file: hand SQL lives in
+	// _repo_ext.go seams, workers and handlers alike.
+	bunRes, err := forgeconv.LintBunPlaceholders(".")
+	if err != nil {
+		return combined, notes, false, fmt.Errorf("forge convention lint (bun placeholders) failed: %w", err)
+	}
+	goFindings = append(goFindings, bunRes.Findings...)
+
 	applied := suppress.ApplyFiles("", goFindings, os.ReadFile)
 	combined.Findings = append(combined.Findings, applied.Kept...)
 	combined.Findings = append(combined.Findings, applied.Violations...)
@@ -1416,7 +1428,7 @@ func (v lintVerdict) render(w io.Writer) error {
 		return cliutil.UserErr("forge lint",
 			"no gating linter ran — this run proved nothing"+v.suffix(),
 			detail,
-			"install the missing tools ('forge tools install', or golangci-lint + buf) and re-run from the project root")
+			"install the missing tools ('forge tools install golangci-lint buf') and re-run from the project root")
 	}
 
 	// A lane that could not run demotes the headline. A SKIP is the project
@@ -1621,9 +1633,24 @@ const typedAccessGuardUnavailableHint = "read the golangci-lint output above —
 	".github/workflows) or a config it cannot load. A lock held by another golangci-lint on this machine is " +
 	"NOT the cause: forge runs it with --allow-serial-runners, so a contended lock waits its turn instead of failing"
 
+// bufMissingError is the buf lint lane's failure on a project that has a
+// buf.yaml and a machine with no buf: the lane used to be skipped, and
+// `forge lint` passed without ever linting a proto.
+func bufMissingError() error {
+	return fmt.Errorf("buf is not on PATH, so the buf lint lane cannot run — and a gating lane that did not run cannot pass. "+
+		"Fix: run `forge tools install buf` (it installs buf %s), or `go install %s@v%s` with its GOBIN on PATH, then re-run `forge lint`",
+		templates.BufVersion, bufModulePath, templates.BufVersion)
+}
+
+// bufModulePath is the package `go install` builds buf from.
+const bufModulePath = "github.com/bufbuild/buf/cmd/buf"
+
 func runBufLint(ctx context.Context) error {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
 		return nil
+	}
+	if _, err := exec.LookPath("buf"); err != nil {
+		return bufMissingError()
 	}
 
 	fmt.Println("Running buf lint...")

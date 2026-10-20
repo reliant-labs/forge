@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 // RenderWorkloads renders an environment's whole workload SET into the
@@ -147,10 +147,6 @@ const (
 	// listens on (kcl/workloads/expand.k:502, schema.k:154-155): serverkit's
 	// standard mux.
 	DefaultServicePort int32 = 8080
-	// Drain defaults when the workload's env does not state them: serverkit's
-	// own (pkg/serverkit/serverkit.go:507-512).
-	defaultPreStopDelaySeconds    = 5
-	defaultShutdownTimeoutSeconds = 30
 	// graceMarginSeconds is expand.k:252's margin above the app's drain.
 	graceMarginSeconds = 5
 	// Job lifecycle (expand.k:720-725). There is deliberately NO
@@ -934,26 +930,17 @@ func envLiteral(env []v1alpha1.EnvVar, key, fallback string) string {
 
 // drainSeconds is one drain knob's share of the grace period, in whole
 // seconds rounded up so the grace period never undercuts the server. It reads
-// the value the way the server does — a Go duration ("30s", "1m30s",
-// "500ms"), or a bare count of seconds — and applies serverkit's rule for
-// both drain durations: unset or zero is the default, negative is none.
-// Anything else (an interpolation, a typo) takes the default, which the
-// server's own config loader would have refused anyway.
-func drainSeconds(raw string, fallback int64) int64 {
-	d, err := time.ParseDuration(raw)
+// the value with drainbudget — the reader the server's drain uses too: a Go
+// duration ("30s", "1m30s", "500ms") or a bare count of seconds, unset or
+// zero is the default, negative is none. Anything else (an interpolation, a
+// typo) takes the default, which the server's own config loader would have
+// refused anyway.
+func drainSeconds(raw string, def time.Duration) int64 {
+	d, err := drainbudget.Parse(raw)
 	if err != nil {
-		n, nerr := strconv.ParseInt(raw, 10, 64)
-		if nerr != nil {
-			return fallback
-		}
-		d = time.Duration(n) * time.Second
+		d = 0
 	}
-	switch {
-	case d == 0:
-		return fallback
-	case d < 0:
-		return 0
-	}
+	d = drainbudget.Effective(d, def)
 	return int64((d + time.Second - 1) / time.Second)
 }
 
@@ -964,8 +951,8 @@ func drainSeconds(raw string, fallback int64) int64 {
 // from the workload's OWN env, so retuning either knob cannot reintroduce
 // the truncation. No preStop hook: the app owns the drain.
 func gracePeriodSeconds(env []v1alpha1.EnvVar) int64 {
-	pre := drainSeconds(envLiteral(env, "PRE_STOP_DELAY", ""), defaultPreStopDelaySeconds)
-	shutdown := drainSeconds(envLiteral(env, "SHUTDOWN_TIMEOUT", ""), defaultShutdownTimeoutSeconds)
+	pre := drainSeconds(envLiteral(env, drainbudget.EnvPreStopDelay, ""), drainbudget.DefaultPreStopDelay)
+	shutdown := drainSeconds(envLiteral(env, drainbudget.EnvShutdownTimeout, ""), drainbudget.DefaultShutdownTimeout)
 	return pre + shutdown + graceMarginSeconds
 }
 

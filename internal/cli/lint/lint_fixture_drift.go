@@ -83,6 +83,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lib/pq"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -490,8 +491,15 @@ func executeFixtureBlock(ctx context.Context, db *sql.DB, b fixtureBlock) (findi
 // message and constraint name verbatim.
 func rejectedFixture(file string, st fixtureStatement, err error) fixtureDriftFinding {
 	f := fixtureDriftFinding{File: file, Line: st.line, Table: st.table, Message: err.Error()}
+	// pgtest opens pgx (*pgconn.PgError); a lib/pq handle gives *pq.Error.
+	var pgErr *pgconn.PgError
 	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
+	switch {
+	case errors.As(err, &pgErr):
+		f.Code = pgErr.Code
+		f.Message = pgErr.Message
+		f.Constraint = pgErr.ConstraintName
+	case errors.As(err, &pqErr):
 		f.Code = string(pqErr.Code)
 		f.Message = pqErr.Message
 		f.Constraint = pqErr.Constraint

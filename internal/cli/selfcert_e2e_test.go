@@ -85,9 +85,10 @@ func initGitRepoE2E(t *testing.T, dir, msg string) {
 // constants so the whole suite moves in one edit when the generated shape
 // changes again — and so the WHY of each choice is written down.
 //
-//	tier1SelfCertGo   — the §2 successor to pkg/app/wire_gen.go: the
-//	                    generated per-service mount surface. Path does not
-//	                    embed the project or binary name.
+//	tier1SelfCertGo   — the composition graph's generated route sets (the
+//	                    successor to mounts_services_gen.go and, before it,
+//	                    pkg/app/wire_gen.go). Path does not embed the
+//	                    project or binary name.
 //	tier1SelfCertOther — a NON-Go stamped file, so the "hash marker is
 //	                    present in representative formats" claim is about
 //	                    more than Go comment syntax.
@@ -107,7 +108,7 @@ func initGitRepoE2E(t *testing.T, dir, msg string) {
 // retired into forge/pkg's migratekit (its ceremony was library code parked
 // in the user's tree), so the cases below moved to a file forge still writes.
 const (
-	tier1SelfCertGo    = "internal/app/mounts_services_gen.go"
+	tier1SelfCertGo    = "internal/app/routes_gen.go"
 	tier1SelfCertOther = "deploy/kcl/config_gen.k"
 	tier1SelfCertGoAlt = "db/source_gen.go"
 )

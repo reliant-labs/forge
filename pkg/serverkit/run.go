@@ -91,8 +91,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// edge so scrapers bypass CORS/auth) and a shutdown fn (flushed in the graceful-shutdown sequence). A setup
 	// error is logged, not fatal — projects depending on OTLP fail config
 	// validation before Run.
-	instanceID, _ := os.Hostname()
-	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observeConfig(cfg, instanceID))
+	otelShutdown, metricsHandler, otelErr := SetupTelemetry(ctx, cfg)
 	if otelErr != nil {
 		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
@@ -110,38 +109,20 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// CALLER's handler only. The Listener routes /healthz + /readyz (and
 	// /flow-health, /metrics) to their own handlers IN FRONT of it — they are
 	// never gated behind CORS, auth, or security-headers middleware.
-	edge := func(handler http.Handler) http.Handler {
-		// CORS: project-supplied middleware factory keeps the existing
-		// pkg/middleware.CORSMiddleware in charge of the actual matching
-		// logic. serverkit only owns the gating (cfg.CORSEnabled: origins
-		// named, OR development — see the method's doc for why dev needs no
-		// origins). A configured-but-unwired factory was already rejected
-		// above (fail closed), so a non-nil CORSMiddleware here is guaranteed.
-		if cfg.CORSEnabled() {
-			handler = srv.CORSMiddleware(cfg.CORSOrigins, cfg.CORSAllowCredentials)(handler)
-		}
-
-		// Security headers — OWASP defaults via project middleware. HSTS is
-		// only emitted in production (Environment != "development"). As with
-		// CORS, a configured-but-unwired factory was rejected above.
-		if cfg.SecurityHeaders {
-			handler = srv.SecurityHeadersMiddleware(!cfg.IsDevelopment())(handler)
-		}
-
-		// RequestID runs at the outermost layer so every subsequent
-		// middleware (CORS, security headers, logging) can see the
-		// correlation ID on both inbound context and outbound response
-		// header.
-		if srv.RequestIDMiddleware != nil {
-			handler = srv.RequestIDMiddleware()(handler)
-		}
-
-		// Project-owned outer wrapper. Runs OUTSIDE serverkit's own stack,
-		// INSIDE the write-stall guard.
-		if srv.HTTPMiddleware != nil {
-			handler = srv.HTTPMiddleware(handler)
-		}
-		return handler
+	//
+	// CORS and security headers are project-supplied factories (the matching
+	// logic stays in pkg/middleware); serverkit owns only the gating, and a
+	// configured-but-unwired factory was already rejected above (fail
+	// closed). The request id is outermost of serverkit's layers, and the
+	// project's HTTPMiddleware wraps them all, inside the write-stall guard.
+	edge, err := Edge{
+		CORS:            srv.CORSMiddleware,
+		SecurityHeaders: srv.SecurityHeadersMiddleware,
+		RequestID:       srv.RequestIDMiddleware,
+		Outer:           srv.HTTPMiddleware,
+	}.Wrap(cfg)
+	if err != nil {
+		return err
 	}
 
 	front := map[string]http.Handler{

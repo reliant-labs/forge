@@ -9,6 +9,150 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
+  `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
+  per `groupBy` value, the `limit` largest by the first series, default 10);
+  `heatmap` buckets one numeric field's values over time (one `count` series
+  naming the field); `sql` carries one read-only SELECT in `sql`, checked by
+  the new `CheckSQL`, which is the alert-rule guard (`alerting.ValidateExpr`),
+  and may bind the dashboard's scope through the `SQLParam*` ClickHouse
+  parameters (`{from:DateTime64(9)}`, `{to:…}`, `{step:UInt32}`,
+  `{env_ids|envs|services:Array(String)}`). `formula` makes a line or number
+  panel plot `A / B * 100` over its series (by position, A to J), parsed and
+  evaluated by `ParseFormula` / `Formula.Eval` so every reader computes the
+  same value (`x / 0` is 0, as in `ratio`). `limit` (1 to 200) keeps the top
+  rows of a table or bar. The validator locates every misuse, and a `sql`
+  panel's `signal` is optional (`Panel.Signal` is now `omitempty`; every other
+  kind still requires it, so existing output is unchanged). HyperDX has no
+  equivalent for any of them, so `RenderHyperDX` leaves those panels out, as
+  it does the console kinds. `CheckField` now also requires an attribute
+  field's key to be 1 to 128 characters (`span.attr.` alone was accepted),
+  the rule the Reliant control plane's copy enforced.
+- **`forge/pkg/serverkit/drainbudget`: the one reader of `PRE_STOP_DELAY`
+  and `SHUTDOWN_TIMEOUT`.** `Parse` (a Go duration or bare seconds; empty is
+  unset), `Effective` (zero is the default, negative is none), the env names
+  and defaults, and `FromEnv(getenv)`, which returns a `Budget` whose fields
+  map onto `serverkit.Config` and errors naming a malformed variable. The rule
+  lived unexported in `pkg/deploy`, so a hand-written main copied it, and the
+  copy drifted (reliant read `-1s` as malformed). serverkit's `Drainer` and
+  the rendered `terminationGracePeriodSeconds` both use it now, and a test
+  pins that the grace period equals the budget `FromEnv` reads. Standard
+  library only: `pkg/deploy` imports it without linking serverkit.
+- **`crud.Repo`'s by-PK statements bind their values, so their text is
+  stable.** bun formats every value into the SQL text, and under pgx's
+  default statement cache (what `serverkit.OpenDB` opens) each distinct text
+  is a new prepared statement: a Get of a new id or an update carrying a new
+  value paid an extra Parse/Describe round trip and churned the connection's
+  512-entry cache. `Get`, `Update`, `UpdateMasked` and `Delete` now build the
+  same bun statement with `$N` markers and run it through `orm.Context`'s raw
+  passthrough with the values as bind parameters (each rendered by the
+  column's bun appender, so arrays, JSON, bytea, times and enums keep bun's
+  semantics): one prepared statement per entity and mask.
+  `BenchmarkRepoByPK` (pgx, one session): statements prepared per call
+  1.0 → 0.003 for `Update`/`UpdateMasked` and 0.21 → 0.003 for `Get` over 64
+  ids; 8.2–9.0 KB → 4.6–5.6 KB per call; allocations 66–79 → 68–86. A model
+  implementing a bun model hook stays on bun's executor; bun query hooks
+  (bunotel) no longer see these statements, and the repo's own
+  `orm.<Op><Entity>` span carries `db.statement` (without values). The `db`
+  skill documents the pool mode: keep pgx's default statement cache.
+- **`orm.InTx(ctx)` and `orm.Context.BeginDetached`: probe for, and hold, a
+  transaction outside `RunTx`'s closure.** `InTx` reports whether ctx carries
+  an active transaction (replacing the `AfterCommit(ctx, noop) == nil` probe).
+  `BeginDetached(ctx, orm.TxOptions)` — on `*Client`, `*Tx` and the injected
+  `orm.Context` interface — opens a new, caller-owned transaction at the given
+  isolation that outlives the call that opened it, which a transaction-scoped
+  advisory lock released later needs. It never joins the ctx's transaction,
+  never retries, and is rolled back when its ctx is cancelled. A hand-written
+  `orm.Context` fake must add the method. Documented in the
+  `service-layer/transactions` skill.
+- **`pkg/pgtest` hands out pgx handles, the driver production runs.** Every
+  `*sql.DB` from `pgtest.New`, `NewClone`, `NewFromTemplate`, `NewAtURL` and
+  the template build callback is now opened with `pgtest.DriverName`
+  (`"pgx"`, jackc/pgx's stdlib adapter) instead of lib/pq, so a DB test runs
+  the same array/time scanning, statement cache and error types
+  (`*pgconn.PgError`, not `*pq.Error`) as `serverkit.OpenDB`. `orm.NewClient`
+  opens pgx too. `forge lint --fixture-drift`, which classified a rejected
+  fixture only from a `*pq.Error`, reads `*pgconn.PgError` as well. A test that
+  asserted `*pq.Error` from a pgtest database should match `*pgconn.PgError`
+  or the driver-neutral `SQLState()` method.
+- **`forge lint` catches SQL written for the wrong placeholder dialect.** The
+  raw passthroughs (`db.Exec` / `Query` / `QueryRow`) take postgres `$N`;
+  everything bun formats (`db.Bun().NewRaw`, the builders' `Where` / `Set` /
+  `ColumnExpr` / …, `bun.SafeQuery`, `db.Bun().ExecContext`) takes `?` / `?N`
+  and treats every unescaped `?` as a placeholder. Two new convention rules,
+  both errors, read string literals and named constants passed to those calls:
+  `forgeconv-bun-dollar-placeholder` (a `$1` bun never binds) and
+  `forgeconv-bun-literal-question-mark` (a `?` in a SQL comment or string
+  literal, or the jsonb `?` / `?|` / `?&` operators, that would consume an
+  argument and shift the rest). The `db/crud-overrides` skill documents both
+  dialects and the `\?` escape.
+- **`testkit.NewPostgresDB`, `NewMigratedPostgresDB` and `LoadFixture` take
+  `testing.TB`**, so a benchmark gets the same migrated, isolated database a
+  test does. Callers passing `*testing.T` are unchanged.
+- **`pgtest.NewFromTemplate` reaps stale templates.** A template used to live
+  as long as its server, which on an external `FORGE_TEST_POSTGRES_URL` server
+  (shared, never torn down) meant one leaked database per migration edit,
+  forever. Each process that uses a template now stamps it
+  (`COMMENT ON DATABASE`), and a process's first `NewFromTemplate` on a server
+  drops every template unused for longer than `pgtest.DefaultTemplateTTL` (24h;
+  `FORGE_TEST_TEMPLATE_TTL` overrides, `0` disables) and every `*_build`
+  database whose builder is gone, each under its key's advisory lock. An
+  unstamped template from an older forge is adopted, then reaped a TTL later;
+  a template reaped under a process that had cached it is rebuilt.
+- **`crud.NoReadBack()`: an exec-only `Update` / `UpdateMasked`.** Every
+  update reads back, via `RETURNING`, each column it did not write plus every
+  GENERATED column, so the entity holds the stored row. For a write whose
+  caller discards the entity that is most of the cost: stamping one column of
+  a 12-column row went 93 → 39 allocations and 9.5 → 6.5 KB with the option
+  (`BenchmarkRepoUpdateMasked_OneColumnStamp`). `Repo.UpdateMasked` now takes
+  `...UpdateOption` (Preserve is rejected there: a mask already names what is
+  written). The default is unchanged.
+- **The composition graph: a new project's `internal/app` is typed, generated
+  Go in which every part of the process is a node** (composition graph, PR 3).
+  A provider is any `func New<X>(<X>Deps) (T, error)` in the owned
+  `providers.go` — the scaffold ships the database pool and ORM, the outbound
+  HTTP client, the user audience's `UserAuth` / `UserChain` / `APIListener`,
+  and pprof — and it is a node exactly like a handler, package, worker or
+  operator. Every Deps field resolves **by type** at generate time (a graph
+  input, a config block, a framework seam, or the one node whose value is
+  assignable; identity is the Go type, never a name). The owned `compose.go`
+  is one constructor method per node, `func (g *Graph) newX() (T, error)`,
+  whose value expressions are the graph's edges: forge adds a missing method
+  and a missing Deps key and never touches a value. The generated
+  `graph_gen.go` holds a memoized accessor per node (`g.X()`), and per root a
+  `Build<Root>` that constructs exactly the closure the root's fields reach
+  and then seals the graph, and a `Run<Root>` that supervises it under
+  `lifecyclekit.Supervise` — each node's Run/Drain/Close/Ready bound in a
+  `lifecyclekit.Node` literal read off its type by go/types at generate time.
+  A root is a `//forge:root <name>` struct in `internal/app`; with none
+  declared, forge generates `Server` — every runnable node nothing depends on
+  (the API listener, the workers, the operators) — which is what
+  `<bin> server` runs. A missing provider, an ambiguous match (until
+  `compose.go` names one), a dependency cycle (named edge by edge; a
+  `func() T` field is a lazy edge that breaks it) and a root field nothing
+  produces are generate errors. The generated `routes_gen.go` replaces
+  `mounts_services_gen.go`'s `MountAll`: one `<Audience>Routes` route set per
+  audience (`UserRoutes`, `DaemonRoutes`, …), each a node whose Deps are its
+  services, with `MountOptions` per-service options set in `compose.go`.
+  New runtime packages: `forge/pkg/graphkit` (`Get`, `Memo`, `Builder.Build`,
+  `Builder.Nodes`, `Builder.Supervise`, `Catch`) and, in `serverkit`,
+  `Probes` (`/healthz`, `/readyz` over a Drainer and checks that may be
+  added after the handler is built, `/metrics`), `Edge` (the CORS /
+  security-headers / request-id layers, fail-closed), `Pprof` and
+  `SetupTelemetry`.
+- **A project scaffolded before the graph keeps generating exactly as
+  before.** forge treats an `internal/app` that declares `type Infra struct`
+  or `func NewComponents` as the legacy composition and runs the legacy
+  generators unchanged (proven byte-identical on control-plane). To migrate by
+  hand: move each `OpenInfra` field into a provider func, delete
+  `compose.go`, `lifecycle.go` and the `Infra` struct, and re-run
+  `forge generate`; the scripted migration is composition graph PR 7.
+- **A new project has no per-service, per-worker or per-operator
+  subcommands** (design §9.5): `cmd/<bin>/main.go` is a bare `cmd.Execute()`,
+  `server` runs the graph's server root, and `serve.go` is the process policy
+  around it (config, logger, boot probes, migrate, telemetry, the readiness
+  gate and stop budget). Splitting a process is a new root, not a new
+  subcommand; one cobra command per root is composition graph PR 4.
 - **`serverkit.Listener` and `serverkit.Chain`: the listener and the
   interceptor chain are components, and a process can run several of each**
   (composition graph, PR 1). `serverkit.NewChain(ChainDeps{Auth, …})` is the
@@ -137,6 +281,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge env deploy <env> <version> --frontends-only` no longer renders or
+  compares the env's bundle.** It applies no bundle object, yet it rendered
+  the whole env and refused when a newer checkout's workloads differed from
+  the release's bundle of record — so a release's frontend could not ship
+  after its backend had (control-plane prod, 2026-10-19). It now records no
+  bundle and computes no k8s plan; its promotion is still confirmed and
+  scoped, and the frontend still builds from the release's recorded sources.
+  A `--target` naming only frontends shipped to Firebase or a bucket is
+  treated the same; any target that renders cluster objects keeps the check.
+- **A release's bundle reproduces from its own commit and forge.** A
+  hand-composed `forge.image_ref_for(<repo>, image_tag)` rendered
+  `<repo>:<release>@<digest>` at the cut, whose build state held a digest
+  under `<repo>:<release>`, and `<repo>@<digest>` on any later redeploy,
+  whose build state did not — so the versioned deploy refused its own
+  release's bundle. A named release now pins its images under the release
+  tag from the release alone (`releaseVersionTag`, the one rule the build's
+  push tag, the render's `image_tag` and the pins share).
+- **A Firebase or bucket frontend that fails before its upload reports
+  nothing shipped.** A failed `npm run build` (or assemble, source-map
+  filing, asset retention, config write) was reported as
+  `PARTLY … failed part-way; some of it may be live`, although the host was
+  never written. Those failures now carry `cluster.ErrNothingApplied`, which
+  the deploy's ship log reads, unless an earlier frontend of the same group
+  already shipped.
+- **`lifecyclekit.Supervise` no longer reports a node as stuck because an
+  earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
+  after its cancel once the budget was gone, so every node behind a slow one
+  logged `node did not stop within the shutdown budget` at ERROR (and
+  `run_still_running`) even when it returned instantly. Each `Run` now gets
+  250ms to return after its cancel; only one that really ignores its context
+  is reported. The walk overruns the budget by at most 250ms per truly stuck
+  node.
+- **`forge storage` worktree reaping no longer holds a worktree for forge's
+  own scratch, a project's pinned tools or its `tmp/`.** The rebuildable
+  allow-list gains `.forge/tmp`, `.forge/generate-cache.json`, `/.tools` and
+  `/tmp`; a leading `/` anchors an entry to the worktree root (`web/tmp` is
+  still unrecognized data), and the never-list still wins (`tmp/data`,
+  `tmp/.env`, `*.db`). A git-ignored repository that is a direct child of
+  `<worktree>/.tools/pre-commit/` (pre-commit's hook clones, which
+  control-plane's gate creates) no longer makes the worktree a
+  `nested-repository`; every other nested repository, including one inside
+  `tmp/`, still holds. Mirrors reliant's `worktreereclaim` list.
+
+- **`serverkit.Listener` loads its TLS certificate in `Listen`, not `Run`.**
+  `ServeTLS` read the pair only once `Run` started serving, so a missing,
+  malformed or mismatched certificate failed after `Listen` had bound and
+  `Ready` had reported the listener up — `lifecyclekit.Supervise` had already
+  started the next node. `Listen` now loads and validates the pair before it
+  binds and returns an error naming both paths; `Run` serves the loaded
+  certificate. `serverkit.Run` gets the same boot-time failure.
 - **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
   Every query on the lease session (the heartbeat, each standby poll, the
   connect) ran under a deadline of `HeartbeatInterval`, and a query that misses
@@ -279,6 +473,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   `TaskFieldId` → `TaskFieldID` (`gopls rename`, or `gofmt -r` per name) — and
   adjust code that read an `integer` column as `int64` or a json column as
   `string` (`string(row.Payload)`, `json.RawMessage(s)`).
+- **`lifecyclekit` no longer re-exports `operatorkit.Run`, `Controller` and
+  `Options`, so importing it never links controller-runtime.** Every binary
+  that imported lifecyclekit for `Supervise`, `WrapWorker` or `Singleton`
+  linked `sigs.k8s.io/controller-runtime` and its Kubernetes tree (~1.8 MB),
+  operators or not. The three names live only in
+  `forge/pkg/appkit/operatorkit`; the scaffolded `lifecycle.go` names it
+  directly, and a `go list -deps` guard pins that lifecyclekit reaches no
+  `k8s.io` package. An owned `lifecycle.go` that names the removed symbols:
+  `forge skill load migrations/v0.1.46/operatorkit-bridge`.
 - **`PRE_STOP_DELAY` and `SHUTDOWN_TIMEOUT` follow one rule: zero is the
   default, negative is none** — the rule every `serverkit.Config` duration
   already used. `ShutdownTimeout <= 0` always became the 30s default, so "no
@@ -290,6 +493,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   used to add 0 while the server spent its default (a SIGKILL mid-drain), a
   negative adds nothing, and any Go duration (`1m30s`, `500ms`, rounded up)
   is read instead of falling back to the default.
+- **`forge generate` refreshes a stale vendored `proto/forge/v1/forge.proto`
+  (and `proto/buf/validate/validate.proto`).** It vendored them only when
+  missing, so a project kept the forge.proto of the forge it was scaffolded
+  on: reliant could not write `(forge.v1.service).audience` until it
+  hand-synced the file. A copy that differs from the running forge's (after
+  the go_package/CRLF normalization `forge lint --vendored-protos` uses — now
+  one shared `assets.NormalizeVendoredProto`) is re-copied and reported as
+  `🔄 Refreshed <path>`. A disowned copy (`forge project disown <path>`) is
+  kept, and so is forge's own source copy in forge's repository.
 - **`forge env up` converges a host-run managed identity with `pkg/identity`
   (FI4).** An env whose `identity` runtime is `forge.IdentityOnHost {infra}` is
   converged against its host Zitadel after the infra is up and before any host

@@ -18,7 +18,10 @@ package lifecyclekit
 //	    pre-stop pause runs (serverkit.Drainer.Begin); then, in REVERSE
 //	    order, for each node: Drain, cancel its Run context and wait for
 //	    Run to return, Close — all inside one shutdown budget; then the
-//	    total, and the telemetry flush last.
+//	    total, and the telemetry flush last. Once the budget is spent, each
+//	    remaining Run still gets a short grace (runStopGrace) to return
+//	    after its cancel, so only a node that really does not stop is
+//	    reported as stuck.
 //
 // Dependents stop before what they depend on, so a listener drains while the
 // pool its handlers read is still open. Each phase writes the same "drain: …"
@@ -389,6 +392,38 @@ func (s *supervisor) stopping() {
 	s.mu.Unlock()
 }
 
+// runStopGrace is how long the reverse walk waits for a node's Run to return
+// after its context is cancelled once the shutdown budget is already spent.
+//
+// Without it, a node stopping after the budget ran out had no time at all:
+// one slow node ahead of it in the walk spent the budget, and every node
+// behind it was reported as "did not stop" — an ERROR per node — even when
+// its Run returned the instant it was cancelled, because returning takes a
+// scheduler tick that a zero wait never grants. The grace is per node, so a
+// walk overruns the budget by at most runStopGrace for each node whose Run
+// really is stuck; a node that returns promptly costs nothing. It is short
+// against the pod's headroom past the budget (terminationGracePeriodSeconds
+// is PRE_STOP_DELAY + SHUTDOWN_TIMEOUT + 5s).
+var runStopGrace = 250 * time.Millisecond
+
+// awaitRun waits for r's Run to return: until ctx — the shutdown budget —
+// ends, then up to runStopGrace more. It reports whether Run returned.
+func awaitRun(ctx context.Context, r *run) bool {
+	select {
+	case <-r.done:
+		return true
+	case <-ctx.Done():
+	}
+	grace := time.NewTimer(runStopGrace)
+	defer grace.Stop()
+	select {
+	case <-r.done:
+		return true
+	case <-grace.C:
+		return false
+	}
+}
+
 // stopNode is one step of the reverse walk: Drain, end Run and wait for it,
 // Close — each bounded by ctx, the shutdown budget — then the node's phase
 // line.
@@ -404,16 +439,9 @@ func (s *supervisor) stopNode(ctx context.Context, drainer *serverkit.Drainer, i
 	}
 	if r != nil {
 		r.cancel()
-		select {
-		case <-r.done:
-		case <-ctx.Done():
-			// The deadline can expire in the same instant Run returns.
-			select {
-			case <-r.done:
-			default:
-				s.logger.Error("supervise: node did not stop within the shutdown budget", "node", n.Name)
-				attrs = append(attrs, "run_still_running", true)
-			}
+		if !awaitRun(ctx, r) {
+			s.logger.Error("supervise: node did not stop within the shutdown budget", "node", n.Name)
+			attrs = append(attrs, "run_still_running", true)
 		}
 	}
 	if n.Close != nil {

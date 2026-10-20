@@ -267,6 +267,47 @@ func TestSupervise_StuckRunnerIsBoundedByTheBudget(t *testing.T) {
 	}
 }
 
+// Once one node has spent the budget, a node behind it in the walk that
+// stops the instant it is cancelled is not reported as stuck: its Run gets a
+// short grace to return, and only the node that really ignored its cancel is
+// named at ERROR.
+func TestSupervise_NodeAfterTheBudgetIsSpentIsNotFalselyStuck(t *testing.T) {
+	var logs syncBuffer
+	drainer := fastDrainer(&logs)
+	drainer.ShutdownTimeout = 100 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	// The walk is reverse order: "stuck" is stopped first and spends the
+	// whole budget; "prompt" is stopped after, with the budget already gone.
+	prompt := lifecyclekit.Node{Name: "prompt", Run: func(ctx context.Context) error { <-ctx.Done(); return nil }}
+	stuck := lifecyclekit.Node{Name: "stuck", Run: func(context.Context) error { <-release; return nil }}
+	stop, done := superviseInBackground(t, lifecyclekit.Policy{Drainer: drainer}, prompt, stuck)
+	waitFor(t, "the process to be ready", drainer.Ready)
+	stop()
+	if err := await(t, done); err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+
+	var stuckLines, promptLines []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(line, "did not stop within the shutdown budget") && !strings.Contains(line, "run_still_running") {
+			continue
+		}
+		switch {
+		case strings.Contains(line, "node=stuck"):
+			stuckLines = append(stuckLines, line)
+		case strings.Contains(line, "node=prompt"):
+			promptLines = append(promptLines, line)
+		}
+	}
+	if len(stuckLines) == 0 {
+		t.Errorf("the stuck node is not reported:\n%s", logs.String())
+	}
+	if len(promptLines) > 0 {
+		t.Errorf("a node that stopped as soon as it was cancelled is reported as stuck:\n%s", strings.Join(promptLines, "\n"))
+	}
+}
+
 func TestSupervise_RejectsInvalidNodes(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	for name, tc := range map[string]struct {

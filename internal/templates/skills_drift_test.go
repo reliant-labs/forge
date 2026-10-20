@@ -85,7 +85,11 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"embed_gen.go":           {},
 		"config_gen.go":          {},
 		"mounts_services_gen.go": {},
-		"root_gen.go":            {},
+		// The composition graph (internal/app, graph mode): the memoized
+		// accessors and roots, and the per-audience route sets.
+		"graph_gen.go":  {},
+		"routes_gen.go": {},
+		"root_gen.go":   {},
 		// Generic suffix references like `*_gen.go` are valid family-level
 		// references (not specific filenames) — handled below by the regex.
 	}

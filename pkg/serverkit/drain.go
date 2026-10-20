@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 // drain.go — the graceful-shutdown sequence, as pieces a hand-built main can
@@ -173,15 +175,9 @@ func (d *Drainer) shutdownTimeout() time.Duration {
 }
 
 // drainDuration is the length of a shutdown phase by Config's rule for
-// durations: zero is the default, negative is none.
+// durations: zero is the default, negative is none (drainbudget.Effective).
 func drainDuration(d, def time.Duration) time.Duration {
-	switch {
-	case d == 0:
-		return def
-	case d < 0:
-		return 0
-	}
-	return d
+	return drainbudget.Effective(d, def)
 }
 
 // NewHTTPServer builds the serving http.Server Run uses around handler: the

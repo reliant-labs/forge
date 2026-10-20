@@ -103,6 +103,46 @@ read-check-write in the transaction, including the next one someone adds.
 Assign whatever the RPC returns from inside `fn` (as `out` above) so the value
 comes from the attempt that committed.
 
+## A transaction that outlives one call: `BeginDetached`
+
+`RunTx` is closure-scoped: the transaction ends when `fn` returns. When a unit
+of work needs a transaction held across returns — a transaction-scoped
+advisory lock taken by one function and released by another — open it with
+`BeginDetached` on the same injected `DB orm.Context`:
+
+```go
+func (s *svc) LockRun(ctx context.Context, key int64) (release func(), err error) {
+    if orm.InTx(ctx) { // a second connection would deadlock on the caller's locks
+        return nil, svcerr.FailedPrecondition("LockRun needs its own transaction")
+    }
+    tx, err := s.deps.DB.BeginDetached(ctx, orm.TxOptions{Isolation: orm.IsolationReadCommitted})
+    if err != nil {
+        return nil, err
+    }
+    if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+        _ = tx.Rollback()
+        return nil, err
+    }
+    if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+        _ = tx.Rollback()
+        return nil, err
+    }
+    return func() { _ = tx.Rollback() }, nil
+}
+```
+
+- It **never joins** the transaction `ctx` carries: it is always a new
+  transaction on its own connection, so inside a caller's `RunTx` its commit
+  survives the caller's rollback. `orm.InTx(ctx)` tells you whether you are
+  inside one.
+- **You end it**: every path calls `Commit` or `Rollback`. Its lifetime is
+  also bounded by `ctx` — cancelling `ctx` rolls it back (pass
+  `context.WithoutCancel(ctx)` to outlive the request).
+- **No retry**: a `40001` comes back to you.
+- `tx.RunTx(ctx, fn)` hands `fn` a `ctx` carrying it, so stores and generated
+  delegates join it; `orm.AfterCommit` callbacks registered there run on
+  `Commit`.
+
 ## `RunTransaction` and `WithTx`
 
 `RunTransaction(ctx, func(tx orm.Context) error)` is the older,

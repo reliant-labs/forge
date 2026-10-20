@@ -13,7 +13,6 @@ import (
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/devpg"
 	"github.com/reliant-labs/forge/internal/hostinfra"
-	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/seedplan"
@@ -420,9 +419,9 @@ func autoSeedConfig(base seedplan.Config, entityTables func() []string) seedplan
 
 // crudEntityTablesForSeed lists the tables behind the project's CRUD entities
 // — each entity a service declares Create/Get/List/Update/Delete RPCs for,
-// mapped to its table the way codegen.BuildSchemaEntities maps it (the
-// pluralized snake_case of the entity name). Tables that do not exist are
-// harmless: seedplan.ScopeTables ignores unknown roots.
+// mapped to the tables codegen.EntityTableCandidates names for it (the
+// pluralized snake_case of the entity name, then the singular). Tables that
+// do not exist are harmless: seedplan.ScopeTables ignores unknown roots.
 //
 // nil (not empty) when the service descriptor cannot be read, so the caller
 // can tell "no entities" from "could not look".
@@ -450,10 +449,11 @@ func crudEntityTables(services []codegen.ServiceDef) []string {
 			if op == "list" {
 				name = inflection.Singular(name)
 			}
-			table := naming.Pluralize(naming.ToSnakeCase(name))
-			if !seen[table] {
-				seen[table] = true
-				out = append(out, table)
+			for _, table := range codegen.EntityTableCandidates(name) {
+				if !seen[table] {
+					seen[table] = true
+					out = append(out, table)
+				}
 			}
 		}
 	}

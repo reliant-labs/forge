@@ -1,6 +1,6 @@
 ---
 name: db/orm-and-safety
-description: The two per-project database opt-outs that live next to the code they affect, not in forge.yaml — `//forge:no-orm` in internal/db to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived, and the lint rules for a migration file that cannot run as one transaction (CONCURRENTLY, enum values).
+description: Where the generated ORM lands (database.orm.package), and the two per-project database opt-outs that live next to the code they affect, not in forge.yaml — `//forge:no-orm` in internal/db to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived, and the lint rules for a migration file that cannot run as one transaction (CONCURRENTLY, enum values).
 ---
 
 # ORM opt-out and migration-safety directives

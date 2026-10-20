@@ -68,7 +68,7 @@ CREATE TABLE jobs (
 		Fields:      []config.PlanEntityField{{Name: "id", Type: "string", PrimaryKey: true}},
 		Constraints: codegen.EntityConstraintsToPlan(codegen.EntityConstraintsFromTable(jobs)),
 	}
-	code := string(renderORMEntity(ent, false))
+	code := string(renderORMEntity("db", ent, false))
 
 	db := shadow.DB()
 	if _, err := db.Exec(`INSERT INTO estimates (id) VALUES ('e1')`); err != nil {
@@ -144,7 +144,7 @@ ALTER TABLE jobs RENAME CONSTRAINT jobs_estimate_id_key TO one_job_per_estimate;
 		Fields:      []config.PlanEntityField{{Name: "id", Type: "string", PrimaryKey: true}},
 		Constraints: codegen.EntityConstraintsToPlan(codegen.EntityConstraintsFromTable(jobs)),
 	}
-	code := string(renderORMEntity(ent, false))
+	code := string(renderORMEntity("db", ent, false))
 
 	if strings.Contains(code, "jobs_estimate_id_key") {
 		t.Error("the pre-rename constraint name is still generated; it names nothing in the applied schema")

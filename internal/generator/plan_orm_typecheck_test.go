@@ -149,7 +149,7 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 

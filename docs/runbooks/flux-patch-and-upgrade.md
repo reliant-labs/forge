@@ -1,8 +1,11 @@
 # Patching and upgrading the Flux that `forge.flux_chart()` installs
 
-forge pins one Flux (`FLUX_CHART_VERSION` in `kcl/lib/flux.k`, mirrored in
-`internal/flux`). There is deliberately no version knob: the pointer forge
-writes and the revision-equality check the wait depends on are properties of a
+forge pins one Flux chart (`FLUX_CHART_VERSION` in `kcl/lib/flux.k`, mirrored
+in `internal/flux`), which a consumer that runs a Flux of its own (a control
+plane reconciling hosted workloads) declares with `forge.flux_chart()`. forge
+never installs Flux into a deploy target by itself; see `forge skill load
+deploy/flux`. There is deliberately no version knob: the chart's hardening and
+the revision checks a control plane's wait depends on are properties of a
 specific source-controller. So a Flux patch is a **forge release**, and a
 consumer picks it up by bumping its forge pin.
 
@@ -69,9 +72,10 @@ forge does not run a feed; whoever owns the pin does.
    the controller at start-up: an unknown gate is a hard failure (`feature-gate
 'X' not supported`), so confirm both still exist in
    `internal/features/features.go` at the new kustomize-controller tag.
-4. **Run the gates:** `task test` for `internal/templates` (the KCL corpus,
-   including `positive_flux_chart_*`) and `internal/cli` (`TestFluxChart_*`
-   render the real chart through helm and assert the objects).
+4. **Run the gates:** `task test -- ./internal/templates/... ./internal/cluster/...`
+   — the KCL corpus (`kcl/tests/positive_flux_chart*.k`, run by
+   `internal/templates`) and `TestFluxChart_*` in `internal/cluster`, which
+   render the real chart through helm and assert the objects.
 5. **Roll it dev first.** Flux upgrades CRDs in place (forge applies them first,
    Established-gated). Watch `kubectl -n flux-system rollout status
 deploy/kustomize-controller deploy/source-controller`, then confirm a

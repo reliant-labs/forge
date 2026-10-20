@@ -30,7 +30,6 @@ import (
 // Each guard traces back to a bug we've already shipped to users once.
 // Don't soften them without replacing with an equivalent check.
 func TestE2EScaffoldFullSpecProject(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -45,6 +44,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	)
 
 	projectDir := filepath.Join(dir, "demo")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Let `forge generate` fill in the derived sources (gen/, bootstrap,
 	// handler stubs). Without this step `go build` fails because the proto
@@ -184,11 +184,23 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// Past bug: server used a raw error compare on srv.Serve's return,
 	// which misclassified wrapped errors. The listener lifecycle (and
 	// its errors.Is(err, http.ErrServerClosed) handling — see
-	// pkg/serverkit/run.go) now lives in serverkit; the shim must hand
-	// the lifecycle off rather than half-reimplementing it.
-	if !strings.Contains(serveGo, "serverkit.Run(") {
-		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to serverkit.Run(); got:\n%s",
+	// pkg/serverkit) now lives in serverkit; the shim must hand the
+	// lifecycle off rather than half-reimplementing it. A new project
+	// composes with the graph: serve.go runs the generated `server` root
+	// (g.RunServer, which supervises every node), and the HTTP listener is
+	// the APIListener provider, a serverkit.Listener.
+	if !strings.Contains(serveGo, "g.RunServer(") {
+		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to the graph's server root, g.RunServer(); got:\n%s",
 			excerpt(serveGo, "Serve", 400))
+	}
+	if strings.Contains(serveGo, ".ListenAndServe(") || strings.Contains(serveGo, "srv.Serve(") {
+		t.Errorf("cmd/demo/cmd/serve.go reimplements the listener lifecycle serverkit owns; got:\n%s",
+			excerpt(serveGo, "Serve", 400))
+	}
+	providersGo := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "providers.go"))
+	if !strings.Contains(providersGo, "serverkit.NewListener(") {
+		t.Errorf("internal/app/providers.go must build the API listener with serverkit.NewListener; got:\n%s",
+			excerpt(providersGo, "APIListener", 400))
 	}
 	// Past bug: server used the `postgres://` URL directly with
 	// database/sql, which has no registered driver named "postgres" in a

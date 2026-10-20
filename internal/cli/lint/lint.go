@@ -58,6 +58,7 @@ type lintFlags struct {
 	staticExport      bool
 	vendoredProtos    bool
 	configReach       bool
+	slowTests         bool
 	generatedDrift    bool
 	strict            bool
 	skipFrontends     bool
@@ -299,6 +300,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
 	cmd.Flags().BoolVar(&flags.vendoredProtos, "vendored-protos", false, "Fail when a vendored proto (proto/forge/v1/forge.proto) differs from the copy embedded in this forge binary — forge's upgrade path does not track these copies, so drift is otherwise invisible")
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
+	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
@@ -501,6 +503,9 @@ func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane 
 			return err
 		}
 		return runWithCwd(func(cwd string) error { return runConfigReachLint(cwd, cfg) })
+	}
+	if flags.slowTests {
+		return runSlowTestsLint(ctx, paths)
 	}
 	// lintLaneFlags names a lane this chain has no arm for. Refuse rather
 	// than run the full sweep under one lane's name.

@@ -221,8 +221,10 @@ type Deps struct {
 // for Extras:
 //
 //  0. Trace                — the server span (Deps.Trace, when non-nil),
-//     then the pprof labels naming it. Outside everything below, so the span
-//     covers recovery, logging and auth, and their log lines carry its ids.
+//     then the pprof labels naming it and the traceresponse header returning
+//     its context to the caller (TraceResponseInterceptor). Outside everything
+//     below, so the span covers recovery, logging and auth, and their log
+//     lines carry its ids.
 //  1. RecoveryInterceptor   — observes panics from everything below.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
 //  3. LoggingInterceptor   — every failure; every success, or a sample
@@ -246,7 +248,7 @@ type Deps struct {
 func Chain(deps Deps) []connect.Interceptor {
 	var chain []connect.Interceptor
 	if deps.Trace != nil {
-		chain = append(chain, deps.Trace, profileLabelsInterceptor())
+		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor())
 	}
 	chain = append(chain,
 		RecoveryInterceptor(deps.Logger),

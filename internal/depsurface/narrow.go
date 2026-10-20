@@ -110,10 +110,29 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	if len(retype) == 0 {
 		return res, nil
 	}
-	if err := w.write(target); err != nil {
+	// Render both files before writing either, so a failure leaves the
+	// package as it was.
+	// When Deps lives in the target itself (a contract package's
+	// contract.go), the declarations are appended to the retyped file.
+	depsFile := filepath.Join(projectDir, filepath.FromSlash(p.DepsFile))
+	retyped, err := retypeFields(depsFile, retype, p.importNames(p.DepsFile))
+	if err != nil {
 		return nil, err
 	}
-	if err := retypeFields(filepath.Join(projectDir, filepath.FromSlash(p.DepsFile)), retype, p.importNames(p.DepsFile)); err != nil {
+	var base []byte
+	if depsFile == target {
+		base = retyped
+	}
+	decls, err := w.render(target, base)
+	if err != nil {
+		return nil, err
+	}
+	if depsFile != target {
+		if err := os.WriteFile(depsFile, retyped, 0o644); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.WriteFile(target, decls, 0o644); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -180,7 +199,7 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 		return "", fmt.Errorf("Deps.%s: both %s and %s are taken in package %s — declare the interface by hand", f.Name, named.Obj().Name(), name, w.p.pkg.Name)
 	}
 	w.taken[name] = true
-	fmt.Fprintf(&w.decls, "\n// %s is the part of %s that this package calls through Deps.%s:\n", name, types.TypeString(named, w.qualifier), f.Name)
+	fmt.Fprintf(&w.decls, "\n// %s is the part of %s.%s that this package calls through Deps.%s:\n", name, named.Obj().Pkg().Name(), named.Obj().Name(), f.Name)
 	fmt.Fprintf(&w.decls, "// declared here, by its consumer, so the package knows only what it uses\n// (forge fix narrow-deps). Add a method when the package calls one.\n")
 	fmt.Fprintf(&w.decls, "type %s interface {\n", name)
 	for _, m := range sortedUsed(f) {
@@ -197,26 +216,30 @@ func (w *ifaceWriter) declare(f Field) (string, error) {
 	return name, nil
 }
 
-// write appends the declarations to target (creating deps.go when absent)
-// with the imports they need.
-func (w *ifaceWriter) write(target string) error {
-	src, err := os.ReadFile(target)
+// render returns target (or base, its pending content) with the
+// declarations appended — deps.go, fresh, when absent — and the imports they
+// need.
+func (w *ifaceWriter) render(target string, base []byte) ([]byte, error) {
+	src, err := base, error(nil)
+	if src == nil {
+		src, err = os.ReadFile(target)
+	}
 	if os.IsNotExist(err) {
 		src = []byte(DepsFileMarker + "\n// The interfaces below are this package's own declarations of what it\n// needs from its Deps; mock_gen.go mocks them.\npackage " + w.p.pkg.Name + "\n")
 	} else if err != nil {
-		return err
+		return nil, err
 	}
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, target, append(append([]byte{}, src...), w.decls.Bytes()...), parser.ParseComments)
 	if err != nil {
-		return fmt.Errorf("narrow-deps rendered an unparseable %s (a forge bug — please report it): %w", target, err)
+		return nil, fmt.Errorf("narrow-deps rendered an unparseable %s (a forge bug — please report it): %w", target, err)
 	}
 	added := map[string]string{}
 	for p := range w.added {
 		added[p] = w.imports[p]
 	}
 	addImports(fset, file, added)
-	return writeFormatted(fset, file, target)
+	return formatFile(fset, file, target)
 }
 
 // addImports adds each path under its name, omitting the name when it is
@@ -231,12 +254,12 @@ func addImports(fset *token.FileSet, file *ast.File, imports map[string]string) 
 	}
 }
 
-func writeFormatted(fset *token.FileSet, file *ast.File, target string) error {
+func formatFile(fset *token.FileSet, file *ast.File, name string) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, file); err != nil {
-		return fmt.Errorf("format %s: %w", target, err)
+		return nil, fmt.Errorf("format %s: %w", name, err)
 	}
-	return os.WriteFile(target, buf.Bytes(), 0o644)
+	return buf.Bytes(), nil
 }
 
 // importNames maps each import of the project-relative file to its name in
@@ -257,17 +280,18 @@ func (p *Package) importNames(rel string) map[string]string {
 	return out
 }
 
-// retypeFields rewrites the type of each named Deps field in file, then
-// drops every import (names: path → name in file) nothing uses any more.
-func retypeFields(file string, retype map[string]string, names map[string]string) error {
+// retypeFields returns file with the type of each named Deps field
+// rewritten, minus every import (names: path → name in file) nothing uses any
+// more.
+func retypeFields(file string, retype map[string]string, names map[string]string) ([]byte, error) {
 	src, err := os.ReadFile(file)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, file, src, parser.ParseComments)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	type edit struct {
 		start, end int
@@ -300,23 +324,26 @@ func retypeFields(file string, retype map[string]string, names map[string]string
 	fset = token.NewFileSet()
 	f, err = parser.ParseFile(fset, file, src, parser.ParseComments)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	type unused struct{ name, path string }
+	var drop []unused
 	for _, imp := range f.Imports {
 		p, _ := strconv.Unquote(imp.Path.Value)
 		name, known := names[p]
-		if !known || name == "_" || name == "." {
+		if !known || name == "_" || name == "." || usesPackageName(f, name) {
 			continue
 		}
-		if !usesPackageName(f, name) {
-			if imp.Name != nil {
-				astutil.DeleteNamedImport(fset, f, imp.Name.Name, p)
-			} else {
-				astutil.DeleteImport(fset, f, p)
-			}
+		explicit := ""
+		if imp.Name != nil {
+			explicit = imp.Name.Name
 		}
+		drop = append(drop, unused{explicit, p})
 	}
-	return writeFormatted(fset, f, file)
+	for _, d := range drop {
+		astutil.DeleteNamedImport(fset, f, d.name, d.path)
+	}
+	return formatFile(fset, f, file)
 }
 
 // usesPackageName reports whether any selector in f is name.X.

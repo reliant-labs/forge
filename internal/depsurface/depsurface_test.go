@@ -205,3 +205,39 @@ func TestNarrow_WritesTheConsumerInterfaceAndRetypesTheField(t *testing.T) {
 		t.Fatalf("the narrowed module does not build: %v\n%s", err, out)
 	}
 }
+
+func TestNarrow_DepsDeclaredInContractGo(t *testing.T) {
+	dir := writeFixture(t)
+	svcPath := filepath.Join(dir, "internal/handlers/tools/service.go")
+	svc, err := os.ReadFile(svcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(svc), "type Deps struct {")
+	end := start + strings.Index(string(svc)[start:], "}\n") + 2
+	contract := "package tools\n\nimport (\n\t\"log/slog\"\n\n\t\"example.com/fx/internal/store\"\n\t\"example.com/fx/pkg/config\"\n)\n\n" + string(svc)[start:end]
+	rest := strings.Replace(string(svc)[:start]+string(svc)[end:], "\t\"log/slog\"\n", "", 1)
+	rest = strings.Replace(rest, "\t\"example.com/fx/pkg/config\"\n", "", 1)
+	if err := os.WriteFile(filepath.Join(dir, "internal/handlers/tools/contract.go"), []byte(contract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(svcPath, []byte(rest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Narrow(dir, "internal/handlers/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.File != "internal/handlers/tools/contract.go" || len(res.Narrowed) != 1 {
+		t.Fatalf("result = %+v", res)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, res.File))
+	if !strings.Contains(string(got), "type Repository interface {") || !strings.Contains(string(got), "Repo   Repository") {
+		t.Fatalf("contract.go was not narrowed in place:\n%s", got)
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the narrowed module does not build: %v\n%s\ncontract.go:\n%s", err, out, got)
+	}
+}

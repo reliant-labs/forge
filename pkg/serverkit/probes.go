@@ -1,11 +1,14 @@
 package serverkit
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	"connectrpc.com/connect"
 )
 
 // Probes is a process's probe surface as listener Front routes: /healthz,
@@ -90,4 +93,33 @@ func (p *Probes) readyz() http.HandlerFunc {
 		p.front = readyzHandlerFunc(drainer, p.ReadyChecks, timeout, logger)
 	})
 	return p.front
+}
+
+// ProbeListenerDeps are a probe listener's dependencies.
+type ProbeListenerDeps struct {
+	// Config is the listener's address, TLS and timeouts — the process's
+	// server address (Config.Listener()), where a kubelet probes it.
+	Config ListenerConfig
+	// Probes is the surface it serves. Required.
+	Probes *Probes
+	// Logger is the listener's logger; nil is slog.Default().
+	Logger *slog.Logger
+}
+
+// NewProbeListener builds a Listener that serves nothing but the process's
+// probes (/healthz, /readyz, /metrics): what a process with no API listener
+// — a worker, an operator, a gateway's outbound half — answers its kubelet
+// on. It takes the address over from the boot probes like any Listener, has
+// no chain and no routes, and is the one listener that never authenticates
+// a request, because it serves none.
+func NewProbeListener(deps ProbeListenerDeps) (*Listener, error) {
+	if deps.Probes == nil {
+		return nil, errors.New("serverkit.NewProbeListener: ProbeListenerDeps.Probes is required")
+	}
+	return newListener(ListenerDeps{
+		Config: deps.Config,
+		Routes: RoutesFunc(func(*http.ServeMux, ...connect.HandlerOption) []string { return nil }),
+		Logger: deps.Logger,
+		Front:  deps.Probes.Front(),
+	})
 }

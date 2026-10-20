@@ -249,11 +249,10 @@ func TestGracePeriod(t *testing.T) {
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1h"}}, 3610},
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1m30s"}}, 100},
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "1500ms"}}, 12}, // rounded up
-		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "7"}}, 42},
+		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "7s"}}, 42},
 		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "0s"}, {Name: "SHUTDOWN_TIMEOUT", Value: "0s"}}, 40},   // zero: the defaults
 		{[]v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "-1s"}}, 35},                                           // negative: no pause
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "-1s"}}, 10},                                         // negative: no window
-		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", Value: "${X}"}}, 40},                                        // not a duration: the default
 		{[]v1alpha1.EnvVar{{Name: "SHUTDOWN_TIMEOUT", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "X"}}}, 40}, // a reference has no literal
 	} {
 		w := svc("api")
@@ -274,7 +273,7 @@ func TestGracePeriod(t *testing.T) {
 func TestGracePeriodAgreesWithTheServersReader(t *testing.T) {
 	ceil := func(d time.Duration) float64 { return float64((d + time.Second - 1) / time.Second) }
 	for _, pair := range [][2]string{
-		{"", ""}, {"0", "0s"}, {"10s", "1m"}, {"7", "45"}, {"-1s", "30s"}, {"-1", "-1"},
+		{"", ""}, {"0", "0s"}, {"10s", "1m"}, {"7s", "45s"}, {"-1s", "30s"}, {"-1s", "-1s"},
 		{"500ms", "1500ms"}, {"1m30s", "1h"},
 	} {
 		m := map[string]string{drainbudget.EnvPreStopDelay: pair[0], drainbudget.EnvShutdownTimeout: pair[1]}
@@ -292,6 +291,30 @@ func TestGracePeriodAgreesWithTheServersReader(t *testing.T) {
 		want := ceil(b.PreStop()) + ceil(b.Shutdown()) + graceMarginSeconds
 		if got := get(pod, "terminationGracePeriodSeconds"); got != want {
 			t.Errorf("env %v: grace = %v, the server's budget implies %v", m, got, want)
+		}
+	}
+}
+
+// TestGracePeriodRefusesWhatTheServerRefuses: a drain value the server's
+// config loader refuses at boot (a bare number, an interpolation, a typo)
+// fails the render, naming the workload and the variable. It used to render
+// the DEFAULT grace period for it — a pod whose grace period was derived from
+// a budget its process would never run, because it would never start.
+func TestGracePeriodRefusesWhatTheServerRefuses(t *testing.T) {
+	for _, env := range [][]v1alpha1.EnvVar{
+		{{Name: "SHUTDOWN_TIMEOUT", Value: "30"}},
+		{{Name: "PRE_STOP_DELAY", Value: "-1"}},
+		{{Name: "SHUTDOWN_TIMEOUT", Value: "${X}"}},
+	} {
+		w := svc("api")
+		w.Spec.Env = env
+		_, err := RenderWorkloads([]v1alpha1.Workload{w}, v1alpha1.ProfileFull, ctx)
+		if err == nil {
+			t.Errorf("env %v: rendered, want an error the server's loader would also give", env)
+			continue
+		}
+		if !strings.Contains(err.Error(), `"api"`) || !strings.Contains(err.Error(), env[0].Name) {
+			t.Errorf("env %v: error must name the workload and the variable; got: %v", env, err)
 		}
 	}
 }

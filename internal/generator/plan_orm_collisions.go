@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // ormOutput is one file the ORM projection is about to write into
@@ -50,7 +51,7 @@ type ormNameCollision struct {
 // consumer and owned file relies on); what this adds is the answer. Each
 // collision names the project's declaration and the entity behind it, and the
 // error names the three ways to resolve it: keep that table off forge's ORM
-// (`// forge:custom` on its CRUD-named rpcs, the per-entity opt-out — the
+// (`COMMENT ON TABLE … 'forge:no-entity'`, the per-table opt-out — the
 // incremental path off a hand-written or sqlc data layer), hand the name to
 // forge, or opt the whole package out with `//forge:no-orm`.
 //
@@ -121,19 +122,8 @@ func checkORMNameCollisions(dbDir string, entities []config.PlanEntity, outputs 
 
 // ORMCollisionError is the refusal checkORMNameCollisions returns: the names
 // the project already declares, and how to resolve each entity.
-//
-// The per-entity advice names the rpcs to mark `// forge:custom`. Which rpcs
-// those are is a fact about the services, which this package does not read,
-// so the caller that does fills EntityRPCs (codegen.EntityRPCs). Without it the
-// advice names no rpc rather than guess: it used to list the CRUD quintet the
-// entity's name implies (CreateMessage, GetMessage, UpdateMessage,
-// DeleteMessage, ListMessages) when reliant declared one of them, on a
-// different service than the rest of the list suggested.
 type ORMCollisionError struct {
 	collisions []ormNameCollision
-	// EntityRPCs maps an entity to its declared, unmarked CRUD-named rpcs,
-	// each rendered "Service.Rpc (proto/…/x.proto:14)".
-	EntityRPCs map[string][]string
 }
 
 // Entities returns the entities whose names collide, sorted.
@@ -163,23 +153,12 @@ func (e *ORMCollisionError) Error() string {
 		tables[c.entity] = c.table
 	}
 	b.WriteString("Resolve each entity one of three ways:\n")
-	entities := e.Entities()
-	if len(entities) == 0 {
-		b.WriteString("  - keep the tables off forge's ORM while your code owns them: put `// forge:custom` above each of their CRUD-named rpcs;\n")
-	}
-	for _, ent := range entities {
+	for _, ent := range e.Entities() {
 		table := tables[ent]
-		rpcs, known := e.EntityRPCs[ent]
-		switch {
-		case known && len(rpcs) > 0:
-			fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: put `// forge:custom` above each declared rpc that makes it an entity — %s. "+
-				"With none of them CRUD, %s is plain schema and forge projects nothing for it;\n",
-				table, strings.Join(rpcs, ", "), table)
-		default:
-			fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: put `// forge:custom` above each of its declared CRUD-named rpcs "+
-				"(`forge project shapes --kind rpc --grep %s` lists them) — with none of them CRUD, %s is plain schema and forge projects nothing for it;\n",
-				table, ent, table)
-		}
+		fmt.Fprintf(&b, "  - keep %s off forge's ORM while your code owns it: in a migration, `COMMENT ON TABLE %s IS '%s'` — "+
+			"the table is then plain schema, with no store and no CRUD wiring (a `// forge:custom` rpc does not do this: "+
+			"the store is projected from every table, whatever its rpcs);\n",
+			table, table, schemadef.TableMarkerNoEntity)
 	}
 	b.WriteString("  - hand the name to forge: delete or rename your declaration (sqlc output: a `rename:` in sqlc.yaml) and use the generated one;\n")
 	b.WriteString("  - or opt the whole data layer out with `//forge:no-orm: <why>` in internal/db's package doc.")

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
 // drain.go — the graceful-shutdown sequence, as pieces a hand-built main can
@@ -124,10 +126,13 @@ func (d *Drainer) Complete() {
 	}
 }
 
-// phase logs one of Run's own phases — workers, operators, teardown — begun
-// at start, with the drainer's logger and meter, and returns its end. Before
-// Begin it logs nothing and returns now.
-func (d *Drainer) phase(name string, start time.Time, msg string, attrs ...any) time.Time {
+// Phase records one phase of the shutdown this drainer began — Run's
+// workers, operators and teardown, or a supervisor's own — begun at start:
+// one INFO line, msg plus attrs, with `phase` and its `elapsed`, and the
+// duration in forge.server.drain.duration, through the drainer's Logger and
+// Meter. It returns the phase's end, the next one's start. Before Begin it
+// records nothing and returns now.
+func (d *Drainer) Phase(name string, start time.Time, msg string, attrs ...any) time.Time {
 	d.mu.Lock()
 	p := d.phases
 	d.mu.Unlock()
@@ -170,15 +175,9 @@ func (d *Drainer) shutdownTimeout() time.Duration {
 }
 
 // drainDuration is the length of a shutdown phase by Config's rule for
-// durations: zero is the default, negative is none.
+// durations: zero is the default, negative is none (drainbudget.Effective).
 func drainDuration(d, def time.Duration) time.Duration {
-	switch {
-	case d == 0:
-		return def
-	case d < 0:
-		return 0
-	}
-	return d
+	return drainbudget.Effective(d, def)
 }
 
 // NewHTTPServer builds the serving http.Server Run uses around handler: the
@@ -211,7 +210,12 @@ func drainDuration(d, def time.Duration) time.Duration {
 // gRPC and load balancers send; an HTTP/1.1 `Upgrade: h2c` request is served
 // as HTTP/1.1.)
 func NewHTTPServer(cfg Config, handler http.Handler, streams *Streams) *http.Server {
-	cfg.Normalize()
+	return newHTTPServer(cfg.Listener(), handler, streams)
+}
+
+// newHTTPServer is NewHTTPServer over one listener's block, which a Listener
+// carries; cfg must be normalized.
+func newHTTPServer(cfg ListenerConfig, handler http.Handler, streams *Streams) *http.Server {
 	if streams != nil {
 		handler = streams.Install(handler)
 	}

@@ -12,6 +12,9 @@ import (
 )
 
 func TestResourceFromConfig(t *testing.T) {
+	// OTEL_SERVICE_NAME wins over Config.ServiceName, so an ambient one (any
+	// shell inside a `forge env up` stack exports it) would fail this test.
+	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment.name=staging")
 	res, err := resourceFromConfig(context.Background(), Config{
 		ServiceName:    "api",
@@ -36,6 +39,7 @@ func TestResourceFromConfig(t *testing.T) {
 }
 
 func TestResourceFromConfig_OmitsEmptyOptionalAttributes(t *testing.T) {
+	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
 	res, err := resourceFromConfig(context.Background(), Config{ServiceName: "api"})
 	if err != nil {

@@ -254,7 +254,7 @@ func structuredOutcomesFixture() []lintStepOutcome {
 			findings: []lintJSONFinding{{File: "internal/app/providers.go", Severity: lintSevWarning,
 				Rule: "scaffold-not-customized", Message: "file still contains 1 FORGE_SCAFFOLD marker(s)"}},
 		},
-		{name: "buf lint", gates: true, skipMsg: "buf not found on PATH — skipping buf lint"},
+		{name: "contract linter", gates: true, skipMsg: "contracts feature disabled — skipping contract linter"},
 		{name: "frontend lint", gates: true, unscoped: true},
 	}
 }
@@ -274,7 +274,7 @@ func TestRenderLintOutcomesQuiet(t *testing.T) {
 		}
 	}
 	// Only FAILING findings: no warning, no passing lane, no skip chatter.
-	for _, unwanted := range []string{"lost_reason", "scaffold", "golangci-lint", "buf"} {
+	for _, unwanted := range []string{"lost_reason", "scaffold", "golangci-lint", "contract"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("quiet output shows %q, which did not fail:\n%s", unwanted, out)
 		}

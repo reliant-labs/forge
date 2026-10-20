@@ -360,7 +360,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-<<<<<<< HEAD
 - **Rebasing no longer leaves a stale proto stamp in `gen/forge_descriptor.json`.**
   The descriptor recorded one `source_hash`, a digest of every `.proto`, so two
   branches that edited different protos both rewrote that line. The merge
@@ -374,7 +373,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names the protos that differ. Descriptors from an older forge (with
   `source_hash`) read as unstamped and are re-stamped by the next
   `forge generate`.
-=======
 - **Parallel `forge cluster up`s no longer lose each other's kubectl
   context.** `k3d cluster create`, `k3d kubeconfig merge`,
   `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
@@ -395,7 +393,6 @@ command`.
   reconcile only measured node constructions, so the dead key failed every
   generate's validate build (#747, again in graph mode); the construction is
   kept and reported with the graph's remedy.
->>>>>>> origin/main
 - **`forge ci verify-generated` and `forge generate --check` never write the
   checkout.** Both regenerated the caller's own tree and then read
   `git status`, so a concurrent gate held every reader of the tree back for

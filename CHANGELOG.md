@@ -32,8 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`(forge.v1.method).timeout` is enforced.** It was documented as the rpc's
   server-side timeout and read by nothing. `forge generate` now projects it
   into `pkg/middleware/procedures_gen.go` as `ProcedureDeadlines`, and the
-  scaffolded chain passes `serverkit.Deadline{Procedures:
-  middleware.ProcedureDeadlines}`. An existing project adopts it by adding
+  scaffolded chain passes
+  `serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. An existing
+  project adopts it by adding
   that one `Deadline:` line to its owned `serve.go` / `providers.go` chain.
 - **A typed activity stream: an rpc declares the activity event it records,
   and one interceptor writes it** (`forge/pkg/activity`).
@@ -343,8 +344,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Parallel `forge cluster up`s no longer lose each other's kubectl
-  context.** `k3d cluster create`, `k3d kubeconfig merge`, `k3d cluster
-  delete` and `kubectl config use-context` each rewrite the whole default
+  context.** `k3d cluster create`, `k3d kubeconfig merge`,
+  `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
   kubeconfig with no lock, so two forge processes creating clusters at once
   dropped one context, and the loser failed on `context "k3d-<name>" does not
 exist` for a running cluster. forge now creates with

@@ -9,7 +9,7 @@ import (
 
 // A takeover from the boot probes retries while the old socket still holds
 // the address, which it can for a moment after the boot server's Close (on
-// Windows CI it did, every run). The bind error is spelled the OS's way
+// Windows CI it did in 3 of 5 main runs). The bind error is spelled the OS's way
 // (addrInUseErrnos), so this runs the real bind on whatever OS runs it.
 func TestListenAfterHandoff_RetriesUntilTheAddressIsFree(t *testing.T) {
 	held, err := net.Listen("tcp", "127.0.0.1:0")

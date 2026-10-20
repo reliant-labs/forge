@@ -36,12 +36,13 @@ There is **no `database:` driver or directory setting**: a service project with 
 
 ## What makes an entity
 
-An entity exists when **both halves** exist:
-
-1. **Wire truth** — a service proto declares the CRUD RPCs (`Create<X>` / `Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`).
-2. **Storage truth** — the applied schema has the matching table (pluralized snake_case; `Bookmark` → `bookmarks`).
-
-CRUD RPCs without a table generate **nothing** — honest stubs, no pages, no ORM. Tables without CRUD RPCs are **plain schema**: yours to query by hand, invisible to the CRUD/frontend projections.
+**The store follows the schema; CRUD wiring follows the wire.** Every applied
+table gets an entity struct and `<Entity>Store`, rpcs or not — opt-outs,
+naming and keys: `db/store`. CRUD handlers, pages and seed roots exist when
+**both halves** exist: a service declares the CRUD RPCs (`Create<X>` /
+`Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`), and the applied schema has
+the matching table (`Bookmark` → `bookmarks`). CRUD RPCs without a table
+generate **nothing** — honest stubs, no pages.
 
 ## Starting a new entity
 

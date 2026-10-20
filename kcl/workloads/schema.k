@@ -48,6 +48,8 @@ import forge.lib.capabilities as caps
 
 # The one authoring schema (kcl/workload.k).
 Workload = forge.Workload
+# Its continuous-profiling override (Workload.profiling).
+Profiling = forge.Profiling
 
 # The kind x capability matrix (kcl/lib/capabilities.k), re-exported so
 # `fw.supports(kind, fw.CAP_...)` reads the table the schema checks read.

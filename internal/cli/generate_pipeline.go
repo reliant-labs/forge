@@ -121,6 +121,12 @@ type GenStep struct {
 // flags) lives here so we parse once at step 0 instead of 3× across
 // the pipeline (see FORGE_REVIEW_CODEBASE.md Tier 2.5).
 type pipelineContext struct {
+	// graphRoots is the composition graph's roots as processes, set by the
+	// internal/app composition step (graphRootsSet) and read by the deploy
+	// config step, which projects their config reach into config_gen.k.
+	graphRoots    []codegen.GraphRoot
+	graphRootsSet bool
+
 	// Inputs (set in newPipelineContextWithFlags).
 	ProjectDir string
 	AbsPath    string
@@ -1998,24 +2004,18 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	svcName := ""
-	for _, e := range entities {
-		if n := codegen.ServiceNameFromProtoFile(e.ProtoFile); n != "" {
-			svcName = n
-			break
-		}
-	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
-	if err := generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums); err != nil {
+	orm := config.ORMPackage(ctx.Cfg)
+	if err := generator.GeneratePlanORM(ctx.ProjectDir, orm, planEntities, ctx.Checksums); err != nil {
 		// Recorded whether or not --strict makes it fatal: without --strict
 		// the run continues, and every step that consumes the ORM must say
 		// it was skipped instead of reporting output it never wrote.
 		ctx.ORMFailure = err
 		return ctx.warnOrFail("ORM generation", err)
 	}
-	// GeneratePlanORM retires a forge-written internal/db/types.go (the
-	// proto-entity era's alias file) itself — and only a forge-written one.
-	fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
+	// GeneratePlanORM retires a forge-written types.go (the proto-entity
+	// era's alias file) itself — and only a forge-written one.
+	fmt.Printf("  ✅ Generated %s/ (%d entity ORM files)\n", orm.PackageDir(), len(entities))
 	return nil
 }
 
@@ -2144,16 +2144,17 @@ func stepWebhookRoutes(ctx *pipelineContext) error {
 // output: any *_orm.go file, or the legacy internal/db/types.go from
 // older projects.
 //
-// Returns an error only when the internal/db scan itself fails (e.g.
-// I/O permission). A missing internal/db directory is simply "off".
+// Returns an error only when the ORM package scan itself fails (e.g. I/O
+// permission). A missing directory is simply "off". The directory is
+// database.orm.package (default internal/db).
 func deriveOrmEnabled(projectDir string) (bool, error) {
-	dbDir := filepath.Join(projectDir, "internal", "db")
-	entries, err := os.ReadDir(dbDir)
+	ormDir := codegen.ProjectORMPackage(projectDir).PackageDir()
+	entries, err := os.ReadDir(filepath.Join(projectDir, filepath.FromSlash(ormDir)))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("scan internal/db for ORM output: %w", err)
+		return false, fmt.Errorf("scan %s for ORM output: %w", ormDir, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -2221,10 +2222,27 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	if err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
+	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums)
+	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
+	ctx.graphRoots, ctx.graphRootsSet = roots, true
 	return nil
+}
+
+// rootsForDeployConfig is the roots config_gen.k projects: the ones the
+// composition step read this run, else (a run that did not compose — a
+// narrowed --steps run) the graph assembled afresh. A graph that does not
+// assemble projects no ROOTS; generate's own composition step reports why.
+func (ctx *pipelineContext) rootsForDeployConfig() []codegen.GraphRoot {
+	if ctx.graphRootsSet {
+		return ctx.graphRoots
+	}
+	roots, err := codegen.GraphRoots(ctx.ProjectDir)
+	if err != nil {
+		return nil
+	}
+	return roots
 }
 
 // stepCmdGroups anchors the dir-nested per-component command-group subpackages
@@ -2543,7 +2561,7 @@ func stepWorkloadsKCL(ctx *pipelineContext) error {
 // config_gen + its config.k to project config into env_vars.
 func stepPerEnvDeployConfig(ctx *pipelineContext) error {
 	return ctx.warnOrFail("per-env deploy config generation",
-		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums))
+		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums, ctx.rootsForDeployConfig))
 }
 
 // stepIngressK3dPorts derives the k3d host→cluster port mappings

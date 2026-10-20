@@ -201,9 +201,9 @@ func classifyGeneratedFile(rel, projectDir string, svcByName map[string]codegen.
 			}
 		}
 
-	case strings.HasPrefix(relSlash, "internal/db/") && strings.HasSuffix(relSlash, "_gen.go"):
+	case strings.HasSuffix(relSlash, "_orm_gen.go") || (strings.HasPrefix(relSlash, "internal/db/") && strings.HasSuffix(relSlash, "_gen.go")):
 		kind = "entity-orm"
-		// internal/db/<entity>_orm.go is a projection of the APPLIED
+		// <orm package>/<entity>_orm_gen.go is a projection of the APPLIED
 		// schema: db/migrations is the source.
 		sources = append(sources, "db/migrations/")
 		notes = append(notes, "entity ORM projected from the applied schema (shadow-introspected db/migrations)")

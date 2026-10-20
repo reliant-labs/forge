@@ -128,6 +128,7 @@ func (m *MigrationSet) apply(db *sql.DB) error {
 type Template struct {
 	digest  string
 	tables  []Table
+	views   []Table
 	baseURL string
 	name    string
 	cleanup func()
@@ -166,13 +167,21 @@ func (m *MigrationSet) ApplyTemplateAt(baseURL string) (*Template, error) {
 	if err != nil {
 		return fail(err)
 	}
+	views, err := IntrospectViews(db)
+	if err != nil {
+		return fail(err)
+	}
 	// Postgres copies a template only while no other session is connected
 	// to it; this pool is the only one that ever was.
 	if err := db.Close(); err != nil {
 		return fail(fmt.Errorf("release the shadow template database: %w", err))
 	}
-	return &Template{digest: m.digest, tables: tables, baseURL: baseURL, name: name, cleanup: cleanup}, nil
+	return &Template{digest: m.digest, tables: tables, views: views, baseURL: baseURL, name: name, cleanup: cleanup}, nil
 }
+
+// Views returns the applied schema's views (IntrospectViews), a deep copy
+// per call like Tables.
+func (t *Template) Views() []Table { return cloneTables(t.views) }
 
 // Digest is the digest of the migration set the template was built from.
 func (t *Template) Digest() string { return t.digest }

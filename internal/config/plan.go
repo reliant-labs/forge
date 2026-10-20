@@ -69,6 +69,9 @@ type PlanEntity struct {
 	// generates the ULID), so no service branches on it, and emitting a
 	// constant nobody reads is noise in every generated file.
 	Constraints []PlanEntityConstraint `yaml:"constraints,omitempty" json:"constraints,omitempty"`
+	// ReadOnly marks a view entity (codegen.EntityDef.ReadOnly): the store
+	// emits List/Count and Get by its key, and no Create/Update/Delete.
+	ReadOnly bool `yaml:"read_only,omitempty" json:"read_only,omitempty"`
 }
 
 // PlanEntityField describes a field on an entity.
@@ -118,6 +121,11 @@ type PlanEntityField struct {
 	// verbatim (codegen.ParseGoTypeOverride): the struct field's Go type in
 	// place of the projected one. "" for none.
 	GoType string `yaml:"go_type,omitempty" json:"go_type,omitempty"`
+
+	// ZeroRejected marks a column a CHECK keeps from holding its Go zero
+	// (codegen.EntityColumn.ZeroRejected): its zero is "unset", so a DEFAULT
+	// applies through ,nullzero rather than a pointer field.
+	ZeroRejected bool `yaml:"zero_rejected,omitempty" json:"zero_rejected,omitempty"`
 }
 
 // ConstraintKind classifies a named constraint by the kind of violation it

@@ -22,6 +22,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 		SoftDelete: entity.SoftDelete,
 		Timestamps: entity.Timestamps,
 		AppendOnly: entity.AppendOnly,
+		ReadOnly:   entity.ReadOnly,
 		Fields:     make([]config.PlanEntityField, 0, len(entity.Columns)),
 		// Constraints come from the applied schema for the same reason the
 		// fields do: postgres names them, forge only reports the name back.
@@ -59,6 +60,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 			Version:      c.Version,
 			FillStrategy: c.FillStrategy,
 			GoType:       c.GoType,
+			ZeroRejected: c.ZeroRejected,
 		}
 		pe.Fields = append(pe.Fields, pf)
 	}

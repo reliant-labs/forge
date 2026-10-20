@@ -1,24 +1,32 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
-// THE PROCESS AROUND THE SERVER ROOT — and, deliberately, nothing else.
+// THE PROCESS POLICY — the one every root runs under, and nothing else.
 //
-// What this process RUNS is the composition graph's `server` root
-// (internal/app/graph_gen.go): the API listener serving every user-audience
-// service, plus every worker and operator — each constructed once, from its
-// own Deps, in internal/app/compose.go. What it is CONFIGURED with is the
-// providers in internal/app/providers.go (auth, chain, listener, database).
-// This file is the process policy around the root: load and validate config,
-// build the logger, hold the port with boot probes while dependencies come up,
-// migrate, install telemetry, then run the root until a signal — readiness
-// flips to draining, the pre-stop pause runs, and every node drains and closes
-// in reverse dependency order inside the shutdown budget, telemetry flushed
-// last. Those are yours; change them here.
+// What a process RUNS is one root of the composition graph
+// (internal/app/graph_gen.go): `{{.Name}} server` runs the server root — the
+// API listener serving every user-audience service, plus every worker and
+// operator — and every //forge:root you declare in internal/app gets a
+// command of its own (roots_gen.go, generated). Each node is constructed
+// once, from its own Deps, in internal/app/compose.go; what it is CONFIGURED
+// with is the providers in internal/app/providers.go.
+//
+// runRoot is the policy around whichever root a command names: load and
+// validate config, build the logger, hold the port with boot probes while
+// dependencies come up, migrate (when the root reaches the database), install
+// telemetry, then run the root until a signal — readiness flips to draining,
+// the pre-stop pause runs, and every node drains and closes in reverse
+// dependency order inside the shutdown budget, telemetry flushed last. Those
+// are yours; change them here, for every root at once — or branch on
+// root.Name for one.
 package cmd
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+{{- if not (and (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout"))}}
+	"os"
+{{- end}}
 	"os/signal"
 {{- if index .ConfigFields "CorsOrigins"}}
 	"strings"
@@ -30,6 +38,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/migratekit"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
+{{- if not (and (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout"))}}
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
+{{- end}}
 
 {{- if index .ConfigFields "AutoMigrate"}}
 	forgedb "{{.Module}}/db"
@@ -41,9 +52,9 @@ import (
 {{- end}}
 )
 
-// Serve runs the `server` root: every node it reaches, supervised until a
-// signal or a failing node.
-func Serve(ctx context.Context, deps Deps) error {
+// runRoot runs one root (roots_gen.go hands it the root a command names):
+// every node it reaches, supervised until a signal or a failing node.
+func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 	// Load validates: a value the config's annotations reject fails here.
 	cfg, err := config.Load(deps.Cmd)
 	if err != nil {
@@ -80,10 +91,13 @@ func Serve(ctx context.Context, deps Deps) error {
 
 	// Migrate BEFORE building the graph: a service that starts serving
 	// against a schema its migrations have not reached answers requests
-	// with errors that look like bugs.
-	if merr := serverkit.AutoMigrateContext(ctx, skCfg, logger,
-		migratekit.AutoMigrate(forgedb.Source(), forgedb.SourceDir)); merr != nil {
-		return merr
+	// with errors that look like bugs. Only a root that reaches the database
+	// migrates — a worker root that never opens it never runs a migration.
+	if root.Migrate {
+		if merr := serverkit.AutoMigrateContext(ctx, skCfg, logger,
+			migratekit.AutoMigrate(forgedb.Source(), forgedb.SourceDir)); merr != nil {
+			return merr
+		}
 	}
 {{- end}}
 
@@ -96,8 +110,9 @@ func Serve(ctx context.Context, deps Deps) error {
 	}
 
 	// THE ROOT POLICY: the readiness gate and stop budget (PRE_STOP_DELAY,
-	// SHUTDOWN_TIMEOUT), and the probes the API listener serves in front of
-	// its edge. Every node that reports Ready joins /readyz.
+	// SHUTDOWN_TIMEOUT), and the probes — served in front of the API
+	// listener's edge, or, for a root without one, by a probe listener of its
+	// own on the same address. Every node that reports Ready joins /readyz.
 	drainer := serverkit.NewDrainer(skCfg)
 	drainer.Logger = logger
 	g := &app.Graph{
@@ -107,7 +122,8 @@ func Serve(ctx context.Context, deps Deps) error {
 		ServerCfg: skCfg,
 		Probes:    &serverkit.Probes{Drainer: drainer, Metrics: metrics, Timeout: skCfg.ReadinessTimeout, Logger: logger},
 	}
-	return g.RunServer(ctx, lifecyclekit.Policy{
+	logger.Info("running root", "root", root.Name)
+	return root.Run(g, ctx, lifecyclekit.Policy{
 		Drainer:       drainer,
 		Logger:        logger,
 		FailurePolicy: skCfg.FailurePolicy,
@@ -194,12 +210,20 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 	}
 {{- end}}
 
-{{- if index .ConfigFields "PreStopDelay"}}
+{{- if and (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout")}}
 
 	skCfg.PreStopDelay = cfg.PreStopDelay.AsDuration()
-{{- end}}
-{{- if index .ConfigFields "ShutdownTimeout"}}
 	skCfg.ShutdownTimeout = cfg.ShutdownTimeout.AsDuration()
+{{- else}}
+
+	// The drain budget: this config declares no pre_stop_delay /
+	// shutdown_timeout, so read PRE_STOP_DELAY and SHUTDOWN_TIMEOUT the way
+	// the pod's grace period is derived from them (drainbudget).
+	budget, berr := drainbudget.FromEnv(os.Getenv)
+	if berr != nil {
+		return serverkit.Config{}, berr
+	}
+	skCfg.PreStopDelay, skCfg.ShutdownTimeout = budget.PreStopDelay, budget.ShutdownTimeout
 {{- end}}
 
 {{- if index .ConfigFields "DbMaxOpenConns"}}
@@ -220,7 +244,7 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- end}}
 
 	// Normalize LAST, so nothing downstream can observe a zero-valued
-	// cap/timeout/driver. Serve reads several of these fields — the Connect
+	// cap/timeout/driver. runRoot reads several of these fields — the Connect
 	// payload caps, the auto-migrate sql.Open driver — BEFORE serverkit.Run
 	// is entered, and Run's own normalization is far too late to help those
 	// reads: a zero ReadMaxBytes/SendMaxBytes already reached connect as

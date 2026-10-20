@@ -402,6 +402,13 @@ func validateMessage(m protoreflect.Message) error {
 
 		// allowed_values closed-set check. A repeated string field is a
 		// closed set PER ELEMENT — every element must be in the set.
+		if vals := opt.GetAllowedValues(); len(vals) > 0 && isEnvFamily(opt) && fd.IsMap() && fd.MapValue().Kind() == protoreflect.StringKind {
+			for _, got := range familyValues(m, fd) {
+				if got != "" && !containsStr(vals, got) {
+					return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+				}
+			}
+		}
 		if vals := opt.GetAllowedValues(); len(vals) > 0 && isStringField(fd) {
 			for _, got := range stringValues(m, fd) {
 				if got != "" && !containsStr(vals, got) {

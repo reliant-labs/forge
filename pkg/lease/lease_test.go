@@ -147,12 +147,15 @@ func TestBackendDeathFailsOverAndFormerLeaderStopsWithinAHeartbeat(t *testing.T)
 	// replica polls first: when a's heartbeat noticed the loss before b's
 	// next poll (one slow CI runner was enough), a re-won on a fresh session
 	// and b never led — a correct outcome for the Locker, and a 10s timeout
-	// here.
+	// here. Only this test's database is touched: the server is shared, and
+	// another package's test holding an advisory lock (migratekit's run lock,
+	// testkit's template build) would be killed too.
 	k.refuse.Store(true)
 	admin := pool(t, dsn)
 	var killed int
 	if err := admin.QueryRow(`SELECT count(pg_terminate_backend(pid)) FROM pg_locks
-		WHERE locktype='advisory' AND granted AND pid <> pg_backend_pid()`).Scan(&killed); err != nil || killed != 1 {
+		WHERE locktype='advisory' AND granted AND pid <> pg_backend_pid()
+		AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&killed); err != nil || killed != 1 {
 		t.Fatalf("terminate leader backend: killed=%d err=%v", killed, err)
 	}
 
@@ -179,7 +182,8 @@ func TestRestartableAfterLosingTheLease(t *testing.T) {
 
 	admin := pool(t, dsn)
 	if _, err := admin.Exec(`SELECT pg_terminate_backend(pid) FROM pg_locks
-		WHERE locktype='advisory' AND granted AND pid <> pg_backend_pid()`); err != nil {
+		WHERE locktype='advisory' AND granted AND pid <> pg_backend_pid()
+		AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "a to run again on a fresh session", func() bool { return a.starts.Load() == 2 && a.leading.Load() })

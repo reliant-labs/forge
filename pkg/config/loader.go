@@ -78,7 +78,7 @@ func fieldOptions(fd protoreflect.FieldDescriptor) *forgepb.ConfigFieldOptions {
 	// same way the generator skips fields with no annotation. A field is
 	// considered config-bound if it names any binding source.
 	if cfg.GetEnvVar() == "" && len(cfg.GetEnvVarAliases()) == 0 && cfg.GetFlag() == "" &&
-		cfg.GetDefaultValue() == "" && !cfg.GetRequired() {
+		cfg.GetDefaultValue() == "" && !cfg.GetRequired() && cfg.GetEnvPrefix() == "" {
 		return nil
 	}
 	return cfg
@@ -419,6 +419,11 @@ func LoadInto(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
 	if err := applyEnvAndFlags(cmd, m); err != nil {
 		return err
 	}
+	// An env family's prefix is owned: a variable under it that nothing
+	// claims is a typo, refused rather than silently dropped (envfamily.go).
+	if err := checkFamilyPrefixes(cmd, msg); err != nil {
+		return err
+	}
 
 	// Required fields must be satisfied by SOME layer (default/file/env/flag).
 	if err := checkRequiredWithin(m, "", o.required); err != nil {
@@ -505,6 +510,9 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 // take env (Secret mount) but NEVER a flag — no flag is ever registered for
 // them, and we defensively skip the flag branch even if one were.
 func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
+	if isEnvFamily(opt) {
+		return overlayFamily(m, fd, opt) // env only: a family has no flag
+	}
 	// Env layer: env_var, then its aliases in order — the first one set wins
 	// (envnames.go). A malformed value in the name that wins is an error; it
 	// never falls through to the next name.

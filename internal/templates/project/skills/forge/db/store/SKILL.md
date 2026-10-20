@@ -1,6 +1,6 @@
 ---
 name: store
-description: Which tables (and views) get a generated store and how it is shaped — every applied table is projected whatever its rpcs, the forge:no-entity opt-out, entity names derived from the table, and where CRUD wiring differs.
+description: Which tables (and opted-in views) get a generated store and how it is shaped — every applied table is projected whatever its rpcs, the forge:no-entity opt-out, entity names derived from the table, and where CRUD wiring differs.
 ---
 
 # The generated store
@@ -44,5 +44,21 @@ declare `forge:entity-name`, or mark the rpc `// forge:custom`.
 - The whole data layer: `//forge:no-orm: <why>` in `internal/db`'s package doc
   (`db/orm-and-safety`).
 
-A table with no primary key is reported and skipped. A composite primary key
-is reported and skipped too.
+## Keys
+
+A single-column primary key is the `id` the delegates take: `Get<E>ByID`,
+`Delete<E>`… A **composite primary key** gets a store addressed by the
+whole key — `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` (one parameter
+per key column), `Upsert<E>` (conflict on every key column), plus
+Create/List/Count/Update/UpdateMasked addressing the row by the struct's key
+fields — but no CRUD wiring, which keys on one id, and no ULID fill or cursor
+pagination. A table with no primary key is reported and skipped.
+
+## Views
+
+A VIEW (regular or materialized) is projected only when it opts in —
+`COMMENT ON VIEW v IS 'forge:entity'` (`key=<column>` to name its key, else
+`id`) — as a read-only entity: the row struct, `List<E>` / `Count<E>` and
+`Get<E>ByID` when it has a key, and a read-only `<E>Store`. Nothing writes. Its
+non-key columns are pointers, because the catalog cannot say a view column is
+NOT NULL.

@@ -281,10 +281,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   push tag, the render's `image_tag` and the pins share).
 - **A Firebase or bucket frontend that fails before its upload reports
   nothing shipped.** A failed `npm run build` (or assemble, source-map
-  filing, asset retention, config write) was reported as `PARTLY … failed
-  part-way; some of it may be live` although the host was never written. Those
-  failures now carry `cluster.ErrNothingApplied`, which the deploy's ship log
-  reads, unless an earlier frontend of the same group already shipped.
+  filing, asset retention, config write) was reported as
+  `PARTLY … failed part-way; some of it may be live`, although the host was
+  never written. Those failures now carry `cluster.ErrNothingApplied`, which
+  the deploy's ship log reads, unless an earlier frontend of the same group
+  already shipped.
 - **`lifecyclekit.Supervise` no longer reports a node as stuck because an
   earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
   after its cancel once the budget was gone, so every node behind a slow one

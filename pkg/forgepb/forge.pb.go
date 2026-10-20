@@ -846,7 +846,12 @@ type MethodOptions struct {
 	AuthRequired *bool `protobuf:"varint,1,opt,name=auth_required,json=authRequired,proto3,oneof" json:"auth_required,omitempty"`
 	// Whether this method is idempotent (safe to retry without side effects).
 	Idempotent bool `protobuf:"varint,3,opt,name=idempotent,proto3" json:"idempotent,omitempty"`
-	// Server-side timeout for this method. Zero means use the service default.
+	// Server-side deadline for this method. forge projects it into
+	// pkg/middleware/procedures_gen.go (ProcedureDeadlines), which the
+	// scaffolded chain hands its Deadline slot; that slot runs ahead of
+	// authentication, so the deadline bounds the credential lookup too. Unset
+	// or zero is the slot's default (serverkit.DefaultUnaryDeadline for a unary
+	// rpc, none for a stream); negative is no server deadline.
 	Timeout *durationpb.Duration `protobuf:"bytes,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	// Whether callers should supply an idempotency key for this method.
 	// This is a convention marker — Forge does not enforce or inspect the key.
@@ -1165,7 +1170,11 @@ type ConfigFieldOptions struct {
 	Flag string `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
 	// Default value as a string. Applied when neither env var nor flag is set.
 	DefaultValue string `protobuf:"bytes,3,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
-	// Whether this field must be provided. Startup fails if missing.
+	// Whether this field must be provided. Loading fails if no layer (default,
+	// config file, env var, flag) gives it a value. It is the ONE runtime
+	// presence check, for every field kind: `sensitive` does not imply it (see
+	// `optional` for why). A credential the process cannot run without says
+	// `required: true` alongside `sensitive: true`.
 	Required bool `protobuf:"varint,4,opt,name=required,proto3" json:"required,omitempty"`
 	// Human-readable description shown in --help output and documentation.
 	Description string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
@@ -1173,7 +1182,12 @@ type ConfigFieldOptions struct {
 	// Kubernetes Secret (or equivalent) rather than a literal env-var, and
 	// it is never written to forge.yaml inline. The deploy generator emits
 	// a `secretKeyRef`-shaped EnvVar referencing a project-level Secret
-	// (default name: <project>-secrets, key: <env_var>).
+	// (default name: <project>-secrets, key: <env_var>), projected into a
+	// workload's env only when that workload names it in `config_secrets`.
+	// Sensitive says where a value comes from (a Secret, never a flag or an
+	// inline manifest value), not whether there must be one: that is
+	// `required`, at runtime, and the secret pre-flight for a ref a workload
+	// declares (see `optional`).
 	Sensitive bool `protobuf:"varint,6,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	// Category groups related fields for KCL emission. Fields with the same
 	// category are rendered together as a single env-var group (e.g.
@@ -1187,7 +1201,8 @@ type ConfigFieldOptions struct {
 	// the annotation does NOT make it the mode field.
 	Role ConfigFieldRole `protobuf:"varint,8,opt,name=role,proto3,enum=forge.v1.ConfigFieldRole" json:"role,omitempty"`
 	// AllowedValues constrains a STRING field to a closed set of valid
-	// values, validated at startup by config.Validate. It is the
+	// values, enforced when the config loads (Load runs config.Validate, so
+	// an out-of-set value fails the load, naming the field). It is the
 	// type/annotation-driven replacement for the old name-matched log-format
 	// check ("json"/"text"): a string field carrying allowed_values is a
 	// string ENUM, rejected when its resolved value is outside the set. The
@@ -1196,15 +1211,31 @@ type ConfigFieldOptions struct {
 	// domain. Renaming the field changes nothing; the set follows the
 	// annotation.
 	AllowedValues []string `protobuf:"bytes,9,rep,name=allowed_values,json=allowedValues,proto3" json:"allowed_values,omitempty"`
-	// Optional marks a field the application TOLERATES being unset, and it is
-	// the only way a `sensitive` field is allowed to have no value.
+	// Optional marks a field the application TOLERATES being unset. It acts
+	// at DEPLOY time; at runtime presence is `required`'s alone.
 	//
-	// WHY sensitive IMPLIES REQUIRED BY DEFAULT. A sensitive field projects to
-	// a secret_ref, and forge validates every declared ref against the env's
-	// store before anything starts (secrets.ValidateDeclaredRefs). That check
-	// exists because the alternative — discovering a missing production
-	// credential at runtime — is the failure it was built to prevent, so
-	// "declared but absent" must be an error by default.
+	//   - sensitive: a secret_ref a workload declares (by naming the field in
+	//     its `config_secrets`) is validated against the env's store before
+	//     anything starts (secrets.ValidateDeclaredRefs), and a declared ref
+	//     with no value is an error by default: discovering a missing
+	//     production credential at runtime is the failure the pre-flight
+	//     exists to prevent. `optional: true` exempts the field from that
+	//     check and marks the rendered ref optional (secretKeyRef.optional /
+	//     managedSecret.optional), so the pod starts without it.
+	//   - not sensitive: the env projection omits the field while its value is
+	//     the schema default, so a knob only some environments set does not
+	//     churn every other environment's manifests.
+	//
+	// WHY sensitive DOES NOT IMPLY REQUIRED AT RUNTIME. Whether a credential
+	// must exist is a property of the WORKLOAD that reads it, not of the
+	// field: one config is loaded by several workloads, and each projects only
+	// the secrets its `config_secrets` names. A runtime check implied by
+	// `sensitive` would refuse to start every workload that deliberately does
+	// not read one (a worker sharing the API server's config, a key source the
+	// process uses only when another is unset), forcing a fake value into the
+	// store. So the deploy pre-flight checks what a workload declares, and a
+	// field the PROCESS cannot run without says so with `required: true`, the
+	// same way any other field does.
 	//
 	// But an OPTIONAL-BY-DESIGN credential is a real thing, and forge had no
 	// way to say so. The case that forced this: a config block whose
@@ -1217,10 +1248,10 @@ type ConfigFieldOptions struct {
 	// puts a real-looking credential in the store and defeats the check for
 	// everyone.
 	//
-	// So: `optional: true` says the absence is intended. The secret-store
-	// validation skips the field, and the runtime required-check skips it too.
-	// It is deliberately an OPT-IN — the safe default stays "a declared secret
-	// must have a value", and an author has to state the exception.
+	// So: `optional: true` says the absence is intended, and the secret-store
+	// validation skips the field. It is deliberately an OPT-IN — the safe
+	// default stays "a declared secret must have a value", and an author has
+	// to state the exception.
 	//
 	// It is an ERROR to set both `required: true` and `optional: true`; they
 	// are direct contradictions and forge rejects the pair rather than

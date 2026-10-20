@@ -43,7 +43,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -230,24 +229,19 @@ func (r *PortResolver) resolve(name string, preferred int) (int, error) {
 
 // writePorts commits the shared reservation map atomically. Read-only renders
 // do not take the writer lock and must never see a truncated JSON file.
+//
+// Through atomicfile, not a bare CreateTemp+Rename: on Windows a rename onto
+// a file another process (or goroutine) has open for reading fails with
+// ERROR_ACCESS_DENIED, and read-only renders read the store without the
+// lock, so the writer lost its reservation whenever a reader overlapped it
+// (TestPersistentResolversReserveAcrossProcessesAndRoles on Windows CI).
+// atomicfile.WriteFile retries that transient refusal.
 func writePorts(path string, ports map[string]int) error {
 	data, err := json.MarshalIndent(ports, "", "  ")
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".ports-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(f.Name()) }()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return atomicfile.WriteFile(path, data, 0o600)
 }
 
 // assign records an allocation in this resolver; Resolve commits the union.

@@ -5,12 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,7 +48,8 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify-generated",
 		Short: "Verify generated code is pristine and up to date",
-		Long: "Three checks, all local to the checkout:\n" +
+		Long: "Three checks of the working tree as it stands (tracked files plus untracked\n" +
+			"files git does not ignore — on a clean checkout, HEAD):\n" +
 			"  1. Self-certification: every generated file's embedded forge:hash marker\n" +
 			"     must verify (recompute vs embedded) — catches hand-edits that were\n" +
 			"     committed without --force / forge project disown.\n" +
@@ -58,30 +60,18 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			"     output (see `forge generate --help`); --no-cache runs them anyway.\n" +
 			"  3. Commit policy: no generated file is gitignored (check 2 cannot see an\n" +
 			"     ignored file), and no machine-local state (.forge-kcl/, a frontend's\n" +
-			"     dev public/config.js) is tracked.",
+			"     dev public/config.js) is tracked.\n\n" +
+			"All three run against a scratch copy of the checkout, made beside the repository\n" +
+			"(`.<repo>.forge-verify-*`) and removed afterwards, so the checkout itself is never\n" +
+			"written: other readers of it can run at the same time, and an interrupted run\n" +
+			"leaves nothing behind. Every change it reports was made by forge generate.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := requireFeature(config.FeatureCI); err != nil {
 				return err
 			}
-
-			// Pass 1: recompute embedded hashes. A hand-edited generated
-			// file fails HERE, by name, before the regenerate pass would
-			// abort on the same files with a less CI-shaped message.
 			root, err := projectRoot()
 			if err != nil {
 				return err
-			}
-			cs, err := generator.LoadChecksums(root)
-			if err != nil {
-				return fmt.Errorf("load .forge ownership state: %w", err)
-			}
-			if drift := scanProjectDrift(root, cs); len(drift) > 0 {
-				fmt.Fprintf(os.Stderr, "Error: %d generated file(s) were hand-edited after forge wrote them:\n", len(drift))
-				for _, d := range drift {
-					fmt.Fprintf(os.Stderr, "  - %s\n", d.Path)
-				}
-				fmt.Fprintln(os.Stderr, "Move the edits to a user-owned extension point (then regenerate), or `forge project disown <path> --reason \"<why>\"` to take ownership.")
-				return fmt.Errorf("generated files failed self-certification")
 			}
 
 			// Refuse a regenerate that would skip part of the tree. forge
@@ -97,37 +87,42 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 				}
 			}
 
-			// Pass 2 attributes every change it sees to `forge generate`,
-			// which is only true when the regenerate starts from the
-			// committed tree.
-			if err := checkTreeCleanBeforeRegenerate(cmd.Context(), os.Stderr); err != nil {
-				return err
+			// Every pass judges one scratch copy of the working tree, so
+			// they agree on what they saw and the checkout is never written
+			// (ci_verify_scratch.go). Ctrl-C cancels the regenerate and
+			// still removes the copy.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			scratch, err := newVerifyScratch(ctx, root, os.Stderr)
+			if err != nil {
+				return fmt.Errorf("make a scratch copy of the checkout to verify: %w", err)
+			}
+			defer scratch.Remove()
+
+			// Pass 1: recompute embedded hashes. A hand-edited generated
+			// file fails HERE, by name, before the regenerate pass would
+			// abort on the same files with a less CI-shaped message.
+			cs, err := generator.LoadChecksums(scratch.root)
+			if err != nil {
+				return fmt.Errorf("load .forge ownership state: %w", err)
+			}
+			if drift := scanProjectDrift(scratch.root, cs); len(drift) > 0 {
+				fmt.Fprintf(os.Stderr, "Error: %d generated file(s) were hand-edited after forge wrote them:\n", len(drift))
+				for _, d := range drift {
+					fmt.Fprintf(os.Stderr, "  - %s\n", d.Path)
+				}
+				fmt.Fprintln(os.Stderr, "Move the edits to a user-owned extension point (then regenerate), or `forge project disown <path> --reason \"<why>\"` to take ownership.")
+				return fmt.Errorf("generated files failed self-certification")
 			}
 
-			// Pass 2: regenerate and diff.
-			parts, err := forgeExecCommand()
-			if err != nil {
-				return fmt.Errorf("resolve forge binary: %w", err)
-			}
-			genArgs := append(slices.Clone(parts[1:]), "generate")
-			if noCache {
-				genArgs = append(genArgs, "--no-cache")
-			}
-			genCmd := exec.CommandContext(cmd.Context(), parts[0], genArgs...)
-			genCmd.Stdout = os.Stdout
-			genCmd.Stderr = os.Stderr
-			if err := genCmd.Run(); err != nil {
+			// Pass 2: regenerate the copy and diff it against itself. The
+			// diff covers modified, deleted AND created files: a regenerate
+			// that CREATED a file (a new entity's ORM, a new service's
+			// mounts) is drift too, though `git diff` would never show it.
+			if err := scratchRegenerate(ctx, scratch, noCache, false); err != nil {
 				return fmt.Errorf("forge generate failed: %w", err)
 			}
-
-			// Check for uncommitted changes — `git status --porcelain`, not
-			// `git diff --exit-code`. git diff reports only TRACKED files,
-			// so a regenerate that CREATED a file (a new entity's ORM, a new
-			// service's mounts) left it untracked, produced an empty diff,
-			// and the gate printed "✅ Generated code is up to date." over
-			// generated code that was never committed. Porcelain sees both
-			// modified and untracked (still honoring .gitignore).
-			changed, err := gitPorcelainChanges(cmd.Context())
+			changed, err := scratch.changes(ctx)
 			if err != nil {
 				return err
 			}
@@ -139,13 +134,14 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "Run 'forge generate' and commit the changes.")
 				return fmt.Errorf("generated code is out of date (%d file(s))", len(changed))
 			}
+			scratch.copyCacheBack()
 
-			// Pass 3: commit policy. Porcelain honours .gitignore, so it is
+			// Pass 3: commit policy. The diff honours .gitignore, so it is
 			// blind to generated code a project's (inherited) .gitignore
 			// excludes — a regenerate that recreates an ignored file reports
 			// "up to date" while every fresh clone fails to compile. Checked
 			// AFTER the regenerate, so the generated set is complete.
-			violations, err := commitpolicy.Check(root)
+			violations, err := commitpolicy.Check(scratch.root)
 			if err != nil {
 				return err
 			}
@@ -158,7 +154,7 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			// State what was verified. "up to date" over a project whose
 			// ownership state never loaded (zero certified files) is a claim
 			// about nothing; the count is what separates the two.
-			certified := countSelfCertifiedFiles(root, cs)
+			certified := countSelfCertifiedFiles(scratch.root, cs)
 			if certified == 0 {
 				fmt.Println("⏭️  No self-certifying generated files found — nothing to verify.")
 				fmt.Println("    (expected `Code generated by forge` markers; is this a forge project that has run `forge generate`?)")
@@ -170,6 +166,34 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Make the regenerate run every step, even when the committed tree is one a full forge generate already verified as its own output (FORGE_GENERATE_NO_CACHE=1 does the same)")
 	return cmd
+}
+
+// scratchRegenerate is the regenerate verify-generated and generate --check
+// run in their scratch copy. A seam for tests, which cannot re-execute the
+// test binary as forge.
+var scratchRegenerate = regenerateScratch
+
+// regenerateScratch runs `forge generate` (this binary) in the scratch copy.
+// Its output streams through; its environment is this process's minus any
+// variable that would point git at the caller's repository.
+func regenerateScratch(ctx context.Context, scratch *verifyScratch, noCache, skipValidate bool) error {
+	parts, err := forgeExecCommand()
+	if err != nil {
+		return fmt.Errorf("resolve forge binary: %w", err)
+	}
+	genArgs := append(slices.Clone(parts[1:]), "generate")
+	if noCache {
+		genArgs = append(genArgs, "--no-cache")
+	}
+	if skipValidate {
+		genArgs = append(genArgs, "--skip-validate")
+	}
+	genCmd := exec.CommandContext(ctx, parts[0], genArgs...)
+	genCmd.Dir = scratch.root
+	genCmd.Env = scratchEnv(os.Environ())
+	genCmd.Stdout = os.Stdout
+	genCmd.Stderr = os.Stderr
+	return genCmd.Run()
 }
 
 func newCIValidateKCLCmd() *cobra.Command {
@@ -495,56 +519,6 @@ func ciRunGovulncheck(ctx context.Context, exemptions []config.CIVulnExemption) 
 		what += fmt.Sprintf(", %d accepted exemption(s)", len(res.Accepted))
 	}
 	return what, nil
-}
-
-// gitPorcelainChanges returns the `git status --porcelain` lines for the
-// working tree — modified, staged, AND untracked paths, minus anything
-// .gitignore excludes. `forge ci verify-generated` uses it instead of `git
-// diff --exit-code`, which is blind to files the regenerate CREATED.
-func gitPorcelainChanges(ctx context.Context) ([]string, error) {
-	out, err := exec.CommandContext(ctx, "git", "status", "--porcelain").Output()
-	if err != nil {
-		return nil, fmt.Errorf("git status --porcelain: %w (is this a git checkout?)", err)
-	}
-	var lines []string
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if strings.TrimSpace(line) != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines, nil
-}
-
-// checkTreeCleanBeforeRegenerate refuses to regenerate over a working tree
-// that is already modified, naming each path as changed BEFORE forge
-// generate ran.
-//
-// Without it, the post-regenerate porcelain listed a file an earlier CI step
-// had rewritten as if `forge generate` had changed it. That is how a
-// frontend's package-lock.json — a file forge never writes — was reported as
-// "generated code is out of date": `forge tools install` had rewritten it
-// with `npm install --save-dev` two steps earlier, and nothing in the report
-// said so. A regenerate over a dirty tree could never pass anyway (the dirty
-// paths stay in the porcelain), so refusing up front changes no verdict,
-// only the attribution — and skips a regenerate whose result is already
-// decided.
-func checkTreeCleanBeforeRegenerate(ctx context.Context, w io.Writer) error {
-	dirty, err := gitPorcelainChanges(ctx)
-	if err != nil {
-		return err
-	}
-	if len(dirty) == 0 {
-		return nil
-	}
-	fmt.Fprintf(w, "Error: %d path(s) were already modified before `forge generate` ran — "+
-		"an earlier step changed them, not forge generate:\n", len(dirty))
-	for _, line := range dirty {
-		fmt.Fprintf(w, "  %s\n", line)
-	}
-	fmt.Fprintln(w, "verify-generated can only attribute drift to forge generate when it starts from the committed tree. "+
-		"Find the step that wrote these and stop it (a package manager re-saving a lockfile — `npm install` "+
-		"where `npm ci` was meant — is the usual cause), or commit the change if it is intended.")
-	return fmt.Errorf("working tree was modified before regenerate (%d path(s)) — not generated-code drift", len(dirty))
 }
 
 // countSelfCertifiedFiles reports how many forge-owned files carry a

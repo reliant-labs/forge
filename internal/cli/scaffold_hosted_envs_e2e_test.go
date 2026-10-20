@@ -19,13 +19,13 @@ import (
 // cluster the author had to name first. Both services are served by one
 // hosted workload, the binary's `server`, at the one origin a frontend calls.
 func TestE2EFreshScaffoldRendersEveryEnv(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 	runCmd(t, dir, forgeBin, "project", "new", "shop", "--mod", "example.com/shop", "--service", "orders,billing")
 	projectDir := filepath.Join(dir, "shop")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	for _, env := range []string{"dev", "staging", "prod"} {
 		out := runCmdOutput(t, projectDir, forgeBin, "env", "render", env)

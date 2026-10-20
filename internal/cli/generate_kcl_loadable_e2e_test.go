@@ -27,13 +27,13 @@ import (
 // say WHICH env or WHAT kcl said has moved the discovery rather than prevented
 // it.
 func TestE2EGenerateFailsOnUnrenderableDeployKCL(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel()
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
 	runCmd(t, dir, forgeBin, "project", "new", "kclbreak", "--mod", "example.com/kclbreak", "--service", "api")
 	projectDir := filepath.Join(dir, "kclbreak")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// A clean scaffold must generate cleanly — otherwise the assertion below
 	// proves nothing about the fault we are about to inject.

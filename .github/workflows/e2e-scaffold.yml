@@ -2,6 +2,13 @@
 # the forge binary built at this commit, then runs generate/build/lint/test
 # against the generated tree. Catches scaffold-level regressions before
 # downstream migration/porting work depends on a broken baseline.
+#
+# WHEN IT RUNS. Every push to main, nightly (nightly.yml), on demand, and on a
+# pull request only with the `ci:e2e` label — the same gate as e2e-suite.yml,
+# for the same reason: at 4 minutes on average and 12 at worst (npm install,
+# `next build`, and on a release commit a wait for the module proxy) it did
+# not fit a pull request's ~5-minute budget (ci.yml, "TWO TIERS"), and a
+# scaffold regression is cheap to bisect from the merge that caused it.
 name: E2E Scaffold
 
 on:
@@ -9,19 +16,26 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # Cancel a superseded run on a pull request only; a run on main always
-# finishes (ci.yml says why).
+# finishes (ci.yml says why). A `labeled` event for some other label gets a
+# group of its own, so it cannot cancel a `ci:e2e` run (e2e-suite.yml).
+# nightly.yml's call shares main's ref; the event keeps it out of a push run's
+# group.
 concurrency:
-  group: e2e-scaffold-${{ github.ref }}
+  group: e2e-scaffold-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   scaffold:
     name: forge project new smoke test
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
     runs-on: ubuntu-latest
     env:
       # Set once so every step uses the same workspace path.
@@ -95,6 +109,24 @@ jobs:
             echo "❌ forge project new"
             exit 1
           fi
+
+      # Judge the forge under test against forge/pkg from the SAME commit.
+      # A forge built from this checkout cannot prove its commit is fetchable
+      # (on a pull request it is an ephemeral merge commit), so the scaffold
+      # pins the newest release the checkout descends from
+      # (buildinfo.PublishedFloor) and bridges to the checkout with go.work.
+      # That release predates every package added since, and `go mod tidy`
+      # ignores go.work — so tidy fell back to the retired forge/pkg module at
+      # @latest (v0.1.15) and failed for any new pkg/* import (pkg/graphkit,
+      # #923). A replace is what tidy honors. A user's forge, installed by tag
+      # or by commit, pins its own version and needs none of this.
+      - name: Bridge the scaffold to this checkout's forge module
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          for mod in . gen; do
+            (cd "$mod" && go mod edit -replace "github.com/reliant-labs/forge=$GITHUB_WORKSPACE")
+          done
+          echo "✅ forge replaced with $GITHUB_WORKSPACE in go.mod and gen/go.mod"
 
       - name: forge generate
         working-directory: ${{ env.E2E_DIR }}/e2e-test

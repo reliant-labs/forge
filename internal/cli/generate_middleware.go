@@ -726,6 +726,9 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
+	if err := codegen.ValidateConfigEnvFamilies(messages); err != nil {
+		return err
+	}
 
 	// Flatten all proto config fields. Most projects have a single
 	// AppConfig message; multiple are supported but rendered as one set.

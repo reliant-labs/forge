@@ -65,6 +65,13 @@ type Graph struct {
 	// /metrics). Every built node that reports Ready joins /readyz when the
 	// root runs. nil for a root that serves no probes.
 	Probes *serverkit.Probes
+{{- range .ConfigInputs}}
+	// {{.Name}} is {{.Doc}}.
+	// A process whose command loads it sets it (roots_gen.go), and it is nil
+	// in any other. Only the composition reads it: each node is handed its
+	// own fields.
+	{{.Name}} *config.{{.Name}}
+{{- end}}
 
 	b graphkit.Builder
 	m graphMemo
@@ -132,6 +139,14 @@ type {{.TypeName}} struct {
 //
 //	{{.Plan}}
 func (g *Graph) Build{{.TypeName}}() (*{{.TypeName}}, error) {
+{{- $root := .}}
+{{- range .Loads}}
+{{- if .Read}}
+	if g.{{.Message}} == nil {
+		return nil, fmt.Errorf("build {{$root.Name}}: set app.Graph's {{.Message}} before building the root: its closure reads it")
+	}
+{{- end}}
+{{- end}}
 	r := &{{.TypeName}}{}
 	err := g.build("{{.Name}}", func() {
 {{- if .Fields}}

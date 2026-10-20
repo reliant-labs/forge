@@ -216,6 +216,21 @@ type BinaryConfig struct {
 	// (persistent on the binary's root), so the command config registers its
 	// leaves alone rather than a second --config shadowing the inherited one.
 	BinaryHasRootConfig bool
+	// Reach is true when the loader also gets Load<Msg>Reach: a config of a
+	// composition-graph project's primary binary, which roots_gen.go loads
+	// with each root's reach (markReachLoaders).
+	Reach bool
+}
+
+// markReachLoaders marks the configs whose loader gains Load<Msg>Reach: in a
+// composition-graph project, the primary binary's (the ones roots_gen.go
+// loads). Nothing else calls one, so no other binary's — and no project
+// without a command tree for the roots — gets it.
+func markReachLoaders(data *ConfigTemplateData, primaryBinary string) {
+	for i := range data.BinaryConfigs {
+		bc := &data.BinaryConfigs[i]
+		bc.Reach = data.Graph && primaryBinary != "" && bc.Binary == primaryBinary
+	}
 }
 
 // Process is the process this config is loaded by, as typed at a shell:
@@ -984,6 +999,11 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	data.Module = modulePath
 	data.ProjectConfigPathEnv = forgeconfig.ConfigPathEnvFor(projectConfigName(targetDir, modulePath))
 	data.Graph = GraphComposition(targetDir)
+	primaryBinary := ""
+	if treeDir := primaryCmdTreeDir(targetDir); treeDir != "" {
+		primaryBinary = filepath.Base(filepath.Dir(treeDir))
+	}
+	markReachLoaders(&data, primaryBinary)
 
 	if err := validateConfigPathEnvs(data); err != nil {
 		return err

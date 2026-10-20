@@ -81,7 +81,7 @@ func TestRootConfig_EachRootReachesItsOwnFields(t *testing.T) {
 		{Name: "worker", Reach: []string{"Tick"}},
 		{Name: "api", Reach: []string{"DB", "Pay", "APIListener"}, Migrate: true},
 	}
-	markRootConfig(views, m, reads)
+	mustMarkRootConfig(t, views, &processConfigs{root: m}, reads)
 	if got := strings.Join(paths(views[0].Config), ","); got != "port,log_level,tick.interval" {
 		t.Errorf("worker reaches %s", got)
 	}
@@ -104,7 +104,7 @@ func TestRootConfig_EachRootReachesItsOwnFields(t *testing.T) {
 	}
 	// A node handing the whole config on reaches every field.
 	reads["Pay"] = &configRead{whole: true}
-	markRootConfig(views, m, reads)
+	mustMarkRootConfig(t, views, &processConfigs{root: m}, reads)
 	if len(views[1].Config) != len(m.all) {
 		t.Errorf("a whole-config read reaches every field: %v", paths(views[1].Config))
 	}

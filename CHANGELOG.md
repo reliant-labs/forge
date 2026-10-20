@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Root reach for binary-config projects.** A composition-graph project whose
+  primary binary binds config per command (`(forge.v1.binary_config)`
+  `command` / `subtrees`) used to get no per-root reach: no `LoadReach`
+  narrowing, and no `ROOTS` in `config_gen.k`, so the scaffolded envs'
+  `workloadEnvMap` call did not render. Now each of the binary's configs
+  beside the root config is an `app.Graph` input, `g.<Message>`. A Deps field
+  typed `*config.<Message>` resolves to it. A root's process loads the root
+  config, the subtree configs over its command and its exact command config,
+  and its reach is still per field: the leaves its closure reads of each.
+  `roots_gen.go` loads each config with the new `config.Load<Msg>Reach`
+  (only reached `required` fields are demanded), sets it on the graph, and
+  registers its flags (command configs on their command, subtree configs on
+  their path's command). `Build<Root>` refuses a nil input its closure reads.
+  `ROOTS` carries the union of every loaded config's reached env and projects
+  it through `<bin>ProcessEnvMap`, so `workloadEnvMap(appcfg.<bin>_process, w)`
+  gives each root exactly its env. Generate refuses a closure that reads a
+  config its root's process never loads, and an env var that two loaded
+  configs both declare. Single-AppConfig and legacy projects generate
+  byte-identical output.
+
 - **Release codemods, and `forge fix operatorkit`.** A codemod
   (`internal/codemod`) is keyed to the release that broke the shape it
   rewrites, exactly as a migration skill is, and decides from the tree, so it
@@ -41,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--allow-version-skew` / `FORGE_ALLOW_VERSION_SKEW=1` runs this forge as
   before; if the pinned forge cannot be had (offline, an unpublished version)
   the old refusal returns, now carrying the reason. See `docs/versioning.md`.
+
 - **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
   only when the caller is an authenticated internal service.** otelconnect
   answers "adopt the inbound traceparent?" once for every caller:

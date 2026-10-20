@@ -14,6 +14,9 @@ package cmd
 
 import (
 	"context"
+{{- if .Fmt}}
+	"fmt"
+{{- end}}
 
 	"github.com/spf13/cobra"
 
@@ -50,6 +53,17 @@ func rootCommands(deps Deps) []*cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deps.Cmd = cmd
+{{- range .Root.Loads}}
+			// {{.Message}}: demanded only where the root reaches it.
+			{{.LoadVar}}, err := config.Load{{.Message}}Reach(cmd, []string{
+{{- range .Config}}
+				"{{.Path}}",
+{{- end}}
+			})
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+{{- end}}
 			return runRoot(cmd.Context(), deps, rootSpec{
 				Name:    "{{.Root.Name}}",
 				Migrate: {{.Root.Migrate}},
@@ -60,13 +74,26 @@ func rootCommands(deps Deps) []*cobra.Command {
 {{- end}}
 				},
 {{- end}}
+{{- if .Root.Loads}}
+				Run: func(g *app.Graph, ctx context.Context, policy lifecyclekit.Policy) error {
+{{- range .Root.Loads}}
+					g.{{.Message}} = {{.LoadVar}}
+{{- end}}
+					return g.Run{{.Root.TypeName}}(ctx, policy)
+				},
+{{- else}}
 				Run: (*app.Graph).Run{{.Root.TypeName}},
+{{- end}}
 			})
 		},
 {{- end}}
 	}
 {{- if .Root}}
 	config.RegisterFlags({{.Var}})
+{{- end}}
+{{- $var := .Var}}
+{{- range .Registers}}
+	config.Register{{.}}Flags({{$var}})
 {{- end}}
 {{- if .Parent}}
 	{{.Parent}}.AddCommand({{.Var}})

@@ -1201,6 +1201,16 @@ func assertZeroServiceShape(t *testing.T, projectDir, name string) {
 // libraries a scaffolded project imports, to local source in BOTH module
 // roots (project + gen/) so `go mod tidy` resolves on either side.
 //
+// Every scaffold e2e test calls it right after `forge project new`: the forge
+// under test must be judged against forge/pkg from the SAME commit. The
+// scaffold's own require is the newest release this checkout descends from
+// (buildinfo.PublishedFloor), which by construction predates any package
+// added since; `go mod tidy` ignores the go.work bridge, so without this it
+// resolves the missing package from the retired forge/pkg module at
+// @latest (v0.1.15) and fails. These tests used to SKIP instead, until a
+// release caught up — which is never, before launch: consumers pin forge by
+// commit, so a release tag always lags main.
+//
 // Under "Path A" proto unification the scaffolded proto/forge/v1/forge.proto
 // declares `option go_package = ".../forge/pkg/forgepb;forgepb"`, and
 // buf.gen.yaml excludes forge/v1 from output — so the project generates NO

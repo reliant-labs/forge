@@ -99,52 +99,9 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string,
 	// registration cmd/contractlint performs before multichecker.Main.
 	contract.SetExcludes(excludes)
 
-	// Same module-resolution discipline the subprocess used: outside a
-	// go.work workspace, pin GOWORK=off and -mod=mod so the loader can
-	// fetch missing modules; inside one (forge itself), honour the
-	// workspace so the local pkg/ checkout resolves.
-	env := os.Environ()
-	if !hasWorkspaceGoMod() {
-		env = appendEnvIfUnset(env, "GOWORK", "off")
-		env = appendEnvIfUnset(env, "GOFLAGS", "-mod=mod")
-	}
-	env = ensureEnvDefault(env, "GOPROXY", "https://proxy.golang.org,direct")
-
-	cfg := &packages.Config{
-		Context: ctx,
-		// checker.Analyze requires LoadAllSyntax-equivalent data.
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
-			packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
-			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedTypesSizes |
-			packages.NeedModule,
-		Env: env,
-		// Parity with the retired multichecker driver (-test=true) and
-		// `go vet -vettool`: test variants are loaded too. The analyzers
-		// skip test files themselves (contract/testfiles.go) — a test
-		// file is not a package's API — so every driver agrees.
-		Tests: true,
-	}
-	pkgs, err := packages.Load(cfg, paths...)
+	pkgs, err := loadPackagesForAnalysis(ctx, paths)
 	if err != nil {
-		return nil, fmt.Errorf("load packages %v: %w", paths, err)
-	}
-
-	// Broken packages mean the type information the analyzers depend on
-	// is incomplete — fail like the subprocess driver did rather than
-	// reporting half-analyzed results.
-	var loadErrs []string
-	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		for _, e := range p.Errors {
-			loadErrs = append(loadErrs, e.Error())
-		}
-	})
-	if len(loadErrs) > 0 {
-		const maxShown = 5
-		shown := loadErrs
-		if len(shown) > maxShown {
-			shown = append(append([]string{}, shown[:maxShown]...), fmt.Sprintf("… and %d more", len(loadErrs)-maxShown))
-		}
-		return nil, fmt.Errorf("packages failed to load:\n  %s", strings.Join(shown, "\n  "))
+		return nil, err
 	}
 
 	graph, err := checker.Analyze(contractAnalyzers(), pkgs, nil)
@@ -217,4 +174,60 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string,
 		return a.Analyzer < b.Analyzer
 	})
 	return out, nil
+}
+
+// loadPackagesForAnalysis loads paths, test variants included, with the full
+// syntax and type information go/analysis's checker needs. Shared by the
+// in-process analyzer lanes (contract, slow-tests). A package that fails to
+// load is an error: half-typed packages would yield half-analyzed results.
+func loadPackagesForAnalysis(ctx context.Context, paths []string) ([]*packages.Package, error) {
+	// Same module-resolution discipline the subprocess used: outside a
+	// go.work workspace, pin GOWORK=off and -mod=mod so the loader can
+	// fetch missing modules; inside one (forge itself), honour the
+	// workspace so the local pkg/ checkout resolves.
+	env := os.Environ()
+	if !hasWorkspaceGoMod() {
+		env = appendEnvIfUnset(env, "GOWORK", "off")
+		env = appendEnvIfUnset(env, "GOFLAGS", "-mod=mod")
+	}
+	env = ensureEnvDefault(env, "GOPROXY", "https://proxy.golang.org,direct")
+
+	cfg := &packages.Config{
+		Context: ctx,
+		// checker.Analyze requires LoadAllSyntax-equivalent data.
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
+			packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
+			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedTypesSizes |
+			packages.NeedModule,
+		Env: env,
+		// Parity with the retired multichecker driver (-test=true) and
+		// `go vet -vettool`: test variants are loaded too. The analyzers
+		// skip test files themselves (contract/testfiles.go) — a test
+		// file is not a package's API — so every driver agrees.
+		Tests: true,
+	}
+	pkgs, err := packages.Load(cfg, paths...)
+	if err != nil {
+		return nil, fmt.Errorf("load packages %v: %w", paths, err)
+	}
+
+	// Broken packages mean the type information the analyzers depend on
+	// is incomplete — fail like the subprocess driver did rather than
+	// reporting half-analyzed results.
+	var loadErrs []string
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		for _, e := range p.Errors {
+			loadErrs = append(loadErrs, e.Error())
+		}
+	})
+	if len(loadErrs) > 0 {
+		const maxShown = 5
+		shown := loadErrs
+		if len(shown) > maxShown {
+			shown = append(append([]string{}, shown[:maxShown]...), fmt.Sprintf("… and %d more", len(loadErrs)-maxShown))
+		}
+		return nil, fmt.Errorf("packages failed to load:\n  %s", strings.Join(shown, "\n  "))
+	}
+
+	return pkgs, nil
 }

@@ -508,3 +508,38 @@ func pipelineContextEqual(a, b *pipelineContext) bool {
 	}
 	return true
 }
+
+// TestGenerateConfigLoaderPrecedesEveryGoTypeCheck pins that pkg/config's
+// generated loader exists before any step compiles or type-checks the
+// project's Go. Hand-written code routinely calls a Load<Msg> /
+// Register<Msg>Flags that the same run generates (a new command config and
+// its first caller land in one change); a step that type-checks the tree
+// before the config loader step would fail on `undefined: config.Load<Msg>`
+// and force a temporary shim (reliant P4 reported needing one).
+func TestGenerateConfigLoaderPrecedesEveryGoTypeCheck(t *testing.T) {
+	names := stepNames(generateSteps())
+	at := map[string]int{}
+	for i, n := range names {
+		at[n] = i
+	}
+	loader, ok := at["config loader (proto/config)"]
+	if !ok {
+		t.Fatal("no config loader step")
+	}
+	// Each of these loads the project's Go with go/packages or the compiler.
+	for _, n := range []string{
+		"internal/app composition (hybrid DI)",
+		"go mod tidy (pre-wiring)",
+		"go mod tidy (root)",
+		"go build (validate generated code)",
+	} {
+		i, ok := at[n]
+		if !ok {
+			t.Errorf("step %q is gone; re-check which steps type-check Go", n)
+			continue
+		}
+		if i < loader {
+			t.Errorf("step %q (#%d) runs before the config loader (#%d): hand-written code calling a Load<Msg> this run generates would not compile there", n, i, loader)
+		}
+	}
+}

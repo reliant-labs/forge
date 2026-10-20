@@ -96,6 +96,15 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// Skip operator packages (internal/operators/<name>) on the same
+	// structural terms: `forge scaffold operator` emits a controller whose
+	// exported methods (Name, SetupWithManager, Reconcile) ARE the
+	// controller-runtime reconciler surface the manager consumes, so a
+	// contract.go could only restate it.
+	if isOperatorPackage(pass, pkgPath) {
+		return nil, nil
+	}
+
 	// Honor forge.yaml's contracts.exclude AND the per-package
 	// //forge:exclude-contract header — these packages are intentionally kept
 	// contract-free (utility packages with no behavioral interface), opted out
@@ -242,8 +251,23 @@ var workerLifecycleMethods = []string{"Name", "Start"}
 // require-contract rule. Only the package's own source counts: a fake worker
 // in a test file does not make the package a worker (testfiles.go).
 func isSupervisedWorkerPackage(pass *analysis.Pass, pkgPath string) bool {
-	if !strings.Contains(pkgPath, "/internal/workers/") &&
-		!strings.HasPrefix(pkgPath, "internal/workers/") {
+	return roleHasMethods(pass, pkgPath, "internal/workers/", workerLifecycleMethods)
+}
+
+// operatorLifecycleMethods is the method an operator's controller registers
+// itself with the manager through.
+var operatorLifecycleMethods = []string{"SetupWithManager"}
+
+// isOperatorPackage reports whether the package lives under
+// internal/operators/ AND declares the controller lifecycle.
+func isOperatorPackage(pass *analysis.Pass, pkgPath string) bool {
+	return roleHasMethods(pass, pkgPath, "internal/operators/", operatorLifecycleMethods)
+}
+
+// roleHasMethods reports whether pkgPath is under the role root and some
+// method of its non-test source carries each of methods' names.
+func roleHasMethods(pass *analysis.Pass, pkgPath, role string, methods []string) bool {
+	if !strings.Contains(pkgPath, "/"+role) && !strings.HasPrefix(pkgPath, role) {
 		return false
 	}
 	found := map[string]bool{}
@@ -259,7 +283,7 @@ func isSupervisedWorkerPackage(pass *analysis.Pass, pkgPath string) bool {
 			found[funcDecl.Name.Name] = true
 		}
 	}
-	for _, m := range workerLifecycleMethods {
+	for _, m := range methods {
 		if !found[m] {
 			return false
 		}

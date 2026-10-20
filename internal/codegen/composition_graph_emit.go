@@ -63,6 +63,18 @@ type graphRootView struct {
 	// method value), forced after the fields so they are built at boot.
 	Lazy []string
 	Plan string
+	// Reach is every node the root's closure holds, in start order.
+	Reach []string
+	// ServesProbes is true when a node in the closure serves g.Probes (the
+	// API listener puts them in front of its edge). A root with none gets a
+	// probe listener of its own on the server address, so every process
+	// answers /healthz and /readyz.
+	ServesProbes bool
+	// Migrate is true when the closure reaches the database, so the process
+	// migrates before building the root.
+	Migrate bool
+	// Command is the cobra command path that runs the root.
+	Command []string
 }
 
 type graphOperatorView struct{ Field, Type, Alias, Label string }
@@ -78,6 +90,9 @@ type graphGenView struct {
 	Nodes     []graphNodeView
 	Roots     []graphRootView
 	Operators *graphOperatorsView
+	// ProbeListener is true when some root serves no g.Probes of its own,
+	// so graph_gen.go carries the probe listener Run<Root> adds for it.
+	ProbeListener bool
 }
 
 type routesServiceView struct {
@@ -103,119 +118,24 @@ type routesGenView struct {
 // (GraphComposition): compose.go reconciled, graph_gen.go and routes_gen.go
 // regenerated.
 func GenerateGraph(in GraphGenInput) error {
-	appDir := filepath.Join(in.ProjectDir, "internal", "app")
-	if err := os.MkdirAll(appDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(in.ProjectDir, "internal", "app"), 0o755); err != nil {
 		return err
 	}
-	inject := InjectGenInput{GenContext: in.GenContext, Services: in.Services, Packages: in.Packages, Workers: in.Workers, Operators: in.Operators, Graph: true}
-	comps, err := assembleBuildComponents(inject)
+	m, err := assembleGraph(in)
 	if err != nil {
 		return err
 	}
-	comps, notComponents := composedComponents(in.ProjectDir, comps)
-	if consumed := notAComponentConsumers(comps, notComponents); len(consumed) > 0 {
-		return notAComponentConsumedError(in.ProjectDir, consumed)
-	}
-	if bad := unconstructibleComponents(in.ProjectDir, comps); len(bad) > 0 {
-		return unconstructibleError(bad)
-	}
-	providers, roots, err := discoverAppDecls(in.ProjectDir)
-	if err != nil {
-		return err
-	}
-
-	// Nodes: components, providers, then the generated ones.
-	var nodes []*graphNode
-	byName := map[string]*graphNode{}
-	add := func(n *graphNode) error {
-		if prev, dup := byName[n.Name]; dup {
-			return fmt.Errorf("the composition graph has two nodes named %s (%s and %s): every node needs its own accessor g.%s() — rename the provider func", n.Name, prev.Doc, n.Doc, n.Name)
-		}
-		if reservedGraphNames[n.Name] {
-			return fmt.Errorf("a node named %s (%s) would collide with app.Graph's own %s — rename it", n.Name, n.Doc, n.Name)
-		}
-		byName[n.Name] = n
-		nodes = append(nodes, n)
-		return nil
-	}
-	compNode := map[string]*graphNode{} // FieldName → node
-	for i := range comps {
-		c := &comps[i]
-		n := componentNode(in.ModulePath, c)
-		compNode[c.FieldName] = n
-		if err := add(n); err != nil {
-			return err
-		}
-	}
-	if err := addGraphProviderNodes(providers, add); err != nil {
-		return err
-	}
-	routesView, err := addGraphRouteNodes(in, compNode, add)
-	if err != nil {
-		return err
-	}
-	opsView, opNodes, err := addGraphOperatorsNode(in.ModulePath, nodes, add)
-	if err != nil {
-		return err
-	}
-
-	// Types: what each node produces, its Deps field types, its lifecycle.
-	u := loadGraphUniverse(in.ProjectDir, comps)
-	u.typeNodes(nodes)
-	for _, n := range nodes {
-		if n.Kind == nodeRoutes || n.Kind == nodeOperators {
-			continue
-		}
-		if !n.NilGuard && (strings.HasPrefix(n.Type, "*") || n.Comp != nil && !strings.HasPrefix(n.Type, "*")) {
-			// Untyped (mid-edit): a pointer, or a component's contract
-			// interface, can be nil.
-			n.NilGuard = true
-		}
-	}
-
-	resolver := &graphResolver{
-		module:       in.ModulePath,
-		nodes:        nodes,
-		byName:       byName,
-		u:            u,
-		blocks:       parseConfigBlocks(in.ProjectDir, in.ModulePath),
-		configFields: parseConfigFields(in.ProjectDir),
-		store:        parseStoreSeam(in.ProjectDir),
-	}
-
-	// compose.go: reconcile (or, when disowned, read as is).
-	composeAbs := filepath.Join(in.ProjectDir, "internal", "app", "compose.go")
-	existing, compose, disowned, err := reconcileGraphComposeFile(in, nodes, resolver)
-	if err != nil {
-		return err
-	}
-
-	edges, lazy := graphComposeEdgesLazy(compose, nodes)
-	if cycle := graphCycle(nodes, edges); cycle != nil {
-		return graphCycleError(cycle)
-	}
-	for _, w := range staleGraphMethods(compose, byName) {
+	for _, w := range staleGraphMethods(m.compose, m.byName) {
 		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
-	}
-
-	// Roots.
-	if len(roots) == 0 {
-		roots = []graphRoot{defaultGraphRoot(nodes, edges)}
-	} else if w := serveRootWarning(in.ProjectDir, roots); w != "" {
-		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
-	}
-	rootViews, err := graphRootViews(roots, nodes, u, edges, lazy)
-	if err != nil {
-		return err
 	}
 
 	// graph_gen.go
-	gv := graphGenViewOf(in.ModulePath, nodes, rootViews, opsView, opNodes)
+	gv := graphGenViewOf(in.ModulePath, m.nodes, m.rootViews, m.opsView, m.opNodes)
 	graphSrc, err := renderGoTemplate("graph_gen.go.tmpl", gv)
 	if err != nil {
 		return err
 	}
-	routesSrc, err := renderGoTemplate("routes_gen.go.tmpl", routesView)
+	routesSrc, err := renderGoTemplate("routes_gen.go.tmpl", m.routesView)
 	if err != nil {
 		return err
 	}
@@ -228,12 +148,136 @@ func GenerateGraph(in GraphGenInput) error {
 	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "routes_gen.go"), routesSrc, in.Checksums); err != nil {
 		return fmt.Errorf("write internal/app/routes_gen.go: %w", err)
 	}
-	if !disowned && compose != existing {
-		if err := writeUserScaffold(composeAbs, []byte(compose)); err != nil {
+	if !m.disowned && m.compose != m.existing {
+		if err := writeUserScaffold(filepath.Join(in.ProjectDir, "internal", "app", "compose.go"), []byte(m.compose)); err != nil {
 			return fmt.Errorf("write internal/app/compose.go: %w", err)
 		}
 	}
-	return nil
+	// cmd/<bin>/cmd/roots_gen.go: one command per root.
+	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, in.Checksums, in.warnings())
+}
+
+// graphModel is the composition graph of one project as generate sees it:
+// every node with its type and lifecycle, compose.go reconciled (in memory),
+// the edges its value expressions draw, and the roots resolved. GenerateGraph
+// renders it; `forge lint --graph` judges it.
+type graphModel struct {
+	nodes    []*graphNode
+	byName   map[string]*graphNode
+	compNode map[string]*graphNode // component FieldName → node
+	u        *graphUniverse
+
+	// existing is compose.go on disk, compose the reconciled file.
+	existing, compose string
+	disowned          bool
+	edges, lazy       map[string][]string
+
+	roots     []graphRoot
+	rootViews []graphRootView
+
+	routesView routesGenView
+	opsView    *graphOperatorsView
+	opNodes    []*graphNode
+}
+
+// assembleGraph discovers, types, reconciles and resolves the graph, writing
+// nothing. Every shape error — a missing provider, an ambiguous match, a
+// cycle, a root field nothing produces — is returned.
+func assembleGraph(in GraphGenInput) (*graphModel, error) {
+	inject := InjectGenInput{GenContext: in.GenContext, Services: in.Services, Packages: in.Packages, Workers: in.Workers, Operators: in.Operators, Graph: true}
+	comps, err := assembleBuildComponents(inject)
+	if err != nil {
+		return nil, err
+	}
+	comps, notComponents := composedComponents(in.ProjectDir, comps)
+	if consumed := notAComponentConsumers(comps, notComponents); len(consumed) > 0 {
+		return nil, notAComponentConsumedError(in.ProjectDir, consumed)
+	}
+	if bad := unconstructibleComponents(in.ProjectDir, comps); len(bad) > 0 {
+		return nil, unconstructibleError(bad)
+	}
+	providers, roots, err := discoverAppDecls(in.ProjectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Nodes: components, providers, then the generated ones.
+	m := &graphModel{byName: map[string]*graphNode{}, compNode: map[string]*graphNode{}}
+	add := func(n *graphNode) error {
+		if prev, dup := m.byName[n.Name]; dup {
+			return fmt.Errorf("the composition graph has two nodes named %s (%s and %s): every node needs its own accessor g.%s() — rename the provider func", n.Name, prev.Doc, n.Doc, n.Name)
+		}
+		if reservedGraphNames[n.Name] {
+			return fmt.Errorf("a node named %s (%s) would collide with app.Graph's own %s — rename it", n.Name, n.Doc, n.Name)
+		}
+		m.byName[n.Name] = n
+		m.nodes = append(m.nodes, n)
+		return nil
+	}
+	for i := range comps {
+		c := &comps[i]
+		n := componentNode(in.ModulePath, c)
+		m.compNode[c.FieldName] = n
+		if err := add(n); err != nil {
+			return nil, err
+		}
+	}
+	if err := addGraphProviderNodes(providers, add); err != nil {
+		return nil, err
+	}
+	if m.routesView, err = addGraphRouteNodes(in, m.compNode, add); err != nil {
+		return nil, err
+	}
+	if m.opsView, m.opNodes, err = addGraphOperatorsNode(in.ModulePath, m.nodes, add); err != nil {
+		return nil, err
+	}
+
+	// Types: what each node produces, its Deps field types, its lifecycle.
+	m.u = loadGraphUniverse(in.ProjectDir, comps)
+	m.u.typeNodes(m.nodes)
+	for _, n := range m.nodes {
+		if n.Kind == nodeRoutes || n.Kind == nodeOperators {
+			continue
+		}
+		if !n.NilGuard && (strings.HasPrefix(n.Type, "*") || n.Comp != nil && !strings.HasPrefix(n.Type, "*")) {
+			// Untyped (mid-edit): a pointer, or a component's contract
+			// interface, can be nil.
+			n.NilGuard = true
+		}
+	}
+
+	resolver := &graphResolver{
+		module:       in.ModulePath,
+		nodes:        m.nodes,
+		byName:       m.byName,
+		u:            m.u,
+		blocks:       parseConfigBlocks(in.ProjectDir, in.ModulePath),
+		configFields: parseConfigFields(in.ProjectDir),
+		store:        parseStoreSeam(in.ProjectDir),
+	}
+
+	// compose.go: reconcile (or, when disowned, read as is).
+	if m.existing, m.compose, m.disowned, err = reconcileGraphComposeFile(in, m.nodes, resolver); err != nil {
+		return nil, err
+	}
+	m.edges, m.lazy = graphComposeEdgesLazy(m.compose, m.nodes)
+	if cycle := graphCycle(m.nodes, m.edges); cycle != nil {
+		return nil, graphCycleError(cycle)
+	}
+
+	// Roots.
+	m.roots = roots
+	if len(m.roots) == 0 {
+		m.roots = []graphRoot{defaultGraphRoot(m.nodes, m.edges)}
+	}
+	if err := checkRootCommands(m.roots); err != nil {
+		return nil, err
+	}
+	if m.rootViews, err = graphRootViews(m.roots, m.nodes, m.u, m.edges, m.lazy); err != nil {
+		return nil, err
+	}
+	markRootReach(m.rootViews, graphComposeInputReads(m.compose, m.nodes), m.byName, m.u)
+	return m, nil
 }
 
 // addGraphProviderNodes adds one node per provider func an owned
@@ -251,6 +295,7 @@ func addGraphProviderNodes(providers []graphProvider, add func(*graphNode) error
 			Ctor: "New" + p.Name, DepsType: p.Name + "Deps", Fallible: p.Fallible,
 			Deps: p.Deps, DepsKeys: p.DepsKeys, DepsFound: true,
 			SrcImports: p.Imports, Pos: p.Pos,
+			File: p.File, Line: p.Line, Standby: p.Standby, AuthAudience: p.Audience,
 		}
 		if err := add(n); err != nil {
 			return err
@@ -275,7 +320,9 @@ func graphRootViews(roots []graphRoot, nodes []*graphNode, u *graphUniverse, edg
 				return nil, err
 			}
 		}
-		rootViews = append(rootViews, rootViewLazy(r, edges, lazy))
+		v := rootViewLazy(r, edges, lazy)
+		v.Command = r.Command
+		rootViews = append(rootViews, v)
 	}
 	return rootViews, nil
 }
@@ -284,6 +331,11 @@ func graphRootViews(roots []graphRoot, nodes []*graphNode, u *graphUniverse, edg
 // operators, and the imports their types need.
 func graphGenViewOf(module string, nodes []*graphNode, rootViews []graphRootView, opsView *graphOperatorsView, opNodes []*graphNode) graphGenView {
 	gv := graphGenView{Module: module, Roots: rootViews, Operators: opsView}
+	for _, rv := range rootViews {
+		if !rv.ServesProbes {
+			gv.ProbeListener = true
+		}
+	}
 	nodeImports := map[string]string{}
 	for _, n := range nodes {
 		for a, p := range n.Imports {
@@ -559,7 +611,7 @@ func defaultGraphRoot(nodes []*graphNode, edges map[string][]string) graphRoot {
 		}
 		return sinks[i].Name < sinks[j].Name
 	})
-	r := graphRoot{Name: "server", TypeName: "Server", Generated: true}
+	r := graphRoot{Name: "server", TypeName: "Server", Generated: true, Command: []string{"server"}}
 	for _, n := range sinks {
 		r.Fields = append(r.Fields, graphRootField{Name: n.Name, Type: n.Type, Node: n})
 	}
@@ -640,6 +692,9 @@ func rootViewLazy(r *graphRoot, edges, lazy map[string][]string) graphRootView {
 				visit(l)
 			}
 		}
+	}
+	for _, ln := range order {
+		v.Reach = append(v.Reach, logNameToNode[ln])
 	}
 	if len(order) == 0 {
 		v.Plan = "(nothing)"
@@ -733,30 +788,4 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 		return fmt.Errorf("write internal/app/providers.go: %w", err)
 	}
 	return nil
-}
-
-// serveRootWarning explains the one build break declaring roots can cause:
-// the scaffolded serve.go runs the default root (g.RunServer), which stops
-// being generated once internal/app declares roots of its own.
-func serveRootWarning(projectDir string, roots []graphRoot) string {
-	for _, r := range roots {
-		if r.TypeName == "Server" {
-			return ""
-		}
-	}
-	matches, _ := filepath.Glob(filepath.Join(projectDir, "cmd", "*", "cmd", "serve.go"))
-	for _, m := range matches {
-		src, err := os.ReadFile(m)
-		if err != nil || !strings.Contains(string(src), ".RunServer(") {
-			continue
-		}
-		rel, _ := filepath.Rel(projectDir, m)
-		names := make([]string, len(roots))
-		for i, r := range roots {
-			names[i] = r.TypeName
-		}
-		return fmt.Sprintf("internal/app declares roots (%s), so the default Server root is no longer generated, but %s still calls g.RunServer: declare `//forge:root server` on a `type Server struct` in internal/app/roots.go (what `server` should run), or point %s at g.Run<Root>",
-			strings.Join(names, ", "), rel, rel)
-	}
-	return ""
 }

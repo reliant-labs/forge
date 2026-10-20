@@ -1432,7 +1432,7 @@ func scaffoldedMiddlewareIdents(t *testing.T) map[string]bool {
 	fset := token.NewFileSet()
 	for name, data := range map[string]any{
 		"middleware.go.tmpl":            struct{ Name string }{Name: "demo"},
-		"middleware-procedures.go.tmpl": struct{ Imports, Open []struct{} }{},
+		"middleware-procedures.go.tmpl": struct{ Imports, Open, Deadlines []struct{} }{},
 	} {
 		src, err := templates.ProjectTemplates().Render(name, data)
 		if err != nil {

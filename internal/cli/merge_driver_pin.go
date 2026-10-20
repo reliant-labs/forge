@@ -21,9 +21,11 @@ package cli
 //     sides overlap — and says why, rather than apply a mismatched forge's
 //     rules.
 //
-// And every forge command run by the pinned forge (re)points the driver at
-// itself, so the first `forge generate` after a pin bump repairs a stale
-// driver. A forge that is NOT the project's pin never rewrites the driver.
+// And every writing forge command run by the pinned forge (re)points the
+// driver at the pin, so the first `forge generate` after a pin bump repairs a
+// stale driver. A forge that is NOT the project's pin never rewrites the
+// driver, and a copy of the pin at another path keeps the copy already
+// registered rather than taking the driver over.
 
 import (
 	"bytes"

@@ -393,7 +393,7 @@ func generateSteps() []GenStep {
 		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
 		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
 		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
-		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no Connect services defined or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
+		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no services/workers/operators or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
 		{Name: "CRUD handlers", Gate: gateCRUDProjection, GateReason: "no Connect services defined, features.codegen=false, or features.orm=false", Run: stepCRUDHandlers, Tag: "codegen"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: gateContractsEnabled, GateReason: "features.contracts=false", Run: stepInternalContracts, Tag: "codegen"},
@@ -910,8 +910,13 @@ func gateOpenAPIEnabled(ctx *pipelineContext) bool {
 	)(ctx)
 }
 
+// gateORMHasServices gates the ORM projection. The store is projected from
+// the applied schema, not from the services' CRUD rpcs, so it needs no
+// service — only an entrypoint, because the go mod tidy that resolves the
+// ORM's imports (forge/pkg/crud, bun) is gated on one. features.orm is
+// already off without a database driver or under `//forge:no-orm`.
 func gateORMHasServices(ctx *pipelineContext) bool {
-	return and(feature(config.FeaturesConfig.ORMEnabled), hasServices)(ctx)
+	return and(feature(config.FeaturesConfig.ORMEnabled), hasAnyEntrypoint)(ctx)
 }
 
 // gateCRUDProjection gates the CRUD handler projection. It AND-s the ORM
@@ -1981,8 +1986,11 @@ func stepServiceStubs(ctx *pipelineContext) error {
 // Columns). The entity struct lives in the same file as its ORM; the
 // old internal/db/types.go proto-alias file is gone (entities are no
 // longer proto messages).
+//
+// The entity set is every applied table (codegen.ParseORMEntities), not the
+// CRUD join: CRUD wiring keys on CRUD rpcs, the store does not.
 func stepInternalDBORM(ctx *pipelineContext) error {
-	entities, entErr := codegen.ParseEntityProtos(ctx.ProjectDir)
+	entities, entErr := codegen.ParseORMEntities(ctx.ProjectDir)
 	if entErr != nil {
 		ctx.ORMFailure = entErr
 		return ctx.warnOrFail("entity parsing for ORM generation", entErr)
@@ -1992,8 +2000,7 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
 	orm := config.ORMPackage(ctx.Cfg)
-	if err := withDeclaredEntityRPCs(ctx,
-		generator.GeneratePlanORM(ctx.ProjectDir, orm, planEntities, ctx.Checksums)); err != nil {
+	if err := generator.GeneratePlanORM(ctx.ProjectDir, orm, planEntities, ctx.Checksums); err != nil {
 		// Recorded whether or not --strict makes it fatal: without --strict
 		// the run continues, and every step that consumes the ORM must say
 		// it was skipped instead of reporting output it never wrote.
@@ -2004,24 +2011,6 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	// era's alias file) itself — and only a forge-written one.
 	fmt.Printf("  ✅ Generated %s/ (%d entity ORM files)\n", orm.PackageDir(), len(entities))
 	return nil
-}
-
-// withDeclaredEntityRPCs fills an ORM name-collision refusal with the rpcs
-// this project declares for each colliding entity, so its advice names them
-// (with file:line) instead of the five a CRUD quintet would have. Any other
-// error, and nil, pass through.
-func withDeclaredEntityRPCs(ctx *pipelineContext, err error) error {
-	var collision *generator.ORMCollisionError
-	if !errors.As(err, &collision) {
-		return err
-	}
-	collision.EntityRPCs = map[string][]string{}
-	for entity, rpcs := range codegen.EntityRPCs(ctx.ProjectDir, ctx.Services, collision.Entities()) {
-		for _, r := range rpcs {
-			collision.EntityRPCs[entity] = append(collision.EntityRPCs[entity], r.String())
-		}
-	}
-	return err
 }
 
 // stepCRUDHandlers — was Step 4b.
@@ -2057,6 +2046,17 @@ func stepCRUDHandlers(ctx *pipelineContext) error {
 	rows, err := ctx.rowServiceDefs()
 	if err != nil {
 		return err
+	}
+	// A CRUD-named rpc whose entity has a wire message but no table would
+	// fall through to a pb-through stub with nothing saying why. Refused by
+	// name here, under the CRUD step's own gate: with the ORM off every
+	// CRUD-named rpc is a stub by design.
+	unmatched, err := codegen.ParseUnmatchedCRUDRPCs(ctx.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("CRUD handler generation failed: match CRUD rpcs to tables: %w", err)
+	}
+	if err := codegen.UnmatchedCRUDRPCsError(unmatched); err != nil {
+		return fmt.Errorf("CRUD handler generation failed: %w", err)
 	}
 	if err := generateCRUDHandlers(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("CRUD handler generation failed: %w", err)

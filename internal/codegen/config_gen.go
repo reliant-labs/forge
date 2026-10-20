@@ -706,16 +706,19 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	// treeDir is cmd/<bin>/cmd, so the binary name is its grandparent leaf.
 	data.Name = filepath.Base(filepath.Dir(treeDir))
 
-	serveTmpl, serverTmpl := "cmd-tree-serve.go.tmpl", "cmd-tree-server.go.tmpl"
-	if GraphComposition(targetDir) {
-		// The composition graph: `server` runs the graph's server root.
-		serveTmpl, serverTmpl = "cmd-tree-serve-graph.go.tmpl", "cmd-tree-server-graph.go.tmpl"
-	}
 	scaffolds := []struct{ tmpl, file string }{
-		{serveTmpl, "serve.go"},
-		{serverTmpl, "server.go"},
+		{"cmd-tree-serve.go.tmpl", "serve.go"},
+		{"cmd-tree-server.go.tmpl", "server.go"},
 		{"cmd-tree-version.go.tmpl", "version.go"},
 		{"cmd-tree-metrics.go.tmpl", "metrics.go"},
+	}
+	if GraphComposition(targetDir) {
+		// The composition graph: serve.go is runRoot, the process policy
+		// every root runs under, and there is no server.go — each root's
+		// command, `server` included, is generated into roots_gen.go
+		// (GenerateGraph).
+		scaffolds[0].tmpl = "cmd-tree-serve-graph.go.tmpl"
+		scaffolds = append(scaffolds[:1], scaffolds[2:]...)
 	}
 	// db.go is birthed only when the project HAS a migration story:
 	// cmd/<bin>/cmd/root.go gates its newDBCmd(deps) call on the same

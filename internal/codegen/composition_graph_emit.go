@@ -63,6 +63,18 @@ type graphRootView struct {
 	// method value), forced after the fields so they are built at boot.
 	Lazy []string
 	Plan string
+	// Reach is every node the root's closure holds, in start order.
+	Reach []string
+	// ServesProbes is true when a node in the closure serves g.Probes (the
+	// API listener puts them in front of its edge). A root with none gets a
+	// probe listener of its own on the server address, so every process
+	// answers /healthz and /readyz.
+	ServesProbes bool
+	// Migrate is true when the closure reaches the database, so the process
+	// migrates before building the root.
+	Migrate bool
+	// Command is the cobra command path that runs the root.
+	Command []string
 }
 
 type graphOperatorView struct{ Field, Type, Alias, Label string }
@@ -78,6 +90,9 @@ type graphGenView struct {
 	Nodes     []graphNodeView
 	Roots     []graphRootView
 	Operators *graphOperatorsView
+	// ProbeListener is true when some root serves no g.Probes of its own,
+	// so graph_gen.go carries the probe listener Run<Root> adds for it.
+	ProbeListener bool
 }
 
 type routesServiceView struct {
@@ -305,9 +320,11 @@ func GenerateGraph(in GraphGenInput) error {
 	// Roots.
 	if len(roots) == 0 {
 		roots = []graphRoot{defaultGraphRoot(nodes, edges)}
-	} else if w := serveRootWarning(in.ProjectDir, roots); w != "" {
-		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
 	}
+	if err := checkRootCommands(roots); err != nil {
+		return err
+	}
+	inputReads := graphComposeInputReads(compose, nodes)
 	var rootViews []graphRootView
 	seenRoot := map[string]string{}
 	for i := range roots {
@@ -321,11 +338,26 @@ func GenerateGraph(in GraphGenInput) error {
 				return err
 			}
 		}
-		rootViews = append(rootViews, rootViewLazy(r, edges, lazy))
+		v := rootViewLazy(r, edges, lazy)
+		v.Command = r.Command
+		for _, name := range v.Reach {
+			if inputReads[name]["Probes"] {
+				v.ServesProbes = true
+			}
+			if n := byName[name]; n != nil && u.isDatabase(n) {
+				v.Migrate = true
+			}
+		}
+		rootViews = append(rootViews, v)
 	}
 
 	// graph_gen.go
 	gv := graphGenView{Module: in.ModulePath, Roots: rootViews, Operators: opsView}
+	for _, rv := range rootViews {
+		if !rv.ServesProbes {
+			gv.ProbeListener = true
+		}
+	}
 	nodeImports := map[string]string{}
 	for _, n := range nodes {
 		for a, p := range n.Imports {
@@ -364,7 +396,8 @@ func GenerateGraph(in GraphGenInput) error {
 			return fmt.Errorf("write internal/app/compose.go: %w", err)
 		}
 	}
-	return nil
+	// cmd/<bin>/cmd/roots_gen.go: one command per root.
+	return emitRootCommands(in.ProjectDir, in.ModulePath, rootViews, in.Checksums, in.warnings())
 }
 
 // reservedGraphNames are app.Graph's own members, which no node may shadow.
@@ -464,7 +497,7 @@ func defaultGraphRoot(nodes []*graphNode, edges map[string][]string) graphRoot {
 		}
 		return sinks[i].Name < sinks[j].Name
 	})
-	r := graphRoot{Name: "server", TypeName: "Server", Generated: true}
+	r := graphRoot{Name: "server", TypeName: "Server", Generated: true, Command: []string{"server"}}
 	for _, n := range sinks {
 		r.Fields = append(r.Fields, graphRootField{Name: n.Name, Type: n.Type, Node: n})
 	}
@@ -545,6 +578,9 @@ func rootViewLazy(r *graphRoot, edges, lazy map[string][]string) graphRootView {
 				visit(l)
 			}
 		}
+	}
+	for _, ln := range order {
+		v.Reach = append(v.Reach, logNameToNode[ln])
 	}
 	if len(order) == 0 {
 		v.Plan = "(nothing)"
@@ -638,30 +674,4 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 		return fmt.Errorf("write internal/app/providers.go: %w", err)
 	}
 	return nil
-}
-
-// serveRootWarning explains the one build break declaring roots can cause:
-// the scaffolded serve.go runs the default root (g.RunServer), which stops
-// being generated once internal/app declares roots of its own.
-func serveRootWarning(projectDir string, roots []graphRoot) string {
-	for _, r := range roots {
-		if r.TypeName == "Server" {
-			return ""
-		}
-	}
-	matches, _ := filepath.Glob(filepath.Join(projectDir, "cmd", "*", "cmd", "serve.go"))
-	for _, m := range matches {
-		src, err := os.ReadFile(m)
-		if err != nil || !strings.Contains(string(src), ".RunServer(") {
-			continue
-		}
-		rel, _ := filepath.Rel(projectDir, m)
-		names := make([]string, len(roots))
-		for i, r := range roots {
-			names[i] = r.TypeName
-		}
-		return fmt.Sprintf("internal/app declares roots (%s), so the default Server root is no longer generated, but %s still calls g.RunServer: declare `//forge:root server` on a `type Server struct` in internal/app/roots.go (what `server` should run), or point %s at g.Run<Root>",
-			strings.Join(names, ", "), rel, rel)
-	}
-	return ""
 }

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Release codemods, and `forge fix operatorkit`.** A codemod
+  (`internal/codemod`) is keyed to the release that broke the shape it
+  rewrites, exactly as a migration skill is, and decides from the tree, so it
+  is a no-op on a project without the old shape. `forge project upgrade` runs
+  every rename-class codemod whose release the baseline predates — under
+  `--check` it lists what it would rewrite — and each is also
+  `forge fix <name> [--dry-run]`. The first is `operatorkit` (v0.1.46): every
+  `lifecyclekit.Run` / `Controller` / `Options` reference becomes
+  `operatorkit.*`, the operatorkit import is added and an unused lifecyclekit
+  import dropped. `forge generate` no longer holds the forge pin back over a
+  codemod that has nothing to rewrite in the project. The previous registry
+  was keyed by minor hop, which a patch-release breaking change could never
+  use, and was empty.
+
+
 - **A forge that is not the project's pinned forge now hands the command to the
   pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
   bundles one) is routinely older than a project's `forge_version`, and

@@ -281,5 +281,7 @@ has no `server shutdown error`.
 
 Use when `internal/app/lifecycle.go` calls `lifecyclekit.Run` or names
 `lifecyclekit.Controller` / `lifecyclekit.Options`: those three names now live
-only in `forge/pkg/appkit/operatorkit`. Load
-`forge skill load migrations/v0.1.46/operatorkit-bridge` for the rename.
+only in `forge/pkg/appkit/operatorkit`. `forge project upgrade` makes the
+rename itself; on a project bumped some other way, run `forge fix operatorkit`
+(`--dry-run` lists the files first). Details:
+`forge skill load migrations/v0.1.46/operatorkit-bridge`.

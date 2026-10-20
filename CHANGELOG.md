@@ -501,6 +501,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `wireRelease.Commits` comment in `internal/cli/hosted_ledger.go` named
+  `DeployRelease.commits` as tag 13; the control plane's proto declares it as tag 14.
 - **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
   finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
   that one rule's findings and ignored for every other, so

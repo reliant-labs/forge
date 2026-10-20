@@ -283,6 +283,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "static-export", on: &f.staticExport},
 		{name: "vendored-protos", on: &f.vendoredProtos},
 		{name: "config-reach", on: &f.configReach},
+		{name: "graph", on: &f.graph},
 		{name: "slow-tests", on: &f.slowTests},
 	}
 }

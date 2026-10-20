@@ -96,6 +96,47 @@ func TestLintGraph_UnreachableServiceAndProvider(t *testing.T) {
 	}
 }
 
+// An internal package nothing consumes yet — the state `forge scaffold
+// package` always leaves — is a pending WARNING, so a fresh scaffold passes
+// lint. The same package taken by a consumer no root reaches is an ERROR:
+// a consumer exists, and no process constructs it.
+func TestLintGraph_UnconsumedPackageIsPendingConsumedButUnreachedIsAnError(t *testing.T) {
+	m := newLintGraphFixture(t).m
+	pkg := &graphNode{Name: "Blobstore", Kind: nodeComponent, Role: "internal", Type: "blobstore.Service",
+		Doc: "the blobstore package (internal/blobstore)", Comp: &BuildComponent{ImportPath: "internal/blobstore"}}
+	m.nodes = append(m.nodes, pkg)
+	m.byName[pkg.Name] = pkg
+
+	got := m.unreachableFindings()
+	want := "forge-graph-unreachable/error@internal/app/providers.go, forge-graph-unreachable/error@internal/handlers/tools, forge-graph-unreachable/warn@internal/blobstore"
+	if rulesOf(got) != want {
+		t.Fatalf("findings = %s\nwant       %s", rulesOf(got), want)
+	}
+	if msg := got[2].Message; !strings.HasPrefix(msg, "pending: nothing takes blobstore.Service") {
+		t.Errorf("the pending finding must say what it waits on: %s", msg)
+	}
+
+	// Tools (no root reaches it) now takes the package: an error.
+	m.edges["Tools"] = []string{"Blobstore"}
+	if got := m.unreachableFindings(); rulesOf(got) != "forge-graph-unreachable/error@internal/app/providers.go, forge-graph-unreachable/error@internal/handlers/tools, forge-graph-unreachable/error@internal/blobstore" {
+		t.Fatalf("a package taken by an unreached consumer must be an error: %s", rulesOf(got))
+	}
+
+	// A lazy edge (a method value) is a consumer too.
+	m.edges["Tools"] = nil
+	m.lazy["Tools"] = []string{"Blobstore"}
+	if got := m.unreachableFindings(); !strings.HasSuffix(rulesOf(got), "error@internal/blobstore") {
+		t.Fatalf("a lazily consumed package no root reaches must be an error: %s", rulesOf(got))
+	}
+
+	// Workers and operators have no consumer by design; they stay errors.
+	pkg.Role = "internal/workers"
+	m.lazy["Tools"] = nil
+	if got := m.unreachableFindings(); !strings.HasSuffix(rulesOf(got), "error@internal/blobstore") {
+		t.Fatalf("an unreached worker is an error whatever consumes it: %s", rulesOf(got))
+	}
+}
+
 func TestLintGraph_AudienceMismatchThroughTheListener(t *testing.T) {
 	m := newLintGraphFixture(t).m
 	if got := m.audienceFindings(); len(got) != 0 {

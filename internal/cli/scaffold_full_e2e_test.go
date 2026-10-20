@@ -92,7 +92,9 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"cmd/demo/main.go",
 		"cmd/demo/cmd/root.go",
 		"cmd/demo/cmd/serve.go",
-		"cmd/demo/cmd/server.go",
+		// One generated command per root of the composition graph;
+		// `server` is the default root's.
+		"cmd/demo/cmd/roots_gen.go",
 		"cmd/demo/cmd/version.go",
 		"cmd/demo/cmd/db.go",
 
@@ -178,20 +180,21 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// need to remove a guard, first remove the corresponding bug risk.
 
 	// The serve PIPELINE (listener lifecycle, driver registration) lives in
-	// serve.go; server.go is the thin cobra command over it. Both guards
-	// below are about the pipeline, so they read serve.go.
+	// serve.go's runRoot; roots_gen.go holds the thin cobra command per root
+	// over it. Both guards below are about the pipeline, so they read
+	// serve.go.
 	serveGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "demo", "cmd", "serve.go"))
 	// Past bug: server used a raw error compare on srv.Serve's return,
 	// which misclassified wrapped errors. The listener lifecycle (and
 	// its errors.Is(err, http.ErrServerClosed) handling — see
-	// pkg/serverkit) now lives in serverkit; the shim must hand the
+	// pkg/serverkit) now lives in serverkit; the policy must hand the
 	// lifecycle off rather than half-reimplementing it. A new project
-	// composes with the graph: serve.go runs the generated `server` root
-	// (g.RunServer, which supervises every node), and the HTTP listener is
-	// the APIListener provider, a serverkit.Listener.
-	if !strings.Contains(serveGo, "g.RunServer(") {
-		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to the graph's server root, g.RunServer(); got:\n%s",
-			excerpt(serveGo, "Serve", 400))
+	// composes with the graph: serve.go's runRoot runs the root a command
+	// names (root.Run, a Run<Root> that supervises every node), and the HTTP
+	// listener is the APIListener provider, a serverkit.Listener.
+	if !strings.Contains(serveGo, "return root.Run(g, ctx, lifecyclekit.Policy{") {
+		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to the root's supervisor (root.Run); got:\n%s",
+			excerpt(serveGo, "runRoot", 400))
 	}
 	if strings.Contains(serveGo, ".ListenAndServe(") || strings.Contains(serveGo, "srv.Serve(") {
 		t.Errorf("cmd/demo/cmd/serve.go reimplements the listener lifecycle serverkit owns; got:\n%s",

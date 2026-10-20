@@ -189,6 +189,27 @@ func TestRequireContract_NonWorkerUnderWorkersDirStillFlagged(t *testing.T) {
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/workers/notaworker")
 }
 
+// Operator exemption, on the worker exemption's structural terms: a package
+// under internal/operators/ declaring SetupWithManager is a controller whose
+// exported methods are controller-runtime's reconciler surface. Before it, a
+// fresh `forge scaffold operator` failed `forge lint --contract`.
+func TestRequireContract_OperatorPackageSkipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/operators/widget")
+}
+
+// The operator exemption is structural: no SetupWithManager, no exemption.
+func TestRequireContract_NonOperatorUnderOperatorsDirStillFlagged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/operators/notanoperator")
+}
+
 // Composition-seam exemption: the module's internal/app package is forge's
 // explicit composition site (compose.go/providers.go/mounts_services.go/
 // lifecycle.go). Its exported methods (DefaultClient, the lifecycle

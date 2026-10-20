@@ -14,6 +14,9 @@ package cmd
 
 import (
 	"context"
+{{- if .Fmt}}
+	"fmt"
+{{- end}}
 
 	"github.com/spf13/cobra"
 
@@ -30,6 +33,9 @@ type rootSpec struct {
 	// Migrate is true when the root reaches the database: the process
 	// migrates before building it.
 	Migrate bool
+	// Config is every config field the root reaches, by path; runRoot
+	// demands only these (config.LoadReach). nil: every field.
+	Config []string
 	// Run builds the root on g — exactly the closure its fields reach — and
 	// supervises it under policy until ctx ends or a node fails.
 	Run func(g *app.Graph, ctx context.Context, policy lifecyclekit.Policy) error
@@ -47,12 +53,47 @@ func rootCommands(deps Deps) []*cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deps.Cmd = cmd
-			return runRoot(cmd.Context(), deps, rootSpec{Name: "{{.Root.Name}}", Migrate: {{.Root.Migrate}}, Run: (*app.Graph).Run{{.Root.TypeName}}})
+{{- range .Root.Loads}}
+			// {{.Message}}: demanded only where the root reaches it.
+			{{.LoadVar}}, err := config.Load{{.Message}}Reach(cmd, []string{
+{{- range .Config}}
+				"{{.Path}}",
+{{- end}}
+			})
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+{{- end}}
+			return runRoot(cmd.Context(), deps, rootSpec{
+				Name:    "{{.Root.Name}}",
+				Migrate: {{.Root.Migrate}},
+{{- if .Root.HasConfig}}
+				Config: []string{
+{{- range .Root.Config}}
+					"{{.Path}}",
+{{- end}}
+				},
+{{- end}}
+{{- if .Root.Loads}}
+				Run: func(g *app.Graph, ctx context.Context, policy lifecyclekit.Policy) error {
+{{- range .Root.Loads}}
+					g.{{.Message}} = {{.LoadVar}}
+{{- end}}
+					return g.Run{{.Root.TypeName}}(ctx, policy)
+				},
+{{- else}}
+				Run: (*app.Graph).Run{{.Root.TypeName}},
+{{- end}}
+			})
 		},
 {{- end}}
 	}
 {{- if .Root}}
 	config.RegisterFlags({{.Var}})
+{{- end}}
+{{- $var := .Var}}
+{{- range .Registers}}
+	config.Register{{.}}Flags({{$var}})
 {{- end}}
 {{- if .Parent}}
 	{{.Parent}}.AddCommand({{.Var}})

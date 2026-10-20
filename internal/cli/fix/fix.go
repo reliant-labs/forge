@@ -6,10 +6,13 @@
 //	forge fix narrow-deps <pkg>   retype a component's wide foreign Deps
 //	                              interfaces to the calls it makes
 //	                              (forgeconv-deps-surface)
+//	forge fix <codemod>           one release codemod (internal/codemod):
+//	                              the mechanical half of a migration skill
 package fix
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +21,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 )
@@ -31,7 +35,60 @@ func newCmd(f *factory.Factory) *cobra.Command {
 		Long:  "Codemods that rewrite the project's own code to what a forge lint rule asks for. Each runs only when you name it, and edits files that are yours: review the diff.",
 	}
 	cmd.AddCommand(newNarrowDepsCmd(f))
+	for _, c := range codemod.All() {
+		cmd.AddCommand(newCodemodCmd(f, c))
+	}
 	return cmdutil.StrictGroup(cmd)
+}
+
+// newCodemodCmd is `forge fix <name>` for one release codemod
+// (internal/codemod): run it over the project, or with --dry-run list what
+// it would rewrite.
+func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   c.Name,
+		Short: c.Short,
+		Long:  c.Long + "\n\nThe rest of the " + c.Version + " story is the migration skill: `forge skill load migrations/" + c.Version + "`.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			root, err := cmdutil.ProjectRoot()
+			if err != nil {
+				return err
+			}
+			rep, err := c.Run(root, !dryRun)
+			if err != nil {
+				return err
+			}
+			printCodemodReport(f.Out, c, rep, dryRun)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be rewritten; change nothing")
+	return cmd
+}
+
+func printCodemodReport(out io.Writer, c codemod.Codemod, rep codemod.Report, dryRun bool) {
+	if !rep.Changed() && len(rep.Next) == 0 {
+		fmt.Fprintf(out, "  %s: nothing to rewrite — the project is already in its %s shape\n", c.Name, c.Version)
+		return
+	}
+	mark := "✅"
+	if dryRun {
+		mark = "would rewrite:"
+	}
+	for _, r := range rep.Rewrites {
+		fmt.Fprintf(out, "  %s %s\n", mark, r)
+	}
+	if len(rep.Next) > 0 {
+		fmt.Fprintln(out, "\n  Next — what the codemod could not decide for you:")
+		for i, n := range rep.Next {
+			fmt.Fprintf(out, "  %d. %s\n", i+1, n)
+		}
+	}
+	if !dryRun && len(rep.Verify) > 0 {
+		fmt.Fprintf(out, "\n  Verify: %s\n", strings.Join(rep.Verify, " && "))
+	}
 }
 
 func newNarrowDepsCmd(f *factory.Factory) *cobra.Command {

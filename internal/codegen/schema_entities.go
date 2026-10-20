@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jinzhu/inflection"
@@ -13,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // ownerMarkerTokenRE matches a `forge:owner` declaration as a WHOLE
@@ -528,6 +531,8 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	}
 
 	// Columns: the applied schema, verbatim.
+	pools := seedplan.PoolsFromTables([]schemadef.Table{table})[table.Name]
+	bounds := seedplan.BoundsFromTables([]schemadef.Table{table})[table.Name]
 	for _, c := range table.Columns {
 		fillStrategy, _ := c.FillStrategy()
 		e.Columns = append(e.Columns, EntityColumn{
@@ -543,6 +548,8 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 			Version:      c.HasMarker(schemadef.ColumnMarkerVersion),
 			FillStrategy: fillStrategy,
 			Owner:        declaresOwnerMarker(c.Comment),
+			GoType:       c.GoTypeOverride(),
+			ZeroRejected: checkRejectsZero(c, pools[c.Name], bounds[c.Name]),
 		})
 	}
 
@@ -561,7 +568,7 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 		e.PkField = table.PKCols[0]
 		for _, c := range table.Columns {
 			if c.Name == e.PkField {
-				e.PkGoType = canonicalGoTypeMust(string(c.Type), c.IsArray)
+				e.PkGoType = ColumnGoType(string(c.Type), c.DeclType, c.IsArray)
 			}
 		}
 	}
@@ -575,6 +582,32 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	// the secret value. Drop any secret field's column from SearchColumns.
 	e.SearchColumns = dropSecretSearchColumns(e.SearchColumns, e.Fields)
 	return e
+}
+
+// checkRejectsZero reports whether the table's single-column CHECKs keep c
+// from ever holding its Go zero: an enum vocabulary (`col IN (...)`) that
+// lacks the empty string or 0, or a numeric bound that excludes 0. Only scalar columns
+// are judged; anything the CHECK parsers do not read answers false — the
+// zero is then presumed storable, which is the safe side (a pointer field).
+func checkRejectsZero(c schemadef.Column, pool []string, bound seedplan.NumBound) bool {
+	if c.IsArray {
+		return false
+	}
+	switch c.Type {
+	case schemadef.TypeString:
+		return len(pool) > 0 && !slices.Contains(pool, "")
+	case schemadef.TypeInt, schemadef.TypeFloat:
+		if len(pool) > 0 {
+			for _, v := range pool {
+				if f, err := strconv.ParseFloat(v, 64); err != nil || f == 0 {
+					return false
+				}
+			}
+			return true
+		}
+		return (bound.Min != nil && *bound.Min > 0) || (bound.Max != nil && *bound.Max < 0)
+	}
+	return false
 }
 
 // dropSecretSearchColumns removes columns backed by a `// forge:secret` wire
@@ -637,12 +670,20 @@ func CanonicalGoTypeOK(canonical string, isArray bool) (goType string, ok bool) 
 	case "string":
 		base = "string"
 	case "json":
-		// A json column holds a document; the entity carries its text. A
-		// json ARRAY column (jsonb[]) is []string for the same reason —
-		// each element is one document.
-		base = "string"
+		// A json column holds a document: json.RawMessage, the bytes of
+		// one, which Bun binds and scans as JSON and encoding/json embeds
+		// verbatim — lossless, with no text round trip. A json ARRAY column
+		// (jsonb[]) stays []string: each element is one document's text.
+		if isArray {
+			return "[]string", true
+		}
+		return "json.RawMessage", true
 	case "int64":
 		base = "int64"
+	case "int32", "int16":
+		// The width-refined integers (GoIntType): `integer` / `smallint`
+		// columns, which hold no more than these.
+		base = canonical
 	case "float64":
 		base = "float64"
 	case "bool":
@@ -662,6 +703,35 @@ func CanonicalGoTypeOK(canonical string, isArray bool) (goType string, ok bool) 
 		return "[]" + base, true
 	}
 	return base, true
+}
+
+// GoIntType refines the canonical int64 of an integer column to the
+// narrowest Go type that holds every value of its declared width:
+// `integer`/`int4`/`serial` → int32, `smallint`/`int2`/`smallserial` →
+// int16, anything else (bigint) → int64. Lossless and idiomatic: a 32-bit
+// column read into int64 claims a range it can never return, and every
+// write needs a guard the column itself already enforces.
+func GoIntType(declType string) string {
+	d := strings.ToUpper(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(declType), "[]")))
+	switch d {
+	case "INTEGER", "INT", "INT4", "SERIAL", "SERIAL4":
+		return "int32"
+	case "SMALLINT", "INT2", "SMALLSERIAL", "SERIAL2":
+		return "int16"
+	}
+	return "int64"
+}
+
+// ColumnGoType is the Go type a column projects to on the entity struct
+// (the NOT NULL variant): CanonicalGoTypeOK of its canonical type, with an
+// integer narrowed to its declared width (GoIntType). It is the one
+// projection the ORM struct (via EntityDefToPlanEntity's plan type) and the
+// CRUD conversions read.
+func ColumnGoType(canonical, declType string, isArray bool) string {
+	if canonical == "int64" {
+		canonical = GoIntType(declType)
+	}
+	return canonicalGoTypeMust(canonical, isArray)
 }
 
 // canonicalGoTypeMust projects a column type that is known to be canonical

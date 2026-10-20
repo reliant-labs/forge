@@ -63,13 +63,8 @@ func (g *ProjectGenerator) generateDXFiles() error {
 		}
 	}
 	if g.isService() && g.Features.ObservabilityEnabled() {
-		if err := g.generateRunbookAndSLO(); err != nil {
-			return fmt.Errorf("write docs/runbook+slo: %w", err)
-		}
-	}
-	if g.isService() && g.Features.ObservabilityEnabled() {
-		if err := g.generatePrometheusRules(); err != nil {
-			return fmt.Errorf("write prometheus-rules: %w", err)
+		if err := g.generateRunbook(); err != nil {
+			return fmt.Errorf("write docs/runbook.md: %w", err)
 		}
 	}
 	if g.isService() && g.Features.ORMEnabled() {
@@ -1124,163 +1119,21 @@ func BenchmarkHealthz(b *testing.B) {
 	return atomicfile.WriteFile(filepath.Join(dir, "healthz_bench_test.go"), []byte(goBench), 0o644)
 }
 
-// generateRunbookAndSLO writes docs/runbook.md and docs/slo.md starter
-// templates with TODO placeholders.
-func (g *ProjectGenerator) generateRunbookAndSLO() error {
+// generateRunbook writes docs/runbook.md: where this project's telemetry,
+// generated dashboards and generated alerts are, and what each built-in alert
+// means. It names only what forge ships (ClickStack, the dashboards under
+// deploy/observability/dashboards/, the defaults tuned through forge.Alerts),
+// so it is useful from the first generate rather than a form of TODOs.
+func (g *ProjectGenerator) generateRunbook() error {
+	content, err := templates.ProjectTemplates().Render("runbook.md.tmpl", struct{ Name string }{g.Name})
+	if err != nil {
+		return fmt.Errorf("render runbook.md.tmpl: %w", err)
+	}
 	dir := filepath.Join(g.Path, "docs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-
-	runbook := fmt.Sprintf(`# Runbook — %s
-
-## Service overview
-
-%[1]s is a Connect RPC service. TODO: add a short description.
-
-## Ownership
-
-- **Team:** TODO
-- **On-call rotation:** TODO (link to PagerDuty / Opsgenie)
-
-## Common alerts
-
-### HighErrorRate
-
-- **Meaning:** 5xx rate exceeds threshold.
-- **Diagnostic steps:**
-  1. Check application logs: `+"`"+`kubectl logs -l app=%[1]s`+"`"+`
-  2. Check downstream dependencies.
-  3. Check recent deployments.
-
-### HighLatency
-
-- **Meaning:** p95 latency exceeds threshold.
-- **Diagnostic steps:**
-  1. Check for traffic spike (Grafana dashboard).
-  2. Check DB slow queries.
-  3. Check CPU/memory pressure.
-
-### ProbeFailure
-
-- **Meaning:** /healthz or /readyz is failing.
-- **Diagnostic steps:**
-  1. Check pod status: `+"`"+`kubectl get pods -l app=%[1]s`+"`"+`
-  2. Check OOM kills.
-  3. Check networking / DNS.
-
-## Dashboards & Logs
-
-- **Grafana:** TODO (link)
-- **Logs:** TODO (link to Loki / CloudWatch)
-- **Traces:** TODO (link to Jaeger / Tempo)
-
-## Emergency contacts
-
-| Role | Contact |
-|------|--------|
-| Primary on-call | TODO |
-| Engineering lead | TODO |
-| Platform team | TODO |
-`, g.Name)
-
-	slo := fmt.Sprintf(`# SLO — %s
-
-Service Level Objectives for %[1]s.
-
-## Availability
-
-- **Target:** 99.9%% (three nines)
-- **Measurement:** ratio of successful (non-5xx) responses to total requests
-- **Window:** rolling 30 days
-
-## Latency
-
-- **Target:** p95 < 250ms
-- **Measurement:** server-side request duration histogram
-- **Window:** rolling 30 days
-
-## Error rate
-
-- **Target:** < 0.1%% of requests return 5xx
-- **Measurement:** 5xx count / total request count
-- **Window:** rolling 30 days
-
-## Error budget policy
-
-1. When the error budget is consumed < 50%%: normal development velocity.
-2. When the error budget is consumed 50-99%%: prioritize reliability work.
-3. When the error budget is exhausted: freeze non-critical changes,
-   focus entirely on restoring reliability.
-
-## Review cadence
-
-Review SLOs quarterly. Adjust targets based on actual traffic patterns
-and business requirements.
-`, g.Name)
-
-	if err := atomicfile.WriteFile(filepath.Join(dir, "runbook.md"), []byte(runbook), 0o644); err != nil {
-		return err
-	}
-	return atomicfile.WriteFile(filepath.Join(dir, "slo.md"), []byte(slo), 0o644)
-}
-
-// generatePrometheusRules writes deploy/observability/prometheus-rules.yaml
-// with stub alert rules.
-func (g *ProjectGenerator) generatePrometheusRules() error {
-	dir := filepath.Join(g.Path, "deploy", "observability")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-
-	rules := fmt.Sprintf(`# Prometheus alert rule stubs for %s.
-# Adjust thresholds and labels to match your environment.
-# Import into Prometheus via the rule_files config directive.
-groups:
-  - name: %[1]s.rules
-    rules:
-      # The runtime's RPC edge metric is otelconnect's rpc.server.duration —
-      # a MILLISECONDS histogram exported as rpc_server_duration_milliseconds
-      # with labels rpc_service / rpc_method and per-protocol status codes
-      # (rpc_connect_rpc_error_code is set on connect errors only;
-      # rpc_grpc_status_code / rpc_grpc_web_status_code are always set, 0 = ok).
-      - alert: HighErrorRate
-        expr: |
-          1 - (
-            sum(rate(rpc_server_duration_milliseconds_count{job="%[1]s",rpc_connect_rpc_error_code="",rpc_grpc_status_code=~"0|",rpc_grpc_web_status_code=~"0|"}[5m]))
-            /
-            sum(rate(rpc_server_duration_milliseconds_count{job="%[1]s"}[5m]))
-          ) > 0.01
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "High RPC error rate on %[1]s"
-          description: "More than 1%% of RPCs are returning errors for 5 minutes."
-
-      - alert: HighLatency
-        expr: |
-          histogram_quantile(0.95,
-            sum(rate(rpc_server_duration_milliseconds_bucket{job="%[1]s"}[5m])) by (le)
-          ) > 250
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High p95 latency on %[1]s"
-          description: "p95 latency exceeds 250ms for 5 minutes."
-
-      - alert: ProbeFailure
-        expr: probe_success{job="%[1]s-probe"} == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Health probe failing for %[1]s"
-          description: "Blackbox probe has been failing for 2 minutes."
-`, g.Name)
-
-	return atomicfile.WriteFile(filepath.Join(dir, "prometheus-rules.yaml"), []byte(rules), 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "runbook.md"), content, 0o644)
 }
 
 // generateDBReadme writes db/README.md: where the schema lives, what forge

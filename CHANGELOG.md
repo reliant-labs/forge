@@ -25,7 +25,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a component that is now instrumented, and unwraps one that gained
   `// forge:no-observe`. `// forge:no-observe` on the package or on one method
   remains the opt-out. Constructions written by hand (`providers.go`,
-  `*_wire.go`) are yours to wrap.
+  `*_wire.go`) are yours to wrap; `forge lint --tracing`'s
+  `forge-tracing-contract-uninstrumented` finds them, with the same decision.
+
+- **`forge lint --tracing`: the places a request's trace is cut.** Four
+  rules, all at error in the full sweep, over owned non-test Go:
+  `forge-tracing-log-without-ctx` (a `slog.Info`, a `*slog.Logger` level
+  method, or a helper named in `lint.tracing.log_wrappers`, called where a
+  `context.Context` or `*http.Request` parameter is in scope: the line
+  carries no trace_id), `forge-tracing-raw-http-client` (an `*http.Client`
+  with no, nil, default or bare transport; `http.DefaultClient`; `http.Get`),
+  `forge-tracing-raw-sql-open` (`sql.Open`, sqlx, pgx stdlib, and a pgx pool
+  with no tracer, instead of `dbtrace`), and
+  `forge-tracing-contract-uninstrumented` (an instrumented contract's `New`
+  used outside `compose.go` without its `…WithForgeMiddleware` decorator).
+  The log rule autofixes to the `…Context` form, dropping an import the
+  rewrite leaves unused. `forge lint --tracing` applies it at any severity
+  but off; the full sweep only where the rule is at error, so a repo that
+  sets a rule to warn in `lint.rules` while it migrates is not rewritten by a
+  forge pin. Worker scaffolds log with their context.
+- **A trace per unit of background work: `observe.RunRoot`,
+  `lifecyclekit.Every`, and a root span per reconcile in
+  `forge/pkg/controller`.** A loop iteration or a reconcile has no Connect
+  edge to start its trace, so the decorated methods, queries and calls it made
+  were each a one-span trace, or nothing (`dbtrace` opens spans only under a
+  parent). `observe.RunRoot(ctx, name, fn)` runs `fn` under a new root span,
+  never the caller's trace, and records `fn`'s error or panic (the panic is
+  re-raised). `lifecyclekit.Every(name, EveryOptions{Interval}, fn)` is the
+  hand-written ticker worker with that built in: one `worker.<name>.run` root
+  per run, a failed or panicking run logged and the cadence kept.
+  `controller.Reconciler.Run` opens `reconcile <Kind>` around every reconcile,
+  with `k8s.namespace.name` / `k8s.object.name` and the error recorded.
+- **Trace context through Temporal and NATS: `forge/pkg/observe/temporalotel`
+  and `forge/pkg/observe/natsotel`.** `temporalotel.NewInterceptor` is
+  Temporal's `contrib/opentelemetry` interceptor with forge's defaults: the
+  global W3C propagator (the same context Connect, HTTP and NATS carry), the
+  global tracer provider read at span time, and `AllowInvalidParentSpans`, so
+  workflows already in flight keep running. Installed once on `client.Dial`,
+  it also applies to the client's workers, so the request that starts a
+  workflow, the workflow and its activities are one trace; before this,
+  Reliant's hand-rolled interceptor made every activity a root. `natsotel` is
+  Reliant's NATS propagation, lifted: `NewMsg`/`Inject` on publish,
+  `StartConsumerSpan(ctx, subject, header, name)` on consume (core NATS or
+  JetStream), `StartProducerSpan` where the publish deserves a span, with
+  `messaging.*` attributes.
+
+- **Root reach for binary-config projects.** A composition-graph project whose
+  primary binary binds config per command (`(forge.v1.binary_config)`
+  `command` / `subtrees`) used to get no per-root reach: no `LoadReach`
+  narrowing, and no `ROOTS` in `config_gen.k`, so the scaffolded envs'
+  `workloadEnvMap` call did not render. Now each of the binary's configs
+  beside the root config is an `app.Graph` input, `g.<Message>`. A Deps field
+  typed `*config.<Message>` resolves to it. A root's process loads the root
+  config, the subtree configs over its command and its exact command config,
+  and its reach is still per field: the leaves its closure reads of each.
+  `roots_gen.go` loads each config with the new `config.Load<Msg>Reach`
+  (only reached `required` fields are demanded), sets it on the graph, and
+  registers its flags (command configs on their command, subtree configs on
+  their path's command). `Build<Root>` refuses a nil input its closure reads.
+  `ROOTS` carries the union of every loaded config's reached env and projects
+  it through `<bin>ProcessEnvMap`, so `workloadEnvMap(appcfg.<bin>_process, w)`
+  gives each root exactly its env. Generate refuses a closure that reads a
+  config its root's process never loads, and an env var that two loaded
+  configs both declare. Single-AppConfig and legacy projects generate
+  byte-identical output.
+
+- **Release codemods, and `forge fix operatorkit`.** A codemod
+  (`internal/codemod`) is keyed to the release that broke the shape it
+  rewrites, exactly as a migration skill is, and decides from the tree, so it
+  is a no-op on a project without the old shape. `forge project upgrade` runs
+  every rename-class codemod whose release the baseline predates — under
+  `--check` it lists what it would rewrite — and each is also
+  `forge fix <name> [--dry-run]`. The first is `operatorkit` (v0.1.46): every
+  `lifecyclekit.Run` / `Controller` / `Options` reference becomes
+  `operatorkit.*`, the operatorkit import is added and an unused lifecyclekit
+  import dropped. `forge generate` no longer holds the forge pin back over a
+  codemod that has nothing to rewrite in the project. The previous registry
+  was keyed by minor hop, which a patch-release breaking change could never
+  use, and was empty.
+
+- **A forge that is not the project's pinned forge now hands the command to the
+  pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
+  bundles one) is routinely older than a project's `forge_version`, and
+  `generate`, `scaffold`, `component install` and friends refused with a
+  recipe, or a render failed with KCL schema errors (`release_dependencies`,
+  `ShellBuild.unit`) that blame the project; agents had to run `task tools` or
+  `go run …@<pin>` by hand. Now the command is exec'd under the right forge
+  with the same arguments, environment, stdio and exit status, and one line on
+  stderr says so. The pinned forge is the project's `.tools/bin/forge` when it
+  reports that version, else a one-time `go install` of the pinned module
+  version into a cache under `<user cache dir>/forge/pinned/` (a project linked
+  to a forge checkout by go.work `use` or a directory `replace` gets a build of
+  that checkout instead). The KCL-reading commands (`env render`, `env shape`, `env config`,
+  `env diff`, `env up`, `kcl`, `doctor`) are handed over too. Read-only runs stay local;
+  `--allow-version-skew` / `FORGE_ALLOW_VERSION_SKEW=1` runs this forge as
+  before; if the pinned forge cannot be had (offline, an unpublished version)
+  the old refusal returns, now carrying the reason. See `docs/versioning.md`.
+
+- **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
+  only when the caller is an authenticated internal service.** otelconnect
+  answers "adopt the inbound traceparent?" once for every caller:
+  `WithTrustRemote` adopts it for everyone, the default for no one. A server
+  reachable from the internet must take the default, so its internal callers'
+  requests became new traces linked to theirs, never one trace (every
+  workspace-proxy → admin-server call in the Reliant control plane). The
+  returned interceptor decides per request: when `trusted(ctx, peer, header)`
+  verifies the caller (an internal-service token signature, a constant-time
+  shared-secret compare, an mTLS identity, never a spoofable header or IP),
+  the server span is the caller's child; otherwise it is a new trace linked to
+  the caller's, exactly as before. It runs outermost, ahead of auth, so the
+  predicate does its own verification. Authorization is unchanged. The threat
+  model (trace grafting, forced sampling, baggage injection) is in
+  `pkg/observe/trust_remote.go`.
 
 - **`observe.NewHTTPClient`: the traced client for plain outbound HTTP.**
   A call to a third-party REST API goes through a plain `*http.Client`, which
@@ -133,6 +244,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its mock; `forge generate` keeps a `deps.go`'s `mock_gen.go` in step.
   `compose.go` needs no change. A field whose value the package passes on,
   type-asserts, or never calls is left alone, with the reason.
+- **Each root's config is its reach** (composition graph, PR 6). Generate
+  reads, per root, the config fields its closure reads in `compose.go`, plus
+  the process fields `runRoot` reads and, for a root reaching the database,
+  the database fields. The roots table carries that set and `runRoot` loads
+  with the new `config.LoadReach(cmd, reach)` (`pkg/config`'s
+  `RequiredWithin(paths...)` load option), so a worker root starts without
+  `DATABASE_URL`. `deploy/kcl/config_gen.k` projects the same set as
+  `ROOTS`, with `root_of(name)` (binds a workload to a root and its command)
+  and `workloadEnvMap(cfg, w)` (exactly the env that root reaches; a
+  `config_secrets` entry it does not reach, or an unknown root, fails the
+  render). `fw.Workload` gains `root?: str` (needs `build`, excludes
+  `command`). New projects deploy `_api` with `root = "server"`. Only a root
+  `AppConfig` is projected; per-binary configs (`binary_config`) get no
+  `ROOTS`.
 
 ### Fixed
 
@@ -149,8 +274,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `forge project new` from #918 until the composition graph, #923, made new
   projects skip lifecycle.go). The import is rendered with the first worker,
   and the reconciler adds it when it injects one into an existing file.
+- **`gen/forge_descriptor.json` stamps one entry per proto, and a merge keeps
+  it current.** The `source_hash` digest of every `.proto` is replaced by
+  `sources` (path → sha256 per file). A single digest of the tree matched no
+  merge: two branches editing different protos each stamped a different
+  value, so every merge that brought in a proto change staled every open
+  branch's descriptor, and main went stale when two landed without a
+  regenerate. Per-file entries change only where their proto changes, and the
+  `forge-generated` merge driver merges them key by key, so the merged stamp
+  is the stamp of the merged tree. forge's vendored annotation protos
+  (`forge/v1/forge.proto`, `buf/validate/validate.proto`) are not stamped:
+  they are grammar, not descriptor input, and only `forge generate` changes
+  them. A stale descriptor is now refused with the protos that drifted
+  (`proto/x.proto (edited)`). The next `forge generate` rewrites the field.
+- **A new service project's `docs/runbook.md` points at what forge ships.** It
+  said "Check for traffic spike (Grafana dashboard)" and "Grafana: TODO
+  (link)", and asked for Loki, Jaeger and PagerDuty links. It now names the
+  Observability tab under Apps in Reliant, the local HyperDX UI, the generated
+  dashboards in `deploy/observability/dashboards/`, the generated alert
+  defaults (`alert-defaults_gen.json`) and how `forge.Alerts.defaults` tunes
+  them, and explains each built-in alert.
+- **`forge generate --help` describes the pipeline it runs.** It described
+  entity protos in `proto/db/` and a `pkg/app/bootstrap.go`, both retired. The
+  no-`forge.yaml` path no longer looks for `proto/api/` and `proto/db/`, and
+  the seed step is gated on services rather than on a `proto/db/` directory.
 
 ### Removed
+
+- **New service projects no longer get `deploy/observability/prometheus-rules.yaml`
+  or `docs/slo.md`.** Nothing in forge loaded the rules (alerts are
+  `forge.AlertRule` / `forge.AlertDefault` in KCL, evaluated as ClickHouse
+  SQL) and nothing measured the SLO doc's targets. An existing project can
+  delete both files.
 
 - **Graph-mode projects no longer scaffold `cmd/<bin>/cmd/server.go`**, and
   `cmd/<bin>/main.go` / `root.go` take no command-group constructors
@@ -452,6 +607,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SignInCode.ExpiresAt` (minting time plus `SignInCodeLifetime`, Zitadel's
   default one hour) says when to re-issue, and `Report.Credentialed` names the
   members confirmed to hold a credential, so a caller can drop their codes.
+- **`forge project new --link-forge` finds the forge checkout without a build-time
+  path, and takes `--forge-root`.** The bridge needed the checkout this binary
+  was built from, recovered from an ldflag or the source path the compiler
+  bakes in. Both are erased by `-trimpath`, which the Reliant workspace image
+  sets as the Go default (`GOFLAGS=-trimpath`), so `--link-forge` refused for
+  every forge built there, and `TestRunNewInPlace_ExistingRepo` and tierguard
+  failed unless run with `GOFLAGS=-buildvcs=auto`. The checkout is now
+  resolved, first match winning, from `--forge-root <path>` (or
+  `FORGE_ROOT`), the ldflag, the compiled source path, the
+  `replace github.com/reliant-labs/forge => ../forge` that a host binary such
+  as `reliant` was built with (resolved against the directories the binary and
+  the process live under), the checkout the executable is inside, and the
+  checkout forge was started in. A stated path that is not a forge checkout
+  (no forge `go.mod` and `pkg/`, or a module-cache copy) is an error, and the
+  refusal when nothing is found names `--forge-root`.
 - **A StatefulSet's declared volume size can grow, and the deploy converges it.**
   `volumeClaimTemplates` are immutable, so raising a declared size (a
   `clickhouse_disk = "100Gi"` that was `"50Gi"`) used to fail every apply with
@@ -769,6 +939,58 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **Least-knowledge lint: the design's severities by default, and the two K3
+  checks.** `forgeconv-deps-surface` (a foreign interface of more than ten
+  methods with unused ones), `forgeconv-no-container-deps` and
+  `forgeconv-deps-no-downcast` are now errors without `--strict`, as
+  composition graph §7 planned one release after they landed as warnings; a
+  fresh scaffold has none. New: `forgeconv-no-getenv` (a component package
+  reading `os.Getenv` / `LookupEnv` / `Environ` — configuration its root's
+  config reach cannot see) is a warning, an error under `--strict`; and
+  `forgeconv-deps-root-config` (a Deps field holding the root
+  `*config.Config`) is reported only under `--strict`, as a warning, because
+  the scaffold still hands every component the root config. `--strict` makes
+  every other least-knowledge finding an error.
+
+- **The entity struct's types are idiomatic and lossless.** Field names spell
+  Go initialisms in capitals (`ID`, `OrgID`, `APIKey`; the `<E>Field*` and
+  `<E>Constraint*` constants follow); an integer column is as wide as it is
+  declared (`INTEGER` → `int32`, `SMALLINT` → `int16`, `BIGINT` → `int64` —
+  it was always `int64`); a `jsonb`/`json` column is `json.RawMessage` (nil
+  for NULL), not `string`.
+  `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares the Go type of
+  one column — a named enum
+  over an integer, `map[string]any` over json, `<path>[;<pkg>].<Type>` —
+  with no generated wire conversion (a CRUD rpc carrying it fails generate
+  by name). The CRUD conversions follow: the wire's int32 enum number is
+  stored at the column's width, json pairs through `[]byte`/`string`.
+  **Upgrading:** regenerate; then rename references to the projected fields in
+  hand-written code — `.Id` → `.ID`, `.UserId` → `.UserID`,
+  `TaskFieldId` → `TaskFieldID` (`gopls rename`, or `gofmt -r` per name) — and
+  adjust code that read an `integer` column as `int64` or a json column as
+  `string` (`string(row.Payload)`, `json.RawMessage(s)`).
+- **A `NOT NULL` column's `DEFAULT` applies when the field is unset — and an
+  explicit zero is still stored.** The generated store wrote the Go zero for
+  every defaulted column a caller left unset, so the DEFAULT never fired:
+  `threads.status INTEGER NOT NULL DEFAULT 2` was stored as 0 by
+  `CreateThread`, and `jsonb NOT NULL DEFAULT '{}'` failed the insert with
+  `""` (reliant P5b). Bun's `default:` tag was never the answer — it reads
+  every zero as unset and would turn an explicit `false` into a
+  `DEFAULT true`. The entity type now carries the distinction
+  (`codegen.ColumnInsertDefault`): a scalar whose DEFAULT is not its Go zero
+  is a **pointer** field (`nil` = unset), and a column whose zero it can never
+  hold keeps its type with `,nullzero` (a json document; an array with a
+  non-empty DEFAULT; a scalar a CHECK keeps from its zero, which is every born
+  enum column). `pkg/crud` gives unset one meaning on every write: `Create`
+  omits the column, a full-replace `Update` and `Upsert`'s conflict branch
+  keep the stored value; a `,nullzero` slice is no longer normalized to `{}`.
+  The CRUD create op stops pasting the DEFAULT's literal into Go
+  (`schemaDefaultAssigns` is gone): it leaves the field unset and the
+  database applies its own DEFAULT, whatever expression it is. **Upgrading:**
+  regenerate; a NOT NULL column whose DEFAULT is a non-zero scalar becomes a
+  pointer field, so hand-written code that reads or writes it changes from
+  `row.Status` / `row.Status = 2` to `*row.Status` / `row.Status = ptr(2)`;
+  born enum (TEXT + CHECK) and json columns keep their types.
 - **`database.orm.package` places the generated data layer.** The ORM always
   projected into `internal/db` (`package db`) and refused any name the
   project already declared there — so a project with its own data layer in

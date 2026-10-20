@@ -144,8 +144,10 @@ type Gateway struct {
   two-phase setter in compose.go, as today.
 - **Completeness** replaces `RequireComplete` (`cmd-tree-serve.go.tmpl:364`). `forge lint --graph` fails when a
   proto service (unless `forge:unmanaged`), worker or operator is reachable from no root. It also fails on an
-  unreachable provider and on a component no root reaches. Boot checks only what generate cannot see: the
-  audience check (§5).
+  unreachable provider and on a component no root reaches. One exception: an internal package that no node
+  consumes yet (the state `forge scaffold package` leaves) is a pending warning, because a package runs
+  nothing and is constructed only as a dependency. Once a consumer takes it, an unreached package fails like
+  any other component. Boot checks only what generate cannot see: the audience check (§5).
 - **Default.** A new project has one generated-default root, `server`: `APIListener` serving `UserRoutes`,
   plus every worker and operator. That is today's `server` command and nothing else, so the 80% case sees no
   new concept.

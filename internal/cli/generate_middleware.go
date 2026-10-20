@@ -702,7 +702,15 @@ func configFieldsExcludingBinaries(messages []codegen.ConfigMessage) []codegen.C
 	return codegen.FlattenFieldsWithBlocks(selected, messages)
 }
 
-func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums) error {
+// graphRootsOrNil calls roots when there is one to call.
+func graphRootsOrNil(roots func() []codegen.GraphRoot) []codegen.GraphRoot {
+	if roots == nil {
+		return nil
+	}
+	return roots()
+}
+
+func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums, roots func() []codegen.GraphRoot) error {
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
 	if err != nil {
 		return fmt.Errorf("parse config protos: %w", err)
@@ -772,10 +780,10 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 
 	if len(perBinary) > 0 {
-		if err := codegen.GenerateConfigNativeSharedPerBinary(rootFields, perBinary, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
+		if err := codegen.GenerateConfigNativeSharedPerBinaryRoots(rootFields, perBinary, graphRootsOrNil(roots), cfg.Name, projectDir, kclDirAbs, cs); err != nil {
 			return fmt.Errorf("emit per-binary KCL config module: %w", err)
 		}
-	} else if err := codegen.GenerateConfigNativeShared(fields, cfg.Name, projectDir, kclDirAbs, cs); err != nil {
+	} else if err := codegen.GenerateConfigNativeSharedRoots(fields, graphRootsOrNil(roots), cfg.Name, projectDir, kclDirAbs, cs); err != nil {
 		return fmt.Errorf("emit KCL config module: %w", err)
 	}
 

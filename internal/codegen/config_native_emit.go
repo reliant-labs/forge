@@ -85,11 +85,21 @@ func devDatabaseDSN(projectName string) string {
 // the absolute deploy/kcl directory; cs is the checksum ledger. When cs is nil
 // or the path can't be made relative, the files are still written (untracked).
 func GenerateConfigNativeShared(fields []ConfigField, projectName, projectDir, kclDirAbs string, cs *checksums.FileChecksums) error {
+	return GenerateConfigNativeSharedRoots(fields, nil, projectName, projectDir, kclDirAbs, cs)
+}
+
+// GenerateConfigNativeSharedRoots is GenerateConfigNativeShared for a
+// composition-graph project: the module also carries ROOTS and the lambdas
+// that bind a workload to a root (RootsKCL). nil roots is the plain module.
+func GenerateConfigNativeSharedRoots(fields []ConfigField, roots []GraphRoot, projectName, projectDir, kclDirAbs string, cs *checksums.FileChecksums) error {
 	body, err := GenerateConfigKCL(fields, projectName)
 	if err != nil {
 		return fmt.Errorf("generate config module: %w", err)
 	}
-	return writeConfigNativeShared(body, projectDir, kclDirAbs, cs)
+	if roots == nil && GraphComposition(projectDir) {
+		roots = []GraphRoot{DefaultServerRoot(fields)}
+	}
+	return writeConfigNativeShared(body+RootsKCL(roots), projectDir, kclDirAbs, cs)
 }
 
 // GenerateConfigNativeSharedPerBinary is the per-binary form of
@@ -101,11 +111,69 @@ func GenerateConfigNativeShared(fields []ConfigField, projectName, projectDir, k
 // non-empty (a project may keep a shared AppConfig alongside per-binary
 // ones, and mid-migration every existing env file still names it).
 func GenerateConfigNativeSharedPerBinary(rootFields []ConfigField, perBinary []BinaryConfigFields, projectName, projectDir, kclDirAbs string, cs *checksums.FileChecksums) error {
+	return GenerateConfigNativeSharedPerBinaryRoots(rootFields, perBinary, nil, projectName, projectDir, kclDirAbs, cs)
+}
+
+// GenerateConfigNativeSharedPerBinaryRoots is GenerateConfigNativeSharedPerBinary
+// for a composition-graph project: the module also carries ROOTS, each root's
+// env the leaves it reaches across every config its process loads, projected
+// through the primary binary's env map (perBinaryRootsEnv). nil roots is the
+// default `server` root, as GenerateConfigNativeSharedRoots has it.
+func GenerateConfigNativeSharedPerBinaryRoots(rootFields []ConfigField, perBinary []BinaryConfigFields, roots []GraphRoot, projectName, projectDir, kclDirAbs string, cs *checksums.FileChecksums) error {
 	body, err := GenerateConfigKCLPerBinary(rootFields, perBinary, projectName)
 	if err != nil {
 		return fmt.Errorf("generate per-binary config module: %w", err)
 	}
+	if GraphComposition(projectDir) {
+		if env, defaultRoot, ok := perBinaryRootsEnv(projectDir, rootFields, perBinary); ok {
+			if roots == nil {
+				roots = []GraphRoot{defaultRoot}
+			}
+			body += RootsKCLFor(roots, env)
+		}
+	}
 	return writeConfigNativeShared(body, projectDir, kclDirAbs, cs)
+}
+
+// perBinaryRootsEnv is how a per-binary project projects a root's process
+// env, and its default `server` root: through appConfigEnvMap when the
+// project keeps an AppConfig and binds no config to the primary binary;
+// through the primary binary's process selector when it binds config per
+// command; through its root config's own lambda when that is all it binds.
+// ok is false when no one lambda is a root's env: no primary binary, or a
+// project-global AppConfig beside configs bound to the primary binary.
+func perBinaryRootsEnv(projectDir string, rootFields []ConfigField, perBinary []BinaryConfigFields) (env RootsEnv, defaultRoot GraphRoot, ok bool) {
+	treeDir := primaryCmdTreeDir(projectDir)
+	if treeDir == "" {
+		return RootsEnv{}, GraphRoot{}, false
+	}
+	binary := filepath.Base(filepath.Dir(treeDir))
+	var root *BinaryConfigFields
+	bound := false
+	for i := range perBinary {
+		bc := &perBinary[i]
+		if bc.Binary != binary {
+			continue
+		}
+		bound = true
+		if root == nil && len(bc.Command) == 0 && len(bc.Subtrees) == 0 {
+			root = bc
+		}
+	}
+	switch {
+	case len(rootFields) > 0 && !bound:
+		return appConfigRootsEnv, DefaultServerRoot(rootFields), true
+	case len(rootFields) > 0 || root == nil:
+		return RootsEnv{}, GraphRoot{}, false
+	}
+	defaultRoot = DefaultServerRootLoads(root.Fields, perBinary, binary, root.MessageName)
+	for _, ps := range ProcessSelectorsFrom(perBinary) {
+		if ps.Binary == binary {
+			return RootsEnv{ConfigType: ps.SchemaName(), EnvMap: ps.LambdaName(), Argv: true}, defaultRoot, true
+		}
+	}
+	schema, lambda := KCLConfigName(root.MessageName)
+	return RootsEnv{ConfigType: schema, EnvMap: lambda}, defaultRoot, true
 }
 
 // writeConfigNativeShared writes the generated config module to

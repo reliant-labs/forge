@@ -55,3 +55,15 @@ github.com/cyphar/filepath-securejoin  # BSD-3-Clause AND MPL-2.0; we link only 
 # Embedded is public domain, and the Go port carries the same grant. Verified
 # by reading the file directly; permissive, no obligations.
 github.com/xi2/xz                    # public domain (XZ Embedded port), non-standard LICENSE text
+
+# --- License added upstream after the tagged release ---
+#
+# nexus-proto-annotations arrives with the Temporal Go SDK (pkg/temporalotel).
+# Its v0.1.0 tag (e558d6edaf, 2026-03-30) shipped no LICENSE file, so the
+# module zip has none to classify. The copyright holder, Temporal Technologies,
+# added an MIT LICENSE in the very next commit (835bd8d49c, 2026-06-29, "Add
+# MIT license"; https://github.com/nexus-rpc/nexus-proto-annotations/blob/main/LICENSE),
+# and that commit changes nothing else — v0.1.0's code is byte-identical to
+# the MIT-licensed tree. GitHub reports the repository as MIT. Drop this entry
+# once the SDK pins a tag that contains the LICENSE.
+github.com/nexus-rpc/nexus-proto-annotations  # MIT (added upstream one commit after v0.1.0; code identical)

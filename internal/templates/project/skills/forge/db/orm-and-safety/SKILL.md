@@ -113,3 +113,21 @@ value's spelling), say so in the file with `-- forge:allow-in-transaction: <why>
 
 `ALTER TYPE … ADD VALUE` on its own is not refused: postgres has allowed it inside a
 transaction since 12, and every postgres forge provisions or tests against is 16 or newer.
+
+## Entity field types
+
+The entity struct's field names and types are Go's, and lossless against the
+column:
+
+- Names spell initialisms in capitals: `id` → `ID`, `org_id` → `OrgID`,
+  `api_key` → `APIKey` (a plural stays: `user_ids` → `UserIds`). The
+  `<E>Field*` and `<E>Constraint*` constants follow.
+- An integer is as wide as its column: `INTEGER` → `int32`, `SMALLINT` →
+  `int16`, `BIGINT` → `int64`.
+- `JSONB` / `JSON` is `json.RawMessage` — the document's bytes, nil for NULL
+  (`jsonb[]` stays `[]string`).
+- `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares another type for
+  one column: a named enum over an integer, `map[string]any` over json,
+  `time.Duration` over a bigint, or `<import path>[;<pkg>].<Type>`. The type
+  must scan and bind by Bun's rules. forge generates no wire conversion for
+  such a column: a CRUD rpc carrying it fails generate naming it.

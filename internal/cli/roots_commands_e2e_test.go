@@ -3,11 +3,13 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -49,6 +51,12 @@ func TestE2EOneCommandPerRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "tick")
+	// The tick worker needs no configuration: drop the root config the
+	// scaffold hands it, so its root reaches only the process fields (a
+	// component with settings takes a config block of its own).
+	tickPath := filepath.Join(projectDir, "internal", "workers", "tick", "worker.go")
+	mustReplaceInFile(t, tickPath, "\tConfig *config.Config\n", "")
+	mustReplaceInFile(t, tickPath, "\n\t\"github.com/test/roots/pkg/config\"\n", "\n")
 
 	rootsGo := `package app
 
@@ -75,14 +83,62 @@ type Worker struct {
 
 	cmdDir := filepath.Join(projectDir, "cmd", "roots", "cmd")
 	assertPathNotExistsE2E(t, filepath.Join(cmdDir, "server.go"))
-	gen := readFileE2E(t, filepath.Join(cmdDir, "roots_gen.go"))
+	gen := strings.Join(strings.Fields(readFileE2E(t, filepath.Join(cmdDir, "roots_gen.go"))), " ")
 	for _, want := range []string{
-		`rootSpec{Name: "server", Migrate: true, Run: (*app.Graph).RunServer}`,
-		`rootSpec{Name: "worker", Migrate: false, Run: (*app.Graph).RunWorker}`,
+		`rootSpec{ Name: "server", Migrate: true, Config: []string{`,
+		`rootSpec{ Name: "worker", Migrate: false, Config: []string{`,
+		`Run: (*app.Graph).RunServer, })`,
+		`Run: (*app.Graph).RunWorker, })`,
 	} {
 		if !strings.Contains(gen, want) {
 			t.Errorf("roots_gen.go lacks %q:\n%s", want, gen)
 		}
+	}
+	workerReach := gen[strings.Index(gen, `Name: "worker"`):]
+	workerReach = workerReach[:strings.Index(workerReach, "Run:")]
+	if strings.Contains(workerReach, `"database_url"`) || !strings.Contains(workerReach, `"port"`) {
+		t.Errorf("the worker root reaches the process fields and not the database: %s", workerReach)
+	}
+
+	// ── Deploy: each workload's env is what its root reaches ────────────
+	probe := `import config_gen
+import forge
+import forge.workloads as fw
+
+_cfg = config_gen.AppConfig {}
+_build = forge.GoBuild {cmd = "./cmd/roots", output_name = "roots"}
+_api = fw.Workload {name = "api", kind = "service", image = "x.invalid/roots", build = _build, config_secrets = []} | config_gen.root_of("server")
+_tick = fw.Workload {name = "tick", kind = "worker", image = "x.invalid/roots", build = _build} | config_gen.root_of("worker")
+api_env = sorted([_k for _k in config_gen.workloadEnvMap(_cfg, _api)])
+worker_env = sorted([_k for _k in config_gen.workloadEnvMap(_cfg, _tick)])
+worker_args = _tick.args
+`
+	probePath := filepath.Join(projectDir, "deploy", "kcl", "roots_probe.k")
+	if err := os.WriteFile(probePath, []byte(probe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evalList := func(field string) []string {
+		t.Helper()
+		var out []string
+		if err := json.Unmarshal([]byte(runCmdStdout(t, projectDir, forgeBin, "kcl", "eval", probePath, "-S", field, "--format", "json")), &out); err != nil {
+			t.Fatalf("eval %s: %v", field, err)
+		}
+		return out
+	}
+	apiEnv, workerEnv := evalList("api_env"), evalList("worker_env")
+	if strings.Join(evalList("worker_args"), " ") != "worker" {
+		t.Errorf("root_of(\"worker\") must set args [worker]")
+	}
+	if !slices.Contains(apiEnv, "DATABASE_URL") || slices.Contains(workerEnv, "DATABASE_URL") {
+		t.Errorf("DATABASE_URL reaches the api (its root opens the database) and not the worker:\napi:    %v\nworker: %v", apiEnv, workerEnv)
+	}
+	for _, k := range workerEnv {
+		if !slices.Contains(apiEnv, k) {
+			t.Errorf("the worker's env %s is not one the api root reaches too: in a scaffold the API's providers take the whole config", k)
+		}
+	}
+	if len(workerEnv) >= len(apiEnv) {
+		t.Errorf("the worker root reaches less than the api root: worker %d keys, api %d", len(workerEnv), len(apiEnv))
 	}
 
 	bin := filepath.Join(projectDir, "roots-bin")
@@ -105,7 +161,9 @@ type Worker struct {
 	if strings.Contains(serverLog, "worker started") {
 		t.Errorf("`server` started the worker its root does not reach:\n%s", serverLog)
 	}
-	workerLog := bootRoot(t, bin, projectDir, dsn, "worker", map[string]int{ping: http.StatusNotFound})
+	// No DATABASE_URL at all: the worker root does not reach it, so the
+	// process starts without it (config.LoadReach).
+	workerLog := bootRoot(t, bin, projectDir, "", "worker", map[string]int{ping: http.StatusNotFound})
 	if !strings.Contains(workerLog, `"worker":"tick"`) || !strings.Contains(workerLog, "worker started") {
 		t.Errorf("`worker` never started the tick worker:\n%s", workerLog)
 	}
@@ -118,16 +176,23 @@ type Worker struct {
 // status, stops it with SIGTERM and returns its output.
 func bootRoot(t *testing.T, bin, projectDir, dsn, command string, want map[string]int) string {
 	t.Helper()
+	return bootRootArgs(t, bin, projectDir, []string{"DATABASE_URL=" + dsn}, []string{command}, want)
+}
+
+// bootRootArgs is bootRoot for the command line args, with env added to the
+// process's environment.
+func bootRootArgs(t *testing.T, bin, projectDir string, env, args []string, want map[string]int) string {
+	t.Helper()
+	command := strings.Join(args, " ")
 	port := freePortE2E(t)
-	cmd := exec.Command(bin, command)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL="+dsn,
 		"ENVIRONMENT=development",
 		"PPROF_ADDR=",
 		"PRE_STOP_DELAY=-1s",
-	)
+	), env...)
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out

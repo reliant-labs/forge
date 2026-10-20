@@ -429,6 +429,18 @@ type EntityColumn struct {
 	// reminder, and it arms the `unscoped_auth` audit gate. See
 	// schemadef.ColumnMarkerOwner.
 	Owner bool `json:",omitempty"`
+	// GoType is a `forge:go-type=<spec>` declaration verbatim
+	// (schemadef.ColumnMarkerGoType, parsed by ParseGoTypeOverride): the Go
+	// type the entity struct declares for the column instead of the one its
+	// SQL type projects to. "" for none.
+	GoType string `json:",omitempty"`
+
+	// ZeroRejected marks a column a single-column CHECK keeps from ever
+	// holding its Go zero — an enum vocabulary without '' (or 0), a bound
+	// that excludes 0. Its zero then means "unset" without ambiguity, so a
+	// DEFAULT applies through ,nullzero rather than a pointer field
+	// (ColumnInsertDefault).
+	ZeroRejected bool `json:",omitempty"`
 }
 
 // FieldKind classifies a proto field for code generation branching.

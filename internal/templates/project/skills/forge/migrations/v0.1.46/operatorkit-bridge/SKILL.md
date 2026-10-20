@@ -20,12 +20,21 @@ when it runs operators. Nothing else in lifecyclekit changed.
 
 ## Steps
 
-1. In `internal/app/lifecycle.go` (yours; `forge generate` does not rewrite
-   it), import `github.com/reliant-labs/forge/pkg/appkit/operatorkit` and
-   replace `lifecyclekit.Controller`, `lifecyclekit.Options` and
-   `lifecyclekit.Run` with `operatorkit.Controller`, `operatorkit.Options` and
+The rename is mechanical, so forge makes it: `forge project upgrade` runs it
+on its own when the project's baseline predates v0.1.46, and
+`forge fix operatorkit` runs it on request (`--dry-run` lists the files it
+would rewrite). Either way:
+
+1. Every reference to `lifecyclekit.Controller`, `lifecyclekit.Options` and
+   `lifecyclekit.Run` in your own Go files — `internal/app/lifecycle.go` is
+   the usual one — becomes `operatorkit.Controller`, `operatorkit.Options` and
    `operatorkit.Run`. The signatures are identical.
-2. Any other file naming those three lifecyclekit symbols: the same rename.
+2. `github.com/reliant-labs/forge/pkg/appkit/operatorkit` is imported where it
+   is now used, and the `lifecyclekit` import is dropped from a file that no
+   longer names anything else from it (`WrapWorker`, `Singleton` and
+   `Supervise` stay in lifecyclekit).
+
+By hand, the same two edits.
 
 ## Verify
 

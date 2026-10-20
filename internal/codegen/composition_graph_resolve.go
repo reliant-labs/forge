@@ -7,7 +7,8 @@
 //
 //  1. a graph INPUT, by type: context.Context → g.Ctx, *config.Config →
 //     g.Cfg, *slog.Logger → g.Log, serverkit.Config → g.ServerCfg,
-//     *serverkit.Probes → g.Probes;
+//     *serverkit.Probes → g.Probes, and each config the primary binary binds
+//     beside the root config, *config.<Message> → g.<Message>;
 //  2. a config BLOCK the root config composes, by type → g.Cfg.Get<Block>();
 //  3. a framework SEAM: the clock, the id generator, a generated store
 //     (<orm pkg>.NewStore over whatever node produces the orm.Context);
@@ -39,6 +40,9 @@ type graphResolver struct {
 	blocks       configBlocks
 	configFields map[string]InfraField
 	store        storeSeam // the generated store, in database.orm.package
+	// configInputs are the primary binary's configs beside the root
+	// config, by message name: each is the graph input g.<Message>.
+	configInputs map[string]bool
 }
 
 // graphProblem is an unresolvable key: missing, or ambiguous.
@@ -80,6 +84,14 @@ func (r *graphResolver) inputFor(want types.Type, written string) (string, bool)
 	// resolve that by the written spelling too.
 	if written == "*config.Config" {
 		return "g.Cfg", true
+	}
+	// A config the primary binary binds beside the root config is a graph
+	// input of its own: *config.<Message> (an alias of the generated
+	// message, either spelling) is g.<Message>.
+	for name := range r.configInputs {
+		if q == "*"+r.module+"/pkg/config."+name || q == "*"+r.module+"/gen/config/v1."+name || written == "*config."+name {
+			return "g." + name, true
+		}
 	}
 	return "", false
 }

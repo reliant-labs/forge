@@ -83,6 +83,9 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	for _, e := range envs {
 		var apiSecrets []string
 		data := templates.EnvTemplateData{
+			// A new project composes with the graph, so its API is bound to
+			// the `server` root and its env is what that root reaches.
+			Roots:       true,
 			ProjectName: g.Name,
 			EnvName:     e.env,
 			// The API holds the dev env's `-api` port key in every

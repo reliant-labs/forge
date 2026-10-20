@@ -29,6 +29,14 @@
 //	                                    a comment, a string literal, or a
 //	                                    jsonb ?/?|/?& operator
 //	                                    (see bun_placeholders.go)
+//	forgeconv-deps-surface              a Deps interface field declares
+//	                                    methods the package never calls
+//	forgeconv-no-container-deps         a Deps field holds a container
+//	                                    (internal/app types, cmd.Deps, a
+//	                                    locator, `any`)
+//	forgeconv-deps-no-downcast          a type assertion from a Deps field
+//	                                    to a concrete type
+//	                                    (see least_knowledge.go)
 //
 // `auth_required` is lint-free here: it is enforced at runtime (projected
 // into pkg/middleware/procedures_gen.go, read fail-closed by the auth

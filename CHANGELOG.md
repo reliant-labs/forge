@@ -14,6 +14,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`forge/pkg/activity`) records how a change arrived, as in "sean promoted
   v1.7.44 via CLI". `middleware.DefaultCORSAllowHeaders` admits `Forge-Via`,
   so a browser console can send it cross-origin.
+- **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
+  `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
+  opened through `otelsql`, so each statement run under a span gets a CLIENT
+  child span named `<OP> <table>` (`SELECT chats`), plus `BEGIN`, `COMMIT`,
+  `ROLLBACK` and `db.connect`. `db.query.text` is the statement with every
+  literal replaced by `?` (`dbtrace.SanitizeSQL`); bind arguments are never
+  recorded. Ping, session-reset, prepare and per-row spans are off, and a
+  statement with no span in its context opens none, so an un-rooted poller
+  does not produce one-span traces. Before this, the only query spans came
+  from bun's hook, which hand-written `database/sql` never reaches: prod had
+  none in 24 hours. `orm.NewClientWithDB` keeps bunotel's query histogram but
+  drops its spans when `dbtrace.IsTraced(db)`, so ORM queries are not spanned
+  twice. `serverkit.PgxConn` reaches the `*pgx.Conn` under a `sql.Conn.Raw`
+  driver connection through the tracing and pooler-drain wrappers.
+
+- **`observe.NewTraceHandler` records WARN and ERROR lines on the span, and
+  `forge/pkg/observe/observetest.AssertLogCorrelation` pins log↔trace joins.**
+  A record at WARN or above, logged with a recording span in its context, is
+  added to that span as a `log.warn` / `log.error` event (`observe.LogEventWarn`,
+  `observe.LogEventError`) with `log.message`, `log.severity` and the error's
+  `exception.message`, each capped at 512 bytes. The tail sampler can then keep
+  a trace whose logs complained instead of keeping its log lines and dropping
+  the trace (in prod only 10% of logged trace ids resolved to a stored trace).
+  The handler sits inside `NewErrorClassHandler` in serverkit's logger, so a
+  user error lowered to INFO adds no event.
+  `AssertLogCorrelation(t, logger, output)` logs through an application's real
+  logger under a span and fails unless the lines carry its
+  `trace_id`/`span_id` and the WARN became an event: the regression test for
+  an app that builds its own logger.
+
 - **One command per root** (composition graph, PR 4). In a graph-mode
   project every root — each `//forge:root` struct in `internal/app`, or the
   generated default `Server` — gets one cobra command in the forge-owned
@@ -35,6 +65,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the scaffolded `server.go` is gone (its command is generated), and a
   `serve.go` from before this change — no `runRoot` — keeps its own commands
   while generate says what to add.
+
+- **`forge lint --graph`: the composition graph, judged whole** (composition
+  graph, PR 5). It assembles the graph exactly as `forge generate` does and
+  fails on an error: a service, package, worker, operator or provider no
+  root reaches (never constructed, so a service there is served by no
+  process — what the boot-time `RequireComplete` gate caught before the
+  graph), and a listener serving a service whose `(forge.v1.service).audience`
+  differs from its chain's authenticator's — the authenticator's provider
+  func declares it with the new `//forge:audience <name>` (the scaffolded
+  `NewUserAuth` is `//forge:audience user`). A provider kept for components
+  to come carries `//forge:standby` (the scaffolded `NewORM` and
+  `NewHTTPClient` do). The lane runs in the full sweep and is whole-project
+  under `--scope`; a legacy-composition project skips it.
+- **Least-knowledge rules in `forge lint --conventions`** (composition graph
+  §2): `forgeconv-deps-surface` (a Deps interface field declaring methods
+  the package never calls through it, read with go/types),
+  `forgeconv-no-container-deps` (an `internal/app` type, `cmd.Deps`, a
+  `map[string]any` locator or `any` in Deps) and
+  `forgeconv-deps-no-downcast` (a type assertion from a Deps field to a
+  concrete type). They land as warnings; under `--strict`, deps-surface is
+  an error for a foreign interface of more than ten methods with unused
+  ones, and the other two are errors.
+- **`forge fix narrow-deps <pkg>`** declares, in the package (`contract.go`,
+  or a new `deps.go`), the interface holding exactly the methods the package
+  calls through each wide foreign Deps field, retypes the field, and writes
+  its mock; `forge generate` keeps a `deps.go`'s `mock_gen.go` in step.
+  `compose.go` needs no change. A field whose value the package passes on,
+  type-asserts, or never calls is left alone, with the reason.
+
+### Fixed
+
+- **A freshly scaffolded operator passes `forge lint --contract`.** An
+  `internal/operators/<name>` package declaring `SetupWithManager` is exempt
+  from `requirecontract` structurally, as a worker is.
+- **`serverkit.Run` serves pprof through the `Pprof` component** instead of
+  its own copy.
 
 ### Removed
 
@@ -413,6 +479,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
+  finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
+  that one rule's findings and ignored for every other, so
+  `lint.rules: {forgeconv-activity-declared: warn}` was accepted by the config
+  loader and then did nothing: the rule stayed an error, and there was no way
+  to adopt it incrementally. `off`, `warn`, `error` and the `*` wildcard now
+  behave the same for every proto and Go-tree convention rule, after
+  `forge:lint-disable` suppression.
+
 - **Parallel `forge cluster up`s no longer lose each other's kubectl
   context.** `k3d cluster create`, `k3d kubeconfig merge`,
   `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
@@ -637,6 +712,36 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **The merge driver is set up per worktree, and forge says what it changed.**
+  Any forge command run in a project (`forge db migration rebase` was the one
+  noticed) pointed the repository's `merge.forge-generated.driver` at a forge
+  binary and routed forge's generated and state files to it in
+  `info/attributes`, silently, in the repository's common git directory that
+  every linked worktree reads. The command names one forge binary, and
+  worktrees are on different branches with different pins, so the last forge to
+  run decided how every other agent's rebase merged. The command now goes in
+  the worktree's own `config.worktree` (forge enables `extensions.worktreeConfig`
+  once, which git has honoured since 2.20 and go-git accepts; it declines for a
+  bare repository or an explicit `core.worktree`, and
+  `FORGE_MERGE_DRIVER_SHARED=1` keeps the old shared placement), so a worktree
+  merges with the forge its own commands run. The routes are no longer copied
+  into the shared `info/attributes` when the project's committed
+  `.gitattributes` already declares them, as every scaffolded project's does.
+  What is still written is reported: each setting with its scope and old value,
+  the git directory, how many worktrees share it, and the undo. A run that
+  changes nothing stays silent, and `FORGE_NO_MERGE_DRIVER=1` still opts out.
+- **A composite-primary-key table gets a store.** It used to get no entity at
+  all, only an info line, so counters and join tables (reliant:
+  `message_order_counters`, `project_daemons`, `connection_secrets`, …) were
+  hand SQL. The entity struct and store now project, addressed by the WHOLE
+  key: `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` take one parameter
+  per key column, `Upsert<E>` resolves a conflict on every key column, and
+  Create/List/Count/Update/UpdateMasked address the row by the struct's key
+  fields. `pkg/crud.Repo` gains `GetByPK` / `DeleteByPK` (a key entity), and
+  its Update, UpdateMasked, Upsert and zero-row classification address a
+  composite key by every column (Bun's `WherePK`); PK columns stay out of the
+  SET list. CRUD wiring still needs a single-column key, and there is no ULID
+  fill or cursor pagination for a composite key.
 - **Entities are named from their table, and a CRUD rpc that matches no table
   is refused.** A CRUD rpc's entity found its table only as
   `Pluralize(snake(<E>))`, so a singular-named table (`daemon_attachment`,

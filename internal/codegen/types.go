@@ -542,6 +542,16 @@ type ConfigField struct {
 	ProtoFile string `json:",omitempty"`
 
 	// EnvVarAliases is (forge.v1.config).env_var_aliases: the further env
+	// EnvPrefix and EnvSuffix bind a map<string, scalar> field to an env
+	// FAMILY: every variable named <EnvPrefix><KEY><EnvSuffix> is one entry
+	// ((forge.v1.config).env_prefix / env_suffix). Empty for an ordinary
+	// field. MapValueType is the map's value kind ("string", "bool", ...).
+	EnvPrefix    string `json:",omitempty"`
+	EnvSuffix    string `json:",omitempty"`
+	MapValueType string `json:",omitempty"`
+	// AllowedValues is the field's closed value set
+	// ((forge.v1.config).allowed_values); empty for an open one.
+	AllowedValues []string `json:",omitempty"`
 	// vars the runtime loader reads, in order, when EnvVar is unset. No
 	// generator projects them — the KCL env map, the secret store key and the
 	// flag's help name EnvVar alone, so forge's own setters converge on one
@@ -566,6 +576,9 @@ type ConfigField struct {
 type EnvVarAlias struct {
 	Name       string
 	Deprecated bool `json:",omitempty"`
+	// Values maps the alias's own values onto the field's
+	// (EnvVarAlias.values in forge.proto); empty for a plain alias.
+	Values map[string]string `json:",omitempty"`
 }
 
 // KCLPath is the dotted path a config.k instance authors this field by, and

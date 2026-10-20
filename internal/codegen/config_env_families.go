@@ -88,73 +88,15 @@ func ValidateConfigEnvFamilies(messages []ConfigMessage) error {
 			if f.EnvPrefix == "" && f.EnvSuffix == "" {
 				continue
 			}
-			where := m.Name + "." + f.Name
-			if f.ProtoFile != "" {
-				where += " (" + f.ProtoFile + ")"
-			}
-			switch {
-			case f.EnvPrefix == "":
-				refuse(fmt.Sprintf("%s: env_suffix without env_prefix. A family is <env_prefix><KEY><env_suffix>; set env_prefix.", where))
-				continue
-			case !envVarNamePattern.MatchString(f.EnvPrefix):
-				refuse(fmt.Sprintf("%s: env_prefix %q does not begin an environment variable name (letters, digits and underscores, not starting with a digit).", where, f.EnvPrefix))
-			case !envNameTailPattern.MatchString(f.EnvSuffix):
-				refuse(fmt.Sprintf("%s: env_suffix %q is not part of an environment variable name (letters, digits and underscores).", where, f.EnvSuffix))
-			}
-			if fe, ok := frontendOwned[m.Name]; ok {
-				refuse(fmt.Sprintf("%s: a frontend config field takes no env_prefix — frontend %q reads its values from the rendered config document, not from an environment.", where, fe))
-			}
-			if f.MapValueType == "" || !familyScalarTypes[f.MapValueType] {
-				refuse(fmt.Sprintf("%s: env_prefix needs a map<string, V> field with a scalar V (string, bool, a number); each variable is one entry. A set the proto can name is fields.", where))
-			}
-			var also []string
-			if f.EnvVar != "" {
-				also = append(also, "env_var")
-			}
-			if len(f.EnvVarAliases) > 0 {
-				also = append(also, "env_var_aliases")
-			}
-			if f.Flag != "" {
-				also = append(also, "flag")
-			}
-			if f.DefaultValue != "" {
-				also = append(also, "default_value")
-			}
-			if len(also) > 0 {
-				refuse(fmt.Sprintf("%s: an env_prefix family takes no %s: its names are its pattern %s, it has no flag form, and an open-ended map has no default. Remove them.",
-					where, strings.Join(also, " or "), familyPatternOf(f)))
+			for _, p := range familyShapeProblems(m, f, frontendOwned) {
+				refuse(p)
 			}
 		}
 	}
 
 	for _, surface := range configEnvSurfaces(messages, byName, composed) {
-		var families, plain []envLeaf
-		for _, leaf := range surface.leaves {
-			if leaf.field.EnvPrefix != "" {
-				families = append(families, leaf)
-			} else {
-				plain = append(plain, leaf)
-			}
-		}
-		for i, a := range families {
-			for _, b := range families[i+1:] {
-				if familiesOverlap(a.field, b.field) {
-					refuse(fmt.Sprintf("%s reads two env families that can claim the same variable: %s (%s) and %s (%s). Give them prefixes or suffixes neither extends.",
-						surface.name, familyPatternOf(a.field), a.path, familyPatternOf(b.field), b.path))
-				}
-			}
-			for _, p := range plain {
-				names := []string{p.field.EnvVar}
-				for _, al := range p.field.EnvVarAliases {
-					names = append(names, al.Name)
-				}
-				for _, n := range names {
-					if n != "" && familyClaims(a.field, n) {
-						refuse(fmt.Sprintf("%s reads %s as a name of %s, and the env family %s (%s) claims it too. Rename one.",
-							surface.name, n, p.path, familyPatternOf(a.field), a.path))
-					}
-				}
-			}
+		for _, p := range familyCollisions(surface) {
+			refuse(p)
 		}
 	}
 
@@ -169,4 +111,82 @@ func ValidateConfigEnvFamilies(messages []ConfigMessage) error {
 	}
 	b.WriteString("An env family loads every variable named <env_prefix><KEY><env_suffix> into a map; see ConfigFieldOptions.env_prefix in forge/v1/forge.proto.")
 	return fmt.Errorf("%s", b.String())
+}
+
+// familyShapeProblems explains each way one field's env family cannot be
+// loaded as declared.
+func familyShapeProblems(m ConfigMessage, f ConfigField, frontendOwned map[string]string) []string {
+	where := m.Name + "." + f.Name
+	if f.ProtoFile != "" {
+		where += " (" + f.ProtoFile + ")"
+	}
+	var out []string
+	switch {
+	case f.EnvPrefix == "":
+		return []string{fmt.Sprintf("%s: env_suffix without env_prefix. A family is <env_prefix><KEY><env_suffix>; set env_prefix.", where)}
+	case !envVarNamePattern.MatchString(f.EnvPrefix):
+		out = append(out, fmt.Sprintf("%s: env_prefix %q does not begin an environment variable name (letters, digits and underscores, not starting with a digit).", where, f.EnvPrefix))
+	case !envNameTailPattern.MatchString(f.EnvSuffix):
+		out = append(out, fmt.Sprintf("%s: env_suffix %q is not part of an environment variable name (letters, digits and underscores).", where, f.EnvSuffix))
+	}
+	if fe, ok := frontendOwned[m.Name]; ok {
+		out = append(out, fmt.Sprintf("%s: a frontend config field takes no env_prefix — frontend %q reads its values from the rendered config document, not from an environment.", where, fe))
+	}
+	if f.MapValueType == "" || !familyScalarTypes[f.MapValueType] {
+		out = append(out, fmt.Sprintf("%s: env_prefix needs a map<string, V> field with a scalar V (string, bool, a number); each variable is one entry. A set the proto can name is fields.", where))
+	}
+	var also []string
+	if f.EnvVar != "" {
+		also = append(also, "env_var")
+	}
+	if len(f.EnvVarAliases) > 0 {
+		also = append(also, "env_var_aliases")
+	}
+	if f.Flag != "" {
+		also = append(also, "flag")
+	}
+	if f.DefaultValue != "" {
+		also = append(also, "default_value")
+	}
+	if len(also) > 0 {
+		out = append(out, fmt.Sprintf("%s: an env_prefix family takes no %s: its names are its pattern %s, it has no flag form, and an open-ended map has no default. Remove them.",
+			where, strings.Join(also, " or "), familyPatternOf(f)))
+	}
+	return out
+}
+
+// familyCollisions lists, for one process's leaves, every pair of families
+// that could claim the same variable and every family that claims another
+// field's env_var or alias.
+func familyCollisions(surface envSurface) []string {
+	var families, plain []envLeaf
+	for _, leaf := range surface.leaves {
+		if leaf.field.EnvPrefix != "" {
+			families = append(families, leaf)
+		} else {
+			plain = append(plain, leaf)
+		}
+	}
+	var out []string
+	for i, a := range families {
+		for _, b := range families[i+1:] {
+			if familiesOverlap(a.field, b.field) {
+				out = append(out, fmt.Sprintf("%s reads two env families that can claim the same variable: %s (%s) and %s (%s). Give them prefixes or suffixes neither extends.",
+					surface.name, familyPatternOf(a.field), a.path, familyPatternOf(b.field), b.path))
+			}
+		}
+		for _, p := range plain {
+			names := []string{p.field.EnvVar}
+			for _, al := range p.field.EnvVarAliases {
+				names = append(names, al.Name)
+			}
+			for _, n := range names {
+				if n != "" && familyClaims(a.field, n) {
+					out = append(out, fmt.Sprintf("%s reads %s as a name of %s, and the env family %s (%s) claims it too. Rename one.",
+						surface.name, n, p.path, familyPatternOf(a.field), a.path))
+				}
+			}
+		}
+	}
+	return out
 }

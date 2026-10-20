@@ -141,11 +141,13 @@ func TestEnvFamily_FailsLoud(t *testing.T) {
 func TestEnvFamily_AllowedValuesConstrainEveryValue(t *testing.T) {
 	m := buildFamilyMessage(t)
 	t.Setenv("FAMTEST_TIER_ACME", "enterprise")
-	if err := LoadInto(nil, m.Interface()); err != nil {
-		t.Fatal(err)
+	// Loading validates, so the load itself refuses the out-of-set value.
+	if err := LoadInto(nil, m.Interface()); err == nil || !strings.Contains(err.Error(), `config field tiers: value "enterprise" is not one of the allowed values [free pro]`) {
+		t.Fatalf("LoadInto = %v, want the out-of-set tier refused", err)
 	}
-	if err := Validate(m.Interface()); err == nil || !strings.Contains(err.Error(), `value "enterprise" is not one of the allowed values [free pro]`) {
-		t.Fatalf("Validate = %v, want the out-of-set tier refused", err)
+	t.Setenv("FAMTEST_TIER_ACME", "pro")
+	if err := LoadInto(nil, buildFamilyMessage(t).Interface()); err != nil {
+		t.Fatalf("an in-set tier was refused: %v", err)
 	}
 }
 

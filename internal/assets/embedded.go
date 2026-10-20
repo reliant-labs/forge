@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -174,4 +175,31 @@ func writeFile(path string, content []byte) error {
 		return err
 	}
 	return atomicfile.WriteFile(path, content, 0o644)
+}
+
+// NormalizeVendoredProto canonicalizes a vendored proto for comparison with
+// the copy embedded in this binary — the one comparison `forge generate`
+// (which refreshes a stale copy) and `forge lint --vendored-protos` (which
+// reports one) both make, so the two cannot disagree about what "stale" is.
+//
+// The go_package line is dropped from both sides: WriteForgeV1Proto rewrites
+// it on purpose, so it differs in every project, and the value forge writes
+// has itself changed across versions. CRLF and trailing whitespace are
+// normalized too, and trailing blank lines dropped: a checkout artifact is not
+// a divergence in what the file declares.
+func NormalizeVendoredProto(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " \t")
+		if strings.HasPrefix(strings.TrimSpace(trimmed), "option go_package") {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
 }

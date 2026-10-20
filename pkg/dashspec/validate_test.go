@@ -15,7 +15,7 @@ func TestValidationFailuresNameFileLineAndColumn(t *testing.T) {
   "panels": [
     {"id": "a", "title": "A", "kind": "line", "signal": "traces",
      "series": [{"label": "p", "agg": "quantile", "quantile": 1.5, "field": "span.duration"}]},
-    {"id": "a", "title": "B", "kind": "heatmap", "signal": "traces"},
+    {"id": "a", "title": "B", "kind": "pie", "signal": "traces"},
     {"id": "c", "title": "C", "kind": "line", "signal": "metrics",
      "series": [{"label": "m", "agg": "sum", "field": "orders_created"}]},
     {"id": "d", "title": "D", "kind": "number", "signal": "traces",
@@ -56,7 +56,7 @@ func TestValidationFailuresNameFileLineAndColumn(t *testing.T) {
 		}
 	}
 	for _, frag := range []string{
-		`unknown field "bogus"`, "level in (0, 1]", `duplicate panel id "a"`, `"heatmap" is not one of`,
+		`unknown field "bogus"`, "level in (0, 1]", `duplicate panel id "a"`, `"pie" is not one of`,
 		`needs "metricType"`, `field "metric.attr.x" is not valid on traces`,
 	} {
 		if !strings.Contains(got, frag) {
@@ -135,7 +135,7 @@ func TestValidationKnowsTheConsoleKindsAndRejectsUnknownOnes(t *testing.T) {
 
 	bad := []struct{ name, src, want string }{
 		{"unknown kind", panel(`"kind":"replay","signal":"traces"`), `"replay" is not one of`},
-		{"heatmap is still unknown", panel(`"kind":"heatmap","signal":"traces"`), `"heatmap" is not one of`},
+		{"pie is unknown", panel(`"kind":"pie","signal":"traces"`), `"pie" is not one of`},
 		{"issues with series", panel(`"kind":"issues","signal":"traces","series":[{"label":"a","agg":"count"}]`), `takes no "series"`},
 		{"sessions with columns", panel(`"kind":"sessions","signal":"traces","columns":["timestamp"]`), `takes no "columns"`},
 		{"funnel with group by", panel(`"kind":"funnel","signal":"traces","groupBy":["service.name"],"funnel":{"steps":["a","b"]}`), `takes no "groupBy"`},
@@ -175,9 +175,15 @@ func TestValidationKnowsTheConsoleKindsAndRejectsUnknownOnes(t *testing.T) {
 func TestEveryPanelKindTheSpecDeclaresIsKnownToTheValidator(t *testing.T) {
 	// A kind added to spec.go but not to validate.go would be a panel the
 	// console is sent and the validator rejects in a user's file.
-	for _, k := range []PanelKind{KindNumber, KindLine, KindTable, KindSearch, KindIssues, KindSessions, KindFunnel} {
+	for _, k := range []PanelKind{KindNumber, KindLine, KindTable, KindSearch, KindBar, KindHeatmap, KindSQL, KindIssues, KindSessions, KindFunnel} {
 		var src string
 		switch k {
+		case KindBar:
+			src = `"kind":"bar","signal":"traces","groupBy":["span.name"],"series":[{"label":"a","agg":"count"}]`
+		case KindHeatmap:
+			src = `"kind":"heatmap","signal":"traces","series":[{"label":"a","agg":"count","field":"span.duration"}]`
+		case KindSQL:
+			src = `"kind":"sql","sql":"SELECT count() FROM otel_traces"`
 		case KindSearch:
 			src = `"kind":"search","signal":"logs","columns":["timestamp"]`
 		case KindFunnel:

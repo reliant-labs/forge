@@ -4,6 +4,14 @@
 // re-derivation. Deleting it sticks; `forge project rescaffold <path>` re-creates it from template.
 // Source: internal/templates/project/cmd-main.go.tmpl.
 //
+{{- if .Graph}}
+// The COMPOSITION ROOT: all command logic lives under cmd/{{.Bin}}/cmd
+// (package cmd — root.go assembles the tree), and cmd.Execute builds it.
+// What a process RUNS is a root of the composition graph
+// (internal/app/graph_gen.go): `{{.Bin}} server` runs the server root — every
+// service, worker and operator in one process. Splitting a process is a new
+// root (a `//forge:root` struct in internal/app), not a new subcommand.
+{{- else}}
 // The COMPOSITION ROOT (devspace idiom): all command logic lives under
 // cmd/{{.Bin}}/cmd (package cmd — root.go assembles the tree) and its
 // command-group SUBPACKAGES (services/, workers/, operators/). This main names
@@ -22,6 +30,7 @@
 //
 // To run a specific service: `{{.Bin}} <service>`. To list services:
 // `{{.Bin}} --help`.
+{{- end}}
 package main
 
 import (

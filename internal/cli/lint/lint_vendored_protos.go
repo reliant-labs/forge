@@ -13,9 +13,12 @@
 //
 // Neither is a template (nothing renders them per-project), neither is
 // Tier-1 (no self-certifying `forge:hash` header), and neither appears in
-// .forge/hashes.json. So forge's whole upgrade path is BLIND to them: a
-// project scaffolded on an old forge keeps that vintage's copy forever,
-// and no command in forge notices or offers to update it.
+// .forge/hashes.json. So the hash-based upgrade path is BLIND to them: a
+// project scaffolded on an old forge kept that vintage's copy forever.
+// `forge generate` now re-copies a stale one (ensureVendoredProtos, with the
+// same assets.NormalizeVendoredProto comparison this check makes); this
+// check is what reports a copy between generates, or one generate keeps
+// because the project disowned it.
 //
 // WHAT THAT COSTS, from the real case this check exists to prevent: a
 // project's vendored forge.proto silently diverged for months, carrying
@@ -259,34 +262,11 @@ func collectVendoredProtoFindings(projectDir string) ([]vendoredProtoFinding, er
 	return findings, nil
 }
 
-// normalizeVendored canonicalizes a vendored proto for comparison.
-//
-// The go_package rewrite is the load-bearing part: scaffold REWRITES that
-// one line (assets.WriteForgeV1Proto) to point at forge/pkg/forgepb, so
-// it differs by design in every project and comparing it would make this
-// check fire universally. It is dropped from both sides rather than
-// pattern-matched to a specific value, because the value forge writes has
-// itself changed across versions and the check must not encode a vintage.
-//
-// CRLF and trailing whitespace are normalized for the same reason: a
-// checkout artifact is not a divergence in what the file DECLARES.
-func normalizeVendored(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	lines := strings.Split(s, "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimRight(line, " \t")
-		if strings.HasPrefix(strings.TrimSpace(trimmed), "option go_package") {
-			continue
-		}
-		out = append(out, trimmed)
-	}
-	// Trailing blank lines carry no meaning in proto.
-	for len(out) > 0 && out[len(out)-1] == "" {
-		out = out[:len(out)-1]
-	}
-	return strings.Join(out, "\n")
-}
+// normalizeVendored canonicalizes a vendored proto for comparison — the
+// go_package rewrite, CRLF and trailing whitespace are not divergence. It is
+// assets.NormalizeVendoredProto, shared with `forge generate`, which
+// refreshes exactly the copies this check would report.
+func normalizeVendored(s string) string { return assets.NormalizeVendoredProto(s) }
 
 // vendoredProtoDiff renders a bounded line difference between forge's
 // copy (want) and the project's (got).

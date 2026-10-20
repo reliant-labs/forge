@@ -93,7 +93,7 @@ func DiscardLogger() *slog.Logger {
 // rows. The first call in a process boots the shared server (downloading
 // the postgres binary on a fresh machine, or connecting to
 // FORGE_TEST_POSTGRES_URL); subsequent calls only CREATE DATABASE.
-func NewPostgresDB(t *testing.T) orm.Context {
+func NewPostgresDB(t testing.TB) orm.Context {
 	t.Helper()
 	db, cleanup, err := pgtest.New()
 	if err != nil {
@@ -130,7 +130,7 @@ func NewPostgresDB(t *testing.T) orm.Context {
 // production runs — so there is no portability subset to honor. A
 // migration that postgres rejects fails loudly here (t.Fatalf names the
 // file).
-func NewMigratedPostgresDB(t *testing.T, migrations fs.FS) orm.Context {
+func NewMigratedPostgresDB(t testing.TB, migrations fs.FS) orm.Context {
 	t.Helper()
 	key, err := migrationsKey(migrations)
 	if err != nil {

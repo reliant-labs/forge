@@ -69,17 +69,6 @@ var quarantine = []quarantined{
 	// ── Discovery results that never reach the consumer ─────────────────
 	{
 		Rule: RulePhantomField,
-		Key:  "internal/codegen.InventoryGenInput.Workers",
-		Cost: "GenerateInventory passes in.Workers to CollisionCounts, and no caller populates it, so " +
-			"worker name collisions are counted against an always-nil slice. Owner: internal/codegen.",
-	},
-	{
-		Rule: RulePhantomField,
-		Key:  "internal/codegen.InventoryGenInput.Operators",
-		Cost: "Same call, same nil: operator names never take part in collision counting. Owner: internal/codegen.",
-	},
-	{
-		Rule: RulePhantomField,
 		Key:  "internal/codegen.WorkerSpec.Path",
 		Cost: "component_naming reads WorkerSpec.Path; only generator_test sets it. Production always " +
 			"reads \"\". Owner: internal/codegen.",

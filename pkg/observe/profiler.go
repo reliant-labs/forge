@@ -2,11 +2,14 @@
 //
 // Setup starts one background goroutine per process (when an OTLP endpoint is
 // set and OTEL_PROFILES_EXPORTER is not "none"). About once a minute it
-// captures a 10s CPU profile plus a heap and a goroutine snapshot, converts them
-// with profiles_convert.go, and POSTs them to the collector's profiles endpoint.
-// Measured cost: ~90 ms CPU and 1.5 MB allocated per cycle to convert, i.e.
-// ~0.15% of one core, plus the runtime's own ~100 Hz CPU sampling during the
-// 10s window.
+// captures a 10s CPU profile, and every 15 minutes a live-heap snapshot
+// (inuse_space / inuse_objects); it converts them with profiles_convert.go and
+// POSTs them to the collector's profiles endpoint. Allocation counters,
+// goroutine, mutex and block profiles are opt-in (profiles_config.go): the
+// opt-in ones that are enabled are captured every cycle, except allocation,
+// which rides on the heap snapshot. Measured cost of converting a full
+// heap+goroutine cycle: ~90 ms CPU and 1.5 MB allocated, i.e. ~0.15% of one
+// core, plus the runtime's own ~100 Hz CPU sampling during the 10s window.
 //
 // The loop is built so it can never hurt the application:
 //
@@ -34,6 +37,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"runtime/pprof"
 	"sync/atomic"
 	"time"
@@ -65,6 +69,7 @@ type profiler struct {
 
 	interval time.Duration
 	window   time.Duration
+	settings profileSettings
 
 	probe func(context.Context) error
 	send  func(context.Context, pprofile.Profiles) error
@@ -72,14 +77,27 @@ type profiler struct {
 
 	// sleep waits d or until ctx ends. A field so tests do not wait.
 	sleep func(context.Context, time.Duration) bool
+	// now is the clock the heap cadence reads. A field so tests can move it.
+	now func() time.Time
 
 	failures int
+	// lastHeap is when the last heap snapshot was delivered; zero until the
+	// first, so a new process sends one on its first cycle.
+	lastHeap time.Time
 }
 
 // startProfiler resolves the destination and starts the capture loop. The
 // returned function stops it. An error means profiling is off, never that the
 // service should not start.
 func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (func(context.Context) error, error) {
+	log := slog.Default().With("component", "profiler")
+	settings, warns := resolveProfileSettings(cfg.Profiles)
+	for _, w := range warns {
+		log.Warn("continuous profiling: ignoring an invalid setting", "error", w)
+	}
+	if !settings.enabled() {
+		return nil, errors.New("no profile type is selected")
+	}
 	tgt, err := resolveProfilesTarget(cfg)
 	if err != nil {
 		return nil, err
@@ -92,11 +110,15 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 		res:      res,
 		interval: profilerInterval,
 		window:   profilerCPUWindow,
+		settings: settings,
 		probe:    tcpProbe(tgt),
 		send:     send,
-		log:      slog.Default().With("component", "profiler"),
+		log:      log,
 		sleep:    sleepCtx,
+		now:      time.Now,
 	}
+	log.Debug("continuous profiling on", "types", joinProfileTypes(settings.types()), "heap_interval", settings.heapInterval)
+	restoreRates := enableContentionSampling(settings)
 	loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
 	profilingActive.Store(true)
@@ -111,8 +133,33 @@ func startProfiler(ctx context.Context, cfg Config, res *resource.Resource) (fun
 		case <-done:
 		case <-shutdownCtx.Done():
 		}
+		restoreRates()
 		return closeSender()
 	}, nil
+}
+
+// enableContentionSampling turns on the runtime's mutex and block sampling for
+// the profiles that need it, and returns the function that puts them back. The
+// runtime records neither by default, and both cost something on every
+// contended lock or blocking operation, so they are set only while a selected
+// profile reads them. The mutex fraction is restored to what it was; the block
+// rate has no getter and goes back to 0 (off).
+func enableContentionSampling(s profileSettings) func() {
+	prevMutex := -1
+	if s.mutex {
+		prevMutex = runtime.SetMutexProfileFraction(profilerMutexFraction)
+	}
+	if s.block {
+		runtime.SetBlockProfileRate(profilerBlockRate)
+	}
+	return func() {
+		if prevMutex >= 0 {
+			runtime.SetMutexProfileFraction(prevMutex)
+		}
+		if s.block {
+			runtime.SetBlockProfileRate(0)
+		}
+	}
 }
 
 // run is the capture loop. It returns when ctx ends.
@@ -178,47 +225,92 @@ func (p *profiler) cycle(ctx context.Context) error {
 		return err
 	}
 
-	var cpu bytes.Buffer
-	cpuOn := pprof.StartCPUProfile(&cpu) == nil
-	if !cpuOn {
-		p.log.Debug("another CPU profile is running; capturing heap and goroutines only")
-	} else {
-		p.sleep(ctx, p.window)
-		pprof.StopCPUProfile()
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
+	var caps []capture
+	if p.settings.cpu {
+		var cpu bytes.Buffer
+		if pprof.StartCPUProfile(&cpu) != nil {
+			p.log.Debug("another CPU profile is running; skipping this cycle's CPU profile")
+		} else {
+			p.sleep(ctx, p.window)
+			pprof.StopCPUProfile()
+			caps = append(caps, capture{name: "cpu", raw: &cpu})
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 	}
 
-	var heap, gor bytes.Buffer
-	if err := pprof.Lookup("heap").WriteTo(&heap, 0); err != nil {
-		return fmt.Errorf("heap profile: %w", err)
+	heapDue := p.heapDue()
+	lookups := []struct {
+		on   bool
+		name string
+		drop []string
+	}{
+		{heapDue, "heap", p.settings.heapDrops()},
+		{p.settings.goroutine, "goroutine", nil},
+		{p.settings.mutex, "mutex", nil},
+		{p.settings.block, "block", nil},
 	}
-	if err := pprof.Lookup("goroutine").WriteTo(&gor, 0); err != nil {
-		return fmt.Errorf("goroutine profile: %w", err)
+	for _, l := range lookups {
+		if !l.on {
+			continue
+		}
+		var b bytes.Buffer
+		if err := pprof.Lookup(l.name).WriteTo(&b, 0); err != nil {
+			return fmt.Errorf("%s profile: %w", l.name, err)
+		}
+		caps = append(caps, capture{name: l.name, raw: &b, drop: l.drop})
 	}
 
 	var errs []error
-	for _, raw := range []*bytes.Buffer{&cpu, &heap, &gor} {
-		if raw.Len() == 0 {
-			continue
-		}
-		pd, err := pprofToOTLP(raw, p.res)
-		if err != nil {
+	for _, c := range caps {
+		if err := p.deliver(ctx, c); err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		if pd.SampleCount() == 0 {
-			continue
-		}
-		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = p.send(sctx, pd)
-		cancel()
-		if err != nil {
-			errs = append(errs, err)
+		if c.name == "heap" {
+			p.lastHeap = p.now()
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// capture is one raw pprof profile read this cycle, with the sample types that
+// are not exported.
+type capture struct {
+	name string
+	raw  *bytes.Buffer
+	drop []string
+}
+
+// deliver converts c and sends it. A profile that recorded nothing is
+// delivered by sending nothing.
+func (p *profiler) deliver(ctx context.Context, c capture) error {
+	if c.raw.Len() == 0 {
+		return nil
+	}
+	pd, err := pprofToOTLP(c.raw, p.res, c.drop...)
+	if err != nil {
+		return err
+	}
+	if pd.SampleCount() == 0 {
+		return nil
+	}
+	sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return p.send(sctx, pd)
+}
+
+// heapDue reports whether this cycle takes the heap snapshot: on the first
+// cycle, then once heapInterval has passed since the last one was delivered.
+// Half a cycle of slack keeps the ±20% cycle jitter from stretching a 15-minute
+// cadence to 16. A failed delivery leaves lastHeap alone, so the next cycle
+// tries again.
+func (p *profiler) heapDue() bool {
+	if !p.settings.heapSnapshot() {
+		return false
+	}
+	return p.lastHeap.IsZero() || p.now().Sub(p.lastHeap) >= p.settings.heapInterval-p.interval/2
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

@@ -21,7 +21,7 @@ An **entity** exists when both halves exist: a service proto declares the CRUD R
 **Principle:** express the app as explicit, owned, typed Go — not a string-keyed registry through a clever framework. The application lives under `internal/`, nested by role (`handlers`/`workers`/`operators`) so owned and generated files are **co-located** in one component directory. `pkg/` is the thin generated substrate the app imports — typed config, the middleware policy file, the test harness. Top-level is otherwise `cmd/` (entrypoints) and `api/` (genuinely-external CRD types).
 
 ```
-cmd/                          # entrypoints ONLY: cobra root + one owned subcommand per binary (~5 lines each)
+cmd/                          # entrypoints ONLY: cobra root, one generated command per root (roots_gen.go), owned serve.go policy
 api/v1alpha1/                 # CRD types — genuinely external (kubebuilder convention)
 internal/                     # the application: components, DI, data access
   handlers/<svc>/             #   a service, all co-located in ONE dir:
@@ -120,6 +120,25 @@ func (g *Graph) newBilling() (*billing.Service, error) {
 - **The `Deps` interface is the seam.** A component depends on each dep's *interface*, so it cannot tell the in-process node from a Connect client or a mock. Splitting a service out later is a one-line change of the value expression.
 - **Shape errors fail generate, named.** A required field nothing produces, a field two nodes could fill (ambiguous — write the key yourself in compose.go and forge keeps your choice), and a dependency cycle (break it with a `func() T` field: forge wires the accessor's method value, a lazy edge) each stop the generate with the node, field and type.
 - **Route sets are per audience** (`routes_gen.go`): `UserRoutes` mounts every service whose proto declares the user audience (the default), `DaemonRoutes` every `audience: "daemon"` one; per-service mount options go in `compose.go` as `Options: MountOptions{…}`.
+
+### Roots and commands
+
+Every root is a command: `cmd/<bin>/cmd/roots_gen.go` (generated) adds one cobra command per root, named after the root or after its `command=` option — `//forge:root api command=server,api` runs as `<bin> server api`. With no declared root the one command is `server`. Each command hands its root to `runRoot` in the owned `cmd/<bin>/cmd/serve.go` — the one process policy every root runs under (config, logger, boot probes, migrate, telemetry, readiness gate, stop budget). Two facts come from the root's reach, read at generate time: a root that reaches the database migrates first, and a root with no API listener gets a probe-only listener on the server address, so every process answers `/healthz` and `/readyz`.
+
+```go
+// internal/app/roots.go — yours
+//forge:root server
+type Server struct {
+    API *APIListener
+}
+
+//forge:root worker
+type Worker struct {
+    Tick *tick.Worker // `<bin> worker` builds the tick worker's closure alone
+}
+```
+
+Declaring a root named `server` keeps the `server` command; once any root is declared, the generated default stops being generated. A project whose `serve.go` predates the per-root commands (no `runRoot`) keeps its own `server` command, and generate tells you to add `runRoot` before it writes `roots_gen.go`.
 
 A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: move each `OpenInfra` field into a provider func, delete `compose.go`, `lifecycle.go` and the `Infra` struct, and re-run `forge generate`.
 

@@ -92,7 +92,9 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"cmd/demo/main.go",
 		"cmd/demo/cmd/root.go",
 		"cmd/demo/cmd/serve.go",
-		"cmd/demo/cmd/server.go",
+		// One generated command per root of the composition graph;
+		// `server` is the default root's.
+		"cmd/demo/cmd/roots_gen.go",
 		"cmd/demo/cmd/version.go",
 		"cmd/demo/cmd/db.go",
 
@@ -178,17 +180,19 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// need to remove a guard, first remove the corresponding bug risk.
 
 	// The serve PIPELINE (listener lifecycle, driver registration) lives in
-	// serve.go; server.go is the thin cobra command over it. Both guards
-	// below are about the pipeline, so they read serve.go.
+	// serve.go's runRoot; roots_gen.go holds the thin cobra command per root
+	// over it. Both guards below are about the pipeline, so they read
+	// serve.go.
 	serveGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "demo", "cmd", "serve.go"))
 	// Past bug: server used a raw error compare on srv.Serve's return,
 	// which misclassified wrapped errors. The listener lifecycle (and
 	// its errors.Is(err, http.ErrServerClosed) handling — see
-	// pkg/serverkit/run.go) now lives in serverkit; the shim must hand
-	// the lifecycle off rather than half-reimplementing it.
-	if !strings.Contains(serveGo, "serverkit.Run(") {
-		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to serverkit.Run(); got:\n%s",
-			excerpt(serveGo, "Serve", 400))
+	// pkg/serverkit/listener.go) now lives in serverkit; the policy must
+	// hand the lifecycle to the root's supervisor (Run<Root>, which runs
+	// lifecyclekit.Supervise) rather than half-reimplementing it.
+	if !strings.Contains(serveGo, "return root.Run(g, ctx, lifecyclekit.Policy{") {
+		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to the root's supervisor (root.Run); got:\n%s",
+			excerpt(serveGo, "runRoot", 400))
 	}
 	// Past bug: server used the `postgres://` URL directly with
 	// database/sql, which has no registered driver named "postgres" in a

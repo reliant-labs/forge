@@ -24,6 +24,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+{{- if not (and (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout"))}}
+	"os"
+{{- end}}
 	"os/signal"
 {{- if index .ConfigFields "CorsOrigins"}}
 	"strings"
@@ -35,6 +38,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/migratekit"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
+{{- if not (and (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout"))}}
+	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
+{{- end}}
 
 {{- if index .ConfigFields "AutoMigrate"}}
 	forgedb "{{.Module}}/db"
@@ -206,12 +212,20 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 	}
 {{- end}}
 
-{{- if index .ConfigFields "PreStopDelay"}}
+{{- if and (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout")}}
 
 	skCfg.PreStopDelay = cfg.PreStopDelay.AsDuration()
-{{- end}}
-{{- if index .ConfigFields "ShutdownTimeout"}}
 	skCfg.ShutdownTimeout = cfg.ShutdownTimeout.AsDuration()
+{{- else}}
+
+	// The drain budget: this config declares no pre_stop_delay /
+	// shutdown_timeout, so read PRE_STOP_DELAY and SHUTDOWN_TIMEOUT the way
+	// the pod's grace period is derived from them (drainbudget).
+	budget, berr := drainbudget.FromEnv(os.Getenv)
+	if berr != nil {
+		return serverkit.Config{}, berr
+	}
+	skCfg.PreStopDelay, skCfg.ShutdownTimeout = budget.PreStopDelay, budget.ShutdownTimeout
 {{- end}}
 
 {{- if index .ConfigFields "DbMaxOpenConns"}}

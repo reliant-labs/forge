@@ -11,8 +11,6 @@ import (
 	"fmt"
 {{- end}}
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-
 	"github.com/reliant-labs/forge/pkg/observe"
 
 	"{{.Module}}/pkg/config"
@@ -135,9 +133,9 @@ func (i *Infra) DefaultClient() *http.Client {
 func (i *Infra) transport() http.RoundTripper {
 	i.httpBaseOnce.Do(func() {
 		if i.httpBase == nil {
-			// otelhttp OUTSIDE, so its client span covers the whole round
-			// trip including the header the inner transport adds.
-			i.httpBase = otelhttp.NewTransport(observe.NewRequestIDTransport(http.DefaultTransport))
+			// otelhttp OUTSIDE the request-ID transport, so its client span
+			// covers the whole round trip including the header it adds.
+			i.httpBase = observe.NewHTTPTransport(http.DefaultTransport)
 		}
 	})
 	return i.httpBase

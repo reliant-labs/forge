@@ -344,7 +344,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Parallel `forge cluster up`s no longer lose each other's kubectl
   context.** `k3d cluster create`, `k3d kubeconfig merge`, `k3d cluster
-delete` and `kubectl config use-context` each rewrite the whole default
+  delete` and `kubectl config use-context` each rewrite the whole default
   kubeconfig with no lock, so two forge processes creating clusters at once
   dropped one context, and the loser failed on `context "k3d-<name>" does not
 exist` for a running cluster. forge now creates with

@@ -246,6 +246,18 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 	if err != nil {
 		return nil, err
 	}
+	// go list reports each Dir as the go command saw its working
+	// directory, which is the symlink-resolved path whenever $PWD does not
+	// name it (an explicit Env carries the caller's PWD, not root): on macOS
+	// t.TempDir's /var/folders/... comes back as /private/var/folders/...,
+	// as does any project under a symlinked directory. Every in-module
+	// package then looked foreign, and every changed .go file ran the full
+	// suite. Dirs under the resolved root are mapped back onto root, the
+	// spelling owner() joins changed files against.
+	realRoot := absRoot
+	if r, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
+		realRoot = r
+	}
 	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}}
 	dec := json.NewDecoder(r)
 	for {
@@ -270,6 +282,11 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 			continue
 		}
 		dir := filepath.Clean(p.Dir)
+		if realRoot != absRoot && !within(absRoot, dir) && within(realRoot, dir) {
+			if rel, rerr := filepath.Rel(realRoot, dir); rerr == nil {
+				dir = filepath.Join(absRoot, rel)
+			}
+		}
 		if !within(absRoot, dir) {
 			continue // the module cache, a sibling checkout: not this diff
 		}

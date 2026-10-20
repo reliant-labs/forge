@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
@@ -35,6 +36,8 @@ func TestNewChain_RequiresAuth(t *testing.T) {
 		"no audience":        {serverkit.ChainDeps{Auth: serverkit.AuthFor("", tokenAuth{})}, "names no audience"},
 		"nil interceptor":    {serverkit.ChainDeps{Auth: serverkit.AuthFor(serverkit.AudienceUser, nil)}, "wraps a nil interceptor"},
 		"omit in wrong slot": {serverkit.ChainDeps{Auth: serverkit.AuthFor(serverkit.AudienceUser, tokenAuth{}), Audit: serverkit.NoTrace}, `ChainDeps.Audit is serverkit.Omit("trace")`},
+		"omit as deadline":   {serverkit.ChainDeps{Auth: serverkit.AuthFor(serverkit.AudienceUser, tokenAuth{}), Deadline: serverkit.NoAudit}, `ChainDeps.Deadline is serverkit.Omit("audit")`},
+		"bad deadline key":   {serverkit.ChainDeps{Auth: serverkit.AuthFor(serverkit.AudienceUser, tokenAuth{}), Deadline: serverkit.Deadline{Procedures: map[string]time.Duration{"svc.v1.Svc/Do": time.Second}}}, `"svc.v1.Svc/Do" is not a procedure`},
 		"omit as rate limit": {serverkit.ChainDeps{Auth: serverkit.AuthFor(serverkit.AudienceUser, tokenAuth{}), RateLimit: serverkit.NoAudit}, "ChainDeps.RateLimit"},
 		"nil extra":          {serverkit.ChainDeps{Auth: serverkit.AuthFor(serverkit.AudienceUser, tokenAuth{}), Extras: []connect.Interceptor{nil}}, "Extras[0] is nil"},
 	}
@@ -73,10 +76,11 @@ func (r recorder) WrapStreamingHandler(next connect.StreamingHandlerFunc) connec
 }
 
 // The order a request passes through the chain is the order serve.go used to
-// spell inline: the span outermost, then auth before audit (audit knows who
-// called), rate limit, the project's extras, the activity stream (next to
-// the handler, so it judges the handler's outcome), the stream drain, and
-// protovalidate innermost, right before the handler.
+// spell inline: the span outermost, then the deadline before auth (the RPC's
+// budget bounds authenticating), auth before audit (audit knows who called),
+// rate limit, the project's extras, the activity stream (next to the handler,
+// so it judges the handler's outcome), the stream drain, and protovalidate
+// innermost, right before the handler.
 func TestNewChain_SlotOrder(t *testing.T) {
 	var (
 		mu  sync.Mutex
@@ -86,6 +90,7 @@ func TestNewChain_SlotOrder(t *testing.T) {
 	chain, err := serverkit.NewChain(serverkit.ChainDeps{
 		Auth:        serverkit.AuthFor(serverkit.AudienceUser, rec("auth")),
 		Trace:       rec("trace"),
+		Deadline:    rec("deadline"),
 		Audit:       rec("audit"),
 		RateLimit:   rec("rate-limit"),
 		Extras:      []connect.Interceptor{rec("extra-1"), rec("extra-2")},
@@ -112,7 +117,7 @@ func TestNewChain_SlotOrder(t *testing.T) {
 	if _, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{})); err != nil {
 		t.Fatalf("call: %v", err)
 	}
-	want := []string{"trace", "auth", "audit", "rate-limit", "extra-1", "extra-2", "activity", "stream-drain", "validate", "handler"}
+	want := []string{"trace", "deadline", "auth", "audit", "rate-limit", "extra-1", "extra-2", "activity", "stream-drain", "validate", "handler"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
@@ -132,6 +137,7 @@ func TestNewChain_DefaultsAndOmits(t *testing.T) {
 	bare, err := serverkit.NewChain(serverkit.ChainDeps{
 		Auth:        auth,
 		Trace:       serverkit.NoTrace,
+		Deadline:    serverkit.NoDeadline,
 		Audit:       serverkit.NoAudit,
 		Activity:    serverkit.NoActivity,
 		StreamDrain: serverkit.NoStreamDrain,
@@ -144,10 +150,10 @@ func TestNewChain_DefaultsAndOmits(t *testing.T) {
 	if n := len(bare.Interceptors()); n != core {
 		t.Fatalf("all defaults omitted: %d interceptors, want observe's core plus auth (%d)", n, core)
 	}
-	// trace (+ its profile-labels companion), audit, activity, stream drain,
-	// validate.
-	if n := len(full.Interceptors()); n != core+6 {
-		t.Fatalf("all defaults: %d interceptors, want %d", n, core+6)
+	// trace (+ its profile-labels companion), deadline, audit, activity,
+	// stream drain, validate.
+	if n := len(full.Interceptors()); n != core+7 {
+		t.Fatalf("all defaults: %d interceptors, want %d", n, core+7)
 	}
 }
 

@@ -178,17 +178,20 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 
 	// INTERCEPTOR CHAIN — serverkit.NewChain, the order requests pass
 	// through, outermost first: trace → recovery → request-id → logging →
-	// metrics → auth → audit → rate-limit → stream-drain → protovalidate.
-	// The trace span is outermost, so a request auth rejects still has a span
-	// and every log line written for it carries its trace_id; recovery is
-	// next, so a panic anywhere inside still produces a response; auth
-	// precedes audit so the audit log knows who called; protovalidate is
-	// innermost, right before the handler.
+	// metrics → deadline → auth → audit → rate-limit → activity →
+	// stream-drain → protovalidate. The trace span is outermost, so a request auth rejects
+	// still has a span and every log line written for it carries its
+	// trace_id; recovery is next, so a panic anywhere inside still produces a
+	// response; the deadline precedes auth so the RPC's budget bounds the
+	// credential lookup; auth precedes audit so the audit log knows who
+	// called; activity sits next to the handler, so it records only an rpc
+	// that succeeded; protovalidate is innermost, right before the handler.
 	//
 	// Every slot has forge's default except Auth, which NewChain REQUIRES —
 	// a chain with no authenticator is a boot error, never a running server.
 	// A field you set replaces that slot's default; serverkit.NoAudit,
-	// NoTrace, NoStreamDrain and NoValidate drop one. The defaults:
+	// NoTrace, NoDeadline, NoActivity, NoStreamDrain and NoValidate drop
+	// one. The defaults:
 	//
 	//   - Trace: otelconnect with WithTrustRemote, so the browser's
 	//     traceparent is the PARENT of this span and a click's spans and the
@@ -196,6 +199,13 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	//     here; pass your own otelconnect interceptor without the option if
 	//     this server is reachable by callers you do not want choosing your
 	//     trace ids.
+	//   - Deadline: every unary RPC bounded by serverkit.DefaultUnaryDeadline
+	//     (30s), streams unbounded, and a unary RPC still running after 10s
+	//     logged at WARN while it runs. The scaffold sets it below to add the
+	//     per-rpc budgets your protos declare (`option (forge.v1.method) =
+	//     {timeout: {seconds: 120}}`), projected into
+	//     middleware.ProcedureDeadlines. serverkit.Deadline's fields move the
+	//     default, the watchdog threshold, and where a slow call is reported.
 	//   - Audit: fmw.AuditInterceptor over the claims auth stashed.
 	//   - StreamDrain: binds every server-streaming and bidi RPC to the
 	//     listener's drain, so a rollout ends it OK with the x-forge-drained
@@ -216,8 +226,9 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// uncapped handler turns one anonymous request into an OOMKill. These
 	// come from the typed config; zero is 4 MiB.
 	chain, err := serverkit.NewChain(serverkit.ChainDeps{
-		Auth:   serverkit.AuthFor(serverkit.AudienceUser, authInterceptor),
-		Logger: logger,
+		Auth:     serverkit.AuthFor(serverkit.AudienceUser, authInterceptor),
+		Logger:   logger,
+		Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines},
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
 		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(cfg.RateLimitRps), Burst: int(cfg.RateLimitBurst)}, middleware.ClaimsFromContext),
 {{- end}}

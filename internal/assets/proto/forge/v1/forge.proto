@@ -256,7 +256,12 @@ message MethodOptions {
   // Whether this method is idempotent (safe to retry without side effects).
   bool idempotent = 3;
 
-  // Server-side timeout for this method. Zero means use the service default.
+  // Server-side deadline for this method. forge projects it into
+  // pkg/middleware/procedures_gen.go (ProcedureDeadlines), which the
+  // scaffolded chain hands its Deadline slot; that slot runs ahead of
+  // authentication, so the deadline bounds the credential lookup too. Unset
+  // or zero is the slot's default (serverkit.DefaultUnaryDeadline for a unary
+  // rpc, none for a stream); negative is no server deadline.
   google.protobuf.Duration timeout = 4;
 
   // Whether callers should supply an idempotency key for this method.

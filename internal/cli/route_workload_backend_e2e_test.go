@@ -514,10 +514,16 @@ func deleteK3dClusterF2(t *testing.T, name string) {
 	defer cancel()
 	// By NAME. Best-effort: a failure here must not mask a test failure,
 	// but it is reported so a leak is visible.
-	cmd := exec.CommandContext(ctx, "k3d", "cluster", "delete", name)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Logf("cleanup: k3d cluster delete %s: %v\n%s", name, err, out)
-	}
+	// k3d removes the cluster's context from the DEFAULT kubeconfig on
+	// delete, a whole-file rewrite: hold forge's kubeconfig lock so a
+	// parallel test's forge cannot lose a context to it (kubeconfig_lock.go).
+	_ = withKubeconfigLock(func() error {
+		cmd := exec.CommandContext(ctx, "k3d", "cluster", "delete", name)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Logf("cleanup: k3d cluster delete %s: %v\n%s", name, err, out)
+		}
+		return nil
+	})
 }
 
 // installEnvoyGateway installs Gateway API + Envoy Gateway the way forge

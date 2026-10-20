@@ -190,6 +190,34 @@ func TestServeTemplate_PayloadCapsAreNormalizedBeforeUse(t *testing.T) {
 	}
 }
 
+// TestServeTemplate_ChainDeadlineIsTheProtoProjection pins that the
+// scaffolded chain hands its Deadline slot the budgets the protos declare —
+// serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}. Without it
+// `(forge.v1.method).timeout` is generated into procedures_gen.go and read
+// by nothing, which is what it was before the slot existed.
+func TestServeTemplate_ChainDeadlineIsTheProtoProjection(t *testing.T) {
+	for name, fields := range serveRenderCases() {
+		t.Run(name, func(t *testing.T) {
+			v, ok := chainDepsFields(t, renderServe(t, fields))["Deadline"]
+			if !ok {
+				t.Fatal("serverkit.ChainDeps sets no Deadline — the protos' declared timeouts never reach the chain")
+			}
+			lit, ok := v.(*ast.CompositeLit)
+			if !ok || !isSelector(lit.Type, "serverkit", "Deadline") {
+				t.Fatalf("ChainDeps.Deadline is not a serverkit.Deadline{...} literal")
+			}
+			for _, elt := range lit.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Procedures" && isSelector(kv.Value, "middleware", "ProcedureDeadlines") {
+						return
+					}
+				}
+			}
+			t.Error("serverkit.Deadline does not set Procedures: middleware.ProcedureDeadlines")
+		})
+	}
+}
+
 // chainCapFields are the ChainDeps payload caps serve.go must feed from the
 // normalized Config.
 var chainCapFields = map[string]string{

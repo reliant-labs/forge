@@ -70,9 +70,9 @@ func gitHooksOptOut() string {
 // core.hooksPath — is LOCAL git config that `git clone` deliberately does
 // not carry (git won't let a repo auto-run hooks on clone; that's the
 // same reason tools like Husky exist). So we set it idempotently as a
-// cheap side-effect of any forge command run inside the project: the
-// first `forge generate` / `build` / `up` after a clone activates the
-// hooks. Worktrees of an already-activated repo inherit it via the shared
+// cheap side-effect of a forge command that writes the project
+// (cmdutil.ConfiguresClone): the first `forge generate` / `scaffold` after a
+// clone activates the hooks. Read-only commands never touch .git/config. Worktrees of an already-activated repo inherit it via the shared
 // .git/config, so they need nothing.
 //
 // Deliberately conservative — it must never surprise the user or block a

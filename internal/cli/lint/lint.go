@@ -105,8 +105,11 @@ runs each frontend's own prettier over the src/ files you own (never
 generated or forge-refreshed ones), and runs eslint --fix on frontends — so
 mechanical formatting never surfaces as a gating error. It never rewrites a
 file the project's own formatter gate accepts. Under --scope it touches only
-files inside the scope. Pass --no-fix to gate only and mutate nothing (CI /
-read-only checks); --json is always detect-only.
+files inside the scope, and naming Go package paths (forge lint ./internal/x/...)
+likewise confines the fixers to those packages — the frontend formatter does
+not run then. Only a bare forge lint rewrites the whole project. Pass --no-fix
+to gate only and mutate nothing (CI / read-only checks); --json is always
+detect-only.
 
 Examples:
   forge lint                     # Auto-fix deterministic-safe issues, then gate
@@ -1241,14 +1244,16 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	// as a golangci-lint gate. golangci-lint --fix (fix flag, below) and eslint
 	// --fix (frontend step) cover the rest. Skipped under --no-fix (fix=false).
 	if fix && cwd != "" {
-		reportFormatPrePass(cwd)
+		reportFormatPrePass(cwd, opts.paths)
 		// The frontend half: prettier over user-owned frontend sources.
 		// eslint --fix (below) does not format — the scaffolded eslint
 		// config deliberately carries no formatting rules — so without this
 		// pass `forge lint` fixed no TS formatting at all, and a scaffolded
 		// file the project's CI prettier check rejected stayed rejected.
 		// --skip-frontends means "no Node toolchain"; honor it here too.
-		if !opts.skipFrontends {
+		// Naming Go paths narrows the run to them, and frontends are not Go
+		// paths, so their formatter does not run (as under --scope).
+		if !opts.skipFrontends && len(opts.paths) == 0 {
 			reportFrontendFormatPrePass(ctx, cwd, opts.cfg)
 		}
 	}

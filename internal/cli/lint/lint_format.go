@@ -185,13 +185,42 @@ func formatGoFile(root string, std goFormatStandard, path string) (string, error
 	return rel, nil
 }
 
-// reportFormatPrePass runs formatGoTree and prints a concise summary of the
+// keepForPaths turns the positional Go package patterns of `forge lint
+// [paths...]` into the file filter the format pre-pass honours. No paths, or a
+// pattern naming the whole module (".", "./...", "..."), is the whole tree
+// (nil). Otherwise only files under a named directory, or a named .go file,
+// are rewritten: the paths exist to say "this is the part I am working on",
+// and the pre-pass used to ignore them and reformat every package.
+func keepForPaths(paths []string) func(rel string) bool {
+	var prefixes []string
+	for _, p := range paths {
+		p = strings.TrimSuffix(filepath.ToSlash(filepath.Clean(strings.TrimSpace(p))), "/...")
+		p = strings.TrimPrefix(p, "./")
+		if p == "" || p == "." || p == "..." {
+			return nil
+		}
+		prefixes = append(prefixes, p)
+	}
+	if len(prefixes) == 0 {
+		return nil
+	}
+	return func(rel string) bool {
+		for _, p := range prefixes {
+			if rel == p || strings.HasPrefix(rel, p+"/") {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// reportFormatPrePass runs formatGoTreeFiltered and prints a concise summary of the
 // files it rewrote. A pre-pass error is advisory: it prints a ⚠️ line and
 // never gates, because the deterministic gate (golangci-lint's goimports
 // formatter) still runs behind it and will surface anything the pre-pass
 // could not apply.
-func reportFormatPrePass(cwd string) {
-	changed, err := formatGoTree(cwd)
+func reportFormatPrePass(cwd string, paths []string) {
+	changed, err := formatGoTreeFiltered(cwd, keepForPaths(paths))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  auto-format pre-pass: %v\n", err)
 		return

@@ -84,6 +84,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge lint ./internal/x/...` no longer reformats packages you did not name.**
+  The auto-fix pre-pass (`gofmt`/`goimports`, then `golangci-lint --fix` and the
+  frontend formatter) honoured `--scope`, but ignored the positional package
+  paths of `forge lint [paths...]`: naming one package still rewrote every Go
+  file in the project, including ones another agent was editing in the same
+  checkout. The Go format pre-pass now touches only files under the named
+  paths (a whole-module pattern such as `./...` is still the whole tree), and
+  the frontend formatter, which cannot be confined to Go paths, does not run
+  when paths are named. A bare `forge lint` still auto-fixes the whole project,
+  `--scope` still confines it to the scope, and `--no-fix` and `--json` still
+  write nothing.
 - **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
   Every query on the lease session (the heartbeat, each standby poll, the
   connect) ran under a deadline of `HeartbeatInterval`, and a query that misses

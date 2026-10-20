@@ -819,6 +819,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **The entity struct's types are idiomatic and lossless.** Field names spell
+  Go initialisms in capitals (`ID`, `OrgID`, `APIKey`; the `<E>Field*` and
+  `<E>Constraint*` constants follow); an integer column is as wide as it is
+  declared (`INTEGER` → `int32`, `SMALLINT` → `int16`, `BIGINT` → `int64` —
+  it was always `int64`); a `jsonb`/`json` column is `json.RawMessage` (nil
+  for NULL), not `string`.
+  `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares the Go type of
+  one column — a named enum
+  over an integer, `map[string]any` over json, `<path>[;<pkg>].<Type>` —
+  with no generated wire conversion (a CRUD rpc carrying it fails generate
+  by name). The CRUD conversions follow: the wire's int32 enum number is
+  stored at the column's width, json pairs through `[]byte`/`string`.
+  **Upgrading:** regenerate; then rename references to the projected fields in
+  hand-written code — `.Id` → `.ID`, `.UserId` → `.UserID`,
+  `TaskFieldId` → `TaskFieldID` (`gopls rename`, or `gofmt -r` per name) — and
+  adjust code that read an `integer` column as `int64` or a json column as
+  `string` (`string(row.Payload)`, `json.RawMessage(s)`).
 - **A `NOT NULL` column's `DEFAULT` applies when the field is unset — and an
   explicit zero is still stored.** The generated store wrote the Go zero for
   every defaulted column a caller left unset, so the DEFAULT never fired:

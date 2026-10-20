@@ -39,11 +39,11 @@ func TestRenderORMEntity_EmitsUniqueAndCheckConstraintConstants(t *testing.T) {
 		{Name: "jobs_total_cents_check", Kind: config.ConstraintKindCheck},
 	}), false))
 
-	// EstimateId, not EstimateID: the identifier uses the same protoc-style
-	// casing as the sibling JobFieldEstimateId and the struct's own
-	// EstimateId field. One column must not be spelled two ways in one file.
+	// EstimateID: the identifier uses the same Go casing as the sibling
+	// JobFieldEstimateID and the struct's own EstimateID field. One column
+	// must not be spelled two ways in one file.
 	for _, want := range []string{
-		`JobConstraintEstimateIdKey = "jobs_estimate_id_key"`,
+		`JobConstraintEstimateIDKey = "jobs_estimate_id_key"`,
 		`JobConstraintTotalCentsCheck = "jobs_total_cents_check"`,
 	} {
 		if !strings.Contains(code, want) {
@@ -60,7 +60,7 @@ func TestRenderORMEntity_EmitsForeignKeyConstraintConstant(t *testing.T) {
 		{Name: "jobs_estimate_id_fkey", Kind: config.ConstraintKindForeignKey},
 	}), false))
 
-	if want := `JobConstraintEstimateIdFkey = "jobs_estimate_id_fkey"`; !strings.Contains(code, want) {
+	if want := `JobConstraintEstimateIDFkey = "jobs_estimate_id_fkey"`; !strings.Contains(code, want) {
 		t.Errorf("generated ORM missing FK constraint constant %q; got:\n%s", want, code)
 	}
 }
@@ -120,7 +120,7 @@ func TestRenderORMEntity_ConstraintRenameMovesTheConstant(t *testing.T) {
 		{Name: "one_job_per_estimate", Kind: config.ConstraintKindUnique},
 	}), false))
 
-	if !strings.Contains(before, `JobConstraintEstimateIdKey = "jobs_estimate_id_key"`) {
+	if !strings.Contains(before, `JobConstraintEstimateIDKey = "jobs_estimate_id_key"`) {
 		t.Fatalf("pre-rename constant missing; got:\n%s", before)
 	}
 	if strings.Contains(after, "jobs_estimate_id_key") {

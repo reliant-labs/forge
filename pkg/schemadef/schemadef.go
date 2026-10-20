@@ -409,7 +409,29 @@ var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerApp
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType}
+
+// ColumnMarkerGoType declares the Go type a column projects to on the
+// generated entity struct, in place of the one forge derives from its SQL
+// type: `forge:go-type=github.com/acme/app/gen/app/v1;appv1.ContentBlockType`
+// for an enum kept as an integer, `forge:go-type=map[string]any` for a json
+// document read as a map. The type must scan from and bind to the column
+// (Bun's own rules: a named integer for an integer column, a map or struct
+// for json). A qualified type names its import path, with `;<name>` when
+// the package's name is not the path's last element — the go_package
+// convention. Read with Column.GoTypeOverride.
+const ColumnMarkerGoType = "forge:go-type"
+
+// GoTypeOverride returns the type a ColumnMarkerGoType declaration names,
+// "" when the column declares none.
+func (c Column) GoTypeOverride() string {
+	if m := goTypeMarkerRE.FindStringSubmatch(c.Comment); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+var goTypeMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ColumnMarkerGoType) + `=(\S+)`)
 
 // HasMarker reports whether the column's catalog comment carries marker.
 //

@@ -182,13 +182,22 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// below are about the pipeline, so they read serve.go.
 	serveGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "demo", "cmd", "serve.go"))
 	// Past bug: server used a raw error compare on srv.Serve's return,
-	// which misclassified wrapped errors. The listener lifecycle (and
-	// its errors.Is(err, http.ErrServerClosed) handling — see
-	// pkg/serverkit/run.go) now lives in serverkit; the shim must hand
-	// the lifecycle off rather than half-reimplementing it.
-	if !strings.Contains(serveGo, "serverkit.Run(") {
-		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to serverkit.Run(); got:\n%s",
+	// which misclassified wrapped errors. The listener lifecycle (and its
+	// errors.Is(err, http.ErrServerClosed) handling) lives in forge's
+	// libraries; the shim must hand the lifecycle off rather than
+	// half-reimplementing it. A new project composes with the graph (#923),
+	// so the hand-off is the generated server root: g.RunServer supervises
+	// the API listener (serverkit.Listener) and every other node through
+	// lifecyclekit.Supervise.
+	if !strings.Contains(serveGo, "g.RunServer(ctx, lifecyclekit.Policy{") {
+		t.Errorf("cmd/demo/cmd/serve.go must hand the serve lifecycle to the graph's server root (g.RunServer); got:\n%s",
 			excerpt(serveGo, "Serve", 400))
+	}
+	for _, own := range []string{".ListenAndServe(", ".Serve(", "http.ErrServerClosed"} {
+		if strings.Contains(serveGo, own) {
+			t.Errorf("cmd/demo/cmd/serve.go runs its own listener lifecycle (%q) instead of handing it off; got:\n%s",
+				own, excerpt(serveGo, own, 400))
+		}
 	}
 	// Past bug: server used the `postgres://` URL directly with
 	// database/sql, which has no registered driver named "postgres" in a

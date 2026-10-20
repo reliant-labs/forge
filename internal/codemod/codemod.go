@@ -17,6 +17,8 @@
 // The intent-bearing half of a migration — the choices only a person or an
 // agent can make — stays prose, in the migration skill. A codemod that cannot
 // decide something says so in its report rather than guessing.
+//
+//forge:exclude-contract: a registry of source rewrites over the local tree — data and functions, no collaborator to substitute
 package codemod
 
 import (

@@ -28,10 +28,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"connectrpc.com/connect"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/observe"
@@ -126,11 +124,7 @@ type HTTPClientDeps struct{}
 // request that caused it. A consumer that wants a different timeout copies it
 // (`c := *d.HTTPClient; c.Timeout = …`) rather than editing the shared one.
 func NewHTTPClient(HTTPClientDeps) (*http.Client, error) {
-	return &http.Client{
-		// otelhttp OUTSIDE, so its span covers the request-id header too.
-		Transport: otelhttp.NewTransport(observe.NewRequestIDTransport(http.DefaultTransport)),
-		Timeout:   30 * time.Second,
-	}, nil
+	return observe.NewHTTPClient(observe.HTTPClientOptions{}), nil
 }
 
 // UserAuth authenticates the user audience — your product's signed-in users:

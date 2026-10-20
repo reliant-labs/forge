@@ -257,13 +257,13 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	}
 
 	resolver := &graphResolver{
-		module:         in.ModulePath,
-		nodes:          m.nodes,
-		byName:         m.byName,
-		u:              m.u,
-		blocks:         parseConfigBlocks(in.ProjectDir, in.ModulePath),
-		configFields:   parseConfigFields(in.ProjectDir),
-		storeAccessors: parseStoreAccessors(in.ProjectDir),
+		module:       in.ModulePath,
+		nodes:        m.nodes,
+		byName:       m.byName,
+		u:            m.u,
+		blocks:       parseConfigBlocks(in.ProjectDir, in.ModulePath),
+		configFields: parseConfigFields(in.ProjectDir),
+		store:        parseStoreSeam(in.ProjectDir),
 	}
 
 	// compose.go: reconcile (or, when disowned, read as is).

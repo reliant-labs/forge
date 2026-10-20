@@ -116,7 +116,7 @@ func TestAppendOnlyUpgrade_PreCommentTableStillGeneratesAnImmutableStore(t *test
 		codegen.EntityDefToPlanEntity(entityDefFromTable("Payment", payments)),
 		codegen.EntityDefToPlanEntity(entityDefFromTable("Invoice", byName["invoices"])),
 	}
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "billing", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))

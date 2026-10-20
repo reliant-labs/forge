@@ -155,7 +155,7 @@ func tier1ExtensionPointHint(relPath string) string {
 			return "regenerate from contract.go / proto instead of editing — this file is derived output"
 		}
 	}
-	if strings.HasPrefix(dir, "internal/db") && strings.HasSuffix(base, "_orm_gen.go") {
+	if strings.HasSuffix(base, "_orm_gen.go") { // in any database.orm.package directory
 		return "edit the migration + proto that derive it — this file is a projection of the schema, not a source of truth"
 	}
 	if dir == "pkg/config" && (base == "config_gen.go" || base == "config.go") {

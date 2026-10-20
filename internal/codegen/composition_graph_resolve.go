@@ -10,7 +10,7 @@
 //     *serverkit.Probes → g.Probes;
 //  2. a config BLOCK the root config composes, by type → g.Cfg.Get<Block>();
 //  3. a framework SEAM: the clock, the id generator, a generated store
-//     (db.NewStore over whatever node produces the orm.Context);
+//     (<orm pkg>.NewStore over whatever node produces the orm.Context);
 //  4. a PRODUCER, by type: the one node whose value is assignable to the
 //     field (an identical type wins over a merely assignable one). Two or
 //     more is an AMBIGUITY — a generate error until compose.go's owned
@@ -32,13 +32,13 @@ import (
 
 // graphResolver resolves missing Deps keys against the graph.
 type graphResolver struct {
-	module         string
-	nodes          []*graphNode
-	byName         map[string]*graphNode
-	u              *graphUniverse
-	blocks         configBlocks
-	configFields   map[string]InfraField
-	storeAccessors map[string]string
+	module       string
+	nodes        []*graphNode
+	byName       map[string]*graphNode
+	u            *graphUniverse
+	blocks       configBlocks
+	configFields map[string]InfraField
+	store        storeSeam // the generated store, in database.orm.package
 }
 
 // graphProblem is an unresolvable key: missing, or ambiguous.
@@ -136,14 +136,14 @@ func (r *graphResolver) resolve(n *graphNode, df DepsField) (resolved, *graphPro
 		case frameworkIDGenType:
 			return resolved{Expr: frameworkIDGenExpr, Comment: "framework id generator", Imports: map[string]string{"ulid": "github.com/oklog/ulid/v2"}}, nil
 		}
-		if plural, isStore := r.storeAccessors[df.Type]; isStore || df.Type == frameworkStoreAggregateType {
+		if r.store.owns(df.Type) {
 			orm := r.ormProducer(n)
 			if orm != nil {
-				expr := "db.NewStore(g." + orm.Name + "())"
-				if isStore {
+				expr := r.store.pkg + ".NewStore(g." + orm.Name + "())"
+				if plural, isEntity := r.store.accessors[df.Type]; isEntity {
 					expr += "." + plural + "()"
 				}
-				return resolved{Expr: expr, Comment: "generated store (internal/db/store_gen.go)", Imports: map[string]string{"db": r.module + "/internal/db"}}, nil
+				return resolved{Expr: expr, Comment: r.store.source(), Imports: map[string]string{r.store.pkg: r.module + "/" + r.store.dir}}, nil
 			}
 		}
 	}

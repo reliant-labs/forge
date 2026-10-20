@@ -27,7 +27,7 @@ func TestCreateRequestFactory_EnumInSiblingGoPackage_UsesThatPackage(t *testing.
 	if len(specs) != 1 {
 		t.Fatalf("want 1 create spec, got %d", len(specs))
 	}
-	out := string(renderEntityFactoryFile("example.com/test", factoryGroup{
+	out := string(renderEntityFactoryFile("example.com/test/internal/db", factoryGroup{
 		pkg: "shop", pbImport: svc.GoPackage, creates: specs,
 	}))
 
@@ -48,7 +48,7 @@ func TestCreateRequestFactory_EnumInServiceGoPackage_StaysPb(t *testing.T) {
 	fx := fixtureModel(t, fixtureSchema(), "products")
 
 	specs := buildCreateRequestSpecs(t.Context(), svc, methods, fx)
-	out := string(renderEntityFactoryFile("example.com/test", factoryGroup{
+	out := string(renderEntityFactoryFile("example.com/test/internal/db", factoryGroup{
 		pkg: "shop", pbImport: svc.GoPackage, creates: specs,
 	}))
 	if !strings.Contains(out, "pb.ProductStatus_PRODUCT_STATUS_ACTIVE") {

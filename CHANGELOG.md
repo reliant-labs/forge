@@ -137,6 +137,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `requirecontract` structurally, as a worker is.
 - **`serverkit.Run` serves pprof through the `Pprof` component** instead of
   its own copy.
+- **A legacy-composition `internal/app/lifecycle.go` with no worker compiles.**
+  The template imported `forge/pkg/lifecyclekit` unconditionally, but since
+  its operator re-exports moved to `operatorkit` (#918) only a `Worker<X>()`
+  accessor names it, so a project without workers failed its first generate
+  with `"…/pkg/lifecyclekit" imported and not used` (every
+  `forge project new` from #918 until the composition graph, #923, made new
+  projects skip lifecycle.go). The import is rendered with the first worker,
+  and the reconciler adds it when it injects one into an existing file.
 
 ### Removed
 
@@ -750,6 +758,22 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **`database.orm.package` places the generated data layer.** The ORM always
+  projected into `internal/db` (`package db`) and refused any name the
+  project already declared there — so a project with its own data layer in
+  `internal/db` (reliant: 30 of 55 names, `type Chat = core.Chat`, `Repo`,
+  `Daemon`) could not have the store at all without renaming thousands of
+  references first. `database: {orm: {package: internal/store}}` in
+  forge.yaml puts every `<entity>_orm_gen.go`, `store_gen.go` and
+  `_repo_ext.go` seam in that directory, declaring its package; the
+  collision refusal and `//forge:no-orm` read that package. Every consumer
+  follows it: CRUD wiring and test factories import it (as `db`), compose.go
+  provides `<pkg>.Store` / `<pkg>.<Entity>Store` Deps fields,
+  `forge project shapes --kind store`, and the drift guard and its hints.
+  Moving the key reclaims forge's previous projection from the old directory (the
+  `_repo_ext.go` seams are yours and stay). Default unchanged: `internal/db`.
+  The collision refusal now offers the key. `generator.GeneratePlanORM` takes
+  a `config.ORMConfig` in place of its two unused module/service arguments.
 - **A view can be a read-only entity.** forge projected BASE TABLEs only, so
   a view's row type was hand-written (reliant: `chats_with_activity`, the one
   definition of a chat's activity). `COMMENT ON VIEW v IS 'forge:entity'`

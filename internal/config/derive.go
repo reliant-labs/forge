@@ -50,15 +50,16 @@ import (
 // never mentions internal/db. The reason is not required by the loader.
 const NoORMDirective = "//forge:no-orm"
 
-// hasNoORMMarker reports whether internal/db declares `//forge:no-orm`.
-// Only non-test, non-generated .go files directly in internal/db are read,
+// hasNoORMMarker reports whether the ORM package directory (relDir, by
+// default internal/db) declares `//forge:no-orm`. Only non-test,
+// non-generated .go files directly in it are read,
 // and only line comments — the same scope `//forge:exclude-contract` is
 // honoured in.
-func hasNoORMMarker(projectDir string) bool {
+func hasNoORMMarker(projectDir, relDir string) bool {
 	if projectDir == "" {
 		return false
 	}
-	dir := filepath.Join(projectDir, "internal", "db")
+	dir := filepath.Join(projectDir, filepath.FromSlash(relDir))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
@@ -208,7 +209,7 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 	server := c.hasServerSources()
 	deploy := c.hasDeployTree()
 	return map[FeatureName]bool{
-		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir),
+		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir, c.Database.ORM.PackageDir()),
 		FeatureCodegen:       codegen,
 		FeatureMigrations:    hasDB && codegen,
 		FeatureCI:            !isLibrary,

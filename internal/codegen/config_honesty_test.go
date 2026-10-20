@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -166,7 +168,6 @@ func serveCalls(file *ast.File) map[string]bool {
 	return called
 }
 
-
 // TestCmdServer_DatabaseStartupRetries pins the order that stops a database
 // which is not up YET from crash-looping the process: the boot probes bind
 // the listener before anything dials, the migrate connect and OpenInfra take
@@ -196,5 +197,17 @@ func TestCmdServer_DatabaseStartupRetries(t *testing.T) {
 	}
 	if !strings.Contains(src, "skCfg.DBConnectTimeout = cfg.DbConnectTimeout.AsDuration()") {
 		t.Error("DB_CONNECT_TIMEOUT is declared but never projected onto serverkit.Config")
+	}
+}
+
+// The composition-graph serve scaffold loads config the same way: Load owns
+// validation, so it carries no second Validate call either.
+func TestCmdServeGraphScaffold_LoadOwnsValidation(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "templates", "project", "cmd-tree-serve-graph.go.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "config.Validate(") {
+		t.Error("cmd-tree-serve-graph.go.tmpl calls config.Validate after Load (Load owns validation)")
 	}
 }

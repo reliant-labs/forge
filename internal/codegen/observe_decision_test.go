@@ -99,3 +99,17 @@ func TestShouldInstrumentComponent(t *testing.T) {
 		})
 	}
 }
+
+// A package returning an interface but without contract.go gets no decorator
+// from the contracts step, so it is never instrumented; nor is one carrying
+// //forge:exclude-contract.
+func TestShouldInstrumentComponent_RequiresAContractPackage(t *testing.T) {
+	service := "package x\n\ntype Service interface{ Do() error }\ntype Deps struct{}\ntype service struct{}\n\nfunc New(d Deps) (Service, error) { return &service{}, nil }\n"
+	if ShouldInstrumentComponent(writeObserveDir(t, map[string]string{"service.go": service}), "Service", "Service") {
+		t.Error("a package with no contract.go was instrumented")
+	}
+	excluded := "//forge:exclude-contract: built elsewhere\npackage x\n\ntype Service interface{ Do() error }\n"
+	if ShouldInstrumentComponent(writeObserveDir(t, map[string]string{"contract.go": excluded, "service.go": service}), "Service", "Service") {
+		t.Error("an exclude-contract package was instrumented")
+	}
+}

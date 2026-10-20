@@ -108,7 +108,7 @@ func TestGenerateInject_MarkedInterfaceWiresByType(t *testing.T) {
 	out := readInject(t, dir)
 	// The marked producer is constructed and the consumer's by-type dep
 	// resolves to its local var (not infra / not a MissingProvider).
-	if !strings.Contains(out, "Payments: c.Payments,") {
+	if !strings.Contains(out, "Payments: paymentsInst,") {
 		t.Fatalf("consumer's payments.Gateway dep should wire to the marked producer var:\n%s", out)
 	}
 }

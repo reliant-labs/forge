@@ -57,19 +57,31 @@ const observeChainSeamFunc = "newObserveChain"
 //
 // ctorType is DetectConstructorType(dir); ifaceName is the component's
 // Service-contract interface name (serviceIfaceOrDefault). A package is
-// instrumented when both hold:
+// instrumented when all hold:
 //
 //  1. the constructor RETURNS the Service interface (ctorType == ifaceName).
 //     Handler-shaped packages return a concrete *Service and are never wrapped
 //     — otelconnect owns the RPC edge, and wrapping *Service would change the
 //     Components field type.
-//  2. it has NOT opted out via a package-level `// forge:no-observe`
+//  2. it is a contract package — a contract.go the contracts step generates
+//     from, not opted out with `//forge:exclude-contract` — because that step
+//     is what writes the decorator. A package returning an interface with no
+//     contract.go has no middleware_gen.go, and wrapping it would not compile.
+//     (A package excluded in forge.yaml's contracts.exclude is not discovered
+//     as a component at all.)
+//  3. it has NOT opted out via a package-level `// forge:no-observe`
 //     (HasPackageNoObserveDirective).
 func ShouldInstrumentComponent(dir, ctorType, ifaceName string) bool {
 	if ifaceName == "" {
 		ifaceName = "Service"
 	}
 	if ctorType != ifaceName {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, "contract.go")); err != nil {
+		return false
+	}
+	if HasExcludeContractDirective(dir) {
 		return false
 	}
 	return !HasPackageNoObserveDirective(dir)

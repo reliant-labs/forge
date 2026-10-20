@@ -81,7 +81,7 @@ func TestGenerateCompose_NotAComponentIsNotComposed(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "cliauth") {
 		t.Fatalf("compose.go must not import, declare or construct the not-a-component package:\n%s", out)
 	}
-	for _, want := range []string{"c.Pricing =", "c.Orders =", "Pricing: c.Pricing,"} {
+	for _, want := range []string{"c.Pricing =", "c.Orders =", "Pricing: pricingInst,"} {
 		if !containsNormalized(out, want) {
 			t.Fatalf("the unmarked package and the handler must compose as before (missing %q):\n%s", want, out)
 		}

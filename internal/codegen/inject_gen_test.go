@@ -99,10 +99,10 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 	if ui > bi {
 		t.Fatalf("User must be constructed before Billing:\n%s", out)
 	}
-	// Billing's Users field is filled by the producer's Components field —
-	// the decorated instance, since every contract package is instrumented by
-	// default — not infra.
-	if !strings.Contains(out, "Users: c.User,") {
+	// Billing's Users field is filled by the producer's local var (suffixed
+	// "Inst" so it never shadows the package import alias), not infra. (The
+	// fixtures declare no middleware_gen.go, so nothing is wrapped.)
+	if !strings.Contains(out, "Users: userInst,") {
 		t.Fatalf("Billing.Users should be wired to the user producer var:\n%s", out)
 	}
 }
@@ -525,7 +525,7 @@ func TestGenerateCompose_ReconcileWiresDBOnFallibleService(t *testing.T) {
 		t.Fatalf("reconcile did not wire the gained DB dep into the fallible construction:\n%s", out)
 	}
 	// Existing wiring must remain intact.
-	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = orders.NewServiceWithForgeMiddleware(ordersInst)"} {
+	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = ordersInst"} {
 		if !strings.Contains(flat(out), want) {
 			t.Fatalf("reconcile disturbed existing wiring (missing %q):\n%s", want, out)
 		}
@@ -853,6 +853,12 @@ func writeObservedPackage(t *testing.T, projectDir, leaf, pkg string, fallible b
 	if err := os.WriteFile(filepath.Join(dir, "observe_chain.go"), []byte(seam), 0o644); err != nil {
 		t.Fatalf("write observe_chain: %v", err)
 	}
+	// The decorator the contracts step writes before compose is assembled;
+	// compose wraps only a component whose decorator is declared.
+	decorator := "package " + pkg + "\n\nfunc NewServiceWithForgeMiddleware(inner Service) Service { return &forgeMiddlewareService{inner: inner} }\n\ntype forgeMiddlewareService struct{ Service; inner Service }\n"
+	if err := os.WriteFile(filepath.Join(dir, "middleware_gen.go"), []byte(decorator), 0o644); err != nil {
+		t.Fatalf("write middleware_gen: %v", err)
+	}
 }
 
 // TestGenerateCompose_WrappedObservedPackage: a package with an observe_chain.go
@@ -1102,7 +1108,7 @@ func TestGenerateCompose_ReconcileDropsRemovedDepsField(t *testing.T) {
 	if strings.Contains(flat(out), "DB:") {
 		t.Fatalf("compose.go still constructs the REMOVED Deps field — the project cannot build:\n%s", out)
 	}
-	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = orders.NewServiceWithForgeMiddleware(ordersInst)"} {
+	for _, want := range []string{"Logger: infra.Log", "Config: infra.Cfg", "c.Orders = ordersInst"} {
 		if !strings.Contains(flat(out), want) {
 			t.Fatalf("drop disturbed the surviving wiring (missing %q):\n%s", want, out)
 		}

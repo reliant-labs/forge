@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,7 +62,7 @@ var repoTracer = otel.Tracer("orm")
 type meta struct {
 	table         string // SQL table name
 	entityName    string // model Go type name (for span names)
-	pkColumn      string // primary-key column name
+	pkColumn      string // primary-key column name ("" for a composite key)
 	pkGoField     string // primary-key struct field (Go) name
 	pkAutoInc     bool   // server-allocated PK (SERIAL/IDENTITY) → RETURNING
 	pkIsString    bool   // string PK → ULID-generate when empty on Create
@@ -81,6 +82,11 @@ type meta struct {
 	updatableSet map[string]bool
 	skipUpdate   map[string]int        // ,skipupdate column → struct field index; see UpdateMasked
 	stampFields  map[string]stampField // created_at/updated_at → field info
+	// pkColumns are every primary-key column, in key order: one for a
+	// single-column key, several for a composite one. A composite-key row
+	// is addressed by all of them at once (Bun's WherePK over a key
+	// entity) — see GetByPK, DeleteByPK and wherePK.
+	pkColumns []string
 	// versionColumn is the SQL name of the `forge:version` column, "" when
 	// the entity declared none. A non-empty value is what switches
 	// Update/UpdateMasked from last-writer-wins to optimistic concurrency
@@ -277,6 +283,9 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 					r.m.stampFields[f.Name] = sf
 				}
 			}
+		}
+		for _, pk := range tbl.PKs {
+			r.m.pkColumns = append(r.m.pkColumns, pk.Name)
 		}
 		switch len(tbl.PKs) {
 		case 1:
@@ -571,7 +580,7 @@ func (r *Repo[M]) returnGenerated(q *bun.UpdateQuery) bool {
 // Letting a client set it would make the predicate self-satisfying, which
 // is the whole guarantee gone.
 func (r *Repo[M]) columnExcludedFromSet(col string) bool {
-	if col == r.m.pkColumn || col == "deleted_at" {
+	if col == r.m.pkColumn || col == "deleted_at" || slices.Contains(r.m.pkColumns, col) {
 		return true
 	}
 	if r.m.versionColumn != "" && col == r.m.versionColumn {
@@ -785,7 +794,7 @@ func (r *Repo[M]) Upsert(ctx context.Context, db orm.Context, entity *M) error {
 	r.normalizeArrays(entity)
 
 	q := r.excludeGeneratedColumns(db.Bun().NewInsert().Model(entity)).
-		On("CONFLICT (?) DO UPDATE", bun.Ident(r.m.pkColumn))
+		On("CONFLICT ("+strings.TrimSuffix(strings.Repeat("?, ", len(r.pkIdents())), ", ")+") DO UPDATE", r.pkIdents()...)
 	for _, col := range r.m.updatable {
 		q = q.Set("? = EXCLUDED.?", bun.Ident(col), bun.Ident(col))
 	}
@@ -840,6 +849,56 @@ func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any) (*M, error) {
 		return nil, fmt.Errorf("get %s by id: %w", r.m.table, err)
 	}
 	return entity, nil
+}
+
+// GetByPK retrieves the row whose primary key equals key's — every key
+// column, so it is how a COMPOSITE-key entity is read (Get takes one id).
+// Only key's primary-key fields are read. A missing row satisfies
+// errors.Is(err, orm.ErrNoRows).
+func (r *Repo[M]) GetByPK(ctx context.Context, db orm.Context, key *M) (*M, error) {
+	r.ensureMeta(db)
+	ctx, span := r.startSpan(ctx, "Get")
+	defer span.End()
+
+	entity := new(M)
+	*entity = *key
+	bnd := r.newBinder(db)
+	q := db.Bun().NewSelect().Model(entity).Limit(1)
+	r.wherePK(q.QueryBuilder(), bnd, entity)
+	r.scopeRead(q)
+	if err := bnd.get(ctx, span, db, q, entity); err != nil {
+		recordErr(span, err)
+		return nil, fmt.Errorf("get %s by key: %w", r.m.table, err)
+	}
+	return entity, nil
+}
+
+// wherePK addresses entity's row by its primary key: the one column for a
+// single-column key, every key column for a composite one — each value
+// through b, so a by-key statement binds its key like every other by-PK
+// statement (see bind.go).
+func (r *Repo[M]) wherePK(q bun.QueryBuilder, b *binder, entity *M) {
+	if len(r.m.pkColumns) > 1 {
+		v := reflect.ValueOf(entity).Elem()
+		for _, col := range r.m.pkColumns {
+			q.Where("? = ?", bun.Ident(col), b.value(r.m.fields[col].Value(v).Interface()))
+		}
+		return
+	}
+	q.Where("? = ?", bun.Ident(r.m.pkColumn), b.value(r.pkFieldValue(entity).Interface()))
+}
+
+// pkIdents are the primary-key columns as identifiers, for a conflict
+// target naming them all.
+func (r *Repo[M]) pkIdents() []any {
+	if len(r.m.pkColumns) == 0 { // no declared key: the conventional id
+		return []any{bun.Ident(r.m.pkColumn)}
+	}
+	out := make([]any, len(r.m.pkColumns))
+	for i, c := range r.m.pkColumns {
+		out[i] = bun.Ident(c)
+	}
+	return out
 }
 
 // ─── List / Count / ListAll ──────────────────────────────────────────────
@@ -985,7 +1044,7 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ..
 	b := r.newBinder(db)
 	q := db.Bun().NewUpdate().Model(entity)
 	b.setColumns(q, r.m.fields, reflect.ValueOf(entity).Elem(), cols)
-	q.Where("? = ?", bun.Ident(r.m.pkColumn), b.value(r.pkFieldValue(entity).Interface()))
+	r.wherePK(q.QueryBuilder(), b, entity)
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, b, entity)
 	returning := false
@@ -1088,7 +1147,7 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	for _, f := range forced {
 		q.SetColumn(f, "?", b.value(v.Field(r.m.skipUpdate[f]).Interface()))
 	}
-	q.Where("? = ?", bun.Ident(r.m.pkColumn), b.value(r.pkFieldValue(entity).Interface()))
+	r.wherePK(q.QueryBuilder(), b, entity)
 	r.scopeWrite(q)
 	r.applyVersionGuard(q, b, entity)
 	returning := false
@@ -1211,7 +1270,7 @@ func (r *Repo[M]) withoutPreserved(cols, preserve []string) ([]string, error) {
 func (r *Repo[M]) readBackUnwritten(q *bun.UpdateQuery, written []string) bool {
 	added := false
 	for _, c := range r.m.columns {
-		if c == r.m.pkColumn || c == r.m.versionColumn ||
+		if c == r.m.pkColumn || slices.Contains(r.m.pkColumns, c) || c == r.m.versionColumn ||
 			slices.Contains(written, c) || slices.Contains(r.m.generatedCols, c) {
 			continue
 		}
@@ -1345,8 +1404,10 @@ func (r *Repo[M]) requireWriteLanded(ctx context.Context, db orm.Context, res sq
 	// two answers. The soft-delete scoping stays, so a tombstoned row reads
 	// as absent exactly as it does to Get — the two verbs must keep
 	// agreeing about what "this row does not exist" means.
-	q := db.Bun().NewSelect().Model((*M)(nil)).
-		Where("? = ?", bun.Ident(r.m.pkColumn), r.pkFieldValue(entity).Interface())
+	key := new(M)
+	*key = *entity
+	q := db.Bun().NewSelect().Model(key)
+	r.wherePK(q.QueryBuilder(), &binder{}, key)
 	r.scopeRead(q)
 	exists, err := q.Exists(ctx)
 	if err != nil {
@@ -1434,6 +1495,49 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 	// rewrites NewDelete → UPDATE deleted_at and scopes to live rows).
 	q := db.Bun().NewDelete().Model((*M)(nil)).
 		Where("? = ?", bun.Ident(r.m.pkColumn), b.value(id))
+	res, err := b.write(ctx, span, db, q, nil, false)
+	if err != nil {
+		recordErr(span, err)
+		return fmt.Errorf("delete %s: %w", r.m.table, err)
+	}
+	if err := requireRowTouched(res, "delete", r.m.table); err != nil {
+		recordErr(span, err)
+		return err
+	}
+	return nil
+}
+
+// DeleteByPK removes the row whose primary key equals key's — every key
+// column, so it is how a COMPOSITE-key entity is deleted (Delete takes one
+// id). Soft delete and the not-found answer are Delete's.
+func (r *Repo[M]) DeleteByPK(ctx context.Context, db orm.Context, key *M) error {
+	r.ensureMeta(db)
+	ctx, span := r.startSpan(ctx, "Delete")
+	defer span.End()
+
+	b := r.newBinder(db)
+	var q bunWrite
+	switch {
+	case r.m.legacyTextSoftDel:
+		uq := db.Bun().NewUpdate().Model((*M)(nil)).
+			Set("? = CURRENT_TIMESTAMP", bun.Ident("deleted_at")).
+			Where("? IS NULL", bun.Ident("deleted_at"))
+		r.wherePK(uq.QueryBuilder(), b, key)
+		q = uq
+	case r.m.nativeSoftDel && b.bind:
+		// As Delete: in bind mode the repo writes the soft-delete UPDATE
+		// itself, with the stamp as a parameter.
+		col := bun.Ident(r.m.softDeleteColumn)
+		uq := db.Bun().NewUpdate().Model((*M)(nil)).
+			Set("? = ?", col, b.value(time.Now())).
+			Where("? IS NULL", col)
+		r.wherePK(uq.QueryBuilder(), b, key)
+		q = uq
+	default:
+		dq := db.Bun().NewDelete().Model((*M)(nil))
+		r.wherePK(dq.QueryBuilder(), b, key)
+		q = dq
+	}
 	res, err := b.write(ctx, span, db, q, nil, false)
 	if err != nil {
 		recordErr(span, err)

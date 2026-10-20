@@ -14,7 +14,8 @@ package config
 //
 // The resolution semantics:
 //
-//   - Precedence: defaults → config file → env (LookupEnv) → flag (only if
+//   - Precedence: defaults → build defaults (stamped with -ldflags, see
+//     builddefaults.go) → config file → env (LookupEnv) → flag (only if
 //     cmd.Flags().Changed), then a required-field check. The file layer
 //     (filelayer.go) loads only when a path is EXPLICITLY given and fails
 //     loudly on a missing/invalid explicit path. See LoadInto.
@@ -32,7 +33,9 @@ package config
 //     Map fields are rejected with a diagnostic naming the field. See
 //     parseValue/parseList.
 //   - A malformed value is an error that aborts loading — never a silent
-//     fallback to the default.
+//     fallback to the default. So is a value the field's annotations reject
+//     (allowed_values, the TLS/CORS role invariants): LoadInto ends with
+//     Validate, so no caller has to remember a second call.
 //   - Durations: a Go duration is recognized ONLY when the proto field is a
 //     google.protobuf.Duration message (no name heuristic — declare the
 //     field as Duration to get typed-duration behavior). String fields stay
@@ -75,7 +78,7 @@ func fieldOptions(fd protoreflect.FieldDescriptor) *forgepb.ConfigFieldOptions {
 	// same way the generator skips fields with no annotation. A field is
 	// considered config-bound if it names any binding source.
 	if cfg.GetEnvVar() == "" && len(cfg.GetEnvVarAliases()) == 0 && cfg.GetFlag() == "" &&
-		cfg.GetDefaultValue() == "" && !cfg.GetRequired() {
+		cfg.GetDefaultValue() == "" && !cfg.GetRequired() && cfg.GetEnvPrefix() == "" {
 		return nil
 	}
 	return cfg
@@ -348,11 +351,15 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // LoadInto populates msg in place using the full forge config precedence —
 // later layers OVERRIDE earlier ones:
 //
-//		defaults  →  config file  →  environment  →  flags
-//		(earliest)                                   (wins)
+//		defaults  →  build defaults  →  config file  →  environment  →  flags
+//		(earliest)                                                      (wins)
 //
 //	  - defaults: every annotated field's proto default (sensitive fields get
 //	    none — an inline secret default would be a leak).
+//	  - build defaults: the values this BUILD was stamped with (-ldflags -X
+//	    into the generated pkg/config.BuildDefaults; builddefaults.go), keyed
+//	    by env_var. A stamp that names no field, a sensitive field, or a value
+//	    that does not parse fails the load.
 //	  - config file: when a path is EXPLICITLY given via the --config flag or
 //	    the binary's <BINARY>_CONFIG env var, the file is proto-native
 //	    unmarshaled INTO msg, overlaying the defaults (see filelayer.go). A
@@ -373,15 +380,24 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // into the message, and consumers read it with .AsDuration(). (A plain
 // string field stays a string; the descriptor has no name heuristic.)
 //
-// The companion semantics — Mode (role=MODE) and Validate
-// (TLS/CORS roles + allowed_values) — live in this package too (semantic.go),
-// as FREE FUNCTIONS over the message. There is no parallel generated struct:
-// a project holds the proto config type and calls these directly.
+// After the layers it checks required fields and then runs Validate (the
+// TLS/CORS role invariants and allowed_values), so a loaded config has
+// already passed every declared check: an out-of-set value fails the load,
+// naming the field. Mode (role=MODE) and Validate live in this package too
+// (semantic.go), as FREE FUNCTIONS over the message; Validate is for a
+// message built by hand, which no load has checked. There is no parallel
+// generated struct: a project holds the proto config type.
 func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	m := msg.ProtoReflect()
 
 	// Layer 1: defaults (the base every later layer overlays).
 	if err := applyDefaults(m); err != nil {
+		return err
+	}
+
+	// Layer 1b: build-time defaults stamped into the binary
+	// (builddefaults.go): what one BUILD says, above what the source says.
+	if err := applyBuildDefaults(m); err != nil {
 		return err
 	}
 
@@ -399,9 +415,22 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	if err := applyEnvAndFlags(cmd, m); err != nil {
 		return err
 	}
+	// An env family's prefix is owned: a variable under it that nothing
+	// claims is a typo, refused rather than silently dropped (envfamily.go).
+	if err := checkFamilyPrefixes(cmd, msg); err != nil {
+		return err
+	}
 
 	// Required fields must be satisfied by SOME layer (default/file/env/flag).
-	return checkRequired(m)
+	if err := checkRequired(m); err != nil {
+		return err
+	}
+
+	// The declared invariants (allowed_values, the TLS pair, CORS wildcard +
+	// credentials) are part of loading, not a second step a caller may skip:
+	// a config whose annotations reject its resolved values never reaches the
+	// process. Validate stays exported for a message built by hand.
+	return validateMessage(m)
 }
 
 // DefaultsInto populates msg with the defaults layer alone — the base LoadInto
@@ -477,6 +506,9 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
 // take env (Secret mount) but NEVER a flag — no flag is ever registered for
 // them, and we defensively skip the flag branch even if one were.
 func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
+	if isEnvFamily(opt) {
+		return overlayFamily(m, fd, opt) // env only: a family has no flag
+	}
 	// Env layer: env_var, then its aliases in order — the first one set wins
 	// (envnames.go). A malformed value in the name that wins is an error; it
 	// never falls through to the next name.
@@ -510,7 +542,10 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 // checkRequired errors if any required field is still unset after all layers
 // have been applied, recursing into nested config blocks. A required field
 // that no layer populated fails fast — the same loud guarantee the single-pass
-// loader gave.
+// loader gave. `required: true` is the only thing that makes a field
+// required here: `sensitive` does not (whether a credential must exist is
+// the deploy pre-flight's question, per workload; see forge.proto's
+// ConfigFieldOptions.optional).
 func checkRequired(m protoreflect.Message) error {
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {

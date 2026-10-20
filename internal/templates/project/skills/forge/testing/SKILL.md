@@ -138,10 +138,51 @@ migration CLI) must either read those inputs itself or skip under `-short`, or
 the cached tier can report a stale pass. The scaffolded CRUD tests are safe:
 they read `db/migrations` with `os.ReadFile` (or `go:embed`) in-process.
 
-Keep the tier fast: a test that takes more than ~2s gets
-`if testing.Short() { t.Skip("<why>") }` (or bypasses its slow side-effect
-under `-short`), and its slow path still runs in `task test`. Gate it, don't
-gut it — never weaken an assertion to fit the 60s per-package timeout.
+### Mark the slow tests; everything else is fast
+
+A test is fast — it runs in the blocking `-short` tier — unless it says
+otherwise. A test that takes more than ~2s, or that does work a child
+process or a container does, declares it first:
+
+```go
+func TestRendersProd(t *testing.T) {
+	testkit.Slow(t, "renders prod through `forge env render`",
+		testkit.Inputs("deploy/kcl/**", "forge.yaml"))
+	...
+}
+```
+
+`testkit.Slow` (`forge/pkg/testkit`) skips under `-short` and in the
+integration lane (`-tags=integration` also compiles the untagged tests, which
+`task test` already ran), and runs in `task test`. Its skip message is `why`
+plus where the test runs instead. A helper that does the slow work for several
+tests can call it with the test's `t`. `testkit.SlowSkipped()` answers the
+same question for a `TestMain` that builds something only slow tests use.
+Never call it from an integration-tagged test: it would skip in the only lane
+that compiles it.
+
+`testkit.Inputs` names the files the test depends on, as globs relative to the
+module root (`*` within a segment, `**` across segments). They must be string
+literals: a tool selecting tests by what a change touched reads them from
+source, without running the test, so it can run a render test in the blocking
+tier exactly when `deploy/` changed. Slow validates them on every run,
+`-short` included.
+
+A plain `if testing.Short() { t.Skip("<why>") }` is still a valid marker, and
+so is bypassing only the slow side effect under `-short`. Gate it, don't gut
+it — never weaken an assertion to fit the 60s per-package timeout.
+
+Two guards hold the line, because neither sees everything:
+
+| Guard | What it catches |
+|---|---|
+| `forge lint --slow-tests` | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git`, `docker`, `kubectl`, … by a constant name, drives containers (testcontainers, dockertest, the docker client), or dials a real external host — in its own body, a `_test.go` helper, or a helper package that imports `testing` — with no `testing.Short` check on the way. It also catches the stale-cache case a timer cannot: a FAST test whose child process reads repo files. A non-literal `testkit.Inputs` argument is reported too. Opt-in for now |
+| `go test -short -json ./... \| forge ci test-budget` | Any top-level test that RAN in a -short run and took longer than `--budget` (default 2s), with file:line — whatever made it slow. Under -short a marked test skips, so anything it reports is unmarked |
+
+`forge/pkg/pgtest` (and `testkit.NewPostgresDB`) is deliberately not "slow":
+every test of a run shares one server and gets a cloned database, so the
+scaffolded CRUD tests belong in the fast tier. A database test that is still
+slow is the budget's to report.
 
 ## Don't hand-roll what forge already provides
 

@@ -99,9 +99,10 @@ _workloads = [
 - `server` runs no operator on hosted: with no Kubernetes API it logs
   `operators disabled` and serves on. The operator runs `_on_cluster`.
 - **Splitting one out** — a service no browser calls, a worker that needs its
-  own capacity: bind it on its own line, `_hosted(wl.<name>)`, AND take it out
-  of `server` (cmd/<bin>/cmd/server.go: a narrower mount, a filtered worker
-  list), or it runs twice. A split-out service the browser does call needs an
+  own capacity: bind it on its own line, `_hosted(wl.<name>)`, AND give it a
+  root of its own that `server`'s root no longer holds (a `//forge:root`
+  struct in internal/app; `architecture`, "Roots and commands"), or it runs
+  twice. A split-out service the browser does call needs an
   origin the frontend can reach — which hosting does not give it.
 - `forge env new <env> --from prod --bind api=cluster` moves the whole API;
   `--bind <service>=…` is refused there, naming `_api`.

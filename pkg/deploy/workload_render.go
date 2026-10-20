@@ -385,7 +385,7 @@ func (set *workloadSet) gatingJobs(target *workload) []*workload {
 func (set *workloadSet) render(w *workload, ctx Context) ([]runtime.Object, error) {
 	switch w.kind {
 	case v1alpha1.KindService, v1alpha1.KindWorker, v1alpha1.KindOperator:
-		return set.renderLongRunning(w, ctx), nil
+		return set.renderLongRunning(w, ctx)
 	case v1alpha1.KindJob:
 		if w.gatingJob() {
 			// expand.k:731: a job with `before` renders NO standalone Job.
@@ -407,7 +407,7 @@ func (set *workloadSet) render(w *workload, ctx Context) ([]runtime.Object, erro
 // renderLongRunning renders service / worker / operator (expand.k:440-533,
 // :748-777): a Deployment, the service's Service, the PDB, the PVC, the
 // identity and the ingress NetworkPolicy.
-func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Object {
+func (set *workloadSet) renderLongRunning(w *workload, ctx Context) ([]runtime.Object, error) {
 	s := w.spec
 	labels := managedLabels(w.name, ctx.PartOf)
 	selector := map[string]string{LabelName: w.name}
@@ -421,7 +421,11 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 	}
 	pod := set.podSpec(w, ctx, extraEnv)
 	if pod.TerminationGracePeriodSeconds == nil {
-		pod.TerminationGracePeriodSeconds = new(gracePeriodSeconds(s.Env))
+		grace, err := gracePeriodSeconds(s.Env)
+		if err != nil {
+			return nil, fmt.Errorf("workload %q: %w", w.name, err)
+		}
+		pod.TerminationGracePeriodSeconds = new(grace)
 	}
 	if s.Replicas > 1 {
 		pod.TopologySpreadConstraints = spreadConstraints(w.name)
@@ -524,7 +528,7 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) []runtime.Ob
 	if np := set.ingressPolicy(w, ctx); np != nil {
 		objs = append(objs, np)
 	}
-	return objs
+	return objs, nil
 }
 
 // renderJob renders a STANDALONE one-shot (expand.k:638-744).
@@ -931,17 +935,17 @@ func envLiteral(env []v1alpha1.EnvVar, key, fallback string) string {
 // drainSeconds is one drain knob's share of the grace period, in whole
 // seconds rounded up so the grace period never undercuts the server. It reads
 // the value with drainbudget — the reader the server's drain uses too: a Go
-// duration ("30s", "1m30s", "500ms") or a bare count of seconds, unset or
-// zero is the default, negative is none. Anything else (an interpolation, a
-// typo) takes the default, which the server's own config loader would have
-// refused anyway.
-func drainSeconds(raw string, def time.Duration) int64 {
+// duration ("30s", "1m30s", "500ms"), unset or zero is the default, negative
+// is none. Anything else (a bare number, an interpolation, a typo) is an
+// error: the server's config loader refuses it at boot, so rendering a grace
+// period for it would ship a pod that crash-loops on a budget nobody got.
+func drainSeconds(raw string, def time.Duration) (int64, error) {
 	d, err := drainbudget.Parse(raw)
 	if err != nil {
-		d = 0
+		return 0, err
 	}
 	d = drainbudget.Effective(d, def)
-	return int64((d + time.Second - 1) / time.Second)
+	return int64((d + time.Second - 1) / time.Second), nil
 }
 
 // gracePeriodSeconds ports expand.k:239-253 _grace_period. On SIGTERM
@@ -950,10 +954,16 @@ func drainSeconds(raw string, def time.Duration) int64 {
 // so without this the kubelet SIGKILLs mid-drain on every rollout. Derived
 // from the workload's OWN env, so retuning either knob cannot reintroduce
 // the truncation. No preStop hook: the app owns the drain.
-func gracePeriodSeconds(env []v1alpha1.EnvVar) int64 {
-	pre := drainSeconds(envLiteral(env, drainbudget.EnvPreStopDelay, ""), drainbudget.DefaultPreStopDelay)
-	shutdown := drainSeconds(envLiteral(env, drainbudget.EnvShutdownTimeout, ""), drainbudget.DefaultShutdownTimeout)
-	return pre + shutdown + graceMarginSeconds
+func gracePeriodSeconds(env []v1alpha1.EnvVar) (int64, error) {
+	pre, err := drainSeconds(envLiteral(env, drainbudget.EnvPreStopDelay, ""), drainbudget.DefaultPreStopDelay)
+	if err != nil {
+		return 0, fmt.Errorf("env %s: %w", drainbudget.EnvPreStopDelay, err)
+	}
+	shutdown, err := drainSeconds(envLiteral(env, drainbudget.EnvShutdownTimeout, ""), drainbudget.DefaultShutdownTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("env %s: %w", drainbudget.EnvShutdownTimeout, err)
+	}
+	return pre + shutdown + graceMarginSeconds, nil
 }
 
 // spreadConstraints ports expand.k:255-266: soft (ScheduleAnyway), because a

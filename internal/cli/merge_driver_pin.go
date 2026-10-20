@@ -21,9 +21,11 @@ package cli
 //     sides overlap — and says why, rather than apply a mismatched forge's
 //     rules.
 //
-// And every forge command run by the pinned forge (re)points the driver at
-// itself, so the first `forge generate` after a pin bump repairs a stale
-// driver. A forge that is NOT the project's pin never rewrites the driver.
+// And every writing forge command run by the pinned forge (re)points the
+// driver at the pin, so the first `forge generate` after a pin bump repairs a
+// stale driver. A forge that is NOT the project's pin never rewrites the
+// driver, and a copy of the pin at another path keeps the copy already
+// registered rather than taking the driver over.
 
 import (
 	"bytes"
@@ -68,18 +70,18 @@ var mergeDriverPinCheck = func(root string) (pin, binary string, skewed bool) {
 var mergeDriverIdentity = func() string { return forgeIdentity(buildinfo.Version()) }
 
 // registerPinnedDriver records command as the driver of this binary's
-// identity in the clone at root.
-func registerPinnedDriver(root, command string) {
+// identity in the clone at root, and reports whether that changed anything.
+func registerPinnedDriver(root, command string, scope configScope) bool {
 	id := mergeDriverIdentity()
 	if id == "" {
-		return
+		return false
 	}
 	key := pinnedDriverSection + "." + id + ".command"
 	cur, _ := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--get", key).Output()
 	if strings.TrimSpace(string(cur)) == command {
-		return
+		return false
 	}
-	_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run()
+	return exec.CommandContext(context.Background(), "git", "-C", root, "config", scope.flag(), key, command).Run() == nil
 }
 
 // pinnedDriverCommand returns the driver command a forge of pin's identity

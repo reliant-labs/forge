@@ -1,0 +1,85 @@
+// Package fix holds the `forge fix` command group: codemods that rewrite the
+// project's own code to what a lint asks for, run on request. Each is
+// deliberate — never part of `forge generate` — because it edits files that
+// are the user's.
+//
+//	forge fix narrow-deps <pkg>   retype a component's wide foreign Deps
+//	                              interfaces to the calls it makes
+//	                              (forgeconv-deps-surface)
+package fix
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/depsurface"
+	"github.com/reliant-labs/forge/internal/generator/contract"
+)
+
+func init() { factory.Register(newCmd) }
+
+func newCmd(f *factory.Factory) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "fix",
+		Short: "Rewrite your code to what a lint asks for (codemods, run on request)",
+		Long:  "Codemods that rewrite the project's own code to what a forge lint rule asks for. Each runs only when you name it, and edits files that are yours: review the diff.",
+	}
+	cmd.AddCommand(newNarrowDepsCmd(f))
+	return cmdutil.StrictGroup(cmd)
+}
+
+func newNarrowDepsCmd(f *factory.Factory) *cobra.Command {
+	return &cobra.Command{
+		Use:   "narrow-deps <package-dir>",
+		Short: "Declare the interfaces a component's Deps actually use, and retype its fields to them",
+		Long: `Narrow a component's Deps to what it uses (composition graph, least knowledge).
+
+For every Deps field typed as an interface DECLARED IN ANOTHER PACKAGE that has
+methods the package never calls through it (forgeconv-deps-surface), write an
+interface holding exactly the methods it calls, in the package itself — its
+contract.go, or deps.go — and retype the field to it. The composition is
+untouched: the value internal/app/compose.go hands the field still satisfies
+the narrower interface, structurally. Its mock is written beside it
+(mock_gen.go), and ` + "`forge generate`" + ` keeps it in step.
+
+A field whose value the package passes on is left alone (what it needs is not
+all visible here), as is one it never calls (delete it) and an interface the
+package already declares (edit that one).`,
+		Example: "  forge fix narrow-deps internal/handlers/tools_daemon",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			dir := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(args[0], "./")))
+			res, err := depsurface.Narrow(cwd, dir)
+			if err != nil {
+				return err
+			}
+			out := f.Out
+			for _, s := range res.Skipped {
+				fmt.Fprintf(out, "  ⏭️  Deps.%s (%s): %s\n", s.Field, s.Type, s.Reason)
+			}
+			if len(res.Narrowed) == 0 {
+				fmt.Fprintf(out, "  %s: nothing to narrow — every foreign interface field is used in full\n", res.Dir)
+				return nil
+			}
+			for _, n := range res.Narrowed {
+				fmt.Fprintf(out, "  ✅ Deps.%s: %s → %s (%d method(s): %s)\n", n.Field, n.From, n.To, len(n.Methods), strings.Join(n.Methods, ", "))
+			}
+			target := filepath.Join(cwd, filepath.FromSlash(res.File))
+			if err := contract.GenerateWithOptions(target, contract.Options{ProjectRoot: cwd, Resolver: contract.NewResolver(target)}); err != nil {
+				return fmt.Errorf("write the mocks for %s: %w", res.File, err)
+			}
+			fmt.Fprintf(out, "  ✅ declared in %s, mocked in %s\n", res.File, filepath.ToSlash(filepath.Join(res.Dir, "mock_gen.go")))
+			return nil
+		},
+	}
+}

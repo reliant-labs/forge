@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     target, env, via and time, and pages by keyset. The store writes through
     `*orm.Client`, so a write inside `RunTx` joins the transaction.
   - **Docs.** The new `activity` skill covers all of the above.
+  - **The lint.** `forgeconv-activity-declared` (`forge lint --conventions`,
+    error) fails a mutating rpc with no declaration and any malformed
+    declaration, such as a path that does not resolve. `forge generate` records
+    each rpc's verdict from `activity.IsMutating` and `activity.Resolve` in
+    `gen/forge_descriptor.json` (`Activity`), and the lint reads it there, so
+    the lint and the interceptor apply the same rules. **Upgrading:** every
+    custom mutating rpc in an existing project needs an `activity` declaration
+    or `activity: { none: "<why>" }`.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);

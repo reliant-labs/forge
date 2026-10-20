@@ -105,6 +105,22 @@ func graphComposeInputReads(src string, nodes []*graphNode) map[string]map[strin
 	return out
 }
 
+// markRootReach sets what each root's process policy reads off its reach:
+// whether a node in it serves g.Probes, and whether it reaches the database.
+func markRootReach(views []graphRootView, inputReads map[string]map[string]bool, byName map[string]*graphNode, u *graphUniverse) {
+	for i := range views {
+		v := &views[i]
+		for _, name := range v.Reach {
+			if inputReads[name]["Probes"] {
+				v.ServesProbes = true
+			}
+			if n := byName[name]; n != nil && u.isDatabase(n) {
+				v.Migrate = true
+			}
+		}
+	}
+}
+
 // isDatabase reports whether n's value is a database pool: a *sql.DB, a
 // pgxpool.Pool, or a struct embedding one (the scaffolded `type DB struct{
 // *sql.DB }`). Untyped (mid-edit), the scaffolded DB provider is recognised

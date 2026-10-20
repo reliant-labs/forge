@@ -162,107 +162,16 @@ func GenerateGraph(in GraphGenInput) error {
 			return err
 		}
 	}
-	for _, p := range providers {
-		typeImports, unknown := typeExprImports(p.Result, p.Imports)
-		if len(unknown) > 0 {
-			return fmt.Errorf("%s: New%s returns %s, whose package %q the file does not import", p.File, p.Name, p.Result, unknown[0])
-		}
-		n := &graphNode{
-			Name: p.Name, LogName: logName(p.Name), Kind: nodeProvider,
-			Doc:  fmt.Sprintf("the %s provider (New%s, %s)", p.Name, p.Name, p.File),
-			Type: p.Result, Imports: typeImports,
-			Ctor: "New" + p.Name, DepsType: p.Name + "Deps", Fallible: p.Fallible,
-			Deps: p.Deps, DepsKeys: p.DepsKeys, DepsFound: true,
-			SrcImports: p.Imports, Pos: p.Pos,
-		}
-		if err := add(n); err != nil {
-			return err
-		}
+	if err := addGraphProviderNodes(providers, add); err != nil {
+		return err
 	}
-
-	rows, connectImports, err := inventoryRows(InventoryGenInput{GenContext: in.GenContext, Services: in.Services, Packages: in.Packages, Workers: in.Workers, Operators: in.Operators, WebhookServices: in.WebhookServices})
+	routesView, err := addGraphRouteNodes(in, compNode, add)
 	if err != nil {
 		return err
 	}
-	routesView := routesGenView{Module: in.ModulePath, ConnectImports: connectImports}
-	routesImports := map[string]string{}
-	byAudience := map[string][]routesServiceView{"user": nil}
-	for _, row := range rows {
-		cn := compNode[row.FieldName]
-		if cn == nil {
-			continue // a not-a-component handler: nothing to mount
-		}
-		sv := routesServiceView{InventoryServiceData: row, Type: cn.Type}
-		routesView.Services = append(routesView.Services, sv)
-		byAudience[row.Audience] = append(byAudience[row.Audience], sv)
-		for a, p := range cn.Imports {
-			routesImports[a] = p
-		}
-	}
-	audiences := make([]string, 0, len(byAudience))
-	for a := range byAudience {
-		audiences = append(audiences, a)
-	}
-	sort.Slice(audiences, func(i, j int) bool {
-		if (audiences[i] == "user") != (audiences[j] == "user") {
-			return audiences[i] == "user"
-		}
-		return audiences[i] < audiences[j]
-	})
-	for _, a := range audiences {
-		name := audienceRoutesName(a)
-		av := routesAudienceView{Name: name, Audience: a, Default: a == "user", Services: byAudience[a]}
-		routesView.Audiences = append(routesView.Audiences, av)
-		n := &graphNode{
-			Name: name, LogName: logName(name), Kind: nodeRoutes, Audience: a,
-			Doc:  fmt.Sprintf("the %s-audience route set (routes_gen.go)", a),
-			Type: "*" + name, Ctor: "New" + name, DepsType: name + "Deps", Fallible: true,
-			DepsKeys: map[string]bool{"Logger": true, "Options": true}, DepsFound: true,
-			SrcImports: routesImports,
-		}
-		for _, sv := range av.Services {
-			n.Deps = append(n.Deps, DepsField{Name: sv.FieldName, Type: sv.Type})
-			n.DepsKeys[sv.FieldName] = true
-			n.Services = append(n.Services, compNode[sv.FieldName])
-		}
-		n.Deps = append(n.Deps, DepsField{Name: "Logger", Type: "*slog.Logger"}, DepsField{Name: "Options", Type: "MountOptions"})
-		if err := add(n); err != nil {
-			return err
-		}
-	}
-	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect",
-		"github.com/reliant-labs/forge/pkg/middleware", "github.com/reliant-labs/forge/pkg/mountkit",
-		"github.com/reliant-labs/forge/pkg/mountkit/inventory", in.ModulePath+"/pkg/middleware")
-
-	var opsView *graphOperatorsView
-	var opNodes []*graphNode
-	for _, n := range nodes {
-		if n.Role == "internal/operators" {
-			opNodes = append(opNodes, n)
-		}
-	}
-	if len(opNodes) > 0 {
-		opsView = &graphOperatorsView{LeaderElectionID: leaderElectionID(in.ModulePath)}
-		n := &graphNode{
-			Name: "Operators", LogName: "operators", Kind: nodeOperators,
-			Doc:  "the controller manager running every operator (graph_gen.go)",
-			Type: "*Operators", Ctor: "NewOperators", DepsType: "OperatorsDeps", Fallible: true,
-			DepsKeys: map[string]bool{"Logger": true, "ServerCfg": true}, DepsFound: true,
-			Lifecycle: lifecycle{Run: "Run"}, NilGuard: true,
-			SrcImports: map[string]string{},
-		}
-		for _, op := range opNodes {
-			n.Deps = append(n.Deps, DepsField{Name: op.Name, Type: op.Type})
-			n.DepsKeys[op.Name] = true
-			for a, p := range op.Imports {
-				n.SrcImports[a] = p
-			}
-			opsView.Ops = append(opsView.Ops, graphOperatorView{Field: op.Name, Type: op.Type, Alias: op.Comp.Alias, Label: op.Comp.Name})
-		}
-		n.Deps = append(n.Deps, DepsField{Name: "Logger", Type: "*slog.Logger"}, DepsField{Name: "ServerCfg", Type: "serverkit.Config"})
-		if err := add(n); err != nil {
-			return err
-		}
+	opsView, opNodes, err := addGraphOperatorsNode(in.ModulePath, nodes, add)
+	if err != nil {
+		return err
 	}
 
 	// Types: what each node produces, its Deps field types, its lifecycle.
@@ -290,23 +199,10 @@ func GenerateGraph(in GraphGenInput) error {
 	}
 
 	// compose.go: reconcile (or, when disowned, read as is).
-	composeRel := filepath.Join("internal", "app", "compose.go")
-	composeAbs := filepath.Join(in.ProjectDir, composeRel)
-	existing, rerr := os.ReadFile(composeAbs)
-	if rerr != nil && !os.IsNotExist(rerr) {
-		return fmt.Errorf("read internal/app/compose.go: %w", rerr)
-	}
-	compose := string(existing)
-	disowned := disownedFilePresent(in.Checksums, composeRel, composeAbs)
-	if !disowned {
-		out, problems, err := reconcileGraphCompose(compose, nodes, resolver)
-		if err != nil {
-			return err
-		}
-		if len(problems) > 0 {
-			return graphProblemsError(problems)
-		}
-		compose = out
+	composeAbs := filepath.Join(in.ProjectDir, "internal", "app", "compose.go")
+	existing, compose, disowned, err := reconcileGraphComposeFile(in, nodes, resolver)
+	if err != nil {
+		return err
 	}
 
 	edges, lazy := graphComposeEdgesLazy(compose, nodes)
@@ -324,56 +220,14 @@ func GenerateGraph(in GraphGenInput) error {
 	if err := checkRootCommands(roots); err != nil {
 		return err
 	}
-	inputReads := graphComposeInputReads(compose, nodes)
-	var rootViews []graphRootView
-	seenRoot := map[string]string{}
-	for i := range roots {
-		r := &roots[i]
-		if prev, dup := seenRoot[r.Name]; dup {
-			return fmt.Errorf("%s:%d: two roots are named %q (%s and %s)", r.File, r.Line, r.Name, prev, r.TypeName)
-		}
-		seenRoot[r.Name] = r.TypeName
-		if !r.Generated {
-			if err := resolveRootFields(r, nodes, u); err != nil {
-				return err
-			}
-		}
-		v := rootViewLazy(r, edges, lazy)
-		v.Command = r.Command
-		for _, name := range v.Reach {
-			if inputReads[name]["Probes"] {
-				v.ServesProbes = true
-			}
-			if n := byName[name]; n != nil && u.isDatabase(n) {
-				v.Migrate = true
-			}
-		}
-		rootViews = append(rootViews, v)
+	rootViews, err := graphRootViews(roots, nodes, u, edges, lazy)
+	if err != nil {
+		return err
 	}
+	markRootReach(rootViews, graphComposeInputReads(compose, nodes), byName, u)
 
 	// graph_gen.go
-	gv := graphGenView{Module: in.ModulePath, Roots: rootViews, Operators: opsView}
-	for _, rv := range rootViews {
-		if !rv.ServesProbes {
-			gv.ProbeListener = true
-		}
-	}
-	nodeImports := map[string]string{}
-	for _, n := range nodes {
-		for a, p := range n.Imports {
-			nodeImports[a] = p
-		}
-		gv.Nodes = append(gv.Nodes, nodeView(n))
-	}
-	if opsView != nil {
-		for _, op := range opNodes {
-			nodeImports[op.Comp.Alias] = in.ModulePath + "/" + op.Comp.ImportPath
-		}
-	}
-	gv.Imports = sortedImports(nodeImports, "context", "fmt", "log/slog", "strings", "github.com/reliant-labs/forge/pkg/appkit/operatorkit",
-		"github.com/reliant-labs/forge/pkg/graphkit", "github.com/reliant-labs/forge/pkg/lifecyclekit",
-		"github.com/reliant-labs/forge/pkg/serverkit", in.ModulePath+"/pkg/config")
-
+	gv := graphGenViewOf(in.ModulePath, nodes, rootViews, opsView, opNodes)
 	graphSrc, err := renderGoTemplate("graph_gen.go.tmpl", gv)
 	if err != nil {
 		return err
@@ -391,13 +245,246 @@ func GenerateGraph(in GraphGenInput) error {
 	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "routes_gen.go"), routesSrc, in.Checksums); err != nil {
 		return fmt.Errorf("write internal/app/routes_gen.go: %w", err)
 	}
-	if !disowned && compose != string(existing) {
+	if !disowned && compose != existing {
 		if err := writeUserScaffold(composeAbs, []byte(compose)); err != nil {
 			return fmt.Errorf("write internal/app/compose.go: %w", err)
 		}
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
 	return emitRootCommands(in.ProjectDir, in.ModulePath, rootViews, in.Checksums, in.warnings())
+}
+
+// addGraphProviderNodes adds one node per provider func an owned
+// internal/app file declares.
+func addGraphProviderNodes(providers []graphProvider, add func(*graphNode) error) error {
+	for _, p := range providers {
+		typeImports, unknown := typeExprImports(p.Result, p.Imports)
+		if len(unknown) > 0 {
+			return fmt.Errorf("%s: New%s returns %s, whose package %q the file does not import", p.File, p.Name, p.Result, unknown[0])
+		}
+		n := &graphNode{
+			Name: p.Name, LogName: logName(p.Name), Kind: nodeProvider,
+			Doc:  fmt.Sprintf("the %s provider (New%s, %s)", p.Name, p.Name, p.File),
+			Type: p.Result, Imports: typeImports,
+			Ctor: "New" + p.Name, DepsType: p.Name + "Deps", Fallible: p.Fallible,
+			Deps: p.Deps, DepsKeys: p.DepsKeys, DepsFound: true,
+			SrcImports: p.Imports, Pos: p.Pos,
+		}
+		if err := add(n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// graphRootViews resolves each root's fields against the nodes and renders
+// it, refusing two roots of one name.
+func graphRootViews(roots []graphRoot, nodes []*graphNode, u *graphUniverse, edges, lazy map[string][]string) ([]graphRootView, error) {
+	var rootViews []graphRootView
+	seenRoot := map[string]string{}
+	for i := range roots {
+		r := &roots[i]
+		if prev, dup := seenRoot[r.Name]; dup {
+			return nil, fmt.Errorf("%s:%d: two roots are named %q (%s and %s)", r.File, r.Line, r.Name, prev, r.TypeName)
+		}
+		seenRoot[r.Name] = r.TypeName
+		if !r.Generated {
+			if err := resolveRootFields(r, nodes, u); err != nil {
+				return nil, err
+			}
+		}
+		v := rootViewLazy(r, edges, lazy)
+		v.Command = r.Command
+		rootViews = append(rootViews, v)
+	}
+	return rootViews, nil
+}
+
+// graphGenViewOf is graph_gen.go's view: every node, the roots, the
+// operators, and the imports their types need.
+func graphGenViewOf(module string, nodes []*graphNode, rootViews []graphRootView, opsView *graphOperatorsView, opNodes []*graphNode) graphGenView {
+	gv := graphGenView{Module: module, Roots: rootViews, Operators: opsView}
+	for _, rv := range rootViews {
+		if !rv.ServesProbes {
+			gv.ProbeListener = true
+		}
+	}
+	nodeImports := map[string]string{}
+	for _, n := range nodes {
+		for a, p := range n.Imports {
+			nodeImports[a] = p
+		}
+		gv.Nodes = append(gv.Nodes, nodeView(n))
+	}
+	if opsView != nil {
+		for _, op := range opNodes {
+			nodeImports[op.Comp.Alias] = module + "/" + op.Comp.ImportPath
+		}
+	}
+	gv.Imports = sortedImports(nodeImports, "context", "fmt", "log/slog", "strings", "github.com/reliant-labs/forge/pkg/appkit/operatorkit",
+		"github.com/reliant-labs/forge/pkg/graphkit", "github.com/reliant-labs/forge/pkg/lifecyclekit",
+		"github.com/reliant-labs/forge/pkg/serverkit", module+"/pkg/config")
+	return gv
+}
+
+// reconcileGraphComposeFile reads internal/app/compose.go and, unless it is
+// disowned, reconciles it against nodes. It returns the file as read, the
+// reconciled source, and whether it is disowned (then the two are equal).
+//
+// The reconcile measures only the nodes' own constructions. compose.go is
+// owned and only ever added to, so it can keep constructing a project package
+// that is no longer a node — marked //forge:external-component or
+// //forge:not-a-component, or out of discovery altogether. Go still fixes that
+// literal's keys to the package's Deps struct, so a removed field breaks the
+// build there exactly as it would for a node (#747): those keys are dropped
+// too, and the construction itself is reported, never deleted.
+func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *graphResolver) (existing, compose string, disowned bool, err error) {
+	composeRel := filepath.Join("internal", "app", "compose.go")
+	composeAbs := filepath.Join(in.ProjectDir, composeRel)
+	raw, rerr := os.ReadFile(composeAbs)
+	if rerr != nil && !os.IsNotExist(rerr) {
+		return "", "", false, fmt.Errorf("read internal/app/compose.go: %w", rerr)
+	}
+	existing = string(raw)
+	if disownedFilePresent(in.Checksums, composeRel, composeAbs) {
+		return existing, existing, true, nil
+	}
+	out, problems, err := reconcileGraphCompose(existing, nodes, resolver)
+	if err != nil {
+		return "", "", false, err
+	}
+	if len(problems) > 0 {
+		return "", "", false, graphProblemsError(problems)
+	}
+	stale := graphStaleConstructionData(in, nodes)
+	out, _ = composeDropStaleDepsKeys(out, stale)
+	for _, w := range composeStaleConstructions(out, stale) {
+		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
+	}
+	return existing, out, false, nil
+}
+
+// graphStaleConstructionData is the view composeDropStaleDepsKeys and
+// composeStaleConstructions take of the graph: the component nodes, with the
+// Deps keys each one's literal is measured against.
+func graphStaleConstructionData(in GraphGenInput, nodes []*graphNode) InjectGenData {
+	data := InjectGenData{Module: in.ModulePath, ProjectDir: in.ProjectDir, Graph: true}
+	for _, n := range nodes {
+		if n.Comp == nil {
+			continue
+		}
+		data.Order = append(data.Order, InjectComponentData{
+			Alias: n.Comp.Alias, ImportPath: n.Comp.ImportPath,
+			DepsFound: n.DepsFound, DepsKeys: n.DepsKeys,
+		})
+	}
+	return data
+}
+
+// addGraphRouteNodes adds one route-set node per audience the services
+// declare (the user audience always), and returns routes_gen.go's view.
+func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add func(*graphNode) error) (routesGenView, error) {
+	rows, connectImports, err := inventoryRows(InventoryGenInput{GenContext: in.GenContext, Services: in.Services, Packages: in.Packages, Workers: in.Workers, Operators: in.Operators, WebhookServices: in.WebhookServices})
+	if err != nil {
+		return routesGenView{}, err
+	}
+	routesView := routesGenView{Module: in.ModulePath, ConnectImports: connectImports}
+	routesImports := map[string]string{}
+	byAudience := map[string][]routesServiceView{"user": nil}
+	for _, row := range rows {
+		cn := compNode[row.FieldName]
+		if cn == nil {
+			continue // a not-a-component handler: nothing to mount
+		}
+		sv := routesServiceView{InventoryServiceData: row, Type: cn.Type}
+		routesView.Services = append(routesView.Services, sv)
+		byAudience[row.Audience] = append(byAudience[row.Audience], sv)
+		for a, p := range cn.Imports {
+			routesImports[a] = p
+		}
+	}
+	for _, a := range sortedAudiences(byAudience) {
+		name := audienceRoutesName(a)
+		av := routesAudienceView{Name: name, Audience: a, Default: a == "user", Services: byAudience[a]}
+		routesView.Audiences = append(routesView.Audiences, av)
+		if err := add(routesNode(av, routesImports, compNode)); err != nil {
+			return routesGenView{}, err
+		}
+	}
+	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect",
+		"github.com/reliant-labs/forge/pkg/middleware", "github.com/reliant-labs/forge/pkg/mountkit",
+		"github.com/reliant-labs/forge/pkg/mountkit/inventory", in.ModulePath+"/pkg/middleware")
+	return routesView, nil
+}
+
+// sortedAudiences is byAudience's keys, the user audience first.
+func sortedAudiences(byAudience map[string][]routesServiceView) []string {
+	audiences := make([]string, 0, len(byAudience))
+	for a := range byAudience {
+		audiences = append(audiences, a)
+	}
+	sort.Slice(audiences, func(i, j int) bool {
+		if (audiences[i] == "user") != (audiences[j] == "user") {
+			return audiences[i] == "user"
+		}
+		return audiences[i] < audiences[j]
+	})
+	return audiences
+}
+
+// routesNode is one audience's route set as a graph node: a Deps field per
+// service it mounts, plus Logger and Options.
+func routesNode(av routesAudienceView, routesImports map[string]string, compNode map[string]*graphNode) *graphNode {
+	n := &graphNode{
+		Name: av.Name, LogName: logName(av.Name), Kind: nodeRoutes, Audience: av.Audience,
+		Doc:  fmt.Sprintf("the %s-audience route set (routes_gen.go)", av.Audience),
+		Type: "*" + av.Name, Ctor: "New" + av.Name, DepsType: av.Name + "Deps", Fallible: true,
+		DepsKeys: map[string]bool{"Logger": true, "Options": true}, DepsFound: true,
+		SrcImports: routesImports,
+	}
+	for _, sv := range av.Services {
+		n.Deps = append(n.Deps, DepsField{Name: sv.FieldName, Type: sv.Type})
+		n.DepsKeys[sv.FieldName] = true
+		n.Services = append(n.Services, compNode[sv.FieldName])
+	}
+	n.Deps = append(n.Deps, DepsField{Name: "Logger", Type: "*slog.Logger"}, DepsField{Name: "Options", Type: "MountOptions"})
+	return n
+}
+
+// addGraphOperatorsNode adds the controller-manager node when the project has
+// operators, and returns graph_gen.go's view of it and the operator nodes.
+func addGraphOperatorsNode(module string, nodes []*graphNode, add func(*graphNode) error) (*graphOperatorsView, []*graphNode, error) {
+	var opNodes []*graphNode
+	for _, n := range nodes {
+		if n.Role == "internal/operators" {
+			opNodes = append(opNodes, n)
+		}
+	}
+	if len(opNodes) == 0 {
+		return nil, nil, nil
+	}
+	opsView := &graphOperatorsView{LeaderElectionID: leaderElectionID(module)}
+	n := &graphNode{
+		Name: "Operators", LogName: "operators", Kind: nodeOperators,
+		Doc:  "the controller manager running every operator (graph_gen.go)",
+		Type: "*Operators", Ctor: "NewOperators", DepsType: "OperatorsDeps", Fallible: true,
+		DepsKeys: map[string]bool{"Logger": true, "ServerCfg": true}, DepsFound: true,
+		Lifecycle: lifecycle{Run: "Run"}, NilGuard: true,
+		SrcImports: map[string]string{},
+	}
+	for _, op := range opNodes {
+		n.Deps = append(n.Deps, DepsField{Name: op.Name, Type: op.Type})
+		n.DepsKeys[op.Name] = true
+		for a, p := range op.Imports {
+			n.SrcImports[a] = p
+		}
+		opsView.Ops = append(opsView.Ops, graphOperatorView{Field: op.Name, Type: op.Type, Alias: op.Comp.Alias, Label: op.Comp.Name})
+	}
+	n.Deps = append(n.Deps, DepsField{Name: "Logger", Type: "*slog.Logger"}, DepsField{Name: "ServerCfg", Type: "serverkit.Config"})
+	if err := add(n); err != nil {
+		return nil, nil, err
+	}
+	return opsView, opNodes, nil
 }
 
 // reservedGraphNames are app.Graph's own members, which no node may shadow.

@@ -230,62 +230,20 @@ func discoverAppDecls(projectDir string) (providers []graphProvider, roots []gra
 		if perr != nil {
 			return nil, nil, fmt.Errorf("parse internal/app/%s: %w", n, perr)
 		}
-		imports := fileImportAliases(file)
-		structs := map[string]*ast.StructType{}
-		for _, decl := range file.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok || gd.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gd.Specs {
-				ts := spec.(*ast.TypeSpec)
-				st, isStruct := ts.Type.(*ast.StructType)
-				if !isStruct {
-					continue
-				}
-				structs[ts.Name.Name] = st
-				doc := ts.Doc
-				if doc == nil && len(gd.Specs) == 1 {
-					doc = gd.Doc
-				}
-				if rootName, opts, isRoot := rootDirective(doc); isRoot {
-					if rootName == "" {
-						rootName = naming.ToKebabCase(ts.Name.Name)
-					}
-					r := graphRoot{Name: rootName, TypeName: ts.Name.Name, File: "internal/app/" + n, Line: fset.Position(ts.Pos()).Line}
-					cmdPath, cerr := rootCommandPath(rootName, opts)
-					if cerr != nil {
-						return nil, nil, fmt.Errorf("%s:%d: root %s: %w", r.File, r.Line, ts.Name.Name, cerr)
-					}
-					r.Command = cmdPath
-					for _, f := range st.Fields.List {
-						typ := printType(fset, f.Type)
-						if len(f.Names) == 0 {
-							return nil, nil, fmt.Errorf("%s:%d: root %s embeds %s; give each root field a name — the field order is the stop order", r.File, fset.Position(f.Pos()).Line, ts.Name.Name, typ)
-						}
-						for _, fn := range f.Names {
-							r.Fields = append(r.Fields, graphRootField{Name: fn.Name, Type: typ})
-						}
-					}
-					roots = append(roots, r)
-				}
-			}
+		rel := "internal/app/" + n
+		structs, fileRoots, rerr := discoverFileStructsAndRoots(fset, file, rel)
+		if rerr != nil {
+			return nil, nil, rerr
 		}
+		roots = append(roots, fileRoots...)
+		imports := fileImportAliases(file)
 		for _, decl := range file.Decls {
 			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Recv != nil || !strings.HasPrefix(fd.Name.Name, "New") || len(fd.Name.Name) == 3 {
+			if !ok {
 				continue
 			}
-			x := strings.TrimPrefix(fd.Name.Name, "New")
-			if !ast.IsExported(x) {
-				continue
-			}
-			params := flattenFieldTypes(fd.Type.Params)
-			if len(params) != 1 || !isIdent(params[0], x+"Deps") {
-				continue
-			}
-			results := flattenFieldTypes(fd.Type.Results)
-			if len(results) == 0 || len(results) > 2 || (len(results) == 2 && !isIdent(results[1], "error")) {
+			x, results, ok := providerFuncShape(fd)
+			if !ok {
 				continue
 			}
 			st := structs[x+"Deps"]
@@ -296,30 +254,117 @@ func discoverAppDecls(projectDir string) (providers []graphProvider, roots []gra
 				continue
 			}
 			pos++
-			keys := map[string]bool{}
-			for _, f := range st.Fields.List {
-				for _, fn := range f.Names {
-					keys[fn.Name] = true
-				}
-				if len(f.Names) == 0 {
-					if en := embeddedFieldName(f.Type); en != "" {
-						keys[en] = true
-					}
-				}
-			}
 			providers = append(providers, graphProvider{
 				Name:     x,
 				Result:   printType(fset, results[0]),
 				Fallible: len(results) == 2,
 				Deps:     collectDepsFields(fset, st),
-				DepsKeys: keys,
+				DepsKeys: depsStructKeys(st),
 				Imports:  imports,
-				File:     "internal/app/" + n,
+				File:     rel,
 				Pos:      pos,
 			})
 		}
 	}
 	return providers, roots, nil
+}
+
+// discoverFileStructsAndRoots indexes file's struct types by name and reads
+// every `//forge:root` struct among them as a graphRoot.
+func discoverFileStructsAndRoots(fset *token.FileSet, file *ast.File, rel string) (map[string]*ast.StructType, []graphRoot, error) {
+	structs := map[string]*ast.StructType{}
+	var roots []graphRoot
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts := spec.(*ast.TypeSpec)
+			st, isStruct := ts.Type.(*ast.StructType)
+			if !isStruct {
+				continue
+			}
+			structs[ts.Name.Name] = st
+			doc := ts.Doc
+			if doc == nil && len(gd.Specs) == 1 {
+				doc = gd.Doc
+			}
+			rootName, opts, isRoot := rootDirective(doc)
+			if !isRoot {
+				continue
+			}
+			r, err := graphRootFromStruct(fset, ts, st, rootName, opts, rel)
+			if err != nil {
+				return nil, nil, err
+			}
+			roots = append(roots, r)
+		}
+	}
+	return structs, roots, nil
+}
+
+// graphRootFromStruct builds the graphRoot a `//forge:root [name]` struct
+// declares. Every field must be named: the field order is the stop order.
+func graphRootFromStruct(fset *token.FileSet, ts *ast.TypeSpec, st *ast.StructType, rootName string, opts []string, rel string) (graphRoot, error) {
+	if rootName == "" {
+		rootName = naming.ToKebabCase(ts.Name.Name)
+	}
+	r := graphRoot{Name: rootName, TypeName: ts.Name.Name, File: rel, Line: fset.Position(ts.Pos()).Line}
+	cmdPath, err := rootCommandPath(rootName, opts)
+	if err != nil {
+		return graphRoot{}, fmt.Errorf("%s:%d: root %s: %w", r.File, r.Line, ts.Name.Name, err)
+	}
+	r.Command = cmdPath
+	for _, f := range st.Fields.List {
+		typ := printType(fset, f.Type)
+		if len(f.Names) == 0 {
+			return graphRoot{}, fmt.Errorf("%s:%d: root %s embeds %s; give each root field a name — the field order is the stop order", r.File, fset.Position(f.Pos()).Line, ts.Name.Name, typ)
+		}
+		for _, fn := range f.Names {
+			r.Fields = append(r.Fields, graphRootField{Name: fn.Name, Type: typ})
+		}
+	}
+	return r, nil
+}
+
+// providerFuncShape reports whether fd is a provider func — a top-level
+// `New<X>(<X>Deps) T` or `New<X>(<X>Deps) (T, error)` with X exported — and
+// returns X and its result types.
+func providerFuncShape(fd *ast.FuncDecl) (string, []ast.Expr, bool) {
+	if fd.Recv != nil || !strings.HasPrefix(fd.Name.Name, "New") || len(fd.Name.Name) == 3 {
+		return "", nil, false
+	}
+	x := strings.TrimPrefix(fd.Name.Name, "New")
+	if !ast.IsExported(x) {
+		return "", nil, false
+	}
+	params := flattenFieldTypes(fd.Type.Params)
+	if len(params) != 1 || !isIdent(params[0], x+"Deps") {
+		return "", nil, false
+	}
+	results := flattenFieldTypes(fd.Type.Results)
+	if len(results) == 0 || len(results) > 2 || (len(results) == 2 && !isIdent(results[1], "error")) {
+		return "", nil, false
+	}
+	return x, results, true
+}
+
+// depsStructKeys is the set of keys a Deps struct literal may name: every
+// named field, plus each embedded field's type name.
+func depsStructKeys(st *ast.StructType) map[string]bool {
+	keys := map[string]bool{}
+	for _, f := range st.Fields.List {
+		for _, fn := range f.Names {
+			keys[fn.Name] = true
+		}
+		if len(f.Names) == 0 {
+			if en := embeddedFieldName(f.Type); en != "" {
+				keys[en] = true
+			}
+		}
+	}
+	return keys
 }
 
 // findAppStruct finds a struct declared in another owned internal/app file.

@@ -62,7 +62,9 @@ service ToolsService {
     audience: "daemon"
   };
 
-  rpc Ping(PingRequest) returns (PingResponse) {}
+  rpc Ping(PingRequest) returns (PingResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 message PingRequest {}

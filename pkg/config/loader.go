@@ -523,7 +523,10 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 // checkRequired errors if any required field is still unset after all layers
 // have been applied, recursing into nested config blocks. A required field
 // that no layer populated fails fast — the same loud guarantee the single-pass
-// loader gave.
+// loader gave. `required: true` is the only thing that makes a field
+// required here: `sensitive` does not (whether a credential must exist is
+// the deploy pre-flight's question, per workload; see forge.proto's
+// ConfigFieldOptions.optional).
 func checkRequired(m protoreflect.Message) error {
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {

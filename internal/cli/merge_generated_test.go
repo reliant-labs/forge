@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -78,22 +80,66 @@ func TestMergeGenerated_BodyConflictsStillConflict(t *testing.T) {
 	}
 }
 
-// gen/forge_descriptor.json's source_hash is a digest of every .proto, so any
-// two proto-changing branches change it.
-func TestMergeGenerated_DescriptorSourceHash(t *testing.T) {
-	desc := func(hash, field string) []byte {
-		return []byte("{\n  \"source_hash\": \"" + hash + "\",\n  \"services\": [\n    \"a\",\n    \"b\",\n    \"c\",\n    \"d\",\n    \"e\"" + field + "\n  ]\n}\n")
+// gen/forge_descriptor.json stamps one entry per .proto. Two branches that
+// edit different protos change different entries, and the merge of the two
+// stamps must be the stamp of the merged tree — even when the entries sit on
+// neighbouring lines, which git's line merge calls a conflict.
+func TestMergeGenerated_DescriptorSourcesMergeKeyByKey(t *testing.T) {
+	desc := func(services []string, sources map[string]string) []byte {
+		b, err := json.MarshalIndent(struct {
+			Services []string          `json:"services"`
+			Configs  []string          `json:"configs"`
+			Sources  map[string]string `json:"sources"`
+		}{services, nil, sources}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return append(b, '\n')
 	}
-	base := desc("h0", "")
-	ours := []byte(strings.Replace(string(desc("h1", "")), "    \"a\",\n", "    \"a\",\n    \"a2\",\n", 1))
-	theirs := desc("h2", ",\n    \"f\"")
+	base := desc([]string{"a", "b", "c", "d"},
+		map[string]string{"a.proto": "a0", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+	// ours edits a.proto and adds a service; theirs edits b.proto (the
+	// neighbouring line), adds d2.proto and deletes e.proto.
+	ours := desc([]string{"a", "a2", "b", "c", "d"},
+		map[string]string{"a.proto": "a1", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+	theirs := desc([]string{"a", "b", "c", "d", "f"},
+		map[string]string{"a.proto": "a0", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"})
+
 	merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
 	if err != nil || !clean {
 		t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
 	}
-	if !strings.Contains(string(merged), `"source_hash": "h1"`) || !strings.Contains(string(merged), `"a2"`) || !strings.Contains(string(merged), `"f"`) {
-		t.Errorf("merged descriptor:\n%s", merged)
+	var got struct {
+		Services []string          `json:"services"`
+		Sources  map[string]string `json:"sources"`
 	}
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatalf("merged descriptor is not JSON: %v\n%s", err, merged)
+	}
+	if want := []string{"a", "a2", "b", "c", "d", "f"}; strings.Join(got.Services, ",") != strings.Join(want, ",") {
+		t.Errorf("services = %v, want %v", got.Services, want)
+	}
+	want := map[string]string{"a.proto": "a1", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"}
+	if fmt.Sprint(got.Sources) != fmt.Sprint(want) {
+		t.Errorf("sources = %v, want the stamp of the merged tree %v", got.Sources, want)
+	}
+	// Byte-for-byte what forge writes for that descriptor, so the merge
+	// leaves nothing for the next generate to reformat.
+	if string(merged) != string(desc(got.Services, want)) {
+		t.Errorf("merged descriptor is not in forge's own rendering:\n%s", merged)
+	}
+
+	t.Run("both sides edited one proto: ours wins, and the next generate restamps", func(t *testing.T) {
+		theirs := desc([]string{"a", "b", "c", "d"},
+			map[string]string{"a.proto": "a9", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+		merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
+		if err != nil || !clean {
+			t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
+		}
+		if !strings.Contains(string(merged), `"a.proto": "a1"`) {
+			t.Errorf("want ours' entry:\n%s", merged)
+		}
+	})
 }
 
 // stampedRender is a Tier-1 file as forge writes it: the body certified by a

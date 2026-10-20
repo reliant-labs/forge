@@ -76,20 +76,20 @@ const storeGenFile = "store_gen.go"
 // entities. Callers pass the same entity slice the ORM render used, so the
 // interfaces cannot describe a different schema than the delegates they
 // abstract.
-func writeStoreInterfaces(root string, entities []config.PlanEntity, cs *FileChecksums) error {
+func writeStoreInterfaces(root string, orm config.ORMConfig, entities []config.PlanEntity, cs *FileChecksums) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	return writeORMFile(root, storeGenFile, renderStoreInterfaces(entities), cs)
+	return writeORMFile(root, orm, storeGenFile, renderStoreInterfaces(orm.PackageName(), entities), cs)
 }
 
 // renderStoreInterfaces builds the store file: one interface per entity,
 // mirroring that entity's generated delegates exactly, then an aggregate
 // embedding them all.
-func renderStoreInterfaces(entities []config.PlanEntity) []byte {
+func renderStoreInterfaces(pkgName string, entities []config.PlanEntity) []byte {
 	var b strings.Builder
 
-	b.WriteString("package db\n\n")
+	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
 
 	b.WriteString("// This file gives the generated CRUD delegates an INTERFACE shape, so a\n")
@@ -122,6 +122,10 @@ func renderStoreInterfaces(entities []config.PlanEntity) []byte {
 // writeEntityStore emits one entity's store interface and the compile-time
 // assertion that the generated delegates satisfy it.
 func writeEntityStore(b *strings.Builder, ent config.PlanEntity) {
+	if ent.ReadOnly {
+		writeReadOnlyStore(b, ent)
+		return
+	}
 	if keys := compositeKey(resolveORMFields(ent)); keys != nil {
 		writeCompositeKeyStore(b, ent, keys)
 		return
@@ -281,6 +285,47 @@ func writeCompositeKeyStore(b *strings.Builder, ent config.PlanEntity, keys []ke
 
 	fmt.Fprintf(b, "// %s adapts the package-level %s delegates to %s,\n", adapter, msgName, iface)
 	b.WriteString("// holding the handle those delegates take per call.\n")
+	fmt.Fprintf(b, "type %s struct{ db orm.Context }\n\n", adapter)
+	for _, m := range methods {
+		fmt.Fprintf(b, "func (s %s) %s {\n\treturn %s\n}\n\n", adapter, m.sig, m.call)
+	}
+	fmt.Fprintf(b, "func (s %s) WithTx(tx orm.Context) %s { return %s{db: tx} }\n\n", adapter, iface, adapter)
+	fmt.Fprintf(b, "var _ %s = %s{}\n\n", iface, adapter)
+}
+
+// writeReadOnlyStore is writeEntityStore for a view entity: the reads the
+// delegates offer (writeReadOnlyDelegates) and nothing that writes.
+func writeReadOnlyStore(b *strings.Builder, ent config.PlanEntity) {
+	msgName := ent.Name
+	iface := msgName + "Store"
+	adapter := lowerFirst(msgName) + "Store"
+	var key *ormField
+	for _, f := range resolveORMFields(ent) {
+		if f.isPK {
+			key = &f
+		}
+	}
+	type method struct{ doc, sig, call string }
+	var methods []method
+	if key != nil {
+		methods = append(methods, method{"Get" + msgName + "ByID retrieves a " + msgName + " row by its " + key.columnName + ".",
+			"Get" + msgName + "ByID(ctx context.Context, id " + key.goType + ") (*" + msgName + ", error)", "Get" + msgName + "ByID(ctx, s.db, id)"})
+	}
+	methods = append(methods,
+		method{"List" + msgName + " retrieves " + msgName + " rows with optional QueryOption filtering.",
+			"List" + msgName + "(ctx context.Context, opts ...orm.QueryOption) ([]*" + msgName + ", error)", "List" + msgName + "(ctx, s.db, opts...)"},
+		method{"Count" + msgName + " counts " + msgName + " rows matching the given options.",
+			"Count" + msgName + "(ctx context.Context, opts ...orm.QueryOption) (int64, error)", "Count" + msgName + "(ctx, s.db, opts...)"},
+	)
+	fmt.Fprintf(b, "// %s reads the %s view (read-only: a view is a derived\n", iface, msgName)
+	b.WriteString("// read, so no write is generated).\n")
+	fmt.Fprintf(b, "type %s interface {\n", iface)
+	for _, m := range methods {
+		fmt.Fprintf(b, "\t// %s\n\t%s\n\n", m.doc, m.sig)
+	}
+	b.WriteString("\t// WithTx returns the same store bound to an explicit transaction handle.\n")
+	fmt.Fprintf(b, "\tWithTx(tx orm.Context) %s\n}\n\n", iface)
+	fmt.Fprintf(b, "// %s adapts the package-level %s delegates to %s.\n", adapter, msgName, iface)
 	fmt.Fprintf(b, "type %s struct{ db orm.Context }\n\n", adapter)
 	for _, m := range methods {
 		fmt.Fprintf(b, "func (s %s) %s {\n\treturn %s\n}\n\n", adapter, m.sig, m.call)

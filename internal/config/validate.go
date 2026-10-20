@@ -5,6 +5,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -980,7 +981,43 @@ func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssu
 	// sources (deriveProjectKindFromSources) before validateRequired runs, so
 	// it is always one of the valid values and needs no validation here.
 
+	if reason := validateORMPackage(cfg.Database.ORM.Package); reason != "" {
+		line, col := findNodePos(root, []string{"database", "orm", "package"})
+		out = append(out, validationIssue{
+			line:   line,
+			column: col,
+			msg:    fmt.Sprintf("'database.orm.package' value %q %s", cfg.Database.ORM.Package, reason),
+			fix:    "use a project-relative Go package directory such as 'internal/store', or delete the key for the default internal/db.",
+		})
+	}
+
 	return out
+}
+
+// ormPackageSegmentRE is one directory of database.orm.package: what a Go
+// import path element and, for the last one, a package name can be.
+var ormPackageSegmentRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// validateORMPackage returns why pkg is not a usable ORM package
+// directory, "" when it is (or is unset).
+func validateORMPackage(pkg string) string {
+	pkg = strings.TrimSpace(pkg)
+	if pkg == "" {
+		return ""
+	}
+	if strings.HasPrefix(pkg, "/") || strings.Contains(pkg, "\\") {
+		return "must be a project-relative, slash-separated directory"
+	}
+	for _, seg := range strings.Split(strings.Trim(pkg, "/"), "/") {
+		if !ormPackageSegmentRE.MatchString(seg) {
+			return fmt.Sprintf("has the element %q; each must be a lower-case Go package name (letters, digits, underscore)", seg)
+		}
+	}
+	switch last := path.Base(strings.Trim(pkg, "/")); last {
+	case "main", "internal", "testdata", "vendor":
+		return fmt.Sprintf("ends in %q, which cannot name the ORM's Go package", last)
+	}
+	return ""
 }
 
 // basePathSegmentRE matches one path segment of a frontend base_path:

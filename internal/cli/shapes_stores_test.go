@@ -71,7 +71,7 @@ func TestScanStores_IndexesGeneratedStoreInterfaces(t *testing.T) {
 	t.Parallel()
 	root := writeStoreFixture(t)
 
-	got := scanStores(filepath.Join(root, "internal", "db"))
+	got := scanStores(filepath.Join(root, "internal", "db"), "internal/db")
 
 	byName := map[string]shape{}
 	for _, s := range got {

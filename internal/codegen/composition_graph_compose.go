@@ -360,7 +360,7 @@ func fixGraphComposeImports(out string, needImport map[string]string, r *graphRe
 		}
 		astutil.AddNamedImport(fset, file, name, p)
 	}
-	known := map[string]bool{"time": true, "github.com/oklog/ulid/v2": true, r.module + "/internal/db": true}
+	known := map[string]bool{"time": true, "github.com/oklog/ulid/v2": true, r.module + "/" + r.store.dir: true}
 	for _, n := range r.nodes {
 		for _, p := range n.Imports {
 			known[p] = true

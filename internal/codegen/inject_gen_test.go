@@ -1752,3 +1752,52 @@ func TestAppTemplateIdentifiers(t *testing.T) {
 		}
 	}
 }
+
+// database.orm.package moves the store out of internal/db (reliant P5b,
+// F12.2): the seam is spelled with the ORM package's own name, and a
+// `db.Store` in that project is the project's own internal/db — which the
+// seam must leave to the ordinary resolution paths.
+func TestGenerateInject_StoreSeamFollowsTheORMPackage(t *testing.T) {
+	dir := newInjectProject(t)
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
+		[]byte("name: proj\nmodule_path: example.com/proj\ndatabase:\n  orm:\n    package: internal/store\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeDir := filepath.Join(dir, "internal", "store")
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "store_gen.go"),
+		[]byte("package store\n\ntype Store interface {\n\tEstimates() EstimateStore\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tEstimates store.EstimateStore\n\tAll store.Store")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("a relocated generated store must resolve; got: %v", err)
+	}
+	out := readInject(t, dir)
+	for _, want := range []string{
+		"Estimates: store.NewStore(infra.ORM).Estimates(),",
+		"All: store.NewStore(infra.ORM),",
+		`"example.com/proj/internal/store"`,
+	} {
+		if !containsNormalized(out, want) {
+			t.Fatalf("compose.go missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"example.com/proj/internal/db"`) {
+		t.Errorf("compose.go imports internal/db for a store that lives in internal/store:\n%s", out)
+	}
+
+	// The project's own internal/db is not the ORM any more: its Store is
+	// not the seam's to provide.
+	if (storeSeam{pkg: "store", dir: "internal/store"}).owns("db.Store") {
+		t.Error("the store seam claimed db.Store although the ORM package is internal/store")
+	}
+}

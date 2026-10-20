@@ -118,18 +118,34 @@ func (s *Store) Write(ctx context.Context, ev Event) error {
 	return nil
 }
 
+// ScopeSeparator separates the segments of a hierarchical scope: an event
+// scoped "org_1/billing" belongs to project billing of org org_1, and one
+// scoped "org_1" to the org itself. See Filter.IncludeAncestors and
+// Filter.IncludeDescendants.
+const ScopeSeparator = "/"
+
 // Filter selects events for [Store.List]. Set fields are AND-combined; an
 // empty field does not filter. Scope is matched exactly, including "": a
 // read handler serving several orgs or projects must always set it.
 type Filter struct {
-	Scope      string
-	ActorID    string
-	ActorKind  ActorKind
-	Verb       string
-	TargetKind string
-	TargetID   string
-	Env        string
-	Via        string
+	Scope string
+	// IncludeAncestors also matches events scoped to each ancestor of Scope:
+	// a project's feed ("org_1/billing") then includes the events of its org
+	// ("org_1"), such as an alert receiver created org-wide.
+	IncludeAncestors bool
+	// IncludeDescendants also matches events scoped below Scope: an org's
+	// feed ("org_1") then includes every project's ("org_1/billing", ...).
+	IncludeDescendants bool
+	ActorID            string
+	ActorKind          ActorKind
+	Verb               string
+	TargetKind         string
+	TargetID           string
+	Env                string
+	// Envs matches any of the listed environments (AND-combined with Env).
+	// Empty does not filter.
+	Envs []string
+	Via  string
 	// Since and Until bound OccurredAt (inclusive, exclusive). Zero is
 	// unbounded.
 	Since, Until time.Time
@@ -160,11 +176,23 @@ type Page struct {
 // (occurred_at, id), so a page never repeats or skips a row as new events
 // arrive.
 func (s *Store) List(ctx context.Context, f Filter) (Page, error) {
-	where := []string{"scope = $1"}
-	args := []any{f.Scope}
+	var args []any
+	var where []string
 	add := func(cond string, v any) {
 		args = append(args, v)
 		where = append(where, fmt.Sprintf(cond, len(args)))
+	}
+	add("scope = ANY($%d)", scopeSet(f))
+	if f.IncludeDescendants {
+		// The prefix is escaped so a scope containing LIKE's own wildcards
+		// matches literally.
+		add(`scope LIKE $%d ESCAPE '\'`, likeEscape(f.Scope+ScopeSeparator)+"%")
+		// The two scope conditions are alternatives, not a conjunction.
+		n := len(where)
+		where = append(where[:n-2], "("+where[n-2]+" OR "+where[n-1]+")")
+	}
+	if len(f.Envs) > 0 {
+		add("env = ANY($%d)", f.Envs)
 	}
 	for _, c := range []struct{ col, v string }{
 		{"actor_id", f.ActorID}, {"actor_kind", string(f.ActorKind)}, {"verb", f.Verb},
@@ -230,6 +258,27 @@ func (s *Store) List(ctx context.Context, f Filter) (Page, error) {
 		page.NextPageToken = encodePageToken(last.OccurredAt, last.ID)
 	}
 	return page, nil
+}
+
+// scopeSet is Scope, plus each of its ancestors under IncludeAncestors.
+func scopeSet(f Filter) []string {
+	set := []string{f.Scope}
+	if !f.IncludeAncestors {
+		return set
+	}
+	for s := f.Scope; ; {
+		i := strings.LastIndex(s, ScopeSeparator)
+		if i < 0 {
+			return set
+		}
+		s = s[:i]
+		set = append(set, s)
+	}
+}
+
+// likeEscape escapes LIKE's wildcards (and its escape character) in s.
+func likeEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 func encodePageToken(at time.Time, id string) string {

@@ -30,6 +30,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -736,10 +737,55 @@ type DatabaseConfig struct {
 	// MigrationsDir is always db/migrations when there is a database.
 	MigrationsDir   string                `yaml:"-"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
+	// ORM places the generated data layer. Absent, it is internal/db.
+	ORM ORMConfig `yaml:"orm,omitempty"`
 }
 
 // DefaultMigrationsDir is where migrations live.
 const DefaultMigrationsDir = "db/migrations"
+
+// DefaultORMPackage is where the generated data layer lands when
+// database.orm.package is unset.
+const DefaultORMPackage = "internal/db"
+
+// ORMConfig is the generated data layer's placement.
+type ORMConfig struct {
+	// Package is the project-relative directory the ORM projects into —
+	// every <entity>_orm_gen.go, store_gen.go and _repo_ext.go seam — and
+	// so the Go package they declare (its last path element). Empty means
+	// DefaultORMPackage.
+	//
+	// It exists for a project that already has a data layer of its own in
+	// internal/db: there the projection's names (Chat, Message, Store,
+	// NewStore) collide with the project's, one package cannot declare
+	// both, and porting onto the store one table at a time needs the two
+	// to live side by side. `package: internal/store` puts the projection
+	// in its own package; every generated consumer (CRUD wiring, the store
+	// Deps in compose.go, factories, shapes, the drift guard) follows it.
+	Package string `yaml:"package,omitempty"`
+}
+
+// PackageDir is the ORM's project-relative directory, slash-separated.
+func (c ORMConfig) PackageDir() string {
+	if p := strings.Trim(strings.TrimSpace(c.Package), "/"); p != "" {
+		return path.Clean(p)
+	}
+	return DefaultORMPackage
+}
+
+// PackageName is the Go package name the ORM's files declare: the last
+// element of PackageDir.
+func (c ORMConfig) PackageName() string { return path.Base(c.PackageDir()) }
+
+// ORMPackage returns the ORM placement of cfg, the default for a nil cfg —
+// the one accessor every consumer reads, so a project with no forge.yaml
+// and one with no `database.orm` block land in the same place.
+func ORMPackage(cfg *ProjectConfig) ORMConfig {
+	if cfg == nil {
+		return ORMConfig{}
+	}
+	return cfg.Database.ORM
+}
 
 // MigrationSafetyConfig controls migrationlint's three severity dials
 // (unsafe add-column, destructive change, volatile default). An intentional

@@ -256,7 +256,12 @@ message MethodOptions {
   // Whether this method is idempotent (safe to retry without side effects).
   bool idempotent = 3;
 
-  // Server-side timeout for this method. Zero means use the service default.
+  // Server-side deadline for this method. forge projects it into
+  // pkg/middleware/procedures_gen.go (ProcedureDeadlines), which the
+  // scaffolded chain hands its Deadline slot; that slot runs ahead of
+  // authentication, so the deadline bounds the credential lookup too. Unset
+  // or zero is the slot's default (serverkit.DefaultUnaryDeadline for a unary
+  // rpc, none for a stream); negative is no server deadline.
   google.protobuf.Duration timeout = 4;
 
   // Whether callers should supply an idempotency key for this method.
@@ -276,6 +281,97 @@ message MethodOptions {
   // The list is informational at runtime today; future work may enforce
   // that handlers can only return declared codes.
   repeated string errors = 6;
+
+  // Activity declares the typed activity event a successful call records:
+  // who (the caller) did what (verb) to which object (target), where (env)
+  // and through what (via). forge/pkg/activity's interceptor reads this
+  // option from the method descriptor and writes the event, so no handler
+  // writes one by hand; `forge lint` fails a mutating rpc that declares
+  // nothing (forgeconv-activity-declared). See ActivityOptions.
+  ActivityOptions activity = 7;
+}
+
+// ActivityOptions declares the activity event an rpc records, or that it
+// records none.
+//
+//   rpc PromoteRelease(PromoteReleaseRequest) returns (PromoteReleaseResponse) {
+//     option (forge.v1.method) = {
+//       activity: {
+//         verb: "promote"
+//         target: { kind: "release", id: "release_id", label: "response.release.version" }
+//         env: "to_env"
+//       }
+//     };
+//   }
+//
+// FIELD PATHS (target.id, target.label, env, scope, detail) are dotted proto
+// field names resolved against the REQUEST, or against the RESPONSE when
+// they start with "response." — a created object's id exists only in the
+// response. Every path must end on a scalar or an enum field.
+//
+// A Create<E>, Update<E> or Delete<E> rpc whose messages have forge's CRUD
+// shape needs no option: verb create/update/delete and target kind snake(E)
+// are implied (forge/pkg/activity.Resolve). An explicit option wins.
+message ActivityOptions {
+  // Verb is the action, a lower_snake token: "promote", "rotate",
+  // "restart". It is stored as written; the UI phrases it ("promoted").
+  string verb = 1;
+
+  // Target names the object the action was done to.
+  ActivityTarget target = 2;
+
+  // Env is the field path whose value is the environment the action
+  // happened in. Empty records a project-level event.
+  string env = 3;
+
+  // Scope is the field path whose value is the scope (an org, a project)
+  // reads are filtered by. Empty takes the interceptor's
+  // ScopeFrom default (the caller's org).
+  string scope = 4;
+
+  // Detail lists field paths copied into the event's detail map, keyed by
+  // each path's last segment.
+  repeated string detail = 5;
+
+  // Writer says who writes the event. The default, the interceptor, writes
+  // it after the handler succeeds. HANDLER means the handler calls
+  // activity.Record inside its own transaction, so the event commits or
+  // rolls back with the mutation.
+  ActivityWriter writer = 6;
+
+  // None records that this rpc changes nothing worth an activity event,
+  // and says why: `activity: { none: "dry run: computes a plan only" }`.
+  // It excludes every other field, and the reason must not be empty.
+  string none = 7;
+}
+
+// ActivityTarget names the object an activity event is about.
+message ActivityTarget {
+  // Kind is the target's type, a lower_snake literal: "release", "secret".
+  string kind = 1;
+
+  // Id is the field path of the target's id. Required.
+  string id = 2;
+
+  // Label is the field path of a human-readable label for the target.
+  // Empty falls back to the id.
+  string label = 3;
+}
+
+// ActivityWriter selects who writes a declared activity event.
+enum ActivityWriter {
+  // ACTIVITY_WRITER_UNSPECIFIED is the interceptor (the default).
+  ACTIVITY_WRITER_UNSPECIFIED = 0;
+
+  // ACTIVITY_WRITER_INTERCEPTOR: the activity interceptor writes the event
+  // after the handler returns successfully, best-effort.
+  ACTIVITY_WRITER_INTERCEPTOR = 1;
+
+  // ACTIVITY_WRITER_HANDLER: the handler calls activity.Record, normally
+  // inside its RunTx so the event is transactional with the mutation. If
+  // the handler succeeds without recording, the interceptor writes the
+  // event itself. Streaming rpcs must use this or `none`.
+  ACTIVITY_WRITER_HANDLER = 2;
 }
 
 // =============================================================================

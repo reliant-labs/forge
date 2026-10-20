@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge lint --tracing`: the places a request's trace is cut.** Four
+  rules, all at error in the full sweep, over owned non-test Go:
+  `forge-tracing-log-without-ctx` (a `slog.Info`, a `*slog.Logger` level
+  method, or a helper named in `lint.tracing.log_wrappers`, called where a
+  `context.Context` or `*http.Request` parameter is in scope: the line
+  carries no trace_id), `forge-tracing-raw-http-client` (an `*http.Client`
+  with no, nil, default or bare transport; `http.DefaultClient`; `http.Get`),
+  `forge-tracing-raw-sql-open` (`sql.Open`, sqlx, pgx stdlib, and a pgx pool
+  with no tracer, instead of `dbtrace`), and
+  `forge-tracing-contract-uninstrumented` (an instrumented contract's `New`
+  used outside `compose.go` without its `…WithForgeMiddleware` decorator).
+  The log rule autofixes to the `…Context` form, dropping an import the
+  rewrite leaves unused. `forge lint --tracing` applies it at any severity
+  but off; the full sweep only where the rule is at error, so a repo that
+  sets a rule to warn in `lint.rules` while it migrates is not rewritten by a
+  forge pin. Worker scaffolds log with their context.
 - **A trace per unit of background work: `observe.RunRoot`,
   `lifecyclekit.Every`, and a root span per reconcile in
   `forge/pkg/controller`.** A loop iteration or a reconcile has no Connect

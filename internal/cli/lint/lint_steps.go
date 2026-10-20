@@ -949,6 +949,27 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13f. Tracing — the places a request's trace is cut: a log line
+		// written without the context in scope (no trace_id), an untraced
+		// *http.Client or database pool, a contract constructed without its
+		// generated decorator. GATES on error findings; a repo adopting a
+		// rule dials it to warn in lint.rules. The full sweep autofixes
+		// log-without-ctx only where it is at error; `forge lint --tracing`
+		// is the migration. See lint_tracing.go.
+		{
+			name:  "tracing lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && hasGoModule(rc.cwd), ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runTracingLint(rc.cwd, rc.cfg, rc.fix, false)
+			},
+			errFormat: "❌ tracing lint: %v\n",
+			collect:   collectTracingJSON,
+		},
+
 		// 14b. No-dotenv — forge projects declare config in KCL and keep
 		// secret VALUES in the secret store. A .env file bypasses
 		// both (it is injected wholesale, so nothing has to be

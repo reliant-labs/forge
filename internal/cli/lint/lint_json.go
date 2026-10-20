@@ -361,6 +361,8 @@ func collectSingleLinterJSON(
 		return reportUngated(collectGuardedFieldsJSON(cwd, frontendDirsForLint()))
 	case flags.staticExport:
 		return report(collectStaticExportJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
+	case flags.tracing:
+		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	case flags.protoOptions:
 		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
 	case flags.vendoredProtos:

@@ -43,7 +43,7 @@ func New(deps Deps) (Service, error) {
 }
 
 func (b *inMemoryBus) Publish(ctx context.Context, topic string, event Event) error {
-	b.deps.Logger.Debug("publishing event", "topic", topic, "type", event.Type, "id", event.ID)
+	b.deps.Logger.DebugContext(ctx, "publishing event", "topic", topic, "type", event.Type, "id", event.ID)
 
 	b.mu.RLock()
 	handlers := b.handlers[topic]
@@ -51,7 +51,7 @@ func (b *inMemoryBus) Publish(ctx context.Context, topic string, event Event) er
 
 	for _, h := range handlers {
 		if err := h(ctx, event); err != nil {
-			b.deps.Logger.Error("handler failed", "topic", topic, "type", event.Type, "error", err)
+			b.deps.Logger.ErrorContext(ctx, "handler failed", "topic", topic, "type", event.Type, "error", err)
 			return err
 		}
 	}
@@ -59,7 +59,7 @@ func (b *inMemoryBus) Publish(ctx context.Context, topic string, event Event) er
 }
 
 func (b *inMemoryBus) Subscribe(ctx context.Context, topic string, handler func(ctx context.Context, event Event) error) error {
-	b.deps.Logger.Debug("subscribing to topic", "topic", topic)
+	b.deps.Logger.DebugContext(ctx, "subscribing to topic", "topic", topic)
 
 	b.mu.Lock()
 	b.handlers[topic] = append(b.handlers[topic], handler)

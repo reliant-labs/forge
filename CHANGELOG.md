@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
+  only when the caller is an authenticated internal service.** otelconnect
+  answers "adopt the inbound traceparent?" once for every caller:
+  `WithTrustRemote` adopts it for everyone, the default for no one. A server
+  reachable from the internet must take the default, so its internal callers'
+  requests became new traces linked to theirs, never one trace (every
+  workspace-proxy → admin-server call in the Reliant control plane). The
+  returned interceptor decides per request: when `trusted(ctx, peer, header)`
+  verifies the caller (an internal-service token signature, a constant-time
+  shared-secret compare, an mTLS identity, never a spoofable header or IP),
+  the server span is the caller's child; otherwise it is a new trace linked to
+  the caller's, exactly as before. It runs outermost, ahead of auth, so the
+  predicate does its own verification. Authorization is unchanged. The threat
+  model (trace grafting, forced sampling, baggage injection) is in
+  `pkg/observe/trust_remote.go`.
+
 - **`observe.NewHTTPClient`: the traced client for plain outbound HTTP.**
   A call to a third-party REST API goes through a plain `*http.Client`, which
   no Connect interceptor sees; built by hand it had no client span, no
@@ -115,6 +131,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its mock; `forge generate` keeps a `deps.go`'s `mock_gen.go` in step.
   `compose.go` needs no change. A field whose value the package passes on,
   type-asserts, or never calls is left alone, with the reason.
+- **Each root's config is its reach** (composition graph, PR 6). Generate
+  reads, per root, the config fields its closure reads in `compose.go`, plus
+  the process fields `runRoot` reads and, for a root reaching the database,
+  the database fields. The roots table carries that set and `runRoot` loads
+  with the new `config.LoadReach(cmd, reach)` (`pkg/config`'s
+  `RequiredWithin(paths...)` load option), so a worker root starts without
+  `DATABASE_URL`. `deploy/kcl/config_gen.k` projects the same set as
+  `ROOTS`, with `root_of(name)` (binds a workload to a root and its command)
+  and `workloadEnvMap(cfg, w)` (exactly the env that root reaches; a
+  `config_secrets` entry it does not reach, or an unknown root, fails the
+  render). `fw.Workload` gains `root?: str` (needs `build`, excludes
+  `command`). New projects deploy `_api` with `root = "server"`. Only a root
+  `AppConfig` is projected; per-binary configs (`binary_config`) get no
+  `ROOTS`.
 
 ### Fixed
 

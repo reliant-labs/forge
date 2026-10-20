@@ -60,7 +60,7 @@ func scaffoldForRender(t *testing.T, name string, services []string, frontend st
 	if err := g.Generate(); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl/config_gen.k"), []byte(hostedConfigGenStub), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl/config_gen.k"), []byte(hostedConfigGenStub+serverRootStub(t, "DATABASE_URL", "IDP_BROKER_TOKEN")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, env := range []string{"dev", "staging", "prod"} {

@@ -686,6 +686,22 @@ observability_ttl = lambda o: Observability -> str {
     "${_days * 24}h" if _days > 0 else ""
 }
 
+# The FORGE_PROFILES value for a Profiling: the selected types in the
+# runtime's order (forge/pkg/observe), or "none".
+_profiling_types = lambda p: Profiling -> str {
+    _on = [t[0] for t in [["cpu", p.cpu], ["heap", p.heap], ["alloc", p.alloc], ["goroutine", p.goroutine], ["mutex", p.mutex], ["block", p.block]] if t[1]]
+    ",".join(_on) if _on else "none"
+}
+
+# A workload's `profiling` override, as the variables forge/pkg/observe reads.
+# Nothing when it is unset (the runtime's defaults apply); each key only where
+# the workload's own env leaves it unset.
+_profiling_env = lambda w: any, env: {str:} -> {str:str} {
+    _p = w.profiling if w.profiling else None
+    ({FORGE_PROFILES = _profiling_types(_p)} if _p and not _env_set(env, "FORGE_PROFILES") else {}) \
+        | ({FORGE_PROFILES_HEAP_INTERVAL = _p.heap_interval} if _p and not _env_set(env, "FORGE_PROFILES_HEAP_INTERVAL") else {})
+}
+
 # The keys forge derives for w on rt (only those the author left unset).
 _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _env = w.env if w.env else {}
@@ -694,6 +710,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     ({OTEL_SERVICE_NAME = w.name} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
         | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
         | (_obs_env(rt, bundle, _env) if _runs else {}) \
+        | (_profiling_env(w, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
 }

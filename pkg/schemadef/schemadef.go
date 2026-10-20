@@ -269,11 +269,30 @@ const ColumnMarkerOwner = "forge:owner"
 // migration made it so, with no proto marker anywhere.
 const TableMarkerAppendOnly = "forge:append-only"
 
+// TableMarkerNoEntity opts one table out of the generated data layer: no
+// entity struct, no store, no delegates, no factory. Every other applied
+// BASE TABLE is projected, whether or not a service declares CRUD rpcs for
+// it — SQL is the schema truth, and the store follows the schema, not the
+// wire. A table carrying it is plain schema reached through hand-written
+// SQL (a migration bookkeeping table, a partition parent, a table another
+// tool owns).
+//
+// It is the per-table twin of the project-level `//forge:no-orm`, and it
+// removes the table from the CRUD join too: a CRUD-named rpc over it is
+// custom, as if the table did not exist.
+const TableMarkerNoEntity = "forge:no-entity"
+
 // KnownTableMarkers is the complete set of `forge:*` marker NAMES a
 // COMMENT ON TABLE may carry — the table-level twin of
 // KnownColumnMarkers, and registered for the same reason: a vocabulary
 // nothing enumerates is a vocabulary a typo silently leaves inert.
-var KnownTableMarkers = []string{TableMarkerAppendOnly}
+var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity}
+
+// NoEntity reports whether the table declares TableMarkerNoEntity in its
+// catalog comment, matched as a whole token.
+func (t Table) NoEntity() bool { return noEntityTableMarkerRE.MatchString(t.Comment) }
+
+var noEntityTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerNoEntity) + `(?:[^\w:-]|$)`)
 
 // AppendOnly reports whether the table is an append-only ledger: INSERT and
 // SELECT only, no UPDATE and no DELETE.

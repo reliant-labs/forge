@@ -64,9 +64,9 @@ func ensureGeneratedCode(projectDir string, skip bool) error {
 //     after `forge generate`'s clean sweep removed gen/.
 //
 //  2. Stale output — the protos are not the ones gen/ was generated from.
-//     When gen/forge_descriptor.json carries its sources stamp, that is the
-//     answer: it is a digest of each .proto's CONTENT, stamped by the
-//     generate that wrote gen/, so it is exact (see staleByDescriptor).
+//     When gen/forge_descriptor.json carries sources, that is the answer:
+//     a digest of every .proto's CONTENT, stamped by the generate that
+//     wrote gen/, so it is exact (see staleByDescriptor).
 //     Only an unstamped tree falls back to comparing modification times.
 func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 	if missing := missingGoWorkModule(projectDir); missing != "" {
@@ -96,8 +96,8 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 }
 
 // staleByDescriptor answers staleness from content when it can: decided is
-// true when gen/forge_descriptor.json carries a sources stamp, and stale is
-// whether any proto on disk differs from it.
+// true when gen/forge_descriptor.json carries sources, and stale is whether
+// the protos on disk differ from them.
 //
 // Modification times cannot answer this on a fresh checkout. git writes
 // files in index order, and gen/ sorts before proto/, so every clone stamps
@@ -106,9 +106,9 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 // pipeline before building. That needs the codegen toolchain, refuses a
 // forge that is not the project's pin, and fetches embedded postgres, so
 // control-plane's k3d smoke test died on a Maven Central 429 while
-// regenerating a tree that was committed and current. The hash is the same
-// fingerprint loadDescriptor already trusts to refuse a stale descriptor
-// (codegen.StaleSources), so the two cannot disagree.
+// regenerating a tree that was committed and current. The check is the same
+// one loadDescriptor uses to refuse a stale descriptor
+// (codegen.DescriptorDrift), so the two cannot disagree.
 func staleByDescriptor(projectDir string) (stale, decided bool) {
 	data, err := os.ReadFile(filepath.Join(projectDir, "gen", "forge_descriptor.json"))
 	if err != nil {
@@ -117,11 +117,10 @@ func staleByDescriptor(projectDir string) (stale, decided bool) {
 	var stamp struct {
 		Sources map[string]string `json:"sources"`
 	}
-	if err := json.Unmarshal(data, &stamp); err != nil {
+	if err := json.Unmarshal(data, &stamp); err != nil || stamp.Sources == nil {
 		return false, false
 	}
-	changed, stamped := codegen.StaleSources(projectDir, stamp.Sources)
-	return len(changed) > 0, stamped
+	return codegen.DescriptorDrift(projectDir, stamp.Sources) != "", true
 }
 
 // missingGoWorkModule returns the first go.work-listed module directory

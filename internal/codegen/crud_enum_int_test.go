@@ -56,9 +56,10 @@ func TestBuildEntityConv_IntegerEnumColumns(t *testing.T) {
 	fromProto := strings.Join(conv.FromProtoAssigns, "\n")
 
 	for _, want := range []string{
-		// Unset (the proto zero) stores the declared DEFAULT; a sent value
-		// stores its wire NUMBER.
-		"e.Status = 1 // status: an unset enum stores the column DEFAULT\nif m.Status != 0 {\n\t\te.Status = int64(m.Status)\n\t}",
+		// Unset (the proto zero) leaves the defaulted column unset — a
+		// pointer, so the INSERT omits it and the DEFAULT fires; a sent
+		// value stores its wire NUMBER.
+		"if m.Status != 0 {\n\t\tv := int64(m.Status)\n\t\te.Status = &v\n\t}",
 		// No DEFAULT: the value goes as sent (no CHECK to refuse the zero).
 		"e.Prior = int64(m.Prior)",
 		// Optional over nullable: unset is NULL.
@@ -72,9 +73,9 @@ func TestBuildEntityConv_IntegerEnumColumns(t *testing.T) {
 	for _, want := range []string{
 		// The stored number IS the wire value: a cast, range-guarded
 		// because the column is wider than int32.
-		"if e.Status < -2147483648 || e.Status > 2147483647 {",
+		"if *e.Status < -2147483648 || *e.Status > 2147483647 {",
 		"out of range for the int32 wire field",
-		"m.Status = pb.TaskStatus(e.Status)",
+		"m.Status = pb.TaskStatus(*e.Status)",
 		"if e.FallbackStatus != nil {",
 		"ev := pb.TaskStatus(*e.FallbackStatus)",
 		"m.FallbackStatus = &ev",

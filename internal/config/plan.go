@@ -117,6 +117,10 @@ type PlanEntityField struct {
 	// "handler" changes no codegen behavior — it only suppresses the
 	// unsatisfiable-column lint. See schemadef.ColumnMarkerFill.
 	FillStrategy string `yaml:"fill_strategy,omitempty" json:"fill_strategy,omitempty"`
+	// ZeroRejected marks a column a CHECK keeps from holding its Go zero
+	// (codegen.EntityColumn.ZeroRejected): its zero is "unset", so a DEFAULT
+	// applies through ,nullzero rather than a pointer field.
+	ZeroRejected bool `yaml:"zero_rejected,omitempty" json:"zero_rejected,omitempty"`
 }
 
 // ConstraintKind classifies a named constraint by the kind of violation it

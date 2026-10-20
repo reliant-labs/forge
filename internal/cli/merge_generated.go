@@ -4,14 +4,12 @@ package cli
 //
 // WHY. Some generated files carry a line whose value is a fingerprint of
 // OTHER files: the `forge:hash=` header every generated file starts with, the
-// mock fixtures' SEED_FINGERPRINT (a digest of every migration). Any two branches that each
-// change a migration or a generated file's body change that ONE line
-// differently, so git reports a conflict there even when the real changes are
-// nowhere near each other. (gen/forge_descriptor.json's proto fingerprints
-// used to be such a line; they are now one entry per proto and merge key by
-// key, merge_descriptor.go.) On 2026-10-07 these were 2 of
-// the 4 real conflicts in control-plane's stale checkout, and every forge pin
-// PR conflicted with every other open branch.
+// mock fixtures' SEED_FINGERPRINT (a digest of every migration). Any two
+// branches that each change a migration or a generated file's body change
+// that ONE line differently, so git reports a conflict there even when the
+// real changes are nowhere near each other. On 2026-10-07 these were 2 of the
+// 4 real conflicts in control-plane's stale checkout, and every forge pin PR
+// conflicted with every other open branch.
 //
 // The fingerprint lines are not content anyone resolves by hand: they are
 // recomputed by the next `forge generate`, and forge's own freshness checks
@@ -20,6 +18,11 @@ package cli
 // lines from the current side. A real conflict in the body is still a
 // conflict; a merge that touched only fingerprints is clean, and the stale
 // fingerprint is exactly what `forge generate` refreshes.
+//
+// gen/forge_descriptor.json's stamp is the exception that needs no refresh:
+// it is one entry per .proto (codegen.DescriptorSources), so the driver
+// merges it key by key and the result IS the stamp of the merged tree
+// (mergeDescriptorSources).
 //
 // Beyond fingerprints, the driver settles the two kinds of file every branch
 // that adds a service changes (P3b friction F16, 33 parallel lanes):
@@ -140,6 +143,19 @@ func restore(merged []byte, ours, theirs map[string]string) []byte {
 // taken out of the comparison. clean is false when the rest of the file
 // conflicts; merged then carries git's conflict markers.
 func mergeGenerated(ctx context.Context, base, ours, theirs []byte, markerSize int) (merged []byte, clean bool, err error) {
+	// The descriptor's per-proto stamp merges key by key, outside the line
+	// merge (see mergeDescriptorSources); the rest of the file merges below.
+	if rOurs, ourSources, ok := splitDescriptorSources(ours); ok {
+		if rTheirs, theirSources, ok := splitDescriptorSources(theirs); ok {
+			rBase, baseSources, _ := splitDescriptorSources(base)
+			rest, clean, err := mergeGenerated(ctx, rBase, rOurs, rTheirs, markerSize)
+			if err != nil {
+				return nil, false, err
+			}
+			return joinDescriptorSources(rest, mergeDescriptorSources(baseSources, ourSources, theirSources)), clean, nil
+		}
+	}
+
 	nBase, _ := neutralize(base)
 	nOurs, ourLines := neutralize(ours)
 	nTheirs, theirLines := neutralize(theirs)
@@ -181,6 +197,98 @@ func mergeGenerated(ctx context.Context, base, ours, theirs []byte, markerSize i
 	return merged, clean, nil
 }
 
+// descriptorSourcesKey opens the per-proto stamp block of
+// gen/forge_descriptor.json, as json.MarshalIndent writes it (two-space
+// indent; ForgeDescriptor.Sources).
+const descriptorSourcesKey = `  "sources": `
+
+// descriptorSourcesPlaceholder stands in for the stamp block while the rest
+// of the descriptor goes through the line merge.
+const descriptorSourcesPlaceholder = "__FORGE_MERGE_DESCRIPTOR_SOURCES__"
+
+// splitDescriptorSources lifts the per-proto stamp block out of a forge
+// descriptor, leaving a placeholder line, and returns the stamp. ok is false
+// for any file without the block, which then merges as before.
+func splitDescriptorSources(text []byte) (rest []byte, sources map[string]string, ok bool) {
+	lines := strings.SplitAfter(string(text), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, descriptorSourcesKey) {
+			continue
+		}
+		value := strings.TrimPrefix(line, descriptorSourcesKey)
+		end := i
+		if strings.HasPrefix(value, "{") && !strings.HasPrefix(strings.TrimSpace(value), "{}") {
+			for end = i + 1; end < len(lines) && !strings.HasPrefix(lines[end], "  }"); end++ {
+			}
+			if end == len(lines) {
+				return text, nil, false
+			}
+		}
+		block := strings.TrimPrefix(strings.Join(lines[i:end+1], ""), descriptorSourcesKey)
+		trimmed := strings.TrimRight(block, "\n")
+		suffix := ""
+		if strings.HasSuffix(trimmed, ",") {
+			trimmed, suffix = strings.TrimSuffix(trimmed, ","), ","
+		}
+		if err := json.Unmarshal([]byte(trimmed), &sources); err != nil || sources == nil {
+			return text, nil, false
+		}
+		placeholder := descriptorSourcesKey + descriptorSourcesPlaceholder + suffix + block[len(strings.TrimRight(block, "\n")):]
+		out := strings.Join(lines[:i], "") + placeholder + strings.Join(lines[end+1:], "")
+		return []byte(out), sources, true
+	}
+	return text, nil, false
+}
+
+// joinDescriptorSources renders sources where splitDescriptorSources left its
+// placeholder, exactly as forge writes the field.
+func joinDescriptorSources(merged []byte, sources map[string]string) []byte {
+	if sources == nil {
+		sources = map[string]string{}
+	}
+	rendered, err := json.MarshalIndent(sources, "  ", "  ")
+	if err != nil {
+		return merged
+	}
+	return bytes.Replace(merged, []byte(descriptorSourcesPlaceholder), rendered, 1)
+}
+
+// mergeDescriptorSources three-way merges the descriptor's per-proto stamp
+// key by key. Each entry stamps one proto, and a side that left an entry as
+// the base had it made no claim about that proto, so the other side's entry
+// (an edit, an addition or a deletion) stands. This is what git's line merge
+// cannot do: two branches that edit protos whose entries sit on neighbouring
+// lines would conflict, though each entry is the truth about its own file.
+//
+// When both sides changed one entry differently, the proto itself was edited
+// on both sides and its merge matches neither stamp: ours is kept, the
+// descriptor reads as stale, and the next `forge generate` restamps it — the
+// policy every other fingerprint line here follows.
+func mergeDescriptorSources(base, ours, theirs map[string]string) map[string]string {
+	out := map[string]string{}
+	keys := map[string]bool{}
+	for _, m := range []map[string]string{base, ours, theirs} {
+		for k := range m {
+			keys[k] = true
+		}
+	}
+	for k := range keys {
+		b, inBase := base[k]
+		o, inOurs := ours[k]
+		t, inTheirs := theirs[k]
+		if inOurs == inBase && o == b {
+			if inTheirs {
+				out[k] = t
+			}
+			continue
+		}
+		if inOurs {
+			out[k] = o
+		}
+	}
+	return out
+}
+
 // recertify rewrites the forge:hash marker to certify the merged body.
 //
 // Ours' marker certifies ours' body, not the merge, so kept as is the merged
@@ -209,26 +317,11 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 			return m, true, "", nil
 		}
 	}
-	keep := "kept this side's render; run `forge generate` to render both sides' inputs into it"
-	if isDescriptorPath(relPath) {
-		m, descClean, ok, derr := mergeDescriptor(ctx, base, ours, theirs, markerSize)
-		if derr != nil {
-			return nil, false, "", derr
-		}
-		if ok && descClean {
-			return m, true, "", nil
-		}
-		if ok {
-			// The descriptor is rewritten whole on every generate and
-			// certified by nothing: a conflict takes this side, with the
-			// proto fingerprints merged so the stamp is as right as it can be.
-			return oursWithMergedSources(base, ours, theirs), true, keep, nil
-		}
-	}
 	merged, clean, err = mergeGenerated(ctx, base, ours, theirs, markerSize)
 	if err != nil {
 		return nil, false, "", err
 	}
+	keep := "kept this side's render; run `forge generate` to render both sides' inputs into it"
 	switch {
 	case relPath != "" && !checksums.Stampable(relPath):
 		// A comment-incapable output (JSON) is certified by

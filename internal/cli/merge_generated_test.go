@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -79,87 +80,66 @@ func TestMergeGenerated_BodyConflictsStillConflict(t *testing.T) {
 	}
 }
 
-// descriptorJSON renders a descriptor the way forge's writer does
-// (json.MarshalIndent of codegen.ForgeDescriptor), with the given services
-// and per-proto fingerprints.
-func descriptorJSON(t *testing.T, services []string, sources map[string]string) []byte {
-	t.Helper()
-	out, err := json.MarshalIndent(struct {
-		Services []string          `json:"services"`
-		Configs  []string          `json:"configs"`
-		Sources  map[string]string `json:"sources,omitempty"`
-	}{services, nil, sources}, "", "  ")
-	if err != nil {
-		t.Fatal(err)
+// gen/forge_descriptor.json stamps one entry per .proto. Two branches that
+// edit different protos change different entries, and the merge of the two
+// stamps must be the stamp of the merged tree — even when the entries sit on
+// neighbouring lines, which git's line merge calls a conflict.
+func TestMergeGenerated_DescriptorSourcesMergeKeyByKey(t *testing.T) {
+	desc := func(services []string, sources map[string]string) []byte {
+		b, err := json.MarshalIndent(struct {
+			Services []string          `json:"services"`
+			Configs  []string          `json:"configs"`
+			Sources  map[string]string `json:"sources"`
+		}{services, nil, sources}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return append(b, '\n')
 	}
-	return append(out, '\n')
-}
+	base := desc([]string{"a", "b", "c", "d"},
+		map[string]string{"a.proto": "a0", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+	// ours edits a.proto and adds a service; theirs edits b.proto (the
+	// neighbouring line), adds d2.proto and deletes e.proto.
+	ours := desc([]string{"a", "a2", "b", "c", "d"},
+		map[string]string{"a.proto": "a1", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+	theirs := desc([]string{"a", "b", "c", "d", "f"},
+		map[string]string{"a.proto": "a0", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"})
 
-// gen/forge_descriptor.json stamps the protos it came from, one fingerprint
-// per proto. Two branches that edit DIFFERENT protos each change the stamp; the
-// merge must carry both edits, so the merged stamp is what a generate over the
-// merged protos writes and nothing needs regenerating or amending.
-func TestMergeDescriptor_DisjointProtoEditsMergeKeyByKey(t *testing.T) {
-	svcs := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
-	base := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b0", "proto/c.proto": "c0"})
-	// ours edits a.proto and adds a service at the top; theirs edits b.proto,
-	// adds a proto, and adds a service at the bottom.
-	ours := descriptorJSON(t, append([]string{"a2"}, svcs...), map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b0", "proto/c.proto": "c0"})
-	theirs := descriptorJSON(t, append(append([]string{}, svcs...), "z"), map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b1", "proto/c.proto": "c0", "proto/d.proto": "d1"})
-
-	got, clean, ok, err := mergeDescriptor(context.Background(), base, ours, theirs, 7)
-	if err != nil || !ok || !clean {
-		t.Fatalf("clean=%v ok=%v err=%v:\n%s", clean, ok, err, got)
-	}
-	want := descriptorJSON(t, append(append([]string{"a2"}, svcs...), "z"),
-		map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b1", "proto/c.proto": "c0", "proto/d.proto": "d1"})
-	if string(got) != string(want) {
-		t.Errorf("merged descriptor is not what a generate over both sides writes:\n--- got\n%s--- want\n%s", got, want)
-	}
-}
-
-// A proto one side removed stays removed; a proto both sides edited alike is
-// that edit; one both edited differently keeps ours (git has the proto itself
-// in conflict, and a stale stamp is refused until generate).
-func TestMergeDescriptor_RemovedAndConflictingProtos(t *testing.T) {
-	svcs := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
-	base := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b0", "proto/c.proto": "c0"})
-	ours := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b0", "proto/c.proto": "c1"})
-	theirs := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a2", "proto/c.proto": "c1"})
-	got, clean, ok, err := mergeDescriptor(context.Background(), base, ours, theirs, 7)
-	if err != nil || !ok || !clean {
-		t.Fatalf("clean=%v ok=%v err=%v", clean, ok, err)
-	}
-	want := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a1", "proto/c.proto": "c1"})
-	if string(got) != string(want) {
-		t.Errorf("got:\n%s\nwant:\n%s", got, want)
-	}
-}
-
-// A conflict in the descriptor's body takes this side whole (it is rewritten
-// by every generate and certified by nothing), but still merges the stamp.
-func TestMergeGeneratedPath_DescriptorBodyConflictKeepsOursMergesStamp(t *testing.T) {
-	base := descriptorJSON(t, []string{"a"}, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b0"})
-	ours := descriptorJSON(t, []string{"ours"}, map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b0"})
-	theirs := descriptorJSON(t, []string{"theirs"}, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b1"})
-	got, clean, _, err := mergeGeneratedPath(context.Background(), "gen/forge_descriptor.json", base, ours, theirs, 7)
+	merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
 	if err != nil || !clean {
-		t.Fatalf("clean=%v err=%v", clean, err)
+		t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
 	}
-	want := descriptorJSON(t, []string{"ours"}, map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b1"})
-	if string(got) != string(want) {
-		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	var got struct {
+		Services []string          `json:"services"`
+		Sources  map[string]string `json:"sources"`
 	}
-}
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatalf("merged descriptor is not JSON: %v\n%s", err, merged)
+	}
+	if want := []string{"a", "a2", "b", "c", "d", "f"}; strings.Join(got.Services, ",") != strings.Join(want, ",") {
+		t.Errorf("services = %v, want %v", got.Services, want)
+	}
+	want := map[string]string{"a.proto": "a1", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"}
+	if fmt.Sprint(got.Sources) != fmt.Sprint(want) {
+		t.Errorf("sources = %v, want the stamp of the merged tree %v", got.Sources, want)
+	}
+	// Byte-for-byte what forge writes for that descriptor, so the merge
+	// leaves nothing for the next generate to reformat.
+	if string(merged) != string(desc(got.Services, want)) {
+		t.Errorf("merged descriptor is not in forge's own rendering:\n%s", merged)
+	}
 
-// A side from before the stamp existed has no block to merge: the descriptor
-// falls back to a plain text merge instead of failing.
-func TestMergeDescriptor_UnstampedSideFallsBack(t *testing.T) {
-	stamped := descriptorJSON(t, []string{"a"}, map[string]string{"proto/a.proto": "a0"})
-	unstamped := descriptorJSON(t, []string{"a"}, nil)
-	if _, _, ok, err := mergeDescriptor(context.Background(), unstamped, stamped, unstamped, 7); err != nil || ok {
-		t.Errorf("ok=%v err=%v, want a decline", ok, err)
-	}
+	t.Run("both sides edited one proto: ours wins, and the next generate restamps", func(t *testing.T) {
+		theirs := desc([]string{"a", "b", "c", "d"},
+			map[string]string{"a.proto": "a9", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
+		merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
+		if err != nil || !clean {
+			t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
+		}
+		if !strings.Contains(string(merged), `"a.proto": "a1"`) {
+			t.Errorf("want ours' entry:\n%s", merged)
+		}
+	})
 }
 
 // stampedRender is a Tier-1 file as forge writes it: the body certified by a
@@ -448,10 +428,14 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 	ensureGeneratedMergeDriverTo(&first, other) // run from the LINKED worktree
 	notice := first.String()
 	common := strings.TrimSpace(gitT(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+	// The notice names the attributes file as git reports it — git's own
+	// separators, forward slashes even on Windows — so the expectation asks
+	// git the same question rather than building it with filepath.Join.
+	attributes := strings.TrimSpace(gitT(t, other, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes"))
 	for _, want := range []string{
 		"shared by 2 worktrees",
 		common,
-		filepath.Join(common, "info", "attributes"),
+		attributes,
 		"merge.forge-generated.driver = '/opt/forge/bin/forge' ",
 		"this worktree only; was: unset",
 		"git config --worktree --unset merge.forge-generated.driver",

@@ -22,9 +22,17 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	proto := "service WidgetService {\n  rpc GetWidget(GetWidgetRequest) returns (GetWidgetResponse);\n}\n"
-	if err := os.WriteFile(filepath.Join(protoDir, "widget.proto"), []byte(proto), 0o644); err != nil {
-		t.Fatal(err)
+	writeProto := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(dir, "proto", rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
+	writeProto("services/widget/v1/widget.proto", proto)
 	genDir := filepath.Join(dir, "gen")
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -38,9 +46,15 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	stamp := func() { write(ForgeDescriptor{Sources: DescriptorSources(dir)}) }
+	reset := func() {
+		writeProto("services/widget/v1/widget.proto", proto)
+		_ = os.Remove(filepath.Join(dir, "proto", "shared", "v1", "types.proto"))
+	}
 
-	t.Run("matching hash loads", func(t *testing.T) {
-		write(ForgeDescriptor{Sources: DescriptorSources(dir)})
+	t.Run("matching stamp loads", func(t *testing.T) {
+		reset()
+		stamp()
 		got, err := loadDescriptor(dir)
 		if err != nil {
 			t.Fatalf("a descriptor matching the protos must load: %v", err)
@@ -50,33 +64,64 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 		}
 	})
 
-	t.Run("proto edited after extraction is refused", func(t *testing.T) {
-		write(ForgeDescriptor{Sources: DescriptorSources(dir)})
-		// The real-world sequence: edit a proto, then run an inspection
-		// command before regenerating.
-		if err := os.WriteFile(filepath.Join(protoDir, "widget.proto"),
-			[]byte(proto+"\nmessage Extra {}\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		_, err := loadDescriptor(dir)
-		if err == nil {
-			t.Fatal("a descriptor extracted from different protos must be REFUSED, not returned")
-		}
-		if !strings.Contains(err.Error(), "stale") || !strings.Contains(err.Error(), "forge generate") {
-			t.Errorf("the refusal must say it is stale AND name the fix; got: %v", err)
-		}
-		if !strings.Contains(err.Error(), "proto/services/widget/v1/widget.proto") {
-			t.Errorf("the refusal must name the proto that changed; got: %v", err)
+	for _, tc := range []struct {
+		name, want string
+		change     func()
+	}{
+		{"proto edited after extraction", "proto/services/widget/v1/widget.proto (edited)", func() {
+			writeProto("services/widget/v1/widget.proto", proto+"\nmessage Extra {}\n")
+		}},
+		{"proto added after extraction", "proto/shared/v1/types.proto (added)", func() {
+			writeProto("shared/v1/types.proto", "message Shared {}\n")
+		}},
+		{"proto deleted after extraction", "proto/services/widget/v1/widget.proto (deleted)", func() {
+			if err := os.Remove(filepath.Join(protoDir, "widget.proto")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			reset()
+			stamp()
+			// The real-world sequence: change a proto, then run an inspection
+			// command before regenerating.
+			tc.change()
+			_, err := loadDescriptor(dir)
+			if err == nil {
+				t.Fatal("a descriptor extracted from different protos must be REFUSED, not returned")
+			}
+			for _, want := range []string{"stale", "forge generate", tc.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal must say it is stale, name the proto and the fix; missing %q in: %v", want, err)
+				}
+			}
+		})
+	}
+
+	t.Run("re-vendoring forge's annotation protos does not stale it", func(t *testing.T) {
+		// forge.proto is the grammar the protos are written in, not an input
+		// any descriptor is extracted from. Stamping it is what made every
+		// forge.proto edit in forge's own repo restamp a descriptor with no
+		// services and no configs.
+		reset()
+		writeProto("forge/v1/forge.proto", "syntax = \"proto3\";\npackage forge.v1;\n")
+		writeProto("buf/validate/validate.proto", "syntax = \"proto2\";\npackage buf.validate;\n")
+		stamp()
+		writeProto("forge/v1/forge.proto", "syntax = \"proto3\";\npackage forge.v1;\nmessage NewOption {}\n")
+		writeProto("buf/validate/validate.proto", "syntax = \"proto2\";\npackage buf.validate;\nmessage NewRule {}\n")
+		if _, err := loadDescriptor(dir); err != nil {
+			t.Fatalf("an edit to a vendored annotation proto must not stale the descriptor: %v", err)
 		}
 	})
 
 	t.Run("unstamped file is allowed — only a stamped-then-drifted one is refused", func(t *testing.T) {
-		// Deliberate scope limit. An unstamped descriptor is either a
-		// pre-guard file (the next generate stamps it) or a hand-built
-		// fixture with no proto tree to hash — several callers construct one
-		// directly. Refusing those would break them for no safety gain: the
-		// drift that actually happens is a descriptor stamped from protos
-		// that then changed, and that IS refused (see the case above).
+		// Deliberate scope limit. An unstamped descriptor is a hand-built
+		// fixture with no proto tree behind it — several callers construct
+		// one directly. Refusing those would break them for no safety gain:
+		// the drift that actually happens is a descriptor stamped from protos
+		// that then changed, and that IS refused (see the cases above).
+		reset()
+		writeProto("services/widget/v1/widget.proto", proto+"\n// drifted\n")
 		write(ForgeDescriptor{})
 		got, err := loadDescriptor(dir)
 		if err != nil {
@@ -114,27 +159,30 @@ func TestDescriptorSources_ContentNotMtime(t *testing.T) {
 		return dir
 	}
 	a, b := mk("service S {}\n"), mk("service S {}\n")
-	if changed, stamped := StaleSources(b, DescriptorSources(a)); !stamped || len(changed) != 0 {
-		t.Errorf("identical proto content in two trees must read as current — otherwise every clone is stale: %v", changed)
+	if DescriptorDrift(b, DescriptorSources(a)) != "" {
+		t.Error("identical proto content in two trees must stamp identically — otherwise every clone reads as stale")
 	}
 	c := mk("service S { rpc X(Y) returns (Z); }\n")
-	changed, stamped := StaleSources(c, DescriptorSources(a))
-	if !stamped || len(changed) != 1 || changed[0] != "proto/svc/v1/a.proto" {
-		t.Errorf("different proto content must be reported, by path, or the guard cannot fire: %v", changed)
+	if DescriptorDrift(c, DescriptorSources(a)) == "" {
+		t.Error("different proto content must stamp differently, or the guard cannot fire")
 	}
-	if got := DescriptorSources(t.TempDir()); got != nil {
-		t.Errorf("a project with no protos has nothing to fingerprint; got %v", got)
-	}
-	if _, stamped := StaleSources(a, nil); stamped {
-		t.Error("an unstamped descriptor is not enforceable")
+	if got := DescriptorSources(t.TempDir()); got == nil || len(got) != 0 {
+		t.Errorf("a project with no protos stamps an empty, non-nil set (a stamped descriptor with no inputs); got %#v", got)
 	}
 }
 
-// Adding or removing a proto changes the stamp the same as editing one.
-func TestStaleSources_AddedAndRemovedProtos(t *testing.T) {
+// One entry per proto, so a change to one proto changes only its own entry.
+// That is what lets two branches that edit different protos merge their
+// stamps into the stamp of the merged tree (see the merge driver's
+// TestMergeGenerated_DescriptorSourcesMergeKeyByKey); a single digest of the
+// tree changed on every branch and matched no merge.
+func TestDescriptorSources_OneEntryPerProto(t *testing.T) {
 	dir := t.TempDir()
-	write := func(name, body string) {
-		p := filepath.Join(dir, "proto", name)
+	for rel, body := range map[string]string{
+		"a/v1/a.proto": "service A {}\n",
+		"b/v1/b.proto": "service B {}\n",
+	} {
+		p := filepath.Join(dir, "proto", rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -142,17 +190,15 @@ func TestStaleSources_AddedAndRemovedProtos(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("a.proto", "a")
-	write("b.proto", "b")
-	stamp := DescriptorSources(dir)
-	write("c.proto", "c")
-	if changed, _ := StaleSources(dir, stamp); len(changed) != 1 || changed[0] != "proto/c.proto" {
-		t.Errorf("an added proto: %v", changed)
-	}
-	if err := os.Remove(filepath.Join(dir, "proto", "b.proto")); err != nil {
+	before := DescriptorSources(dir)
+	if err := os.WriteFile(filepath.Join(dir, "proto", "a", "v1", "a.proto"), []byte("service A { rpc X(Y) returns (Z); }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if changed, _ := StaleSources(dir, stamp); len(changed) != 2 {
-		t.Errorf("an added and a removed proto: %v", changed)
+	after := DescriptorSources(dir)
+	if before["a/v1/a.proto"] == after["a/v1/a.proto"] {
+		t.Error("the edited proto's entry must change")
+	}
+	if before["b/v1/b.proto"] != after["b/v1/b.proto"] || len(after) != 2 {
+		t.Errorf("only the edited proto's entry may change: before %v, after %v", before, after)
 	}
 }

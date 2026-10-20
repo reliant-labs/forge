@@ -302,8 +302,8 @@ func TestMergeGenerated_RebaseKeepsDescriptorStampCurrent(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("the rebased descriptor does not parse: %v\n%s", err, data)
 	}
-	if changed, stamped := codegen.StaleSources(dir, got.Sources); !stamped || len(changed) != 0 {
-		t.Errorf("after the rebase the descriptor is stamped for protos the tree does not hold (differs: %v); the lane would have to regenerate and amend:\n%s", changed, data)
+	if drift := codegen.DescriptorDrift(dir, got.Sources); drift != "" || len(got.Sources) == 0 {
+		t.Errorf("after the rebase the descriptor is stamped for protos the tree does not hold (%q); the lane would have to regenerate and amend:\n%s", drift, data)
 	}
 	if strings.Contains(string(data), "<<<<<<<") {
 		t.Errorf("the descriptor carries conflict markers:\n%s", data)

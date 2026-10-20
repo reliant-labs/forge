@@ -64,7 +64,27 @@ read browser spans (`signal: traces`):
 
 The HyperDX renderer **skips** them (HyperDX's own UI already plays replay and
 searches spans), so a local `forge env up` stack shows the frontend dashboard
-without them. A `table` or `number` series may carry `thresholds: {good, poor}`
+without them.
+
+Three more kinds, and one field, are queries the console draws and HyperDX
+has no equivalent for, so HyperDX skips them too:
+
+| kind / field | takes | draws |
+|---|---|---|
+| `bar` | `groupBy` (required), `series`, `limit` (default 10) | top-N bars: one group per `groupBy` value, the `limit` largest by the first series |
+| `heatmap` | one series: `agg: count` plus a numeric `field` (`span.duration`); `signal` traces or logs | time across, value buckets up, each cell the number of events in it |
+| `sql` | `sql`: one read-only SELECT; no `series`, `where` or `groupBy`; `signal` optional | the rows; a first `DateTime` column draws a time series |
+| `formula` on `line` / `number` | `"A / B * 100"`: series by position (A, B, ... J), numbers, `+ - * /`, parentheses | that one expression instead of the series; `x / 0` is 0, as in `ratio` |
+
+`limit` (1 to 200) also keeps the top rows of a `table`. A `sql` statement runs
+under the alert-rule guard and limits (one SELECT; no writes, DDL, `SETTINGS`,
+`FORMAT`, `system.*` or outside table functions; a timeout and a row cap) as the
+viewer's own read-only database user, and binds the dashboard's scope as
+ClickHouse parameters: `{from:DateTime64(9)}`, `{to:DateTime64(9)}`,
+`{step:UInt32}`, `{env_ids:Array(String)}`, `{envs:Array(String)}`,
+`{services:Array(String)}`.
+
+A `table` or `number` series may carry `thresholds: {good, poor}`
 to grade its value like Core Web Vitals do; renderers that cannot colour ignore
 it. The frontend dashboard's **Web vitals by route** table uses it for the p75
 of LCP, INP and CLS, and **JS errors by release** splits the error spans by
@@ -91,7 +111,7 @@ They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so 
 
 A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/service-<svc>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
-Every file is validated at the cut, and `forge observe dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, issues, sessions, funnel`.
+Every file is validated at the cut, and `forge observe dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel`.
 
 `annotations: [{"source": "releases"}]` on a dashboard asks the console to draw a marker for every promotion on its time-series panels. Generated dashboards declare it.
 

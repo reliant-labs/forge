@@ -26,6 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives containers or dials an external host with no `testing.Short` check
   on the way; `go test -short -json ./... | forge ci test-budget` fails on
   any unmarked top-level test over `--budget` (default 2s), with file:line.
+- **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
+  `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
+  per `groupBy` value, the `limit` largest by the first series, default 10);
+  `heatmap` buckets one numeric field's values over time (one `count` series
+  naming the field); `sql` carries one read-only SELECT in `sql`, checked by
+  the new `CheckSQL`, which is the alert-rule guard (`alerting.ValidateExpr`),
+  and may bind the dashboard's scope through the `SQLParam*` ClickHouse
+  parameters (`{from:DateTime64(9)}`, `{to:…}`, `{step:UInt32}`,
+  `{env_ids|envs|services:Array(String)}`). `formula` makes a line or number
+  panel plot `A / B * 100` over its series (by position, A to J), parsed and
+  evaluated by `ParseFormula` / `Formula.Eval` so every reader computes the
+  same value (`x / 0` is 0, as in `ratio`). `limit` (1 to 200) keeps the top
+  rows of a table or bar. The validator locates every misuse, and a `sql`
+  panel's `signal` is optional (`Panel.Signal` is now `omitempty`; every other
+  kind still requires it, so existing output is unchanged). HyperDX has no
+  equivalent for any of them, so `RenderHyperDX` leaves those panels out, as
+  it does the console kinds. `CheckField` now also requires an attribute
+  field's key to be 1 to 128 characters (`span.attr.` alone was accepted),
+  the rule the Reliant control plane's copy enforced.
 - **`forge/pkg/serverkit/drainbudget`: the one reader of `PRE_STOP_DELAY`
   and `SHUTDOWN_TIMEOUT`.** `Parse` (a Go duration or bare seconds; empty is
   unset), `Effective` (zero is the default, negative is none), the env names
@@ -90,8 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pgtest.NewFromTemplate` reaps stale templates.** A template used to live
   as long as its server, which on an external `FORGE_TEST_POSTGRES_URL` server
   (shared, never torn down) meant one leaked database per migration edit,
-  forever. Each process that uses a template now stamps it
-  (`COMMENT ON DATABASE`), and a process's first `NewFromTemplate` on a server drops every
+  forever. Each process that uses a template now stamps it (`COMMENT ON
+DATABASE`), and a process's first `NewFromTemplate` on a server drops every
   template unused for longer than `pgtest.DefaultTemplateTTL` (24h;
   `FORGE_TEST_TEMPLATE_TTL` overrides, `0` disables) and every `*_build`
   database whose builder is gone, each under its key's advisory lock. An
@@ -279,6 +298,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge env deploy <env> <version> --frontends-only` no longer renders or
+  compares the env's bundle.** It applies no bundle object, yet it rendered
+  the whole env and refused when a newer checkout's workloads differed from
+  the release's bundle of record — so a release's frontend could not ship
+  after its backend had (control-plane prod, 2026-10-19). It now records no
+  bundle and computes no k8s plan; its promotion is still confirmed and
+  scoped, and the frontend still builds from the release's recorded sources.
+  A `--target` naming only frontends shipped to Firebase or a bucket is
+  treated the same; any target that renders cluster objects keeps the check.
+- **A release's bundle reproduces from its own commit and forge.** A
+  hand-composed `forge.image_ref_for(<repo>, image_tag)` rendered
+  `<repo>:<release>@<digest>` at the cut, whose build state held a digest
+  under `<repo>:<release>`, and `<repo>@<digest>` on any later redeploy,
+  whose build state did not — so the versioned deploy refused its own
+  release's bundle. A named release now pins its images under the release
+  tag from the release alone (`releaseVersionTag`, the one rule the build's
+  push tag, the render's `image_tag` and the pins share).
+- **A Firebase or bucket frontend that fails before its upload reports
+  nothing shipped.** A failed `npm run build` (or assemble, source-map
+  filing, asset retention, config write) was reported as
+  `PARTLY … failed part-way; some of it may be live`, although the host was
+  never written. Those failures now carry `cluster.ErrNothingApplied`, which
+  the deploy's ship log reads, unless an earlier frontend of the same group
+  already shipped.
 - **`lifecyclekit.Supervise` no longer reports a node as stuck because an
   earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
   after its cancel once the budget was gone, so every node behind a slow one

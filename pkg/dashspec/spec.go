@@ -30,6 +30,19 @@ const (
 	KindTable PanelKind = "table"
 	// KindSearch is a log or span search (no aggregate): the rows themselves.
 	KindSearch PanelKind = "search"
+	// KindBar is a top-N bar chart: one bar group per GroupBy value, one bar
+	// per Series within it, the Limit groups with the largest Series[0] first.
+	KindBar PanelKind = "bar"
+	// KindHeatmap is the distribution of one numeric field over time: time
+	// buckets across, value buckets up, each cell coloured by how many events
+	// fell in it (a latency heatmap is span.duration). It takes exactly one
+	// series, a count with the bucketed value in Field.
+	KindHeatmap PanelKind = "heatmap"
+	// KindSQL is drawn from a read-only ClickHouse SELECT the panel carries in
+	// SQL instead of from series. The reader runs it with the same guard and
+	// limits as an alert rule's expr (see CheckSQL and the SQLParam*
+	// parameters).
+	KindSQL PanelKind = "sql"
 
 	// The kinds below are drawn by the Reliant console from its own services,
 	// not from a query over the panel's series, so they take no series,
@@ -56,6 +69,14 @@ func IsConsoleKind(k PanelKind) bool {
 	}
 	return false
 }
+
+// Row limits of a table or bar panel (Panel.Limit).
+const (
+	// MaxLimit is the most rows a panel may keep.
+	MaxLimit = 200
+	// DefaultBarLimit is how many bar groups a bar panel with no Limit draws.
+	DefaultBarLimit = 10
+)
 
 // FunnelBy is what a funnel counts: how events are tied into one journey.
 type FunnelBy string
@@ -189,11 +210,26 @@ type Panel struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description,omitempty"`
 	Kind        PanelKind `json:"kind"`
-	Signal      Signal    `json:"signal"`
-	Series      []Series  `json:"series,omitempty"`
+	// Signal is required on every kind but KindSQL, whose statement names its
+	// own tables.
+	Signal Signal   `json:"signal,omitempty"`
+	Series []Series `json:"series,omitempty"`
 	// Ratio makes a two-series line panel plot Series[0]/Series[1]
 	// (an error rate is failed requests over all requests).
 	Ratio bool `json:"ratio,omitempty"`
+	// Formula makes a line or number panel plot one arithmetic expression
+	// over its series instead of the series themselves: "A / B * 100", where
+	// A is Series[0], B is Series[1], and so on (see ParseFormula). It is the
+	// general form of Ratio, which a panel uses instead of, not with, it.
+	Formula string `json:"formula,omitempty"`
+	// Limit keeps the top Limit rows of a table or bar panel, largest
+	// Series[0] first. Zero is DefaultBarLimit for a bar and the reader's own
+	// row cap for a table; at most MaxLimit.
+	Limit int `json:"limit,omitempty"`
+	// SQL is a KindSQL panel's statement: one read-only SELECT over the
+	// telemetry tables, which may use the SQLParam* query parameters. Only
+	// that kind takes it.
+	SQL string `json:"sql,omitempty"`
 	// Where narrows every series of the panel.
 	Where   []Predicate `json:"where,omitempty"`
 	GroupBy []string    `json:"groupBy,omitempty"`

@@ -54,6 +54,9 @@ func newNewCmd() *cobra.Command {
 		// checkout this binary was built from (a gitignored go.work `use`).
 		// See forge_bridge.go for why it is never implicit.
 		linkForge bool
+		// forgeRoot names the checkout --link-forge bridges to, for a binary
+		// that cannot find its own (see buildinfo.ResolveForgeRoot).
+		forgeRoot string
 		verbose   bool
 	)
 
@@ -141,6 +144,8 @@ checkout stop being the same source; drop the bridge with
 			if frontendOutput != "" && frontendOutput != "static" && frontendOutput != "standalone" && frontendOutput != "server" {
 				return fmt.Errorf("invalid --output %q: use static, standalone, or server", frontendOutput)
 			}
+			explicitForgeRoot = forgeRoot
+			defer func() { explicitForgeRoot = "" }()
 			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, newFrontendOptions{output: frontendOutput, routes: frontendRoutes})
 		},
 	}
@@ -163,6 +168,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
 	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks + packages/ui-web shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
 	cmd.Flags().BoolVar(&linkForge, "link-forge", false, "Bridge the project to the forge checkout this binary was built from (gitignored go.work 'use' + .forge-link/ for the web runtime). Off by default; required for a service scaffold from an unreleased forge build (also: "+linkForgeEnv+"=1)")
+	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
@@ -1069,7 +1075,7 @@ func writeDevForgeGoWork(targetPath string, link bool) {
 	if !link {
 		return
 	}
-	root := devForgeBridgeRoot()
+	root, _ := devForgeBridgeRoot()
 	if root == "" {
 		// checkScaffoldCanResolveForge refuses --link-forge without a root
 		// before anything is written; this only guards a direct caller.
@@ -1113,20 +1119,16 @@ func writeDevForgeGoWork(targetPath string, link bool) {
 	fmt.Printf("🔗 --link-forge: wrote go.work bridging this project to %s (gitignored, machine-local; undo: go work edit -dropuse=%s)\n", root, root)
 }
 
+// explicitForgeRoot is --forge-root for the `project new` run in progress.
+var explicitForgeRoot string
+
 // devForgeBridgeRoot is the local forge checkout --link-forge bridges a
-// scaffold to: the checkout this binary was built from, or "" when it cannot
-// tell.
-//
-// Prefer the explicitly stamped ldflag; otherwise recover the source root
-// dynamically from this binary's own compiled file paths. The dynamic path is
-// what makes the bridge work when forge runs EMBEDDED (e.g. `reliant forge
-// project new`), where the host binary's build never stamped forge's
-// DevForgeRoot — see buildinfo.DiscoverDevForgeRootFromSource.
-func devForgeBridgeRoot() string {
-	if root := buildinfo.DevForgeRoot; root != "" {
-		return root
-	}
-	return buildinfo.DiscoverDevForgeRootFromSource()
+// scaffold to, or "" when none can be found. A path stated by --forge-root or
+// $FORGE_ROOT that is not a forge checkout is an error. How the rest is
+// discovered, and why not only from the build: buildinfo.ResolveForgeRoot.
+func devForgeBridgeRoot() (string, error) {
+	r, _, err := buildinfo.ResolveForgeRoot(explicitForgeRoot)
+	return r.Dir, err
 }
 
 // checkScaffoldCanResolveForge refuses, BEFORE anything is written, a
@@ -1136,15 +1138,20 @@ func devForgeBridgeRoot() string {
 // non-nil), the require exists, so the question becomes whether this binary
 // can generate into the forge it resolves (adoptedForgeResolution).
 func checkScaffoldCanResolveForge(kind string, link bool, adopted *adoptedForge) error {
-	root := devForgeBridgeRoot()
+	root, rootErr := devForgeBridgeRoot()
+	if rootErr != nil {
+		return cliutil.UserErr(Name()+" project new --forge-root", rootErr.Error(), "",
+			"name a forge checkout (a directory with forge's go.mod and pkg/), or drop the flag")
+	}
 	if link && root == "" {
 		return cliutil.UserErr(Name()+" project new --link-forge",
-			fmt.Sprintf("this forge (%s) cannot locate the checkout it was built from (a -trimpath build, or a "+
-				"binary copied off the machine that built it), so there is nothing to bridge to. Nothing was written",
+			fmt.Sprintf("this forge (%s) cannot locate a forge checkout to bridge to: it carries no build-time path "+
+				"(a -trimpath build, or a binary copied off the machine that built it), embeds no go.mod replace "+
+				"that resolves, and neither it nor this directory is inside a checkout. Nothing was written",
 				buildinfo.Version()),
 			"",
-			"rebuild forge from its checkout with `task install:dev` / `make dev` (which records the checkout), "+
-				"or scaffold without --link-forge and bridge by hand: go work use <path-to-forge-checkout>")
+			"name the checkout: --forge-root <path-to-forge-checkout> (or "+buildinfo.ForgeRootEnv+"=<path>), "+
+				"or rebuild forge from its checkout with `task install:dev` / `make dev`")
 	}
 	if adopted != nil {
 		return adoptedForgeResolution(kind, *adopted, link, buildinfo.InstallableVersion(), buildinfo.Version(),

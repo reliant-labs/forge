@@ -140,6 +140,8 @@ type Worker struct {
 
 Declaring a root named `server` keeps the `server` command; once any root is declared, the generated default stops being generated. A project whose `serve.go` predates the per-root commands (no `runRoot`) keeps its own `server` command, and generate tells you to add `runRoot` before it writes `roots_gen.go`.
 
+**Each root's config is its reach.** Generate reads, per root, the config fields its closure reads (`g.Cfg.X`, `g.Cfg.GetX()`, `g.Cfg.X.Y` in `compose.go`; `g.Cfg` handed on whole is every field), plus the process fields `runRoot` reads and, for a root reaching the database, the database fields. `runRoot` demands only those (`config.LoadReach`), so a worker root starts without `DATABASE_URL`. `deploy/kcl/config_gen.k` projects the same set as `ROOTS`: deploy a root with `fw.Workload {…} | config_gen.root_of("worker")` and `config_gen.workloadEnvMap(cfg, w)` gives it exactly that env — its required credentials, plus the optional ones its `config_secrets` opts into (a credential its root does not reach fails the render, as does an unknown root). The scaffolded `_api` is `root = "server"`. A component that hands on the whole config reaches all of it; a config block of its own is what narrows it.
+
 ### Checking the whole graph, and what each node knows
 
 `forge lint --graph` judges the graph as `forge generate` assembles it, and fails on an error:

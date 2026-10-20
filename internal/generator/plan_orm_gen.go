@@ -440,6 +440,11 @@ type ormField struct {
 	// struct tag in forge's own namespace (see structTag) —
 	// pkg/crud.Repo.ensureMeta reads it back the same way it reads version.
 	isFillULID bool
+	// insertDefault is how the column's DEFAULT applies when the caller
+	// leaves the field unset (codegen.ColumnInsertDefault): a pointer field
+	// whose nil is the DEFAULT, or ,nullzero on a type whose zero is never
+	// a stored value (a json document, an array with a non-empty DEFAULT).
+	insertDefault codegen.InsertDefault
 }
 
 // isBunSoftDeleteTimeType reports whether a deleted_at field's projected
@@ -939,14 +944,26 @@ func bunTag(f ormField) string {
 			parts = append(parts, "notnull")
 		}
 		if f.hasDefault && (!f.notNull || f.isTimestamp) {
-			// A NOT NULL non-timestamp column (e.g. a bool `default:true`) always
-			// carries a concrete Go zero value on INSERT, so Bun would send that
-			// zero and never let the DB default fire — worse, `default:` here makes
-			// Bun treat the Go zero as "unset" and substitute the default, flipping
-			// an intentional false to true. Only emit ,default: where a Go value can
-			// legitimately be absent: nullable columns, or server-stamped timestamps.
+			// Not on a NOT NULL non-timestamp column (e.g. a bool `default:true`):
+			// `default:` makes Bun treat the Go zero as "unset" and substitute
+			// the default, flipping an intentional false to true. Such a column
+			// says "unset" with its TYPE instead — a pointer whose nil Bun sends
+			// as DEFAULT, or ,nullzero where the zero is never a stored value
+			// (codegen.ColumnInsertDefault). ,default: stays where a Go value can
+			// legitimately be absent: nullable columns, or server-stamped
+			// timestamps.
 			parts = append(parts, "default:"+f.columnDef)
 		}
+	}
+
+	// A column whose Go zero is never a value it stores — a json document
+	// (`""` is not JSON) or an array/bytea with a non-empty DEFAULT — reads
+	// that zero as "unset": ,nullzero makes Bun omit the column from the
+	// INSERT so its DEFAULT fires, and pkg/crud keeps the stored value on a
+	// full-replace Update. (A scalar whose DEFAULT is not its zero is a
+	// pointer instead — see resolveORMFields — because its zero IS a value.)
+	if f.insertDefault == codegen.InsertDefaultNullZero {
+		parts = append(parts, "nullzero")
 	}
 
 	// GENERATED ALWAYS AS (...) STORED: the DB computes it, and postgres
@@ -1186,9 +1203,17 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			isVersion:   e.Version,
 			isFillULID:  e.FillStrategy == schemadef.FillStrategyULID,
 		}
+		base, isArray := strings.CutPrefix(e.Type, "[]")
+		f.insertDefault = codegen.ColumnInsertDefault(codegen.InsertDefaultColumn{
+			Canonical: base, IsArray: isArray, NotNull: e.NotNull, IsPK: e.PrimaryKey,
+			Generated: e.Generated, Version: e.Version, Default: e.Default,
+			ZeroRejected: e.ZeroRejected,
+		})
 		// Nullable column → pointer struct field. Arrays and bytes are
-		// reference types already (NULL scans to nil).
-		f.nullable = !f.isPK && !f.notNull && isNullablePlanType(e.Type)
+		// reference types already (NULL scans to nil). A NOT NULL column
+		// whose DEFAULT is not its Go zero is a pointer too: nil is "unset",
+		// the INSERT omits it and the DEFAULT fires.
+		f.nullable = ((!f.isPK && !f.notNull) || f.insertDefault == codegen.InsertDefaultPointer) && isNullablePlanType(e.Type)
 		fields = append(fields, f)
 	}
 

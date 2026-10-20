@@ -121,6 +121,12 @@ type GenStep struct {
 // flags) lives here so we parse once at step 0 instead of 3× across
 // the pipeline (see FORGE_REVIEW_CODEBASE.md Tier 2.5).
 type pipelineContext struct {
+	// graphRoots is the composition graph's roots as processes, set by the
+	// internal/app composition step (graphRootsSet) and read by the deploy
+	// config step, which projects their config reach into config_gen.k.
+	graphRoots    []codegen.GraphRoot
+	graphRootsSet bool
+
 	// Inputs (set in newPipelineContextWithFlags).
 	ProjectDir string
 	AbsPath    string
@@ -233,8 +239,6 @@ type pipelineContext struct {
 
 	// Proto-tree presence flags — populated once in stepDetectProtoDirs.
 	HasServices  bool
-	HasAPI       bool
-	HasDB        bool
 	HasConfig    bool
 	HasWorkers   bool
 	HasOperators bool
@@ -488,7 +492,7 @@ func generateSteps() []GenStep {
 		// emitter is a function of what is on disk, and a project with no
 		// api/ directory — most of them — does nothing here.
 		{Name: "CRD KCL manifests (api/ Go types)", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepCRDKCL, Tag: "deploy"},
-		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasDBOrServices), GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
+		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasServices), GateReason: "no services (an entity is a table a service's CRUD rpcs name) or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
 		{Name: "retire delivered agent skills", Gate: always, Run: stepRetireAgentSkills, Tag: "tools"},
@@ -881,12 +885,6 @@ func hasAnyEntrypoint(ctx *pipelineContext) bool {
 	return ctx.HasServices || ctx.HasWorkers || ctx.HasOperators
 }
 
-// hasDBOrServices is the entity-source precondition: either proto/db
-// (migrations) or proto/services (entity structs) can produce entities.
-func hasDBOrServices(ctx *pipelineContext) bool {
-	return ctx.HasDB || ctx.HasServices
-}
-
 // The gates below are referenced from other files (generate_tier1_scope.go,
 // generate_retire_disowns.go) or directly from tests, so they keep their
 // named definitions; their bodies are expressed via the combinators for
@@ -1010,7 +1008,7 @@ func stepLoadConfig(ctx *pipelineContext) error {
 		// was a fully-silent fallback that turned every "I deleted
 		// forge.yaml by mistake" into "why is my generate emitting
 		// nothing structural?" — see B2 in the loud-by-default backlog.
-		fmt.Fprintln(os.Stderr, "ℹ️  No forge.yaml found; using directory convention scanning (proto/, proto/services/, proto/api/, proto/db/)")
+		fmt.Fprintln(os.Stderr, "ℹ️  No forge.yaml found; generating from proto/ alone (the steps that read forge.yaml are skipped)")
 		ctx.Cfg = nil
 		return nil
 	}
@@ -1295,7 +1293,7 @@ func stepAnnounceProject(ctx *pipelineContext) error {
 }
 
 // populateComponentPresence fills the proto-tree presence flags
-// (HasServices/HasAPI/HasDB/HasConfig) and the worker/operator presence
+// (HasServices/HasConfig) and the worker/operator presence
 // flags on ctx. Returns the RAW operator presence (before the
 // experimental-feature suppression) so stepDetectProtoDirs can print
 // its one-line skip message exactly once.
@@ -1323,8 +1321,6 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	// step. stepParseServicesAndModule later reconciles this to the exact
 	// descriptor count. See projectDefinesConnectServices.
 	ctx.HasServices = projectDefinesConnectServices(ctx.ProjectDir)
-	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto", "api"))
-	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto", "db"))
 	// Config protos, not the directory: an empty proto/config (a CLI
 	// scaffold leaves one) would have the loader write a pkg/config that
 	// imports gen/config/v1, which nothing generates.
@@ -1332,8 +1328,7 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 	// HasWorkers / HasOperators are BOOLEAN presence gates (does the project
 	// have any worker/operator at all), NOT an enumeration of the set — generate
 	// does zero worker/operator discovery. They gate the bootstrap family of
-	// steps (hasAnyEntrypoint) exactly like HasDB/HasConfig gate on proto dir
-	// existence.
+	// steps (hasAnyEntrypoint) exactly like HasConfig gates on config protos.
 	ctx.HasWorkers = hasComponentDir(ctx.ProjectDir, "internal/workers")
 	rawHasOperators = hasComponentDir(ctx.ProjectDir, "internal/operators")
 	ctx.HasOperators = rawHasOperators
@@ -1476,34 +1471,16 @@ func stepRecordGeneratingBuild(ctx *pipelineContext) error {
 }
 
 // stepDetectProtoDirs populates the proto-tree presence flags
-// (HasServices/HasAPI/HasDB/HasConfig) and worker/operator presence.
-// Was inline at lines 188-213 of the pre-refactor pipeline. Also
-// short-circuits with an error when the directory-scan fallback is
-// active and there are no proto files anywhere.
+// (HasServices/HasConfig) and worker/operator presence. Without forge.yaml
+// the protos are all generate has to go on, so a tree with none is an error.
 func stepDetectProtoDirs(ctx *pipelineContext) error {
 	rawHasOperators := populateComponentPresence(ctx)
 	if rawHasOperators && !ctx.HasOperators {
 		fmt.Println("[generate] operator scaffolds detected but features.operators is off — skipping operator codegen")
 	}
 
-	if ctx.Cfg == nil && !ctx.HasServices && !ctx.HasAPI && !ctx.HasDB && !ctx.HasConfig {
-		return fmt.Errorf("no proto files found in proto/api, proto/services, proto/db, or proto/config")
-	}
-	if ctx.Cfg == nil {
-		fmt.Println("🔍 Detected proto directories:")
-		if ctx.HasAPI {
-			fmt.Println("  ✓ proto/api/ (API messages)")
-		}
-		if ctx.HasServices {
-			fmt.Println("  ✓ Connect service definitions")
-		}
-		if ctx.HasDB {
-			fmt.Println("  ✓ proto/db/ (Database models)")
-		}
-		if ctx.HasConfig {
-			fmt.Println("  ✓ proto/config/ (Config definitions)")
-		}
-		fmt.Println()
+	if ctx.Cfg == nil && len(discoverProtoSubdirs(ctx.ProjectDir)) == 0 {
+		return fmt.Errorf("no forge.yaml and no .proto files under proto/: nothing to generate from")
 	}
 	return nil
 }
@@ -2216,10 +2193,27 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	if err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
+	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums)
+	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
+	ctx.graphRoots, ctx.graphRootsSet = roots, true
 	return nil
+}
+
+// rootsForDeployConfig is the roots config_gen.k projects: the ones the
+// composition step read this run, else (a run that did not compose — a
+// narrowed --steps run) the graph assembled afresh. A graph that does not
+// assemble projects no ROOTS; generate's own composition step reports why.
+func (ctx *pipelineContext) rootsForDeployConfig() []codegen.GraphRoot {
+	if ctx.graphRootsSet {
+		return ctx.graphRoots
+	}
+	roots, err := codegen.GraphRoots(ctx.ProjectDir)
+	if err != nil {
+		return nil
+	}
+	return roots
 }
 
 // stepCmdGroups anchors the dir-nested per-component command-group subpackages
@@ -2538,7 +2532,7 @@ func stepWorkloadsKCL(ctx *pipelineContext) error {
 // config_gen + its config.k to project config into env_vars.
 func stepPerEnvDeployConfig(ctx *pipelineContext) error {
 	return ctx.warnOrFail("per-env deploy config generation",
-		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums))
+		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums, ctx.rootsForDeployConfig))
 }
 
 // stepIngressK3dPorts derives the k3d host→cluster port mappings

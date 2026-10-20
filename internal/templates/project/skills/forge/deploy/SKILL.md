@@ -361,7 +361,10 @@ Typed per-env config lives in `deploy/kcl/<env>/config.k` (an `AppConfig`
 instance); `config_gen.appConfigEnvMap(cfg, w.config_secrets)` projects it
 into a workload's `env` map. A `sensitive` field reaches only workloads that
 list it in `config_secrets`, so one feature's missing Secret key cannot stall
-every pod. Anything else is a literal in the workload's `env`:
+every pod. A workload bound to a composition-graph root (`| config_gen.root_of("worker")`)
+takes `config_gen.workloadEnvMap(cfg, w)` instead: exactly the config its root
+reaches — the scaffolded envs already call it (`architecture`, "Roots and
+commands"). Anything else is a literal in the workload's `env`:
 
 ```kcl
 wl.item | {env = {LOG_LEVEL = "debug"}}

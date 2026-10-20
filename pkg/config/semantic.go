@@ -216,8 +216,30 @@ func registerConfigFileFlag(cmd *cobra.Command, msg proto.Message) {
 // option.
 // It is the cobra-facing alias of LoadInto. cmd may be nil (env + defaults
 // only). Sensitive fields resolve from env / Secret mount only.
-func Load(cmd *cobra.Command, msg proto.Message) error {
-	return LoadInto(cmd, msg)
+func Load(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
+	return LoadInto(cmd, msg, opts...)
+}
+
+// LoadOption narrows what a load demands of the configuration.
+type LoadOption func(*loadOptions)
+
+type loadOptions struct {
+	required map[string]bool // nil: every field
+}
+
+// RequiredWithin makes `required: true` apply only to the named fields — the
+// ones the process reaches, by path from the root message ("database_url",
+// "stripe.secret_key"). A process running one root of the composition graph
+// loads with the fields that root reaches (cmd/<bin>/cmd/roots_gen.go), so a
+// worker that never opens the database does not demand DATABASE_URL, and
+// its workload is not handed the credential to satisfy it. Every field still
+// loads and validates; only the "must be set" demand narrows.
+func RequiredWithin(paths ...string) LoadOption {
+	set := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		set[p] = true
+	}
+	return func(o *loadOptions) { o.required = set }
 }
 
 // LoadTyped is the generic convenience: it allocates a fresh T, loads it,
@@ -228,10 +250,10 @@ func Load(cmd *cobra.Command, msg proto.Message) error {
 //
 // It mirrors the generated Load(cmd) (*Config, error) signature shape so a
 // project can drop the generated loader and call this directly.
-func LoadTyped[T proto.Message](cmd *cobra.Command) (T, error) {
+func LoadTyped[T proto.Message](cmd *cobra.Command, opts ...LoadOption) (T, error) {
 	var zero T
 	msg := zero.ProtoReflect().New().Interface()
-	if err := LoadInto(cmd, msg); err != nil {
+	if err := LoadInto(cmd, msg, opts...); err != nil {
 		return zero, err
 	}
 	return msg.(T), nil

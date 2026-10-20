@@ -58,22 +58,22 @@ func TestBuildEntityConv_IntegerEnumColumns(t *testing.T) {
 	for _, want := range []string{
 		// Unset (the proto zero) stores the declared DEFAULT; a sent value
 		// stores its wire NUMBER.
-		"e.Status = 1 // status: an unset enum stores the column DEFAULT\nif m.Status != 0 {\n\t\te.Status = int64(m.Status)\n\t}",
+		// The columns are INT4/INT2: the entity fields are int32/int16
+		// (codegen.GoIntType), so the wire number converts at that width.
+		"e.Status = 1 // status: an unset enum stores the column DEFAULT\nif m.Status != 0 {\n\t\te.Status = int32(m.Status)\n\t}",
 		// No DEFAULT: the value goes as sent (no CHECK to refuse the zero).
-		"e.Prior = int64(m.Prior)",
+		"e.Prior = int16(m.Prior)",
 		// Optional over nullable: unset is NULL.
-		"if m.FallbackStatus != nil && *m.FallbackStatus != 0 {\n\t\tv := int64(*m.FallbackStatus)\n\t\te.FallbackStatus = &v\n\t}",
-		"for _, v := range m.History {\n\t\te.History = append(e.History, int64(v))\n\t}",
+		"if m.FallbackStatus != nil && *m.FallbackStatus != 0 {\n\t\tv := int32(*m.FallbackStatus)\n\t\te.FallbackStatus = &v\n\t}",
+		"for _, v := range m.History {\n\t\te.History = append(e.History, int32(v))\n\t}",
 	} {
 		if !strings.Contains(fromProto, want) {
 			t.Errorf("fromProto missing %q; got:\n%s", want, fromProto)
 		}
 	}
 	for _, want := range []string{
-		// The stored number IS the wire value: a cast, range-guarded
-		// because the column is wider than int32.
-		"if e.Status < -2147483648 || e.Status > 2147483647 {",
-		"out of range for the int32 wire field",
+		// The stored number IS the wire value: a cast, with no guard —
+		// an INT4 column holds nothing an int32 cannot.
 		"m.Status = pb.TaskStatus(e.Status)",
 		"if e.FallbackStatus != nil {",
 		"ev := pb.TaskStatus(*e.FallbackStatus)",

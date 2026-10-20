@@ -85,7 +85,7 @@ func (s *svc) RecordPayment(ctx context.Context, in RecordPaymentInput) (Invoice
         }
         out = inv // generated balance_cents was scanned back by the write — no re-read
         return orm.AfterCommit(ctx, func(ctx context.Context) {
-            s.deps.Events.PaymentRecorded(ctx, inv.Id) // side effect: after commit, once
+            s.deps.Events.PaymentRecorded(ctx, inv.ID) // side effect: after commit, once
         })
     })
     return toInvoice(out), err

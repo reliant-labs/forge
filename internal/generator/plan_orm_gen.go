@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -406,6 +407,9 @@ type ormField struct {
 	// struct tag in forge's own namespace (see structTag) —
 	// pkg/crud.Repo.ensureMeta reads it back the same way it reads version.
 	isFillULID bool
+	// override is a `forge:go-type` declaration: the struct field's Go type
+	// in place of goType's projection, and the import it needs.
+	override *codegen.GoTypeOverride
 }
 
 // isBunSoftDeleteTimeType reports whether a deleted_at field's projected
@@ -420,6 +424,12 @@ func isBunSoftDeleteTimeType(f ormField) bool {
 // struct: the base type, pointered when the column is nullable
 // (arrays/bytes are reference types already and stay bare).
 func (f ormField) structGoType() string {
+	if f.override != nil {
+		if f.nullable && !f.override.IsReference() {
+			return "*" + f.override.GoType
+		}
+		return f.override.GoType
+	}
 	if f.nullable && !f.isArray && f.goType != "[]byte" {
 		return "*" + f.goType
 	}
@@ -463,12 +473,17 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	// "does any field's type MENTION time.Time", not "is any field
 	// time.Time" — the latter left an array-of-instants column referencing
 	// an unimported package.
-	needsTime := false
+	needsTime, needsJSON := false, false
+	var overrideImports []string
 	for _, f := range fields {
-		if strings.Contains(f.goType, "time.Time") {
-			needsTime = true
-			break
+		if f.override != nil {
+			if spec := f.override.ImportSpec(); spec != "" && !slices.Contains(overrideImports, spec) {
+				overrideImports = append(overrideImports, spec)
+			}
+			continue
 		}
+		needsTime = needsTime || strings.Contains(f.goType, "time.Time")
+		needsJSON = needsJSON || strings.Contains(f.goType, "json.RawMessage")
 	}
 
 	var b strings.Builder
@@ -480,7 +495,7 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	b.WriteString("package db\n\n")
 
 	// Imports
-	writeORMImports(&b, needsTime)
+	writeORMImports(&b, needsTime, needsJSON, overrideImports)
 
 	// The entity struct: a projection of the APPLIED schema, with Bun tags.
 	writeEntityStruct(&b, msgName, tableName, fields, hasExtra)
@@ -551,9 +566,28 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 // BaseModel). time is added when any column projects to time.Time. The old
 // per-file fmt/strings/ulid/otel imports are gone — the library owns the
 // tracing, ULID generation, and error wrapping.
-func writeORMImports(b *strings.Builder, needsTime bool) {
+func writeORMImports(b *strings.Builder, needsTime, needsJSON bool, extra []string) {
+	// forge:go-type imports join the group they belong to: a standard
+	// library path (no dot in its first element) beside context, any
+	// other beside bun. format.Source sorts each group and drops a
+	// duplicate of a path the file already imports.
+	var std, third []string
+	for _, spec := range extra {
+		p := spec[strings.Index(spec, `"`)+1:]
+		if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") {
+			third = append(third, spec)
+		} else {
+			std = append(std, spec)
+		}
+	}
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
+	for _, spec := range std {
+		b.WriteString("\t" + spec + "\n")
+	}
+	if needsJSON {
+		b.WriteString("\t\"encoding/json\"\n")
+	}
 	b.WriteString("\t\"errors\"\n")
 	if needsTime {
 		b.WriteString("\t\"time\"\n")
@@ -563,6 +597,9 @@ func writeORMImports(b *strings.Builder, needsTime bool) {
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/svcerr\"\n")
 	b.WriteString("\t\"github.com/uptrace/bun\"\n")
+	for _, spec := range third {
+		b.WriteString("\t" + spec + "\n")
+	}
 	b.WriteString(")\n\n")
 }
 
@@ -888,11 +925,11 @@ func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []o
 }
 
 // isIntegerGoType reports whether the projected Go type is an integer —
-// the PK kinds that are server-allocated (BIGSERIAL / SERIAL / rowid).
-// int64 is the only spelling reachable: schemadef canonicalizes every
-// integer column width (SMALLINT through BIGSERIAL) to int64, so a wider
-// list would describe PKs introspection cannot produce.
-func isIntegerGoType(goType string) bool { return goType == "int64" }
+// the PK kinds that are server-allocated (BIGSERIAL / SERIAL / rowid),
+// at the width the column declares (codegen.GoIntType).
+func isIntegerGoType(goType string) bool {
+	return goType == "int64" || goType == "int32" || goType == "int16"
+}
 
 // ── managed-timestamp stamping (type-aware) ────────────────────────────
 //
@@ -981,6 +1018,13 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			isVersion:   e.Version,
 			isFillULID:  e.FillStrategy == schemadef.FillStrategyULID,
 		}
+		if e.GoType != "" {
+			// validatePlanFieldTypes refused an unparseable spec before
+			// any render ran.
+			if o, err := codegen.ParseGoTypeOverride(e.GoType); err == nil {
+				f.override = &o
+			}
+		}
 		// Nullable column → pointer struct field. Arrays and bytes are
 		// reference types already (NULL scans to nil).
 		f.nullable = !f.isPK && !f.notNull && isNullablePlanType(e.Type)
@@ -1052,6 +1096,11 @@ func planFieldGoType(t string) (string, bool) {
 func validatePlanFieldTypes(entities []config.PlanEntity) error {
 	for _, ent := range entities {
 		for _, f := range ent.Fields {
+			if f.GoType != "" {
+				if _, err := codegen.ParseGoTypeOverride(f.GoType); err != nil {
+					return fmt.Errorf("entity %s field %s: %w", ent.Name, f.Name, err)
+				}
+			}
 			if _, ok := planFieldGoType(f.Type); !ok {
 				return fmt.Errorf(
 					"entity %s field %s: no Go projection for plan field type %q — "+
@@ -1067,8 +1116,9 @@ func validatePlanFieldTypes(entities []config.PlanEntity) error {
 }
 
 // isNullablePlanType returns true when a nullable column of this type
-// becomes a pointer field on the entity struct. Arrays and bytes are
-// reference types already: NULL scans to nil without one.
+// becomes a pointer field on the entity struct. Arrays, bytes and json
+// (json.RawMessage) are reference types already: NULL scans to nil without
+// one.
 func isNullablePlanType(t string) bool {
-	return !strings.HasPrefix(t, "[]") && t != "bytes"
+	return !strings.HasPrefix(t, "[]") && t != "bytes" && t != "json"
 }

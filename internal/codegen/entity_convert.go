@@ -58,6 +58,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 			Immutable:    c.Immutable,
 			Version:      c.Version,
 			FillStrategy: c.FillStrategy,
+			GoType:       c.GoType,
 		}
 		pe.Fields = append(pe.Fields, pf)
 	}
@@ -75,11 +76,19 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 // through instead of re-deciding it is what makes the ORM struct field and
 // the conversion generator's pairing the same projection (see
 // CanonicalGoTypeOK) rather than two opinions that happen to agree.
+//
+// An integer column carries its declared width (GoIntType): "int32" for an
+// `integer`, "int16" for a `smallint`, so the struct field is as wide as
+// the column and no wider.
 func planTypeForColumn(c EntityColumn) string {
-	if c.IsArray {
-		return "[]" + c.Type
+	t := c.Type
+	if t == "int64" {
+		t = GoIntType(c.DeclType)
 	}
-	return c.Type
+	if c.IsArray {
+		return "[]" + t
+	}
+	return t
 }
 
 // EntityDefsToPlanEntities converts a slice of EntityDef to a slice of PlanEntity.

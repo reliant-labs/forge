@@ -32,9 +32,12 @@ func TestPlanFieldGoType_ArrayVocabularyCoversEveryCanonicalType(t *testing.T) {
 		{"bool", "bool", "[]bool"},
 		{"time", "time.Time", "[]time.Time"},
 		{"bytes", "[]byte", "[][]byte"},
-		// A JSONB[] element is a document, so it projects to text like a
-		// scalar JSONB column does.
-		{"json", "string", "[]string"},
+		// A JSONB column is json.RawMessage, the document's bytes; a JSONB[]
+		// element is one document's text.
+		{"json", "json.RawMessage", "[]string"},
+		// The width-refined integers (codegen.GoIntType).
+		{"int32", "int32", "[]int32"},
+		{"int16", "int16", "[]int16"},
 	}
 	for _, c := range cases {
 		got, ok := planFieldGoType(c.canonical)
@@ -136,13 +139,14 @@ func TestPlanFieldGoType_CoversEveryTypeTheProducerCanEmit(t *testing.T) {
 
 // TestGeneratePlanORM_RefusesOutOfVocabularyFieldType pins the refusal.
 //
-// "int32" is not hypothetical: hand-written fixtures in this package
-// carried it, and while planFieldGoType routed through a total-signature
-// projection it came back "string" — an int32 field declared on the entity
-// struct as text, generated green. The generator must now name the entity,
-// the field and the type, and write nothing.
+// The defect is not hypothetical: hand-written fixtures in this package
+// once carried "int32" before it was a plan type, and while planFieldGoType
+// routed through a total-signature projection it came back "string" — an
+// integer field declared on the entity struct as text, generated green.
+// ("int32"/"int16" are plan types now, the width-refined integers.) The
+// generator must name the entity, the field and the type, and write nothing.
 func TestGeneratePlanORM_RefusesOutOfVocabularyFieldType(t *testing.T) {
-	for _, bad := range []string{"int32", "uint64", "float", "double", "timestamp", "[]int32", ""} {
+	for _, bad := range []string{"uint64", "float", "double", "timestamp", "[]uint64", ""} {
 		t.Run("type="+bad, func(t *testing.T) {
 			root := t.TempDir()
 			err := GeneratePlanORM(root, "example.com/app", "api", []config.PlanEntity{{

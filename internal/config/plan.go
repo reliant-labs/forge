@@ -114,6 +114,10 @@ type PlanEntityField struct {
 	// "handler" changes no codegen behavior — it only suppresses the
 	// unsatisfiable-column lint. See schemadef.ColumnMarkerFill.
 	FillStrategy string `yaml:"fill_strategy,omitempty" json:"fill_strategy,omitempty"`
+	// GoType carries a `forge:go-type=<spec>` COMMENT ON COLUMN declaration
+	// verbatim (codegen.ParseGoTypeOverride): the struct field's Go type in
+	// place of the projected one. "" for none.
+	GoType string `yaml:"go_type,omitempty" json:"go_type,omitempty"`
 }
 
 // ConstraintKind classifies a named constraint by the kind of violation it

@@ -136,6 +136,19 @@ func RegisterFlags(cmd *cobra.Command) {
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.RootConfigMessage}}](cmd)
 }
+{{- if .Graph}}
+
+// LoadReach is Load for a process running one root of the composition graph:
+// `required: true` applies only to the fields the root reaches (reach, by
+// path; roots_gen.go passes each root's), so a root that never opens the
+// database does not demand DATABASE_URL. nil reach is Load.
+func LoadReach(cmd *cobra.Command, reach []string) (*Config, error) {
+	if reach == nil {
+		return Load(cmd)
+	}
+	return forgeconfig.LoadTyped[*configv1.{{.RootConfigMessage}}](cmd, forgeconfig.RequiredWithin(reach...))
+}
+{{- end}}
 
 // Defaults returns the Config Load produces when no config file, environment
 // variable or flag is set: every annotated field at its proto default, nested
@@ -185,6 +198,18 @@ func RegisterFlags(cmd *cobra.Command) {
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.PrimaryConfigMessage}}](cmd)
 }
+{{- if .Graph}}
+
+// LoadReach is Load for a process running one root of the composition graph:
+// `required: true` applies only to the fields the root reaches. nil reach is
+// Load.
+func LoadReach(cmd *cobra.Command, reach []string) (*Config, error) {
+	if reach == nil {
+		return Load(cmd)
+	}
+	return forgeconfig.LoadTyped[*configv1.{{.PrimaryConfigMessage}}](cmd, forgeconfig.RequiredWithin(reach...))
+}
+{{- end}}
 
 // Defaults returns the Config ({{.PrimaryConfigMessage}}) Load produces when no
 // config file, environment variable or flag is set: proto defaults applied,

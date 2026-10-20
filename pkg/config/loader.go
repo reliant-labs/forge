@@ -387,7 +387,11 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // (semantic.go), as FREE FUNCTIONS over the message; Validate is for a
 // message built by hand, which no load has checked. There is no parallel
 // generated struct: a project holds the proto config type.
-func LoadInto(cmd *cobra.Command, msg proto.Message) error {
+func LoadInto(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
+	var o loadOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	m := msg.ProtoReflect()
 
 	// Layer 1: defaults (the base every later layer overlays).
@@ -422,7 +426,7 @@ func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	}
 
 	// Required fields must be satisfied by SOME layer (default/file/env/flag).
-	if err := checkRequired(m); err != nil {
+	if err := checkRequiredWithin(m, "", o.required); err != nil {
 		return err
 	}
 
@@ -546,18 +550,26 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 // required here: `sensitive` does not (whether a credential must exist is
 // the deploy pre-flight's question, per workload; see forge.proto's
 // ConfigFieldOptions.optional).
-func checkRequired(m protoreflect.Message) error {
+func checkRequired(m protoreflect.Message) error { return checkRequiredWithin(m, "", nil) }
+
+// checkRequiredWithin is checkRequired over the fields a process reaches:
+// within names them by path ("database_url", "stripe.secret_key"); nil is
+// every field.
+func checkRequiredWithin(m protoreflect.Message, prefix string, within map[string]bool) error {
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
 		if isConfigBlock(fd) {
-			if err := checkRequired(m.Get(fd).Message()); err != nil {
+			if err := checkRequiredWithin(m.Get(fd).Message(), prefix+string(fd.Name())+".", within); err != nil {
 				return err
 			}
 			continue
 		}
 		opt := fieldOptions(fd)
 		if opt == nil || !opt.GetRequired() {
+			continue
+		}
+		if within != nil && !within[prefix+string(fd.Name())] {
 			continue
 		}
 		if fieldIsEmpty(m, fd) {

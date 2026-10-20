@@ -121,6 +121,12 @@ type GenStep struct {
 // flags) lives here so we parse once at step 0 instead of 3× across
 // the pipeline (see FORGE_REVIEW_CODEBASE.md Tier 2.5).
 type pipelineContext struct {
+	// graphRoots is the composition graph's roots as processes, set by the
+	// internal/app composition step (graphRootsSet) and read by the deploy
+	// config step, which projects their config reach into config_gen.k.
+	graphRoots    []codegen.GraphRoot
+	graphRootsSet bool
+
 	// Inputs (set in newPipelineContextWithFlags).
 	ProjectDir string
 	AbsPath    string
@@ -2216,10 +2222,27 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	if err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
+	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums)
+	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
+	ctx.graphRoots, ctx.graphRootsSet = roots, true
 	return nil
+}
+
+// rootsForDeployConfig is the roots config_gen.k projects: the ones the
+// composition step read this run, else (a run that did not compose — a
+// narrowed --steps run) the graph assembled afresh. A graph that does not
+// assemble projects no ROOTS; generate's own composition step reports why.
+func (ctx *pipelineContext) rootsForDeployConfig() []codegen.GraphRoot {
+	if ctx.graphRootsSet {
+		return ctx.graphRoots
+	}
+	roots, err := codegen.GraphRoots(ctx.ProjectDir)
+	if err != nil {
+		return nil
+	}
+	return roots
 }
 
 // stepCmdGroups anchors the dir-nested per-component command-group subpackages
@@ -2538,7 +2561,7 @@ func stepWorkloadsKCL(ctx *pipelineContext) error {
 // config_gen + its config.k to project config into env_vars.
 func stepPerEnvDeployConfig(ctx *pipelineContext) error {
 	return ctx.warnOrFail("per-env deploy config generation",
-		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums))
+		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums, ctx.rootsForDeployConfig))
 }
 
 // stepIngressK3dPorts derives the k3d host→cluster port mappings

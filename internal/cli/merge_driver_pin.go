@@ -70,18 +70,18 @@ var mergeDriverPinCheck = func(root string) (pin, binary string, skewed bool) {
 var mergeDriverIdentity = func() string { return forgeIdentity(buildinfo.Version()) }
 
 // registerPinnedDriver records command as the driver of this binary's
-// identity in the clone at root.
-func registerPinnedDriver(root, command string) {
+// identity in the clone at root, and reports whether that changed anything.
+func registerPinnedDriver(root, command string, scope configScope) bool {
 	id := mergeDriverIdentity()
 	if id == "" {
-		return
+		return false
 	}
 	key := pinnedDriverSection + "." + id + ".command"
 	cur, _ := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--get", key).Output()
 	if strings.TrimSpace(string(cur)) == command {
-		return
+		return false
 	}
-	_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run()
+	return exec.CommandContext(context.Background(), "git", "-C", root, "config", scope.flag(), key, command).Run() == nil
 }
 
 // pinnedDriverCommand returns the driver command a forge of pin's identity

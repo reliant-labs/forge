@@ -394,6 +394,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "COMMENT ON TABLE goose_db_version IS 'forge:no-entity — goose owns it';",
 		},
 		{
+			Name:      schemadef.TableMarkerEntityName,
+			AppliesTo: "table",
+			Effect:    "Names the entity the TABLE holds, for a table whose name derives to something else. Without it the entity is named from the table — the singular, camel-cased (`message_content_blocks` → MessageContentBlock, `daemon_attachment` → DaemonAttachment) — and a CRUD rpc's entity <E> finds its table by that name, by the plural of <E> (`bookmarks`) or by its singular (`daemon_attachment`). Declared, the store is named <Name> and a `Get<Name>`/`List<Names>`/… rpc over a <Name> message is CRUD over this table. A CRUD-named rpc whose entity has a wire message but matches no table, and that no handler implements by hand, fails `forge generate` by name rather than serving forge's Unimplemented stub — this declaration is one of its fixes.",
+			Placement: "COMMENT ON TABLE <table> IS 'forge:entity-name=<Name>'; in a migration — on the TABLE, not a column.",
+			Example:   "COMMENT ON TABLE tbl_widget_v2 IS 'forge:entity-name=Widget';",
+		},
+		{
 			Name:      schemadef.ColumnMarkerOwner,
 			AppliesTo: "column",
 			Effect:    "Declares this column as the one naming WHO a row belongs to. Changes NO codegen — forge ships no ownership of its own and never injects a WHERE clause for you, because only your app knows how a caller's claims map onto this column's values. What it changes is what forge lets ship: it ARMS the `unscoped_auth` audit category for this table, so an authenticated RPC over this entity whose handler never resolves the caller stops being a warning and becomes an ERROR, failing `forge project audit`. Declare nothing and the category behaves exactly as before (warn, exit 0), which is why a fresh scaffold is unaffected. The gate arms PER TABLE — declaring an owner on customers does not fail an unscoped RPC over a global product catalog — and `// forge:auth-unscoped-ok: <reason>` above the handler suppresses the error for a legitimately global RPC (the reason is mandatory; a bare directive does not count). Pairs naturally with forge:immutable on the same column, since an owner column is exactly the kind a full-replace Update must not zero.",

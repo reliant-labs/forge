@@ -486,6 +486,32 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-bis2. Composition graph — every component and provider is
+		// reached by a root, and every listener serves its chain's
+		// audience. GATES on errors: in graph mode a service no root
+		// reaches is a service no process serves, which the boot-time
+		// RequireComplete gate used to fail on. A whole-graph fact, so it
+		// cannot be scoped to a file.
+		{
+			name:  "graph lint",
+			gates: true,
+			scope: scopeWholeProject,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if !dirExists("internal/app") {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runGraphLint(rc.cwd)
+			},
+			errFormat: "❌ graph lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectGraphJSON(rc.cwd)
+				return fs, anyErrorFinding(fs), err
+			},
+		},
+
 		// 13d-ter. Component-drift — reports components the code declares
 		// that deploy/kcl/workloads.k does not (and vice versa). forge does
 		// not regenerate that file, so this is what notices when the two

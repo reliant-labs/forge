@@ -9,6 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -249,6 +250,16 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 
 		contractPath := filepath.Join(path, "contract.go")
 		if _, statErr := os.Stat(contractPath); os.IsNotExist(statErr) {
+			// A component with no contract.go (a handler, worker or
+			// operator) whose Deps interfaces `forge fix narrow-deps`
+			// declared in deps.go: its mocks follow that file, exactly as a
+			// contract package's follow contract.go. Nothing else of the
+			// contract machinery applies — the package exports no Service.
+			if depsurface.HasDepsMarker(path) {
+				if genErr := contract.GenerateWithOptions(filepath.Join(path, depsurface.DepsFileName), contractOpts); genErr != nil {
+					return fmt.Errorf("generate Deps mocks for %s: %w", rel, genErr)
+				}
+			}
 			return nil
 		} else if statErr != nil {
 			return statErr
@@ -582,6 +593,11 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return nil, err
 	}
+	// An env family that is not a map<string, scalar>, or one that could
+	// claim a variable another family or field of the same process reads.
+	if err := codegen.ValidateConfigEnvFamilies(messages); err != nil {
+		return nil, err
+	}
 
 	// A `sensitive` field bound to a FRONTEND is refused before anything is
 	// written. This runs at the head of config generation on purpose: a
@@ -703,6 +719,9 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 		return err
 	}
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
+		return err
+	}
+	if err := codegen.ValidateConfigEnvFamilies(messages); err != nil {
 		return err
 	}
 

@@ -458,6 +458,11 @@ func matchedAppField(m *DepsAssignabilityMatcher, roleRoot, pkgDir, depsName, de
 // and dots, which the API server rejects with "may not contain '/'". Use
 // the module's final path element, lowercased with every invalid rune
 // squashed to '-', suffixed with "-leader" (e.g. "control-plane-leader").
+// LeaderElectionID is the controller manager's leader election ID for a
+// module — the one the generated operators node (and the legacy
+// lifecycle.go before it) elects under.
+func LeaderElectionID(modulePath string) string { return leaderElectionID(modulePath) }
+
 func leaderElectionID(modulePath string) string {
 	base := modulePath
 	if i := strings.LastIndex(base, "/"); i >= 0 {

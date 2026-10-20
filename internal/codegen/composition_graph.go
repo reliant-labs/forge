@@ -21,8 +21,9 @@
 // A project is in GRAPH mode unless its internal/app still holds the legacy
 // composition — the owned `type Infra struct` / `func NewComponents` that
 // providers.go and compose.go were before the graph. Those projects keep the
-// legacy generators byte-for-byte until they migrate (PR 7's codemod; the
-// manual path is in the `architecture` skill).
+// legacy generators byte-for-byte until they migrate (`forge fix
+// composition-graph`, internal/codemod; the rest of the path is the
+// migrations/v0.1.47 skill).
 
 package codegen
 

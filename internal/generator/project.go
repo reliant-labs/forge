@@ -458,11 +458,9 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 	if g.isService() && g.Features.CodegenEnabled() {
 		bin := g.binaryName()
 		treeDir := filepath.Join("cmd", bin, "cmd")
-		files = append(files,
-			// A new project composes with the composition graph: `server`
-			// runs the graph's server root.
-			struct{ template, dest string }{"cmd-tree-server-graph.go.tmpl", filepath.Join(treeDir, "server.go")},
-		)
+		// A new project composes with the composition graph: there is no
+		// server.go — `server` is the default root's command, generated with
+		// every other root's into roots_gen.go by the codegen lane.
 		// cmd/<bin>/cmd/db.go (the `db migrate` commands) depends on both
 		// pkg/config and pkg/migratekit; skip when migrations are also disabled.
 		if g.Features.MigrationsEnabled() {

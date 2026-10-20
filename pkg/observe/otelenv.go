@@ -105,8 +105,12 @@ func exportEnabled(s signal, cfg Config) bool {
 			return false
 		}
 	case signalProfiles:
-		// On by default; off by the typed field or OTEL_PROFILES_EXPORTER=none.
+		// On by default; off by the typed field, OTEL_PROFILES_EXPORTER=none,
+		// or a profile selection that names no type.
 		if cfg.ProfilesDisabled || strings.EqualFold(envValue(EnvProfilesExporter), "none") {
+			return false
+		}
+		if s, _ := resolveProfileSettings(cfg.Profiles); !s.enabled() {
 			return false
 		}
 	default:

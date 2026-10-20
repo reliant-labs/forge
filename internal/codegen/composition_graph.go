@@ -151,14 +151,22 @@ type graphNode struct {
 	Services []*graphNode
 	// Pos orders providers by their declaration in internal/app.
 	Pos int
+	// File and Line locate a provider's func; Standby and AuthAudience are
+	// its //forge:standby and //forge:audience directives (graphProvider).
+	File         string
+	Line         int
+	Standby      bool
+	AuthAudience string
 }
 
 // graphRoot is one root: a struct in internal/app whose fields select the
 // subgraph a process builds, or the generated default.
 type graphRoot struct {
-	// Name is the root's name — the `//forge:root <name>` argument, which
-	// PR 4's commands are named after.
+	// Name is the root's name — the `//forge:root <name>` argument.
 	Name string
+	// Command is the cobra command path that runs the root
+	// (cmd/<bin>/cmd/roots_gen.go): the `command=a,b` option, else [Name].
+	Command []string
 	// TypeName is the root struct's Go name: Build<TypeName> / Run<TypeName>.
 	TypeName string
 	// Generated is the default root forge emits when none is declared.
@@ -185,11 +193,56 @@ type graphProvider struct {
 	DepsKeys map[string]bool
 	Imports  map[string]string // the declaring file's imports, alias → path
 	File     string
+	Line     int
 	Pos      int
+	// Standby is `//forge:standby` on the provider func: a provider kept
+	// ready for components to come, which `forge lint --graph` does not
+	// require a root to reach.
+	Standby bool
+	// Audience is `//forge:audience <name>` on the provider func: the
+	// trust domain an authenticator node authenticates, which `forge lint
+	// --graph` compares with the audience of every service a listener
+	// serves through a chain over it.
+	Audience string
 }
 
 // rootDirectiveRE matches `//forge:root` with an optional name and options.
-var rootDirectiveRE = regexp.MustCompile(`^//\s*forge:root(?:\s+([A-Za-z][\w-]*))?`)
+var rootDirectiveRE = regexp.MustCompile(`^//\s*forge:root(?:\s+([A-Za-z][\w-]*))?((?:\s+\S+)*)\s*$`)
+
+// standbyDirectiveRE and audienceDirectiveRE read a provider func's doc.
+var (
+	standbyDirectiveRE  = regexp.MustCompile(`^//\s*forge:standby\b`)
+	audienceDirectiveRE = regexp.MustCompile(`^//\s*forge:audience\s+([a-z][a-z0-9_-]*)\s*$`)
+)
+
+// hasDirective reports whether doc carries a line matching re.
+func hasDirective(doc *ast.CommentGroup, re *regexp.Regexp) bool {
+	if doc == nil {
+		return false
+	}
+	for _, c := range doc.List {
+		if re.MatchString(c.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// audienceDirective is the `//forge:audience <name>` argument, or "".
+func audienceDirective(doc *ast.CommentGroup) string {
+	if doc == nil {
+		return ""
+	}
+	for _, c := range doc.List {
+		if m := audienceDirectiveRE.FindStringSubmatch(c.Text); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// commandWordRE is one word of a root's command path.
+var commandWordRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // isGraphGeneratedFile reports whether name is one of forge's generated
 // internal/app files, which discovery never reads as owned declarations.
@@ -257,7 +310,10 @@ func discoverAppDecls(projectDir string) (providers []graphProvider, roots []gra
 				DepsKeys: depsStructKeys(st),
 				Imports:  imports,
 				File:     rel,
+				Line:     fset.Position(fd.Pos()).Line,
 				Pos:      pos,
+				Standby:  hasDirective(fd.Doc, standbyDirectiveRE),
+				Audience: audienceDirective(fd.Doc),
 			})
 		}
 	}
@@ -285,11 +341,11 @@ func discoverFileStructsAndRoots(fset *token.FileSet, file *ast.File, rel string
 			if doc == nil && len(gd.Specs) == 1 {
 				doc = gd.Doc
 			}
-			rootName, isRoot := rootDirective(doc)
+			rootName, opts, isRoot := rootDirective(doc)
 			if !isRoot {
 				continue
 			}
-			r, err := graphRootFromStruct(fset, ts, st, rootName, rel)
+			r, err := graphRootFromStruct(fset, ts, st, rootName, opts, rel)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -301,11 +357,16 @@ func discoverFileStructsAndRoots(fset *token.FileSet, file *ast.File, rel string
 
 // graphRootFromStruct builds the graphRoot a `//forge:root [name]` struct
 // declares. Every field must be named: the field order is the stop order.
-func graphRootFromStruct(fset *token.FileSet, ts *ast.TypeSpec, st *ast.StructType, rootName, rel string) (graphRoot, error) {
+func graphRootFromStruct(fset *token.FileSet, ts *ast.TypeSpec, st *ast.StructType, rootName string, opts []string, rel string) (graphRoot, error) {
 	if rootName == "" {
 		rootName = naming.ToKebabCase(ts.Name.Name)
 	}
 	r := graphRoot{Name: rootName, TypeName: ts.Name.Name, File: rel, Line: fset.Position(ts.Pos()).Line}
+	cmdPath, err := rootCommandPath(rootName, opts)
+	if err != nil {
+		return graphRoot{}, fmt.Errorf("%s:%d: root %s: %w", r.File, r.Line, ts.Name.Name, err)
+	}
+	r.Command = cmdPath
 	for _, f := range st.Fields.List {
 		typ := printType(fset, f.Type)
 		if len(f.Names) == 0 {
@@ -371,17 +432,38 @@ func findAppStruct(projectDir string, names []string, want string) *ast.StructTy
 	return nil
 }
 
-// rootDirective reads `//forge:root [name]` off a type's doc comment.
-func rootDirective(doc *ast.CommentGroup) (string, bool) {
+// rootDirective reads `//forge:root [name] [command=a,b]` off a type's doc
+// comment: the root's name and its options, unparsed.
+func rootDirective(doc *ast.CommentGroup) (name string, opts []string, ok bool) {
 	if doc == nil {
-		return "", false
+		return "", nil, false
 	}
 	for _, c := range doc.List {
 		if m := rootDirectiveRE.FindStringSubmatch(c.Text); m != nil {
-			return m[1], true
+			return m[1], strings.Fields(m[2]), true
 		}
 	}
-	return "", false
+	return "", nil, false
+}
+
+// rootCommandPath parses a root's options into the cobra command path that
+// runs it: `command=server,api` is `<bin> server api`; with no command option
+// the path is the root's name. Command words are lower-case cobra names.
+func rootCommandPath(name string, opts []string) ([]string, error) {
+	path := []string{name}
+	for _, o := range opts {
+		key, val, found := strings.Cut(o, "=")
+		if !found || key != "command" {
+			return nil, fmt.Errorf("unknown //forge:root option %q: the one option is command=<word>[,<word>…], the command path that runs the root", o)
+		}
+		path = strings.Split(val, ",")
+	}
+	for _, w := range path {
+		if !commandWordRE.MatchString(w) {
+			return nil, fmt.Errorf("command word %q is not a cobra command name: lower-case letters, digits and dashes, starting with a letter", w)
+		}
+	}
+	return path, nil
 }
 
 // fileImportAliases maps each import's name in file (explicit alias, or the

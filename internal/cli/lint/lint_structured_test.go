@@ -230,7 +230,7 @@ func TestEveryLintStepDeclaresAScopeMode(t *testing.T) {
 			whole = append(whole, s.name)
 		}
 	}
-	if want := []string{"frontend lint", "component-drift lint"}; !reflect.DeepEqual(whole, want) {
+	if want := []string{"frontend lint", "graph lint", "component-drift lint"}; !reflect.DeepEqual(whole, want) {
 		t.Errorf("whole-project lanes = %v, want %v — update the --scope flag help and the forge skill's lint section with the change", whole, want)
 	}
 }

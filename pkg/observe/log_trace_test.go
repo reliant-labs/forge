@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 func traceJSONLogger(buf *bytes.Buffer, cfg Config) *slog.Logger {
@@ -182,5 +186,60 @@ func TestOTLPLogsNeedAnEndpointAndAnEnabledSDK(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "true")
 	if exportEnabled(signalLogs, Config{}) {
 		t.Error("OTEL_SDK_DISABLED=true must disable logs export")
+	}
+}
+
+func TestWarnAndErrorRecordsBecomeSpanEvents(t *testing.T) {
+	var buf bytes.Buffer
+	logger := traceJSONLogger(&buf, Config{})
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	ctx, span := tp.Tracer("t").Start(context.Background(), "op")
+
+	logger.InfoContext(ctx, "fine")
+	logger.WarnContext(ctx, "slow upstream", "error", errors.New("deadline"))
+	logger.ErrorContext(ctx, strings.Repeat("é", 400))
+	span.End()
+
+	ro, ok := span.(sdktrace.ReadOnlySpan)
+	if !ok {
+		t.Fatal("span is not a ReadOnlySpan")
+	}
+	events := ro.Events()
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 (WARN and ERROR; INFO adds none)", len(events))
+	}
+	if events[0].Name != LogEventWarn || events[1].Name != LogEventError {
+		t.Fatalf("event names = %q, %q", events[0].Name, events[1].Name)
+	}
+	attrs := map[string]string{}
+	for _, kv := range events[0].Attributes {
+		attrs[string(kv.Key)] = kv.Value.Emit()
+	}
+	if attrs["log.message"] != "slow upstream" || attrs["log.severity"] != "WARN" || attrs["exception.message"] != "deadline" {
+		t.Errorf("warn event attrs = %v", attrs)
+	}
+	for _, kv := range events[1].Attributes {
+		if kv.Key == "log.message" {
+			if msg := kv.Value.AsString(); len(msg) > maxLogEventMessage+len("…") || !utf8.ValidString(msg) {
+				t.Errorf("error event message not capped to valid UTF-8: %d bytes", len(msg))
+			}
+		}
+	}
+}
+
+// A user error the error-class policy lowers to INFO adds no event: the
+// trace handler sits inside NewErrorClassHandler and sees the lowered level.
+func TestLoweredUserErrorAddsNoSpanEvent(t *testing.T) {
+	var buf bytes.Buffer
+	inner := NewLogHandler(slog.NewJSONHandler(&buf, nil), Config{})
+	logger := slog.New(NewErrorClassHandler(inner, WithErrorClassifier(func(error) svcerr.Class { return svcerr.ClassUser })))
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	ctx, span := tp.Tracer("t").Start(context.Background(), "op")
+	logger.ErrorContext(ctx, "user did a thing", "error", errors.New("bad input"))
+	span.End()
+	if evs := span.(sdktrace.ReadOnlySpan).Events(); len(evs) != 0 {
+		t.Fatalf("got %d events for a user error lowered to INFO, want 0", len(evs))
 	}
 }

@@ -208,7 +208,15 @@ func renderRepoExtSeam(ent config.PlanEntity) []byte {
 	// The seam must name only the delegates that EXIST. An append-only
 	// entity has no Update/Delete to reuse, and advertising them sends the
 	// reader hunting for a symbol forge deliberately refuses to emit.
-	if ent.AppendOnly {
+	if keys := compositeKey(resolveORMFields(ent)); keys != nil {
+		fmt.Fprintf(&b, "//      package-level Get%sByPK / List%s / Create%s / Upsert%s, keyed by\n", msgName, msgName, msgName, msgName)
+		fmt.Fprintf(&b, "//      the whole composite key %s", keyColumns(keys))
+		if ent.AppendOnly {
+			b.WriteString(" (append-only: no Update/Delete)\n")
+		} else {
+			fmt.Fprintf(&b, ", plus Update%s / Delete%sByPK\n", msgName, msgName)
+		}
+	} else if ent.AppendOnly {
 		fmt.Fprintf(&b, "//      package-level Get%sByID / List%s / Create%s — %s is append-only,\n", msgName, msgName, msgName, msgName)
 		b.WriteString("//      so there is no Update/Delete delegate to reuse; correct a bad row\n")
 		b.WriteString("//      by appending its reversal\n")
@@ -533,7 +541,11 @@ func renderORMEntity(ent config.PlanEntity, hasExtra bool) []byte {
 	// ,skipupdate tag on the column itself (see bunTag), where Bun enforces
 	// it. A parallel list of column NAMES in the Spec was the same fact
 	// spelled a second way, unchecked against the struct it described.
-	writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete, ent.AppendOnly)
+	if keys := compositeKey(fields); keys != nil {
+		writeCompositeKeyDelegates(&b, msgName, keys, ent.SoftDelete, ent.AppendOnly)
+	} else {
+		writeORMRepoAndDelegates(&b, msgName, pkGoType, ent.SoftDelete, ent.AppendOnly)
+	}
 
 	// gofmt the render so struct-tag/const alignment matches what the
 	// project's gofmt/CI check (and the drift guard) expect. The writers
@@ -685,6 +697,137 @@ func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, soft
 	fmt.Fprintf(b, "func Delete%s(ctx context.Context, db orm.Context, id %s) error {\n", msgName, pkGoType)
 	fmt.Fprintf(b, "\treturn %s.Delete(ctx, db, id)\n", repoVar)
 	b.WriteString("}\n")
+}
+
+// keyParam is one column of a composite primary key, as a delegate
+// parameter.
+type keyParam struct {
+	param   string // the Go parameter name, e.g. "chatId"
+	goType  string
+	goField string // the struct field, e.g. "ChatId"
+	column  string
+}
+
+// compositeKey returns the primary-key columns of a composite-key entity,
+// in declaration order, and nil for a single-column (or absent) key.
+func compositeKey(fields []ormField) []keyParam {
+	var keys []keyParam
+	for _, f := range fields {
+		if f.isPK {
+			keys = append(keys, keyParam{param: keyParamName(f.goName), goType: f.goType, goField: f.goName, column: f.columnName})
+		}
+	}
+	if len(keys) < 2 {
+		return nil
+	}
+	return keys
+}
+
+// keyParamName is a key column's delegate parameter: the field name with
+// its first letter lowered, kept clear of Go keywords and of the names the
+// delegates already bind (ctx, db, msg, row, err).
+func keyParamName(goField string) string {
+	name := lowerFirst(goField)
+	switch name {
+	case "ctx", "db", "msg", "row", "err", "opts", "fields":
+		return name + "Key"
+	}
+	if token.Lookup(name).IsKeyword() {
+		return name + "Key"
+	}
+	return name
+}
+
+// keyParamList spells the key as a parameter list ("chatId string, kind
+// string"), the argument list ("chatId, kind") and the key literal
+// ("&Counter{ChatId: chatId, Kind: kind}").
+func keyParamList(msgName string, keys []keyParam) (params, args, literal string) {
+	var ps, as, ls []string
+	for _, k := range keys {
+		ps = append(ps, k.param+" "+k.goType)
+		as = append(as, k.param)
+		ls = append(ls, k.goField+": "+k.param)
+	}
+	return strings.Join(ps, ", "), strings.Join(as, ", "), "&" + msgName + "{" + strings.Join(ls, ", ") + "}"
+}
+
+// keyColumns names the key for a doc comment: "(chat_id, kind)".
+func keyColumns(keys []keyParam) string {
+	cols := make([]string, len(keys))
+	for i, k := range keys {
+		cols[i] = k.column
+	}
+	return "(" + strings.Join(cols, ", ") + ")"
+}
+
+// writeCompositeKeyDelegates is writeORMRepoAndDelegates for an entity whose
+// primary key spans several columns (reliant P5b, F12.3: counters, join
+// tables). Every by-key verb takes the WHOLE key — Get<E>ByPK and
+// Delete<E>ByPK, one parameter per key column — and Upsert<E> resolves a
+// conflict on all of them. Create, List, Count and Update/UpdateMasked
+// (which address the row by msg's key fields) keep the single-key shape.
+// There is no ULID fill and no cursor pagination: neither has a single
+// column to key on.
+func writeCompositeKeyDelegates(b *strings.Builder, msgName string, keys []keyParam, softDelete, appendOnly bool) {
+	repoVar := lowerFirst(msgName) + "Repo"
+	params, _, literal := keyParamList(msgName, keys)
+	keyDoc := keyColumns(keys)
+	entityLower := strings.ToLower(msgName)
+
+	fmt.Fprintf(b, "// %s is the generic CRUD repository for %s, whose primary key\n", repoVar, msgName)
+	fmt.Fprintf(b, "// is the composite %s. The functions below are thin delegates onto it.\n", keyDoc)
+	fmt.Fprintf(b, "var %s = crud.NewRepo[%s]()\n\n", repoVar, msgName)
+
+	fmt.Fprintf(b, "// Create%s inserts a new %s row (plain INSERT, never an upsert).\n", msgName, msgName)
+	fmt.Fprintf(b, "func Create%s(ctx context.Context, db orm.Context, msg *%s) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.Create(ctx, db, msg)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Get%sByPK retrieves the %s whose key %s is the one given. A\n", msgName, msgName, keyDoc)
+	fmt.Fprintf(b, "// missing row is svcerr.NotFound(%q); every other error is the repository's.\n", entityLower)
+	fmt.Fprintf(b, "func Get%sByPK(ctx context.Context, db orm.Context, %s) (*%s, error) {\n", msgName, params, msgName)
+	fmt.Fprintf(b, "\trow, err := %s.GetByPK(ctx, db, %s)\n", repoVar, literal)
+	b.WriteString("\tif errors.Is(err, orm.ErrNoRows) {\n")
+	fmt.Fprintf(b, "\t\treturn nil, svcerr.NotFound(%q)\n", entityLower)
+	b.WriteString("\t}\n\treturn row, err\n}\n\n")
+
+	fmt.Fprintf(b, "// List%s retrieves %s rows with optional QueryOption filtering.\n", msgName, msgName)
+	fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.List(ctx, db, opts...)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Count%s returns the number of matching %s rows.\n", msgName, msgName)
+	fmt.Fprintf(b, "func Count%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {\n", msgName)
+	fmt.Fprintf(b, "\treturn %s.Count(ctx, db, opts...)\n}\n\n", repoVar)
+
+	if softDelete {
+		fmt.Fprintf(b, "// ListAll%s retrieves all %s rows including soft-deleted ones.\n", msgName, msgName)
+		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
+		fmt.Fprintf(b, "\treturn %s.ListAll(ctx, db, opts...)\n}\n\n", repoVar)
+	}
+
+	fmt.Fprintf(b, "// Upsert%s writes msg by its key %s: INSERT, or on a conflict\n", msgName, keyDoc)
+	b.WriteString("// with an existing row, UPDATE its updatable columns.\n")
+	fmt.Fprintf(b, "func Upsert%s(ctx context.Context, db orm.Context, msg *%s) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.Upsert(ctx, db, msg)\n}\n", repoVar)
+
+	if appendOnly {
+		return
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(b, "// Update%s writes the updatable columns of the %s msg's key %s\n", msgName, msgName, keyDoc)
+	b.WriteString("// addresses, and reads back every column it did not write.\n")
+	b.WriteString("// crud.Preserve(cols...) keeps more columns out of this one write.\n")
+	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, opts ...crud.UpdateOption) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.Update(ctx, db, msg, opts...)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns of the row msg's key\n", msgName)
+	b.WriteString("// addresses (unknown/immutable paths return *orm.UnknownFieldError).\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string) error {\n", msgName, msgName)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields)\n}\n\n", repoVar)
+
+	fmt.Fprintf(b, "// Delete%sByPK removes the %s whose key %s is the one given (soft\n", msgName, msgName, keyDoc)
+	b.WriteString("// delete stamps deleted_at when the entity opts in; otherwise a hard DELETE).\n")
+	fmt.Fprintf(b, "func Delete%sByPK(ctx context.Context, db orm.Context, %s) error {\n", msgName, params)
+	fmt.Fprintf(b, "\treturn %s.DeleteByPK(ctx, db, %s)\n}\n", repoVar, literal)
 }
 
 // lowerFirst returns s with its first rune lower-cased (msgName ->

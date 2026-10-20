@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/shadowdb"
 )
 
 // ForgeDescriptor is the JSON structure written by protoc-gen-forge --mode=descriptor.
@@ -258,6 +259,39 @@ func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 		return nil, nil
 	}
 	return BuildSchemaEntities(projectDir, ManagedServices(desc.Services))
+}
+
+// ParseORMEntities returns the data layer's entities: every applied BASE
+// TABLE (see BuildORMEntities), with the CRUD join's name and wire markers
+// where a managed service claims the table. Unlike ParseEntityProtos it
+// needs no descriptor — a project whose protos have not been compiled yet
+// still has a schema, and the store is a projection of the schema alone.
+func ParseORMEntities(projectDir string) ([]EntityDef, error) {
+	desc, err := loadDescriptor(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	var services []ServiceDef
+	if desc != nil {
+		services = ManagedServices(desc.Services)
+	}
+	return BuildORMEntities(projectDir, services)
+}
+
+// ParseUnmatchedCRUDRPCs lists the managed services' CRUD-named rpcs whose
+// entity has a wire message but no table (UnmatchedCRUDRPCs) and that no
+// handler implements by hand (WithoutHandImplemented). Empty when the
+// descriptor or the migrations do not exist yet.
+func ParseUnmatchedCRUDRPCs(projectDir string) ([]UnmatchedCRUDRPC, error) {
+	desc, err := loadDescriptor(projectDir)
+	if err != nil || desc == nil {
+		return nil, err
+	}
+	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	if err != nil {
+		return nil, err
+	}
+	return WithoutHandImplemented(projectDir, UnmatchedCRUDRPCs(tables, ManagedServices(desc.Services))), nil
 }
 
 // ParseConfigProto reads config messages from the forge descriptor,

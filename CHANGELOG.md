@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge fix composition-graph`: the upgrade path off the legacy
+  composition** (composition graph PR 7). It converts what forge scaffolded —
+  Infra / OpenInfra, NewComponents, lifecycle.go, ServeSpec and the
+  per-service / per-worker / per-operator subcommands — onto providers,
+  compose.go constructor methods (every Deps value you set is kept,
+  translated: `infra.DB` → `g.DB().DB`, `c.Tasks` → `g.Tasks()`) and the
+  default `server` root, which runs what `<bin> server` ran. It is all or
+  nothing: an Infra field of your own, a ServeSpec knob, custom supervision, a
+  command calling `Serve` or code naming a retired symbol is listed with its
+  file:line and the edit that clears it, and nothing is written. It runs only
+  on a committed tree (`--allow-dirty`), and a project with no internal/app is
+  told how to adopt the graph by hand instead. `migrations/v0.1.47` section 2
+  is the manual path, with control-plane's `OperatorListener`,
+  `NoKubernetesAPI` and `WorkerLeases` knobs mapped to roots and reach, and the
+  three hand edits a graph project moving to `binary_config` needs.
+
 - **Root reach for binary-config projects.** A composition-graph project whose
   primary binary binds config per command (`(forge.v1.binary_config)`
   `command` / `subtrees`) used to get no per-root reach: no `LoadReach`

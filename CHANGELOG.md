@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     target, env, via and time, and pages by keyset. The store writes through
     `*orm.Client`, so a write inside `RunTx` joins the transaction.
   - **Docs.** The new `activity` skill covers all of the above.
+  - **The lint.** `forgeconv-activity-declared` (`forge lint --conventions`,
+    error) fails a mutating rpc with no declaration and any malformed
+    declaration, such as a path that does not resolve. `forge generate` records
+    each rpc's verdict from `activity.IsMutating` and `activity.Resolve` in
+    `gen/forge_descriptor.json` (`Activity`), and the lint reads it there, so
+    the lint and the interceptor apply the same rules. **Upgrading:** every
+    custom mutating rpc in an existing project needs an `activity` declaration
+    or `activity: { none: "<why>" }`.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);
@@ -608,8 +616,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   zero of 55 tables). The store now follows the schema: every BASE TABLE with a
   single-column primary key is projected, a table no rpc names under the
   singular of its name (`message_content_blocks` → `MessageContentBlock`).
-  CRUD wiring, pages and seed roots still key on CRUD rpcs. `COMMENT ON TABLE t
-  IS 'forge:no-entity'` keeps one table off the store (and off CRUD wiring);
+  CRUD wiring, pages and seed roots still key on CRUD rpcs.
+  `COMMENT ON TABLE t IS 'forge:no-entity'` keeps one table off the store (and
+  off CRUD wiring);
   `//forge:no-orm` still opts out the whole data layer. The ORM step no longer
   needs a service, only an entrypoint, and a name collision's advice now names
   the table opt-out (`// forge:custom` no longer takes a table off the store).

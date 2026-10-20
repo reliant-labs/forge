@@ -40,7 +40,7 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 	}
 
 	t.Run("matching hash loads", func(t *testing.T) {
-		write(ForgeDescriptor{SourceHash: DescriptorSourceHash(dir)})
+		write(ForgeDescriptor{Sources: DescriptorSources(dir)})
 		got, err := loadDescriptor(dir)
 		if err != nil {
 			t.Fatalf("a descriptor matching the protos must load: %v", err)
@@ -51,7 +51,7 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 	})
 
 	t.Run("proto edited after extraction is refused", func(t *testing.T) {
-		write(ForgeDescriptor{SourceHash: DescriptorSourceHash(dir)})
+		write(ForgeDescriptor{Sources: DescriptorSources(dir)})
 		// The real-world sequence: edit a proto, then run an inspection
 		// command before regenerating.
 		if err := os.WriteFile(filepath.Join(protoDir, "widget.proto"),
@@ -64,6 +64,9 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "stale") || !strings.Contains(err.Error(), "forge generate") {
 			t.Errorf("the refusal must say it is stale AND name the fix; got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "proto/services/widget/v1/widget.proto") {
+			t.Errorf("the refusal must name the proto that changed; got: %v", err)
 		}
 	})
 
@@ -95,10 +98,10 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 	})
 }
 
-// The hash must answer "was this extracted from THESE protos?" — not "have the
-// files been touched?". A checkout, rebase or `cp -R` rewrites mtimes without
-// changing meaning and must not invalidate a good descriptor.
-func TestDescriptorSourceHash_ContentNotMtime(t *testing.T) {
+// The stamp must answer "was this extracted from THESE protos?" — not "have
+// the files been touched?". A checkout, rebase or `cp -R` rewrites mtimes
+// without changing meaning and must not invalidate a good descriptor.
+func TestDescriptorSources_ContentNotMtime(t *testing.T) {
 	mk := func(body string) string {
 		dir := t.TempDir()
 		pd := filepath.Join(dir, "proto", "svc", "v1")
@@ -111,14 +114,45 @@ func TestDescriptorSourceHash_ContentNotMtime(t *testing.T) {
 		return dir
 	}
 	a, b := mk("service S {}\n"), mk("service S {}\n")
-	if DescriptorSourceHash(a) != DescriptorSourceHash(b) {
-		t.Error("identical proto content in two trees must hash identically — otherwise every clone reads as stale")
+	if changed, stamped := StaleSources(b, DescriptorSources(a)); !stamped || len(changed) != 0 {
+		t.Errorf("identical proto content in two trees must read as current — otherwise every clone is stale: %v", changed)
 	}
 	c := mk("service S { rpc X(Y) returns (Z); }\n")
-	if DescriptorSourceHash(a) == DescriptorSourceHash(c) {
-		t.Error("different proto content must hash differently, or the guard cannot fire")
+	changed, stamped := StaleSources(c, DescriptorSources(a))
+	if !stamped || len(changed) != 1 || changed[0] != "proto/svc/v1/a.proto" {
+		t.Errorf("different proto content must be reported, by path, or the guard cannot fire: %v", changed)
 	}
-	if DescriptorSourceHash(t.TempDir()) != "" {
-		t.Error("a project with no protos has nothing to fingerprint; empty means 'do not enforce'")
+	if got := DescriptorSources(t.TempDir()); got != nil {
+		t.Errorf("a project with no protos has nothing to fingerprint; got %v", got)
+	}
+	if _, stamped := StaleSources(a, nil); stamped {
+		t.Error("an unstamped descriptor is not enforceable")
+	}
+}
+
+// Adding or removing a proto changes the stamp the same as editing one.
+func TestStaleSources_AddedAndRemovedProtos(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		p := filepath.Join(dir, "proto", name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.proto", "a")
+	write("b.proto", "b")
+	stamp := DescriptorSources(dir)
+	write("c.proto", "c")
+	if changed, _ := StaleSources(dir, stamp); len(changed) != 1 || changed[0] != "proto/c.proto" {
+		t.Errorf("an added proto: %v", changed)
+	}
+	if err := os.Remove(filepath.Join(dir, "proto", "b.proto")); err != nil {
+		t.Fatal(err)
+	}
+	if changed, _ := StaleSources(dir, stamp); len(changed) != 2 {
+		t.Errorf("an added and a removed proto: %v", changed)
 	}
 }

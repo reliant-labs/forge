@@ -148,10 +148,8 @@ func loadForgeDescriptor(projectDir string) (*ForgeDescriptor, error) {
 	// is the loader `forge project graph` / `introspect` use, so a guard on
 	// only one of the two loaders leaves the inspection commands — the ones an
 	// agent actually reads — answering from a cache that can lie.
-	if want := codegen.DescriptorSourceHash(projectDir); want != "" && desc.SourceHash != "" && desc.SourceHash != want {
-		return nil, fmt.Errorf(
-			"gen/forge_descriptor.json is stale: extracted from different .proto files than the ones on disk. " +
-				"It is a derived cache — the protos are the source of truth. Fix: reliant forge generate")
+	if changed, stamped := codegen.StaleSources(projectDir, desc.Sources); stamped && len(changed) > 0 {
+		return nil, codegen.StaleDescriptorError(changed)
 	}
 	return &desc, nil
 }

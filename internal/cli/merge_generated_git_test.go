@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/obsdash"
 )
 
@@ -217,4 +219,93 @@ func TestMergeGenerated_TwoServiceBranchesRebaseClean(t *testing.T) {
 	dir := twoServiceBranches(t)
 	gitT(t, dir, "rebase", "run")
 	assertConvergesToBothServices(t, dir)
+}
+
+// The report that started this: every rebase of a branch that edited one
+// proto onto a branch that edited another left gen/forge_descriptor.json
+// stamped for protos that no longer existed on disk, so the lane had to
+// regenerate and amend before verify-generated would pass.
+//
+// Real git, real rebase, the test binary as the driver, and the real stamp
+// (codegen.DescriptorSources) over a real proto tree: after the rebase the
+// descriptor must name exactly the protos the work tree holds, with no
+// generate in between.
+func TestMergeGenerated_RebaseKeepsDescriptorStampCurrent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: runs a real git rebase that execs the test binary as the driver; runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	gitT(t, dir, "init", "-q", "-b", "main")
+	writeTreeFileT(t, filepath.Join(dir, "forge.yaml"), "name: app\nmodule_path: example.com/app\n")
+	exe, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "config", "merge.forge-generated.driver", "'"+exe+"' merge-generated %O %A %B %L %P")
+	if !writeMergeAttributes(dir) {
+		t.Fatal("precondition: the attributes block was written")
+	}
+
+	stamp := func(services ...string) {
+		t.Helper()
+		out, err := json.MarshalIndent(codegen.ForgeDescriptor{
+			Services: func() (s []codegen.ServiceDef) {
+				for _, n := range services {
+					s = append(s, codegen.ServiceDef{Name: n})
+				}
+				return
+			}(),
+			Sources: codegen.DescriptorSources(dir),
+		}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTreeFileT(t, filepath.Join(dir, "gen", "forge_descriptor.json"), string(out)+"\n")
+	}
+	proto := func(name, body string) {
+		t.Helper()
+		writeTreeFileT(t, filepath.Join(dir, "proto", name+".proto"), body)
+	}
+	commit := func(msg string) {
+		gitT(t, dir, "add", "-A")
+		gitT(t, dir, "commit", "-qm", msg)
+	}
+
+	for _, n := range []string{"alpha", "beta", "gamma"} {
+		proto(n, "syntax = \"proto3\";\nmessage "+n+" {}\n")
+	}
+	stamp("alpha", "beta", "gamma")
+	commit("base")
+
+	gitT(t, dir, "checkout", "-qb", "feature")
+	proto("alpha", "syntax = \"proto3\";\nmessage alpha {}\nmessage AlphaTwo {}\n")
+	stamp("alpha", "beta", "gamma")
+	commit("feature edits alpha")
+
+	gitT(t, dir, "checkout", "-q", "main")
+	proto("beta", "syntax = \"proto3\";\nmessage beta {}\nmessage BetaTwo {}\n")
+	proto("delta", "syntax = \"proto3\";\nmessage delta {}\n")
+	stamp("alpha", "beta", "gamma", "delta")
+	commit("main edits beta and adds delta")
+
+	gitT(t, dir, "checkout", "-q", "feature")
+	gitT(t, dir, "rebase", "main")
+
+	data, err := os.ReadFile(filepath.Join(dir, "gen", "forge_descriptor.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got codegen.ForgeDescriptor
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("the rebased descriptor does not parse: %v\n%s", err, data)
+	}
+	if changed, stamped := codegen.StaleSources(dir, got.Sources); !stamped || len(changed) != 0 {
+		t.Errorf("after the rebase the descriptor is stamped for protos the tree does not hold (differs: %v); the lane would have to regenerate and amend:\n%s", changed, data)
+	}
+	if strings.Contains(string(data), "<<<<<<<") {
+		t.Errorf("the descriptor carries conflict markers:\n%s", data)
+	}
 }

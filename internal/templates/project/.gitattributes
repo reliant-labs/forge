@@ -18,10 +18,11 @@
 
 # forge-generated files merge through forge's driver: git's normal three-way
 # merge for everything except the lines that FINGERPRINT other files (the
-# forge:hash header, the mock fixtures' SEED_FINGERPRINT, the descriptor's
-# source_hash). Those would otherwise conflict between any two branches that
-# change a migration, a proto, or a generated body; the driver keeps this
-# side's value and the next `forge generate` refreshes it. Two branches that
+# forge:hash header, the mock fixtures' SEED_FINGERPRINT). Those would
+# otherwise conflict between any two branches that change a migration or a
+# generated body; the driver keeps this side's value and the next `forge
+# generate` refreshes it. gen/forge_descriptor.json carries one fingerprint
+# per proto, which the driver merges key by key. Two branches that
 # each add a service also both change forge's state files under .forge/
 # (merged key by key) and its aggregated renders (when both sides are forge's
 # renders, the driver keeps this side's and `forge generate` renders both).

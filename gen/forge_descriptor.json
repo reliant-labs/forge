@@ -1,5 +1,7 @@
 {
   "services": null,
   "configs": null,
-  "source_hash": "62e95cc50c4cdccea74d5d814bc08cb84d74e800c3ad8940eca59535e67ae979"
+  "sources": {
+    "proto/forge/v1/forge.proto": "8d8ecb6427bd49593950a23f080a9b331c47d34137d65ebb72ae7c0752d57b23"
+  }
 }

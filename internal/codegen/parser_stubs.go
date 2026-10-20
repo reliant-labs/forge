@@ -19,8 +19,9 @@ type ForgeDescriptor struct {
 	Services []ServiceDef    `json:"services"`
 	Configs  []ConfigMessage `json:"configs"`
 
-	// SourceHash fingerprints the .proto files this descriptor was extracted
-	// from. It exists because the descriptor is a DERIVED CACHE of state that
+	// Sources fingerprints the .proto files this descriptor was extracted
+	// from: project-relative path (under proto/) -> sha256 of the content.
+	// It exists because the descriptor is a DERIVED CACHE of state that
 	// already lives in the protos, and a cache that cannot detect its own
 	// staleness does not degrade — it LIES.
 	//
@@ -31,26 +32,36 @@ type ForgeDescriptor struct {
 	//
 	// A missing descriptor was always handled gracefully; a WRONG one was
 	// trusted completely. That asymmetry is backwards, and this field is what
-	// inverts it — see DescriptorSourceHash and loadDescriptor.
+	// inverts it — see DescriptorSources and loadDescriptor.
+	//
+	// ONE ENTRY PER PROTO, not one digest of all of them. The descriptor is
+	// committed, and a single rolled-up digest changes whenever ANY proto
+	// does: two branches that edit different protos both rewrote it, git
+	// could only keep one side's, and every such rebase left a stale value
+	// behind that needed a regenerate and an amend. A map is merged key by
+	// key by the merge driver (cli.mergeDescriptorSources), so branches that
+	// touched different protos merge to exactly what a generate over the
+	// merged protos writes.
 	//
 	// Empty means "written by a forge that predates the stamp": treated as
-	// stale, because an unverifiable cache is exactly the thing being fixed.
-	SourceHash string `json:"source_hash,omitempty"`
+	// unverifiable, never as stale-and-refused.
+	Sources map[string]string `json:"sources,omitempty"`
 }
 
-// DescriptorSourceHash fingerprints every .proto under <projectDir>/proto by
-// path and content. Order-independent by construction (paths are sorted), so
-// the same tree always hashes the same regardless of walk order.
+// DescriptorSources fingerprints every .proto under <projectDir>/proto by
+// path and content. Keyed by slash-separated path relative to the project
+// root, so the same tree always yields the same map regardless of walk order
+// or operating system.
 //
 // Content, not mtime: a checkout, a rebase or a `cp -R` rewrites mtimes
 // without changing meaning, and would invalidate a descriptor that is
 // perfectly good. Hashing the bytes answers the question actually being
 // asked — "was this extracted from THESE protos?"
-func DescriptorSourceHash(projectDir string) string {
-	type entry struct{ rel, sum string }
-	var entries []entry
-
+//
+// nil when there are no protos: nothing to fingerprint, so nothing to enforce.
+func DescriptorSources(projectDir string) map[string]string {
 	root := filepath.Join(projectDir, "proto")
+	var sources map[string]string
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || filepath.Ext(path) != ".proto" {
 			return nil //nolint:nilerr // an unreadable tree contributes nothing
@@ -59,27 +70,56 @@ func DescriptorSourceHash(projectDir string) string {
 		if readErr != nil {
 			return nil //nolint:nilerr // same
 		}
-		rel, relErr := filepath.Rel(root, path)
+		rel, relErr := filepath.Rel(projectDir, path)
 		if relErr != nil {
 			rel = path
 		}
 		sum := sha256.Sum256(data)
-		entries = append(entries, entry{filepath.ToSlash(rel), hex.EncodeToString(sum[:])})
+		if sources == nil {
+			sources = map[string]string{}
+		}
+		sources[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
 		return nil
 	})
-	if len(entries) == 0 {
-		return ""
-	}
+	return sources
+}
 
-	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
-	h := sha256.New()
-	for _, e := range entries {
-		_, _ = h.Write([]byte(e.rel))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(e.sum))
-		_, _ = h.Write([]byte{0})
+// StaleSources compares a descriptor's stamp with the protos on disk. stamped
+// is false when the descriptor carries no stamp or there are no protos to
+// compare with, which nothing can be enforced against. Otherwise changed
+// lists, sorted, the protos whose content differs, was added, or was removed
+// since the descriptor was extracted; empty means it is current.
+func StaleSources(projectDir string, stamp map[string]string) (changed []string, stamped bool) {
+	want := DescriptorSources(projectDir)
+	if len(stamp) == 0 || len(want) == 0 {
+		return nil, false
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	for path, sum := range want {
+		if stamp[path] != sum {
+			changed = append(changed, path)
+		}
+	}
+	for path := range stamp {
+		if _, ok := want[path]; !ok {
+			changed = append(changed, path)
+		}
+	}
+	sort.Strings(changed)
+	return changed, true
+}
+
+// StaleDescriptorError is the refusal for a descriptor that does not match
+// the protos on disk, naming the protos that differ.
+func StaleDescriptorError(changed []string) error {
+	const shown = 5
+	list := strings.Join(changed, ", ")
+	if len(changed) > shown {
+		list = strings.Join(changed[:shown], ", ") + fmt.Sprintf(", … (%d more)", len(changed)-shown)
+	}
+	return fmt.Errorf(
+		"gen/forge_descriptor.json is stale: it was extracted from different .proto files than the ones on disk (%s).\n"+
+			"  It is a DERIVED cache — the protos are the source of truth — so forge refuses to answer from it.\n"+
+			"  Fix: reliant forge generate", list)
 }
 
 // noticeMissingDescriptor reports the absent gen/forge_descriptor.json —
@@ -154,11 +194,8 @@ func loadDescriptor(projectDir string) (*ForgeDescriptor, error) {
 	// descriptor directly without a proto tree to hash. The drift this
 	// guards against is a stamped descriptor whose protos then changed —
 	// which is the sequence that actually happens.
-	if want := DescriptorSourceHash(projectDir); want != "" && desc.SourceHash != "" && desc.SourceHash != want {
-		return nil, fmt.Errorf(
-			"gen/forge_descriptor.json is stale: it was extracted from different .proto files than the ones on disk.\n" +
-				"  It is a DERIVED cache — the protos are the source of truth — so forge refuses to answer from it.\n" +
-				"  Fix: reliant forge generate")
+	if changed, stamped := StaleSources(projectDir, desc.Sources); stamped && len(changed) > 0 {
+		return nil, StaleDescriptorError(changed)
 	}
 	return &desc, nil
 }

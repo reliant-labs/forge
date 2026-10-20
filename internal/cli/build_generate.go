@@ -64,8 +64,8 @@ func ensureGeneratedCode(projectDir string, skip bool) error {
 //     after `forge generate`'s clean sweep removed gen/.
 //
 //  2. Stale output — the protos are not the ones gen/ was generated from.
-//     When gen/forge_descriptor.json carries a source_hash, that is the
-//     answer: it is a digest of every .proto's CONTENT, stamped by the
+//     When gen/forge_descriptor.json carries its sources stamp, that is the
+//     answer: it is a digest of each .proto's CONTENT, stamped by the
 //     generate that wrote gen/, so it is exact (see staleByDescriptor).
 //     Only an unstamped tree falls back to comparing modification times.
 func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
@@ -96,8 +96,8 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 }
 
 // staleByDescriptor answers staleness from content when it can: decided is
-// true when gen/forge_descriptor.json carries a source_hash, and stale is
-// whether the protos on disk hash differently.
+// true when gen/forge_descriptor.json carries a sources stamp, and stale is
+// whether any proto on disk differs from it.
 //
 // Modification times cannot answer this on a fresh checkout. git writes
 // files in index order, and gen/ sorts before proto/, so every clone stamps
@@ -108,19 +108,20 @@ func generatedCodeNeedsRefresh(projectDir string) (string, bool) {
 // control-plane's k3d smoke test died on a Maven Central 429 while
 // regenerating a tree that was committed and current. The hash is the same
 // fingerprint loadDescriptor already trusts to refuse a stale descriptor
-// (codegen.DescriptorSourceHash), so the two cannot disagree.
+// (codegen.StaleSources), so the two cannot disagree.
 func staleByDescriptor(projectDir string) (stale, decided bool) {
 	data, err := os.ReadFile(filepath.Join(projectDir, "gen", "forge_descriptor.json"))
 	if err != nil {
 		return false, false
 	}
 	var stamp struct {
-		SourceHash string `json:"source_hash"`
+		Sources map[string]string `json:"sources"`
 	}
-	if err := json.Unmarshal(data, &stamp); err != nil || stamp.SourceHash == "" {
+	if err := json.Unmarshal(data, &stamp); err != nil {
 		return false, false
 	}
-	return codegen.DescriptorSourceHash(projectDir) != stamp.SourceHash, true
+	changed, stamped := codegen.StaleSources(projectDir, stamp.Sources)
+	return len(changed) > 0, stamped
 }
 
 // missingGoWorkModule returns the first go.work-listed module directory

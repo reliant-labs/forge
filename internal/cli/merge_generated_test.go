@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,21 +78,86 @@ func TestMergeGenerated_BodyConflictsStillConflict(t *testing.T) {
 	}
 }
 
-// gen/forge_descriptor.json's source_hash is a digest of every .proto, so any
-// two proto-changing branches change it.
-func TestMergeGenerated_DescriptorSourceHash(t *testing.T) {
-	desc := func(hash, field string) []byte {
-		return []byte("{\n  \"source_hash\": \"" + hash + "\",\n  \"services\": [\n    \"a\",\n    \"b\",\n    \"c\",\n    \"d\",\n    \"e\"" + field + "\n  ]\n}\n")
+// descriptorJSON renders a descriptor the way forge's writer does
+// (json.MarshalIndent of codegen.ForgeDescriptor), with the given services
+// and per-proto fingerprints.
+func descriptorJSON(t *testing.T, services []string, sources map[string]string) []byte {
+	t.Helper()
+	out, err := json.MarshalIndent(struct {
+		Services []string          `json:"services"`
+		Configs  []string          `json:"configs"`
+		Sources  map[string]string `json:"sources,omitempty"`
+	}{services, nil, sources}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
 	}
-	base := desc("h0", "")
-	ours := []byte(strings.Replace(string(desc("h1", "")), "    \"a\",\n", "    \"a\",\n    \"a2\",\n", 1))
-	theirs := desc("h2", ",\n    \"f\"")
-	merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
+	return append(out, '\n')
+}
+
+// gen/forge_descriptor.json stamps the protos it came from, one fingerprint
+// per proto. Two branches that edit DIFFERENT protos each change the stamp; the
+// merge must carry both edits, so the merged stamp is what a generate over the
+// merged protos writes and nothing needs regenerating or amending.
+func TestMergeDescriptor_DisjointProtoEditsMergeKeyByKey(t *testing.T) {
+	svcs := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	base := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b0", "proto/c.proto": "c0"})
+	// ours edits a.proto and adds a service at the top; theirs edits b.proto,
+	// adds a proto, and adds a service at the bottom.
+	ours := descriptorJSON(t, append([]string{"a2"}, svcs...), map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b0", "proto/c.proto": "c0"})
+	theirs := descriptorJSON(t, append(append([]string{}, svcs...), "z"), map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b1", "proto/c.proto": "c0", "proto/d.proto": "d1"})
+
+	got, clean, ok, err := mergeDescriptor(context.Background(), base, ours, theirs, 7)
+	if err != nil || !ok || !clean {
+		t.Fatalf("clean=%v ok=%v err=%v:\n%s", clean, ok, err, got)
+	}
+	want := descriptorJSON(t, append(append([]string{"a2"}, svcs...), "z"),
+		map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b1", "proto/c.proto": "c0", "proto/d.proto": "d1"})
+	if string(got) != string(want) {
+		t.Errorf("merged descriptor is not what a generate over both sides writes:\n--- got\n%s--- want\n%s", got, want)
+	}
+}
+
+// A proto one side removed stays removed; a proto both sides edited alike is
+// that edit; one both edited differently keeps ours (git has the proto itself
+// in conflict, and a stale stamp is refused until generate).
+func TestMergeDescriptor_RemovedAndConflictingProtos(t *testing.T) {
+	svcs := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	base := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b0", "proto/c.proto": "c0"})
+	ours := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b0", "proto/c.proto": "c1"})
+	theirs := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a2", "proto/c.proto": "c1"})
+	got, clean, ok, err := mergeDescriptor(context.Background(), base, ours, theirs, 7)
+	if err != nil || !ok || !clean {
+		t.Fatalf("clean=%v ok=%v err=%v", clean, ok, err)
+	}
+	want := descriptorJSON(t, svcs, map[string]string{"proto/a.proto": "a1", "proto/c.proto": "c1"})
+	if string(got) != string(want) {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A conflict in the descriptor's body takes this side whole (it is rewritten
+// by every generate and certified by nothing), but still merges the stamp.
+func TestMergeGeneratedPath_DescriptorBodyConflictKeepsOursMergesStamp(t *testing.T) {
+	base := descriptorJSON(t, []string{"a"}, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b0"})
+	ours := descriptorJSON(t, []string{"ours"}, map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b0"})
+	theirs := descriptorJSON(t, []string{"theirs"}, map[string]string{"proto/a.proto": "a0", "proto/b.proto": "b1"})
+	got, clean, _, err := mergeGeneratedPath(context.Background(), "gen/forge_descriptor.json", base, ours, theirs, 7)
 	if err != nil || !clean {
-		t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
+		t.Fatalf("clean=%v err=%v", clean, err)
 	}
-	if !strings.Contains(string(merged), `"source_hash": "h1"`) || !strings.Contains(string(merged), `"a2"`) || !strings.Contains(string(merged), `"f"`) {
-		t.Errorf("merged descriptor:\n%s", merged)
+	want := descriptorJSON(t, []string{"ours"}, map[string]string{"proto/a.proto": "a1", "proto/b.proto": "b1"})
+	if string(got) != string(want) {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A side from before the stamp existed has no block to merge: the descriptor
+// falls back to a plain text merge instead of failing.
+func TestMergeDescriptor_UnstampedSideFallsBack(t *testing.T) {
+	stamped := descriptorJSON(t, []string{"a"}, map[string]string{"proto/a.proto": "a0"})
+	unstamped := descriptorJSON(t, []string{"a"}, nil)
+	if _, _, ok, err := mergeDescriptor(context.Background(), unstamped, stamped, unstamped, 7); err != nil || ok {
+		t.Errorf("ok=%v err=%v, want a decline", ok, err)
 	}
 }
 

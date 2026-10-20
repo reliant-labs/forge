@@ -84,6 +84,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Rebasing no longer leaves a stale proto stamp in `gen/forge_descriptor.json`.**
+  The descriptor recorded one `source_hash`, a digest of every `.proto`, so two
+  branches that edited different protos both rewrote that line. The merge
+  driver could only keep one side's value, which named the other side's protos
+  as they were before the edit, and every rebase needed a `forge generate` and
+  an amend before `verify-generated` passed. The descriptor now carries
+  `sources`, one sha256 per proto keyed by its path, and the driver merges it
+  key by key: the side that changed a proto's entry wins it, and an added or
+  removed proto is added or removed, so the rebased descriptor is what a
+  generate over the merged protos writes. The stale-descriptor refusal now
+  names the protos that differ. Descriptors from an older forge (with
+  `source_hash`) read as unstamped and are re-stamped by the next
+  `forge generate`.
 - **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
   Every query on the lease session (the heartbeat, each standby poll, the
   connect) ran under a deadline of `HeartbeatInterval`, and a query that misses

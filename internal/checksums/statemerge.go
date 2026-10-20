@@ -115,6 +115,18 @@ func mergeKeyed[V any](base, ours, theirs map[string]V) map[string]V {
 	return out
 }
 
+// MergeStringMap is the per-key three-way merge of a string map: a key one
+// side changed takes that side's state, and a key both changed differently
+// keeps ours. The merge driver uses it for the descriptor's per-proto
+// fingerprints (cli.mergeDescriptor).
+func MergeStringMap(base, ours, theirs map[string]string) map[string]string {
+	merged := mergeKeyed(base, ours, theirs)
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
 // mergeSet is mergeKeyed over a sorted string set.
 func mergeSet(base, ours, theirs []string) []string {
 	asMap := func(s []string) map[string]bool {

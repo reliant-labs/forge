@@ -4,11 +4,12 @@ package cli
 //
 // WHY. Some generated files carry a line whose value is a fingerprint of
 // OTHER files: the `forge:hash=` header every generated file starts with, the
-// mock fixtures' SEED_FINGERPRINT (a digest of every migration), and
-// gen/forge_descriptor.json's source_hash (a digest of every .proto). Any two
-// branches that each change a migration, a proto, or a generated file's body
-// change that ONE line differently, so git reports a conflict there even when
-// the real changes are nowhere near each other. On 2026-10-07 these were 2 of
+// mock fixtures' SEED_FINGERPRINT (a digest of every migration). Any two branches that each
+// change a migration or a generated file's body change that ONE line
+// differently, so git reports a conflict there even when the real changes are
+// nowhere near each other. (gen/forge_descriptor.json's proto fingerprints
+// used to be such a line; they are now one entry per proto and merge key by
+// key, merge_descriptor.go.) On 2026-10-07 these were 2 of
 // the 4 real conflicts in control-plane's stale checkout, and every forge pin
 // PR conflicted with every other open branch.
 //
@@ -79,7 +80,7 @@ const generatedMergeDriver = "forge-generated"
 // volatileLine matches a generated line whose value is a fingerprint of other
 // files. Group 1 is the line's KEY: two lines with the same key are the same
 // fact, whichever value they carry.
-var volatileLine = regexp.MustCompile(`^(\s*(?://|#|<!--|/?\*)?\s*forge:hash=|export const SEED_FINGERPRINT\s*=|export const SEED_CONFIG_FINGERPRINT\s*=|export const SEED_FINGERPRINT_FILES\s*=|\s*"source_hash"\s*:)`)
+var volatileLine = regexp.MustCompile(`^(\s*(?://|#|<!--|/?\*)?\s*forge:hash=|export const SEED_FINGERPRINT\s*=|export const SEED_CONFIG_FINGERPRINT\s*=|export const SEED_FINGERPRINT_FILES\s*=)`)
 
 // volatilePlaceholder replaces a fingerprint's value while the rest merges.
 const volatilePlaceholder = "__FORGE_MERGE_GENERATED_VOLATILE__"
@@ -201,11 +202,26 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 			return m, true, "", nil
 		}
 	}
+	keep := "kept this side's render; run `forge generate` to render both sides' inputs into it"
+	if isDescriptorPath(relPath) {
+		m, descClean, ok, derr := mergeDescriptor(ctx, base, ours, theirs, markerSize)
+		if derr != nil {
+			return nil, false, "", derr
+		}
+		if ok && descClean {
+			return m, true, "", nil
+		}
+		if ok {
+			// The descriptor is rewritten whole on every generate and
+			// certified by nothing: a conflict takes this side, with the
+			// proto fingerprints merged so the stamp is as right as it can be.
+			return oursWithMergedSources(base, ours, theirs), true, keep, nil
+		}
+	}
 	merged, clean, err = mergeGenerated(ctx, base, ours, theirs, markerSize)
 	if err != nil {
 		return nil, false, "", err
 	}
-	keep := "kept this side's render; run `forge generate` to render both sides' inputs into it"
 	switch {
 	case relPath != "" && !checksums.Stampable(relPath):
 		// A comment-incapable output (JSON) is certified by

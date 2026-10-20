@@ -244,8 +244,11 @@ func (p FirebaseProvider) Deploy(ctx context.Context, group ServiceGroup) error 
 // to its Firebase Hosting site. dryRun prints the plan and skips every
 // side effect.
 func (p FirebaseProvider) deployFrontends(ctx context.Context, fes []FirebaseFrontend, dryRun bool) error {
-	for _, fe := range fes {
+	for i, fe := range fes {
 		if err := p.deployOne(ctx, fe, dryRun); err != nil {
+			if i > 0 {
+				return afterShipping(err)
+			}
 			return err
 		}
 	}
@@ -328,7 +331,7 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dryRun bool) error {
 	plan, err := p.buildPlan(fe)
 	if err != nil {
-		return err
+		return shippedNothing(err)
 	}
 
 	if dryRun {
@@ -337,6 +340,27 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	}
 
 	runner := p.runner()
+	// Everything before `firebase deploy` is local: the live site is
+	// untouched until it runs (frontend_not_shipped.go).
+	if err := p.prepare(ctx, runner, fe, plan); err != nil {
+		return shippedNothing(err)
+	}
+
+	// Deploy phase — firebase deploy from the workdir so it picks up the
+	// generated firebase.json + .firebaserc.
+	fmt.Printf("  [firebase] %s: deploying to project=%s site=%s target=%s...\n",
+		plan.Stage.Name, fe.Spec.Project, fe.Spec.Site, fe.Spec.resolvedTarget())
+	if err := runInDir(ctx, runner, plan.DeployWorkdir, nil, plan.DeployCmd); err != nil {
+		return fmt.Errorf("firebase %s: deploy: %w", plan.Stage.Name, err)
+	}
+	fmt.Printf("  [firebase] %s: deployed.\n", plan.Stage.Name)
+	return nil
+}
+
+// prepare is everything a Firebase deploy does before it writes the site:
+// build and assemble the tree, file its source maps, carry the live release's
+// assets into it, and write firebase.json + .firebaserc beside it.
+func (p FirebaseProvider) prepare(ctx context.Context, runner commandRunner, fe FirebaseFrontend, plan firebasePlan) error {
 	fmt.Printf("  [firebase] %s: building (%s) in %s...\n",
 		plan.Stage.Name, strings.Join(plan.Stage.BuildCmd, " "), plan.Stage.FrontendDir)
 
@@ -372,15 +396,6 @@ func (p FirebaseProvider) deployOne(ctx context.Context, fe FirebaseFrontend, dr
 	if err := atomicfile.WriteFile(filepath.Join(plan.DeployWorkdir, ".firebaserc"), []byte(plan.FirebaseRC), 0o644); err != nil {
 		return fmt.Errorf("firebase %s: write .firebaserc: %w", plan.Stage.Name, err)
 	}
-
-	// Deploy phase — firebase deploy from the workdir so it picks up the
-	// generated firebase.json + .firebaserc.
-	fmt.Printf("  [firebase] %s: deploying to project=%s site=%s target=%s...\n",
-		plan.Stage.Name, fe.Spec.Project, fe.Spec.Site, fe.Spec.resolvedTarget())
-	if err := runInDir(ctx, runner, plan.DeployWorkdir, nil, plan.DeployCmd); err != nil {
-		return fmt.Errorf("firebase %s: deploy: %w", plan.Stage.Name, err)
-	}
-	fmt.Printf("  [firebase] %s: deployed.\n", plan.Stage.Name)
 	return nil
 }
 

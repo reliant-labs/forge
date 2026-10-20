@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`fw.Workload.profiling` (`forge.Profiling`): a typed per-workload
+  profiling override.** `wl.worker | {profiling = fw.Profiling {alloc = True, heap_interval = "1m"}}`
+  turns a type on or the heap cadence up for one workload; the schema defaults
+  to the runtime's set, and `heap_interval` is whole minutes or hours from
+  `1m` to `24h`. It renders `FORGE_PROFILES` and `FORGE_PROFILES_HEAP_INTERVAL`
+  on every runtime that runs a process; a value the workload's own `env` sets
+  wins, and it never turns profiling on where the env has it off.
 - **Fast/slow test tiers: `testkit.Slow`, `forge lint --slow-tests`,
   `forge ci test-budget`.** A test is fast (it runs in the blocking
   `go test -short` tier) unless it declares otherwise:
@@ -121,6 +128,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     target, env, via and time, and pages by keyset. The store writes through
     `*orm.Client`, so a write inside `RunTx` joins the transaction.
   - **Docs.** The new `activity` skill covers all of the above.
+  - **The lint.** `forgeconv-activity-declared` (`forge lint --conventions`,
+    error) fails a mutating rpc with no declaration and any malformed
+    declaration, such as a path that does not resolve. `forge generate` records
+    each rpc's verdict from `activity.IsMutating` and `activity.Resolve` in
+    `gen/forge_descriptor.json` (`Activity`), and the lint reads it there, so
+    the lint and the interceptor apply the same rules. **Upgrading:** every
+    custom mutating rpc in an existing project needs an `activity` declaration
+    or `activity: { none: "<why>" }`.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);
@@ -617,6 +632,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **Continuous profiling captures CPU and the live heap by default; allocation,
+  goroutine, mutex and block profiles are opt-in (`forge/pkg/observe`).** The
+  profiler still takes a 10s CPU profile every minute, but now snapshots the
+  heap every 15 minutes and exports only `inuse_space` / `inuse_objects`. Go's
+  `alloc_space` / `alloc_objects` are cumulative since process start, so each
+  snapshot repeated every allocation site the process ever had and grew with
+  uptime: in a production deployment they were 97.7% of stored profile rows (99.2%
+  of bytes), and one service's grew from 11k to 39k rows per snapshot over 8
+  hours. The new defaults keep about 0.3% of that deployment's rows (PROFILES.md
+  has the measurements). Choose the set with `observe.Config.Profiles`
+  (`ProfilesConfig{Types, HeapInterval}`), or per deploy with `FORGE_PROFILES`
+  (`cpu,heap,alloc,goroutine,mutex,block`, or `none`) and
+  `FORGE_PROFILES_HEAP_INTERVAL`, which win over the config; invalid values
+  are logged and ignored. Mutex and block profiles set the runtime's sampling
+  rates only while selected and restore them on shutdown. Opted-in allocation
+  counters stay cumulative, at the heap cadence. A live-heap snapshot also no
+  longer carries the locations and functions of allocation-only stacks.
 - **The ORM projects every applied table, whatever its rpcs.** The store
   (`<entity>_orm_gen.go`, `<Entity>Store`, delegates, the `_repo_ext.go` seam)
   used to exist only for a table some managed service declared a CRUD rpc
@@ -625,8 +657,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   zero of 55 tables). The store now follows the schema: every BASE TABLE with a
   single-column primary key is projected, a table no rpc names under the
   singular of its name (`message_content_blocks` → `MessageContentBlock`).
-  CRUD wiring, pages and seed roots still key on CRUD rpcs. `COMMENT ON TABLE t
-  IS 'forge:no-entity'` keeps one table off the store (and off CRUD wiring);
+  CRUD wiring, pages and seed roots still key on CRUD rpcs.
+  `COMMENT ON TABLE t IS 'forge:no-entity'` keeps one table off the store (and
+  off CRUD wiring);
   `//forge:no-orm` still opts out the whole data layer. The ORM step no longer
   needs a service, only an entrypoint, and a name collision's advice now names
   the table opt-out (`// forge:custom` no longer takes a table off the store).

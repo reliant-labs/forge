@@ -204,18 +204,9 @@ func (c configInput) scope(binary string) string {
 	case len(c.msg.Command) > 0:
 		return fmt.Sprintf("the `%s %s` command config", binary, strings.Join(c.msg.Command, " "))
 	case len(c.msg.Subtrees) > 0:
-		return fmt.Sprintf("the config of every `%s` process at or below %s", binary, subtreeList(binary, c.msg.Subtrees))
+		return fmt.Sprintf("the config of every %#q process at or below %s", binary, subtreeList(binary, c.msg.Subtrees))
 	}
-	return fmt.Sprintf("the `%s` binary's root config", binary)
-}
-
-// loadConfigModel reads proto/config's root config message: the one
-// config.Config aliases. nil when there is none to read reach against.
-func loadConfigModel(projectDir string) *configModel {
-	if pc := loadProcessConfigs(projectDir); pc != nil {
-		return pc.root
-	}
-	return nil
+	return fmt.Sprintf("the %#q binary's root config", binary)
 }
 
 // loadProcessConfigs reads proto/config: the root config — the project's
@@ -540,7 +531,7 @@ func markProcessConfig(views []graphRootView, pc *processConfigs, reads map[stri
 func unloadedConfigProblem(binary string, v graphRootView, node string, msg *ConfigMessage) string {
 	process := strings.TrimSpace(binary + " " + strings.Join(v.Command, " "))
 	return fmt.Sprintf(
-		"root %q (`%s`) reaches %s, whose constructor in internal/app/compose.go (new%s) reads g.%s — %s, which the `%s` process never loads, so g.%s is nil there. Read the setting from a config that process loads (the binary's root config, a subtree config over `%s`, or its own command config), or keep %s out of the %s root's closure.",
+		"root %q (%#q) reaches %s, whose constructor in internal/app/compose.go (new%s) reads g.%s — %s, which the %#q process never loads, so g.%s is nil there. Read the setting from a config that process loads (the binary's root config, a subtree config over %#q, or its own command config), or keep %s out of the %s root's closure.",
 		v.Name, process, node, node, msg.Name, scopePhrase(msg), process, msg.Name, process, node, v.Name)
 }
 

@@ -162,7 +162,7 @@ func perBinaryRootsEnv(projectDir string, rootFields []ConfigField, perBinary []
 	}
 	switch {
 	case len(rootFields) > 0 && !bound:
-		return AppConfigRootsEnv, DefaultServerRoot(rootFields), true
+		return appConfigRootsEnv, DefaultServerRoot(rootFields), true
 	case len(rootFields) > 0 || root == nil:
 		return RootsEnv{}, GraphRoot{}, false
 	}

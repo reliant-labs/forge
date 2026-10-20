@@ -37,12 +37,12 @@ type RootsEnv struct {
 	Argv               bool
 }
 
-// AppConfigRootsEnv is the single-AppConfig project's.
-var AppConfigRootsEnv = RootsEnv{ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"}
+// appConfigRootsEnv is the single-AppConfig project's.
+var appConfigRootsEnv = RootsEnv{ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"}
 
 // RootsKCL renders the ROOTS block appended to config_gen.k, or "" when the
 // roots' reach is unknown (no root config message) or there are none.
-func RootsKCL(roots []GraphRoot) string { return RootsKCLFor(roots, AppConfigRootsEnv) }
+func RootsKCL(roots []GraphRoot) string { return RootsKCLFor(roots, appConfigRootsEnv) }
 
 // RootsKCLFor is RootsKCL for a project whose processes' env is projected
 // through env: each root's env and secrets are the leaves it reaches across

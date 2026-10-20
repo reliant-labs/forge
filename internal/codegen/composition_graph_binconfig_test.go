@@ -258,9 +258,9 @@ func TestGraphComposeInputConfigReads_ReadsEachConfigInput(t *testing.T) {
 // RootsKCLFor through appConfigEnvMap.
 func TestRootsKCLFor_AppConfigIsRootsKCL(t *testing.T) {
 	_, roots := twoRootFixture()
-	got := RootsKCLFor(roots, AppConfigRootsEnv)
+	got := RootsKCLFor(roots, appConfigRootsEnv)
 	if got != RootsKCL(roots) {
-		t.Fatal("RootsKCL must be RootsKCLFor(…, AppConfigRootsEnv)")
+		t.Fatal("RootsKCL must be RootsKCLFor(…, appConfigRootsEnv)")
 	}
 	for _, want := range []string{
 		"rootEnvMap = lambda c: AppConfig, w: any",

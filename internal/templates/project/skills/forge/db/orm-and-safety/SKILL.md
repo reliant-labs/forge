@@ -1,6 +1,6 @@
 ---
 name: db/orm-and-safety
-description: The two per-project database opt-outs that live next to the code they affect, not in forge.yaml — `//forge:no-orm` in internal/db to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived, and the lint rules for a migration file that cannot run as one transaction (CONCURRENTLY, enum values).
+description: Where the generated ORM lands (database.orm.package), and the two per-project database opt-outs that live next to the code they affect, not in forge.yaml — `//forge:no-orm` in internal/db to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived, and the lint rules for a migration file that cannot run as one transaction (CONCURRENTLY, enum values).
 ---
 
 # ORM opt-out and migration-safety directives
@@ -39,6 +39,33 @@ mark it `// forge:custom` instead (`forge project annotations --kind method`).
 forge reads it from non-test, non-generated `.go` files **directly in** `internal/db/`. A line
 that merely mentions it in prose, a `_gen.go` file, a `_test.go` file, or another package does
 not count. `forge project features` shows `orm` off with `(//forge:no-orm in internal/db)`.
+With `database.orm.package` set, the marker is read in THAT directory instead.
+
+## Placing the ORM: `database.orm.package`
+
+The one ORM setting forge.yaml does carry, because it is a property of the
+PROJECT (where generated code goes), not of a package that already exists:
+
+```yaml
+database:
+  orm:
+    package: internal/store   # default internal/db
+```
+
+Every projected file — `<entity>_orm_gen.go`, `store_gen.go`, the scaffold-once
+`<entity>_repo_ext.go` seams — lands in that directory and declares its package
+(`package store`). Everything compiled against the ORM follows it: the CRUD
+wiring imports it (as `db`, the qualifier every generated CRUD file uses),
+`compose.go` provides `store.Store` / `store.<Entity>Store` Deps fields, the
+test factories, `forge project shapes --kind store`, and the drift guard. The
+name-collision refusal and `//forge:no-orm` read that package, not internal/db.
+
+Use it when `internal/db` is already a data layer of yours whose names (a
+`Chat` alias, a `Repo`, a `Store`) collide with the projection's, and you are
+porting onto the generated store one table at a time: the two packages coexist,
+and nothing about your `internal/db` has to change first. Moving the key
+reclaims forge's previous projection from the old directory; your
+`_repo_ext.go` seams there are yours and stay.
 
 ## Allowing one destructive migration: `-- forge:allow-destructive`
 

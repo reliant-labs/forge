@@ -369,6 +369,27 @@ func Record(ctx context.Context, w Writer, ev Event) error {
 	return nil
 }
 
+// Skip records that this call, although it succeeded, changed nothing worth
+// an activity event, so the interceptor writes none for it: an idempotent
+// "ensure" rpc that found its object already there, a dry run, a no-op
+// update. It reports whether ctx is a declared rpc's context; outside one it
+// does nothing.
+//
+// A declaration states what an rpc records when it changes something; Skip is
+// the handler's way to say this call did not. Inside a RunTx the skip takes
+// effect only if the transaction commits, like Record.
+func Skip(ctx context.Context) bool {
+	c, _ := ctx.Value(callKey{}).(*call)
+	if c == nil {
+		return false
+	}
+	mark := func(context.Context) { c.recorded.Store(true) }
+	if err := orm.AfterCommit(ctx, mark); errors.Is(err, orm.ErrNoTransaction) {
+		c.recorded.Store(true)
+	}
+	return true
+}
+
 // fill sets ev's zero fields from the call.
 func (c *call) fill(ev *Event) {
 	declared := c.event(nil)

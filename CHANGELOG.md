@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`observe.NewHTTPClient`: the traced client for plain outbound HTTP.**
+  A call to a third-party REST API goes through a plain `*http.Client`, which
+  no Connect interceptor sees; built by hand it had no client span, no
+  traceparent and no `X-Request-Id`, so the caller's trace ended at the
+  process boundary. `NewHTTPClient(HTTPClientOptions{Timeout, Base})` returns
+  a fresh client over one shared traced transport, with spans named
+  `<METHOD> <host>` instead of `HTTP POST`. `NewHTTPTransport(base)` wraps a
+  transport you do not construct yourself. The scaffolded `DefaultClient()`
+  transport, the composition graph's `NewHTTPClient` provider, and the
+  adapter and client scaffolds' nil-`HTTPClient` defaults all use it, so a
+  minimal wiring is no longer the one untraced outbound path. Connect clients
+  keep `NewClientStack`, whose otelconnect interceptor already opens the span.
+
+- **forge's control-plane client names itself in `Forge-Via`.** Every call
+  sends `cli`, or `ci` under a CI runner, so a server's activity stream
+  (`forge/pkg/activity`) records how a change arrived, as in "sean promoted
+  v1.7.44 via CLI". `middleware.DefaultCORSAllowHeaders` admits `Forge-Via`,
+  so a browser console can send it cross-origin.
+- **Activity scopes are paths, so one feed can span an org and its projects**
+  (`forge/pkg/activity`). An event scoped `org_1/billing` belongs to project
+  billing of org org_1. `Filter.IncludeAncestors` adds the ancestors' events to
+  a scope's feed, so a project's feed shows its org's events.
+  `Filter.IncludeDescendants` adds every descendant's events, so an org's feed
+  shows every project's. `Filter.Envs` matches any of several environments.
+  Wildcards in a scope name match literally. `activity.Skip(ctx)` lets a
+  handler whose call changed nothing (an idempotent ensure, a dry run) suppress
+  that call's event.
 - **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
   `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
   opened through `otelsql`, so each statement run under a span gets a CLIENT
@@ -96,6 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `requirecontract` structurally, as a worker is.
 - **`serverkit.Run` serves pprof through the `Pprof` component** instead of
   its own copy.
+- **A legacy-composition `internal/app/lifecycle.go` with no worker compiles.**
+  The template imported `forge/pkg/lifecyclekit` unconditionally, but since
+  its operator re-exports moved to `operatorkit` (#918) only a `Worker<X>()`
+  accessor names it, so a project without workers failed its first generate
+  with `"…/pkg/lifecyclekit" imported and not used` (every
+  `forge project new` from #918 until the composition graph, #923, made new
+  projects skip lifecycle.go). The import is rendered with the first worker,
+  and the reconciler adds it when it injects one into an existing file.
 
 ### Removed
 
@@ -474,6 +509,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `wireRelease.Commits` comment in `internal/cli/hosted_ledger.go` named
+  `DeployRelease.commits` as tag 13; the control plane's proto declares it as tag 14.
 - **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
   finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
   that one rule's findings and ignored for every other, so
@@ -729,6 +766,22 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   pointer field, so hand-written code that reads or writes it changes from
   `row.Status` / `row.Status = 2` to `*row.Status` / `row.Status = ptr(2)`;
   born enum (TEXT + CHECK) and json columns keep their types.
+- **`database.orm.package` places the generated data layer.** The ORM always
+  projected into `internal/db` (`package db`) and refused any name the
+  project already declared there — so a project with its own data layer in
+  `internal/db` (reliant: 30 of 55 names, `type Chat = core.Chat`, `Repo`,
+  `Daemon`) could not have the store at all without renaming thousands of
+  references first. `database: {orm: {package: internal/store}}` in
+  forge.yaml puts every `<entity>_orm_gen.go`, `store_gen.go` and
+  `_repo_ext.go` seam in that directory, declaring its package; the
+  collision refusal and `//forge:no-orm` read that package. Every consumer
+  follows it: CRUD wiring and test factories import it (as `db`), compose.go
+  provides `<pkg>.Store` / `<pkg>.<Entity>Store` Deps fields,
+  `forge project shapes --kind store`, and the drift guard and its hints.
+  Moving the key reclaims forge's previous projection from the old directory (the
+  `_repo_ext.go` seams are yours and stay). Default unchanged: `internal/db`.
+  The collision refusal now offers the key. `generator.GeneratePlanORM` takes
+  a `config.ORMConfig` in place of its two unused module/service arguments.
 - **A view can be a read-only entity.** forge projected BASE TABLEs only, so
   a view's row type was hand-written (reliant: `chats_with_activity`, the one
   definition of a chat's activity). `COMMENT ON VIEW v IS 'forge:entity'`

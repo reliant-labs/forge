@@ -98,8 +98,8 @@ func (r *inferringResolver) Resolve(consumer BuildComponent, depsType string) st
 // interface satisfied by exactly one other component, plus every field
 // satisfied by more than one. infraFields is the AST-parsed Infra surface
 // (an exact-name Infra field is an explicit binding and skips inference);
-// storeAccessors lists the generated-store dep types the framework seam owns.
-func inferInterfaceProducers(projectDir string, comps []BuildComponent, base TypeResolver, infraFields map[string]InfraField, storeAccessors map[string]string) (map[string]string, []AmbiguousProvider) {
+// store names the generated-store dep types the framework seam owns.
+func inferInterfaceProducers(projectDir string, comps []BuildComponent, base TypeResolver, infraFields map[string]InfraField, store storeSeam) (map[string]string, []AmbiguousProvider) {
 	type candidateDep struct {
 		consumer BuildComponent
 		field    DepsField
@@ -107,7 +107,7 @@ func inferInterfaceProducers(projectDir string, comps []BuildComponent, base Typ
 	var pending []candidateDep
 	for _, c := range comps {
 		for _, df := range c.Deps {
-			if !inferableDep(df, storeAccessors) {
+			if !inferableDep(df, store) {
 				continue
 			}
 			if _, explicit := infraFields[df.Name]; explicit {
@@ -271,7 +271,7 @@ func loadProducerUniverse(projectDir string, comps []BuildComponent) *producerUn
 // inferableDep reports whether df is a collaborator dep the inference pass
 // may resolve: not a conventional Logger/Config, not a scalar config value,
 // not a framework-seam type forge already provides.
-func inferableDep(df DepsField, storeAccessors map[string]string) bool {
+func inferableDep(df DepsField, store storeSeam) bool {
 	switch df.Name {
 	case "Logger", "Config":
 		return false
@@ -280,13 +280,10 @@ func inferableDep(df DepsField, storeAccessors map[string]string) bool {
 		return false
 	}
 	switch df.Type {
-	case frameworkClockType, frameworkIDGenType, frameworkHTTPClientType, frameworkStoreAggregateType:
+	case frameworkClockType, frameworkIDGenType, frameworkHTTPClientType:
 		return false
 	}
-	if _, ok := storeAccessors[df.Type]; ok {
-		return false
-	}
-	return true
+	return !store.owns(df.Type)
 }
 
 // constructedType returns the first result type of the package-level func

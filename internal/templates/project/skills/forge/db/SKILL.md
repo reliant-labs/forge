@@ -32,7 +32,7 @@ There is no schema DSL and no proto annotation: `db/migrations/*.up.sql` is the 
 
 `db/migrations/` and `db/queries/` are yours and forge never modifies them; `internal/db/<entity>_orm.go` is regenerated.
 
-There is **no `database:` driver or directory setting**: a service project with `db/migrations/` has a postgres database. A hand-written data layer opts out of the generated ORM with `//forge:no-orm: <why>` in the `internal/db` package doc — see `db/orm-and-safety`.
+There is **no `database:` driver or directory setting**: a service project with `db/migrations/` has a postgres database. A hand-written data layer opts out of the generated ORM with `//forge:no-orm: <why>` in the `internal/db` package doc, or moves the projection beside it with `database.orm.package` — see `db/orm-and-safety`.
 
 ## What makes an entity
 

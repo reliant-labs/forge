@@ -1192,7 +1192,8 @@ type ConfigFieldOptions struct {
 	// the annotation does NOT make it the mode field.
 	Role ConfigFieldRole `protobuf:"varint,8,opt,name=role,proto3,enum=forge.v1.ConfigFieldRole" json:"role,omitempty"`
 	// AllowedValues constrains a STRING field to a closed set of valid
-	// values, validated at startup by config.Validate. It is the
+	// values, enforced when the config loads (Load runs config.Validate, so
+	// an out-of-set value fails the load, naming the field). It is the
 	// type/annotation-driven replacement for the old name-matched log-format
 	// check ("json"/"text"): a string field carrying allowed_values is a
 	// string ENUM, rejected when its resolved value is outside the set. The

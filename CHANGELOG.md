@@ -324,6 +324,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge ci verify-generated` and `forge generate --check` never write the
+  checkout.** Both regenerated the caller's own tree and then read
+  `git status`, so a concurrent gate held every reader of the tree back for
+  30-50s, and a run that found drift, crashed or was killed left the
+  regenerated files behind. They now regenerate a scratch copy made beside
+  the repository (`.<repo>.forge-verify-<pid>-*`: its own git repository
+  borrowing the checkout's objects, holding the checkout's index and working
+  tree byte for byte, plus the gitignored files generate reads) and diff the
+  copy against itself; output and exit codes are unchanged. They judge the
+  working tree as `git add -A` would commit it — HEAD on a clean checkout — so
+  a dirty tree now gets a verdict instead of a refusal, and every change
+  reported is generate's. The generate cache is shared both ways: the
+  checkout's record is copied in, and a fixed point the scratch run verifies
+  is copied back to `.forge/generate-cache.json`. The cache key also stops
+  including `FORGE_SLOT_HELD`, a fresh token per slot holder, which made every
+  run inside the gate a miss. `forge ci gate` no longer runs verify-generated
+  alone, skips it on a dirty tree, or resets the tree after it fails.
+- **`forge slot run` and read-only commands no longer edit `.git/config`.**
+  Every forge command pointed the generated-file merge driver at itself
+  (`.git/config`, `info/attributes`) and activated forge's hooks
+  (`core.hooksPath`) as a side effect, so `forge slot run`, `env status`,
+  `env render` and `env deploy --dry-run` rewrote the config every linked
+  worktree shares. Only commands that write generated or state files do it
+  now (`generate` without `--check`/`--plan`, `scaffold`, `project disown`,
+  `project delete service`, `package new`). And two copies of the pinned forge
+  at different paths (each worktree's tool-cache install, a `go install`ed one)
+  no longer take the driver from each other on every run: the copy already
+  registered keeps it while it exists.
 - **`forge env deploy <env> <version> --frontends-only` no longer renders or
   compares the env's bundle.** It applies no bundle object, yet it rendered
   the whole env and refused when a newer checkout's workloads differed from

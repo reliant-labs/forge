@@ -303,24 +303,18 @@ func (p planner) checksLane() []Check {
 	// 1. Frontend dependencies, so every npm row below has what it needs.
 	out = append(out, p.frontendDeps(LaneChecks)...)
 
-	// 2. verify-generated runs alone, ahead of every check that reads the
-	// tree (MutatesTree). It regenerates the tree and demands a
-	// byte-identical result, so it can only attribute drift to
-	// `forge generate` when it starts from the committed tree, and a check
-	// reading a file mid-rewrite would judge a torn tree. If it fails, the
-	// tree it leaves is reset so the rows after it judge the COMMITTED code,
-	// not the regenerated one.
+	// 2. verify-generated regenerates a scratch copy of the checkout and
+	// never writes the tree, so it runs beside the checks that read it. It
+	// still waits for the dependency installs: the TypeScript stubs are
+	// regenerated with the protoc-gen-es a frontend's node_modules holds.
 	if ci.VerifyGenerated {
 		vg := Check{
-			Name:        "verify-generated",
-			Lane:        LaneChecks,
-			Group:       GroupStatic,
-			Heavy:       true,
-			MutatesTree: true,
-			After:       p.allDeps(),
-			Argv:        p.forge("ci", "verify-generated"),
-			Prereq:      p.cleanTree,
-			OnFail:      p.resetTree,
+			Name:  "verify-generated",
+			Lane:  LaneChecks,
+			Group: GroupStatic,
+			Heavy: true,
+			After: p.allDeps(),
+			Argv:  p.forge("ci", "verify-generated"),
 		}
 		if ci.RunsBufGenerate {
 			vg.Tools = []Tool{buf}
@@ -733,31 +727,6 @@ func HasIntegrationTests(root string) bool {
 	})
 	return found
 }
-
-// cleanTree is verify-generated's prerequisite: it regenerates the tree and
-// attributes every change to `forge generate`, which is only true when it
-// starts from the committed tree.
-func (p planner) cleanTree() string {
-	if _, err := exec.LookPath("git"); err != nil {
-		return "git is not on PATH"
-	}
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = p.Root
-	out, err := cmd.Output()
-	if err != nil {
-		return "not a git work tree, so drift cannot be attributed to `forge generate`"
-	}
-	if n := len(strings.Fields(strings.ReplaceAll(string(out), "\n", " "))); n > 0 {
-		lines := strings.Count(strings.TrimSpace(string(out)), "\n") + 1
-		return fmt.Sprintf("working tree has %d uncommitted path(s): verify-generated attributes every change to `forge generate`, so it needs the committed tree — commit or stash, or name it in %s", lines, SkipEnv)
-	}
-	return ""
-}
-
-// resetTree restores the committed tree after verify-generated failed, so the
-// rows after it judge the committed code and not the regenerated copy. Safe
-// only because cleanTree proved the tree was clean before the row ran.
-func (p planner) resetTree(out io.Writer) { resetTo(p.Root, "verify-generated drift", out) }
 
 // resetIfClean is a project tree-mutating check's OnFail: the same reset, but
 // only when the tree was clean when the gate started — otherwise the

@@ -315,8 +315,17 @@ func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *tes
 		writeTreeFileT(t, exe, "#!/bin/sh\n")
 	}
 	// Binaries under the temp directory are ephemeral and never become the
-	// driver; move the temp directory away from these two.
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "tmp"))
+	// driver; move the temp directory away from these two. os.TempDir reads
+	// TMPDIR on Unix and TMP / TEMP on Windows, so set all three; setting
+	// TMPDIR alone left Windows's temp directory over both binaries.
+	movedTemp := filepath.Join(t.TempDir(), "tmp")
+	for _, env := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(env, movedTemp)
+	}
+	if ephemeralExecutable(first) || ephemeralExecutable(second) {
+		t.Fatalf("precondition: %s and %s must not count as ephemeral once the temp directory is %s (os.TempDir() = %s)",
+			first, second, movedTemp, os.TempDir())
+	}
 
 	mergeDriverExecutable = func() (string, error) { return first, nil }
 	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))

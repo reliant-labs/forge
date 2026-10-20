@@ -133,7 +133,7 @@ type wireRelease struct {
 	// same clean checkout `forge env build prod --release` had cut from
 	// minutes earlier, rebuilt every image and named a new release.
 	Provenance *wireProvenance `json:"provenance,omitempty"`
-	// Commits is DeployRelease.commits (tag 13): the source history the
+	// Commits is DeployRelease.commits (tag 14): the source history the
 	// release adds over the release it was cut after, recorded at the cut
 	// because no reader of a hosted ledger has the repository.
 	Commits *wireCommitRange `json:"commits,omitempty"`

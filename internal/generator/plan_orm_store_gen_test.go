@@ -35,7 +35,7 @@ func storeTestEntities() []config.PlanEntity {
 func storeGenSource(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", storeTestEntities(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, storeTestEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))

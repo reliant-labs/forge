@@ -67,6 +67,7 @@ var appTemplateIdentifiers = sync.OnceValue(func() map[string]bool {
 		NeedsTime:         true,
 		NeedsULID:         true,
 		NeedsDBStore:      true,
+		DBStoreImport:     module + "/internal/db",
 		Fields: []composeField{
 			{FieldName: "A", Alias: svcAlias, FieldType: "*" + svcAlias + ".Service"},
 			{FieldName: "B", Alias: wkrAlias, FieldType: wkrAlias + ".Service"},

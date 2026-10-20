@@ -19,7 +19,7 @@ func TestPlanORM_CompositeKeyDelegatesTakeTheWholeKey(t *testing.T) {
 			{Name: "note", Type: "string"},
 		},
 	}
-	src := string(renderORMEntity(ent, false))
+	src := string(renderORMEntity("db", ent, false))
 	for _, want := range []string{
 		"func GetProjectDaemonByPK(ctx context.Context, db orm.Context, projectId string, typeKey string) (*ProjectDaemon, error) {",
 		"projectDaemonRepo.GetByPK(ctx, db, &ProjectDaemon{ProjectId: projectId, Type: typeKey})",
@@ -38,7 +38,7 @@ func TestPlanORM_CompositeKeyDelegatesTakeTheWholeKey(t *testing.T) {
 		t.Errorf("a composite key has no single id to Get/Delete by:\n%s", src)
 	}
 
-	store := string(renderStoreInterfaces([]config.PlanEntity{ent}))
+	store := string(renderStoreInterfaces("db", []config.PlanEntity{ent}))
 	for _, want := range []string{
 		"GetProjectDaemonByPK(ctx context.Context, projectId string, typeKey string) (*ProjectDaemon, error)",
 		"DeleteProjectDaemonByPK(ctx context.Context, projectId string, typeKey string) error",

@@ -157,11 +157,16 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 			if n.Standby {
 				continue
 			}
-			out = append(out, GraphFinding{
+			f := GraphFinding{
 				Rule: GraphRuleUnreachable, Error: true, File: n.File, Line: n.Line,
 				Message: fmt.Sprintf("provider New%s (%s) is reachable from no root (%s): nothing takes its value", n.Name, n.Type, m.rootNames()),
 				Fix:     fmt.Sprintf("take %s in the Deps of a node a root reaches, delete New%s, or mark it `//forge:standby` to keep it ready for a component to come", n.Type, n.Name),
-			})
+			}
+			if n.Lifecycle.Run != "" {
+				f.Message = fmt.Sprintf("provider New%s (%s) runs, but no root (%s) holds it: no process starts it", n.Name, n.Type, m.rootNames())
+				f.Fix = fmt.Sprintf("add a field of type %s to the //forge:root struct of the process that should run it, delete New%s, or mark it `//forge:standby`", n.Type, n.Name)
+			}
+			out = append(out, f)
 		}
 	}
 	return out

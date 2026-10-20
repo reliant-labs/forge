@@ -55,9 +55,12 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 	if main := readFileE2E(t, filepath.Join(projectDir, "cmd", "cmdcode", "main.go")); !strings.Contains(main, "cmd.Execute()") {
 		t.Errorf("main.go must be the bare composition root:\n%s", main)
 	}
-	serverGo := readFileE2E(t, filepath.Join(cmdDir, "server.go"))
-	if !strings.Contains(serverGo, "Serve(cmd.Context(), deps)") {
-		t.Errorf("`server` must run the graph's server root through Serve:\n%s", serverGo)
+	// `server` is the default root's command, generated with every other
+	// root's into roots_gen.go, and runs through serve.go's runRoot.
+	assertPathNotExistsE2E(t, filepath.Join(cmdDir, "server.go"))
+	rootsGo := readFileE2E(t, filepath.Join(cmdDir, "roots_gen.go"))
+	if !strings.Contains(rootsGo, `rootSpec{Name: "server",`) || !strings.Contains(rootsGo, "Run: (*app.Graph).RunServer}") {
+		t.Errorf("`server` must run the graph's server root through runRoot:\n%s", rootsGo)
 	}
 
 	// (2) Register a second binary AS CODE: replace the scaffolded

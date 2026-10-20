@@ -143,6 +143,34 @@ type Method struct {
 	// referenced as an unresolved identifier.
 	InputProtoFile  string
 	OutputProtoFile string
+	// Activity is the rpc's activity declaration as forge/pkg/activity
+	// resolves it from the compiled descriptor — the same Resolve the
+	// runtime interceptor calls, so forgeconv-activity-declared judges
+	// exactly what the interceptor will do. Nil on descriptors written
+	// before forge recorded it; the lint asks for a regenerate then.
+	Activity *MethodActivity `json:",omitempty"`
+}
+
+// MethodActivity is one rpc's resolved activity declaration
+// (forge/pkg/activity.Resolve / IsMutating), recorded at generate time.
+type MethodActivity struct {
+	// Mutating reports an rpc that must declare its activity (or none):
+	// not named with a read verb and not marked NO_SIDE_EFFECTS.
+	Mutating bool
+	// Declared reports any declaration: explicit, implied by CRUD shape,
+	// or none.
+	Declared bool `json:",omitempty"`
+	// None is the reason a `none` declaration gives.
+	None string `json:",omitempty"`
+	// Verb and TargetKind are the declared event's, empty for none.
+	Verb       string `json:",omitempty"`
+	TargetKind string `json:",omitempty"`
+	// Implied reports a declaration derived from forge's CRUD shape.
+	Implied bool `json:",omitempty"`
+	// Writer is INTERCEPTOR or HANDLER for a declared event.
+	Writer string `json:",omitempty"`
+	// Error is Resolve's error for a malformed declaration.
+	Error string `json:",omitempty"`
 }
 
 // MessageFieldDef represents a single field in a proto message definition.

@@ -10,14 +10,23 @@
 # golangci-lint, which is configured with no build tags. They were invisible to
 # every gate forge had.
 #
-# FOUR JOBS.
+# WHEN IT RUNS. Every push to main, nightly (nightly.yml, `select: all`), on
+# demand (workflow_dispatch), and on a pull request only when it carries the
+# `ci:e2e` label. It used to run on every pull request, and at 7-12 minutes a
+# shard (20 on average, 42 at worst, for the workflow) it was half of a pull
+# request's wall time. A pull request's budget is about five minutes (ci.yml,
+# "TWO TIERS"), so the suite moved to main, where a regression is bisected
+# from the merge that caused it. Label a pull request `ci:e2e` when it changes
+# what the suite exercises — scaffolding, generate, the frontend build — and
+# you want the verdict before merging rather than after.
 #
-#   compile   `go build`/`go vet` under the tag, as an early and independent
-#             signal: the cheapest and commonest breakage in a tagged file is
-#             that it stopped compiling (vet also type-checks the test files
-#             themselves). It gates nothing — the shards used to wait on it,
-#             which put its 3-5 minutes in front of every shard for a check
-#             the prepare job's own compile repeats anyway.
+# What stayed on every pull request is the compile check: ci.yml's
+# `e2e-compile` job runs `go vet -tags e2e` over the tagged packages, because
+# the cheapest and commonest breakage in a tagged file is that it stopped
+# compiling, and golangci-lint (no build tags) cannot see it. It used to be
+# this workflow's `compile` job.
+#
+# THREE JOBS.
 #
 #   prepare   BUILD ONCE, PLAN ONCE. Compiles the e2e test binary, forge, and
 #             the codegen plugins `forge tools install` provides; lists the
@@ -38,15 +47,15 @@
 #             to delete.
 #
 # WHICH TESTS. Exactly the e2e tests, by name: a test is an e2e test when its
-# name starts with TestE2E, and internal/e2eshard's naming guard (run by the
-# Test job on every PR) fails if a test in an e2e-tagged file is named
+# name starts with TestE2E, and internal/e2eshard's naming guard (run by
+# ci.yml's test-short shards on every PR) fails if a test in an e2e-tagged file is named
 # otherwise or a TestE2E test lives in an untagged file. So
 # `-test.list '^TestE2E'` on the compiled binary IS the tagged set. The
 # shards used to run all ~3,200 tests in the package — the ~3,100 untagged
 # ones a second time, after ci.yml's Test (internal/cli) job had already run
 # them under -race.
 #
-# A pull request (and a push to main) runs `-select pr`: every e2e test but
+# A push to main (and a labelled pull request) runs `-select pr`: every e2e test but
 # the TestE2ENightly* ones. nightly.yml calls this workflow with
 # `select: all`, which runs those too. Moving a test to nightly is a rename,
 # and its doc comment says why.
@@ -79,8 +88,11 @@ name: E2E Suite
 on:
   push:
     branches: [main]
+  # Gated on the `ci:e2e` label (see WHEN IT RUNS): `labeled` so that adding
+  # the label starts a run without another push.
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
   # nightly.yml: the whole suite, TestE2ENightly* included.
   workflow_call:
     inputs:
@@ -104,30 +116,20 @@ permissions:
 # finishes (ci.yml says why). The event is part of the group so nightly.yml's
 # call, which shares main's ref, never queues behind — or replaces — a push
 # run's pending one.
+#
+# Adding some OTHER label to a pull request is a `labeled` event too. Its run
+# gets a group of its own (the run id), so it cannot cancel a `ci:e2e` run in
+# progress; all of its jobs then skip.
 concurrency:
-  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}
+  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  compile:
-    name: compile (-tags e2e)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-      # Both, not just build: `go vet` type-checks the test files themselves
-      # (an unused import, a helper whose signature moved), which `go build`
-      # does not reach.
-      - name: go build -tags e2e
-        run: go build -tags e2e ./...
-      - name: go vet -tags e2e
-        run: go vet -tags e2e ./...
-
   prepare:
     name: prepare (build once, plan shards)
+    # Everything else needs this job, so this one condition gates the
+    # workflow: on a pull request without the label, all of it skips.
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
     runs-on: ubuntu-latest
     env:
       # THE shard count. The suite's matrix and the ledger both read it from
@@ -496,9 +498,11 @@ jobs:
     name: coverage ledger
     runs-on: ubuntu-latest
     needs: [prepare, suite]
-    # ALWAYS. The ledger's whole job is to say what did NOT run, which is
-    # most valuable exactly when something went wrong.
-    if: always()
+    # ALWAYS — unless prepare was skipped on purpose (a pull request without
+    # the `ci:e2e` label), when there is no run to account for. The ledger's
+    # whole job is to say what did NOT run, which is most valuable exactly
+    # when something went wrong.
+    if: ${{ always() && needs.prepare.result != 'skipped' }}
     env:
       # ── The skip ratchet ─────────────────────────────────────────────
       # A test that skips is a test that did not run, and this workflow

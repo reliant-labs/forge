@@ -3,6 +3,7 @@ package crud
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/uptrace/bun"
@@ -183,5 +184,41 @@ func TestCompositePK_FullLifecycleByTheWholeKey(t *testing.T) {
 	}
 	if err := repo.Update(ctx, db, &documentCounter{CompanyID: "zz", Kind: "none", NextValue: 1}); !errors.Is(err, orm.ErrNoRows) {
 		t.Errorf("Update of a missing key: err = %v, want orm.ErrNoRows", err)
+	}
+}
+
+// The composite-key by-PK statements bind every key column (F12.8's rule
+// for the single-key ones): one prepared statement per shape, however many
+// distinct keys pass through.
+func TestCompositePK_ByKeyStatementsBindTheirKey(t *testing.T) {
+	db, sqldb := newPgxRepoTestDB(t)
+	ctx := context.Background()
+	createDocumentCountersTable(t, db)
+	repo := NewRepo[documentCounter]()
+
+	const n = 15
+	for i := range n {
+		if err := repo.Create(ctx, db, &documentCounter{CompanyID: fmt.Sprintf("c%d", i), Kind: "invoice", NextValue: int64(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	preparedStatements(t, sqldb)
+	before := preparedStatements(t, sqldb)
+	for i := range n {
+		key := &documentCounter{CompanyID: fmt.Sprintf("c%d", i), Kind: "invoice"}
+		row, err := repo.GetByPK(ctx, db, key)
+		if err != nil {
+			t.Fatalf("GetByPK: %v", err)
+		}
+		row.NextValue++
+		if err := repo.Update(ctx, db, row); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if err := repo.DeleteByPK(ctx, db, key); err != nil {
+			t.Fatalf("DeleteByPK: %v", err)
+		}
+	}
+	if got := preparedStatements(t, sqldb) - before; got > 3 {
+		t.Fatalf("%d by-key calls over %d distinct keys prepared %d statements, want at most 3 (one per shape)", 3*n, n, got)
 	}
 }

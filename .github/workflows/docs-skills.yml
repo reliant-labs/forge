@@ -1,0 +1,60 @@
+# The checks a prose-only pull request still needs.
+#
+# ci.yml and library-lint.yml skip a pull request that touches only docs/**,
+# the root *.md files and the skills under internal/templates/project/skills/
+# (their `paths-ignore`). Skills are not inert prose: they are embedded in the
+# forge binary, and tests validate them — frontmatter, size, drift, the paths
+# they reference. internal/templates also reads docs/ (the Gateway API
+# version-drift check). So this workflow runs exactly the -short tests that
+# read those files, whenever any of them changes, in about two minutes.
+#
+# On a pull request that also changes Go, ci.yml runs these same packages in
+# its shards; this run is then a cheap duplicate, kept because a path filter
+# cannot say "only these paths" and the duplicate costs only runner time.
+name: Docs & skills
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "*.md"
+      - "internal/templates/project/skills/**"
+
+permissions:
+  contents: read
+
+# Cancel a superseded run on a pull request only (ci.yml says why); this
+# workflow runs on nothing else.
+concurrency:
+  group: docs-skills-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Test (-short, docs & skills readers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # ci.yml's -short scope, saved from main; restore only.
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-short-${{ runner.os }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+      # internal/templates and internal/checksums hold the skill validators
+      # and the scaffold ledger over embedded files; internal/cli's skill
+      # tests render, list and version-check them.
+      - name: Go tests (-short)
+        run: |
+          go test -short ./internal/templates/... ./internal/checksums/...
+          go test -short -run '(?i)skill' ./internal/cli/

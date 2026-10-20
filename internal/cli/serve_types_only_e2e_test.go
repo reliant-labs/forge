@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,42 +18,25 @@ import (
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
-// TestE2EUnmountedServiceIsFailClosed is the modern replacement for the
-// retired TestE2ERegistrationTypesOnlyService.
+// TestE2EUnmountedServiceIsFailClosed pins what happens to a service whose
+// proto generates and whose handler dir exists, but which a given process
+// does not mount — asked of the composition graph a new project composes
+// with:
 //
-// WHY IT WAS REWRITTEN RATHER THAN DELETED. The old test drove the
-// registration-in-code lifecycle: a user-owned pkg/app/services.go row list,
-// serviceRow<X> constructors, and BootstrapOnly's string-keyed registration
-// guard. That whole mechanism is gone — a fresh project's pkg/app/ holds only
-// CONVENTIONS.md, and mount selection is now compile-time typed via
-// (*app.Components).Mount<Svc> method expressions with no string→func table
-// anywhere on the run path. Its skip comment pointed at the services.go PARSER
-// unit tests (TestServiceRegistry_* in generate_serve_test.go) as residual
-// coverage, and those do still exist. But they cover the parser for MIGRATED
-// projects that still carry the file; they say nothing about the guarantee
-// that replaced the registration guard. Deleting outright would have left that
-// guarantee — the boot-time completeness gate — with no e2e coverage at all,
-// so this file now pins the current model instead.
-//
-// THE QUESTION IS THE SAME ONE, ASKED OF THE NEW MODEL: what happens to a
-// service whose proto generates and whose handler dir exists, but which a
-// given binary does not mount? Four answers, in order:
-//
-//	A. The typed mount method IS generated for it — being unmounted is a
-//	   composition choice, never a gap in what forge emitted.
+//	A. Its typed mount IS generated (MountOptions.Mount<Svc>) and its
+//	   audience's route set (UserRoutes) takes it as a Deps field — being
+//	   unmounted is a composition choice, never a gap in what forge emitted.
 //	B. Inventory lists it, so `forge project map` / `forge project audit`
 //	   still see it. Introspection is data-only and independent of mounting.
-//	C. FAIL-CLOSED: the all-services command sets RequireComplete: true, and
-//	   a binary that declares a service but does not mount it REFUSES TO
-//	   BOOT, naming the service. This is the guarantee that replaced the old
-//	   registration guard, and it is what makes a silent 404 in production
-//	   unreachable.
-//	D. A deliberate subset mount, with the gate off, boots fine and serves
-//	   ONLY the chosen service. The shipped per-service subcommand is exactly
-//	   this shape.
-//
-// C and D are two halves of one design and are only meaningful together: the
-// gate must refuse the accident and permit the intent.
+//	C. COMPLETE BY CONSTRUCTION: the default `server` root's API listener
+//	   serves UserRoutes, which mounts every user-audience service — there
+//	   is no list to forget a service from. (A service reachable from no
+//	   root at all is `forge lint --graph`'s finding, composition graph PR 5;
+//	   the boot-time RequireComplete gate belonged to the retired ServeSpec.)
+//	D. A deliberate subset — an owned value expression in compose.go that
+//	   hands the API listener a route set of its own — boots, serves ONLY
+//	   the chosen service, and never constructs the other one: a node no
+//	   root reaches is not built.
 func TestE2EUnmountedServiceIsFailClosed(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -130,22 +114,18 @@ message GetProjectResponse {
 	assertPathExistsE2E(t, filepath.Join(projectDir, "gen", "services", "project", "v1"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project"))
 
-	mounts := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "mounts_services_gen.go"))
+	mounts := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "routes_gen.go"))
 	for _, method := range []string{
-		"func (c *Components) MountProject(",
-		"func (c *Components) MountAPI(",
-		"func (c *Components) MountAll(",
+		"func (o MountOptions) MountProject(",
+		"func (o MountOptions) MountAPI(",
+		"func (r *UserRoutes) Register(",
 	} {
 		if !strings.Contains(mounts, method) {
-			t.Errorf("mounts_services_gen.go must generate %q:\n%s", method, mounts)
+			t.Errorf("routes_gen.go must generate %q:\n%s", method, mounts)
 		}
 	}
-	// The typed method expression is what a subset command names; it exists
-	// per-service in its own generated file next to the user-owned command.
-	projectMountExpr := readFileE2E(t, filepath.Join(projectDir,
-		"cmd", "tonly", "cmd", "services", "project_mount_gen.go"))
-	if !strings.Contains(projectMountExpr, "(*app.Components).MountProject") {
-		t.Errorf("per-service mount file must name the typed method expression:\n%s", projectMountExpr)
+	if !regexp.MustCompile(`(?s)type UserRoutesDeps struct \{[^}]*Project +\*project\.Service`).MatchString(mounts) {
+		t.Errorf("UserRoutes must take the project service as a Deps field:\n%s", mounts)
 	}
 
 	// ── B. Inventory lists it — introspection is independent of mounting ─
@@ -166,7 +146,7 @@ message GetProjectResponse {
 	runCmd(t, projectDir, "go", "build", "./...")
 
 	// One postgres for both boots below: the scaffolded config declares
-	// database_url REQUIRED and OpenInfra pings it, so "no database" is not
+	// database_url REQUIRED and the DB provider pings it, so "no database" is not
 	// a bootable configuration and neither phase could run without it.
 	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
@@ -174,62 +154,46 @@ message GetProjectResponse {
 	}
 	defer cleanup()
 
-	// ── C. FAIL-CLOSED: declared but not mounted refuses to boot ────────
-	//
-	// Carve the all-services command down to one service while leaving
-	// RequireComplete: true — precisely the mistake the gate exists to
-	// catch, and exactly what a half-finished refactor looks like. Boot must
-	// FAIL and must NAME the unmounted service; a server that came up here
-	// would answer production traffic for ProjectService with a 404.
-	serverCmdPath := filepath.Join(projectDir, "cmd", "tonly", "cmd", "server.go")
-	allServicesCmd := readFileE2E(t, serverCmdPath)
-	const mountAllLine = "Mount:           (*app.Components).MountAll,"
-	if !strings.Contains(allServicesCmd, mountAllLine) {
-		t.Fatalf("all-services command no longer names MountAll as expected:\n%s", allServicesCmd)
-	}
-	if !strings.Contains(allServicesCmd, "RequireComplete: true,") {
-		t.Fatalf("all-services command must set RequireComplete: true:\n%s", allServicesCmd)
-	}
-	incomplete := strings.Replace(allServicesCmd, mountAllLine,
-		"Mount:           (*app.Components).MountAPI,", 1)
-	if err := os.WriteFile(serverCmdPath, []byte(incomplete), 0o644); err != nil {
-		t.Fatalf("write carved server.go: %v", err)
-	}
+	// ── C. The default root mounts every user-audience service ──────────
+	fullBin := filepath.Join(projectDir, "tonly-full")
+	runCmd(t, projectDir, "go", "build", "-o", fullBin, "./cmd/tonly")
+	assertServesRoutes(t, fullBin, projectDir, dsn,
+		[]string{"/services.api.v1.APIService/Ping", "/services.project.v1.ProjectService/GetProject"}, nil)
 
-	incompleteBin := filepath.Join(projectDir, "tonly-incomplete")
-	runCmd(t, projectDir, "go", "build", "-o", incompleteBin, "./cmd/tonly")
-	bootOut, bootErr := runServerExpectingExit(t, incompleteBin, projectDir, dsn)
-	if bootErr == nil {
-		t.Fatalf("a binary that declares ProjectService but does not mount it MUST refuse to boot "+
-			"with RequireComplete: true; it started instead:\n%s", bootOut)
+	// ── D. A deliberate subset, as owned value expressions ──────────────
+	//
+	// The API listener takes any serverkit.Routes, and compose.go hands it
+	// one that mounts only the api service. forge keeps both edits (they
+	// are the author's), and the project service — reached by nothing now —
+	// is never constructed.
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
+		"\tRoutes    *UserRoutes\n", "\tRoutes    serverkit.Routes\n")
+	composePath := filepath.Join(projectDir, "internal", "app", "compose.go")
+	compose := readFileE2E(t, composePath)
+	routesKey := regexp.MustCompile(`Routes: +g\.UserRoutes\(\),`)
+	if !routesKey.MatchString(compose) {
+		t.Fatalf("compose.go's newAPIListener no longer hands the listener g.UserRoutes():\n%s", compose)
 	}
-	for _, want := range []string{
-		"completeness check",
-		"services.project.v1.ProjectService",
-	} {
-		if !strings.Contains(bootOut, want) {
-			t.Errorf("fail-closed boot error must contain %q:\n%s", want, bootOut)
+	compose = routesKey.ReplaceAllString(compose, `Routes: serverkit.RoutesFunc(func(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
+			return MountOptions{}.MountAPI(mux, g.API(), g.Log, opts...)
+		}),`)
+	for _, imp := range []string{`"net/http"`, `"connectrpc.com/connect"`, `"github.com/reliant-labs/forge/pkg/serverkit"`} {
+		if !strings.Contains(compose, imp) {
+			compose = strings.Replace(compose, "import (\n", "import (\n\t"+imp+"\n", 1)
 		}
 	}
-
-	// ── D. A deliberate subset mount boots, and serves only its service ──
-	//
-	// Same carved mount, gate turned off — the shape every per-service
-	// subcommand ships with. It must boot cleanly and mount EXACTLY the
-	// chosen service. The discriminator is the status code: a mounted
-	// Connect route rejects the unauthenticated call with 401 (the auth
-	// interceptor ran, so the route is registered), while an unmounted one
-	// is a plain 404 from the mux.
-	subset := strings.Replace(incomplete, "RequireComplete: true,", "RequireComplete: false,", 1)
-	if err := os.WriteFile(serverCmdPath, []byte(subset), 0o644); err != nil {
-		t.Fatalf("write subset server.go: %v", err)
+	if err := os.WriteFile(composePath, []byte(compose), 0o644); err != nil {
+		t.Fatalf("write carved compose.go: %v", err)
+	}
+	runCmd(t, projectDir, forgeBin, "generate")
+	if got := readFileE2E(t, composePath); !strings.Contains(got, "MountOptions{}.MountAPI(mux, g.API(), g.Log, opts...)") {
+		t.Fatalf("generate rewrote the owned value expression:\n%s", got)
 	}
 	subsetBin := filepath.Join(projectDir, "tonly-subset")
 	runCmd(t, projectDir, "go", "build", "-o", subsetBin, "./cmd/tonly")
-
-	assertSubsetMountServesOnly(t, subsetBin, projectDir, dsn,
-		"/services.api.v1.APIService/Ping",
-		"/services.project.v1.ProjectService/GetProject")
+	assertServesRoutes(t, subsetBin, projectDir, dsn,
+		[]string{"/services.api.v1.APIService/Ping"},
+		[]string{"/services.project.v1.ProjectService/GetProject"})
 }
 
 // assertAuditSeesService asserts that `forge project audit --json` reports the
@@ -270,12 +234,16 @@ func assertAuditSeesService(t *testing.T, projectDir, forgeBin, serviceName, rpc
 	t.Fatalf("audit shape must keep the unmounted service %q discoverable:\n%s", serviceName, out)
 }
 
-// runServerExpectingExit boots serverBin's all-services command and waits for
-// it to EXIT, returning its combined output. It is the fail-closed probe: the
-// gate rejects before the listener opens, so a refusal is a fast exit rather
-// than anything observable over HTTP. A server that stays up past the deadline
-// is itself the failure — it is killed and reported as still running.
-func runServerExpectingExit(t *testing.T, serverBin, projectDir, dsn string) (string, error) {
+// assertServesRoutes boots serverBin's `server`, then asserts it is
+// healthy, that every served path is registered, and that every notServed
+// path is not.
+//
+// The status code is the discriminator, and the distinction is sharp: a
+// registered Connect route runs the auth interceptor and rejects the
+// unauthenticated probe with 401, while an unregistered one never reaches a
+// handler and the mux answers 404. Asserting 401 (not 2xx) also keeps the
+// test honest about auth — nothing here disables authentication.
+func assertServesRoutes(t *testing.T, serverBin, projectDir, dsn string, served, notServed []string) {
 	t.Helper()
 	port := freePortE2E(t)
 
@@ -292,45 +260,6 @@ func runServerExpectingExit(t *testing.T, serverBin, projectDir, dsn string) (st
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		return out.String(), err
-	case <-time.After(60 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
-		return out.String(), nil // nil error == "it did not refuse", which the caller fails on
-	}
-}
-
-// assertSubsetMountServesOnly boots serverBin's carved all-services command
-// (subset mount, completeness gate off), then asserts it is healthy, that
-// mountedPath is served, and that unmountedPath is NOT.
-//
-// The status code is the discriminator, and the distinction is sharp: a
-// registered Connect route runs the auth interceptor and rejects the
-// unauthenticated probe with 401, while an unregistered one never reaches a
-// handler and the mux answers 404. Asserting 401 (not 2xx) also keeps the
-// test honest about auth — nothing here disables authentication.
-func assertSubsetMountServesOnly(t *testing.T, serverBin, projectDir, dsn, mountedPath, unmountedPath string) {
-	t.Helper()
-	port := freePortE2E(t)
-
-	cmd := exec.Command(serverBin, "server")
-	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL="+dsn,
-		"ENVIRONMENT=development",
-	)
-	var out strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start subset server: %v", err)
-	}
 	killed := false
 	defer func() {
 		if !killed {
@@ -341,19 +270,20 @@ func assertSubsetMountServesOnly(t *testing.T, serverBin, projectDir, dsn, mount
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if !waitForServing(t, base, 30*time.Second) {
-		t.Fatalf("subset mount must boot with the completeness gate off; it never became ready\noutput:\n%s", out.String())
+		t.Fatalf("server never became ready\noutput:\n%s", out.String())
+	}
+	for _, p := range served {
+		if code := postStatus(t, base+p); code != http.StatusUnauthorized {
+			t.Errorf("route %s = %d, want 401 (route registered, auth interceptor rejects)\noutput:\n%s", p, code, out.String())
+		}
+	}
+	for _, p := range notServed {
+		if code := postStatus(t, base+p); code != http.StatusNotFound {
+			t.Errorf("route %s = %d, want 404 (never registered on the mux)\noutput:\n%s", p, code, out.String())
+		}
 	}
 
-	if code := postStatus(t, base+mountedPath); code != http.StatusUnauthorized {
-		t.Errorf("mounted route %s = %d, want 401 (route registered, auth interceptor rejects)\noutput:\n%s",
-			mountedPath, code, out.String())
-	}
-	if code := postStatus(t, base+unmountedPath); code != http.StatusNotFound {
-		t.Errorf("unmounted route %s = %d, want 404 (never registered on the mux)\noutput:\n%s",
-			unmountedPath, code, out.String())
-	}
-
-	// A carved process must still shut down cleanly.
+	// The process must still shut down cleanly.
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
 	}
@@ -363,13 +293,13 @@ func assertSubsetMountServesOnly(t *testing.T, serverBin, projectDir, dsn, mount
 	case err := <-done:
 		killed = true
 		if err != nil {
-			t.Fatalf("subset server did not shut down cleanly on SIGTERM: %v\noutput:\n%s", err, out.String())
+			t.Fatalf("server did not shut down cleanly on SIGTERM: %v\noutput:\n%s", err, out.String())
 		}
 	case <-time.After(30 * time.Second):
 		_ = cmd.Process.Kill()
 		<-done
 		killed = true
-		t.Fatalf("subset server did not exit within 30s of SIGTERM\noutput:\n%s", out.String())
+		t.Fatalf("server did not exit within 30s of SIGTERM\noutput:\n%s", out.String())
 	}
 }
 

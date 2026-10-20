@@ -3237,4 +3237,3 @@ func runCorpusCmdOK(t *testing.T, dir, name string, args ...string) string {
 	}
 	return out
 }
-

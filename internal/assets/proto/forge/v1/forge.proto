@@ -544,6 +544,28 @@ message EnvVarAlias {
   // default) is read silently: NODE_ENV is somebody else's convention, not
   // a migration in flight, and a notice at every start would be noise.
   bool deprecated = 2;
+
+  // Values maps the alias's values onto the FIELD's: the alias is read only
+  // when it is set to one of the keys, and the field takes the mapped value.
+  // Any other value — and unset, and "" — reads as the alias being unset, so
+  // the next name is tried.
+  //
+  //   string level = 1 [(forge.v1.config) = {
+  //     env_var: "APP_LOG_LEVEL"
+  //     env_var_aliases: [{name: "DEBUG", values: [{key: "true", value: "debug"}, {key: "1", value: "debug"}]}]
+  //   }];
+  //
+  // It is for a variable whose CONVENTION implies one of this field's values
+  // without carrying it: DEBUG=true meaning a debug log level, CI=true a
+  // non-interactive mode. Such a variable is not this field's to parse —
+  // DEBUG=express:* belongs to another tool — so a value outside the map is
+  // ignored rather than refused, which is the one place the config loader
+  // ignores a value it was handed. Keys match exactly (no trimming, no case
+  // folding: the convention decides its spelling). Each mapped value must be
+  // valid for the field (its kind and allowed_values); `forge generate`
+  // refuses one that is not. A variable your own project owns needs no map:
+  // name its values after the field's and make it env_var or a plain alias.
+  map<string, string> values = 3;
 }
 
 // BinaryConfigOptions binds a config message to the BINARY that loads it,

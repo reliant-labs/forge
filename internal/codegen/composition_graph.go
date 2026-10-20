@@ -151,6 +151,12 @@ type graphNode struct {
 	Services []*graphNode
 	// Pos orders providers by their declaration in internal/app.
 	Pos int
+	// File and Line locate a provider's func; Standby and AuthAudience are
+	// its //forge:standby and //forge:audience directives (graphProvider).
+	File         string
+	Line         int
+	Standby      bool
+	AuthAudience string
 }
 
 // graphRoot is one root: a struct in internal/app whose fields select the
@@ -187,11 +193,53 @@ type graphProvider struct {
 	DepsKeys map[string]bool
 	Imports  map[string]string // the declaring file's imports, alias → path
 	File     string
+	Line     int
 	Pos      int
+	// Standby is `//forge:standby` on the provider func: a provider kept
+	// ready for components to come, which `forge lint --graph` does not
+	// require a root to reach.
+	Standby bool
+	// Audience is `//forge:audience <name>` on the provider func: the
+	// trust domain an authenticator node authenticates, which `forge lint
+	// --graph` compares with the audience of every service a listener
+	// serves through a chain over it.
+	Audience string
 }
 
 // rootDirectiveRE matches `//forge:root` with an optional name and options.
 var rootDirectiveRE = regexp.MustCompile(`^//\s*forge:root(?:\s+([A-Za-z][\w-]*))?((?:\s+\S+)*)\s*$`)
+
+// standbyDirectiveRE and audienceDirectiveRE read a provider func's doc.
+var (
+	standbyDirectiveRE  = regexp.MustCompile(`^//\s*forge:standby\b`)
+	audienceDirectiveRE = regexp.MustCompile(`^//\s*forge:audience\s+([a-z][a-z0-9_-]*)\s*$`)
+)
+
+// hasDirective reports whether doc carries a line matching re.
+func hasDirective(doc *ast.CommentGroup, re *regexp.Regexp) bool {
+	if doc == nil {
+		return false
+	}
+	for _, c := range doc.List {
+		if re.MatchString(c.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// audienceDirective is the `//forge:audience <name>` argument, or "".
+func audienceDirective(doc *ast.CommentGroup) string {
+	if doc == nil {
+		return ""
+	}
+	for _, c := range doc.List {
+		if m := audienceDirectiveRE.FindStringSubmatch(c.Text); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
 
 // commandWordRE is one word of a root's command path.
 var commandWordRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -262,7 +310,10 @@ func discoverAppDecls(projectDir string) (providers []graphProvider, roots []gra
 				DepsKeys: depsStructKeys(st),
 				Imports:  imports,
 				File:     rel,
+				Line:     fset.Position(fd.Pos()).Line,
 				Pos:      pos,
+				Standby:  hasDirective(fd.Doc, standbyDirectiveRE),
+				Audience: audienceDirective(fd.Doc),
 			})
 		}
 	}

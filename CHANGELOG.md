@@ -649,6 +649,22 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **Entities are named from their table, and a CRUD rpc that matches no table
+  is refused.** A CRUD rpc's entity found its table only as
+  `Pluralize(snake(<E>))`, so a singular-named table (`daemon_attachment`,
+  `provider_backoff`) matched nothing and its `Get<E>` silently became a
+  pb-through stub. The join now matches a table by its own entity name (its
+  singular, camel-cased), then the plural and the singular of `<E>`; a table
+  whose name derives to the wrong thing declares what it holds with
+  `COMMENT ON TABLE t IS 'forge:entity-name=<Name>'`, which also names its
+  store. A unary, unmarked CRUD-named rpc whose entity has a wire message but
+  matches no table, and that no handler implements by hand (its only method
+  is forge's unwired stub, or none), now fails `forge generate` (under the
+  CRUD step's gate), naming the rpc and the tables it looked for. The seed scope and the
+  ownership audit look for the singular too. **Upgrading:** a project with
+  such an rpc gets the refusal on its next generate: write the migration,
+  declare `forge:entity-name`, or mark the rpc `// forge:custom` (what it
+  already was in effect).
 - **Continuous profiling captures CPU and the live heap by default; allocation,
   goroutine, mutex and block profiles are opt-in (`forge/pkg/observe`).** The
   profiler still takes a 10s CPU profile every minute, but now snapshots the

@@ -22,6 +22,10 @@ type link struct {
 	latency time.Duration
 	silent  atomic.Bool
 	closed  atomic.Bool
+	// refuse drops every NEW connection on accept: a client that is cut off
+	// from the database cannot open a fresh session. Existing connections
+	// are untouched.
+	refuse atomic.Bool
 
 	mu    sync.Mutex
 	conns []net.Conn
@@ -53,6 +57,10 @@ func newLink(t *testing.T, dsn string, latency time.Duration) (*link, string) {
 			c, err := ln.Accept()
 			if err != nil {
 				return
+			}
+			if k.refuse.Load() {
+				_ = c.Close()
+				continue
 			}
 			s, err := net.Dial("tcp", upstream)
 			if err != nil {

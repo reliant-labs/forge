@@ -16,6 +16,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1m` to `24h`. It renders `FORGE_PROFILES` and `FORGE_PROFILES_HEAP_INTERVAL`
   on every runtime that runs a process; a value the workload's own `env` sets
   wins, and it never turns profiling on where the env has it off.
+- **Fast/slow test tiers: `testkit.Slow`, `forge lint --slow-tests`,
+  `forge ci test-budget`.** A test is fast (it runs in the blocking
+  `go test -short` tier) unless it declares otherwise:
+  `testkit.Slow(t, "<what makes it slow>", testkit.Inputs("deploy/**"))`
+  skips under `-short` and in the integration lane, runs in the full tier,
+  and says so in its skip message. It sits on Go's own `-short`, so plain
+  `go test`, IDEs and the test cache are unchanged; a plain
+  `if testing.Short() { t.Skip(...) }` still counts. `Inputs` names the
+  files a slow test depends on, read from source (string literals) by the
+  new `internal/linter/slowtest` analyzer, for a later affected-selection
+  tool. Two guards enforce the marker by measurement:
+  `forge lint --slow-tests` (opt-in for now) flags a test whose own code — its body,
+  `_test.go` helpers, helper files that import `testing`, across packages
+  via analysis facts — execs `go`/`forge`/`kcl`/`node`/`npm`/`git`/`docker`/…,
+  drives containers or dials an external host with no `testing.Short` check
+  on the way; `go test -short -json ./... | forge ci test-budget` fails on
+  any unmarked top-level test over `--budget` (default 2s), with file:line.
+- **The interceptor chain has a `Deadline` slot, ahead of `Auth`
+  (`forge/pkg/serverkit`).** `ChainDeps.Deadline` takes a `serverkit.Deadline`
+  — the slot's configuration and its interceptor in one value — and runs right
+  after metrics and right before auth, so the RPC's deadline bounds
+  authentication: a stalled token-store query or introspection call ends as
+  `DeadlineExceeded` instead of holding the request. The default (a nil slot)
+  bounds every unary RPC by `DefaultUnaryDeadline` (30s), leaves streams
+  unbounded, and logs a unary RPC still running after `DefaultSlowAfter` (10s)
+  at WARN, then every `DefaultSlowRepeat` (30s), then once more when it
+  completes. `Deadline.Procedures` overrides the budget per procedure (zero or
+  negative is none; an entry bounds a stream too), `Unary` moves the default,
+  `SlowAfter`/`SlowRepeat` the watchdog, and `OnSlow` replaces its log (to
+  count slow calls as well). The server's budget is a ceiling: a client's
+  shorter deadline still applies, a longer one does not lift it.
+  `serverkit.NoDeadline` drops the slot; any other interceptor in it replaces
+  forge's and runs in the same pre-auth position. `observe.Deps.Deadline` is
+  the same position in `observe.Chain`. NewChain rejects a `Procedures` key
+  that is not a procedure (`/pkg.v1.Service/Method`). Behaviour change: an
+  existing chain gets the 30s unary default on upgrade with no edit — the
+  `migrations/v0.1.47` playbook says how to declare longer budgets.
+- **`(forge.v1.method).timeout` is enforced.** It was documented as the rpc's
+  server-side timeout and read by nothing. `forge generate` now projects it
+  into `pkg/middleware/procedures_gen.go` as `ProcedureDeadlines`, and the
+  scaffolded chain passes
+  `serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. An existing
+  project adopts it by adding
+  that one `Deadline:` line to its owned `serve.go` / `providers.go` chain.
+- **A typed activity stream: an rpc declares the activity event it records,
+  and one interceptor writes it** (`forge/pkg/activity`).
+  - **Declaring.** An rpc declares its event with
+    `(forge.v1.method).activity`, giving
+    `verb`, `target {kind, id, label}`, `env`, `scope` and `detail`. Field
+    paths resolve against the request, or against the response when they start
+    with `response.`.
+  - **Opting out.** `activity: { none: "<why>" }` records that a mutating rpc
+    changes nothing worth an event.
+  - **CRUD needs no option.** A `Create<E>`, `Update<E>` or `Delete<E>` rpc with
+    forge's CRUD shape implies `create`, `update` or `delete` on `snake(E)`.
+  - **One resolver.** `activity.Resolve` is the only code that interprets a
+    declaration. `activity.IsMutating` decides which rpcs must declare one:
+    every rpc except those named with a read verb (`Get`, `List`, `Watch`,
+    `Search`, `Query`, `Count`, `Describe`, `BatchGet`) and those marked
+    `idempotency_level = NO_SIDE_EFFECTS`.
+  - **The interceptor.** `activity.Interceptor` fills the new
+    `serverkit.ChainDeps.Activity` slot, after auth and next to the handler. It
+    reads the declaration from the method descriptor. When the handler
+    succeeds, it writes the event best-effort, taking the actor from the
+    caller's claims and `via` from the `Forge-Via` header.
+  - **Failures and defaults.** A failed write is logged and counted
+    (`forge_activity_write_failures_total`) and never fails the rpc. The default
+    slot logs events without storing them. `serverkit.NoActivity` drops the
+    slot.
+  - **Transactional writes.** `writer: ACTIVITY_WRITER_HANDLER` hands the write
+    to the handler: it calls `activity.Record` inside its `RunTx`, so the event
+    commits or rolls back with the mutation. `activity.Record` is also the
+    explicit write for actors that are not rpcs: a converger, an alert
+    transition, CI.
+  - **Storage.** `activity.NewStore(db)` writes and lists the `activity_events`
+    table, whose DDL is `activity.SchemaSQL`. `List` filters by actor, verb,
+    target, env, via and time, and pages by keyset. The store writes through
+    `*orm.Client`, so a write inside `RunTx` joins the transaction.
+  - **Docs.** The new `activity` skill covers all of the above.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);
@@ -288,6 +367,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Parallel `forge cluster up`s no longer lose each other's kubectl
+  context.** `k3d cluster create`, `k3d kubeconfig merge`,
+  `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
+  kubeconfig with no lock, so two forge processes creating clusters at once
+  dropped one context, and the loser failed on `context "k3d-<name>" does not
+exist` for a running cluster. forge now creates with
+  `--kubeconfig-update-default=false --kubeconfig-switch-context=false` and
+  makes every kubeconfig write under one cross-process flock beside the file
+  (`<kubeconfig>.forge.lock`). The declarative cluster path also stops
+  silently switching your current context to the cluster it created.
+- **A graph-composed project's scaffolded e2e harness starts `<bin> server`.**
+  It ran `<bin> <svc>`, a per-service command that only legacy Components
+  projects have, so every new project's e2e suite failed with `unknown
+command`.
+- **`forge generate` drops a removed Deps key from a compose.go construction
+  of a package that is no longer a graph node** (marked
+  `//forge:external-component` or `//forge:not-a-component`). The graph
+  reconcile only measured node constructions, so the dead key failed every
+  generate's validate build (#747, again in graph mode); the construction is
+  kept and reported with the graph's remedy.
 - **`forge ci verify-generated` and `forge generate --check` never write the
   checkout.** Both regenerated the caller's own tree and then read
   `git status`, so a concurrent gate held every reader of the tree back for

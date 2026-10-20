@@ -35,7 +35,6 @@ import (
 // per-verb, so a single fixture that exercises every verb costs roughly what
 // one would.
 func TestE2EAddVerbsProduceABuildableTree(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -45,6 +44,7 @@ func TestE2EAddVerbsProduceABuildableTree(t *testing.T) {
 		"--service", "widget",
 	)
 	projectDir := filepath.Join(dir, "addverbs")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// ── the add verbs ────────────────────────────────────────────────
 	runCmd(t, projectDir, forgeBin, "scaffold", "worker", "nightly",

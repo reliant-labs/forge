@@ -1,0 +1,35 @@
+# TEMPORARY — flake hunt. Runs only on its own draft PR; never merged.
+name: zz flake hunt
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [".github/workflows/zz-flake-hunt.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  hostslot:
+    name: hostslot ${{ matrix.i }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        i: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: hostslot under whole-tier load
+        run: |
+          set +e
+          go test -c -o hostslot.test ./pkg/hostslot/
+          (go test -short -count=1 ./internal/... > load.log 2>&1 &)
+          for n in $(seq 1 6); do
+            ./hostslot.test -test.count=300 -test.run '^TestAcquire_NeverMoreThanNHolders$' > hs-$n.log 2>&1
+            echo "batch $n exit $?"
+            grep -E -B2 -A6 'FAIL|hostslot_test.go' hs-$n.log | head -40
+          done

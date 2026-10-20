@@ -279,7 +279,8 @@ func ParseORMEntities(projectDir string) ([]EntityDef, error) {
 }
 
 // ParseUnmatchedCRUDRPCs lists the managed services' CRUD-named rpcs whose
-// entity has a wire message but no table (UnmatchedCRUDRPCs). Empty when the
+// entity has a wire message but no table (UnmatchedCRUDRPCs) and that no
+// handler implements by hand (WithoutHandImplemented). Empty when the
 // descriptor or the migrations do not exist yet.
 func ParseUnmatchedCRUDRPCs(projectDir string) ([]UnmatchedCRUDRPC, error) {
 	desc, err := loadDescriptor(projectDir)
@@ -290,7 +291,7 @@ func ParseUnmatchedCRUDRPCs(projectDir string) ([]UnmatchedCRUDRPC, error) {
 	if err != nil {
 		return nil, err
 	}
-	return UnmatchedCRUDRPCs(tables, ManagedServices(desc.Services)), nil
+	return WithoutHandImplemented(projectDir, UnmatchedCRUDRPCs(tables, ManagedServices(desc.Services))), nil
 }
 
 // ParseConfigProto reads config messages from the forge descriptor,

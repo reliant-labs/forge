@@ -466,8 +466,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   whose name derives to the wrong thing declares what it holds with
   `COMMENT ON TABLE t IS 'forge:entity-name=<Name>'`, which also names its
   store. A unary, unmarked CRUD-named rpc whose entity has a wire message but
-  matches no table now fails `forge generate` (under the CRUD step's gate),
-  naming the rpc and the tables it looked for. The seed scope and the
+  matches no table, and that no handler implements by hand (its only method
+  is forge's unwired stub, or none), now fails `forge generate` (under the
+  CRUD step's gate), naming the rpc and the tables it looked for. The seed scope and the
   ownership audit look for the singular too. **Upgrading:** a project with
   such an rpc gets the refusal on its next generate: write the migration,
   declare `forge:entity-name`, or mark the rpc `// forge:custom` (what it

@@ -108,3 +108,38 @@ func TestStepCRUDHandlers_RefusesACRUDRPCWithNoTable(t *testing.T) {
 		t.Errorf("the refusal must name the rpc and the tables it looked for:\n%v", stepErr)
 	}
 }
+
+// A CRUD-named rpc over no table that the handler implements by hand is
+// custom in fact (reliant: ListArchivedChats, GetRun): nothing is silent
+// about it, so it is not refused — only one left as forge's stub is.
+func TestStepCRUDHandlers_HandImplementedRPCWithNoTableIsFine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("applies the fixture's migrations to a shadow postgres; runs in task test")
+	}
+	wire := daemonAttachmentWire()
+	wire["DaemonLease"] = []codegen.MessageFieldDef{{Name: "id", ProtoType: "string"}}
+	dir := writeDaemonProject(t, []codegen.Method{
+		{Name: "GetDaemonLease", InputType: "GetDaemonLeaseRequest", OutputType: "GetDaemonLeaseResponse"},
+	}, wire)
+	if err := os.WriteFile(filepath.Join(dir, "internal", "handlers", "daemon", "rpc_get_daemon_lease.go"), []byte(`package daemon
+
+// GetDaemonLease is computed from the scheduler, not a table.
+func (s *Service) GetDaemonLease() {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	services, err := codegen.ParseServicesFromProtos("", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &pipelineContext{ProjectDir: dir, ModulePath: "example.com/app", Services: services}
+	var stepErr error
+	out := captureStdout(t, func() {
+		if stepErr = stepInternalDBORM(ctx); stepErr == nil {
+			stepErr = stepCRUDHandlers(ctx)
+		}
+	})
+	if stepErr != nil {
+		t.Fatalf("a hand-implemented rpc over no table must not be refused: %v\n%s", stepErr, out)
+	}
+}

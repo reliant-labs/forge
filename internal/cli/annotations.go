@@ -396,7 +396,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      schemadef.TableMarkerEntityName,
 			AppliesTo: "table",
-			Effect:    "Names the entity the TABLE holds, for a table whose name derives to something else. Without it the entity is named from the table — the singular, camel-cased (`message_content_blocks` → MessageContentBlock, `daemon_attachment` → DaemonAttachment) — and a CRUD rpc's entity <E> finds its table by that name, by the plural of <E> (`bookmarks`) or by its singular (`daemon_attachment`). Declared, the store is named <Name> and a `Get<Name>`/`List<Names>`/… rpc over a <Name> message is CRUD over this table. A CRUD-named rpc whose entity has a wire message but matches no table fails `forge generate` by name rather than becoming a stub — this declaration is one of its fixes.",
+			Effect:    "Names the entity the TABLE holds, for a table whose name derives to something else. Without it the entity is named from the table — the singular, camel-cased (`message_content_blocks` → MessageContentBlock, `daemon_attachment` → DaemonAttachment) — and a CRUD rpc's entity <E> finds its table by that name, by the plural of <E> (`bookmarks`) or by its singular (`daemon_attachment`). Declared, the store is named <Name> and a `Get<Name>`/`List<Names>`/… rpc over a <Name> message is CRUD over this table. A CRUD-named rpc whose entity has a wire message but matches no table, and that no handler implements by hand, fails `forge generate` by name rather than serving forge's Unimplemented stub — this declaration is one of its fixes.",
 			Placement: "COMMENT ON TABLE <table> IS 'forge:entity-name=<Name>'; in a migration — on the TABLE, not a column.",
 			Example:   "COMMENT ON TABLE tbl_widget_v2 IS 'forge:entity-name=Widget';",
 		},

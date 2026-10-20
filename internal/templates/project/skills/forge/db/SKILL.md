@@ -50,7 +50,7 @@ composite or no primary key is reported and skipped.
 1. **Wire truth** — a service proto declares the CRUD RPCs (`Create<X>` / `Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`).
 2. **Storage truth** — the applied schema has the matching table: the one whose entity name is `<X>` (its singular, or a `COMMENT ON TABLE t IS 'forge:entity-name=<X>'` declaration), else `<x>s` or `<x>` (`Bookmark` → `bookmarks`, `DaemonAttachment` → `daemon_attachment`).
 
-A CRUD RPC whose entity has a wire message but no table **fails `forge generate`** by name — write the migration, declare `forge:entity-name`, or mark the rpc `// forge:custom`. One with no wire message generates **nothing** — honest stubs, no pages. Tables without CRUD RPCs get a store and nothing on the wire: yours to call from hand-written rpcs, invisible to the CRUD/frontend projections.
+A CRUD RPC whose entity has a wire message but no table, and no hand-written implementation, **fails `forge generate`** by name — write the migration, declare `forge:entity-name`, or mark the rpc `// forge:custom`. One with no wire message generates **nothing** — honest stubs, no pages. Tables without CRUD RPCs get a store and nothing on the wire: yours to call from hand-written rpcs, invisible to the CRUD/frontend projections.
 
 ## Starting a new entity
 

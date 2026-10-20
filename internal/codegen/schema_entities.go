@@ -281,6 +281,7 @@ func EntityTableCandidates(entity string) []string {
 // table: forge would stub it, and nothing in the tree would say why.
 type UnmatchedCRUDRPC struct {
 	Service, RPC, Entity string
+	GoName               string   // the rpc's *Service method name
 	Looked               []string // the table names it looked for
 }
 
@@ -312,8 +313,39 @@ func UnmatchedCRUDRPCs(tables []schemadef.Table, services []ServiceDef) []Unmatc
 			if _, ok := idx.lookup(name); ok || !declaresWireMessage(svc, name) {
 				continue
 			}
-			out = append(out, UnmatchedCRUDRPC{Service: svc.Name, RPC: m.Name, Entity: name, Looked: EntityTableCandidates(name)})
+			out = append(out, UnmatchedCRUDRPC{Service: svc.Name, RPC: m.Name, Entity: name, GoName: m.GoName(), Looked: EntityTableCandidates(name)})
 		}
+	}
+	return out
+}
+
+// WithoutHandImplemented drops the rpcs projectDir's handler packages
+// implement by hand: a CRUD-named rpc over no table that the author wrote
+// (a computed ListArchivedChats, a GetRun over a workflow engine) is
+// custom in fact, and nothing about it is silent. What stays is an rpc
+// with no method at all, or only forge's `forge:gen unwired-stub` — the
+// one that would serve Unimplemented with nothing saying why.
+func WithoutHandImplemented(projectDir string, unmatched []UnmatchedCRUDRPC) []UnmatchedCRUDRPC {
+	type scan struct{ existing, stubs map[string]bool }
+	dirs := map[string]scan{}
+	var out []UnmatchedCRUDRPC
+	for _, u := range unmatched {
+		sc, ok := dirs[u.Service]
+		if !ok {
+			if res, err := ResolveServiceComponent(projectDir, u.Service); err == nil {
+				if existing, err := ScanExistingMethods(res.Dir, false); err == nil {
+					for name := range ScanHandlersCrudMethods(res.Dir) {
+						existing[name] = true
+					}
+					sc = scan{existing: existing, stubs: ScanUnwiredStubMethods(res.Dir)}
+				}
+			}
+			dirs[u.Service] = sc
+		}
+		if sc.existing[u.GoName] && !sc.stubs[u.GoName] {
+			continue
+		}
+		out = append(out, u)
 	}
 	return out
 }
@@ -325,7 +357,7 @@ func UnmatchedCRUDRPCsError(unmatched []UnmatchedCRUDRPC) error {
 		return nil
 	}
 	var b strings.Builder
-	b.WriteString("CRUD-named rpcs whose entity has a wire message but no table — forge would stub them with nothing saying why:\n")
+	b.WriteString("CRUD-named rpcs whose entity has a wire message but no table, and no implementation but forge's Unimplemented stub — nothing would say why:\n")
 	for _, u := range unmatched {
 		fmt.Fprintf(&b, "  - %s.%s: entity %s, no table %s\n", u.Service, u.RPC, u.Entity, strings.Join(u.Looked, " or "))
 	}

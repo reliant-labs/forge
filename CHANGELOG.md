@@ -779,8 +779,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   `<E>Constraint*` constants follow); an integer column is as wide as it is
   declared (`INTEGER` → `int32`, `SMALLINT` → `int16`, `BIGINT` → `int64` —
   it was always `int64`); a `jsonb`/`json` column is `json.RawMessage` (nil
-  for NULL), not `string`. `COMMENT ON COLUMN t.c IS
-  'forge:go-type=<type>'` declares the Go type of one column — a named enum
+  for NULL), not `string`.
+  `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares the Go type of
+  one column — a named enum
   over an integer, `map[string]any` over json, `<path>[;<pkg>].<Type>` —
   with no generated wire conversion (a CRUD rpc carrying it fails generate
   by name). The CRUD conversions follow: the wire's int32 enum number is

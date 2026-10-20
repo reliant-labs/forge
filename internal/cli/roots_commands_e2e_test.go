@@ -176,16 +176,23 @@ worker_args = _tick.args
 // status, stops it with SIGTERM and returns its output.
 func bootRoot(t *testing.T, bin, projectDir, dsn, command string, want map[string]int) string {
 	t.Helper()
+	return bootRootArgs(t, bin, projectDir, []string{"DATABASE_URL=" + dsn}, []string{command}, want)
+}
+
+// bootRootArgs is bootRoot for the command line args, with env added to the
+// process's environment.
+func bootRootArgs(t *testing.T, bin, projectDir string, env, args []string, want map[string]int) string {
+	t.Helper()
+	command := strings.Join(args, " ")
 	port := freePortE2E(t)
-	cmd := exec.Command(bin, command)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL="+dsn,
 		"ENVIRONMENT=development",
 		"PPROF_ADDR=",
 		"PRE_STOP_DELAY=-1s",
-	)
+	), env...)
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out

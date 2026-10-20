@@ -51,7 +51,13 @@ func writeRootsKCLProject(t *testing.T, main string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	module += RootsKCL(roots)
+	return writeRootsKCLProjectModule(t, module+RootsKCL(roots), main)
+}
+
+// writeRootsKCLProjectModule writes a KCL project holding module as
+// config_gen.k, a stub forge package and main.
+func writeRootsKCLProjectModule(t *testing.T, module, main string) string {
+	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"kcl.mod":                 "[package]\nname = \"roots_proof\"\n",

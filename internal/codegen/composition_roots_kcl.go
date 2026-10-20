@@ -27,9 +27,27 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
+// RootsEnv is how config_gen.k projects a root's process env: the KCL type
+// of the config instance a workload's env is built from, and the lambda that
+// projects it. The single-AppConfig project's is AppConfig/appConfigEnvMap; a
+// binary that binds config per command projects through its process selector
+// (<bin>ProcessEnvMap), which also takes the process's argv — a root's args.
+type RootsEnv struct {
+	ConfigType, EnvMap string
+	Argv               bool
+}
+
+// appConfigRootsEnv is the single-AppConfig project's.
+var appConfigRootsEnv = RootsEnv{ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"}
+
 // RootsKCL renders the ROOTS block appended to config_gen.k, or "" when the
 // roots' reach is unknown (no root config message) or there are none.
-func RootsKCL(roots []GraphRoot) string {
+func RootsKCL(roots []GraphRoot) string { return RootsKCLFor(roots, appConfigRootsEnv) }
+
+// RootsKCLFor is RootsKCL for a project whose processes' env is projected
+// through env: each root's env and secrets are the leaves it reaches across
+// every config its process loads.
+func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 	if len(roots) == 0 {
 		return ""
 	}
@@ -40,11 +58,11 @@ func RootsKCL(roots []GraphRoot) string {
 	}
 	sorted := append([]GraphRoot(nil), roots...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-	data := rootsKCLData{}
+	data := rootsKCLData{ConfigType: env.ConfigType, EnvMap: env.EnvMap, Argv: env.Argv}
 	for _, r := range sorted {
 		v := rootKCLView{Name: strconv.Quote(r.Name), Args: kclStringList(r.Args)}
 		var env, secrets, required []string
-		for _, l := range r.Config {
+		for _, l := range r.Leaves() {
 			if l.EnvVar == "" {
 				continue
 			}
@@ -69,7 +87,11 @@ func RootsKCL(roots []GraphRoot) string {
 }
 
 // rootsKCLData is config-roots.k.tmpl's input: each root's KCL literals.
-type rootsKCLData struct{ Roots []rootKCLView }
+type rootsKCLData struct {
+	Roots              []rootKCLView
+	ConfigType, EnvMap string
+	Argv               bool
+}
 
 type rootKCLView struct{ Name, Args, Env, Secrets, Required string }
 
@@ -85,6 +107,25 @@ func DefaultServerRoot(fields []ConfigField) GraphRoot {
 			path = f.KCLBlock + "." + f.Name
 		}
 		r.Config = append(r.Config, ConfigLeaf{Path: path, EnvVar: f.EnvVar, Sensitive: f.Sensitive, Required: f.Required})
+	}
+	return r
+}
+
+// DefaultServerRootLoads is DefaultServerRoot for a binary that binds config
+// per command: the default `server` reaches every field of its root config
+// and of each other config a process running `server` loads.
+func DefaultServerRootLoads(rootFields []ConfigField, perBinary []BinaryConfigFields, binary, rootMessage string) GraphRoot {
+	r := DefaultServerRoot(rootFields)
+	for _, bc := range perBinary {
+		if bc.Binary != binary || bc.MessageName == rootMessage {
+			continue
+		}
+		in := configInput{msg: &ConfigMessage{Name: bc.MessageName, Binary: bc.Binary, Command: bc.Command, Subtrees: bc.Subtrees}}
+		if !in.loadedAt(r.Args) {
+			continue
+		}
+		all := DefaultServerRoot(bc.Fields).Config
+		r.Loads = append(r.Loads, RootConfigLoad{Message: bc.MessageName, Config: all, Read: len(all) > 0, Command: bc.Command, Subtrees: bc.Subtrees})
 	}
 	return r
 }

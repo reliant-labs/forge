@@ -14,7 +14,7 @@ import (
 // (PASS 1, additive). Scaffold-once owned files (providers.go, post_build.go)
 // are written before the generated injector so its Infra-field resolution
 // sees the Infra struct on the first pass too.
-func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
+func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums, roots *[]codegen.GraphRoot) error {
 	// NO len()==0 early-return: the generated cmd/server.go imports
 	// internal/app unconditionally (OpenInfra → Build → PostBuild → mount via
 	// Inventory → serverkit.Run), so internal/app must be a non-empty,
@@ -61,6 +61,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 			Workers:         workers,
 			Operators:       operators,
 			WebhookServices: webhookServices,
+			Roots:           roots,
 		}); err != nil {
 			return fmt.Errorf("failed to generate the composition graph (internal/app): %w", err)
 		}

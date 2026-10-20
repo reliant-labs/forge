@@ -241,7 +241,7 @@ func scaffoldWorkloadModelProject(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := generatePerEnvDeployConfig(dir, cfg, cs); err != nil {
+	if err := generatePerEnvDeployConfig(dir, cfg, cs, nil); err != nil {
 		t.Fatalf("generate per-env config: %v", err)
 	}
 	return dir

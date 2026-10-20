@@ -504,3 +504,89 @@ func TestGoCacheTrimHonoursBudgetViaSample(t *testing.T) {
 		t.Fatalf("age rule: %d entries left, want %d\n%s", got, 64*3, out.String())
 	}
 }
+
+// TestGoCacheOverBudgetIsNotStoppedByTheCap is the 2026-10-18 pass: 62 GiB
+// estimated against a 20 GiB budget, 6.1 GiB freed, "stopped at this pass's
+// delete cap". A cache over its size budget trims to the budget in one pass,
+// least recently used first; the cap still bounds the age rule.
+func TestGoCacheOverBudgetIsNotStoppedByTheCap(t *testing.T) {
+	root := t.TempDir()
+	// 16 shards x 50 entries x 100 B = 80 000 B; entry i is (3+i)h old.
+	fillShards(t, root, 16, 50, func(_, i int) time.Duration { return time.Duration(3+i) * time.Hour })
+	prev := goCacheDiskSpace
+	goCacheDiskSpace = func(path string) (Disk, error) { return Disk{Path: path, Capacity: 4_000_000}, nil }
+	t.Cleanup(func() { goCacheDiskSpace = prev })
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.GoCacheVolumePercent = 1 // budget: 1% of 4 MB = 40 000 B, half the cache
+	r.Policy.MaxDeletesPerPass = 50
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatalf("over-budget pass: %v\n%s", err, out.String())
+	}
+	if got := countEntries(root); got != 400 {
+		t.Fatalf("%d entries left, want 400 (the budget), not 800 minus a 50-entry cap\n%s", got, out.String())
+	}
+	// Least recently used first: entries 0..24 (3h..27h) stay, 25..49 go.
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Base(p) == "README" {
+			return nil
+		}
+		info, _ := d.Info()
+		if age := time.Since(info.ModTime()); age > 27*time.Hour+time.Minute {
+			t.Errorf("%s (%s old) survived while newer entries went", filepath.Base(p), age.Round(time.Hour))
+		}
+		return nil
+	})
+	if !strings.Contains(out.String(), "per-pass cap lifted") {
+		t.Fatalf("the pass must say it lifted the cap:\n%s", out.String())
+	}
+}
+
+// TestGoCacheAgeRuleStaysCapped: under budget, the cap holds as before.
+func TestGoCacheAgeRuleStaysCapped(t *testing.T) {
+	root := t.TempDir()
+	fillShards(t, root, 8, 25, func(int, int) time.Duration { return 100 * time.Hour })
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot = root
+	r.Policy.MaxDeletesPerPass = 50
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	_ = r.SharedGoCache(true)
+	if got := countEntries(root); got != 200-50 {
+		t.Fatalf("%d entries left, want the age rule capped at 50 unlinks\n%s", got, out.String())
+	}
+}
+
+func TestGoCacheBudgetIsCappedByTheVolume(t *testing.T) {
+	prev := goCacheDiskSpace
+	t.Cleanup(func() { goCacheDiskSpace = prev })
+	for _, tc := range []struct {
+		name     string
+		capacity uint64
+		err      error
+		percent  int
+		want     uint64
+	}{
+		{"40 GiB build volume: 15% of it", 40 * GiB, nil, 0, 40 * GiB / 100 * 15},
+		{"1 TiB volume: go_cache_gib", 1024 * GiB, nil, 0, 60 * GiB},
+		{"100 percent leaves go_cache_gib", 40 * GiB, nil, 100, 60 * GiB},
+		{"unreadable volume leaves go_cache_gib", 0, os.ErrPermission, 0, 60 * GiB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			goCacheDiskSpace = func(path string) (Disk, error) { return Disk{Path: path, Capacity: tc.capacity}, tc.err }
+			r := Runner{Policy: DefaultPolicy()}
+			r.Policy.GoCacheVolumePercent = tc.percent
+			if got := r.goCacheBudget("/cache"); got != tc.want {
+				t.Fatalf("budget = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	bad := DefaultPolicy()
+	bad.GoCacheVolumePercent = 101
+	if bad.Validate() == nil {
+		t.Fatal("go_cache_volume_percent 101 must be rejected")
+	}
+}

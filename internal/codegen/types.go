@@ -17,6 +17,12 @@ type ServiceDef struct {
 	ModulePath string                       // e.g., "github.com/demo-project"
 	Messages   map[string][]MessageFieldDef // message name → fields (e.g., "ListPatientsRequest" → [...])
 
+	// Audience is the trust domain the service serves, from
+	// `option (forge.v1.service) = {audience: "..."}`: "user" when the
+	// service declares none. A serverkit.Listener mounts the service only
+	// on a chain whose Authenticator admits this audience.
+	Audience string `json:",omitempty"`
+
 	// Schemas is the deep type graph for full JSON-Schema emission:
 	// fully-qualified message name → fields, covering
 	// every message transitively reachable from any method's input or

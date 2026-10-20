@@ -20,6 +20,12 @@
 //	                                    OTEL_SERVICE_NAME, a per-workload
 //	                                    fact forge.render derives
 //	                                    (see config_service_name.go)
+//	forgeconv-bun-dollar-placeholder    `$N` in SQL bun formats (NewRaw,
+//	                                    the builders), which binds only `?`
+//	forgeconv-bun-literal-question-mark a `?` bun will bind by mistake: in
+//	                                    a comment, a string literal, or a
+//	                                    jsonb ?/?|/?& operator
+//	                                    (see bun_placeholders.go)
 //
 // `auth_required` is lint-free here: it is enforced at runtime (projected
 // into pkg/middleware/procedures_gen.go, read fail-closed by the auth

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
@@ -37,8 +38,17 @@ func (s *Server) Mount(connectPath string, svc any, mountOpts ...mountkit.Option
 	if s.Mux == nil {
 		panic("serverkit: Server.Mount called with nil Server.Mux — set srv.Mux = http.NewServeMux() before mounting")
 	}
-	mountkit.RegisterService(s.Mux, svc, s.HandlerOpts, mountOpts...)
+	mountkit.RegisterService(s.Mux, svc, s.handlerOptions(), mountOpts...)
 	s.Mounted(connectPath)
+}
+
+// handlerOptions is what the Mount helpers build a service with: HandlerOpts,
+// or the Chain's options when HandlerOpts is unset.
+func (s *Server) handlerOptions() []connect.HandlerOption {
+	if s.HandlerOpts == nil && s.Chain != nil {
+		return s.Chain.HandlerOptions()
+	}
+	return s.HandlerOpts
 }
 
 // RequireMounted is the boot-time completeness guardrail: it verifies that

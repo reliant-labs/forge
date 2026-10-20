@@ -36,6 +36,7 @@ type bootKey struct{}
 type BootProbes struct {
 	srv    *http.Server
 	logger *slog.Logger
+	addr   string // the Config.Addr bound, which a Listener on it takes over
 
 	mu      sync.Mutex
 	pending map[string]struct{}
@@ -58,7 +59,7 @@ func StartBootProbes(ctx context.Context, cfg Config, logger *slog.Logger) (cont
 	if err != nil {
 		return ctx, nil, fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
-	b := &BootProbes{logger: logger, pending: map[string]struct{}{}}
+	b := &BootProbes{logger: logger, addr: cfg.Addr, pending: map[string]struct{}{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

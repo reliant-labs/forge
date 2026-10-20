@@ -52,8 +52,9 @@ const (
 // Built from a survey of the ignored content of every reliant, forge and
 // control-plane worktree on the author's machine. An entry is one or more
 // path segments (globs allowed per segment) matched anywhere in the ignored
-// path. Data-bearing paths never belong here, and worktreeNeverRebuildable
-// vetoes them even if a policy lists them.
+// path, or, with a leading "/", only from the worktree's root. Data-bearing
+// paths never belong here, and worktreeNeverRebuildable vetoes them even if a
+// policy lists them.
 var defaultWorktreeRebuildable = []string{
 	"node_modules", "dist", "bin", ".gocache", ".next", ".next-prod", ".turbo",
 	"coverage", "coverage.out", "*.tsbuildinfo", "next-env.d.ts",
@@ -61,7 +62,15 @@ var defaultWorktreeRebuildable = []string{
 	"kcl.mod.lock", "go.work", "go.work.sum",
 	".forge/generating-build", ".forge/forge.lock", ".forge/render",
 	".forge/logs", ".forge/workspace-base.tag",
+	// forge's own scratch and its generate fixed-point cache.
+	".forge/tmp", ".forge/generate-cache.json",
 	"target", ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".gradle",
+	// Pinned tools a project installs into its checkout (bin, stamps, tmp,
+	// pre-commit's hook clones): `task tools` puts them back.
+	"/.tools",
+	// The checkout's scratch directory. A repository inside it is still a
+	// nested repository, and data under it is still data (the never-list wins).
+	"/tmp",
 }
 
 // worktreeNeverRebuildable are paths that hold application data. They are
@@ -480,8 +489,8 @@ func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, rules wor
 	if scan.recent != "" {
 		return HoldActive, fmt.Sprintf("%s modified %s ago", scan.recent, scan.age.Round(time.Minute)), false
 	}
-	if len(scan.nested) > 0 {
-		return HoldNested, strings.Join(scan.nested, ", "), false
+	if nested := r.withoutToolClones(ctx, e.path, scan.nested); len(nested) > 0 {
+		return HoldNested, strings.Join(nested, ", "), false
 	}
 	// Commits only this worktree can reach (its reflog, per-worktree refs,
 	// detached HEAD) are garbage-collected once the worktree is removed.
@@ -737,6 +746,51 @@ func scanTree(ctx context.Context, worktree string, cutoff time.Time) (treeScan,
 	return scan, err
 }
 
+// toolCloneDirs are directories, relative to a worktree's root, whose direct
+// children are git clones a tool made and can make again from their remote.
+// pre-commit clones each hook repository at a pinned rev into
+// $PRE_COMMIT_HOME/repo*, and control-plane's CI gate points PRE_COMMIT_HOME at
+// <checkout>/.tools/pre-commit. Any other repository inside a worktree stays a
+// nested repository: its history may exist nowhere else.
+var toolCloneDirs = []string{".tools/pre-commit"}
+
+// withoutToolClones drops from nested (relative `.git` paths from scanTree)
+// the clones a tool regenerates. A clone qualifies only when its `.git` is a
+// directory, it is a direct child of a toolCloneDirs entry, AND the worktree's
+// own git ignores it: a tracked or unignored clone is the user's.
+func (r Runner) withoutToolClones(ctx context.Context, worktree string, nested []string) []string {
+	var out []string
+	for _, gitPath := range nested {
+		if !r.toolClone(ctx, worktree, gitPath) {
+			out = append(out, gitPath)
+		}
+	}
+	return out
+}
+
+func (r Runner) toolClone(ctx context.Context, worktree, gitPath string) bool {
+	segs := splitSegments(gitPath)
+	if len(segs) < 2 || segs[len(segs)-1] != ".git" {
+		return false
+	}
+	clone := segs[:len(segs)-1]
+	listed := false
+	for _, dir := range toolCloneDirs {
+		want := splitSegments(dir)
+		if len(clone) == len(want)+1 && strings.Join(clone[:len(want)], "/") == strings.Join(want, "/") {
+			listed = true
+		}
+	}
+	if !listed {
+		return false
+	}
+	if info, err := os.Lstat(filepath.Join(worktree, filepath.FromSlash(gitPath))); err != nil || !info.IsDir() {
+		return false
+	}
+	_, err := r.readGit(ctx, worktree, "check-ignore", "-q", "--", strings.Join(clone, "/"))
+	return err == nil
+}
+
 // lazyOpenFiles answers "does a running process use this path?" from one
 // open-files snapshot. lsof costs seconds, so the snapshot is taken on the
 // first question — only once a worktree has otherwise earned removal — and
@@ -861,7 +915,11 @@ func matchesRun(segments []string, pattern string) bool {
 	if len(want) == 0 {
 		return false
 	}
-	for start := 0; start+len(want) <= len(segments); start++ {
+	last := len(segments) - len(want)
+	if strings.HasPrefix(pattern, "/") {
+		last = min(last, 0) // anchored: only a run starting at the root
+	}
+	for start := 0; start <= last; start++ {
 		ok := true
 		for i, w := range want {
 			if m, err := path.Match(w, segments[start+i]); err != nil || !m {

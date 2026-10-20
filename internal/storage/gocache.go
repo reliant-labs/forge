@@ -332,6 +332,48 @@ func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time
 	return cutoff, estTotal
 }
 
+// goCacheNeed estimates how many entries are last used before cutoff across
+// the whole cache: the sample's count scaled to every shard. The sample's
+// entries are those past the floor, which every cutoff is.
+func goCacheNeed(sample goCacheSample, nShards int, cutoff time.Time) int {
+	if sample.shards == 0 {
+		return 0
+	}
+	n := 0
+	for _, e := range sample.entries {
+		if e.mtime.Before(cutoff) {
+			n++
+		}
+	}
+	return int(float64(n) * float64(nShards) / float64(sample.shards))
+}
+
+// defaultGoCacheVolumePercent is GoCacheVolumePercent's default.
+const defaultGoCacheVolumePercent = 15
+
+// goCacheDiskSpace is DiskSpace; tests replace it.
+var goCacheDiskSpace = DiskSpace
+
+// goCacheBudget is the size the cache at root is trimmed to: go_cache_gib,
+// capped at go_cache_volume_percent of the volume it lives on. A volume that
+// cannot be read leaves go_cache_gib alone.
+func (r Runner) goCacheBudget(root string) uint64 {
+	budget := r.Policy.GoCacheGiB * GiB
+	pct := r.Policy.GoCacheVolumePercent
+	if pct == 0 {
+		pct = defaultGoCacheVolumePercent
+	}
+	if pct >= 100 {
+		return budget
+	}
+	if disk, err := goCacheDiskSpace(root); err == nil && disk.Capacity > 0 {
+		if v := disk.Capacity / 100 * uint64(pct); v < budget {
+			budget = v
+		}
+	}
+	return budget
+}
+
 // cursorFile persists, per cache, the shard the next pass starts at.
 func (r Runner) goCacheCursorPath() string {
 	if r.PolicyPath == "" || guardMachinePolicy(r.PolicyPath) != nil {
@@ -398,15 +440,26 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		r.print("%s %s: %v\n", label, root, err)
 		return err
 	}
-	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, r.Policy.GoCacheGiB*GiB)
+	budget := r.goCacheBudget(root)
+	cutoff, estTotal := goCacheCutoff(sample, len(shards), now, unused, budget)
+	overBudget := ""
+	if estTotal > budget {
+		// Over its size budget: the per-pass cap must not stop the trim short
+		// of the budget, or a cache that grows faster than one capped pass
+		// can trim never converges. Allow what the sample says it takes, with
+		// a margin; pacing, back-off and the time slice still apply.
+		need := goCacheNeed(sample, len(shards), cutoff)
+		del = del.allowOver(need + need/10 + deleteBatch)
+		overBudget = fmt.Sprintf("; over budget, per-pass cap lifted for ~%d entries", need)
+	}
 
 	pass := streamTrimGoCache(ctx, root, shards, start, cutoff, apply, del)
 	if apply {
 		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}
 
-	r.print("%s %s: ~%.1f GiB estimated (budget %d GiB); deleting entries last used before %s (age rule %s, floor %s)\n",
-		label, root, float64(estTotal)/float64(GiB), r.Policy.GoCacheGiB, cutoff.Format(time.RFC3339), unused, goCacheFloor)
+	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB); deleting entries last used before %s (age rule %s, floor %s)%s\n",
+		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, overBudget)
 	for _, p := range pass.samples {
 		r.print("  %s %s\n", verb(apply), p)
 	}
@@ -635,8 +688,8 @@ func (r Runner) goCacheStatus(ctx context.Context) {
 		return
 	}
 	est := float64(sample.bytes) * float64(len(shards)) / float64(sample.shards)
-	r.print("go build cache %s: ~%.1f GiB estimated from %d/%d shards (budget %d GiB, unused %s)\n", root,
-		est/float64(GiB), sample.shards, len(shards), r.Policy.GoCacheGiB, r.Policy.GoCacheUnused)
+	r.print("go build cache %s: ~%.1f GiB estimated from %d/%d shards (budget %.1f GiB, unused %s)\n", root,
+		est/float64(GiB), sample.shards, len(shards), float64(r.goCacheBudget(root))/float64(GiB), r.Policy.GoCacheUnused)
 }
 
 // ProductionGoCacheRoots resolves the machine's Go-toolchain cache locations

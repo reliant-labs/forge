@@ -116,7 +116,33 @@ The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer p
 
 Mode resolution happens ONCE at construction: a validator → enforce; `ExternalAuth` → passthrough (another interceptor owns identity); neither → **refuse to start**. **No environment variable can run a forge service without authentication**, and no config value can either — which is why the answer is readable in a diff rather than only observable in production.
 
-Chain order (`observe.Chain`): **trace** (otelconnect, `Deps.Trace`) **→ recovery → request-id → logging → tracing → metrics**, then **auth → audit → rate-limit**. Auth after observability is deliberate — operators see auth failures in the same dashboards as successful traffic, and a rejected call has a span and logs carrying its `trace_id`. Put otelconnect in `Deps.Trace`, never in `Extras` (which runs after auth).
+The chain is a component, `serverkit.NewChain(serverkit.ChainDeps{Auth: …})`, built once in `serve.go`. Order: **trace** (otelconnect, `ChainDeps.Trace`) **→ recovery → request-id → logging → tracing → metrics**, then **auth → audit → rate-limit → your `Extras` → stream-drain → protovalidate**. Auth after observability is deliberate — operators see auth failures in the same dashboards as successful traffic, and a rejected call has a span and logs carrying its `trace_id`. Every slot is defaulted except **`Auth`, which is required: a nil `Auth` is a `NewChain` error, so a server without an authenticator fails at boot**. A slot you set replaces its default; `serverkit.NoAudit`, `NoTrace`, `NoStreamDrain` and `NoValidate` drop one, and nothing drops `Auth`. Payload caps ride the chain too (`ReadMaxBytes`/`SendMaxBytes`; zero is 4 MiB).
+
+### Audiences: one listener per kind of caller
+
+`ChainDeps.Auth` is a `serverkit.Authenticator` — the auth interceptor plus the **audience** it admits: `serverkit.AuthFor(serverkit.AudienceUser, authInterceptor)` for your signed-in users. A service declares the audience it serves in its proto, defaulting to `user`:
+
+```proto
+service ToolsDaemonService {
+  option (forge.v1.service) = { audience: "daemon" };  // not reachable with a user token
+  rpc Attach(stream AttachRequest) returns (stream AttachResponse);
+}
+```
+
+A `serverkit.Listener` refuses to start when it mounts a service whose audience differs from its chain's `Auth.Audience()` — and `serverkit.Run` checks the same over a `Server.Chain`. So a daemon credential can never reach a user RPC, even through a hand-written route set. Serving a second kind of caller is a second chain and a second listener, never a second token type inside one chain:
+
+```go
+daemonChain, err := serverkit.NewChain(serverkit.ChainDeps{Auth: serverkit.AuthFor("daemon", daemonAuth)})
+daemon, err := serverkit.NewListener(serverkit.ListenerDeps{
+    Config: serverkit.ListenerConfig{Addr: ":9090", ReadTimeout: -1}, // long bidi streams
+    Chain:  daemonChain,
+    Routes: serverkit.RoutesFunc(func(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
+        return components.MountToolsDaemon(mux, cfg, logger, opts...)
+    }),
+})
+```
+
+Run the listeners under `lifecyclekit.Supervise` (`services/shutdown`, "Without `serverkit.Run`").
 
 ### Publishing one RPC (per-RPC allow-list)
 

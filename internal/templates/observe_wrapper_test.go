@@ -142,10 +142,9 @@ func TestProvidersTemplate_DefaultClient(t *testing.T) {
 				"func (i *Infra) DefaultClient() *http.Client {",
 				"Transport: i.transport(),",
 				"func (i *Infra) transport() http.RoundTripper {",
-				"i.httpBase = otelhttp.NewTransport(observe.NewRequestIDTransport(http.DefaultTransport))",
+				"i.httpBase = observe.NewHTTPTransport(http.DefaultTransport)",
 				"httpBaseOnce sync.Once",
 				"infra.transport()",
-				`"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"`,
 				`"github.com/reliant-labs/forge/pkg/observe"`,
 			} {
 				if !strings.Contains(src, want) {
@@ -178,6 +177,11 @@ func TestAdapterAndClientTemplates_InjectableHTTPClient(t *testing.T) {
 	if !strings.Contains(string(clientOut), "if httpClient == nil {") {
 		t.Fatalf("client New must default a nil HTTPClient:\n%s", clientOut)
 	}
+	// The default is the traced client, not a bare &http.Client{}: a
+	// minimal wiring must not be the one untraced outbound path.
+	if !strings.Contains(string(clientOut), "observe.NewHTTPClient(") {
+		t.Fatalf("client must default to observe.NewHTTPClient:\n%s", clientOut)
+	}
 	if _, ferr := format.Source(clientOut); ferr != nil {
 		t.Fatalf("rendered client.go is not gofmt-valid: %v\n%s", ferr, clientOut)
 	}
@@ -189,6 +193,9 @@ func TestAdapterAndClientTemplates_InjectableHTTPClient(t *testing.T) {
 	}
 	if !strings.Contains(string(adapterOut), "HTTPClient *http.Client") {
 		t.Fatalf("adapter Deps must expose HTTPClient:\n%s", adapterOut)
+	}
+	if !strings.Contains(string(adapterOut), "observe.NewHTTPClient(") {
+		t.Fatalf("adapter must default to observe.NewHTTPClient:\n%s", adapterOut)
 	}
 	if _, ferr := format.Source(adapterOut); ferr != nil {
 		t.Fatalf("rendered adapter.go is not gofmt-valid: %v\n%s", ferr, adapterOut)

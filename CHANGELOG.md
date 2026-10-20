@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`observe.NewHTTPClient`: the traced client for plain outbound HTTP.**
+  A call to a third-party REST API goes through a plain `*http.Client`, which
+  no Connect interceptor sees; built by hand it had no client span, no
+  traceparent and no `X-Request-Id`, so the caller's trace ended at the
+  process boundary. `NewHTTPClient(HTTPClientOptions{Timeout, Base})` returns
+  a fresh client over one shared traced transport, with spans named
+  `<METHOD> <host>` instead of `HTTP POST`. `NewHTTPTransport(base)` wraps a
+  transport you do not construct yourself. The scaffolded `DefaultClient()`
+  transport, the composition graph's `NewHTTPClient` provider, and the
+  adapter and client scaffolds' nil-`HTTPClient` defaults all use it, so a
+  minimal wiring is no longer the one untraced outbound path. Connect clients
+  keep `NewClientStack`, whose otelconnect interceptor already opens the span.
+
+- **forge's control-plane client names itself in `Forge-Via`.** Every call
+  sends `cli`, or `ci` under a CI runner, so a server's activity stream
+  (`forge/pkg/activity`) records how a change arrived, as in "sean promoted
+  v1.7.44 via CLI". `middleware.DefaultCORSAllowHeaders` admits `Forge-Via`,
+  so a browser console can send it cross-origin.
+- **Activity scopes are paths, so one feed can span an org and its projects**
+  (`forge/pkg/activity`). An event scoped `org_1/billing` belongs to project
+  billing of org org_1. `Filter.IncludeAncestors` adds the ancestors' events to
+  a scope's feed, so a project's feed shows its org's events.
+  `Filter.IncludeDescendants` adds every descendant's events, so an org's feed
+  shows every project's. `Filter.Envs` matches any of several environments.
+  Wildcards in a scope name match literally. `activity.Skip(ctx)` lets a
+  handler whose call changed nothing (an idempotent ensure, a dry run) suppress
+  that call's event.
 - **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
   `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
   opened through `otelsql`, so each statement run under a span gets a CLIENT
@@ -707,6 +734,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **A view can be a read-only entity.** forge projected BASE TABLEs only, so
+  a view's row type was hand-written (reliant: `chats_with_activity`, the one
+  definition of a chat's activity). `COMMENT ON VIEW v IS 'forge:entity'`
+  (regular or materialized; `key=<column>` names the key, else `id`) projects
+  it: the row struct, `List<E>` / `Count<E>`, `Get<E>ByID` when it has a key,
+  and the matching read-only store — no write is generated. Non-key columns
+  are pointers (the catalog cannot say a view column is NOT NULL). Views
+  without the marker are not projected. `schemadef.IntrospectViews` and
+  `shadowdb.Views` read them from the same shadow apply as the tables.
 - **The merge driver is set up per worktree, and forge says what it changed.**
   Any forge command run in a project (`forge db migration rebase` was the one
   noticed) pointed the repository's `merge.forge-generated.driver` at a forge

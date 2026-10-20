@@ -110,6 +110,79 @@ type graphEdit struct {
 	text       string
 }
 
+// graphLiteralEdits reconciles one existing new<X> method's Deps literal
+// against its node: a key whose field the Deps struct no longer has is cut,
+// and a field with no key gets one, resolved by type. Every existing value
+// expression is the author's and is left alone.
+func graphLiteralEdits(src string, off func(token.Pos) int, lit *ast.CompositeLit, n *graphNode, r *graphResolver, addImports func(map[string]string)) ([]graphEdit, []graphProblem) {
+	var (
+		edits    []graphEdit
+		problems []graphProblem
+	)
+	have := map[string]bool{}
+	dropped := map[ast.Expr]bool{}
+	for _, el := range lit.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		id, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		have[id.Name] = true
+		if n.DepsFound && !n.DepsKeys[id.Name] {
+			s, e := widenDepsElementCut(src, off(kv.Pos()), off(kv.End()))
+			edits = append(edits, graphEdit{start: s, end: e})
+			dropped[el] = true
+		}
+	}
+	var lines strings.Builder
+	for _, df := range n.Deps {
+		if have[df.Name] {
+			continue
+		}
+		res, prob := r.resolve(n, df)
+		if prob != nil {
+			problems = append(problems, *prob)
+			continue
+		}
+		addImports(res.Imports)
+		lines.WriteString("\n" + df.Name + ": " + res.Expr + ",")
+		if res.Comment != "" {
+			lines.WriteString(" // " + res.Comment)
+		}
+	}
+	if lines.Len() == 0 {
+		return edits, problems
+	}
+	at := off(lit.Rbrace)
+	// The last element that survives the stale-key drop needs a trailing
+	// comma before anything is added after it.
+	for i := len(lit.Elts) - 1; i >= 0; i-- {
+		el := lit.Elts[i]
+		if dropped[el] {
+			continue
+		}
+		next := at
+		if i+1 < len(lit.Elts) {
+			next = off(lit.Elts[i+1].Pos())
+		}
+		if !strings.Contains(src[off(el.End()):next], ",") {
+			edits = append(edits, graphEdit{start: off(el.End()), end: off(el.End()), text: ","})
+		}
+		break
+	}
+	// Insert on a line of its own: at the start of the closing brace's line
+	// when nothing else is on it.
+	text := lines.String() + "\n"
+	if k := strings.LastIndexAny(src[:at], "\n"); k >= 0 && strings.TrimSpace(src[k+1:at]) == "" {
+		at, text = k+1, strings.TrimPrefix(text, "\n")
+	}
+	edits = append(edits, graphEdit{start: at, end: at, text: text})
+	return edits, problems
+}
+
 // reconcileGraphCompose returns compose.go reconciled against nodes, the
 // keys it could not resolve, and an error when the file cannot be parsed or
 // the result does not format.
@@ -160,66 +233,9 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 		if lit == nil {
 			continue // the author's own shape: left alone
 		}
-		have := map[string]bool{}
-		dropped := map[ast.Expr]bool{}
-		for _, el := range lit.Elts {
-			kv, ok := el.(*ast.KeyValueExpr)
-			if !ok {
-				continue
-			}
-			id, ok := kv.Key.(*ast.Ident)
-			if !ok {
-				continue
-			}
-			have[id.Name] = true
-			if n.DepsFound && !n.DepsKeys[id.Name] {
-				s, e := widenDepsElementCut(src, off(kv.Pos()), off(kv.End()))
-				edits = append(edits, graphEdit{start: s, end: e})
-				dropped[el] = true
-			}
-		}
-		var lines strings.Builder
-		for _, df := range n.Deps {
-			if have[df.Name] {
-				continue
-			}
-			res, prob := r.resolve(n, df)
-			if prob != nil {
-				problems = append(problems, *prob)
-				continue
-			}
-			addImports(res.Imports)
-			lines.WriteString("\n" + df.Name + ": " + res.Expr + ",")
-			if res.Comment != "" {
-				lines.WriteString(" // " + res.Comment)
-			}
-		}
-		if lines.Len() > 0 {
-			at := off(lit.Rbrace)
-			// The last element that survives the stale-key drop needs a
-			// trailing comma before anything is added after it.
-			for i := len(lit.Elts) - 1; i >= 0; i-- {
-				el := lit.Elts[i]
-				if dropped[el] {
-					continue
-				}
-				next := at
-				if i+1 < len(lit.Elts) {
-					next = off(lit.Elts[i+1].Pos())
-				}
-				if !strings.Contains(src[off(el.End()):next], ",") {
-					edits = append(edits, graphEdit{start: off(el.End()), end: off(el.End()), text: ","})
-				}
-				break
-			}
-			// Insert on a line of its own: at the start of the closing
-			// brace's line when nothing else is on it.
-			text := lines.String() + "\n"
-			if k := strings.LastIndexAny(src[:at], "\n"); k >= 0 && strings.TrimSpace(src[k+1:at]) == "" {
-				at, text = k+1, strings.TrimPrefix(text, "\n")
-			}
-			edits = append(edits, graphEdit{start: at, end: at, text: text})
-		}
+		litEdits, litProblems := graphLiteralEdits(src, off, lit, n, r, addImports)
+		edits = append(edits, litEdits...)
+		problems = append(problems, litProblems...)
 	}
 	if len(problems) > 0 {
 		return "", problems, nil
@@ -233,13 +249,21 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 	if len(added) > 0 {
 		out = strings.TrimRight(out, "\n") + "\n" + strings.Join(added, "")
 	}
-
-	// Imports: add what the new text names, and drop a forge-known import
-	// the reconciled file no longer uses (a dropped key's package).
-	fset = token.NewFileSet()
-	file, err = parser.ParseFile(fset, "compose.go", out, parser.ParseComments|parser.SkipObjectResolution)
+	formatted, err := fixGraphComposeImports(out, needImport, r)
 	if err != nil {
-		return "", nil, fmt.Errorf("reconciled internal/app/compose.go does not parse (a forge bug — please report it): %w\n%s", err, out)
+		return "", nil, err
+	}
+	return formatted, nil, nil
+}
+
+// fixGraphComposeImports adds the imports the reconciled text names, drops a
+// forge-known import it no longer uses (a dropped key's package), and
+// formats the result.
+func fixGraphComposeImports(out string, needImport map[string]string, r *graphResolver) (string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "compose.go", out, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return "", fmt.Errorf("reconciled internal/app/compose.go does not parse (a forge bug — please report it): %w\n%s", err, out)
 	}
 	have := fileImportAliases(file)
 	aliases := make([]string, 0, len(needImport))
@@ -279,13 +303,13 @@ func reconcileGraphCompose(existing string, nodes []*graphNode, r *graphResolver
 	}
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, file); err != nil {
-		return "", nil, fmt.Errorf("format reconciled internal/app/compose.go: %w", err)
+		return "", fmt.Errorf("format reconciled internal/app/compose.go: %w", err)
 	}
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
-		return "", nil, fmt.Errorf("format reconciled internal/app/compose.go: %w", err)
+		return "", fmt.Errorf("format reconciled internal/app/compose.go: %w", err)
 	}
-	return string(formatted), nil, nil
+	return string(formatted), nil
 }
 
 func nameOrEmpty(imp *ast.ImportSpec) string {

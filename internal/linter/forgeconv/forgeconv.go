@@ -36,6 +36,10 @@
 //	                                    locator, `any`)
 //	forgeconv-deps-no-downcast          a type assertion from a Deps field
 //	                                    to a concrete type
+//	forgeconv-no-getenv                 a component package reads the
+//	                                    process environment itself
+//	forgeconv-deps-root-config          a Deps field holds the root config
+//	                                    (--strict only, a warning)
 //	                                    (see least_knowledge.go)
 //
 // `auth_required` is lint-free here: it is enforced at runtime (projected

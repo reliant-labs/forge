@@ -19,7 +19,8 @@ import (
 //  3. handing the user listener the daemon route set fails it (audience),
 //     and generate still succeeds — the check is the lint's;
 //  4. a handler taking a 12-method foreign interface and calling one method
-//     is a forgeconv-deps-surface warning, an error under --strict;
+//     is a forgeconv-deps-surface error (§9.2), and --strict on the narrowed
+//     project still passes (the scaffold's root-config Deps only warn);
 //  5. `forge fix narrow-deps` writes the 1-method interface and its mock,
 //     the project builds, and the rule goes quiet.
 func TestE2EGraphLintAndNarrowDeps(t *testing.T) {
@@ -139,11 +140,8 @@ func (s *Service) Peek(ctx context.Context, id string) (string, error) {
 	runCmd(t, projectDir, "gofmt", "-w", svcPath)
 	runCmd(t, projectDir, "go", "build", "./...")
 	out, err = lint("--conventions")
-	if err != nil || !strings.Contains(out, "⚠ [forgeconv-deps-surface] internal/handlers/alpha/service.go") {
-		t.Fatalf("a wide foreign interface is a deps-surface warning: %v\n%s", err, out)
-	}
-	if out, err = lint("--conventions", "--strict"); err == nil || !strings.Contains(out, "✗ [forgeconv-deps-surface]") {
-		t.Fatalf("under --strict a foreign interface of more than ten methods with unused ones is an error: %v\n%s", err, out)
+	if err == nil || !strings.Contains(out, "✗ [forgeconv-deps-surface] internal/handlers/alpha/service.go") {
+		t.Fatalf("a foreign interface of more than ten methods with unused ones is a deps-surface error: %v\n%s", err, out)
 	}
 
 	// ── 5. Narrow it ─────────────────────────────────────────────────────

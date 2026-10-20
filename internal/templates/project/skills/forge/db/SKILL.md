@@ -36,25 +36,13 @@ There is **no `database:` driver or directory setting**: a service project with 
 
 ## What makes an entity
 
-**The store follows the schema.** Every applied BASE TABLE gets an entity
-struct, an `<Entity>Store`, delegates and a `_repo_ext.go` seam, whether or not
-any service declares rpcs for it. A table no rpc names is projected under the
-singular of its name (`message_content_blocks` → `MessageContentBlock`). Keep a
-table off the store with `COMMENT ON TABLE t IS 'forge:no-entity'` in a
-migration; `//forge:no-orm` opts out the whole data layer. A VIEW is
-projected only when it opts in — `COMMENT ON VIEW v IS 'forge:entity'`
-(`key=<column>` to name its key, else `id`) — as a read-only entity: the row
-struct, `List<E>`/`Count<E>` and `Get<E>ByID`, no writes; its non-key columns
-are pointers, because the catalog cannot say they are NOT NULL. A table with a
-composite or no primary key is reported and skipped.
-
-**CRUD wiring follows the wire.** CRUD handlers, pages and seed roots exist when
-**both halves** exist:
-
-1. **Wire truth** — a service proto declares the CRUD RPCs (`Create<X>` / `Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`).
-2. **Storage truth** — the applied schema has the matching table (pluralized snake_case; `Bookmark` → `bookmarks`).
-
-CRUD RPCs without a table generate **nothing** — honest stubs, no pages. Tables without CRUD RPCs get a store and nothing on the wire: yours to call from hand-written rpcs, invisible to the CRUD/frontend projections.
+**The store follows the schema; CRUD wiring follows the wire.** Every applied
+table gets an entity struct and `<Entity>Store`, rpcs or not — opt-outs,
+naming and keys: `db/store`. CRUD handlers, pages and seed roots exist when
+**both halves** exist: a service declares the CRUD RPCs (`Create<X>` /
+`Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`), and the applied schema has
+the matching table (`Bookmark` → `bookmarks`). CRUD RPCs without a table
+generate **nothing** — honest stubs, no pages.
 
 ## Starting a new entity
 

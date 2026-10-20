@@ -38,7 +38,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/reliant-labs/forge/pkg/appkit/operatorkit"
+{{- /* Only a Worker<X>() accessor names lifecyclekit; imported without one it
+       fails the first build ("imported and not used"). The reconciler adds it
+       with the first worker (lifecycleKitImport in inject_gen.go). */}}
+{{- if .Workers}}
 	"github.com/reliant-labs/forge/pkg/lifecyclekit"
+{{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
 {{- range .Operators}}
 	{{.Alias}} "{{$.Module}}/{{.ImportPath}}"

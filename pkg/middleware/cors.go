@@ -188,11 +188,12 @@ func writePreflightHeaders(w http.ResponseWriter, allowHeaders string) {
 }
 
 // DefaultCORSAllowHeaders are the request headers every forge server admits
-// cross-origin: Connect's protocol headers, the bearer token, and the trace
-// context and request id the generated clients attach.
+// cross-origin: Connect's protocol headers, the bearer token, the trace
+// context and request id the generated clients attach, and Forge-Via, which
+// names the client to the activity stream (forge/pkg/activity.ViaHeader).
 var DefaultCORSAllowHeaders = []string{
 	"Content-Type", "Connect-Protocol-Version", "Connect-Timeout-Ms",
-	"Authorization", "Traceparent", "Tracestate", "X-Request-Id",
+	"Authorization", "Traceparent", "Tracestate", "X-Request-Id", "Forge-Via",
 }
 
 // DefaultCORSExposeHeaders are the response headers every forge server lets a

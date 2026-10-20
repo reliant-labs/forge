@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge lint` is report-only under CI, and `--check` says so anywhere.** The
+  auto-fix default (#843) is right on a developer's machine and wrong on a CI
+  runner, where the checkout is thrown away: a fixer that quietly repairs it
+  turns "this commit is unformatted" into a green build. When the `CI`
+  environment variable is set (GitHub Actions, GitLab and the rest set it;
+  `GITHUB_ACTIONS` also counts), `forge lint` now writes nothing, prints the
+  unified diff each fix would have applied (gofmt/goimports and prettier), and
+  fails with a `format` lane in the verdict, `--gate-json` evidence and the
+  exit code, so CI fails on unformatted code with the exact change to make.
+  `--check` is the clear name for the same thing anywhere, and `--no-fix`
+  remains as its spelling. `--fix`, a no-op until now, forces fixing even under
+  CI. A local run with no flags still auto-fixes. The report and the fixer share
+  one walk, so they cannot disagree about which files are pending, and the
+  scaffolded release workflow and the `ci` and `deploy` skills now rely on it
+  instead of passing a flag. `--json` and the targeted lanes were already
+  detect-only.
 - **Fast/slow test tiers: `testkit.Slow`, `forge lint --slow-tests`,
   `forge ci test-budget`.** A test is fast (it runs in the blocking
   `go test -short` tier) unless it declares otherwise:

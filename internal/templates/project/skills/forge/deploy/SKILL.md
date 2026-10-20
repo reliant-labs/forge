@@ -143,8 +143,8 @@ to a cluster you operate instead. The allowed/refused table: `deploy/hosting`.
 ## Pre-flight checks
 
 ```
-forge lint              # Go + proto + frontend linters (same checks CI runs)
-forge lint --no-fix     # gate only, mutate nothing (CI / read-only)
+forge lint              # Go + proto + frontend linters; fixes formatting in place locally
+forge lint --check      # report only: print the diffs, write nothing (what CI does, by itself)
 task test               # full suite
 forge ci validate-kcl   # every env renders to something applyable
 forge doctor --signal deploy   # probes, resources, Secrets, migrations

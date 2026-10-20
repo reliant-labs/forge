@@ -52,6 +52,10 @@ func TestLintHelpSurface(t *testing.T) {
 	cmd := newCmd(testFactory())
 
 	assertStringSlicesEqual(t, "lint visible flags", visibleFlagNames(cmd), []string{
+		// Report-only: the dry run of the auto-fix default, and what CI gets
+		// without asking. Visible because the CI behaviour is otherwise a
+		// surprise an author only meets on a red build.
+		"check",
 		// Continuous rules about the USER's own code. config-deps,
 		// frontend-stores and optional-deps-guard were all hidden as
 		// "audits" and were consequently undiscoverable: on the flagship app

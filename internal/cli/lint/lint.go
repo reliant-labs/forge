@@ -34,6 +34,7 @@ type lintFlags struct {
 	migrationSafety   bool
 	fix               bool
 	noFix             bool
+	check             bool
 	exportedVars      bool
 	conventions       bool
 	frontendStores    bool
@@ -83,7 +84,7 @@ func newCmd(_ *factory.Factory) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "lint [paths...]",
-		Short: "Run linters on the project (auto-fixes formatting in place first; --no-fix to only check)",
+		Short: "Run linters on the project (auto-fixes formatting in place first; report-only under CI or --check)",
 		Long: `Run various linters on the Forge project.
 
 This command will:
@@ -109,13 +110,20 @@ mechanical formatting never surfaces as a gating error. It never rewrites a
 file the project's own formatter gate accepts. Under --scope it touches only
 files inside the scope, and naming Go package paths (forge lint ./internal/x/...)
 likewise confines the fixers to those packages — the frontend formatter does
-not run then. Only a bare forge lint rewrites the whole project. Pass --no-fix
-to gate only and mutate nothing (CI / read-only checks); --json is always
-detect-only.
+not run then. Only a bare forge lint rewrites the whole project.
+
+REPORT-ONLY. When the CI environment variable is set (GitHub Actions, GitLab
+and the rest set it), or --check (also spelled --no-fix) is passed, forge lint
+writes NOTHING: it prints the diff each fix would have applied and exits
+non-zero if any is pending, so CI fails on unformatted code instead of
+repairing a checkout that is thrown away. --fix forces fixing even under CI;
+--json is always detect-only.
 
 Examples:
   forge lint                     # Auto-fix deterministic-safe issues, then gate
-  forge lint --no-fix            # Gate only; mutate nothing (CI / read-only)
+  forge lint --check             # Report only: print the diffs, mutate nothing
+  CI=1 forge lint                # Same, from the environment (CI sets it)
+  CI=1 forge lint --fix          # Fix even under CI
   forge lint --skip-frontends    # Backend-only gate; no Node toolchain needed
   forge lint --contract          # Run contract interface enforcement linter
   forge lint --db                # Run DB entity lint rules
@@ -306,11 +314,12 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
-	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Deprecated: auto-fix of deterministic-safe issues is now the default; this flag is a no-op kept for back-compat (use --no-fix to opt out)")
-	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Skip the deterministic-safe auto-fix pre-pass (Go formatting, golangci autofixes, frontend prettier, eslint --fix); gate only and mutate nothing (CI / read-only)")
+	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Apply the deterministic-safe fixes (Go formatting, golangci autofixes, frontend prettier, eslint --fix) even when CI is set; they are the default everywhere else")
+	cmd.Flags().BoolVar(&flags.check, "check", false, "Report only: write nothing, print the diff each fix would apply, and exit non-zero if any is pending. The default when CI is set (also spelled --no-fix)")
+	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Same as --check: write nothing, print the diff each fix would apply, and fail if any is pending")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
-	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). Auto-fix still rewrites files in place, silently (--no-fix to only check); combines with the targeted flags and --scope")
-	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix still rewrites files in place, only those under PATH (--no-fix to only check)")
+	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). Auto-fix still rewrites files in place, silently, unless CI is set or --check (--no-fix) is passed; combines with the targeted flags and --scope")
+	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix still rewrites files in place, only those under PATH, unless CI is set or --check (--no-fix) is passed")
 	// No backticks: cobra would render the first quoted span as the flag's
 	// argument placeholder (see --optional-deps-guard).
 	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")
@@ -533,7 +542,8 @@ func runAllLintersText(ctx context.Context, flags lintFlags, paths []string) err
 	// the legacy --fix flag is now redundant (auto-fix is the default) but still
 	// accepted so existing invocations keep working.
 	_, err = runAllLinters(ctx, lintRunOptions{
-		fix:           !flags.noFix,
+		fix:           flags.autoFix(),
+		note:          fixModeNote(flags),
 		strict:        flags.strict,
 		skipFrontends: flags.skipFrontends,
 		paths:         paths,
@@ -548,7 +558,13 @@ func runAllLintersText(ctx context.Context, flags lintFlags, paths []string) err
 // signatures — the shape the pre-existing (fix, strict, paths, cfg) list
 // was already straining against.
 type lintRunOptions struct {
-	fix           bool
+	fix bool
+	// note is said once, to stderr, when the environment (CI) rather than a
+	// flag made this run report-only.
+	note string
+	// reportFormat adds the report-only format lane to a detect-only
+	// collection (--json), so its findings and exit code match the text mode.
+	reportFormat  bool
 	strict        bool
 	skipFrontends bool
 	paths         []string
@@ -1254,6 +1270,9 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 
 	fix := opts.fix
 	cwd := lintCwd()
+	if opts.note != "" {
+		fmt.Fprintln(os.Stderr, opts.note)
+	}
 
 	// Auto-fix-then-gate: apply the deterministic-safe Go formatter across the
 	// whole source tree (owned + generated) BEFORE the gating pipeline, so
@@ -1287,6 +1306,22 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	}
 	hasFailed := false
 
+	// Report-only: the fix pre-pass above did not run, so a file it would
+	// have rewritten is a finding. Printed as the diff the rewrite would
+	// apply, and counted as a failed gating lane so the exit code, the
+	// verdict line and --gate-json all say so.
+	var ranGating, skippedGating, unavailable, failedLanes []string
+	if !fix && cwd != "" {
+		{
+			n := runFormatCheck(ctx, os.Stdout, cwd, opts.paths, opts.skipFrontends, opts.cfg)
+			ranGating = append(ranGating, formatLaneName)
+			if n > 0 {
+				hasFailed = true
+				failedLanes = append(failedLanes, formatLaneName)
+			}
+		}
+	}
+
 	// Which GATING linters actually executed, and which were skipped. The
 	// verdict has to name them: "✅ All linters passed!" was printed
 	// unconditionally, so a machine without golangci-lint and without buf —
@@ -1297,8 +1332,6 @@ func runAllLinters(ctx context.Context, opts lintRunOptions) (lintLaneTally, err
 	// unavailable is the third bucket: lanes that were supposed to execute
 	// and could not. See laneUnavailableError for why they are neither
 	// "ran" nor "skipped".
-	var ranGating, skippedGating, unavailable, failedLanes []string
-
 	for _, step := range lintPipeline() {
 		run, skipMsg := step.shouldRun(rc)
 		if !run {

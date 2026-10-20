@@ -88,7 +88,7 @@ const (
 // targetedWholeProjectLanes are the targeted-only lanes (not in the
 // pipeline table) that cannot be scoped. config-reach reports config FIELDS
 // no binary loads — a fact about the project, carrying no file.
-var targetedWholeProjectLanes = map[string]bool{"config-reach": true}
+var targetedWholeProjectLanes = map[string]bool{"config-reach": true, "graph": true}
 
 // targetedPackageLanes are the targeted lanes that take Go package
 // arguments, mirroring scopeByPackages.

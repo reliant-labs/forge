@@ -59,6 +59,7 @@ type lintFlags struct {
 	staticExport      bool
 	vendoredProtos    bool
 	configReach       bool
+	graph             bool
 	slowTests         bool
 	generatedDrift    bool
 	strict            bool
@@ -208,7 +209,7 @@ Examples:
                                  # Only findings in files under those paths.
                                  # golangci-lint/contract run on the scope's
                                  # packages; whole-project linters (frontend
-                                 # lint, component-drift, config-reach) are
+                                 # lint, graph, component-drift, config-reach) are
                                  # skipped and named in the verdict, so run an
                                  # unscoped 'forge lint' before merging
 
@@ -310,6 +311,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.staticExport, "static-export", false, "For each Next.js frontend that must build to a static export (forge.yaml output: static, or bound to forge.OnHosted / OnBucket / OnFirebase in any env), report with file:line what the export cannot serve. FAILS on what next build refuses (a dynamic route without generateStaticParams, server actions, next/headers, next/image without images.unoptimized, a build that is not an export); WARNS on what it silently drops (middleware, non-GET route handlers, ungated rewrites/redirects/headers, a bucket-bound export without trailingSlash)")
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
 	cmd.Flags().BoolVar(&flags.vendoredProtos, "vendored-protos", false, "Fail when a vendored proto (proto/forge/v1/forge.proto) differs from the copy embedded in this forge binary — forge's upgrade path does not track these copies, so drift is otherwise invisible")
+	cmd.Flags().BoolVar(&flags.graph, "graph", false, "Check the composition graph (internal/app) as a whole: every component and provider is reached by some root, and every listener serves only services of its chain's audience. FAILS the build on an error (graph mode only)")
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, and any lane that could NOT run (frontend typecheck or eslint with deps not installed; typed-config guardrail when golangci-lint never reported)")
@@ -319,7 +321,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Same as --check: write nothing, print the diff each fix would apply, and fail if any is pending")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). Auto-fix still rewrites files in place, silently, unless CI is set or --check (--no-fix) is passed; combines with the targeted flags and --scope")
-	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix still rewrites files in place, only those under PATH, unless CI is set or --check (--no-fix) is passed")
+	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, graph, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. Auto-fix still rewrites files in place, only those under PATH, unless CI is set or --check (--no-fix) is passed")
 	// No backticks: cobra would render the first quoted span as the flag's
 	// argument placeholder (see --optional-deps-guard).
 	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")
@@ -508,6 +510,9 @@ func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane 
 	}
 	if flags.vendoredProtos {
 		return runWithCwd(runVendoredProtosLint)
+	}
+	if flags.graph {
+		return runWithCwd(runGraphLint)
 	}
 	if flags.configReach {
 		_, cfg, err := loadLintConfig()
@@ -829,6 +834,17 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		res, err := forgeconv.LintOptionalDepMarkerPosition(".")
 		if err != nil {
 			return combined, notes, false, fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
+		}
+		goFindings = append(goFindings, res.Findings...)
+	}
+	// Least knowledge (composition graph §2): what every component's Deps
+	// declares against what the package uses through it — wide foreign
+	// interfaces, containers, downcasts. Warnings; --strict applies the
+	// design's severities.
+	if _, err := os.Stat("internal"); err == nil {
+		res, err := forgeconv.LintLeastKnowledge(".", opts)
+		if err != nil {
+			return combined, notes, false, fmt.Errorf("forge convention lint (least knowledge) failed: %w", err)
 		}
 		goFindings = append(goFindings, res.Findings...)
 	}

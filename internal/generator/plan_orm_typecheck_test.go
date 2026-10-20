@@ -102,6 +102,35 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true},
 			},
 		},
+		// Composite primary keys (F12.3): a counter, a join table whose
+		// key column is a Go keyword, and an append-only one.
+		{
+			Name: "MessageOrderCounter", TableName: "message_order_counters", Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "chat_id", Type: "string", PrimaryKey: true, NotNull: true},
+				{Name: "kind", Type: "string", PrimaryKey: true, NotNull: true},
+				{Name: "next_seq", Type: "int64", NotNull: true},
+				{Name: "created_at", Type: "time", NotNull: true},
+				{Name: "updated_at", Type: "time", NotNull: true},
+			},
+		},
+		{
+			Name: "ProjectDaemon", TableName: "project_daemons", SoftDelete: true,
+			Fields: []config.PlanEntityField{
+				{Name: "project_id", Type: "string", PrimaryKey: true, NotNull: true},
+				{Name: "type", Type: "string", PrimaryKey: true, NotNull: true},
+				{Name: "seq", Type: "int64", PrimaryKey: true, NotNull: true},
+				{Name: "deleted_at", Type: "time"},
+			},
+		},
+		{
+			Name: "LedgerLine", TableName: "ledger_lines", AppendOnly: true,
+			Fields: []config.PlanEntityField{
+				{Name: "ledger_id", Type: "string", PrimaryKey: true, NotNull: true},
+				{Name: "line", Type: "int64", PrimaryKey: true, NotNull: true},
+				{Name: "amount", Type: "int64", NotNull: true},
+			},
+		},
 	}
 
 	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {

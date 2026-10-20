@@ -7,8 +7,25 @@
 #   scripts/ci-test-packages.sh unit cli     the union of the named sets (Windows runs this)
 #   scripts/ci-test-packages.sh check        prove the three sets partition `go list ./...`
 #
+#   scripts/ci-test-packages.sh short I N    the pull-request tier's package shard I of N (0-based)
+#   scripts/ci-test-packages.sh split        the packages the pull-request tier splits by TEST
+#
 # Taskfile.yml's `task test` runs the same three sets with the same flags, so
 # the local full tier and CI cannot disagree about what runs where.
+#
+# THE PULL-REQUEST TIER IS PARTITIONED DIFFERENTLY. A pull request runs the
+# -short tier without -race (ci.yml's `test-short` matrix, driven by
+# scripts/ci-test-shard.sh); the three sets above, under -race and in full
+# mode, run on every push to main. Under -short the guards skip their whole-
+# repo work and take seconds, so the PR tier has no guard set: it is every
+# package, cut two ways. The `split` packages run one serial test binary each
+# (internal/cli: ~3,200 tests, ~117s even on a 16-core laptop), so no number
+# of package shards makes them shorter; their TESTS are divided across shards
+# instead. Every other package is dealt round-robin, in `go list` order, onto
+# `short I N`. `short` and `split` together cover `go list ./...` by
+# construction, given that every split package exists — which `check` proves.
+# internal/ciguard proves ci.yml's matrix names every index of every shard
+# count, so no shard can drop out of the matrix with its packages.
 #
 # WHY THE GUARDS HAVE THEIR OWN JOB. internal/tierguard renders four whole forge
 # projects, internal/removalguard regex-scans every file in the repository, and
@@ -55,6 +72,13 @@ cli=(
   github.com/reliant-labs/forge/internal/cli
 )
 
+# The packages the pull-request tier splits by test rather than by package:
+# each is one long serial test binary (see the header).
+split=(
+  github.com/reliant-labs/forge/internal/cli
+  github.com/reliant-labs/forge/internal/generator
+)
+
 # `go list ./...` once per invocation: it is the slow part, and `check` needs
 # it four times over.
 all_cache=""
@@ -64,17 +88,30 @@ all() {
 }
 guard_set() { printf '%s\n' "${guards[@]}"; }
 cli_set() { printf '%s\n' "${cli[@]}"; }
+split_set() { printf '%s\n' "${split[@]}"; }
 unit_set() { all | grep -vxF -f <(guard_set) -f <(cli_set); }
+
+# short_set I N: every package but the split ones, dealt round-robin.
+short_set() {
+  local i=$1 n=$2
+  if ! [[ "$i" =~ ^[0-9]+$ && "$n" =~ ^[1-9][0-9]*$ ]] || ((i >= n)); then
+    echo "usage: $0 short I N   (0 <= I < N)" >&2
+    exit 2
+  fi
+  all | grep -vxF -f <(split_set) | awk -v i="$i" -v n="$n" '(NR - 1) % n == i'
+}
+
+usage() {
+  echo "usage: $0 unit|cli|guards [unit|cli|guards ...] | check | split | short I N" >&2
+  exit 2
+}
 
 set_of() {
   case "$1" in
     unit) unit_set ;;
     cli) cli_set ;;
     guards) guard_set ;;
-    *)
-      echo "usage: $0 unit|cli|guards [unit|cli|guards ...] | check" >&2
-      exit 2
-      ;;
+    *) usage ;;
   esac
 }
 
@@ -85,7 +122,7 @@ case "${1:-}" in
     all_cache=$(go list ./...)
     all_pkgs=$(all | sort)
     status=0
-    named=$(printf '%s\n%s\n' "$(guard_set)" "$(cli_set)" | sort)
+    named=$(printf '%s\n%s\n%s\n' "$(guard_set)" "$(cli_set)" "$(split_set)" | sort -u)
     # Every named package must be real: a renamed or deleted one would
     # otherwise leave its job testing nothing and passing.
     missing=$(comm -13 <(printf '%s\n' "$all_pkgs") <(printf '%s\n' "$named"))
@@ -113,8 +150,15 @@ case "${1:-}" in
     fi
     exit $status
     ;;
+  split)
+    split_set
+    ;;
+  short)
+    [[ $# -eq 3 ]] || usage
+    short_set "$2" "$3"
+    ;;
   "")
-    set_of ""
+    usage
     ;;
   *)
     for s in "$@"; do set_of "$s"; done

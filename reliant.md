@@ -90,7 +90,7 @@ test bodies.
 
 1. **Inner loop — every edit:** `task test:short -- ./internal/<pkg>/...`, naming only the packages you touched (`go test -short`, cached, no `-race`).
 2. **Package-targeted — before committing:** `task test -- ./internal/<pkg>/...`. Full mode (no `-short`, with `-race`) for the packages you touched, so the gated slow tests run too.
-3. **Full gate — once, at the end / CI:** `task test` — the whole module in CI's three lanes from `scripts/ci-test-packages.sh` (unit and `internal/cli` under `-race -count=1`, the guards at `-p 1` without `-race`), each with its own hang budget (15m / 45m / 30m) — plus the e2e corpus: `task test:e2e` (`go test -tags e2e -count=1 -timeout 60m -run '^TestE2E' ./internal/cli/`; narrow it with `task test:e2e -- -run <regex>`). The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so wall-clock is roughly the slowest fixture. Run it in the background: the full lane, `internal/cli` / `internal/tierguard` in full mode, and the e2e corpus all exceed ~2 minutes.
+3. **Full gate — once, at the end / main's CI:** `task test` — the whole module in main's three CI lanes from `scripts/ci-test-packages.sh` (unit and `internal/cli` under `-race -count=1`, the guards at `-p 1` without `-race`), each with its own hang budget (15m / 45m / 30m) — plus the e2e corpus: `task test:e2e` (`go test -tags e2e -count=1 -timeout 60m -run '^TestE2E' ./internal/cli/`; narrow it with `task test:e2e -- -run <regex>`). The e2e tests are `t.Parallel()` (independent projects in separate temp dirs, forge binary built once via `sync.Once`), so wall-clock is roughly the slowest fixture. Run it in the background: the full lane, `internal/cli` / `internal/tierguard` in full mode, and the e2e corpus all exceed ~2 minutes.
 
 Rules that keep the tiers honest:
 
@@ -99,41 +99,67 @@ Rules that keep the tiers honest:
 - A package that exceeds `task test:short`'s 300s timeout has grown a slow test. Find it with `go test -short -count=1 -json ./internal/<pkg>/` and gate it; do not raise the timeout.
 - e2e tests that boot servers must allocate ports with `freePortE2E(t)` (`internal/cli/scaffold_e2e_test.go`) — never hard-code a port; the corpus runs in parallel.
 - e2e tests must keep all state inside their own `t.TempDir()` project; no `t.Setenv`/`t.Chdir` in parallel tests (Go panics on the combo).
-- Never set a private `GOMODCACHE` either; CI runs the full non-short suite with `-race`, and `-short` is a local/agent convention only.
+- Never set a private `GOMODCACHE` either. A pull request's CI runs the `-short` tier (no `-race`); a push to main runs the full non-short suite with `-race`. So tier 2 before committing is how a gated test of yours gets exercised before it merges.
 
 See the comment block at the top of `internal/cli/fixture_corpus_e2e_test.go` for the same tiers from the e2e corpus's point of view.
 
 ### CI: what runs where
 
-Every workflow runs on pull requests and on pushes to main, except `nightly.yml`.
-Each workflow's header says why its lanes are shaped the way they are; read it before
-moving a check between lanes.
+Two tiers. A **pull request** gets the fast tier, budgeted at about five minutes of wall
+time; a **push to main** gets the slow tier as well. Nothing left CI when the tiers split:
+every check that is off the pull request runs on every push to main. Each workflow's header
+says why its lanes are shaped the way they are; read it before moving a check between
+lanes. `ci.yml`'s `CI gate` job prints every job's wall time and the critical path on each
+run — watch it when you add a test.
+
+**Pull request** (`ci.yml`, plus `pre-commit.yml`, `library-lint.yml`, `license-gate.yml`):
+
+- **Test (-short)** — the `-short` tier, no `-race`, as 8 shards (`scripts/ci-test-shard.sh`):
+  3 package shards (`scripts/ci-test-packages.sh short I N`) and `internal/cli` (3) and
+  `internal/generator` (2) split by test name, because each is one serial test binary.
+  `internal/ciguard` fails if the matrix misses an index. No `-count=1`: unchanged packages
+  replay main's cached results.
+- **Flake gate** — each test the change adds or edits runs three times under the race
+  detector (`scripts/ci-changed-tests.sh`). A test that fails one run in three never merges.
+- **Windows (cross-compile + vet)** — `GOOS=windows` build and vet (tests included) from
+  Linux, and the windows/arm64 build of `cmd/forge`.
+- **compile (-tags e2e)** — `go vet -tags e2e` over the e2e-tagged packages.
+- Lint, Build, Verify Generated Code, Validate KCL, Vulnerability Scan, License Compliance.
+- A pull request that touches only `docs/**`, root `*.md` or skills skips `ci.yml` and
+  `library-lint.yml`; `docs-skills.yml` runs the `-short` tests that read those files.
+
+**Push to main** (and `workflow_dispatch` on any branch) adds:
 
 - **Unit** — `ci.yml` Test: `go test -race -count=1` over `scripts/ci-test-packages.sh unit`
-  (every package except `internal/cli` and the guards).
+  (every package except `internal/cli` and the guards), full mode.
 - **internal/cli** — `ci.yml` Test (internal/cli): the package alone, `-race -count=1`. Its
   subpackages stay in Unit.
 - **Guards** — `ci.yml` Test (guards): tierguard, removalguard, deadcodeguard; `-p 1`, no
-  `-race`.
-- **Windows** — `ci.yml` Windows: build, vet, the windows/arm64 build, the `-short` tier of
-  Unit + internal/cli, and a scaffold+render smoke. No `-count=1`: a PR restores main's
-  build cache and replays unchanged packages; only a push to main saves the cache.
+  `-race`. Under `-short` they skip their whole-repo work, so pull requests get their fast
+  half only.
+- **Test (-short, whole tier)** — the pull-request tier in one job; it saves the
+  `go-build-short` cache the shards restore.
+- **Windows** — native: build, vet, the `-short` tier of Unit + internal/cli, and a
+  scaffold+render smoke.
 - **e2e** — `e2e-suite.yml`: `prepare` builds the e2e test binary, forge and the codegen
   plugins once and plans 4 shards by recorded duration (`.github/e2e-timings.json`,
   `internal/e2eshard`); the shards run only `TestE2E*` tests, minus `TestE2ENightly*`; a
-  coverage ledger proves they ran every selected test. `compile` (build + vet under the tag)
-  runs beside them and gates nothing.
-- **Nightly** — `nightly.yml` (schedule + dispatch): the full windows/arm64 `go vet`, and the
-  whole e2e suite (`select: all`, so `TestE2ENightly*` too). A red nightly on main opens, or
-  comments on, the "Nightly CI is red" issue; the next green one closes it.
+  coverage ledger proves they ran every selected test. **E2E Scaffold** (`e2e-scaffold.yml`)
+  likewise. Label a pull request `ci:e2e` to run both on it before merging.
+- **Nightly** — `nightly.yml` (schedule + dispatch): the full windows/arm64 `go vet`, the
+  whole e2e suite (`select: all`, so `TestE2ENightly*` too) and E2E Scaffold. A red nightly
+  on main opens, or comments on, the "Nightly CI is red" issue; the next green one closes it.
+
+So a test gated with `if testing.Short()` runs on main, not on pull requests: mark the slow
+ones, and a red main is bisected from the merge that caused it.
 
 e2e naming is load-bearing: a test in an e2e-tagged file must be named `TestE2E*` and no
-untagged test may be — `internal/e2eshard`'s guard fails the Test job otherwise, because
-the shards select by that prefix. A test with no recorded duration is planned at the
+untagged test may be — `internal/e2eshard`'s guard fails the test shards otherwise, because
+the e2e shards select by that prefix. A test with no recorded duration is planned at the
 median; `scripts/e2e-timings.sh` refreshes the file from a CI run.
 
-A check moves to nightly only when it is slow AND a failure is rare and cheap to bisect a
-day later. Say why in its job comment.
+A check moves off the pull request only when it is slow AND a failure is rare and cheap to
+bisect from main. Say why in its job comment.
 
 Build caches: a PR job restores main's cache and never saves one; only pushes to main
 save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR

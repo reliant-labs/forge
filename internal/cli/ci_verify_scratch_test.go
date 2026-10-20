@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
@@ -293,34 +294,64 @@ func TestVerifyScratch_PrunesCopiesOfDeadProcesses(t *testing.T) {
 }
 
 // A fixed point the scratch run records reaches the checkout's generate
-// cache — gitignored state, never the tree — so the next check and the next
-// in-place `forge generate` skip. Never over a record that moved meanwhile.
+// cache — gitignored state, never the tree — together with the .forge/ state
+// it names (the generating-build record a run writes), so the next check and
+// the next in-place `forge generate` skip. Never over a record that moved
+// meanwhile.
 func TestVerifyScratch_CopiesARecordedFixedPointBack(t *testing.T) {
 	_, repo := verifyRepo(t)
-	writeTestFile(t, filepath.Join(repo, ".forge", "generate-cache.json"), "old")
 	cache := filepath.Join(repo, ".forge", "generate-cache.json")
+	build := filepath.Join(repo, ".forge", "generating-build")
+	writeTestFile(t, cache, "old")
+	record := func(s *verifyScratch) string {
+		t.Helper()
+		writeTestFile(t, filepath.Join(s.root, ".forge", "generating-build"), "forge test-build\n")
+		id, err := pathIdentity(filepath.Join(s.root, ".forge", "generating-build"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(generateCacheManifest{
+			Version: generateCacheVersion,
+			Env:     map[string]string{},
+			Files:   map[string]string{".forge/generating-build": id, "gen/widget_gen.go": "x"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(s.root, ".forge", "generate-cache.json"), string(body))
+		return string(body)
+	}
 
 	s, err := newVerifyScratch(context.Background(), repo, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Remove()
-	writeTestFile(t, filepath.Join(s.root, ".forge", "generate-cache.json"), "recorded")
+	want := record(s)
 	s.copyCacheBack()
-	if got, _ := os.ReadFile(cache); string(got) != "recorded" {
+	if got, _ := os.ReadFile(cache); string(got) != want {
 		t.Errorf("cache = %q, want the scratch run's record", got)
 	}
+	if got, _ := os.ReadFile(build); string(got) != "forge test-build\n" {
+		t.Errorf(".forge/generating-build = %q, want the state the record names", got)
+	}
 
+	if err := os.Remove(build); err != nil {
+		t.Fatal(err)
+	}
 	s2, err := newVerifyScratch(context.Background(), repo, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s2.Remove()
 	writeTestFile(t, cache, "a concurrent in-place run")
-	writeTestFile(t, filepath.Join(s2.root, ".forge", "generate-cache.json"), "scratch")
+	record(s2)
 	s2.copyCacheBack()
 	if got, _ := os.ReadFile(cache); string(got) != "a concurrent in-place run" {
 		t.Errorf("cache = %q: a record made meanwhile was replaced", got)
+	}
+	if _, err := os.Stat(build); !os.IsNotExist(err) {
+		t.Errorf("state was copied back over a cache that moved meanwhile: %v", err)
 	}
 }
 
@@ -365,6 +396,38 @@ func TestVerifyScratch_FingerprintsLikeTheCheckout(t *testing.T) {
 	for k, v := range got {
 		if _, ok := want[k]; !ok {
 			t.Errorf("%s: only the scratch has it (%q)", k, v)
+		}
+	}
+}
+
+// A CI checkout is usually shallow (actions/checkout fetch-depth 1): its HEAD
+// commit's parent is not in the object store. The scratch copy must carry the
+// clone's shallow boundary, or every `git log` there — the Go toolchain's VCS
+// stamp in the regenerate's validate build among them — fails with exit 128
+// reading the missing parent.
+func TestVerifyScratch_WorksInAShallowClone(t *testing.T) {
+	_, repo := verifyRepo(t)
+	writeTestFile(t, filepath.Join(repo, "internal", "app", "providers.go"), "package app // second\n")
+	gitOut(t, repo, "commit", "-q", "-am", "second")
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitOut(t, parent, "clone", "-q", "--depth", "1", "file://"+repo, "shallow")
+	clone := filepath.Join(parent, "shallow")
+
+	s, err := newVerifyScratch(context.Background(), clone, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Remove()
+	// What cmd/go runs to stamp a build with VCS information.
+	for _, args := range [][]string{
+		{"-c", "log.showsignature=false", "log", "-1", "--format=%H:%ct"},
+		{"status", "--porcelain"},
+	} {
+		if _, err := scratchGit(context.Background(), s.top, nil, args...); err != nil {
+			t.Errorf("git %v in the scratch copy of a shallow clone: %v", args, err)
 		}
 	}
 }

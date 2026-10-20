@@ -54,6 +54,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -162,8 +163,18 @@ func (s *verifyScratch) populate(ctx context.Context, objects, format string, in
 	if err := os.MkdirAll(filepath.Dir(alternates), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(alternates, []byte(objects+"\n"), 0o644); err != nil {
+	if err := atomicfile.WriteFile(alternates, []byte(objects+"\n"), 0o644); err != nil {
 		return err
+	}
+	// A shallow clone (CI's fetch-depth 1) lacks its HEAD's parents; without
+	// the same boundary every `git log` here — cmd/go's VCS stamp in the
+	// validate build among them — fails reading a parent that is not there.
+	if p, err := callerGit(ctx, s.callerTop, "rev-parse", "--path-format=absolute", "--git-path", "shallow"); err == nil {
+		if body, rerr := os.ReadFile(strings.TrimSpace(string(p))); rerr == nil {
+			if err := atomicfile.WriteFile(filepath.Join(s.top, ".git", "shallow"), body, 0o644); err != nil {
+				return err
+			}
+		}
 	}
 	if head, err := callerGit(ctx, s.callerTop, "rev-parse", "-q", "--verify", "HEAD^{commit}"); err == nil {
 		if _, err := scratchGit(ctx, s.top, nil, "update-ref", "HEAD", strings.TrimSpace(string(head))); err != nil {
@@ -391,7 +402,7 @@ func (s *verifyScratch) writeExcludes(ctx context.Context, extra []string) error
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(file, []byte(b.String()), 0o644)
+	return atomicfile.WriteFile(file, []byte(b.String()), 0o644)
 }
 
 // prefix is the project's slash-separated path within the repository, "" at
@@ -470,20 +481,64 @@ func (s *verifyScratch) changes(ctx context.Context) ([]string, error) {
 // later run skip over a tree it does not describe; it is written only while
 // the caller's own manifest is still the one copied in, so a record a
 // concurrent in-place run made is never replaced.
+//
+// The record names forge's top-level .forge/ state as it stood when the run
+// ended — the generating-build record a run writes among it. That state is
+// copied back first, where it differs, or the next scratch copy would carry
+// the caller's older state and miss the record it just made. Only .forge/,
+// forge's own machine-local state: no verdict found any other file different,
+// and the tree is not this check's to write.
 func (s *verifyScratch) copyCacheBack() {
 	recorded, err := os.ReadFile(filepath.Join(s.root, generateCacheRel))
 	if err != nil || bytes.Equal(recorded, s.cacheIn) {
 		return
 	}
 	dst := filepath.Join(s.callerRoot, generateCacheRel)
-	current, _ := os.ReadFile(dst)
-	if !bytes.Equal(current, s.cacheIn) {
-		return
-	}
 	if _, err := os.Stat(filepath.Dir(dst)); err != nil {
 		return // no .forge/ in the checkout: not ours to create
 	}
+	var m generateCacheManifest
+	if json.Unmarshal(recorded, &m) != nil {
+		return
+	}
+	for key, want := range m.Files {
+		name, ok := strings.CutPrefix(key, ".forge/")
+		if !ok || strings.Contains(name, "/") || want == "absent" || want == "dir" {
+			continue
+		}
+		src := filepath.Join(s.root, ".forge", name)
+		if id, err := pathIdentity(src); err != nil || id != want {
+			continue
+		}
+		target := filepath.Join(s.callerRoot, ".forge", name)
+		if id, err := pathIdentity(target); err == nil && id == want {
+			continue
+		}
+		info, err := os.Lstat(src)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		body, err := os.ReadFile(src)
+		if err != nil {
+			return
+		}
+		if !bytes.Equal(readOrNil(dst), s.cacheIn) {
+			return // a concurrent run moved the cache: its state is newer
+		}
+		if atomicfile.WriteFile(target, body, info.Mode().Perm()) != nil {
+			return
+		}
+	}
+	if !bytes.Equal(readOrNil(dst), s.cacheIn) {
+		return
+	}
 	_ = atomicfile.WriteFile(dst, recorded, 0o644)
+}
+
+// readOrNil is a file's content, nil when it cannot be read.
+func readOrNil(path string) []byte {
+	body, _ := os.ReadFile(path)
+	return body
 }
 
 // Remove deletes the scratch copy. The node_modules links are removed, not

@@ -262,6 +262,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge env deploy <env> <version> --frontends-only` no longer renders or
+  compares the env's bundle.** It applies no bundle object, yet it rendered
+  the whole env and refused when a newer checkout's workloads differed from
+  the release's bundle of record — so a release's frontend could not ship
+  after its backend had (control-plane prod, 2026-10-19). It now records no
+  bundle and computes no k8s plan; its promotion is still confirmed and
+  scoped, and the frontend still builds from the release's recorded sources.
+  A `--target` naming only frontends shipped to Firebase or a bucket is
+  treated the same; any target that renders cluster objects keeps the check.
+- **A release's bundle reproduces from its own commit and forge.** A
+  hand-composed `forge.image_ref_for(<repo>, image_tag)` rendered
+  `<repo>:<release>@<digest>` at the cut, whose build state held a digest
+  under `<repo>:<release>`, and `<repo>@<digest>` on any later redeploy,
+  whose build state did not — so the versioned deploy refused its own
+  release's bundle. A named release now pins its images under the release
+  tag from the release alone (`releaseVersionTag`, the one rule the build's
+  push tag, the render's `image_tag` and the pins share).
+- **A Firebase or bucket frontend that fails before its upload reports
+  nothing shipped.** A failed `npm run build` (or assemble, source-map
+  filing, asset retention, config write) was reported as `PARTLY … failed
+  part-way; some of it may be live` although the host was never written. Those
+  failures now carry `cluster.ErrNothingApplied`, which the deploy's ship log
+  reads, unless an earlier frontend of the same group already shipped.
 - **`lifecyclekit.Supervise` no longer reports a node as stuck because an
   earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
   after its cancel once the budget was gone, so every node behind a slow one

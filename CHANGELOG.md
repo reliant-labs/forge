@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
+  only when the caller is an authenticated internal service.** otelconnect
+  answers "adopt the inbound traceparent?" once for every caller:
+  `WithTrustRemote` adopts it for everyone, the default for no one. A server
+  reachable from the internet must take the default, so its internal callers'
+  requests became new traces linked to theirs, never one trace (every
+  workspace-proxy → admin-server call in the Reliant control plane). The
+  returned interceptor decides per request: when `trusted(ctx, peer, header)`
+  verifies the caller (an internal-service token signature, a constant-time
+  shared-secret compare, an mTLS identity, never a spoofable header or IP),
+  the server span is the caller's child; otherwise it is a new trace linked to
+  the caller's, exactly as before. It runs outermost, ahead of auth, so the
+  predicate does its own verification. Authorization is unchanged. The threat
+  model (trace grafting, forced sampling, baggage injection) is in
+  `pkg/observe/trust_remote.go`.
+
 - **`observe.NewHTTPClient`: the traced client for plain outbound HTTP.**
   A call to a third-party REST API goes through a plain `*http.Client`, which
   no Connect interceptor sees; built by hand it had no client span, no

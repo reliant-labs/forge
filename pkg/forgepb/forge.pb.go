@@ -1194,16 +1194,38 @@ func (x *EnvVarAlias) GetDeprecated() bool {
 //   - The ROOT config (no `command`) is the binary-wide surface: every
 //     process of the binary loads it, and its flags register as PERSISTENT
 //     flags on the binary's root command, so every subcommand inherits them.
+//
 //   - A COMMAND config is loaded by exactly the process running that
 //     subcommand. Its leaves — composed blocks included — register as LOCAL
 //     flags on that subcommand, and its loader refuses to load from any
 //     other command.
 //
-// A process therefore reads the root config plus the ONE config declared for
-// its exact command path; command configs do not nest (a config for
-// ["server"] is not inherited by `server api`). The root config and a command
-// config of the same binary may not declare the same env var or flag: one
-// process would read the value twice, from two declarations that can drift.
+//   - A SUBTREE config (`subtrees`) is loaded by every process running a
+//     command AT OR BELOW one of its paths. Its leaves register as
+//     PERSISTENT flags on each path's command, so the commands beneath
+//     inherit them. It is how a setting that several commands read — but not
+//     every process of the binary — is declared once: the CLI connection
+//     every end-user command needs (server URL, token) without the server
+//     roles' workloads carrying it, or the guard policy `daemon start` and
+//     `open` both run.
+//
+// A process therefore reads the root config, every subtree config whose path
+// prefixes its command path, and the ONE config declared for its exact path
+// — and nothing else: least knowledge, by declaration. Two configs one
+// process can load together (the root and anything; a subtree config and a
+// command config or another subtree config below or above it) may not
+// declare the same env var, flag or top-level field: that process would read
+// one value from two declarations that can drift. Configs no process loads
+// together (sibling commands) may compose the same block freely: that is one
+// definition, two values.
+//
+//	message CLIConfig {
+//	  option (forge.v1.binary_config) = {
+//	    binary: "reliant"
+//	    subtrees: [{path: ["auth"]}, {path: ["daemon"]}, {path: ["open"]}]
+//	  };
+//	  string server_url = 1 [(forge.v1.config) = {env_var: "RELIANT_SERVER_URL", flag: "server"}];
+//	}
 type BinaryConfigOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Binary is the cmd/<name> leaf whose process loads this config — the same
@@ -1223,7 +1245,16 @@ type BinaryConfigOptions struct {
 	// would be a guess that is wrong in both directions — and a wrong refusal
 	// blocks generate. The exact check runs where the tree is real: the
 	// generated Load<Msg>(cmd) refuses a command whose path is not this one.
-	Command       []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
+	Command []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
+	// Subtrees binds this config to every command AT OR BELOW each path:
+	// [{path: ["daemon"]}] is loaded by `daemon start`, `daemon status` and
+	// every other command under `daemon`, and by `daemon` itself. Exclusive
+	// with `command` (a config is one process's, or a subtree's); both empty
+	// binds the binary's root config. Each path is shaped like `command`, and
+	// no path may lie below another of the same message (the outer one already
+	// covers it). Register<Msg>Flags is called on each path's command; the
+	// generated Load<Msg>(cmd) refuses a command under none of them.
+	Subtrees      []*CommandPath `protobuf:"bytes,3,rep,name=subtrees,proto3" json:"subtrees,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1268,6 +1299,59 @@ func (x *BinaryConfigOptions) GetBinary() string {
 func (x *BinaryConfigOptions) GetCommand() []string {
 	if x != nil {
 		return x.Command
+	}
+	return nil
+}
+
+func (x *BinaryConfigOptions) GetSubtrees() []*CommandPath {
+	if x != nil {
+		return x.Subtrees
+	}
+	return nil
+}
+
+// CommandPath is one cobra command path below a binary's root, one command
+// name per element: ["daemon", "start"]. See BinaryConfigOptions.subtrees.
+type CommandPath struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          []string               `protobuf:"bytes,1,rep,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommandPath) Reset() {
+	*x = CommandPath{}
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommandPath) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommandPath) ProtoMessage() {}
+
+func (x *CommandPath) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommandPath.ProtoReflect.Descriptor instead.
+func (*CommandPath) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CommandPath) GetPath() []string {
+	if x != nil {
+		return x.Path
 	}
 	return nil
 }
@@ -1319,7 +1403,7 @@ type FrontendConfigOptions struct {
 
 func (x *FrontendConfigOptions) Reset() {
 	*x = FrontendConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	mi := &file_forge_v1_forge_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1331,7 +1415,7 @@ func (x *FrontendConfigOptions) String() string {
 func (*FrontendConfigOptions) ProtoMessage() {}
 
 func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	mi := &file_forge_v1_forge_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1344,7 +1428,7 @@ func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FrontendConfigOptions.ProtoReflect.Descriptor instead.
 func (*FrontendConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{10}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *FrontendConfigOptions) GetFrontend() string {
@@ -1538,10 +1622,13 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
 	"\n" +
 	"deprecated\x18\x02 \x01(\bR\n" +
-	"deprecated\"G\n" +
+	"deprecated\"z\n" +
 	"\x13BinaryConfigOptions\x12\x16\n" +
 	"\x06binary\x18\x01 \x01(\tR\x06binary\x12\x18\n" +
-	"\acommand\x18\x02 \x03(\tR\acommand\"3\n" +
+	"\acommand\x18\x02 \x03(\tR\acommand\x121\n" +
+	"\bsubtrees\x18\x03 \x03(\v2\x15.forge.v1.CommandPathR\bsubtrees\"!\n" +
+	"\vCommandPath\x12\x12\n" +
+	"\x04path\x18\x01 \x03(\tR\x04path\"3\n" +
 	"\x15FrontendConfigOptions\x12\x1a\n" +
 	"\bfrontend\x18\x01 \x01(\tR\bfrontend*q\n" +
 	"\aStoreAs\x12\x18\n" +
@@ -1582,7 +1669,7 @@ func file_forge_v1_forge_proto_rawDescGZIP() []byte {
 }
 
 var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_forge_v1_forge_proto_goTypes = []any{
 	(StoreAs)(0),                        // 0: forge.v1.StoreAs
 	(ServiceVisibility)(0),              // 1: forge.v1.ServiceVisibility
@@ -1597,12 +1684,13 @@ var file_forge_v1_forge_proto_goTypes = []any{
 	(*ConfigFieldOptions)(nil),          // 10: forge.v1.ConfigFieldOptions
 	(*EnvVarAlias)(nil),                 // 11: forge.v1.EnvVarAlias
 	(*BinaryConfigOptions)(nil),         // 12: forge.v1.BinaryConfigOptions
-	(*FrontendConfigOptions)(nil),       // 13: forge.v1.FrontendConfigOptions
-	(*durationpb.Duration)(nil),         // 14: google.protobuf.Duration
-	(*descriptorpb.MessageOptions)(nil), // 15: google.protobuf.MessageOptions
-	(*descriptorpb.FieldOptions)(nil),   // 16: google.protobuf.FieldOptions
-	(*descriptorpb.ServiceOptions)(nil), // 17: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),  // 18: google.protobuf.MethodOptions
+	(*CommandPath)(nil),                 // 13: forge.v1.CommandPath
+	(*FrontendConfigOptions)(nil),       // 14: forge.v1.FrontendConfigOptions
+	(*durationpb.Duration)(nil),         // 15: google.protobuf.Duration
+	(*descriptorpb.MessageOptions)(nil), // 16: google.protobuf.MessageOptions
+	(*descriptorpb.FieldOptions)(nil),   // 17: google.protobuf.FieldOptions
+	(*descriptorpb.ServiceOptions)(nil), // 18: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),  // 19: google.protobuf.MethodOptions
 }
 var file_forge_v1_forge_proto_depIdxs = []int32{
 	4,  // 0: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
@@ -1610,28 +1698,29 @@ var file_forge_v1_forge_proto_depIdxs = []int32{
 	6,  // 2: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
 	1,  // 3: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
 	8,  // 4: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
-	14, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
+	15, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
 	2,  // 6: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
 	11, // 7: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
-	15, // 8: forge.v1.entity:extendee -> google.protobuf.MessageOptions
-	15, // 9: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
-	15, // 10: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
-	16, // 11: forge.v1.field:extendee -> google.protobuf.FieldOptions
-	16, // 12: forge.v1.config:extendee -> google.protobuf.FieldOptions
-	17, // 13: forge.v1.service:extendee -> google.protobuf.ServiceOptions
-	18, // 14: forge.v1.method:extendee -> google.protobuf.MethodOptions
-	3,  // 15: forge.v1.entity:type_name -> forge.v1.EntityOptions
-	12, // 16: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
-	13, // 17: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
-	5,  // 18: forge.v1.field:type_name -> forge.v1.FieldOptions
-	10, // 19: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
-	7,  // 20: forge.v1.service:type_name -> forge.v1.ServiceOptions
-	9,  // 21: forge.v1.method:type_name -> forge.v1.MethodOptions
-	22, // [22:22] is the sub-list for method output_type
-	22, // [22:22] is the sub-list for method input_type
-	15, // [15:22] is the sub-list for extension type_name
-	8,  // [8:15] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	13, // 8: forge.v1.BinaryConfigOptions.subtrees:type_name -> forge.v1.CommandPath
+	16, // 9: forge.v1.entity:extendee -> google.protobuf.MessageOptions
+	16, // 10: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
+	16, // 11: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
+	17, // 12: forge.v1.field:extendee -> google.protobuf.FieldOptions
+	17, // 13: forge.v1.config:extendee -> google.protobuf.FieldOptions
+	18, // 14: forge.v1.service:extendee -> google.protobuf.ServiceOptions
+	19, // 15: forge.v1.method:extendee -> google.protobuf.MethodOptions
+	3,  // 16: forge.v1.entity:type_name -> forge.v1.EntityOptions
+	12, // 17: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
+	14, // 18: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
+	5,  // 19: forge.v1.field:type_name -> forge.v1.FieldOptions
+	10, // 20: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
+	7,  // 21: forge.v1.service:type_name -> forge.v1.ServiceOptions
+	9,  // 22: forge.v1.method:type_name -> forge.v1.MethodOptions
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	16, // [16:23] is the sub-list for extension type_name
+	9,  // [9:16] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_forge_v1_forge_proto_init() }
@@ -1646,7 +1735,7 @@ func file_forge_v1_forge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_v1_forge_proto_rawDesc), len(file_forge_v1_forge_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 7,
 			NumServices:   0,
 		},

@@ -367,6 +367,8 @@ func collectSingleLinterJSON(
 		return report(collectVendoredProtosJSON(cwd))
 	case flags.configReach:
 		return reportUngated(collectConfigReachJSON(cwd, cfg))
+	case flags.graph:
+		return reportBySeverity(collectGraphJSON(cwd))
 	}
 
 	return nil, false, nil

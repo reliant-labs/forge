@@ -161,6 +161,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `forge project new` from #918 until the composition graph, #923, made new
   projects skip lifecycle.go). The import is rendered with the first worker,
   and the reconciler adds it when it injects one into an existing file.
+- **`gen/forge_descriptor.json` stamps one entry per proto, and a merge keeps
+  it current.** The `source_hash` digest of every `.proto` is replaced by
+  `sources` (path → sha256 per file). A single digest of the tree matched no
+  merge: two branches editing different protos each stamped a different
+  value, so every merge that brought in a proto change staled every open
+  branch's descriptor, and main went stale when two landed without a
+  regenerate. Per-file entries change only where their proto changes, and the
+  `forge-generated` merge driver merges them key by key, so the merged stamp
+  is the stamp of the merged tree. forge's vendored annotation protos
+  (`forge/v1/forge.proto`, `buf/validate/validate.proto`) are not stamped:
+  they are grammar, not descriptor input, and only `forge generate` changes
+  them. A stale descriptor is now refused with the protos that drifted
+  (`proto/x.proto (edited)`). The next `forge generate` rewrites the field.
 
 ### Removed
 

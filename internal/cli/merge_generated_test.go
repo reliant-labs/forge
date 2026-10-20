@@ -382,10 +382,14 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 	ensureGeneratedMergeDriverTo(&first, other) // run from the LINKED worktree
 	notice := first.String()
 	common := strings.TrimSpace(gitT(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+	// The notice names the attributes file as git reports it — git's own
+	// separators, forward slashes even on Windows — so the expectation asks
+	// git the same question rather than building it with filepath.Join.
+	attributes := strings.TrimSpace(gitT(t, other, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes"))
 	for _, want := range []string{
 		"shared by 2 worktrees",
 		common,
-		filepath.Join(common, "info", "attributes"),
+		attributes,
 		"merge.forge-generated.driver = '/opt/forge/bin/forge' ",
 		"this worktree only; was: unset",
 		"git config --worktree --unset merge.forge-generated.driver",

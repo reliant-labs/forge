@@ -25,6 +25,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NoKubernetesAPI` and `WorkerLeases` knobs mapped to roots and reach, and the
   three hand edits a graph project moving to `binary_config` needs.
 
+- **`forge lint --tracing`: the places a request's trace is cut.** Four
+  rules, all at error in the full sweep, over owned non-test Go:
+  `forge-tracing-log-without-ctx` (a `slog.Info`, a `*slog.Logger` level
+  method, or a helper named in `lint.tracing.log_wrappers`, called where a
+  `context.Context` or `*http.Request` parameter is in scope: the line
+  carries no trace_id), `forge-tracing-raw-http-client` (an `*http.Client`
+  with no, nil, default or bare transport; `http.DefaultClient`; `http.Get`),
+  `forge-tracing-raw-sql-open` (`sql.Open`, sqlx, pgx stdlib, and a pgx pool
+  with no tracer, instead of `dbtrace`), and
+  `forge-tracing-contract-uninstrumented` (an instrumented contract's `New`
+  used outside `compose.go` without its `…WithForgeMiddleware` decorator).
+  The log rule autofixes to the `…Context` form, dropping an import the
+  rewrite leaves unused. `forge lint --tracing` applies it at any severity
+  but off; the full sweep only where the rule is at error, so a repo that
+  sets a rule to warn in `lint.rules` while it migrates is not rewritten by a
+  forge pin. Worker scaffolds log with their context.
+- **A trace per unit of background work: `observe.RunRoot`,
+  `lifecyclekit.Every`, and a root span per reconcile in
+  `forge/pkg/controller`.** A loop iteration or a reconcile has no Connect
+  edge to start its trace, so the decorated methods, queries and calls it made
+  were each a one-span trace, or nothing (`dbtrace` opens spans only under a
+  parent). `observe.RunRoot(ctx, name, fn)` runs `fn` under a new root span,
+  never the caller's trace, and records `fn`'s error or panic (the panic is
+  re-raised). `lifecyclekit.Every(name, EveryOptions{Interval}, fn)` is the
+  hand-written ticker worker with that built in: one `worker.<name>.run` root
+  per run, a failed or panicking run logged and the cadence kept.
+  `controller.Reconciler.Run` opens `reconcile <Kind>` around every reconcile,
+  with `k8s.namespace.name` / `k8s.object.name` and the error recorded.
+- **Trace context through Temporal and NATS: `forge/pkg/observe/temporalotel`
+  and `forge/pkg/observe/natsotel`.** `temporalotel.NewInterceptor` is
+  Temporal's `contrib/opentelemetry` interceptor with forge's defaults: the
+  global W3C propagator (the same context Connect, HTTP and NATS carry), the
+  global tracer provider read at span time, and `AllowInvalidParentSpans`, so
+  workflows already in flight keep running. Installed once on `client.Dial`,
+  it also applies to the client's workers, so the request that starts a
+  workflow, the workflow and its activities are one trace; before this,
+  Reliant's hand-rolled interceptor made every activity a root. `natsotel` is
+  Reliant's NATS propagation, lifted: `NewMsg`/`Inject` on publish,
+  `StartConsumerSpan(ctx, subject, header, name)` on consume (core NATS or
+  JetStream), `StartProducerSpan` where the publish deserves a span, with
+  `messaging.*` attributes.
+
 - **Root reach for binary-config projects.** A composition-graph project whose
   primary binary binds config per command (`(forge.v1.binary_config)`
   `command` / `subtrees`) used to get no per-root reach: no `LoadReach`
@@ -58,7 +100,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   codemod that has nothing to rewrite in the project. The previous registry
   was keyed by minor hop, which a patch-release breaking change could never
   use, and was empty.
-
 
 - **A forge that is not the project's pinned forge now hands the command to the
   pinned forge instead of refusing.** The forge on PATH (a Reliant workspace

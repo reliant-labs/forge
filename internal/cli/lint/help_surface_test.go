@@ -177,6 +177,10 @@ func TestLintHelpSurface(t *testing.T) {
 		// generated ORM cannot express GROUP BY — so this is a lane
 		// forge's own guidance leads authors into.
 		"time-bucketing",
+		// Gating, and the migration command for the log rule: a repo that
+		// dialled the tracing rules to warn adopts them by running this lane,
+		// which rewrites every log call. Hidden, nobody would find it.
+		"tracing",
 		// Gating, and about the user's project: forge COPIES these protos
 		// in and then never tracks them, so a stale vendored forge.proto
 		// is invisible to every other command. Hiding the one check that

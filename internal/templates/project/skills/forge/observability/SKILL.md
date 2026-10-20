@@ -229,6 +229,13 @@ Every RPC already writes a structured audit record to your logs (`log_type=audit
   interceptor, request-ID forwarding, timeout — then
   `genconnect.NewXClient(stack.HTTPClient, baseURL, stack.ClientOptions...)`.
 
+## Keeping a request in one trace
+
+`forge lint` gates on the places app code cuts a trace: a log call that drops
+the `ctx` in scope, a raw `*http.Client` or `sql.Open`, a contract built
+without its decorator. `forge lint --tracing` runs them alone and rewrites the
+log calls: `observability/tracing-lint`.
+
 ## Opting out (hosted observability is opt-out)
 
 Observability is ON by default for every deployed env, and you can switch off

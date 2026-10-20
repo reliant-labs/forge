@@ -74,12 +74,12 @@ func (r *Runner) Name() string { return "{{.Name}}" }
 //           }
 //       }
 func (r *Runner) Run(ctx context.Context) error {
-	r.deps.Logger.Info("{{.Name}} runtime entered (placeholder Run body)")
+	r.deps.Logger.InfoContext(ctx, "{{.Name}} runtime entered (placeholder Run body)")
 
 	// TODO: Implement your binary's runtime loop. The placeholder body
 	// blocks on ctx so the scaffold compiles and exits cleanly on
 	// shutdown signal.
 	<-ctx.Done()
-	r.deps.Logger.Info("{{.Name}} runtime ctx cancelled, exiting")
+	r.deps.Logger.InfoContext(ctx, "{{.Name}} runtime ctx cancelled, exiting")
 	return nil
 }

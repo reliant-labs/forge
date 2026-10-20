@@ -133,14 +133,24 @@ func TestDifferentNamesDoNotExclude(t *testing.T) {
 
 func TestBackendDeathFailsOverAndFormerLeaderStopsWithinAHeartbeat(t *testing.T) {
 	dsn := testDSN(t)
-	a := start(t, dsn, "sweeper", nil)
+	// a reaches the database through a link this test can cut.
+	k, via := newLink(t, dsn, 0)
+	a := start(t, via, "sweeper", nil)
 	eventually(t, "a to lead", a.leading.Load)
 	b := start(t, dsn, "sweeper", nil)
 
-	// Kill a's backend the way a network partition or a node loss does: the
-	// server drops its session and its locks. Only this test's database: the
-	// server is shared, and another package's test holding an advisory lock
-	// (migratekit's run lock, testkit's template build) would be killed too.
+	// Partition a the way a network split or a node loss does: the server
+	// drops its session and its locks, and a cannot open a new one.
+	//
+	// Cutting a's NEW connections is not optional. Killing only the backend
+	// leaves a free to reconnect, and the freed lock goes to whichever
+	// replica polls first: when a's heartbeat noticed the loss before b's
+	// next poll (one slow CI runner was enough), a re-won on a fresh session
+	// and b never led — a correct outcome for the Locker, and a 10s timeout
+	// here. Only this test's database is touched: the server is shared, and
+	// another package's test holding an advisory lock (migratekit's run lock,
+	// testkit's template build) would be killed too.
+	k.refuse.Store(true)
 	admin := pool(t, dsn)
 	var killed int
 	if err := admin.QueryRow(`SELECT count(pg_terminate_backend(pid)) FROM pg_locks

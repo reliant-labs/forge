@@ -24,6 +24,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   twice. `serverkit.PgxConn` reaches the `*pgx.Conn` under a `sql.Conn.Raw`
   driver connection through the tracing and pooler-drain wrappers.
 
+- **Fast/slow test tiers: `testkit.Slow`, `forge lint --slow-tests`,
+  `forge ci test-budget`.** A test is fast (it runs in the blocking
+  `go test -short` tier) unless it declares otherwise:
+  `testkit.Slow(t, "<what makes it slow>", testkit.Inputs("deploy/**"))`
+  skips under `-short` and in the integration lane, runs in the full tier,
+  and says so in its skip message. It sits on Go's own `-short`, so plain
+  `go test`, IDEs and the test cache are unchanged; a plain
+  `if testing.Short() { t.Skip(...) }` still counts. `Inputs` names the
+  files a slow test depends on, read from source (string literals) by the
+  new `internal/linter/slowtest` analyzer, for a later affected-selection
+  tool. Two guards enforce the marker by measurement:
+  `forge lint --slow-tests` (opt-in for now) flags a test whose own code — its body,
+  `_test.go` helpers, helper files that import `testing`, across packages
+  via analysis facts — execs `go`/`forge`/`kcl`/`node`/`npm`/`git`/`docker`/…,
+  drives containers or dials an external host with no `testing.Short` check
+  on the way; `go test -short -json ./... | forge ci test-budget` fails on
+  any unmarked top-level test over `--budget` (default 2s), with file:line.
+- **The interceptor chain has a `Deadline` slot, ahead of `Auth`
+  (`forge/pkg/serverkit`).** `ChainDeps.Deadline` takes a `serverkit.Deadline`
+  — the slot's configuration and its interceptor in one value — and runs right
+  after metrics and right before auth, so the RPC's deadline bounds
+  authentication: a stalled token-store query or introspection call ends as
+  `DeadlineExceeded` instead of holding the request. The default (a nil slot)
+  bounds every unary RPC by `DefaultUnaryDeadline` (30s), leaves streams
+  unbounded, and logs a unary RPC still running after `DefaultSlowAfter` (10s)
+  at WARN, then every `DefaultSlowRepeat` (30s), then once more when it
+  completes. `Deadline.Procedures` overrides the budget per procedure (zero or
+  negative is none; an entry bounds a stream too), `Unary` moves the default,
+  `SlowAfter`/`SlowRepeat` the watchdog, and `OnSlow` replaces its log (to
+  count slow calls as well). The server's budget is a ceiling: a client's
+  shorter deadline still applies, a longer one does not lift it.
+  `serverkit.NoDeadline` drops the slot; any other interceptor in it replaces
+  forge's and runs in the same pre-auth position. `observe.Deps.Deadline` is
+  the same position in `observe.Chain`. NewChain rejects a `Procedures` key
+  that is not a procedure (`/pkg.v1.Service/Method`). Behaviour change: an
+  existing chain gets the 30s unary default on upgrade with no edit — the
+  `migrations/v0.1.47` playbook says how to declare longer budgets.
+- **`(forge.v1.method).timeout` is enforced.** It was documented as the rpc's
+  server-side timeout and read by nothing. `forge generate` now projects it
+  into `pkg/middleware/procedures_gen.go` as `ProcedureDeadlines`, and the
+  scaffolded chain passes
+  `serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. An existing
+  project adopts it by adding
+  that one `Deadline:` line to its owned `serve.go` / `providers.go` chain.
 - **A typed activity stream: an rpc declares the activity event it records,
   and one interceptor writes it** (`forge/pkg/activity`).
   - **Declaring.** An rpc declares its event with
@@ -331,6 +375,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Parallel `forge cluster up`s no longer lose each other's kubectl
+  context.** `k3d cluster create`, `k3d kubeconfig merge`,
+  `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
+  kubeconfig with no lock, so two forge processes creating clusters at once
+  dropped one context, and the loser failed on `context "k3d-<name>" does not
+exist` for a running cluster. forge now creates with
+  `--kubeconfig-update-default=false --kubeconfig-switch-context=false` and
+  makes every kubeconfig write under one cross-process flock beside the file
+  (`<kubeconfig>.forge.lock`). The declarative cluster path also stops
+  silently switching your current context to the cluster it created.
+- **A graph-composed project's scaffolded e2e harness starts `<bin> server`.**
+  It ran `<bin> <svc>`, a per-service command that only legacy Components
+  projects have, so every new project's e2e suite failed with `unknown
+command`.
+- **`forge generate` drops a removed Deps key from a compose.go construction
+  of a package that is no longer a graph node** (marked
+  `//forge:external-component` or `//forge:not-a-component`). The graph
+  reconcile only measured node constructions, so the dead key failed every
+  generate's validate build (#747, again in graph mode); the construction is
+  kept and reported with the graph's remedy.
 - **`forge ci verify-generated` and `forge generate --check` never write the
   checkout.** Both regenerated the caller's own tree and then read
   `git status`, so a concurrent gate held every reader of the tree back for

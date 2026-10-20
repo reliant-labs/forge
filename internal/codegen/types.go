@@ -578,6 +578,12 @@ type ConfigMessage struct {
 	// root config. A binding is keyed on (Binary, Command).
 	Command []string `json:",omitempty"`
 
+	// Subtrees are the command paths at or below which this config is
+	// loaded, from (forge.v1.binary_config).subtrees: every process whose
+	// command path has one of them as a prefix loads it, alongside the root
+	// config and its exact command config. Exclusive with Command.
+	Subtrees [][]string `json:",omitempty"`
+
 	// Frontend is the forge.yaml frontends[].name whose BUNDLE loads this
 	// config, from the message-level (forge.v1.frontend_config).frontend
 	// annotation. Empty means the message is not bound to a frontend.

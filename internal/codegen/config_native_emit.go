@@ -328,7 +328,9 @@ func generateConfigKBodyPerBinary(rootFields []ConfigField, perBinary []BinaryCo
 		// Name the process each instance configures: with command-scoped
 		// configs, one binary has several, and the message name alone does
 		// not say which subcommand reads which.
-		if len(bc.Command) == 0 {
+		if len(bc.Subtrees) > 0 {
+			fmt.Fprintf(&b, "# Every process at or below %s.\n", subtreeList(bc.Binary, bc.Subtrees))
+		} else if len(bc.Command) == 0 {
 			fmt.Fprintf(&b, "# Every `%s` process (the binary's root config).\n", bc.Binary)
 		} else {
 			fmt.Fprintf(&b, "# The `%s %s` process.\n", bc.Binary, strings.Join(bc.Command, " "))
@@ -351,6 +353,10 @@ func generateConfigKBodyPerBinary(rootFields []ConfigField, perBinary []BinaryCo
 		fmt.Fprintf(&b, "%s: %s.%s = {\n", naming.ToSnakeCase(ps.SchemaName()), ConfigSchemaModule, ps.SchemaName())
 		if ps.Root != nil {
 			inst := InstanceName(ps.Root.MessageName)
+			fmt.Fprintf(&b, "    %s = %s\n", inst, inst)
+		}
+		for _, c := range ps.Subtrees {
+			inst := InstanceName(c.MessageName)
 			fmt.Fprintf(&b, "    %s = %s\n", inst, inst)
 		}
 		for _, c := range ps.Commands {

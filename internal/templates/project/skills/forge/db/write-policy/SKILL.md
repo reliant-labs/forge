@@ -1,6 +1,6 @@
 ---
 name: write-policy
-description: Who may write a column, and which marker says so — the decision table for forge:read-only vs forge:computed vs forge:generated vs forge:guards vs forge:immutable, row-ownership columns, forge:immutable against accidental full-replace overwrites, and forge:version optimistic concurrency.
+description: Who may write a column, and which marker says so — the decision table for forge:read-only vs forge:computed vs forge:generated vs forge:guards vs forge:immutable, row-ownership columns, forge:immutable against accidental full-replace overwrites, forge:version optimistic concurrency, and how a NOT NULL column's DEFAULT applies to an unset field (pointer or ,nullzero).
 ---
 
 # Column write policy
@@ -180,3 +180,25 @@ choose its own version could satisfy its own concurrency check. Entities with no
 
 See also: `db` for the schema/ORM half, `db/seeding` for `forge:ref` (the same
 `COMMENT ON` vocabulary applied to a foreign-key constraint).
+
+## Unset columns and DEFAULTs
+
+A `NOT NULL` column with a `DEFAULT` says "unset" with its TYPE, so the
+DEFAULT applies when you do not set the field and an explicit zero is still
+stored:
+
+- A scalar whose DEFAULT is not its Go zero (`status INTEGER NOT NULL DEFAULT
+  2`, `active BOOLEAN NOT NULL DEFAULT true`, `kind TEXT NOT NULL DEFAULT
+  'llm'`, any expression) is a **pointer** field: `nil` is unset, `&false` is
+  false.
+- A column whose zero it can never hold keeps its type and takes `,nullzero`:
+  a json document (`""` is not JSON), an array with a non-empty DEFAULT, a
+  scalar a CHECK keeps from its zero (every born enum column).
+- A DEFAULT equal to the zero (`0`, `false`, `''`, `'{}'`) changes nothing.
+
+Unset means one thing on every write: `Create` omits the column so the DEFAULT
+fires, a full-replace `Update` and `Upsert`'s conflict branch keep the stored
+value, and a masked update naming an unset column sets it back to its DEFAULT.
+Reads always fill the pointer. `forge:read-only` columns the create request
+does not carry are left unset the same way, so their DEFAULT is the row's
+initial state.

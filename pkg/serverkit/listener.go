@@ -38,7 +38,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -415,11 +414,22 @@ func listenAfterHandoff(ctx context.Context, addr string, handoff bool) (net.Lis
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
-		if err == nil || !handoff || !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+		if err == nil || !handoff || !addrInUse(err) || time.Now().After(deadline) {
 			return ln, err
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// addrInUse reports whether err is a bind refused because something still
+// holds the address, in this OS's spelling (addrInUseErrnos).
+func addrInUse(err error) bool {
+	for _, errno := range addrInUseErrnos {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }
 
 // Run binds (unless Listen already did) and serves until Drain stops the

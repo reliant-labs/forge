@@ -39,7 +39,7 @@ func appendOnlyStoreEntities() []config.PlanEntity {
 func appendOnlyStoreSource(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", appendOnlyStoreEntities(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, appendOnlyStoreEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))
@@ -153,7 +153,7 @@ func TestStoreInterfaces_MutableEntityKeepsItsMutators(t *testing.T) {
 func appendOnlyORMSource(t *testing.T, snake string) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", appendOnlyStoreEntities(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, appendOnlyStoreEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", snake+"_orm_gen.go"))
@@ -222,7 +222,7 @@ func TestPlanORM_MutableEntityKeepsItsPackageLevelMutators(t *testing.T) {
 // reader to look for a symbol forge deliberately refuses to emit.
 func TestPlanORM_AppendOnlyRepoExtSeamDoesNotAdvertiseMutators(t *testing.T) {
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", appendOnlyStoreEntities(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, appendOnlyStoreEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "internal", "db", "payment_repo_ext.go"))

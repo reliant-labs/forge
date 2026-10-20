@@ -150,11 +150,11 @@ func TestEmitRootCommands_WritesOneCommandPerRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := squash(string(src))
+	s := squash(strings.Join(strings.Fields(string(src)), " "))
 	for _, want := range []string{
-		`rootSpec{Name: "server", Migrate: true, Run: (*app.Graph).RunServer}`,
-		`rootSpec{Name: "worker", Migrate: false, Run: (*app.Graph).RunWorker}`,
-		`Short: "Run the worker root: tick"`,
+		`rootSpec{ Name: "server", Migrate: true, Run: (*app.Graph).RunServer, })`,
+		`rootSpec{ Name: "worker", Migrate: false, Run: (*app.Graph).RunWorker, })`,
+		`Short: "Run the worker root: tick",`,
 		"return []*cobra.Command{serverCmd, workerCmd}",
 	} {
 		if !strings.Contains(s, want) {

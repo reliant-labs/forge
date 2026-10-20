@@ -729,6 +729,15 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   pointer field, so hand-written code that reads or writes it changes from
   `row.Status` / `row.Status = 2` to `*row.Status` / `row.Status = ptr(2)`;
   born enum (TEXT + CHECK) and json columns keep their types.
+- **A view can be a read-only entity.** forge projected BASE TABLEs only, so
+  a view's row type was hand-written (reliant: `chats_with_activity`, the one
+  definition of a chat's activity). `COMMENT ON VIEW v IS 'forge:entity'`
+  (regular or materialized; `key=<column>` names the key, else `id`) projects
+  it: the row struct, `List<E>` / `Count<E>`, `Get<E>ByID` when it has a key,
+  and the matching read-only store — no write is generated. Non-key columns
+  are pointers (the catalog cannot say a view column is NOT NULL). Views
+  without the marker are not projected. `schemadef.IntrospectViews` and
+  `shadowdb.Views` read them from the same shadow apply as the tables.
 - **The merge driver is set up per worktree, and forge says what it changed.**
   Any forge command run in a project (`forge db migration rebase` was the one
   noticed) pointed the repository's `merge.forge-generated.driver` at a forge

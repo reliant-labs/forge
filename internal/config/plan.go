@@ -69,6 +69,9 @@ type PlanEntity struct {
 	// generates the ULID), so no service branches on it, and emitting a
 	// constant nobody reads is noise in every generated file.
 	Constraints []PlanEntityConstraint `yaml:"constraints,omitempty" json:"constraints,omitempty"`
+	// ReadOnly marks a view entity (codegen.EntityDef.ReadOnly): the store
+	// emits List/Count and Get by its key, and no Create/Update/Delete.
+	ReadOnly bool `yaml:"read_only,omitempty" json:"read_only,omitempty"`
 }
 
 // PlanEntityField describes a field on an entity.

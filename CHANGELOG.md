@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fast/slow test tiers: `testkit.Slow`, `forge lint --slow-tests`,
+  `forge ci test-budget`.** A test is fast (it runs in the blocking
+  `go test -short` tier) unless it declares otherwise:
+  `testkit.Slow(t, "<what makes it slow>", testkit.Inputs("deploy/**"))`
+  skips under `-short` and in the integration lane, runs in the full tier,
+  and says so in its skip message. It sits on Go's own `-short`, so plain
+  `go test`, IDEs and the test cache are unchanged; a plain
+  `if testing.Short() { t.Skip(...) }` still counts. `Inputs` names the
+  files a slow test depends on, read from source (string literals) by the
+  new `internal/linter/slowtest` analyzer, for a later affected-selection
+  tool. Two guards enforce the marker by measurement:
+  `forge lint --slow-tests` (opt-in for now) flags a test whose own code — its body,
+  `_test.go` helpers, helper files that import `testing`, across packages
+  via analysis facts — execs `go`/`forge`/`kcl`/`node`/`npm`/`git`/`docker`/…,
+  drives containers or dials an external host with no `testing.Short` check
+  on the way; `go test -short -json ./... | forge ci test-budget` fails on
+  any unmarked top-level test over `--budget` (default 2s), with file:line.
 - **The interceptor chain has a `Deadline` slot, ahead of `Auth`
   (`forge/pkg/serverkit`).** `ChainDeps.Deadline` takes a `serverkit.Deadline`
   — the slot's configuration and its interceptor in one value — and runs right

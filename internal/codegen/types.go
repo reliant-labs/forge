@@ -508,6 +508,13 @@ type ConfigField struct {
 	ProtoFile string `json:",omitempty"`
 
 	// EnvVarAliases is (forge.v1.config).env_var_aliases: the further env
+	// EnvPrefix and EnvSuffix bind a map<string, scalar> field to an env
+	// FAMILY: every variable named <EnvPrefix><KEY><EnvSuffix> is one entry
+	// ((forge.v1.config).env_prefix / env_suffix). Empty for an ordinary
+	// field. MapValueType is the map's value kind ("string", "bool", ...).
+	EnvPrefix    string `json:",omitempty"`
+	EnvSuffix    string `json:",omitempty"`
+	MapValueType string `json:",omitempty"`
 	// vars the runtime loader reads, in order, when EnvVar is unset. No
 	// generator projects them — the KCL env map, the secret store key and the
 	// flag's help name EnvVar alone, so forge's own setters converge on one

@@ -987,6 +987,41 @@ type ConfigFieldOptions struct {
 	// no aliases: its values come from the rendered config document, not
 	// from an environment.
 	EnvVarAliases []*EnvVarAlias `protobuf:"bytes,11,rep,name=env_var_aliases,json=envVarAliases,proto3" json:"env_var_aliases,omitempty"`
+	// EnvPrefix (with EnvSuffix) binds a `map<string, V>` field, V a scalar,
+	// to a FAMILY of environment variables: every variable named
+	// <env_prefix><KEY><env_suffix> with a non-empty KEY is one entry,
+	// map[KEY] = value parsed as V. KEY is taken verbatim.
+	//
+	//   map<string, string> oauth_client_ids = 1 [(forge.v1.config) = {
+	//     env_prefix: "APP_OAUTH_", env_suffix: "_CLIENT_ID"
+	//   }];
+	//   map<string, string> oauth_client_secrets = 2 [(forge.v1.config) = {
+	//     env_prefix: "APP_OAUTH_", env_suffix: "_CLIENT_SECRET", sensitive: true
+	//   }];
+	//   map<string, bool> features = 3 [(forge.v1.config) = {env_prefix: "APP_FEATURE_"}];
+	//
+	// APP_OAUTH_GITHUB_CLIENT_ID=abc loads oauth_client_ids["GITHUB"] = "abc".
+	// It is for a set of keys the PROCESS does not know at build time (an
+	// integration catalog, feature names an operator invents); a set the proto
+	// can name is fields.
+	//
+	// The prefix is OWNED: a variable that starts with a family's env_prefix
+	// and matches no family and no env_var of the process fails the load,
+	// naming it — APP_OAUTH_GITHUB_CLIENT_SECERT is a typo, never an entry
+	// silently missing. Env entries overlay the config file's map key by key.
+	// `required: true` means at least one entry; allowed_values constrains
+	// every value; `sensitive` keeps the values off flags and inline manifests.
+	// A family takes no env_var, env_var_aliases, flag or default_value, and
+	// `forge generate` refuses two families (or a family and an env_var) of one
+	// process that could claim the same variable.
+	//
+	// Families are read from the environment and the config file; the KCL
+	// config schema does not project them — set a family's variables in a
+	// workload's `env` (or its secrets, for a sensitive one).
+	EnvPrefix string `protobuf:"bytes,12,opt,name=env_prefix,json=envPrefix,proto3" json:"env_prefix,omitempty"`
+	// EnvSuffix is the fixed tail of an env_prefix family's variable names
+	// ("_CLIENT_ID"); empty when the KEY runs to the end of the name.
+	EnvSuffix     string `protobuf:"bytes,13,opt,name=env_suffix,json=envSuffix,proto3" json:"env_suffix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1096,6 +1131,20 @@ func (x *ConfigFieldOptions) GetEnvVarAliases() []*EnvVarAlias {
 		return x.EnvVarAliases
 	}
 	return nil
+}
+
+func (x *ConfigFieldOptions) GetEnvPrefix() string {
+	if x != nil {
+		return x.EnvPrefix
+	}
+	return ""
+}
+
+func (x *ConfigFieldOptions) GetEnvSuffix() string {
+	if x != nil {
+		return x.EnvSuffix
+	}
+	return ""
 }
 
 // EnvVarAlias is one fallback environment variable of a config field. See
@@ -1520,7 +1569,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
 	"\x06errors\x18\x06 \x03(\tR\x06errorsB\x10\n" +
-	"\x0e_auth_required\"\x8f\x03\n" +
+	"\x0e_auth_required\"\xcd\x03\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +
 	"\x04flag\x18\x02 \x01(\tR\x04flag\x12#\n" +
@@ -1533,7 +1582,11 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x0eallowed_values\x18\t \x03(\tR\rallowedValues\x12\x1a\n" +
 	"\boptional\x18\n" +
 	" \x01(\bR\boptional\x12=\n" +
-	"\x0fenv_var_aliases\x18\v \x03(\v2\x15.forge.v1.EnvVarAliasR\renvVarAliases\"A\n" +
+	"\x0fenv_var_aliases\x18\v \x03(\v2\x15.forge.v1.EnvVarAliasR\renvVarAliases\x12\x1d\n" +
+	"\n" +
+	"env_prefix\x18\f \x01(\tR\tenvPrefix\x12\x1d\n" +
+	"\n" +
+	"env_suffix\x18\r \x01(\tR\tenvSuffix\"A\n" +
 	"\vEnvVarAlias\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
 	"\n" +

@@ -809,6 +809,15 @@ func noticeLegacyEntityAnnotation(file *protogen.File, msg *protogen.Message) {
 		file.Desc.Path(), msg.Desc.Name())
 }
 
+// configMapValueType names a map field's value kind ("string", "bool"),
+// or "" for a field that is not a map.
+func configMapValueType(f *protogen.Field) string {
+	if !f.Desc.IsMap() {
+		return ""
+	}
+	return protoKindToString(f.Desc.MapValue().Kind())
+}
+
 // configFieldRoleString maps the ConfigFieldRole enum to the bare enum
 // spelling stored on codegen.ConfigField.Role ("" for UNSPECIFIED so old
 // descriptors and unannotated fields serialize identically). Config codegen
@@ -900,6 +909,9 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			ProtoType:     protoKindToString(f.Desc.Kind()),
 			EnvVar:        cf.GetEnvVar(),
 			EnvVarAliases: aliases,
+			EnvPrefix:     cf.GetEnvPrefix(),
+			EnvSuffix:     cf.GetEnvSuffix(),
+			MapValueType:  configMapValueType(f),
 			Flag:          cf.GetFlag(),
 			DefaultValue:  cf.GetDefaultValue(),
 			Required:      cf.GetRequired(),

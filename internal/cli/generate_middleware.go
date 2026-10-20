@@ -587,6 +587,11 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return nil, err
 	}
+	// An env family that is not a map<string, scalar>, or one that could
+	// claim a variable another family or field of the same process reads.
+	if err := codegen.ValidateConfigEnvFamilies(messages); err != nil {
+		return nil, err
+	}
 
 	// A `sensitive` field bound to a FRONTEND is refused before anything is
 	// written. This runs at the head of config generation on purpose: a

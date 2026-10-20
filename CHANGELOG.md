@@ -23,6 +23,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JetStream), `StartProducerSpan` where the publish deserves a span, with
   `messaging.*` attributes.
 
+- **Root reach for binary-config projects.** A composition-graph project whose
+  primary binary binds config per command (`(forge.v1.binary_config)`
+  `command` / `subtrees`) used to get no per-root reach: no `LoadReach`
+  narrowing, and no `ROOTS` in `config_gen.k`, so the scaffolded envs'
+  `workloadEnvMap` call did not render. Now each of the binary's configs
+  beside the root config is an `app.Graph` input, `g.<Message>`. A Deps field
+  typed `*config.<Message>` resolves to it. A root's process loads the root
+  config, the subtree configs over its command and its exact command config,
+  and its reach is still per field: the leaves its closure reads of each.
+  `roots_gen.go` loads each config with the new `config.Load<Msg>Reach`
+  (only reached `required` fields are demanded), sets it on the graph, and
+  registers its flags (command configs on their command, subtree configs on
+  their path's command). `Build<Root>` refuses a nil input its closure reads.
+  `ROOTS` carries the union of every loaded config's reached env and projects
+  it through `<bin>ProcessEnvMap`, so `workloadEnvMap(appcfg.<bin>_process, w)`
+  gives each root exactly its env. Generate refuses a closure that reads a
+  config its root's process never loads, and an env var that two loaded
+  configs both declare. Single-AppConfig and legacy projects generate
+  byte-identical output.
+
+- **Release codemods, and `forge fix operatorkit`.** A codemod
+  (`internal/codemod`) is keyed to the release that broke the shape it
+  rewrites, exactly as a migration skill is, and decides from the tree, so it
+  is a no-op on a project without the old shape. `forge project upgrade` runs
+  every rename-class codemod whose release the baseline predates — under
+  `--check` it lists what it would rewrite — and each is also
+  `forge fix <name> [--dry-run]`. The first is `operatorkit` (v0.1.46): every
+  `lifecyclekit.Run` / `Controller` / `Options` reference becomes
+  `operatorkit.*`, the operatorkit import is added and an unused lifecyclekit
+  import dropped. `forge generate` no longer holds the forge pin back over a
+  codemod that has nothing to rewrite in the project. The previous registry
+  was keyed by minor hop, which a patch-release breaking change could never
+  use, and was empty.
+
+
+- **A forge that is not the project's pinned forge now hands the command to the
+  pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
+  bundles one) is routinely older than a project's `forge_version`, and
+  `generate`, `scaffold`, `component install` and friends refused with a
+  recipe, or a render failed with KCL schema errors (`release_dependencies`,
+  `ShellBuild.unit`) that blame the project; agents had to run `task tools` or
+  `go run …@<pin>` by hand. Now the command is exec'd under the right forge
+  with the same arguments, environment, stdio and exit status, and one line on
+  stderr says so. The pinned forge is the project's `.tools/bin/forge` when it
+  reports that version, else a one-time `go install` of the pinned module
+  version into a cache under `<user cache dir>/forge/pinned/` (a project linked
+  to a forge checkout by go.work `use` or a directory `replace` gets a build of
+  that checkout instead). The KCL-reading commands (`env render`, `env shape`, `env config`,
+  `env diff`, `env up`, `kcl`, `doctor`) are handed over too. Read-only runs stay local;
+  `--allow-version-skew` / `FORGE_ALLOW_VERSION_SKEW=1` runs this forge as
+  before; if the pinned forge cannot be had (offline, an unpublished version)
+  the old refusal returns, now carrying the reason. See `docs/versioning.md`.
+
 - **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
   only when the caller is an authenticated internal service.** otelconnect
   answers "adopt the inbound traceparent?" once for every caller:

@@ -378,5 +378,28 @@ func ModeOf{{.MessageName}}(cfg *{{.MessageName}}) Mode { return forgeconfig.Mod
 // config. Load{{.MessageName}} already runs them; call it on a config built
 // or edited by hand.
 func Validate{{.MessageName}}(cfg *{{.MessageName}}) error { return forgeconfig.Validate(cfg) }
+{{- if .Reach}}
+
+// Load{{.MessageName}}Reach is Load{{.MessageName}} for a process running one root of the
+// composition graph: `required: true` applies only to the fields of it the
+// root reaches (reach, by path; roots_gen.go passes each root's), so a
+// required field only another root reads is not demanded here. nil reach is
+// Load{{.MessageName}}.
+func Load{{.MessageName}}Reach(cmd *cobra.Command, reach []string) (*{{.MessageName}}, error) {
+	if reach == nil {
+		return Load{{.MessageName}}(cmd)
+	}
+{{- if .Command}}
+	if err := forgeconfig.CheckCommandPath(cmd, "{{.MessageName}}", {{.CommandGoArgs}}); err != nil {
+		return nil, err
+	}
+{{- else if .Subtrees}}
+	if err := forgeconfig.CheckCommandSubtree(cmd, "{{.MessageName}}", {{.SubtreesGoArgs}}); err != nil {
+		return nil, err
+	}
+{{- end}}
+	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd, forgeconfig.RequiredWithin(reach...))
+}
+{{- end}}
 {{- end}}
 {{- end}}

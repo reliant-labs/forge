@@ -124,8 +124,9 @@ func pinHopNeedsUpgrade(projectDir, from, to string) string {
 		return fmt.Sprintf("it spans %d minor releases, more than the %d `forge project upgrade` stages in one step",
 			hop, supportedUpgradeWindowMinors)
 	}
-	if hops := codemodHopsBetween(from, to); len(hops) > 0 {
-		return fmt.Sprintf("the %s hop carries a codemod", strings.Join(hops, ", "))
+	if names := pendingUpgradeCodemods(projectDir, from, to); len(names) > 0 {
+		return fmt.Sprintf("codemod %s still has to rewrite this project (or run `forge fix %s` yourself)",
+			strings.Join(names, ", "), strings.Join(names, "` / `forge fix "))
 	}
 	metas, err := loadMigrationMetas()
 	if err != nil {
@@ -146,20 +147,16 @@ func pinHopNeedsUpgrade(projectDir, from, to string) string {
 	return ""
 }
 
-// codemodHopsBetween lists the registered codemod hops a from → to upgrade
-// would run — the same walk runCodemodChain makes.
-func codemodHopsBetween(from, to string) []string {
-	fMaj, fMin, ok1 := splitMinor(from)
-	tMaj, tMin, ok2 := splitMinor(to)
-	if !ok1 || !ok2 || fMaj != tMaj {
-		return nil
-	}
+// pendingUpgradeCodemods names the upgrade codemods a from → to move
+// crosses that would still rewrite something in this project (a dry run of
+// each — upgrade_codemod.go). A codemod with nothing to rewrite here does not
+// hold the pin back: it decides from the tree, so crossing it is a no-op.
+func pendingUpgradeCodemods(projectDir, from, to string) []string {
 	var out []string
-	for cur := fMin; cur < tMin; cur++ {
-		hopFrom := fmt.Sprintf("%d.%d", fMaj, cur)
-		hopTo := fmt.Sprintf("%d.%d", fMaj, cur+1)
-		if _, ok := codemodRegistry[codemodKey(hopFrom, hopTo)]; ok {
-			out = append(out, "v"+hopFrom+" → v"+hopTo)
+	for _, c := range upgradeCodemods(from, to) {
+		rep, err := c.Run(projectDir, false)
+		if err != nil || rep.Changed() {
+			out = append(out, c.Name)
 		}
 	}
 	return out

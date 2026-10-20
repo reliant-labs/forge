@@ -25,6 +25,7 @@ package cli
 // --allow-version-skew (or FORGE_ALLOW_VERSION_SKEW=1) proceeds anyway.
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"regexp"
@@ -36,6 +37,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
 
 // pinGatedCommands are the commands, relative to forge's root, that refuse
@@ -225,24 +227,54 @@ func pinSkewRefusal(projectRoot, pin, binary, what string) error {
 	return fmt.Errorf("%s", b.String())
 }
 
-// checkForgePinSkew is the root command's check, for cmd. It warns on w, and
-// returns a refusal for a pin-gated command unless allowed.
+// checkForgePinSkew is the root command's check, for cmd. A command that
+// depends on which forge ran it is handed to the forge the project wants
+// (forge_pin_delegate.go); when that is not possible, or the command is not
+// one of those, it warns on w, and returns a refusal for a pin-gated command
+// unless allowed.
 func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error {
+	if forgedelegate.Delegated() {
+		return nil
+	}
 	projectRoot, err := cmdutil.FindProjectRoot()
 	if err != nil || projectRoot == "" {
 		return nil
 	}
+	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
+	readOnlyFlags, gated := pinGateFor(rel)
+	readOnly := readOnlyRun(cmd, readOnlyFlags)
+	overridden := allow || forgecompat.SkewOverridden()
+
+	var delegateErr error
+	if !overridden && delegationWanted(rel, readOnly) && !pinDelegationDisabled {
+		if t, ok := delegateTargetFor(projectRoot); ok && !t.devAgainstTag(rel) {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			handed, err := delegateToPinned(ctx, w, projectRoot, t, forgeInvocationArgs())
+			if handed {
+				return nil
+			}
+			delegateErr = err
+		}
+	}
+
 	pin, binary, skewed, devAgainstTag := pinSkewFor(projectRoot)
 	if !skewed {
 		return nil
 	}
-	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
-	if readOnlyFlags, gated := pinGateFor(rel); gated && !readOnlyRun(cmd, readOnlyFlags) &&
-		!(devAgainstTag && !pinBuildCommands[rel]) &&
-		!allow && !forgecompat.SkewOverridden() {
-		return pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
+	if gated && !readOnly && !(devAgainstTag && !pinBuildCommands[rel]) && !overridden {
+		err := pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
+		if note := delegationFailure(delegateErr); note != "" {
+			return fmt.Errorf("%s\n%s", err, strings.TrimSuffix(note, "\n"))
+		}
+		return err
 	}
 	_, _ = fmt.Fprint(w, pinSkewWarning(pin, binary, buildinfo.Current()))
+	if note := delegationFailure(delegateErr); note != "" {
+		_, _ = fmt.Fprint(w, "  "+strings.TrimPrefix(note, "  "))
+	}
 	return nil
 }
 

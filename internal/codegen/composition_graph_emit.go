@@ -82,7 +82,18 @@ type graphRootView struct {
 	// when the project has no root config message to read reach against.
 	Config    []ConfigLeaf
 	HasConfig bool
+	// Loads are the other configs the root's process loads (a subtree
+	// config over its command, its command config), each with the fields of
+	// it the root reaches.
+	Loads []RootConfigLoad
 }
+
+// LoadVar is the local roots_gen.go loads a config into: ApiConfig →
+// apiConfig.
+func (l RootConfigLoad) LoadVar() string { return strings.ToLower(l.Message[:1]) + l.Message[1:] }
+
+// graphConfigInputView is one config input on app.Graph (graph_gen.go).
+type graphConfigInputView struct{ Name, Doc string }
 
 type graphOperatorView struct{ Field, Type, Alias, Label string }
 
@@ -100,6 +111,9 @@ type graphGenView struct {
 	// ProbeListener is true when some root serves no g.Probes of its own,
 	// so graph_gen.go carries the probe listener Run<Root> adds for it.
 	ProbeListener bool
+	// ConfigInputs are the primary binary's configs beside the root config,
+	// each an app.Graph field a process that loads it sets.
+	ConfigInputs []graphConfigInputView
 }
 
 type routesServiceView struct {
@@ -138,6 +152,7 @@ func GenerateGraph(in GraphGenInput) error {
 
 	// graph_gen.go
 	gv := graphGenViewOf(in.ModulePath, m.nodes, m.rootViews, m.opsView, m.opNodes)
+	gv.ConfigInputs = m.configs.inputViews()
 	graphSrc, err := renderGoTemplate("graph_gen.go.tmpl", gv)
 	if err != nil {
 		return err
@@ -184,6 +199,8 @@ type graphModel struct {
 
 	roots     []graphRoot
 	rootViews []graphRootView
+	// configs is every config the processes load (nil: no root config).
+	configs *processConfigs
 
 	routesView routesGenView
 	opsView    *graphOperatorsView
@@ -242,6 +259,18 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 		return nil, err
 	}
 
+	// Config inputs: each of the primary binary's configs beside the root
+	// config is an app.Graph field, so no node may take its name.
+	m.configs = loadProcessConfigs(in.ProjectDir)
+	for name := range m.configs.configInputs() {
+		if n := m.byName[name]; n != nil {
+			return nil, fmt.Errorf("a node named %s (%s) would collide with app.Graph's %s, the config proto/config's %s message binds to the primary binary — rename the node", name, n.Doc, name, name)
+		}
+		if reservedGraphNames[name] {
+			return nil, fmt.Errorf("config message %s is bound to the primary binary, so it is an app.Graph input of that name — which app.Graph already declares itself: rename the message", name)
+		}
+	}
+
 	// Types: what each node produces, its Deps field types, its lifecycle.
 	m.u = loadGraphUniverse(in.ProjectDir, comps)
 	m.u.typeNodes(m.nodes)
@@ -264,6 +293,7 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 		blocks:       parseConfigBlocks(in.ProjectDir, in.ModulePath),
 		configFields: parseConfigFields(in.ProjectDir),
 		store:        parseStoreSeam(in.ProjectDir),
+		configInputs: m.configs.configInputs(),
 	}
 
 	// compose.go: reconcile (or, when disowned, read as is).
@@ -287,7 +317,9 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 		return nil, err
 	}
 	markRootReach(m.rootViews, graphComposeInputReads(m.compose, m.nodes), m.byName, m.u)
-	markRootConfig(m.rootViews, loadConfigModel(in.ProjectDir), graphComposeConfigReads(m.compose, m.nodes))
+	if err := markProcessConfig(m.rootViews, m.configs, graphComposeInputConfigReads(m.compose, m.nodes, m.configs.inputNames())); err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 

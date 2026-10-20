@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/activity"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -251,6 +252,25 @@ func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
 	// the same file's ProcedureDeadlines, the chain's Deadline slot.
 }
 
+// methodActivity records md's activity declaration through
+// forge/pkg/activity — the resolver the runtime interceptor uses — so the
+// lint (forgeconv-activity-declared) reads the runtime's own verdict rather
+// than re-deriving the rules.
+func methodActivity(md protoreflect.MethodDescriptor) *codegen.MethodActivity {
+	a := &codegen.MethodActivity{Mutating: activity.IsMutating(md)}
+	decl, err := activity.Resolve(md)
+	switch {
+	case err != nil:
+		a.Error = err.Error()
+	case decl == nil:
+	case decl.None != "":
+		a.Declared, a.None = true, decl.None
+	default:
+		a.Declared, a.Verb, a.TargetKind, a.Implied, a.Writer = true, decl.Verb, decl.TargetKind, decl.Implied, decl.Writer.String()
+	}
+	return a
+}
+
 // serviceAudience reads `(forge.v1.service).audience`, defaulting to "user"
 // — the same default serverkit.ServiceAudience applies at boot.
 func serviceAudience(svc *protogen.Service) string {
@@ -328,6 +348,8 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 				}
 			}
 		}
+
+		method.Activity = methodActivity(m.Desc)
 
 		sd.Methods = append(sd.Methods, method)
 
@@ -921,12 +943,13 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	}
 
 	protoFile, line := configMessageLocation(msg)
-	binary, command := configMessageBinary(msg)
+	binary, command, subtrees := configMessageBinary(msg)
 	return codegen.ConfigMessage{
 		Name:      string(msg.Desc.Name()),
 		Fields:    configFields,
 		Binary:    binary,
 		Command:   command,
+		Subtrees:  subtrees,
 		Frontend:  configMessageFrontend(msg),
 		ProtoFile: protoFile,
 		Line:      line,
@@ -978,20 +1001,25 @@ func configMessageFrontend(msg *protogen.Message) string {
 
 // configMessageBinary reads the message-level (forge.v1.binary_config)
 // annotation — the cmd/<name> leaf whose process loads this config, and the
-// cobra command path below it (empty for the binary's root config). Both
-// empty when the message carries no annotation, which is the common
-// single-AppConfig project and also every shared block (BaseConfig) composed
-// onto the per-binary configs.
-func configMessageBinary(msg *protogen.Message) (string, []string) {
+// cobra command path below it (empty for the binary's root config), and the
+// subtree paths a subtree config is loaded at or below. All empty when the
+// message carries no annotation, which is the common single-AppConfig
+// project and also every shared block (BaseConfig) composed onto the
+// per-binary configs.
+func configMessageBinary(msg *protogen.Message) (string, []string, [][]string) {
 	opts := msg.Desc.Options()
 	if opts == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	bc, ok := proto.GetExtension(opts, forgev1.E_BinaryConfig).(*forgev1.BinaryConfigOptions)
 	if !ok || bc == nil {
-		return "", nil
+		return "", nil, nil
 	}
-	return bc.GetBinary(), bc.GetCommand()
+	var subtrees [][]string
+	for _, p := range bc.GetSubtrees() {
+		subtrees = append(subtrees, p.GetPath())
+	}
+	return bc.GetBinary(), bc.GetCommand(), subtrees
 }
 
 // messageHasConfigFields reports whether any DIRECT field of msg

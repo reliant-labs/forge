@@ -204,11 +204,15 @@ func (b *Builder) Nodes() []lifecyclekit.Node {
 // Every node that reports Ready joins probes' /readyz, and probes' Drainer is
 // the policy's readiness gate and shutdown budget when the policy names none.
 // probes may be nil — a root with no probe route. Call it after Build.
-func (b *Builder) Supervise(ctx context.Context, policy lifecyclekit.Policy, probes *serverkit.Probes) error {
+//
+// first are nodes the graph did not build — a root's probe listener — that
+// start before every built node and stop after all of them, so they answer
+// for the whole of boot and drain.
+func (b *Builder) Supervise(ctx context.Context, policy lifecyclekit.Policy, probes *serverkit.Probes, first ...lifecyclekit.Node) error {
 	if !b.sealed {
 		return errors.New("graphkit: Supervise before Build: build the root first, so nothing is constructed while it runs")
 	}
-	nodes := b.Nodes()
+	nodes := append(append([]lifecyclekit.Node(nil), first...), b.Nodes()...)
 	if probes != nil {
 		probes.AddReadyCheck(lifecyclekit.ReadyChecks(nodes...)...)
 		if policy.Drainer == nil {

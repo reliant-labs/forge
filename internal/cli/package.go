@@ -101,7 +101,7 @@ Example:
 	packageNewCmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 	packageNewCmd.Flags().String("type", "service", "package shape: service|adapter (see --help for details)")
 
-	cmd.AddCommand(packageNewCmd)
+	cmd.AddCommand(cmdutil.ConfiguresClone(packageNewCmd))
 
 	return cmdutil.StrictGroup(cmd)
 }

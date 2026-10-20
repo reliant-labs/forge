@@ -13,12 +13,20 @@
 //
 // The rule:
 //
-//   - A value is a Go duration ("30s", "1m30s", "500ms", "-1s") or a bare
-//     count of seconds ("30", "-1"). Empty is unset. Anything else is an
-//     error.
+//   - A value is a Go duration ("30s", "1m30s", "500ms", "-1s", and "0").
+//     Empty is unset. Anything else is an error — a bare count of seconds
+//     ("30") included.
 //   - Zero, set or unset, is the default: 5s for PRE_STOP_DELAY, 30s for
 //     SHUTDOWN_TIMEOUT.
 //   - Negative is none: a phase that takes no time. Never unbounded.
+//
+// WHY NO BARE SECONDS. A forge server reads both knobs as
+// google.protobuf.Duration config fields, and the config language takes a Go
+// duration only: a bare number has no unit, and for any other Duration field
+// ("500" as an RPC timeout) guessing seconds is the wrong guess as often as
+// not. This reader used to accept "30" as well, so the renderer derived a
+// grace period from a value the server itself refused to boot on. Both
+// readers now take the same language, the config loader's.
 //
 // It has no dependencies beyond the standard library, so the renderer can
 // import it without linking serverkit.
@@ -45,25 +53,23 @@ const (
 	DefaultShutdownTimeout = 30 * time.Second
 )
 
-// Parse reads one drain knob as written: a Go duration or a bare count of
-// seconds. Empty (after trimming space) is 0, the default. The result is the
-// value as configured — apply [Effective] for the length of the phase.
+// Parse reads one drain knob as written: a Go duration. Empty (after
+// trimming space) is 0, the default. The result is the value as configured —
+// apply [Effective] for the length of the phase. A bare number other than 0
+// is an error that says which unit to add.
 func Parse(raw string) (time.Duration, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return 0, nil
 	}
-	if d, err := time.ParseDuration(raw); err == nil {
+	d, err := time.ParseDuration(raw)
+	if err == nil {
 		return d, nil
 	}
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%q is neither a Go duration (\"30s\", \"1m30s\", \"-1s\") nor a whole number of seconds", raw)
+	if _, nerr := strconv.ParseInt(raw, 10, 64); nerr == nil {
+		return 0, fmt.Errorf("%q has no unit: write a Go duration (%q for seconds); the server's config loader refuses a bare number", raw, raw+"s")
 	}
-	if n > int64(time.Duration(1<<63-1)/time.Second) || n < int64(time.Duration(-1<<63)/time.Second) {
-		return 0, fmt.Errorf("%q seconds is out of range", raw)
-	}
-	return time.Duration(n) * time.Second, nil
+	return 0, fmt.Errorf("%q is not a Go duration (\"30s\", \"1m30s\", \"-1s\")", raw)
 }
 
 // Effective is the length of a drain phase configured as d: def when d is

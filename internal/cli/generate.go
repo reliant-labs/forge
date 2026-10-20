@@ -7,13 +7,14 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -159,7 +160,10 @@ func newGenerateCmd() *cobra.Command {
 		Long:  generateLongHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
-				return generateInSlot(cmd, func() error { return runGenerateCheck(noCache) })
+				// No slot here: the regenerate is a child `forge generate`,
+				// which queues for its own. Holding one across it would
+				// deadlock a machine with a single heavy slot.
+				return runGenerateCheck(noCache)
 			}
 			if planOnly {
 				return runGeneratePlan(".", pipelineFlags{
@@ -307,7 +311,8 @@ func newGenerateCmd() *cobra.Command {
 		"timings",           // pipeline profiling (where a run's wall time went)
 	)
 
-	return cmd
+	// --check and --plan/--dry-run write nothing in this checkout.
+	return cmdutil.ConfiguresClone(cmd, "check", "plan", "dry-run")
 }
 
 // generateRunEndsCommand reports whether the first run's error ends
@@ -1528,89 +1533,61 @@ func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error
 }
 
 // runGenerateCheck implements `forge generate --check` — the CI guard
-// that verifies the committed tree matches what the generator would
-// produce from current proto + forge.yaml + templates. Drift means
-// someone forgot to run `forge generate` after editing a proto file or
-// upgrading forge; CI should fail loudly so the gap doesn't ship.
+// that verifies the tree matches what the generator would produce from
+// current proto + forge.yaml + templates. Drift means someone forgot to run
+// `forge generate` after editing a proto file or upgrading forge; CI should
+// fail loudly so the gap doesn't ship.
 //
-// Approach:
-//  1. Snapshot the current tree's committed state via `git stash --keep-index --include-untracked`
-//     equivalent — we use `git diff --quiet` after running generate to
-//     detect any change.
-//  2. Run the pipeline against `.` (the normal path).
-//  3. Compare the post-generate tree against HEAD via `git status --porcelain`.
-//  4. If anything tracked changed (or new files appeared at tracked paths),
-//     emit the diff and exit 1.
+// It regenerates a scratch copy of the working tree (ci_verify_scratch.go)
+// and diffs the copy against itself, so the checkout is never written and
+// every change reported is the generator's — the same mechanism as
+// `forge ci verify-generated`, minus its self-certification and commit-policy
+// passes and its validate build.
 //
-// We don't actually copy the tree to a tmpdir — for forge projects the
-// pipeline is idempotent in the steady state, so the cheapest and most
-// honest check is "run it and see if git notices". The pipeline is
-// already designed to be re-runnable.
-//
-// The run consults the generate cache like any `forge generate`: a clean
-// tree that a full run verified as its own output cannot drift, so the check
-// passes without re-running. It never RECORDS one — it skips the validate
-// build, and a record vouches for a validated tree. noCache forces the run.
+// The run consults the generate cache like any `forge generate`: a tree that
+// a full run verified as its own output cannot drift, so the check passes
+// without re-running. It never RECORDS one — it skips the validate build,
+// and a record vouches for a validated tree. noCache forces the run.
 func runGenerateCheck(noCache bool) error {
-	if _, err := exec.LookPath("git"); err != nil {
-		return cliutil.UserErr("forge generate --check",
-			"git not found on PATH",
-			"",
-			"--check requires git to diff the post-generate tree against HEAD")
-	}
-	// Refuse to --check on a dirty working tree — we'd otherwise blame
-	// the user's uncommitted edits on the generator.
-	dirty, err := workingTreeDirty()
+	root, err := projectRoot()
 	if err != nil {
-		return fmt.Errorf("git status check: %w", err)
+		return err
 	}
-	if dirty {
-		return cliutil.UserErr("forge generate --check",
-			"working tree has uncommitted changes — --check would misattribute them to the generator",
-			"",
-			"commit or stash your changes, then re-run forge generate --check")
-	}
-
-	fmt.Println("[generate --check] running generate against current tree...")
-	pipeErr := withGenerateLock(".", func() error {
-		return runGeneratePipelineFlags(".", pipelineFlags{SkipValidate: true, Cache: true, NoCache: noCache})
-	})
-	if pipeErr != nil {
-		return fmt.Errorf("generate pipeline: %w", pipeErr)
-	}
-
-	// Did anything change?
-	statusCmd := exec.Command("git", "status", "--porcelain")
-	out, err := statusCmd.Output()
+	// Regenerate a scratch copy of the working tree, never the checkout
+	// itself (ci_verify_scratch.go): every change the diff reports was made
+	// by the generator, so uncommitted edits are judged, not misattributed.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	scratch, err := newVerifyScratch(ctx, root, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("git status --porcelain: %w", err)
+		return cliutil.UserErr("forge generate --check",
+			"could not make a scratch copy of the checkout to regenerate", "",
+			"--check needs git and a writable directory beside the repository: "+err.Error())
 	}
-	if strings.TrimSpace(string(out)) == "" {
+	defer scratch.Remove()
+
+	fmt.Println("[generate --check] running generate against a scratch copy of the working tree...")
+	if err := scratchRegenerate(ctx, scratch, noCache, true); err != nil {
+		return fmt.Errorf("generate pipeline: %w", err)
+	}
+	changed, err := scratch.changes(ctx)
+	if err != nil {
+		return err
+	}
+	if len(changed) == 0 {
+		scratch.copyCacheBack()
 		fmt.Println("[generate --check] no drift — tree matches generator output.")
 		return nil
 	}
 
-	fmt.Fprintln(os.Stderr, "[generate --check] drift detected — committed tree does not match generator output:")
+	fmt.Fprintln(os.Stderr, "[generate --check] drift detected — the tree does not match generator output:")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprint(os.Stderr, string(out))
+	for _, line := range changed {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	fmt.Fprintln(os.Stderr)
-	// Show a short unified diff so reviewers can see what's stale.
-	diffCmd := exec.Command("git", "--no-pager", "diff", "--stat")
-	diffCmd.Stdout = os.Stderr
-	diffCmd.Stderr = os.Stderr
-	_ = diffCmd.Run()
 	return cliutil.UserErr("forge generate --check",
-		"generated artifacts are out of date in the committed tree",
+		"generated artifacts are out of date in the tree",
 		"",
 		"run 'forge generate' locally, commit the result, and push")
-}
-
-// workingTreeDirty returns true when `git status --porcelain` reports
-// any tracked-or-untracked change.
-func workingTreeDirty() (bool, error) {
-	out, err := exec.Command("git", "status", "--porcelain").Output()
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(string(out)) != "", nil
 }

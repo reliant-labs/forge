@@ -83,11 +83,18 @@ func TestORMEntities_OptOutsAndUnkeyedTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := strings.Join(entityNames(got), ","); s != "Thread=threads" {
-		t.Errorf("ORM entities = %s, want only Thread=threads", s)
+	// A composite key projects (its store takes the whole key, F12.3); a
+	// table with no key at all, and an opted-out one, do not.
+	if s := strings.Join(entityNames(got), ","); s != "MessageOrderCounter=message_order_counters,Thread=threads" {
+		t.Errorf("ORM entities = %s, want MessageOrderCounter and Thread", s)
+	}
+	for _, e := range got {
+		if e.TableName == "message_order_counters" && e.PkField != "" {
+			t.Errorf("a composite key must not name one of its columns as THE key: PkField = %q", e.PkField)
+		}
 	}
 	joined := strings.Join(notes, "\n")
-	for _, want := range []string{"message_order_counters has a composite primary key", "audit_events has no primary key"} {
+	for _, want := range []string{"audit_events has no primary key"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("notes do not say %q:\n%s", want, joined)
 		}
@@ -124,8 +131,76 @@ func TestTableEntityName(t *testing.T) {
 		"statuses":                  "Status",
 		"background_process_output": "BackgroundProcessOutput",
 	} {
-		if got := TableEntityName(table); got != want {
+		if got := TableEntityName(schemadef.Table{Name: table}); got != want {
 			t.Errorf("TableEntityName(%q) = %q, want %q", table, got, want)
 		}
+	}
+}
+
+// Singular-named tables (reliant P5b, F12.4): `daemon_attachment`,
+// `provider_backoff`, `connector_audit_log`. The CRUD join looked only for
+// Pluralize(snake(message)) — `daemon_attachments` — so a `GetDaemonAttachment`
+// over the real table found nothing and silently became a stub.
+func TestEntities_SingularTableMatchesItsEntity(t *testing.T) {
+	svc := ServiceDef{Name: "DaemonService", Package: "app.v1",
+		Methods:  []Method{{Name: "GetDaemonAttachment"}, {Name: "ListProviderBackoffs"}},
+		Messages: map[string][]MessageFieldDef{"DaemonAttachment": {{Name: "id", ProtoType: "string"}}, "ProviderBackoff": {{Name: "id", ProtoType: "string"}}}}
+	tables := []schemadef.Table{pkTable("daemon_attachment", "id"), pkTable("provider_backoff", "id")}
+	got := entitiesForTables(tables, []ServiceDef{svc})
+	if s := strings.Join(entityNames(got), ","); s != "DaemonAttachment=daemon_attachment,ProviderBackoff=provider_backoff" {
+		t.Fatalf("entities = %s", s)
+	}
+	if u := UnmatchedCRUDRPCs(tables, []ServiceDef{svc}); len(u) != 0 {
+		t.Errorf("matched rpcs reported unmatched: %+v", u)
+	}
+}
+
+// `forge:entity-name=<Name>` names the entity a table holds when its name
+// derives to something else; the join and the store both follow it.
+func TestEntities_DeclaredEntityName(t *testing.T) {
+	legacy := pkTable("tbl_widget_v2", "id")
+	legacy.Comment = "forge:entity-name=Widget"
+	svc := ServiceDef{Name: "WidgetService", Package: "app.v1", Methods: []Method{{Name: "GetWidget"}},
+		Messages: map[string][]MessageFieldDef{"Widget": {{Name: "id", ProtoType: "string"}}}}
+	got := entitiesForTables([]schemadef.Table{legacy}, []ServiceDef{svc})
+	if s := strings.Join(entityNames(got), ","); s != "Widget=tbl_widget_v2" {
+		t.Fatalf("CRUD entities = %s, want Widget=tbl_widget_v2", s)
+	}
+	orm, _, err := ormEntitiesForTables([]schemadef.Table{legacy}, nil)
+	if err != nil || len(orm) != 1 || orm[0].Name != "Widget" {
+		t.Fatalf("ORM entities = %v, %v; want Widget (the declared name, with no rpc at all)", entityNames(orm), err)
+	}
+}
+
+// A CRUD-named rpc with a wire message and no table is named, with every
+// table it looked for — never stubbed in silence. One with no wire message,
+// a forge:custom one, and one on an unmanaged service are not listed.
+func TestUnmatchedCRUDRPCs(t *testing.T) {
+	svc := ServiceDef{Name: "DaemonService", Package: "app.v1",
+		Methods: []Method{
+			{Name: "GetDaemonAttachment"},
+			{Name: "ListSecrets"}, // no Secret message: the name is no evidence of an entity
+			{Name: "GetWidget", Custom: true},
+		},
+		Messages: map[string][]MessageFieldDef{"DaemonAttachment": {{Name: "id"}}, "Widget": {{Name: "id"}}}}
+	unmanaged := svc
+	unmanaged.Name, unmanaged.Unmanaged = "LegacyService", true
+
+	got := UnmatchedCRUDRPCs([]schemadef.Table{pkTable("daemons", "id")}, []ServiceDef{svc, unmanaged})
+	if len(got) != 1 || got[0].RPC != "GetDaemonAttachment" {
+		t.Fatalf("unmatched = %+v, want exactly DaemonService.GetDaemonAttachment", got)
+	}
+	msg := UnmatchedCRUDRPCsError(got).Error()
+	for _, want := range []string{
+		"DaemonService.GetDaemonAttachment: entity DaemonAttachment, no table daemon_attachments or daemon_attachment",
+		"forge:entity-name=<Entity>",
+		"// forge:custom",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal does not say %q:\n%s", want, msg)
+		}
+	}
+	if UnmatchedCRUDRPCsError(nil) != nil {
+		t.Error("no unmatched rpcs must be no error")
 	}
 }

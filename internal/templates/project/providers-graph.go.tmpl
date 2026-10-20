@@ -108,6 +108,11 @@ type ORMDeps struct {
 
 // NewORM is the ORM client over the serving pool — what a handler's
 // `DB orm.Context` Deps field resolves to. No database, no client.
+//
+// The standby directive keeps it ready before any handler takes the ORM:
+// `forge lint --graph` does not require a root to reach it.
+//
+//forge:standby
 func NewORM(d ORMDeps) (*orm.Client, error) {
 	if d.DB.DB == nil {
 		return nil, nil
@@ -125,6 +130,8 @@ type HTTPClientDeps struct{}
 // X-Request-Id forwarding so a third-party call's logs stitch onto the
 // request that caused it. A consumer that wants a different timeout copies it
 // (`c := *d.HTTPClient; c.Timeout = …`) rather than editing the shared one.
+//
+//forge:standby
 func NewHTTPClient(HTTPClientDeps) (*http.Client, error) {
 	return &http.Client{
 		// otelhttp OUTSIDE, so its span covers the request-id header too.
@@ -150,6 +157,12 @@ type UserAuthDeps struct {
 // FAIL-CLOSED: a request must present a valid token unless the rpc it names
 // declared `auth_required: false` in its proto. A server with no validator is
 // a boot error (NewAuthInterceptor refuses), never a running process.
+//
+// The audience directive names the trust domain it authenticates, so
+// `forge lint --graph` can prove every service a listener serves through a
+// chain over it declares the same audience.
+//
+//forge:audience user
 func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 	authDeps := middleware.AuthDeps{AnonymousOK: false}
 	authenticator, err := SetupAuth(d.Config)

@@ -14,7 +14,9 @@ package codegen
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -117,6 +119,9 @@ func ValidateConfigEnvAliases(messages []ConfigMessage) error {
 					refuse(fmt.Sprintf("%s: alias %s is listed twice. Remove one.", where, a.Name))
 				}
 				own[a.Name] = true
+				for _, p := range aliasValueProblems(f, a) {
+					refuse(fmt.Sprintf("%s: alias %s %s", where, a.Name, p))
+				}
 			}
 		}
 	}
@@ -271,4 +276,57 @@ func configLeaves(m *ConfigMessage, byName map[string]*ConfigMessage) []envLeaf 
 	}
 	walk(m, m.Name+".", map[string]bool{})
 	return out
+}
+
+// aliasValueProblems explains each way a value-mapped alias's map cannot be
+// honoured: an empty key (an empty variable is unset, so it never matches),
+// or a mapped value the field itself would refuse — outside its
+// allowed_values, or not parseable as its kind. The loader would otherwise
+// discover the latter at the first start that sets the alias.
+func aliasValueProblems(f ConfigField, a EnvVarAlias) []string {
+	keys := make([]string, 0, len(a.Values))
+	for k := range a.Values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []string
+	for _, k := range keys {
+		v := a.Values[k]
+		if k == "" {
+			out = append(out, "maps the empty value, which never matches: an empty variable is unset. Remove it.")
+			continue
+		}
+		if len(f.AllowedValues) > 0 && v != "" && !slices.Contains(f.AllowedValues, v) {
+			out = append(out, fmt.Sprintf("maps %q to %q, which is not one of the field's allowed_values %v.", k, v, f.AllowedValues))
+			continue
+		}
+		if err := checkScalarValue(f.ProtoType, v); err != nil {
+			out = append(out, fmt.Sprintf("maps %q to %q, which is not a valid %s: %v.", k, v, f.ProtoType, err))
+		}
+	}
+	return out
+}
+
+// checkScalarValue reports whether raw parses as a config value of a scalar
+// proto kind, the way the runtime loader parses it. Kinds it does not know
+// (messages such as Duration, enums) are not checked here.
+func checkScalarValue(protoType, raw string) error {
+	var err error
+	switch protoType {
+	case "int32", "sint32", "sfixed32":
+		_, err = strconv.ParseInt(raw, 10, 32)
+	case "int64", "sint64", "sfixed64":
+		_, err = strconv.ParseInt(raw, 10, 64)
+	case "uint32", "fixed32":
+		_, err = strconv.ParseUint(raw, 10, 32)
+	case "uint64", "fixed64":
+		_, err = strconv.ParseUint(raw, 10, 64)
+	case "bool":
+		_, err = strconv.ParseBool(raw)
+	case "float":
+		_, err = strconv.ParseFloat(raw, 32)
+	case "double":
+		_, err = strconv.ParseFloat(raw, 64)
+	}
+	return err
 }

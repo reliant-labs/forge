@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   twice. `serverkit.PgxConn` reaches the `*pgx.Conn` under a `sql.Conn.Raw`
   driver connection through the tracing and pooler-drain wrappers.
 
+- **`observe.NewTraceHandler` records WARN and ERROR lines on the span, and
+  `forge/pkg/observe/observetest.AssertLogCorrelation` pins log↔trace joins.**
+  A record at WARN or above, logged with a recording span in its context, is
+  added to that span as a `log.warn` / `log.error` event (`observe.LogEventWarn`,
+  `observe.LogEventError`) with `log.message`, `log.severity` and the error's
+  `exception.message`, each capped at 512 bytes. The tail sampler can then keep
+  a trace whose logs complained instead of keeping its log lines and dropping
+  the trace (in prod only 10% of logged trace ids resolved to a stored trace).
+  The handler sits inside `NewErrorClassHandler` in serverkit's logger, so a
+  user error lowered to INFO adds no event.
+  `AssertLogCorrelation(t, logger, output)` logs through an application's real
+  logger under a span and fails unless the lines carry its
+  `trace_id`/`span_id` and the WARN became an event: the regression test for
+  an app that builds its own logger.
+
 - **One command per root** (composition graph, PR 4). In a graph-mode
   project every root — each `//forge:root` struct in `internal/app`, or the
   generated default `Server` — gets one cobra command in the forge-owned
@@ -45,6 +60,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the scaffolded `server.go` is gone (its command is generated), and a
   `serve.go` from before this change — no `runRoot` — keeps its own commands
   while generate says what to add.
+
+- **`forge lint --graph`: the composition graph, judged whole** (composition
+  graph, PR 5). It assembles the graph exactly as `forge generate` does and
+  fails on an error: a service, package, worker, operator or provider no
+  root reaches (never constructed, so a service there is served by no
+  process — what the boot-time `RequireComplete` gate caught before the
+  graph), and a listener serving a service whose `(forge.v1.service).audience`
+  differs from its chain's authenticator's — the authenticator's provider
+  func declares it with the new `//forge:audience <name>` (the scaffolded
+  `NewUserAuth` is `//forge:audience user`). A provider kept for components
+  to come carries `//forge:standby` (the scaffolded `NewORM` and
+  `NewHTTPClient` do). The lane runs in the full sweep and is whole-project
+  under `--scope`; a legacy-composition project skips it.
+- **Least-knowledge rules in `forge lint --conventions`** (composition graph
+  §2): `forgeconv-deps-surface` (a Deps interface field declaring methods
+  the package never calls through it, read with go/types),
+  `forgeconv-no-container-deps` (an `internal/app` type, `cmd.Deps`, a
+  `map[string]any` locator or `any` in Deps) and
+  `forgeconv-deps-no-downcast` (a type assertion from a Deps field to a
+  concrete type). They land as warnings; under `--strict`, deps-surface is
+  an error for a foreign interface of more than ten methods with unused
+  ones, and the other two are errors.
+- **`forge fix narrow-deps <pkg>`** declares, in the package (`contract.go`,
+  or a new `deps.go`), the interface holding exactly the methods the package
+  calls through each wide foreign Deps field, retypes the field, and writes
+  its mock; `forge generate` keeps a `deps.go`'s `mock_gen.go` in step.
+  `compose.go` needs no change. A field whose value the package passes on,
+  type-asserts, or never calls is left alone, with the reason.
+
+### Fixed
+
+- **A freshly scaffolded operator passes `forge lint --contract`.** An
+  `internal/operators/<name>` package declaring `SetupWithManager` is exempt
+  from `requirecontract` structurally, as a worker is.
+- **`serverkit.Run` serves pprof through the `Pprof` component** instead of
+  its own copy.
 
 ### Removed
 
@@ -647,6 +698,34 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **A composite-primary-key table gets a store.** It used to get no entity at
+  all, only an info line, so counters and join tables (reliant:
+  `message_order_counters`, `project_daemons`, `connection_secrets`, …) were
+  hand SQL. The entity struct and store now project, addressed by the WHOLE
+  key: `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` take one parameter
+  per key column, `Upsert<E>` resolves a conflict on every key column, and
+  Create/List/Count/Update/UpdateMasked address the row by the struct's key
+  fields. `pkg/crud.Repo` gains `GetByPK` / `DeleteByPK` (a key entity), and
+  its Update, UpdateMasked, Upsert and zero-row classification address a
+  composite key by every column (Bun's `WherePK`); PK columns stay out of the
+  SET list. CRUD wiring still needs a single-column key, and there is no ULID
+  fill or cursor pagination for a composite key.
+- **Entities are named from their table, and a CRUD rpc that matches no table
+  is refused.** A CRUD rpc's entity found its table only as
+  `Pluralize(snake(<E>))`, so a singular-named table (`daemon_attachment`,
+  `provider_backoff`) matched nothing and its `Get<E>` silently became a
+  pb-through stub. The join now matches a table by its own entity name (its
+  singular, camel-cased), then the plural and the singular of `<E>`; a table
+  whose name derives to the wrong thing declares what it holds with
+  `COMMENT ON TABLE t IS 'forge:entity-name=<Name>'`, which also names its
+  store. A unary, unmarked CRUD-named rpc whose entity has a wire message but
+  matches no table, and that no handler implements by hand (its only method
+  is forge's unwired stub, or none), now fails `forge generate` (under the
+  CRUD step's gate), naming the rpc and the tables it looked for. The seed scope and the
+  ownership audit look for the singular too. **Upgrading:** a project with
+  such an rpc gets the refusal on its next generate: write the migration,
+  declare `forge:entity-name`, or mark the rpc `// forge:custom` (what it
+  already was in effect).
 - **Continuous profiling captures CPU and the live heap by default; allocation,
   goroutine, mutex and block profiles are opt-in (`forge/pkg/observe`).** The
   profiler still takes a 10s CPU profile every minute, but now snapshots the

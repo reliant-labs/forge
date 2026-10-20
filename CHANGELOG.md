@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`observe.NewTraceHandler` records WARN and ERROR lines on the span, and
+  `forge/pkg/observe/observetest.AssertLogCorrelation` pins log↔trace joins.**
+  A record at WARN or above, logged with a recording span in its context, is
+  added to that span as a `log.warn` / `log.error` event (`observe.LogEventWarn`,
+  `observe.LogEventError`) with `log.message`, `log.severity` and the error's
+  `exception.message`, each capped at 512 bytes. The tail sampler can then keep
+  a trace whose logs complained instead of keeping its log lines and dropping
+  the trace (in prod only 10% of logged trace ids resolved to a stored trace).
+  The handler sits inside `NewErrorClassHandler` in serverkit's logger, so a
+  user error lowered to INFO adds no event.
+  `AssertLogCorrelation(t, logger, output)` logs through an application's real
+  logger under a span and fails unless the lines carry its
+  `trace_id`/`span_id` and the WARN became an event: the regression test for
+  an app that builds its own logger.
+
 - **One command per root** (composition graph, PR 4). In a graph-mode
   project every root — each `//forge:root` struct in `internal/app`, or the
   generated default `Server` — gets one cobra command in the forge-owned

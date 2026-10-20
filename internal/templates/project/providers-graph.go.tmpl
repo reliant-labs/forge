@@ -173,10 +173,10 @@ func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 
 // UserChain is the interceptor chain the API listener builds every user
 // route with (serverkit.NewChain): trace → recovery → request-id → logging →
-// metrics → deadline → auth → audit → rate-limit → stream-drain →
+// metrics → deadline → auth → audit → rate-limit → activity → stream-drain →
 // protovalidate, plus the payload caps. Every slot has forge's default except
 // Auth; a field you set replaces that slot, and serverkit.NoAudit, NoTrace,
-// NoDeadline, NoStreamDrain and NoValidate drop one.
+// NoDeadline, NoActivity, NoStreamDrain and NoValidate drop one.
 type UserChain struct{ *serverkit.Chain }
 
 // UserChainDeps is the chain's authenticator and settings.

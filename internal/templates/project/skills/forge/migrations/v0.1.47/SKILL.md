@@ -19,7 +19,8 @@ Use when `cmd/<bin>/cmd/serve.go` or `internal/app/providers.go` calls
 `serverkit.ChainDeps` has a `Deadline` slot, between metrics and auth:
 
     trace → recovery → request-id → logging → tracing → metrics →
-    deadline → auth → audit → rate-limit → extras → stream-drain → protovalidate
+    deadline → auth → audit → rate-limit → extras → activity → stream-drain →
+    protovalidate
 
 It runs **before** Auth, so authenticating — a token-store query, an
 introspection call — runs inside the RPC's budget, and a stalled credential

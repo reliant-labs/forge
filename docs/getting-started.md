@@ -1,8 +1,14 @@
 # Getting started
 
-This is the zero-to-running walkthrough. Every command and every piece of
-output below was run against a real scaffold — if something here disagrees
-with what your terminal says, trust your terminal and file it.
+This is the zero-to-running walkthrough for working on a forge project from
+a checkout. Every command and every piece of output below was run against a
+real scaffold — if something here disagrees with what your terminal says,
+trust your terminal and file it.
+
+The user guide — the same journey plus deploys, environments, observability
+and troubleshooting — is at
+[docs.reliantlabs.io/forge](https://docs.reliantlabs.io/forge/overview). This
+page stays close to the files.
 
 By the end you will have a service, a database-backed entity with working
 CRUD, and a running stack. More importantly, you will know **which files are
@@ -42,7 +48,7 @@ lint, contracts and the feature set are all inferred. You add a key only to
 _override_ a default.
 
 **Your project already knows its own conventions.** The forge binary
-ships ~80 skills covering architecture, proto, db, api, testing, deploy and
+ships over a hundred skills covering architecture, proto, db, api, testing, deploy and
 more (`forge skill list`). Reliant reads them automatically; other agents can
 be told to run `forge skill search <query>`. Nothing is written into your tree
 — see [Working with an agent](#7-working-with-an-agent).
@@ -56,24 +62,20 @@ after the binary or the layer.
 forge scaffold service bookmark
 ```
 
-That writes a proto stub, the handler package, the typed mount, a cobra
-subcommand and a test-harness entry. It finishes by telling you the one thing
-it deliberately did **not** do:
+That writes a proto stub, the handler package, a cobra subcommand and a
+test-harness entry, and appends the service's constructor to the
+`cmd.Execute(...)` call in `cmd/bookmarks/main.go`:
 
 ```
-🔧 One owned file left to wire — the command tree is named explicitly,
-   not discovered:
-
-  cmd/bookmarks/main.go — add to the cmd.Execute(...) arg list:
-      import "github.com/you/bookmarks/cmd/bookmarks/cmd/services"
-      services.NewBookmarkCmd,
+✅ wired services.NewBookmarkCmd into cmd/bookmarks/main.go — `bookmarks bookmark` is live
 ```
 
-This is Forge's style throughout: it will not silently edit a file you own,
-even when the edit is obvious. It tells you exactly what to add and where.
-`bookmarks server` already serves the new service, because that command
-mounts everything; only the standalone `bookmarks bookmark` subcommand needs
-the wire-up.
+`bookmarks server` serves every service on one port, so the new one is
+already reachable there; the standalone `bookmarks bookmark` subcommand runs
+it alone. If forge cannot find the `cmd.Execute(...)` call (you restructured
+`main.go`), it leaves the file alone and prints the import and argument to
+add by hand. It also binds nothing new in the deploy files: in every
+environment, the binary's `server` already runs the new service.
 
 ## 3. Declare an entity
 
@@ -117,7 +119,7 @@ From that one marker you got:
 - **The CRUD quintet in your proto** — `CreateBookmark`, `GetBookmark`,
   `UpdateBookmark`, `DeleteBookmark`, `ListBookmarks`, written into the
   service you already had.
-- **The entity struct and ORM** — `internal/db/bookmark_orm.go`.
+- **The entity struct and ORM** — `internal/db/bookmark_orm_gen.go`.
 - **An extension point** — `internal/db/bookmark_repo_ext.go`, scaffolded
   once, for the queries generated CRUD cannot express.
 - **Handler wiring** — `internal/handlers/bookmark/`, including a CRUD
@@ -126,7 +128,7 @@ From that one marker you got:
 The generated migration explains its own status in a comment:
 
 ```sql
--- Born from proto message services.bookmark.v1.Bookmark.
+-- Born from proto message services.bookmark.v1.Bookmark (`forge scaffold entity --from-proto`).
 -- This migration is YOURS from birth: forge never re-reads the proto to
 -- regenerate or edit it. Evolution is a NEW migration plus a proto edit —
 -- the schema truth and the wire truth evolve on independent clocks.
@@ -189,9 +191,10 @@ constructed deliberately, and replaces everything else with
 because the unguarded version once leaked a database DSN, password included,
 to an unauthenticated caller.
 
-If a handler grows past those five steps, the extra logic belongs in a
-service under `internal/<name>/`. `forge lint` will tell you when you cross
-the line.
+If a handler grows past those five steps, move the extra logic into a
+package (`forge scaffold package <name>`, which writes
+`internal/<name>/contract.go`) and give the handler its interface as a
+dependency. `forge lint` will tell you when a handler file grows too large.
 
 ## 5. Run it
 
@@ -199,15 +202,16 @@ the line.
 forge env up dev
 ```
 
-This is the inner loop: host services plus frontends, no cluster. It
-regenerates if your protos are newer than `gen/`, applies migrations, and
-seeds the database so the app boots with data in it.
+This is the inner loop: Postgres and the rest of the dev infrastructure in
+Docker Compose, the API as a host process under air (hot reload), and the
+frontends' dev servers — no cluster. It regenerates if your protos are newer
+than `gen/`, applies migrations, and seeds the database so the app boots with
+data in it. Every process's output also lands in `.forge/logs/dev/`, one file
+per service, frontends' browser consoles included.
 
-When you need the full stack — cluster, ingress, the works:
-
-```bash
-forge env up dev
-```
+A cluster is involved only when something in `dev` is bound to one (an
+operator, say); then the same command creates the local k3d cluster and
+applies to it.
 
 One detail that matters if you drive Forge from a script or an agent: with a
 terminal attached, `env up` holds the foreground and tears the stack down on
@@ -216,8 +220,7 @@ It will not hang waiting for a TTY that is not there.
 
 Host readiness includes compilation: Forge waits up to two minutes for the
 declared ports, prints progress, and reports a runner's exit immediately.
-On a slower machine, use `forge env up dev --host-ready-timeout 5m` (also
-available on `forge env up`). A timeout reports the pending ports and log paths;
+On a slower machine, use `forge env up dev --host-ready-timeout 5m`. A timeout reports the pending ports and log paths;
 it does not mean the process crashed, and started processes remain tracked
 for `forge env status` and `forge env down`.
 
@@ -233,7 +236,7 @@ forge env status dev
 Before you call a change done:
 
 ```bash
-forge generate && forge lint && go build ./... && go test ./...
+forge generate && forge lint && go build ./... && task test
 ```
 
 Run it at every step, not at the end. `forge lint` catches contract gaps,
@@ -254,8 +257,11 @@ forge lint --frontend-stores      # server data living in a Zustand store
 `--config-deps` in particular writes the fix out for you — the proto message,
 the `AppConfig` line, and the Go replacement, per finding.
 
-Use `forge test` rather than raw `go test` when you want the database and
-build tags set up for you.
+`task test` is the suite CI runs — Go with the race detector against a real
+Postgres, plus every frontend's tests — with the database and build tags set
+up for you. While iterating, `task test:short -- ./internal/handlers/bookmark/...`
+runs one package's fast tests, cached. `task ci` runs the whole pull-request
+gate locally.
 
 ## 7. Working with an agent
 
@@ -284,7 +290,8 @@ scaffolded code and want to know what it does, `--kind go` is the answer.
 
 `forge project libraries` is the highest-value one. The single most
 re-implemented thing in Forge's history is a utility that already existed in
-`forge/pkg`. Check before porting, and read APIs with `go doc <import path>`
+`forge/pkg`. Check before porting, and read a package's API with
+`forge project libraries <pkg>` — every exported signature, methods included —
 rather than searching the filesystem.
 
 **Trust the errors.** Forge's failures are written as runbooks — what was
@@ -306,7 +313,7 @@ There are really three categories, not two.
 
 | Category                     | Examples                                                                                                                                                     | Behavior                                  |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
-| **Regenerated every run**    | `gen/**`, `*_gen.go`, `internal/db/<entity>_orm.go`, `deploy/kcl/config_gen.k`                                                                               | Overwritten. Never edit.                  |
+| **Regenerated every run**    | `gen/**`, `*_gen.go` (including `internal/db/<entity>_orm_gen.go`), `deploy/kcl/config_gen.k`                                                                | Overwritten. Never edit.                  |
 | **Written once, then yours** | `internal/app/compose.go`, `internal/app/auth.go`, `db/migrations/*.sql`, `internal/db/<entity>_repo_ext.go`, `deploy/kcl/<env>/config.k`                    | Forge writes if absent, then leaves alone |
 | **Purely yours**             | handler bodies (`internal/handlers/<svc>/rpc_<name>.go`), a domain package's `internal/<name>/contract.go`, `internal/app/providers.go`, `cmd/<bin>/main.go` | Forge never writes these                  |
 
@@ -330,7 +337,7 @@ Move the change to an extension point, or take ownership of the file
 deliberately:
 
 ```bash
-forge project disown internal/db/bookmark_orm.go --reason "why the generated form doesn't fit"
+forge project disown internal/db/bookmark_orm_gen.go --reason "why the generated form doesn't fit"
 ```
 
 The `--reason` is required, and it is not bureaucracy: a disown means the
@@ -351,7 +358,7 @@ forge skill load architecture   # the deep version of the layer map
 forge skill load db             # migrations, projections, CRUD overrides
 forge skill load api            # handler patterns, error handling, testing
 forge skill load auth           # the auth seam and the dev-loop IdP
-forge skill load deploy         # environments, promote, preflight
+forge skill load deploy         # environments, releases, plans, promotion
 forge skill load testing        # the test pyramid and the harness patterns
 ```
 

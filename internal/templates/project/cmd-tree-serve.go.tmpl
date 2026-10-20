@@ -178,19 +178,20 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 
 	// INTERCEPTOR CHAIN — serverkit.NewChain, the order requests pass
 	// through, outermost first: trace → recovery → request-id → logging →
-	// metrics → deadline → auth → audit → rate-limit → stream-drain →
-	// protovalidate. The trace span is outermost, so a request auth rejects
+	// metrics → deadline → auth → audit → rate-limit → activity →
+	// stream-drain → protovalidate. The trace span is outermost, so a request auth rejects
 	// still has a span and every log line written for it carries its
 	// trace_id; recovery is next, so a panic anywhere inside still produces a
 	// response; the deadline precedes auth so the RPC's budget bounds the
 	// credential lookup; auth precedes audit so the audit log knows who
-	// called; protovalidate is innermost, right before the handler.
+	// called; activity sits next to the handler, so it records only an rpc
+	// that succeeded; protovalidate is innermost, right before the handler.
 	//
 	// Every slot has forge's default except Auth, which NewChain REQUIRES —
 	// a chain with no authenticator is a boot error, never a running server.
 	// A field you set replaces that slot's default; serverkit.NoAudit,
-	// NoTrace, NoDeadline, NoStreamDrain and NoValidate drop one. The
-	// defaults:
+	// NoTrace, NoDeadline, NoActivity, NoStreamDrain and NoValidate drop
+	// one. The defaults:
 	//
 	//   - Trace: otelconnect with WithTrustRemote, so the browser's
 	//     traceparent is the PARENT of this span and a click's spans and the

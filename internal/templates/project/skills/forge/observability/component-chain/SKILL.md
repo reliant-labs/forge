@@ -10,7 +10,8 @@ Forge instruments three boundaries, so a request is observable end to end:
 1. **The RPC edge** — every Connect handler runs the interceptor chain built by
    `serverkit.NewChain(serverkit.ChainDeps{…})` in `cmd/<bin>/cmd/serve.go`
    (otelconnect → recovery → request-id → logging → tracing → metrics, then
-   deadline → auth → audit → rate-limit → stream-drain → protovalidate). One
+   deadline → auth → audit → rate-limit → activity → stream-drain →
+   protovalidate). One
    span, one metric sample and one log record per RPC:
    `rpc failed` for every failure, `rpc completed` for every success, and
    `slow=true` on any success over 1s. Success logging can be SAMPLED — see

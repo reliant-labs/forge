@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A typed activity stream: an rpc declares the activity event it records,
+  and one interceptor writes it** (`forge/pkg/activity`).
+  - **Declaring.** An rpc declares its event with
+    `(forge.v1.method).activity`, giving
+    `verb`, `target {kind, id, label}`, `env`, `scope` and `detail`. Field
+    paths resolve against the request, or against the response when they start
+    with `response.`.
+  - **Opting out.** `activity: { none: "<why>" }` records that a mutating rpc
+    changes nothing worth an event.
+  - **CRUD needs no option.** A `Create<E>`, `Update<E>` or `Delete<E>` rpc with
+    forge's CRUD shape implies `create`, `update` or `delete` on `snake(E)`.
+  - **One resolver.** `activity.Resolve` is the only code that interprets a
+    declaration. `activity.IsMutating` decides which rpcs must declare one:
+    every rpc except those named with a read verb (`Get`, `List`, `Watch`,
+    `Search`, `Query`, `Count`, `Describe`, `BatchGet`) and those marked
+    `idempotency_level = NO_SIDE_EFFECTS`.
+  - **The interceptor.** `activity.Interceptor` fills the new
+    `serverkit.ChainDeps.Activity` slot, after auth and next to the handler. It
+    reads the declaration from the method descriptor. When the handler
+    succeeds, it writes the event best-effort, taking the actor from the
+    caller's claims and `via` from the `Forge-Via` header.
+  - **Failures and defaults.** A failed write is logged and counted
+    (`forge_activity_write_failures_total`) and never fails the rpc. The default
+    slot logs events without storing them. `serverkit.NoActivity` drops the
+    slot.
+  - **Transactional writes.** `writer: ACTIVITY_WRITER_HANDLER` hands the write
+    to the handler: it calls `activity.Record` inside its `RunTx`, so the event
+    commits or rolls back with the mutation. `activity.Record` is also the
+    explicit write for actors that are not rpcs: a converger, an alert
+    transition, CI.
+  - **Storage.** `activity.NewStore(db)` writes and lists the `activity_events`
+    table, whose DDL is `activity.SchemaSQL`. `List` filters by actor, verb,
+    target, env, via and time, and pages by keyset. The store writes through
+    `*orm.Client`, so a write inside `RunTx` joins the transaction.
+  - **Docs.** The new `activity` skill covers all of the above.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);

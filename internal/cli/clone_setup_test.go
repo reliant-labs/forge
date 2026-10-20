@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -59,6 +60,9 @@ func TestReadOnlyCommandsLeaveTheCloneGitSetupAlone(t *testing.T) {
 		{"generate", "--plan"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			if args[0] == "slot" && runtime.GOOS == "windows" {
+				t.Skip("runs `true`")
+			}
 			repo := cloneSetupRepo(t)
 			clearProjectDir(t)
 			before := cloneGitSetup(t, repo)

@@ -355,7 +355,12 @@ func (s *verifyScratch) linkNodeModules(topFiles []string) ([]string, error) {
 			return nil, err
 		}
 		if err := os.Symlink(src, dst); err != nil {
-			return nil, fmt.Errorf("link %s into the scratch copy: %w", dir, err)
+			// No symlinks here (Windows without the privilege): copy the
+			// installed tree instead. Slower, and the same to git and to
+			// the fingerprint, which both see an ignored directory.
+			if cerr := copyDirTree(src, dst); cerr != nil {
+				return nil, fmt.Errorf("link %s into the scratch copy (%v), or copy it: %w", dir, err, cerr)
+			}
 		}
 		excludes = append(excludes, "/"+dir)
 	}

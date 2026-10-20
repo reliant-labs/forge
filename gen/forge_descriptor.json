@@ -2,6 +2,6 @@
   "services": null,
   "configs": null,
   "sources": {
-    "proto/forge/v1/forge.proto": "90e50a06076c36e1c843d4bd10dde2d7bd6c4348168e135f669e5784582cca52"
+    "proto/forge/v1/forge.proto": "a2e17d52b35175a844910ef7ef199a6c63e1117b6428a75199d01bc29c5348ee"
   }
 }

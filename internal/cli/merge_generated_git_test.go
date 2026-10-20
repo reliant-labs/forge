@@ -89,7 +89,7 @@ func twoServiceBranches(t *testing.T) string {
 		t.Fatal(err)
 	}
 	gitT(t, dir, "config", "merge.forge-generated.driver", "'"+exe+"' merge-generated %O %A %B %L %P")
-	if !writeMergeAttributes(dir) {
+	if _, ok := writeMergeAttributes(dir); !ok {
 		t.Fatal("precondition: the attributes block was written")
 	}
 
@@ -245,7 +245,7 @@ func TestMergeGenerated_RebaseKeepsDescriptorStampCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitT(t, dir, "config", "merge.forge-generated.driver", "'"+exe+"' merge-generated %O %A %B %L %P")
-	if !writeMergeAttributes(dir) {
+	if _, ok := writeMergeAttributes(dir); !ok {
 		t.Fatal("precondition: the attributes block was written")
 	}
 

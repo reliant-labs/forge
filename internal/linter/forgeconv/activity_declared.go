@@ -111,12 +111,14 @@ func checkActivityDeclared(rootDir string, protoFiles []string) map[string][]Fin
 				stale = true
 				continue
 			}
-			var msg string
+			var msg, fix string
 			switch {
 			case a.Error != "":
-				msg = fmt.Sprintf("rpc %s.%s: %s", svc.Name, m.Name, a.Error)
+				// Resolve's error already names the rpc.
+				msg, fix = a.Error, "fix the declaration: every path is a dotted field name in the request (or response.<path>) ending on a scalar or enum (forge skill load activity)"
 			case a.Mutating && !a.Declared:
 				msg = fmt.Sprintf("rpc %s.%s mutates (its name is not a read verb and it is not NO_SIDE_EFFECTS) but declares no activity event", svc.Name, m.Name)
+				fix = activityRemediation
 			default:
 				continue
 			}
@@ -126,7 +128,7 @@ func checkActivityDeclared(rootDir string, protoFiles []string) map[string][]Fin
 				File:        filepath.FromSlash(file),
 				Line:        lines[file+"|"+svc.Name+"|"+m.Name],
 				Message:     msg,
-				Remediation: activityRemediation,
+				Remediation: fix,
 			})
 		}
 	}

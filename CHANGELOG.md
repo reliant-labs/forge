@@ -56,7 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was keyed by minor hop, which a patch-release breaking change could never
   use, and was empty.
 
-
 - **A forge that is not the project's pinned forge now hands the command to the
   pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
   bundles one) is routinely older than a project's `forge_version`, and

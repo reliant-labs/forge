@@ -41,24 +41,24 @@ func New(d Deps) (*Service, error) // validateDeps: every field required; nil is
 A component can also implement any of four single-method interfaces from `lifecyclekit`. Each one is
 optional and detected by **codegen** (go/types sees the concrete type). Detection is never a runtime type switch.
 
-| Interface | Meaning | Typical implementers |
-|---|---|---|
-| `Run(ctx) error` | long-lived; returns when ctx ends | listener serve loop, Temporal worker, background loop, operator manager |
-| `Drain(ctx) error` | stop taking new work, finish in-flight by ctx's deadline | listener, Temporal worker, gateway connector |
-| `Close(ctx) error` | release resources | DB pool, NATS conn, Temporal client, OTel |
-| `Ready(ctx) error` | contributes to `/readyz` | DB pool, NATS conn |
+| Interface          | Meaning                                                  | Typical implementers                                                    |
+| ------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `Run(ctx) error`   | long-lived; returns when ctx ends                        | listener serve loop, Temporal worker, background loop, operator manager |
+| `Drain(ctx) error` | stop taking new work, finish in-flight by ctx's deadline | listener, Temporal worker, gateway connector                            |
+| `Close(ctx) error` | release resources                                        | DB pool, NATS conn, Temporal client, OTel                               |
+| `Ready(ctx) error` | contributes to `/readyz`                                 | DB pool, NATS conn                                                      |
 
-**Everything is a component.** Forge ships *library* components and the project owns *instances*:
+**Everything is a component.** Forge ships _library_ components and the project owns _instances_:
 
-| Thing | Library constructor (forge) | Instance (project) |
-|---|---|---|
-| Postgres pool | `serverkit.NewPool(PoolDeps{Config})` (wraps today's `serverkit.OpenDB`) | provider func in `providers.go` |
-| NATS / Temporal client, third-party SDK | — | 5-line provider func: `func NewNATS(d NATSDeps) (*nats.Conn, error)` |
-| Handler / package / worker / operator | — | `internal/handlers|workers|operators|<pkg>/` (unchanged) |
-| Route set | generated `<Audience>Routes`: every service of one audience (§4) | hand-write one for a custom grouping |
-| Interceptor chain | `serverkit.NewChain(ChainDeps{Auth, …})`: today's inline chain, extracted | `UserChain`, `DaemonChain` |
-| HTTP listener | `serverkit.NewListener(ListenerDeps{Config, Chain, Routes})` | `APIListener`, `DaemonListener` |
-| Root | — | `internal/app/roots.go` struct marked `//forge:root` (§3) |
+| Thing                                   | Library constructor (forge)                                               | Instance (project)                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------- | --------- | ------------------- |
+| Postgres pool                           | `serverkit.NewPool(PoolDeps{Config})` (wraps today's `serverkit.OpenDB`)  | provider func in `providers.go`                                      |
+| NATS / Temporal client, third-party SDK | —                                                                         | 5-line provider func: `func NewNATS(d NATSDeps) (*nats.Conn, error)` |
+| Handler / package / worker / operator   | —                                                                         | `internal/handlers                                                   | workers | operators | <pkg>/` (unchanged) |
+| Route set                               | generated `<Audience>Routes`: every service of one audience (§4)          | hand-write one for a custom grouping                                 |
+| Interceptor chain                       | `serverkit.NewChain(ChainDeps{Auth, …})`: today's inline chain, extracted | `UserChain`, `DaemonChain`                                           |
+| HTTP listener                           | `serverkit.NewListener(ListenerDeps{Config, Chain, Routes})`              | `APIListener`, `DaemonListener`                                      |
+| Root                                    | —                                                                         | `internal/app/roots.go` struct marked `//forge:root` (§3)            |
 
 **Instance identity is the Go type.** Two listeners are two types: `type DaemonListener struct{ *serverkit.Listener }`.
 That is what keeps by-type resolution unambiguous without names, tags or qualifiers.
@@ -71,14 +71,14 @@ is enough.
 
 **Generated vs owned:**
 
-| File | Status |
-|---|---|
-| `internal/app/compose.go` | owned and reconciled. One constructor method per component, holding the value expressions (§3). Forge injects missing methods and Deps keys and never touches values. This is today's contract. |
-| `internal/app/providers.go` | owned. **Provider constructors** replace the single eager `OpenInfra` |
-| `internal/app/roots.go` | owned. Root structs |
-| `internal/app/graph_gen.go` | generated. Memoized accessors, `Build<Root>`, `Run<Root>`, lifecycle plan, cycle check |
-| `internal/app/routes_gen.go` | generated. Per-audience route sets (replaces `mounts_services_gen.go` and `MountAll`) |
-| `cmd/<bin>/cmd/roots_gen.go` | generated. One cobra command per root (replaces `cmd-tree-serve.go.tmpl`'s `Serve`/`ServeSpec`) |
+| File                         | Status                                                                                                                                                                                          |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `internal/app/compose.go`    | owned and reconciled. One constructor method per component, holding the value expressions (§3). Forge injects missing methods and Deps keys and never touches values. This is today's contract. |
+| `internal/app/providers.go`  | owned. **Provider constructors** replace the single eager `OpenInfra`                                                                                                                           |
+| `internal/app/roots.go`      | owned. Root structs                                                                                                                                                                             |
+| `internal/app/graph_gen.go`  | generated. Memoized accessors, `Build<Root>`, `Run<Root>`, lifecycle plan, cycle check                                                                                                          |
+| `internal/app/routes_gen.go` | generated. Per-audience route sets (replaces `mounts_services_gen.go` and `MountAll`)                                                                                                           |
+| `cmd/<bin>/cmd/roots_gen.go` | generated. One cobra command per root (replaces `cmd-tree-serve.go.tmpl`'s `Serve`/`ServeSpec`)                                                                                                 |
 
 ## 2. Least knowledge, least privilege (first-class rule)
 
@@ -87,14 +87,14 @@ Today a process opens the whole `Infra` eagerly (`providers.go.tmpl:156`), and `
 (`service.go.tmpl:24`, wired by convention at `inject_gen.go:1204`). Reliant's handlers take `Repo db.Repository`:
 a 447-method interface held by 9 Deps fields, of which `tools_daemon` calls 19. The rules below reverse that:
 
-| Rule | Means | Enforced by |
-|---|---|---|
-| **K1** Deps name exactly what is used | consumer-declared interfaces, usually 1–3 methods | **lint** `forgeconv-deps-surface`: go/types compares the methods a Deps interface declares with the methods the package calls through `s.deps.X`. It is an error for a *foreign* interface with more than 10 methods and unused ones, and a warning otherwise. **Codegen** `forge fix narrow-deps <pkg>` writes the interface from the observed call set. `mock_gen` extends to every Deps interface, so narrowing costs no test work |
-| **K2** Nothing receives a container | no `*Graph`, `*Infra`, `*Components`, root config, `cmd.Deps`, locator or `any` | **compiler**: `internal/app` imports every component, so a component importing it is an import cycle. **lint** `forgeconv-no-container-deps` for the rest |
-| **K3** Config: own block only | `Config config.XConfig`, never `*config.Config` | **codegen** scaffolds a block per component. **lint** fails on root config in Deps and on `os.Getenv` in a component package. The conventional `Config` wiring is retired |
-| **P1** Capabilities, not handles | read-only views, scoped publishers, no downcasts | **types**: generated `db.<Entity>Reader` (reads only) beside `<Entity>Store`, and `natskit.ScopedPublisher{Subjects}`. **lint** `forgeconv-deps-no-downcast` fails a type assertion from a Deps field to a concrete type (reliant's `database.(*db.Repo)`, q2 C2). **runtime**, opt-in where a breach matters: a read-only pool on a read-only Postgres role (`dbrole` exists in control-plane), NATS credentials scoped to subjects |
-| **P2** A process holds only its subgraph | a root builds its closure and nothing else | **construction** (§3). **deploy**: `config_gen.k` emits each root's reachable config, secrets and env, and a workload bound to a root gets only those. The worker never receives the gateway's daemon-token secret. **lint** `config-reach` gains per-root over-grant (warning) and under-grant (error) |
-| **P3** Trust domains do not touch | daemon-audience handlers cannot read user-auth state | **boot + lint** audience check (§5). **lint** forbids a non-`user` audience handler package from importing the user-claims accessor |
+| Rule                                     | Means                                                                           | Enforced by                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **K1** Deps name exactly what is used    | consumer-declared interfaces, usually 1–3 methods                               | **lint** `forgeconv-deps-surface`: go/types compares the methods a Deps interface declares with the methods the package calls through `s.deps.X`. It is an error for a _foreign_ interface with more than 10 methods and unused ones, and a warning otherwise. **Codegen** `forge fix narrow-deps <pkg>` writes the interface from the observed call set. `mock_gen` extends to every Deps interface, so narrowing costs no test work |
+| **K2** Nothing receives a container      | no `*Graph`, `*Infra`, `*Components`, root config, `cmd.Deps`, locator or `any` | **compiler**: `internal/app` imports every component, so a component importing it is an import cycle. **lint** `forgeconv-no-container-deps` for the rest                                                                                                                                                                                                                                                                             |
+| **K3** Config: own block only            | `Config config.XConfig`, never `*config.Config`                                 | **codegen** scaffolds a block per component. **lint** fails on root config in Deps and on `os.Getenv` in a component package. The conventional `Config` wiring is retired                                                                                                                                                                                                                                                             |
+| **P1** Capabilities, not handles         | read-only views, scoped publishers, no downcasts                                | **types**: generated `db.<Entity>Reader` (reads only) beside `<Entity>Store`, and `natskit.ScopedPublisher{Subjects}`. **lint** `forgeconv-deps-no-downcast` fails a type assertion from a Deps field to a concrete type (reliant's `database.(*db.Repo)`, q2 C2). **runtime**, opt-in where a breach matters: a read-only pool on a read-only Postgres role (`dbrole` exists in control-plane), NATS credentials scoped to subjects  |
+| **P2** A process holds only its subgraph | a root builds its closure and nothing else                                      | **construction** (§3). **deploy**: `config_gen.k` emits each root's reachable config, secrets and env, and a workload bound to a root gets only those. The worker never receives the gateway's daemon-token secret. **lint** `config-reach` gains per-root over-grant (warning) and under-grant (error)                                                                                                                               |
+| **P3** Trust domains do not touch        | daemon-audience handlers cannot read user-auth state                            | **boot + lint** audience check (§5). **lint** forbids a non-`user` audience handler package from importing the user-claims accessor                                                                                                                                                                                                                                                                                                   |
 
 **Not enforceable, so not claimed:** ambient authority. That covers values smuggled through `context.Context`,
 process globals (`slog.Default`, `http.DefaultClient`, package vars beyond what the exported-vars lint already
@@ -163,13 +163,13 @@ the nodes in **reverse** topological order. For each node: `Drain`, cancel its `
 root-field order. Each phase logs counts (P9). Dependents always stop before what they depend on, so the order
 is listener, then handlers, then workers, then infra, as the graph implies:
 
-| Case (q3) | How it fits |
-|---|---|
+| Case (q3)                        | How it fits                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Long-lived streams (#773, P1/P2) | `serverkit.Listener` owns a `Streams` registry. Its `Drain` stops accepting, **soft-signals** every bound stream (`serverkit.Draining(ctx)` channel), waits until `deadline − DrainReserve`, hard-ends leftovers (cancel with cause `ErrServerDraining`, ending OK by default or `Unavailable` for procedures listed in `Config.RedialOnDrain`), then runs `http.Server.Shutdown` for unary. `ErrServerDraining` is registered as expected (P3) |
-| Hijacked websockets, SSE (P4) | the route is registered as `serverkit.LongLived(h)`, so its request ctx is bound into `Streams`. On the soft signal the terminal handler sends 1012 and returns, and its deferred PTY close runs. If the handler needs to wait for sessions, it implements `Drain` and stops after the listener |
-| Gateway handover (#898, P5) | **no `BeforeShutdown` hook.** `Gateway.Connector` is the first field, so outbound dials close first. The daemon listener's soft signal is the make-before-break trigger: the ToolsDaemon stream handler sends `GatewayDrain` and returns once the daemon has moved. Leftovers end with `Unavailable` (`RedialOnDrain`), and `Shutdown` gets the reserve |
-| Worker's longer budget (B12) | the worker root's `shutdown_timeout: 60s`, from its own config. KCL already derives `terminationGracePeriodSeconds` from it. The Temporal worker's `Drain` is `worker.Stop()` bounded by ctx |
-| Health port stopped last (B5) | probes are root policy, served last and stopped last. A separate `HealthAddr` remains a root field (q3 P7) |
+| Hijacked websockets, SSE (P4)    | the route is registered as `serverkit.LongLived(h)`, so its request ctx is bound into `Streams`. On the soft signal the terminal handler sends 1012 and returns, and its deferred PTY close runs. If the handler needs to wait for sessions, it implements `Drain` and stops after the listener                                                                                                                                                 |
+| Gateway handover (#898, P5)      | **no `BeforeShutdown` hook.** `Gateway.Connector` is the first field, so outbound dials close first. The daemon listener's soft signal is the make-before-break trigger: the ToolsDaemon stream handler sends `GatewayDrain` and returns once the daemon has moved. Leftovers end with `Unavailable` (`RedialOnDrain`), and `Shutdown` gets the reserve                                                                                         |
+| Worker's longer budget (B12)     | the worker root's `shutdown_timeout: 60s`, from its own config. KCL already derives `terminationGracePeriodSeconds` from it. The Temporal worker's `Drain` is `worker.Stop()` bounded by ctx                                                                                                                                                                                                                                                    |
+| Health port stopped last (B5)    | probes are root policy, served last and stopped last. A separate `HealthAddr` remains a root field (q3 P7)                                                                                                                                                                                                                                                                                                                                      |
 
 There is one genuine exception: stop order among siblings with no edge between them. It is a plain field order
 in a struct the project owns. It is not a hook and not a new category.
@@ -178,7 +178,7 @@ in a struct the project owns. It is not a hook and not a new category.
 
 A chain is a component: `serverkit.NewChain(ChainDeps{Auth, Logger, …})`. It is today's inline chain
 (`cmd-tree-serve.go.tmpl:112-233`) as a library. Every slot is defaulted (trace, recovery, request-id, logging,
-metrics, stream-drain, audit, protovalidate, payload caps) except **`Auth`, which is required**, so a missing
+metrics, deadline, audit, activity, stream-drain, protovalidate, payload caps) except **`Auth`, which is required**, so a missing
 validator still fails at boot. Dropping a default needs an explicit value (`serverkit.NoAudit`). A nil
 default is a `validateDeps` error. The gateway is two components (`DaemonAuth`, `DaemonChain`) and a listener
 whose `Config` carries its own address, TLS, `MaxConcurrentStreams` and `ReadTimeout: 0` (P6). Nothing forks
@@ -215,15 +215,15 @@ one component at a time. Each step below ships alone, with three roles, one imag
 
 ## 7. What changes in forge (PR sequence)
 
-| PR | Change | Files | Size |
-|---|---|---|---|
-| 1 | `Listener` (multi-instance, TLS/h2/timeouts, `Streams`, soft/hard drain, `LongLived`), `Chain` + `Authenticator` + audience boot check. `serverkit.Run` becomes a one-listener wrapper with no behaviour change. Covers q3 P1–P4, P6 and P8 | `pkg/serverkit/{listener,chain,streams}.go`, `run.go` | M |
-| 2 | `lifecyclekit`: the four interfaces, `Supervise` (topo start, reverse drain/close, budget, phase logs). The old `Worker` Start/Stop is adapted | `pkg/lifecyclekit/supervise.go` | S–M |
-| 3 | Graph codegen: provider funcs replace `Infra`/`OpenInfra`, the per-component constructor-method compose.go and its reconciler, `graph_gen.go` (memo, seal, `Build`/`Run<Root>`, plan, cycles), `//forge:root` discovery, per-audience `routes_gen.go` | `internal/codegen/{inject_gen,build_topo,compose_membership,deps_parser}.go`, `compose.go.tmpl`, `providers.go.tmpl`, `mounts_services_gen.go.tmpl` | L |
-| 4 | Commands: `roots_gen.go` replaces `Serve`/`ServeSpec`/`MountFunc`/`MountNone`, and `cmd-svc-group`/`cmd-worker-group` are retired (Q5) | `cmd-tree-serve.go.tmpl` (deleted), `cmd-tree-server.go.tmpl`, `lifecycle.go.tmpl` (deleted) | M |
-| 5 | Lint: `deps-surface`, `no-container-deps`, `deps-no-downcast`, root-config/getenv, `--graph` (reachability, audience, imports), plus `forge fix narrow-deps`, and `mock_gen` for Deps interfaces | `internal/linter/forgeconv/`, `internal/contractcheck/` | M |
-| 6 | KCL: `Workload.root`, `ROOTS` in `config_gen.k`, per-root env/secret projection, unknown-root render error. This retires `binary_config.command` (Q4) | `kcl/workload.k`, `internal/codegen/config_gen.go` | M |
-| 7 | Upgrade playbook and codemod: `c.X = pkg.New(pkg.Deps{…})` → `newX` methods (mechanical, `infra.Y` → `g.Y()`), `OpenInfra` body → provider funcs (codemod plus playbook), custom `ServeSpec` fields → roots/components (control-plane's three flags are the worked example) | `migrations/vX-composition-graph`, `internal/cli/upgrade` | S–M |
+| PR  | Change                                                                                                                                                                                                                                                                      | Files                                                                                                                                               | Size |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 1   | `Listener` (multi-instance, TLS/h2/timeouts, `Streams`, soft/hard drain, `LongLived`), `Chain` + `Authenticator` + audience boot check. `serverkit.Run` becomes a one-listener wrapper with no behaviour change. Covers q3 P1–P4, P6 and P8                                 | `pkg/serverkit/{listener,chain,streams}.go`, `run.go`                                                                                               | M    |
+| 2   | `lifecyclekit`: the four interfaces, `Supervise` (topo start, reverse drain/close, budget, phase logs). The old `Worker` Start/Stop is adapted                                                                                                                              | `pkg/lifecyclekit/supervise.go`                                                                                                                     | S–M  |
+| 3   | Graph codegen: provider funcs replace `Infra`/`OpenInfra`, the per-component constructor-method compose.go and its reconciler, `graph_gen.go` (memo, seal, `Build`/`Run<Root>`, plan, cycles), `//forge:root` discovery, per-audience `routes_gen.go`                       | `internal/codegen/{inject_gen,build_topo,compose_membership,deps_parser}.go`, `compose.go.tmpl`, `providers.go.tmpl`, `mounts_services_gen.go.tmpl` | L    |
+| 4   | Commands: `roots_gen.go` replaces `Serve`/`ServeSpec`/`MountFunc`/`MountNone`, and `cmd-svc-group`/`cmd-worker-group` are retired (Q5)                                                                                                                                      | `cmd-tree-serve.go.tmpl` (deleted), `cmd-tree-server.go.tmpl`, `lifecycle.go.tmpl` (deleted)                                                        | M    |
+| 5   | Lint: `deps-surface`, `no-container-deps`, `deps-no-downcast`, root-config/getenv, `--graph` (reachability, audience, imports), plus `forge fix narrow-deps`, and `mock_gen` for Deps interfaces                                                                            | `internal/linter/forgeconv/`, `internal/contractcheck/`                                                                                             | M    |
+| 6   | KCL: `Workload.root`, `ROOTS` in `config_gen.k`, per-root env/secret projection, unknown-root render error. This retires `binary_config.command` (Q4)                                                                                                                       | `kcl/workload.k`, `internal/codegen/config_gen.go`                                                                                                  | M    |
+| 7   | Upgrade playbook and codemod: `c.X = pkg.New(pkg.Deps{…})` → `newX` methods (mechanical, `infra.Y` → `g.Y()`), `OpenInfra` body → provider funcs (codemod plus playbook), custom `ServeSpec` fields → roots/components (control-plane's three flags are the worked example) | `migrations/vX-composition-graph`, `internal/cli/upgrade`                                                                                           | S–M  |
 
 PRs 1–2 ship value alone, since every forge app with a server stream inherits #773 today. PR 3 is the
 keystone. PR 5's new rules land as warnings and become errors one release later.

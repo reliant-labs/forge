@@ -472,6 +472,12 @@ var knownCodegenInternalAppFiles = map[string]bool{
 	// auth.go. The skills must be able to name it — it is where the whole
 	// server-side OIDC flow lives.
 	"login_broker.go": true,
+	// The composition graph's forge-owned halves (codegen.GenerateGraph): the
+	// memoized accessors, Build<Root>/Run<Root>, and the per-audience
+	// routes. A graph-mode project has these instead of
+	// mounts_services_gen.go, which GenerateGraph retires.
+	"graph_gen.go":  true,
+	"routes_gen.go": true,
 }
 
 // knownCodegenPkgAppFiles are pkg/app/ files written by `forge generate`
@@ -1426,7 +1432,7 @@ func scaffoldedMiddlewareIdents(t *testing.T) map[string]bool {
 	fset := token.NewFileSet()
 	for name, data := range map[string]any{
 		"middleware.go.tmpl":            struct{ Name string }{Name: "demo"},
-		"middleware-procedures.go.tmpl": struct{ Imports, Open []struct{} }{},
+		"middleware-procedures.go.tmpl": struct{ Imports, Open, Deadlines []struct{} }{},
 	} {
 		src, err := templates.ProjectTemplates().Render(name, data)
 		if err != nil {

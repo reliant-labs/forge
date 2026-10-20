@@ -111,7 +111,9 @@ func RegisterFlags(cmd *cobra.Command) {
 // Load populates a Config from CLI flags > environment variables > config
 // file (--config, or ConfigPathEnv) > proto defaults (see the library for
 // the precedence rationale), recursing into nested config blocks. Malformed
-// values abort startup. Sensitive fields resolve from env / Secret mount only.
+// values abort startup, and so does a value Validate rejects: a loaded Config
+// has passed every declared check. Sensitive fields resolve from env / Secret
+// mount only.
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.RootConfigMessage}}](cmd)
 }
@@ -139,7 +141,8 @@ func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
 // Validate runs the cross-field / closed-set config invariants (TLS keypair
 // both-or-neither, CORS wildcard+credentials rejection, allowed_values
 // string-enum checks). Annotation/TYPE-driven — never keyed on field names.
-// Called by the server entrypoint after Load, before the listener binds.
+// Load already runs it, so a loaded Config has passed; call it on a Config
+// built or edited by hand.
 func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 {{- else if .PrimaryConfigMessage}}
 // RegisterFlags registers every config-bound field of {{.PrimaryConfigMessage}} (own leaves
@@ -158,7 +161,8 @@ func RegisterFlags(cmd *cobra.Command) {
 }
 
 // Load populates a Config ({{.PrimaryConfigMessage}}) from CLI flags > environment
-// variables > proto defaults, recursing into any composed shared block.
+// variables > proto defaults, recursing into any composed shared block, then
+// validates it.
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.PrimaryConfigMessage}}](cmd)
 }
@@ -181,7 +185,8 @@ func Defaults() *Config {
 func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
 
 // Validate runs the cross-field / closed-set config invariants against the
-// primary binary's own config. See Validate for the root-AppConfig form.
+// primary binary's own config. Load already runs it; call it on a Config
+// built or edited by hand.
 func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 {{- end}}
 {{- if .BinaryConfigs}}
@@ -246,7 +251,7 @@ func Register{{.MessageName}}Flags(cmd *cobra.Command) {
 
 // Load{{.MessageName}} populates the `{{.Process}}` process's config from CLI
 // flags > environment variables > config file > proto defaults, including
-// the block(s) it composes. It refuses a cmd that is not the
+// the block(s) it composes, then validates it. It refuses a cmd that is not the
 // "{{.CommandLine}}" subcommand: its flags are registered there alone.
 func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 	if err := forgeconfig.CheckCommandPath(cmd, "{{.MessageName}}", {{.CommandGoArgs}}); err != nil {
@@ -273,7 +278,8 @@ func Register{{.MessageName}}Flags(cmd *cobra.Command) {
 
 // Load{{.MessageName}} populates the {{.Binary}} binary's config from CLI
 // flags > environment variables > config file > proto defaults, including the
-// block(s) it composes. Call it from any {{.Binary}} command.
+// block(s) it composes, then validates it. Call it from any {{.Binary}}
+// command.
 func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
 }
@@ -284,8 +290,10 @@ func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 // shared block it composes).
 func ModeOf{{.MessageName}}(cfg *{{.MessageName}}) Mode { return forgeconfig.Mode(cfg) }
 
-// Validate{{.MessageName}} runs the same cross-field / closed-set invariants
-// Validate runs, against the `{{.Process}}` process's own config.
+// Validate{{.MessageName}} runs the cross-field / closed-set invariants
+// (allowed_values, the TLS pair, CORS) against the `{{.Process}}` process's
+// config. Load{{.MessageName}} already runs them; call it on a config built
+// or edited by hand.
 func Validate{{.MessageName}}(cfg *{{.MessageName}}) error { return forgeconfig.Validate(cfg) }
 {{- end}}
 {{- end}}

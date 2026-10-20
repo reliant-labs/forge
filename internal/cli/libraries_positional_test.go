@@ -72,7 +72,7 @@ func TestLibraries_PositionalSelectorsPrintSignatures(t *testing.T) {
 			// The exact signature 14 greps went looking for. Asserting on
 			// the parameter list, not the name: a name alone is what
 			// `go doc` already gave them, and it was not enough.
-			if !strings.Contains(out, "UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string) error") {
+			if !strings.Contains(out, "UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string, opts ...UpdateOption) error") {
 				t.Errorf("no full UpdateMasked signature — the measured query is still unanswered:\n%s", out)
 			}
 		})

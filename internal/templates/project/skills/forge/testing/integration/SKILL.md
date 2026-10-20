@@ -30,7 +30,7 @@ Forge integration tests use the **`//go:build integration`** build tag — *not*
 | `//go:build integration` | The Go toolchain physically excludes the file from `go build` / `go test` unless `-tags integration` is passed. No compile, no link, no skip-at-runtime. | The test needs infra that may not be present (DB, broker, network). The default test run must not even attempt it. |
 | `if testing.Short() { t.Skip(...) }` | The test is always compiled and runs by default. `go test -short` skips it at runtime. | The test is hermetic but optionally slow — e.g. a fast unit test that has an extra long-running scenario behind `-short`. |
 
-**Rule for forge projects:** all DB-backed / RPC-roundtrip / infra-dependent tests use the build tag. Reserve `testing.Short()` for the rare case of a hermetic test with a fast/slow toggle. If your test would `t.Skip` because it can't reach a database, it belongs behind `//go:build integration` instead.
+**Rule for forge projects:** all DB-backed / RPC-roundtrip / infra-dependent tests use the build tag. Reserve `testing.Short()` for the rare case of a hermetic test with a fast/slow toggle. Spell that toggle `testkit.Slow(t, "<why>")` (see `testing`): it also skips in the integration lane, so never call it from an integration-tagged test — that test would run nowhere. If your test would `t.Skip` because it can't reach a database, it belongs behind `//go:build integration` instead.
 
 The matching convention for end-to-end tests is `//go:build e2e`.
 

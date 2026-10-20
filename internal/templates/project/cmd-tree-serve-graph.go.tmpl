@@ -56,7 +56,10 @@ import (
 // every node it reaches, supervised until a signal or a failing node.
 func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 	// Load validates: a value the config's annotations reject fails here.
-	cfg, err := config.Load(deps.Cmd)
+	// Only the fields the root reaches are demanded (root.Config, from
+	// roots_gen.go): a worker that never opens the database starts without
+	// DATABASE_URL, and its workload is never handed the credential.
+	cfg, err := config.LoadReach(deps.Cmd, root.Config)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}

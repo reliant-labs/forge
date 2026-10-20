@@ -115,6 +115,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its mock; `forge generate` keeps a `deps.go`'s `mock_gen.go` in step.
   `compose.go` needs no change. A field whose value the package passes on,
   type-asserts, or never calls is left alone, with the reason.
+- **Each root's config is its reach** (composition graph, PR 6). Generate
+  reads, per root, the config fields its closure reads in `compose.go`, plus
+  the process fields `runRoot` reads and, for a root reaching the database,
+  the database fields. The roots table carries that set and `runRoot` loads
+  with the new `config.LoadReach(cmd, reach)` (`pkg/config`'s
+  `RequiredWithin(paths...)` load option), so a worker root starts without
+  `DATABASE_URL`. `deploy/kcl/config_gen.k` projects the same set as
+  `ROOTS`, with `root_of(name)` (binds a workload to a root and its command)
+  and `workloadEnvMap(cfg, w)` (exactly the env that root reaches; a
+  `config_secrets` entry it does not reach, or an unknown root, fails the
+  render). `fw.Workload` gains `root?: str` (needs `build`, excludes
+  `command`). New projects deploy `_api` with `root = "server"`. Only a root
+  `AppConfig` is projected; per-binary configs (`binary_config`) get no
+  `ROOTS`.
 
 ### Fixed
 

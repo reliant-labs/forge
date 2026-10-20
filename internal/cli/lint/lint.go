@@ -820,8 +820,9 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	}
 	// Least knowledge (composition graph §2): what every component's Deps
 	// declares against what the package uses through it — wide foreign
-	// interfaces, containers, downcasts. Warnings; --strict applies the
-	// design's severities.
+	// interfaces, containers, downcasts, environment reads, the root config.
+	// The design's severities (§9.2); --strict makes them all errors but the
+	// root config's, which it only reports.
 	if _, err := os.Stat("internal"); err == nil {
 		res, err := forgeconv.LintLeastKnowledge(".", opts)
 		if err != nil {

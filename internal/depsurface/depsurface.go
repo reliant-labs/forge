@@ -49,6 +49,10 @@ type Package struct {
 	Fields   []Field
 	// Downcasts are type assertions from a Deps field to a concrete type.
 	Downcasts []Downcast
+	// EnvReads are the package's own reads of the process environment
+	// (os.Getenv, os.LookupEnv, os.Environ) in non-test files: configuration
+	// the composition never handed it, and a root's config reach cannot see.
+	EnvReads []EnvRead
 
 	pkg  *packages.Package
 	deps *types.Struct
@@ -78,6 +82,9 @@ type Field struct {
 	Downcast bool
 	// Container names the container the field holds ("" for none).
 	Container string
+	// RootConfig is true for a field holding the project's root config
+	// (pkg/config.Config) rather than the component's own block.
+	RootConfig bool
 
 	typ types.Type
 }
@@ -91,6 +98,14 @@ func Unused(f Field) []string {
 		}
 	}
 	return out
+}
+
+// EnvRead is one read of the process environment.
+type EnvRead struct {
+	File string
+	Line int
+	// Call is the function read through ("os.Getenv").
+	Call string
 }
 
 // Downcast is one type assertion from a Deps field.
@@ -266,10 +281,58 @@ func analyzePackage(projectDir, module string, p *packages.Package) *Package {
 			}
 		}
 		f.Container = containerKind(module, v.Type())
+		f.RootConfig = isRootConfig(module, v.Type())
 		byVar[v] = len(out.Fields)
 		out.Fields = append(out.Fields, f)
 	}
 	readUses(p, byVar, out, rel)
+	out.EnvReads = envReads(p, rel)
+	return out
+}
+
+// isRootConfig reports whether t is the project's root config,
+// <module>/pkg/config.Config, by value or pointer.
+func isRootConfig(module string, t types.Type) bool {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := t.(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+	return named.Obj().Pkg().Path() == module+"/pkg/config" && named.Obj().Name() == "Config"
+}
+
+// envFuncs are the os functions that read the process environment.
+var envFuncs = map[string]bool{"Getenv": true, "LookupEnv": true, "Environ": true}
+
+// envReads lists the package's calls of os.Getenv / LookupEnv / Environ in
+// non-test files, resolved by type so an alias of os or a local named os
+// is told apart.
+func envReads(p *packages.Package, rel func(token.Pos) (string, int)) []EnvRead {
+	var out []EnvRead
+	for _, f := range p.Syntax {
+		if strings.HasSuffix(p.Fset.Position(f.Pos()).Filename, "_test.go") {
+			continue
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			fn, ok := p.TypesInfo.Uses[sel.Sel].(*types.Func)
+			if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "os" || !envFuncs[fn.Name()] {
+				return true
+			}
+			file, line := rel(call.Pos())
+			out = append(out, EnvRead{File: file, Line: line, Call: "os." + fn.Name()})
+			return true
+		})
+	}
 	return out
 }
 

@@ -106,10 +106,10 @@ func TestBuildEntityConv_JSONBPairing(t *testing.T) {
 	if !strings.Contains(fromProto, "orm.MarshalJSONBList(m.LineItems)") {
 		t.Errorf("repeated message should marshal through orm.MarshalJSONBList; got:\n%s", fromProto)
 	}
-	if !strings.Contains(fromProto, "e.LineItems = lineItemsJSON") {
+	if !strings.Contains(fromProto, "e.LineItems = []byte(lineItemsJSON)") {
 		t.Errorf("repeated message should assign the marshalled text; got:\n%s", fromProto)
 	}
-	if !strings.Contains(toProto, "orm.UnmarshalJSONBList(e.LineItems, &m.LineItems)") {
+	if !strings.Contains(toProto, "orm.UnmarshalJSONBList(string(e.LineItems), &m.LineItems)") {
 		t.Errorf("repeated message should unmarshal through orm.UnmarshalJSONBList; got:\n%s", toProto)
 	}
 
@@ -117,7 +117,7 @@ func TestBuildEntityConv_JSONBPairing(t *testing.T) {
 	if !strings.Contains(fromProto, "orm.MarshalJSONBMessage(m.ShipTo)") {
 		t.Errorf("singular message should marshal through orm.MarshalJSONBMessage; got:\n%s", fromProto)
 	}
-	if !strings.Contains(toProto, "orm.UnmarshalJSONBMessage(e.ShipTo, &m.ShipTo)") {
+	if !strings.Contains(toProto, "orm.UnmarshalJSONBMessage(string(e.ShipTo), &m.ShipTo)") {
 		t.Errorf("singular message should unmarshal through orm.UnmarshalJSONBMessage; got:\n%s", toProto)
 	}
 
@@ -125,24 +125,26 @@ func TestBuildEntityConv_JSONBPairing(t *testing.T) {
 	if !strings.Contains(fromProto, "orm.MarshalJSONBScalars(m.Tags)") {
 		t.Errorf("repeated scalar should marshal through orm.MarshalJSONBScalars; got:\n%s", fromProto)
 	}
-	if !strings.Contains(toProto, "orm.UnmarshalJSONBScalars(e.Tags, &m.Tags)") {
+	if !strings.Contains(toProto, "orm.UnmarshalJSONBScalars(string(e.Tags), &m.Tags)") {
 		t.Errorf("repeated scalar should unmarshal through orm.UnmarshalJSONBScalars; got:\n%s", toProto)
 	}
 
-	// NULLABLE jsonb column: the struct field is *string, so an absent
-	// message is SQL NULL rather than a fabricated empty document.
+	// NULLABLE jsonb column: the struct field is json.RawMessage, nil for
+	// SQL NULL, so an absent message is NULL rather than a fabricated empty
+	// document.
 	if !strings.Contains(fromProto, "if m.GiftNote != nil {") {
 		t.Errorf("nullable json column should write NULL for an absent message; got:\n%s", fromProto)
 	}
 	if !strings.Contains(toProto, "if e.GiftNote != nil {") ||
-		!strings.Contains(toProto, "orm.UnmarshalJSONBMessage(*e.GiftNote, &m.GiftNote)") {
+		!strings.Contains(toProto, "orm.UnmarshalJSONBMessage(string(e.GiftNote), &m.GiftNote)") {
 		t.Errorf("nullable json column should deref before unmarshalling; got:\n%s", toProto)
 	}
 
 	// A plain `string` wire field over a jsonb column is the document
-	// itself — passthrough, no encoder in either direction.
-	if !strings.Contains(toProto, "m.RawPayload = e.RawPayload") ||
-		!strings.Contains(fromProto, "e.RawPayload = m.RawPayload") {
+	// itself — passthrough, no encoder in either direction, converted
+	// between the wire's text and the entity's json.RawMessage bytes.
+	if !strings.Contains(toProto, "m.RawPayload = string(e.RawPayload)") ||
+		!strings.Contains(fromProto, "e.RawPayload = []byte(m.RawPayload)") {
 		t.Errorf("a string field over a json column stays a passthrough; got:\n%s\n%s", toProto, fromProto)
 	}
 

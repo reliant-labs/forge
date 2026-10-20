@@ -33,7 +33,7 @@ func TestPlanORM_NotNullDefaultsSayUnsetWithTheirType(t *testing.T) {
 		"Status":    "*int64 `bun:\"status,notnull\"`",
 		"Pinned":    "*bool `bun:\"pinned,notnull\"`",
 		"Kind":      "*string `bun:\"kind,notnull\"`",
-		"Metadata":  "string `bun:\"metadata,notnull,nullzero\"`",
+		"Metadata":  "json.RawMessage `bun:\"metadata,notnull,nullzero\"`",
 		"Labels":    "[]string `bun:\"labels,array,notnull,nullzero\"`",
 		"Unread":    "int64 `bun:\"unread,notnull\"`",
 		"EmptyTags": "[]string `bun:\"empty_tags,array,notnull\"`",

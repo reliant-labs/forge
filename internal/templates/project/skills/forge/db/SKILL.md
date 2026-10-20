@@ -173,6 +173,8 @@ Wire evolution stays proto: service-proto messages are the **API truth** and evo
 
 ## Generated ORM semantics
 
+- **Field types are Go's, as wide as the column** (`ID`, `int32`, `json.RawMessage`, `forge:go-type`): `db/orm-and-safety`.
+
 - `Create<Entity>` is a plain `INSERT`, never an upsert. Unset string PKs are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back via `RETURNING` — any caller-provided value is ignored.
 - Writes scan database-computed values back via `RETURNING` — generated columns on every write, DB defaults on insert, unwritten columns on update — so never re-read a row you just wrote.
 - **A `NOT NULL` column's `DEFAULT` applies to an unset field**, and an explicit zero is still written: `db/write-policy`.

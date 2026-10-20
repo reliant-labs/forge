@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scaffolded release workflow and the `ci` and `deploy` skills now rely on it
   instead of passing a flag. `--json` and the targeted lanes were already
   detect-only.
+- **A forge that is not the project's pinned forge now hands the command to the
+  pinned forge instead of refusing.** The forge on PATH (a Reliant workspace
+  bundles one) is routinely older than a project's `forge_version`, and
+  `generate`, `scaffold`, `component install` and friends refused with a
+  recipe, or a render failed with KCL schema errors (`release_dependencies`,
+  `ShellBuild.unit`) that blame the project; agents had to run `task tools` or
+  `go run …@<pin>` by hand. Now the command is exec'd under the right forge
+  with the same arguments, environment, stdio and exit status, and one line on
+  stderr says so. The pinned forge is the project's `.tools/bin/forge` when it
+  reports that version, else a one-time `go install` of the pinned module
+  version into a cache under `<user cache dir>/forge/pinned/` (a project linked
+  to a forge checkout by go.work `use` or a directory `replace` gets a build of
+  that checkout instead). The KCL-reading commands (`env render`, `env shape`, `env config`,
+  `env diff`, `env up`, `kcl`, `doctor`) are handed over too. Read-only runs stay local;
+  `--allow-version-skew` / `FORGE_ALLOW_VERSION_SKEW=1` runs this forge as
+  before; if the pinned forge cannot be had (offline, an unpublished version)
+  the old refusal returns, now carrying the reason. See `docs/versioning.md`.
 - **`observe.TrustRemoteFrom(trusted, opts...)`: continue a caller's trace
   only when the caller is an authenticated internal service.** otelconnect
   answers "adopt the inbound traceparent?" once for every caller:
@@ -846,6 +863,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **The entity struct's types are idiomatic and lossless.** Field names spell
+  Go initialisms in capitals (`ID`, `OrgID`, `APIKey`; the `<E>Field*` and
+  `<E>Constraint*` constants follow); an integer column is as wide as it is
+  declared (`INTEGER` → `int32`, `SMALLINT` → `int16`, `BIGINT` → `int64` —
+  it was always `int64`); a `jsonb`/`json` column is `json.RawMessage` (nil
+  for NULL), not `string`.
+  `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares the Go type of
+  one column — a named enum
+  over an integer, `map[string]any` over json, `<path>[;<pkg>].<Type>` —
+  with no generated wire conversion (a CRUD rpc carrying it fails generate
+  by name). The CRUD conversions follow: the wire's int32 enum number is
+  stored at the column's width, json pairs through `[]byte`/`string`.
+  **Upgrading:** regenerate; then rename references to the projected fields in
+  hand-written code — `.Id` → `.ID`, `.UserId` → `.UserID`,
+  `TaskFieldId` → `TaskFieldID` (`gopls rename`, or `gofmt -r` per name) — and
+  adjust code that read an `integer` column as `int64` or a json column as
+  `string` (`string(row.Payload)`, `json.RawMessage(s)`).
 - **A `NOT NULL` column's `DEFAULT` applies when the field is unset — and an
   explicit zero is still stored.** The generated store wrote the Go zero for
   every defaulted column a caller left unset, so the DEFAULT never fired:

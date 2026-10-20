@@ -174,8 +174,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they are grammar, not descriptor input, and only `forge generate` changes
   them. A stale descriptor is now refused with the protos that drifted
   (`proto/x.proto (edited)`). The next `forge generate` rewrites the field.
+- **A new service project's `docs/runbook.md` points at what forge ships.** It
+  said "Check for traffic spike (Grafana dashboard)" and "Grafana: TODO
+  (link)", and asked for Loki, Jaeger and PagerDuty links. It now names the
+  Observability tab under Apps in Reliant, the local HyperDX UI, the generated
+  dashboards in `deploy/observability/dashboards/`, the generated alert
+  defaults (`alert-defaults_gen.json`) and how `forge.Alerts.defaults` tunes
+  them, and explains each built-in alert.
+- **`forge generate --help` describes the pipeline it runs.** It described
+  entity protos in `proto/db/` and a `pkg/app/bootstrap.go`, both retired. The
+  no-`forge.yaml` path no longer looks for `proto/api/` and `proto/db/`, and
+  the seed step is gated on services rather than on a `proto/db/` directory.
 
 ### Removed
+
+- **New service projects no longer get `deploy/observability/prometheus-rules.yaml`
+  or `docs/slo.md`.** Nothing in forge loaded the rules (alerts are
+  `forge.AlertRule` / `forge.AlertDefault` in KCL, evaluated as ClickHouse
+  SQL) and nothing measured the SLO doc's targets. An existing project can
+  delete both files.
 
 - **Graph-mode projects no longer scaffold `cmd/<bin>/cmd/server.go`**, and
   `cmd/<bin>/main.go` / `root.go` take no command-group constructors

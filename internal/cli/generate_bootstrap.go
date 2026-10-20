@@ -13,8 +13,10 @@ import (
 // generateHybridComposition emits the internal/app composition layer
 // (PASS 1, additive). Scaffold-once owned files (providers.go, post_build.go)
 // are written before the generated injector so its Infra-field resolution
-// sees the Infra struct on the first pass too.
-func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums, roots *[]codegen.GraphRoot) error {
+// sees the Infra struct on the first pass too. It returns a graph-mode
+// project's roots, the reach config_gen.k projects as ROOTS; a legacy
+// composition has none.
+func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) ([]codegen.GraphRoot, error) {
 	// NO len()==0 early-return: the generated cmd/server.go imports
 	// internal/app unconditionally (OpenInfra → Build → PostBuild → mount via
 	// Inventory → serverkit.Run), so internal/app must be a non-empty,
@@ -34,7 +36,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// a tree that does not compile.
 	workers, operators, err := discoverSupervised(projectDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// The composition graph (docs/design/composition-graph.md): provider
@@ -45,11 +47,12 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// generators below until it migrates.
 	if codegen.GraphComposition(projectDir) {
 		if err := codegen.GenerateGraphProviders(modulePath, databaseDriver, projectDir); err != nil {
-			return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
+			return nil, fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
 		}
 		if err := generateLoginBroker(modulePath, projectDir); err != nil {
-			return err
+			return nil, err
 		}
+		var roots []codegen.GraphRoot
 		if err := codegen.GenerateGraph(codegen.GraphGenInput{
 			GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
 			Services:        services,
@@ -57,17 +60,17 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 			Workers:         workers,
 			Operators:       operators,
 			WebhookServices: webhookServices,
-			Roots:           roots,
+			Roots:           &roots,
 		}); err != nil {
-			return fmt.Errorf("failed to generate the composition graph (internal/app): %w", err)
+			return nil, fmt.Errorf("failed to generate the composition graph (internal/app): %w", err)
 		}
 		fmt.Println("  ✅ Generated internal/app composition graph (compose.go + graph_gen.go + routes_gen.go)")
-		return nil
+		return roots, nil
 	}
 
 	// Owned, scaffold-once (never overwritten after first emit).
 	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
-		return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
+		return nil, fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
 	}
 
 	// Owned, scaffold-once internal/app/auth.go (SetupAuth). Co-located
@@ -76,7 +79,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// calls app.SetupAuth. Authentication is code now, not forge.yaml
 	// config — the user edits SetupAuth to pick the validator.
 	if err := generateAuthSetup(modulePath, projectDir); err != nil {
-		return fmt.Errorf("failed to scaffold internal/app/auth.go: %w", err)
+		return nil, fmt.Errorf("failed to scaffold internal/app/auth.go: %w", err)
 	}
 
 	// Explicit per-binary component construction site (compose.go: Components +
@@ -90,7 +93,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		Workers:    workers,
 		Operators:  operators,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/compose.go: %w", err)
+		return nil, fmt.Errorf("failed to generate internal/app/compose.go: %w", err)
 	}
 
 	// Supervised-component surface (workers/operators) over *Components —
@@ -103,7 +106,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		Workers:    workers,
 		Operators:  operators,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/lifecycle.go: %w", err)
+		return nil, fmt.Errorf("failed to generate internal/app/lifecycle.go: %w", err)
 	}
 
 	// Typed per-service mount surface + data-only inventory (mounts_services.go).
@@ -119,7 +122,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		Operators:       operators,
 		WebhookServices: webhookServices,
 	}); err != nil {
-		return fmt.Errorf("failed to generate internal/app/mounts_services.go: %w", err)
+		return nil, fmt.Errorf("failed to generate internal/app/mounts_services.go: %w", err)
 	}
 
 	// NOTE: the REAL per-component cmd-group subcommands (dir-nested under
@@ -134,7 +137,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// generateCmdGroups + stepCmdGroups.
 
 	fmt.Println("  ✅ Generated internal/app composition layer (compose.go + mounts_services.go + lifecycle.go)")
-	return nil
+	return nil, nil
 }
 
 // generateCmdGroups anchors the dir-nested per-component command-group

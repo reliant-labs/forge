@@ -2227,8 +2227,8 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	var roots []codegen.GraphRoot
-	if err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums, &roots); err != nil {
+	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums)
+	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
 	ctx.graphRoots, ctx.graphRootsSet = roots, true

@@ -361,10 +361,22 @@ var (
 
 // forgeE2EBinaryEnv names a forge binary already built from this checkout,
 // used instead of building one. e2e-suite.yml's prepare job builds forge once
-// — with the same `go build -o <bin> ./cmd/forge` as below, at the same
-// checkout path — and hands it to every shard, so no shard compiles forge.
-// Unset (a developer's run), the binary is built here as always.
+// — with the same `go build -ldflags <devForgeRootLDFlag> -o <bin> ./cmd/forge`
+// as below, at the same checkout path — and hands it to every shard, so no
+// shard compiles forge. Unset (a developer's run), the binary is built here
+// as always.
 const forgeE2EBinaryEnv = "FORGE_E2E_BINARY"
+
+// devForgeRootLDFlag stamps buildinfo.DevForgeRoot with the checkout the
+// binary under test is built from. Every fixture scaffolds with --link-forge,
+// which needs that checkout. Unstamped, forge recovers it from its compiled
+// source paths, and -trimpath erases those: under GOFLAGS=-trimpath (the Go
+// default in the Reliant workspace image) every scaffolding fixture refused
+// with "cannot locate the checkout it was built from". Without -trimpath the
+// stamp is the path discovery would have found, so nothing else changes.
+func devForgeRootLDFlag(repoRoot string) string {
+	return "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=" + repoRoot
+}
 
 func buildforgeBinary(t *testing.T) string {
 	t.Helper()
@@ -392,7 +404,7 @@ func buildforgeBinary(t *testing.T) string {
 		// test to finish must not delete what the rest still execute.
 		registerSharedTempDir(dir)
 		bin := filepath.Join(dir, "forge")
-		cmd := exec.Command("go", "build", "-o", bin, "./cmd/forge")
+		cmd := exec.Command("go", "build", "-ldflags", devForgeRootLDFlag(repoRoot), "-o", bin, "./cmd/forge")
 		cmd.Dir = repoRoot
 		if output, berr := cmd.CombinedOutput(); berr != nil {
 			forgeBinaryErr = fmt.Errorf("failed to build forge binary: %w\n%s", berr, output)

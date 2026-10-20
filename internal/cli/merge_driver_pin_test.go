@@ -290,3 +290,64 @@ func TestGoRunExecutable(t *testing.T) {
 		}
 	}
 }
+
+// Two copies of the pinned forge at different paths — each worktree's
+// tool-cache install, a `go install`ed one — must not take the driver from
+// each other: each used to rewrite .git/config to name itself, so alternating
+// between them rewrote it on every run. The copy already registered keeps it
+// while it exists; when it is gone, the next copy repairs the driver.
+func TestEnsureGeneratedMergeDriver_CopiesOfThePinDoNotFightOverTheDriver(t *testing.T) {
+	repo := pinTestRepo(t)
+	setPinCheck(t, false)
+	prevExe, prevID := mergeDriverExecutable, mergeDriverIdentity
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverIdentity = prevExe, prevID })
+	mergeDriverIdentity = func() string { return "7410e351b23b" }
+	realTemp := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	first := filepath.Join(realTemp(), "worktree-a", "forge")
+	second := filepath.Join(realTemp(), "worktree-b", "forge")
+	for _, exe := range []string{first, second} {
+		writeTreeFileT(t, exe, "#!/bin/sh\n")
+	}
+	// Binaries under the temp directory are ephemeral and never become the
+	// driver; move the temp directory away from these two.
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "tmp"))
+
+	mergeDriverExecutable = func() (string, error) { return first, nil }
+	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	want := gitConfig(t, repo, "merge.forge-generated.driver")
+	if !strings.HasPrefix(want, "'"+first+"'") {
+		t.Fatalf("driver = %q, want the first copy", want)
+	}
+	configBefore, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mergeDriverExecutable = func() (string, error) { return second, nil }
+	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	configAfter, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(configAfter) != string(configBefore) {
+		t.Errorf("a second copy of the pin rewrote .git/config:\n--- before\n%s\n--- after\n%s", configBefore, configAfter)
+	}
+
+	if err := os.Remove(first); err != nil {
+		t.Fatal(err)
+	}
+	ensureGeneratedMergeDriver(filepath.Join(repo, "svc"))
+	got := gitConfig(t, repo, "merge.forge-generated.driver")
+	if !strings.HasPrefix(got, "'"+second+"'") {
+		t.Errorf("driver = %q after the registered copy was deleted, want the second copy", got)
+	}
+	if reg := gitConfig(t, repo, pinnedDriverSection+".7410e351b23b.command"); reg != got {
+		t.Errorf("registered = %q, want %q", reg, got)
+	}
+}

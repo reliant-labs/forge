@@ -53,7 +53,7 @@ Subcommands:
                                 client keep generating for callers while the
                                 handler is no longer served.`,
 	}
-	cmd.AddCommand(newDeleteServiceCmd())
+	cmd.AddCommand(cmdutil.ConfiguresClone(newDeleteServiceCmd()))
 	return cmdutil.StrictGroup(cmd)
 }
 

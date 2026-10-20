@@ -52,6 +52,7 @@ import (
 
 	"golang.org/x/tools/go/ast/astutil"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
@@ -501,7 +502,7 @@ func applyLogFixes(f *goFile, sites []logSite) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := os.WriteFile(f.abs, formatted, info.Mode().Perm()); err != nil {
+	if err := atomicfile.WriteFile(f.abs, formatted, info.Mode().Perm()); err != nil {
 		return 0, fmt.Errorf("tracing lint: rewrite %s: %w", f.rel, err)
 	}
 	return len(sites), nil

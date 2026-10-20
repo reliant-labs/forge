@@ -774,6 +774,28 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **A `NOT NULL` column's `DEFAULT` applies when the field is unset — and an
+  explicit zero is still stored.** The generated store wrote the Go zero for
+  every defaulted column a caller left unset, so the DEFAULT never fired:
+  `threads.status INTEGER NOT NULL DEFAULT 2` was stored as 0 by
+  `CreateThread`, and `jsonb NOT NULL DEFAULT '{}'` failed the insert with
+  `""` (reliant P5b). Bun's `default:` tag was never the answer — it reads
+  every zero as unset and would turn an explicit `false` into a
+  `DEFAULT true`. The entity type now carries the distinction
+  (`codegen.ColumnInsertDefault`): a scalar whose DEFAULT is not its Go zero
+  is a **pointer** field (`nil` = unset), and a column whose zero it can never
+  hold keeps its type with `,nullzero` (a json document; an array with a
+  non-empty DEFAULT; a scalar a CHECK keeps from its zero, which is every born
+  enum column). `pkg/crud` gives unset one meaning on every write: `Create`
+  omits the column, a full-replace `Update` and `Upsert`'s conflict branch
+  keep the stored value; a `,nullzero` slice is no longer normalized to `{}`.
+  The CRUD create op stops pasting the DEFAULT's literal into Go
+  (`schemaDefaultAssigns` is gone): it leaves the field unset and the
+  database applies its own DEFAULT, whatever expression it is. **Upgrading:**
+  regenerate; a NOT NULL column whose DEFAULT is a non-zero scalar becomes a
+  pointer field, so hand-written code that reads or writes it changes from
+  `row.Status` / `row.Status = 2` to `*row.Status` / `row.Status = ptr(2)`;
+  born enum (TEXT + CHECK) and json columns keep their types.
 - **`database.orm.package` places the generated data layer.** The ORM always
   projected into `internal/db` (`package db`) and refused any name the
   project already declared there — so a project with its own data layer in

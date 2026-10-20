@@ -52,6 +52,9 @@ const (
 	KindLine            = dashspec.KindLine
 	KindTable           = dashspec.KindTable
 	KindSearch          = dashspec.KindSearch
+	KindBar             = dashspec.KindBar
+	KindHeatmap         = dashspec.KindHeatmap
+	KindSQL             = dashspec.KindSQL
 	KindIssues          = dashspec.KindIssues
 	KindSessions        = dashspec.KindSessions
 	KindFunnel          = dashspec.KindFunnel

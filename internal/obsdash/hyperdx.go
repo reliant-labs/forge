@@ -199,9 +199,7 @@ func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 			return hd, fmt.Errorf("duplicate panel id %q", p.ID)
 		}
 		seen[p.ID] = true
-		// HyperDX cannot draw the console's own kinds; its UI already plays
-		// replay and searches spans.
-		if IsConsoleKind(p.Kind) {
+		if !hyperDXDraws(p) {
 			continue
 		}
 		w, h := p.Width, p.Height
@@ -228,6 +226,22 @@ func renderDashboard(d Dashboard) (HyperDXDashboard, error) {
 }
 
 const gridColumns = dashspec.GridColumns
+
+// hyperDXDraws reports whether HyperDX can draw p. It cannot draw the
+// console's own kinds (its UI already plays replay and searches spans), and it
+// has no equivalent of a top-N bar over groups, a value-bucketed heatmap of a
+// field, a raw SQL panel or arbitrary arithmetic across series: those panels
+// are the console's, and a HyperDX dashboard leaves them out rather than draw
+// something that means something else.
+func hyperDXDraws(p Panel) bool {
+	switch {
+	case IsConsoleKind(p.Kind), p.Formula != "":
+		return false
+	case p.Kind == KindBar, p.Kind == KindHeatmap, p.Kind == KindSQL:
+		return false
+	}
+	return true
+}
 
 func renderChart(p Panel) (HyperDXChart, error) {
 	where, err := predicatesSQL(p.Signal, p.Where)

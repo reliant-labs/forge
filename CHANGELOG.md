@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
+  `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
+  per `groupBy` value, the `limit` largest by the first series, default 10);
+  `heatmap` buckets one numeric field's values over time (one `count` series
+  naming the field); `sql` carries one read-only SELECT in `sql`, checked by
+  the new `CheckSQL`, which is the alert-rule guard (`alerting.ValidateExpr`),
+  and may bind the dashboard's scope through the `SQLParam*` ClickHouse
+  parameters (`{from:DateTime64(9)}`, `{to:…}`, `{step:UInt32}`,
+  `{env_ids|envs|services:Array(String)}`). `formula` makes a line or number
+  panel plot `A / B * 100` over its series (by position, A to J), parsed and
+  evaluated by `ParseFormula` / `Formula.Eval` so every reader computes the
+  same value (`x / 0` is 0, as in `ratio`). `limit` (1 to 200) keeps the top
+  rows of a table or bar. The validator locates every misuse, and a `sql`
+  panel's `signal` is optional (`Panel.Signal` is now `omitempty`; every other
+  kind still requires it, so existing output is unchanged). HyperDX has no
+  equivalent for any of them, so `RenderHyperDX` leaves those panels out, as
+  it does the console kinds. `CheckField` now also requires an attribute
+  field's key to be 1 to 128 characters (`span.attr.` alone was accepted),
+  the rule the Reliant control plane's copy enforced.
 - **`forge/pkg/serverkit/drainbudget`: the one reader of `PRE_STOP_DELAY`
   and `SHUTDOWN_TIMEOUT`.** `Parse` (a Go duration or bare seconds; empty is
   unset), `Effective` (zero is the default, negative is none), the env names

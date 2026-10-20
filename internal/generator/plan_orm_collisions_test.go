@@ -50,7 +50,7 @@ func TestGeneratePlanORM_RefusesANameTheProjectDeclares(t *testing.T) {
 		"internal/db/task_orm_gen.go for entity Task (table tasks)",
 		"NewStore, declared at internal/db/models.go:8",
 		"internal/db/store_gen.go for every entity",
-		"`// forge:custom` above each of its declared CRUD-named rpcs (`forge project shapes --kind rpc --grep Task` lists them)",
+		"`COMMENT ON TABLE tasks IS 'forge:no-entity'`",
 		"rename:` in sqlc.yaml",
 		"//forge:no-orm",
 	} {
@@ -103,11 +103,10 @@ func TestGeneratePlanORM_KeepsAHandWrittenTypesGo(t *testing.T) {
 	}
 }
 
-// The advice names the rpcs the project DECLARES for the entity when the
-// caller supplies them, and never the quintet the entity's name implies: on
-// reliant it listed CreateMessage … ListMessages when the only unmarked one
-// was MessageService.GetMessage, on a service the list did not mention.
-func TestORMCollisionError_NamesDeclaredRPCs(t *testing.T) {
+// The advice names the per-table opt-out. It used to say "put // forge:custom
+// on its CRUD-named rpcs", which no longer keeps a table off the store: the
+// store is projected from every table, whatever its rpcs (F12.1).
+func TestORMCollisionError_NamesTheTableOptOut(t *testing.T) {
 	root := t.TempDir()
 	writeDBFile(t, root, "models.go", "package db\n\ntype Task struct{ ID string }\n")
 	err := GeneratePlanORM(root, "example.com/app", "task", []config.PlanEntity{taskPlanEntity()}, nil)
@@ -118,14 +117,11 @@ func TestORMCollisionError_NamesDeclaredRPCs(t *testing.T) {
 	if got := collision.Entities(); len(got) != 1 || got[0] != "Task" {
 		t.Fatalf("Entities() = %v", got)
 	}
-	collision.EntityRPCs = map[string][]string{"Task": {"TaskService.GetTask (proto/app/v1/task.proto:14)"}}
 	msg := collision.Error()
-	if !strings.Contains(msg, "above each declared rpc that makes it an entity — TaskService.GetTask (proto/app/v1/task.proto:14)") {
-		t.Errorf("the advice does not name the declared rpc:\n%s", msg)
+	if !strings.Contains(msg, "COMMENT ON TABLE tasks IS 'forge:no-entity'") {
+		t.Errorf("the advice does not name the table opt-out:\n%s", msg)
 	}
-	for _, hypothetical := range []string{"CreateTask", "UpdateTask", "DeleteTask", "ListTasks"} {
-		if strings.Contains(msg, hypothetical) {
-			t.Errorf("the advice names %s, which the project does not declare:\n%s", hypothetical, msg)
-		}
+	if strings.Contains(msg, "above each") {
+		t.Errorf("the advice still offers forge:custom as a way off the store:\n%s", msg)
 	}
 }

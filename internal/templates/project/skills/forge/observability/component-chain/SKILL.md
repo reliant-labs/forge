@@ -10,8 +10,9 @@ Forge instruments three boundaries, so a request is observable end to end:
 1. **The RPC edge** — every Connect handler runs the interceptor chain built by
    `serverkit.NewChain(serverkit.ChainDeps{…})` in `cmd/<bin>/cmd/serve.go`
    (otelconnect → recovery → request-id → logging → tracing → metrics, then
-   auth → audit → rate-limit → stream-drain → protovalidate). One span, one
-   metric sample and one log record per RPC:
+   deadline → auth → audit → rate-limit → activity → stream-drain →
+   protovalidate). One
+   span, one metric sample and one log record per RPC:
    `rpc failed` for every failure, `rpc completed` for every success, and
    `slow=true` on any success over 1s. Success logging can be SAMPLED — see
    [Success-log sampling](#success-log-sampling) below. Tune the layer
@@ -19,6 +20,13 @@ Forge instruments three boundaries, so a request is observable end to end:
    `observe.WithSuccessLevel(<svc>connect.<Svc><Method>Procedure, slog.LevelDebug)`
    silences one poll, `observe.WithSuccessSampling(d)` fixes this layer's
    sampling window, `observe.WithSlowThreshold(d)` moves the slow line.
+   Those lines are written when an RPC COMPLETES; the chain's Deadline slot
+   (`serverkit.Deadline`) also watches a unary RPC while it runs, logging
+   `rpc still in flight` at WARN after `SlowAfter` (10s) and again every
+   `SlowRepeat` (30s), then `rpc completed slowly` — so a wedged handler shows
+   up in the log tail before its deadline (30s by default; per rpc from
+   `(forge.v1.method).timeout`) ends it. `Deadline.OnSlow` replaces that log,
+   e.g. to count slow calls in a metric too.
 2. **The in-process component boundary** — every internal component→component
    method call (a `contract.go` `Service`) gets one span, one metric sample
    and one log record (every failure, every success unless sampling is on),

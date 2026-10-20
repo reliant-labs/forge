@@ -111,7 +111,9 @@ func RegisterFlags(cmd *cobra.Command) {
 // Load populates a Config from CLI flags > environment variables > config
 // file (--config, or ConfigPathEnv) > proto defaults (see the library for
 // the precedence rationale), recursing into nested config blocks. Malformed
-// values abort startup. Sensitive fields resolve from env / Secret mount only.
+// values abort startup, and so does a value Validate rejects: a loaded Config
+// has passed every declared check. Sensitive fields resolve from env / Secret
+// mount only.
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.RootConfigMessage}}](cmd)
 }
@@ -139,7 +141,8 @@ func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
 // Validate runs the cross-field / closed-set config invariants (TLS keypair
 // both-or-neither, CORS wildcard+credentials rejection, allowed_values
 // string-enum checks). Annotation/TYPE-driven — never keyed on field names.
-// Called by the server entrypoint after Load, before the listener binds.
+// Load already runs it, so a loaded Config has passed; call it on a Config
+// built or edited by hand.
 func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 {{- else if .PrimaryConfigMessage}}
 // RegisterFlags registers every config-bound field of {{.PrimaryConfigMessage}} (own leaves
@@ -158,7 +161,8 @@ func RegisterFlags(cmd *cobra.Command) {
 }
 
 // Load populates a Config ({{.PrimaryConfigMessage}}) from CLI flags > environment
-// variables > proto defaults, recursing into any composed shared block.
+// variables > proto defaults, recursing into any composed shared block, then
+// validates it.
 func Load(cmd *cobra.Command) (*Config, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.PrimaryConfigMessage}}](cmd)
 }
@@ -181,7 +185,8 @@ func Defaults() *Config {
 func ModeOf(cfg *Config) Mode { return forgeconfig.Mode(cfg) }
 
 // Validate runs the cross-field / closed-set config invariants against the
-// primary binary's own config. See Validate for the root-AppConfig form.
+// primary binary's own config. Load already runs it; call it on a Config
+// built or edited by hand.
 func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 {{- end}}
 {{- if .BinaryConfigs}}
@@ -214,8 +219,14 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 //     and a sibling subcommand rejects it. Load<Msg> refuses to load from
 //     any other command, which is where a mistyped `command` surfaces.
 //
-// A process running a subcommand loads its binary's root config AND its
-// command config (two Load calls); precedence is unchanged for both
+//   - A SUBTREE config (`subtrees: [{path: ["daemon"]}]`) is the surface of
+//     every command at or below its paths: Register<Msg>Flags puts every leaf
+//     on each path's command as a PERSISTENT flag, so the commands beneath
+//     inherit them. Load<Msg> refuses a command under none of them.
+//
+// A process running a subcommand loads its binary's root config, each
+// subtree config over its path, AND its command config (one Load call each);
+// precedence is unchanged for all of them
 // (flags > env > config file > proto defaults). Every process of a binary
 // reads its config file from --config or that binary's own <BINARY>_CONFIG
 // variable — never another binary's. It is ONE file per process, flat across
@@ -246,10 +257,43 @@ func Register{{.MessageName}}Flags(cmd *cobra.Command) {
 
 // Load{{.MessageName}} populates the `{{.Process}}` process's config from CLI
 // flags > environment variables > config file > proto defaults, including
-// the block(s) it composes. It refuses a cmd that is not the
+// the block(s) it composes, then validates it. It refuses a cmd that is not the
 // "{{.CommandLine}}" subcommand: its flags are registered there alone.
 func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 	if err := forgeconfig.CheckCommandPath(cmd, "{{.MessageName}}", {{.CommandGoArgs}}); err != nil {
+		return nil, err
+	}
+	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
+}
+{{- else if .Subtrees}}
+
+// {{.MessageName}} is the configuration of every {{.Binary}} process running a
+// command at or below {{range $i, $l := .SubtreeLines}}{{if $i}}, {{end}}"{{$l}}"{{end}}. That process also loads its
+// binary's root config, when it declares one, and its own command config.
+type {{.MessageName}} = configv1.{{.MessageName}}
+
+// Register{{.MessageName}}Flags registers every leaf {{.MessageName}}
+// resolves — its own and those of the blocks it composes — as PERSISTENT
+// flags on cmd: call it on the command of EACH subtree ({{range $i, $l := .SubtreeLines}}{{if $i}}, {{end}}"{{$l}}"{{end}}), so
+// every command beneath inherits them. Sensitive fields are skipped (env /
+// Secret only).
+{{- if .BinaryHasRootConfig}} The --config file flag is the {{.Binary}}
+// binary's root config's to register, persistent on the root.
+{{- else}} Also registers the --config file flag (or
+// {{.PathEnv}}): the {{.Binary}} binary binds no root config to carry it.
+{{- end}}
+func Register{{.MessageName}}Flags(cmd *cobra.Command) {
+	if err := forgeconfig.{{if .BinaryHasRootConfig}}RegisterInheritedFlags{{else}}RegisterPersistentFlags{{end}}(cmd, &configv1.{{.MessageName}}{}); err != nil {
+		panic("config: Register{{.MessageName}}Flags: " + err.Error())
+	}
+}
+
+// Load{{.MessageName}} populates the config from CLI flags > environment
+// variables > config file > proto defaults, including the block(s) it
+// composes, then validates it. It refuses a cmd under none of its subtrees:
+// its flags are registered there alone.
+func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
+	if err := forgeconfig.CheckCommandSubtree(cmd, "{{.MessageName}}", {{.SubtreesGoArgs}}); err != nil {
 		return nil, err
 	}
 	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
@@ -273,7 +317,8 @@ func Register{{.MessageName}}Flags(cmd *cobra.Command) {
 
 // Load{{.MessageName}} populates the {{.Binary}} binary's config from CLI
 // flags > environment variables > config file > proto defaults, including the
-// block(s) it composes. Call it from any {{.Binary}} command.
+// block(s) it composes, then validates it. Call it from any {{.Binary}}
+// command.
 func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
 }
@@ -284,8 +329,10 @@ func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 // shared block it composes).
 func ModeOf{{.MessageName}}(cfg *{{.MessageName}}) Mode { return forgeconfig.Mode(cfg) }
 
-// Validate{{.MessageName}} runs the same cross-field / closed-set invariants
-// Validate runs, against the `{{.Process}}` process's own config.
+// Validate{{.MessageName}} runs the cross-field / closed-set invariants
+// (allowed_values, the TLS pair, CORS) against the `{{.Process}}` process's
+// config. Load{{.MessageName}} already runs them; call it on a config built
+// or edited by hand.
 func Validate{{.MessageName}}(cfg *{{.MessageName}}) error { return forgeconfig.Validate(cfg) }
 {{- end}}
 {{- end}}

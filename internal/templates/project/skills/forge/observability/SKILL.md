@@ -167,6 +167,7 @@ Apps never learn the collector's backend. The platform renders the standard Open
 | `OTEL_SDK_DISABLED=true` | every export off |
 | `OTEL_LOGS_EXPORTER=otlp` | the explicit switch for OTLP logs (off by default) |
 | `OTEL_PROFILES_EXPORTER=none` | turns continuous profiling off (the runtime profiles whenever an endpoint is set); the declaration renders it wherever profiles are off (`observability/profiles`); typed equivalent `observe.Config.ProfilesDisabled` |
+| `FORGE_PROFILES` / `FORGE_PROFILES_HEAP_INTERVAL` | which profiles are captured (`cpu,heap` by default; `alloc`, `goroutine`, `mutex`, `block` are opt-in; `none` for nothing) and the heap cadence (`15m` by default). A workload's `profiling` block renders them; typed equivalent `observe.Config.Profiles`, which they win over (`observability/profiles`) |
 | `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` | where profiles go: a FULL URL used as given (`http://127.0.0.1:4328/v1development/profiles`). Unset, profiles follow the base endpoint and gain `/v1development/profiles`. Headers, protocol, timeout and compression follow the per-signal `OTEL_EXPORTER_OTLP_PROFILES_*` variables |
 
 `Config.OTLPEndpoint` (the typed `otlp_endpoint` config field) overrides the endpoint variables; protocol and headers always come from the environment. With no endpoint nothing is exported, but `/metrics` still works and the W3C TraceContext+Baggage propagator is **always** installed, so `traceparent` is honoured and forwarded regardless. With export on, Go runtime metrics are recorded too.
@@ -188,7 +189,7 @@ The server writes JSON lines to stdout; a record logged with a context holding a
 
 ## Continuous profiles
 
-Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 10s CPU profile plus heap and goroutine snapshots about once a minute, **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge observe profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
+Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 10s CPU profile about once a minute and a live-heap snapshot every 15 minutes (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge observe profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
 
 ## Resource identity
 

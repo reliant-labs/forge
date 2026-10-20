@@ -80,7 +80,9 @@
 //   - NewChain(ChainDeps{Auth, …}) is the ordered interceptor stack and the
 //     payload caps. Every slot is defaulted except Auth, which is required;
 //     an Omit constant (NoAudit, NoTrace, …) drops a default. Auth is an
-//     Authenticator: an interceptor plus the audience it admits.
+//     Authenticator: an interceptor plus the audience it admits. The
+//     Deadline slot (a Deadline: per-RPC budgets and a slow-call watchdog)
+//     runs right before Auth, so the RPC's deadline bounds authentication.
 //   - NewListener(ListenerDeps{Config, Chain, Routes, …}) is one address with
 //     its own TLS, timeouts, HTTP/2 stream cap and Streams registry. It
 //     mounts its Routes with its Chain and refuses to start when a mounted

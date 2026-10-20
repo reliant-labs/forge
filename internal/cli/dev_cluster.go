@@ -376,19 +376,23 @@ func runK3dClusterCreateCommand(ctx context.Context, args []string) error {
 	return cmd.Run()
 }
 
-// mergeK3dKubeconfig repairs the finalization step skipped when Forge cancels
-// a wedged create client after the cluster is already running. It is also safe
-// after a normal create: merge is an idempotent update and deliberately does
-// not switch the caller's active context.
+// mergeK3dKubeconfig writes the cluster's k3d-<name> context into the default
+// kubeconfig, under withKubeconfigLock. It is THE merge after every create —
+// createK3dCluster tells `k3d cluster create` not to write the kubeconfig,
+// because that write is unlocked — and it also repairs a wedged create client
+// cancelled after the cluster was already running. Merge is an idempotent
+// update and deliberately does not switch the caller's active context.
 func mergeK3dKubeconfig(ctx context.Context, name string) error {
-	cmd := exec.CommandContext(ctx, "k3d", "kubeconfig", "merge", name,
-		"--kubeconfig-merge-default", "--kubeconfig-switch-context=false")
-	cmd.Stdout = nil
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("merge kubeconfig for k3d cluster %q: %w", name, err)
-	}
-	return nil
+	return withKubeconfigLock(func() error {
+		cmd := exec.CommandContext(ctx, "k3d", "kubeconfig", "merge", name,
+			"--kubeconfig-merge-default", "--kubeconfig-switch-context=false")
+		cmd.Stdout = nil
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("merge kubeconfig for k3d cluster %q: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // cleanupK3dStartTools removes the disposable helper k3d leaves behind when
@@ -525,6 +529,9 @@ func createK3dCluster(ctx context.Context, name string, args []string) error {
 	if storageErr != nil {
 		return storageErr
 	}
+	// The context is merged below, under the kubeconfig lock; see
+	// kubeconfig_lock.go for the lost-update this prevents.
+	args = withoutKubeconfigWrites(args)
 	if err := runK3dClusterLifecycle(ctx, name, "create",
 		func(commandCtx context.Context) error {
 			return runK3dClusterCreateCommandFn(commandCtx, args)
@@ -543,13 +550,15 @@ func createK3dCluster(ctx context.Context, name string, args []string) error {
 // rest of `forge cluster` from leaking commands into a non-dev context.
 func pinKubectlContext(ctx context.Context, clusterName string) error {
 	target := "k3d-" + clusterName
-	cmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", target)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("kubectl config use-context %s: %w", target, err)
-	}
-	return nil
+	return withKubeconfigLock(func() error {
+		cmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", target)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("kubectl config use-context %s: %w", target, err)
+		}
+		return nil
+	})
 }
 
 // currentKubectlContext returns the current kubectl context name, or ""
@@ -799,13 +808,18 @@ var renderEnvClustersFn = func(ctx context.Context, env string) ([]ClusterEntity
 var (
 	reconcileEnvClustersFn = reconcileDeclaredClusters
 	deleteK3dClusterFn     = func(ctx context.Context, name string) error {
-		del := exec.CommandContext(ctx, "k3d", "cluster", "delete", name)
-		del.Stdout = os.Stdout
-		del.Stderr = os.Stderr
-		if err := del.Run(); err != nil {
-			return fmt.Errorf("k3d cluster delete %s: %w", name, err)
-		}
-		return nil
+		// `k3d cluster delete` removes the context from the default
+		// kubeconfig — a whole-file rewrite like any other, so it takes the
+		// kubeconfig lock (kubeconfig_lock.go).
+		return withKubeconfigLock(func() error {
+			del := exec.CommandContext(ctx, "k3d", "cluster", "delete", name)
+			del.Stdout = os.Stdout
+			del.Stderr = os.Stderr
+			if err := del.Run(); err != nil {
+				return fmt.Errorf("k3d cluster delete %s: %w", name, err)
+			}
+			return nil
+		})
 	}
 )
 

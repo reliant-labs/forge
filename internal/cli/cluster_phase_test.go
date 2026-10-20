@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -510,6 +511,11 @@ func TestCreateK3dCluster_CancelsHungClientAfterClusterIsRunning(t *testing.T) {
 	runK3dClusterCreateCommandFn = func(ctx context.Context, args []string) error {
 		if len(args) < 3 || args[0] != "cluster" || args[1] != "create" {
 			t.Fatalf("create args = %v", args)
+		}
+		// The context is merged under the kubeconfig lock afterwards; the
+		// create itself must not write the kubeconfig (kubeconfig_lock.go).
+		if !slices.Contains(args, "--kubeconfig-update-default=false") || !slices.Contains(args, "--kubeconfig-switch-context=false") {
+			t.Errorf("create writes the kubeconfig unlocked: args = %v", args)
 		}
 		<-ctx.Done()
 		return ctx.Err()

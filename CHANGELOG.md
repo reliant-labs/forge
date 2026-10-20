@@ -592,8 +592,9 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   zero of 55 tables). The store now follows the schema: every BASE TABLE with a
   single-column primary key is projected, a table no rpc names under the
   singular of its name (`message_content_blocks` → `MessageContentBlock`).
-  CRUD wiring, pages and seed roots still key on CRUD rpcs. `COMMENT ON TABLE t
-  IS 'forge:no-entity'` keeps one table off the store (and off CRUD wiring);
+  CRUD wiring, pages and seed roots still key on CRUD rpcs.
+  `COMMENT ON TABLE t IS 'forge:no-entity'` keeps one table off the store (and
+  off CRUD wiring);
   `//forge:no-orm` still opts out the whole data layer. The ORM step no longer
   needs a service, only an entrypoint, and a name collision's advice now names
   the table opt-out (`// forge:custom` no longer takes a table off the store).

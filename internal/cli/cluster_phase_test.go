@@ -926,3 +926,98 @@ func TestReconcileClusterPortDrift_UnverifiedEditIsAnError(t *testing.T) {
 		t.Fatalf("want a still-unmapped error, got %v", err)
 	}
 }
+
+// createSeams stubs every side effect of createK3dCluster and records them.
+type createSeams struct {
+	runs    [][]string
+	deletes []string
+	merges  int
+}
+
+func stubCreateSeams(t *testing.T, exists bool, runErrs []error, crashes []string) *createSeams {
+	t.Helper()
+	origRun, origLookup, origCleanup := runK3dClusterCreateCommandFn, lookupK3dStateAfterCreateFn, cleanupK3dCreateToolsFn
+	origMerge, origCrash, origDelete, origStorage := mergeK3dKubeconfigFn, k3dServerBootCrashFn, deleteK3dClusterFn, addClusterStorageArgsFn
+	t.Cleanup(func() {
+		runK3dClusterCreateCommandFn, lookupK3dStateAfterCreateFn, cleanupK3dCreateToolsFn = origRun, origLookup, origCleanup
+		mergeK3dKubeconfigFn, k3dServerBootCrashFn, deleteK3dClusterFn, addClusterStorageArgsFn = origMerge, origCrash, origDelete, origStorage
+	})
+	s := &createSeams{}
+	addClusterStorageArgsFn = func(args []string) ([]string, error) { return args, nil }
+	runK3dClusterCreateCommandFn = func(_ context.Context, args []string) error {
+		s.runs = append(s.runs, args)
+		if i := len(s.runs) - 1; i < len(runErrs) {
+			return runErrs[i]
+		}
+		return nil
+	}
+	lookupK3dStateAfterCreateFn = func(context.Context, string) (k3dClusterRuntimeState, error) {
+		return k3dClusterRuntimeState{Exists: exists}, nil
+	}
+	cleanupK3dCreateToolsFn = func(context.Context, string) error { return nil }
+	mergeK3dKubeconfigFn = func(context.Context, string) error { s.merges++; return nil }
+	k3dServerBootCrashFn = func(context.Context, string) string {
+		if i := len(s.runs) - 1; i < len(crashes) {
+			return crashes[i]
+		}
+		return ""
+	}
+	deleteK3dClusterFn = func(_ context.Context, name string) error { s.deletes = append(s.deletes, name); return nil }
+	return s
+}
+
+var errK3dReady = errors.New("k3d: node k3d-x-server-0 failed to get ready: stopped returning log lines: node is running=true in status=restarting")
+
+// A server that crashed while booting is a k3s/k3d startup failure forge
+// cannot prevent and the next create does not repeat: the half-made cluster
+// is deleted and created once more.
+func TestCreateK3dCluster_RecreatesOnceAfterAK3sBootCrash(t *testing.T) {
+	s := stubCreateSeams(t, false, []error{errK3dReady}, []string{"k3d-x-server-0: restarts=1 running exit=1"})
+	if err := createK3dCluster(t.Context(), "x", []string{"cluster", "create", "x"}); err != nil {
+		t.Fatalf("createK3dCluster: %v", err)
+	}
+	if len(s.runs) != 2 || len(s.deletes) != 1 || s.merges != 1 {
+		t.Fatalf("runs=%d deletes=%v merges=%d, want 2 creates, the failed one deleted, one merge", len(s.runs), s.deletes, s.merges)
+	}
+	if !slices.Contains(s.runs[0], "--no-rollback") {
+		t.Errorf("the create must keep a failed server for its logs: args=%v", s.runs[0])
+	}
+}
+
+// Any other failure is not retried: forge rolls back what it made (k3d's own
+// rollback is off) and returns the error.
+func TestCreateK3dCluster_OtherFailureRollsBackOnceAndReturns(t *testing.T) {
+	boom := errors.New("k3d: port 6443 is already allocated")
+	s := stubCreateSeams(t, false, []error{boom}, nil)
+	if err := createK3dCluster(t.Context(), "x", []string{"cluster", "create", "x"}); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the create's own error", err)
+	}
+	if len(s.runs) != 1 || len(s.deletes) != 1 || s.merges != 0 {
+		t.Fatalf("runs=%d deletes=%v merges=%d, want one create, rolled back, nothing merged", len(s.runs), s.deletes, s.merges)
+	}
+}
+
+// A crash on the retry too is not an infrastructure blip: fail, with both
+// servers' reasons.
+func TestCreateK3dCluster_SecondBootCrashFailsWithBothReasons(t *testing.T) {
+	s := stubCreateSeams(t, false, []error{errK3dReady, errK3dReady}, []string{"first: exit=1", "second: exit=2"})
+	err := createK3dCluster(t.Context(), "x", []string{"cluster", "create", "x"})
+	if err == nil || !strings.Contains(err.Error(), "first: exit=1") || !strings.Contains(err.Error(), "second: exit=2") {
+		t.Fatalf("err = %v, want both attempts' reasons", err)
+	}
+	if len(s.runs) != 2 || len(s.deletes) != 2 {
+		t.Fatalf("runs=%d deletes=%v, want exactly one retry, both rolled back", len(s.runs), s.deletes)
+	}
+}
+
+// A name that is already taken is someone's cluster: k3d refuses the create,
+// and forge must neither keep the nodes for itself nor delete anything.
+func TestCreateK3dCluster_NeverRollsBackAClusterThatExisted(t *testing.T) {
+	s := stubCreateSeams(t, true, []error{errors.New("cluster x already exists")}, []string{"k3d-x-server-0: restarts=3"})
+	if err := createK3dCluster(t.Context(), "x", []string{"cluster", "create", "x"}); err == nil {
+		t.Fatal("want the create's error")
+	}
+	if len(s.deletes) != 0 || slices.Contains(s.runs[0], "--no-rollback") {
+		t.Fatalf("deletes=%v args=%v: an existing cluster was put at risk", s.deletes, s.runs[0])
+	}
+}

@@ -474,11 +474,18 @@ func e2eClusterName(t *testing.T) string {
 
 func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort, listenerPort int, kubeconfig string) {
 	t.Helper()
-	// Registered BEFORE the create, so a create that fails (and, with
-	// --no-rollback, leaves its nodes behind) is still deleted by name.
+	// Registered BEFORE the create, so a create that fails partway is still
+	// deleted by name.
 	t.Cleanup(func() { deleteK3dClusterF2(t, name) })
 
-	createArgs := []string{"cluster", "create", name,
+	// Through forge's own create (createK3dCluster), not a bare `k3d cluster
+	// create`: it is what users get, and it rides out the one k3d failure
+	// this test ever had — a k3s server that crashed two seconds into boot,
+	// which k3d's readiness wait reports as "stopped returning log lines:
+	// … status=restarting" instead of waiting for Docker's restart. forge
+	// deletes that half-made cluster and creates it once more, printing the
+	// server's exit and last log lines.
+	if err := createK3dCluster(ctx, name, []string{"cluster", "create", name,
 		"--servers", "1", "--agents", "0",
 		"--port", fmt.Sprintf("%d:%d@loadbalancer", hostPort, listenerPort),
 		// k3s bundles Traefik, whose svclb claims the loadbalancer's port 80
@@ -486,25 +493,14 @@ func createK3dClusterF2(t *testing.T, ctx context.Context, name string, hostPort
 		// request. The test's gateway is Envoy, so Traefik must not exist.
 		"--k3s-arg", "--disable=traefik@server:0",
 		"--wait", "--timeout", "300s",
-		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
-		// Keep a failed server for its logs: k3d's rollback deletes the
-		// node, and with it the only record of why k3s exited (CI saw a
-		// server go to status=restarting two seconds into boot, with
-		// nothing left to read). deleteK3dClusterF2 removes it either way.
-		"--no-rollback",
-	}
-	if out, err := runE2ESoft(ctx, "", nil, "k3d", createArgs...); err != nil {
-		server := "k3d-" + name + "-server-0"
-		logs, _ := runE2ESoft(context.Background(), "", nil, "docker", "logs", "--tail", "80", server)
-		inspect, _ := runE2ESoft(context.Background(), "", nil, "docker", "inspect", "--format",
-			"status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} err={{.State.Error}}", server)
-		t.Fatalf("k3d %s: %v\n%s\n--- %s: %s--- last k3s log lines:\n%s",
-			strings.Join(createArgs, " "), err, out, server, inspect, logs)
+	}); err != nil {
+		t.Fatalf("create k3d cluster %s: %v", name, err)
 	}
 
-	// A private kubeconfig: this test must never mutate the developer's
-	// current context (k3d switches it by default, which is why both
-	// flags above are off).
+	// A private kubeconfig for this test's own kubectl calls. createK3dCluster
+	// merges the cluster's context into the default kubeconfig without
+	// switching the current one (and the delete removes it); the test never
+	// relies on that entry.
 	//
 	// `k3d kubeconfig write` rather than `get`: k3d writes its own
 	// progress logging to the same stream as the document, ANSI colour

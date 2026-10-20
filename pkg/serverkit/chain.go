@@ -3,8 +3,9 @@ package serverkit
 // chain.go — the interceptor chain as a component.
 //
 // Every request a Connect handler answers passes through the same ordered
-// stack: a trace span, panic recovery, a request id, logging, metrics,
-// authentication, audit, rate limiting, the stream drain and protovalidate.
+// stack: a trace span, panic recovery, a request id, logging, metrics, the
+// RPC's deadline and slow-call watchdog, authentication, audit, rate limiting,
+// the stream drain and protovalidate.
 // The order is a decision, and it used to be re-derived inline in every
 // project's serve.go. NewChain is that stack as a library: every slot has a
 // working default except Auth, which a caller must name, so a chain that
@@ -74,6 +75,10 @@ type Omit string
 const (
 	// NoTrace opens no server span for the chain's RPCs.
 	NoTrace Omit = "trace"
+	// NoDeadline gives the chain's RPCs no server deadline and no slow-call
+	// watchdog: a wedged handler then holds its request until the client
+	// gives up, and nothing reports it while it does.
+	NoDeadline Omit = "deadline"
 	// NoAudit writes no audit event for the chain's RPCs.
 	NoAudit Omit = "audit"
 	// NoStreamDrain leaves server and bidi streams unbound to the listener's
@@ -121,6 +126,19 @@ type ChainDeps struct {
 	// must not choose its trace ids passes its own otelconnect interceptor
 	// without that option. NoTrace drops it.
 	Trace connect.Interceptor
+
+	// Deadline bounds every RPC's time and reports one still running past
+	// its watchdog threshold. It runs after observability, so a
+	// DeadlineExceeded is logged and counted with its full duration, and
+	// BEFORE Auth, so authenticating — a token store query, an
+	// introspection call — runs inside the RPC's budget. nil is
+	// serverkit.Deadline{}: unary RPCs bounded by DefaultUnaryDeadline,
+	// streams unbounded, a unary RPC still running after DefaultSlowAfter
+	// logged at WARN through Logger. Configure it in place
+	// (serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}); any
+	// other interceptor here replaces it and runs in the same position.
+	// NoDeadline drops it.
+	Deadline connect.Interceptor
 
 	// Audit records who called what, after Auth. nil is
 	// middleware.AuditInterceptor over the claims Auth stashed. NoAudit
@@ -170,8 +188,8 @@ type Chain struct {
 }
 
 // NewChain builds the chain, outermost first: trace → recovery → request-id →
-// logging → tracing → metrics → auth → audit → rate-limit → extras →
-// stream-drain → protovalidate. Every slot but Auth is defaulted; see
+// logging → tracing → metrics → deadline → auth → audit → rate-limit → extras
+// → stream-drain → protovalidate. Every slot but Auth is defaulted; see
 // ChainDeps for each default and how to drop it. It fails when Auth is
 // missing or names no audience, when an Omit is given for the wrong slot, and
 // when a default cannot be built — a chain missing a layer it was meant to
@@ -191,6 +209,13 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
+	deadline, err := chainSlot(deps.Deadline, NoDeadline, func() (connect.Interceptor, error) {
+		return Deadline{}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	deadline = deadlineWithLogger(deadline, logger)
 	audit, err := chainSlot(deps.Audit, NoAudit, func() (connect.Interceptor, error) {
 		return middleware.AuditInterceptor(logger, authn.ClaimsFromContext), nil
 	})
@@ -219,6 +244,7 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	interceptors := observe.Chain(observe.Deps{
 		Logger:     logger,
 		Trace:      trace,
+		Deadline:   deadline,
 		Auth:       deps.Auth,
 		Audit:      audit,
 		RateLimit:  deps.RateLimit,
@@ -254,6 +280,7 @@ func validateChainDeps(deps ChainDeps) error {
 		omit  Omit
 	}{
 		{"Trace", deps.Trace, NoTrace},
+		{"Deadline", deps.Deadline, NoDeadline},
 		{"Audit", deps.Audit, NoAudit},
 		{"StreamDrain", deps.StreamDrain, NoStreamDrain},
 		{"Validate", deps.Validate, NoValidate},
@@ -261,6 +288,18 @@ func validateChainDeps(deps ChainDeps) error {
 	} {
 		if o, ok := s.value.(Omit); ok && o != s.omit {
 			errs = append(errs, fmt.Errorf("ChainDeps.%s is serverkit.Omit(%q), which drops another slot", s.field, string(o)))
+		}
+	}
+	switch d := deps.Deadline.(type) {
+	case Deadline:
+		if err := d.validate(); err != nil {
+			errs = append(errs, err)
+		}
+	case *Deadline:
+		if d == nil {
+			errs = append(errs, errors.New("ChainDeps.Deadline is a nil *serverkit.Deadline: leave the field nil for the default"))
+		} else if err := d.validate(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	for i, x := range deps.Extras {
@@ -296,6 +335,8 @@ func omitName(o Omit) string {
 	switch o {
 	case NoTrace:
 		return "NoTrace"
+	case NoDeadline:
+		return "NoDeadline"
 	case NoAudit:
 		return "NoAudit"
 	case NoStreamDrain:
@@ -304,6 +345,25 @@ func omitName(o Omit) string {
 		return "NoValidate"
 	}
 	return string(o)
+}
+
+// deadlineWithLogger hands a forge Deadline the chain's logger when it names
+// none, so its slow-call log lands where the chain's own logs do.
+func deadlineWithLogger(ic connect.Interceptor, logger *slog.Logger) connect.Interceptor {
+	switch d := ic.(type) {
+	case Deadline:
+		if d.Logger == nil {
+			d.Logger = logger
+		}
+		return d
+	case *Deadline:
+		if d.Logger == nil {
+			c := *d
+			c.Logger = logger
+			return c
+		}
+	}
+	return ic
 }
 
 // payloadCap maps a ChainDeps cap onto connect's, where zero is unlimited.

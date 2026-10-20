@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The interceptor chain has a `Deadline` slot, ahead of `Auth`
+  (`forge/pkg/serverkit`).** `ChainDeps.Deadline` takes a `serverkit.Deadline`
+  — the slot's configuration and its interceptor in one value — and runs right
+  after metrics and right before auth, so the RPC's deadline bounds
+  authentication: a stalled token-store query or introspection call ends as
+  `DeadlineExceeded` instead of holding the request. The default (a nil slot)
+  bounds every unary RPC by `DefaultUnaryDeadline` (30s), leaves streams
+  unbounded, and logs a unary RPC still running after `DefaultSlowAfter` (10s)
+  at WARN, then every `DefaultSlowRepeat` (30s), then once more when it
+  completes. `Deadline.Procedures` overrides the budget per procedure (zero or
+  negative is none; an entry bounds a stream too), `Unary` moves the default,
+  `SlowAfter`/`SlowRepeat` the watchdog, and `OnSlow` replaces its log (to
+  count slow calls as well). The server's budget is a ceiling: a client's
+  shorter deadline still applies, a longer one does not lift it.
+  `serverkit.NoDeadline` drops the slot; any other interceptor in it replaces
+  forge's and runs in the same pre-auth position. `observe.Deps.Deadline` is
+  the same position in `observe.Chain`. NewChain rejects a `Procedures` key
+  that is not a procedure (`/pkg.v1.Service/Method`). Behaviour change: an
+  existing chain gets the 30s unary default on upgrade with no edit — the
+  `migrations/v0.1.47` playbook says how to declare longer budgets.
+- **`(forge.v1.method).timeout` is enforced.** It was documented as the rpc's
+  server-side timeout and read by nothing. `forge generate` now projects it
+  into `pkg/middleware/procedures_gen.go` as `ProcedureDeadlines`, and the
+  scaffolded chain passes `serverkit.Deadline{Procedures:
+  middleware.ProcedureDeadlines}`. An existing project adopts it by adding
+  that one `Deadline:` line to its owned `serve.go` / `providers.go` chain.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);

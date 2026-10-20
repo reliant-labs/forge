@@ -789,7 +789,12 @@ type MethodOptions struct {
 	AuthRequired *bool `protobuf:"varint,1,opt,name=auth_required,json=authRequired,proto3,oneof" json:"auth_required,omitempty"`
 	// Whether this method is idempotent (safe to retry without side effects).
 	Idempotent bool `protobuf:"varint,3,opt,name=idempotent,proto3" json:"idempotent,omitempty"`
-	// Server-side timeout for this method. Zero means use the service default.
+	// Server-side deadline for this method. forge projects it into
+	// pkg/middleware/procedures_gen.go (ProcedureDeadlines), which the
+	// scaffolded chain hands its Deadline slot; that slot runs ahead of
+	// authentication, so the deadline bounds the credential lookup too. Unset
+	// or zero is the slot's default (serverkit.DefaultUnaryDeadline for a unary
+	// rpc, none for a stream); negative is no server deadline.
 	Timeout *durationpb.Duration `protobuf:"bytes,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	// Whether callers should supply an idempotency key for this method.
 	// This is a convention marker — Forge does not enforce or inspect the key.

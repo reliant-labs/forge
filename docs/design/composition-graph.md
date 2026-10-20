@@ -178,7 +178,7 @@ in a struct the project owns. It is not a hook and not a new category.
 
 A chain is a component: `serverkit.NewChain(ChainDeps{Auth, Logger, …})`. It is today's inline chain
 (`cmd-tree-serve.go.tmpl:112-233`) as a library. Every slot is defaulted (trace, recovery, request-id, logging,
-metrics, stream-drain, audit, protovalidate, payload caps) except **`Auth`, which is required**, so a missing
+metrics, deadline, stream-drain, audit, protovalidate, payload caps) except **`Auth`, which is required**, so a missing
 validator still fails at boot. Dropping a default needs an explicit value (`serverkit.NoAudit`). A nil
 default is a `validateDeps` error. The gateway is two components (`DaemonAuth`, `DaemonChain`) and a listener
 whose `Config` carries its own address, TLS, `MaxConcurrentStreams` and `ReadTimeout: 0` (P6). Nothing forks

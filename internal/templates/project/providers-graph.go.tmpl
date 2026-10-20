@@ -173,10 +173,10 @@ func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 
 // UserChain is the interceptor chain the API listener builds every user
 // route with (serverkit.NewChain): trace → recovery → request-id → logging →
-// metrics → auth → audit → rate-limit → stream-drain → protovalidate, plus the
-// payload caps. Every slot has forge's default except Auth; a field you set
-// replaces that slot, and serverkit.NoAudit, NoTrace, NoStreamDrain and
-// NoValidate drop one.
+// metrics → deadline → auth → audit → rate-limit → stream-drain →
+// protovalidate, plus the payload caps. Every slot has forge's default except
+// Auth; a field you set replaces that slot, and serverkit.NoAudit, NoTrace,
+// NoDeadline, NoStreamDrain and NoValidate drop one.
 type UserChain struct{ *serverkit.Chain }
 
 // UserChainDeps is the chain's authenticator and settings.
@@ -192,6 +192,10 @@ func NewUserChain(d UserChainDeps) (*UserChain, error) {
 	chain, err := serverkit.NewChain(serverkit.ChainDeps{
 		Auth:   d.Auth,
 		Logger: d.Logger,
+		// Each rpc's `(forge.v1.method).timeout`; the rest get the slot's
+		// default (30s unary, streams unbounded). It runs ahead of Auth, so
+		// the budget bounds the credential lookup too.
+		Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines},
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
 		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(d.Config.RateLimitRps), Burst: int(d.Config.RateLimitBurst)}, middleware.ClaimsFromContext),
 {{- end}}

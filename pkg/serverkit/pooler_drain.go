@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // pooler_drain.go — a database pool that rides through a pooler's rollout.
@@ -37,10 +40,11 @@ import (
 // the server end had already torn down.
 
 // openPool is sql.Open, except that the pgx driver's connections ride through
-// a draining pooler (see above). Every other driver opens unchanged.
+// a draining pooler (see above), and every statement is an OpenTelemetry span
+// under the caller's span (pkg/observe/dbtrace) — whatever the driver.
 func openPool(driverName, dsn string) (*sql.DB, error) {
 	if driverName != "pgx" && driverName != "pgx/v5" {
-		return sql.Open(driverName, dsn)
+		return dbtrace.Open(driverName, dsn)
 	}
 	pgxDriver, ok := stdlib.GetDefaultDriver().(driver.DriverContext)
 	if !ok {
@@ -50,7 +54,7 @@ func openPool(driverName, dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(poolerDrainConnector{Connector: connector}), nil
+	return dbtrace.OpenDB(poolerDrainConnector{Connector: connector}), nil
 }
 
 // poolerDrainConnector hands database/sql poolerDrainConns.
@@ -85,9 +89,9 @@ func (c poolerDrainConnector) Connect(ctx context.Context) (driver.Conn, error) 
 //
 // The pgx connection is embedded so every optional driver interface it
 // implements (session reset, named-value checking, ...) is promoted unchanged;
-// only the methods that send a statement, and Close, are overridden. Code that
-// reaches the *pgx.Conn through sql.Conn.Raw asserts
-// interface{ Conn() *pgx.Conn } — promoted too — rather than *stdlib.Conn.
+// only the methods that send a statement, and Close, are overridden. The pool
+// wraps it once more for tracing, so code that reaches the *pgx.Conn through
+// sql.Conn.Raw uses PgxConn rather than asserting a concrete type.
 type poolerDrainConn struct {
 	*stdlib.Conn
 }
@@ -123,6 +127,23 @@ func (c poolerDrainConn) Ping(ctx context.Context) error {
 // says so in its own message. That is not a close failure.
 func (c poolerDrainConn) Close() error {
 	return withoutPeerClosedErrors(c.Conn.Close())
+}
+
+// PgxConn returns the *pgx.Conn under a driver connection handed to
+// sql.Conn.Raw's callback, through every wrapper OpenDB puts around it (the
+// tracing driver, the pooler-drain connection).
+func PgxConn(driverConn any) (*pgx.Conn, bool) {
+	for driverConn != nil {
+		if c, ok := driverConn.(interface{ Conn() *pgx.Conn }); ok {
+			return c.Conn(), true
+		}
+		raw, ok := driverConn.(interface{ Raw() driver.Conn })
+		if !ok {
+			return nil, false
+		}
+		driverConn = raw.Raw()
+	}
+	return nil, false
 }
 
 // retryIfPoolerDraining marks a draining pooler's refusal as

@@ -878,11 +878,17 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		// other forge rule — no second implementation of the same
 		// three-state dial to drift out of step.
 		peRes := forgeconv.LintFrontendProcessEnv(".", feDirs, forgeconv.SeverityWarning)
-		peFindings := peRes.Findings
-		if store, err := loadProjectStore(); err == nil && store != nil {
-			peFindings = store.Lint().EffectiveRules().ApplyAll(peFindings)
-		}
-		combined.Findings = append(combined.Findings, peFindings...)
+		combined.Findings = append(combined.Findings, peRes.Findings...)
+	}
+
+	// `lint.rules` re-grades EVERY convention finding, once, here — not rule
+	// by rule at each call site. It used to be applied to the frontend
+	// process-env rule alone, so `lint.rules: {forgeconv-activity-declared:
+	// warn}` (and any other proto or Go-tree rule) was accepted by the config
+	// loader and then silently ignored: the one dial meant for adopting a
+	// newly added rule incrementally did nothing for the rules that need it.
+	if store, err := loadProjectStore(); err == nil && store != nil {
+		combined.Findings = store.Lint().EffectiveRules().ApplyAll(combined.Findings)
 	}
 
 	// If none of proto/, internal/, handlers/, workers/, operators/, or a

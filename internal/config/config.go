@@ -1421,6 +1421,31 @@ type LintConfig struct {
 	// The special key "*" applies to every forge rule; an exact rule ID
 	// beats it.
 	Rules map[string]string `yaml:"rules,omitempty"`
+
+	// Tracing configures the tracing lane (`forge lint --tracing`).
+	Tracing TracingLintConfig `yaml:"tracing,omitempty"`
+}
+
+// TracingLintConfig configures `forge lint --tracing`.
+type TracingLintConfig struct {
+	// LogWrappers names the project's own context-free logging helpers —
+	// a `logging.Info(msg, args...)` that calls slog.Info — so
+	// forge-tracing-log-without-ctx flags and rewrites their calls the way
+	// it does slog's own.
+	LogWrappers []LogWrapperConfig `yaml:"log_wrappers,omitempty"`
+}
+
+// LogWrapperConfig is one context-free logging helper and its context-taking
+// replacement.
+type LogWrapperConfig struct {
+	// Call is the helper, as "<import path>.<Func>":
+	// github.com/acme/app/internal/logging.Info.
+	Call string `yaml:"call"`
+	// ContextCall is what a call is rewritten to, as "<import path>.<Func>",
+	// taking the context first and then the helper's arguments unchanged
+	// (log/slog.InfoContext). Empty means "<Call>Context" in the helper's
+	// own package.
+	ContextCall string `yaml:"context_call,omitempty"`
 }
 
 // ValidateRules reports rule-severity entries forge cannot interpret.

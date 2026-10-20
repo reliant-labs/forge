@@ -82,7 +82,7 @@ store them, give the slot a store:
 ```go
 import "github.com/reliant-labs/forge/pkg/activity"
 
-store := activity.NewStore(infra.DB) // *orm.Client
+store := activity.NewStore(infra.ORM) // *orm.Client: writes join a RunTx
 chain, err := serverkit.NewChain(serverkit.ChainDeps{
     // ...Auth and the rest as scaffolded...
     Activity: activity.Interceptor(activity.Deps{Writer: store}),

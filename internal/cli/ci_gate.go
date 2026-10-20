@@ -55,9 +55,10 @@ func newCIGateCmd() *cobra.Command {
 			"     version that happens to be on PATH.\n" +
 			"  4. Under GitHub Actions the table is appended to $GITHUB_STEP_SUMMARY.\n\n" +
 			"Checks run concurrently. A check waits for the checks it names in `after`; a check that\n" +
-			"rewrites the tree (verify-generated, `mutates_tree`) runs alone, before the checks that\n" +
-			"read it; a heavy check holds one of the machine's heavy slots (`forge slot status`), and\n" +
-			"at most --jobs light checks run at once. Each check's output goes to\n" +
+			"rewrites the tree (an extra with `mutates_tree`) runs alone, before the checks that read\n" +
+			"it (verify-generated regenerates a scratch copy, so it is not one); a heavy check holds\n" +
+			"one of the machine's heavy slots (`forge slot status`), and at most --jobs light checks\n" +
+			"run at once. Each check's output goes to\n" +
 			"tmp/ci/<lane>/<check>.log; the console shows start and finish lines and a failure's tail.\n\n" +
 			"On a committed tree, a check that PASSED on this exact tree before (any worktree of the\n" +
 			"repository, same forge and pinned tools) is not run again: its row reads\n" +

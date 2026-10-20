@@ -126,7 +126,7 @@ func (g *Graph) newBilling() (*billing.Service, error) {
 Every root is a command: `cmd/<bin>/cmd/roots_gen.go` (generated) adds one cobra command per root, named after the root or after its `command=` option — `//forge:root api command=server,api` runs as `<bin> server api`. With no declared root the one command is `server`. Each command hands its root to `runRoot` in the owned `cmd/<bin>/cmd/serve.go` — the one process policy every root runs under (config, logger, boot probes, migrate, telemetry, readiness gate, stop budget). Two facts come from the root's reach, read at generate time: a root that reaches the database migrates first, and a root with no API listener gets a probe-only listener on the server address, so every process answers `/healthz` and `/readyz`.
 
 ```go
-// internal/app/roots.go — yours
+// internal/app, conventionally roots.go — yours
 //forge:root server
 type Server struct {
     API *APIListener

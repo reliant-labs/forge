@@ -24,6 +24,11 @@ import (
 // nobody has configured YET from one this environment deliberately leaves
 // unset, and guessing wrong in the permissive direction turns the check off
 // precisely where it matters.
+//
+// "Declared" is per WORKLOAD: a ref exists only for a sensitive field the
+// workload names in its config_secrets. So none of this is a runtime check —
+// at runtime a field must have a value only when it says `required: true`,
+// sensitive or not (forge.proto's ConfigFieldOptions.optional has why).
 
 // ContradictoryOptionality names one field that claims to be both required
 // and optional.

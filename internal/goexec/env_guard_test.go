@@ -20,7 +20,7 @@ var envExempt = map[string]string{
 	// so it can fetch modules a fresh checkout has not downloaded, and
 	// honours the caller's GOFLAGS inside one. It is a checker, not a
 	// generator: nothing it writes is diffed against a CI regenerate.
-	"internal/cli/lint/contract_inprocess.go:runContractAnalysisInProcess": "lint's loader sets its own -mod policy",
+	"internal/cli/lint/contract_inprocess.go:loadPackagesForAnalysis": "lint's loader (contract and slow-tests lanes) sets its own -mod policy",
 }
 
 // TestGoToolchainCallsUseEnv pins the boundary Env exists for: every

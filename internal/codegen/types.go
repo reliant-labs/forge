@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/naming"
 )
@@ -107,6 +108,11 @@ type Method struct {
 	// found in 17 of 20 generated CRUD RPCs. Making it fail closed is an
 	// interceptor decision, not a codegen one.
 	AuthRequired bool
+	// Timeout is (forge.v1.method).timeout: the rpc's server-side deadline,
+	// projected into pkg/middleware/procedures_gen.go's ProcedureDeadlines
+	// for the chain's Deadline slot. Zero (unset) is the slot's default;
+	// negative is no server deadline.
+	Timeout time.Duration `json:",omitempty"`
 	// Errors records the Connect/gRPC error codes this method may return,
 	// derived from (forge.v1.method).errors. Values match connect.Code
 	// names (e.g. "NotFound", "PermissionDenied"). Surfaced through

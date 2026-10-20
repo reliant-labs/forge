@@ -388,6 +388,11 @@ bundle provider is the single-source model now — prefer it.
   `required: true` and `optional: true` together are refused at generate
   time rather than resolved by precedence.
 
+  All of this is the DEPLOY pre-flight, over the refs a workload declares
+  in `config_secrets`. At runtime `sensitive` does not make a field
+  required: a field the process cannot start without says `required: true`
+  (sensitive or not), and the loader fails on it naming the env var.
+
   The same exemption exists on the escape hatch. A hand-written
   `forge.EnvVar` takes `secret_optional = True` — the canonical case is an
   integration that is OFF until an operator registers it (a Slack app's

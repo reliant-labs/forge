@@ -9,8 +9,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// The e2e harness starts the service with the SAME subcommand the scaffolded
-// CLI declares for it.
+// In a legacy-composed project the e2e harness starts the service with the
+// SAME subcommand the scaffolded CLI declares for it.
 //
 // It used to run `<bin> server <svc>`. The generated tree has no such form:
 // each service is a TOP-LEVEL `<bin> <svc>` command, and `server` takes no
@@ -33,6 +33,7 @@ func TestE2EHarnessServesWithTheCLISubcommand(t *testing.T) {
 	} {
 		t.Run(c.service, func(t *testing.T) {
 			dir := t.TempDir()
+			writeLegacyComposition(t, dir)
 			if err := GenerateE2ETests(dir, c.service, "example.com/demo", "demo", nil); err != nil {
 				t.Fatalf("GenerateE2ETests: %v", err)
 			}
@@ -55,6 +56,48 @@ func TestE2EHarnessServesWithTheCLISubcommand(t *testing.T) {
 				if !strings.Contains(src, want) {
 					t.Errorf("harness does not set %s for the service it starts", want)
 				}
+			}
+		})
+	}
+}
+
+// writeLegacyComposition gives dir the owned `type Infra struct` that marks a
+// project composed the pre-graph way (codegen.GraphComposition).
+func writeLegacyComposition(t *testing.T, dir string) {
+	t.Helper()
+	app := filepath.Join(dir, "internal", "app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "providers.go"), []byte("package app\n\ntype Infra struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A project composed with the graph — every new project (#923) — has no
+// per-service subcommands: `server` runs the server root, which mounts every
+// service. The harness used to start `<bin> <svc>` there too, a command the
+// tree no longer has, so a freshly scaffolded project's own e2e suite could
+// not start its service (`unknown command "api-gateway"`).
+// TestE2EScaffoldE2EHarnessCommand (e2e tag) runs the argv against a real
+// scaffold's binary.
+func TestE2EHarnessServesWithServerInGraphMode(t *testing.T) {
+	for _, service := range []string{"membership", "api-gateway", "AdminServerService"} {
+		t.Run(service, func(t *testing.T) {
+			dir := t.TempDir() // no internal/app yet: a new project, graph mode
+			if !codegen.GraphComposition(dir) {
+				t.Fatal("precondition: a project with no internal/app composes with the graph")
+			}
+			if err := GenerateE2ETests(dir, service, "example.com/demo", "demo", nil); err != nil {
+				t.Fatalf("GenerateE2ETests: %v", err)
+			}
+			pkg := strings.ReplaceAll(strings.ToLower(service), "-", "_")
+			main, err := os.ReadFile(filepath.Join(dir, "e2e", pkg, "main_test.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if src := string(main); !strings.Contains(src, `exec.CommandContext(ctx, "./bin/demo", "server")`) {
+				t.Errorf("a graph-mode harness must start `demo server`, the only command that serves %q:\n%s", service, src)
 			}
 		})
 	}

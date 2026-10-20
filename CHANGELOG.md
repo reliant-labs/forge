@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **One command per root** (composition graph, PR 4). In a graph-mode
+  project every root — each `//forge:root` struct in `internal/app`, or the
+  generated default `Server` — gets one cobra command in the forge-owned
+  `cmd/<bin>/cmd/roots_gen.go`, named after the root or after its new
+  `command=` option (`//forge:root api command=server,api` runs as
+  `<bin> server api`). Each command runs its root through `runRoot`, the
+  owned process policy `serve.go` now holds — config, logger, boot probes,
+  migrate, telemetry, the readiness gate and stop budget, for every root at
+  once — handing it two facts read off the root's reach at generate time: a
+  root that reaches the database migrates first (a worker root that never
+  opens it never runs a migration), and a root whose closure serves no
+  probes gets a probe-only listener on the server address
+  (`serverkit.NewProbeListener`), so every process answers `/healthz` and
+  `/readyz`. A config without `pre_stop_delay` / `shutdown_timeout` reads the
+  drain budget through `drainbudget.FromEnv`. `graphkit.Builder.Supervise`
+  takes nodes to start before the graph and stop after it. A root whose
+  command collides with `version`, `db` or `metrics`, or two roots with one
+  command, are generate errors. Declaring roots no longer breaks the build:
+  the scaffolded `server.go` is gone (its command is generated), and a
+  `serve.go` from before this change — no `runRoot` — keeps its own commands
+  while generate says what to add.
+
+### Removed
+
+- **Graph-mode projects no longer scaffold `cmd/<bin>/cmd/server.go`**, and
+  `cmd/<bin>/main.go` / `root.go` take no command-group constructors
+  (`Execute()`, `newRootCmd(deps)`). The per-service, per-worker and
+  per-operator subcommands and `Serve` / `ServeSpec` / `MountFunc` /
+  `MountNone` stay only in projects on the legacy `Infra` / `NewComponents`
+  composition, which generate exactly as before.
+
+### Added
+
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);

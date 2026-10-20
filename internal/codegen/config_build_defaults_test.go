@@ -19,3 +19,12 @@ func TestConfigTemplate_InstallsBuildDefaultsForEveryConfig(t *testing.T) {
 		}
 	}
 }
+
+// A subtree config's env vars are stampable too: it is one of the configs the
+// binary declares.
+func TestConfigTemplate_BuildDefaultsCoverSubtreeConfigs(t *testing.T) {
+	got := renderConfigGo(t, subtreeKCLMessages())
+	if !strings.Contains(got, "&configv1.CLIConfig{}") || !strings.Contains(got, "forgeconfig.SetBuildDefaults(BuildDefaults") {
+		t.Errorf("SetBuildDefaults must include the subtree config CLIConfig:\n%s", got)
+	}
+}

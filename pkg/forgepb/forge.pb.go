@@ -141,6 +141,63 @@ func (ServiceVisibility) EnumDescriptor() ([]byte, []int) {
 	return file_forge_v1_forge_proto_rawDescGZIP(), []int{1}
 }
 
+// ActivityWriter selects who writes a declared activity event.
+type ActivityWriter int32
+
+const (
+	// ACTIVITY_WRITER_UNSPECIFIED is the interceptor (the default).
+	ActivityWriter_ACTIVITY_WRITER_UNSPECIFIED ActivityWriter = 0
+	// ACTIVITY_WRITER_INTERCEPTOR: the activity interceptor writes the event
+	// after the handler returns successfully, best-effort.
+	ActivityWriter_ACTIVITY_WRITER_INTERCEPTOR ActivityWriter = 1
+	// ACTIVITY_WRITER_HANDLER: the handler calls activity.Record, normally
+	// inside its RunTx so the event is transactional with the mutation. If
+	// the handler succeeds without recording, the interceptor writes the
+	// event itself. Streaming rpcs must use this or `none`.
+	ActivityWriter_ACTIVITY_WRITER_HANDLER ActivityWriter = 2
+)
+
+// Enum value maps for ActivityWriter.
+var (
+	ActivityWriter_name = map[int32]string{
+		0: "ACTIVITY_WRITER_UNSPECIFIED",
+		1: "ACTIVITY_WRITER_INTERCEPTOR",
+		2: "ACTIVITY_WRITER_HANDLER",
+	}
+	ActivityWriter_value = map[string]int32{
+		"ACTIVITY_WRITER_UNSPECIFIED": 0,
+		"ACTIVITY_WRITER_INTERCEPTOR": 1,
+		"ACTIVITY_WRITER_HANDLER":     2,
+	}
+)
+
+func (x ActivityWriter) Enum() *ActivityWriter {
+	p := new(ActivityWriter)
+	*p = x
+	return p
+}
+
+func (x ActivityWriter) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ActivityWriter) Descriptor() protoreflect.EnumDescriptor {
+	return file_forge_v1_forge_proto_enumTypes[2].Descriptor()
+}
+
+func (ActivityWriter) Type() protoreflect.EnumType {
+	return &file_forge_v1_forge_proto_enumTypes[2]
+}
+
+func (x ActivityWriter) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ActivityWriter.Descriptor instead.
+func (ActivityWriter) EnumDescriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{2}
+}
+
 // ConfigFieldRole enumerates the semantic roles a config field can carry.
 // Today the only role is MODE (the runtime production/development switch
 // that gates dev ergonomics and the explicit auth bypass). Additional
@@ -203,11 +260,11 @@ func (x ConfigFieldRole) String() string {
 }
 
 func (ConfigFieldRole) Descriptor() protoreflect.EnumDescriptor {
-	return file_forge_v1_forge_proto_enumTypes[2].Descriptor()
+	return file_forge_v1_forge_proto_enumTypes[3].Descriptor()
 }
 
 func (ConfigFieldRole) Type() protoreflect.EnumType {
-	return &file_forge_v1_forge_proto_enumTypes[2]
+	return &file_forge_v1_forge_proto_enumTypes[3]
 }
 
 func (x ConfigFieldRole) Number() protoreflect.EnumNumber {
@@ -216,7 +273,7 @@ func (x ConfigFieldRole) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ConfigFieldRole.Descriptor instead.
 func (ConfigFieldRole) EnumDescriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{2}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{3}
 }
 
 // EntityOptions defines how a protobuf message maps to a database table.
@@ -789,7 +846,12 @@ type MethodOptions struct {
 	AuthRequired *bool `protobuf:"varint,1,opt,name=auth_required,json=authRequired,proto3,oneof" json:"auth_required,omitempty"`
 	// Whether this method is idempotent (safe to retry without side effects).
 	Idempotent bool `protobuf:"varint,3,opt,name=idempotent,proto3" json:"idempotent,omitempty"`
-	// Server-side timeout for this method. Zero means use the service default.
+	// Server-side deadline for this method. forge projects it into
+	// pkg/middleware/procedures_gen.go (ProcedureDeadlines), which the
+	// scaffolded chain hands its Deadline slot; that slot runs ahead of
+	// authentication, so the deadline bounds the credential lookup too. Unset
+	// or zero is the slot's default (serverkit.DefaultUnaryDeadline for a unary
+	// rpc, none for a stream); negative is no server deadline.
 	Timeout *durationpb.Duration `protobuf:"bytes,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	// Whether callers should supply an idempotency key for this method.
 	// This is a convention marker — Forge does not enforce or inspect the key.
@@ -806,7 +868,14 @@ type MethodOptions struct {
 	//
 	// The list is informational at runtime today; future work may enforce
 	// that handlers can only return declared codes.
-	Errors        []string `protobuf:"bytes,6,rep,name=errors,proto3" json:"errors,omitempty"`
+	Errors []string `protobuf:"bytes,6,rep,name=errors,proto3" json:"errors,omitempty"`
+	// Activity declares the typed activity event a successful call records:
+	// who (the caller) did what (verb) to which object (target), where (env)
+	// and through what (via). forge/pkg/activity's interceptor reads this
+	// option from the method descriptor and writes the event, so no handler
+	// writes one by hand; `forge lint` fails a mutating rpc that declares
+	// nothing (forgeconv-activity-declared). See ActivityOptions.
+	Activity      *ActivityOptions `protobuf:"bytes,7,opt,name=activity,proto3" json:"activity,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -876,6 +945,208 @@ func (x *MethodOptions) GetErrors() []string {
 	return nil
 }
 
+func (x *MethodOptions) GetActivity() *ActivityOptions {
+	if x != nil {
+		return x.Activity
+	}
+	return nil
+}
+
+// ActivityOptions declares the activity event an rpc records, or that it
+// records none.
+//
+//	rpc PromoteRelease(PromoteReleaseRequest) returns (PromoteReleaseResponse) {
+//	  option (forge.v1.method) = {
+//	    activity: {
+//	      verb: "promote"
+//	      target: { kind: "release", id: "release_id", label: "response.release.version" }
+//	      env: "to_env"
+//	    }
+//	  };
+//	}
+//
+// FIELD PATHS (target.id, target.label, env, scope, detail) are dotted proto
+// field names resolved against the REQUEST, or against the RESPONSE when
+// they start with "response." — a created object's id exists only in the
+// response. Every path must end on a scalar or an enum field.
+//
+// A Create<E>, Update<E> or Delete<E> rpc whose messages have forge's CRUD
+// shape needs no option: verb create/update/delete and target kind snake(E)
+// are implied (forge/pkg/activity.Resolve). An explicit option wins.
+type ActivityOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Verb is the action, a lower_snake token: "promote", "rotate",
+	// "restart". It is stored as written; the UI phrases it ("promoted").
+	Verb string `protobuf:"bytes,1,opt,name=verb,proto3" json:"verb,omitempty"`
+	// Target names the object the action was done to.
+	Target *ActivityTarget `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	// Env is the field path whose value is the environment the action
+	// happened in. Empty records a project-level event.
+	Env string `protobuf:"bytes,3,opt,name=env,proto3" json:"env,omitempty"`
+	// Scope is the field path whose value is the scope (an org, a project)
+	// reads are filtered by. Empty takes the interceptor's
+	// ScopeFrom default (the caller's org).
+	Scope string `protobuf:"bytes,4,opt,name=scope,proto3" json:"scope,omitempty"`
+	// Detail lists field paths copied into the event's detail map, keyed by
+	// each path's last segment.
+	Detail []string `protobuf:"bytes,5,rep,name=detail,proto3" json:"detail,omitempty"`
+	// Writer says who writes the event. The default, the interceptor, writes
+	// it after the handler succeeds. HANDLER means the handler calls
+	// activity.Record inside its own transaction, so the event commits or
+	// rolls back with the mutation.
+	Writer ActivityWriter `protobuf:"varint,6,opt,name=writer,proto3,enum=forge.v1.ActivityWriter" json:"writer,omitempty"`
+	// None records that this rpc changes nothing worth an activity event,
+	// and says why: `activity: { none: "dry run: computes a plan only" }`.
+	// It excludes every other field, and the reason must not be empty.
+	None          string `protobuf:"bytes,7,opt,name=none,proto3" json:"none,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActivityOptions) Reset() {
+	*x = ActivityOptions{}
+	mi := &file_forge_v1_forge_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActivityOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActivityOptions) ProtoMessage() {}
+
+func (x *ActivityOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActivityOptions.ProtoReflect.Descriptor instead.
+func (*ActivityOptions) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ActivityOptions) GetVerb() string {
+	if x != nil {
+		return x.Verb
+	}
+	return ""
+}
+
+func (x *ActivityOptions) GetTarget() *ActivityTarget {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *ActivityOptions) GetEnv() string {
+	if x != nil {
+		return x.Env
+	}
+	return ""
+}
+
+func (x *ActivityOptions) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *ActivityOptions) GetDetail() []string {
+	if x != nil {
+		return x.Detail
+	}
+	return nil
+}
+
+func (x *ActivityOptions) GetWriter() ActivityWriter {
+	if x != nil {
+		return x.Writer
+	}
+	return ActivityWriter_ACTIVITY_WRITER_UNSPECIFIED
+}
+
+func (x *ActivityOptions) GetNone() string {
+	if x != nil {
+		return x.None
+	}
+	return ""
+}
+
+// ActivityTarget names the object an activity event is about.
+type ActivityTarget struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Kind is the target's type, a lower_snake literal: "release", "secret".
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Id is the field path of the target's id. Required.
+	Id string `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	// Label is the field path of a human-readable label for the target.
+	// Empty falls back to the id.
+	Label         string `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActivityTarget) Reset() {
+	*x = ActivityTarget{}
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActivityTarget) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActivityTarget) ProtoMessage() {}
+
+func (x *ActivityTarget) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActivityTarget.ProtoReflect.Descriptor instead.
+func (*ActivityTarget) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ActivityTarget) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ActivityTarget) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ActivityTarget) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
 // ConfigFieldOptions defines how a config protobuf field maps to runtime
 // configuration sources (environment variables and CLI flags).
 //
@@ -899,7 +1170,11 @@ type ConfigFieldOptions struct {
 	Flag string `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
 	// Default value as a string. Applied when neither env var nor flag is set.
 	DefaultValue string `protobuf:"bytes,3,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
-	// Whether this field must be provided. Startup fails if missing.
+	// Whether this field must be provided. Loading fails if no layer (default,
+	// config file, env var, flag) gives it a value. It is the ONE runtime
+	// presence check, for every field kind: `sensitive` does not imply it (see
+	// `optional` for why). A credential the process cannot run without says
+	// `required: true` alongside `sensitive: true`.
 	Required bool `protobuf:"varint,4,opt,name=required,proto3" json:"required,omitempty"`
 	// Human-readable description shown in --help output and documentation.
 	Description string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
@@ -907,7 +1182,12 @@ type ConfigFieldOptions struct {
 	// Kubernetes Secret (or equivalent) rather than a literal env-var, and
 	// it is never written to forge.yaml inline. The deploy generator emits
 	// a `secretKeyRef`-shaped EnvVar referencing a project-level Secret
-	// (default name: <project>-secrets, key: <env_var>).
+	// (default name: <project>-secrets, key: <env_var>), projected into a
+	// workload's env only when that workload names it in `config_secrets`.
+	// Sensitive says where a value comes from (a Secret, never a flag or an
+	// inline manifest value), not whether there must be one: that is
+	// `required`, at runtime, and the secret pre-flight for a ref a workload
+	// declares (see `optional`).
 	Sensitive bool `protobuf:"varint,6,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	// Category groups related fields for KCL emission. Fields with the same
 	// category are rendered together as a single env-var group (e.g.
@@ -921,7 +1201,8 @@ type ConfigFieldOptions struct {
 	// the annotation does NOT make it the mode field.
 	Role ConfigFieldRole `protobuf:"varint,8,opt,name=role,proto3,enum=forge.v1.ConfigFieldRole" json:"role,omitempty"`
 	// AllowedValues constrains a STRING field to a closed set of valid
-	// values, validated at startup by config.Validate. It is the
+	// values, enforced when the config loads (Load runs config.Validate, so
+	// an out-of-set value fails the load, naming the field). It is the
 	// type/annotation-driven replacement for the old name-matched log-format
 	// check ("json"/"text"): a string field carrying allowed_values is a
 	// string ENUM, rejected when its resolved value is outside the set. The
@@ -930,15 +1211,31 @@ type ConfigFieldOptions struct {
 	// domain. Renaming the field changes nothing; the set follows the
 	// annotation.
 	AllowedValues []string `protobuf:"bytes,9,rep,name=allowed_values,json=allowedValues,proto3" json:"allowed_values,omitempty"`
-	// Optional marks a field the application TOLERATES being unset, and it is
-	// the only way a `sensitive` field is allowed to have no value.
+	// Optional marks a field the application TOLERATES being unset. It acts
+	// at DEPLOY time; at runtime presence is `required`'s alone.
 	//
-	// WHY sensitive IMPLIES REQUIRED BY DEFAULT. A sensitive field projects to
-	// a secret_ref, and forge validates every declared ref against the env's
-	// store before anything starts (secrets.ValidateDeclaredRefs). That check
-	// exists because the alternative — discovering a missing production
-	// credential at runtime — is the failure it was built to prevent, so
-	// "declared but absent" must be an error by default.
+	//   - sensitive: a secret_ref a workload declares (by naming the field in
+	//     its `config_secrets`) is validated against the env's store before
+	//     anything starts (secrets.ValidateDeclaredRefs), and a declared ref
+	//     with no value is an error by default: discovering a missing
+	//     production credential at runtime is the failure the pre-flight
+	//     exists to prevent. `optional: true` exempts the field from that
+	//     check and marks the rendered ref optional (secretKeyRef.optional /
+	//     managedSecret.optional), so the pod starts without it.
+	//   - not sensitive: the env projection omits the field while its value is
+	//     the schema default, so a knob only some environments set does not
+	//     churn every other environment's manifests.
+	//
+	// WHY sensitive DOES NOT IMPLY REQUIRED AT RUNTIME. Whether a credential
+	// must exist is a property of the WORKLOAD that reads it, not of the
+	// field: one config is loaded by several workloads, and each projects only
+	// the secrets its `config_secrets` names. A runtime check implied by
+	// `sensitive` would refuse to start every workload that deliberately does
+	// not read one (a worker sharing the API server's config, a key source the
+	// process uses only when another is unset), forcing a fake value into the
+	// store. So the deploy pre-flight checks what a workload declares, and a
+	// field the PROCESS cannot run without says so with `required: true`, the
+	// same way any other field does.
 	//
 	// But an OPTIONAL-BY-DESIGN credential is a real thing, and forge had no
 	// way to say so. The case that forced this: a config block whose
@@ -951,10 +1248,10 @@ type ConfigFieldOptions struct {
 	// puts a real-looking credential in the store and defeats the check for
 	// everyone.
 	//
-	// So: `optional: true` says the absence is intended. The secret-store
-	// validation skips the field, and the runtime required-check skips it too.
-	// It is deliberately an OPT-IN — the safe default stays "a declared secret
-	// must have a value", and an author has to state the exception.
+	// So: `optional: true` says the absence is intended, and the secret-store
+	// validation skips the field. It is deliberately an OPT-IN — the safe
+	// default stays "a declared secret must have a value", and an author has
+	// to state the exception.
 	//
 	// It is an ERROR to set both `required: true` and `optional: true`; they
 	// are direct contradictions and forge rejects the pair rather than
@@ -993,7 +1290,7 @@ type ConfigFieldOptions struct {
 
 func (x *ConfigFieldOptions) Reset() {
 	*x = ConfigFieldOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[7]
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1005,7 +1302,7 @@ func (x *ConfigFieldOptions) String() string {
 func (*ConfigFieldOptions) ProtoMessage() {}
 
 func (x *ConfigFieldOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[7]
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1018,7 +1315,7 @@ func (x *ConfigFieldOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigFieldOptions.ProtoReflect.Descriptor instead.
 func (*ConfigFieldOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{7}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ConfigFieldOptions) GetEnvVar() string {
@@ -1117,7 +1414,7 @@ type EnvVarAlias struct {
 
 func (x *EnvVarAlias) Reset() {
 	*x = EnvVarAlias{}
-	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1129,7 +1426,7 @@ func (x *EnvVarAlias) String() string {
 func (*EnvVarAlias) ProtoMessage() {}
 
 func (x *EnvVarAlias) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1142,7 +1439,7 @@ func (x *EnvVarAlias) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnvVarAlias.ProtoReflect.Descriptor instead.
 func (*EnvVarAlias) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{8}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *EnvVarAlias) GetName() string {
@@ -1230,7 +1527,7 @@ type BinaryConfigOptions struct {
 
 func (x *BinaryConfigOptions) Reset() {
 	*x = BinaryConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	mi := &file_forge_v1_forge_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1242,7 +1539,7 @@ func (x *BinaryConfigOptions) String() string {
 func (*BinaryConfigOptions) ProtoMessage() {}
 
 func (x *BinaryConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	mi := &file_forge_v1_forge_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1255,7 +1552,7 @@ func (x *BinaryConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BinaryConfigOptions.ProtoReflect.Descriptor instead.
 func (*BinaryConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{9}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *BinaryConfigOptions) GetBinary() string {
@@ -1319,7 +1616,7 @@ type FrontendConfigOptions struct {
 
 func (x *FrontendConfigOptions) Reset() {
 	*x = FrontendConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1331,7 +1628,7 @@ func (x *FrontendConfigOptions) String() string {
 func (*FrontendConfigOptions) ProtoMessage() {}
 
 func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1344,7 +1641,7 @@ func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FrontendConfigOptions.ProtoReflect.Descriptor instead.
 func (*FrontendConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{10}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *FrontendConfigOptions) GetFrontend() string {
@@ -1511,7 +1808,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\n" +
 	"AuthConfig\x12#\n" +
 	"\rauth_required\x18\x01 \x01(\bR\fauthRequired\x12#\n" +
-	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xe1\x01\n" +
+	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\x98\x02\n" +
 	"\rMethodOptions\x12(\n" +
 	"\rauth_required\x18\x01 \x01(\bH\x00R\fauthRequired\x88\x01\x01\x12\x1e\n" +
 	"\n" +
@@ -1519,8 +1816,21 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"idempotent\x123\n" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
-	"\x06errors\x18\x06 \x03(\tR\x06errorsB\x10\n" +
-	"\x0e_auth_required\"\x8f\x03\n" +
+	"\x06errors\x18\x06 \x03(\tR\x06errors\x125\n" +
+	"\bactivity\x18\a \x01(\v2\x19.forge.v1.ActivityOptionsR\bactivityB\x10\n" +
+	"\x0e_auth_required\"\xdd\x01\n" +
+	"\x0fActivityOptions\x12\x12\n" +
+	"\x04verb\x18\x01 \x01(\tR\x04verb\x120\n" +
+	"\x06target\x18\x02 \x01(\v2\x18.forge.v1.ActivityTargetR\x06target\x12\x10\n" +
+	"\x03env\x18\x03 \x01(\tR\x03env\x12\x14\n" +
+	"\x05scope\x18\x04 \x01(\tR\x05scope\x12\x16\n" +
+	"\x06detail\x18\x05 \x03(\tR\x06detail\x120\n" +
+	"\x06writer\x18\x06 \x01(\x0e2\x18.forge.v1.ActivityWriterR\x06writer\x12\x12\n" +
+	"\x04none\x18\a \x01(\tR\x04none\"J\n" +
+	"\x0eActivityTarget\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x12\x14\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\"\x8f\x03\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +
 	"\x04flag\x18\x02 \x01(\tR\x04flag\x12#\n" +
@@ -1553,7 +1863,11 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x11ServiceVisibility\x12\"\n" +
 	"\x1eSERVICE_VISIBILITY_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SERVICE_VISIBILITY_API\x10\x01\x12\x1f\n" +
-	"\x1bSERVICE_VISIBILITY_INTERNAL\x10\x02*\xe1\x01\n" +
+	"\x1bSERVICE_VISIBILITY_INTERNAL\x10\x02*o\n" +
+	"\x0eActivityWriter\x12\x1f\n" +
+	"\x1bACTIVITY_WRITER_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bACTIVITY_WRITER_INTERCEPTOR\x10\x01\x12\x1b\n" +
+	"\x17ACTIVITY_WRITER_HANDLER\x10\x02*\xe1\x01\n" +
 	"\x0fConfigFieldRole\x12!\n" +
 	"\x1dCONFIG_FIELD_ROLE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16CONFIG_FIELD_ROLE_MODE\x10\x01\x12\x1e\n" +
@@ -1581,57 +1895,63 @@ func file_forge_v1_forge_proto_rawDescGZIP() []byte {
 	return file_forge_v1_forge_proto_rawDescData
 }
 
-var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_forge_v1_forge_proto_goTypes = []any{
 	(StoreAs)(0),                        // 0: forge.v1.StoreAs
 	(ServiceVisibility)(0),              // 1: forge.v1.ServiceVisibility
-	(ConfigFieldRole)(0),                // 2: forge.v1.ConfigFieldRole
-	(*EntityOptions)(nil),               // 3: forge.v1.EntityOptions
-	(*IndexDef)(nil),                    // 4: forge.v1.IndexDef
-	(*FieldOptions)(nil),                // 5: forge.v1.FieldOptions
-	(*ValidationRules)(nil),             // 6: forge.v1.ValidationRules
-	(*ServiceOptions)(nil),              // 7: forge.v1.ServiceOptions
-	(*AuthConfig)(nil),                  // 8: forge.v1.AuthConfig
-	(*MethodOptions)(nil),               // 9: forge.v1.MethodOptions
-	(*ConfigFieldOptions)(nil),          // 10: forge.v1.ConfigFieldOptions
-	(*EnvVarAlias)(nil),                 // 11: forge.v1.EnvVarAlias
-	(*BinaryConfigOptions)(nil),         // 12: forge.v1.BinaryConfigOptions
-	(*FrontendConfigOptions)(nil),       // 13: forge.v1.FrontendConfigOptions
-	(*durationpb.Duration)(nil),         // 14: google.protobuf.Duration
-	(*descriptorpb.MessageOptions)(nil), // 15: google.protobuf.MessageOptions
-	(*descriptorpb.FieldOptions)(nil),   // 16: google.protobuf.FieldOptions
-	(*descriptorpb.ServiceOptions)(nil), // 17: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),  // 18: google.protobuf.MethodOptions
+	(ActivityWriter)(0),                 // 2: forge.v1.ActivityWriter
+	(ConfigFieldRole)(0),                // 3: forge.v1.ConfigFieldRole
+	(*EntityOptions)(nil),               // 4: forge.v1.EntityOptions
+	(*IndexDef)(nil),                    // 5: forge.v1.IndexDef
+	(*FieldOptions)(nil),                // 6: forge.v1.FieldOptions
+	(*ValidationRules)(nil),             // 7: forge.v1.ValidationRules
+	(*ServiceOptions)(nil),              // 8: forge.v1.ServiceOptions
+	(*AuthConfig)(nil),                  // 9: forge.v1.AuthConfig
+	(*MethodOptions)(nil),               // 10: forge.v1.MethodOptions
+	(*ActivityOptions)(nil),             // 11: forge.v1.ActivityOptions
+	(*ActivityTarget)(nil),              // 12: forge.v1.ActivityTarget
+	(*ConfigFieldOptions)(nil),          // 13: forge.v1.ConfigFieldOptions
+	(*EnvVarAlias)(nil),                 // 14: forge.v1.EnvVarAlias
+	(*BinaryConfigOptions)(nil),         // 15: forge.v1.BinaryConfigOptions
+	(*FrontendConfigOptions)(nil),       // 16: forge.v1.FrontendConfigOptions
+	(*durationpb.Duration)(nil),         // 17: google.protobuf.Duration
+	(*descriptorpb.MessageOptions)(nil), // 18: google.protobuf.MessageOptions
+	(*descriptorpb.FieldOptions)(nil),   // 19: google.protobuf.FieldOptions
+	(*descriptorpb.ServiceOptions)(nil), // 20: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),  // 21: google.protobuf.MethodOptions
 }
 var file_forge_v1_forge_proto_depIdxs = []int32{
-	4,  // 0: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
+	5,  // 0: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
 	0,  // 1: forge.v1.FieldOptions.store:type_name -> forge.v1.StoreAs
-	6,  // 2: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
+	7,  // 2: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
 	1,  // 3: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
-	8,  // 4: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
-	14, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
-	2,  // 6: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
-	11, // 7: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
-	15, // 8: forge.v1.entity:extendee -> google.protobuf.MessageOptions
-	15, // 9: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
-	15, // 10: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
-	16, // 11: forge.v1.field:extendee -> google.protobuf.FieldOptions
-	16, // 12: forge.v1.config:extendee -> google.protobuf.FieldOptions
-	17, // 13: forge.v1.service:extendee -> google.protobuf.ServiceOptions
-	18, // 14: forge.v1.method:extendee -> google.protobuf.MethodOptions
-	3,  // 15: forge.v1.entity:type_name -> forge.v1.EntityOptions
-	12, // 16: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
-	13, // 17: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
-	5,  // 18: forge.v1.field:type_name -> forge.v1.FieldOptions
-	10, // 19: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
-	7,  // 20: forge.v1.service:type_name -> forge.v1.ServiceOptions
-	9,  // 21: forge.v1.method:type_name -> forge.v1.MethodOptions
-	22, // [22:22] is the sub-list for method output_type
-	22, // [22:22] is the sub-list for method input_type
-	15, // [15:22] is the sub-list for extension type_name
-	8,  // [8:15] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	9,  // 4: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
+	17, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
+	11, // 6: forge.v1.MethodOptions.activity:type_name -> forge.v1.ActivityOptions
+	12, // 7: forge.v1.ActivityOptions.target:type_name -> forge.v1.ActivityTarget
+	2,  // 8: forge.v1.ActivityOptions.writer:type_name -> forge.v1.ActivityWriter
+	3,  // 9: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
+	14, // 10: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
+	18, // 11: forge.v1.entity:extendee -> google.protobuf.MessageOptions
+	18, // 12: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
+	18, // 13: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
+	19, // 14: forge.v1.field:extendee -> google.protobuf.FieldOptions
+	19, // 15: forge.v1.config:extendee -> google.protobuf.FieldOptions
+	20, // 16: forge.v1.service:extendee -> google.protobuf.ServiceOptions
+	21, // 17: forge.v1.method:extendee -> google.protobuf.MethodOptions
+	4,  // 18: forge.v1.entity:type_name -> forge.v1.EntityOptions
+	15, // 19: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
+	16, // 20: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
+	6,  // 21: forge.v1.field:type_name -> forge.v1.FieldOptions
+	13, // 22: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
+	8,  // 23: forge.v1.service:type_name -> forge.v1.ServiceOptions
+	10, // 24: forge.v1.method:type_name -> forge.v1.MethodOptions
+	25, // [25:25] is the sub-list for method output_type
+	25, // [25:25] is the sub-list for method input_type
+	18, // [18:25] is the sub-list for extension type_name
+	11, // [11:18] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_forge_v1_forge_proto_init() }
@@ -1645,8 +1965,8 @@ func file_forge_v1_forge_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_v1_forge_proto_rawDesc), len(file_forge_v1_forge_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   11,
+			NumEnums:      4,
+			NumMessages:   13,
 			NumExtensions: 7,
 			NumServices:   0,
 		},

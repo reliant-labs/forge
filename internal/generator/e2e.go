@@ -35,17 +35,23 @@ type E2ETemplateData struct {
 	Port                 int
 	Methods              []E2EMethodInfo
 	FirstRequestType     string // Used to anchor the pb import in helpers
-	// ServeArgs is the argv (after the binary) that runs this service: its
-	// own top-level subcommand, named by the same derivation that generates
-	// the CLI tree (codegen.CmdServiceCommand), so the harness and the CLI
-	// cannot disagree. A service whose name collides with a built-in command
-	// gets no subcommand; `server` (which mounts every service) runs it.
+	// ServeArgs is the argv (after the binary) that runs this service. A
+	// project composed by the graph (codegen.GraphComposition — every new
+	// project) has no per-component subcommands: `server` runs the default
+	// root, which serves every service. A legacy Components project gives
+	// each service its own top-level subcommand, named by the same
+	// derivation that generates the CLI tree (codegen.CmdServiceCommand), so
+	// the harness and the CLI cannot disagree; a service whose name collides
+	// with a built-in command gets none, and `server` runs it.
 	ServeArgs []string
 }
 
 // e2eServeArgs returns the CLI argv that serves serviceName in the scaffolded
-// binary. See E2ETemplateData.ServeArgs.
-func e2eServeArgs(serviceName string) []string {
+// binary at projectDir. See E2ETemplateData.ServeArgs.
+func e2eServeArgs(projectDir, serviceName string) []string {
+	if codegen.GraphComposition(projectDir) {
+		return []string{"server"}
+	}
 	if cmd, _, ok := codegen.CmdServiceCommand(serviceName); ok {
 		return []string{cmd}
 	}
@@ -86,7 +92,7 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 		Port:                 0, // E2E uses freePort(); this is available as a template var
 		Methods:              goMethods,
 		FirstRequestType:     "",
-		ServeArgs:            e2eServeArgs(serviceName),
+		ServeArgs:            e2eServeArgs(projectDir, serviceName),
 	}
 
 	templateFiles := []struct {

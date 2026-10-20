@@ -59,8 +59,8 @@ func serviceInput(t *testing.T) PlanInput {
 	}
 }
 
-// The order is load-bearing: verify-generated runs first (after dependency
-// installs) because it needs the committed tree, and the KCL checks run last.
+// The order is load-bearing: verify-generated is listed first (after
+// dependency installs), and the KCL checks run last.
 func TestPlan_OrderAndLanes(t *testing.T) {
 	all, err := Plan(serviceInput(t))
 	if err != nil {
@@ -353,8 +353,10 @@ func TestPlan_SchedulingOfForgesOwnChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	vg := find(t, all, "verify-generated")
-	if !vg.MutatesTree || !vg.Heavy || strings.Join(vg.After, ",") != "deps-web" {
-		t.Errorf("verify-generated rewrites the tree (protoc-gen-es from node_modules): %+v", vg)
+	// It regenerates a scratch copy, never the tree, so it neither runs
+	// alone nor resets anything; it still needs the frontend's protoc-gen-es.
+	if vg.MutatesTree || vg.Prereq != nil || vg.OnFail != nil || !vg.Heavy || strings.Join(vg.After, ",") != "deps-web" {
+		t.Errorf("verify-generated is a heavy, non-mutating check after the frontend install: %+v", vg)
 	}
 	for _, n := range []string{"lint-web", "typecheck-web", "build-web"} {
 		if c := find(t, all, n); strings.Join(c.After, ",") != "deps-web" {

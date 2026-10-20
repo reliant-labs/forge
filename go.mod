@@ -14,6 +14,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/MicahParks/keyfunc/v3 v3.8.2
+	github.com/XSAM/otelsql v0.43.0
 	github.com/brianvoe/gofakeit/v7 v7.17.1
 	github.com/ebitengine/purego v0.11.1
 	github.com/evanw/esbuild v0.28.2

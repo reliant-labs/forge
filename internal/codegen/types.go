@@ -361,6 +361,10 @@ type EntityDef struct {
 	// notably the store interface, whose UpdateX/DeleteX otherwise
 	// type-check against a table postgres will refuse at runtime.
 	AppendOnly bool `json:",omitempty"`
+	// ReadOnly marks a VIEW opted into the data layer (`COMMENT ON VIEW v
+	// IS 'forge:entity'`): its store reads — List, Count, and Get by its key
+	// column when it has one — and writes nothing.
+	ReadOnly bool `json:",omitempty"`
 	// Constraints are the table's named UNIQUE / CHECK / FOREIGN KEY
 	// constraints. They project to per-entity name constants so a service
 	// can branch on orm.ConstraintName(err) against something the
@@ -542,6 +546,13 @@ type ConfigField struct {
 	ProtoFile string `json:",omitempty"`
 
 	// EnvVarAliases is (forge.v1.config).env_var_aliases: the further env
+	// EnvPrefix and EnvSuffix bind a map<string, scalar> field to an env
+	// FAMILY: every variable named <EnvPrefix><KEY><EnvSuffix> is one entry
+	// ((forge.v1.config).env_prefix / env_suffix). Empty for an ordinary
+	// field. MapValueType is the map's value kind ("string", "bool", ...).
+	EnvPrefix    string `json:",omitempty"`
+	EnvSuffix    string `json:",omitempty"`
+	MapValueType string `json:",omitempty"`
 	// AllowedValues is the field's closed value set
 	// ((forge.v1.config).allowed_values); empty for an open one.
 	AllowedValues []string `json:",omitempty"`

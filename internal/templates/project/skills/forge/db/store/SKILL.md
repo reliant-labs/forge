@@ -38,7 +38,7 @@ project to one name fail generate, naming both.
 ## Keys
 
 A single-column primary key is the `id` the delegates take: `Get<E>ByID`,
-`Delete<E>ByID`… A **composite primary key** gets a store addressed by the
+`Delete<E>`… A **composite primary key** gets a store addressed by the
 whole key — `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` (one parameter
 per key column), `Upsert<E>` (conflict on every key column), plus
 Create/List/Count/Update/UpdateMasked addressing the row by the struct's key

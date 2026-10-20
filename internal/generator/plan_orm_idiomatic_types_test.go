@@ -26,7 +26,7 @@ func TestPlanORM_IdiomaticLosslessTypes(t *testing.T) {
 			{Name: "attrs", Type: "json", GoType: "map[string]any"},
 		},
 	}
-	src := string(renderORMEntity(ent, false))
+	src := string(renderORMEntity("db", ent, false))
 	for field, want := range map[string]string{
 		"ID":        "string `bun:\"id,pk\"`",
 		"MessageID": "string `bun:\"message_id,notnull\"`",

@@ -2,6 +2,7 @@ package crud
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/uptrace/bun"
@@ -23,15 +24,15 @@ import (
 type thread struct {
 	bun.BaseModel `bun:"table:threads,alias:threads"`
 
-	ID       string   `bun:"id,pk"`
-	Title    string   `bun:"title,notnull"`
-	Status   *int64   `bun:"status,notnull"`
-	Pinned   *bool    `bun:"pinned,notnull"`
-	Kind     *string  `bun:"kind,notnull"`
-	Metadata string   `bun:"metadata,notnull,nullzero"`
-	Labels   []string `bun:"labels,array,notnull,nullzero"`
-	Unread   int64    `bun:"unread,notnull"`
-	Tone     string   `bun:"tone,notnull,nullzero"` // a born enum column: its CHECK refuses ''
+	ID       string          `bun:"id,pk"`
+	Title    string          `bun:"title,notnull"`
+	Status   *int64          `bun:"status,notnull"`
+	Pinned   *bool           `bun:"pinned,notnull"`
+	Kind     *string         `bun:"kind,notnull"`
+	Metadata json.RawMessage `bun:"metadata,notnull,nullzero"`
+	Labels   []string        `bun:"labels,array,notnull,nullzero"`
+	Unread   int64           `bun:"unread,notnull"`
+	Tone     string          `bun:"tone,notnull,nullzero"` // a born enum column: its CHECK refuses ''
 }
 
 func newThreadsTestDB(t *testing.T) orm.Context {
@@ -82,7 +83,7 @@ func TestCreate_UnsetNotNullColumnsTakeTheirDefault(t *testing.T) {
 	if got.Kind == nil || *got.Kind != "llm" {
 		t.Errorf("kind = %v, want the DEFAULT 'llm'", got.Kind)
 	}
-	if got.Metadata != "{}" {
+	if string(got.Metadata) != "{}" {
 		t.Errorf("metadata = %q, want the DEFAULT '{}'", got.Metadata)
 	}
 	if len(got.Labels) != 1 || got.Labels[0] != "inbox" {
@@ -92,7 +93,7 @@ func TestCreate_UnsetNotNullColumnsTakeTheirDefault(t *testing.T) {
 		t.Errorf("tone = %q, want the DEFAULT 'WARM' (an unset enum, not a CHECK violation)", got.Tone)
 	}
 	// RETURNING: the caller's struct holds what was stored.
-	if row.Status == nil || *row.Status != 2 || row.Pinned == nil || !*row.Pinned || row.Metadata != "{}" {
+	if row.Status == nil || *row.Status != 2 || row.Pinned == nil || !*row.Pinned || string(row.Metadata) != "{}" {
 		t.Errorf("after Create the entity does not hold the stored defaults: %+v", row)
 	}
 }
@@ -118,7 +119,7 @@ func TestUpdate_UnsetColumnsKeepTheStoredValue(t *testing.T) {
 	repo := NewRepo[thread]()
 	ctx := context.Background()
 
-	if err := repo.Create(ctx, db, &thread{ID: "t3", Title: "x", Status: ptr[int64](5), Metadata: `{"a":1}`, Labels: []string{"x"}}); err != nil {
+	if err := repo.Create(ctx, db, &thread{ID: "t3", Title: "x", Status: ptr[int64](5), Metadata: json.RawMessage(`{"a":1}`), Labels: []string{"x"}}); err != nil {
 		t.Fatal(err)
 	}
 	upd := &thread{ID: "t3", Title: "renamed"}
@@ -126,7 +127,7 @@ func TestUpdate_UnsetColumnsKeepTheStoredValue(t *testing.T) {
 		t.Fatalf("Update with defaulted columns unset: %v", err)
 	}
 	got := storedThread(t, db, "t3")
-	if got.Title != "renamed" || *got.Status != 5 || got.Metadata != `{"a": 1}` || len(got.Labels) != 1 || got.Labels[0] != "x" {
+	if got.Title != "renamed" || *got.Status != 5 || string(got.Metadata) != `{"a": 1}` || len(got.Labels) != 1 || got.Labels[0] != "x" {
 		t.Errorf("stored after Update = %+v (status %d), want title renamed and the rest kept", got, *got.Status)
 	}
 	if upd.Status == nil || *upd.Status != 5 {

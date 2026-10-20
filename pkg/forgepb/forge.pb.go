@@ -846,7 +846,12 @@ type MethodOptions struct {
 	AuthRequired *bool `protobuf:"varint,1,opt,name=auth_required,json=authRequired,proto3,oneof" json:"auth_required,omitempty"`
 	// Whether this method is idempotent (safe to retry without side effects).
 	Idempotent bool `protobuf:"varint,3,opt,name=idempotent,proto3" json:"idempotent,omitempty"`
-	// Server-side timeout for this method. Zero means use the service default.
+	// Server-side deadline for this method. forge projects it into
+	// pkg/middleware/procedures_gen.go (ProcedureDeadlines), which the
+	// scaffolded chain hands its Deadline slot; that slot runs ahead of
+	// authentication, so the deadline bounds the credential lookup too. Unset
+	// or zero is the slot's default (serverkit.DefaultUnaryDeadline for a unary
+	// rpc, none for a stream); negative is no server deadline.
 	Timeout *durationpb.Duration `protobuf:"bytes,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	// Whether callers should supply an idempotency key for this method.
 	// This is a convention marker — Forge does not enforce or inspect the key.
@@ -1163,9 +1168,18 @@ type ConfigFieldOptions struct {
 	EnvVar string `protobuf:"bytes,1,opt,name=env_var,json=envVar,proto3" json:"env_var,omitempty"`
 	// CLI flag name, without leading dashes (e.g., "database-url").
 	Flag string `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
-	// Default value as a string. Applied when neither env var nor flag is set.
+	// Default value as a string: what the SOURCE says. A build can override
+	// it — the generated pkg/config.BuildDefaults, stamped with -ldflags -X in
+	// URL query form keyed by env_var ("SERVER_URL=https://api&REGION=eu") —
+	// and the config file, env var and flag override both:
+	//   default_value < build default < config file < env var < flag.
+	// A sensitive field takes neither (a secret in a binary is published).
 	DefaultValue string `protobuf:"bytes,3,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
-	// Whether this field must be provided. Startup fails if missing.
+	// Whether this field must be provided. Loading fails if no layer (default,
+	// config file, env var, flag) gives it a value. It is the ONE runtime
+	// presence check, for every field kind: `sensitive` does not imply it (see
+	// `optional` for why). A credential the process cannot run without says
+	// `required: true` alongside `sensitive: true`.
 	Required bool `protobuf:"varint,4,opt,name=required,proto3" json:"required,omitempty"`
 	// Human-readable description shown in --help output and documentation.
 	Description string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
@@ -1173,7 +1187,12 @@ type ConfigFieldOptions struct {
 	// Kubernetes Secret (or equivalent) rather than a literal env-var, and
 	// it is never written to forge.yaml inline. The deploy generator emits
 	// a `secretKeyRef`-shaped EnvVar referencing a project-level Secret
-	// (default name: <project>-secrets, key: <env_var>).
+	// (default name: <project>-secrets, key: <env_var>), projected into a
+	// workload's env only when that workload names it in `config_secrets`.
+	// Sensitive says where a value comes from (a Secret, never a flag or an
+	// inline manifest value), not whether there must be one: that is
+	// `required`, at runtime, and the secret pre-flight for a ref a workload
+	// declares (see `optional`).
 	Sensitive bool `protobuf:"varint,6,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	// Category groups related fields for KCL emission. Fields with the same
 	// category are rendered together as a single env-var group (e.g.
@@ -1187,7 +1206,8 @@ type ConfigFieldOptions struct {
 	// the annotation does NOT make it the mode field.
 	Role ConfigFieldRole `protobuf:"varint,8,opt,name=role,proto3,enum=forge.v1.ConfigFieldRole" json:"role,omitempty"`
 	// AllowedValues constrains a STRING field to a closed set of valid
-	// values, validated at startup by config.Validate. It is the
+	// values, enforced when the config loads (Load runs config.Validate, so
+	// an out-of-set value fails the load, naming the field). It is the
 	// type/annotation-driven replacement for the old name-matched log-format
 	// check ("json"/"text"): a string field carrying allowed_values is a
 	// string ENUM, rejected when its resolved value is outside the set. The
@@ -1196,15 +1216,31 @@ type ConfigFieldOptions struct {
 	// domain. Renaming the field changes nothing; the set follows the
 	// annotation.
 	AllowedValues []string `protobuf:"bytes,9,rep,name=allowed_values,json=allowedValues,proto3" json:"allowed_values,omitempty"`
-	// Optional marks a field the application TOLERATES being unset, and it is
-	// the only way a `sensitive` field is allowed to have no value.
+	// Optional marks a field the application TOLERATES being unset. It acts
+	// at DEPLOY time; at runtime presence is `required`'s alone.
 	//
-	// WHY sensitive IMPLIES REQUIRED BY DEFAULT. A sensitive field projects to
-	// a secret_ref, and forge validates every declared ref against the env's
-	// store before anything starts (secrets.ValidateDeclaredRefs). That check
-	// exists because the alternative — discovering a missing production
-	// credential at runtime — is the failure it was built to prevent, so
-	// "declared but absent" must be an error by default.
+	//   - sensitive: a secret_ref a workload declares (by naming the field in
+	//     its `config_secrets`) is validated against the env's store before
+	//     anything starts (secrets.ValidateDeclaredRefs), and a declared ref
+	//     with no value is an error by default: discovering a missing
+	//     production credential at runtime is the failure the pre-flight
+	//     exists to prevent. `optional: true` exempts the field from that
+	//     check and marks the rendered ref optional (secretKeyRef.optional /
+	//     managedSecret.optional), so the pod starts without it.
+	//   - not sensitive: the env projection omits the field while its value is
+	//     the schema default, so a knob only some environments set does not
+	//     churn every other environment's manifests.
+	//
+	// WHY sensitive DOES NOT IMPLY REQUIRED AT RUNTIME. Whether a credential
+	// must exist is a property of the WORKLOAD that reads it, not of the
+	// field: one config is loaded by several workloads, and each projects only
+	// the secrets its `config_secrets` names. A runtime check implied by
+	// `sensitive` would refuse to start every workload that deliberately does
+	// not read one (a worker sharing the API server's config, a key source the
+	// process uses only when another is unset), forcing a fake value into the
+	// store. So the deploy pre-flight checks what a workload declares, and a
+	// field the PROCESS cannot run without says so with `required: true`, the
+	// same way any other field does.
 	//
 	// But an OPTIONAL-BY-DESIGN credential is a real thing, and forge had no
 	// way to say so. The case that forced this: a config block whose
@@ -1217,10 +1253,10 @@ type ConfigFieldOptions struct {
 	// puts a real-looking credential in the store and defeats the check for
 	// everyone.
 	//
-	// So: `optional: true` says the absence is intended. The secret-store
-	// validation skips the field, and the runtime required-check skips it too.
-	// It is deliberately an OPT-IN — the safe default stays "a declared secret
-	// must have a value", and an author has to state the exception.
+	// So: `optional: true` says the absence is intended, and the secret-store
+	// validation skips the field. It is deliberately an OPT-IN — the safe
+	// default stays "a declared secret must have a value", and an author has
+	// to state the exception.
 	//
 	// It is an ERROR to set both `required: true` and `optional: true`; they
 	// are direct contradictions and forge rejects the pair rather than
@@ -1460,16 +1496,38 @@ func (x *EnvVarAlias) GetDeprecated() bool {
 //   - The ROOT config (no `command`) is the binary-wide surface: every
 //     process of the binary loads it, and its flags register as PERSISTENT
 //     flags on the binary's root command, so every subcommand inherits them.
+//
 //   - A COMMAND config is loaded by exactly the process running that
 //     subcommand. Its leaves — composed blocks included — register as LOCAL
 //     flags on that subcommand, and its loader refuses to load from any
 //     other command.
 //
-// A process therefore reads the root config plus the ONE config declared for
-// its exact command path; command configs do not nest (a config for
-// ["server"] is not inherited by `server api`). The root config and a command
-// config of the same binary may not declare the same env var or flag: one
-// process would read the value twice, from two declarations that can drift.
+//   - A SUBTREE config (`subtrees`) is loaded by every process running a
+//     command AT OR BELOW one of its paths. Its leaves register as
+//     PERSISTENT flags on each path's command, so the commands beneath
+//     inherit them. It is how a setting that several commands read — but not
+//     every process of the binary — is declared once: the CLI connection
+//     every end-user command needs (server URL, token) without the server
+//     roles' workloads carrying it, or the guard policy `daemon start` and
+//     `open` both run.
+//
+// A process therefore reads the root config, every subtree config whose path
+// prefixes its command path, and the ONE config declared for its exact path
+// — and nothing else: least knowledge, by declaration. Two configs one
+// process can load together (the root and anything; a subtree config and a
+// command config or another subtree config below or above it) may not
+// declare the same env var, flag or top-level field: that process would read
+// one value from two declarations that can drift. Configs no process loads
+// together (sibling commands) may compose the same block freely: that is one
+// definition, two values.
+//
+//	message CLIConfig {
+//	  option (forge.v1.binary_config) = {
+//	    binary: "reliant"
+//	    subtrees: [{path: ["auth"]}, {path: ["daemon"]}, {path: ["open"]}]
+//	  };
+//	  string server_url = 1 [(forge.v1.config) = {env_var: "RELIANT_SERVER_URL", flag: "server"}];
+//	}
 type BinaryConfigOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Binary is the cmd/<name> leaf whose process loads this config — the same
@@ -1489,7 +1547,16 @@ type BinaryConfigOptions struct {
 	// would be a guess that is wrong in both directions — and a wrong refusal
 	// blocks generate. The exact check runs where the tree is real: the
 	// generated Load<Msg>(cmd) refuses a command whose path is not this one.
-	Command       []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
+	Command []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
+	// Subtrees binds this config to every command AT OR BELOW each path:
+	// [{path: ["daemon"]}] is loaded by `daemon start`, `daemon status` and
+	// every other command under `daemon`, and by `daemon` itself. Exclusive
+	// with `command` (a config is one process's, or a subtree's); both empty
+	// binds the binary's root config. Each path is shaped like `command`, and
+	// no path may lie below another of the same message (the outer one already
+	// covers it). Register<Msg>Flags is called on each path's command; the
+	// generated Load<Msg>(cmd) refuses a command under none of them.
+	Subtrees      []*CommandPath `protobuf:"bytes,3,rep,name=subtrees,proto3" json:"subtrees,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1534,6 +1601,59 @@ func (x *BinaryConfigOptions) GetBinary() string {
 func (x *BinaryConfigOptions) GetCommand() []string {
 	if x != nil {
 		return x.Command
+	}
+	return nil
+}
+
+func (x *BinaryConfigOptions) GetSubtrees() []*CommandPath {
+	if x != nil {
+		return x.Subtrees
+	}
+	return nil
+}
+
+// CommandPath is one cobra command path below a binary's root, one command
+// name per element: ["daemon", "start"]. See BinaryConfigOptions.subtrees.
+type CommandPath struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          []string               `protobuf:"bytes,1,rep,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommandPath) Reset() {
+	*x = CommandPath{}
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommandPath) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommandPath) ProtoMessage() {}
+
+func (x *CommandPath) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommandPath.ProtoReflect.Descriptor instead.
+func (*CommandPath) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *CommandPath) GetPath() []string {
+	if x != nil {
+		return x.Path
 	}
 	return nil
 }
@@ -1585,7 +1705,7 @@ type FrontendConfigOptions struct {
 
 func (x *FrontendConfigOptions) Reset() {
 	*x = FrontendConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	mi := &file_forge_v1_forge_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1597,7 +1717,7 @@ func (x *FrontendConfigOptions) String() string {
 func (*FrontendConfigOptions) ProtoMessage() {}
 
 func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[12]
+	mi := &file_forge_v1_forge_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1610,7 +1730,7 @@ func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FrontendConfigOptions.ProtoReflect.Descriptor instead.
 func (*FrontendConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{12}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *FrontendConfigOptions) GetFrontend() string {
@@ -1817,10 +1937,13 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
 	"\n" +
 	"deprecated\x18\x02 \x01(\bR\n" +
-	"deprecated\"G\n" +
+	"deprecated\"z\n" +
 	"\x13BinaryConfigOptions\x12\x16\n" +
 	"\x06binary\x18\x01 \x01(\tR\x06binary\x12\x18\n" +
-	"\acommand\x18\x02 \x03(\tR\acommand\"3\n" +
+	"\acommand\x18\x02 \x03(\tR\acommand\x121\n" +
+	"\bsubtrees\x18\x03 \x03(\v2\x15.forge.v1.CommandPathR\bsubtrees\"!\n" +
+	"\vCommandPath\x12\x12\n" +
+	"\x04path\x18\x01 \x03(\tR\x04path\"3\n" +
 	"\x15FrontendConfigOptions\x12\x1a\n" +
 	"\bfrontend\x18\x01 \x01(\tR\bfrontend*q\n" +
 	"\aStoreAs\x12\x18\n" +
@@ -1865,7 +1988,7 @@ func file_forge_v1_forge_proto_rawDescGZIP() []byte {
 }
 
 var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_forge_v1_forge_proto_goTypes = []any{
 	(StoreAs)(0),                        // 0: forge.v1.StoreAs
 	(ServiceVisibility)(0),              // 1: forge.v1.ServiceVisibility
@@ -1883,12 +2006,13 @@ var file_forge_v1_forge_proto_goTypes = []any{
 	(*ConfigFieldOptions)(nil),          // 13: forge.v1.ConfigFieldOptions
 	(*EnvVarAlias)(nil),                 // 14: forge.v1.EnvVarAlias
 	(*BinaryConfigOptions)(nil),         // 15: forge.v1.BinaryConfigOptions
-	(*FrontendConfigOptions)(nil),       // 16: forge.v1.FrontendConfigOptions
-	(*durationpb.Duration)(nil),         // 17: google.protobuf.Duration
-	(*descriptorpb.MessageOptions)(nil), // 18: google.protobuf.MessageOptions
-	(*descriptorpb.FieldOptions)(nil),   // 19: google.protobuf.FieldOptions
-	(*descriptorpb.ServiceOptions)(nil), // 20: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),  // 21: google.protobuf.MethodOptions
+	(*CommandPath)(nil),                 // 16: forge.v1.CommandPath
+	(*FrontendConfigOptions)(nil),       // 17: forge.v1.FrontendConfigOptions
+	(*durationpb.Duration)(nil),         // 18: google.protobuf.Duration
+	(*descriptorpb.MessageOptions)(nil), // 19: google.protobuf.MessageOptions
+	(*descriptorpb.FieldOptions)(nil),   // 20: google.protobuf.FieldOptions
+	(*descriptorpb.ServiceOptions)(nil), // 21: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),  // 22: google.protobuf.MethodOptions
 }
 var file_forge_v1_forge_proto_depIdxs = []int32{
 	5,  // 0: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
@@ -1896,31 +2020,32 @@ var file_forge_v1_forge_proto_depIdxs = []int32{
 	7,  // 2: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
 	1,  // 3: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
 	9,  // 4: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
-	17, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
+	18, // 5: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
 	11, // 6: forge.v1.MethodOptions.activity:type_name -> forge.v1.ActivityOptions
 	12, // 7: forge.v1.ActivityOptions.target:type_name -> forge.v1.ActivityTarget
 	2,  // 8: forge.v1.ActivityOptions.writer:type_name -> forge.v1.ActivityWriter
 	3,  // 9: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
 	14, // 10: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
-	18, // 11: forge.v1.entity:extendee -> google.protobuf.MessageOptions
-	18, // 12: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
-	18, // 13: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
-	19, // 14: forge.v1.field:extendee -> google.protobuf.FieldOptions
-	19, // 15: forge.v1.config:extendee -> google.protobuf.FieldOptions
-	20, // 16: forge.v1.service:extendee -> google.protobuf.ServiceOptions
-	21, // 17: forge.v1.method:extendee -> google.protobuf.MethodOptions
-	4,  // 18: forge.v1.entity:type_name -> forge.v1.EntityOptions
-	15, // 19: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
-	16, // 20: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
-	6,  // 21: forge.v1.field:type_name -> forge.v1.FieldOptions
-	13, // 22: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
-	8,  // 23: forge.v1.service:type_name -> forge.v1.ServiceOptions
-	10, // 24: forge.v1.method:type_name -> forge.v1.MethodOptions
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	18, // [18:25] is the sub-list for extension type_name
-	11, // [11:18] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	16, // 11: forge.v1.BinaryConfigOptions.subtrees:type_name -> forge.v1.CommandPath
+	19, // 12: forge.v1.entity:extendee -> google.protobuf.MessageOptions
+	19, // 13: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
+	19, // 14: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
+	20, // 15: forge.v1.field:extendee -> google.protobuf.FieldOptions
+	20, // 16: forge.v1.config:extendee -> google.protobuf.FieldOptions
+	21, // 17: forge.v1.service:extendee -> google.protobuf.ServiceOptions
+	22, // 18: forge.v1.method:extendee -> google.protobuf.MethodOptions
+	4,  // 19: forge.v1.entity:type_name -> forge.v1.EntityOptions
+	15, // 20: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
+	17, // 21: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
+	6,  // 22: forge.v1.field:type_name -> forge.v1.FieldOptions
+	13, // 23: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
+	8,  // 24: forge.v1.service:type_name -> forge.v1.ServiceOptions
+	10, // 25: forge.v1.method:type_name -> forge.v1.MethodOptions
+	26, // [26:26] is the sub-list for method output_type
+	26, // [26:26] is the sub-list for method input_type
+	19, // [19:26] is the sub-list for extension type_name
+	12, // [12:19] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_forge_v1_forge_proto_init() }
@@ -1935,7 +2060,7 @@ func file_forge_v1_forge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_v1_forge_proto_rawDesc), len(file_forge_v1_forge_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 7,
 			NumServices:   0,
 		},

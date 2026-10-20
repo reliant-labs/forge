@@ -128,8 +128,9 @@ rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
 ```
 
 It is then custom everywhere (stub, test row, no shim, no page). Mark every
-CRUD-named rpc of a table and the table is no entity: no ORM struct in
-`internal/db`, no page, no seed root.
+CRUD-named rpc of a table and the table gets no CRUD wiring, page or seed root.
+It keeps its store: the ORM projects every applied table, rpcs or not; keep a
+table off it with `COMMENT ON TABLE t IS 'forge:no-entity'`.
 
 Every rpc is closed to unauthenticated callers unless it carries
 `auth_required: false` (`proto`, `auth`).

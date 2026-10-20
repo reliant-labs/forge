@@ -195,6 +195,12 @@ page, err := s.deps.Activity.List(ctx, activity.Filter{
 })
 ```
 
+**Scopes are paths.** Scope an event `org_1` for something org-wide and
+`org_1/billing` for something in project billing (`activity.ScopeSeparator`).
+`Filter.IncludeAncestors` then reads a project's feed together with its org's
+events, and `Filter.IncludeDescendants` reads an org's feed together with every
+project's. `Filter.Envs` matches any of several environments.
+
 `List` returns the newest events first and pages by keyset, so a page never
 repeats or skips a row while new events arrive. `Filter.Scope` is matched
 exactly, including the empty scope, so always set it.

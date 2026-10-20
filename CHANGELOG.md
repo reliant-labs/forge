@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Activity scopes are paths, so one feed can span an org and its projects**
+  (`forge/pkg/activity`). An event scoped `org_1/billing` belongs to project
+  billing of org org_1. `Filter.IncludeAncestors` adds the ancestors' events to
+  a scope's feed, so a project's feed shows its org's events.
+  `Filter.IncludeDescendants` adds every descendant's events, so an org's feed
+  shows every project's. `Filter.Envs` matches any of several environments.
+  Wildcards in a scope name match literally.
 - **`fw.Workload.profiling` (`forge.Profiling`): a typed per-workload
   profiling override.** `wl.worker | {profiling = fw.Profiling {alloc = True, heap_interval = "1m"}}`
   turns a type on or the heap cadence up for one workload; the schema defaults

@@ -542,6 +542,13 @@ type ConfigField struct {
 	ProtoFile string `json:",omitempty"`
 
 	// EnvVarAliases is (forge.v1.config).env_var_aliases: the further env
+	// EnvPrefix and EnvSuffix bind a map<string, scalar> field to an env
+	// FAMILY: every variable named <EnvPrefix><KEY><EnvSuffix> is one entry
+	// ((forge.v1.config).env_prefix / env_suffix). Empty for an ordinary
+	// field. MapValueType is the map's value kind ("string", "bool", ...).
+	EnvPrefix    string `json:",omitempty"`
+	EnvSuffix    string `json:",omitempty"`
+	MapValueType string `json:",omitempty"`
 	// AllowedValues is the field's closed value set
 	// ((forge.v1.config).allowed_values); empty for an open one.
 	AllowedValues []string `json:",omitempty"`

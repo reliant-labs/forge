@@ -372,6 +372,13 @@ func markerSpecs() []MarkerSpec {
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:fill=ulid'; or 'forge:fill=handler'; in a migration",
 			Example:   "COMMENT ON COLUMN customers.company_id IS 'forge:fill=handler';",
 		},
+		{
+			Name:      schemadef.ColumnMarkerGoType,
+			AppliesTo: "column",
+			Effect:    "Declares the Go type the column projects to on the generated entity struct, in place of the one its SQL type maps to (TEXT → string, INTEGER → int32, SMALLINT → int16, BIGINT → int64, JSONB → json.RawMessage, …): a named enum type over an integer column, `map[string]any` or a struct over a json column, `time.Duration` over a bigint. The type must scan from and bind to the column by Bun's own rules. A nullable column gets a pointer unless the type is already a pointer, slice or map. A qualified type names its import path — `<path>.<Type>`, with `<path>;<package>.<Type>` when the package name is not the path's last element (the go_package convention). forge generates no wire conversion for the column: a CRUD rpc whose wire message carries it fails `forge generate` naming it — convert it in the owned shim, or keep it off the wire.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:go-type=<type>'; in a migration",
+			Example:   "COMMENT ON COLUMN message_content_blocks.block_type IS 'forge:go-type=github.com/acme/app/gen/app/v1;appv1.ContentBlockType';",
+		},
 		// ── Table-comment markers ──
 		//
 		// The same catalog-comment mechanism as the column markers above,

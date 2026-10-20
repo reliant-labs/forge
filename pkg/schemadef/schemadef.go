@@ -286,11 +286,32 @@ const TableMarkerAppendOnly = "forge:append-only"
 // custom, as if the table did not exist.
 const TableMarkerNoEntity = "forge:no-entity"
 
+// TableMarkerEntityName declares the Go/wire name of the entity a table
+// projects to: `COMMENT ON TABLE daemon_attachment IS
+// 'forge:entity-name=DaemonAttachment'`. Without it the name is derived from
+// the table (the singular, camel-cased), and a CRUD rpc's entity finds its
+// table by that name, its plural or its singular. The declaration is for a
+// table whose name derives to something else — an irregular plural, a
+// prefix, a legacy spelling — so the entity, its store and any `Get<E>`
+// rpc over it are named for what the table holds.
+const TableMarkerEntityName = "forge:entity-name"
+
 // KnownTableMarkers is the complete set of `forge:*` marker NAMES a
 // COMMENT ON TABLE may carry — the table-level twin of
 // KnownColumnMarkers, and registered for the same reason: a vocabulary
 // nothing enumerates is a vocabulary a typo silently leaves inert.
-var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, ViewMarkerEntity}
+var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity}
+
+// DeclaredEntityName returns the name a TableMarkerEntityName declaration
+// gives the table's entity, "" when it declares none.
+func (t Table) DeclaredEntityName() string {
+	if m := entityNameTableMarkerRE.FindStringSubmatch(t.Comment); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+var entityNameTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerEntityName) + `=([A-Za-z_][A-Za-z0-9_]*)`)
 
 // ViewMarkerEntity opts a VIEW into the generated data layer as a READ-ONLY
 // entity: `COMMENT ON VIEW chats_with_activity IS 'forge:entity'`. It gets

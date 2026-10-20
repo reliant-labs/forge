@@ -154,13 +154,39 @@ func (g *Graph) Build{{.TypeName}}() (*{{.TypeName}}, error) {
 // ctx ends or a node fails: every node that reports Ready joins g.Probes'
 // /readyz, and g.Probes' Drainer is the stop policy's readiness gate and
 // budget unless policy names one.
+{{- if not .ServesProbes}}
+// No node the root reaches serves g.Probes, so a probe listener on the server
+// address does: started before every node, stopped after them.
+{{- end}}
 func (g *Graph) Run{{.TypeName}}(ctx context.Context, policy lifecyclekit.Policy) error {
 	if _, err := g.Build{{.TypeName}}(); err != nil {
 		return err
 	}
+{{- if .ServesProbes}}
 	return g.b.Supervise(ctx, policy, g.Probes)
+{{- else}}
+	probes, err := g.probeListener()
+	if err != nil {
+		return fmt.Errorf("build {{.Name}}: %w", err)
+	}
+	return g.b.Supervise(ctx, policy, g.Probes, probes...)
+{{- end}}
 }
 {{end}}
+{{- if .ProbeListener}}
+// probeListener serves g.Probes on the server address, for a root none of
+// whose nodes does; nil when the graph has no Probes.
+func (g *Graph) probeListener() ([]lifecyclekit.Node, error) {
+	if g.Probes == nil {
+		return nil, nil
+	}
+	l, err := serverkit.NewProbeListener(serverkit.ProbeListenerDeps{Config: g.ServerCfg.Listener(), Probes: g.Probes, Logger: g.Log})
+	if err != nil {
+		return nil, err
+	}
+	return []lifecyclekit.Node{{"{{"}}Name: "probe_listener", Run: l.Run, Drain: l.Drain, Close: l.Close, Ready: l.Ready}}, nil
+}
+{{- end}}
 {{- with .Operators}}
 // Operators runs every operator under one controller manager (kubeconfig
 // resolution with a graceful no-cluster degrade, leader election, scheme and

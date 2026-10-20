@@ -10,7 +10,8 @@
 // What a process RUNS is a root of the composition graph
 // (internal/app/graph_gen.go): `{{.Bin}} server` runs the server root — every
 // service, worker and operator in one process. Splitting a process is a new
-// root (a `//forge:root` struct in internal/app), not a new subcommand.
+// root (a `//forge:root` struct in internal/app), and each root's command is
+// generated (cmd/{{.Bin}}/cmd/roots_gen.go).
 {{- else}}
 // The COMPOSITION ROOT (devspace idiom): all command logic lives under
 // cmd/{{.Bin}}/cmd (package cmd — root.go assembles the tree) and its

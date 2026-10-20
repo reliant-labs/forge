@@ -394,6 +394,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "COMMENT ON TABLE goose_db_version IS 'forge:no-entity — goose owns it';",
 		},
 		{
+			Name:      schemadef.TableMarkerEntityName,
+			AppliesTo: "table",
+			Effect:    "Names the entity the TABLE holds, for a table whose name derives to something else. Without it the entity is named from the table — the singular, camel-cased (`message_content_blocks` → MessageContentBlock, `daemon_attachment` → DaemonAttachment) — and a CRUD rpc's entity <E> finds its table by that name, by the plural of <E> (`bookmarks`) or by its singular (`daemon_attachment`). Declared, the store is named <Name> and a `Get<Name>`/`List<Names>`/… rpc over a <Name> message is CRUD over this table. A CRUD-named rpc whose entity has a wire message but matches no table, and that no handler implements by hand, fails `forge generate` by name rather than serving forge's Unimplemented stub — this declaration is one of its fixes.",
+			Placement: "COMMENT ON TABLE <table> IS 'forge:entity-name=<Name>'; in a migration — on the TABLE, not a column.",
+			Example:   "COMMENT ON TABLE tbl_widget_v2 IS 'forge:entity-name=Widget';",
+		},
+		{
 			Name:      schemadef.ViewMarkerEntity,
 			AppliesTo: "table", // on a VIEW — the table-level catalog comment of a relation that is not a base table
 			Effect:    "Opts a VIEW (regular or materialized) into the generated data layer as a READ-ONLY entity: the row struct (named from the view: `chats_with_activity` → ChatsWithActivity), List<E>/Count<E>, and Get<E>ByID by its key column — `id` when the view has one, or the column `forge:entity key=<column>` names; a keyless view gets List/Count only. Nothing writes: no Create/Update/Delete delegate or store method is generated, so a write through a view is a compile error. The catalog cannot say whether a view column is nullable, so every column but the key projects as a pointer (the key must never be NULL). Views without the marker are not projected — most are reporting conveniences nothing in Go reads.",

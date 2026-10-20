@@ -81,9 +81,11 @@ option go_package = "{{.Module}}/gen/config/v1;configv1";
 // config.RegisterApiServerConfigFlags on it), config.LoadApiServerConfig
 // refuses to load from any other command, and the worker's Deployment never
 // carries AUTH_API_KEY. Command configs do not nest (`server`'s config is not
-// `server api`'s), and a root and a command config may not declare the same
-// env var, flag, or top-level field name: the process reads both from one
-// config file, whose keys are flat across them. In KCL,
+// `server api`'s); a config several commands read is a SUBTREE config
+// (`subtrees: [{path: ["daemon"]}, {path: ["open"]}]`), loaded at or below
+// each path. Two configs one process loads may not declare the same env var,
+// flag, or top-level field name: the process reads them from one config
+// file, whose keys are flat across them. In KCL,
 // config_gen.<bin>ProcessEnvMap projects a
 // workload's env from its own `command + args`: the root config plus the
 // matching command config, with config_secrets routed to whichever declares

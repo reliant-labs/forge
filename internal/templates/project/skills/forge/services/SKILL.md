@@ -142,19 +142,23 @@ The serve path (`cmd/<bin>/cmd/serve.go`) then applies the typed `Mount<Svc>` me
 - **The interceptor chain and the listener are components.** `serve.go` builds the chain with `serverkit.NewChain(serverkit.ChainDeps{Auth: …})` (every slot defaulted except `Auth`, which is required) and hands it to `serverkit.Server.Chain`; `serverkit.Run` serves one `serverkit.Listener` over it. A process that serves a second kind of caller — daemons, operators — builds a second chain and a second `serverkit.NewListener(ListenerDeps{Config, Chain, Routes})` on its own address, and a listener refuses to start when a mounted service's `(forge.v1.service).audience` differs from its chain's. Depth: `auth` (audiences), `services/shutdown` (running listeners without `Run`).
 - **Shutdown is Run's, and it drains.** Readiness flips, the pre-stop pause runs, then unary requests finish while long-lived streams (SSE, websockets, Connect streams) are ended inside the budget. Mark a plain-HTTP streaming route with `serverkit.LongLived(h)`. Depth: `forge skill load services/shutdown`.
 
-## Subcommands are real cobra, not a projected string table
+## Commands are roots, not one per service
 
-Each service gets its own file at `cmd/<bin>/cmd/services/<name>.go` — forge-owned (Tier-1, `forge project disown` to take it), exporting a real cobra command with its own flags, help, and a jumpable Go symbol:
+A project on the composition graph has no per-service, per-worker or
+per-operator subcommand. A process is a **root** — a `//forge:root` struct in
+`internal/app` whose fields select the subgraph it builds — and every root gets
+one generated cobra command in `cmd/<bin>/cmd/roots_gen.go`, which runs it
+through `runRoot`, the owned process policy in `serve.go`. With no root
+declared the one command is `server`, running every service, worker and
+operator. To run a service alone, declare a root that holds only it; the
+`architecture` skill ("Roots and commands") has the worked example. Custom
+NON-root subcommands go in the user-owned `cmd/<bin>/cmd/commands.go`
+(`userCommands(deps)`) — see the `binaries` skill.
 
-```go
-// cmd/<bin>/cmd/services/billing.go — generated
-func NewBillingCmd(deps cmd.Deps) *cobra.Command {
-    // ...RunE:
-    return cmd.Serve(c.Context(), deps, cmd.ServeSpec{Mount: (*app.Components).MountBilling})
-}
-```
-
-The mount is the typed METHOD EXPRESSION, named directly — no name→func lookup anywhere on the run path. `cmd/<bin>/cmd/server.go` is the all-services command and mounts `(*app.Components).MountAll`; there is no `server [services...]` string-matching and no generated `cmd/services_gen.go`. Custom NON-service subcommands go in the user-owned `cmd/<bin>/cmd/commands.go` (`userCommands(deps)`) — see the `binaries` skill.
+A project still on the legacy `Infra` / `NewComponents` composition keeps its
+generated `cmd/<bin>/cmd/services/<name>.go` per-service commands
+(`cmd.Serve(c.Context(), deps, cmd.ServeSpec{Mount: (*app.Components).MountBilling})`)
+until it migrates.
 
 ## Inventory (introspection only)
 

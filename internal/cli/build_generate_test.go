@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,8 +168,11 @@ func TestGeneratedCodeNeedsRefresh(t *testing.T) {
 		dir := t.TempDir()
 		writeFileAt(t, dir, "go.mod", "module example.com/x\n\ngo 1.26.2\n")
 		writeFileAt(t, dir, "proto/v1/a.proto", protoBody)
-		hash := codegen.DescriptorSourceHash(dir)
-		gen := writeFileAt(t, dir, "gen/forge_descriptor.json", `{"services": [], "source_hash": "`+hash+`"}`)
+		sources, err := json.Marshal(codegen.DescriptorSources(dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gen := writeFileAt(t, dir, "gen/forge_descriptor.json", `{"services": [], "sources": `+string(sources)+`}`)
 		past := time.Now().Add(-time.Hour)
 		if err := os.Chtimes(gen, past, past); err != nil {
 			t.Fatal(err)

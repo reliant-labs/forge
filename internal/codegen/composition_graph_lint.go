@@ -10,6 +10,8 @@
 //     never constructed, so a service in that position is a service no
 //     process serves — the exact gap RequireComplete failed boot over. A
 //     provider kept for components to come says so with //forge:standby.
+//     An internal package NOTHING consumes yet (every freshly scaffolded
+//     one) is a pending warning, not an error: see pendingPackageFinding.
 //   - AUDIENCE. For every listener (a node whose value is a
 //     serverkit.Listener), the audience of each service its routes reach
 //     must be the audience of the authenticator its chain reaches (a
@@ -139,6 +141,7 @@ func (m *graphModel) rootNames() string {
 // Route sets and the operators' manager are reported through their members.
 func (m *graphModel) unreachableFindings() []GraphFinding {
 	reached := m.reached()
+	consumed := m.consumed()
 	audienceOf := m.serviceAudiences()
 	var out []GraphFinding
 	for _, n := range m.nodes {
@@ -147,6 +150,10 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 		}
 		switch n.Kind {
 		case nodeComponent:
+			if n.Role == "internal" && !consumed[n.Name] {
+				out = append(out, m.pendingPackageFinding(n))
+				continue
+			}
 			out = append(out, GraphFinding{
 				Rule: GraphRuleUnreachable, Error: true,
 				File:    filepath.ToSlash(n.Comp.ImportPath),
@@ -170,6 +177,42 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 		}
 	}
 	return out
+}
+
+// consumed is every node some other node's compose.go method names — called
+// or as a lazy method value — whether or not a root reaches the consumer.
+func (m *graphModel) consumed() map[string]bool {
+	out := map[string]bool{}
+	for _, deps := range []map[string][]string{m.edges, m.lazy} {
+		for _, targets := range deps {
+			for _, t := range targets {
+				out[t] = true
+			}
+		}
+	}
+	return out
+}
+
+// pendingPackageFinding reports an internal package that nothing consumes
+// yet, as a WARNING.
+//
+// A package runs nothing and serves nothing: it exists only as another
+// node's dependency, and in the graph it is constructed only when a
+// consumer's Deps takes it. So `forge scaffold package <name>` always births
+// one with no consumer, and an error here made forge's own fresh output fail
+// forge's own gate (TestE2EComponentScaffoldsLintClean), the state
+// lint_pending_stubs.go and scaffold-not-customized already hold at warning.
+// A package with no consumer is pending work, not a gap a process falls
+// into. Once something takes it, its reach is the consumer's, and a consumer
+// no root reaches is an error, reported for both.
+func (m *graphModel) pendingPackageFinding(n *graphNode) GraphFinding {
+	return GraphFinding{
+		Rule: GraphRuleUnreachable, Error: false,
+		File: filepath.ToSlash(n.Comp.ImportPath),
+		Message: fmt.Sprintf("pending: nothing takes %s in its Deps yet — %s is reachable from no root (%s), so no process constructs it; "+
+			"a warning while it has no consumer, an error once a consumer no root reaches takes it", n.Type, n.Doc, m.rootNames()),
+		Fix: fmt.Sprintf("take %s in the Deps of a node a root reaches, or delete the package", n.Type),
+	}
 }
 
 func (m *graphModel) unreachableComponentFix(n *graphNode, audience string) string {

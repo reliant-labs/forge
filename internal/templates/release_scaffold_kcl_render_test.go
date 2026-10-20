@@ -101,7 +101,7 @@ appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forg
     } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}
 }
 `
-	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_gen.k"), []byte(configGenStub), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "deploy/kcl", "config_gen.k"), []byte(configGenStub+serverRootStub(t, "DATABASE_URL")), 0644); err != nil {
 		t.Fatalf("write config_gen.k stub: %v", err)
 	}
 	for _, env := range []string{"dev", "staging", "prod"} {

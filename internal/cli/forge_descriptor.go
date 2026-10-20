@@ -35,16 +35,18 @@ const descriptorStageDir = ".descriptor.d"
 // It aggregates all data the generate.go pipeline needs from proto descriptors.
 // NOTE: this mirrors codegen.ForgeDescriptor — the writer's view of the same
 // file the reader parses. Every field must stay in sync with it, INCLUDING
-// SourceHash: a field added on one side only would produce a file the other
+// Sources: a field added on one side only would produce a file the other
 // side silently ignores.
 type ForgeDescriptor struct {
 	Services []codegen.ServiceDef    `json:"services"`
 	Configs  []codegen.ConfigMessage `json:"configs"`
 
-	// SourceHash fingerprints the .proto files this descriptor came from.
-	// codegen.loadDescriptor REFUSES a descriptor whose hash does not match
-	// the protos on disk, so an unstamped file reads as stale.
-	SourceHash string `json:"source_hash,omitempty"`
+	// Sources fingerprints the .proto files this descriptor came from, one
+	// entry per file (codegen.DescriptorSources). codegen.loadDescriptor
+	// REFUSES a descriptor whose entries do not match the protos on disk. It
+	// is the LAST field: the merge driver settles the block key by key
+	// (mergeDescriptorSources), so its position must stay fixed.
+	Sources map[string]string `json:"sources"`
 }
 
 // generateDescriptor extracts services, entities, and configs from all proto
@@ -206,11 +208,11 @@ func MergeDescriptorFragments(descriptorOut string) error {
 		merged.Configs = append(merged.Configs, frag.Configs...)
 	}
 
-	// Stamp the fingerprint of the protos this descriptor was extracted from.
-	// descriptorOut is <projectDir>/gen, so the project root is its parent.
-	// Without this the file is an unverifiable cache, and loadDescriptor
-	// refuses it — see codegen.DescriptorSourceHash.
-	merged.SourceHash = codegen.DescriptorSourceHash(filepath.Dir(descriptorOut))
+	// Stamp the fingerprints of the protos this descriptor was extracted
+	// from. descriptorOut is <projectDir>/gen, so the project root is its
+	// parent. Without this the file is an unverifiable cache — see
+	// codegen.DescriptorSources.
+	merged.Sources = codegen.DescriptorSources(filepath.Dir(descriptorOut))
 
 	out, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {

@@ -345,7 +345,7 @@ func TestRescaffold_PipelineCIStepRendersTheTreeThePipelineLeaves(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		if err := generatePerEnvDeployConfig(root, cfg, cs); err != nil {
+		if err := generatePerEnvDeployConfig(root, cfg, cs, nil); err != nil {
 			return err
 		}
 		return generateCIWorkflows(root, cfg, nil, false)

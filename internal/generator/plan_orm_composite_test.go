@@ -19,11 +19,11 @@ func TestPlanORM_CompositeKeyDelegatesTakeTheWholeKey(t *testing.T) {
 			{Name: "note", Type: "string"},
 		},
 	}
-	src := string(renderORMEntity(ent, false))
+	src := string(renderORMEntity("db", ent, false))
 	for _, want := range []string{
-		"func GetProjectDaemonByPK(ctx context.Context, db orm.Context, projectId string, typeKey string) (*ProjectDaemon, error) {",
-		"projectDaemonRepo.GetByPK(ctx, db, &ProjectDaemon{ProjectId: projectId, Type: typeKey})",
-		"func DeleteProjectDaemonByPK(ctx context.Context, db orm.Context, projectId string, typeKey string) error {",
+		"func GetProjectDaemonByPK(ctx context.Context, db orm.Context, projectID string, typeKey string) (*ProjectDaemon, error) {",
+		"projectDaemonRepo.GetByPK(ctx, db, &ProjectDaemon{ProjectID: projectID, Type: typeKey})",
+		"func DeleteProjectDaemonByPK(ctx context.Context, db orm.Context, projectID string, typeKey string) error {",
 		"func UpsertProjectDaemon(ctx context.Context, db orm.Context, msg *ProjectDaemon) error {",
 		"func UpdateProjectDaemon(ctx context.Context, db orm.Context, msg *ProjectDaemon, opts ...crud.UpdateOption) error {",
 		"func ListProjectDaemon(",
@@ -38,10 +38,10 @@ func TestPlanORM_CompositeKeyDelegatesTakeTheWholeKey(t *testing.T) {
 		t.Errorf("a composite key has no single id to Get/Delete by:\n%s", src)
 	}
 
-	store := string(renderStoreInterfaces([]config.PlanEntity{ent}))
+	store := string(renderStoreInterfaces("db", []config.PlanEntity{ent}))
 	for _, want := range []string{
-		"GetProjectDaemonByPK(ctx context.Context, projectId string, typeKey string) (*ProjectDaemon, error)",
-		"DeleteProjectDaemonByPK(ctx context.Context, projectId string, typeKey string) error",
+		"GetProjectDaemonByPK(ctx context.Context, projectID string, typeKey string) (*ProjectDaemon, error)",
+		"DeleteProjectDaemonByPK(ctx context.Context, projectID string, typeKey string) error",
 		"UpsertProjectDaemon(ctx context.Context, msg *ProjectDaemon) error",
 		"var _ ProjectDaemonStore = projectDaemonStore{}",
 	} {

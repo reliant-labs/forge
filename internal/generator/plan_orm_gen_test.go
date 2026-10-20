@@ -28,7 +28,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	// Struct fields are gofmt-aligned; collapse whitespace before matching
 	// the field declaration (name + Go type + bun tag).
 	collapsedStruct := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsedStruct, "Id string `bun:\"id,pk\"`") {
+	if !strings.Contains(collapsedStruct, "ID string `bun:\"id,pk\"`") {
 		t.Error("Project struct should carry a bun-tagged string Id (pk) field")
 	}
 	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Description *string") {
@@ -236,11 +236,11 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	// Field constants (gofmt aligns the `=`, so collapse whitespace before
 	// matching the const declaration).
 	collapsed := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsed, `ProjectFieldId = "id"`) {
-		t.Error("missing field constant for Id")
+	if !strings.Contains(collapsed, `ProjectFieldID = "id"`) {
+		t.Error("missing field constant for ID")
 	}
-	if !strings.Contains(collapsed, `ProjectFieldOrgId = "org_id"`) {
-		t.Error("missing field constant for OrgId")
+	if !strings.Contains(collapsed, `ProjectFieldOrgID = "org_id"`) {
+		t.Error("missing field constant for OrgID")
 	}
 }
 
@@ -257,7 +257,7 @@ func TestGeneratePlanORM_Minimal(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -357,7 +357,7 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -421,7 +421,7 @@ func TestGeneratePlanORM_TableNameOverride(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -471,7 +471,7 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -525,9 +525,9 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		t.Error("Bun scans directly; should not emit a scanRecord function")
 	}
 
-	// "json" maps to Go string on the struct; NOT NULL projects ,notnull.
-	if !strings.Contains(collapsedStruct, "Meta string `bun:\"meta,notnull\"`") {
-		t.Error("json NOT NULL column should be a string struct field tagged ,notnull")
+	// "json" maps to json.RawMessage on the struct; NOT NULL projects ,notnull.
+	if !strings.Contains(collapsedStruct, "Meta json.RawMessage `bun:\"meta,notnull\"`") {
+		t.Error("json NOT NULL column should be a json.RawMessage struct field tagged ,notnull")
 	}
 
 	// Array columns are native slices tagged ,array so Bun maps them to
@@ -573,7 +573,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -643,7 +643,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 func TestGeneratePlanORM_Empty(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", nil, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, nil, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -667,7 +667,7 @@ func TestGeneratePlanORM_MultipleEntities(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -692,7 +692,7 @@ func TestGeneratePlanORM_References(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -729,7 +729,7 @@ func TestGeneratePlanORM_NoSoftDelete(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -784,7 +784,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -796,7 +796,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 
 	// id should be in field constants (gofmt aligns the `=`).
 	collapsed := strings.Join(strings.Fields(code), " ")
-	if !strings.Contains(collapsed, `WidgetFieldId = "id"`) {
+	if !strings.Contains(collapsed, `WidgetFieldID = "id"`) {
 		t.Error("missing auto-generated id field constant")
 	}
 
@@ -816,7 +816,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 	}
 
 	// The struct carries the id field with a bun pk tag so Bun scans it.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id string `bun:\"id,pk\"`") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "ID string `bun:\"id,pk\"`") {
 		t.Error("Widget struct should carry a bun-tagged Id field")
 	}
 
@@ -857,7 +857,7 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -868,12 +868,12 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 	code := string(content)
 
 	// Should NOT have an auto-generated id field constant
-	if strings.Contains(code, `CounterFieldId = "id"`) {
+	if strings.Contains(code, `CounterFieldID = "id"`) {
 		t.Error("should not auto-add id when explicit PK exists")
 	}
 
 	// Should use counter_id as the PK
-	if !strings.Contains(code, `CounterFieldCounterId = "counter_id"`) {
+	if !strings.Contains(code, `CounterFieldCounterID = "counter_id"`) {
 		t.Error("missing counter_id field constant")
 	}
 	if !strings.Contains(code, "func GetCounterByID(ctx context.Context, db orm.Context, id int64)") {
@@ -897,7 +897,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -965,7 +965,7 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1050,7 +1050,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1127,7 +1127,7 @@ func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1197,7 +1197,7 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1259,7 +1259,7 @@ func TestGeneratePlanORM_UnstampableTimestampsSkipped(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1310,7 +1310,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1320,7 +1320,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	// the DB-assigned value back via RETURNING) moved into pkg/crud, which
 	// detects it off Bun's schema. The generator's contract is the struct
 	// tag that tells Bun the PK is autoincrement: ,pk,autoincrement.
-	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id int64 `bun:\"id,pk,autoincrement\"`") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "ID int64 `bun:\"id,pk,autoincrement\"`") {
 		t.Error("server-allocated int64 PK should carry the bun ,pk,autoincrement tag")
 	}
 
@@ -1374,7 +1374,7 @@ func TestGeneratePlanORM_GetClassifiesMissingRow(t *testing.T) {
 			{Name: "patient_id", Type: "string", NotNull: true},
 		},
 	}}
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "prescription_orm_gen.go"))
@@ -1565,7 +1565,7 @@ func widgetEntity() []config.PlanEntity {
 // entity struct embeds it — the seam and its consumer are born together.
 func TestGeneratePlanORM_ComputedFieldSeam_FreshEntity(t *testing.T) {
 	root := t.TempDir()
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, widgetEntity(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -1608,7 +1608,7 @@ func TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectWithoutExtra(t *testin
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, widgetEntity(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -1654,7 +1654,7 @@ func TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectAdoptsExtra(t *testing
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", widgetEntity(), nil); err != nil {
+	if err := GeneratePlanORM(root, config.ORMConfig{}, widgetEntity(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 

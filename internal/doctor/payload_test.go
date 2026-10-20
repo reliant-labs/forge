@@ -38,7 +38,7 @@ const (
 
 	// payloadDescriptorWithService / payloadDescriptorEmpty are the two
 	// authoritative answers gen/forge_descriptor.json can give. Neither
-	// carries a source_hash: an unstamped descriptor skips the staleness
+	// carries sources: an unstamped descriptor skips the staleness
 	// guard, which is what a hand-built fixture wants.
 	payloadDescriptorWithService = `{"services":[{"Name":"BillingService","Package":"acme.billing.v1"}]}`
 	payloadDescriptorEmpty       = `{"services":[]}`

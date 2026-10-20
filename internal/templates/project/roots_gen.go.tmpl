@@ -30,6 +30,9 @@ type rootSpec struct {
 	// Migrate is true when the root reaches the database: the process
 	// migrates before building it.
 	Migrate bool
+	// Config is every config field the root reaches, by path; runRoot
+	// demands only these (config.LoadReach). nil: every field.
+	Config []string
 	// Run builds the root on g — exactly the closure its fields reach — and
 	// supervises it under policy until ctx ends or a node fails.
 	Run func(g *app.Graph, ctx context.Context, policy lifecyclekit.Policy) error
@@ -47,7 +50,18 @@ func rootCommands(deps Deps) []*cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deps.Cmd = cmd
-			return runRoot(cmd.Context(), deps, rootSpec{Name: "{{.Root.Name}}", Migrate: {{.Root.Migrate}}, Run: (*app.Graph).Run{{.Root.TypeName}}})
+			return runRoot(cmd.Context(), deps, rootSpec{
+				Name:    "{{.Root.Name}}",
+				Migrate: {{.Root.Migrate}},
+{{- if .Root.HasConfig}}
+				Config: []string{
+{{- range .Root.Config}}
+					"{{.Path}}",
+{{- end}}
+				},
+{{- end}}
+				Run: (*app.Graph).Run{{.Root.TypeName}},
+			})
 		},
 {{- end}}
 	}

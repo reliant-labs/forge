@@ -135,6 +135,13 @@ rolls back with it. If such a handler succeeds without recording, the
 interceptor writes the event itself and logs a warning. A streaming rpc must
 use `ACTIVITY_WRITER_HANDLER` or `none`.
 
+## When a call changes nothing
+
+A declaration says what an rpc records when it changes something. An
+idempotent "ensure" rpc that found its object already there, a dry run or a
+no-op update calls `activity.Skip(ctx)`, and the interceptor writes no event for
+that call.
+
 ## Actors that are not rpcs
 
 A converger, an alert transition, or a CI ingestion job writes with the same

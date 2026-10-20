@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a scope's feed, so a project's feed shows its org's events.
   `Filter.IncludeDescendants` adds every descendant's events, so an org's feed
   shows every project's. `Filter.Envs` matches any of several environments.
-  Wildcards in a scope name match literally.
+  Wildcards in a scope name match literally. `activity.Skip(ctx)` lets a
+  handler whose call changed nothing (an idempotent ensure, a dry run) suppress
+  that call's event.
 - **`fw.Workload.profiling` (`forge.Profiling`): a typed per-workload
   profiling override.** `wl.worker | {profiling = fw.Profiling {alloc = True, heap_interval = "1m"}}`
   turns a type on or the heap cadence up for one workload; the schema defaults

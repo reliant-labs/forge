@@ -20,12 +20,10 @@ import (
 // TestE2ECmdAsCodeSubcommands drives the cmd-as-code surface end to end
 // on a real scaffold:
 //
-//  1. `./<bin> <svc>` is a REAL cobra subcommand (its own `-h`, its own
-//     identity) that boots only that service through the canonical server
-//     pipeline, via a TYPED (*app.Components).Mount<Svc> — and the
-//     composition root cmd/<bin>/main.go actually NAMES it, so it appears
-//     on `--help` and runs. `./<bin> server` remains the monolith: no args,
-//     every service mounted, every worker/operator supervised.
+//  1. A new project composes with the composition graph, so it has NO
+//     per-service subcommand (design §9.5): `./<bin> server` runs the
+//     generated server root — every service, worker and operator — and the
+//     composition root cmd/<bin>/main.go is a bare cmd.Execute().
 //  2. The user-owned cmd/commands.go extension point: a second binary
 //     registered AS CODE (userCommands()) shows up on the root command,
 //     runs, and SURVIVES regeneration (Tier-2: forge never overwrites).
@@ -45,33 +43,21 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 
 	runCmd(t, projectDir, forgeBin, "generate")
 
-	// The cmd layer is a dir-nested cobra tree under cmd/<bin>/, not a flat
-	// cmd/ package: each service is its OWN file in the services/ group,
-	// beside the group anchor, with the user-owned extension point one
-	// level up beside the generated root.
+	// The cmd layer is a cobra tree under cmd/<bin>/: the generated root,
+	// the owned serve pipeline, and the user-owned extension point. There is
+	// no services/ group — a process is a root, not a subcommand per service.
 	cmdDir := filepath.Join(projectDir, "cmd", "cmdcode", "cmd")
-	svcCmdPath := filepath.Join(cmdDir, "services", "api.go")
 	commandsPath := filepath.Join(cmdDir, "commands.go")
-
-	// (1) The REAL per-service subcommand file IS emitted, and the
-	// user-owned extension point exists.
-	assertPathExistsE2E(t, svcCmdPath)
-	assertPathExistsE2E(t, filepath.Join(cmdDir, "services", "register_gen.go"))
 	assertPathExistsE2E(t, commandsPath)
-
-	// Selection is compile-time TYPED, never a registry string. The method
-	// expression itself is the ONE derived thing, so it lives next door in
-	// the generated <svc>_mount_gen.go and the owned subcommand references
-	// it by name — that split is what lets forge add or rename a service
-	// without rewriting the file the user edits. Assert both halves: a
-	// typed expression nobody references would not select anything.
-	svcCmd := readFileE2E(t, svcCmdPath)
-	if !strings.Contains(svcCmd, "Mount: mountAPI") {
-		t.Errorf("per-service subcommand must select its service by TYPED mount method, not a string:\n%s", svcCmd)
+	if _, err := os.Stat(filepath.Join(cmdDir, "services")); !os.IsNotExist(err) {
+		t.Errorf("a graph-mode project has a cmd/cmdcode/cmd/services group (%v)", err)
 	}
-	mountGen := readFileE2E(t, filepath.Join(cmdDir, "services", "api_mount_gen.go"))
-	if !strings.Contains(mountGen, "(*app.Components).MountAPI") {
-		t.Errorf("mountAPI must be the typed mount method expression, not a string lookup:\n%s", mountGen)
+	if main := readFileE2E(t, filepath.Join(projectDir, "cmd", "cmdcode", "main.go")); !strings.Contains(main, "cmd.Execute()") {
+		t.Errorf("main.go must be the bare composition root:\n%s", main)
+	}
+	serverGo := readFileE2E(t, filepath.Join(cmdDir, "server.go"))
+	if !strings.Contains(serverGo, "Serve(cmd.Context(), deps)") {
+		t.Errorf("`server` must run the graph's server root through Serve:\n%s", serverGo)
 	}
 
 	// (2) Register a second binary AS CODE: replace the scaffolded
@@ -112,27 +98,22 @@ func userCommands(deps Deps) []*cobra.Command {
 	if got := readFileE2E(t, commandsPath); got != customCommands {
 		t.Fatalf("forge generate overwrote the user-owned cmd/<bin>/cmd/commands.go:\n%s", got)
 	}
-	assertPathExistsE2E(t, svcCmdPath)
 
 	bin := filepath.Join(projectDir, "cmdcode-bin")
 	// `./cmd/...` matches the main package AND its cobra subpackages, which
 	// `go build -o <file>` refuses; name the ONE main package.
 	runCmd(t, projectDir, "go", "build", "-o", bin, "./cmd/cmdcode")
 
-	// Root help advertises the canonical server command, the REAL
-	// per-service subcommand (api), and the code-registered second binary.
+	// Root help advertises the server command and the code-registered second
+	// binary — and no per-service subcommand.
 	helpOut := runCmdOutput(t, projectDir, bin, "--help")
-	for _, want := range []string{"proxy-tool", "server", "api"} {
+	for _, want := range []string{"proxy-tool", "server"} {
 		if !strings.Contains(helpOut, want) {
 			t.Errorf("root --help missing subcommand %q:\n%s", want, helpOut)
 		}
 	}
-
-	// `<bin> api -h` is a FIRST-CLASS subcommand with its own,
-	// service-specific help — not a positional arg to `server`.
-	svcHelpOut := runCmdOutput(t, projectDir, bin, "api", "-h")
-	if !strings.Contains(svcHelpOut, "Run only the api service") {
-		t.Errorf("`api -h` missing service-specific help:\n%s", svcHelpOut)
+	if strings.Contains(helpOut, "Run only the api service") {
+		t.Errorf("root --help still lists a per-service subcommand:\n%s", helpOut)
 	}
 
 	// The second binary runs through the shared root.
@@ -142,7 +123,8 @@ func userCommands(deps Deps) []*cobra.Command {
 	}
 
 	// The scaffolded config declares database_url REQUIRED (config.checkRequired
-	// fires before bind) and OpenInfra PINGS the database while wiring infra, so
+	// fires before bind) and the DB provider PINGS the database while the root
+	// is built, so
 	// "no database" is not a bootable configuration for any service project.
 	// One ephemeral database serves both boots below; it stays empty — the point
 	// here is the command grammar, not the schema.
@@ -152,8 +134,7 @@ func userCommands(deps Deps) []*cobra.Command {
 	}
 	defer dropDB()
 
-	// bootService starts `bin <args...>` (a real per-service subcommand or the
-	// all-services `server`), waits for /healthz, and asserts 200.
+	// bootService starts `bin <args...>`, waits for /healthz, and asserts 200.
 	bootService := func(label string, args ...string) {
 		t.Helper()
 		port := freePortE2E(t)
@@ -193,10 +174,8 @@ func userCommands(deps Deps) []*cobra.Command {
 		}
 	}
 
-	// The REAL per-service subcommand boots only that service.
-	bootService("api", "api")
-	// The MONOLITH still works: `server` takes no args and mounts every
-	// service (typed MountAll) plus every worker/operator in one process.
+	// `server` takes no args and runs the server root: every service on the
+	// API listener plus every worker/operator, in one process.
 	bootService("server", "server")
 
 	// (3) No phantom service: audit's codegen category must not carry an
@@ -217,14 +196,15 @@ func userCommands(deps Deps) []*cobra.Command {
 
 	// (4) Owned-auth honesty compiles end to end. Auth is CODE now, not a
 	// forge.yaml provider gate: a fresh project scaffolds the OWNED
-	// internal/app/auth.go (SetupAuth), and the generated runServer calls it
-	// and threads the validator into AuthDeps.Validate. Regenerate + build
+	// internal/app/auth.go (SetupAuth), and the owned UserAuth provider calls
+	// it and threads the validator into AuthDeps.Validate. Regenerate + build
 	// must stay green with no auth block anywhere in forge.yaml.
 	runCmd(t, projectDir, forgeBin, "generate")
-	serveGo := readFileE2E(t, filepath.Join(cmdDir, "serve.go"))
-	if !strings.Contains(serveGo, "app.SetupAuth(cfg)") {
-		t.Fatalf("cmd/<bin>/cmd/serve.go must call the owned app.SetupAuth(cfg):\n%s", serveGo)
+	providersGo := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "providers.go"))
+	if !strings.Contains(providersGo, "SetupAuth(d.Config)") {
+		t.Fatalf("internal/app/providers.go's UserAuth must call the owned SetupAuth:\n%s", providersGo)
 	}
+	serveGo := readFileE2E(t, filepath.Join(cmdDir, "serve.go"))
 	if strings.Contains(serveGo, "InstallGeneratedAuth") || strings.Contains(serveGo, "GeneratedAuthInterceptor") {
 		t.Fatalf("cmd/<bin>/cmd/serve.go must not reference the retired generated-auth surface:\n%s", serveGo)
 	}

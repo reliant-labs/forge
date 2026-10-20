@@ -29,6 +29,7 @@ package serverkit
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -55,7 +56,9 @@ type ListenerConfig struct {
 	// Addr is the address to bind (":8080", "127.0.0.1:0"). Required.
 	Addr string
 
-	// TLSCertPath and TLSKeyPath serve TLS when both are set.
+	// TLSCertPath and TLSKeyPath serve TLS when both are set. The pair is
+	// loaded by Listen, before the address is bound: a missing or invalid
+	// certificate fails boot, never a listener that already reported Ready.
 	TLSCertPath string
 	TLSKeyPath  string
 
@@ -182,10 +185,11 @@ type Listener struct {
 	streams  *Streams
 	srv      *http.Server
 
-	mu       sync.Mutex
-	ln       net.Listener
-	serving  bool
-	draining bool
+	mu        sync.Mutex
+	ln        net.Listener
+	serving   bool
+	draining  bool
+	tlsLoaded bool // Listen loaded cfg's certificate into srv.TLSConfig
 }
 
 // NewListener mounts deps.Routes with deps.Chain's handler options and builds
@@ -349,7 +353,9 @@ func (l *Listener) Addr() net.Addr {
 
 // Listen binds the listener's address without serving yet, so a caller can
 // learn the bound address, or report a bind failure, before anything runs.
-// Run calls it when it has not been called. Idempotent.
+// With TLS configured it first loads and validates the certificate pair, so a
+// bad one is a Listen error: the listener never binds and never reports
+// Ready. Run calls it when it has not been called. Idempotent.
 //
 // When ctx carries the boot probes (StartBootProbes) bound to the same
 // address, Listen takes the address over from them.
@@ -362,6 +368,14 @@ func (l *Listener) Listen(ctx context.Context) error {
 	if l.draining {
 		return fmt.Errorf("listen %s: the listener is draining", l.cfg.Addr)
 	}
+	// The certificate is loaded before anything binds, so a bad one fails
+	// here — boot — rather than in Run's ServeTLS, after Ready had already
+	// reported the listener bound and a supervisor had moved on.
+	if l.cfg.tls() && !l.tlsLoaded {
+		if err := l.loadTLS(); err != nil {
+			return fmt.Errorf("listen %s: %w", l.cfg.Addr, err)
+		}
+	}
 	handoff := false
 	if b := BootProbesFrom(ctx); b != nil && b.addr == l.cfg.Addr {
 		b.release()
@@ -373,6 +387,24 @@ func (l *Listener) Listen(ctx context.Context) error {
 	}
 	l.ln = ln
 	l.logger.Info("server listening", "addr", l.cfg.Addr, "tls", l.cfg.tls())
+	return nil
+}
+
+// loadTLS loads the certificate pair into the server's TLS config, which
+// ServeTLS then uses as is (it reads the files only when no certificate is
+// configured). Called with l.mu held.
+func (l *Listener) loadTLS() error {
+	cert, err := tls.LoadX509KeyPair(l.cfg.TLSCertPath, l.cfg.TLSKeyPath)
+	if err != nil {
+		return fmt.Errorf("load TLS certificate (TLSCertPath %q, TLSKeyPath %q): %w", l.cfg.TLSCertPath, l.cfg.TLSKeyPath, err)
+	}
+	cfg := l.srv.TLSConfig.Clone()
+	if cfg == nil {
+		cfg = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	cfg.Certificates = []tls.Certificate{cert}
+	l.srv.TLSConfig = cfg
+	l.tlsLoaded = true
 	return nil
 }
 
@@ -413,7 +445,8 @@ func (l *Listener) Run(ctx context.Context) error {
 	go func() {
 		var err error
 		if l.cfg.tls() {
-			err = l.srv.ServeTLS(ln, l.cfg.TLSCertPath, l.cfg.TLSKeyPath)
+			// Listen loaded the certificate into srv.TLSConfig.
+			err = l.srv.ServeTLS(ln, "", "")
 		} else {
 			err = l.srv.Serve(ln)
 		}

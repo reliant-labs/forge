@@ -161,3 +161,20 @@ func TestUpsert_UnsetColumnsDefaultOnInsertAndKeepOnConflict(t *testing.T) {
 		t.Errorf("conflict branch: title=%q status=%d, want the title written and status kept at 7", got.Title, *got.Status)
 	}
 }
+
+// A masked update that names an unset column asks for it to be unset: the
+// column goes back to its DEFAULT (SET … = DEFAULT, on the bind path).
+func TestUpdateMasked_NamingAnUnsetColumnRestoresItsDefault(t *testing.T) {
+	db := newThreadsTestDB(t)
+	repo := NewRepo[thread]()
+	ctx := context.Background()
+	if err := repo.Create(ctx, db, &thread{ID: "t5", Title: "x", Status: ptr[int64](9)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateMasked(ctx, db, &thread{ID: "t5"}, []string{"status"}); err != nil {
+		t.Fatalf("UpdateMasked naming an unset column: %v", err)
+	}
+	if got := storedThread(t, db, "t5"); *got.Status != 2 {
+		t.Errorf("status = %d, want the DEFAULT 2", *got.Status)
+	}
+}

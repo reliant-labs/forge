@@ -508,7 +508,9 @@ type contractShapeFacts struct {
 // a package's `//forge:exclude-contract` when an exported interface it
 // declares has two or more implementations in the module — correctly, because
 // interchangeable implementations ARE a contract — and prescribes moving the
-// interface into a contract.go. Doing that makes the package a contract
+// interface into a contract.go. (It no longer refuses an interface the
+// package itself consumes — a Deps or struct-field seam — so a seam reaches
+// this rule only when its author chose a contract.go for it.) Doing that makes the package a contract
 // package, at which point the shape rule used to demand a constructor
 // returning that interface.
 //

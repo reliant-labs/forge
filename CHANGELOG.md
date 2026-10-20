@@ -464,6 +464,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SignInCode.ExpiresAt` (minting time plus `SignInCodeLifetime`, Zitadel's
   default one hour) says when to re-issue, and `Report.Credentialed` names the
   members confirmed to hold a credential, so a caller can drop their codes.
+- **`forge project new --link-forge` finds the forge checkout without a build-time
+  path, and takes `--forge-root`.** The bridge needed the checkout this binary
+  was built from, recovered from an ldflag or the source path the compiler
+  bakes in. Both are erased by `-trimpath`, which the Reliant workspace image
+  sets as the Go default (`GOFLAGS=-trimpath`), so `--link-forge` refused for
+  every forge built there, and `TestRunNewInPlace_ExistingRepo` and tierguard
+  failed unless run with `GOFLAGS=-buildvcs=auto`. The checkout is now
+  resolved, first match winning, from `--forge-root <path>` (or
+  `FORGE_ROOT`), the ldflag, the compiled source path, the
+  `replace github.com/reliant-labs/forge => ../forge` that a host binary such
+  as `reliant` was built with (resolved against the directories the binary and
+  the process live under), the checkout the executable is inside, and the
+  checkout forge was started in. A stated path that is not a forge checkout
+  (no forge `go.mod` and `pkg/`, or a module-cache copy) is an error, and the
+  refusal when nothing is found names `--forge-root`.
 - **A StatefulSet's declared volume size can grow, and the deploy converges it.**
   `volumeClaimTemplates` are immutable, so raising a declared size (a
   `clickhouse_disk = "100Gi"` that was `"50Gi"`) used to fail every apply with

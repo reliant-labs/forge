@@ -191,6 +191,9 @@ type BinaryConfig struct {
 	// config (["server", "api"]); empty for the binary's ROOT config. See
 	// ConfigMessage.Command.
 	Command []string
+	// Subtrees are the command paths at or below which this config is
+	// loaded; empty unless it is a subtree config. See ConfigMessage.Subtrees.
+	Subtrees [][]string
 	// MessageName is the config message's proto name (e.g. "AdminConfig") —
 	// the generated Go type this binary's Config aliases.
 	MessageName string
@@ -205,7 +208,7 @@ type BinaryConfig struct {
 	// Blocks are the config blocks this message composes, in declaration
 	// order — the shared definitions, named so the template can reach them.
 	Blocks []ConfigBlockRef
-	// BinaryHasRootConfig reports, on a command config, whether its binary
+	// BinaryHasRootConfig reports, on a command or subtree config, whether its binary
 	// also binds a root config. That root config owns the --config file flag
 	// (persistent on the binary's root), so the command config registers its
 	// leaves alone rather than a second --config shadowing the inherited one.
@@ -215,6 +218,10 @@ type BinaryConfig struct {
 // Process is the process this config is loaded by, as typed at a shell:
 // "reliant" for a root config, "reliant server api" for a command config.
 func (bc BinaryConfig) Process() string {
+	if len(bc.Subtrees) > 0 {
+		// Several processes: name the first subtree's, marked as a subtree.
+		return strings.TrimSpace(bc.Binary+" "+strings.Join(bc.Subtrees[0], " ")) + " …"
+	}
 	return ConfigMessage{Binary: bc.Binary, Command: bc.Command}.ProcessName()
 }
 
@@ -238,6 +245,31 @@ func (bc BinaryConfig) CommandGoArgs() string {
 	return strings.Join(q, ", ")
 }
 
+// SubtreeLines renders each subtree path as typed at a shell, below the
+// binary ("daemon", "auth login").
+func (bc BinaryConfig) SubtreeLines() []string {
+	out := make([]string, len(bc.Subtrees))
+	for i, p := range bc.Subtrees {
+		out[i] = strings.Join(p, " ")
+	}
+	return out
+}
+
+// SubtreesGoArgs renders Subtrees as Go []string literals
+// (`[]string{"daemon"}, []string{"open"}`), for the generated loader's
+// subtree check.
+func (bc BinaryConfig) SubtreesGoArgs() string {
+	parts := make([]string, len(bc.Subtrees))
+	for i, p := range bc.Subtrees {
+		q := make([]string, len(p))
+		for j, c := range p {
+			q[j] = strconv.Quote(c)
+		}
+		parts[i] = "[]string{" + strings.Join(q, ", ") + "}"
+	}
+	return strings.Join(parts, ", ")
+}
+
 // BinaryConfigsFromMessages resolves the per-binary config surfaces from a
 // project's parsed config messages: one BinaryConfig per message carrying a
 // (forge.v1.binary_config) annotation — a binary's root config or one of its
@@ -259,7 +291,7 @@ func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
 		if m.Binary == "" {
 			continue
 		}
-		bc := BinaryConfig{Binary: m.Binary, Command: m.Command, MessageName: m.Name}
+		bc := BinaryConfig{Binary: m.Binary, Command: m.Command, Subtrees: m.Subtrees, MessageName: m.Name}
 		for _, f := range m.Fields {
 			// A message-typed field naming another config message is a
 			// composed block — a shared DEFINITION. Its leaves keep their
@@ -285,12 +317,13 @@ func BinaryConfigsFromMessages(messages []ConfigMessage) []BinaryConfig {
 	}
 	hasRoot := map[string]bool{}
 	for _, bc := range out {
-		if len(bc.Command) == 0 {
+		if len(bc.Command) == 0 && len(bc.Subtrees) == 0 {
 			hasRoot[bc.Binary] = true
 		}
 	}
 	for i := range out {
-		out[i].BinaryHasRootConfig = len(out[i].Command) > 0 && hasRoot[out[i].Binary]
+		scoped := len(out[i].Command) > 0 || len(out[i].Subtrees) > 0
+		out[i].BinaryHasRootConfig = scoped && hasRoot[out[i].Binary]
 	}
 	return out
 }
@@ -901,7 +934,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 				// every one of its commands — and so its whole component
 				// graph — loads. A command config is one process's surface
 				// and cannot stand in for it.
-				if bc.Binary == primaryBinary && len(bc.Command) == 0 {
+				if bc.Binary == primaryBinary && len(bc.Command) == 0 && len(bc.Subtrees) == 0 {
 					data.PrimaryConfigMessage = bc.MessageName
 					data.PrimaryConfigPathEnv = bc.PathEnv()
 					break

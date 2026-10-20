@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // verifyRepo is a committed checkout holding a forge project, in a directory
@@ -48,12 +50,22 @@ func verifyRepo(t *testing.T) (parent, repo string) {
 	return parent, repo
 }
 
-// treeLines is one line per path under dir — its mode and content hash, or
-// its link target — sorted, so a test can tell the checkout was not written
-// and, when it was, name the paths that changed.
-func treeLines(t *testing.T, dir string) []string {
+// checkoutEntry is one path of a checkoutSnapshot. key (mode + content, or a
+// symlink's target) is what equality compares; size and mtime are carried
+// only so a failure can say what happened to the path.
+type checkoutEntry struct {
+	key   string
+	size  int64
+	mtime time.Time
+}
+
+// checkoutSnapshot records every path under dir — the checkout AND its .git — by
+// mode and content, so any write at all shows up in checkoutDiff.
+type checkoutSnapshot map[string]checkoutEntry
+
+func snapshotCheckout(t *testing.T, dir string) checkoutSnapshot {
 	t.Helper()
-	var lines []string
+	snap := checkoutSnapshot{}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -63,47 +75,58 @@ func treeLines(t *testing.T, dir string) []string {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, p)
+		e := checkoutEntry{size: info.Size(), mtime: info.ModTime()}
 		switch {
 		case info.Mode()&fs.ModeSymlink != 0:
 			target, _ := os.Readlink(p)
-			lines = append(lines, rel+" -> "+target)
+			e.key = "-> " + target
 		case info.IsDir():
-			lines = append(lines, rel+"/")
+			rel, e.key, e.size = rel+"/", "dir", 0
 		default:
 			body, err := os.ReadFile(p)
 			if err != nil {
 				return err
 			}
 			sum := sha256.Sum256(body)
-			lines = append(lines, rel+" "+info.Mode().String()+" "+hex.EncodeToString(sum[:]))
+			e.key = info.Mode().String() + " " + hex.EncodeToString(sum[:])
 		}
+		snap[rel] = e
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(lines)
-	return lines
+	return snap
 }
 
-// treeDiff names the lines only one of two treeLines listings has.
-func treeDiff(before, after []string) string {
-	var b strings.Builder
-	in := func(list []string, s string) bool {
-		i := sort.SearchStrings(list, s)
-		return i < len(list) && list[i] == s
-	}
-	for _, l := range before {
-		if !in(after, l) {
-			b.WriteString("  - " + l + "\n")
+// checkoutDiff lists every path whose presence, mode or content differs between
+// two snapshots, one line each with its size and mtime on both sides, so a
+// failure names the writer's footprint instead of two opaque hashes.
+func checkoutDiff(before, after checkoutSnapshot) []string {
+	describe := func(e checkoutEntry, ok bool) string {
+		if !ok {
+			return "absent"
 		}
+		return fmt.Sprintf("%s size=%d mtime=%s", e.key, e.size, e.mtime.UTC().Format(time.RFC3339Nano))
 	}
-	for _, l := range after {
-		if !in(before, l) {
-			b.WriteString("  + " + l + "\n")
+	paths := map[string]bool{}
+	for p := range before {
+		paths[p] = true
+	}
+	for p := range after {
+		paths[p] = true
+	}
+	var out []string
+	for p := range paths {
+		b, inB := before[p]
+		a, inA := after[p]
+		if inB && inA && a.key == b.key {
+			continue
 		}
+		out = append(out, fmt.Sprintf("%s\n        before: %s\n        after:  %s", p, describe(b, inB), describe(a, inA)))
 	}
-	return b.String()
+	sort.Strings(out)
+	return out
 }
 
 // fakeRegenerate stands in for the child `forge generate`, which a test
@@ -169,13 +192,13 @@ func TestVerifyGenerated_LeavesTheCheckoutByteIdentical(t *testing.T) {
 			}
 			clearProjectDir(t)
 			seen := fakeRegenerate(t, tc.edit)
-			before := treeLines(t, repo)
+			before := snapshotCheckout(t, repo)
 
 			var stderr strings.Builder
 			err := runVerifyGeneratedIn(t, repo, &stderr)
 
-			if after := treeLines(t, repo); strings.Join(after, "\n") != strings.Join(before, "\n") {
-				t.Errorf("verify-generated wrote the checkout:\n%s", treeDiff(before, after))
+			if diff := checkoutDiff(before, snapshotCheckout(t, repo)); len(diff) > 0 {
+				t.Errorf("the checkout changed during verify-generated, at %d path(s):\n  %s", len(diff), strings.Join(diff, "\n  "))
 			}
 			if len(*seen) != 1 || strings.HasPrefix((*seen)[0], repo) {
 				t.Fatalf("regenerate ran in %v, want once, in a scratch copy outside %s (err=%v)\n%s", *seen, repo, err, stderr.String())

@@ -195,7 +195,7 @@ chain.
 
 That decorator is the ONLY per-package observability codegen — request-scoped
 observability is Connect interceptors at the handler boundary
-(`observe.Chain(observe.Deps{…})`, built in the generated `cmd serve.go`). See
+(`serverkit.NewChain(serverkit.ChainDeps{…})`, built in the generated `cmd serve.go`). See
 `observability`.
 
 ## Using mocks in tests

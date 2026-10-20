@@ -355,7 +355,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -367,8 +367,8 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
-	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindIssues), string(KindSessions), string(KindFunnel))
-	sigName := v.oneOf(path, o, "signal", true, string(Traces), string(Metrics), string(Logs))
+	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel))
+	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
 	v.oneOf(path, o, "unit", false, string(UnitCount), string(UnitMillis), string(UnitBytes), string(UnitPercent), string(UnitSeconds))
 	if w, ok := v.number(path, o, "width"); ok && (w < 0 || w > GridColumns || w != float64(int(w))) {
@@ -386,8 +386,9 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 
 	v.predicates(path, o, "where", sig)
 
-	if gs, ok := v.list(path, o, "groupBy"); ok && len(gs) > maxGroupByPerPanel {
-		v.add(childPath(path, "groupBy"), "groups by %d fields, over the %d allowed", len(gs), maxGroupByPerPanel)
+	groupBy, _ := v.list(path, o, "groupBy")
+	if len(groupBy) > maxGroupByPerPanel {
+		v.add(childPath(path, "groupBy"), "groups by %d fields, over the %d allowed", len(groupBy), maxGroupByPerPanel)
 	}
 	v.stringList(path, o, "groupBy", sig)
 
@@ -401,12 +402,50 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 		}
 	}
 
+	if kind == string(KindSQL) {
+		v.sqlPanel(path, o)
+		return
+	}
+	if _, has := o["sql"]; has {
+		v.add(childPath(path, "sql"), "only a sql panel takes \"sql\"")
+	}
+
 	if kind == string(KindSearch) {
+		v.refuse(path, o, KindSearch, "ratio", "formula", "limit")
 		v.searchPanel(path, o, sig)
 		return
 	}
 	if _, has := o["columns"]; has {
 		v.add(childPath(path, "columns"), "only a search panel takes columns")
+	}
+	if l, ok := v.number(path, o, "limit"); ok {
+		switch {
+		case kind != string(KindTable) && kind != string(KindBar):
+			v.add(childPath(path, "limit"), "only a table or bar panel takes \"limit\"")
+		case l < 1 || l > MaxLimit || l != float64(int(l)):
+			v.add(childPath(path, "limit"), "must be a whole number of rows from 1 to %d", MaxLimit)
+		}
+	}
+	_, hasFormula := o["formula"]
+	formula := v.str(path, o, "formula", hasFormula)
+	if hasFormula {
+		if kind != string(KindLine) && kind != string(KindNumber) {
+			v.add(childPath(path, "formula"), "a formula applies to a line or number panel, not %q", kind)
+		}
+		if ratio {
+			v.add(childPath(path, "formula"), "a panel plots a formula or a ratio, not both (the ratio is the formula \"A / B\")")
+		}
+	}
+	switch PanelKind(kind) {
+	case KindBar:
+		if len(groupBy) == 0 {
+			v.add(path, "a bar panel needs a \"groupBy\": it draws one bar group per value")
+		}
+	case KindHeatmap:
+		v.refuse(path, o, KindHeatmap, "groupBy")
+		if sig == Metrics {
+			v.add(childPath(path, "signal"), "a heatmap buckets the values of individual events: its signal is %q or %q", Traces, Logs)
+		}
 	}
 
 	series, ok := v.list(path, o, "series")
@@ -427,6 +466,14 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 			v.add(childPath(path, "ratio"), "a ratio applies to a line panel, not %q", kind)
 		}
 	}
+	if formula != "" && len(series) > 0 && len(series) <= maxSeriesPerPanel {
+		if _, err := ParseFormula(formula, len(series)); err != nil {
+			v.add(childPath(path, "formula"), "%v", err)
+		}
+	}
+	if kind == string(KindHeatmap) {
+		v.heatmapSeries(path, series)
+	}
 	labels := map[string]bool{}
 	for i, raw := range series {
 		p := indexPath(childPath(path, "series"), i)
@@ -435,6 +482,66 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 			continue
 		}
 		v.series(p, s, sig, labels)
+	}
+}
+
+// refuse reports each of keys that o carries, on a kind that takes none of
+// them: a field a renderer would silently ignore is a mistake worth naming.
+func (v *validator) refuse(path string, o map[string]any, kind PanelKind, keys ...string) {
+	for _, k := range keys {
+		if _, has := o[k]; has {
+			v.add(childPath(path, k), "a %s panel takes no %q", kind, k)
+		}
+	}
+}
+
+// sqlPanel validates a KindSQL panel: its statement is all it carries.
+func (v *validator) sqlPanel(path string, o map[string]any) {
+	v.refuse(path, o, KindSQL, "series", "ratio", "formula", "limit", "where", "groupBy", "columns")
+	raw, present := o["sql"]
+	if !present {
+		v.add(path, "a sql panel needs \"sql\": one read-only SELECT")
+		return
+	}
+	s, ok := raw.(string)
+	if !ok {
+		v.add(childPath(path, "sql"), "must be a string")
+		return
+	}
+	if err := CheckSQL(s); err != nil {
+		v.add(childPath(path, "sql"), "%v", err)
+	}
+}
+
+// nonNumericFields are the semantic fields that never hold a number, so a
+// heatmap cannot bucket them. An attribute's type is unknown until query time.
+var nonNumericFields = map[string]bool{
+	FieldService: true, FieldEnv: true, "timestamp": true,
+	"span.name": true, "span.kind": true, "span.status": true, "span.status_message": true,
+	"log.severity": true, "log.body": true,
+}
+
+// heatmapSeries checks a heatmap's one series: a count of events, bucketed by
+// the numeric value in its field.
+func (v *validator) heatmapSeries(path string, series []any) {
+	if len(series) != 1 {
+		v.add(childPath(path, "series"), "a heatmap panel takes exactly 1 series, has %d", len(series))
+		return
+	}
+	p := indexPath(childPath(path, "series"), 0)
+	s, ok := series[0].(map[string]any)
+	if !ok {
+		return
+	}
+	if agg, _ := s["agg"].(string); agg != "" && agg != string(AggCount) {
+		v.add(childPath(p, "agg"), "a heatmap counts events: its series' agg is %q, not %q", AggCount, agg)
+	}
+	field, _ := s["field"].(string)
+	switch {
+	case field == "":
+		v.add(p, "a heatmap series names the numeric value it buckets in \"field\" (span.duration, say)")
+	case nonNumericFields[field]:
+		v.add(childPath(p, "field"), "%q is not numeric; a heatmap buckets a numeric field such as span.duration", field)
 	}
 }
 
@@ -449,7 +556,7 @@ func consoleKindFor(field string) PanelKind {
 // (issues, sessions, funnel). They carry no query: a series, a ratio, columns
 // or a group-by would be silently ignored, so each is refused.
 func (v *validator) consolePanel(path string, o map[string]any, kind PanelKind, sig Signal) {
-	for _, no := range []string{"series", "ratio", "columns", "groupBy", "unit"} {
+	for _, no := range []string{"series", "ratio", "formula", "limit", "columns", "groupBy", "unit", "sql"} {
 		if _, has := o[no]; has {
 			v.add(childPath(path, no), "a %s panel is drawn by the console and takes no %q", kind, no)
 		}

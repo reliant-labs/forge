@@ -206,3 +206,49 @@ func appImportAlias(alias, role string, taken map[string]bool) string {
 	}
 	return role + upperFirst(alias)
 }
+
+// graphTemplateIdentifiers is appTemplateIdentifiers for a project in graph
+// mode: every identifier graph_gen.go, routes_gen.go and a compose.go
+// constructor method write for something other than a component's package.
+// Kept apart from the legacy set so a legacy project's aliases never change.
+var graphTemplateIdentifiers = sync.OnceValue(func() map[string]bool {
+	taken := map[string]bool{}
+	const module = "example.com/forgeidents"
+	placeholder := func(role string) (string, string) {
+		return "zzforgeplaceholder" + role, "internal/" + role + "/zzforgeplaceholder"
+	}
+	svcAlias, svcPath := placeholder("handlers")
+	wkrAlias, _ := placeholder("workers")
+	opAlias, _ := placeholder("operators")
+	svcRow := routesServiceView{InventoryServiceData: InventoryServiceData{Name: "a", FieldName: "A", ConnectPkg: "x", ProtoServiceName: "A", HasWebhooks: true}, Type: "*" + svcAlias + ".Service"}
+	graphGen := graphGenView{
+		Module:  module,
+		Imports: []graphImport{{Alias: svcAlias, Path: module + "/" + svcPath}},
+		Nodes: []graphNodeView{
+			{Name: "A", LogName: "a", Type: "*" + svcAlias + ".Service", Doc: "a"},
+			{Name: "B", LogName: "b", Type: "*" + svcAlias + ".Service", Doc: "b", HasLifecycle: true, NilGuard: true, NodeFields: "Run: c.Run"},
+		},
+		Roots:     []graphRootView{{Name: "server", TypeName: "Server", Generated: true, Fields: []graphRootFieldView{{Name: "B", Type: "*B", Accessor: "B"}}, ForceOrder: []graphRootFieldView{{Name: "B", Type: "*B", Accessor: "B"}}, Plan: "b"}},
+		Operators: &graphOperatorsView{LeaderElectionID: "x", Ops: []graphOperatorView{{Field: "O", Type: "*" + opAlias + ".Controller", Alias: opAlias, Label: "o"}}},
+	}
+	routesGen := routesGenView{Module: module, Services: []routesServiceView{svcRow}, Audiences: []routesAudienceView{{Name: "UserRoutes", Audience: "user", Default: true, Services: []routesServiceView{svcRow}}}}
+	wrapped := &graphNode{Name: "A", Doc: "a", Type: wkrAlias + ".Service", Ctor: wkrAlias + ".New", DepsType: wkrAlias + ".Deps", Fallible: true, Wrapped: true, MiddlewareCtor: "NewServiceWithForgeMiddleware", Comp: &BuildComponent{Alias: wkrAlias}}
+	method := "package app\n" + renderGraphMethod(wrapped, []graphAssign{{Field: "Logger", Expr: "g.Log"}})
+	for ident := range fileScopeIdentifiers(method) {
+		if !strings.HasPrefix(ident, "zzforgeplaceholder") {
+			taken[ident] = true
+		}
+	}
+	for name, data := range map[string]any{"graph_gen.go.tmpl": graphGen, "routes_gen.go.tmpl": routesGen} {
+		src, err := templates.ProjectTemplates().Render(name, data)
+		if err != nil {
+			continue
+		}
+		for ident := range fileScopeIdentifiers(string(src)) {
+			if !strings.HasPrefix(ident, "zzforgeplaceholder") {
+				taken[ident] = true
+			}
+		}
+	}
+	return taken
+})

@@ -135,12 +135,49 @@ func Serve() {
 }
 `
 
+	// The scaffold since the chain became a component: serverkit.NewChain
+	// applies the caps itself and maps zero to 4 MiB, so a chain is capped
+	// whether or not the field is set — unless it names a negative cap.
+	chainCapped := `package cmd
+
+import "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := serverkit.NewChain(serverkit.ChainDeps{
+		Auth:         auth,
+		ReadMaxBytes: skCfg.ReadMaxBytes,
+	})
+	_ = chain
+}
+`
+	chainUncapped := `package cmd
+
+import sk "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := sk.NewChain(sk.ChainDeps{Auth: auth, SendMaxBytes: -1})
+	_ = chain
+}
+`
+
 	tests := []struct {
 		name     string
 		serve    string
 		want     Status
 		evidence string
 	}{
+		{
+			name:     "a serverkit chain is capped",
+			serve:    chainCapped,
+			want:     StatusPass,
+			evidence: "NewChain.SendMaxBytes(default 4 MiB)",
+		},
+		{
+			name:     "a chain with a negative cap is unlimited",
+			serve:    chainUncapped,
+			want:     StatusFail,
+			evidence: "SendMaxBytes: -1",
+		},
 		{
 			name:     "cap read from a never-assigned field is unlimited",
 			serve:    unassignedField,

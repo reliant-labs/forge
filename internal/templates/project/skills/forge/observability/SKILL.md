@@ -203,7 +203,7 @@ In HyperDX → Search → Metrics (or a chart tile), pick the metric by name. Th
 ## In-process component observability (the middleware chain)
 
 Forge instruments three boundaries: the RPC edge (the interceptor chain built
-by `observe.Chain` in `cmd/<bin>/cmd/serve.go`: one span, one metric sample and
+by `serverkit.NewChain` in `cmd/<bin>/cmd/serve.go`: one span, one metric sample and
 one log record per RPC), every internal component→component call (a
 generated `middleware_gen.go` decorator routed through the owned
 `observe_chain.go` seam), and the ORM (`pkg/orm` registers the `bunotel` hook,
@@ -212,7 +212,7 @@ out, and the `enforce-component-observe` lint: `observability/component-chain`.
 
 ## Audit log
 
-Every RPC already writes a structured audit record to your logs (`log_type=audit`, message `audit.event`, from `fmw.AuditInterceptor` in `observe.Chain`). For a DB-persisted audit trail you can query and page through (a compliance record, an admin `ListAuditEvents` RPC) on `forge/pkg/audit`: `observability/audit-log`.
+Every RPC already writes a structured audit record to your logs (`log_type=audit`, message `audit.event`, from `fmw.AuditInterceptor`, the default `Audit` slot of `serverkit.NewChain`). For a DB-persisted audit trail you can query and page through (a compliance record, an admin `ListAuditEvents` RPC) on `forge/pkg/audit`: `observability/audit-log`.
 
 ## Outbound instrumentation
 

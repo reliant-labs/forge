@@ -80,13 +80,6 @@ func renderServe(t *testing.T, configFields map[string]bool) *ast.File {
 	return file
 }
 
-// capOptions are the connect handler options whose argument must be provably
-// non-zero at the point serve.go builds them.
-var capOptions = map[string]string{
-	"WithReadMaxBytes": "inbound request",
-	"WithSendMaxBytes": "outbound response",
-}
-
 // configProducer finds the function that PRODUCES the serverkit.Config this
 // file serves from, and the name of the variable it returns.
 //
@@ -165,50 +158,72 @@ func TestServeTemplate_PayloadCapsAreNormalizedBeforeUse(t *testing.T) {
 					fn.Name.Name, returned, returned)
 			}
 
-			// 2. Every payload-cap option must read off a variable produced by
-			//    that same producer — never a literal, never an unrelated value.
-			seen := map[string]bool{}
-			ast.Inspect(file, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok || len(call.Args) != 1 {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
+			// 2. The caps reach the chain as fields of the serverkit.ChainDeps
+			//    serverkit.NewChain builds the handler options from, read off a
+			//    variable produced by that same producer — never a literal,
+			//    never an unrelated value. (NewChain maps a zero cap to 4 MiB,
+			//    so a cap that read zero would still be bounded; this pins that
+			//    the configured knobs are the ones that reach connect.)
+			fields := chainDepsFields(t, file)
+			for field, kind := range chainCapFields {
+				v, ok := fields[field]
 				if !ok {
-					return true
+					t.Errorf("serverkit.ChainDeps sets no %s — the configured %s cap never reaches connect", field, kind)
+					continue
 				}
-				kind, tracked := capOptions[sel.Sel.Name]
-				if !tracked {
-					return true
-				}
-				seen[sel.Sel.Name] = true
-
-				argSel, isSel := call.Args[0].(*ast.SelectorExpr)
+				argSel, isSel := v.(*ast.SelectorExpr)
 				if !isSel {
-					t.Errorf("%s must be passed a field of the normalized serverkit.Config, got a bare expression "+
-						"— connect-go reads a zero cap as UNLIMITED %s payloads", sel.Sel.Name, kind)
-					return true
+					t.Errorf("ChainDeps.%s must be a field of the normalized serverkit.Config, got a bare expression", field)
+					continue
 				}
 				recv, isIdent := argSel.X.(*ast.Ident)
 				if !isIdent {
-					t.Errorf("%s argument is not a simple <config>.<Field> selector", sel.Sel.Name)
-					return true
+					t.Errorf("ChainDeps.%s is not a simple <config>.<Field> selector", field)
+					continue
 				}
 				if !assignedFromCall(file, recv.Name, fn.Name.Name) {
-					t.Errorf("%s reads %s.%s, but %s is not the value returned by %s — "+
-						"it is therefore not normalized and may be zero (UNLIMITED %s payloads)",
-						sel.Sel.Name, recv.Name, argSel.Sel.Name, recv.Name, fn.Name.Name, kind)
-				}
-				return true
-			})
-
-			for opt := range capOptions {
-				if !seen[opt] {
-					t.Errorf("rendered serve.go never calls connect.%s — Connect payloads are unbounded", opt)
+					t.Errorf("ChainDeps.%s reads %s.%s, but %s is not the value returned by %s — "+
+						"it is therefore not normalized", field, recv.Name, argSel.Sel.Name, recv.Name, fn.Name.Name)
 				}
 			}
 		})
 	}
+}
+
+// chainCapFields are the ChainDeps payload caps serve.go must feed from the
+// normalized Config.
+var chainCapFields = map[string]string{
+	"ReadMaxBytes": "inbound request",
+	"SendMaxBytes": "outbound response",
+}
+
+// chainDepsFields returns the fields of the serverkit.ChainDeps literal passed
+// to serverkit.NewChain — the one chain the handler options come from.
+func chainDepsFields(t *testing.T, file *ast.File) map[string]ast.Expr {
+	t.Helper()
+	var lits []*ast.CompositeLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isSelector(call.Fun, "serverkit", "NewChain") || len(call.Args) != 1 {
+			return true
+		}
+		if lit, ok := call.Args[0].(*ast.CompositeLit); ok && isSelector(lit.Type, "serverkit", "ChainDeps") {
+			lits = append(lits, lit)
+		}
+		return true
+	})
+	if len(lits) != 1 {
+		t.Fatalf("rendered serve.go builds %d serverkit.NewChain(serverkit.ChainDeps{...}) chains, want exactly 1", len(lits))
+	}
+	fields := map[string]ast.Expr{}
+	for _, elt := range lits[0].Elts {
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			if key, ok := kv.Key.(*ast.Ident); ok {
+				fields[key.Name] = kv.Value
+			}
+		}
+	}
+	return fields
 }
 
 // TestServeTemplate_ConfigCapFieldsAreProjected asserts the operator-facing
@@ -478,38 +493,23 @@ func assignedFromCall(file *ast.File, name, callee string) bool {
 
 // TestServeTemplate_StreamingRPCsAreBoundToTheDrain pins the #773 fix into
 // every scaffolded server: a server-streaming or bidi RPC never finishes on
-// its own, so a chain without serverkit.StreamDrainInterceptor leaves each
-// open stream to hold the shutdown for the whole SHUTDOWN_TIMEOUT and then be
-// cut without a status. The interceptor must be an Extra of the chain the
-// handler options are built from — not merely mentioned in the file.
+// its own, so a chain without the stream-drain interceptor leaves each open
+// stream to hold the shutdown for the whole SHUTDOWN_TIMEOUT and then be cut
+// without a status. serverkit.NewChain installs it by default
+// (pkg/serverkit's TestNewChain_DefaultsAndOmits and
+// TestListener_DefaultChainEndsStreamsOnDrain prove that); this pins that the
+// scaffold builds its handler options from that chain and does not drop it.
 func TestServeTemplate_StreamingRPCsAreBoundToTheDrain(t *testing.T) {
 	for name, fields := range serveRenderCases() {
 		t.Run(name, func(t *testing.T) {
 			file := renderServe(t, fields)
-			bound := false
-			ast.Inspect(file, func(n ast.Node) bool {
-				assign, ok := n.(*ast.AssignStmt)
-				if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
-					return true
-				}
-				lhs, ok := assign.Lhs[0].(*ast.SelectorExpr)
-				if !ok || lhs.Sel.Name != "Extras" {
-					return true
-				}
-				call, ok := assign.Rhs[0].(*ast.CallExpr)
-				if !ok || calleeName(call.Fun) != "append" {
-					return true
-				}
-				for _, arg := range call.Args[1:] {
-					if inner, isCall := arg.(*ast.CallExpr); isCall && isSelector(inner.Fun, "serverkit", "StreamDrainInterceptor") {
-						bound = true
-					}
-				}
-				return true
-			})
-			if !bound {
-				t.Error("rendered serve.go never appends serverkit.StreamDrainInterceptor() to the chain's Extras — " +
+			deps := chainDepsFields(t, file)
+			if v, ok := deps["StreamDrain"]; ok && isSelector(v, "serverkit", "NoStreamDrain") {
+				t.Error("rendered serve.go drops the chain's stream drain (serverkit.NoStreamDrain) — " +
 					"every open server stream would hold the shutdown for the whole budget and be cut without a status")
+			}
+			if !assignedFromCall(file, "opts", "HandlerOptions") {
+				t.Error("rendered serve.go does not build its handler options from the chain (opts := chain.HandlerOptions())")
 			}
 		})
 	}

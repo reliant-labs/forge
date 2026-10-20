@@ -21,9 +21,10 @@ import (
 //     that nothing put in the project's go.mod. `forge generate` failed its own
 //     validate step and rolled back.
 //  2. `scaffold worker` / `scaffold operator` scaffolded cmd/<bin>/cmd/{workers,operators}/
-//     <name>.go calling c.Worker<X>() / c.Operator<X>() — accessors that live in
+//     <name>.go calling c.Worker<X>() / c.Operator<X>() — accessors that lived in
 //     the scaffold-once internal/app/lifecycle.go and were never written.
-//     `c.WorkerNightly undefined`.
+//     `c.WorkerNightly undefined`. (A new project composes with the graph
+//     now: each worker and operator is a node the default root reaches.)
 //  3. `scaffold operator` recorded nothing an `scaffold crd --operator <name>` could find,
 //     and `project new --service <svc>` recorded nothing an
 //     `scaffold webhook --service <svc>` could find, so both dependent verbs were
@@ -60,21 +61,24 @@ func TestE2EAddVerbsProduceABuildableTree(t *testing.T) {
 		t.Errorf("go.mod does not require robfig/cron after `scaffold worker --kind cron`:\n%s", gomod)
 	}
 
-	// ── bug 2: the supervised surface the scaffolded subcommands call ─
-	lifecycle := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "lifecycle.go"))
+	// ── bug 2: every scaffolded worker and operator joins the graph ──
+	// (a new project composes with the composition graph: no per-component
+	// subcommand, so `server` must reach each one through the default root).
+	graph := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "graph_gen.go"))
 	for _, want := range []string{
-		"func (c *Components) WorkerNightly() serverkit.Worker",
-		"func (c *Components) WorkerMailer() serverkit.Worker",
-		"func (c *Components) OperatorFleet() OperatorEntry",
+		"func (g *Graph) Nightly() ",
+		"func (g *Graph) Mailer() ",
+		"func (g *Graph) Fleet() ",
+		"func (g *Graph) Operators() *Operators",
 	} {
-		if !strings.Contains(lifecycle, want) {
-			t.Errorf("internal/app/lifecycle.go missing %q — the scaffolded subcommand calls it:\n%s", want, lifecycle)
+		if !strings.Contains(graph, want) {
+			t.Errorf("internal/app/graph_gen.go missing %q:\n%s", want, graph)
 		}
 	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
-	for _, want := range []string{"c.Nightly =", "c.Mailer =", "c.Fleet ="} {
+	for _, want := range []string{"func (g *Graph) newNightly()", "func (g *Graph) newMailer()", "func (g *Graph) newFleet()", "func (g *Graph) newOperators()"} {
 		if !strings.Contains(compose, want) {
-			t.Errorf("internal/app/compose.go missing %q — lifecycle.go's accessor reads it:\n%s", want, compose)
+			t.Errorf("internal/app/compose.go missing %q — graph_gen.go's accessor calls it:\n%s", want, compose)
 		}
 	}
 

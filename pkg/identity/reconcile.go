@@ -52,6 +52,13 @@ type Options struct {
 	// for every declared member who has no credential. Use it where nothing can
 	// deliver mail.
 	SignInCodes bool
+	// HeldSignInCode, when set, reports whether the caller still holds an
+	// unexpired code it delivered for a member. Such a member is not minted
+	// another: minting invalidates the code they hold, so a converge loop that
+	// minted on every pass would change the code under someone about to use it,
+	// and no pass would ever be quiet. Nil: every credential-less member gets a
+	// fresh code on every pass. Consulted only with SignInCodes.
+	HeldSignInCode func(email string) bool
 	// KeepSuperseded disables deleting credentials that a newer one has
 	// replaced, once the overlap has passed. They are then only reported.
 	KeepSuperseded bool
@@ -154,11 +161,19 @@ type Retiring struct {
 	DeleteAfter time.Time
 }
 
+// SignInCodeLifetime is how long a minted sign-in code stays redeemable:
+// Zitadel's default PasswordVerificationCode expiry (cmd/defaults.yaml,
+// SecretGenerators.PasswordVerificationCode.Expiry). An instance configured
+// otherwise makes SignInCode.ExpiresAt an estimate.
+const SignInCodeLifetime = time.Hour
+
 // SignInCode is a one-time code that lets a credential-less member set a first
 // password. It is single-use and short-lived; treat it as a secret.
 type SignInCode struct {
 	Email string
 	Code  string
+	// ExpiresAt is Options.Now at minting plus SignInCodeLifetime.
+	ExpiresAt time.Time
 }
 
 // Report is what a pass did.
@@ -170,6 +185,11 @@ type Report struct {
 	Warnings    []string
 	Retiring    []Retiring
 	SignInCodes []SignInCode
+	// Credentialed lists the declared members this pass CONFIRMED hold a
+	// credential (filled only with Options.SignInCodes): any code a caller
+	// holds for them is spent or moot. A member whose check failed is in
+	// neither this list nor SignInCodes.
+	Credentialed []string
 	// Output is the published view, filled even when Options.Outputs is nil.
 	Output Output
 	DryRun bool

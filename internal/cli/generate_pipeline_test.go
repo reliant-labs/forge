@@ -187,7 +187,7 @@ func TestGenerateStepsGatesAreSideEffectFree(t *testing.T) {
 		{"with cfg + services + db", &pipelineContext{
 			ProjectDir: ".", AbsPath: "/abs/.",
 			Cfg:         &config.ProjectConfig{Name: "sample"},
-			HasServices: true, HasDB: true, HasConfig: true,
+			HasServices: true, HasConfig: true,
 		}},
 		{"with cfg + frontends", &pipelineContext{
 			ProjectDir: ".", AbsPath: "/abs/.",
@@ -479,10 +479,7 @@ func pipelineContextEqual(a, b *pipelineContext) bool {
 	if a.ProjectDir != b.ProjectDir || a.AbsPath != b.AbsPath || a.Force != b.Force {
 		return false
 	}
-	if a.HasServices != b.HasServices || a.HasAPI != b.HasAPI {
-		return false
-	}
-	if a.HasDB != b.HasDB || a.HasConfig != b.HasConfig {
+	if a.HasServices != b.HasServices || a.HasConfig != b.HasConfig {
 		return false
 	}
 	if a.HasWorkers != b.HasWorkers || a.HasOperators != b.HasOperators {

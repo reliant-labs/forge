@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as long as its server, which on an external `FORGE_TEST_POSTGRES_URL` server
   (shared, never torn down) meant one leaked database per migration edit,
   forever. Each process that uses a template now stamps it (`COMMENT ON
-  DATABASE`), and a process's first `NewFromTemplate` on a server drops every
+DATABASE`), and a process's first `NewFromTemplate` on a server drops every
   template unused for longer than `pgtest.DefaultTemplateTTL` (24h;
   `FORGE_TEST_TEMPLATE_TTL` overrides, `0` disables) and every `*_build`
   database whose builder is gone, each under its key's advisory lock. An

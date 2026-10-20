@@ -563,7 +563,7 @@ func checkBunSQL(fset *token.FileSet, arg ast.Expr, site string, hasArgs bool, r
 			case c == '$':
 				if n := digitsAt(q, i+1); n > 0 {
 					add(bunDollarPlaceholderRule, i,
-						fmt.Sprintf("`%s` in a bun-formatted query: bun binds only its own `?` placeholders, interpolating the arguments client-side, so `%s` reaches postgres literally with no argument bound (\"there is no parameter %s\")", q[i:i+1+n], q[i:i+1+n], q[i:i+1+n]),
+						fmt.Sprintf("%#q in a bun-formatted query: bun binds only its own `?` placeholders, interpolating the arguments client-side, so %#q reaches postgres literally with no argument bound (\"there is no parameter %s\")", q[i:i+1+n], q[i:i+1+n], q[i:i+1+n]),
 						"write `?` (in argument order) or `?0`, `?1`, … (0-based, reusable) — or run the statement through the raw passthrough db.Exec / db.Query / db.QueryRow, which takes native `$N`")
 					i += n
 					continue
@@ -588,7 +588,7 @@ func checkBunSQL(fset *token.FileSet, arg ast.Expr, site string, hasArgs bool, r
 		}
 		if op, ok := jsonbQuestionOperator(q, i); ok {
 			add(bunLiteralQuestionRule, i,
-				fmt.Sprintf("the jsonb `%s` operator is read by bun as a placeholder: it consumes an argument, and every later argument lands on the wrong placeholder", op),
+				fmt.Sprintf("the jsonb %#q operator is read by bun as a placeholder: it consumes an argument, and every later argument lands on the wrong placeholder", op),
 				fmt.Sprintf("escape the operator as `\\%s` (Go: \"\\\\%s\"), or use jsonb_exists / jsonb_exists_any / jsonb_exists_all", op, op))
 		}
 	}

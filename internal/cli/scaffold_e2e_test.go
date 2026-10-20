@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,10 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
 	"time"
-
-	"github.com/reliant-labs/forge/internal/templates"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
@@ -26,7 +24,6 @@ import (
 // TestE2EScaffoldBasicProject creates a project with a single service,
 // runs generate, and verifies the full toolchain: build, vet, test, lint.
 func TestE2EScaffoldBasicProject(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -35,6 +32,7 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	runCmd(t, dir, forgeBin, "project", "new", "basicapp", "--mod", "example.com/basicapp", "--service", "api")
 
 	projectDir := filepath.Join(dir, "basicapp")
+	addCorpusForgePkgReplace(t, projectDir)
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "go.mod"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api"))
@@ -77,7 +75,6 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 // TestE2EScaffoldMultiServiceProject creates a project with multiple services
 // and a frontend, then verifies everything builds.
 func TestE2EScaffoldMultiServiceProject(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -90,6 +87,7 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 	)
 
 	projectDir := filepath.Join(dir, "multiapp")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Verify all services exist
 	for _, svc := range []string{"api", "users", "orders"} {
@@ -133,7 +131,6 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 // TestE2EScaffoldAddService creates a project, then adds a service using
 // `forge scaffold service`, regenerates, and verifies the build.
 func TestE2EScaffoldAddService(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
@@ -144,6 +141,7 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	runCmd(t, dir, forgeBin, "project", "new", "addtest", "--mod", "example.com/addtest", "--service", "api")
 
 	projectDir := filepath.Join(dir, "addtest")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Add a new service
 	runCmd(t, projectDir, forgeBin, "scaffold", "service", "billing")
@@ -190,7 +188,6 @@ func TestE2EScaffoldVersion(t *testing.T) {
 // TestE2EScaffoldServerStartup creates a project and verifies the server
 // can start and respond to health checks.
 func TestE2EScaffoldServerStartup(t *testing.T) {
-	requirePublishedForgePkg(t)
 	// Boot needs a real database (see the DATABASE_URL note below); take it
 	// from the ONE shared embedded server rather than starting another.
 	sharedTestPostgres(t)
@@ -202,6 +199,7 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	runCmd(t, dir, forgeBin, "project", "new", "srvtest", "--mod", "example.com/srvtest", "--service", "api")
 
 	projectDir := filepath.Join(dir, "srvtest")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// Generate code
 	runCmd(t, projectDir, forgeBin, "generate")
@@ -225,7 +223,7 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 		t.Fatalf("provision boot postgres: %v", err)
 	}
 	defer dsnCleanup()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, serverBin, "server")
@@ -276,82 +274,20 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 		t.Fatalf("expected 200 from /healthz, got %d", resp.StatusCode)
 	}
 
-	// Verify readiness endpoint
-	resp, err = http.Get(addr + "/readyz")
-	if err != nil {
-		t.Fatalf("readiness check failed: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from /readyz, got %d", resp.StatusCode)
-	}
-}
-
-// ── Published-module guard ──────────────────────────────────────────────────
-//
-// The scaffold e2e tests below exercise the PUBLISHED-module path: a
-// scaffolded project resolving github.com/reliant-labs/forge/pkg from the
-// module proxy with no local replace (exactly what a real user's first
-// build does). When the published snapshot predates the packages current
-// templates import (appkit/serverkit — true until the pkg/vX.Y.Z release
-// tag is pushed; see the release flow in scripts/release-pkg.sh), these
-// tests cannot pass for environmental reasons. They SKIP with that reason
-// rather than fail, so the plain command stays honest:
-//
-//	go test -tags e2e ./internal/cli/
-//
-// runs everything runnable with zero -run incantations, and the skips
-// disappear by themselves the day the tag is published. The local-replace
-// fixtures (fixture_corpus, lifecycle) are unaffected — they pin current-
-// tree behavior and always run.
-var (
-	publishedPkgOnce sync.Once
-	publishedPkgErr  error
-)
-
-func requirePublishedForgePkg(t *testing.T) {
-	t.Helper()
-	publishedPkgOnce.Do(func() {
-		// Probe EVERY forge/pkg subpackage the templates import, not one
-		// hand-named package. The old probe asked for pkg/appkit, which no
-		// template imports at all — so it resolved against the published
-		// module, reported green, and let eleven tests run a `go mod tidy`
-		// that could not possibly succeed: the scaffold imports
-		// pkg/validate, which landed after the last pkg release tag, and
-		// `go mod tidy` ignores go.work by design.
-		want := templates.ForgePkgImports()
-		if len(want) == 0 {
-			publishedPkgErr = fmt.Errorf("templates report no forge/pkg imports; the probe would be vacuous")
-			return
+	// Readiness. /healthz answers from the top of boot, while the graph is
+	// still constructing and starting its nodes; /readyz opens only once the
+	// root has started them all (Drainer.MarkReady). Reading /readyz once,
+	// right after /healthz, raced that boot and saw 503 — so WAIT for it,
+	// with a bound that still fails a server that never becomes ready.
+	if !waitForServing(t, addr, 15*time.Second) {
+		resp, err := http.Get(addr + "/readyz")
+		status := "unreachable"
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			status = fmt.Sprintf("%d %s", resp.StatusCode, body)
 		}
-		dir, err := os.MkdirTemp("", "forge-pkg-probe-")
-		if err != nil {
-			publishedPkgErr = err
-			return
-		}
-		defer os.RemoveAll(dir)
-		init := exec.Command("go", "mod", "init", "probe.local/probe")
-		init.Dir = dir
-		if out, err := init.CombinedOutput(); err != nil {
-			publishedPkgErr = fmt.Errorf("probe init: %v\n%s", err, out)
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-		defer cancel()
-		args := make([]string, 0, len(want)+1)
-		args = append(args, "get")
-		for _, name := range want {
-			args = append(args, "github.com/reliant-labs/forge/pkg/"+name+"@latest")
-		}
-		get := exec.CommandContext(ctx, "go", args...)
-		get.Dir = dir
-		if out, err := get.CombinedOutput(); err != nil {
-			publishedPkgErr = fmt.Errorf("published forge/pkg does not satisfy the scaffold's imports %v "+
-				"(push the pkg release tag — see scripts/release-pkg.sh): %v\n%s", want, err, out)
-		}
-	})
-	if publishedPkgErr != nil {
-		t.Skipf("published-module path unavailable: %v", publishedPkgErr)
+		t.Fatalf("/readyz never answered 200 (last: %s)\nserver output:\n%s", status, serverOutput.String())
 	}
 }
 

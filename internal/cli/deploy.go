@@ -3875,10 +3875,16 @@ func ensureDevCluster(ctx context.Context) error {
 			return err
 		}
 		defer cleanup()
-		createCmd := exec.CommandContext(ctx, "k3d", args...)
-		createCmd.Stdout = os.Stdout
-		createCmd.Stderr = os.Stderr
-		if err := createCmd.Run(); err != nil {
+		// This legacy bootstrap keeps k3d's own kubeconfig write (and its
+		// switch to the new context, which the single-cluster dev deploy
+		// relies on), so the whole create holds the kubeconfig lock
+		// (kubeconfig_lock.go).
+		if err := withKubeconfigLock(func() error {
+			createCmd := exec.CommandContext(ctx, "k3d", args...)
+			createCmd.Stdout = os.Stdout
+			createCmd.Stderr = os.Stderr
+			return createCmd.Run()
+		}); err != nil {
 			return fmt.Errorf("failed to create k3d cluster: %w", err)
 		}
 	} else {

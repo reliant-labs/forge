@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -929,9 +930,26 @@ func TestReconcileClusterPortDrift_UnverifiedEditIsAnError(t *testing.T) {
 
 // createSeams stubs every side effect of createK3dCluster and records them.
 type createSeams struct {
+	mu      sync.Mutex
 	runs    [][]string
 	deletes []string
 	merges  int
+}
+
+// record notes one create run and returns how many there have been. The
+// create runs on the lifecycle's goroutine while the boot-crash watch reads
+// the count on its own, hence the lock.
+func (s *createSeams) record(args []string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runs = append(s.runs, args)
+	return len(s.runs)
+}
+
+func (s *createSeams) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.runs)
 }
 
 func stubCreateSeams(t *testing.T, exists bool, runErrs []error, crashes []string) *createSeams {
@@ -945,8 +963,7 @@ func stubCreateSeams(t *testing.T, exists bool, runErrs []error, crashes []strin
 	s := &createSeams{}
 	addClusterStorageArgsFn = func(args []string) ([]string, error) { return args, nil }
 	runK3dClusterCreateCommandFn = func(_ context.Context, args []string) error {
-		s.runs = append(s.runs, args)
-		if i := len(s.runs) - 1; i < len(runErrs) {
+		if i := s.record(args) - 1; i < len(runErrs) {
 			return runErrs[i]
 		}
 		return nil
@@ -957,7 +974,7 @@ func stubCreateSeams(t *testing.T, exists bool, runErrs []error, crashes []strin
 	cleanupK3dCreateToolsFn = func(context.Context, string) error { return nil }
 	mergeK3dKubeconfigFn = func(context.Context, string) error { s.merges++; return nil }
 	k3dServerBootCrashFn = func(context.Context, string) string {
-		if i := len(s.runs) - 1; i < len(crashes) {
+		if i := s.count() - 1; i >= 0 && i < len(crashes) {
 			return crashes[i]
 		}
 		return ""
@@ -1019,5 +1036,40 @@ func TestCreateK3dCluster_NeverRollsBackAClusterThatExisted(t *testing.T) {
 	}
 	if len(s.deletes) != 0 || slices.Contains(s.runs[0], "--no-rollback") {
 		t.Fatalf("deletes=%v args=%v: an existing cluster was put at risk", s.deletes, s.runs[0])
+	}
+}
+
+// Some k3d/Docker combinations do not fail a create whose server restarted:
+// the readiness wait keeps following a log stream that has ended until its
+// own timeout (seen on CI's k3d 5.8.3). The create watches the server
+// containers instead, cancels the wedged client the moment one restarted, and
+// recreates — it does not sit out the timeout.
+func TestCreateK3dCluster_WatchCatchesARestartK3dDoesNotReport(t *testing.T) {
+	s := stubCreateSeams(t, false, nil, nil)
+	origPoll := k3dBootCrashPoll
+	t.Cleanup(func() { k3dBootCrashPoll = origPoll })
+	k3dBootCrashPoll = 5 * time.Millisecond
+	runK3dClusterCreateCommandFn = func(ctx context.Context, args []string) error {
+		if s.record(args) == 1 {
+			<-ctx.Done() // k3d waiting on a log stream that will never say "up"
+			return ctx.Err()
+		}
+		return nil
+	}
+	k3dServerBootCrashFn = func(context.Context, string) string {
+		if s.count() == 1 {
+			return "k3d-x-server-0: restarts=1 running exit=0"
+		}
+		return ""
+	}
+	start := time.Now()
+	if err := createK3dCluster(t.Context(), "x", []string{"cluster", "create", "x"}); err != nil {
+		t.Fatalf("createK3dCluster: %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("took %v: the restart was not caught while k3d waited", took)
+	}
+	if len(s.runs) != 2 || len(s.deletes) != 1 || s.merges != 1 {
+		t.Fatalf("runs=%d deletes=%v merges=%d, want the wedged create cancelled, deleted, and created again", len(s.runs), s.deletes, s.merges)
 	}
 }

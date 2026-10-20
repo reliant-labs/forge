@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -555,20 +556,35 @@ func createK3dCluster(ctx context.Context, name string, args []string) error {
 	}
 	var firstCrash string
 	for attempt := 1; ; attempt++ {
+		var seen bootCrashWatch
 		err := runK3dClusterLifecycle(ctx, name, "create",
 			func(commandCtx context.Context) error {
-				return runK3dClusterCreateCommandFn(commandCtx, args)
+				if !ownRollback {
+					return runK3dClusterCreateCommandFn(commandCtx, args)
+				}
+				return seen.run(commandCtx, name, func(c context.Context) error {
+					return runK3dClusterCreateCommandFn(c, args)
+				})
 			},
 			lookupK3dStateAfterCreateFn,
 			cleanupK3dCreateToolsFn,
 		)
-		if err == nil {
+		crash := seen.reason()
+		if err == nil && crash == "" {
 			return mergeK3dKubeconfigFn(ctx, name)
 		}
 		if !ownRollback || ctx.Err() != nil {
+			if err == nil {
+				err = fmt.Errorf("k3d cluster create %q: a server restarted during boot", name)
+			}
 			return err
 		}
-		crash := k3dServerBootCrashFn(ctx, name)
+		if crash == "" {
+			crash = k3dServerBootCrashFn(ctx, name)
+		}
+		if err == nil {
+			err = fmt.Errorf("k3d cluster create %q: a server restarted during boot", name)
+		}
 		if derr := deleteK3dClusterFn(ctx, name); derr != nil {
 			fmt.Fprintf(os.Stderr, "  warning: roll back the failed k3d cluster %q: %v\n", name, derr)
 		}
@@ -589,6 +605,55 @@ func createK3dCluster(ctx context.Context, name string, args []string) error {
 
 // k3dServerBootCrashFn is the seam for k3dServerBootCrash.
 var k3dServerBootCrashFn = k3dServerBootCrash
+
+// k3dBootCrashPoll is how often a create checks its servers for a restart.
+var k3dBootCrashPoll = time.Second
+
+// bootCrashWatch watches a create's servers for a restart while the create
+// runs, and cancels the k3d client when one happens. Not every k3d reports a
+// restarted server: depending on version and Docker, its readiness wait
+// either fails ("stopped returning log lines: … status=restarting") or keeps
+// following a log stream that has ended until its own timeout. Watching the
+// containers decides the crash the same way in both cases, at once.
+type bootCrashWatch struct {
+	mu    sync.Mutex
+	crash string
+}
+
+func (w *bootCrashWatch) run(ctx context.Context, name string, create func(context.Context) error) error {
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(k3dBootCrashPoll)
+		defer t.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-t.C:
+			}
+			if r := k3dServerBootCrashFn(watchCtx, name); r != "" {
+				w.mu.Lock()
+				w.crash = r
+				w.mu.Unlock()
+				cancel()
+				return
+			}
+		}
+	}()
+	err := create(watchCtx)
+	cancel()
+	<-done
+	return err
+}
+
+func (w *bootCrashWatch) reason() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.crash
+}
 
 // k3dServerBootCrash reports why a failed create's server crashed during
 // boot, or "" when no server container restarted (then the failure is not

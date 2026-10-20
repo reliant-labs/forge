@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`fw.Workload.profiling` (`forge.Profiling`): a typed per-workload
+  profiling override.** `wl.worker | {profiling = fw.Profiling {alloc = True, heap_interval = "1m"}}`
+  turns a type on or the heap cadence up for one workload; the schema defaults
+  to the runtime's set, and `heap_interval` is whole minutes or hours from
+  `1m` to `24h`. It renders `FORGE_PROFILES` and `FORGE_PROFILES_HEAP_INTERVAL`
+  on every runtime that runs a process; a value the workload's own `env` sets
+  wins, and it never turns profiling on where the env has it off.
 - **Fast/slow test tiers: `testkit.Slow`, `forge lint --slow-tests`,
   `forge ci test-budget`.** A test is fast (it runs in the blocking
   `go test -short` tier) unless it declares otherwise:
@@ -592,6 +599,23 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
 
 ### Changed
 
+- **Continuous profiling captures CPU and the live heap by default; allocation,
+  goroutine, mutex and block profiles are opt-in (`forge/pkg/observe`).** The
+  profiler still takes a 10s CPU profile every minute, but now snapshots the
+  heap every 15 minutes and exports only `inuse_space` / `inuse_objects`. Go's
+  `alloc_space` / `alloc_objects` are cumulative since process start, so each
+  snapshot repeated every allocation site the process ever had and grew with
+  uptime: in a production deployment they were 97.7% of stored profile rows (99.2%
+  of bytes), and one service's grew from 11k to 39k rows per snapshot over 8
+  hours. The new defaults keep about 0.3% of that deployment's rows (PROFILES.md
+  has the measurements). Choose the set with `observe.Config.Profiles`
+  (`ProfilesConfig{Types, HeapInterval}`), or per deploy with `FORGE_PROFILES`
+  (`cpu,heap,alloc,goroutine,mutex,block`, or `none`) and
+  `FORGE_PROFILES_HEAP_INTERVAL`, which win over the config; invalid values
+  are logged and ignored. Mutex and block profiles set the runtime's sampling
+  rates only while selected and restore them on shutdown. Opted-in allocation
+  counters stay cumulative, at the heap cadence. A live-heap snapshot also no
+  longer carries the locations and functions of allocation-only stacks.
 - **The ORM projects every applied table, whatever its rpcs.** The store
   (`<entity>_orm_gen.go`, `<Entity>Store`, delegates, the `_repo_ext.go` seam)
   used to exist only for a table some managed service declared a CRUD rpc

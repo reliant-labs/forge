@@ -1,0 +1,30 @@
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// `{{.Name}} server` runs the composition graph's `server` root
+// (internal/app/graph_gen.go): the API listener serving every user-audience
+// service, plus every worker and operator. Which nodes that is follows from
+// internal/app — declare `//forge:root` structs of your own there
+// (conventionally in roots.go) to split a process. Serve (serve.go) is the
+// process policy around it.
+package cmd
+
+import (
+	"github.com/spf13/cobra"
+
+	"{{.Module}}/pkg/config"
+)
+
+func newServerCmd(deps Deps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "server",
+		Args:  cobra.NoArgs,
+		Short: "Start the server: every service, worker and operator",
+		Long:  "Start the server root: the API listener serving every user-audience service, plus every worker and operator, supervised until a signal.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			deps.Cmd = cmd
+			return Serve(cmd.Context(), deps)
+		},
+	}
+	config.RegisterFlags(cmd)
+	return cmd
+}

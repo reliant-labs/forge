@@ -227,7 +227,7 @@ func TestE2EComponentScaffoldsLintClean(t *testing.T) {
 		t.Errorf("a freshly scaffolded adapter must not trip forge-config-deps:\n%s", out)
 	}
 	compose := readFileE2E(t, filepath.Join(projectDir, "internal", "app", "compose.go"))
-	for _, want := range []string{"infra.Cfg.GetBlobstore()", "infra.Cfg.GetPricing()"} {
+	for _, want := range []string{"g.Cfg.GetBlobstore()", "g.Cfg.GetPricing()"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose.go must fill the adapter's config block from the loaded config (%s):\n%s", want, compose)
 		}

@@ -6,9 +6,52 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # A pull request that touches only prose skips this workflow: nothing here
+    # reads docs/ or the root *.md files under -short. Skills ARE embedded in
+    # the binary, so a skills-only change is not unchecked — docs-skills.yml
+    # runs the packages that read them (and docs/). A path filter that skips a
+    # whole workflow leaves any REQUIRED check it owns pending forever; none
+    # is required today (the main ruleset has no status-check rule). If one
+    # becomes required, require `CI gate` from a workflow that always runs, or
+    # move this filter into a job-level `if:`.
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "internal/templates/project/skills/**"
+  # Run the push-to-main tier (full mode, -race, Windows) on any branch.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# ── TWO TIERS ──────────────────────────────────────────────────────────────
+#
+# A PULL REQUEST gets the fast tier, budgeted at about five minutes of wall
+# time with no job longer than ~4-5 minutes including setup:
+#
+#   test-short      the -short tier, no -race, sharded (scripts/ci-test-shard.sh)
+#   flake-gate      tests the change adds or edits, -race -count=3
+#   windows-cross   GOOS=windows build + vet, from Linux
+#   e2e-compile     `go vet -tags e2e` over the e2e-tagged packages
+#   lint, verify-generated (+ KCL), vuln-scan
+#
+# A PUSH TO MAIN (and workflow_dispatch) gets everything the pull request got
+# except the sharded and flake lanes, plus the slow tier:
+#
+#   test, test-cli, test-guards   full mode (no -short) under -race; guards at -p 1
+#   build, license-check          the -trimpath release build; go-licenses
+#   test-short-warm               the whole -short tier in one job; saves the
+#                                 build cache the pull-request shards restore
+#   windows                       native Windows: build, vet, -short tests, smoke
+#
+# plus e2e-suite.yml and e2e-scaffold.yml (which also run nightly). Speed on
+# the pull request was chosen over catching everything before merge: a test
+# that needs more than ~2s skips under -short (`if testing.Short()`) and runs
+# on main, and a red main is bisected from there. Nothing was deleted — every
+# check that left the pull request runs on every push to main.
+#
+# `gate` (CI gate) needs every job, fails if any failed, and writes each
+# job's wall time and the run's critical path to the run summary.
 
 # Cancel a superseded run on a pull request only. On main the run in progress
 # always finishes: every push to main shares one group, so cancelling there let
@@ -114,7 +157,202 @@ jobs:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
-  # ── Go tests: three jobs, partitioned by scripts/ci-test-packages.sh ────
+  # ── The pull-request test tier: -short, no -race, sharded ───────────────
+  #
+  # Each shard is one invocation of scripts/ci-test-shard.sh over
+  # scripts/ci-test-packages.sh's `short I N`: every package, dealt
+  # round-robin. internal/ciguard fails if this matrix misses an index.
+  #
+  # TWO SHARDS, because the cost is compile and link, not test bodies.
+  # Measured on this PR's first runs: internal/cli's ~3,200 tests take 16-18s
+  # per third on a runner and internal/generator's ~370 take ~6s, while a
+  # shard's `go test` step is ~50-75s and setup ~45s. Splitting packages by
+  # test name (tried first, 8 shards) bought nothing a package boundary does
+  # not, and every extra job queues: the org runs at most 20 jobs at once.
+  #
+  # No -race: it multiplies compile and run time several-fold, and the
+  # race-detected run of every package happens on each push to main (`test`,
+  # `test-cli`). flake-gate keeps -race on the tests a change touches. No
+  # -count=1: the -short tier is held cache-sound, so a package main's cache
+  # already holds a result for replays it.
+  test-short:
+    name: Test (-short) ${{ matrix.shard }}
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Every shard reports: one failure must not hide another shard's.
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: "1/2", args: "0 2" }
+          - { shard: "2/2", args: "1 2" }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The -short tier's own scope, saved from main by test-short-warm. Its
+      # first fallback is the tools scope: `go install ./cmd/forge` without
+      # -race, i.e. most of what these shards compile, already compiled.
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-short-${{ runner.os }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+      # The same toolchain as `test`: postgres for pkg/pgtest, buf for the
+      # generate pipeline, migrate for TestDBReset_*. A test that needs a
+      # missing tool fails under CI=true rather than skipping.
+      - uses: ./.github/actions/embedded-postgres-cache
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          # Authenticated for the rate limit; see the same step in `test`.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install golang-migrate CLI
+        uses: ./.github/actions/install-migrate
+      - name: Go tests (-short)
+        env:
+          CI_TEST_JSON: ${{ runner.temp }}/test-shard.json
+        run: scripts/ci-test-shard.sh ${{ matrix.args }}
+      - name: Upload the go test -json stream
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-short-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/test-shard.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  # The flake gate: every test the pull request adds or edits, three times,
+  # under -race (scripts/ci-changed-tests.sh says how it finds them and why).
+  # A test that passes once and fails once is caught here, before it lands,
+  # instead of in somebody else's pull request weeks later.
+  flake-gate:
+    name: Flake gate (new/edited tests, -race -count=3)
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Depth 2: the merge commit and its first parent, the base branch's tip.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # -race artifacts: main's test-cli and test scopes hold them.
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-test-cli-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-test-cli-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-test-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-test-cli-${{ runner.os }}-
+      - uses: ./.github/actions/embedded-postgres-cache
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install golang-migrate CLI
+        uses: ./.github/actions/install-migrate
+      - name: New and edited tests, -race -count=3
+        run: scripts/ci-changed-tests.sh HEAD^1
+
+  # Windows, cross-checked from Linux on every pull request: the whole module
+  # and its tests must still COMPILE for windows/amd64 (vet type-checks test
+  # files). vet's verdict depends on the target, not the host. The
+  # windows/arm64 build (~2 min more, cold) is in the native job and the
+  # arm64 vet in nightly.yml: only GOARCH-specific files differ. The native Windows job — which RUNS the -short tier
+  # and the scaffold + render smoke — is push-to-main only: at 17-19 minutes it
+  # was the slowest job on every pull request, and the failures only it finds
+  # (path separators, file locking, the KCL DLL load) are rare and cheap to
+  # bisect from main.
+  windows-cross:
+    name: Windows (cross-compile + vet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: "0"
+      GOOS: windows
+      GOARCH: amd64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Restore Go build cache
+        id: restore-gocache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-wincross-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-wincross-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-wincross-${{ runner.os }}-
+      - name: Build (windows/amd64)
+        run: go build ./...
+      - name: Vet (windows/amd64, includes tests)
+        run: go vet ./...
+      # Main only; see "Build-cache note" at the top of this file.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+
+  # The e2e files compile. They are behind `//go:build e2e`, so golangci-lint
+  # (configured with no build tags) and every plain `go test` never see them;
+  # the suite that runs them (e2e-suite.yml) is push-to-main and nightly. The
+  # cheapest and commonest breakage in a tagged file is that it stopped
+  # compiling, so that much is checked on every pull request: `go vet`
+  # type-checks the test files, which `go build` does not reach. The package
+  # set is derived from the build constraints, not typed here.
+  e2e-compile:
+    name: compile (-tags e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-short-${{ runner.os }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+      - name: go vet -tags e2e
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(git grep -lE '^//go:build.*\be2e\b' -- '*.go' | xargs -n1 dirname | sort -u | sed 's|^|./|')
+          if [ "${#pkgs[@]}" -eq 0 ]; then
+            echo "::error::no file carries the e2e build tag — this check would inspect nothing"
+            exit 1
+          fi
+          printf '%s\n' "${pkgs[@]}"
+          go vet -tags e2e "${pkgs[@]}"
+
+  # ── Go tests, full mode: three jobs, partitioned by scripts/ci-test-packages.sh ──
+  #
+  # PUSH TO MAIN ONLY (and workflow_dispatch). A pull request runs the -short
+  # tier above instead; these are the slow tier that catches what -short
+  # skips, plus the race detector over everything.
   #
   # `test` runs every package under -race EXCEPT internal/cli and the
   # repo-wide guards (internal/tierguard, internal/removalguard,
@@ -154,6 +392,7 @@ jobs:
   # the same reason.
   test:
     name: Test
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -221,6 +460,7 @@ jobs:
 
   test-cli:
     name: Test (internal/cli)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -268,6 +508,7 @@ jobs:
 
   test-guards:
     name: Test (guards)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -314,6 +555,50 @@ jobs:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
+  # The pull-request tier, run whole on main. Two jobs in one: main's own
+  # check that the tier pull requests are judged by still passes (the full
+  # jobs above run a superset, but under different flags), and the producer
+  # of the go-build-short cache every test-short shard restores — non-race,
+  # -short artifacts and test results that nothing else on main compiles. One
+  # job, one cache entry, rather than one per shard: the repository's cache
+  # budget is 10 GB (see "Build-cache note").
+  test-short-warm:
+    name: Test (-short, whole tier)
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Restore Go build cache
+        id: restore-gocache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-build-short-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-short-${{ runner.os }}-
+            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+      - uses: ./.github/actions/embedded-postgres-cache
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install golang-migrate CLI
+        uses: ./.github/actions/install-migrate
+      - name: Go tests (-short, every package)
+        run: go test -short -timeout 30m ./...
+      # Main only, and after the tests so the entry carries their results.
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+
   # ── Windows: first runtime coverage for the cgo-free, Windows-ported CLI ──
   #
   # forge is cgo-free (KCL is loaded through purego) and builds for
@@ -347,8 +632,13 @@ jobs:
   # than restored: a module-cache restore is the same NTFS extraction plus the
   # zips — setup-go's combined restore measured 238s where the GOCACHE-only
   # one below measured 62-144s.
+  #
+  # PUSH TO MAIN ONLY (and workflow_dispatch). At 17-19 minutes this was the
+  # slowest job on every pull request. A pull request gets windows-cross
+  # instead: the windows build and vet, from Linux, in a couple of minutes.
   windows:
     name: Windows
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -427,9 +717,14 @@ jobs:
           path: ${{ steps.gocache.outputs.dir }}
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
+  # PUSH TO MAIN ONLY. On a pull request every package is already compiled
+  # by the test shards and windows-cross; what this adds is the release
+  # flags (-trimpath -buildvcs), which a code change almost never breaks
+  # differently. No `needs:`: it used to wait for lint and every test job,
+  # for no data dependency.
   build:
     name: Build
-    needs: [lint, test, test-cli, test-guards]
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -466,7 +761,7 @@ jobs:
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
   verify-generated:
-    name: Verify Generated Code
+    name: Verify Generated Code + Validate KCL
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -474,11 +769,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # verify-generated, validate-kcl and vuln-scan all run
-      # `go install ./cmd/forge` with identical flags, so they share ONE
-      # cache scope: whichever job finishes first warms the other two on
-      # the next run, instead of three jobs each compiling forge from
-      # cold in parallel.
+      # verify-generated and vuln-scan both run `go install ./cmd/forge`
+      # with identical flags, so they share ONE cache scope: whichever job
+      # finishes first warms the other on the next run, instead of each
+      # compiling forge from cold in parallel.
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -522,34 +816,9 @@ jobs:
         run: forge tools install --force
       - name: Verify generated code
         run: forge ci verify-generated
-      # Main only; see "Build-cache note" at the top of this file.
-      - name: Save Go build cache
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
-
-  validate-kcl:
-    name: Validate KCL
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-      # Shares the tools scope with verify-generated and vuln-scan — same
-      # `go install ./cmd/forge`, same flags, same artifacts.
-      - name: Restore Go build cache
-        id: restore-gocache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/go-build
-          key: go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-build-tools-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-            go-build-tools-${{ runner.os }}-
+      # Validate KCL used to be a job of its own; it shares this job's forge
+      # install and cache scope, and a second runner bought only a second
+      # minute of setup.
       # KCL_VERSION is pinned deliberately. Left unset, the installer
       # resolves "latest" through an UNAUTHENTICATED api.github.com call,
       # which is rate-limited to 60/hour per runner IP and shared across
@@ -574,10 +843,6 @@ jobs:
           curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
           command -v kcl
           kcl --version
-      - name: Install forge
-        # Same reason as verify-generated: this step runs `forge`, and in
-        # forge's own repo the forge that must run is the one being tested.
-        run: go install ./cmd/forge
       - name: Validate KCL manifests
         run: forge ci validate-kcl
       # Main only; see "Build-cache note" at the top of this file.
@@ -588,9 +853,9 @@ jobs:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
+  # No `needs:`, for the same reason as `build`.
   vuln-scan:
     name: Vulnerability Scan
-    needs: [lint, test, test-cli, test-guards]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -598,7 +863,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # Shares the tools scope with verify-generated and validate-kcl.
+      # Shares the tools scope with verify-generated.
       - name: Restore Go build cache
         id: restore-gocache
         uses: actions/cache/restore@v6
@@ -636,8 +901,13 @@ jobs:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
 
+  # PUSH TO MAIN ONLY. license-gate.yml's permissive-licenses-only job
+  # checks every Go dependency's license on each pull request in ~40s; this
+  # go-licenses pass (~2 min, most of it compiling go-licenses) is the second
+  # opinion, kept on main.
   license-check:
     name: License Compliance
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -669,3 +939,52 @@ jobs:
         with:
           path: ~/.cache/go-build
           key: ${{ steps.restore-gocache.outputs.cache-primary-key }}
+
+  # CI gate: one check that is red exactly when any job above failed or was
+  # cancelled (a skipped job — a main-only lane on a pull request — is not a
+  # failure). It is the check to require if a ruleset ever requires one, so a
+  # job added above must be added to `needs` too; internal/ciguard fails if
+  # one is missing. It also writes every job's wall time and the run's
+  # critical path to the run summary (scripts/ci-run-timings.sh), so the
+  # pull-request budget is visible on every run.
+  gate:
+    name: CI gate
+    if: ${{ always() }}
+    needs:
+      - lint
+      - test-short
+      - flake-gate
+      - windows-cross
+      - e2e-compile
+      - test
+      - test-cli
+      - test-guards
+      - test-short-warm
+      - windows
+      - build
+      - verify-generated
+      - vuln-scan
+      - license-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Job wall times
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Reporting only: a failed API call must not turn the gate red.
+        run: scripts/ci-run-timings.sh || echo "::warning::could not read this run's job timings"
+      - name: Every job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          red=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<<"$RESULTS")
+          if [ -n "$red" ]; then
+            echo "::error::not every job passed:"
+            echo "$red"
+            exit 1
+          fi
+          echo "every job passed or was skipped"

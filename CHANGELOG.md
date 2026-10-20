@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
+  `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
+  opened through `otelsql`, so each statement run under a span gets a CLIENT
+  child span named `<OP> <table>` (`SELECT chats`), plus `BEGIN`, `COMMIT`,
+  `ROLLBACK` and `db.connect`. `db.query.text` is the statement with every
+  literal replaced by `?` (`dbtrace.SanitizeSQL`); bind arguments are never
+  recorded. Ping, session-reset, prepare and per-row spans are off, and a
+  statement with no span in its context opens none, so an un-rooted poller
+  does not produce one-span traces. Before this, the only query spans came
+  from bun's hook, which hand-written `database/sql` never reaches: prod had
+  none in 24 hours. `orm.NewClientWithDB` keeps bunotel's query histogram but
+  drops its spans when `dbtrace.IsTraced(db)`, so ORM queries are not spanned
+  twice. `serverkit.PgxConn` reaches the `*pgx.Conn` under a `sql.Conn.Raw`
+  driver connection through the tracing and pooler-drain wrappers.
+
 - **`observe.NewTraceHandler` records WARN and ERROR lines on the span, and
   `forge/pkg/observe/observetest.AssertLogCorrelation` pins log↔trace joins.**
   A record at WARN or above, logged with a recording span in its context, is

@@ -23,6 +23,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drops its spans when `dbtrace.IsTraced(db)`, so ORM queries are not spanned
   twice. `serverkit.PgxConn` reaches the `*pgx.Conn` under a `sql.Conn.Raw`
   driver connection through the tracing and pooler-drain wrappers.
+
+- **A typed activity stream: an rpc declares the activity event it records,
+  and one interceptor writes it** (`forge/pkg/activity`).
+  - **Declaring.** An rpc declares its event with
+    `(forge.v1.method).activity`, giving
+    `verb`, `target {kind, id, label}`, `env`, `scope` and `detail`. Field
+    paths resolve against the request, or against the response when they start
+    with `response.`.
+  - **Opting out.** `activity: { none: "<why>" }` records that a mutating rpc
+    changes nothing worth an event.
+  - **CRUD needs no option.** A `Create<E>`, `Update<E>` or `Delete<E>` rpc with
+    forge's CRUD shape implies `create`, `update` or `delete` on `snake(E)`.
+  - **One resolver.** `activity.Resolve` is the only code that interprets a
+    declaration. `activity.IsMutating` decides which rpcs must declare one:
+    every rpc except those named with a read verb (`Get`, `List`, `Watch`,
+    `Search`, `Query`, `Count`, `Describe`, `BatchGet`) and those marked
+    `idempotency_level = NO_SIDE_EFFECTS`.
+  - **The interceptor.** `activity.Interceptor` fills the new
+    `serverkit.ChainDeps.Activity` slot, after auth and next to the handler. It
+    reads the declaration from the method descriptor. When the handler
+    succeeds, it writes the event best-effort, taking the actor from the
+    caller's claims and `via` from the `Forge-Via` header.
+  - **Failures and defaults.** A failed write is logged and counted
+    (`forge_activity_write_failures_total`) and never fails the rpc. The default
+    slot logs events without storing them. `serverkit.NoActivity` drops the
+    slot.
+  - **Transactional writes.** `writer: ACTIVITY_WRITER_HANDLER` hands the write
+    to the handler: it calls `activity.Record` inside its `RunTx`, so the event
+    commits or rolls back with the mutation. `activity.Record` is also the
+    explicit write for actors that are not rpcs: a converger, an alert
+    transition, CI.
+  - **Storage.** `activity.NewStore(db)` writes and lists the `activity_events`
+    table, whose DDL is `activity.SchemaSQL`. `List` filters by actor, verb,
+    target, env, via and time, and pages by keyset. The store writes through
+    `*orm.Client`, so a write inside `RunTx` joins the transaction.
+  - **Docs.** The new `activity` skill covers all of the above.
 - **Dashboard spec: `bar`, `heatmap` and `sql` panels, `Panel.Formula` and
   `Panel.Limit` (`forge/pkg/dashspec`).** `bar` is a top-N chart (one group
   per `groupBy` value, the `limit` largest by the first series, default 10);
@@ -295,6 +331,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge ci verify-generated` and `forge generate --check` never write the
+  checkout.** Both regenerated the caller's own tree and then read
+  `git status`, so a concurrent gate held every reader of the tree back for
+  30-50s, and a run that found drift, crashed or was killed left the
+  regenerated files behind. They now regenerate a scratch copy made beside
+  the repository (`.<repo>.forge-verify-<pid>-*`: its own git repository
+  borrowing the checkout's objects, holding the checkout's index and working
+  tree byte for byte, plus the gitignored files generate reads) and diff the
+  copy against itself; output and exit codes are unchanged. They judge the
+  working tree as `git add -A` would commit it — HEAD on a clean checkout — so
+  a dirty tree now gets a verdict instead of a refusal, and every change
+  reported is generate's. The generate cache is shared both ways: the
+  checkout's record is copied in, and a fixed point the scratch run verifies
+  is copied back to `.forge/generate-cache.json`. The cache key also stops
+  including `FORGE_SLOT_HELD`, a fresh token per slot holder, which made every
+  run inside the gate a miss. `forge ci gate` no longer runs verify-generated
+  alone, skips it on a dirty tree, or resets the tree after it fails.
+- **`forge slot run` and read-only commands no longer edit `.git/config`.**
+  Every forge command pointed the generated-file merge driver at itself
+  (`.git/config`, `info/attributes`) and activated forge's hooks
+  (`core.hooksPath`) as a side effect, so `forge slot run`, `env status`,
+  `env render` and `env deploy --dry-run` rewrote the config every linked
+  worktree shares. Only commands that write generated or state files do it
+  now (`generate` without `--check`/`--plan`, `scaffold`, `project disown`,
+  `project delete service`, `package new`). And two copies of the pinned forge
+  at different paths (each worktree's tool-cache install, a `go install`ed one)
+  no longer take the driver from each other on every run: the copy already
+  registered keeps it while it exists.
 - **`forge env deploy <env> <version> --frontends-only` no longer renders or
   compares the env's bundle.** It applies no bundle object, yet it rendered
   the whole env and refused when a newer checkout's workloads differed from

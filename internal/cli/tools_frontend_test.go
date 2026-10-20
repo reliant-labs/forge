@@ -2,10 +2,7 @@ package cli
 
 import (
 	"bytes"
-	"context"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -173,58 +170,6 @@ func TestToolsInstall_UndeclaredTSPluginFailsWithRunbook(t *testing.T) {
 		}
 	}
 	f.assertUntouched(t)
-}
-
-// verify-generated must not blame `forge generate` for a file an earlier
-// step changed. The houndersclub report listed package-lock.json under
-// "generated code is out of date" with nothing saying forge generate never
-// touched it.
-func TestCheckTreeCleanBeforeRegenerate(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	root := t.TempDir()
-	lock := filepath.Join(root, "frontends", "web", "package-lock.json")
-	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(lock, []byte(toolsTestLockfile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	git("init", "-q")
-	git("add", ".")
-	git("commit", "-q", "-m", "init")
-	t.Chdir(root)
-	ctx := context.Background()
-
-	if err := checkTreeCleanBeforeRegenerate(ctx, io.Discard); err != nil {
-		t.Fatalf("a clean checkout was refused: %v", err)
-	}
-
-	if err := os.WriteFile(lock, []byte(`{"rewritten":"by npm on linux"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var report bytes.Buffer
-	err := checkTreeCleanBeforeRegenerate(ctx, &report)
-	if err == nil {
-		t.Fatal("regenerate would run over a lockfile an earlier step rewrote, and report it as generated-code drift")
-	}
-	if strings.Contains(err.Error(), "out of date") {
-		t.Errorf("error still reads as generated-code drift: %v", err)
-	}
-	for _, want := range []string{"frontends/web/package-lock.json", "before `forge generate` ran", "an earlier step"} {
-		if !strings.Contains(report.String(), want) {
-			t.Errorf("report does not say %q:\n%s", want, report.String())
-		}
-	}
 }
 
 // The runbook's range must be the one forge scaffolds, or following it

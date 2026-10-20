@@ -12,6 +12,9 @@
 //	forgeconv-list-filter-optional      a List request's scalar/enum filter
 //	                                    fields must be `optional`
 //	                                    (see list_filter_optional.go)
+//	forgeconv-activity-declared         every mutating rpc declares its
+//	                                    activity event, or `none`
+//	                                    (see activity_declared.go)
 //	forgeconv-allocate-port-spacing     two allocate_port() base literals
 //	                                    congruent mod BlockSize collide at
 //	                                    a block reachable within MaxStacks
@@ -183,8 +186,15 @@ func LintProtoTreeOpts(rootDir string, opts LintOptions) (Result, error) {
 	// they run once up front; their findings join each file's own below and
 	// go through the same suppression pass.
 	treeFindings := checkListFilterOptional(rootDir, protoFiles)
+	if treeFindings == nil {
+		treeFindings = map[string][]Finding{}
+	}
+	for rel, fs := range checkActivityDeclared(rootDir, protoFiles) {
+		treeFindings[rel] = append(treeFindings[rel], fs...)
+	}
 
 	var result Result
+	consumed := map[string]bool{}
 	for _, file := range protoFiles {
 		content, err := os.ReadFile(file)
 		if err != nil {
@@ -201,10 +211,19 @@ func LintProtoTreeOpts(rootDir string, opts LintOptions) (Result, error) {
 		// offending declaration, and a reasonless one of a gating rule is
 		// itself reported. Applied here rather than by the caller so
 		// every consumer (lint, audit) sees the same verdict.
+		consumed[rel] = true
 		findings := append(lintProtoFile(rel, string(content), opts), treeFindings[rel]...)
 		applied := suppress.Apply(string(content), findings)
 		result.Findings = append(result.Findings, applied.Kept...)
 		result.Findings = append(result.Findings, applied.Violations...)
+	}
+
+	// Tree findings about no walked file — the descriptor itself, keyed
+	// "" — have no source to suppress against; they are reported as is.
+	for rel, fs := range treeFindings {
+		if !consumed[rel] {
+			result.Findings = append(result.Findings, fs...)
+		}
 	}
 
 	// Stable ordering: by file, then line, then rule.

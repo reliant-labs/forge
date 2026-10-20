@@ -64,9 +64,11 @@ Every **mutating** rpc must declare. An rpc counts as mutating unless:
   `Count`, `Describe` or `BatchGet`; or
 - it carries protobuf's read-only marker, `option idempotency_level = NO_SIDE_EFFECTS;`.
 
-`forge lint` fails a mutating rpc that declares nothing, and it fails any
-declaration whose paths do not resolve. A read rpc may still declare an
-event. For example, revealing a secret can be a `reveal`.
+`forge lint` (the conventions lane, rule `forgeconv-activity-declared`) fails
+a mutating rpc that declares nothing, and it fails any declaration whose paths
+do not resolve. It reads the verdict `forge generate` records in
+`gen/forge_descriptor.json`, so run `forge generate` first. A read rpc may
+still declare an event. For example, revealing a secret can be a `reveal`.
 
 `activity.Resolve` and `activity.IsMutating` are the only code that interprets
 these rules. The interceptor and the lint both call them.

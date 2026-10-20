@@ -295,6 +295,7 @@ func addGraphProviderNodes(providers []graphProvider, add func(*graphNode) error
 			Ctor: "New" + p.Name, DepsType: p.Name + "Deps", Fallible: p.Fallible,
 			Deps: p.Deps, DepsKeys: p.DepsKeys, DepsFound: true,
 			SrcImports: p.Imports, Pos: p.Pos,
+			File: p.File, Line: p.Line, Standby: p.Standby, AuthAudience: p.Audience,
 		}
 		if err := add(n); err != nil {
 			return err

@@ -2,6 +2,8 @@ package crud
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/uptrace/bun"
@@ -116,5 +118,107 @@ func TestCreate_SingleStringPK_StillGeneratesULID(t *testing.T) {
 	}
 	if row.ID == "" {
 		t.Error("Create must ULID-generate a single-column string PK left empty by the caller")
+	}
+}
+
+// A composite-key entity is a full store (reliant P5b, F12.3): read,
+// rewritten, upserted and deleted by its WHOLE key. Every one of these used
+// to address the row by a single pkColumn — "" for a composite key — so
+// the only safe verbs were Create and List.
+func TestCompositePK_FullLifecycleByTheWholeKey(t *testing.T) {
+	db := newRepoTestDB(t)
+	ctx := context.Background()
+	createDocumentCountersTable(t, db)
+	repo := NewRepo[documentCounter]()
+
+	for _, row := range []*documentCounter{
+		{CompanyID: "c1", Kind: "invoice", NextValue: 1},
+		{CompanyID: "c1", Kind: "estimate", NextValue: 10},
+		{CompanyID: "c2", Kind: "invoice", NextValue: 100},
+	} {
+		if err := repo.Create(ctx, db, row); err != nil {
+			t.Fatalf("Create %+v: %v", row, err)
+		}
+	}
+
+	got, err := repo.GetByPK(ctx, db, &documentCounter{CompanyID: "c1", Kind: "estimate"})
+	if err != nil || got.NextValue != 10 {
+		t.Fatalf("GetByPK(c1, estimate) = %+v, %v; want next_value 10", got, err)
+	}
+	if _, err := repo.GetByPK(ctx, db, &documentCounter{CompanyID: "c3", Kind: "invoice"}); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("GetByPK of a missing key: err = %v, want orm.ErrNoRows", err)
+	}
+
+	got.NextValue = 11
+	if err := repo.Update(ctx, db, got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := repo.UpdateMasked(ctx, db, &documentCounter{CompanyID: "c2", Kind: "invoice", NextValue: 101}, []string{"next_value"}); err != nil {
+		t.Fatalf("UpdateMasked: %v", err)
+	}
+	if err := repo.Upsert(ctx, db, &documentCounter{CompanyID: "c1", Kind: "invoice", NextValue: 2}); err != nil {
+		t.Fatalf("Upsert on the composite key: %v", err)
+	}
+	want := map[string]int64{"c1/invoice": 2, "c1/estimate": 11, "c2/invoice": 101}
+	rows, err := repo.List(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("List = %d rows, want %d (an Update or Upsert that matched by one key column would touch, or add, others)", len(rows), len(want))
+	}
+	for _, r := range rows {
+		if w := want[r.CompanyID+"/"+r.Kind]; r.NextValue != w {
+			t.Errorf("%s/%s next_value = %d, want %d", r.CompanyID, r.Kind, r.NextValue, w)
+		}
+	}
+
+	if err := repo.DeleteByPK(ctx, db, &documentCounter{CompanyID: "c1", Kind: "invoice"}); err != nil {
+		t.Fatalf("DeleteByPK: %v", err)
+	}
+	if n, _ := repo.Count(ctx, db); n != 2 {
+		t.Errorf("after DeleteByPK, %d rows remain, want 2 (only the one key)", n)
+	}
+	if err := repo.DeleteByPK(ctx, db, &documentCounter{CompanyID: "c1", Kind: "invoice"}); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("DeleteByPK of a missing key: err = %v, want orm.ErrNoRows", err)
+	}
+	if err := repo.Update(ctx, db, &documentCounter{CompanyID: "zz", Kind: "none", NextValue: 1}); !errors.Is(err, orm.ErrNoRows) {
+		t.Errorf("Update of a missing key: err = %v, want orm.ErrNoRows", err)
+	}
+}
+
+// The composite-key by-PK statements bind every key column (F12.8's rule
+// for the single-key ones): one prepared statement per shape, however many
+// distinct keys pass through.
+func TestCompositePK_ByKeyStatementsBindTheirKey(t *testing.T) {
+	db, sqldb := newPgxRepoTestDB(t)
+	ctx := context.Background()
+	createDocumentCountersTable(t, db)
+	repo := NewRepo[documentCounter]()
+
+	const n = 15
+	for i := range n {
+		if err := repo.Create(ctx, db, &documentCounter{CompanyID: fmt.Sprintf("c%d", i), Kind: "invoice", NextValue: int64(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	preparedStatements(t, sqldb)
+	before := preparedStatements(t, sqldb)
+	for i := range n {
+		key := &documentCounter{CompanyID: fmt.Sprintf("c%d", i), Kind: "invoice"}
+		row, err := repo.GetByPK(ctx, db, key)
+		if err != nil {
+			t.Fatalf("GetByPK: %v", err)
+		}
+		row.NextValue++
+		if err := repo.Update(ctx, db, row); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if err := repo.DeleteByPK(ctx, db, key); err != nil {
+			t.Fatalf("DeleteByPK: %v", err)
+		}
+	}
+	if got := preparedStatements(t, sqldb) - before; got > 3 {
+		t.Fatalf("%d by-key calls over %d distinct keys prepared %d statements, want at most 3 (one per shape)", 3*n, n, got)
 	}
 }

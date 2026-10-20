@@ -196,3 +196,38 @@ func TestForgePinSkew_AutoGenerateIsRefused(t *testing.T) {
 		t.Errorf("--no-generate must skip the pipeline and the guard: %v", err)
 	}
 }
+
+// A command that is not refused still warns, and the warning gives the
+// refusal's remedy. It used to say only "go install forge@<pin>", which does
+// nothing for an embedded forge: `reliant forge` kept running the forge
+// compiled into reliant.
+func TestForgePinSkew_WarningGivesTheRefusalsRemedy(t *testing.T) {
+	skewedProject(t)
+	root := NewRootCmd()
+	cmd, _, err := root.Find([]string{"lint"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warn strings.Builder
+	if err := checkForgePinSkew(cmd, root, &warn, false); err != nil {
+		t.Fatalf("lint was refused: %v", err)
+	}
+	if want := "go run github.com/reliant-labs/forge/cmd/forge@" + skewTestPin; !strings.Contains(warn.String(), want) {
+		t.Errorf("the warning does not give the go run form %q:\n%s", want, warn.String())
+	}
+
+	embedded := pinSkewWarning(skewTestPin, skewTestBinary,
+		buildinfo.Build{Embedded: true, Embedder: "github.com/reliant-labs/reliant"})
+	for _, want := range []string{
+		"go run github.com/reliant-labs/forge/cmd/forge@" + skewTestPin,
+		"embedded in reliant",
+		"upgrade reliant",
+	} {
+		if !strings.Contains(embedded, want) {
+			t.Errorf("the embedded warning does not contain %q:\n%s", want, embedded)
+		}
+	}
+	if strings.Contains(embedded, "go install") {
+		t.Errorf("the embedded warning still advises go install, which does not change the embedded forge:\n%s", embedded)
+	}
+}

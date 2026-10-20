@@ -64,7 +64,7 @@ func runGeneratePlan(projectDir string, flags pipelineFlags) error {
 	templatesAllow := flags.TemplatesOnly
 
 	// Pre-fly the gate-input setup steps so the Gate predicates see a
-	// realistic ctx (HasServices, HasDB, etc. are populated by
+	// realistic ctx (HasServices, HasConfig, etc. are populated by
 	// stepDetectProtoDirs; Cfg by stepLoadConfig; Checksums by
 	// stepLoadChecksums). We run the smallest prefix needed to make the
 	// gates meaningful, NOT the full pipeline.

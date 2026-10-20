@@ -34,16 +34,16 @@ func constraintTestEntity(cs []config.PlanEntityConstraint) config.PlanEntity {
 }
 
 func TestRenderORMEntity_EmitsUniqueAndCheckConstraintConstants(t *testing.T) {
-	code := string(renderORMEntity(constraintTestEntity([]config.PlanEntityConstraint{
+	code := string(renderORMEntity("db", constraintTestEntity([]config.PlanEntityConstraint{
 		{Name: "jobs_estimate_id_key", Kind: config.ConstraintKindUnique},
 		{Name: "jobs_total_cents_check", Kind: config.ConstraintKindCheck},
 	}), false))
 
-	// EstimateId, not EstimateID: the identifier uses the same protoc-style
-	// casing as the sibling JobFieldEstimateId and the struct's own
-	// EstimateId field. One column must not be spelled two ways in one file.
+	// EstimateID: the identifier uses the same Go casing as the sibling
+	// JobFieldEstimateID and the struct's own EstimateID field. One column
+	// must not be spelled two ways in one file.
 	for _, want := range []string{
-		`JobConstraintEstimateIdKey = "jobs_estimate_id_key"`,
+		`JobConstraintEstimateIDKey = "jobs_estimate_id_key"`,
 		`JobConstraintTotalCentsCheck = "jobs_total_cents_check"`,
 	} {
 		if !strings.Contains(code, want) {
@@ -56,11 +56,11 @@ func TestRenderORMEntity_EmitsUniqueAndCheckConstraintConstants(t *testing.T) {
 // 23503 means the parent row is gone, which is a caller-visible NotFound,
 // not a server fault.
 func TestRenderORMEntity_EmitsForeignKeyConstraintConstant(t *testing.T) {
-	code := string(renderORMEntity(constraintTestEntity([]config.PlanEntityConstraint{
+	code := string(renderORMEntity("db", constraintTestEntity([]config.PlanEntityConstraint{
 		{Name: "jobs_estimate_id_fkey", Kind: config.ConstraintKindForeignKey},
 	}), false))
 
-	if want := `JobConstraintEstimateIdFkey = "jobs_estimate_id_fkey"`; !strings.Contains(code, want) {
+	if want := `JobConstraintEstimateIDFkey = "jobs_estimate_id_fkey"`; !strings.Contains(code, want) {
 		t.Errorf("generated ORM missing FK constraint constant %q; got:\n%s", want, code)
 	}
 }
@@ -69,7 +69,7 @@ func TestRenderORMEntity_EmitsForeignKeyConstraintConstant(t *testing.T) {
 // name in the identifier — stripping is a readability affordance for the
 // prefix postgres itself adds, not a rule about what the constant means.
 func TestRenderORMEntity_UnprefixedConstraintNameKeepsFullName(t *testing.T) {
-	code := string(renderORMEntity(constraintTestEntity([]config.PlanEntityConstraint{
+	code := string(renderORMEntity("db", constraintTestEntity([]config.PlanEntityConstraint{
 		{Name: "total_is_subtotal_plus_tax", Kind: config.ConstraintKindCheck},
 	}), false))
 
@@ -84,7 +84,7 @@ func TestRenderORMEntity_UnprefixedConstraintNameKeepsFullName(t *testing.T) {
 // other's spelling — so the colliding pair falls back to the FULL name,
 // which postgres guarantees is distinct within a table.
 func TestRenderORMEntity_PrefixStripCollisionFallsBackToFullName(t *testing.T) {
-	code := string(renderORMEntity(constraintTestEntity([]config.PlanEntityConstraint{
+	code := string(renderORMEntity("db", constraintTestEntity([]config.PlanEntityConstraint{
 		{Name: "jobs_status_key", Kind: config.ConstraintKindUnique},
 		{Name: "status_key", Kind: config.ConstraintKindUnique},
 	}), false))
@@ -103,7 +103,7 @@ func TestRenderORMEntity_PrefixStripCollisionFallsBackToFullName(t *testing.T) {
 // empty `const ()` is not valid-looking generated code and an empty exported
 // name would trip revive's exported rule.
 func TestRenderORMEntity_NoConstraintsEmitsNoBlock(t *testing.T) {
-	code := string(renderORMEntity(constraintTestEntity(nil), false))
+	code := string(renderORMEntity("db", constraintTestEntity(nil), false))
 	if strings.Contains(code, "JobConstraint") {
 		t.Errorf("entity with no constraints emitted a constraint constant; got:\n%s", code)
 	}
@@ -113,14 +113,14 @@ func TestRenderORMEntity_NoConstraintsEmitsNoBlock(t *testing.T) {
 // the whole point: the compiler cannot see a renamed string literal, but it
 // can see a renamed constant.
 func TestRenderORMEntity_ConstraintRenameMovesTheConstant(t *testing.T) {
-	before := string(renderORMEntity(constraintTestEntity([]config.PlanEntityConstraint{
+	before := string(renderORMEntity("db", constraintTestEntity([]config.PlanEntityConstraint{
 		{Name: "jobs_estimate_id_key", Kind: config.ConstraintKindUnique},
 	}), false))
-	after := string(renderORMEntity(constraintTestEntity([]config.PlanEntityConstraint{
+	after := string(renderORMEntity("db", constraintTestEntity([]config.PlanEntityConstraint{
 		{Name: "one_job_per_estimate", Kind: config.ConstraintKindUnique},
 	}), false))
 
-	if !strings.Contains(before, `JobConstraintEstimateIdKey = "jobs_estimate_id_key"`) {
+	if !strings.Contains(before, `JobConstraintEstimateIDKey = "jobs_estimate_id_key"`) {
 		t.Fatalf("pre-rename constant missing; got:\n%s", before)
 	}
 	if strings.Contains(after, "jobs_estimate_id_key") {

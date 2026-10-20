@@ -281,6 +281,40 @@ func TestInterceptor_HandlerWriter(t *testing.T) {
 	})
 }
 
+// A handler that changed nothing calls Skip, and the interceptor writes no
+// event for that call: the declaration's verb is not a lie on a no-op.
+func TestInterceptor_SkipSuppressesTheEvent(t *testing.T) {
+	for name, writer := range map[string]forgepb.ActivityWriter{
+		"interceptor writer": forgepb.ActivityWriter_ACTIVITY_WRITER_UNSPECIFIED,
+		"handler writer":     forgepb.ActivityWriter_ACTIVITY_WRITER_HANDLER,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opt := promoteDecl()
+			opt.Writer = writer
+			w := &memWriter{}
+			md := fixtureRPC(t, fixtureMethod{name: "Promote", activity: opt})
+			h := newHarness(t, md, Deps{Writer: w}, func(ctx context.Context, req, resp *dynamicpb.Message) error {
+				if !Skip(ctx) {
+					t.Error("Skip reported no declared call inside a declared rpc")
+				}
+				return promoteHandler(ctx, req, resp)
+			})
+			if err := h.call(map[string]string{"release_id": "rel_1"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(w.got()); n != 0 {
+				t.Errorf("wrote %d events after Skip, want 0", n)
+			}
+			if strings.Contains(h.log.String(), "did not call activity.Record") {
+				t.Errorf("a skipped HANDLER call was warned about:\n%s", h.log.String())
+			}
+		})
+	}
+	if Skip(context.Background()) {
+		t.Error("Skip outside an rpc reported a declared call")
+	}
+}
+
 func TestRecord_OutsideAnRPCNeedsACompleteEvent(t *testing.T) {
 	w := &memWriter{}
 	err := Record(context.Background(), w, Event{Verb: "observe"})

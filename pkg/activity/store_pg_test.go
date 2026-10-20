@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -132,6 +134,61 @@ func TestStore_WriteAndList(t *testing.T) {
 
 	if _, err := store.List(ctx, Filter{Scope: "p1", PageToken: "garbage"}); !errors.Is(err, ErrBadPageToken) {
 		t.Errorf("bad token: err = %v, want ErrBadPageToken", err)
+	}
+}
+
+// A scope is a path: an org's events and its projects' events are read
+// together (descendants) or a project's with its org's (ancestors), and a
+// sibling whose name shares a prefix, or a LIKE wildcard in a name, never
+// leaks in.
+func TestStore_HierarchicalScopes(t *testing.T) {
+	store, _ := newPGStore(t)
+	ctx := context.Background()
+	for _, sc := range []struct{ scope, env string }{
+		{"org_1", ""}, {"org_1/billing", "prod"}, {"org_1/billing", "e2e"}, {"org_1/web", "prod"},
+		{"org_10", ""}, {"org_10/billing", "prod"}, {"org_%", ""}, {"org_%/x", "prod"},
+	} {
+		ev := Event{Scope: sc.scope, Env: sc.env, Actor: User("u", "u"), Verb: "promote", Target: Target{Kind: "release", ID: sc.scope + "@" + sc.env}}
+		if err := store.Write(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(f Filter) []string {
+		t.Helper()
+		page, err := store.List(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, ev := range page.Events {
+			out = append(out, ev.Target.ID)
+		}
+		sort.Strings(out)
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		f    Filter
+		want []string
+	}{
+		{"exact", Filter{Scope: "org_1/billing"}, []string{"org_1/billing@e2e", "org_1/billing@prod"}},
+		{"project with its org", Filter{Scope: "org_1/billing", IncludeAncestors: true}, []string{"org_1/billing@e2e", "org_1/billing@prod", "org_1@"}},
+		{"org with its projects", Filter{Scope: "org_1", IncludeDescendants: true}, []string{"org_1/billing@e2e", "org_1/billing@prod", "org_1/web@prod", "org_1@"}},
+		{"wildcard is literal", Filter{Scope: "org_%", IncludeDescendants: true}, []string{"org_%/x@prod", "org_%@"}},
+		{"envs any-of", Filter{Scope: "org_1", IncludeDescendants: true, Envs: []string{"prod"}}, []string{"org_1/billing@prod", "org_1/web@prod"}},
+	} {
+		if got := ids(tc.f); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestScopeSet(t *testing.T) {
+	if got := scopeSet(Filter{Scope: "a/b/c", IncludeAncestors: true}); !slices.Equal(got, []string{"a/b/c", "a/b", "a"}) {
+		t.Errorf("ancestors = %v", got)
+	}
+	if got := scopeSet(Filter{Scope: "a/b"}); !slices.Equal(got, []string{"a/b"}) {
+		t.Errorf("exact = %v", got)
 	}
 }
 

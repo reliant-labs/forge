@@ -162,8 +162,10 @@ jobs:
             go-build-e2e-prepare-${{ runner.os }}-
       # The binary under test must come from THIS commit, so all three are
       # built from the checkout. forge is built exactly as the tests' own
-      # buildforgeBinary builds it (`go build -o <bin> ./cmd/forge`, in the
-      # same checkout path on every runner), so the prebuilt one is the
+      # buildforgeBinary builds it (`go build -o <bin> ./cmd/forge` with
+      # DevForgeRoot stamped to the checkout, devForgeRootLDFlag in
+      # internal/cli/scaffold_e2e_test.go; the same checkout path on every
+      # runner), so the prebuilt one is the
       # binary a shard would have built. The plugins are what the generate
       # pipeline's buf `local:` plugins and goimports expect on PATH, at the
       # versions go.mod resolves; --force so a runner image's own copy can
@@ -174,7 +176,7 @@ jobs:
           dist="$RUNNER_TEMP/e2e-dist"
           mkdir -p "$dist/bin"
           go test -c -tags e2e -o "$dist/e2e.test" ./internal/cli/
-          go build -o "$dist/bin/forge" ./cmd/forge
+          go build -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$PWD" -o "$dist/bin/forge" ./cmd/forge
           GOBIN="$dist/bin" PATH="$dist/bin:$PATH" "$dist/bin/forge" tools install --force
           ls -la "$dist" "$dist/bin"
       - name: List the e2e tests and plan the shards

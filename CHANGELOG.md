@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scaffolded release workflow and the `ci` and `deploy` skills now rely on it
   instead of passing a flag. `--json` and the targeted lanes were already
   detect-only.
+- **forge's control-plane client names itself in `Forge-Via`.** Every call
+  sends `cli`, or `ci` under a CI runner, so a server's activity stream
+  (`forge/pkg/activity`) records how a change arrived, as in "sean promoted
+  v1.7.44 via CLI". `middleware.DefaultCORSAllowHeaders` admits `Forge-Via`,
+  so a browser console can send it cross-origin.
+- **Activity scopes are paths, so one feed can span an org and its projects**
+  (`forge/pkg/activity`). An event scoped `org_1/billing` belongs to project
+  billing of org org_1. `Filter.IncludeAncestors` adds the ancestors' events to
+  a scope's feed, so a project's feed shows its org's events.
+  `Filter.IncludeDescendants` adds every descendant's events, so an org's feed
+  shows every project's. `Filter.Envs` matches any of several environments.
+  Wildcards in a scope name match literally. `activity.Skip(ctx)` lets a
+  handler whose call changed nothing (an idempotent ensure, a dry run) suppress
+  that call's event.
 - **Every SQL statement is a span: `forge/pkg/observe/dbtrace`, used by
   `serverkit.OpenDB`, `cmdkit.OpenDB` and `orm.NewClient`.** The pool is
   opened through `otelsql`, so each statement run under a span gets a CLIENT

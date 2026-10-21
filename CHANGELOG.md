@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge cloud identity invite|reset --return-code`** hands the one-time
+  password-set code back (with the env's `/auth/reset` link filled in) for you
+  to deliver, the only way to invite or reset where the environment declares no
+  `smtp`: the control plane refuses both there rather than send nothing.
+  `status` prints `Mail: none|smtp` (`mailDelivery` in `--json`). `reset` now
+  says it emailed a link, and `invite` no longer claims an unsent email
+  succeeded. The `deploy/managed-identity` skill describes every verb, the
+  `identity:read` / `identity:manage` scopes (machine credentials carrying them
+  are accepted; a Reliant session is elevated on demand) and the code flow; it
+  had said machine credentials were refused and that an invitation's code could
+  not be redeemed by `/auth/reset`.
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
   each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
 <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,

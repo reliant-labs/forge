@@ -1,6 +1,6 @@
 ---
 name: deploy/managed-identity
-description: forge.ManagedIdentity, an env's users declared in KCL — roles, the applications that sign users in, the workloads that read tokens, share_with, SMTP, seed users — and how forge fills each consumer's typed config (jwt_issuer, oidc_client_id, ...) with no app code change, what it delivers per runtime, what is refused, and what is not built yet (hosted login, social).
+description: forge.ManagedIdentity, an env's users declared in KCL — roles, the applications that sign users in, the workloads that read tokens, share_with, SMTP, seed users — administering a hosted env's users with `forge cloud identity` (verbs, the identity:read/manage scopes, password-set codes), how forge fills each consumer's typed config (jwt_issuer, oidc_client_id, ...) with no app code change, what it delivers per runtime, what is refused, and what is not built yet (hosted login, social).
 ---
 
 # Managed identity
@@ -44,39 +44,52 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `share_with` | a bare env name **of the same project**. The owner must declare an identity and not itself be a sharer: no chains. A sharer declares only applications and consumers |
 | `social` | **reserved**; refused at render |
 
-## Onboard a hosted user
+## Administer a hosted env's users
 
-After deploying the environment, use the public control-plane management API through Forge:
+After deploying the environment, use the public control-plane management API (`controlplane.v1.IdentityService`) through Forge:
 
 ```bash
-forge cloud identity status prod
+forge cloud identity status prod                  # state, issuer, apps, deliveries, Mail: none|smtp
 forge cloud identity users prod --query person@example.com --page-size 20 --json
-forge cloud identity invite prod --email person@example.com --role member
-# Multiple roles: --role member --role operator
+forge cloud identity invite prod --email person@example.com --role member [--role operator] [--return-code]
+forge cloud identity set-roles prod --user person@example.com --role member   # --none removes every console role
+forge cloud identity reset prod --user person@example.com [--return-code]
+forge cloud identity lock|unlock prod --user person@example.com
+forge cloud identity revoke-sessions prod --user person@example.com
+forge cloud identity delete prod --user person@example.com                     # asks; --yes skips the question
 # Continue a listing: forge cloud identity users prod --page-token <nextPageToken> --json
 ```
 
-Choose the recipient explicitly; never infer the owner's email from the agent's session. There is no password flag, bootstrap password or production seed user. The response reports `userId` and `created` (false for an existing account receiving roles), never a password or token. Status and listings return safe metadata; all three commands accept `--json`.
+`--user` takes a user id or an exact email (resolved through `users`; an ambiguous one is refused). Every verb accepts `--json`. Choose the recipient explicitly; never infer the owner's email from the agent's session. There is no password flag, bootstrap password or production seed user, and no response carries a password or token, except the one-time code `--return-code` asks for.
 
-### What an invitation does, and does not, do
+`set-roles` replaces the user's **console-managed** roles with exactly the `--role` values. Roles with `members_from = "declared"` are converged from KCL: naming one is refused, the ones a user holds are kept, and `delete` refuses a user who holds one (the next reconcile would recreate them). Change those in `deploy/kcl/identity.k`. `lock` is reversible with `unlock`; `delete` is not. `revoke-sessions` ends sign-in sessions; access tokens already issued stay valid until they expire.
 
-**No mail is sent unless the environment declares `smtp`.** `invite` creates the account (or grants roles to an existing one) and asks the instance to email a code; an instance with no SMTP provider accepts that and delivers nothing, and nothing reports the failure. Declare `smtp` and the email is sent. Also, the invitation's code verifies the **email address**; it is not a password code, so the scaffolded `/auth/reset` cannot redeem it.
+### Who may call it
 
-**forge scaffolds no invite flow.** What it scaffolds is public sign-up (below) and self-serve password reset (`auth/frontend`). To build invites by hand:
+The endpoint comes from that env's `ControlPlane` KCL. Credentials use the usual precedence: `--token`, the declared token env var, the stored `forge login`, then the host session helper (under Reliant, no extra login is needed). The org comes from the authenticated control plane and the env id is looked up by exact project/name; there is no org override.
 
-1. Create the account: `IdentityService.InviteUser` (or `forge cloud identity invite`), which also grants roles. Keep the returned `userId`.
-2. Mint a one-time password code from the app's broker: `devidp.MintPasswordResetCode(ctx, userID)`.
-3. Hand the person `<your app>/auth/reset?userID=<id>&code=<code>` through a channel you control (your own mailer, a message, an admin screen). The scaffolded `/auth/reset` page redeems it, sets their password and signs them in.
+| what | needs |
+|---|---|
+| `status`, `users` | the `identity:read` scope |
+| every verb that changes a user (`invite`, `set-roles`, `reset`, `lock`, `unlock`, `delete`, `revoke-sessions`), and any `--return-code` | `identity:manage` (implies read), held by an **org admin** |
 
-The code is the credential: never return it from an endpoint anyone can call.
+A person's session is checked against their org role and their identity grants (owners and admins hold both scopes). A **machine credential** (an org access token, a Reliant agent's session token) is accepted when it is scoped to the org and carries the scope; a `--return-code` from one also needs its acting user to still hold the `identity:manage` grant. A Reliant session or a `forge login` credential does not carry the identity scopes itself: when the control plane answers that one is missing, forge exchanges the credential for exactly that scope (`AccessTokenService/ExchangeToken`, for an hour, in memory only, and only while the person behind it holds the grant) and retries. A `--token` or the token env var is used exactly as given and must already carry the scope.
+
+`status` reports the current state even while provisioning or refused. Every verb fails closed on an identity that is not ready, an unknown role, a declared/read-only role or a missing scope: fix the reported cause; do not bypass it with an internal reconciler credential.
+
+### Getting a credential to a person
+
+`invite` creates the account (or grants roles to an existing one, `created=false`). An account with no credential yet is issued a one-time **password-set code**, which the scaffolded `/auth/reset` page redeems (it sets the password and signs the person in). `reset` issues one for any account; their current password keeps working until it is redeemed. Codes are single use and expire within the hour.
+
+**No mail is sent unless the environment declares `smtp`**; there is no platform relay, `GetIdentityStatus` reports `mail_delivery: IDENTITY_MAIL_DELIVERY_NONE`, and `status` shows `Mail: none`. Then the control plane **refuses** `invite` (for an account that needs a code) and `reset` with FailedPrecondition naming `smtp`, rather than succeed and send nothing. An `identity:manage` caller passes `--return-code` (`return_code` on the rpc): the code comes back, with the env's reset link already filled in (`<app>/auth/reset?userID=…&code=…&orgID=…`, built from the application's `login_uri`), and you deliver it over a channel you control (your own mailer, a message, an admin screen). Declare `smtp` and the code is emailed instead.
+
+Where the link points: an explicit `login_uri` on the application always wins. Without one, the deployed control plane builds it from the first bound domain, and an env that has neither gets the bare code with no link. **Once control-plane #1115 is deployed** (merged, not yet in a prod release), an identity's `login_uri` and its reset links default to the env's single hosted frontend, at its oldest live custom domain or else its platform hostname. An env with several hosted frontends must still declare `login_uri`.
+
+The code is a credential: never print it into a shared log or return it from an endpoint anyone can call. **forge scaffolds no invite UI**; an admin screen of your own calls `IdentityService.InviteUser` / `SendPasswordReset` with `return_code`, or mints a code from the app's broker with `devidp.MintPasswordResetCode(ctx, userID)`.
 
 ### Public sign-up is on by default
 
-The scaffolded broker mounts `POST /auth/register`, so **anyone who can reach the app can create an account** and is signed in. That is how a real user gets a credential today when mail is not configured. For an invite-only app, delete that route in `internal/app/login_broker.go` and the "Create an account" toggle in the sign-in screen, then build invites as above.
-
-The endpoint comes from that env's `ControlPlane` KCL. Credentials use the usual precedence: `--token`, declared token env var, stored endpoint login, then the host session helper (so under Reliant, no extra login is needed). The org comes from the authenticated control plane; the env ID is looked up by exact project/name. There is no org override. A **human session** is required: members may read; inviting requires an **org admin**, and machine credentials are refused. Standalone users can authenticate with `forge login`.
-
-`status` reports the current state even while provisioning or refused. Listing and inviting fail closed when the server refuses an identity that is not ready, an unknown role, a declared/read-only role, or insufficient permissions. Fix the reported cause; do not bypass it with an internal reconciler credential. Roles with `members_from = "declared"` must be changed in KCL, not through invitations.
+The scaffolded broker mounts `POST /auth/register`, so **anyone who can reach the app can create an account** and is signed in. For an invite-only app, delete that route in `internal/app/login_broker.go` and the "Create an account" toggle in the sign-in screen, then invite as above.
 
 ## The issuer
 

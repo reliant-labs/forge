@@ -410,6 +410,14 @@ type ormField struct {
 	// hand-rolled (Bun's ,soft_delete stamps a time.Time that a TEXT column
 	// can't round-trip — kalshi fr-3fba9166ba style).
 	softDeleteNative bool
+	// softDeleteLegacy is true on a soft-delete deleted_at that does NOT
+	// project to a time (a legacy TEXT column): Bun's ,soft_delete cannot
+	// own it, so it carries a `forge:"soft-delete"` struct tag and
+	// pkg/crud hand-rolls the filter and the stamp. The repo reads soft
+	// delete only from a tag — never from the column's name — so a
+	// deleted_at declared `forge:no-soft-delete` carries neither and is an
+	// ordinary column at runtime too.
+	softDeleteLegacy bool
 	// isGenerated marks a GENERATED ALWAYS AS (...) STORED column →
 	// ,nullzero,skipupdate: postgres rejects the column in an INSERT column
 	// list or an UPDATE SET, but it must still be SELECTed. See bunTag for
@@ -1083,6 +1091,8 @@ func structTag(f ormField) string {
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "version")
 	case f.isFillULID:
 		return fmt.Sprintf("`%s forge:%q`", bunPart, "fill=ulid")
+	case f.softDeleteLegacy:
+		return fmt.Sprintf("`%s forge:%q`", bunPart, "soft-delete")
 	case f.isGenerated:
 		// GENERATED ALWAYS AS (...) STORED. The bun tag's ,nullzero handles
 		// the common INSERT (a zero value marshals to DEFAULT, which
@@ -1252,14 +1262,21 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 		fields = append(fields, f)
 	}
 
-	// Mark the soft-delete column when soft delete is active and the
-	// deleted_at column projects to a proper time type — Bun's built-in
-	// ,soft_delete then owns it. A legacy TEXT deleted_at (Go type string)
-	// is left unmarked and keeps the hand-rolled stamp/filter path.
+	// Mark the soft-delete column when soft delete is active. A deleted_at
+	// that projects to a proper time type is Bun's built-in ,soft_delete; a
+	// legacy TEXT deleted_at (Go type string) is tagged for pkg/crud's
+	// hand-rolled stamp/filter path. Without soft delete — no deleted_at,
+	// or one declared forge:no-soft-delete — neither mark is set and the
+	// column is plain.
 	if ent.SoftDelete {
 		for i := range fields {
-			if fields[i].columnName == "deleted_at" && isBunSoftDeleteTimeType(fields[i]) {
+			if fields[i].columnName != "deleted_at" {
+				continue
+			}
+			if isBunSoftDeleteTimeType(fields[i]) {
 				fields[i].softDeleteNative = true
+			} else {
+				fields[i].softDeleteLegacy = true
 			}
 		}
 	}

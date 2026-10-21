@@ -332,15 +332,17 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 			r.m.softDeleteColumn = tbl.SoftDeleteField.Name
 		}
 
-		// A deleted_at column Bun's ,soft_delete did NOT claim is the legacy
-		// TEXT form: Bun stamps a time.Time that a TEXT column cannot
-		// round-trip, so the repo hand-rolls the filter and the stamp. The
-		// repo already derives the native half from tbl.SoftDeleteField; the
-		// legacy half is its complement, so deriving it here replaces a flag
-		// that only ever restated what these two facts already imply.
+		// The legacy TEXT form: a deleted_at Bun's ,soft_delete cannot own
+		// (it stamps a time.Time a TEXT column cannot round-trip), DECLARED
+		// with forge's soft-delete tag, so the repo hand-rolls the filter and
+		// the stamp. Declared rather than inferred from the column's name:
+		// a deleted_at is also how a schema spells an archive stamp
+		// (`forge:no-soft-delete`), and a repo that soft-deleted every
+		// column called deleted_at hid archived rows and turned Delete into
+		// an UPDATE behind a declaration that said otherwise.
 		if !r.m.nativeSoftDel {
 			for _, f := range tbl.Fields {
-				if f.Name == "deleted_at" {
+				if softDeleteTagged(f) && f.Name == "deleted_at" {
 					r.m.legacyTextSoftDel = true
 					break
 				}
@@ -488,6 +490,13 @@ const fillULIDTagValue = "fill=ulid"
 // SELECT stops projecting the column and every read returns the Go zero).
 const generatedTagValue = "generated"
 
+// softDeleteTagValue is the forge-tag value marking a legacy TEXT deleted_at
+// the repo soft-deletes by hand (Bun's ,soft_delete owns the time-typed
+// form). Only a soft-delete deleted_at carries it; one declared
+// `forge:no-soft-delete` (pkg/schemadef.ColumnMarkerNoSoftDelete) is an
+// ordinary column.
+const softDeleteTagValue = "soft-delete"
+
 // versionTagged reports whether a Bun field carries forge's version tag.
 // Read off the raw StructField rather than Bun's parsed Tag: the value
 // lives in forge's own tag namespace, which Bun does not parse.
@@ -498,6 +507,12 @@ func versionTagged(f *schema.Field) bool {
 // fillULIDTagged reports whether a Bun field carries forge's fill=ulid tag.
 func fillULIDTagged(f *schema.Field) bool {
 	return f.StructField.Tag.Get(forgeTagKey) == fillULIDTagValue
+}
+
+// softDeleteTagged reports whether a Bun field carries forge's soft-delete
+// tag: the legacy TEXT deleted_at the repo soft-deletes by hand.
+func softDeleteTagged(f *schema.Field) bool {
+	return f.StructField.Tag.Get(forgeTagKey) == softDeleteTagValue
 }
 
 // generatedTagged reports whether a Bun field carries forge's generated tag.
@@ -585,6 +600,20 @@ func (r *Repo[M]) returnGenerated(q *bun.UpdateQuery) bool {
 	return len(r.m.generatedCols) > 0
 }
 
+// isSoftDeleteColumn reports whether col is the column this repo
+// soft-deletes by — Bun's native ,soft_delete column, or the tagged legacy
+// TEXT deleted_at. A deleted_at that is neither is an ordinary column: the
+// caller writes it, and reads and deletes ignore it.
+func (r *Repo[M]) isSoftDeleteColumn(col string) bool {
+	switch {
+	case r.m.nativeSoftDel:
+		return col == r.m.softDeleteColumn
+	case r.m.legacyTextSoftDel:
+		return col == "deleted_at"
+	}
+	return false
+}
+
 // columnExcludedFromSet mirrors the generator's excludedFromSet: columns
 // that never appear in an UPDATE SET clause a CALLER controls.
 //
@@ -596,7 +625,7 @@ func (r *Repo[M]) returnGenerated(q *bun.UpdateQuery) bool {
 // Letting a client set it would make the predicate self-satisfying, which
 // is the whole guarantee gone.
 func (r *Repo[M]) columnExcludedFromSet(col string) bool {
-	if col == r.m.pkColumn || col == "deleted_at" || slices.Contains(r.m.pkColumns, col) {
+	if col == r.m.pkColumn || r.isSoftDeleteColumn(col) || slices.Contains(r.m.pkColumns, col) {
 		return true
 	}
 	if r.m.versionColumn != "" && col == r.m.versionColumn {

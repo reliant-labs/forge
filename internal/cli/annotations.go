@@ -379,6 +379,13 @@ func markerSpecs() []MarkerSpec {
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:go-type=<type>'; in a migration",
 			Example:   "COMMENT ON COLUMN message_content_blocks.block_type IS 'forge:go-type=github.com/acme/app/gen/app/v1;appv1.ContentBlockType';",
 		},
+		{
+			Name:      schemadef.ColumnMarkerNoSoftDelete,
+			AppliesTo: "column",
+			Effect:    "Declares the table's `deleted_at` an ordinary nullable timestamp instead of forge's soft-delete tombstone — for an ARCHIVE stamp, where an archived row must stay readable and writable and a delete must delete. Without it a time-typed deleted_at IS the soft-delete convention: Bun's `,soft_delete` tag, Get/List/Update skip rows where it is set, Delete stamps it, and ListAll<E> reads every row. Declared, the column gets no soft-delete tag, Get/List see every row, Update and an update_mask may write the column, Delete is a hard DELETE, no ListAll<E> is generated, and the generated list/detail pages show the column. Only meaningful on deleted_at; on any other column `forge generate` and `forge lint` reject it.",
+			Placement: "COMMENT ON COLUMN <table>.deleted_at IS 'forge:no-soft-delete'; in a migration",
+			Example:   "COMMENT ON COLUMN worktrees.deleted_at IS 'forge:no-soft-delete — the archive stamp; archived worktrees stay readable';",
+		},
 		// ── Table-comment markers ──
 		//
 		// The same catalog-comment mechanism as the column markers above,

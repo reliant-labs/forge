@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Probe paths are configurable, and the deploy follows the process
+  (`forge/pkg/serverkit`).** `serverkit.Config.Probes`
+  (`ProbePaths{Live, Ready []string}`; empty is `/healthz`, `/readyz`, so
+  defaults are unchanged) names the paths the process answers its liveness and
+  readiness probes on. Several paths per probe are allowed: the first is
+  canonical and the rest are aliases. The boot probes, `serverkit.Run`'s
+  listener and a `serverkit.Probes` surface (`Probes.Paths`) all serve them, and
+  `ProbePaths.Validate` rejects a path no listener can serve. The scaffold
+  declares `liveness_paths` / `readiness_paths` (`LIVENESS_PATHS` /
+  `READINESS_PATHS`, reached by every root) and projects them in `serve.go`.
+  The KCL lowering's default probe for a forge-built workload reads the same
+  env values, and `PORT`, so a pod is probed where its process answers. A
+  declared probe is kept. `Probes.Handle(path, h)` adds a probe-surface route,
+  such as a `/flow-health` on the probe port. A composition-graph node that
+  only calls `g.Probes.Handle` / `AddReadyCheck` no longer counts as serving
+  the probes, so its root keeps its probe listener. Existing projects:
+  `migrations/v0.1.47` section 3.
 - **Roots can be declared one at a time: resolution follows reach.** A
   root's process builds only the closure its fields reach, but `forge
   generate` demanded a provider for every Deps field of every discovered

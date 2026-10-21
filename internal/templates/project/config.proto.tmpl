@@ -299,6 +299,25 @@ message AppConfig {
     description: "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them."
   }];
 
+  // The probe paths, on the server port. The deploy reads these same values:
+  // forge's KCL lowering writes a forge-built workload's default probe from
+  // LIVENESS_PATHS / READINESS_PATHS (the first path of each), so the pod is
+  // probed where the process answers. Keep this pair in step with the same
+  // fields in internal/codegen/config_gen.go.
+  string liveness_paths = 46 [(forge.v1.config) = {
+    env_var: "LIVENESS_PATHS"
+    flag: "liveness-paths"
+    default_value: "/healthz"
+    description: "Comma-separated paths the liveness probe answers on (200 while the process runs). The first is the one the deploy probes; the rest are aliases, for a platform that probes a fixed path (/health)."
+  }];
+
+  string readiness_paths = 47 [(forge.v1.config) = {
+    env_var: "READINESS_PATHS"
+    flag: "readiness-paths"
+    default_value: "/readyz"
+    description: "Comma-separated paths the readiness probe answers on (503 while booting, draining, or a dependency is down). The first is the one the deploy probes; the rest are aliases (/ready)."
+  }];
+
   string otlp_endpoint = 21 [(forge.v1.config) = {
     env_var: "OTEL_EXPORTER_OTLP_ENDPOINT"
     flag: "otlp-endpoint"

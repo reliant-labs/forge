@@ -48,6 +48,26 @@ output = forge.render(forge.Bundle {
         # forge-built worker and job: no default
         fw.Workload {name = "sync", kind = "worker", build = _build, image = "localhost:5050/demo", args = ["sync"]}
         fw.Workload {name = "seed", kind = "job", build = _build, image = "localhost:5050/demo", args = ["seed"]}
+        # the default follows the process's config: the probe paths and the
+        # port its env gives serverkit (liveness_paths / readiness_paths /
+        # port), first path of each
+        fw.Workload {
+            name = "configured"
+            build = _build
+            image = "localhost:5050/demo"
+            args = ["configured"]
+            ports = [fw.Port {name = "http", port = 8080}, fw.Port {name = "health", port = 8081}]
+            env = {"LIVENESS_PATHS" = "/health, /healthz", "READINESS_PATHS" = "/ready,/readyz", "PORT" = "8081"}
+        }
+        # an env the lowering cannot read (a secret) falls back to the default
+        fw.Workload {
+            name = "opaque"
+            build = _build
+            image = "localhost:5050/demo"
+            args = ["opaque"]
+            ports = [fw.Port {name = "http", port = 8080}]
+            env = {"READINESS_PATHS" = forge.SecretRef {name = "probe", key = "paths"}}
+        }
         # a declared probe is kept
         fw.Workload {
             name = "custom"
@@ -78,6 +98,8 @@ assert_third_party_operator_no_default = _p["ctl-vendor"] == None
 assert_operator_declared_probe_kept = _explicit(_p["ctl-custom"], 9440)
 assert_worker_no_default = _p["sync"] == None
 assert_job_no_default = _p["seed"] == None
+assert_default_follows_config = _p["configured"].livenessPath == "/health" and _p["configured"].readinessPath == "/ready" and _p["configured"].startupPath == "/ready" and _p["configured"].port == 8081
+assert_unreadable_env_keeps_default = _explicit(_p["opaque"], 8080)
 assert_declared_probe_kept = _p["custom"].readinessPath == "/ready" and _p["custom"].livenessPath == "/live" and _p["custom"].periodSeconds == 10
 
 # The default rides the RECORD too — Go renders what the spec says.

@@ -277,6 +277,12 @@ func TestHostedFrontendReachesEveryService(t *testing.T) {
 		if cors := vars["CORS_ORIGINS"]["workloadURL"]; cors == nil {
 			t.Errorf("%s/%s: the API does not accept the site's browser calls (CORS_ORIGINS = %#v)", env, target, vars["CORS_ORIGINS"])
 		}
+		// Native sign-in answers with a session cookie set by the API's origin,
+		// and the site is another origin: unless the API allows credentials,
+		// the browser drops the cookie and every call after sign-in is 401.
+		if got := vars["CORS_ALLOW_CREDENTIALS"]["value"]; got != "true" {
+			t.Errorf("%s/%s: CORS_ALLOW_CREDENTIALS = %#v, want \"true\": the site's sign-in cookie never reaches the API", env, target, vars["CORS_ALLOW_CREDENTIALS"])
+		}
 		if db := vars["DATABASE_URL"]["databaseRef"]; db == nil {
 			t.Errorf("%s/%s: the API does not read the managed database (DATABASE_URL = %#v)", env, target, vars["DATABASE_URL"])
 		}

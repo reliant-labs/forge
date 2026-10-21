@@ -199,6 +199,32 @@ func (g *Graph) newTick() (*tick.Worker, error) { return tick.New(tick.Deps{Logg
 	}
 }
 
+// A node that only adds to the probe surface — a /flow-health route, a ready
+// check — does not serve it: the root keeps its probe listener. One that
+// takes Front does serve it.
+func TestGraphComposeInputReads_RegisteringOnTheProbesIsNotServingThem(t *testing.T) {
+	src := `package app
+
+func (g *Graph) newFlowHealth() (*FlowHealth, error) {
+	f := NewFlowHealth(FlowHealthDeps{Logger: g.Log})
+	if err := g.Probes.Handle("/flow-health", f); err != nil {
+		return nil, err
+	}
+	g.Probes.AddReadyCheck(f.Check())
+	return f, nil
+}
+
+func (g *Graph) newSideListener() (*serverkit.Listener, error) {
+	return serverkit.NewListener(serverkit.ListenerDeps{Front: g.Probes.Front()})
+}
+`
+	nodes := []*graphNode{{Name: "FlowHealth"}, {Name: "SideListener"}}
+	reads := graphComposeInputReads(src, nodes)
+	if reads["FlowHealth"]["Probes"] || !reads["FlowHealth"]["Log"] || !reads["SideListener"]["Probes"] {
+		t.Fatalf("reads = %v", reads)
+	}
+}
+
 func TestIsDatabaseType_PoolsAndStructsEmbeddingThem(t *testing.T) {
 	fset := token.NewFileSet()
 	sqlFile, err := parser.ParseFile(fset, "sql.go", "package sql\n\ntype DB struct{}\n", 0)

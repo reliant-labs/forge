@@ -489,6 +489,13 @@ schema Workload:
     # cluster this lands on — a pod naming a missing one is refused at
     # admission. Unset = the cluster default. Full profile only.
     priorityClassName?: str
+    # Opt the pods IN to Kubernetes' service links (an env var per Service in
+    # the namespace: <NAME>_PORT=tcp://ip:port, <NAME>_SERVICE_HOST, ...).
+    # Unset renders enableServiceLinks: false — those names collide with
+    # typed config (a Service `temporal` injects TEMPORAL_PORT, which an int
+    # port field then fails to parse). Resolve Services by DNS or explicit
+    # env. Full profile only.
+    enableServiceLinks?: bool
     # Pod-identity overrides (uid/gid, fsGroup, read-only root filesystem).
     securityContext?: tiers.PodSecurity
     # Overrides the grace period Go derives from the drain env

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Rendered pods set `enableServiceLinks: false`. Behavior change.**
+  Kubernetes injects `<SERVICE>_PORT=tcp://ip:port`, `<SERVICE>_SERVICE_HOST`
+  and `<SERVICE>_SERVICE_PORT` into every pod for every Service in its
+  namespace, and those names collide with typed config: a Service `temporal`
+  made `TEMPORAL_PORT` unparseable as an int and CrashLooped a prod gateway
+  (`ZITADEL_PORT` was the first outage of the class). Every pod template forge
+  renders (Deployment, Job, CronJob, the observability node agent's DaemonSet,
+  `forge.TestJWKS`'s Deployment) now opts out. `fw.Workload` gains
+  `enableServiceLinks` (default off) to opt one workload back in, Full profile
+  only (refused on hosted, the host runtime and on a job with `before`). The
+  next deploy rolls every forge-rendered pod once, and a standalone Job gets a
+  new spec-hash name. A workload that reads `*_SERVICE_HOST` / `*_SERVICE_PORT`
+  must move to DNS or explicit env, or opt in: `migrations/v0.1.47`, section 4.
+
 ### Fixed
 
 - **Tracing remediation says `--fix`.** Lint became report-only by default,

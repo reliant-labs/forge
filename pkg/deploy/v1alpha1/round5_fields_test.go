@@ -132,3 +132,15 @@ func TestPodSecurityOverride(t *testing.T) {
 	mustFail(t, WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, Before: []string{"api"}, SecurityContext: &PodSecurity{RunAsUser: ptr(int64(1000))}}.Validate(ProfileFull),
 		"securityContext is not allowed on a job with before")
 }
+
+// TestEnableServiceLinks: Full-only, pod-bearing kinds only, and nothing on a
+// gating job (it has no pod of its own).
+func TestEnableServiceLinks(t *testing.T) {
+	ok := WorkloadSpec{Kind: KindWorker, Image: pinnedImage, EnableServiceLinks: true}
+	mustPass(t, ok, ProfileFull)
+	mustFail(t, ok.Validate(ProfileRestricted), "enableServiceLinks: not allowed under the restricted profile")
+	mustFail(t, WorkloadSpec{Kind: KindTool, Image: pinnedImage, EnableServiceLinks: true}.Validate(ProfileFull), `enableServiceLinks is not supported for kind "tool"`)
+	mustFail(t, WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, Before: []string{"api"}, EnableServiceLinks: true}.Validate(ProfileFull),
+		"enableServiceLinks is not allowed on a job with before")
+	mustPass(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage}, ProfileRestricted)
+}

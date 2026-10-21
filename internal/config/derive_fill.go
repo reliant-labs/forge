@@ -64,6 +64,16 @@ func presentKeys(node *yaml.Node) map[string]bool {
 	return present
 }
 
+// fillZeroSection writes def into the section *dst only when *dst is
+// entirely zero: the no-node path of ApplyDerivedDefaultsFromNode, which
+// cannot tell user-written keys from defaulted ones and so never touches a
+// section that holds anything.
+func fillZeroSection[T any](dst *T, def T) {
+	if reflect.ValueOf(dst).Elem().IsZero() {
+		*dst = def
+	}
+}
+
 // fillSectionDefaults writes def into dst for every field the user did not
 // write, recursing into nested structs so a partially-specified block keeps
 // the defaults of the keys it left out.

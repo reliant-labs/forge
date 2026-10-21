@@ -233,3 +233,22 @@ func TestPinDelegateOnlyFor(t *testing.T) {
 		}
 	}
 }
+
+// A forge.yaml this binary would REJECT is still handed to the forge it pins:
+// that forge is the one that judges the file. The case that bit: a site's
+// forge.yaml has no module_path (optional only in newer forges), and an older
+// `reliant forge` stopped at "'module_path' is required" without ever reading
+// the pin. Simulated here with a key this binary does not know.
+func TestDelegation_AForgeYAMLThisBinaryRejectsIsStillHandedOver(t *testing.T) {
+	skewedProject(t)
+	writeForgeYAML(t, ".", "name: demo\nforge_version: "+skewTestPin+"\nkey_from_a_newer_forge: true\n")
+	t.Setenv(forgedelegate.MarkerEnv, "")
+	h, _ := armDelegation(t)
+
+	if _, err := runCheck(t, "env", "render", "prod"); err != nil {
+		t.Fatalf("delegation was refused: %v", err)
+	}
+	if h.path == "" {
+		t.Fatal("a forge.yaml this binary cannot validate was not handed to the pinned forge")
+	}
+}

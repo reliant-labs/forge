@@ -83,7 +83,9 @@ export {
   freshTraceparent,
   injectTraceContext,
   setTraceSampled,
+  traceIdFrom,
   TRACEPARENT_RE,
+  TRACERESPONSE_HEADER,
 } from "./trace.js";
 
 /** Session: the signed-in user, derived from the app's auth state and JWT claims. */
@@ -136,6 +138,9 @@ export {
   setExceptionReporter,
   type ExceptionAttributes,
 } from "./error-reporter.js";
+
+/** The server trace id a failed RPC's error carries (ConnectClientError.traceId). */
+export { SERVER_TRACE_ID_ATTRIBUTE, serverTraceIdOf } from "./trace-id.js";
 
 /**
  * Product events, the signed-in user and the consent kill-switch for browser

@@ -549,6 +549,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "//forge:standby\nfunc NewMailer(d MailerDeps) (Mailer, error)",
 		},
 		{
+			Name:      codegen.TxOpenerMarker,
+			AppliesTo: "function",
+			Effect:    "Declares a project's own transaction opener — a func or method that takes an orm.TxPolicy and runs the transaction itself (resolving it with orm.ResolveTxPolicy) — so forgeconv-tx-lock-under-serializable judges its calls as it judges pkg/orm's RunTx: a lock under SERIALIZABLE in its body is reported. level-arg is the 0-based index of the call argument naming the policy (ctx is 0; a receiver is not counted); body-arg, the func argument that is the transaction's body, defaults to the last func-typed parameter, and an opener with none is detached (the rest of the opening function is its body). Calls are matched by name and arity, project wide. A marker that does not parse, or is not on a func declaration, is a lint error.",
+			Placement: "on the func's doc comment, spaced or unspaced",
+			Example:   "//forge:tx-opener level-arg=1\nfunc (r *Repo) RunTx(ctx context.Context, policy orm.TxPolicy, fn func(context.Context) error) error",
+		},
+		{
 			Name:      "forge:audience",
 			AppliesTo: "function",
 			Effect:    "Names the trust domain an authenticator provider authenticates; `forge lint --graph` compares it with the audience of every service a listener serves through a chain over it.",

@@ -200,8 +200,37 @@ var ErrInvalidTxOptions = errors.New("orm: invalid transaction options")
 // detached is true for an opener that hands the transaction to the caller and
 // so cannot retry.
 func resolveTxPolicy(p TxPolicy, op string, detached bool) (TxOptions, error) {
+	return resolveTxPolicyFrom(p, op, detached, 0)
+}
+
+// ResolveTxPolicy validates the policy a project's OWN transaction opener was
+// handed — a func that takes an orm.TxPolicy and runs the transaction itself,
+// such as a repository wrapper with a retry ladder of its own — and returns
+// it as full options: level, access mode and attempt budget. It refuses what
+// RunTx refuses (no policy, an unset or unknown level, no attempt budget), so
+// the wrapper's callers name a level exactly as RunTx's do.
+//
+// op names the opener for the error ("Repo.RunTx"), and the error names the
+// line that called the opener — one frame above the caller of
+// ResolveTxPolicy. Declare the opener with `//forge:tx-opener level-arg=<n>`
+// so forgeconv-tx-lock-under-serializable judges its calls as it judges
+// RunTx's.
+func ResolveTxPolicy(op string, p TxPolicy) (TxOptions, error) {
+	return resolveTxPolicyFrom(p, op, false, 1)
+}
+
+// ResolveDetachedTxPolicy is ResolveTxPolicy for an opener that hands the
+// transaction to its caller, as BeginDetached does: such an opener cannot
+// re-run the caller's work, so it also requires exactly one attempt.
+func ResolveDetachedTxPolicy(op string, p TxPolicy) (TxOptions, error) {
+	return resolveTxPolicyFrom(p, op, true, 1)
+}
+
+// resolveTxPolicyFrom is resolveTxPolicy whose error names the call site
+// skip frames further out than the first one outside this package.
+func resolveTxPolicyFrom(p TxPolicy, op string, detached bool, skip int) (TxOptions, error) {
 	if p == nil {
-		return TxOptions{}, fmt.Errorf("%w: %s at %s passes no policy — pass orm.Serializable or orm.ReadCommitted (see orm.Isolation)", ErrInvalidTxOptions, op, callSite())
+		return TxOptions{}, fmt.Errorf("%w: %s at %s passes no policy — pass orm.Serializable or orm.ReadCommitted (see orm.Isolation)", ErrInvalidTxOptions, op, callSite(skip))
 	}
 	o := p.txOptions()
 	var problem string
@@ -217,7 +246,7 @@ func resolveTxPolicy(p TxPolicy, op string, detached bool) (TxOptions, error) {
 	default:
 		return o, nil
 	}
-	return TxOptions{}, fmt.Errorf("%w: %s at %s %s", ErrInvalidTxOptions, op, callSite(), problem)
+	return TxOptions{}, fmt.Errorf("%w: %s at %s %s", ErrInvalidTxOptions, op, callSite(skip), problem)
 }
 
 // levelName is the constant that spells level.
@@ -243,15 +272,20 @@ var ormPkg = func() string {
 }()
 
 // callSite returns file:line of the first caller outside this package's
-// non-test sources — the line that opened the transaction.
-func callSite() string {
+// non-test sources — the line that opened the transaction — or, with skip
+// > 0, of the caller that many frames further out (the line that called a
+// project's own opener, for ResolveTxPolicy).
+func callSite(skip int) string {
 	pcs := make([]uintptr, 32)
 	n := runtime.Callers(3, pcs)
 	frames := runtime.CallersFrames(pcs[:n])
 	for {
 		f, more := frames.Next()
 		if !strings.HasPrefix(f.Function, ormPkg) || strings.HasSuffix(f.File, "_test.go") {
-			return fmt.Sprintf("%s:%d", f.File, f.Line)
+			if skip == 0 {
+				return fmt.Sprintf("%s:%d", f.File, f.Line)
+			}
+			skip--
 		}
 		if !more {
 			return "an unknown call site"

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A project's own transaction openers are judged by
+  `forgeconv-tx-lock-under-serializable`.** A wrapper that takes an
+  `orm.TxPolicy` and runs the transaction itself (reliant's `Repo.RunTx`,
+  which keeps its own retry ladder) declares itself with
+  `//forge:tx-opener level-arg=<n> [body-arg=<n>]` on its func declaration;
+  the lint then finds a lock under SERIALIZABLE in its calls exactly as in
+  `RunTx`'s, matched by name and arity across the project, detached when it
+  takes no body. A marker that does not parse, or sits anywhere but on a func
+  declaration, is an error. The marker is in the `--go-markers` registry.
+  `orm.ResolveTxPolicy` / `orm.ResolveDetachedTxPolicy` validate such an
+  opener's policy as `RunTx` / `BeginDetached` do and return the full
+  options (level, access mode, attempt budget), the error naming the line
+  that called the opener.
+
 - **The scaffolded sign-up says what a password needs.** Sign-up used to answer
   "That password does not meet the requirements." and never name one. The
   login broker now serves the identity provider's own complexity policy at the

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -232,10 +231,15 @@ func levelName(level Isolation) string {
 	return "Serializable"
 }
 
-// ormDir is this package's source directory, for callSite.
-var ormDir = func() string {
-	_, file, _, _ := runtime.Caller(0)
-	return filepath.Dir(file)
+// ormPkg is this package's import path plus ".", the prefix of every function
+// it declares, for callSite. A frame is placed by its function, not its file:
+// under -trimpath a file is a module-relative path, and the package's
+// identity should not depend on where its source sat at build time.
+var ormPkg = func() string {
+	pc, _, _, _ := runtime.Caller(0)
+	name := runtime.FuncForPC(pc).Name() // <import path>.glob..func1
+	slash := strings.LastIndex(name, "/")
+	return name[:slash+strings.Index(name[slash:], ".")+1]
 }()
 
 // callSite returns file:line of the first caller outside this package's
@@ -246,7 +250,7 @@ func callSite() string {
 	frames := runtime.CallersFrames(pcs[:n])
 	for {
 		f, more := frames.Next()
-		if filepath.Dir(f.File) != ormDir || strings.HasSuffix(f.File, "_test.go") {
+		if !strings.HasPrefix(f.Function, ormPkg) || strings.HasSuffix(f.File, "_test.go") {
 			return fmt.Sprintf("%s:%d", f.File, f.Line)
 		}
 		if !more {

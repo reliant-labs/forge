@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Checks build with `-trimpath`, so worktrees and scratch copies share one
+  build and test cache.** Without it Go hashes every main-module package's
+  absolute directory into its cache key: a fresh worktree of the same commit
+  compiled the whole module again (267 packages, 0 of 73 test packages cached,
+  in control-plane), and `forge ci verify-generated` — which regenerates in a
+  fresh scratch directory every run — recompiled everything in its validate
+  step every time (10.8s against 2.6s with the flag). `forge generate`'s
+  compile check, `forge lint`'s golangci-lint and every `forge ci gate` check
+  now merge `-trimpath` into the effective GOFLAGS (`goexec.CheckEnv` /
+  `WithTrimpath`), and the scaffolded Taskfiles do the same for every task in
+  a top-level `env:` block. A GOFLAGS that already says `-trimpath` or
+  `-trimpath=false` is left alone; debug builds keep absolute paths. Measured
+  with control-plane's own gate: four concurrent `task ci` runs in fresh
+  worktrees went from 182–258s wall (802s summed slot wait) to 103–139s (304s).
+- **Heavy slots default to min(CPUs / 2, memory GiB / 8), not CPUs / 4.**
+  Memory is what protects the machine (the reclaim collapse the old constant
+  was measured against), and it still decides on a 16 vCPU / 32 GiB VM. CPU
+  sharing degrades gracefully instead — four CPU-bound test lanes at once took
+  the same total time as running them in turn — and a heavy job is rarely
+  CPU-bound throughout: four concurrent merge gates on a 16-CPU / 128 GiB Mac
+  left the CPU ~33% idle at 4 slots while 304s of slot wait piled up, and at 8
+  slots the worst gate's wall fell 139s → 116s (164s → 122s on a rerun).
+
 ### Added
 
 - **`orm.Client.DBTX`, `SQLConn(ctx)` and `InTx(ctx)`: sqlc and hand-written
@@ -284,6 +309,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ROOTS`.
 
 ### Fixed
+
+- **A heavy-slot waiter no longer fails when another waiter scans the queue at
+  the same moment.** Filing a ticket creates it and locks it an instant later;
+  a concurrent queue scan probing that ticket's lock in between made `Acquire`
+  return `lock slot ticket …: <nil>`, failing a heavy lane for nothing (seen as
+  `TestAcquire_NeverMoreThanNHolders` losing one of twelve acquisitions under
+  load). The fresh ticket's lock is now retried for as long as a probe can
+  hold it.
 
 - **A freshly scaffolded operator passes `forge lint --contract`.** An
   `internal/operators/<name>` package declaring `SetupWithManager` is exempt

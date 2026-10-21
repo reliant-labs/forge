@@ -5,6 +5,15 @@ version: "3"
 # the verbs that have an obvious meaning for a single-binary tool (build,
 # test, lint, fmt). Add more as the project grows.
 
+env:
+  # GOFLAGS gets -trimpath, merged into whatever GOFLAGS you already use (the
+  # same block the scaffold templates ship; internal/templates/project/
+  # Taskfile.yml.tmpl says why). Without it every worktree of forge compiles
+  # the module again and re-runs every test instead of reusing a sibling's
+  # build cache. An environment GOFLAGS wins; -trimpath=false opts out.
+  GOFLAGS:
+    sh: 'f="$(go env GOFLAGS 2>/dev/null)"; case " $f " in *" -trimpath"*|*" --trimpath"*) echo "$f" ;; *) echo "${f:+$f }-trimpath" ;; esac'
+
 vars:
   # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
   # overridden from the command line (`task test GOTESTRACE=`), which is how
@@ -58,11 +67,11 @@ tasks:
       # project builds against your in-development forge with no manual
       # replace; generate/lint/doctor warn when this binary and that checkout
       # stop being the same source (re-run this task). NOTE:
-      # no -trimpath here — the dev-vs-release discriminator (IsDevBuild)
-      # relies on the embedded "(devel)" version / vcs info a plain install
-      # records. Released binaries use `task install` (no stamp), so they
-      # never write a go.work.
-      - go install -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
+      # no -trimpath here (-trimpath=false overrides the env block above) —
+      # the dev-vs-release discriminator (IsDevBuild) relies on the embedded
+      # "(devel)" version / vcs info a plain install records. Released
+      # binaries use `task install` (no stamp), so they never write a go.work.
+      - go install -trimpath=false -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   release:forge:
     desc: "Cut a forge release (one module, one tag): task release:forge -- vX.Y.Z (add --dry-run to validate only)"

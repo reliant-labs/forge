@@ -153,8 +153,11 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 
 	// CI runs with go's default -mod=readonly; a caller's GOFLAGS=-mod=mod
 	// would let the gate's `go build` rewrite go.mod and go.sum and report a
-	// verdict CI would not give. ci.gate.env applies to every check.
-	env := goexec.Env(cigate.GateEnv(cfg)...)
+	// verdict CI would not give. ci.gate.env applies to every check. Every
+	// check also builds with -trimpath, so a fresh worktree reuses the build
+	// and test cache its siblings filled instead of compiling the module again
+	// while it holds a heavy slot (goexec.WithTrimpath).
+	env := goexec.CheckEnv(cigate.GateEnv(cfg)...)
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

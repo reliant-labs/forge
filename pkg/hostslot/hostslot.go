@@ -624,13 +624,35 @@ func (q queue) enqueue(rec record) (*ticket, error) {
 		if err != nil {
 			return nil, fmt.Errorf("file a slot ticket: %w", err)
 		}
-		if ok, err := tryLock(f); err != nil || !ok {
+		if err := lockFreshTicket(f); err != nil {
 			_ = f.Close()
 			_ = os.Remove(path)
-			return nil, fmt.Errorf("lock slot ticket %s: %v", path, err)
+			return nil, fmt.Errorf("lock slot ticket %s: %w", path, err)
 		}
 		_, _ = f.WriteAt(rec.encode(), 0)
 		return &ticket{f: f, path: path, name: name}, nil
+	}
+}
+
+// lockFreshTicket locks a ticket this process just created. Nobody else owns
+// it, but another waiter's queue scan may be probing it at this very moment
+// (alive takes the lock for an instant to tell a live ticket from a dead one),
+// so a busy lock means "try again", not failure. The probe lets go within
+// microseconds; the bound only keeps a broken lock from spinning forever.
+func lockFreshTicket(f *os.File) error {
+	deadline := time.Now().Add(ticketGrace)
+	for {
+		ok, err := tryLock(f)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("held by another process for longer than a queue probe takes")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

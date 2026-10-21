@@ -696,6 +696,10 @@ func installGolangciLint(ctx context.Context, gobin, goVersion, ver string) erro
 // reach the user.
 func runGolangciBinary(ctx context.Context, bin string, args []string) golangciOutput {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// golangci-lint compiles the export data it type-checks against through
+	// `go list -export`: -trimpath lets that reuse the cache other worktrees
+	// of the module filled (goexec.WithTrimpath).
+	cmd.Env = goexec.WithTrimpath(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

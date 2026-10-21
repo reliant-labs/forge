@@ -131,8 +131,11 @@ func compileTree(projectDir string, tests bool) (compileReport, error) {
 	args = append(args, "./...")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = projectDir
-	// Never the caller's -mod=mod: see goexec.Env.
-	cmd.Env = goexec.Env()
+	// Never the caller's -mod=mod: see goexec.Env. -trimpath, so the
+	// compile reuses the build cache a sibling worktree, the checkout this
+	// scratch copy came from or the last verify-generated filled: see
+	// goexec.WithTrimpath.
+	cmd.Env = goexec.CheckEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	// go list -e repeats some load errors on stderr; the JSON carries them
@@ -292,7 +295,7 @@ func missingMainFunc(projectDir string, p *listedPackage) string {
 func goBuildFallback(projectDir string, stream io.Writer) (string, error) {
 	cmd := exec.Command("go", "build", "-o", os.DevNull, "./...")
 	cmd.Dir = projectDir
-	cmd.Env = goexec.Env()
+	cmd.Env = goexec.CheckEnv()
 	var out strings.Builder
 	if stream != nil {
 		cmd.Stdout = stream

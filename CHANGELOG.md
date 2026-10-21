@@ -257,6 +257,23 @@ generate` runs the same check. `project new` never took a heavy slot and still
 
 ### Fixed
 
+- **A fresh `forge project new` passes its own `forge lint` again.** The login
+  broker (`internal/app/login_broker.go`) took `ctx` second in
+  `writePasswordRejection`, which revive's `context-as-argument` rejects; the
+  sign-in page and reset form imported out of `import/order`; the password
+  test missed an import-group blank line and, on vite-spa, declared two unused
+  parameters; vite-spa's eslint linted the generated `public/config.js`
+  (`no-undef` on `window`); and the cli kind's `cmd/<name>/version.go` carried
+  a doc-comment code block gofmt rewrites. A new `-short` tripwire
+  (`TestFreshScaffold_GoIsFormattedAndTakesContextFirst`) checks every Go file
+  the service, cli and library kinds write for both Go rules, and
+  `TestE2EFreshScaffoldLintExitsZeroForEveryKind` runs the real `forge lint`
+  on fresh cli and library projects.
+- **The E2E Suite runs on main again.** Since #1056 its shards skipped on every
+  push and nightly call: a job with no `if:` inherits the skip of the
+  pull-request-only `changes` job two hops up, though `prepare` succeeded. The
+  shards now say when they run, and `internal/ciguard`'s
+  `TestNoJobInheritsAnUpstreamSkip` rejects that shape in every workflow.
 - **`forge tools install` replaces a GOBIN binary on Windows while something
   has it open.** The atomic install (#1062) renamed the staged binary over the
   old one with a bare `os.Rename`, which Windows refuses while any handle, such

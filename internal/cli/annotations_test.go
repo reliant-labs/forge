@@ -567,6 +567,19 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		t.Errorf("forge:resolves-caller not recognized on a function doc, got %+v", got)
 	}
 
+	// The synonyms read through the same recognizers.
+	if got := codegen.DetectServiceInterfaceName(write(t, map[string]string{
+		"contract.go": "package x\n\n// forge:contract\ntype Store interface{ Get() error }\n",
+	})); got != "Store" {
+		t.Errorf("forge:contract should name Store as the contract, got %q", got)
+	}
+	if !codegen.HasExternalComponentDirective(write(t, map[string]string{"doc.go": "// forge:provided\npackage x\n"})) {
+		t.Error("forge:provided not recognized as external-component")
+	}
+	if got := codegen.ExtractPlaceholderType("forge:placeholder: user.Repository"); got != "user.Repository" {
+		t.Errorf("forge:placeholder not recognized, got %q", got)
+	}
+
 	// Every Go marker in the catalog is covered above. If someone adds one
 	// without a recognizer check, this catches it.
 	covered := map[string]bool{
@@ -574,14 +587,66 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		"forge:no-observe": true, "forge:service": true,
 		"forge:exclude-contract": true, "forge:external-component": true,
 		"forge:not-a-component": true, "forge:outbound-io": true,
-		"forge:resolves-caller": true,
+		"forge:resolves-caller": true, "forge:contract": true,
+		"forge:provided": true, "forge:placeholder": true,
 		// Lint-suppression directive: read by the analyzer, not by codegen,
 		// so it has no codegen recognizer to pin here.
 		"forge:optional-checked": true,
+		// Read by unexported scanners outside codegen's exported surface —
+		// the composition graph's directive scan (root, standby, audience;
+		// pinned in codegen's go_markers_test.go and composition-graph
+		// tests), internal/config's no-orm scan (derive_test.go), the
+		// unscoped_auth audit, and the banner lint.
+		"forge:root": true, "forge:standby": true, "forge:audience": true,
+		"forge:no-orm": true, "forge:auth-unscoped-ok": true, "forge:allow": true,
 	}
 	for _, m := range filterMarkers(markerSpecs(), goMarkerKinds...) {
 		if !covered[m.Name] {
 			t.Errorf("Go marker %q is advertised but has no recognizer check in this test", m.Name)
+		}
+	}
+}
+
+// TestAnnotations_GoMarkersMatchTheLintRegistry pins the catalog to the
+// vocabulary `forge lint --go-markers` enforces (codegen.KnownGoMarkers): a
+// marker the catalog advertises must be one the lint accepts, spelled in its
+// example the way the lint accepts it, and every marker an author writes by
+// hand must be advertised — the lint's fix hint sends the reader to
+// `forge project annotations --kind go`, which must then list it.
+func TestAnnotations_GoMarkersMatchTheLintRegistry(t *testing.T) {
+	advertised := map[string]bool{}
+	for _, m := range filterMarkers(markerSpecs(), goMarkerKinds...) {
+		advertised[m.Name] = true
+		if _, ok := codegen.LookupGoMarker(m.Name); !ok {
+			t.Errorf("annotations advertise %s, which the go-markers lint does not know", m.Name)
+			continue
+		}
+		found := false
+		for _, line := range strings.Split(m.Example, "\n") {
+			line = strings.TrimSpace(line)
+			if i := strings.Index(line, "//"); i >= 0 {
+				use := codegen.ClassifyGoMarkerComment(line[i:])
+				if use.Name == m.Name {
+					found = true
+					if use.Status != codegen.GoMarkerOK {
+						t.Errorf("%s: the example %q is a spelling the lint rejects", m.Name, line)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: the example does not show the marker", m.Name)
+		}
+	}
+	// Written by forge itself, never by an author: not advertised.
+	forgeWritten := map[string]bool{
+		"forge:hash": true, "forge:gen": true, "forge:deps": true, "forge:custom-read-shape": true,
+		"forge:lint-disable": true, "forge:lint-disable-file": true,
+		"forge:lint-disable-next-line": true, "forge:lint-enable": true, // documented with the suppression mechanism
+	}
+	for _, name := range codegen.KnownGoMarkers() {
+		if !advertised[name] && !forgeWritten[name] {
+			t.Errorf("%s is a Go-source marker the lint accepts but `forge project annotations --kind go` does not list", name)
 		}
 	}
 }

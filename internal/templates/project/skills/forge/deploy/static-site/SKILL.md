@@ -44,6 +44,31 @@ cd site
 The scaffolded UI is starter code. Before designing the page, load
 `frontend/design`; it asks for the brief first.
 
+### Already have the site? Adopt it where it stands
+
+An existing Vite SPA or Next.js static export (a landing page on Cloudflare
+Pages, Netlify, Firebase) becomes a forge project without moving a file:
+
+```bash
+cd my-site                                    # the app's root: package.json + vite.config / next.config
+reliant forge project new --in-place --kind site --name my-site
+```
+
+That writes `forge.yaml` (no `module_path`: a site has no Go module),
+`deploy/kcl/kcl.mod` and `deploy/kcl/{dev,staging,prod}/main.k`, each
+declaring the root app (`path = "."`, `type = "vite"`, `public_dir = "dist"`
+or the literal `build.outDir` it found) bound to its dev server in dev and to
+`forge.OnHosted {}` in staging and prod. The app's own files are untouched,
+and `.gitignore` is merged. With no go.mod, every Go step (codegen, tidy,
+golangci-lint, the contract linter) skips by itself, and the root app is in
+the inventory `forge lint` and `forge build` load. A bare `--in-place` over
+such a directory stops and names `--kind site` rather than scaffolding a Go
+server beside the app.
+
+Build-time keys (`VITE_*`, `NEXT_PUBLIC_*`) become `env_vars` on the frontend
+in each env, and are baked in per release; values that must change without a
+rebuild belong in `runtime_config`.
+
 ## 2. Bind it to a static runtime, per env
 
 A frontend states where it runs in each env's `deploy/kcl/<env>/main.k`:

@@ -56,6 +56,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// without asking. Visible because the CI behaviour is otherwise a
 		// surprise an author only meets on a red build.
 		"check",
+		// A continuous rule about the user's own schema, and the only
+		// hermetic place a CHECK that mirrors a Go set (forge's access-token
+		// scopes) is compared with it: the project tests that did this
+		// needed a database and skipped on the -short tier.
+		"closed-sets",
 		// Continuous rules about the USER's own code. config-deps,
 		// frontend-stores and optional-deps-guard were all hidden as
 		// "audits" and were consequently undiscoverable: on the flagship app

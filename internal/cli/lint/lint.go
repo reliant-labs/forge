@@ -47,6 +47,7 @@ type lintFlags struct {
 	optionalDepsGuard bool
 	configDeps        bool
 	columnMarkers     bool
+	closedSets        bool
 	crudFixtures      bool
 	fixtureDrift      bool
 	timeBucketing     bool
@@ -303,6 +304,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of // forge:optional-dep Deps fields (warnings only; suppress with // forge:optional-checked on the deref line)")
 	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/config and take it as a typed field (warnings only)")
 	cmd.Flags().BoolVar(&flags.columnMarkers, "column-markers", false, "Fail on a COMMENT ON TABLE/VIEW/COLUMN/CONSTRAINT carrying a forge: marker that object does not read")
+	cmd.Flags().BoolVar(&flags.closedSets, "closed-sets", false, "Fail when a CHECK declared forge:closed-set <set> does not list exactly that Go set, and print the migration that fixes it")
 	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Execute every literal fixture statement in a scaffolded handlers_crud_test.go against the current schema — migrations applied to a shadow postgres, each statement run in a rolled-back transaction — and report postgres's own error for each one it rejects: a GENERATED column, a UNIQUE collision, a dangling foreign key, a CHECK a later migration added (warnings only)")
 	// --crud-fixtures checked one failure class (a dangling foreign key) by
 	// reading migration text; --fixture-drift now executes the statements, so
@@ -470,6 +472,13 @@ func runTargetedLane(ctx context.Context, flags lintFlags, paths []string, lane 
 			return err
 		}
 		return runColumnMarkersLint(cfg)
+	}
+	if flags.closedSets {
+		_, cfg, err := loadLintConfig()
+		if err != nil {
+			return err
+		}
+		return runWithCwd(func(cwd string) error { return runClosedSetsLint(cwd, cfg) })
 	}
 	if flags.fixtureDrift || flags.crudFixtures {
 		_, cfg, err := loadLintConfig()

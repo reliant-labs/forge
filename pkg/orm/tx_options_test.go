@@ -113,3 +113,52 @@ func TestTxOptions_LevelsAndModifiers(t *testing.T) {
 		t.Errorf("ReadCommitted rejected by BeginDetached: %v", err)
 	}
 }
+
+// projectOpener is a project's own opener: it takes a policy and runs the
+// transaction itself, so it resolves the policy with ResolveTxPolicy.
+func projectOpener(p TxPolicy) (TxOptions, error) { return ResolveTxPolicy("Repo.RunTx", p) }
+
+// projectDetachedOpener hands its transaction to the caller.
+func projectDetachedOpener(p TxPolicy) (TxOptions, error) {
+	return ResolveDetachedTxPolicy("Repo.BeginTx", p)
+}
+
+// A project's own opener resolves a policy to the options RunTx would run,
+// refuses what RunTx refuses, and the refusal names the line that called the
+// opener — not the opener's own call to ResolveTxPolicy.
+func TestResolveTxPolicy_ForAProjectsOwnOpener(t *testing.T) {
+	for _, tc := range []struct {
+		p    TxPolicy
+		want string
+	}{
+		{Serializable, "serializable, 7 attempts"},
+		{Serializable.WithMaxAttempts(1), "serializable, 1 attempt"},
+		{Serializable.WithReadOnly(), "serializable read only deferrable, 7 attempts"},
+		{ReadCommitted, "read committed, 1 attempt"},
+		{ReadCommitted.WithMaxAttempts(DefaultTxMaxAttempts), "read committed, 7 attempts"},
+	} {
+		got, err := projectOpener(tc.p)
+		if err != nil {
+			t.Fatalf("ResolveTxPolicy(%v): %v", tc.p, err)
+		}
+		if got.String() != tc.want {
+			t.Errorf("ResolveTxPolicy(%v) = %q, want %q", tc.p, got, tc.want)
+		}
+	}
+
+	_, err := projectOpener(Isolation(0)) // the line the error must name
+	_, _, line, _ := runtime.Caller(0)
+	if !errors.Is(err, ErrInvalidTxOptions) || !strings.Contains(err.Error(), "names no isolation level") {
+		t.Fatalf("ResolveTxPolicy(unset) = %v, want ErrInvalidTxOptions naming no isolation level", err)
+	}
+	if site := fmt.Sprintf("tx_options_test.go:%d", line-1); !strings.Contains(err.Error(), "Repo.RunTx at ") || !strings.Contains(err.Error(), site) {
+		t.Errorf("err = %q, want it to name Repo.RunTx and its caller %s", err, site)
+	}
+
+	if _, err := projectDetachedOpener(ReadCommitted); err != nil {
+		t.Errorf("ResolveDetachedTxPolicy(ReadCommitted): %v", err)
+	}
+	if _, err := projectDetachedOpener(Serializable); !errors.Is(err, ErrInvalidTxOptions) || !strings.Contains(err.Error(), "Repo.BeginTx cannot retry") {
+		t.Errorf("ResolveDetachedTxPolicy(Serializable) = %v, want a refusal of its 7 attempts", err)
+	}
+}

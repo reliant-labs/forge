@@ -125,6 +125,23 @@ func (c *ProjectConfig) hasDeployTree() bool {
 	return dirExists(filepath.Join(c.projectDir, "deploy", "kcl"))
 }
 
+// HasGoModule reports whether the project is a Go module: a go.mod at its
+// root. A static site — its frontends and their deploy envs, nothing else
+// (`forge project new --kind site`) — has none, so every Go step (codegen,
+// go mod tidy, goimports, the compile check, golangci-lint, the contract
+// linter) has nothing to act on and is skipped, naming this reason, rather
+// than failing on `pattern ./...`. A site that grows a backend gains a go.mod
+// and every one of those steps with it.
+//
+// With no on-disk project (a byte-only load in a test) the answer is yes:
+// every kind but a site is a Go module, and a site is only ever read from disk.
+func (c *ProjectConfig) HasGoModule() bool {
+	if c.projectDir == "" {
+		return true
+	}
+	return fileExists(filepath.Join(c.projectDir, "go.mod"))
+}
+
 // bufModulePaths returns the module paths declared in buf.yaml (v2
 // `modules[].path`), or nil when there is no buf.yaml or it does not parse.
 func bufModulePaths(projectDir string) []string {

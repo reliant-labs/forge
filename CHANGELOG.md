@@ -22,23 +22,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--token` is used as given. `invite` is unchanged.
 - **`forge project new --verify`** keeps the compile check at the end of the
   bootstrap generate (see Changed).
+- **A CHECK that mirrors a Go set declares it, and `forge lint` keeps the two
+  equal.** In a migration, write
+  `COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes'`.
+  The new closed-sets lane, which runs by default (`--closed-sets` runs it
+  alone), finds the CHECK the migrations last defined. It reads
+  `col <@ ARRAY[…]`, `col = ANY (ARRAY[…])` or `col IN (…)`, with or without
+  casts, and compares the values with the named set. A mismatch fails the
+  lane, naming the missing and extra values and printing the forward
+  migration. `forge db migration new --closed-set <constraint>` writes that
+  migration. The lane reads migration text, so it
+  needs no database and runs on the `-short` tier. That is the tier where a
+  forge bump adding `identity:read`/`identity:manage` went unnoticed until it
+  turned a project's main red.
+  - forge exports `accesstoken.AllScopes` and `accesstoken.AllResourceKinds`.
+    A project names its own set as `<import path>.<Var>`; forge type-checks
+    that package and executes none of it.
+  - postgres drops a constraint's comment along with the constraint, so the
+    lane also reports a CHECK that was replaced without re-issuing its
+    declaration.
+  - `forge:closed-set` is part of the catalog-marker vocabulary, so
+    `forge generate` and `--column-markers` reject a misspelled marker or one
+    on the wrong constraint kind. `schemadef.CheckConstraint` gains `Comment`.
+- **A project's own transaction openers are judged by
+  `forgeconv-tx-lock-under-serializable`.** A wrapper that takes an
+  `orm.TxPolicy` and runs the transaction itself (reliant's `Repo.RunTx`,
+  which keeps its own retry ladder) declares itself with
+  `//forge:tx-opener level-arg=<n> [body-arg=<n>]` on its func declaration;
+  the lint then finds a lock under SERIALIZABLE in its calls exactly as in
+  `RunTx`'s, matched by name and arity across the project, detached when it
+  takes no body. A marker that does not parse, or sits anywhere but on a func
+  declaration, is an error. The marker is in the `--go-markers` registry.
+  `orm.ResolveTxPolicy` / `orm.ResolveDetachedTxPolicy` validate such an
+  opener's policy as `RunTx` / `BeginDetached` do and return the full
+  options (level, access mode, attempt budget), the error naming the line
+  that called the opener.
 - **The scaffolded sign-up says what a password needs.** Sign-up used to answer
   "That password does not meet the requirements." and never name one. The
   login broker now serves the identity provider's own complexity policy at the
-  unauthenticated `GET /auth/password-policy` (`{min_length, has_uppercase,
-  has_lowercase, has_number, has_symbol}`, read from Zitadel's
-  `GET /v2/settings/password/complexity` with the broker's token, cached for a
-  minute), and a rejected password comes back `400 {error, code:
-  "password_policy", unmet:[...]}` naming **every** rule it breaks (the
-  provider reports only the first). The sign-up and reset forms show the
+  unauthenticated `GET /auth/password-policy`
+  (`{min_length, has_uppercase, has_lowercase, has_number, has_symbol}`, read
+  from Zitadel's `GET /v2/settings/password/complexity` with the broker's
+  token, cached for a minute), and a rejected password comes back
+  `400 {error, code: "password_policy", unmet:[...]}` naming **every** rule it
+  breaks (the provider reports only the first). The sign-up and reset forms show the
   checklist up front and tick it as the person types; the server stays the
-  authority. New in `pkg/devidp`: `Client.PasswordPolicy`, `PasswordPolicy.
-  Unmet/Describe`, and `PasswordPolicyError.Rule`; `Register` now returns a
+  authority. New in `pkg/devidp`: `Client.PasswordPolicy`,
+  `PasswordPolicy.Unmet/Describe`, and `PasswordPolicyError.Rule`; `Register` now returns a
   `*PasswordPolicyError` for a weak password. Existing projects keep their
   owned `internal/app/login_broker.go` and screens; copy the new handlers from
   a fresh scaffold.
-- **Self-serve password reset in the scaffold.** The broker mounts `POST
-  /auth/forgot` and `POST /auth/reset`, and the Next.js and Vite frontends get
+- **Self-serve password reset in the scaffold.** The broker mounts
+  `POST /auth/forgot` and `POST /auth/reset`, and the Next.js and Vite frontends get
   static-export-safe `/auth/forgot` and `/auth/reset?userID=&code=&orgID=`
   pages, so the reset links the control plane produces have somewhere to land.
   `/auth/forgot` never reveals whether an address has an account and is limited
@@ -162,6 +197,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now; a package with none is pinned by its directory.
 - **Docs no longer promise mail that is never sent.** The `deploy/managed-
   identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+- **Docs no longer promise mail that is never sent.** The
+  `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is
   true: with no `smtp`, an instance sends no mail at all. The skill now says so,
   sketches building invites by hand (`InviteUser` + `MintPasswordResetCode` +

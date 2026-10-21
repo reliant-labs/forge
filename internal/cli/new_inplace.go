@@ -479,6 +479,12 @@ func detectExistingFrontendApps(root string) []existingFrontendApp {
 			}
 		}
 	}
+	return detectExistingFrontendAppsIn(root, candidates)
+}
+
+// detectExistingFrontendAppsIn is detectExistingFrontendApps over an explicit
+// candidate list ("." is the root itself: a static site's app).
+func detectExistingFrontendAppsIn(root string, candidates []string) []existingFrontendApp {
 	var apps []existingFrontendApp
 	for _, dir := range candidates {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(dir), "package.json"))
@@ -511,10 +517,16 @@ func detectExistingFrontendApps(root string) []existingFrontendApp {
 	return apps
 }
 
-// adoptFrontendSnippet is the forge.yaml declaration that points forge at an
-// existing app instead of scaffolding a new one.
+// adoptFrontendSnippet is the KCL declaration that points forge at an
+// existing app instead of scaffolding a new one. Frontends are declared in
+// each env's deploy/kcl/<env>/main.k (forge.yaml has no `frontends:` key);
+// the binding (`runtime`) is that env's choice.
 func adoptFrontendSnippet(a existingFrontendApp) string {
-	return fmt.Sprintf("frontends:\n  - name: %s\n    type: %s\n    path: %s", a.name, a.typ, a.dir)
+	typ, publicDir := "nextjs", "out"
+	if a.typ == "vite-spa" {
+		typ, publicDir = "vite", "dist"
+	}
+	return fmt.Sprintf("forge.Frontend {\n    name = %q\n    type = %q\n    path = %q\n    public_dir = %q\n}", a.name, typ, a.dir, publicDir)
 }
 
 // checkInPlaceFrontendCollisions refuses, before anything is written, an
@@ -531,8 +543,8 @@ func checkInPlaceFrontendCollisions(apps []existingFrontendApp, frontendNames []
 				fmt.Sprintf("--frontend %s: %s/ already holds a %s app, and scaffolding one would put a second app "+
 					"at frontends/%s/ beside it. Nothing was written", want, a.dir, a.framework(), want),
 				"",
-				fmt.Sprintf("drop --frontend %s and declare the existing app in forge.yaml — frontends[].path "+
-					"points forge at an existing directory:\n\n%s\n", want, indent(adoptFrontendSnippet(a), "    ")))
+				fmt.Sprintf("drop --frontend %s and declare the existing app in each env's deploy/kcl/<env>/main.k "+
+					"frontends list — its path points forge at an existing directory:\n\n%s\n", want, indent(adoptFrontendSnippet(a), "    ")))
 		}
 	}
 	return nil
@@ -545,7 +557,7 @@ func existingFrontendNote(apps []existingFrontendApp) []string {
 	for _, a := range apps {
 		out = append(out, "",
 			fmt.Sprintf("ℹ️  Found an existing %s app at %s/ — forge left it alone. To have forge manage it,", a.framework(), a.dir),
-			"    declare it in forge.yaml (frontends[].path points forge at an existing directory):",
+			"    declare it in each env's deploy/kcl/<env>/main.k frontends list (path points forge at it):",
 			indent(adoptFrontendSnippet(a), "      "))
 	}
 	return out

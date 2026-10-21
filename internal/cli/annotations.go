@@ -36,6 +36,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/reliant-labs/forge/internal/closedset"
 	"github.com/reliant-labs/forge/internal/codegen"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
@@ -359,6 +360,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "COMMENT ON CONSTRAINT orders_patient_id_fkey ON orders IS 'forge:ref derived-from=prescription_id';",
 		},
 		{
+			Name:      schemadef.ColumnMarkerClosedSet,
+			AppliesTo: "column",
+			Effect:    "Declares that a CHECK's value list mirrors a closed Go set. `forge lint` (the closed-sets lane, on by default; `--closed-sets` alone) reads the CHECK the migrations LAST defined for the constraint — `col <@ ARRAY[…]` for an array column, `col = ANY (ARRAY[…])` or `col IN (…)` for a scalar — and fails when its values differ from the set, naming the missing and extra values and printing the forward migration (`forge db migration new --closed-set <constraint>` writes it). The set is a forge-exported name (" + strings.Join(closedset.Names(), ", ") + ") or a project set's qualified Go name, `<import path>.<Var>`, whose initializer is a literal of constants; forge type-checks it and runs nothing. postgres drops a constraint's comment with the constraint, so a migration that replaces the CHECK must re-issue the COMMENT — the lane reports a declaration lost that way.",
+			Placement: "COMMENT ON CONSTRAINT <check_name> ON <table> IS 'forge:closed-set <set>'; in a migration, after the CHECK exists — on the CHECK constraint, NOT the column.",
+			Example:   "COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes';",
+		},
+		{
 			Name:      schemadef.ColumnMarkerVersion,
 			AppliesTo: "column",
 			Effect:    "Opts the entity into optimistic concurrency control: Update/UpdateMasked add this column to the WHERE clause (matched against the caller's last-read value) and increment it on a successful write. A write that loses the race to a concurrent writer fails with Connect code Aborted instead of silently overwriting the other writer's change. REQUIRES a matching field on the entity's wire message (`int64 version = N;  // forge:read-only`) — the check compares the version the CALLER presents, so a column the caller cannot read back and return is always the zero value, and every update after a row's first one fails Aborted; `forge generate` refuses the column-only half rather than emit that. The repo owns the increment, so the client's proposed value is never trusted: forge:read-only keeps the field off the Create/Update request shapes while leaving it on the entity and the read responses, and an update_mask naming the column is an unknown_field error.",
@@ -547,6 +555,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Keeps a provider ready for components to come: `forge lint --graph` does not require a root to reach it.",
 			Placement: "on the provider func's doc comment, unspaced",
 			Example:   "//forge:standby\nfunc NewMailer(d MailerDeps) (Mailer, error)",
+		},
+		{
+			Name:      codegen.TxOpenerMarker,
+			AppliesTo: "function",
+			Effect:    "Declares a project's own transaction opener — a func or method that takes an orm.TxPolicy and runs the transaction itself (resolving it with orm.ResolveTxPolicy) — so forgeconv-tx-lock-under-serializable judges its calls as it judges pkg/orm's RunTx: a lock under SERIALIZABLE in its body is reported. level-arg is the 0-based index of the call argument naming the policy (ctx is 0; a receiver is not counted); body-arg, the func argument that is the transaction's body, defaults to the last func-typed parameter, and an opener with none is detached (the rest of the opening function is its body). Calls are matched by name and arity, project wide. A marker that does not parse, or is not on a func declaration, is a lint error.",
+			Placement: "on the func's doc comment, spaced or unspaced",
+			Example:   "//forge:tx-opener level-arg=1\nfunc (r *Repo) RunTx(ctx context.Context, policy orm.TxPolicy, fn func(context.Context) error) error",
 		},
 		{
 			Name:      "forge:audience",

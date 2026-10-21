@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,7 +30,15 @@ while [ $# -gt 0 ]; do
 done
 f="$FAKE_GH_DIR/$(sed 's/?.*//; s#/#_#g' <<<"$path")"
 [ -f "$f" ] || { echo "fake gh: no fixture for $path" >&2; exit 1; }
-if [ -n "$expr" ]; then jq -r "$expr" "$f"; else cat "$f"; fi
+if [ -n "$expr" ]; then "${REAL_JQ:-jq}" -r "$expr" "$f"; else cat "$f"; fi
+`
+
+// crlfJQ stands in for jq.exe, the jq on Windows runners: every line it
+// prints ends in CRLF (only its Windows-only --binary turns that off). gh's
+// own --jq is gojq and prints LF, so fakeGH calls the real jq directly.
+const crlfJQ = `#!/usr/bin/env bash
+set -o pipefail
+"$REAL_JQ" "$@" | awk '{ printf "%s\r\n", $0 }'
 `
 
 type fakeJob struct {
@@ -51,6 +60,7 @@ type mainRedCase struct {
 	mine   []fakeJob // this run's jobs
 	main   []fakeJob // main's latest run's jobs
 	logs   map[int]string
+	crlfJQ bool // jq prints CRLF, as jq.exe does
 }
 
 const repo = "o/r"
@@ -71,13 +81,24 @@ func failLine(test string) string {
 
 func runMainRed(t *testing.T, c mainRedCase) (string, bool) {
 	t.Helper()
-	for _, tool := range []string{"bash", "jq", "comm", "sed"} {
+	for _, tool := range []string{"bash", "jq", "comm", "sed", "tr", "awk"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			if os.Getenv("CI") != "" {
 				t.Fatalf("%s is not on PATH; CI must provide it", tool)
 			}
 			t.Skipf("%s is not on PATH", tool)
 		}
+	}
+	var env []string
+	if c.crlfJQ {
+		if runtime.GOOS == "windows" {
+			t.Skip("jq here is jq.exe, which already prints CRLF: every case is this one")
+		}
+		realJQ, err := exec.LookPath("jq")
+		if err != nil {
+			t.Fatal(err)
+		}
+		env = append(env, "REAL_JQ="+realJQ)
 	}
 	script, err := os.ReadFile(mainRedScript)
 	if err != nil {
@@ -107,6 +128,9 @@ func runMainRed(t *testing.T, c mainRedCase) (string, bool) {
 		write(filepath.Join(fixtures, strings.ReplaceAll(apiPath, "/", "_")), data, 0o644)
 	}
 	write(filepath.Join(bin, "gh"), []byte(fakeGH), 0o755)
+	if c.crlfJQ {
+		write(filepath.Join(bin, "jq"), []byte(crlfJQ), 0o755)
+	}
 	write(filepath.Join(dir, "ci-main-red.sh"), script, 0o755)
 
 	var labels []map[string]string
@@ -146,6 +170,7 @@ func runMainRed(t *testing.T, c mainRedCase) (string, bool) {
 		"GITHUB_EVENT_PATH="+evPath,
 		"GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary.md"),
 	)
+	cmd.Env = append(cmd.Env, env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if _, ok := err.(*exec.ExitError); !ok {
@@ -179,6 +204,17 @@ func TestMainRedOverride(t *testing.T) {
 		{
 			name: "a failing test that also fails on main", short: true,
 			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), passedJob(12, "Lint (golangci-lint, go vet, -tags e2e)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain")})},
+			accept: true, want: "tests: TestOnMain",
+		},
+		{
+			// Windows' jq.exe: CRLF on every line. Before the script stripped
+			// it, main's job ids kept a CR and named no log, so main's failing
+			// tests came back empty and this was refused (the native Windows
+			// job on main, run 39614701314).
+			name: "the same, under a jq that prints CRLF", short: true,
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"}, crlfJQ: true,
 				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), passedJob(12, "Lint (golangci-lint, go vet, -tags e2e)"), gate},
 				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain")})},
 			accept: true, want: "tests: TestOnMain",

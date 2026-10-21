@@ -38,7 +38,7 @@ wait behind someone's gate.
 | --- | --- |
 | `forge slot run --class heavy -- <cmd>` | run `<cmd>` holding a slot, exit with its status. Ctrl-C while waiting gives up (130) |
 | `forge slot status [--json]` | the count, where it came from, the holders, the queue |
-| `FORGE_HEAVY_SLOTS=<n>` | override the count. Default min(CPUs / 4, memory GiB / 8), read from the cgroup v2 limit when there is one (inside a VM sandbox or container that is the truth, not nproc / MemTotal), at least 1 |
+| `FORGE_HEAVY_SLOTS=<n>` | override the count. Default min(CPUs / 2, memory GiB / 8), read from the cgroup v2 limit when there is one (inside a VM sandbox or container that is the truth, not nproc / MemTotal), at least 1 |
 | `FORGE_HEAVY_SLOTS=off` | switch the limit off: nothing waits (a CI runner that runs one job per machine may) |
 | `FORGE_SLOTS_DIR` | relocate the slot files (default: the user cache dir, so one user's processes share them; point every user of a multi-user host at one mode-1777 directory to share across users) |
 

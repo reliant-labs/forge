@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
@@ -34,13 +36,7 @@ func TestTxIsolation_KeepsEveryShapesWireLevelAndAttempts(t *testing.T) {
 		copyFile(t, filepath.Join(fixture, name), filepath.Join(dir, name))
 	}
 	copyFile(t, filepath.Join(root, "go.sum"), filepath.Join(dir, "go.sum"))
-	gomod := "module example.com/txscratch\n\ngo 1.27.0\n\n" +
-		"require github.com/reliant-labs/forge v0.0.0-00010101000000-000000000000\n\n" +
-		"replace github.com/reliant-labs/forge => " + root + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	goCmd(t, dir, "mod", "tidy")
+	writeScratchGoMod(t, root, dir)
 
 	rep, err := runTxIsolation(dir, true)
 	if err != nil {
@@ -142,6 +138,56 @@ func copyFile(t *testing.T, from, to string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(to, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeScratchGoMod writes dir/go.mod for a module that requires this forge,
+// with forge's own requirement list copied in, so the scratch module's build
+// list is forge's. It is not `go mod tidy`: under GOPROXY=off tidy needs every
+// module in the "all" graph, tests of dependencies included, and nothing that
+// builds or tests forge downloads those. CI's module cache lacked one
+// (github.com/go-logr/logr@v1.2.2's go.mod) and the test failed before
+// reaching the codemod; a cache from `go mod download` lacks others.
+func writeScratchGoMod(t *testing.T, root, dir string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forge, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &modfile.File{}
+	for _, err := range []error{
+		f.AddModuleStmt("example.com/txscratch"),
+		f.AddGoStmt(forge.Go.Version),
+		f.AddRequire(forge.Module.Mod.Path, "v0.0.0-00010101000000-000000000000"),
+		f.AddReplace(forge.Module.Mod.Path, "", root, ""),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range forge.Require {
+		f.AddNewRequire(r.Mod.Path, r.Mod.Version, true)
+	}
+	for _, r := range forge.Replace {
+		newPath := r.New.Path
+		if modfile.IsDirectoryPath(newPath) && !filepath.IsAbs(newPath) {
+			newPath = filepath.Join(root, newPath)
+		}
+		if err := f.AddReplace(r.Old.Path, r.Old.Version, newPath, r.New.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Cleanup()
+	out, err := f.Format()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), out, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

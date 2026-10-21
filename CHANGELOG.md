@@ -122,6 +122,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge tools install` replaces a GOBIN binary on Windows while something
+  has it open.** The atomic install (#1062) renamed the staged binary over the
+  old one with a bare `os.Rename`, which Windows refuses while any handle, such
+  as a virus scanner or a parallel forge, has the target open. It now retries
+  for a moment, as every `atomicfile` write already does (new
+  `atomicfile.Replace`).
+- **The main-red override judges main's latest run that has a verdict.**
+  `scripts/ci-main-red.sh` compared against main's newest completed run, which
+  is often one a later push cancelled, and refused #1071 because that run
+  (25283f30) had no failed job. It now skips cancelled and unfinished runs. It
+  also drops the CRs a native `jq.exe` writes, which made `TestMainRedOverride`
+  fail on Windows since #1057.
 - **Docs no longer promise mail that is never sent.** The
   `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is

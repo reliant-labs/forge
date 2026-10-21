@@ -114,34 +114,9 @@ diamond at once, and which route to pick are in `db/seeding`.
 
 ### A CHECK that mirrors a Go set
 
-When a CHECK lists a vocabulary that Go also owns, such as forge's access-token
-scopes, the two must not drift. If Go gains a value the CHECK lacks, every
-write of it fails the constraint. If the CHECK admits a value Go lacks, rows
-holding it cannot be read. Declare which set the CHECK mirrors, on the CHECK:
-
-```sql
-COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS
-    'forge:closed-set accesstoken.AllScopes';
-```
-
-`forge lint` checks every declaration in its closed-sets lane, which runs by
-default (`--closed-sets` runs it alone). It finds the CHECK the migrations last
-defined and reads its list. It reads `col <@ ARRAY[…]` for an array column,
-and `col = ANY (ARRAY[…])` or `col IN (…)` for a scalar, with or without casts.
-If the list differs from the set, the lane names the missing and extra values
-and prints the forward migration that fixes it.
-`forge db migration new --closed-set <constraint>` writes that migration for
-you. The lane needs no database, so it runs on every tier.
-
-- **Set names.** forge exports `accesstoken.AllScopes` and
-  `accesstoken.AllResourceKinds`. Your own set is named by its qualified Go
-  name, `<import path>.<Var>`: a package-level variable initialized by a
-  literal of constants. forge type-checks the package and runs none of its
-  code. An unknown name fails the lane.
-- **Re-declare after replacing the CHECK.** postgres drops a constraint's
-  comment along with the constraint. A migration that replaces the CHECK with
-  DROP + ADD must therefore re-issue the COMMENT, and the fix migration does.
-  The lane reports a declaration that was lost this way.
+A CHECK listing a vocabulary Go also owns (access-token scopes) declares it:
+`COMMENT ON CONSTRAINT … IS 'forge:closed-set <set>'`, and `forge lint` keeps
+the two equal. Set names and the fix migration: `db/closed-sets`.
 
 ## Behavior by convention — real columns, no annotations
 
@@ -167,18 +142,14 @@ Derived from the SAME row (`line_total = quantity * unit_price`) → a `GENERATE
 CONSTRAINT estimates_approved_has_stamp
     CHECK (status <> 'ESTIMATE_STATUS_APPROVED' OR approved_at IS NOT NULL)
 
--- NO: biconditional. `forge db seed apply` cannot place it, and because it
--- spans `status` it also blocks every well-formed guard on that column.
+-- NO: biconditional. `forge db seed apply` cannot place it, nor any guard on
+-- `status` beside it, and apply is one transaction: the whole dev dataset.
 CONSTRAINT estimates_approved_iff
     CHECK ((status = 'ESTIMATE_STATUS_APPROVED') = (approved_at IS NOT NULL))
 ```
 
-Forge merges implications over one column into a single union and satisfies them
-together; a biconditional has no top-level `OR`, so nothing can read it and the
-columns are drawn independently. `apply` is one transaction, so the cost is the
-entire dev dataset. Enforce the mirror half (not approved ⇒ NULL stamp) in the
-RPC that owns the transition — it is a single-writer invariant. Full reasoning
-and the mixing rule are in the `db/seeding` skill.
+Enforce the mirror half (not approved ⇒ NULL stamp) in the RPC that owns the
+transition. Why, and the mixing rule: `db/seeding`.
 
 ## Just write postgres
 
@@ -249,11 +220,7 @@ Never hand-edit `schema_migrations` or `DROP DATABASE` — measured, two runs di
 | `applied version N is behind latest on disk M` — nothing is broken | `forge db migrate up` |
 | dev rows are stale, wrong, or hand-mangled | `forge db seed reset` |
 
-`forge db migrate force` **asserts** a version is applied without verifying it — forge cannot know how much of the failed migration landed. Inspect with `forge db introspect` and finish or undo the partial migration **first**; forcing past SQL that never ran leaves the schema permanently behind what forge thinks is applied. Use it only for a migration that genuinely failed mid-flight, never to skip one.
-
-`seed reset` fixes *data*, not migration state: on a dirty database it refuses just like `seed apply`. Clear the migration state first.
-
-**Correcting a born schema** (an enum gained a value, a constraint was wrong) is a *migration*, not a recovery: write one and `forge generate`.
+Read `db/recovery` before `forge db migrate force`: it asserts a version without verifying it.
 
 Dev DSN convention: `postgres://postgres:postgres@localhost:5432/<project>?sslmode=disable`
 

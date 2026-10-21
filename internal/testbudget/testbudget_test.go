@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -71,7 +72,7 @@ func TestCheckLiveRun(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("go", "test", "-short", "-count=1", "-json", "./...")
 	cmd.Dir = fixtureModule
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("go test on the fixture module: %v\n%s", err, out)

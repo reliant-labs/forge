@@ -59,6 +59,22 @@ minute budget so a first trim of a very large cache can make progress; a pass
 cut off by the deadline stops cleanly and resumes next time. Dry-run
 (`forge storage gc`) prints each candidate and its bytes.
 
+The 2h floor also bounds every budget: what was written in the last two hours
+stays, however often or uncapped the pass runs. A cache that takes in more than
+its budget in that window cannot be trimmed to it. The pass then removes
+everything older, prints `WARNING … no trim can reach it` with the size written
+inside the floor and the fill rate, and records the cache under `over_budget` in
+`last-auto-gc.json` / `last-full-gc.json` (not a failure). `forge storage
+status` prints the same split. The remedy is a slower fill, not a harder trim.
+On 2026-10-21 a 20 GiB budget held a 152 GiB cache filling at ~70 GiB/h: 87% of
+its bytes were compiles keyed on a worktree's absolute path, because the repos
+pinned `toolchain go1.27.3`, `GOTOOLCHAIN=auto` switched to a downloaded
+toolchain, and that toolchain's `$GOROOT/go.env` lacks the `GOFLAGS=-trimpath`
+the workspace image appends to its own. Check with `go env GOFLAGS` in a
+worktree. Anything forge starts with its own GOFLAGS merges `-trimpath` back in
+(`goexec.WithTrimpath`); `internal/goexec`'s `TestGOFLAGSOverridesKeepTrimpath`
+keeps it that way.
+
 ## Bounded deletion
 
 On 2026-10-09 one `forge storage gc --apply` unlinked 175,324 Go build cache

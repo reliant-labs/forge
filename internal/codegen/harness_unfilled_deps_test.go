@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // unfilledDepsService is reliant's account shape: a raw *sql.DB the harness
@@ -150,7 +152,7 @@ func runFixtureTests(t *testing.T, root, run string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("go", "test", "-count=1", "-run", run, "./internal/handlers/accounts/")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

@@ -676,7 +676,7 @@ func installGolangciLint(ctx context.Context, gobin, goVersion, ver string) erro
 	}
 	cmd := exec.CommandContext(ctx, "go", "install", golangciModulePath+"@"+ver)
 	cmd.Dir = gobin
-	cmd.Env = goexec.Env("GOBIN="+gobin, "GOTOOLCHAIN="+goVersion, "GOWORK=off", "GOFLAGS=")
+	cmd.Env = goexec.WithTrimpath(goexec.Env("GOBIN="+gobin, "GOTOOLCHAIN="+goVersion, "GOWORK=off", "GOFLAGS="))
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

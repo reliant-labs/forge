@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // The born contract_test.go must survive the polish its own sibling
@@ -181,7 +183,7 @@ func runBornContractTest(t *testing.T, contractTest string) (string, error) {
 	// -mod=mod lets the throwaway module materialise its own go.sum;
 	// GOWORK=off keeps any ambient workspace out of a module that resolves
 	// forge through an explicit replace.
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

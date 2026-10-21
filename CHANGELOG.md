@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A Go cache budget no trim can reach is reported, not passed over.** The
+  trim never deletes an entry used in the last 2h (a running build may need
+  it), so a cache that takes in more than its budget in that window cannot be
+  held to it — and every pass used to report itself finished while a 20 GiB
+  budget held a 152 GiB cache. The pass now prints a `no trim can reach it`
+  warning with the size written inside the floor and the fill rate, and
+  records it in the GC record's new `over_budget` list (not a failure);
+  `forge storage status` shows the same split.
+- **Child go commands that set their own GOFLAGS keep `-trimpath`.** Tool
+  installs (`forge ci` tools, golangci-lint) and the test suite's builds of
+  scaffolded projects replaced GOFLAGS (`GOFLAGS=-mod=mod`, `GOFLAGS=`), which
+  dropped the `-trimpath` default and gave every `t.TempDir()` project fresh
+  cache keys each run. They now merge through `goexec.WithTrimpath`, and
+  `TestGOFLAGSOverridesKeepTrimpath` fails on any new site that does not.
+
 - **Checks build with `-trimpath`, so worktrees and scratch copies share one
   build and test cache.** Without it Go hashes every main-module package's
   absolute directory into its cache key: a fresh worktree of the same commit
@@ -455,6 +470,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repaired go.mod, so only the next run was right. A
   `go mod tidy (pre-composition)` step now runs first on any project generate
   has composed before.
+- **`forge lint --tracing` says what each rewrite did.** Its fix report
+  called every rewrite a log call, so a run that only renamed contract
+  constructions to `NewInstrumented` printed "34 log call(s) rewritten to pass
+  the request context" across 23 files. Each file now reports in the words of
+  the rule that rewrote it (`describeTracingFix`), the summary counts
+  rewrites, and the "can be rewritten automatically" hint counts
+  contract-uninstrumented warnings as well as log ones.
 - **A fresh project's first `forge lint` under CI passes.** `forge lint`'s
   format lane skips a scaffold file nobody has touched, judged by the birth
   hash in `.forge/scaffolded.json`. Of a frontend's scaffold, only `nav.tsx`

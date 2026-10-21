@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // A contract interface that EMBEDS another package's interface. The parser
@@ -164,7 +166,7 @@ func newObserveChain() *observe.ComponentChain { return nil }
 
 	cmd := exec.Command("go", "build", "./...")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		mock, _ := os.ReadFile(mockPath)
 		deco, _ := os.ReadFile(filepath.Join(pipeline, "middleware_gen.go"))

@@ -28,6 +28,7 @@ schema Workload:
     command?: [str]
     crds?: [str]
     deployPhase?: str
+    enableServiceLinks?: bool
     env?: [EnvVar]
     group?: str
     image: str
@@ -100,6 +101,7 @@ workload_json = lambda v: Workload -> {str:} {
         "command": v.command
         "crds": v.crds
         "deployPhase": v.deployPhase
+        "enableServiceLinks": v.enableServiceLinks
         "env": [env_var_json(_i) for _i in v.env] if v.env else Undefined
         "group": v.group
         "image": v.image
@@ -130,6 +132,7 @@ workload_json = lambda v: Workload -> {str:} {
 
 schema StaticSite:
     """StaticSiteSpec is a site served from an object-storage bucket, optionally behind a CDN."""
+    assetDir?: str
     basePath?: str
     bucket?: str
     cdn?: StaticSiteCDN
@@ -143,6 +146,7 @@ schema StaticSite:
     runtimeConfig?: {str:RuntimeConfigValue}
 
     check:
+        assetDir == Undefined or len(assetDir) <= 255, "StaticSite.assetDir must be at most 255 characters"
         basePath == Undefined or regex.match(basePath, "^/.*$"), "StaticSite.basePath must match ^/.*$"
         bucket == Undefined or len(bucket) <= 222, "StaticSite.bucket must be at most 222 characters"
         domains == Undefined or len(domains) <= 8, "StaticSite.domains allows at most 8 entries"
@@ -154,6 +158,7 @@ schema StaticSite:
 
 static_site_json = lambda v: StaticSite -> {str:} {
     _d = {
+        "assetDir": v.assetDir
         "basePath": v.basePath
         "bucket": v.bucket
         "cdn": static_site_cdn_json(v.cdn) if v.cdn else Undefined
@@ -731,6 +736,7 @@ workload_url_ref_json = lambda v: WorkloadURLRef -> {str:} {
 RESTRICTED_FIELD_REASONS: {str:str} = {
     "clusterRBAC" = "hosted workloads have no Kubernetes API access until each hosted user runs in an isolated cluster (vcluster)"
     "crds" = "operators need cluster-scoped Kubernetes API access, which shared hosted nodes cannot grant until each hosted user runs in an isolated cluster (vcluster)"
+    "enableServiceLinks" = "service links inject an env var per Service in the namespace; a hosted namespace is platform-owned, and its Services are not the author's to read. Address your own workloads by DNS name"
     "env.configMapRef" = "a ConfigMap reference reads a namespace object you did not write; use value, or managedSecret for a credential"
     "env.fieldRef" = "the Downward API exposes pod and node placement, which the hosted platform owns"
     "env.secretRef" = "a raw Secret name in a shared hosted namespace can address platform-owned Secrets; use managedSecret, which names a value in your environment's secret store"

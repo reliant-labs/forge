@@ -116,14 +116,14 @@ trusting the submitted entity.
 
 When a `Persist` / `PersistMasked` override (or any custom RPC) loads the
 stored row, decides whether the change is allowed, and then writes, wrap the
-three steps in `s.deps.DB.RunTx` and use the `ctx` it hands you for all of
-them:
+three steps in `s.deps.DB.RunTx(ctx, orm.Serializable, …)` and use the `ctx`
+it hands you for all of them:
 
 ```go
 // (This op carries no per-caller predicate; if yours does, the read must honor
 // opts — see "Where a per-caller policy attaches" above.)
 op.PersistMasked = func(ctx context.Context, e *db.Job, fields []string, _ ...orm.QueryOption) error {
-    return s.deps.DB.RunTx(ctx, func(ctx context.Context) error {
+    return s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) error {
         stored, err := db.GetJobByID(ctx, s.deps.DB, e.ID) // inside the transaction
         if err != nil {
             return err
@@ -137,9 +137,12 @@ op.PersistMasked = func(ctx context.Context, e *db.Job, fields []string, _ ...or
 ```
 
 No `SELECT … FOR UPDATE`: the generated delegates join the transaction
-carried by `ctx`, and `RunTx`'s SERIALIZABLE-plus-retry turns a concurrent
-writer into a re-run that sees the committed row. The closure may run more
-than once, so keep side effects out of it (`orm.AfterCommit`).
+carried by `ctx`, and `orm.Serializable`'s SERIALIZABLE-plus-retry turns a
+concurrent writer into a re-run that sees the committed row. The closure may
+run more than once, so keep side effects out of it (`orm.AfterCommit`). The
+level is the argument, so name it: the same body at `orm.ReadCommitted` lets
+both writers commit, and adding a `FOR UPDATE` to `orm.Serializable` makes the
+waiter fail `40001` (`forgeconv-tx-lock-under-serializable`).
 `service-layer/transactions` explains why this is safe.
 
 ### Read-only fields are already handled — do not overlay them

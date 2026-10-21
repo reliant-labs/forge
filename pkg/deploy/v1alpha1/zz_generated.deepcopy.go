@@ -697,6 +697,11 @@ func (in *StaticSiteSpec) DeepCopy() *StaticSiteSpec {
 func (in *StaticSiteStatus) DeepCopyInto(out *StaticSiteStatus) {
 	*out = *in
 	in.TierStatus.DeepCopyInto(&out.TierStatus)
+	if in.RecentDigests != nil {
+		in, out := &in.RecentDigests, &out.RecentDigests
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.LastSyncedAt != nil {
 		in, out := &in.LastSyncedAt, &out.LastSyncedAt
 		*out = (*in).DeepCopy()

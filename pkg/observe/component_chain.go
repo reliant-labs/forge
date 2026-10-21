@@ -30,7 +30,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -173,10 +172,7 @@ func (m recoverMiddleware) WrapComponent(ctx context.Context, method string, nex
 			if logger == nil {
 				logger = slog.Default()
 			}
-			logger.LogAttrs(ctx, slog.LevelError, method+": panic recovered",
-				slog.Any("panic", r),
-				slog.String("stack", string(debug.Stack())),
-			)
+			LogPanic(ctx, logger, method+": panic recovered", r)
 			err = fmt.Errorf("panic in %s: %v", method, r)
 		}
 	}()

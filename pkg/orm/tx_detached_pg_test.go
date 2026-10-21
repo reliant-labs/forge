@@ -28,7 +28,7 @@ func TestInTx_TracksTheCarriedTransaction(t *testing.T) {
 
 	var leaked context.Context
 	var inCallback bool
-	err := c.RunTx(ctx, func(ctx context.Context) error {
+	err := c.RunTx(ctx, Serializable, func(ctx context.Context) error {
 		if !InTx(ctx) {
 			t.Error("InTx = false inside RunTx")
 		}
@@ -45,7 +45,7 @@ func TestInTx_TracksTheCarriedTransaction(t *testing.T) {
 		t.Error("InTx = true for a ctx leaked past RunTx; its queries run on the pool")
 	}
 
-	tx, err := c.BeginDetached(ctx, TxOptions{})
+	tx, err := c.BeginDetached(ctx, Serializable.WithMaxAttempts(1))
 	if err != nil {
 		t.Fatalf("BeginDetached: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestInTx_TracksTheCarriedTransaction(t *testing.T) {
 	if InTx(ctx) {
 		t.Error("InTx = true for the ctx BeginDetached was called with; it carries nothing")
 	}
-	if err := tx.RunTx(ctx, func(ctx context.Context) error {
+	if err := tx.Join(ctx, func(ctx context.Context) error {
 		if !InTx(ctx) {
 			t.Error("InTx = false inside tx.RunTx")
 		}
@@ -67,7 +67,7 @@ func TestInTx_TracksTheCarriedTransaction(t *testing.T) {
 // transaction through the injected orm.Context interface — not the concrete
 // *Client — writes in it, and RETURNS with the transaction still open.
 func openNoteTx(ctx context.Context, db Context, id string) (*Tx, error) {
-	tx, err := db.BeginDetached(ctx, TxOptions{Isolation: IsolationReadCommitted})
+	tx, err := db.BeginDetached(ctx, ReadCommitted)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func TestBeginDetached_OutlivesTheCallThatOpenedIt(t *testing.T) {
 	}
 
 	// Code written against the plain client joins it through tx.RunTx.
-	if err := tx.RunTx(ctx, func(ctx context.Context) error { return insertNote(ctx, c, "joined") }); err != nil {
+	if err := tx.Join(ctx, func(ctx context.Context) error { return insertNote(ctx, c, "joined") }); err != nil {
 		t.Fatalf("tx.RunTx insert: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -128,12 +128,12 @@ func TestBeginDetached_IsIndependentOfTheCarriedTransaction(t *testing.T) {
 	ctx := context.Background()
 
 	sentinel := errors.New("outer fails")
-	err := c.RunTransaction(ctx, func(outer Context) error {
-		if err := outer.RunTx(ctx, func(ctx context.Context) error { return insertNote(ctx, c, "outer") }); err != nil {
+	err := c.RunTransaction(ctx, ReadCommitted, func(outer Context) error {
+		if err := outer.RunTx(ctx, Serializable, func(ctx context.Context) error { return insertNote(ctx, c, "outer") }); err != nil {
 			return err
 		}
 		for _, db := range []Context{outer, c} {
-			tx, err := db.BeginDetached(ctx, TxOptions{})
+			tx, err := db.BeginDetached(ctx, Serializable.WithMaxAttempts(1))
 			if err != nil {
 				return err
 			}
@@ -188,7 +188,7 @@ func TestBeginDetached_ReadOnlySerializableIsDeferrable(t *testing.T) {
 	c := newTxTestClient(t)
 	ctx := context.Background()
 
-	tx, err := c.BeginDetached(ctx, TxOptions{ReadOnly: true})
+	tx, err := c.BeginDetached(ctx, Serializable.WithReadOnly().WithMaxAttempts(1))
 	if err != nil {
 		t.Fatalf("BeginDetached: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestBeginDetached_ReadOnlySerializableIsDeferrable(t *testing.T) {
 }
 
 func TestBeginDetached_TxWithoutClientErrors(t *testing.T) {
-	if _, err := (&Tx{}).BeginDetached(context.Background(), TxOptions{}); err == nil {
+	if _, err := (&Tx{}).BeginDetached(context.Background(), Serializable.WithMaxAttempts(1)); err == nil {
 		t.Fatal("BeginDetached on a Tx with no Client succeeded")
 	}
 }

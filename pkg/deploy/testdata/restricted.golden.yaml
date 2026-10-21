@@ -88,6 +88,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - args:
         - db
@@ -271,6 +272,7 @@ spec:
           name: tmp
         - mountPath: /data
           name: data
+      enableServiceLinks: false
       initContainers:
       - args:
         - db
@@ -440,6 +442,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - args:
         - db
@@ -519,8 +522,8 @@ metadata:
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
     forge.dev/job-name: report
-    forge.dev/spec-hash: cee8e001d5
-  name: report-cee8e001d5
+    forge.dev/spec-hash: c04dd9defb
+  name: report-c04dd9defb
   namespace: demo-prod
 spec:
   backoffLimit: 6
@@ -559,6 +562,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - args:
         - db

@@ -120,6 +120,16 @@ func goldenCases() []goldenCase {
 		}},
 		{name: "netpol", network: &EnvNetworkPolicy{EgressPorts: []int32{443, 5432}, TelemetryNamespace: "observability", IngressNamespace: "gateway-system"},
 			ws: []v1alpha1.Workload{scaffoldAPI()}},
+		// enableServiceLinks is the opt-in: this pod renders true, its
+		// neighbour keeps the default false.
+		{name: "service_links", ws: []v1alpha1.Workload{
+			scaffoldAPI(),
+			func() v1alpha1.Workload {
+				w := gw("legacy", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Command: []string{"/app/demo", "legacy"}})
+				w.Spec.EnableServiceLinks = true
+				return w
+			}(),
+		}},
 		{name: "mixed_env", ws: []v1alpha1.Workload{func() v1alpha1.Workload {
 			w := scaffoldAPI()
 			w.Spec.Env = []v1alpha1.EnvVar{

@@ -118,7 +118,7 @@ func TestOTLPLogsAreOffByDefault(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := Config{ServiceName: "svc"}
 	h := NewLogHandler(slog.NewJSONHandler(&buf, nil), cfg)
-	if _, ok := h.(*traceHandler); !ok {
+	if _, ok := unwrapErrorInputs(h).(*traceHandler); !ok {
 		t.Fatalf("default log handler = %T, want the plain trace handler (no OTLP bridge)", h)
 	}
 	shutdown, _, err := Setup(context.Background(), cfg)
@@ -242,4 +242,11 @@ func TestLoweredUserErrorAddsNoSpanEvent(t *testing.T) {
 	if evs := span.(sdktrace.ReadOnlySpan).Events(); len(evs) != 0 {
 		t.Fatalf("got %d events for a user error lowered to INFO, want 0", len(evs))
 	}
+}
+
+func unwrapErrorInputs(h slog.Handler) slog.Handler {
+	if e, ok := h.(errorInputsHandler); ok {
+		return e.next
+	}
+	return h
 }

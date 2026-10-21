@@ -348,6 +348,19 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	PriorityClassName string `json:"priorityClassName,omitempty"`
 
+	// EnableServiceLinks opts the pods IN to Kubernetes' service links: an
+	// env var per Service in the namespace (<NAME>_PORT=tcp://ip:port,
+	// <NAME>_SERVICE_HOST, <NAME>_SERVICE_PORT, ...). Unset (false) renders
+	// pod.enableServiceLinks: false, because those names are not namespaced
+	// to anything: a Service called `temporal` injects TEMPORAL_PORT, which
+	// a typed config loader then parses as a port number and the process
+	// CrashLoops at boot (reliant's daemon-gateway, 2026-10-21; Zitadel's
+	// ZITADEL_PORT before it). Resolve a Service through DNS
+	// (<svc>.<namespace>.svc) or an explicit env var instead. Set this only
+	// for an image that reads the injected variables. Full profile only.
+	// +optional
+	EnableServiceLinks bool `json:"enableServiceLinks,omitempty"`
+
 	// TerminationGracePeriodSeconds overrides the drain-derived grace
 	// period (PRE_STOP_DELAY + SHUTDOWN_TIMEOUT + 5 from the workload's env).
 	// For a process whose shutdown budget is not expressed in those env

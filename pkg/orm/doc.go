@@ -8,10 +8,12 @@
 //
 //   - [Client]        the handle; Bun() is the raw engine seam for queries
 //     the generated CRUD cannot express.
-//   - [Client.RunTx]  a SERIALIZABLE, conflict-retried transaction carried in
-//     ctx: every query made with the ctx it hands fn — generated delegates,
-//     stores, pkg/crud, raw SQL — joins it. fn may run more than once; defer
-//     side effects with [AfterCommit]. See tx.go.
+//   - [Client.RunTx]  a transaction carried in ctx, at the level the caller
+//     names — [Serializable] (conflict-retried; lock-free read-check-write)
+//     or [ReadCommitted] (one attempt; correctness from a lock). There is no
+//     default. Every query made with the ctx it hands fn — generated
+//     delegates, stores, pkg/crud, raw SQL — joins it. fn may run more than
+//     once; defer side effects with [AfterCommit]. See tx.go and [TxOptions].
 //   - [ErrNoRows]     the missing-row sentinel. Match it with errors.Is and
 //     let pkg/svcerr map it to a clean NotFound — never leak SQL text.
 //   - [IsUniqueViolation], [IsCheckViolation], [ConstraintName] the write-side

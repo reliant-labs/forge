@@ -101,6 +101,29 @@ type StaticSiteSpec struct {
 	// +kubebuilder:validation:Pattern=`^/.*$`
 	BasePath string `json:"basePath,omitempty"`
 
+	// AssetDir is the build's CONTENT-HASHED asset directory, relative to
+	// the site's mount (BasePath): "assets" for a Vite build, "_next/static"
+	// for a Next.js export. Every file under it is named for its bytes.
+	//
+	// It is a SERVING fact, not a build input, because two serving
+	// guarantees hang off it and neither can be inferred from a bucket:
+	//
+	//   - CACHE POLICY. Files under it may be cached forever
+	//     (`public, max-age=31536000, immutable`); everything else — the
+	//     entry document, config.js, version.json — must revalidate
+	//     (`no-cache`), so a deploy is visible on the next load.
+	//   - STALE TABS KEEP WORKING. A page loaded before a deploy lazy-loads
+	//     chunks the new release no longer contains. The server keeps the
+	//     previous releases' files under this directory serveable, so that
+	//     import succeeds instead of failing on a 404 (or, worse, on an HTML
+	//     fallback parsed as JavaScript).
+	//
+	// Empty means the build declares none: no immutable caching and no
+	// carried-forward assets.
+	// +optional
+	// +kubebuilder:validation:MaxLength=255
+	AssetDir string `json:"assetDir,omitempty"`
+
 	// ReleaseRepository is the OCI repository LiveDigest was pushed to —
 	// the whole reference, registry host included, with no tag or digest
 	// on it. Together with LiveDigest it is the complete address of the
@@ -232,6 +255,16 @@ type StaticSiteStatus struct {
 	LiveDigest string `json:"liveDigest,omitempty"`
 	// +optional
 	PreviousDigest string `json:"previousDigest,omitempty"`
+
+	// RecentDigests are the releases the live prefix CONFIRMED serving
+	// before LiveDigest, newest first (PreviousDigest leads). The executor
+	// keeps their files under spec.assetDir serveable — a page loaded from
+	// one of them still lazy-loads its chunks after a deploy — so retention
+	// must never delete them. Ordered history that a bucket listing cannot
+	// give: archive prefixes carry no time.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	RecentDigests []string `json:"recentDigests,omitempty"`
 
 	// ReleaseCount is how many archived releases the last retention pass
 	// observed.

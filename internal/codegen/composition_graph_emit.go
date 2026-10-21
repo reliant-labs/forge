@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -861,6 +862,52 @@ func sortedImports(m map[string]string, fixed ...string) []graphImport {
 	return out
 }
 
+// providersGraphData is providers-graph.go.tmpl's input.
+type providersGraphData struct {
+	Module                   string
+	HasDatabase, RESTEnabled bool
+	ConfigFields             map[string]bool
+	// AuthConfigType and BrokerConfigType are the pkg/config types auth.go
+	// and login_broker.go read (configDeclaring; "" is Config), and
+	// NoBrokerConfig is true when no config declares the broker's fields.
+	AuthConfigType, BrokerConfigType string
+	NoBrokerConfig                   bool
+	// NoProjectAuthInterceptor: the project's pkg/middleware declares no
+	// NewAuthInterceptor (projectDeclaresAuthInterceptor).
+	NoProjectAuthInterceptor bool
+}
+
+// projectAuthInterceptorDecl matches the auth interceptor the scaffolded
+// pkg/middleware/middleware.go declares.
+var projectAuthInterceptorDecl = regexp.MustCompile(`(?m)^func NewAuthInterceptor\(`)
+
+// projectDeclaresAuthInterceptor reports whether the project's pkg/middleware
+// declares NewAuthInterceptor — forge's scaffold does, a project with a
+// middleware package of its own may not, and providers.go's UserAuth then
+// builds forge's authn interceptor instead of calling a function that is not
+// there. A project with no pkg/middleware yet is about to get forge's.
+func projectDeclaresAuthInterceptor(projectDir string) bool {
+	dir := filepath.Join(projectDir, "pkg", "middleware")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	scaffolded := false
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		if !strings.HasSuffix(n, "_gen.go") {
+			scaffolded = true
+		}
+		if src, err := os.ReadFile(filepath.Join(dir, n)); err == nil && projectAuthInterceptorDecl.Match(src) {
+			return true
+		}
+	}
+	return !scaffolded
+}
+
 // GenerateGraphProviders scaffolds a graph-mode project's owned
 // internal/app/providers.go (the default providers: the database pool and
 // ORM, the outbound HTTP client, the user audience's authenticator, chain and
@@ -879,15 +926,9 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	if msgs, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config")); err == nil && len(msgs) > 0 {
 		configFields = RootConfigFieldNames(msgs, projectDir)
 	}
-	data := struct {
-		Module                           string
-		HasDatabase                      bool
-		RESTEnabled                      bool
-		ConfigFields                     map[string]bool
-		AuthConfigType, BrokerConfigType string
-		NoBrokerConfig                   bool
-	}{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
-		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker}
+	data := providersGraphData{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
+		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
+		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir)}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)

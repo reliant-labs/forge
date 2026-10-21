@@ -2172,12 +2172,7 @@ func FormatPreflightReport(r PreflightResult) string {
 		}
 	}
 
-	if len(r.VolumeResizeRefusals) > 0 {
-		b.WriteString("\n  StatefulSet volumes that cannot be converged (volumeClaimTemplates are immutable; only a LARGER storage request is):\n")
-		for _, m := range r.VolumeResizeRefusals {
-			fmt.Fprintf(&b, "    - %s\n", m)
-		}
-	}
+	writeVolumeResizeBlock(&b, r)
 
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("\n  DECLARED external Secret prerequisites missing (forge.ExternalSecret — provision out-of-band):\n")
@@ -2235,12 +2230,7 @@ func FormatPreflightReport(r PreflightResult) string {
 		b.WriteString("      experimental channel ONLY for an x-k8s.io alpha kind, and never on a\n")
 		b.WriteString("      local cluster alone — it would diverge dev from the cloud.\n")
 	}
-	if len(r.VolumeResizeRefusals) > 0 {
-		b.WriteString("  - declare the StatefulSet volume(s) above at the live size or larger, and leave their storage\n")
-		b.WriteString("      class and access modes alone. A volume cannot shrink; to move data to a smaller or different\n")
-		b.WriteString("      volume, restore into a new StatefulSet. A claim whose StorageClass lacks allowVolumeExpansion\n")
-		b.WriteString("      must have expansion enabled on the class first.\n")
-	}
+	writeVolumeResizeFix(&b, r)
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("  - provision the DECLARED external Secret(s) above out-of-band in their\n")
 		b.WriteString("      namespace (e.g. the cert-manager `cloudflare-api-token`); forge does\n")
@@ -2716,4 +2706,26 @@ func dockerConfigAuthsFromSecret(secretJSON []byte) map[string]json.RawMessage {
 		return nil
 	}
 	return cfg.Auths
+}
+
+// writeVolumeResizeBlock lists the StatefulSet volumes no resize can converge.
+func writeVolumeResizeBlock(b *strings.Builder, r PreflightResult) {
+	if len(r.VolumeResizeRefusals) == 0 {
+		return
+	}
+	b.WriteString("\n  StatefulSet volumes that cannot be converged (volumeClaimTemplates are immutable; only a LARGER storage request is):\n")
+	for _, m := range r.VolumeResizeRefusals {
+		fmt.Fprintf(b, "    - %s\n", m)
+	}
+}
+
+// writeVolumeResizeFix is the remedy for [writeVolumeResizeBlock].
+func writeVolumeResizeFix(b *strings.Builder, r PreflightResult) {
+	if len(r.VolumeResizeRefusals) == 0 {
+		return
+	}
+	b.WriteString("  - declare the StatefulSet volume(s) above at the live size or larger, and leave their storage\n")
+	b.WriteString("      class and access modes alone. A volume cannot shrink; to move data to a smaller or different\n")
+	b.WriteString("      volume, restore into a new StatefulSet. A claim whose StorageClass lacks allowVolumeExpansion\n")
+	b.WriteString("      must have expansion enabled on the class first.\n")
 }

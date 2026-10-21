@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Each root's config reach as importable Go: `pkg/config/roots_gen.go`.**
+  A graph-mode project's generated `pkg/config` now has `Roots()`,
+  `RootNamed(name)` and `ValidateRootEnv(name, env)`. These are the same reach
+  `deploy/kcl/config_gen.k`'s `ROOTS` projects, generated from the same data
+  in the same step. For each root: its name and command path, every env var it
+  reaches (config, path, type, required, sensitive, aliases), the env families
+  it reaches, and the configs its process loads with the fields its command
+  demands. `forgeconfig.Root.Validate(env)` runs the boot load over a rendered
+  env instead of the process's, with no flags, and returns every problem rather
+  than the first. It catches a missing required var, a value the process would
+  refuse (a bare-number duration, a value outside allowed_values, a misspelt
+  env-family entry), and, as `*UnreachedVarError`, every var the root never
+  reads. The repo that keeps a deployment's values can then check them against
+  the binary's own schema, per root, in a Go test at its pinned version.
 - **`Plan<Root>()`: each root's start and stop order as data.** `graph_gen.go`
   emits a static `graphkit.Plan` per root — every node `Build<Root>`
   constructs, in order, with the lifecycle methods its type has, the probe

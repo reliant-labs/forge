@@ -16,7 +16,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -50,12 +49,11 @@ func familyPattern(opt *forgepb.ConfigFieldOptions) string {
 }
 
 // overlayFamily applies a family's env entries onto m's map field fd.
-func overlayFamily(m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
+func overlayFamily(m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, env environ) error {
 	if !fd.IsMap() || fd.MapKey().Kind() != protoreflect.StringKind {
 		return fmt.Errorf("config field %s: env_prefix needs a map<string, V> field", fd.Name())
 	}
-	names := os.Environ()
-	sort.Strings(names)
+	names := env.environ()
 	for _, kv := range names {
 		name, value, _ := strings.Cut(kv, "=")
 		key, ok := familyKey(opt, name)
@@ -74,7 +72,7 @@ func overlayFamily(m protoreflect.Message, fd protoreflect.FieldDescriptor, opt 
 // checkFamilyPrefixes fails when a variable under one of msg's family
 // prefixes is claimed by no family and no env var of the configs the
 // process loads (msg plus those recorded on cmd's path).
-func checkFamilyPrefixes(cmd *cobra.Command, msg proto.Message) error {
+func checkFamilyPrefixes(cmd *cobra.Command, msg proto.Message, o *loadOptions) error {
 	own := familiesOf(msg.ProtoReflect().Descriptor())
 	if len(own) == 0 {
 		return nil
@@ -82,16 +80,12 @@ func checkFamilyPrefixes(cmd *cobra.Command, msg proto.Message) error {
 	var families []*forgepb.ConfigFieldOptions
 	plain := map[string]bool{}
 	descs := []protoreflect.MessageDescriptor{msg.ProtoReflect().Descriptor()}
-	for _, md := range sharedFileMessages(cmd, msg) {
-		descs = append(descs, md)
-	}
+	descs = append(descs, o.sharedFileMessages(cmd, msg)...)
 	for _, md := range descs {
 		families = append(families, familiesOf(md)...)
 		collectEnvNames(md, plain, map[protoreflect.FullName]bool{})
 	}
-	names := os.Environ()
-	sort.Strings(names)
-	for _, kv := range names {
+	for _, kv := range o.env.environ() {
 		name, value, _ := strings.Cut(kv, "=")
 		if value == "" || plain[name] {
 			continue
@@ -123,8 +117,10 @@ func checkFamilyPrefixes(cmd *cobra.Command, msg proto.Message) error {
 			}
 		}
 		sort.Strings(patterns)
-		return fmt.Errorf("env %s is under the config family prefix %s, but matches none of its families (%s): a misspelled name is an entry that silently never loads. Rename it, or unset it",
-			name, under.GetEnvPrefix(), strings.Join(patterns, ", "))
+		if err := o.report(fmt.Errorf("env %s is under the config family prefix %s, but matches none of its families (%s): a misspelled name is an entry that silently never loads. Rename it, or unset it",
+			name, under.GetEnvPrefix(), strings.Join(patterns, ", "))); err != nil {
+			return err
+		}
 	}
 	return nil
 }

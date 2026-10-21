@@ -359,6 +359,44 @@ type Sender interface {
 	}
 }
 
+// TestInternalContracts_NotAComponentSkipped: a package the server
+// composition never constructs (`//forge:not-a-component`) has no
+// constructor for the shape to make bindable, so its one-interface
+// contract.go is not an unfinished Service. The same package without the
+// marker still fires (TestInternalContracts_SingleInterfaceStillFires).
+func TestInternalContracts_NotAComponentSkipped(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "grants")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `// Package grants stores grants.
+//
+//forge:not-a-component: built by a hand-wired server, not forge's composition root
+package grants
+
+type Store interface {
+	Get(id string) (string, error)
+}
+`))
+	must(t, writeFile(filepath.Join(pkgDir, "store_sql.go"), `package grants
+
+type SQLStore struct{ db any }
+
+func NewSQLStore(db any) *SQLStore { return &SQLStore{db: db} }
+
+func (s *SQLStore) Get(id string) (string, error) { return id, nil }
+`))
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleInternalPackageContractNames}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got := findingsForRule(fs, string(RuleInternalPackageContractNames)); len(got) != 0 {
+		t.Fatalf("a not-a-component package needs no Service/Deps/New shape, got %d finding(s):\n%s",
+			len(got), AsResult(fs).FormatText())
+	}
+}
+
 // TestInternalContracts_ZeroInterfacePackagesSkipped is the table-driven
 // guard for the zero-interface early-out. Each row models one of the
 // recurring shapes that previously forced cp-forge porters to add

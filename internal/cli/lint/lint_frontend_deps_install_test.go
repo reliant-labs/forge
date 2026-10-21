@@ -21,6 +21,9 @@ func TestMain(m *testing.M) {
 	// Nor does an in-process `forge lint` take or wait for one of the host's
 	// heavy slots (pkg/hostslot).
 	os.Setenv(hostslot.SlotsEnv(hostslot.Heavy), "off")
+	// The fix guard's type-check execs `go list`; the format and tracing
+	// fixtures here are not what it is for (lint_fix_guard_test.go is).
+	fixTypecheck = func(string, []string) map[string]string { return nil }
 	os.Exit(m.Run())
 }
 

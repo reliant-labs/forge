@@ -49,6 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ShellBuild.built_images`: one image built FROM another.**
+  `built_images = {BASE = "runtime"}` declares that this ShellBuild needs the
+  image the `runtime` workload's build pushes. `forge env build` builds
+  `runtime` first and runs the dependent with `BASE` set to the exact
+  `<repository>@sha256:<digest>` it pushed — the digest its build state and
+  the release record — so a parent image is no longer a hand-edited digest
+  constant that drifts from what was built. `--target <dependent>` builds its
+  parents too; a composition carries an unselected parent from its base
+  instead. A parent that fails, is skipped, or pushes nothing whose digest
+  forge can resolve fails its dependents rather than handing them a tag.
+  Edges to an undeclared, non-ShellBuild or image-less workload are refused at
+  render, and cycles before any build runs; `--plan` shows each edge.
+  Independent builds still run in parallel.
 - **`NewInstrumented`: a contract's constructor, already decorated, so every
   construction site is one rename from traced.** `middleware_gen.go` now
   declares `NewInstrumented` beside the decorator, with `New`'s exact

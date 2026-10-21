@@ -442,7 +442,10 @@ func splitQualified(q string) (string, string) {
 // applyLogFixes rewrites f's sites in place and returns how many it rewrote.
 // The result must parse and gofmt, or the file is left untouched and the
 // sites are reported instead.
-func applyLogFixes(f *goFile, sites []logSite) (int, error) {
+func applyLogFixes(f *goFile, sites []logSite, write func(abs string, data []byte, mode os.FileMode) error) (int, error) {
+	if write == nil {
+		write = atomicfile.WriteFile
+	}
 	type edit struct {
 		at, end int
 		text    string
@@ -502,7 +505,7 @@ func applyLogFixes(f *goFile, sites []logSite) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := atomicfile.WriteFile(f.abs, formatted, info.Mode().Perm()); err != nil {
+	if err := write(f.abs, formatted, info.Mode().Perm()); err != nil {
 		return 0, fmt.Errorf("tracing lint: rewrite %s: %w", f.rel, err)
 	}
 	return len(sites), nil

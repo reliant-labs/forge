@@ -61,6 +61,9 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 	if len(tables) == 0 {
 		return nil, nil
 	}
+	if err := schemadef.CheckMarkers(tables); err != nil {
+		return nil, err
+	}
 	return entitiesForTables(tables, services), nil
 }
 
@@ -150,6 +153,9 @@ func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, er
 	}
 	views, err := shadowdb.Views(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
+		return nil, err
+	}
+	if err := schemadef.CheckMarkers(append(tables, views...)); err != nil {
 		return nil, err
 	}
 	entities, notes, err := ormEntitiesForTables(append(tables, views...), services)

@@ -118,7 +118,7 @@ The columns ARE the declaration. The generators read these off the introspected 
 
 | columns | behavior |
 |---------|----------|
-| `deleted_at` | soft delete: DELETE becomes UPDATE, reads filter `IS NULL`, `ListAll*` is the unfiltered variant |
+| `deleted_at` | soft delete: DELETE becomes UPDATE, reads filter `IS NULL`, `ListAll*` is the unfiltered variant; an archive stamp opts out: `db/soft-delete` |
 | `created_at` + `updated_at` | ORM-managed timestamps — type-gated: time columns (`TIMESTAMPTZ` et al) or legacy `TEXT` count; anything else (epoch integers) stays plain schema |
 | text columns | spanned by the generated list `search` filter |
 | `GENERATED ALWAYS AS (…) STORED` | derived column: postgres maintains it, the ORM excludes it from writes, and the seeder skips it |

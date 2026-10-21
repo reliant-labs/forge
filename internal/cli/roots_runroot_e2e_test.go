@@ -46,8 +46,8 @@ message ApiConfig {
   google.protobuf.Duration pre_stop_delay = 2 [(forge.v1.config) = {
     env_var: "API_PRE_STOP_DELAY"
     flag: "pre-stop-delay"
-    default_value: "-2s"
-    description: "The api's pre-stop pause."
+    default_value: "-1s"
+    description: "The api's pre-stop pause (negative: none)."
   }];
   google.protobuf.Duration shutdown_timeout = 3 [(forge.v1.config) = {
     env_var: "API_SHUTDOWN_TIMEOUT"
@@ -73,8 +73,8 @@ message WorkerConfig {
   google.protobuf.Duration pre_stop_delay = 2 [(forge.v1.config) = {
     env_var: "WORKER_PRE_STOP_DELAY"
     flag: "pre-stop-delay"
-    default_value: "-3s"
-    description: "The worker's pre-stop pause."
+    default_value: "-1s"
+    description: "The worker's pre-stop pause (negative: none)."
   }];
   google.protobuf.Duration shutdown_timeout = 3 [(forge.v1.config) = {
     env_var: "WORKER_SHUTDOWN_TIMEOUT"
@@ -219,8 +219,8 @@ type Worker struct {
 	if !strings.Contains(apiLog, "db migration completed") {
 		t.Errorf("`server api` (migrate=apply) did not migrate:\n%s", apiLog)
 	}
-	if !strings.Contains(apiLog, `"pre_stop_delay":-2000000000`) && !strings.Contains(apiLog, `pre_stop_delay=-2s`) {
-		t.Errorf("`server api` did not drain with its command config's pre_stop_delay (-2s):\n%s", apiLog)
+	if !strings.Contains(apiLog, `"shutdown_timeout":7000000000`) {
+		t.Errorf("`server api` did not drain within its command config's shutdown_timeout (7s):\n%s", apiLog)
 	}
 
 	// ── The worker proceeds once the schema is current ───────────────────
@@ -245,8 +245,8 @@ type Worker struct {
 	if strings.Contains(log, "db migration completed") {
 		t.Errorf("the migrate=wait worker ran a migration:\n%s", log)
 	}
-	if !strings.Contains(log, `"pre_stop_delay":-3000000000`) && !strings.Contains(log, `pre_stop_delay=-3s`) {
-		t.Errorf("`server worker` did not drain with its command config's pre_stop_delay (-3s):\n%s", log)
+	if !strings.Contains(log, `"shutdown_timeout":9000000000`) {
+		t.Errorf("`server worker` did not drain within its command config's shutdown_timeout (9s):\n%s", log)
 	}
 }
 

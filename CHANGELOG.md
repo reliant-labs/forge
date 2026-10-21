@@ -10,14 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **A CHECK that mirrors a Go set declares it, and `forge lint` keeps the two
-  equal.** Write `COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS
-  'forge:closed-set accesstoken.AllScopes'` in a migration. The new closed-sets
-  lane, which runs by default (`--closed-sets` runs it alone), finds the CHECK
-  the migrations last defined. It reads `col <@ ARRAY[…]`, `col = ANY (ARRAY[…])`
-  or `col IN (…)`, with or without casts, and compares the values with the named
-  set. A mismatch fails the lane, naming the missing and extra values and
-  printing the forward migration. `forge db migration new --closed-set
-  <constraint>` writes that migration. The lane reads migration text, so it
+  equal.** In a migration, write
+  `COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes'`.
+  The new closed-sets lane, which runs by default (`--closed-sets` runs it
+  alone), finds the CHECK the migrations last defined. It reads
+  `col <@ ARRAY[…]`, `col = ANY (ARRAY[…])` or `col IN (…)`, with or without
+  casts, and compares the values with the named set. A mismatch fails the
+  lane, naming the missing and extra values and printing the forward
+  migration. `forge db migration new --closed-set <constraint>` writes that
+  migration. The lane reads migration text, so it
   needs no database and runs on the `-short` tier. That is the tier where a
   forge bump adding `identity:read`/`identity:manage` went unnoticed until it
   turned a project's main red.

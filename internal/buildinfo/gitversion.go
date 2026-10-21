@@ -110,7 +110,9 @@ func deriveGitVersion(root string) string {
 		return ""
 	}
 	run := func(args ...string) string {
-		cmd := exec.Command("git", args...)
+		// --no-optional-locks: `status` below must not refresh (rewrite) the
+		// index of the checkout forge was built from.
+		cmd := exec.Command("git", append([]string{"--no-optional-locks"}, args...)...)
 		cmd.Dir = root
 		// TZ is load-bearing: pseudo-version timestamps are UTC, and
 		// %cd with a local-format date would otherwise use the machine's

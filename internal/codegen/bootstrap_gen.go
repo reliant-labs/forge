@@ -111,15 +111,15 @@ type BootstrapComponentData struct {
 	CanonicalAppField string
 	// ConnectPkg is the import alias of the generated Connect package for
 	// this service (e.g. "echov1connect") — used by the bootstrap template
-	// to reference the `<X>ServiceName` constant when building vanguard
-	// REST services. Only populated for services and only when
+	// to reference the `<X>ServiceName` constant when building the vanguard
+	// REST routes. Only populated for services and only when
 	// `api.rest: true`; empty for non-services or when REST is off.
 	ConnectPkg string
 	// ProtoServiceName is the PascalCase proto service identifier (e.g.
 	// "EchoService") used to look up the `<ProtoServiceName>Name` constant
 	// in the connect-generated package. Combined with ConnectPkg, the
 	// bootstrap template emits `<connectPkg>.<ProtoServiceName>Name` as
-	// the Connect path passed to vanguard.NewService.
+	// the Connect service name handed to serverkit.RESTHandler.
 	ProtoServiceName string
 }
 

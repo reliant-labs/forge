@@ -28,11 +28,12 @@ updates:
       # forge_version in forge.yaml must move with this require, and a hop can
       # carry migrations that only `forge project upgrade` runs.
       - dependency-name: github.com/reliant-labs/forge
-      # A 0.x minor is a breaking release, and vanguard v0.5.0 is a redesign:
-      # Service/NewService/NewTranscoder are gone in favour of a
-      # connect.Server + vanguard.Mount model. Grouped in with the patch
-      # bumps, it merged as #997 and pkg/serverkit/rest.go stopped compiling.
-      # Moving to it is a migration, made on purpose, not a weekly bump.
+      # A 0.x minor is a breaking release: vanguard v0.5.0 replaced
+      # Service/NewService/NewTranscoder with a connect.Server + vanguard.Mount
+      # model, and grouped in with the patch bumps it merged as #997 and
+      # pkg/serverkit/rest.go stopped compiling. v0.5 is adopted on purpose
+      # (pkg/serverkit/rest.go); the next 0.x minor is a migration too, made
+      # deliberately, not a weekly bump.
       - dependency-name: connectrpc.com/vanguard
         update-types: ["version-update:semver-minor"]
 

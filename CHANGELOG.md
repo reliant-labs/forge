@@ -304,6 +304,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`api.rest` runs on vanguard v0.5, and no longer hides the mux's other
+  routes.** vanguard v0.5 serves REST from a connect-go v2 `*connect.Server`
+  (`vanguard.Mount`) and removed `Service` / `NewService` / `NewTranscoder`.
+  `serverkit.RESTHandler` keeps its signature: each mounted service is
+  registered as `vanguard.ForwardService` over a Connect client whose
+  transport serves the call with the mux in process, so a REST request is
+  answered by the same handler and interceptor chain as its Connect URL, and
+  that handler sees the REST caller's address, TLS state and Host. A request
+  the mux has a route for now always goes to the mux: under v0.4's transcoder
+  every non-Connect route on it (the login broker's `/auth/*`) answered 404
+  once REST was on. Two v0.5 behaviors to know about. A streaming rpc maps to
+  REST only when its streamed side is a `google.api.HttpBody` (v0.4 sent
+  JSON lines). Annotating any other streaming rpc fails the REST routes at
+  startup, and the server then serves Connect only.
 - **A freshly scaffolded operator passes `forge lint --contract`.** An
   `internal/operators/<name>` package declaring `SetupWithManager` is exempt
   from `requirecontract` structurally, as a worker is.

@@ -242,6 +242,27 @@ func validateReleaseRepository(repository string) error {
 	return nil
 }
 
+// validateAssetDir checks a StaticSite's assetDir: a clean directory path
+// relative to the site's mount. A server joins it under basePath to decide
+// what it may cache forever and serve from previous releases, so a leading
+// "/", a trailing "/", an empty or dot segment, or a backslash is refused
+// rather than normalized — normalizing would make two spellings of one
+// directory, and ".." would name a directory outside the site.
+func validateAssetDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	if strings.ContainsAny(dir, "\\\x00") || strings.HasPrefix(dir, "/") || strings.HasSuffix(dir, "/") {
+		return fmt.Errorf("assetDir %q must be a directory relative to the site's mount (e.g. \"assets\"), with no leading or trailing '/'", dir)
+	}
+	for _, seg := range strings.Split(dir, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("assetDir %q must not contain an empty, '.' or '..' segment", dir)
+		}
+	}
+	return nil
+}
+
 // Validate checks a StaticSite spec.
 func (s StaticSiteSpec) Validate() error {
 	var errs []error
@@ -250,6 +271,9 @@ func (s StaticSiteSpec) Validate() error {
 	}
 	if s.BasePath != "" && !strings.HasPrefix(s.BasePath, "/") {
 		errs = append(errs, fmt.Errorf("basePath %q must start with '/'", s.BasePath))
+	}
+	if err := validateAssetDir(s.AssetDir); err != nil {
+		errs = append(errs, err)
 	}
 	if err := validateReleaseRepository(s.ReleaseRepository); err != nil {
 		errs = append(errs, err)

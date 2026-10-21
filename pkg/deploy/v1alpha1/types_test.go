@@ -209,6 +209,16 @@ func TestStaticSiteValidateAndRetention(t *testing.T) {
 	mustFail(t, StaticSiteSpec{CDN: &StaticSiteCDN{URLMap: "m", Invalidate: "some"}}.Validate(), "cdn.invalidate")
 	mustFail(t, StaticSiteSpec{BasePath: "admin"}.Validate(), "basePath")
 
+	// assetDir: a clean directory relative to the mount, never normalized.
+	for _, ok := range []string{"assets", "_next/static", "static/js"} {
+		if err := (StaticSiteSpec{AssetDir: ok}).Validate(); err != nil {
+			t.Errorf("assetDir %q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"/assets", "assets/", "a//b", "./assets", "../up", "a/../b", `a\b`} {
+		mustFail(t, StaticSiteSpec{AssetDir: bad}.Validate(), "assetDir")
+	}
+
 	// Runtime config: exactly one channel per entry, JS-identifier keys,
 	// DNS-label reference names. An explicit empty value is legal.
 	empty, lit := "", "x"

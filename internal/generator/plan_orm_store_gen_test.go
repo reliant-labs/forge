@@ -59,8 +59,8 @@ func TestStoreInterfaces_ExposeTheDelegatesAsAType(t *testing.T) {
 		"GetEstimateByID(ctx context.Context, id string) (*Estimate, error)",
 		"ListEstimate(ctx context.Context, opts ...orm.QueryOption) ([]*Estimate, error)",
 		"CountEstimate(ctx context.Context, opts ...orm.QueryOption) (int64, error)",
-		"UpdateEstimate(ctx context.Context, msg *Estimate) error",
-		"UpdateEstimateMasked(ctx context.Context, msg *Estimate, fields []string) error",
+		"UpdateEstimate(ctx context.Context, msg *Estimate, opts ...crud.UpdateOption) error",
+		"UpdateEstimateMasked(ctx context.Context, msg *Estimate, fields []string, opts ...crud.UpdateOption) error",
 		"DeleteEstimate(ctx context.Context, id string) error",
 	} {
 		if !strings.Contains(src, want) {

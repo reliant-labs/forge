@@ -409,7 +409,35 @@ var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerApp
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete}
+
+// ColumnMarkerNoSoftDelete declares that a table's `deleted_at` column is an
+// ordinary nullable timestamp, not forge's soft-delete tombstone:
+// `COMMENT ON COLUMN worktrees.deleted_at IS 'forge:no-soft-delete'`.
+//
+// By convention a time-typed deleted_at IS the soft-delete declaration — the
+// generated Get, List and Update skip rows where it is set, and Delete stamps
+// it instead of deleting. That is the right default and stays the default.
+// But the same column name is also how a schema spells an ARCHIVE stamp,
+// where an archived row must stay readable and writable and a delete must
+// delete. Without a declaration the only way out was to route every query
+// through the builder with WhereAllWithDeleted and ForceDelete, re-deriving
+// by hand what the generated store should have said.
+//
+// With the marker the column projects like any other nullable timestamp:
+// no Bun ,soft_delete tag, no ListAll<E>, the column is writable by Update,
+// every row is visible to Get and List, and Delete is a real DELETE. Only
+// meaningful on deleted_at — on any other column it is rejected, because it
+// would do nothing (see CheckMarkers).
+const ColumnMarkerNoSoftDelete = "forge:no-soft-delete"
+
+// DeclaresNoSoftDelete reports whether the column's catalog comment carries
+// ColumnMarkerNoSoftDelete, matched as a whole token.
+func (c Column) DeclaresNoSoftDelete() bool {
+	return noSoftDeleteMarkerRE.MatchString(c.Comment)
+}
+
+var noSoftDeleteMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ColumnMarkerNoSoftDelete) + `(?:[^\w:=-]|$)`)
 
 // ColumnMarkerGoType declares the Go type a column projects to on the
 // generated entity struct, in place of the one forge derives from its SQL
@@ -614,6 +642,8 @@ const (
 //
 //	deleted_at (time)            ⇒ soft delete (UPDATE-not-DELETE,
 //	                               reads filter IS NULL, ListAll* unfiltered)
+//	                               unless the column declares
+//	                               forge:no-soft-delete (ColumnMarkerNoSoftDelete)
 //	created_at + updated_at      ⇒ managed timestamps
 //	text columns                 ⇒ searchable by the generated list filter
 type Conventions struct {
@@ -646,7 +676,7 @@ func DetectConventions(t Table) Conventions {
 	for _, col := range t.Columns {
 		byName[col.Name] = col
 	}
-	if col, ok := byName[ColDeletedAt]; ok && col.Type == TypeTime {
+	if col, ok := byName[ColDeletedAt]; ok && col.Type == TypeTime && !col.DeclaresNoSoftDelete() {
 		c.SoftDelete = true
 	}
 	c.AppendOnly = t.AppendOnly()

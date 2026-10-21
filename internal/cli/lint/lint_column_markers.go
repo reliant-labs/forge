@@ -2,25 +2,29 @@
 //
 // column-markers — `forge lint --column-markers`.
 //
-// A `forge:*` column-comment marker (COMMENT ON COLUMN / COMMENT ON
-// CONSTRAINT) that is misspelled or simply not a marker forge recognizes
-// does NOTHING today — postgres stores the comment verbatim, forge reads
-// it looking for an exact known marker, and a typo like `forge:immutible`
+// A `forge:*` catalog-comment marker (COMMENT ON TABLE / VIEW / COLUMN /
+// CONSTRAINT) that is misspelled, or declared on an object nothing reads it
+// on, does NOTHING — postgres stores the comment verbatim, forge reads it
+// looking for an exact known marker, and a typo like `forge:immutible`
 // silently fails to opt the column into anything. That is the same
-// silent-failure shape `forge:ref` shipped with before this registry
-// existed: undiscoverable until the seeder (or, for forge:immutable, an
-// unwanted UPDATE clobber) surprised someone.
+// silent-failure shape `forge:ref` shipped with before the registry existed:
+// undiscoverable until the seeder (or, for forge:immutable, an unwanted
+// UPDATE clobber) surprised someone.
 //
-// This check flags any COMMENT ON COLUMN / COMMENT ON CONSTRAINT whose
-// text contains `forge:` but matches none of schemadef.KnownColumnMarkers
-// — the SAME registry `forge project annotations --kind column` dumps, so
-// the marker vocabulary this check enforces and the vocabulary the docs
-// advertise cannot drift apart.
+// This check reads every COMMENT ON statement in the migrations and
+// classifies each `forge:` marker in it through
+// schemadef.CommentMarkerProblems — the SAME classifier `forge generate`
+// runs over the applied catalog (schemadef.CheckMarkers), over the same
+// per-object vocabularies `forge project annotations --kind column|table`
+// dumps. So the lint, the generator and the docs cannot disagree about what
+// a marker is.
 //
-// Severity is warning, never gating: an unrecognized marker might be a
-// future forge version's, or simply prose that happens to start with
-// "forge:" in an unrelated comment. The finding is a nudge to check the
-// spelling, not a hard failure.
+// It GATES, like the Go-source twin (lint_go_markers.go) and unlike the
+// proto one: a `forge:` token in a catalog comment has one reader, and the
+// generate that reads the schema already refuses the same comment — this
+// lane is the file:line half of that verdict, found without a shadow
+// database. Prose in the comment is fine; only `forge:<name>` tokens are
+// read, and `forge: ` followed by a space is not one.
 
 package lint
 
@@ -51,25 +55,30 @@ var commentOnConstraintRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+constraint
 
 // forgeTokenRe extracts the whole `forge:...` token (up to the next
 // whitespace) out of a comment body, for reporting the exact offending
-// text rather than the whole comment.
+// text rather than the whole comment. The proto-markers lane reads it;
+// catalog comments are tokenized by schemadef.MarkerTokens.
 var forgeTokenRe = regexp.MustCompile(`forge:\S*`)
+
+// commentOnRelationRe matches `COMMENT ON TABLE|VIEW|MATERIALIZED VIEW
+// <name> IS '...'`; the first capture is the object kind.
+var commentOnRelationRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+(table|view|materialized\s+view)\s+(` + sqlident.Qualified + `)\s+is\s+'((?:[^']|'')*)'`)
 
 // columnMarkerFinding is one COMMENT ON COLUMN/CONSTRAINT whose text
 // carries an unrecognized `forge:` marker. File is projectDir-relative.
 type columnMarkerFinding struct {
 	File   string
 	Line   int
-	Object string // "orders.patient_id" or "constraint orders_patient_id_fkey on orders"
-	Marker string // the offending forge:* token, verbatim
+	Object string // "orders.patient_id", "table orders" or "constraint orders_patient_id_fkey on orders"
+	Marker string // the offending forge:* marker name, verbatim
+	// Problem is schemadef's sentence: why the marker does nothing there,
+	// and the vocabulary that object does read.
+	Problem string
 }
 
-// columnMarkerFixHint renders the canonical remediation, listing the
-// known markers straight from schemadef.KnownColumnMarkers so the hint can
-// never advertise a marker the registry doesn't have (or omit one it does).
+// columnMarkerFixHint renders the remediation: schemadef's own sentence, so
+// the hint names exactly the vocabulary the generator enforces.
 func columnMarkerFixHint(f columnMarkerFinding) string {
-	return fmt.Sprintf(
-		"%q is not a marker forge recognizes on %s — known column markers: %s (see `forge project annotations --kind column`)",
-		f.Marker, f.Object, strings.Join(schemadef.KnownColumnMarkers, ", "))
+	return fmt.Sprintf("on %s: %s (see `forge project annotations --kind column` / `--kind table`)", f.Object, f.Problem)
 }
 
 // runColumnMarkersLint is the text-mode entry point.
@@ -80,6 +89,9 @@ func runColumnMarkersLint(cfg *config.ProjectConfig) error {
 		return err
 	}
 	formatColumnMarkers(os.Stdout, findings)
+	if len(findings) > 0 {
+		return fmt.Errorf("%d forge:* catalog-comment marker(s) forge does not read", len(findings))
+	}
 	return nil
 }
 
@@ -97,15 +109,14 @@ func migrationsDirFor(cfg *config.ProjectConfig) string {
 // single success line, matching the sibling advisory lints.
 func formatColumnMarkers(w io.Writer, findings []columnMarkerFinding) {
 	if len(findings) == 0 {
-		_, _ = fmt.Fprintln(w, "  column-markers clean — every forge:* column/constraint comment matches a known marker")
+		_, _ = fmt.Fprintln(w, "  column-markers clean — every forge:* catalog comment carries markers forge reads where they are declared")
 		return
 	}
 	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ⚠ [forge-column-markers] %s:%d\n", f.File, f.Line)
+		_, _ = fmt.Fprintf(w, "  ✗ [forge-column-markers] %s:%d\n", f.File, f.Line)
 		_, _ = fmt.Fprintf(w, "      → %s\n", columnMarkerFixHint(f))
 	}
-	_, _ = fmt.Fprintf(w, "\n%d unrecognized column marker(s).\n", len(findings))
-	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
+	_, _ = fmt.Fprintf(w, "\n%d forge:* catalog-comment marker(s) that do nothing where declared.\n", len(findings))
 }
 
 // collectColumnMarkerFindings is the shared engine behind text mode and
@@ -149,67 +160,38 @@ func collectColumnMarkerFindings(migrationsDir string) ([]columnMarkerFinding, e
 }
 
 // findUnknownColumnMarkers scans one migration file's content for
-// COMMENT ON COLUMN / COMMENT ON CONSTRAINT statements carrying an
-// unrecognized forge:* marker.
+// COMMENT ON statements carrying a forge:* marker the object does not read.
 func findUnknownColumnMarkers(file, content string) []columnMarkerFinding {
 	var findings []columnMarkerFinding
+	add := func(start int, object string, site schemadef.MarkerSite, column, text string) {
+		for _, p := range schemadef.CommentMarkerProblems(site, column, text) {
+			findings = append(findings, columnMarkerFinding{
+				File:    file,
+				Line:    strings.Count(content[:start], "\n") + 1,
+				Object:  object,
+				Marker:  p.Marker,
+				Problem: p.Problem,
+			})
+		}
+	}
 
 	for _, m := range commentOnColumnRe.FindAllStringSubmatchIndex(content, -1) {
 		object := content[m[2]:m[3]]
-		text := content[m[4]:m[5]]
-		if f, ok := unknownMarkerFinding(file, content, m[0], object, text); ok {
-			findings = append(findings, f)
-		}
+		add(m[0], object, schemadef.SiteColumn, sqlident.Last(object), content[m[4]:m[5]])
 	}
 	for _, m := range commentOnConstraintRe.FindAllStringSubmatchIndex(content, -1) {
 		name := content[m[2]:m[3]]
 		table := content[m[4]:m[5]]
-		text := content[m[6]:m[7]]
-		object := fmt.Sprintf("constraint %s on %s", name, table)
-		if f, ok := unknownMarkerFinding(file, content, m[0], object, text); ok {
-			findings = append(findings, f)
+		add(m[0], fmt.Sprintf("constraint %s on %s", name, table), schemadef.SiteConstraint, "", content[m[6]:m[7]])
+	}
+	for _, m := range commentOnRelationRe.FindAllStringSubmatchIndex(content, -1) {
+		site := schemadef.SiteTable
+		if !strings.EqualFold(content[m[2]:m[3]], "table") {
+			site = schemadef.SiteView
 		}
+		add(m[0], fmt.Sprintf("%s %s", site, content[m[4]:m[5]]), site, "", content[m[6]:m[7]])
 	}
 
 	sort.SliceStable(findings, func(i, j int) bool { return findings[i].Line < findings[j].Line })
 	return findings
-}
-
-// unknownMarkerFinding builds a finding when text carries a `forge:` token
-// that matches none of schemadef.KnownColumnMarkers. The token is the
-// whole-word span after `forge:` up to the next whitespace/quote, compared
-// for EXACT equality against the registry — a substring/prefix check would
-// let `forge:refactor` silently pass as `forge:ref` (with an argument) once
-// a marker that takes arguments (like forge:ref) exists. matchStart is the
-// byte offset of the whole COMMENT ON ... statement, used to compute the
-// 1-indexed line number.
-func unknownMarkerFinding(file, content string, matchStart int, object, text string) (columnMarkerFinding, bool) {
-	token := forgeTokenRe.FindString(text)
-	if token == "" {
-		return columnMarkerFinding{}, false
-	}
-	// A marker whose argument is attached with `=` (forge:fill=handler) arrives
-	// as one token, so compare the part before the `=` as well. The split is
-	// on the FIRST `=` only, and the registry entry must still match in full:
-	// that keeps the exact-equality guarantee this function exists for —
-	// `forge:refactor` cannot pass as `forge:ref`, because neither the whole
-	// token nor its pre-`=` head equals a registry entry.
-	//
-	// forge:ref takes its argument separated by a space, so it never reached
-	// this case and the gap only appeared once a `=`-style marker existed.
-	head := token
-	if i := strings.IndexByte(head, '='); i >= 0 {
-		head = head[:i]
-	}
-	for _, marker := range schemadef.KnownColumnMarkers {
-		if token == marker || head == marker {
-			return columnMarkerFinding{}, false
-		}
-	}
-	return columnMarkerFinding{
-		File:   file,
-		Line:   strings.Count(content[:matchStart], "\n") + 1,
-		Object: object,
-		Marker: token,
-	}, true
 }

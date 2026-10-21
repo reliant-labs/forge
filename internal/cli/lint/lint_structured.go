@@ -500,10 +500,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	case targeted:
 		// A targeted lane never auto-fixes, in text mode or here.
 	default:
-		fix, note := resolveFixMode(flags)
-		if note != "" {
-			fmt.Fprintln(os.Stderr, note)
-		}
+		fix := resolveFixMode(flags)
 		if fix {
 			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, flags.skipFrontends)
 		}
@@ -541,14 +538,15 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 // run applies, without their progress output, and returns how many files it
 // changed. Under --scope only files inside the scope are touched and the
 // frontend formatter does not run (frontend lint cannot be scoped).
-// golangci-lint --fix and eslint --fix are applied inside their own lanes
-// (rc.fix), as in text mode.
+// eslint --fix is applied inside its own lane (rc.fix), as in text mode;
+// golangci-lint never fixes (lint_check.go).
 func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectConfig, scope *lintScope, skipFrontends bool) int {
 	var keep func(rel string) bool
 	if scope != nil {
 		keep = scope.contains
 	}
-	changed, err := formatGoTreeFiltered(cwd, keep)
+	changed, reverted, err := formatGoTreeVerified(cwd, keep, fixTypecheck)
+	printRevertedGoFixes(os.Stderr, "auto-format pre-pass", reverted)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  auto-format pre-pass: %v\n", err)
 	}

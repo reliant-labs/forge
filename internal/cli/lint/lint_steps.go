@@ -618,12 +618,13 @@ func lintPipeline() []linterStep {
 			collect:   collectIdentityShareJSON,
 		},
 
-		// 13d-bis. Column-markers — flags a COMMENT ON COLUMN/CONSTRAINT
-		// whose text contains forge: but matches no known column marker
-		// (see lint_column_markers.go). Warnings only.
+		// 13d-bis. Column-markers — flags a COMMENT ON TABLE/VIEW/COLUMN/
+		// CONSTRAINT carrying a forge: marker that object does not read
+		// (see lint_column_markers.go). Gates: `forge generate` refuses the
+		// same comment, and this is its file:line half.
 		{
 			name:  "column-markers lint",
-			gates: false,
+			gates: true,
 			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if dirExists(migrationsDirFor(rc.cfg)) {
@@ -634,10 +635,10 @@ func lintPipeline() []linterStep {
 			runText: func(rc *lintRunCtx) error {
 				return runColumnMarkersLint(rc.cfg)
 			},
-			errFormat: "⚠️  column-markers lint: %v\n",
+			errFormat: "❌ column-markers lint: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectColumnMarkersJSON(rc.cfg)
-				return fs, false, err
+				return fs, len(fs) > 0, err
 			},
 		},
 
@@ -684,6 +685,27 @@ func lintPipeline() []linterStep {
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectProtoMarkersJSON(protoDirDefault)
 				return fs, false, err
+			},
+		},
+
+		// 13d-ter-bis. Go-markers — the same check for .go comments, which
+		// GATES: a `//forge:` directive comment has one purpose, so a name no
+		// recognizer reads, or a known marker in a spelling its parser
+		// ignores (`//forge:exclude-contract — why`), is a no-op the author
+		// cannot see (lint_go_markers.go).
+		{
+			name:  "go-markers lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "", ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runGoMarkersLint(rc.cwd)
+			},
+			errFormat: "❌ go-markers lint: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectGoMarkersJSON(rc.cwd)
 			},
 		},
 

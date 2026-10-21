@@ -7,8 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Checks build with `-trimpath`, so worktrees and scratch copies share one
+  build and test cache.** Without it Go hashes every main-module package's
+  absolute directory into its cache key: a fresh worktree of the same commit
+  compiled the whole module again (267 packages, 0 of 73 test packages cached,
+  in control-plane), and `forge ci verify-generated` — which regenerates in a
+  fresh scratch directory every run — recompiled everything in its validate
+  step every time (10.8s against 2.6s with the flag). `forge generate`'s
+  compile check, `forge lint`'s golangci-lint and every `forge ci gate` check
+  now merge `-trimpath` into the effective GOFLAGS (`goexec.CheckEnv` /
+  `WithTrimpath`), and the scaffolded Taskfiles do the same for every task in
+  a top-level `env:` block. A GOFLAGS that already says `-trimpath` or
+  `-trimpath=false` is left alone; debug builds keep absolute paths. Measured
+  with control-plane's own gate: four concurrent `task ci` runs in fresh
+  worktrees went from 182–258s wall (802s summed slot wait) to 103–139s (304s).
+- **Heavy slots default to min(CPUs / 2, memory GiB / 8), not CPUs / 4.**
+  Memory is what protects the machine (the reclaim collapse the old constant
+  was measured against), and it still decides on a 16 vCPU / 32 GiB VM. CPU
+  sharing degrades gracefully instead — four CPU-bound test lanes at once took
+  the same total time as running them in turn — and a heavy job is rarely
+  CPU-bound throughout: four concurrent merge gates on a 16-CPU / 128 GiB Mac
+  left the CPU ~33% idle at 4 slots while 304s of slot wait piled up, and at 8
+  slots the worst gate's wall fell 139s → 116s (164s → 122s on a rerun).
+
 ### Added
 
+- **`ShellBuild.built_images`: one image built FROM another.**
+  `built_images = {BASE = "runtime"}` declares that this ShellBuild needs the
+  image the `runtime` workload's build pushes. `forge env build` builds
+  `runtime` first and runs the dependent with `BASE` set to the exact
+  `<repository>@sha256:<digest>` it pushed — the digest its build state and
+  the release record — so a parent image is no longer a hand-edited digest
+  constant that drifts from what was built. `--target <dependent>` builds its
+  parents too; a composition carries an unselected parent from its base
+  instead. A parent that fails, is skipped, or pushes nothing whose digest
+  forge can resolve fails its dependents rather than handing them a tag.
+  Edges to an undeclared, non-ShellBuild or image-less workload are refused at
+  render, and cycles before any build runs; `--plan` shows each edge.
+  Independent builds still run in parallel.
 - **`NewInstrumented`: a contract's constructor, already decorated, so every
   construction site is one rename from traced.** `middleware_gen.go` now
   declares `NewInstrumented` beside the decorator, with `New`'s exact
@@ -417,6 +455,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repaired go.mod, so only the next run was right. A
   `go mod tidy (pre-composition)` step now runs first on any project generate
   has composed before.
+- **A fresh project's first `forge lint` under CI passes.** `forge lint`'s
+  format lane skips a scaffold file nobody has touched, judged by the birth
+  hash in `.forge/scaffolded.json`. Of a frontend's scaffold, only `nav.tsx`
+  and `dashboard.tsx` were recorded. Every other file read as edited from
+  birth, so under CI, where lint is report-only, a new project failed on 31
+  template files prettier would re-wrap. Every scaffold-once file a frontend
+  scaffold writes, the core UI components and the seeded mock scenario
+  included, is now born with its hash.
 - **A generated store reports a missing row one way.** `Get<E>ByID`,
   `Get<E>ByPK` and a view's `Get<E>ByID` returned `svcerr.NotFound`, while
   `Update<E>`, `Update<E>Masked`, `Delete<E>` and `Delete<E>ByPK` returned

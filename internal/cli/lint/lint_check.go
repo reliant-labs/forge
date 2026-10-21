@@ -1,30 +1,51 @@
 package lint
 
-// Report-only lint: the fixers' dry run.
+// Report-only lint: the default, and the fixers' dry run.
 //
-// `forge lint` auto-fixes by default (#843), which is right on a developer's
-// machine and wrong on a CI runner: the checkout is thrown away, so a
-// formatter that quietly repairs it turns "this commit is unformatted" into a
-// green build and the repair is lost. In report-only mode nothing is written;
-// every file a fixer WOULD rewrite is printed as the diff the rewrite would
-// apply, and the run fails, so CI fails on unformatted code and tells the
-// author exactly what to change.
+// `forge lint` is a GATE. It runs in `task ci`, in every agent's loop between
+// phases, and in checkouts other agents are editing at the same moment. A
+// gate that rewrites files is a gate whose verdict is about a tree nobody
+// wrote — and it auto-fixed by default (#843) until P5b, when several agents
+// independently found it had:
+//
+//   - rewritten a mixed-type const block in reliant's
+//     internal/workflow/yaml/triggers.go to satisfy staticcheck SA9004, giving
+//     untyped field-name constants the protoreflect.FullName type, which no
+//     longer compiled (golangci-lint --fix applies every linter's suggested
+//     rewrite, semantic ones included);
+//   - rewritten files another PR owned (internal/integrations/manifest/
+//     assemble.go, auth.go) because a bare `forge lint` formats the project;
+//   - edited go.mod.
+//
+// Every agent then had to remember --no-fix or revert by hand. So the default
+// is the one a gate should have: report, never rewrite. Every file a fixer
+// WOULD rewrite is printed as the diff the rewrite would apply, and the run
+// fails, so the author sees exactly what to change. Writing is one flag away
+// and always deliberate: `forge lint --fix`.
 //
 // WHEN. resolveFixMode, strongest first:
 //
-//	--check / --no-fix   report-only, anywhere
+//	--check / --no-fix   report-only (the default; kept as explicit spellings)
 //	--fix                fix, anywhere (including under CI)
-//	CI is set            report-only (buildinfo.IsCI: CI, GITHUB_ACTIONS)
-//	otherwise            fix
+//	otherwise            report-only
 //
-// WHAT IS REPORTED. The pre-pass fixers that rewrite source: the Go
-// formatter (gofmt, plus goimports' grouping when the project's golangci-lint
-// config enables it) and prettier over a frontend's owned sources. They share
-// their walk with the fix pass (walkGoFormat, ownedFrontendSources), so the
-// two cannot disagree about which files are pending. The fixers that live
-// inside a linter (golangci-lint --fix, eslint --fix) are simply not asked to
-// fix: the linter reports the same issues as findings and fails the lane, as
-// it always did under --no-fix.
+// WHAT --fix APPLIES. Only mechanical rewrites: the Go formatter (gofmt, plus
+// goimports' grouping when the project's golangci-lint config enables it —
+// FormatOnly, so it never adds or drops an import), prettier over a
+// frontend's owned sources, eslint --fix, and the tracing lint's
+// log-without-ctx rewrite. golangci-lint is NEVER run with --fix: its fixes
+// come from staticcheck, gocritic and the rest, and a rewrite that changes a
+// type (SA9004) or a call is a code change for the author to make, so those
+// stay findings. And every Go rewrite is verified (lint_fix_guard.go): the
+// packages it touched are type-checked afterwards, and a package that no
+// longer type-checks gets its files back as they were, with the fix reported
+// as not applied.
+//
+// WHAT IS REPORTED. The pre-pass fixers that rewrite source share their walk
+// with the fix pass (walkGoFormat, ownedFrontendSources), so the two cannot
+// disagree about which files are pending. The fixers that live inside a
+// linter (eslint --fix) are simply not asked to fix: the linter reports the
+// same issues as findings and fails the lane.
 
 import (
 	"bytes"
@@ -40,41 +61,22 @@ import (
 
 	"github.com/pmezard/go-difflib/difflib"
 
-	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
 // formatLaneName is the lane report-only mode adds for pending formatting.
 const formatLaneName = "format"
 
-// ciReportOnlyNote is said once when CI, not a flag, chose report-only.
-const ciReportOnlyNote = "forge lint: CI is set, so this run is report-only: nothing is written, and any file a fixer would " +
-	"rewrite fails the run with the diff it would apply. Pass --fix to apply fixes here."
-
-// resolveFixMode decides whether this run rewrites files. note is non-empty
-// when CI alone chose report-only, so the run can say why it did not fix.
-func resolveFixMode(f lintFlags) (fix bool, note string) {
-	switch {
-	case f.noFix || f.check:
-		return false, ""
-	case f.fix:
-		return true, ""
-	case buildinfo.IsCI():
-		return false, ciReportOnlyNote
-	}
-	return true, ""
-}
-
-// fixModeNote is resolveFixMode's note.
-func fixModeNote(f lintFlags) string {
-	_, note := resolveFixMode(f)
-	return note
+// resolveFixMode decides whether this run rewrites files: only when --fix
+// asks, and never when --check / --no-fix also does. The environment (CI)
+// no longer matters — report-only is the default everywhere.
+func resolveFixMode(f lintFlags) bool {
+	return f.fix && !f.noFix && !f.check
 }
 
 // autoFix reports whether this run rewrites files.
 func (f lintFlags) autoFix() bool {
-	fix, _ := resolveFixMode(f)
-	return fix
+	return resolveFixMode(f)
 }
 
 // formatPending is one file a fixer would rewrite, and the rewrite.

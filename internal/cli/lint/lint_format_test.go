@@ -8,20 +8,20 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
-// TestLintAutoFixDefaultOn pins the auto-fix-then-gate contract at the flag
-// layer: `forge lint` with no flags auto-fixes (noFix defaults false, so the
-// effective !noFix is true), and --no-fix is the explicit opt-out. The legacy
-// --fix flag still parses (back-compat) but is no longer required.
-func TestLintAutoFixDefaultOn(t *testing.T) {
+// TestLintReportOnlyByDefault pins the gate contract at the flag layer: a
+// bare `forge lint` writes nothing; --fix is the one way to rewrite, and
+// --no-fix / --check still beat it.
+func TestLintReportOnlyByDefault(t *testing.T) {
 	cases := []struct {
-		name       string
-		args       []string
-		wantAutoFx bool
+		name    string
+		args    []string
+		wantFix bool
 	}{
-		{"default (no flags) auto-fixes", nil, true},
-		{"--no-fix opts out", []string{"--no-fix"}, false},
-		{"legacy --fix still parses, stays on", []string{"--fix"}, true},
+		{"default (no flags) is report-only", nil, false},
+		{"--no-fix is report-only", []string{"--no-fix"}, false},
+		{"--fix fixes", []string{"--fix"}, true},
 		{"--no-fix wins over --fix", []string{"--fix", "--no-fix"}, false},
+		{"--check wins over --fix", []string{"--fix", "--check"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -29,13 +29,12 @@ func TestLintAutoFixDefaultOn(t *testing.T) {
 			if err := cmd.Flags().Parse(tc.args); err != nil {
 				t.Fatalf("Parse(%v): %v", tc.args, err)
 			}
-			noFix, err := cmd.Flags().GetBool("no-fix")
-			if err != nil {
-				t.Fatalf("GetBool(no-fix): %v", err)
-			}
-			// runLint derives the effective auto-fix as !noFix.
-			if got := !noFix; got != tc.wantAutoFx {
-				t.Errorf("effective auto-fix = %v, want %v", got, tc.wantAutoFx)
+			var f lintFlags
+			f.fix, _ = cmd.Flags().GetBool("fix")
+			f.noFix, _ = cmd.Flags().GetBool("no-fix")
+			f.check, _ = cmd.Flags().GetBool("check")
+			if got := f.autoFix(); got != tc.wantFix {
+				t.Errorf("autoFix = %v, want %v", got, tc.wantFix)
 			}
 		})
 	}

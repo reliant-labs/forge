@@ -51,15 +51,28 @@ func (m Machine) String() string {
 
 const gib = float64(1 << 30)
 
-// CPUsPerSlot and GiBPerSlot are the default budget of one heavy job: a Go
-// build or test lane at full tilt uses about four cores and, with the race
-// detector and a linker or two in flight, several GiB. Fewer than this per job
-// and the jobs slow each other down more than they gain by overlapping —
-// measured on a 16 vCPU / 32 GiB VM, where `go build ./...` went from 36–50 s
-// beside 0–3 other heavy jobs to 101–155 s beside 8 or more, the loss being
-// memory-cgroup reclaim rather than CPU.
+// CPUsPerSlot and GiBPerSlot are the default budget of one heavy job.
+//
+// Memory is the budget that protects the machine: with the race detector and
+// a linker or two in flight a Go build or test lane takes several GiB, and
+// past that the jobs slow each other down more than they gain by overlapping
+// — measured on a 16 vCPU / 32 GiB VM, where `go build ./...` went from
+// 36–50 s beside 0–3 other heavy jobs to 101–155 s beside 8 or more, the loss
+// being memory-cgroup reclaim rather than CPU.
+//
+// CPU is not, so its budget is two cores, not four. Sharing CPU degrades
+// gracefully: on a 16-CPU / 128 GiB Mac four CPU-bound test lanes at once took
+// 161 s against 44 s for one alone — the same throughput as running them in
+// turn, not a collapse. And a heavy job is rarely CPU-bound for its whole run
+// (a regenerate is mostly serial steps, a test lane waits on subprocesses):
+// four concurrent control-plane merge gates on that Mac left the CPU ~33% idle
+// at 4 slots while 304 s of slot wait piled up; at 8 slots the worst gate's
+// wall fell 139 s -> 116 s and the summed wait to 60 s (a rerun on a busier
+// box: 164 s -> 122 s, wait 309 s -> 137 s). Where memory is tight — the
+// 16 vCPU / 32 GiB VM above — GiBPerSlot still decides, and the count is the
+// same as before.
 const (
-	CPUsPerSlot = 4
+	CPUsPerSlot = 2
 	GiBPerSlot  = 8
 )
 

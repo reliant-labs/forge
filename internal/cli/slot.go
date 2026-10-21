@@ -32,7 +32,7 @@ func newSlotCmd() *cobra.Command {
 			"On a shared machine, past a handful of concurrent heavy jobs every job slows down — measured,\n" +
 			"`go build ./...` went from ~45s to ~130s beside 8 others — so queueing them finishes sooner\n" +
 			"than running them all at once. A slot is an OS file lock: a crashed holder releases it.\n\n" +
-			"Slots per class default to min(CPUs / 4, memory GiB / 8), read from the cgroup limit when\n" +
+			"Slots per class default to min(CPUs / 2, memory GiB / 8), read from the cgroup limit when\n" +
 			"there is one, at least 1. FORGE_HEAVY_SLOTS=<n> overrides it; FORGE_HEAVY_SLOTS=off turns\n" +
 			"the limit off. FORGE_SLOTS_DIR relocates the slot files (default: the user cache dir).\n\n" +
 			"`forge generate`, `forge lint` and the heavy checks of `forge ci gate` take a slot on\n" +

@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -253,8 +254,11 @@ func (p planner) frontendDeps(lane Lane) []Check {
 				return ""
 			},
 			Requires: []string{"npm"},
-			Argv:     []string{"npm", "ci"},
-			Dir:      fe.Path,
+			// `ci`, unless a workspace root (forge's dev web-runtime bridge)
+			// adopts the frontend without a lockfile of its own: `npm ci`
+			// cannot run there at all.
+			Argv: []string{"npm", frontenddeps.NpmInstallVerb(p.path(fe.Path))},
+			Dir:  fe.Path,
 		})
 	}
 	return out

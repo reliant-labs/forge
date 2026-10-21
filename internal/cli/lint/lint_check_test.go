@@ -20,28 +20,23 @@ func clearCI(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 }
 
-// The whole contract in one table: an explicit flag wins anywhere; CI alone
-// makes a run report-only; --fix beats CI; a developer's machine fixes.
+// The whole contract in one table: a gate reports, so nothing is written
+// unless --fix asks, wherever it runs; --check / --no-fix beat --fix.
 func TestResolveFixMode(t *testing.T) {
 	cases := []struct {
-		name     string
-		env      map[string]string
-		flags    lintFlags
-		wantFix  bool
-		wantNote bool
+		name    string
+		env     map[string]string
+		flags   lintFlags
+		wantFix bool
 	}{
-		{"local, no flags: auto-fix (#843)", nil, lintFlags{}, true, false},
-		{"local, --fix", nil, lintFlags{fix: true}, true, false},
-		{"local, --check", nil, lintFlags{check: true}, false, false},
-		{"local, --no-fix", nil, lintFlags{noFix: true}, false, false},
-		{"CI=true, no flags: report-only, and says why", map[string]string{"CI": "true"}, lintFlags{}, false, true},
-		{"CI=1 (presence counts)", map[string]string{"CI": "1"}, lintFlags{}, false, true},
-		{"GITHUB_ACTIONS alone", map[string]string{"GITHUB_ACTIONS": "true"}, lintFlags{}, false, true},
-		{"CI, --fix forces fixing", map[string]string{"CI": "true"}, lintFlags{fix: true}, true, false},
-		{"CI, --check: no note, a flag chose it", map[string]string{"CI": "true"}, lintFlags{check: true}, false, false},
-		{"CI, --no-fix: no note", map[string]string{"CI": "true"}, lintFlags{noFix: true}, false, false},
-		{"--check beats --fix, as --no-fix always did", map[string]string{"CI": "true"}, lintFlags{fix: true, check: true}, false, false},
-		{"--no-fix beats --fix locally", nil, lintFlags{fix: true, noFix: true}, false, false},
+		{"local, no flags: report-only (a gate never rewrites)", nil, lintFlags{}, false},
+		{"local, --fix", nil, lintFlags{fix: true}, true},
+		{"local, --check", nil, lintFlags{check: true}, false},
+		{"local, --no-fix", nil, lintFlags{noFix: true}, false},
+		{"CI=true, no flags: report-only", map[string]string{"CI": "true"}, lintFlags{}, false},
+		{"CI, --fix fixes", map[string]string{"CI": "true"}, lintFlags{fix: true}, true},
+		{"--check beats --fix, as --no-fix always did", map[string]string{"CI": "true"}, lintFlags{fix: true, check: true}, false},
+		{"--no-fix beats --fix locally", nil, lintFlags{fix: true, noFix: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,12 +44,8 @@ func TestResolveFixMode(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			fix, note := resolveFixMode(tc.flags)
-			if fix != tc.wantFix {
+			if fix := resolveFixMode(tc.flags); fix != tc.wantFix {
 				t.Errorf("fix = %v, want %v", fix, tc.wantFix)
-			}
-			if (note != "") != tc.wantNote {
-				t.Errorf("note = %q, want a note: %v", note, tc.wantNote)
 			}
 		})
 	}
@@ -77,17 +68,16 @@ func TestLintCheckFlagsParse(t *testing.T) {
 	}
 }
 
-// CI set: nothing is written, the diff each fix would apply is printed, and
-// the count is non-zero so the run fails.
-func TestFormatCheck_CIWritesNothingPrintsDiffAndFails(t *testing.T) {
-	t.Setenv("CI", "true")
+// No flags: nothing is written, the diff each fix would apply is printed,
+// and the count is non-zero so the run fails.
+func TestFormatCheck_DefaultWritesNothingPrintsDiffAndFails(t *testing.T) {
+	clearCI(t)
 	root := newFormatProject(t)
 	abs := writeFile(t, root, "internal/foo/bar.go", unformattedGo)
 	other := writeFile(t, root, "internal/foo/clean.go", "package foo\n\nfunc Clean() {}\n")
 
-	fix, note := resolveFixMode(lintFlags{})
-	if fix || note == "" {
-		t.Fatalf("precondition: CI must select report-only with a note, got fix=%v note=%q", fix, note)
+	if resolveFixMode(lintFlags{}) {
+		t.Fatalf("precondition: a bare `forge lint` must be report-only")
 	}
 
 	var out bytes.Buffer

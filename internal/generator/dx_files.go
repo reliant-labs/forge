@@ -799,7 +799,7 @@ Conventions read off real columns (no annotations):
 
 | columns                  | behavior                                         |
 |--------------------------|--------------------------------------------------|
-| ` + "`deleted_at`" + `             | soft delete: DELETE becomes UPDATE, reads filter ` + "`IS NULL`" + ` |
+| ` + "`deleted_at`" + `             | soft delete: DELETE becomes UPDATE, reads filter ` + "`IS NULL`" + ` (` + "`forge:no-soft-delete`" + ` on the column opts out) |
 | ` + "`created_at`" + ` + ` + "`updated_at`" + ` | managed timestamps (stamped by the ORM)   |
 | text columns             | spanned by the generated list ` + "`search`" + ` filter   |
 

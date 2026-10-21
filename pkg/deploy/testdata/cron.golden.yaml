@@ -47,6 +47,7 @@ spec:
             volumeMounts:
             - mountPath: /tmp
               name: tmp
+          enableServiceLinks: false
           restartPolicy: OnFailure
           securityContext:
             runAsGroup: 65532

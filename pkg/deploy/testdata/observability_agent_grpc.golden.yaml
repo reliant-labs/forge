@@ -351,6 +351,7 @@ spec:
           readOnly: true
         - mountPath: /var/lib/otel-agent
           name: storage
+      enableServiceLinks: false
       serviceAccountName: otel-agent
       tolerations:
       - operator: Exists

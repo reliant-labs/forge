@@ -141,6 +141,10 @@ var FieldProfiles = map[string]Profile{
 	// Pod priority ranks this pod against every other pod on the node,
 	// including other hosted users' pods.
 	"priorityClassName": ProfileFull,
+	// Service links put every Service in the namespace into the pod's env.
+	// A hosted namespace is shared platform plumbing, and the hosted user
+	// has no use for it: they address their own workloads by name.
+	"enableServiceLinks": ProfileFull,
 
 	// A timeout only ever shortens what runs, so it is not an escalation.
 	"activeDeadlineSeconds": ProfileRestricted,
@@ -177,6 +181,7 @@ var fullOnlyReasons = map[string]string{
 	"nodeSelector":                  "hosted placement (the isolation pool) is decided by the platform, never by the workload's author",
 	"tolerations":                   "hosted placement (the isolation pool) is decided by the platform, never by the workload's author; a toleration would let a pod onto nodes reserved for something else",
 	"priorityClassName":             "the hosted platform ranks hosted pods itself, on its own priority ladder; a class you chose could preempt another hosted user's pods, or the platform's own",
+	"enableServiceLinks":            "service links inject an env var per Service in the namespace; a hosted namespace is platform-owned, and its Services are not the author's to read. Address your own workloads by DNS name",
 	"podAnnotations":                "pod annotations drive platform integrations (mesh injection, runtime class, autoscalers) that the hosted platform owns",
 	"terminationGracePeriodSeconds": "the hosted platform sets the grace period, because it holds shared node capacity past SIGTERM; tune PRE_STOP_DELAY and SHUTDOWN_TIMEOUT, which it derives from",
 	"securityContext":               "the hosted platform owns the pod identity (uid, gid, filesystem) its isolation depends on",

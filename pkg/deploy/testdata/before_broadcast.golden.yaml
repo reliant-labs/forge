@@ -71,6 +71,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - command:
         - /app/demo
@@ -223,6 +224,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - command:
         - /app/demo
@@ -323,6 +325,7 @@ spec:
             volumeMounts:
             - mountPath: /tmp
               name: tmp
+          enableServiceLinks: false
           restartPolicy: OnFailure
           securityContext:
             runAsGroup: 65532
@@ -359,8 +362,8 @@ metadata:
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
     forge.dev/job-name: report
-    forge.dev/spec-hash: 1009ab9492
-  name: report-1009ab9492
+    forge.dev/spec-hash: 630ed7a96b
+  name: report-630ed7a96b
   namespace: demo-prod
 spec:
   backoffLimit: 6
@@ -400,6 +403,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - command:
         - /app/demo

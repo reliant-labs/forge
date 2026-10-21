@@ -500,6 +500,28 @@ type pipelineFlags struct {
 	NoCache bool
 }
 
+// beginRunFlags announces the flags that change what a run does, and resets
+// the checksum package's per-run state: side-render redirect tracking
+// (--explain-drift), the heal-notice dedupe set, and the heal opt-in all
+// start empty/off on every invocation (AutoHeal defaults OFF — the
+// non-destructive behavior).
+func beginRunFlags(flags pipelineFlags) {
+	switch {
+	case flags.SkipValidateNote != "":
+		fmt.Println(flags.SkipValidateNote)
+	case flags.SkipValidate:
+		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
+	}
+	if flags.SkipPreChecks {
+		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
+	}
+	checksums.ResetPerRunState()
+	if flags.Heal {
+		fmt.Println("♻️  --heal: on-disk content matching a PRIOR forge render will be overwritten with the current template")
+		checksums.AutoHeal = true
+	}
+}
+
 // runGeneratePipelineFlags is the canonical entrypoint. Both the
 // shorter runGeneratePipeline (force) and runGeneratePipelineOpts
 // (+ skipValidate) call through here. New flags land on pipelineFlags.
@@ -535,25 +557,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return nil
 	}
 
-	switch {
-	case flags.SkipValidateNote != "":
-		fmt.Println(flags.SkipValidateNote)
-	case flags.SkipValidate:
-		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
-	}
-	if flags.SkipPreChecks {
-		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
-	}
-
-	// Per-run side-render redirect tracking (--explain-drift), the
-	// heal-notice dedupe set, and the heal opt-in start empty/off on
-	// every invocation (AutoHeal defaults OFF — the non-destructive
-	// behavior).
-	checksums.ResetPerRunState()
-	if flags.Heal {
-		fmt.Println("♻️  --heal: on-disk content matching a PRIOR forge render will be overwritten with the current template")
-		checksums.AutoHeal = true
-	}
+	beginRunFlags(flags)
 
 	// Arm the stage-then-validate rollback journal (fr-40f7ec9bd9). From
 	// here on, every forge write captures its target's pre-run bytes so a

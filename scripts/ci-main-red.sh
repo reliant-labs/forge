@@ -74,8 +74,13 @@ if [ "$(jq -r .user.login <<<"$prjson")" = "dependabot[bot]" ]; then
   refuse "#$pr is a Dependabot pull request; fix what its checks show instead"
 fi
 
-# Top-level failing test names in a job's log. Timestamps and colour codes
-# are stripped first; a subtest's line is indented, so only its parent counts.
+# Failing test names in a job's log, subtests included under their full
+# `Parent/sub` name. Timestamps and colour codes are stripped first. A
+# subtest's line is indented when go test nests it under its parent and is
+# not when the output is not nested (a parallel shard prints
+# `--- FAIL: TestX/sub` at column 0), so the indentation is dropped and both
+# spellings name the same test: comparing only column-0 names made a subtest
+# failing on main and here read as new.
 # A log that cannot be read names no tests: on this run that sends the job to
 # the stricter step match below, and on main it only shrinks what matches.
 #
@@ -86,7 +91,7 @@ failed_tests() {
   local log path="repos/$repo/actions/jobs/$1/logs"
   log=$(gh api --allow-escape-sequences "$path" 2>/dev/null || gh api "$path" 2>/dev/null) || log=""
   sed -E 's/\x1b\[[0-9;]*m//g; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' <<<"$log" |
-    sed -nE 's/^--- FAIL: ([^ ]+).*/\1/p' | sort -u
+    sed -nE 's/^[[:space:]]*--- FAIL: ([^ ]+).*/\1/p' | sort -u
 }
 
 # The latest attempt of every job in a run.

@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 func TestHTTPStack_RecoversAndLogs(t *testing.T) {
@@ -35,6 +37,42 @@ func TestHTTPStack_RecoversAndLogs(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "panic recovered") {
 		t.Fatalf("panic must be logged, got: %s", out)
+	}
+}
+
+//go:noinline
+func handlerThatPanics(http.ResponseWriter, *http.Request) { panic("boom") }
+
+func TestHTTPStack_PanicNamesThePanickingFrame(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(observe.NewLogHandler(slog.NewJSONHandler(&buf, nil), observe.Config{}))
+
+	h := HTTPStack(logger, rlClaimsFromContext)(http.HandlerFunc(handlerThatPanics))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/hook", http.NoBody)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	var line map[string]any
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatalf("not JSON: %q", l)
+		}
+		if m["msg"] == "panic recovered" {
+			line = m
+		}
+	}
+	if line == nil {
+		t.Fatalf("no panic record in %s", buf.String())
+	}
+	if got := line["code.function.name"]; got != "github.com/reliant-labs/forge/pkg/middleware.handlerThatPanics" {
+		t.Errorf("code.function.name = %v, want the panicking handler, not httpRecovery", got)
+	}
+	if stack, _ := line["exception.stacktrace"].(string); !strings.Contains(stack, "handlerThatPanics") {
+		t.Errorf("exception.stacktrace = %q", stack)
+	}
+	if line["path"] != "/hook" || line["method"] != "GET" || line["exception.type"] != "string" {
+		t.Errorf("attrs: %v", line)
 	}
 }
 

@@ -36,7 +36,11 @@ const (
 func NewTraceHandler(next slog.Handler) slog.Handler { return &traceHandler{next: next} }
 
 // NewLogHandler is the handler serverkit builds for the process logger: next
-// (the stdout JSON or text handler) wrapped by NewTraceHandler. When
+// (the stdout JSON or text handler) wrapped by NewTraceHandler. Every record
+// at ERROR or above also gains the attributes an issue is grouped by —
+// code.function.name, code.file.path, code.line.number, and for a record
+// carrying an error exception.type and exception.message (see error_inputs.go)
+// — on both shipping paths. When
 // the OTLP logs switch is on (Config.OTLPLogs or OTEL_LOGS_EXPORTER=otlp) it is also teed into the OpenTelemetry logs bridge,
 // which Setup connects to an OTLP exporter.
 //
@@ -48,9 +52,9 @@ func NewTraceHandler(next slog.Handler) slog.Handler { return &traceHandler{next
 func NewLogHandler(next slog.Handler, cfg Config) slog.Handler {
 	h := NewTraceHandler(next)
 	if !exportEnabled(signalLogs, cfg) {
-		return h
+		return errorInputsHandler{next: h}
 	}
-	return slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))
+	return errorInputsHandler{next: slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))}
 }
 
 func logScopeName(cfg Config) string {

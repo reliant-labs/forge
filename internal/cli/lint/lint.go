@@ -1615,27 +1615,36 @@ func laneUnavailable(fixHint, format string, a ...any) error {
 }
 
 // golangciRunArgs is the ONE place a `golangci-lint run` argv is assembled,
-// so every lane that shells golangci-lint waits for the machine-global lock
-// the same way.
+// so every lane that shells golangci-lint takes golangci-lint's machine-global
+// lock ($TMPDIR/golangci-lint.lock) the same way.
 //
-// --allow-serial-runners is what makes it wait. Without it golangci-lint gives
-// the lock at $TMPDIR/golangci-lint.lock five seconds and then exits 3 with
-// "parallel golangci-lint is running" — on a shared box that fails `forge
-// lint` whenever any other agent, editor LSP or CI job on the machine is
-// linting ANY project. The flag keeps the lock and drops only the deadline:
-// invocations queue and run one at a time.
+// Inside a heavy slot of its own (cmdutil.HoldsOwnHeavySlot; `forge lint`
+// takes one) it passes --allow-parallel-runners, which drops the lock. The
+// lock exists because two full golangci-lint runs at once can exhaust a small
+// machine's memory, and the slot already bounds that: slots are sized at
+// GiBPerSlot of memory each (pkg/hostslot). Keeping the lock as well made
+// every golangci-lint on the machine run one at a time while each queued run
+// held a slot it could not use — measured on a 16-CPU Mac, three scoped lints
+// started together finished in 5s, 10s and 13s under the lock and in 4s each
+// without it.
 //
-// NOT --allow-parallel-runners. That drops the lock entirely, and the lock is
-// there because two full golangci-lint runs at once can exhaust a small
-// machine's memory — the same reasoning the scaffolded .golangci.yml
-// (templates/project/golangci.yml.tmpl) records beside its own
-// `allow-serial-runners: true`. The flag is passed here as well because that
-// config line reaches only projects scaffolded or upgraded after it landed; a
-// project on an older .golangci.yml still got five seconds. A project that
-// deliberately sets allow-parallel-runners keeps it: golangci-lint consults
-// that before this flag.
+// Outside a slot (the limit is off, the slot was inherited from a parent that
+// may run several children in it, or the limiter is broken) it passes
+// --allow-serial-runners: keep the lock and drop only its deadline. Without
+// either flag golangci-lint gives the lock five seconds and then exits 3 with
+// "parallel golangci-lint is running", which on a shared box fails `forge
+// lint` whenever any other agent, editor LSP or CI job is linting ANY project.
+// The flag is passed even though the scaffolded .golangci.yml sets
+// `allow-serial-runners: true`, because that config line reaches only
+// projects scaffolded or upgraded after it landed. A project that sets
+// allow-parallel-runners in its config keeps it: golangci-lint consults that
+// before the serial flag.
 func golangciRunArgs(extra []string, paths []string) []string {
-	args := append([]string{"run", "--allow-serial-runners"}, extra...)
+	lock := "--allow-serial-runners"
+	if cmdutil.HoldsOwnHeavySlot() {
+		lock = "--allow-parallel-runners"
+	}
+	args := append([]string{"run", lock}, extra...)
 	return append(args, paths...)
 }
 
@@ -1713,15 +1722,17 @@ func runTypedAccessGuardAdvisory(rc *lintRunCtx) error {
 // invocation that never reported.
 //
 // It no longer leads with golangci-lint's machine-global lock. forge passes
-// --allow-serial-runners on every invocation (golangciRunArgs), so a
-// contended lock now QUEUES rather than failing after five seconds. What is
+// --allow-serial-runners or, inside its own heavy slot, --allow-parallel-runners
+// on every invocation (golangciRunArgs), so a contended lock never fails the
+// run after five seconds. What is
 // left is a golangci-lint that could not start at all — most often an old
 // binary that predates the flag, or a config it cannot load — and the
 // output printed just above this line names which.
 const typedAccessGuardUnavailableHint = "read the golangci-lint output above — it exited before reporting. The usual " +
 	"causes are a golangci-lint too old for this project's .golangci.yml (the version CI pins is in " +
 	".github/workflows) or a config it cannot load. A lock held by another golangci-lint on this machine is " +
-	"NOT the cause: forge runs it with --allow-serial-runners, so a contended lock waits its turn instead of failing"
+	"NOT the cause: forge runs it with --allow-serial-runners (or --allow-parallel-runners inside its own heavy slot), so a " +
+	"contended lock waits its turn instead of failing"
 
 // bufMissingError is the buf lint lane's failure on a project that has a
 // buf.yaml and a machine with no buf: the lane used to be skipped, and

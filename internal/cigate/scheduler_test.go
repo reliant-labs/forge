@@ -246,6 +246,41 @@ func TestScheduler_HeavyChecksHoldHostSlots(t *testing.T) {
 	}
 }
 
+// A heavy check that holds a slot of its own runs its SlotArgv; without one
+// (no limiter) it runs Argv. golangci-lint drops its machine-global lock this
+// way only where the slot bounds it.
+func TestScheduler_SlotArgvRunsOnlyInsideAnOwnSlot(t *testing.T) {
+	lint := check("golangci-lint", "golangci-lint", "run", "--allow-serial-runners")
+	lint.Heavy = true
+	lint.SlotArgv = []string{"golangci-lint", "run", "--allow-parallel-runners"}
+	for _, tc := range []struct {
+		name string
+		slot SlotFunc
+		want string
+	}{
+		{"own slot", (&fakeSlots{sem: make(chan struct{}, 1)}).take, "golangci-lint run --allow-parallel-runners"},
+		{"no limiter", nil, "golangci-lint run --allow-serial-runners"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var ran []string
+			exec := func(_ context.Context, _ string, _ []string, argv []string, _ io.Writer) error {
+				mu.Lock()
+				ran = append(ran, strings.Join(argv, " "))
+				mu.Unlock()
+				return nil
+			}
+			rep := runChecks(t, []Check{lint}, Options{Exec: exec, Jobs: 2, Slot: tc.slot})
+			if rep.Failed() {
+				t.Fatalf("rows: %+v", rep.Results)
+			}
+			if len(ran) != 1 || ran[0] != tc.want {
+				t.Fatalf("ran %q, want %q", ran, tc.want)
+			}
+		})
+	}
+}
+
 // The gate files one slot request at a time and gives each freed slot to the
 // waiting check earliest in execution order, not to whichever asked first.
 func TestHeavyQueue_EarliestPositionFirst(t *testing.T) {

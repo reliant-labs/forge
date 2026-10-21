@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // HTTPStack returns HTTP middleware that applies recovery, logging, and
@@ -88,12 +88,9 @@ func httpRecovery(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					logger.ErrorContext(r.Context(), "panic recovered",
-						"method", r.Method,
-						"path", r.URL.Path,
-						"panic", rec,
-						"stack", string(debug.Stack()),
-					)
+					observe.LogPanic(r.Context(), logger, "panic recovered", rec,
+						slog.String("method", r.Method),
+						slog.String("path", r.URL.Path))
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 				}
 			}()

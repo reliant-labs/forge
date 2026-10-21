@@ -177,3 +177,41 @@ func TestRootsKCL_RefusesAnUnknownRootAndAnUnreachedSecret(t *testing.T) {
 		})
 	}
 }
+
+// Before generate has composed internal/app (a fresh scaffold, or one whose
+// bootstrap generate failed) there are no providers to assemble, so the
+// graph's reach is unknown: GraphRoots answers nil, and config_gen.k projects
+// the default `server` root reaching every field, which is what a scaffold's
+// server reaches. A graph assembled from that partial tree would give a
+// server root that reaches no database, and the scaffold's own workloads,
+// which opt into DATABASE_URL, would fail the render.
+func TestGraphRoots_UnknownBeforeTheFirstCompose(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fresh\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := GraphRoots(dir)
+	if err != nil || roots != nil {
+		t.Fatalf("GraphRoots on a project with no internal/app/compose.go = %+v, %v; want nil, nil", roots, err)
+	}
+	kclDir := filepath.Join(dir, "deploy", "kcl")
+	if err := os.MkdirAll(kclDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var fields []ConfigField
+	for _, m := range DefaultConfigMessages() {
+		fields = append(fields, m.Fields...)
+	}
+	if err := GenerateConfigNativeSharedRoots(fields, roots, "fresh", dir, kclDir, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(kclDir, ConfigSchemaModule+".k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"workloadEnvMap = lambda", `"DATABASE_URL"`} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("config_gen.k lacks %s: the default server root was not projected", want)
+		}
+	}
+}

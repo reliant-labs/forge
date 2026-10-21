@@ -456,8 +456,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `orm.ArgList(slice)` — the way to bind an integer `?` argument, which bun
   formats without consulting the dialect. A value stays a literal where a
   parameter would change its meaning (positional `ORDER BY`, typed literals,
-  bare arguments of `"any"` functions such as `jsonb_build_object`, `? IS
-  NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
+  bare arguments of `"any"` functions such as `jsonb_build_object`,
+  `? IS NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
   equal to bun's text, or that is not DML, runs as bun rendered it.
   `orm.Literal(v)` keeps one value in the text (a constant a partial index's
   predicate is proved from); `orm.InlineValues(ctx)` turns binding off for a

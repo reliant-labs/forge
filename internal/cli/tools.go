@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cliutil"
@@ -375,7 +376,9 @@ func installIntoGOBIN(ctx context.Context, binary, spec, gobin string) error {
 		return err
 	}
 	name := binary + exeSuffix()
-	return os.Rename(filepath.Join(tmp, name), filepath.Join(gobin, name))
+	// atomicfile.Replace, not os.Rename: on Windows a process reading or
+	// starting the old binary makes the replace fail for an instant.
+	return atomicfile.Replace(filepath.Join(tmp, name), filepath.Join(gobin, name))
 }
 
 // installPinnedGolangciLint installs forge's pinned golangci-lint into GOBIN,

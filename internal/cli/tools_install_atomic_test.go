@@ -56,6 +56,11 @@ func TestGoInstallTool_ReplacesTheGOBINBinaryAtomically(t *testing.T) {
 		if b, err := os.ReadFile(bin); err == nil && string(b) != old && string(b) != full {
 			t.Fatalf("a reader saw a partial binary (%d bytes, neither the old nor the new one) during the install", len(b))
 		}
+		// A pause between reads, as a real reader has. On Windows an open
+		// handle refuses the replace for as long as it is open (the install
+		// retries through that), and a loop that reopens the file the moment
+		// it closes it leaves the replace almost no instant to land in.
+		time.Sleep(100 * time.Microsecond)
 	}
 	if b, err := os.ReadFile(bin); err != nil || string(b) != full {
 		t.Fatalf("GOBIN binary = %q, %v; want the new one", b, err)

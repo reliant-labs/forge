@@ -25,19 +25,27 @@ const (
 
 func newCloudIdentityCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "identity", Short: "Inspect managed identity and invite users to an environment",
+		Use: "identity", Short: "Inspect managed identity and administer its users",
 		Long: `Manage the identity an environment declares in KCL, using its control plane.
 
-Requires a human session (Reliant's session helper or forge login); machine
-credentials are refused by the server. Members may read; invitations require
-an org admin. The organization is resolved from the authenticated server, not
-a token claim or a flag. The environment must already exist in this project.
+Reads (status, users) need identity:read; every verb that changes a user
+(invite, set-roles, reset, lock, unlock, delete, revoke-sessions) needs
+identity:manage and an org admin. Under Reliant, or after forge login, nothing
+extra is needed: when the control plane answers that the credential lacks one of
+those scopes, forge trades it for the scope on demand (an hour, and only while
+the person behind the session holds the grant), as deploy does for deploy:read.
+A --token or the token env var is used exactly as given and must carry the scope.
+The organization is resolved from the authenticated server, not a token claim or
+a flag. The environment must already exist in this project.
+
+--user takes a user id or an exact email address (see 'users').
 
 Inviting sends an email link for the recipient to set their own credential.
 There is no password option, seed account or implicit recipient. Roles managed
 in deploy/kcl/identity.k (members_from = "declared") are read-only here.`,
 	}
 	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd())
+	cmd.AddCommand(newCloudIdentityUserVerbs()...)
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -244,8 +252,8 @@ func newCloudIdentityInviteCmd() *cobra.Command {
 		Long: `Invite this explicit email address; repeat --role for multiple roles.
 The recipient sets their own credential using the invitation email. An existing
 account receives the requested roles (created=false). The server refuses unknown
-or declared/read-only roles, machine credentials and an identity that is not
-ready. Such a refusal is an error, never a fallback to a seeded password.`,
+or declared/read-only roles, a credential without identity:manage and an
+identity that is not ready. Such a refusal is an error, never a fallback to a seeded password.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			address, err := mail.ParseAddress(email)

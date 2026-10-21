@@ -7,8 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`forge cloud identity` administers users, not just reads them.** New verbs,
+  each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
+  <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
+  `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
+  `revoke-sessions`. `--user` takes a user id, or an email matched exactly
+  (case-insensitively) through `users`; no match, or two, is a refusal. The
+  scopes are `identity:read` for reads and `identity:manage` for every verb that
+  changes a user. forge presents neither up front: a Reliant session or `forge
+  login` credential is traded for the scope the control plane's 403 names, for
+  an hour, exactly as `deploy:read` and `secret:write` are. An explicit
+  `--token` is used as given. `invite` is unchanged.
+- **`forge project new --verify`** keeps the compile check at the end of the
+  bootstrap generate (see Changed).
+
 ### Changed
 
+- **A handler's `svcerr` error reaches the client with its Connect code,
+  wrapped or not.** `return nil, svcerr.PermissionDenied("…")` used to arrive as
+  `code = unknown`, because the constructors build sentinels and connect-go maps
+  anything that is not a `*connect.Error` to unknown; only
+  `svcerr.Wrap(svcerr.PermissionDenied(…))` worked. `serverkit.NewChain` now
+  ends every chain with `svcerr.Interceptor()` (new, in `pkg/svcerr`), which
+  applies `svcerr.Wrap` to whatever the handler returned: a typed error gets its
+  code, an error already wrapped or a `*connect.Error` passes through unchanged,
+  and an error nothing recognises becomes `internal` with
+  `svcerr.InternalMessage`. It sits innermost, so audit, logging and metrics see
+  the wire error. Writing `svcerr.Wrap` in a handler stays correct. A project
+  that assembles its own interceptor list instead of `serverkit.NewChain` adds
+  `svcerr.Interceptor()` itself.
+- **`forge project new` no longer compiles the scaffold before returning.** The
+  bootstrap generate skips its final `go build` and deploy-KCL render unless you
+  pass `--verify`. That tail was the one CPU-saturating step (40s of the
+  pipeline's 63s on a cold build cache), and it re-proved output that forge's
+  own e2e corpus compiles on every change; your first `go build` or `forge
+  generate` runs the same check. `project new` never took a heavy slot and still
+  does not: pinned by `TestRunNew_TakesNoHeavySlot`.
 - **Rendered pods set `enableServiceLinks: false`. Behavior change.**
   Kubernetes injects `<SERVICE>_PORT=tcp://ip:port`, `<SERVICE>_SERVICE_HOST`
   and `<SERVICE>_SERVICE_PORT` into every pod for every Service in its

@@ -105,7 +105,7 @@ func TestRunNewSiteRefusals(t *testing.T) {
 // --kind site, before writing anything.
 func TestProjectNewInPlaceOverARootFrontendPointsAtKindSite(t *testing.T) {
 	root := viteApp(t, "export default {}\n")
-	err := runNew(t.Context(), "landing", root, "", "", nil, nil, "", true, false, nil, "reliant", true, "local", "per-service", false, false, false, newFrontendOptions{})
+	err := runNew(t.Context(), "landing", root, "", "", nil, nil, "", true, false, nil, "reliant", true, "local", "per-service", false, false, false, false, newFrontendOptions{})
 	if err == nil || !strings.Contains(err.Error(), "--kind site") {
 		t.Fatalf("want a refusal naming --kind site, got %v", err)
 	}

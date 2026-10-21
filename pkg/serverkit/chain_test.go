@@ -3,6 +3,7 @@ package serverkit_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/serverkit"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // A chain authenticates: a missing Auth, an audience-less one, or one wrapping
@@ -147,13 +149,14 @@ func TestNewChain_DefaultsAndOmits(t *testing.T) {
 		t.Fatalf("NewChain (all omitted): %v", err)
 	}
 	core := len(observe.Chain(observe.Deps{Auth: auth, Deadline: serverkit.NoDeadline}))
-	if n := len(bare.Interceptors()); n != core {
-		t.Fatalf("all defaults omitted: %d interceptors, want observe's core plus auth (%d)", n, core)
+	// The svcerr interceptor is not a slot: it is always the innermost one.
+	if n := len(bare.Interceptors()); n != core+1 {
+		t.Fatalf("all defaults omitted: %d interceptors, want observe's core plus auth plus svcerr (%d)", n, core+1)
 	}
 	// trace (+ its profile-labels and traceresponse companions), deadline,
 	// audit, activity, stream drain, validate.
-	if n := len(full.Interceptors()); n != core+8 {
-		t.Fatalf("all defaults: %d interceptors, want %d", n, core+8)
+	if n := len(full.Interceptors()); n != core+9 {
+		t.Fatalf("all defaults: %d interceptors, want %d", n, core+9)
 	}
 }
 
@@ -253,4 +256,75 @@ func TestNewChain_DefaultTraceTrustsRemoteParent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A handler that returns a svcerr constructor's error unwrapped reaches the
+// client with that constructor's Connect code, not CodeUnknown — and the same
+// code is what the interceptors outside the handler (audit, logging) read.
+func TestNewChain_HandlerSvcerrReachesClientWithItsCode(t *testing.T) {
+	const procedure = "/serverkit.chain.v1.Svc/Err"
+	for name, tc := range map[string]struct {
+		err  error
+		want connect.Code
+		msg  string
+	}{
+		"permission denied": {svcerr.PermissionDenied("admins only"), connect.CodePermissionDenied, "admins only"},
+		"not found":         {svcerr.NotFound("note"), connect.CodeNotFound, "note not found"},
+		"already wrapped":   {svcerr.Wrap(svcerr.InvalidArgument("bad id")), connect.CodeInvalidArgument, "bad id"},
+		"own connect error": {connect.NewError(connect.CodeUnauthenticated, errors.New("sign in")), connect.CodeUnauthenticated, "sign in"},
+		"unrecognised":      {errors.New(`pq: relation "notes" does not exist`), connect.CodeInternal, svcerr.InternalMessage},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var seen error
+			observer := errObserver{seen: &seen}
+			chain, err := serverkit.NewChain(serverkit.ChainDeps{
+				Auth:  serverkit.AuthFor(serverkit.AudienceUser, tokenAuth{token: "t"}),
+				Audit: observer,
+			})
+			if err != nil {
+				t.Fatalf("NewChain: %v", err)
+			}
+			mux := http.NewServeMux()
+			mux.Handle(procedure, connect.NewUnaryHandler(procedure,
+				func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+					return nil, tc.err
+				}, chain.HandlerOptions()...))
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			client := connect.NewClient[emptypb.Empty, emptypb.Empty](srv.Client(), srv.URL+procedure)
+			req := connect.NewRequest(&emptypb.Empty{})
+			req.Header().Set("Authorization", "Bearer t")
+			_, err = client.CallUnary(context.Background(), req)
+			if got := connect.CodeOf(err); got != tc.want {
+				t.Fatalf("client code = %v (%v), want %v", got, err, tc.want)
+			}
+			var ce *connect.Error
+			if !errors.As(err, &ce) || ce.Message() != tc.msg {
+				t.Fatalf("client message = %q, want %q", ce.Message(), tc.msg)
+			}
+			if got := connect.CodeOf(seen); got != tc.want {
+				t.Fatalf("audit slot saw code %v, want %v: the error was converted outside it", got, tc.want)
+			}
+		})
+	}
+}
+
+// errObserver records the error the handler's result carries at its position.
+type errObserver struct{ seen *error }
+
+func (o errObserver) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		resp, err := next(ctx, req)
+		*o.seen = err
+		return resp, err
+	}
+}
+
+func (o errObserver) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (o errObserver) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
 }

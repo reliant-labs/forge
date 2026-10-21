@@ -467,7 +467,7 @@ func TestBootstrapGeneratedCodeRunsGeneratePipelineInProjectDirectory(t *testing
 	// pkg via a replace directive so `go mod tidy` resolves locally.
 	addforgeReplaceMain(t, dir)
 
-	if err := bootstrapGeneratedCode(dir); err != nil {
+	if err := bootstrapGeneratedCode(dir, true); err != nil {
 		t.Fatalf("bootstrapGeneratedCode() error = %v", err)
 	}
 

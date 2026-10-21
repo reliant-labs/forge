@@ -134,3 +134,30 @@ message Bookmark {
 	// And the grown tree compiles.
 	runCmd(t, projectDir, "go", "build", "./...")
 }
+
+// TestE2EProjectNewScaffoldCompilesWithoutVerify: `project new` skips its own
+// compile check by default, so the guarantee that a fresh scaffold builds
+// lives here, run explicitly: the tree `project new` returns compiles (and
+// vets) with no `forge generate` in between, and `--verify` runs the check
+// inside the command.
+func TestE2EProjectNewScaffoldCompilesWithoutVerify(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
+	forgeBin := buildforgeBinary(t)
+	dir := t.TempDir()
+
+	out := runCmdOutput(t, dir, forgeBin, "project", "new", "freshapp", "--mod", "example.com/freshapp", "--service", "notes")
+	if !strings.Contains(out, "compile check skipped") {
+		t.Errorf("default `project new` did not say it skipped the compile check:\n%s", out)
+	}
+	if strings.Contains(out, "Validating generated code") {
+		t.Errorf("default `project new` ran the validate build:\n%s", out)
+	}
+	projectDir := filepath.Join(dir, "freshapp")
+	runCmd(t, projectDir, "go", "build", "./...")
+	runCmd(t, projectDir, "go", "vet", "./...")
+
+	verified := runCmdOutput(t, dir, forgeBin, "project", "new", "verifiedapp", "--mod", "example.com/verifiedapp", "--service", "notes", "--verify")
+	if !strings.Contains(verified, "Validating generated code") {
+		t.Errorf("`project new --verify` did not run the validate build:\n%s", verified)
+	}
+}

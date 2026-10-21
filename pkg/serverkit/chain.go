@@ -28,6 +28,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/authn"
 	"github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/observe"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 	"github.com/reliant-labs/forge/pkg/validate"
 )
 
@@ -206,7 +207,8 @@ type Chain struct {
 
 // NewChain builds the chain, outermost first: trace → recovery → request-id →
 // logging → tracing → metrics → deadline → auth → audit → rate-limit → extras
-// → activity → stream-drain → protovalidate. Every slot but Auth is defaulted;
+// → activity → stream-drain → protovalidate → svcerr (the handler's errors
+// become their Connect codes). Every slot but Auth is defaulted;
 // see ChainDeps for each default and how to drop it. It fails when Auth is
 // missing or names no audience, when an Omit is given for the wrong slot, and
 // when a default cannot be built — a chain missing a layer it was meant to
@@ -260,6 +262,10 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	if validator != nil {
 		extras = append(extras, validator)
 	}
+	// Innermost, always: a handler's svcerr error becomes its Connect error
+	// before audit, logging and metrics read it. Not a slot — a handler
+	// that returns its own *connect.Error passes through unchanged.
+	extras = append(extras, svcerr.Interceptor())
 	interceptors := observe.Chain(observe.Deps{
 		Logger: logger,
 		Trace:  trace,

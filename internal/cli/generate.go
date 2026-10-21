@@ -375,6 +375,9 @@ func runGeneratePipelineOpts(projectDir string, force, skipValidate bool) error 
 type pipelineFlags struct {
 	Force        bool
 	SkipValidate bool
+	// SkipValidateNote replaces the "--skip-validate" banner for a caller
+	// that skips the compile check on the user's behalf (`project new`).
+	SkipValidateNote string
 
 	SkipPreChecks bool
 	// SkipConfigCheck opts out of the forge.yaml ↔ filesystem cross-
@@ -532,7 +535,10 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return nil
 	}
 
-	if flags.SkipValidate {
+	switch {
+	case flags.SkipValidateNote != "":
+		fmt.Println(flags.SkipValidateNote)
+	case flags.SkipValidate:
 		fmt.Println("⏩ --skip-validate: the final compile check (validate generated code) will be skipped")
 	}
 	if flags.SkipPreChecks {

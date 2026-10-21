@@ -291,7 +291,14 @@ func isDeclarationFile(p string) bool {
 // to the bare package-relative form a pin appends.
 func cleanEntry(p string) string {
 	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
-	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") || !isDeclarationFile(p) {
+	// Only a .d.ts may be pinned. A tsconfig `paths` value is also resolved
+	// by Next's webpack, whose TypeScript loader takes .ts/.tsx/.d.ts and
+	// nothing else: a pin at index.d.mts/.d.cts is read as JavaScript and
+	// fails the build ("Module parse failed: Unexpected token", measured on
+	// @opentelemetry/api 1.10, which ships only those two). Without an entry
+	// the pin names the package directory, which both tsc and webpack
+	// resolve through the package's own exports.
+	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") || !strings.HasSuffix(p, ".d.ts") {
 		return ""
 	}
 	return p

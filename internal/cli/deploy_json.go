@@ -1413,12 +1413,16 @@ func deployFindingsFromPreflight(res cluster.PreflightResult) []deployJSONFindin
 		"the image's architecture does not include the target cluster's declared node arch")
 	listed("missing_crd", res.MissingCRDs, true,
 		"the target cluster's API server does not serve a kind the bundle renders")
+	listed("volume_resize_refused", res.VolumeResizeRefusals, true,
+		"a StatefulSet's declared volume differs from the live one in a way no resize can converge (a shrink, a changed storage class, or a class that cannot expand)")
 	listed("byte_match_mismatch", res.ByteMatchMismatches, true,
 		"a declared value_group's live Secret values are not identical across the group")
 	// Advisory, and NOT blocking: a transport failure says nothing about the
 	// image. Reported so a consumer knows the gate could not vouch for it.
 	listed("image_warning", res.ImageWarnings, false,
 		"the image check was inconclusive (transport failure) — neither present nor absent was established")
+	listed("volume_resize_warning", res.VolumeResizeWarnings, false,
+		"the live volumes of a StatefulSet could not be read, so its declared sizes were not checked")
 	listed("arch_warning", res.ArchWarnings, false,
 		"the image's architecture could not be read, so no mismatch could be asserted")
 

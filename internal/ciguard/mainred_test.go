@@ -81,6 +81,13 @@ func failLine(test string) string {
 		"2026-10-21T12:00:00.0000000Z     --- FAIL: " + test + "/subtest (0.00s)\n"
 }
 
+// The same failure printed unnested, as a parallel -short shard prints it:
+// the subtest's line at column 0, after its parent's.
+func unnestedFailLine(test string) string {
+	return "2026-10-21T12:00:00.0000000Z --- FAIL: " + test + "/subtest (0.00s)\n" +
+		"2026-10-21T12:00:00.0000000Z --- FAIL: " + test + " (0.01s)\n"
+}
+
 func runMainRed(t *testing.T, c mainRedCase) (string, bool) {
 	t.Helper()
 	for _, tool := range []string{"bash", "jq", "comm", "sed"} {
@@ -266,7 +273,25 @@ func TestMainRedOverride(t *testing.T) {
 			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
 				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
 				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain") + failLine("TestNew")})},
-			want: "TestNew do not fail on main",
+			want: "TestNew TestNew/subtest do not fail on main",
+		},
+		{
+			// The subtest is the same test whether or not go test nested
+			// its line under the parent's.
+			name: "a failing subtest main fails nested, printed unnested here", short: true,
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: unnestedFailLine("TestOnMain")})},
+			accept: true, want: "tests: TestOnMain TestOnMain/subtest",
+		},
+		{
+			// ...and a subtest main does not fail is new, even under a
+			// parent that main fails.
+			name: "a new subtest of a test main fails",
+			c: mainRedCase{event: "pull_request", labels: []string{"ci:main-red"},
+				mine: []fakeJob{failedJob(11, "Test (-short) 1/2", "Go tests (-short)"), gate},
+				main: mainRed, logs: merge(mainLogs, map[int]string{11: failLine("TestOnMain") + "--- FAIL: TestOnMain/other (0.00s)\n"})},
+			want: "TestOnMain/other do not fail on main",
 		},
 		{
 			name: "a non-test job that passed on main",

@@ -299,6 +299,9 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 		rules := worktreeRules{base: base, idle: o.idle, common: common, managed: managed, self: self}
 		if len(entries) > 0 {
 			rules.main = canonicalPath(entries[0].path)
+			if !entries[0].bare {
+				rules.source = rules.main
+			}
 		}
 		for index, e := range entries {
 			if index == 0 || e.bare || e.head == "" || e.prunable {
@@ -362,6 +365,9 @@ type worktreeRules struct {
 	common string
 	// main is the repository's main checkout, canonical.
 	main string
+	// source is main when it is a working tree an ignored file can be copied
+	// from; "" for a bare repository.
+	source string
 	// managed are canonical roots another tool owns its worktrees under.
 	managed []string
 	self    openfiles.Snapshot
@@ -461,12 +467,18 @@ func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, rules wor
 	if err != nil {
 		return HoldUnchecked, err.Error(), false
 	}
-	dirty, data := r.classifyStatus(e.path, string(b))
+	dirty, data := r.classifyStatus(e.path, rules.source, string(b))
 	if dirty {
 		return HoldDirty, "", false
 	}
 	if len(data) > 0 {
-		return HoldData, strings.Join(data, ", "), false
+		detail := strings.Join(data, ", ")
+		if rules.source != "" {
+			// Say how to free it: a copy identical to the main checkout's
+			// would not hold the worktree.
+			detail += " (not in " + rules.source + ", or different there)"
+		}
+		return HoldData, detail, false
 	}
 	// Edits to skip-worktree / assume-unchanged files are invisible to status
 	// and to `git worktree remove`'s own check.
@@ -856,9 +868,10 @@ func (r Runner) pushed(ctx context.Context, worktree, head, base string) bool {
 }
 
 // classifyStatus splits `git status --porcelain -z --ignored` into whether
-// anything is modified or untracked, and the ignored paths that are not on the
-// rebuildable allowlist.
-func (r Runner) classifyStatus(worktree, porcelain string) (dirty bool, data []string) {
+// anything is modified or untracked, and the ignored paths that are the user's
+// data (see dataJudge). source is the repository's main checkout, "" if none.
+func (r Runner) classifyStatus(worktree, source, porcelain string) (dirty bool, data []string) {
+	judge := dataJudge{checkout: worktree, source: source, allow: r.rebuildable()}
 	for _, entry := range strings.Split(porcelain, "\x00") {
 		entry = strings.TrimRight(entry, "\n")
 		if strings.TrimSpace(entry) == "" {
@@ -868,38 +881,9 @@ func (r Runner) classifyStatus(worktree, porcelain string) (dirty bool, data []s
 			dirty = true
 			continue
 		}
-		data = append(data, unrecognizedIgnored(worktree, strings.TrimPrefix(entry, "!! "), r.rebuildable())...)
+		data = append(data, judge.visit(strings.TrimPrefix(entry, "!! "))...)
 	}
 	return dirty, data
-}
-
-// unrecognizedIgnored returns the ignored paths under rel that are not
-// rebuildable. git collapses a directory holding only ignored files into one
-// entry (web/ for web/node_modules/), which would hide the allowlisted child
-// from the match, so an unmatched directory is judged by its contents. Walking
-// stops at every allowlisted directory, so node_modules is never traversed.
-func unrecognizedIgnored(worktree, rel string, allow []string) []string {
-	if rebuildablePath(rel, allow) {
-		return nil
-	}
-	full := filepath.Join(worktree, filepath.FromSlash(rel))
-	info, err := os.Lstat(full)
-	if err != nil || !info.IsDir() {
-		return []string{rel}
-	}
-	children, err := os.ReadDir(full)
-	if err != nil || len(children) == 0 {
-		return []string{rel}
-	}
-	var out []string
-	for _, child := range children {
-		name := strings.TrimSuffix(rel, "/") + "/" + child.Name()
-		if child.IsDir() {
-			name += "/"
-		}
-		out = append(out, unrecognizedIgnored(worktree, name, allow)...)
-	}
-	return out
 }
 
 func splitSegments(p string) []string {
@@ -937,12 +921,10 @@ func matchesRun(segments []string, pattern string) bool {
 // rebuildablePath reports whether an ignored path is recreated by a build.
 // The never-list is checked first so a policy cannot make data deletable.
 func rebuildablePath(p string, allow []string) bool {
-	segments := splitSegments(p)
-	for _, deny := range worktreeNeverRebuildable {
-		if matchesRun(segments, deny) {
-			return false
-		}
+	if neverRebuildablePath(p) {
+		return false
 	}
+	segments := splitSegments(p)
 	for _, pattern := range allow {
 		if matchesRun(segments, pattern) {
 			return true

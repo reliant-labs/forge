@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
+  each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
+<id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
+  `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
+  `revoke-sessions`. `--user` takes a user id, or an email matched exactly
+  (case-insensitively) through `users`; no match, or two, is a refusal. The
+  scopes are `identity:read` for reads and `identity:manage` for every verb that
+  changes a user. forge presents neither up front: a Reliant session or `forge
+login` credential is traded for the scope the control plane's 403 names, for
+  an hour, exactly as `deploy:read` and `secret:write` are. An explicit
   each one rpc of `controlplane.v1.IdentityService`:
   `set-roles <env> --user <id|email> --role a --role b` (or `--none`), `reset`,
   `lock`, `unlock`, `delete` (asks first; `--yes` skips the question; a closed
@@ -129,6 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap generate skips its final `go build` and deploy-KCL render unless you
   pass `--verify`. That tail was the one CPU-saturating step (40s of the
   pipeline's 63s on a cold build cache), and it re-proved output that forge's
+  own e2e corpus compiles on every change; your first `go build` or `forge
+generate` runs the same check. `project new` never took a heavy slot and still
+  does not: pinned by `TestRunNew_TakesNoHeavySlot`.
   own e2e corpus compiles on every change; your first `go build` or
   `forge generate` runs the same check. `project new` never took a heavy slot
   and still does not: pinned by `TestRunNew_TakesNoHeavySlot`.
@@ -218,6 +230,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
   JavaScript (`Module parse failed: Unexpected token`). Only a `.d.ts` is pinned
   now; a package with none is pinned by its directory.
+- **Docs no longer promise mail that is never sent.** The `deploy/managed-
+identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
 - **Docs no longer promise mail that is never sent.** The
   `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   mail through a platform relay and that an invitation emails a link. Neither is
@@ -1255,6 +1269,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hands a revision to Flux: kustomize-controller dry-runs every object of a
   Kustomization before applying any, so one such StatefulSet otherwise stops the
   whole unit converging, and its per-object force would delete the pods.
+- **A raised StatefulSet volume now converges under Flux too: forge renders a
+  pre-rollout resize Job.** Direct apply could repair the rejection after the
+  fact; a reconciler cannot (Flux dry-runs every object of a Kustomization before
+  applying any, so one raised `volumeClaimTemplates` size wedged the whole tree,
+  and forge was not in the loop). The render now carries the repair: for each
+  (cluster, namespace, delivery unit) that holds a StatefulSet with
+  `volumeClaimTemplates` it emits a `sts-volume-resize-<unit>-<hash>` Job, with a
+  ServiceAccount, Role, RoleBinding and NetworkPolicy, in the unit's `pre` phase.
+  The bundle's `pre` tree is what the `rollout` tree waits on and direct apply
+  gates workloads on the same Job, so it runs before the StatefulSet is applied
+  by either. It grows each claim smaller than the declared size, then deletes the
+  StatefulSet with `--cascade=orphan` so the rollout recreates it with the new
+  templates and adopts the running pods; it is a no-op when the sizes match or
+  the StatefulSet is absent, and idempotent (the Job name hashes the declared
+  volumes). A shrink, or any change to a template other than a larger storage
+  request, exits 2: the Job's `podFailurePolicy` fails it at once and the deploy
+  stops with the reason. The Job's RBAC is namespace-scoped (`get`/`delete` on
+  the named StatefulSets, `get`/`list`/`patch` on PVCs, nothing cluster-scoped);
+  whether a claim may grow is learned from a server-side dry-run patch before the
+  first write. The script is embedded in `pkg/stsresize` (`Script`, `Build`) and
+  tested against `Decide` over one table so the two cannot drift. The image is a
+  digest-pinned `alpine/k8s`; `Bundle.statefulset_resize = forge.StatefulSetResize
+{image = ..., disabled = True}` replaces or removes it. It is not rendered for
+  `lifecycle = "local"`/`"ephemeral"` envs. `forge env deploy`'s preflight now also
+  compares each rendered StatefulSet's volumes with the live ones and blocks a
+  shrink (or any unconvergeable template change) by name before anything is
+  applied (`volume_resize_refused` in `--json`). See `deploy/statefulset-volumes`.
+  An env with a StatefulSet gains a `pre` tree and its objects on its next bundle.
 - `forge cloud identity status|users|invite <env>`: inspect hosted managed identity,
   page/search users, and email an invitation with explicit `--email` and repeatable
   `--role`. Uses the authenticated org and exact project/environment lookup;

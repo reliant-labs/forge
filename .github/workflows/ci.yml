@@ -31,7 +31,8 @@ permissions:
 # A PULL REQUEST gets the fast tier, budgeted at about five minutes of wall
 # time with no job longer than ~4-5 minutes including setup:
 #
-#   test-short        the -short tier, no -race, sharded (scripts/ci-test-shard.sh)
+#   test-short        the -short tier, no -race, sharded (scripts/ci-test-shard.sh),
+#                     and the guards in full mode, balanced across its entries
 #   flake-gate        tests the change adds or edits, -race -count=3
 #   windows-cross     GOOS=windows build + vet, from Linux
 #   lint              golangci-lint (root and pkg/), go vet, go vet -tags e2e
@@ -65,7 +66,8 @@ permissions:
 # jobs per pull request, three per push) live here now, the e2e vet joined
 # lint, vuln-scan joined quick-checks, the guards
 # joined the whole -short tier and go-licenses joined build (no race, no -short
-# difference in what they compile). A pull request runs 8 jobs, down from 13.
+# difference in what they compile). A pull request runs 8 jobs, down from 13
+# (9 since the guards joined it: one test-short entry of their own).
 #
 # plus e2e-suite.yml and e2e-scaffold.yml (which also run nightly). Speed on
 # the pull request was chosen over catching everything before merge: a test
@@ -269,8 +271,22 @@ jobs:
   # `test-cli`). flake-gate keeps -race on the tests a change touches. No
   # -count=1: the -short tier is held cache-sound, so a package main's cache
   # already holds a result for replays it.
+  # The -short tier, sharded, AND the guards in full mode.
+  #
+  # THE GUARDS ON PULL REQUESTS. deadcodeguard, removalguard, tierguard and
+  # writeguard skip their whole-repo work under -short, and their full mode
+  # ran on main only, so a phantom field or a removed feature's leftover
+  # reference merged green and turned main red (two of October 2026's main
+  # reds). Each now runs in full mode here, after a shard's -short tests
+  # (sharing its warm build cache) or in an entry of its own, balanced so
+  # every entry fits the ~4-minute budget. Measured on ubuntu-latest, test
+  # time / whole job: all four in one job at -p 3 3:50 / 5:00 and at -p 1
+  # 4:38 / 5:46 (they contend for cores and memory: deadcodeguard 49s alone,
+  # 144s beside the others); tierguard alone 1:36 / 3:10. -p 1 within an
+  # entry, for the same reason. The partition is checked by
+  # internal/ciguard: every guard runs in exactly one entry.
   test-short:
-    name: Test (-short) ${{ matrix.shard }}
+    name: Test (${{ matrix.label }})
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -279,8 +295,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { shard: "1/2", args: "0 2" }
-          - { shard: "2/2", args: "1 2" }
+          - label: "-short 1/2, deadcodeguard"
+            shard: "1/2"
+            args: "0 2"
+            guards: "deadcodeguard"
+          - label: "-short 2/2, tierguard"
+            shard: "2/2"
+            args: "1 2"
+            guards: "tierguard"
+          - label: "removalguard, writeguard"
+            shard: "guards"
+            args: ""
+            guards: "removalguard writeguard"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -311,11 +337,21 @@ jobs:
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
       - name: Go tests (-short)
+        if: ${{ matrix.args != '' }}
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-shard.json
         run: scripts/ci-test-shard.sh ${{ matrix.args }}
+      # After the shard, whatever it reported: a red shard must not hide a
+      # guard's finding. Full mode, -count=1, as on main.
+      - name: Guards (full mode)
+        if: ${{ !cancelled() && matrix.guards != '' }}
+        run: |
+          set -euo pipefail
+          pkgs=()
+          for g in ${{ matrix.guards }}; do pkgs+=("github.com/reliant-labs/forge/internal/$g"); done
+          go test -p 1 -count=1 -timeout 30m "${pkgs[@]}"
       - name: Upload the go test -json stream
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.args != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-short-${{ strategy.job-index }}

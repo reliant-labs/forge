@@ -1,6 +1,6 @@
 import React from "react";
 
-import { FormFieldContext } from "./form";
+import { FormFieldContext } from "./form_field_context";
 
 /**
  * Label — form field label primitive. Renders a native <label> with the
@@ -29,7 +29,7 @@ import { FormFieldContext } from "./form";
  * The same pattern is used by shadcn/ui (via Radix UI's Label
  * primitive) and headlessui's `<Field>`; the forge component library
  * stays radix-free at the base layer by re-implementing the minimum
- * context shape — see `FormFieldContext` in `form.tsx`.
+ * context shape — see `FormFieldContext` in `form_field_context.tsx`.
  */
 
 export interface LabelProps extends React.LabelHTMLAttributes<HTMLLabelElement> {

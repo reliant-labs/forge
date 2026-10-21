@@ -151,15 +151,15 @@ value through `normalizeError(err)` first.
 ## 2. App-shell providers, error boundary, toast host
 
 The dependency points **app → runtime, one way**. The runtime never imports
-`@/lib/auth/*`, `@/lib/event-context`, or `@/components/ui/*` — those are yours
+`@/lib/auth/*`, `@/lib/event-context`, `@/lib/use-event`, or `@/components/ui/*` — those are yours
 to rename, restyle, or delete, and a forge-owned file may not depend on them.
 Everything app-shaped is a **prop**, wired once in your `providers.tsx`:
 
 ```tsx
 import { RuntimeShell } from "@reliantlabs/forge-web-runtime";
 import ToastNotification from "@/components/ui/toast_notification";
-import { useAuth } from "@/lib/auth/context";
-import { useEventBus } from "@/lib/event-context";
+import { useAuth } from "@/lib/auth/use-auth";
+import { useEventBus } from "@/lib/use-event";
 
 function RuntimeLayer({ children }: { children: React.ReactNode }) {
   const auth = useAuth();

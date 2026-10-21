@@ -14,7 +14,7 @@ import React from "react";
 const EXTERNAL_HREF = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
 
 /** True for absolute/external URLs that must bypass client routing. */
-export function isExternalHref(href: string): boolean {
+function isExternalHref(href: string): boolean {
   return EXTERNAL_HREF.test(href) || href.startsWith("mailto:") || href.startsWith("tel:");
 }
 

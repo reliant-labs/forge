@@ -8,10 +8,10 @@ import (
 )
 
 func init() {
-	SchemeBuilder.Register(addKnownTypes_{{.TypeName}})
+	SchemeBuilder.Register(addKnown{{.TypeName}}Types)
 }
 
-func addKnownTypes_{{.TypeName}}(scheme *runtime.Scheme) error {
+func addKnown{{.TypeName}}Types(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&{{.TypeName}}{},
 		&{{.TypeName}}List{},
@@ -37,11 +37,11 @@ type {{.TypeName}}Spec struct {
 	// reconciler observes it and drives Status.Phase to converge.
 	// Valid values: "Running", "Suspended", "Deleting".
 	State {{.TypeName}}State `json:"state,omitempty"`
-{{- end }}
-
+{{ end }}
 	// TODO: Add your spec fields here.
 }
-{{ if eq .Shape "state-machine" }}
+{{- if eq .Shape "state-machine" }}
+
 // {{.TypeName}}State is the desired state set by the user.
 type {{.TypeName}}State string
 
@@ -69,12 +69,12 @@ type {{.TypeName}}Status struct {
 	// ObservedGeneration is metadata.generation at the time of the
 	// last successful reconcile. Used to detect drift.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-{{- end }}
-
+{{ end }}
 	// Conditions reports the current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
-{{ if eq .Shape "state-machine" }}
+{{- if eq .Shape "state-machine" }}
+
 // {{.TypeName}}Phase is the observed phase set by the reconciler.
 type {{.TypeName}}Phase string
 

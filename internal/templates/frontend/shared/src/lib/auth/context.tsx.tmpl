@@ -67,16 +67,13 @@
 // scenario stubs still answers 401 until you sign in to the real server at
 // /auth/sign-in (that form still posts to it).
 {{- end}}
+//
+// ── This file exports one component ───────────────────────────────────
+//
+// The context object and useAuth() live in ./use-auth, so React Fast Refresh
+// can hot-swap this provider when you edit it. Import the hook from there.
 
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-
-{{if eq .Platform "react-native"}}/** Who is signed in. Presentation only. */
-export interface Identity {
-  authenticated: boolean;
-  email?: string;
-  name?: string;
-  subject?: string;
-}{{end}}
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 {{if eq .Platform "react-native"}}// React Native does not share the web's cookie model — there is no cookie
 // jar on fetch by default and no same-origin to be same as — so native
@@ -89,21 +86,10 @@ export interface Identity {
 // implementation of AuthProvider (./provider) over the IdP's native SDK or a
 // token you store yourself. Nothing else in the app changes: the context
 // value under it is the same on every platform.
-import { createSessionAuthProvider } from "./session-provider";{{else}}import { fetchIdentity, signOut as apiSignOut, type Identity } from "./native-login";
-import { createSessionAuthProvider, isMockMode } from "./session-provider";{{end}}
-
-interface AuthContextValue {
-  /** Who is signed in. Presentation only — see the note above. */
-  identity: Identity;
-  isAuthenticated: boolean;
-  /** True until the first identity check completes. */
-  isLoading: boolean;
-  /** Re-read the session from the server. Call after signing in. */
-  refresh: () => Promise<void>;
-  logout: () => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null);
+import { createSessionAuthProvider } from "./session-provider";
+import { AuthContext, type AuthContextValue, type Identity } from "./use-auth";{{else}}import { fetchIdentity, signOut as apiSignOut, type Identity } from "./native-login";
+import { createSessionAuthProvider, isMockMode } from "./session-provider";
+import { AuthContext, type AuthContextValue } from "./use-auth";{{end}}
 
 export function AuthContextProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState<Identity>({ authenticated: false });
@@ -189,12 +175,4 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error("useAuth must be used within an AuthContextProvider");
-  }
-  return ctx;
 }

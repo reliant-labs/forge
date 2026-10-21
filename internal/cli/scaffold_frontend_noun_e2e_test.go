@@ -15,9 +15,9 @@ import (
 //
 // The existing frontend e2e (TestE2EScaffoldFrontendBuilds) covers `project
 // new --frontend web`, which runs a full `forge generate` on its way out. The
-// ADD verb does not — deliberately, so a parallel-agent round can stage a
-// frontend without project-wide codegen churn — and that is where two shipped
-// bugs lived:
+// ADD verb used not to (it now does, unless --no-generate stages a frontend
+// for a later generate), and the files it writes BEFORE that run are where
+// two shipped bugs lived:
 //
 //  1. The scaffolded src/lib/connect.ts references "@/lib/mock-transport",
 //     which only `forge generate` emitted. A freshly added vite-spa failed

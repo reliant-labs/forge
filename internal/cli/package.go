@@ -84,8 +84,10 @@ Subcommands:
   - contract.go  — Go interface that IS the package contract
   - service.go   — Implementation with unexported concrete type
 
-After creation, define your interface methods in contract.go, then run
-'forge generate' to produce mock_gen.go and middleware_gen.go.
+It ends with a 'forge generate' run, which writes mock_gen.go and
+middleware_gen.go and wires the package into internal/app/compose.go, so
+the project lints clean straight away (--no-generate skips it). After you
+add methods to contract.go, run 'forge generate' again.
 
 ` + packageTypeHelp + `
 
@@ -95,15 +97,45 @@ Example:
   forge package new events --kind eventbus
   forge package new stripe-adapter --type adapter`,
 		Args: cobra.ExactArgs(1),
-		RunE: runPackageNew,
+		RunE: runPackageNewThenGenerate,
 	}
 
 	packageNewCmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 	packageNewCmd.Flags().String("type", "service", "package shape: service|adapter (see --help for details)")
+	packageNewCmd.Flags().Bool("no-generate", false, "skip the post-scaffold 'forge generate' run (scaffold-only mode for parallel-agent rounds); run 'forge generate' before 'forge lint'")
 
 	cmd.AddCommand(cmdutil.ConfiguresClone(packageNewCmd))
 
 	return cmdutil.StrictGroup(cmd)
+}
+
+// runPackageNewThenGenerate is `forge package new`: the same scaffold as
+// `forge scaffold package`, ending the same way — with a generate run under
+// the project lock, so the new package's middleware_gen.go, mock and
+// compose.go wiring exist before the next `forge lint` (without them the
+// owned observe_chain.go seam is unreferenced, and an adapter's
+// config.<Name>Config does not exist yet). The scaffold group runs the same
+// tail through its own lock wrapper; see scaffold.syncDerivedFiles.
+func runPackageNewThenGenerate(cmd *cobra.Command, args []string) error {
+	root, err := projectRoot()
+	if err != nil {
+		return runPackageNew(cmd, args) // reports the missing project itself
+	}
+	return withGenerateLock(root, func() error {
+		if err := runPackageNew(cmd, args); err != nil {
+			return err
+		}
+		if noGenerate, _ := cmd.Flags().GetBool("no-generate"); noGenerate {
+			fmt.Printf("\n⏩ --no-generate: skipping the post-scaffold `forge generate` run.\n")
+			fmt.Printf("   Package %q is written, but the files forge derives from it are not yet: run `forge generate` before `forge lint`.\n", args[0])
+			return nil
+		}
+		fmt.Println("\n🔧 Running generation pipeline...")
+		if err := runGeneratePipeline(root, false); err != nil {
+			return fmt.Errorf("package %q was written and kept, but the post-scaffold `forge generate` failed: %w; fix it, then re-run `forge generate`", args[0], err)
+		}
+		return nil
+	})
 }
 
 func runPackageNew(cmd *cobra.Command, args []string) error {
@@ -310,7 +342,9 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// or observe_chain.go, which is where the scaffold's best guidance
 	// lives.
 	printScaffoldedPackageSummary(pkgDir, name, pkgType)
-	if data.ConfigBlock != "" {
+	// Every caller ends with a generate run unless --no-generate skipped it;
+	// only then is "run generate first" still advice the user needs.
+	if noGenerate, _ := cmd.Flags().GetBool("no-generate"); data.ConfigBlock != "" && noGenerate {
 		// adapter.go names config.<ConfigBlock>, which pkg/config declares
 		// only once generate has compiled the block the proto edit added.
 		fmt.Printf("\n   Run `forge generate` first: it generates config.%s from proto/config/v1 and wires\n", data.ConfigBlock)

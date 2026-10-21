@@ -82,7 +82,14 @@ func TestE2EFrontendOnlyLifecycle(t *testing.T) {
 		}
 	}
 	// Later frontends must use the same declaration/binder shape and routes.
-	must(project, "scaffold", "frontend", "docs", "--routes", "none")
+	//
+	// --no-generate: `forge scaffold frontend` ends with a generate run, and
+	// on this shape (`--disable codegen`) `forge generate` is red before the
+	// scaffold touches anything — `project new` above already reports "initial
+	// code generation failed" — so the run would fail for reasons this test
+	// does not cover. The declaration and binder shape under test are written
+	// before that run.
+	must(project, "scaffold", "frontend", "docs", "--routes", "none", "--no-generate")
 	must(project, "env", "new", "preview", "--from", "prod", "--bind", "docs=hosted", "--bind", "web=hosted")
 	must(project, "env", "render", "preview")
 	if out, err := run(project, "env", "new", "bad", "--from", "prod", "--bind", "missing=hosted"); err == nil {

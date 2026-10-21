@@ -68,6 +68,125 @@ func TestFreshScaffold_GoIsFormattedAndTakesContextFirst(t *testing.T) {
 	}
 }
 
+// The same invariant for what the component nouns add to an existing project:
+// `forge scaffold operator`, `crd`, `binary`, `worker` and `webhook`. None of
+// these writes is reformatted by a later step, so each template's bytes are
+// what the project's first `forge lint` judges. Three shipped red: the
+// operator's doc.go and the binary's Run doc carried space-indented
+// doc-comment code blocks that gofmt rewrites, and every CRD's types file
+// declared addKnownTypes_<Type>, which revive's var-naming rejects.
+// TestE2EScaffoldNounsLeaveLintGreen runs the real `forge lint` after each.
+func TestComponentScaffolds_GoIsFormattedAndNamedForLint(t *testing.T) {
+	const mod = "example.com/compapp"
+	root := filepath.Join(t.TempDir(), "compapp")
+	g := NewProjectGenerator("compapp", root, mod)
+	g.Kind = "service"
+	g.ServiceName = "orders"
+	if err := g.Generate(); err != nil {
+		t.Fatalf("Generate(): %v", err)
+	}
+	before := goFilesUnder(t, root)
+
+	if err := GenerateOperatorBinaryOnly(root, mod, "manager", "compapp.io", "v1alpha1"); err != nil {
+		t.Fatalf("GenerateOperatorBinaryOnly: %v", err)
+	}
+	for _, shape := range []CRDShape{"state-machine", "config", "composite"} {
+		typeName := map[CRDShape]string{"state-machine": "Widget", "config": "Setting", "composite": "Bundle"}[shape]
+		if err := GenerateCRDFiles(CRDGenInput{
+			Root: root, ModulePath: mod, OperatorName: "manager",
+			TypeName: typeName, Group: "compapp.io", Version: "v1alpha1", Shape: shape,
+		}); err != nil {
+			t.Fatalf("GenerateCRDFiles(%s): %v", shape, err)
+		}
+	}
+	if err := GenerateBinaryFiles(root, mod, "proxy"); err != nil {
+		t.Fatalf("GenerateBinaryFiles: %v", err)
+	}
+	if err := GenerateWorkerFiles(root, mod, "sweeper", "", ""); err != nil {
+		t.Fatalf("GenerateWorkerFiles: %v", err)
+	}
+	if err := GenerateWebhookFiles(root, mod, "orders", "scanner"); err != nil {
+		t.Fatalf("GenerateWebhookFiles: %v", err)
+	}
+
+	checkScaffoldedGo(t, root)
+
+	added := 0
+	for path := range goFilesUnder(t, root) {
+		if before[path] {
+			continue
+		}
+		added++
+		for _, v := range underscoredNames(t, path) {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("%s: %s — revive var-naming (enabled by the scaffolded .golangci.yml) rejects underscores in Go names", rel, v)
+		}
+	}
+	if added == 0 {
+		t.Fatal("the component scaffolds wrote no Go files, so this test asserted nothing")
+	}
+}
+
+func goFilesUnder(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && filepath.Ext(path) == ".go" {
+			out[path] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return out
+}
+
+// underscoredNames reports each declared func, type, var or const whose name
+// carries an underscore — revive's var-naming — skipping the test-function
+// prefixes Go itself defines and the blank identifier.
+func underscoredNames(t *testing.T, path string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	var out []string
+	check := func(id *ast.Ident) {
+		if id == nil || id.Name == "_" || !strings.Contains(id.Name, "_") {
+			return
+		}
+		for _, prefix := range []string{"Test", "Benchmark", "Example", "Fuzz"} {
+			if strings.HasPrefix(id.Name, prefix) && strings.HasSuffix(path, "_test.go") {
+				return
+			}
+		}
+		out = append(out, fmt.Sprintf("%d: %s", fset.Position(id.Pos()).Line, id.Name))
+	}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			check(d.Name)
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch s := spec.(type) {
+				case *ast.TypeSpec:
+					check(s.Name)
+				case *ast.ValueSpec:
+					for _, n := range s.Names {
+						check(n)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
 func checkScaffoldedGo(t *testing.T, root string) {
 	t.Helper()
 	files := 0

@@ -70,7 +70,7 @@ func GenerateOperatorBinaryOnly(root, modulePath, name, group, version string) e
 //
 // To add a CRD scaffold to this operator, run:
 //
-//   forge scaffold crd <Name> --operator %s
+//	forge scaffold crd <Name> --operator %s
 //
 // That command emits:
 //

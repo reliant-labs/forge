@@ -1,5 +1,7 @@
 import React from "react";
 
+import { FormFieldContext } from "./form_field_context";
+
 /**
  * Form primitives — minimal, unopinionated wrappers for building a
  * forms-as-react-tree shape. The root <Form> is just a styled <form>;
@@ -20,26 +22,6 @@ export default function Form({ className, noValidate, children, ...rest }: FormP
     </form>
   );
 }
-
-/**
- * FormFieldContext — minted by `<FormField>`, consumed by sibling form
- * primitives (`<Label>`, `<Input>`, `<Select>`, …) so a single id is
- * shared across the label/input pair without callers writing
- * `htmlFor` / `id` boilerplate.
- *
- * Exported so custom form controls can opt into the same auto-binding
- * behavior — read the context, fall back to the prop the caller
- * passed:
- *
- *   const ctx = React.useContext(FormFieldContext);
- *   const id = props.id ?? ctx?.id;
- */
-export interface FormFieldContextValue {
-  /** Generated id shared between the label and its associated input. */
-  id: string;
-}
-
-export const FormFieldContext = React.createContext<FormFieldContextValue | null>(null);
 
 /**
  * FormField — vertical-stack container for a Label + Input + optional

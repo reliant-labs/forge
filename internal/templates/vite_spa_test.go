@@ -161,11 +161,20 @@ func TestViteSPATemplatesRender(t *testing.T) {
 	t.Run("main.tsx mounts the router", func(t *testing.T) {
 		content, _ := FrontendTemplates().Render("vite-spa/src/main.tsx", data)
 		s := string(content)
-		if !strings.Contains(s, "RouterProvider") {
-			t.Error("main.tsx should mount RouterProvider")
+		if !strings.Contains(s, "<Providers />") {
+			t.Error("main.tsx should mount the provider stack from ./providers")
 		}
 		if !strings.Contains(s, "createRoot") {
 			t.Error("main.tsx should call createRoot")
+		}
+		// The stack lives in its own module: a component defined in the entry
+		// point has no export, which react-refresh/only-export-components flags.
+		if strings.Contains(s, "function ") {
+			t.Error("main.tsx should define no component of its own")
+		}
+		providers, _ := FrontendTemplates().Render("vite-spa/src/providers.tsx", data)
+		if !strings.Contains(string(providers), "<RouterProvider router={router} />") {
+			t.Error("providers.tsx should mount RouterProvider")
 		}
 	})
 }

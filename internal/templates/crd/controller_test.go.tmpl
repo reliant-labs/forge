@@ -50,8 +50,8 @@ func Test{{.TypeName}}Reconcile_NotFound(t *testing.T) {
 	if err != nil {
 		t.Errorf("NotFound should not error: %v", err)
 	}
-	if res.Requeue {
-		t.Error("NotFound should not requeue")
+	if res != (ctrl.Result{}) {
+		t.Errorf("NotFound should not requeue, got %+v", res)
 	}
 }
 

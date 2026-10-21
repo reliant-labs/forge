@@ -387,6 +387,39 @@ func runPostScaffoldGenerate(f *factory.Factory, root, name string, noGenerate b
 	return nil
 }
 
+// noGenerateFlagUsage is the --no-generate help text shared by every scaffold
+// noun that ends in a full `forge generate` run.
+const noGenerateFlagUsage = "skip the post-scaffold 'forge generate' run (scaffold-only mode for parallel-agent rounds); run 'forge generate' before 'forge lint'"
+
+// syncDerivedFiles ends a scaffold whose writes are generate INPUTS — a proto
+// under proto/, a contract.go — by running the full generate pipeline, so the
+// command leaves the project exactly as green as it found it.
+//
+// Without it the scaffold hands the user a tree whose derived files disagree
+// with their sources: `forge scaffold frontend` writes
+// proto/config/v1/<fe>_config.proto, and until generate re-extracts
+// gen/forge_descriptor.json, `forge lint`'s convention and graph lanes refuse
+// to read the stale descriptor and fail. A scaffold that must be followed by a
+// second command before the project is green is a two-step procedure that
+// gets skipped; `scaffold service` and `scaffold rpc` already end this way.
+//
+// --no-generate is the escape hatch for a round that stages several
+// scaffolds and generates once at a coordination point. A failed pipeline
+// keeps what the scaffold wrote — its files are the user's from birth — and
+// returns the error, because a project that does not generate is not green.
+func syncDerivedFiles(f *factory.Factory, root, what string, noGenerate bool) error {
+	if noGenerate {
+		fmt.Printf("\n⏩ --no-generate: skipping the post-scaffold `forge generate` run.\n")
+		fmt.Printf("   %s is written, but the files forge derives from it are not yet: run `forge generate` before `forge lint`.\n", what)
+		return nil
+	}
+	fmt.Println("\n🔧 Running generation pipeline...")
+	if err := f.Gen.RunPipeline(root); err != nil {
+		return fmt.Errorf("%s was written and kept, but the post-scaffold `forge generate` failed: %w; fix it, then re-run `forge generate`", what, err)
+	}
+	return nil
+}
+
 // binaryName resolves the primary binary (the cmd/<bin>/ leaf) for wiring
 // output — the forge.yaml project name, falling back to the project dir base.
 func binaryName(cfg *config.ProjectConfig, root string) string {
@@ -1047,18 +1080,43 @@ The --type flag picks the scaffold shape:
               third-party system. Marker: '// forge:outbound-io'.
               Skill: forge skill load adapter
 
+It ends with a 'forge generate' run, which writes the package's mock and
+middleware_gen.go and wires it into internal/app/compose.go, so the next
+'forge lint' is green. --no-generate skips it.
+
 Example:
   forge scaffold package cache
   forge scaffold package events --kind eventbus
   forge scaffold package stripe-adapter --type adapter`,
 		Args: cobra.ExactArgs(1),
-		RunE: f.Gen.RunPackageNew,
+		RunE: packageNewThenGenerate(f),
 	}
 
 	cmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 	cmd.Flags().String("type", "service", "package shape: service|adapter (see --help)")
+	cmd.Flags().Bool("no-generate", false, noGenerateFlagUsage)
 
 	return cmd
+}
+
+// packageNewThenGenerate is the RunE of `scaffold package` and `scaffold
+// adapter`: the shared package scaffold, then the generate run that writes its
+// middleware_gen.go and mock, wires it into compose.go and — for an adapter —
+// compiles the config block it composed onto AppConfig. Without that run the
+// owned observe_chain.go seam is unreferenced (golangci `unused`) and an
+// adapter's config.<Name>Config does not exist, so the next `forge lint` is red.
+func packageNewThenGenerate(f *factory.Factory) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if err := f.Gen.RunPackageNew(cmd, args); err != nil {
+			return err
+		}
+		root, err := projectRoot()
+		if err != nil {
+			return err
+		}
+		noGenerate, _ := cmd.Flags().GetBool("no-generate")
+		return syncDerivedFiles(f, root, fmt.Sprintf("Package %q", args[0]), noGenerate)
+	}
 }
 
 // --- scaffold worker ---
@@ -1462,13 +1520,14 @@ func runCRD(name, group, version, shape, operator string) error {
 
 // --- scaffold frontend ---
 
-func newFrontendCmd(_ *factory.Factory) *cobra.Command {
+func newFrontendCmd(f *factory.Factory) *cobra.Command {
 	var port int
 	var kind string
 	var output string
 	var basePath string
 	var authMode string
 	var routes []string
+	var noGenerate bool
 
 	cmd := &cobra.Command{
 		Use:   "frontend <name>",
@@ -1518,6 +1577,12 @@ written against forge/pkg/devidp, not a flow spread through the frontend.
 Bringing the environment up registers the new frontend with the dev IdP;
 nothing else to run.
 
+The scaffold ends with a 'forge generate' run, because the frontend's
+config proto (proto/config/v1/<name>_config.proto) is a generate input: the
+run re-extracts gen/forge_descriptor.json and writes the frontend's typed
+config, so the next 'forge lint' is green. --no-generate skips it, for a
+round that stages several scaffolds and generates once.
+
 Example:
   forge scaffold frontend web
   forge scaffold frontend dashboard --port 3001
@@ -1529,9 +1594,13 @@ Example:
   forge scaffold frontend ops --routes users,usage-events`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFrontend(cmd.Context(), args[0], port, kind, output, basePath, authMode, routes)
+			return runFrontend(cmd.Context(), f, frontendArgs{
+				name: args[0], port: port, kind: kind, output: output, basePath: basePath,
+				authMode: authMode, routes: routes, noGenerate: noGenerate,
+			})
 		},
 	}
+	cmd.Flags().BoolVar(&noGenerate, "no-generate", false, noGenerateFlagUsage)
 
 	cmd.Flags().IntVar(&port, "port", 0, "Pin the frontend dev-server port. Default (unset) allocates a free port at launch — set this only when the port is externally fixed (e.g. an OAuth redirect URI registered with an IdP).")
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
@@ -1647,7 +1716,18 @@ func checkFrontendNameConflict(ctxLabel, name string, existing []config.Frontend
 	return nil
 }
 
-func runFrontend(ctx context.Context, name string, port int, kind, output, basePath, authMode string, routes []string) error {
+// frontendArgs is `forge scaffold frontend` as invoked: the name and the flag
+// values as given (validateFrontendFlags normalizes the flag subset).
+type frontendArgs struct {
+	name                             string
+	port                             int
+	kind, output, basePath, authMode string
+	routes                           []string
+	noGenerate                       bool
+}
+
+func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error {
+	name, port, kind, output, basePath, authMode, routes := a.name, a.port, a.kind, a.output, a.basePath, a.authMode, a.routes
 	ctxLabel := fmt.Sprintf("forge scaffold frontend %s", name)
 	if err := validateFrontendName(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid frontend name", "",
@@ -1773,9 +1853,10 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	}
 	// The templates just rendered import "@/lib/config_gen" (auth's
 	// session-provider.ts does unconditionally), so the module has to
-	// exist NOW. The add verb does not run generate, and
-	// writing this used to live only in the generate pipeline — which left
-	// a freshly added frontend unable to typecheck against its own scaffold.
+	// exist NOW. The add verb's own generate run comes last and is skipped
+	// under --no-generate, and writing this used to live only in the
+	// generate pipeline — which left a freshly added frontend unable to
+	// typecheck against its own scaffold.
 	// frontendType is already the platform label the generate pipeline uses
 	// (nextjs / vite-spa / react-native), so it is passed straight through.
 	if err := generator.WriteScaffoldedFrontendConfigTS(root, cfg.Name, name, frontendType, apiPort); err != nil {
@@ -1837,6 +1918,14 @@ func runFrontend(ctx context.Context, name string, port int, kind, output, baseP
 	// they just added — before running generate again — would otherwise hit
 	// the error first.
 	generator.ReconcileFrontendTsconfigPeers(root)
+
+	// The config proto written above is a generate input, so the descriptor
+	// is stale until generate re-extracts it — and `forge lint`'s convention
+	// and graph lanes refuse a stale descriptor. Generate last, after the
+	// install, so the run finds the frontend's protoc-gen-es in place.
+	if err := syncDerivedFiles(f, root, fmt.Sprintf("Frontend %q", name), a.noGenerate); err != nil {
+		return err
+	}
 
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
 	if authMode == authModeNone {

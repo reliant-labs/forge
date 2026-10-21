@@ -752,7 +752,10 @@ func runLintE2E(t *testing.T, dir, extraPathDir, name string, args ...string) (s
 }
 
 // assertScaffoldIsEslintCleanAsEmitted runs the scaffold's own lint script
-// with no --fix and requires zero problems.
+// with no --fix and requires zero problems — WARNINGS INCLUDED. eslint exits 0
+// on warnings, so the exit code alone passes a scaffold that opens with a wall
+// of them (vite-spa once shipped nine react-refresh/only-export-components);
+// the summary line ("✖ N problems (0 errors, N warnings)") is what tells.
 //
 // It drives `npm run lint` rather than eslint directly so the assertion is
 // about what the PROJECT is configured to do, not about a flag set this test
@@ -765,7 +768,7 @@ func assertScaffoldIsEslintCleanAsEmitted(t *testing.T, feDir string) {
 	if err != nil {
 		t.Fatalf("`npm run lint` failed on a freshly-scaffolded frontend: %v\n%s", err, out)
 	}
-	if strings.Contains(string(out), "problem") {
+	if strings.Contains(string(out), "problem") || strings.Contains(string(out), " warning ") {
 		t.Errorf("the emitted scaffold is not eslint-clean as written — every new project starts "+
 			"with findings its author did not create, and `forge lint`'s --fix pre-pass hides "+
 			"them by mutating the files:\n%s", out)

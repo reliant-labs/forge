@@ -11,13 +11,15 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo } from "react";
 
 import ToastNotification from "@/components/ui/toast_notification";
-import { AuthContextProvider, useAuth } from "@/lib/auth/context";
+import { AuthContextProvider } from "@/lib/auth/context";
 {{- if not .Public}}
 import { RouteGuard } from "@/lib/auth/route-guard";
 {{- end}}
-import { EventBusProvider, useEventBus } from "@/lib/event-context";
+import { useAuth } from "@/lib/auth/use-auth";
+import { EventBusProvider } from "@/lib/event-context";
 import { initTelemetry } from "@/lib/otel_gen";
 import { queryClient } from "@/lib/query-client";
+import { useEventBus } from "@/lib/use-event";
 
 import type { ToastEvent } from "@/lib/events";
 import type {

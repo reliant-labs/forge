@@ -175,7 +175,7 @@ func TestRunAddFrontend_DeclaresFrontendInKCL(t *testing.T) {
 	}
 	t.Chdir(root)
 
-	if err := runFrontend(t.Context(), "web", 0, "", "", "", "", nil); err != nil {
+	if err := runFrontend(t.Context(), testFactory(), frontendArgs{name: "web"}); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
 

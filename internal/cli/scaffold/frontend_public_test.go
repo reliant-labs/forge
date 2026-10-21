@@ -39,7 +39,7 @@ func TestRunAddFrontend_NoIdPScaffoldsPublicFrontend(t *testing.T) {
 	markServiceProject(t, dir)
 	writeDevMainK(t, dir, false)
 
-	if err := runFrontend(context.Background(), "web", 0, "", "", "", "", nil); err != nil {
+	if err := runFrontend(context.Background(), testFactory(), frontendArgs{name: "web"}); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestRunAddFrontend_WithIdPKeepsTheSignInGate(t *testing.T) {
 	markServiceProject(t, dir)
 	writeDevMainK(t, dir, true)
 
-	if err := runFrontend(context.Background(), "web", 0, "", "", "", "", nil); err != nil {
+	if err := runFrontend(context.Background(), testFactory(), frontendArgs{name: "web"}); err != nil {
 		t.Fatalf("runFrontend: %v", err)
 	}
 	providers, err := os.ReadFile(filepath.Join(dir, "frontends", "web", "src", "app", "providers.tsx"))

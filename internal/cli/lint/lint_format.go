@@ -60,8 +60,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // goFormatDirs are the source trees the format pre-pass walks — the same set
@@ -109,16 +107,37 @@ func formatGoTree(root string) ([]string, error) {
 // (project-relative, slash-separated); a nil keep accepts every file. It is
 // how `forge lint --scope` auto-fixes only its own slice — a scoped run must
 // not reformat a file another agent is in the middle of editing.
+//
+// Every rewrite goes through a goFixSet and is verified by check (nil is the
+// real type-check): a file whose package the rewrite left failing to
+// type-check is put back and returned in reverted, never in changed.
 func formatGoTreeFiltered(root string, keep func(rel string) bool) ([]string, error) {
-	var changed []string
-	err := walkGoFormat(root, keep, func(rel, abs string, src, formatted []byte) error {
-		if err := writeFormatted(abs, formatted); err != nil {
-			return err
+	changed, _, err := formatGoTreeVerified(root, keep, fixTypecheck)
+	return changed, err
+}
+
+// formatGoTreeVerified is formatGoTreeFiltered with the type-check injected.
+func formatGoTreeVerified(root string, keep func(rel string) bool, check goTypecheck) (changed []string, reverted []revertedGoFix, err error) {
+	set := newGoFixSet(root)
+	var written []string
+	err = walkGoFormat(root, keep, func(rel, abs string, src, formatted []byte) error {
+		mode := fs.FileMode(0o644)
+		if info, statErr := os.Stat(abs); statErr == nil {
+			mode = info.Mode().Perm()
 		}
-		changed = append(changed, filepath.FromSlash(rel))
+		if werr := set.write(abs, formatted, mode); werr != nil {
+			return werr
+		}
+		written = append(written, rel)
 		return nil
 	})
-	return changed, err
+	reverted = set.settle(check)
+	for _, rel := range written {
+		if set.applied(filepath.Join(root, filepath.FromSlash(rel))) {
+			changed = append(changed, filepath.FromSlash(rel))
+		}
+	}
+	return changed, reverted, err
 }
 
 // walkGoFormat visits every owned Go file under the project's source trees
@@ -182,15 +201,6 @@ func walkGoFormat(root string, keep func(rel string) bool, visit func(rel, abs s
 	return nil
 }
 
-// writeFormatted rewrites path with data, preserving the file's mode.
-func writeFormatted(path string, data []byte) error {
-	mode := fs.FileMode(0o644)
-	if info, statErr := os.Stat(path); statErr == nil {
-		mode = info.Mode().Perm()
-	}
-	return atomicfile.WriteFile(path, data, mode)
-}
-
 // keepForPaths turns the positional Go package patterns of `forge lint
 // [paths...]` into the file filter the format pre-pass honours. No paths, or a
 // pattern naming the whole module (".", "./...", "..."), is the whole tree
@@ -226,7 +236,8 @@ func keepForPaths(paths []string) func(rel string) bool {
 // formatter) still runs behind it and will surface anything the pre-pass
 // could not apply.
 func reportFormatPrePass(cwd string, paths []string) {
-	changed, err := formatGoTreeFiltered(cwd, keepForPaths(paths))
+	changed, reverted, err := formatGoTreeVerified(cwd, keepForPaths(paths), fixTypecheck)
+	printRevertedGoFixes(os.Stderr, "auto-format pre-pass", reverted)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  auto-format pre-pass: %v\n", err)
 		return

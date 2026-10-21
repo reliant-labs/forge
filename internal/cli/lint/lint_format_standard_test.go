@@ -167,19 +167,25 @@ func TestFormatGoTreeFiltered_TouchesOnlyTheScope(t *testing.T) {
 
 // `forge lint --help` says that lint rewrites files by default and how to
 // stop it, where an agent reading the synopsis will see it.
-func TestLintHelpSaysItFixesByDefault(t *testing.T) {
+func TestLintHelpSaysItIsReportOnly(t *testing.T) {
 	cmd := newCmd(testFactory())
-	if !strings.Contains(cmd.Short, "auto-fix") {
-		t.Errorf("Short does not say lint auto-fixes: %q", cmd.Short)
+	if !strings.Contains(cmd.Short, "report-only") || !strings.Contains(cmd.Short, "--fix") {
+		t.Errorf("Short does not say lint is report-only unless --fix: %q", cmd.Short)
 	}
 	for _, flag := range []string{"scope", "quiet"} {
-		usage := cmd.Flags().Lookup(flag).Usage
-		if !strings.Contains(usage, "--no-fix") || !strings.Contains(usage, "--check") || !strings.Contains(usage, "CI") {
-			t.Errorf("--%s usage does not say auto-fix applies and that CI, --check or --no-fix stops it: %q", flag, usage)
+		if usage := cmd.Flags().Lookup(flag).Usage; !strings.Contains(usage, "--fix") {
+			t.Errorf("--%s usage does not say what --fix does under it: %q", flag, usage)
 		}
 	}
-	if long := strings.Join(strings.Fields(cmd.Long), " "); !strings.Contains(long, "never rewrites a file the project's own formatter gate accepts") ||
-		!strings.Contains(long, "REWRITING FILES IN PLACE") {
-		t.Errorf("Long does not say the pre-pass formats to the project's own gate:\n%s", cmd.Long)
+	long := strings.Join(strings.Fields(cmd.Long), " ")
+	for _, want := range []string{
+		"REPORT-ONLY BY DEFAULT",
+		"REWRITING FILES IN PLACE",
+		"never rewrites a file the project's own formatter gate accepts",
+		"never applies golangci-lint's fixes",
+	} {
+		if !strings.Contains(long, want) {
+			t.Errorf("Long lacks %q:\n%s", want, cmd.Long)
+		}
 	}
 }

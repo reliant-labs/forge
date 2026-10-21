@@ -237,30 +237,33 @@ and each is runnable on its own:
 
 Run `task ci` locally before pushing to reproduce the whole CI gate.
 
-## `forge lint` under CI: report-only
+## `forge lint` is report-only
 
-Locally `forge lint` auto-fixes deterministic-safe issues (gofmt/goimports,
-prettier, golangci `--fix`, eslint `--fix`) and then gates. On a CI runner that
-is the wrong default: the checkout is thrown away, so a fixer that quietly
-repairs it turns "this commit is unformatted" into a green build.
+`forge lint` is a gate, and a gate reports: everywhere — your machine, an
+agent's loop, a CI runner — it writes nothing, prints the unified diff each
+fix would have applied, and exits non-zero if any is pending. A lint that
+rewrote files used to rewrite other people's: in a shared checkout it
+reformatted files another PR owned, and golangci-lint's `--fix` turned an
+SA9004 finding into a const block that no longer compiled.
 
-So when the `CI` environment variable is set (GitHub Actions, GitLab, CircleCI
-and the rest set it) `forge lint` is **report-only** without being told to: it
-writes nothing, prints the unified diff each fix would have applied, and exits
-non-zero if any is pending. Say so explicitly anywhere with `--check` (also
-spelled `--no-fix`); force fixing even under CI with `--fix`.
+`forge lint --fix` applies the mechanical fixes in place, then gates:
+gofmt/goimports formatting, the tracing lint's log-call rewrite, prettier and
+`eslint --fix`. Every Go rewrite is type-checked afterwards, and a fix that
+leaves its package failing is put back and reported. golangci-lint's own
+fixes (staticcheck, gocritic, …) are never applied — they are code changes,
+so they stay findings for you to make.
 
-| Where            | Flags     | Result                                       |
-| ---------------- | --------- | -------------------------------------------- |
-| your machine     | none      | fixes in place, then gates                   |
-| your machine     | `--check` | report-only, non-zero if anything is pending |
-| CI (`CI` is set) | none      | report-only, non-zero if anything is pending |
-| CI (`CI` is set) | `--fix`   | fixes in place, then gates                   |
+| Flags                  | Result                                       |
+| ---------------------- | -------------------------------------------- |
+| none                   | report-only, non-zero if anything is pending |
+| `--check` / `--no-fix` | the same, said explicitly                    |
+| `--fix`                | fixes in place (verified), then gates        |
 
 A pending fix is a failing `format` lane in the verdict and in `--gate-json`
-evidence, so a pipeline needs no flag to get the strict behaviour. To fix what
-CI reported, run `forge lint` locally and commit the result. `--json` is
-always detect-only, and so are the targeted lanes (`--contract`, `--db`, …).
+evidence, so a pipeline needs no flag to get the strict behaviour. To fix
+what the gate reported, run `forge lint --fix` and commit the result.
+`--json` is always detect-only, and so are the targeted lanes (`--contract`,
+`--db`, …).
 
 ## Linting the workflows themselves
 

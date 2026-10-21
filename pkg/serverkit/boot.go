@@ -3,7 +3,6 @@ package serverkit
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -52,6 +51,9 @@ func StartBootProbes(ctx context.Context, cfg Config, logger *slog.Logger) (cont
 	if cfg.Addr == "" {
 		return ctx, nil, fmt.Errorf("serverkit.StartBootProbes: Config.Addr is required")
 	}
+	if err := cfg.Probes.Validate(); err != nil {
+		return ctx, nil, fmt.Errorf("serverkit.StartBootProbes: Config.Probes: %w", err)
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -61,20 +63,19 @@ func StartBootProbes(ctx context.Context, cfg Config, logger *slog.Logger) (cont
 	}
 	b := &BootProbes{logger: logger, addr: cfg.Addr, pending: map[string]struct{}{}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+	for path, h := range cfg.Probes.routes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := readyzResponse{Status: "not_ready"}
 		for _, name := range b.pendingNames() {
 			resp.Checks = append(resp.Checks, readyzCheckStatus{Name: name, OK: false})
 		}
 		writeReadyz(w, http.StatusServiceUnavailable, resp)
-	})
+	})) {
+		mux.Handle(path, h)
+	}
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = b.srv.Serve(ln) }()
-	logger.InfoContext(ctx, "boot probes listening — /readyz fails until the server is composed", "addr", cfg.Addr)
+	logger.InfoContext(ctx, "boot probes listening — readiness fails until the server is composed",
+		"addr", cfg.Addr, "liveness", cfg.Probes.Live, "readiness", cfg.Probes.Ready)
 	return context.WithValue(ctx, bootKey{}, b), b, nil
 }
 

@@ -53,7 +53,7 @@ import (
 var processConfigFields = []string{
 	"Port", "OtlpEndpoint", "PprofAddr", "TlsCertPath", "TlsKeyPath", "LogFormat", "LogLevel",
 	"Environment", "ReadMaxBytes", "SendMaxBytes", "SecurityHeadersEnabled", "CorsAllowCredentials",
-	"CorsOrigins", "PreStopDelay", "ShutdownTimeout",
+	"CorsOrigins", "PreStopDelay", "ShutdownTimeout", "LivenessPaths", "ReadinessPaths",
 }
 
 // databaseConfigFields are the fields a root reaches when it reaches the

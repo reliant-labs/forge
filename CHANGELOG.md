@@ -385,7 +385,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   swallows it (absent-is-success) and every existing check keep working. The
   generated delegates now only forward, and no longer import `errors` or
   `pkg/svcerr`. **Migration note:** nothing that checked either error breaks;
-  `ignoreNotFound`-style helpers that test both can test one. A caller that
+  `ignoreNotFound`-style helpers that test both can test one. Two checks
+  that never fired now do: `errors.Is(err, sql.ErrNoRows)` after a `Get…`,
+  and `svcerr.IsNotFound(err)` after an Update or Delete. A caller that
   compared the error with `==` (never correct: it was wrapped) or matched its
   text sees `"<entity> not found"` in place of `"sql: no rows in result set"`.
 - **`Create<E>` and `Upsert<E>` keep a caller-set `updated_at`.** Managed

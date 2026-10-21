@@ -86,6 +86,29 @@ export function freshTraceparent(): string {
 }
 
 /**
+ * TRACERESPONSE_HEADER is the W3C Trace Context Level 2 response header a
+ * forge server sets on every Connect response, failed ones included: the
+ * context of ITS server span (forge/pkg/observe TraceResponseInterceptor).
+ * It is the authoritative answer to "which trace did this request land in" —
+ * the traceparent the browser sent is only a request, which a server that does
+ * not trust remote parents, or a proxy that restarts the trace, overrides.
+ */
+export const TRACERESPONSE_HEADER = "traceresponse";
+
+/**
+ * traceIdFrom extracts the trace id from a traceparent or traceresponse value
+ * (`00-<trace-id>-<span-id>-<flags>`), or returns null for anything malformed
+ * or an all-zero id.
+ */
+export function traceIdFrom(value: string | null | undefined): string | null {
+  if (!value || !TRACEPARENT_RE.test(value.trim())) {
+    return null;
+  }
+  const traceId = value.trim().split("-")[1] ?? null;
+  return traceId === ZERO_TRACE_ID ? null : traceId;
+}
+
+/**
  * injectTraceContext writes a `traceparent` (and any accompanying W3C
  * context headers, e.g. `tracestate`) onto the outgoing request headers.
  *

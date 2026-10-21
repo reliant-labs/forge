@@ -26,6 +26,12 @@ func write(t *testing.T, root, rel, body string) {
 func loadTree(t *testing.T, root string) *ProjectConfig {
 	t.Helper()
 	write(t, root, "forge.yaml", "name: demo\nmodule_path: example.com/demo\n")
+	// Every tree these tests model is a Go project (it declares a
+	// module_path), and features such as contracts and ci derive from the
+	// go.mod (ProjectConfig.HasGoModule). A site's tree is site_test.go's.
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); os.IsNotExist(err) {
+		write(t, root, "go.mod", "module example.com/demo\n\ngo 1.24\n")
+	}
 	cfg, err := LoadProjectDir(root)
 	if err != nil {
 		t.Fatalf("load: %v", err)

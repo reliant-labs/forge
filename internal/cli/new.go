@@ -80,6 +80,9 @@ Pick a project kind with --kind:
                             no proto/services, no deploy/.
   --kind library            Pure Go module: pkg/<name>/ skeleton, no cmd/,
                             no CI workflows by default.
+  --kind site               A static site: adopt the frontend at the root of
+                            the current directory (with --in-place). Writes
+                            forge.yaml and deploy/kcl envs only — no Go.
 
 Use --disable to turn features off at creation time. Each is pinned off in
 forge.yaml's features: block, so a later change to the tree does not turn it
@@ -152,7 +155,7 @@ checkout stop being the same source; drop the bridge with
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (e.g., github.com/example/my-project). Defaults to example.com/<name>, so a first project needs no flag; set it to the path you will publish under")
-	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
+	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (adopt the static frontend at this directory's root, with --in-place)")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&frontendOutput, "output", "", "Output for every --frontend: static (default), standalone, or server")
@@ -209,13 +212,13 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 		kind = config.ProjectKindService
 	}
 	switch kind {
-	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary:
+	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary, projectKindSite:
 		// ok
 	default:
 		return "", "", "", cliutil.UserErr("forge project new",
-			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library", kindFlag),
+			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library, site", kindFlag),
 			"",
-			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, or --kind=library for a pure Go module")
+			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, --kind=library for a pure Go module, or --kind=site (with --in-place) to adopt a static frontend")
 	}
 
 	// Validate --buf-plugins. Default 'local' (no BSR auth required); the
@@ -289,9 +292,34 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	if err != nil {
 		return err
 	}
+	if kindNormalized == projectKindSite {
+		if !inPlace {
+			return runNewSite("", projectName, false, force, harness)
+		}
+		targetPath, name, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
+		if err != nil {
+			return err
+		}
+		return runNewSite(targetPath, name, inPlace, force, harness)
+	}
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
 	if err != nil {
 		return err
+	}
+	// A directory whose ROOT is a frontend app, and which is no Go module, is
+	// a static site. The service scaffold would write a Go server beside it
+	// and never declare the app; say so instead, unless --kind or --service
+	// asked for a backend explicitly.
+	if inPlace && strings.TrimSpace(kindFlag) == "" && len(serviceNames) == 0 && len(frontendNames) == 0 {
+		if _, statErr := os.Stat(filepath.Join(targetPath, "go.mod")); os.IsNotExist(statErr) {
+			if apps := detectExistingFrontendAppsIn(targetPath, []string{"."}); len(apps) > 0 {
+				return cliutil.UserErr("forge project new --in-place",
+					fmt.Sprintf("%s is a %s app at its root, with no Go module", targetPath, apps[0].framework()),
+					"",
+					"adopt it as a static site: forge project new --in-place --kind site --name <name>. "+
+						"To scaffold a Go backend beside it instead, pass --kind service (or --service <entity>)")
+			}
+		}
 	}
 	// An in-place target may be a module that already requires forge. Its
 	// pin is adopted, never moved — see new_inplace_forge_pin.go.

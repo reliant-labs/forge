@@ -12,7 +12,8 @@ then, not before.
 **Building a landing page, marketing site, docs site or SPA with no backend of
 its own?** That is a static site, and forge ships it too: a static export bound
 to hosted static hosting (the platform owns the bucket and the CDN), with envs,
-build-once releases and promotion from day 0. Load `deploy/static-site`
+build-once releases and promotion from day 0. An existing one is adopted in
+place: `forge project new --in-place --kind site`. Load `deploy/static-site`
 instead of reading on: the service sequence below is for apps with an API.
 
 ## Greenfield, end to end

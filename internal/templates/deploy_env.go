@@ -36,6 +36,16 @@ type EnvTemplateData struct {
 	// --bind` rewrites.
 	FrontendIdent  string
 	FrontendRoutes []string
+	// FrontendPath is the frontend's directory relative to the project root:
+	// frontends/<name> for a scaffolded one, "." for a site adopted in place
+	// (`forge project new --in-place --kind site`), whose app IS the root.
+	FrontendPath string
+	// FrontendType is the KCL forge.Frontend.type to declare ("vite",
+	// "nextjs"); empty leaves the schema default (nextjs) implicit.
+	FrontendType string
+	// FrontendPublicDir is where the static build lands, relative to
+	// FrontendPath: "out" for a Next.js static export, "dist" for Vite.
+	FrontendPublicDir string
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string
@@ -61,6 +71,12 @@ func (d EnvTemplateData) withDefaults() interface{} {
 	}
 	if d.FrontendIdent == "" {
 		d.FrontendIdent = strings.NewReplacer("-", "_", ".", "_").Replace(d.FrontendName)
+	}
+	if d.FrontendPath == "" {
+		d.FrontendPath = "frontends/" + d.FrontendName
+	}
+	if d.FrontendPublicDir == "" {
+		d.FrontendPublicDir = "out"
 	}
 	if d.Replicas == 0 {
 		d.Replicas, d.CPURequest, d.CPULimit, d.MemoryRequestMiB, d.MemoryLimitMiB = 3, "0.5", "2.0", 512, 1024

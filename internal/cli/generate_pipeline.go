@@ -379,7 +379,7 @@ func generateSteps() []GenStep {
 		// its writes are journaled so a later failure restores them.
 		{Name: "sync forge KCL module vendor", Gate: always, Run: stepSyncForgeKCL, Tag: "config"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
-		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config", Writes: writesGenGoMod},
+		{Name: "ensure gen/go.mod", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepEnsureGenModule, Tag: "config", Writes: writesGenGoMod},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto", Writes: writesBufGo},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto", Writes: writesDescriptor},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto", Writes: writesOpenAPI},
@@ -400,7 +400,7 @@ func generateSteps() []GenStep {
 		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no services/workers/operators or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
 		{Name: "CRUD handlers", Gate: gateCRUDProjection, GateReason: "no Connect services defined, features.codegen=false, or features.orm=false", Run: stepCRUDHandlers, Tag: "codegen"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
-		{Name: "internal package contracts", Gate: gateContractsEnabled, GateReason: "features.contracts=false", Run: stepInternalContracts, Tag: "codegen"},
+		{Name: "internal package contracts", Gate: and(gateContractsEnabled, hasGoModule), GateReason: "features.contracts=false, or " + noGoModuleReason, Run: stepInternalContracts, Tag: "codegen"},
 		// Auth is owned code now (internal/app/auth.go's SetupAuth),
 		// scaffolded alongside providers.go in the internal/app composition
 		// step below — there is no auth-config codegen step.
@@ -419,7 +419,7 @@ func generateSteps() []GenStep {
 		// both tidies and the validation build, so what a hook emits is
 		// tidied and compiled in this same run.
 		{Name: generateHooksStep, Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
-		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
+		{Name: "go mod tidy (gen/)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
 		// NOT gated on features.deploy. The Tier-1 files this sweep writes
 		// each carry their own enabledFor predicate and none is a deploy
 		// artifact (deploy/alloy-config.alloy gates on observability, not
@@ -453,7 +453,7 @@ func generateSteps() []GenStep {
 		// creates it when it is absent (an upgrade from a build that predates
 		// it, or a project whose deploy/ was scaffolded before the first
 		// component existed). Drift is reported by `forge lint`, not repaired.
-		{Name: "workloads.k (scaffold once)", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepWorkloadsKCL, Tag: "deploy"},
+		{Name: "workloads.k (scaffold once)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason + ": there is no workload to declare", Run: stepWorkloadsKCL, Tag: "deploy"},
 		// Dashboards are a projection of the services the descriptor and the
 		// parsed protos describe, so they follow "parse services + module
 		// path". Owned overrides live beside the _gen files; see obsdash.
@@ -484,7 +484,7 @@ func generateSteps() []GenStep {
 		// disk. Running earlier, the first generate of a fresh project saw
 		// its hosted staging and prod fail to render, took them for cluster
 		// envs, and wrote a deploy.yml beside the scaffold's release.yml.
-		{Name: "CI workflows", Gate: and(feature(config.FeaturesConfig.CIEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
+		{Name: "CI workflows", Gate: and(feature(config.FeaturesConfig.CIEnabled), hasForgeYAML, hasGoModule), GateReason: "no forge.yaml, features.ci=false, or " + noGoModuleReason + ": the workflows install forge from go.mod and run the Go lanes", Run: stepCIWorkflows, Tag: "deploy"},
 		// Ingress (Gateway API codegen — the k3d-ports fragment and, in
 		// later phases, other ingress-derived artifacts) is off when
 		// features.ingress is explicitly false OR features.deploy is off
@@ -494,13 +494,13 @@ func generateSteps() []GenStep {
 		// features.deploy alone (not on operators being configured): the
 		// emitter is a function of what is on disk, and a project with no
 		// api/ directory — most of them — does nothing here.
-		{Name: "CRD KCL manifests (api/ Go types)", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepCRDKCL, Tag: "deploy"},
+		{Name: "CRD KCL manifests (api/ Go types)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason, Run: stepCRDKCL, Tag: "deploy"},
 		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasServices), GateReason: "no services (an entity is a table a service's CRUD rpcs name) or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
 		{Name: "retire delivered agent skills", Gate: always, Run: stepRetireAgentSkills, Tag: "tools"},
-		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
-		{Name: "goimports on generated Go", Gate: always, Run: stepGoimports, Tag: "tools"},
+		{Name: "go mod tidy (root)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
+		{Name: "goimports on generated Go", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoimports, Tag: "tools"},
 		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
 		// Runs after every Tier-1 emitter so checksums.Tier1TargetSet is
 		// complete: drop disowns whose path forge no longer Tier-1-owns
@@ -522,7 +522,7 @@ func generateSteps() []GenStep {
 		// pb reference there would otherwise surface only at the user's
 		// next `go test`. See generate_stale_scaffold.go.
 		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
-		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepGoBuildValidate, Tag: "validate"},
+		{Name: "go build (validate generated code)", Gate: and(gateValidateNotSkipped, hasGoModule), GateReason: "--skip-validate was passed, or " + noGoModuleReason, Run: stepGoBuildValidate, Tag: "validate"},
 		// The deploy tree must COMPILE, and a tree that does not is a hard
 		// failure rather than a warning. See generate_kcl_loadable.go: a
 		// generate that exits 0 on an unrenderable tree defers the discovery
@@ -872,6 +872,15 @@ func hasConfig(ctx *pipelineContext) bool   { return ctx.HasConfig }
 // that emit forge.yaml-derived artifacts AND it in so the directory-scan
 // fallback (Cfg == nil) skips them rather than panicking on a nil Cfg.
 func hasForgeYAML(ctx *pipelineContext) bool { return ctx.Cfg != nil }
+
+// hasGoModule is true when the project is a Go module (a go.mod at its
+// root; config.ProjectConfig.HasGoModule). A static site has none, and the
+// steps gated on it — the tidies, goimports, the compile check, the contract
+// and CRD emitters — have no Go to act on: run, they fail on `pattern ./...`.
+// The directory-scan fallback (no forge.yaml) keeps the old behaviour.
+func hasGoModule(ctx *pipelineContext) bool { return ctx.Cfg == nil || ctx.Cfg.HasGoModule() }
+
+const noGoModuleReason = "no go.mod (a project with no Go code, e.g. a static site)"
 
 // hasDeployEnvs is true when at least one deploy/kcl/<env>/main.k exists.
 // It is the precondition for the file those envs IMPORT (config_gen.k)

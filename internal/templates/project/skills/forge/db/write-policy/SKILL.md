@@ -202,3 +202,11 @@ value, and a masked update naming an unset column sets it back to its DEFAULT.
 Reads always fill the pointer. `forge:read-only` columns the create request
 does not carry are left unset the same way, so their DEFAULT is the row's
 initial state.
+
+Managed timestamps follow the same rule. `Create` and `Upsert` stamp
+`created_at` and `updated_at` with now only when the field is unset (zero
+time, `nil`, `""`) and keep a value you set, so an imported or replayed row
+keeps its own times; `Upsert` writes that one `updated_at` on either branch.
+`Update` and `UpdateMasked` always re-stamp `updated_at`: an entity read back
+and written again still carries its old value, which is not a decision. Keep
+a client off a wire `created_at`/`updated_at` with `forge:read-only`.

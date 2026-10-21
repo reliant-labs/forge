@@ -386,6 +386,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A generated store reports a missing row one way.** `Get<E>ByID`,
+  `Get<E>ByPK` and a view's `Get<E>ByID` returned `svcerr.NotFound`, while
+  `Update<E>`, `Update<E>Masked`, `Delete<E>` and `Delete<E>ByPK` returned
+  `orm.ErrNoRows`, so a caller touching both checked both. `crud.Repo` now
+  answers every by-key miss (and `crud.ScopedGet`'s) with
+  `svcerr.NotFound("<entity>")` carrying `orm.ErrNoRows` as its cause:
+  `svcerr.IsNotFound(err)` and `errors.Is(err, orm.ErrNoRows)` (=
+  `sql.ErrNoRows`) are both true. `svcerr.NotFound` is the answer because it
+  is the domain category `svcerr.Wrap` maps to CodeNotFound and a service can
+  return as-is; the sentinel stays reachable so a Persist closure that
+  swallows it (absent-is-success) and every existing check keep working. The
+  generated delegates now only forward, and no longer import `errors` or
+  `pkg/svcerr`. **Migration note:** nothing that checked either error breaks;
+  `ignoreNotFound`-style helpers that test both can test one. Two checks
+  that never fired now do: `errors.Is(err, sql.ErrNoRows)` after a `Get…`,
+  and `svcerr.IsNotFound(err)` after an Update or Delete. A caller that
+  compared the error with `==` (never correct: it was wrapped) or matched its
+  text sees `"<entity> not found"` in place of `"sql: no rows in result set"`.
+- **`Create<E>` and `Upsert<E>` keep a caller-set `updated_at`.** Managed
+  timestamps follow explicit-beats-default, the rule a `NOT NULL DEFAULT`
+  column follows: `created_at` and `updated_at` get now only when unset (zero
+  time, `nil`, `""`), and a value the caller set is kept — Create overwrote
+  `updated_at` unconditionally, so rows that carry their own times (reliant's
+  drafts and scenarios) had to bypass it. `Upsert` writes the same
+  `updated_at` on either branch. `Update`/`UpdateMasked` still always
+  re-stamp `updated_at`. **Migration note:** a Create of a struct that still
+  holds a stale non-zero `updated_at` (copied from another row) now stores
+  that value; zero it, or set it to now, to stamp.
+- **`List<E>` with no limit returns every row instead of the first 10,000.**
+  A limit-less `crud.Repo.List` was capped at 10,000 rows with no error and
+  no flag, so a table that outgrew it silently returned a wrong answer. The
+  cap is gone: no `orm.WithLimit` means all matching rows, as `ListAll`
+  already did. Bound a read with `orm.WithLimit`, or walk a growing table a
+  page at a time (`WhereGt` on the key + `WithOrderBy` + `WithLimit`). The
+  paged List rpcs are unchanged: they clamp `page_size` to `MaxPageSize` and
+  always pass their own limit. **Migration note:** a direct caller that
+  relied on the cap to bound memory must now pass `orm.WithLimit`.
+
 - **Every ORM statement is sent with its values as bind parameters, not just
   the by-key ones.** bun formats values into the SQL text, so under pgx's
   default statement cache each new id, timestamp or body was a new statement

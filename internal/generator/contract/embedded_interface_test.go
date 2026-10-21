@@ -152,7 +152,7 @@ func newObserveChain() *observe.ComponentChain { return nil }
 	if err != nil {
 		t.Fatalf("ParseContract: %v", err)
 	}
-	if _, err := WriteObservedDecorator(cf, pipeline, "Service", "", "", "pipeline", Options{}); err != nil {
+	if _, err := WriteObservedDecorator(cf, pipeline, "Service", "", "", "pipeline", nil, Options{}); err != nil {
 		t.Fatalf("WriteObservedDecorator: %v", err)
 	}
 

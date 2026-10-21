@@ -33,7 +33,7 @@ func TestGenerate_ParamsNamedLikeBodyIdentifiers(t *testing.T) {
 		t.Fatalf("ParseContract: %v", err)
 	}
 	written, err := WriteObservedDecorator(cf, dir, "Service", "NewServiceWithForgeMiddleware",
-		"forgeMiddlewareService", "identcollision", Options{})
+		"forgeMiddlewareService", "identcollision", nil, Options{})
 	if err != nil || !written {
 		t.Fatalf("WriteObservedDecorator: written=%v err=%v", written, err)
 	}

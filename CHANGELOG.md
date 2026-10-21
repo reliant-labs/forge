@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   id joins a screenshot of an error, the browser's record, and every server
   span and log line of the request.
 
+- **Every contract package is instrumented by default.** A package whose
+  constructor returns its `Service` interface now gets `middleware_gen.go`
+  (one span, the call metrics and a failure log per method), and compose.go
+  constructs it wrapped, with no `// forge:constructor` marker and no
+  `observe_chain.go` seam. The gate on those two had left every package that
+  predated the scaffold silently untraced: 26 of the control plane's 46,
+  including its hottest business paths, so most of its traces were a single
+  span. Without a seam the decorator builds the new
+  `observe.DefaultComponentChain(scope, name, level)`, which is what the
+  scaffolded seam assembles. Nothing is scaffolded into the package, and the
+  seam is now an optional override. `forge generate` also brings an existing
+  compose.go construction in line when the decision changes, in both the
+  `NewComponents` and the composition-graph (`new<X>` method) shapes: it wraps
+  a component that is now instrumented, and unwraps one that gained
+  `// forge:no-observe`. `// forge:no-observe` on the package or on one method
+  remains the opt-out. Constructions written by hand (`providers.go`,
+  `*_wire.go`) are yours to wrap; `forge lint --tracing`'s
+  `forge-tracing-contract-uninstrumented` finds them, with the same decision.
+
 - **`orm.Client.DBTX`, `SQLConn(ctx)` and `InTx(ctx)`: sqlc and hand-written
   database/sql code join the ORM's transaction.** A project porting onto the
   ORM keeps sqlc on the same pool for a while, and until now a sqlc call
@@ -376,6 +395,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives containers or dials an external host with no `testing.Short` check
   on the way; `go test -short -json ./... | forge ci test-budget` fails on
   any unmarked top-level test over `--budget` (default 2s), with file:line.
+- **`forge lint --slow-tests`: git against a repo in a temp dir is not slow
+  work.** An exec of `git` whose `Dir` (or, with none, an argument such as
+  `-C <dir>` / `init <dir>`) comes from `t.TempDir()` or `os.MkdirTemp` is
+  no longer reported: such a fixture repo reads nothing the test cache cannot
+  see and is usually milliseconds; `forge ci test-budget` still reports one
+  that is slow. The directory is followed through locals, struct fields set
+  in the same function, functions that return a temp dir, and helper
+  parameters across packages (the slow fact carries the parameter). git over
+  the checkout is still reported. Findings: forge 146 → 48, reliant
+  205 → 111, control-plane 3 → 2.
 - **The interceptor chain has a `Deadline` slot, ahead of `Auth`
   (`forge/pkg/serverkit`).** `ChainDeps.Deadline` takes a `serverkit.Deadline`
   — the slot's configuration and its interceptor in one value — and runs right
@@ -731,8 +760,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/obsdash`'s HyperDX renderer refuses a field through `CheckField`,
   and a test holds the two to the same vocabulary.
 
+### Removed
+
+- **The `enforce-component-observe` lint and `config.enforce_component_observe`.**
+  It failed a package that had made no observability decision. Being
+  instrumented is now the default decision, so there is nothing left for it
+  to enforce. Delete the key if your forge.yaml sets it.
+
 ### Fixed
 
+- **forge rides out a k3s server that crashes while a k3d cluster boots.**
+  k3d waits for a server's "k3s is up and running" log line and gives up the
+  moment the container restarts (`stopped returning log lines: … status=restarting`),
+  although Docker's restart policy brings k3s back. forge now keeps a new
+  cluster's nodes on failure (`--no-rollback`, only for a name that did not
+  exist), and when a server restarted it deletes the half-made cluster and
+  creates it once more, printing the server's exit and last log lines. Any
+  other failure is rolled back and returned as before; a second crash fails
+  with both reasons.
 - **`forge lint ./internal/x/...` no longer reformats packages you did not name.**
   The auto-fix pre-pass (`gofmt`/`goimports`, then `golangci-lint --fix` and the
   frontend formatter) honoured `--scope`, but ignored the positional package

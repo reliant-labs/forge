@@ -105,8 +105,7 @@ const (
 // PACKAGE-level observability markers, returning them in one AST walk:
 //
 //   - hasConstructorMarker: `// forge:constructor` on the constructor's doc
-//     (any name — see IsComponentConstructor) — the
-//     opt-in signal for the generated decorator.
+//     (any name — see IsComponentConstructor).
 //   - hasNoObserve: `// forge:no-observe` on the constructor's doc, the package
 //     doc comment, or the contract interface's doc — the package-level opt-out.
 //
@@ -174,8 +173,7 @@ func observePackageDecision(dir string) (hasConstructorMarker, hasNoObserve bool
 }
 
 // HasConstructorMarker reports whether the package rooted at dir carries the
-// `// forge:constructor` marker on its `func New` doc comment — the opt-in
-// signal for the generated observability decorator.
+// `// forge:constructor` marker on its constructor's doc comment.
 func HasConstructorMarker(dir string) bool {
 	m, _ := observePackageDecision(dir)
 	return m
@@ -469,11 +467,9 @@ func parseReasonedDirective(raw, directive string) (reason string, ok bool) {
 // HasOutboundIODirective reports whether the package rooted at dir declares
 // `//forge:outbound-io` in any of its non-test .go files — the marker the
 // adapter scaffold stamps on contract.go. It asserts one property: this
-// package calls OUT to a third-party system and nothing calls in. Two
-// mechanisms read it — the outbound-io-no-rpc contract check (an inbound
-// handler contradicts the claim) and the enforce-component-observe lint's
-// I/O heuristic (an outbound boundary does I/O by definition, so a component
-// depending on one touches I/O).
+// package calls OUT to a third-party system and nothing calls in. The
+// outbound-io-no-rpc contract check reads it (an inbound handler contradicts
+// the claim).
 func HasOutboundIODirective(dir string) bool {
 	return packageHasDirective(dir, "forge:outbound-io")
 }

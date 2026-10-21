@@ -345,33 +345,6 @@ func TestConfigGuardConfig_EffectiveEnforceTypedAccess(t *testing.T) {
 	}
 }
 
-func TestConfigGuardConfig_EffectiveEnforceComponentObserve(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"absent defaults to error", "", EnforceComponentObserveError},
-		{"whitespace defaults to error", "   ", EnforceComponentObserveError},
-		{"off", "off", EnforceComponentObserveOff},
-		{"error", "error", EnforceComponentObserveError},
-		{"case-insensitive Off", "Off", EnforceComponentObserveOff},
-		{"unknown defaults to error", "nonsense", EnforceComponentObserveError},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := ConfigGuardConfig{EnforceComponentObserve: tt.in}
-			if got := c.EffectiveEnforceComponentObserve(); got != tt.want {
-				t.Errorf("EffectiveEnforceComponentObserve(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-			wantEnabled := tt.want != EnforceComponentObserveOff
-			if got := c.ComponentObserveGuardEnabled(); got != wantEnabled {
-				t.Errorf("ComponentObserveGuardEnabled(%q) = %v, want %v", tt.in, got, wantEnabled)
-			}
-		})
-	}
-}
-
 func TestConfigGuardConfig_EffectiveLoaderPackage(t *testing.T) {
 	if got := (ConfigGuardConfig{}).EffectiveLoaderPackage(); got != DefaultLoaderPackage {
 		t.Errorf("absent loader_package = %q, want %q", got, DefaultLoaderPackage)

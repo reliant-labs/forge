@@ -33,6 +33,13 @@ func RawGuard(t testing.TB) { // want RawGuard:"marks slow"
 	}
 }
 
+// GitIn runs git in dir: slow work only when dir is not a temp dir.
+func GitIn(dir string, args ...string) { // want GitIn:"slow unless arg 0 is a temp dir: execs `git` at helper.go:38"
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	_ = cmd.Run()
+}
+
 // fast does nothing slow, so it gets no fact (and is unexported anyway).
 func fast() int { return 1 }
 

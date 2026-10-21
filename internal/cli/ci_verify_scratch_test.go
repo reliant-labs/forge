@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -506,6 +507,42 @@ func TestVerifyScratch_WorksInAShallowClone(t *testing.T) {
 	} {
 		if _, err := scratchGit(context.Background(), s.top, nil, args...); err != nil {
 			t.Errorf("git %v in the scratch copy of a shallow clone: %v", args, err)
+		}
+	}
+}
+
+// TestIsolateGit_CommitSpawnsNoBackgroundMaintenance pins, deterministically,
+// the fix #940 made for TestVerifyGenerated_LeavesTheCheckoutByteIdentical's
+// flake: under a default config `git commit` starts `git maintenance run
+// --auto --detach`, which holds .git/objects/maintenance.lock after commit
+// returns, so a fixture repository kept being written by a process no test
+// waited for. Asserted on git's own trace of the processes commit starts, so
+// it fails whenever isolateGit stops disabling maintenance, not only when the
+// detached child happens to be slow.
+func TestIsolateGit_CommitSpawnsNoBackgroundMaintenance(t *testing.T) {
+	isolateGit(t)
+	repo := t.TempDir()
+	gitOut(t, repo, "init", "-q")
+	writeTestFile(t, filepath.Join(repo, "a.txt"), "a\n")
+	gitOut(t, repo, "add", "-A")
+
+	trace := filepath.Join(t.TempDir(), "trace2.json")
+	cmd := exec.Command("git", "commit", "-q", "-m", "init")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GIT_TRACE2_EVENT="+trace)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	events, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("read git's trace2 events: %v", err)
+	}
+	for _, line := range strings.Split(string(events), "\n") {
+		if !strings.Contains(line, `"event":"child_start"`) {
+			continue
+		}
+		if strings.Contains(line, `"maintenance"`) || strings.Contains(line, `"gc"`) {
+			t.Fatalf("git commit in an isolateGit repository started background maintenance — a writer the fixture never waits for:\n%s", line)
 		}
 	}
 }

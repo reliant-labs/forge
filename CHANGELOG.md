@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
+  and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
+  Two opt-in components on the Bundle, like `observability` and `identity`:
+  `openbao = forge.OpenBao {}` (Raft x3 by default, TLS listeners, a generated
+  static seal key escrowed through `bootstrap_source`, audit on, a service-account
+  writer) and `external_secrets_operators = [forge.ExternalSecretsOperator {cluster}]`
+  (one hardened, cluster-wide ESO per cluster; a second for one cluster is refused).
+  A `forge.ExternalSecret` gains `source = forge.StoreSource {store, data, templates,
+  generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
+  `OpenBaoStore` or `GCPSecretManagerStore`, and `out_of_band_reason` for the ones
+  that stay out of band once any is store-backed. `forge.BootstrapSecret` and
+  `bootstrap_source = forge.GCPSecretManager {project} | forge.OutOfBand {}` name the
+  values the store needs before it can serve a read. `forge.GeneratedSecret` gains
+  kinds `password`, `ec_p256_pkcs8`, `rsa_2048` and `ec_p256_selfsigned` (the closed
+  set `pkg/secretgen` implements); `FileSecrets.generate` stays `random` only.
+  Every refusal names its escape: a plaintext listener needs `transitional_reason`, a
+  glob `read` grant needs `wildcard_read_reason`, a pin above 1 on an `immutable`
+  name is refused. A Bundle that declares none of this renders byte-for-byte as before.
+
 - **What the owned `runRoot` reads is every root's config reach.** `generate`
   reads `cmd/<bin>/cmd/serve.go` the way it reads compose.go: `cfg` from
   `config.LoadReach`, `root.Configs.<Msg>`, and each config value handed to a

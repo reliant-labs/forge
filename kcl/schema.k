@@ -1095,25 +1095,86 @@ schema HostInfra:
             "HostInfra.idp_masterkey must be exactly 32 characters (Zitadel's requirement)"
 
 schema GeneratedSecret:
-    """How forge mints a secret that is pure random key material (an
-    encryption key, a session secret) when the store has no value for it.
+    """How forge mints a value when the store has none for it: random key
+    material by default, or one of the other KINDS below.
 
         secret_provider = forge.FileSecrets {
             generate = {"VAULT_KEY" = forge.GeneratedSecret {prefix = "v1:"}}
         }
 
-    The value is `prefix` + `bytes` of crypto-random data in `encoding`
-    ("base64" standard, or "hex"). It is written ONCE and never overwritten:
-    the generated value is durable, and rotating it is a deliberate,
-    operator-driven `forge secret set`. Only FileSecrets carries this field,
-    so a hosted or external store can never generate — a missing value there
-    is a real error an operator must provision."""
+    The default kind, "random", is `prefix` + `bytes` of crypto-random data in
+    `encoding` ("base64" standard, or "hex"). A generated value is written
+    ONCE and never overwritten: it is durable, and rotating it is a
+    deliberate, operator-driven act (`forge secret set`, or a reviewed pin
+    bump). Where a spec may appear decides who mints it:
+
+      * `FileSecrets.generate` (a local env's file) — kind "random" only;
+      * `StoreSource.generate` (a store-backed ExternalSecret) — every kind,
+        minted at promotion (hosted store) or by the component's converge Job
+        (self-run OpenBao), so a value never leaves the cluster that needs it;
+      * `BootstrapSecret.generate` — "random" or "password", created at deploy
+        if the bootstrap source has none.
+
+    KINDS (the closed set pkg/secretgen implements):
+
+      * "random"             `bytes` of randomness, `encoding`, after `prefix`.
+      * "password"           `length` characters (default 32) with at least one
+                             upper-case letter, lower-case letter, digit and
+                             symbol — what an IdP's password policy demands.
+                             `symbols` is the alphabet (default "!-_.").
+      * "ec_p256_pkcs8"      an EC P-256 private key, PKCS#8 PEM.
+      * "rsa_2048"           an RSA 2048 private key (PKCS#8 PEM) under the
+                             entry's name, and its public key under `companion`.
+      * "ec_p256_selfsigned" an EC P-256 private key under the entry's name,
+                             and a self-signed certificate for `common_name`
+                             (valid `valid_days`, default 3700) under
+                             `companion`.
+
+    A kind that writes two names writes both or neither: the key and its
+    companion are one atomic unit, so a half-written pair cannot exist."""
+    kind: "random" | "password" | "ec_p256_pkcs8" | "rsa_2048" | "ec_p256_selfsigned" = "random"
     bytes: int = 32
     encoding: str = "base64"
     prefix: str = ""
+    # kind "password": 0 = the default (32).
+    length: int = 0
+    # kind "password": the symbol alphabet; "" = the default ("!-_.").
+    symbols: str = ""
+    # kinds "rsa_2048" and "ec_p256_selfsigned": the store name of the second
+    # output (the public key, or the certificate).
+    companion: str = ""
+    # kind "ec_p256_selfsigned": the certificate's subject CommonName.
+    common_name: str = ""
+    # kind "ec_p256_selfsigned": certificate lifetime in days; 0 = the default.
+    valid_days: int = 0
     check:
         bytes >= 1 and bytes <= 1024, "GeneratedSecret.bytes must be 1..1024"
         encoding in ["base64", "hex"], "GeneratedSecret.encoding must be 'base64' or 'hex'"
+        kind == "random" or (bytes == 32 and encoding == "base64" and not prefix), \
+            "GeneratedSecret kind '${kind}' takes no bytes, encoding or prefix: those describe kind 'random' (random bytes written in an encoding after a prefix). Remove them, or use kind = \"random\""
+        kind == "password" or (length == 0 and not symbols), \
+            "GeneratedSecret kind '${kind}' takes no length or symbols: those describe kind 'password'. Remove them, or use kind = \"password\""
+        length == 0 or (length >= 8 and length <= 1024), \
+            "GeneratedSecret.length must be 8..1024 (a password shorter than 8 cannot hold one character of each class and still be a password)"
+        all c in symbols { c in _GENERATE_SYMBOLS }, \
+            "GeneratedSecret.symbols '${symbols}' has characters outside the allowed alphabet ${_GENERATE_SYMBOLS}: these are the symbols that survive a URL, a shell and a YAML scalar unquoted"
+        kind in ["rsa_2048", "ec_p256_selfsigned"] or not companion, \
+            "GeneratedSecret kind '${kind}' writes one name, so it takes no companion. Remove companion, or use kind \"rsa_2048\" or \"ec_p256_selfsigned\", which write a second name"
+        kind not in ["rsa_2048", "ec_p256_selfsigned"] or regex.match(companion, _STORE_NAME_RE), \
+            "GeneratedSecret kind '${kind}' writes two names and needs `companion` = the store name of the second one (the public key, or the certificate), matching ${_STORE_NAME_RE}"
+        kind == "ec_p256_selfsigned" or (not common_name and valid_days == 0), \
+            "GeneratedSecret kind '${kind}' takes no common_name or valid_days: those describe kind 'ec_p256_selfsigned'. Remove them, or use that kind"
+        kind != "ec_p256_selfsigned" or common_name, \
+            "GeneratedSecret kind 'ec_p256_selfsigned' needs common_name: the certificate's subject, e.g. \"signing.example.com\""
+        valid_days >= 0 and valid_days <= 36500, "GeneratedSecret.valid_days must be 1..36500 (0 = the default)"
+
+# The symbols a generated password may use: the set secretgen draws from, all
+# of which survive a URL userinfo, a shell word and an unquoted YAML scalar.
+_GENERATE_SYMBOLS: str = "!#%*+-.:=@^_~"
+
+# A store secret NAME: the grammar the stores enforce on write, so a name that
+# validates here is one the store accepts.
+_STORE_NAME_RE: str = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
 schema FileSecrets:
     """Dev/local secret provider: a single gitignored YAML file — a flat
@@ -1153,6 +1214,13 @@ schema FileSecrets:
             "FileSecrets.path must not be a .env* path — use e.g. 'secrets/<env>.yaml'"
         # Whether THIS env may hold plaintext secrets is a Bundle fact (its
         # lifecycle), so that check lives on Bundle, not here.
+        len(_non_random_generate(generate)) == 0, \
+            "FileSecrets.generate ${_non_random_generate(generate)} use a kind other than 'random'. A local env's file mints random key material only. A password, key pair or certificate is minted for a store-backed secret: declare it on a forge.StoreSource (`source.generate`)"
+
+# The FileSecrets.generate names whose kind is not "random".
+_non_random_generate = lambda g: any -> [str] {
+    [k for k, v in g if v.kind != "random"] if g else []
+}
 
 schema ExternalSecrets:
     """Prod/staging secret provider. forge does NOT see values: k8s
@@ -3678,12 +3746,695 @@ schema ExternalSecret:
     keys: [str]
     reason: str = ""
     value_group: str = ""
+    # Where the values come from. UNSET keeps the original meaning above: a
+    # Secret something else provisions, which forge only checks for. A
+    # `forge.StoreSource` makes it a Secret ESO syncs from a store; see
+    # StoreSource. Once any ExternalSecret in a Bundle declares a source, the
+    # ones that do not must say why in `out_of_band_reason`.
+    source?: StoreSource
+    # Why this Secret is still provisioned out of band in a Bundle that has
+    # store-backed ones. Meaningless with a `source`.
+    out_of_band_reason: str = ""
 
     check:
         type == "secret", "ExternalSecret.type must be 'secret'"
         name, "ExternalSecret.name is required"
         namespace, "ExternalSecret.namespace is required (the namespace the out-of-band Secret must exist in — often NOT the deploy namespace, e.g. 'cert-manager')"
         len(keys) > 0, "ExternalSecret.keys must list at least one data key the consumer reads (e.g. ['api-token'])"
+        not (source and out_of_band_reason), \
+            "ExternalSecret '${name}' sets both source and out_of_band_reason: the reason explains a Secret with no source. Drop one"
+        not source or _ss_keys_agree(source, keys), \
+            "ExternalSecret '${name}'.keys ${sorted(keys)} do not match what its source produces ${_ss_keys(source) if source else []}: a key nothing produces is a pod that cannot start, and a key nobody declared is one the preflight never checks. Make `keys` equal the source's `data` + `templates` keys"
+
+# ---------------------------------------------------------------------------
+# Platform secrets: forge.OpenBao, forge.ExternalSecretsOperator, the store
+# kinds, and the source a forge.ExternalSecret reads from.
+#
+# Two opt-in components, declared like `observability`, `identity` and
+# `databases`: unset means nothing is rendered.
+#
+#     Bundle.openbao                      a self-run OpenBao (the secret store)
+#     Bundle.external_secrets_operators   one hardened ESO per cluster
+#     Bundle.bootstrap_source             where the values the store itself
+#                                         needs before it can serve a read live
+#
+# and one source that composes with them:
+#
+#     forge.ExternalSecret {source = forge.StoreSource {store = ..., ...}}
+#
+# Every default runs: `forge.OpenBao {}` is Raft x3 behind TLS with a generated
+# static seal key and audit on; `forge.ExternalSecretsOperator {cluster = c}`
+# is the hardened cluster-wide install. Every refusal below names its escape.
+# ---------------------------------------------------------------------------
+
+# OPENBAO_IMAGE is the OpenBao release forge runs by default, pinned by the
+# manifest-list digest. ESO_IMAGE / ESO_CHART_VERSION are the matching pair for
+# the External Secrets Operator. A pin bump here is a deliberate forge release.
+OPENBAO_IMAGE: str = "quay.io/openbao/openbao:2.6.2@sha256:11fd73a2102cda9c55d5d881a8c3210303146a7ec1e8ac76f526e175c6d24641"
+ESO_CHART_VERSION: str = "2.13.0"
+ESO_IMAGE: str = "ghcr.io/external-secrets/external-secrets:v2.13.0@sha256:f799d87a6a959e597a4ba7a8d2379886292c3fcfbee678f7dc2d3566051bcb96"
+
+# The suffix that keeps two envs sharing one bootstrap source from colliding on
+# a default secret name: "-prod" under `-D env=prod`, "" when no env is bound.
+# Set `name` / `key_id` yourself when `Bundle.env` overrides the option.
+_ENV_SUFFIX: str = ("-" + option("env")) if option("env") else ""
+
+_DNS_LABEL_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+_DNS_NAME_RE: str = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"
+# A Secret data key, as Kubernetes defines it.
+_SECRET_KEY_RE: str = r"^[-._a-zA-Z0-9]+$"
+# Google Secret Manager secret ids allow hyphens; the stores do not.
+_BOOTSTRAP_NAME_RE: str = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$"
+_GCP_PROJECT_RE: str = r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+# project:region:instance, as the Cloud SQL proxy addresses an instance.
+_CLOUDSQL_RE: str = r"^[^:\s]+:[a-z0-9-]+:[a-z0-9-]+$"
+# Characters allowed in a policy path. The path is rendered into HCL, so a
+# quote or a brace in it would be an injection, not a typo.
+_POLICY_PATH_RE: str = r"^[A-Za-z0-9_./+*-]+$"
+_BAO_CAPABILITIES: [str] = ["create", "read", "update", "patch", "delete", "list"]
+# A cron expression of five space-separated fields.
+_CRON_RE: str = r"^\S+( \S+){4}$"
+
+# --- Stores ----------------------------------------------------------------
+
+schema HostedStore:
+    """The secret store the env's hosted control plane runs (Reliant's, or a
+    self-run control plane's). Values are written through the control plane's
+    write-only secret API (`forge secret set`, the console) and delivered by
+    ESO's vault provider over a projected service-account token.
+
+        source = forge.StoreSource {store = forge.HostedStore {}, ...}
+
+    WHERE THE STORE IS REACHED is derived: on the cluster that runs the store
+    it is the in-cluster Service and its internal CA; everywhere else it is
+    the store's public endpoint, which `forge cluster connect` records. `server`
+    and `ca_configmap` override the derivation, for a store behind a proxy of
+    your own."""
+    type: "hosted" = "hosted"
+    # The store's base URL. "" = derived.
+    server: str = ""
+    # The ConfigMap holding the CA that signed the store's certificate.
+    # "" = derived.
+    ca_configmap: str = ""
+
+    check:
+        not server or server.startswith("https://"), \
+            "HostedStore.server '${server}' must be an https:// URL: a SecretStore sends a service-account token to it. Use the store's TLS endpoint"
+
+schema OpenBaoStore:
+    """The OpenBao this env runs itself (`Bundle.openbao`). The component
+    renders the server, its access document and the SecretStores that point
+    at it, so there is nothing to configure here.
+
+        openbao = forge.OpenBao {}
+        required_secrets = [forge.ExternalSecret {..., source = forge.StoreSource {store = forge.OpenBaoStore {}}}]
+
+    Requires `Bundle.openbao`; a Bundle that reads from an OpenBaoStore
+    without declaring the component is refused. A cluster other than the one
+    running OpenBao reaches it through `openbao.public`. `server` and
+    `ca_configmap` override the derived address."""
+    type: "openbao" = "openbao"
+    server: str = ""
+    ca_configmap: str = ""
+
+    check:
+        not server or server.startswith("https://"), \
+            "OpenBaoStore.server '${server}' must be an https:// URL: a SecretStore sends a service-account token to it. Use the store's TLS endpoint"
+
+schema GCPSecretManagerStore:
+    """Google Secret Manager, read through ESO's `gcpsm` provider over
+    Workload Identity: no credential is stored anywhere. The cluster must
+    federate ESO's service account to a Google service account with
+    `roles/secretmanager.secretAccessor` (`ExternalSecretsOperator.
+    gcp_service_account`).
+
+        source = forge.StoreSource {store = forge.GCPSecretManagerStore {project = "acme-prod"}, ...}
+
+    A store name here is a secret id: letters, digits, `_` and `-`. A value
+    cannot be GENERATED into this store by a StoreSource (it is written by
+    whoever owns the project); a `BootstrapSecret` can be."""
+    type: "gcpsm" = "gcpsm"
+    project: str
+
+    check:
+        regex.match(project, _GCP_PROJECT_RE), \
+            "GCPSecretManagerStore.project '${project}' is not a Google Cloud project id (6-30 lowercase letters, digits and hyphens, starting with a letter)"
+
+# --- StoreSource -----------------------------------------------------------
+
+# The grammar of a store name depends on the store: GSM allows `-`.
+_ss_name_re = lambda store: any -> str {
+    _BOOTSTRAP_NAME_RE if store.type == "gcpsm" else _STORE_NAME_RE
+}
+
+# The store names a StoreSource reads: the values of `data`.
+_ss_read = lambda data: {str: str} -> [str] {
+    [v for _k, v in data]
+}
+
+# Every store name the source touches: what it reads plus the companion
+# outputs of multi-name generated kinds.
+_ss_known = lambda data: {str: str}, generate: {str: any} -> [str] {
+    _ss_read(data) + [g.companion for _k, g in generate if g.companion]
+}
+
+# The data keys a Go template reads (`.password`, `(.pw)`, `| default .x`).
+# String literals are blanked first so `printf "%s .no"` reads nothing, and
+# `index . "k"` (a hyphenated key) is not parsed: it is checked at render.
+_ss_tpl_refs = lambda t: str -> [str] {
+    [r[r.rfind(".") + 1:] for act in regex.findall(t, r"\{\{.*?\}\}") for r in regex.findall(regex.replace(act, r'"[^"]*"', '""'), r"(?:^|[\s({|,])\.[A-Za-z_][A-Za-z0-9_]*")]
+}
+
+# The data keys the templates read that `data` does not declare, sorted.
+_ss_tpl_missing = lambda templates: {str: str}, data: {str: str} -> [str] {
+    sorted({r: 0 for _k, t in templates for r in _ss_tpl_refs(t) if r not in data})
+}
+
+# The Secret keys a source produces, sorted.
+_ss_keys = lambda src: any -> [str] {
+    sorted([k for k, _v in src.data] + [k for k, _v in src.templates])
+}
+
+# Does the ExternalSecret's `keys` list exactly the keys its source produces?
+_ss_keys_agree = lambda src: any, keys: [str] -> bool {
+    _ss_keys(src) == sorted(keys)
+}
+
+schema StoreSource:
+    """Where a `forge.ExternalSecret`'s values come from: a secret store, read
+    by ESO and synced into the Kubernetes Secret the workloads already mount.
+    Without a `source` an ExternalSecret keeps its original meaning: a Secret
+    something else provisions, which forge only checks for.
+
+        forge.ExternalSecret {
+            name = "reliant-db-role", namespace = "app"
+            keys = ["password", "proxy-database-url"]
+            reason = "role the proxy dials the database as"
+            source = forge.StoreSource {
+                store = forge.HostedStore {}
+                data = {"password" = "RELIANT_DB_ROLE_PASSWORD"}
+                templates = {"proxy-database-url" = "postgres://reliant:{{ .password | urlquery }}@127.0.0.1:5432/app"}
+                generate = {"RELIANT_DB_ROLE_PASSWORD" = forge.GeneratedSecret {bytes = 24, encoding = "hex"}}
+                pin = {"RELIANT_DB_ROLE_PASSWORD" = 1}
+            }
+        }
+
+    Fields:
+      * `store`     — a HostedStore, OpenBaoStore or GCPSecretManagerStore.
+      * `data`      — Secret key -> the store name it is copied from.
+      * `templates` — Secret key -> an ESO template over `data` keys (a DSN, a
+                      dockerconfigjson): derived values are never stored.
+      * `generate`  — store name -> how to mint it when absent (see
+                      GeneratedSecret). Minted once, create-only.
+      * `pin`       — store name -> the version to read. Absent = the latest
+                      (a FLOATING value, for platform-issued tokens). Rotation
+                      is a reviewed bump of the pin.
+      * `immutable` — store names that are never rotated in place (an
+                      encryption key whose loss destroys data): a pin above 1
+                      is refused.
+      * `refresh`   — how often ESO re-reads. At least 5m.
+      * `creation_policy` — "Orphan" (default: the Secret outlives the
+                      ExternalSecret) or "Merge" (update only the declared keys
+                      of a Secret that already exists, for adopting a Secret
+                      other tooling still writes).
+      * `shadow`    — sync to `<name>-eso-shadow` instead, so a value can be
+                      compared with the live Secret before it is adopted.
+
+    The set of Secret keys produced (`data` + `templates`) must equal the
+    ExternalSecret's `keys`: a key nothing produces is a pod that cannot
+    start, and a key nobody declared is one the preflight never checks."""
+    store: HostedStore | OpenBaoStore | GCPSecretManagerStore
+    data: {str: str} = {}
+    templates: {str: str} = {}
+    generate: {str: GeneratedSecret} = {}
+    pin: {str: int} = {}
+    immutable: [str] = []
+    refresh: str = "1h"
+    creation_policy: "Orphan" | "Merge" = "Orphan"
+    shadow: bool = False
+
+    check:
+        len(data) + len(templates) > 0, \
+            "StoreSource produces no Secret key: declare `data` (key -> store name) and/or `templates`"
+        all k, _v in data { regex.match(k, _SECRET_KEY_RE) } and all k, _v in templates { regex.match(k, _SECRET_KEY_RE) }, \
+            "StoreSource data/templates keys must be Secret data keys (letters, digits, '-', '_', '.'): ${[k for k, _v in data if not regex.match(k, _SECRET_KEY_RE)] + [k for k, _v in templates if not regex.match(k, _SECRET_KEY_RE)]}"
+        len([k for k, _v in data if k in templates]) == 0, \
+            "StoreSource declares ${[k for k, _v in data if k in templates]} in both `data` and `templates`: a Secret key has one producer. Keep the `data` entry for a copied value, the `templates` entry for a derived one"
+        all _k, v in data { regex.match(v, _ss_name_re(store)) }, \
+            "StoreSource.data names ${[v for _k, v in data if not regex.match(v, _ss_name_re(store))]} are not valid ${store.type} store names (${_ss_name_re(store)})"
+        len(_ss_tpl_missing(templates, data)) == 0, \
+            "StoreSource.templates read data keys that `data` does not declare: ${_ss_tpl_missing(templates, data)}. A template sees only the keys in `data`; add them there (declared: ${sorted([k for k, _v in data])})"
+        all n, _g in generate { regex.match(n, _ss_name_re(store)) and n in _ss_read(data) }, \
+            "StoreSource.generate names ${sorted([n for n, _g in generate if not (regex.match(n, _ss_name_re(store)) and n in _ss_read(data))])} that no `data` entry reads. A generated value is minted for a Secret key to carry: add `data = {\"<key>\" = \"<name>\"}`, or drop the entry"
+        store.type != "gcpsm" or len(generate) == 0, \
+            "StoreSource.generate is refused for a GCPSecretManagerStore: the project's owner writes those values (forge would need write access to Google Secret Manager at deploy). Generate into a HostedStore or OpenBaoStore, or declare the value as a BootstrapSecret with `generate`"
+        len([g.companion for _n, g in generate if g.companion in generate]) == 0 and len(_duplicates([g.companion for _n, g in generate if g.companion])) == 0, \
+            "StoreSource.generate companions ${sorted([g.companion for _n, g in generate if g.companion in generate or g.companion in _duplicates([x.companion for _m, x in generate if x.companion])])} collide with another generated name. Give each multi-name kind distinct key and companion names"
+        all n, v in pin { n in _ss_known(data, generate) and v >= 1 }, \
+            "StoreSource.pin ${sorted([n for n, v in pin if not (n in _ss_known(data, generate) and v >= 1)])} must name a store name this source reads, at a version of 1 or more (the pin is the KV version ESO reads)"
+        all n in immutable { n in _ss_known(data, generate) }, \
+            "StoreSource.immutable ${[n for n in immutable if n not in _ss_known(data, generate)]} names a store name this source does not read"
+        len([n for n in immutable if n in pin and pin[n] > 1]) == 0, \
+            "StoreSource.pin ${sorted([n for n in immutable if n in pin and pin[n] > 1])} is above 1 but the name is `immutable`: it is never rotated in place (rotating it destroys what it protects). Mint a new name and migrate, or drop it from `immutable`"
+        regex.match(refresh, _ALERT_DURATION_RE) and _alert_secs(refresh) >= 300, \
+            "StoreSource.refresh '${refresh}' must be a duration of at least 5m (e.g. '15m', '1h'): a faster loop is a load on the store, and the cluster's admission policy refuses it"
+
+# --- Bootstrap -------------------------------------------------------------
+
+schema GCPSecretManager:
+    """Where `BootstrapSecret`s live: Google Secret Manager, delivered into
+    the cluster by ESO's `gcpsm` provider over Workload Identity.
+
+        bootstrap_source = forge.GCPSecretManager {project = "acme-prod"}
+
+    The bootstrap set is exactly the values the store needs BEFORE it can
+    serve a read (its own unseal key, its database password): they cannot live
+    in the store they bootstrap."""
+    type: "gcpsm" = "gcpsm"
+    project: str
+
+    check:
+        regex.match(project, _GCP_PROJECT_RE), \
+            "GCPSecretManager.project '${project}' is not a Google Cloud project id (6-30 lowercase letters, digits and hyphens, starting with a letter)"
+
+schema OutOfBand:
+    """`bootstrap_source = forge.OutOfBand {}`: bootstrap values are provisioned
+    by a person or a pipeline, and forge only checks that they exist (the same
+    meaning an ExternalSecret without a `source` has).
+
+    This is the default for a real env. A recovery escrow that resolves inside
+    the cluster it protects is a render WARNING under this source: the escrow
+    exists to survive the loss of that cluster."""
+    type: "out_of_band" = "out_of_band"
+
+schema BootstrapSecret:
+    """A value the secret store needs before it can serve a read, held in
+    `Bundle.bootstrap_source` (never in the store itself).
+
+        key = forge.BootstrapSecret {
+            name = "openbao-unseal-prod"
+            generate = forge.GeneratedSecret {bytes = 32, encoding = "hex"}
+        }
+
+    With `generate`, forge creates the value at deploy if the source has none
+    (create-if-absent: the same rule as `FileSecrets.generate`, never an
+    overwrite). Without it the value is provisioned out of band. Only the
+    kinds that make a single secret value ("random", "password") apply."""
+    name: str
+    generate?: GeneratedSecret
+
+    check:
+        regex.match(name, _BOOTSTRAP_NAME_RE), \
+            "BootstrapSecret.name '${name}' must be 1-255 letters, digits, '-' and '_' (a Secret Manager secret id), starting with a letter or digit"
+        not generate or generate.kind in ["random", "password"], \
+            "BootstrapSecret '${name}'.generate has kind '${generate.kind if generate else ''}', but a bootstrap value is one secret string: use \"random\" or \"password\""
+
+# --- OpenBao ---------------------------------------------------------------
+
+schema OpenBaoListener:
+    """One OpenBao API listener. TLS is ALWAYS on unless the listener carries a
+    `transitional_reason`: a plaintext listener exists to let clients move to
+    HTTPS without downtime, and warns on every render until it is dropped.
+
+        forge.OpenBaoListener {port = 8200}
+        forge.OpenBaoListener {port = 8201, tls = False, transitional_reason = "clients move to https by 2026-12-01"}"""
+    port: int = 8200
+    tls: bool = True
+    transitional_reason: str = ""
+
+    check:
+        port > 0 and port < 65536, "OpenBaoListener.port must be 1..65535"
+        tls or transitional_reason, \
+            "OpenBaoListener on port ${port} has tls = False and no transitional_reason. A store that hands out secrets does not speak plaintext. Keep tls = True, or set transitional_reason to say when this listener goes away (it warns on every render until it does)"
+        not (tls and transitional_reason), \
+            "OpenBaoListener on port ${port} sets transitional_reason but tls is on: the reason excuses a plaintext listener. Drop the reason, or set tls = False"
+
+schema OpenBaoTLS:
+    """Where the listeners' certificate comes from. The default is a
+    namespaced self-signed CA (a cert-manager Issuer and Certificate), and
+    forge renders the CA as the ConfigMap `ca_configmap` that SecretStores
+    reference. `secret` brings your own: a kubernetes.io/tls Secret, whose CA
+    you publish as `ca_configmap`."""
+    # "" = forge issues one from its own CA.
+    secret: str = ""
+    # "" = "<openbao name>-ca".
+    ca_configmap: str = ""
+    # Lifetime of the issued certificate.
+    duration: str = "8760h"
+
+    check:
+        not secret or ca_configmap, \
+            "OpenBaoTLS.secret '${secret}' needs ca_configmap: SecretStores must trust the CA that signed it, so name the ConfigMap that holds that CA"
+        regex.match(duration, _DURATION_RE), \
+            "OpenBaoTLS.duration '${duration}' is not a duration - it needs a unit, e.g. '8760h'"
+
+schema OpenBaoSnapshot:
+    """A Raft snapshot CronJob that writes to a bucket you name."""
+    bucket: str
+    schedule: str = "0 3 * * *"
+    keep: int = 14
+
+    check:
+        bucket, "OpenBaoSnapshot.bucket is required: the bucket (gs://... or s3://...) the snapshots are written to"
+        regex.match(schedule, _CRON_RE), "OpenBaoSnapshot.schedule '${schedule}' must be a five-field cron expression"
+        keep >= 1, "OpenBaoSnapshot.keep must be at least 1"
+
+schema OpenBaoRaft:
+    """Integrated Raft storage on PersistentVolumeClaims: the default, and the
+    only storage that runs on any cluster with nothing else installed. Three
+    replicas by default. `snapshot` adds a backup CronJob to a bucket."""
+    type: "raft" = "raft"
+    size_gib: int = 10
+    # "" = the cluster's default StorageClass.
+    storage_class: str = ""
+    snapshot?: OpenBaoSnapshot
+
+    check:
+        size_gib >= 1, "OpenBaoRaft.size_gib must be at least 1"
+
+schema OpenBaoPostgres:
+    """Postgres storage. Name EITHER a Cloud SQL instance (forge renders the
+    cloud-sql-proxy sidecar over Workload Identity) OR a `host`. The password
+    is a BootstrapSecret: the store cannot read it from itself.
+
+        storage = forge.OpenBaoPostgres {
+            cloudsql_instance = "acme:us-central1:pg"
+            gcp_service_account = "openbao@acme.iam.gserviceaccount.com"
+            password = forge.BootstrapSecret {name = "openbao-pg-password-prod"}
+        }
+
+    `max_parallel` bounds the connections each replica holds; keep
+    replicas x max_parallel under the database's connection limit."""
+    type: "postgres" = "postgres"
+    password: BootstrapSecret
+    cloudsql_instance: str = ""
+    host: str = ""
+    port: int = 5432
+    database: str = "openbao"
+    role: str = "openbao"
+    # The Google service account the pod federates to, for the Cloud SQL proxy.
+    gcp_service_account: str = ""
+    max_parallel: int = 4
+
+    check:
+        bool(cloudsql_instance) != bool(host), \
+            "OpenBaoPostgres needs exactly one of cloudsql_instance (a Cloud SQL instance, via the proxy) or host (a Postgres you run)"
+        not cloudsql_instance or regex.match(cloudsql_instance, _CLOUDSQL_RE), \
+            "OpenBaoPostgres.cloudsql_instance '${cloudsql_instance}' must be project:region:instance"
+        not cloudsql_instance or gcp_service_account, \
+            "OpenBaoPostgres.cloudsql_instance needs gcp_service_account: the proxy authenticates with Workload Identity, so name the Google service account holding roles/cloudsql.client"
+        port > 0 and port < 65536, "OpenBaoPostgres.port must be 1..65535"
+        database and role, "OpenBaoPostgres.database and role are required"
+        max_parallel >= 1, "OpenBaoPostgres.max_parallel must be at least 1"
+
+schema StaticSeal:
+    """Auto-unseal with a static AES-256 key: a restarted pod comes back
+    unsealed with nobody present. The key is a BootstrapSecret, escrowed in
+    `Bundle.bootstrap_source` OUTSIDE the cluster, because it is also what
+    makes the store's backups readable.
+
+    Both defaults are derived from `-D env`, so two envs sharing a bootstrap
+    source never share a key. The generated key is 32 random bytes, hex."""
+    type: "static" = "static"
+    key_id: str = "1" if not _ENV_SUFFIX else _ENV_SUFFIX[1:] + "-1"
+    key: BootstrapSecret = BootstrapSecret {
+        name = "openbao-unseal" + _ENV_SUFFIX
+        generate = GeneratedSecret {bytes = 32, encoding = "hex"}
+    }
+
+    check:
+        regex.match(key_id, r"^[A-Za-z0-9][A-Za-z0-9._-]*$"), \
+            "StaticSeal.key_id '${key_id}' must be letters, digits, '.', '_' and '-'"
+        not key.generate or (key.generate.kind == "random" and key.generate.bytes == 32 and key.generate.encoding == "hex" and not key.generate.prefix), \
+            "StaticSeal.key.generate must be {kind = \"random\", bytes = 32, encoding = \"hex\"} with no prefix: a static seal key is exactly 32 bytes. Drop `generate` to provision the key out of band instead"
+
+schema OpenBaoRecovery:
+    """Where `bao operator init`'s output (recovery keys and root token) is
+    escrowed. The converge Job writes it BEFORE it converges anything, so a
+    crash after init never strands an unrecoverable store. It is written by
+    the Job, never generated."""
+    escrow: BootstrapSecret = BootstrapSecret {name = "openbao-recovery" + _ENV_SUFFIX}
+
+    check:
+        not escrow.generate, \
+            "OpenBaoRecovery.escrow '${escrow.name}' sets generate, but the recovery output is WRITTEN by the converge Job from `bao operator init`; it is not minted by forge. Drop generate"
+
+schema OpenBaoKV:
+    """The KV-v2 mount that holds values. `max_versions` bounds the history a
+    version pin can reach back to."""
+    mount: str = "secret"
+    max_versions: int = 10
+
+    check:
+        regex.match(mount, r"^[A-Za-z0-9][A-Za-z0-9_-]*$"), "OpenBaoKV.mount '${mount}' must be a single path segment (letters, digits, '_', '-')"
+        max_versions >= 2 and max_versions <= 1000, \
+            "OpenBaoKV.max_versions must be 2..1000: a rotation keeps the previous version readable so a pin can be rolled back"
+
+schema OpenBaoHA:
+    """High availability: a PodDisruptionBudget and zone spread, rendered when
+    there is more than one replica."""
+    pdb: bool = True
+    zone_spread: bool = True
+    priority_class: str = ""
+
+schema OpenBaoAudit:
+    """Audit devices. Audit is on by default: `stdout` is collected by the
+    node agent when `Bundle.observability` is set, `file` keeps a copy on the
+    pod's volume. OpenBao refuses requests when EVERY device fails, so keep
+    both unless one is redundant."""
+    stdout: bool = True
+    file: bool = True
+    file_path: str = "/openbao/audit/audit.log"
+
+    check:
+        stdout or file, \
+            "OpenBaoAudit has no device: a secret store with no audit trail is refused. Keep stdout (collected by the node agent) or file"
+        file_path.startswith("/"), "OpenBaoAudit.file_path must be an absolute path"
+
+schema OpenBaoPublic:
+    """Publishes the store on a Gateway so clusters elsewhere can read from it.
+    Envoy terminates TLS and re-encrypts to the component's TLS listener.
+    Only the JWT login and the KV read of a value are routed; every other path
+    gets 404. The limits below mirror forge's other public edge and are
+    ceilings against a flood, not quotas.
+
+        public = forge.OpenBaoPublic {host = "secrets.example.com", gateway = "public"}"""
+    host: str
+    # The name of a forge.Gateway declared in Bundle.gateways.
+    gateway: str = "public"
+    requests_per_second: int = 500
+    per_source_requests_per_second: int = 50
+    max_connections: int = 2000
+    request_timeout: str = "30s"
+
+    check:
+        regex.match(host, _DNS_NAME_RE), "OpenBaoPublic.host '${host}' must be a DNS name"
+        gateway, "OpenBaoPublic.gateway is required: the name of a forge.Gateway in Bundle.gateways"
+        requests_per_second >= 1 and per_source_requests_per_second >= 1 and max_connections >= 1, \
+            "OpenBaoPublic request and connection limits must each be at least 1"
+        per_source_requests_per_second <= requests_per_second, \
+            "OpenBaoPublic.per_source_requests_per_second (${per_source_requests_per_second}) exceeds requests_per_second (${requests_per_second}): one source could take the whole budget"
+        regex.match(request_timeout, _DURATION_RE), "OpenBaoPublic.request_timeout '${request_timeout}' is not a duration - it needs a unit, e.g. '30s'"
+
+schema OpenBaoGrant:
+    """One ACL grant for a consumer: a path and the capabilities on it.
+
+    A `read` on a path with a glob (`*` or `+`) is a standing exception to
+    exact-path access, so it must say why in `wildcard_read_reason`. The reason
+    is written into the policy as a comment and listed on every render.
+
+        forge.OpenBaoGrant {path = "secret/data/envs/*", capabilities = ["read"],
+            wildcard_read_reason = "deployer reads every env until per-env grants land"}"""
+    path: str
+    capabilities: [str]
+    wildcard_read_reason: str = ""
+
+    check:
+        regex.match(path, _POLICY_PATH_RE) and not path.startswith("/"), \
+            "OpenBaoGrant.path '${path}' must be a relative OpenBao API path of letters, digits and '_', '.', '/', '+', '*', '-' (it is rendered into an HCL policy)"
+        len(capabilities) > 0, "OpenBaoGrant '${path}' lists no capabilities"
+        all c in capabilities { c in _BAO_CAPABILITIES }, \
+            "OpenBaoGrant '${path}' capabilities ${[c for c in capabilities if c not in _BAO_CAPABILITIES]} are not one of ${_BAO_CAPABILITIES}. 'sudo' and 'deny' are not grantable here"
+        not ("read" in capabilities and ("*" in path or "+" in path)) or wildcard_read_reason, \
+            "OpenBaoGrant '${path}' grants read on a glob and states no wildcard_read_reason. A glob read exposes every value under it. Grant exact paths instead, or set wildcard_read_reason to say why they cannot be named"
+        not wildcard_read_reason or "read" in capabilities, \
+            "OpenBaoGrant '${path}' sets wildcard_read_reason but grants no read: the reason excuses a glob read. Drop it"
+
+schema OpenBaoConsumer:
+    """A static principal that talks to the store, authenticating with its
+    own service account through JWT auth against this cluster. It gets
+    exactly the `grants` listed and nothing else.
+
+        forge.OpenBaoConsumer {name = "control-plane-service", workload = "admin-server",
+            grants = [forge.OpenBaoGrant {path = "secret/data/*", capabilities = ["create", "update"]}]}
+
+    `delegated = True` additionally grants the access-admin policy: the
+    principal may author `auth/jwt-*` mounts and `sys/policies/acl/env-*`
+    policies (and nothing under `secret/`). That is for an app, such as a
+    hosted control plane, that converges per-binding grants itself through
+    pkg/secretaccess."""
+    name: str
+    # The workload (service account) that logs in.
+    workload: str
+    # "" = OpenBao's own namespace.
+    namespace: str = ""
+    grants: [OpenBaoGrant] = []
+    delegated: bool = False
+
+    check:
+        regex.match(name, _DNS_LABEL_RE) and len(name) <= 40, \
+            "OpenBaoConsumer.name '${name}' must be an RFC-1123 label of at most 40 characters: it names the JWT role"
+        regex.match(workload, _DNS_LABEL_RE), "OpenBaoConsumer '${name}'.workload '${workload}' must be an RFC-1123 label (the service account's name)"
+        not namespace or regex.match(namespace, _DNS_LABEL_RE), "OpenBaoConsumer '${name}'.namespace '${namespace}' must be an RFC-1123 label"
+        len(grants) > 0 or delegated, \
+            "OpenBaoConsumer '${name}' has no grants and is not delegated: it could authenticate and do nothing. Add grants, or drop it"
+
+schema OpenBaoSAWriter:
+    """How a person writes values to a SELF-RUN store, the default: `forge
+    secret set` mints a 10-minute service-account token for `service_account`
+    (a ServiceAccount forge renders, bound by a JWT role to a write-only policy
+    on this env's paths) using the operator's own kube context. It needs
+    nothing but cluster access, and the kubeconfig is already the trust root."""
+    type: "service_account" = "service_account"
+    service_account: str = "forge-secret-writer"
+
+    check:
+        regex.match(service_account, _DNS_LABEL_RE), "OpenBaoSAWriter.service_account '${service_account}' must be an RFC-1123 label"
+
+schema OpenBaoOIDCWriter:
+    """The opt-in alternative: writers sign in with the env's
+    `forge.ManagedIdentity`, and `role` (one of its roles) decides who may
+    write. Requires `Bundle.identity`."""
+    type: "oidc" = "oidc"
+    # The ManagedIdentity role whose members may write.
+    role: str
+
+    check:
+        role, "OpenBaoOIDCWriter.role is required: the ManagedIdentity role whose members may write secrets"
+
+schema OpenBao:
+    """A self-run OpenBao, the secret store the env owns. Opt-in on the
+    Bundle, like `observability` and `identity`; unset renders nothing.
+
+        openbao = forge.OpenBao {}            # Raft x3, TLS, static seal, audit on
+
+    Everything has a working default, and every default is overridable:
+
+      * `storage`   — OpenBaoRaft (default) or OpenBaoPostgres.
+      * `listeners` — TLS always (see OpenBaoListener).
+      * `tls`       — a self-signed CA, or your own Secret.
+      * `seal`      — a static key, escrowed in `Bundle.bootstrap_source`.
+      * `recovery`  — where `bao operator init` output is escrowed.
+      * `kv`, `ha`, `audit` — the KV-v2 mount, availability, audit devices.
+      * `consumers` — static principals with exact grants.
+      * `writer`    — how a person writes values (default: a service-account
+                      token; opt in to OIDC with a ManagedIdentity).
+      * `public`    — publish the store for clusters elsewhere.
+
+    ONE PER CLUSTER. The component stamps every object it renders with
+    `forge.dev/component-owner=<project>.<env>`; a second declaration on the
+    same cluster is refused at render. `replicas` defaults to 3 for Raft
+    (quorum) and 2 for Postgres."""
+    name: str = "openbao"
+    namespace: str = "openbao"
+    # Where it runs. Unset = the env's primary cluster target.
+    runtime?: OnCluster
+    image: str = OPENBAO_IMAGE
+    storage: OpenBaoRaft | OpenBaoPostgres = OpenBaoRaft {}
+    replicas: int = 3 if storage.type == "raft" else 2
+    listeners: [OpenBaoListener] = [OpenBaoListener {}]
+    tls: OpenBaoTLS = OpenBaoTLS {}
+    seal: StaticSeal = StaticSeal {}
+    recovery: OpenBaoRecovery = OpenBaoRecovery {}
+    kv: OpenBaoKV = OpenBaoKV {}
+    ha: OpenBaoHA = OpenBaoHA {}
+    audit: OpenBaoAudit = OpenBaoAudit {}
+    consumers: [OpenBaoConsumer] = []
+    writer: OpenBaoSAWriter | OpenBaoOIDCWriter = OpenBaoSAWriter {}
+    public?: OpenBaoPublic
+
+    check:
+        regex.match(name, _DNS_LABEL_RE) and len(name) <= 40, \
+            "OpenBao.name '${name}' must be an RFC-1123 label of at most 40 characters: it names the Deployment, Services and the CA ConfigMap"
+        regex.match(namespace, _DNS_LABEL_RE), "OpenBao.namespace '${namespace}' must be an RFC-1123 label"
+        image, "OpenBao.image is required"
+        replicas >= 1 and replicas <= 9, "OpenBao.replicas must be 1..9"
+        storage.type != "raft" or replicas % 2 == 1, \
+            "OpenBao.replicas = ${replicas} with Raft storage: Raft needs an odd number of voters (1, 3, 5) to keep a quorum when one fails. Use ${replicas + 1} or ${replicas - 1}, or OpenBaoPostgres storage, which has no quorum"
+        len(listeners) > 0, "OpenBao.listeners is empty: the store needs a listener. The default is [forge.OpenBaoListener {}]"
+        len(_duplicates([str(l.port) for l in listeners])) == 0, \
+            "OpenBao.listeners declare a port twice: ${_duplicates([str(l.port) for l in listeners])}"
+        any l in listeners { l.tls }, \
+            "OpenBao.listeners has no TLS listener: a plaintext listener is only transitional, beside a TLS one. Add forge.OpenBaoListener {} (TLS, the default)"
+        len(_duplicates([c.name for c in consumers])) == 0, "OpenBao.consumers: a name is declared twice: ${_duplicates([c.name for c in consumers])}"
+        len(_duplicates([(c.namespace or namespace) + "/" + c.workload for c in consumers])) == 0, \
+            "OpenBao.consumers: a workload is declared twice: ${_duplicates([(c.namespace or namespace) + '/' + c.workload for c in consumers])}. One principal has one role; merge the grants"
+        writer.type != "service_account" or writer.service_account not in [c.workload for c in consumers if (c.namespace or namespace) == namespace], \
+            "OpenBao.writer.service_account '${writer.service_account if writer.type == 'service_account' else ''}' is also a consumer's workload. The writer is write-only on this env's paths; give the consumer its own service account"
+
+# --- External Secrets Operator ---------------------------------------------
+
+schema ExternalSecretsOperator:
+    """One hardened, cluster-wide External Secrets Operator for a cluster.
+    Opt-in on the Bundle (a list: an env may install it on several clusters).
+
+        external_secrets_operators = [
+            forge.ExternalSecretsOperator {cluster = _hub}
+            forge.ExternalSecretsOperator {cluster = _daemon_target}
+        ]
+
+    HARDENED BY DEFAULT: ClusterSecretStore, ClusterExternalSecret, PushSecret
+    and the generators are not installed (their CRDs are absent), so what can
+    drive ESO is only namespaced `ExternalSecret`s and `SecretStore`s; the
+    controller runs restricted, read-only, in its own namespace, with a
+    network policy and an image pinned by digest. Token creation is limited
+    by `resourceNames` to the `reliant-secrets` service account.
+
+    ONE PER CLUSTER. Several installs on one cluster fight over the cluster-
+    scoped CRDs and webhook configurations, so a second declaration for the
+    same cluster is refused at render. A cluster that another env's bundle
+    already installs it on is checked by the preflight, not declared again.
+
+    `values` is the escape hatch: a raw overlay on the chart's values, applied
+    last. Overriding a hardening value (say `scopedRBAC`) is recorded."""
+    cluster: Cluster | ClusterTarget
+    namespace: str = "external-secrets"
+    version: str = ESO_CHART_VERSION
+    image: str = ESO_IMAGE
+    # Two replicas with leader election.
+    replicas: int = 2
+    priority_class: str = ""
+    # The Google service account ESO's service account federates to, so a
+    # GCPSecretManagerStore (and a GCP bootstrap source) can be read over
+    # Workload Identity. "" = none.
+    gcp_service_account: str = ""
+    values: {str: any} = {}
+
+    check:
+        regex.match(namespace, _DNS_LABEL_RE), "ExternalSecretsOperator.namespace '${namespace}' must be an RFC-1123 label"
+        version, "ExternalSecretsOperator.version is required (the chart version, e.g. '${ESO_CHART_VERSION}')"
+        image, "ExternalSecretsOperator.image is required"
+        replicas >= 1, "ExternalSecretsOperator.replicas must be at least 1"
+        not gcp_service_account or regex.match(gcp_service_account, r"^[^@\s]+@[^@\s]+\.iam\.gserviceaccount\.com$"), \
+            "ExternalSecretsOperator.gcp_service_account '${gcp_service_account}' must be a Google service account email (name@project.iam.gserviceaccount.com)"
+
+# The kubectl context an ESO declaration installs into: a k3d Cluster's
+# derived `.context`, or a ClusterTarget's `cluster`.
+_eso_context = lambda e: any -> str {
+    e.cluster.context if typeof(e.cluster) == "Cluster" else e.cluster.cluster
+}
+
+# The names of ExternalSecrets with no source, in a Bundle where at least one
+# has one and they give no out_of_band_reason. Empty when no secret is
+# store-backed: an all-out-of-band Bundle is today's meaning, unchanged.
+_unsourced_required = lambda secrets: [any] -> [str] {
+    [s.namespace + "/" + s.name for s in secrets if not s.source and not s.out_of_band_reason] if len([x for x in secrets if x.source]) > 0 else []
+}
+
+# The ExternalSecrets that read from an OpenBaoStore.
+_openbao_sources = lambda secrets: [any] -> [any] {
+    [s for s in secrets if s.source and s.source.store.type == "openbao"]
+}
 
 schema DNSRecord:
     """A DNS record a deploy DEPENDS ON — the declarative replacement for a
@@ -5241,6 +5992,20 @@ schema Bundle:
     # runs. UNSET = no managed identity (bring your own issuer in config.k).
     # Declaring it AND hand-setting a config field it fills is refused.
     identity?: ManagedIdentity
+    # The env's own secret store (forge.OpenBao): opt-in, like `observability`
+    # and `identity`. UNSET renders nothing. A forge.ExternalSecret reads from
+    # it with `source = forge.StoreSource {store = forge.OpenBaoStore {}}`.
+    openbao?: OpenBao
+    # One hardened External Secrets Operator per cluster (forge.
+    # ExternalSecretsOperator). UNSET renders none. Any ExternalSecret with a
+    # `source` needs one on the cluster it lands on; it may be declared by
+    # another env's bundle, in which case the deploy preflight checks it.
+    external_secrets_operators: [ExternalSecretsOperator] = []
+    # Where the values the secret store needs BEFORE it can serve a read live
+    # (its unseal key, its database password, its recovery escrow): outside
+    # the store, because they cannot live in what they bootstrap. UNSET =
+    # forge.OutOfBand {} - provisioned by hand, and only checked.
+    bootstrap_source?: GCPSecretManager | OutOfBand
 
     check:
         # The key grammar, checked at load so a typo'd key is a KCL error
@@ -5384,6 +6149,24 @@ schema Bundle:
             "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
         len(_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
             "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
+        # The structural rules live on the schemas; these need the Bundle.
+        len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
+            "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_eso_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
+        len(_openbao_sources(required_secrets)) == 0 or openbao, \
+            "Bundle.required_secrets ${[s.name for s in _openbao_sources(required_secrets)]} read from a forge.OpenBaoStore, but the Bundle declares no `openbao`. Declare `openbao = forge.OpenBao {}`, or point the source at a forge.HostedStore or forge.GCPSecretManagerStore"
+        len([s.name for s in required_secrets if s.source and s.source.store.type == "hosted"]) == 0 or control_plane, \
+            "Bundle.required_secrets ${[s.name for s in required_secrets if s.source and s.source.store.type == 'hosted']} read from a forge.HostedStore, which is the store of the env's control plane: declare `control_plane = forge.ControlPlane {}` on the same Bundle, or use a forge.OpenBaoStore / forge.GCPSecretManagerStore"
+        len(_unsourced_required(required_secrets)) == 0, \
+            "Bundle.required_secrets ${_unsourced_required(required_secrets)} declare no `source`, but other ExternalSecrets in this Bundle do. Once any Secret is store-backed, each one that is not says why with `out_of_band_reason = \"...\"` (or gets a `source`)"
+        len(_duplicates([s.namespace + "/" + s.name for s in required_secrets if s.source])) == 0, \
+            "Bundle.required_secrets: a store-backed Secret is declared twice: ${_duplicates([s.namespace + '/' + s.name for s in required_secrets if s.source])}. Two ExternalSecrets for one Secret would fight over its keys"
+        not openbao or openbao.writer.type != "oidc" or identity, \
+            "Bundle.openbao.writer is an OpenBaoOIDCWriter, which signs writers in with the env's ManagedIdentity, but the Bundle declares no `identity`. Declare `identity = forge.ManagedIdentity {...}`, or keep the default writer (forge.OpenBaoSAWriter {}), which needs only cluster access"
+        not openbao or openbao.writer.type != "oidc" or openbao.writer.role in [r.key for r in identity.roles if identity], \
+            "Bundle.openbao.writer.role '${openbao.writer.role if openbao and openbao.writer.type == 'oidc' else ''}' is not a role of Bundle.identity (declared: ${[r.key for r in identity.roles] if identity else []})"
+        not openbao or not openbao.public or openbao.public.gateway in [g.name for g in gateways], \
+            "Bundle.openbao.public.gateway '${openbao.public.gateway if openbao and openbao.public else ''}' is not a forge.Gateway in Bundle.gateways (declared: ${[g.name for g in gateways]}). Declare the Gateway, or name an existing one"
         # MANAGED IDENTITY (forge.ManagedIdentity). The structural rules live on
         # the schema; these need the Bundle: its control plane, workloads,
         # infra and lifecycle.

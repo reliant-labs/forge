@@ -22,6 +22,7 @@ one mixed env. Together they are the §9.1 contract between three parties:
 | `identity-cluster` | The same declaration on a cluster env: roles only; applications, consumers, the delivered `identity` (required) and `identity_jwks` Secrets and the API's whole typed config are derived, with the broker token and JWKS snapshot as re-read files |
 | `identity-share-with` | A preview env reusing staging's users: only derived applications and consumers, the owner named |
 | `identity-host` | The dev loop: the identity on a host-run Zitadel, a seed user, config read from the env's secret store |
+| `secrets-components` | `forge.OpenBao`, `forge.ExternalSecretsOperator`, `bootstrap_source` and a store-backed `forge.ExternalSecret` are DECLARATIONS ONLY: the render is what it would be without them. This golden changes the day a later PR wires one into the output |
 
 ## Invariants
 

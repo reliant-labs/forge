@@ -141,6 +141,11 @@ type rollbackReport struct {
 	// revert did not own also differs from before the run. The "back to
 	// its pre-run state" claim is made only when it is verified Clean.
 	Residue rollbackResidue
+	// Unborn are the scaffold-once files this run created and the revert
+	// removed again, with their birth records. Each will be scaffolded
+	// afresh by the next run, so when one of them is what broke this run
+	// the user needs the way to decline it, here, rather than in a skill.
+	Unborn []string
 }
 
 // goBuildRestoredTree runs `go build ./...` against the tree the rollback
@@ -279,11 +284,29 @@ func writeRollbackReport(w io.Writer, rep rollbackReport) {
 	if rep.Consistency.Checked && !rep.Consistency.Builds {
 		writePreRunDoesNotCompileNote(w)
 	}
+	writeUnbornScaffolds(w, rep.Unborn)
 
 	// 3. The post-rollback errors, quarantined behind the artifact marker.
 	if rep.Consistency.Checked && !rep.Consistency.Builds && strings.TrimSpace(rep.Consistency.Output) != "" {
 		writeArtifactSection(w, rep)
 	}
+}
+
+// writeUnbornScaffolds names the scaffold-once files the revert un-created,
+// and how to decline one. A scaffold whose presence breaks the run it is
+// born in (reliant's serve.go, which switched composition on) is otherwise
+// re-born and rolled back by every run, and deleting it is no remedy: the
+// birth record that would make the deletion stick went with the revert.
+func writeUnbornScaffolds(w io.Writer, unborn []string) {
+	if len(unborn) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n   🌱 %d scaffold-once file(s) this run created were removed again, so the next run scaffolds them afresh:\n", len(unborn))
+	for _, p := range unborn {
+		fmt.Fprintf(w, "      - %s\n", p)
+	}
+	fmt.Fprintf(w, "      If this project should not have one, decline it — the decline survives a failed run:\n")
+	fmt.Fprintf(w, "        %s project disown %s --absent --reason \"<why>\"\n", Name(), strings.Join(unborn, " "))
 }
 
 // compileVerdictSuffix adds the "and it compiles" reassurance ONLY when a

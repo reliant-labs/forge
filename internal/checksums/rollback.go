@@ -105,6 +105,7 @@ var rollbackTrees map[string]bool
 // forge write captures its target's pre-run state (once per path) so
 // RestoreRollback can undo the whole run.
 func BeginRollbackJournal(root string) {
+	resetScaffoldBirths()
 	rollbackJournal = map[string]rollbackEntry{}
 	rollbackTrees = map[string]bool{}
 	if abs, err := filepath.Abs(root); err == nil {
@@ -119,6 +120,7 @@ func BeginRollbackJournal(root string) {
 // back OFF so a subsequent non-pipeline write in the same process isn't
 // silently recorded.
 func CommitRollback() {
+	resetScaffoldBirths()
 	rollbackJournal = nil
 	rollbackTrees = nil
 	rollbackRoot = ""
@@ -491,6 +493,25 @@ func createdUnderTrees(root string) []string {
 	return out
 }
 
+// ScaffoldsCreatedThisRun returns the scaffold-once files this run brought
+// into existence: a birth recorded this run for a file that was absent
+// before it. Sorted; read it BEFORE RestoreRollbackReport, which clears both
+// the journal and the birth set.
+//
+// A birth recorded for a file that was already there (an older project's
+// scaffold, adopted by ScaffoldOnceDecision) is not one: a rollback leaves
+// that file, restores the ledger without the adoption, and the next run
+// adopts it again.
+func ScaffoldsCreatedThisRun() []string {
+	var created []string
+	for _, rel := range ScaffoldBirthsThisRun() {
+		if entry, ok := rollbackJournal[slashKey(rel)]; ok && !entry.existed {
+			created = append(created, rel)
+		}
+	}
+	return created
+}
+
 // RestoreRollback rewinds every journaled path to its captured pre-run
 // state and returns the sorted list of paths it restored. A path that
 // existed before the run is rewritten with its original bytes + mode; a
@@ -568,9 +589,14 @@ func RestoreRollbackReport(root string) (restored, failed []string) {
 		pruneEmptyParents(root, filepath.Dir(full))
 		restored = append(restored, rel)
 	}
+	created := ScaffoldsCreatedThisRun()
 	rollbackJournal = nil
 	rollbackTrees = nil
 	rollbackRoot = ""
+	// Journaling is off now, so the reconcile's own ledger writes are not
+	// captured into a journal that no longer exists.
+	resetScaffoldBirths()
+	reconcileScaffoldBirths(root, created)
 	sort.Strings(restored)
 	sort.Strings(failed)
 	return restored, failed

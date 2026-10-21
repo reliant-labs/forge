@@ -999,7 +999,14 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	}
 	changed := checksums.ChangedJournalPaths(absPath)
 	journaled := checksums.JournaledPaths()
+	born := checksums.ScaffoldsCreatedThisRun()
 	restored, failed := checksums.RestoreRollbackReport(absPath)
+	var unborn []string
+	for _, p := range born {
+		if _, statErr := os.Stat(filepath.Join(absPath, filepath.FromSlash(p))); os.IsNotExist(statErr) {
+			unborn = append(unborn, p)
+		}
+	}
 	residue := verifyRestoredTree(absPath, preRun, append(journaled, restored...), failed)
 	if len(restored) == 0 {
 		switch {
@@ -1039,6 +1046,7 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 		StepErr:     stepErr,
 		Consistency: consistency,
 		Residue:     residue,
+		Unborn:      unborn,
 	})
 
 	preservedAt := ""

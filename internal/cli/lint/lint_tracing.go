@@ -79,9 +79,34 @@ func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool) 
 	if contracts {
 		opts.Instrumented = instrumentedComponent
 	}
+	// The log rewrite adds and drops imports, so it lands through a goFixSet
+	// and is verified: a rewrite that leaves its package failing to
+	// type-check is taken back (lint_fix_guard.go).
+	var set *goFixSet
+	if fix {
+		set = newGoFixSet(cwd)
+		opts.Write = set.write
+	}
 	res, err := tracinglint.Lint(cwd, opts)
 	if err != nil {
 		return tracingRun{}, fmt.Errorf("tracing lint: %w", err)
+	}
+	if set != nil {
+		if reverted := set.settle(fixTypecheck); len(reverted) > 0 {
+			printRevertedGoFixes(os.Stdout, "tracing lint", reverted)
+			// Re-read the tree: the reverted sites are findings again.
+			opts.Fix, opts.Write = false, nil
+			fixed := res.Fixed[:0:0]
+			for _, f := range res.Fixed {
+				if set.applied(filepath.Join(cwd, filepath.FromSlash(f.File))) {
+					fixed = append(fixed, f)
+				}
+			}
+			if res, err = tracinglint.Lint(cwd, opts); err != nil {
+				return tracingRun{}, fmt.Errorf("tracing lint: %w", err)
+			}
+			res.Fixed = fixed
+		}
 	}
 	applied := suppress.ApplyFiles(cwd, res.Findings, os.ReadFile)
 	kept := rules.ApplyAll(applied.Kept)

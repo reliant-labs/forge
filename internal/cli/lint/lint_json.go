@@ -349,6 +349,8 @@ func collectSingleLinterJSON(
 		return reportUngated(collectTimeBucketingJSON(cwd, cfg))
 	case flags.protoMarkers:
 		return reportUngated(collectProtoMarkersJSON(protoDirDefault))
+	case flags.goMarkers:
+		return report(collectGoMarkersJSON(cwd))
 	case flags.createNullability:
 		return report(collectCreateNullabilityJSON(protoDirDefault, cwd))
 	case flags.computedFields:

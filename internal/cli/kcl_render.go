@@ -971,6 +971,11 @@ type ShellBuild struct {
 	// SourceDir is invocation-local; the declaration stays intact for provenance.
 	SourceDir string            `json:"-"`
 	Env       map[string]string `json:"env,omitempty"`
+	// BuiltImages maps an env var the command reads to the workload whose
+	// built image it carries. The build runs each named workload first and
+	// sets the var to the `<repository>@sha256:<digest>` it pushed — see
+	// externalBuildGraph.
+	BuiltImages map[string]string `json:"built_images,omitempty"`
 }
 
 // RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears
@@ -1920,6 +1925,15 @@ func (w WorkloadEntity) EffectiveBuildCwd() string {
 func (w WorkloadEntity) EffectiveBuildEnv() map[string]string {
 	if sh := w.shell(); sh != nil {
 		return sh.Env
+	}
+	return nil
+}
+
+// EffectiveBuiltImages is the shell build's built_images edges (env var ->
+// workload). nil for a non-shell build.
+func (w WorkloadEntity) EffectiveBuiltImages() map[string]string {
+	if sh := w.shell(); sh != nil {
+		return sh.BuiltImages
 	}
 	return nil
 }

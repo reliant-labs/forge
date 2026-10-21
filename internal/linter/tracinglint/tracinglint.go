@@ -103,6 +103,10 @@ type Options struct {
 	// forge.yaml grades below the level it fixes at. A declined finding is
 	// reported instead.
 	FixFilter func(f finding.Finding) bool
+	// Write, when non-nil, is how a fix lands on disk — the caller's hook
+	// for verifying the rewrite (forge lint type-checks every package a fix
+	// touched and takes back a fix that broke one). nil writes in place.
+	Write func(abs string, data []byte, mode os.FileMode) error
 	// Instrumented reports whether the component package in dir (absolute)
 	// gets the generated decorator. nil disables
 	// forge-tracing-contract-uninstrumented.
@@ -219,7 +223,7 @@ func Lint(root string, opts Options) (Result, error) {
 				}
 			}
 			if len(fix) > 0 {
-				n, err := applyLogFixes(f, fix)
+				n, err := applyLogFixes(f, fix, opts.Write)
 				if err != nil {
 					return Result{}, err
 				}

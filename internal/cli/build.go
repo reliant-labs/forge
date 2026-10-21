@@ -689,9 +689,10 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if err := preflightRealBuild(ctx, entities, opts); err != nil {
 		return err
 	}
-	// Refuse conflicting writers before ANY build or push, not after earlier
-	// lanes have published images. The dispatcher and --plan use this too.
-	if _, _, err := externalBuildUnits(externalBuildServices(entities), opts, resolvedTag, projectDirForKCL()); err != nil {
+	// Refuse conflicting writers, and built_images edges that cannot be
+	// scheduled, before ANY build or push, not after earlier lanes have
+	// published images. The dispatcher and --plan use this too.
+	if _, _, err := externalBuildSchedule(externalBuildServices(entities), opts, resolvedTag, projectDirForKCL()); err != nil {
 		return err
 	}
 	registerBuildStorage(ctx, projectDirForKCL(), entities, push)
@@ -1104,6 +1105,22 @@ func narrowBuildEntities(projectName string, entities *KCLEntities, opts buildOp
 	if entities == nil {
 		return nil
 	}
+	// Whatever the narrowing below keeps, it keeps the images those builds
+	// are built FROM (ShellBuild.built_images): naming one workload cannot
+	// mean building it on a parent nobody built. A composition is the one
+	// exception — its selection is explicit, and an unselected parent is
+	// carried from the base, which the build resolves instead.
+	full := entities
+	narrowed := narrowBuildEntitiesBySelection(projectName, entities, opts)
+	if opts.composition != nil {
+		return narrowed
+	}
+	return withBuiltImageDependencies(full, narrowed)
+}
+
+// narrowBuildEntitiesBySelection is the narrowing --target and the
+// orchestrator's targets select, before built_images dependencies are added.
+func narrowBuildEntitiesBySelection(projectName string, entities *KCLEntities, opts buildOptions) *KCLEntities {
 	// opts.targets is the orchestrator's channel (set by `forge env up`).
 	// Validated by the caller (`forge env up` / `forge env deploy`), which
 	// owns the "unknown target" message and its available-names list.

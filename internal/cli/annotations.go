@@ -217,7 +217,7 @@ func buildAnnotationsSpec(kind string) (AnnotationsSpec, error) {
 
 // goMarkerKinds are the AppliesTo values of the markers read out of .go
 // source rather than proto or SQL: what `--kind go` lists.
-var goMarkerKinds = []string{"package", "contract", "constructor", "deps-field", "function"}
+var goMarkerKinds = []string{"package", "contract", "constructor", "deps-field", "function", "root", "declaration"}
 
 func filterMarkers(in []MarkerSpec, appliesTo ...string) []MarkerSpec {
 	want := make(map[string]bool, len(appliesTo))
@@ -505,6 +505,69 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Declares that calling this function resolves the caller: it reads the authenticated principal the auth interceptor put on the request context. Forge's own seam (middleware.GetUser / ClaimsFromContext in the scaffolded pkg/middleware) needs no marker. A project with its own auth package marks its accessors, and the unscoped_auth audit then counts a handler that calls one — through the import that binds the declaring package in that file, or through a helper in the handler's own package — as resolving the caller, and names it in its hint. Package-level functions only: a marker on a method is reported as ignored, because a call site does not name its receiver's type. `forge project audit --json` lists the declarations it found under unscoped_auth's caller_resolvers.",
 			Placement: "on the function's doc comment, spaced or unspaced, as the whole comment line",
 			Example:   "// GetUserIDFromContext returns the signed-in user's id.\n//\n//forge:resolves-caller\nfunc GetUserIDFromContext(ctx context.Context) (string, bool)",
+		},
+		{
+			Name:      "forge:contract",
+			AppliesTo: "contract",
+			Effect:    "Synonym of `forge:service`: declares this interface the package's contract when it is not named `Service`. `contract` reads better on a non-service package.",
+			Placement: "on the interface's doc comment",
+			Example:   "// forge:contract\ntype Store interface { Get(ctx context.Context, id string) (Row, error) }",
+		},
+		{
+			Name:      "forge:provided",
+			AppliesTo: "package",
+			Effect:    "Synonym of `forge:external-component`: the component is hand-constructed in providers.go, and the injector skips it.",
+			Placement: "package doc comment, or a free-standing comment in any of the package's .go files",
+			Example:   "// forge:provided\npackage natsbus",
+		},
+		{
+			Name:      "forge:no-orm",
+			AppliesTo: "package",
+			Effect:    "Switches the generated data layer off for the project: no <entity>_orm_gen.go structs, stores or factories under internal/db. The opt-out sits in the package it exempts; the reason is not required, but write one.",
+			Placement: "package doc comment of internal/db (spaced or unspaced); a reason follows a colon or a space",
+			Example:   "//forge:no-orm: the repository is hand-written; entities are not projected\npackage db",
+		},
+		{
+			Name:      "forge:placeholder",
+			AppliesTo: "deps-field",
+			Effect:    "Records the type a Deps field typed `any` is waiting for — a placeholder left until the dependency it names exists. While the field is still `any`, the wire-coverage lint errors on it as unresolved: the marker is a TODO forge can count, not a way to wire `any`.",
+			Placement: "leading or trailing comment on the Deps field; the type follows a colon",
+			Example:   "type Deps struct {\n\tUserRepo any // forge:placeholder: user.Repository\n}",
+		},
+		{
+			Name:      "forge:root",
+			AppliesTo: "root",
+			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it) and migrate=apply|wait|none (what its process does about the schema); an unknown option fails generate.",
+			Placement: "on the struct's doc comment, unspaced",
+			Example:   "//forge:root api command=serve migrate=apply\ntype API struct { ... }",
+		},
+		{
+			Name:      "forge:standby",
+			AppliesTo: "function",
+			Effect:    "Keeps a provider ready for components to come: `forge lint --graph` does not require a root to reach it.",
+			Placement: "on the provider func's doc comment, unspaced",
+			Example:   "//forge:standby\nfunc NewMailer(d MailerDeps) (Mailer, error)",
+		},
+		{
+			Name:      "forge:audience",
+			AppliesTo: "function",
+			Effect:    "Names the trust domain an authenticator provider authenticates; `forge lint --graph` compares it with the audience of every service a listener serves through a chain over it.",
+			Placement: "on the provider func's doc comment, unspaced, with exactly one lower-case word",
+			Example:   "//forge:audience daemon\nfunc NewDaemonAuthenticator(d AuthDeps) (Authenticator, error)",
+		},
+		{
+			Name:      "forge:auth-unscoped-ok",
+			AppliesTo: "function",
+			Effect:    "Acknowledges that an authenticated rpc is intentionally global, so the unscoped_auth audit lists it as acknowledged rather than unscoped. The reason is required: the marker alone is the unfalsifiable comment the audit exists to replace.",
+			Placement: "on the handler method's doc comment; the reason follows a colon",
+			Example:   "// forge:auth-unscoped-ok: the plan catalog is the same for every caller\nfunc (s *Service) ListPlans(...)",
+		},
+		{
+			Name:      "forge:allow",
+			AppliesTo: "declaration",
+			Effect:    "The user-owned (Tier-3) marker on a declaration in a scaffold-once file: forge's banner lint reads it as \"this is yours\". Scaffolds stamp it; it changes no codegen.",
+			Placement: "on the declaration's doc comment, unspaced",
+			Example:   "// yours: scaffolded once, never touched again\n//\n//forge:allow\ntype Infra struct { ... }",
 		},
 	}
 }

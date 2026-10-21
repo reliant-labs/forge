@@ -1,12 +1,15 @@
 package contract
 
 import (
+	"fmt"
 	"go/ast"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // RequireContractAnalyzer checks that internal packages with exported methods
@@ -177,12 +180,30 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		// Report on the package clause of the first file.
 		if len(pass.Files) > 0 {
 			pass.Reportf(pass.Files[0].Package,
-				"package %s has exported methods but no contract.go",
-				pass.Pkg.Name())
+				"package %s has exported methods but no contract.go%s",
+				pass.Pkg.Name(), malformedExcludeHint(pass))
 		}
 	}
 
 	return nil, nil
+}
+
+// malformedExcludeHint explains a contract finding on a package that MEANT to
+// opt out: it carries `//forge:exclude-contract` in a spelling the directive
+// parser does not read (`— <why>` instead of `: <why>`), so the opt-out did
+// not happen. Without this the rule failed with no hint at all — the author
+// had written the opt-out and could see it on screen.
+func malformedExcludeHint(pass *analysis.Pass) string {
+	dir := passPkgDir(pass)
+	if dir == "" {
+		return ""
+	}
+	bad := codegen.MalformedGoMarkers(dir, "forge:exclude-contract")
+	if len(bad) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — %s:%d spells forge:exclude-contract in a form forge does not read, so the package is NOT excluded; write it as `//forge:exclude-contract: <reason>`",
+		filepath.Base(bad[0].File), bad[0].Line)
 }
 
 // stdlibConventionMethods are exported method names whose meaning is fixed

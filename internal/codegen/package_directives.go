@@ -401,9 +401,22 @@ func findReasonedDirective(dir, directive string) (ReasonedMarker, bool) {
 // directive in dir's non-test, non-generated files, in file-name then line
 // order.
 func findReasonedDirectives(dir, directive string) []ReasonedMarker {
+	var out []ReasonedMarker
+	forEachPackageComment(dir, func(path string, line int, raw string) {
+		if reason, ok := parseReasonedDirective(raw, directive); ok {
+			out = append(out, ReasonedMarker{File: path, Line: line, Reason: reason})
+		}
+	})
+	return out
+}
+
+// forEachPackageComment calls fn for every comment in dir's non-test,
+// non-generated .go files, in file-name then position order. Unparseable
+// files are skipped: a directive is read best-effort.
+func forEachPackageComment(dir string, fn func(path string, line int, raw string)) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return
 	}
 	var names []string
 	for _, e := range entries {
@@ -416,7 +429,6 @@ func findReasonedDirectives(dir, directive string) []ReasonedMarker {
 	}
 	sort.Strings(names)
 
-	var out []ReasonedMarker
 	fset := token.NewFileSet()
 	for _, n := range names {
 		path := filepath.Join(dir, n)
@@ -426,15 +438,10 @@ func findReasonedDirectives(dir, directive string) []ReasonedMarker {
 		}
 		for _, cg := range file.Comments {
 			for _, c := range cg.List {
-				reason, ok := parseReasonedDirective(c.Text, directive)
-				if !ok {
-					continue
-				}
-				out = append(out, ReasonedMarker{File: path, Line: fset.Position(c.Pos()).Line, Reason: reason})
+				fn(path, fset.Position(c.Pos()).Line, c.Text)
 			}
 		}
 	}
-	return out
 }
 
 // ParseExcludeContractComment reports whether one raw comment IS the
@@ -445,7 +452,10 @@ func findReasonedDirectives(dir, directive string) []ReasonedMarker {
 //
 // Anything else — prose that mentions the directive, `forge:exclude-contract,
 // forge:outbound-io, …` lists, a different separator — is not the directive,
-// matching every other forge marker's whole-line rule.
+// matching every other forge marker's whole-line rule. A different separator
+// is not silent, though: `//forge:exclude-contract — <why>` is what
+// ClassifyGoMarkerComment calls GoMarkerMalformed, and `forge lint` reports it
+// with its file:line and this form (go_markers.go).
 func ParseExcludeContractComment(raw string) (reason string, ok bool) {
 	return parseReasonedDirective(raw, directiveExcludeContract)
 }

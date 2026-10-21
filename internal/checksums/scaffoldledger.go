@@ -97,6 +97,22 @@ type ScaffoldEntry struct {
 	// write-once scaffolds, which never need to know whether the file still
 	// matches what forge produced.
 	BirthHash string `json:"birth_hash,omitempty"`
+	// Declined, when set, is the project's reason for declaring that forge
+	// must never scaffold this path (`forge project disown <path> --absent`).
+	//
+	// The ledger already treats "recorded + absent" as "leave it absent",
+	// but that state was reachable only by a BIRTH that survived its run: a
+	// path whose birth broke the generate it was born in (reliant's serve.go,
+	// which switched composition on mid-migration) was rolled back with its
+	// record every time, so there was never a record to delete it against,
+	// and the only escape was hand-writing JSON. A declined entry is that
+	// record written on purpose, by a command outside generate — so a failed
+	// run's rollback, which restores this file to its pre-run bytes, keeps it.
+	//
+	// It is a declaration, not a deletion: AbsentScaffolds does not report
+	// it (nothing went missing), and `forge project rescaffold <path>`
+	// re-adopts the path by dropping the entry, exactly as for a deletion.
+	Declined string `json:"declined,omitempty"`
 }
 
 // IsLocalOnlyScaffold reports whether relPath is a scaffold-once file that is
@@ -282,7 +298,8 @@ func saveScaffoldLedgerLocked(root string) {
 //
 //	!recorded            → never scaffolded: write it
 //	recorded && present  → the user's bytes: leave them
-//	recorded && absent   → the user deleted it: leave it deleted
+//	recorded && absent   → the user deleted it, or declined it
+//	                       (ScaffoldEntry.Declined): leave it absent
 func ScaffoldRecorded(root, relPath string) bool {
 	if IsLocalOnlyScaffold(relPath) {
 		return false
@@ -319,15 +336,131 @@ func RecordScaffold(root, relPath string) {
 		return // already recorded — no churn
 	}
 	led[rel] = ScaffoldEntry{ScaffoldedAt: time.Now().UTC().Format(time.RFC3339)}
+	noteBirthLocked(rel)
 	saveScaffoldLedgerLocked(root)
+}
+
+// scaffoldBirths is the set of paths whose birth record was CREATED while
+// the rollback journal is armed — the scaffolds this generate run brought
+// into the world. nil when journaling is off. Guarded by scaffoldMu.
+//
+// It exists so a failed run can keep the file/record pair whole (see
+// ReconcileScaffoldBirths) and so the failure report can name the scaffolds
+// it removed again, with the one command that declines them.
+var scaffoldBirths map[string]bool
+
+func noteBirthLocked(rel string) {
+	if rollbackJournal == nil {
+		return
+	}
+	if scaffoldBirths == nil {
+		scaffoldBirths = map[string]bool{}
+	}
+	scaffoldBirths[rel] = true
+}
+
+// ScaffoldBirthsThisRun returns the paths whose birth this generate run
+// recorded, sorted. Read it BEFORE RestoreRollbackReport, which clears it.
+func ScaffoldBirthsThisRun() []string {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	out := make([]string, 0, len(scaffoldBirths))
+	for p := range scaffoldBirths {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resetScaffoldBirths drops the per-run birth set. Called wherever the
+// journal is armed or dropped.
+func resetScaffoldBirths() {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	scaffoldBirths = nil
+}
+
+// reconcileScaffoldBirths makes every path born this run agree with its
+// birth record after a rollback: a scaffold-once file is never half-recorded.
+//
+// The rollback deletes the run's new files and restores the ledger file to
+// its pre-run bytes, which normally leaves each birth wholly undone. Either
+// half can fail on its own, though, and each failure is a different lie:
+//
+//   - the file could not be removed but its record was: the file is on disk
+//     and unrecorded, so forge would read the user's later deletion of it as
+//     "never scaffolded" and write it again;
+//   - the file was removed but the ledger could not be restored: the record
+//     says "scaffolded, then deleted on purpose", so forge would never write
+//     the file at all — the failed run consumed the path's only birth.
+//
+// So the record follows the file: present files are recorded, absent ones
+// this run recorded are forgotten. Records that predate the run (births of
+// earlier runs, and declined entries) are not in births and are untouched.
+func reconcileScaffoldBirths(root string, births []string) {
+	for _, rel := range births {
+		_, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
+		switch {
+		case err == nil:
+			RecordScaffold(root, rel)
+		case os.IsNotExist(err):
+			ForgetScaffold(root, rel)
+		}
+	}
+}
+
+// DeclineScaffold records that the project declines relPath: forge must
+// never scaffold it here. reason is the design feedback the decline carries,
+// and is required (an empty reason is ignored by the caller's validation,
+// never stored as a decline that reads as a deletion).
+//
+// An existing birth record is kept and marked, so a scaffold the user had
+// deleted becomes a declared decline without losing its provenance.
+func DeclineScaffold(root, relPath, reason string) {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	rel := filepath.ToSlash(relPath)
+	led := loadScaffoldLedgerLocked(root)
+	e, ok := led[rel]
+	if ok && e.Declined == reason {
+		return // already declined for this reason — no churn
+	}
+	e.Declined = reason
+	led[rel] = e
+	saveScaffoldLedgerLocked(root)
+}
+
+// ScaffoldDeclined reports whether the project declined relPath, and why.
+func ScaffoldDeclined(root, relPath string) (reason string, ok bool) {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	e, found := loadScaffoldLedgerLocked(root)[filepath.ToSlash(relPath)]
+	if !found || e.Declined == "" {
+		return "", false
+	}
+	return e.Declined, true
+}
+
+// DeclinedScaffolds returns every declined path with its reason.
+func DeclinedScaffolds(root string) map[string]string {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	out := map[string]string{}
+	for p, e := range loadScaffoldLedgerLocked(root) {
+		if e.Declined != "" {
+			out[p] = e.Declined
+		}
+	}
+	return out
 }
 
 // ForgetScaffold drops relPath's birth record, returning the path to the
 // "never scaffolded" state so the next run scaffolds it fresh — the
 // deliberate reset `forge project rescaffold` takes.
 //
-// A failed `forge generate` does not need it: the rollback journal restores
-// the ledger file itself to its pre-run bytes (see RestoreRollbackReport).
+// A failed `forge generate` rarely needs it: the rollback journal restores
+// the ledger file itself to its pre-run bytes (see RestoreRollbackReport),
+// and reconcileScaffoldBirths calls it only when that restore failed.
 func ForgetScaffold(root, relPath string) {
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
@@ -385,7 +518,11 @@ func AbsentScaffolds(root string) []string {
 		abs = root
 	}
 	var out []string
-	for p := range loadScaffoldLedgerLocked(abs) {
+	for p, e := range loadScaffoldLedgerLocked(abs) {
+		if e.Declined != "" {
+			// Declared absent, not gone missing: nothing to report.
+			continue
+		}
 		if _, serr := os.Stat(filepath.Join(abs, filepath.FromSlash(p))); os.IsNotExist(serr) {
 			out = append(out, p)
 		}
@@ -541,7 +678,10 @@ func RecordScaffoldWithHash(root, relPath string, content []byte) {
 	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)
 	led := loadScaffoldLedgerLocked(root)
-	e := led[rel]
+	e, known := led[rel]
+	if !known {
+		noteBirthLocked(rel)
+	}
 	if e.ScaffoldedAt == "" {
 		e.ScaffoldedAt = time.Now().UTC().Format(time.RFC3339)
 	}

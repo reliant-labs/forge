@@ -149,14 +149,15 @@ func TestNewChain_DefaultsAndOmits(t *testing.T) {
 		t.Fatalf("NewChain (all omitted): %v", err)
 	}
 	core := len(observe.Chain(observe.Deps{Auth: auth, Deadline: serverkit.NoDeadline}))
-	// The svcerr interceptor is not a slot: it is always the innermost one.
-	if n := len(bare.Interceptors()); n != core+1 {
-		t.Fatalf("all defaults omitted: %d interceptors, want observe's core plus auth plus svcerr (%d)", n, core+1)
+	// The svcerr interceptor is not a slot: observe.Chain always ends with it,
+	// so it is already part of core.
+	if n := len(bare.Interceptors()); n != core {
+		t.Fatalf("all defaults omitted: %d interceptors, want observe's core (%d)", n, core)
 	}
 	// trace (+ its profile-labels and traceresponse companions), deadline,
 	// audit, activity, stream drain, validate.
-	if n := len(full.Interceptors()); n != core+9 {
-		t.Fatalf("all defaults: %d interceptors, want %d", n, core+9)
+	if n := len(full.Interceptors()); n != core+8 {
+		t.Fatalf("all defaults: %d interceptors, want %d", n, core+8)
 	}
 }
 

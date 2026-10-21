@@ -154,6 +154,44 @@ message CreateApiKeyResponse {}
 	}
 }
 
+// TestE2EFreshScaffoldLintExitsZeroForEveryKind holds the same invariant for
+// the project kinds TestE2EFreshScaffoldLintExitsZero does not scaffold:
+// `--kind cli` and `--kind library`. Neither runs generate, so nothing
+// reformats what the templates emit — the cli kind's cmd/<name>/version.go
+// once shipped a doc-comment code block indented with spaces, and every new
+// CLI project's first `forge lint` failed its format lane. The unit-tier
+// tripwire for that shape is internal/generator's
+// TestFreshScaffold_GoIsFormattedAndTakesContextFirst; this is the real
+// `forge lint` over the real scaffold.
+func TestE2EFreshScaffoldLintExitsZeroForEveryKind(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "golangci-lint")
+	forgeBin := buildforgeBinary(t)
+	contractlintDir := buildContractlintBinary(t)
+	for _, kind := range []string{"cli", "library"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			name := kind + "lintapp"
+			runCmd(t, dir, forgeBin, "project", "new", name, "--mod", "example.com/"+name, "--kind", kind)
+			projectDir := filepath.Join(dir, name)
+			addCorpusForgePkgReplace(t, projectDir)
+			runCmd(t, projectDir, "go", "build", "./...")
+
+			out, err := runLintE2E(t, projectDir, contractlintDir, forgeBin, "lint", "--no-fix")
+			if err != nil {
+				t.Fatalf("forge lint must exit 0 on a freshly-scaffolded --kind %s project, got: %v\n%s", kind, err, out)
+			}
+			if strings.Contains(out, "❌") {
+				t.Errorf("forge lint printed error findings on a fresh --kind %s scaffold:\n%s", kind, out)
+			}
+			if !strings.Contains(out, "Running golangci-lint") || strings.Contains(out, "golangci-lint not found") {
+				t.Errorf("golangci-lint lane did not run — the exit-0 assertion is vacuous:\n%s", out)
+			}
+		})
+	}
+}
+
 // TestE2EComponentScaffoldsLintClean extends the fresh-scaffold-lint
 // invariant from the BARE project to the three COMPONENT scaffolds
 // TestE2EFreshScaffoldLintExitsZero never exercises: `scaffold worker`,

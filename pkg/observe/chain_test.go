@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/reliant-labs/forge/pkg/observe"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // markerInterceptor is a test collaborator that records, on a shared
@@ -112,13 +113,16 @@ func TestChain_NilCollaboratorsSkipped(t *testing.T) {
 	}
 	// Chain still has the fixed observability prefix (recovery, request-id,
 	// logging, tracing, metrics) = 5 interceptors, none of which is a
-	// marker, plus the Deadline slot's default: nil is forge's budget, not
-	// none.
-	if len(chain) != 6 {
-		t.Errorf("nil-collaborator chain length = %d, want 6 (observability + the default deadline)", len(chain))
+	// marker, plus the Deadline slot's default (nil is forge's budget, not
+	// none) and the always-last svcerr interceptor.
+	if len(chain) != 7 {
+		t.Errorf("nil-collaborator chain length = %d, want 7 (observability + the default deadline + svcerr)", len(chain))
 	}
 	if _, ok := chain[5].(observe.Deadline); !ok {
 		t.Errorf("chain[5] = %T, want the default observe.Deadline", chain[5])
+	}
+	if !svcerr.IsInterceptor(chain[6]) {
+		t.Errorf("chain[6] = %T, want svcerr.Interceptor innermost", chain[6])
 	}
 }
 

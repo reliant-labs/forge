@@ -37,8 +37,11 @@
 //	})
 //
 // Order matters; see the DefaultMiddlewares docstring for the rationale.
+// Both DefaultMiddlewares and Chain end with svcerr.Interceptor, so a
+// handler's svcerr error reaches the client with its Connect code.
 //
-// Projects that want a custom chain compose interceptors directly:
+// Projects that want a custom chain compose interceptors directly, and add
+// svcerr.Interceptor() last themselves:
 //
 //	interceptors := []connect.Interceptor{
 //	    observe.RecoveryInterceptor(logger),

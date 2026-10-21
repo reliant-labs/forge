@@ -16,7 +16,7 @@ import (
 // version, commit, and date are stamped at build time via -ldflags so the
 // CLI can report exactly what's running:
 //
-//   go build -ldflags="-X main.version=v1.0.0 -X main.commit=abc123 -X main.date=2026-01-01" ./cmd/{{.Name}}
+//	go build -ldflags="-X main.version=v1.0.0 -X main.commit=abc123 -X main.date=2026-01-01" ./cmd/{{.Name}}
 //
 // `dev` / `none` / `unknown` are visible defaults so an unstamped build
 // announces itself rather than impersonating a release.

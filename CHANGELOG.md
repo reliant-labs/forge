@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`forge tools install` replaces a GOBIN binary atomically.** It ran
+  `go install` straight into GOBIN. When cmd/go cannot rename its build into
+  place (a setgid GOBIN, or a `$WORK` on another filesystem), it removes
+  the file and rewrites it in place. A parallel generate starting `buf` or
+  `protoc-gen-go` at that moment could find nothing, or run a half-written
+  binary. The install now builds into a temp directory inside GOBIN and
+  renames the result into place.
 - **Tracing remediation says `--fix`.** Lint became report-only by default,
   but every tracing finding's remediation, the auto-fix hint, the generated
   `NewInstrumented` comment and the observability skills still said

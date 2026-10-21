@@ -70,7 +70,7 @@ func DeclareFrontendInKCL(root, projectName, frontendName, kclType string, pinne
 			fmt.Printf("   - %s (frontend '%s' declared)\n", rel, frontendName)
 			if binding == frontendHosted && !hostedCORSOrigin.MatchString(codegen.StripKCLProse(string(raw))) {
 				fmt.Printf("     ↳ hosted: a service answers this site's browser calls only once its CORS_ORIGINS names it — add\n"+
-					"       `CORS_ORIGINS = forge.WorkloadURL {workload = %q}` to the `_hosted` binder's env in %s\n", frontendName, rel)
+					"       `CORS_ORIGINS = forge.WorkloadURL {workload = %q}, CORS_ALLOW_CREDENTIALS = \"true\"` to the `_hosted` binder's env in %s\n", frontendName, rel)
 			}
 		case frontendKCLAlreadyDeclared:
 			// Quiet: an earlier run, or the user, already declared it.

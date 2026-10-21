@@ -30,7 +30,9 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
-
+{{if .NoProjectAuthInterceptor}}
+	"github.com/reliant-labs/forge/pkg/authn"
+{{- end}}
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/observe"
 {{- if .HasDatabase}}
@@ -141,7 +143,7 @@ type UserAuth struct{ serverkit.Authenticator }
 
 // UserAuthDeps is what the authenticator reads.
 type UserAuthDeps struct {
-	Config *config.Config
+	Config *config.{{or .AuthConfigType "Config"}}
 {{- if .HasDatabase}}
 	DB     *DB
 {{- end}}
@@ -158,20 +160,35 @@ type UserAuthDeps struct {
 //
 //forge:audience user
 func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
+{{- if .NoProjectAuthInterceptor}}
+	// pkg/middleware declares no NewAuthInterceptor of its own, so this is
+	// forge's (authn) over the generated allow-list: the bearer token (or
+	// API key) is the credential, and no claims enrichment runs.
+	policy := authn.Policy{Unauthenticated: middleware.UnauthenticatedProcedures}
+{{- else}}
 	authDeps := middleware.AuthDeps{AnonymousOK: false}
+{{- end}}
 	authenticator, err := SetupAuth(d.Config)
 	if err != nil {
 		return nil, fmt.Errorf("auth setup: %w", err)
 	}
 	if authenticator != nil {
+{{- if .NoProjectAuthInterceptor}}
+		policy.ValidatorConfigured, policy.ValidateContext = true, authenticator.Authenticate
+{{- else}}
 		authDeps.Validate = authenticator.Authenticate
+{{- end}}
 {{- if .HasDatabase}}
 		authenticator.UseKeyValidator(APIKeyValidator(d.DB))
 {{- else}}
 		authenticator.UseKeyValidator(APIKeyValidator())
 {{- end}}
 	}
+{{- if .NoProjectAuthInterceptor}}
+	interceptor, err := authn.NewInterceptor(policy)
+{{- else}}
 	interceptor, err := middleware.NewAuthInterceptor(authDeps)
+{{- end}}
 	if err != nil {
 		return nil, fmt.Errorf("auth configuration: %w", err)
 	}
@@ -204,7 +221,7 @@ func NewUserChain(d UserChainDeps) (*UserChain, error) {
 		// the budget bounds the credential lookup too.
 		Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines},
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
-		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(d.Config.RateLimitRps), Burst: int(d.Config.RateLimitBurst)}, middleware.ClaimsFromContext),
+		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(d.Config.RateLimitRps), Burst: int(d.Config.RateLimitBurst)}, {{if .NoProjectAuthInterceptor}}authn{{else}}middleware{{end}}.ClaimsFromContext),
 {{- end}}
 {{- if index .ConfigFields "LogSuccessSampleWindow"}}
 		// Success-log sampling (0s, the default, logs every successful rpc).
@@ -236,6 +253,11 @@ type APIListenerDeps struct {
 	Chain     *UserChain
 	Routes    *UserRoutes
 	Probes    *serverkit.Probes
+{{- if .BrokerConfigType}}
+	// Broker is the config login_broker.go reads its idp_* / oidc_*
+	// settings from.
+	Broker *config.{{.BrokerConfigType}}
+{{- end}}
 }
 
 // NewAPIListener mounts the user routes with the user chain — refusing to
@@ -288,14 +310,16 @@ func NewAPIListener(d APIListenerDeps) (*APIListener, error) {
 		Chain:  d.Chain.Chain,
 		Routes: serverkit.RoutesFunc(func(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
 			mounted := d.Routes.Register(mux, opts...)
+{{- if not .NoBrokerConfig}}
 			// NATIVE SIGN-IN: /auth/login, /auth/register, /auth/session and
 			// /auth/logout, gated on configuration (login_broker.go, yours).
-			if err := LoginBrokerConfigured(d.Config); err == nil {
-				RegisterLoginBroker(mux, d.Config, d.Logger)
+			if err := LoginBrokerConfigured(d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}); err == nil {
+				RegisterLoginBroker(mux, d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}, d.Logger)
 				d.Logger.Info("native sign-in enabled", "routes", "/auth/login /auth/register /auth/session /auth/logout")
 			} else {
 				d.Logger.Debug("native sign-in not configured", "reason", err)
 			}
+{{- end}}
 			return mounted
 		}),
 		Logger: d.Logger,

@@ -41,10 +41,13 @@ type tracingRun struct {
 // warn too.
 func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool) (tracingRun, error) {
 	var lintCfg config.LintConfig
-	contracts := true
+	contracts, libraryOnly := true, false
 	if cfg != nil {
 		lintCfg = cfg.Lint
 		contracts = cfg.Features.ContractsEnabled()
+		// No observability: the project's own processes record no trace
+		// (a CLI, a library), so only its importable code can cut one.
+		libraryOnly = !cfg.Features.ObservabilityEnabled()
 	}
 	rules := lintCfg.EffectiveRules()
 
@@ -59,6 +62,7 @@ func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool) 
 
 	opts := tracinglint.Options{
 		LogWrappers: wrappers,
+		LibraryOnly: libraryOnly,
 		Fix:         fix,
 		FixFilter: func(f finding.Finding) bool {
 			adjusted, keep := rules.Override(f)

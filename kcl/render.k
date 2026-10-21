@@ -252,17 +252,46 @@ _primary_target = lambda b: Bundle -> any {
 # Go's WorkloadSpec.EffectiveProbes gives a service with ports TCP on its
 # first one. A worker or job gets none unless it declares one.
 # ---------------------------------------------------------------------------
+#
+# The default reads the SAME config the process does: serverkit serves its
+# probes on the paths in LIVENESS_PATHS / READINESS_PATHS (the scaffold's
+# liveness_paths / readiness_paths fields, default /healthz and /readyz) and
+# on the port in PORT, so the default probes the first path of each on that
+# port, read from the workload's own env. The pod's probe and the process's
+# route cannot drift apart.
 _default_probes = lambda w: any -> any {
+    _ready = _probe_path(w, "READINESS_PATHS", "/readyz")
     w.probes if w.probes else (_TProbes {
-        # startupPath = /readyz holds liveness off until the server is ready,
-        # for the whole startup-dependency wait (the database connect retries
-        # for up to DB_CONNECT_TIMEOUT). The window is v1alpha1's
+        # startupPath = readiness holds liveness off until the server is
+        # ready, for the whole startup-dependency wait (the database connect
+        # retries for up to DB_CONNECT_TIMEOUT). The window is v1alpha1's
         # DefaultStartupFailureThreshold.
-        startupPath = "/readyz"
-        readinessPath = "/readyz"
-        livenessPath = "/healthz"
-        port = _http_port(w)
+        startupPath = _ready
+        readinessPath = _ready
+        livenessPath = _probe_path(w, "LIVENESS_PATHS", "/healthz")
+        port = _probe_port(w)
     } if w.build and (w.kind == "service" or (w.kind == "operator" and w.ports)) else Undefined)
+}
+
+# A plain string env value of the workload, or "" (unset, or a reference
+# the lowering cannot read: a secret, a field ref).
+_env_str = lambda w: any, name: str -> str {
+    _v = (w.env or {})[name] if name in (w.env or {}) else None
+    _v if typeof(_v) == "str" else ""
+}
+
+# The first path of a comma-separated probe path list in env `name` — what
+# serverkit.ProbePathList parses — else the default.
+_probe_path = lambda w: any, name: str, default: str -> str {
+    _paths = [_p.strip() for _p in _env_str(w, name).split(",") if _p.strip()]
+    _paths[0] if _paths else default
+}
+
+# The port a default probe targets: the process's PORT when the workload
+# sets it, else its http port.
+_probe_port = lambda w: any -> int {
+    _p = _env_str(w, "PORT")
+    int(_p) if _p and _p.isdigit() else _http_port(w)
 }
 
 # The port a default probe targets: the one named `http`, else the first,

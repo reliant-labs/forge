@@ -327,6 +327,92 @@ func traced(ctx context.Context, dsn string) {
 	assertHits(t, res, f+"12", f+"14")
 }
 
+// A pool opened only to look its driver up runs no statement: it is how a
+// traced pool is built from a driver name (dbtrace.Open), not a defect.
+func TestRawSQLOpenDriverProbe(t *testing.T) {
+	src := `package db
+
+import (
+	"database/sql"
+	"database/sql/driver"
+)
+
+func lookup(name, dsn string) (driver.Driver, error) {
+	probe, err := sql.Open(name, dsn) // probe: only .Driver and .Close
+	if err != nil {
+		return nil, err
+	}
+	d := probe.Driver()
+	_ = probe.Close()
+	return d, nil
+}
+
+func leaks(name, dsn string) (*sql.DB, error) {
+	db, err := sql.Open(name, dsn) // 19: returned, so it runs queries
+	_ = db.Driver()
+	return db, err
+}
+
+func discards(name, dsn string) {
+	_, _ = sql.Open(name, dsn) // 25
+}
+`
+	root := writeTree(t, map[string]string{"internal/db/open.go": src})
+	res, err := Lint(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := RuleRawSQLOpen + " internal/db/open.go:"
+	assertHits(t, res, f+"19", f+"25")
+}
+
+// A file that exports telemetry over OTLP keeps its client untraced on
+// purpose; the same client anywhere else is flagged.
+func TestRawHTTPClientTelemetryExporter(t *testing.T) {
+	exporter := `package export
+
+import (
+	"net/http"
+
+	"go.opentelemetry.io/collector/pdata/pprofile/pprofileotlp"
+)
+
+var _ = pprofileotlp.NewExportRequest
+
+var client = &http.Client{}
+`
+	plain := "package export\n\nimport \"net/http\"\n\nvar client2 = &http.Client{}\n"
+	root := writeTree(t, map[string]string{"internal/export/otlp.go": exporter, "internal/export/plain.go": plain})
+	res, err := Lint(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHits(t, res, RuleRawHTTPClient+" internal/export/plain.go:5")
+}
+
+// LibraryOnly lints only what another module can import.
+func TestLibraryOnly(t *testing.T) {
+	bad := "package %s\n\nimport \"net/http\"\n\nvar c = &http.Client{}\n"
+	pkg := func(name string) string { return strings.Replace(bad, "%s", name, 1) }
+	root := writeTree(t, map[string]string{
+		"internal/cli/cli.go":        pkg("cli"),
+		"cmd/tool/main.go":           pkg("main"),
+		"tools/build/main.go":        pkg("main"),
+		"pkg/client/client.go":       pkg("client"),
+		"pkg/client/internal/x/x.go": pkg("x"),
+		"root.go":                    pkg("app"),
+	})
+	res, err := Lint(root, Options{LibraryOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := RuleRawHTTPClient + " "
+	assertHits(t, res, f+"pkg/client/client.go:5", f+"pkg/client/internal/x/x.go:5", f+"root.go:5")
+	if res, _ := Lint(root, Options{}); len(res.Findings) != 6 {
+		t.Errorf("without LibraryOnly: %v, want all six", hits(res))
+	}
+}
+
 func TestContractUninstrumented(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"internal/billing/contract.go": "package billing\n\ntype Service interface{ Charge() }\n\ntype Deps struct{}\n\nfunc New(Deps) Service { return nil }\n",
@@ -334,30 +420,35 @@ func TestContractUninstrumented(t *testing.T) {
 			"func NewServiceWithForgeMiddleware(s Service) Service { return s }\n",
 		"internal/billing/internal_use.go": "package billing\n\nfunc self() Service { return New(Deps{}) }\n",
 		"internal/plain/plain.go":          "package plain\n\nfunc New() int { return 0 }\n",
+		// Instrumented, but its decorator is not generated yet: compose.go
+		// would not wrap it either, so it is not flagged.
+		"internal/fresh/contract.go": "package fresh\n\ntype Service interface{ Do() }\n\ntype Deps struct{}\n\nfunc New(Deps) Service { return nil }\n",
 		"internal/app/providers.go": `package app
 
 import (
 	"example.com/app/internal/billing"
+	"example.com/app/internal/fresh"
 	"example.com/app/internal/plain"
 )
 
 func wire() error {
-	_ = billing.New(billing.Deps{}) // 9: unwrapped
+	_ = billing.New(billing.Deps{}) // 10: unwrapped
 	_ = billing.NewServiceWithForgeMiddleware(billing.New(billing.Deps{}))
 	inst := billing.New(billing.Deps{})
 	_ = billing.NewServiceWithForgeMiddleware(inst)
 	_ = plain.New() // not instrumented
+	_ = fresh.New(fresh.Deps{}) // no decorator generated yet
 	return nil
 }
 `,
 		"internal/app/providers_test.go": "package app\n\nimport \"example.com/app/internal/billing\"\n\nvar _ = billing.New(billing.Deps{})\n",
 	})
-	instrumented := func(dir string) bool { return filepath.Base(dir) == "billing" }
+	instrumented := func(dir string) bool { return filepath.Base(dir) == "billing" || filepath.Base(dir) == "fresh" }
 	res, err := Lint(root, Options{Instrumented: instrumented})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertHits(t, res, RuleContractUninstrumented+" internal/app/providers.go:9")
+	assertHits(t, res, RuleContractUninstrumented+" internal/app/providers.go:10")
 	if r := res.Findings[0].Remediation; !strings.Contains(r, "billing.NewServiceWithForgeMiddleware(billing.New(…))") {
 		t.Errorf("remediation does not name the decorator: %s", r)
 	}

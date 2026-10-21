@@ -78,7 +78,7 @@ func (p *Pprof) Run(ctx context.Context) error {
 	}
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", p.addr)
 	if err != nil {
-		p.logger.Error("pprof listener unavailable — continuing without it",
+		p.logger.ErrorContext(ctx, "pprof listener unavailable — continuing without it",
 			"addr", p.addr, "error", err,
 			"hint", "another process is probably bound there; set PPROF_ADDR to a free port, or pass --pprof-addr= to disable pprof")
 		<-ctx.Done()
@@ -87,7 +87,7 @@ func (p *Pprof) Run(ctx context.Context) error {
 	p.mu.Lock()
 	p.ln = ln
 	p.mu.Unlock()
-	p.logger.Info("pprof server starting", "addr", p.addr)
+	p.logger.InfoContext(ctx, "pprof server starting", "addr", p.addr)
 	errCh := make(chan error, 1)
 	go func() { errCh <- p.srv.Serve(ln) }()
 	select {
@@ -95,7 +95,7 @@ func (p *Pprof) Run(ctx context.Context) error {
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		p.logger.Error("pprof server error", "error", err)
+		p.logger.ErrorContext(ctx, "pprof server error", "error", err)
 		return nil
 	case <-ctx.Done():
 		_ = p.srv.Close()

@@ -147,7 +147,7 @@ func RetryConnect(ctx context.Context, p ConnectPolicy, attempt func(ctx context
 		cancel()
 		if err == nil {
 			boot.clear(p.Name)
-			p.Logger.Info(p.Name+" connected",
+			p.Logger.InfoContext(ctx, p.Name+" connected",
 				"dependency", p.Name, "elapsed", time.Since(start).Round(time.Millisecond), "attempts", attempts)
 			return nil
 		}
@@ -163,7 +163,7 @@ func RetryConnect(ctx context.Context, p ConnectPolicy, attempt func(ctx context
 		}
 
 		if lastWarn.IsZero() || time.Since(lastWarn) >= p.LogEvery {
-			p.Logger.Warn(p.Name+" not reachable yet — retrying",
+			p.Logger.WarnContext(ctx, p.Name+" not reachable yet — retrying",
 				"dependency", p.Name,
 				"error_class", classifyConnectError(lastErr),
 				"error", lastErr,

@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -47,6 +45,9 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	if cfg.Addr == "" {
 		return fmt.Errorf("serverkit.Run: Config.Addr is required")
 	}
+	if err := cfg.Probes.Validate(); err != nil {
+		return fmt.Errorf("serverkit.Run: Config.Probes: %w", err)
+	}
 	if len(srv.Operators) > 0 && srv.RunOperators == nil {
 		return fmt.Errorf("serverkit.Run: Server.Operators is non-empty but Server.RunOperators is nil")
 	}
@@ -77,7 +78,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// permissive behavior is selected by the caller (at mount time) based on
 	// cfg.Environment.
 	if cfg.IsDevelopment() {
-		logger.Warn("running in development mode — permissive edge defaults are enabled (CORS reflects any origin, HSTS off). NEVER set ENVIRONMENT=development in production.")
+		logger.WarnContext(ctx, "running in development mode — permissive edge defaults are enabled (CORS reflects any origin, HSTS off). NEVER set ENVIRONMENT=development in production.")
 	}
 
 	// OTel: serverkit OWNS OpenTelemetry setup (the generated cmd/otel.go
@@ -90,7 +91,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// validation before Run.
 	otelShutdown, metricsHandler, otelErr := SetupTelemetry(ctx, cfg)
 	if otelErr != nil {
-		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
+		logger.ErrorContext(ctx, "failed to initialize OpenTelemetry", "error", otelErr)
 	}
 
 	// Readiness gate and drain budget: opened AFTER the listener binds (see
@@ -122,17 +123,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		return err
 	}
 
-	front := map[string]http.Handler{
-		"/healthz": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, "ok\n")
-		}),
-		// /readyz is the ROUTABILITY answer: listener bound, not draining, and
-		// every registered dependency reachable. It is what a rolling deploy
-		// believes, so it runs the checks live on each request rather than
-		// reporting a value latched at boot. See readiness.go.
-		"/readyz": drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger),
-	}
+	// Liveness and readiness on cfg.Probes (/healthz, /readyz by default).
+	// Readiness is the ROUTABILITY answer: listener bound, not draining, and
+	// every registered dependency reachable. It is what a rolling deploy
+	// believes, so it runs the checks live on each request rather than
+	// reporting a value latched at boot. See readiness.go.
+	front := cfg.Probes.routes(drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger))
 	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
 	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
 	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check
@@ -186,11 +182,11 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	)
 	failComponent := func(component string, err error) {
 		if cfg.FailurePolicy == Ignore {
-			logger.Error("component failed — continuing (FailurePolicy=Ignore)",
+			logger.ErrorContext(ctx, "component failed — continuing (FailurePolicy=Ignore)",
 				"component", component, "error", err)
 			return
 		}
-		logger.Error("component failed — terminating process (FailurePolicy=FailProcess)",
+		logger.ErrorContext(ctx, "component failed — terminating process (FailurePolicy=FailProcess)",
 			"component", component, "error", err)
 		componentMu.Lock()
 		if componentFailure == nil {
@@ -275,13 +271,13 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 			wctx, wcancel := context.WithCancel(workerCtx)
 			defer wcancel()
 			if cw, ok := w.(ContextWorker); ok {
-				logger.Info("worker starting", "worker", w.Name(), "lifecycle", "run-context")
+				logger.InfoContext(ctx, "worker starting", "worker", w.Name(), "lifecycle", "run-context")
 				if workErr := cw.RunContext(wctx); workErr != nil && !errors.Is(workErr, context.Canceled) {
 					failComponent("worker "+w.Name(), workErr)
 				}
 				return
 			}
-			logger.Info("worker starting", "worker", w.Name())
+			logger.InfoContext(ctx, "worker starting", "worker", w.Name())
 			if startErr := w.Start(wctx); startErr != nil && !errors.Is(startErr, context.Canceled) {
 				failComponent("worker "+w.Name(), startErr)
 			}
@@ -319,11 +315,11 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	var runErr error
 	select {
 	case err := <-errCh:
-		logger.Error("server error", "error", err)
+		logger.ErrorContext(ctx, "server error", "error", err)
 		runErr = fmt.Errorf("server failed: %w", err)
 	case <-runCtx.Done():
 	}
-	logger.Info("server stopping")
+	logger.InfoContext(ctx, "server stopping")
 
 	// Graceful shutdown sequence (drain.go):
 	//   1. Flip readiness to "draining" so /readyz starts failing.
@@ -363,19 +359,19 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	//     shutdown itself produced — precisely the window an operator reads
 	//     when a deploy goes wrong.
 	if shutErr := listener.Drain(shutdownCtx); shutErr != nil {
-		logger.Error("server shutdown error", "error", shutErr)
+		logger.ErrorContext(ctx, "server shutdown error", "error", shutErr)
 	}
 	listenerCancel()
 	mark := time.Now()
 
 	workerCancel()
 	if len(srv.Workers) > 0 && !waitWithin(shutdownCtx, &workerWg) {
-		logger.Error("workers did not drain within the shutdown budget",
+		logger.ErrorContext(ctx, "workers did not drain within the shutdown budget",
 			"shutdown_timeout", drainer.shutdownTimeout())
 	}
 	for _, w := range srv.Workers {
 		if stopErr := w.Stop(shutdownCtx); stopErr != nil {
-			logger.Error("worker stop error", "worker", w.Name(), "error", stopErr)
+			logger.ErrorContext(ctx, "worker stop error", "worker", w.Name(), "error", stopErr)
 		}
 	}
 	mark = drainer.Phase("workers", mark, "drain: workers stopped", "workers", len(srv.Workers))
@@ -390,7 +386,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// the platform's own grace period is about to SIGKILL it anyway and a
 	// clean-ish exit beats being shot mid-flush.
 	if operatorsSupervised && !waitWithin(shutdownCtx, &operatorWg) {
-		logger.Error("controller manager did not drain within the shutdown budget",
+		logger.ErrorContext(ctx, "controller manager did not drain within the shutdown budget",
 			"shutdown_timeout", drainer.shutdownTimeout())
 	}
 	if operatorsSupervised {
@@ -402,12 +398,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// workers have stopped, so nothing it closes is still in use.
 	if srv.OnShutdown != nil {
 		if shutErr := srv.OnShutdown(shutdownCtx); shutErr != nil {
-			logger.Error("shutdown error", "error", shutErr)
+			logger.ErrorContext(ctx, "shutdown error", "error", shutErr)
 		}
 	}
 
 	if shutErr := pprofSrv.Close(shutdownCtx); shutErr != nil {
-		logger.Error("pprof shutdown error", "error", shutErr)
+		logger.ErrorContext(ctx, "pprof shutdown error", "error", shutErr)
 	}
 	pprofCancel()
 	drainer.Phase("teardown", mark, "drain: teardown done")
@@ -417,7 +413,7 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// so it exports everything the steps above produced.
 	if otelShutdown != nil {
 		if shutErr := otelShutdown(shutdownCtx); shutErr != nil {
-			logger.Error("otel shutdown error", "error", shutErr)
+			logger.ErrorContext(ctx, "otel shutdown error", "error", shutErr)
 		}
 	}
 

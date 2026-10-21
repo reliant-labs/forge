@@ -699,8 +699,8 @@ type CmdServerTemplateData struct {
 	Name string
 
 	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
-	// composition site builds a vanguard transcoder over the mounted
-	// services' Connect paths and serves it in place of the bare mux.
+	// composition site serves vanguard's REST routes for the mounted
+	// services in front of the bare mux (serverkit.RESTHandler).
 	// Filled by generateCmdServerData from projectAPIRESTEnabled.
 	RESTEnabled bool
 }
@@ -1093,6 +1093,57 @@ func RootConfigFieldNames(messages []ConfigMessage, projectDir string) map[strin
 	return names
 }
 
+// jwtConfigFields are the root-config-shaped fields the scaffolded
+// internal/app/auth.go's JWT validator reads; brokerConfigFields the ones
+// internal/app/login_broker.go reads.
+var (
+	jwtConfigFields = []string{"JwtSigningMethod", "JwtIssuer", "JwtAudience", "JwtJwksUrl", "JwtSecret",
+		"JwtRolesClaim", "JwtJwksSnapshotFile", "JwtJwksSnapshot", "JwtJwksSnapshotMaxAge"}
+	brokerConfigFields = []string{"IdpBase", "IdpHost", "IdpBrokerToken", "IdpBrokerTokenFile",
+		"OidcClientId", "OidcRedirectUri", "Environment"}
+)
+
+// configDeclaring names the config of the primary binary a scaffold reading
+// goNames reads them from: the one that declares every one of them at its top
+// level — the root config ("", which the templates spell Config), else the
+// first config beside it that does (its message name). found is false when no
+// config the binary loads declares them all; the scaffold then reads none of
+// them (F1: a scaffold may only read fields some config declares).
+func configDeclaring(projectDir string, goNames []string) (typeName string, found bool) {
+	messages, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
+	if err != nil || len(messages) == 0 {
+		return "", true // no parsed config yet: the default scaffold's AppConfig
+	}
+	return configDeclaringIn(messages, projectDir, goNames)
+}
+
+// configDeclaringIn is configDeclaring over parsed messages.
+func configDeclaringIn(messages []ConfigMessage, projectDir string, goNames []string) (typeName string, found bool) {
+	declares := func(fields map[string]bool) bool {
+		for _, n := range goNames {
+			if !fields[n] {
+				return false
+			}
+		}
+		return true
+	}
+	if declares(RootConfigFieldNames(messages, projectDir)) {
+		return "", true
+	}
+	if pc := processConfigsFrom(messages, primaryBinaryName(projectDir)); pc != nil {
+		for _, in := range pc.inputs {
+			own := map[string]bool{}
+			for _, f := range in.msg.Fields {
+				own[f.GoName] = true
+			}
+			if declares(own) {
+				return in.msg.Name, true
+			}
+		}
+	}
+	return "", false
+}
+
 // primaryBinaryName is the primary binary's name — its cmd/<bin>/cmd tree's
 // <bin> — or "" when the project has no command tree.
 func primaryBinaryName(projectDir string) string {
@@ -1369,6 +1420,29 @@ func DefaultConfigMessages() []ConfigMessage {
 					Flag:         "security-headers-enabled",
 					DefaultValue: "true",
 					Description:  "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them.",
+				},
+				{
+					// The probe paths: the KCL lowering reads the same env
+					// values for a forge-built workload's default probe. Keep
+					// in step with internal/templates/project/config.proto.tmpl.
+					Name:         "liveness_paths",
+					GoName:       "LivenessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "LIVENESS_PATHS",
+					Flag:         "liveness-paths",
+					DefaultValue: "/healthz",
+					Description:  "Comma-separated paths the liveness probe answers on (200 while the process runs). The first is the one the deploy probes; the rest are aliases, for a platform that probes a fixed path (/health).",
+				},
+				{
+					Name:         "readiness_paths",
+					GoName:       "ReadinessPaths",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "READINESS_PATHS",
+					Flag:         "readiness-paths",
+					DefaultValue: "/readyz",
+					Description:  "Comma-separated paths the readiness probe answers on (503 while booting, draining, or a dependency is down). The first is the one the deploy probes; the rest are aliases (/ready).",
 				},
 			},
 		},

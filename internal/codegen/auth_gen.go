@@ -17,6 +17,14 @@ type AuthSetupTemplateData struct {
 	// serving pool (*DB), not the legacy *Infra.
 	Graph       bool
 	HasDatabase bool
+	// AuthConfigType is the pkg/config type SetupAuth reads its jwt_*
+	// settings from — the config that declares them (ConfigDeclaring): ""
+	// is the root config, Config.
+	AuthConfigType string
+	// NoJWTConfig is true when no config the binary loads declares them:
+	// SetupAuth then builds no validator, and a root that reaches the user
+	// authenticator refuses to start until one is written.
+	NoJWTConfig bool
 }
 
 // GenerateAuthSetup scaffolds internal/app/auth.go ONCE — the OWNED,

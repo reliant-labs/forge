@@ -9,7 +9,7 @@ require (
 	buf.build/go/protovalidate v1.4.0
 	cel.dev/cel-go v0.32.0
 	connectrpc.com/connect v1.21.1
-	connectrpc.com/connect/v2 v2.0.0
+	connectrpc.com/connect/v2 v2.0.1
 	connectrpc.com/otelconnect v0.12.0
 	connectrpc.com/vanguard v0.5.0
 	github.com/BurntSushi/toml v1.6.0

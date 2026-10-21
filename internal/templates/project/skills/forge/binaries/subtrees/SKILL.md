@@ -48,3 +48,7 @@ another process: `apply` migrates before building the root (the default for a
 root that reaches the database), `wait` blocks until the schema is current
 (`/readyz` names `schema`; `migratekit.AwaitSchema`), and `none` leaves it
 alone. `runRoot` reads `root.Migrate` / `root.AwaitMigrations`.
+
+## Each root's env schema, importable
+
+`pkg/config/roots_gen.go` (generated) is `ROOTS` as Go: `config.Roots()`, `config.RootNamed(name)` and `config.ValidateRootEnv(name, env)`. Each `forgeconfig.Root` carries its args, every env var it reaches (config, path, type, required, sensitive), its env families and the configs its process loads. `Root.Validate(env)` runs the boot load over a rendered env (no flags, every problem rather than the first) and adds a `*forgeconfig.UnreachedVarError` for each var the root never reads. The repo that keeps a deployment's values imports this package at its pinned version and checks each workload's env against the root it runs.

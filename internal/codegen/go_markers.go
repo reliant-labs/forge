@@ -91,6 +91,7 @@ var goMarkers = []GoMarker{
 	{Name: directiveExcludeContract, Grammar: GoMarkerReasoned, Form: "//forge:exclude-contract: <reason>"},
 	{Name: directiveExternalComponent, Grammar: GoMarkerBare, Form: "// forge:external-component"},
 	{Name: "forge:gen", Grammar: GoMarkerOwnGrammar, Form: "// forge:gen <kind> <key>=<value> (written by forge)"},
+	{Name: "forge:group", Grammar: GoMarkerOwnGrammar, Form: "//forge:group <word>[,<word>…]"},
 	{Name: "forge:hash", Grammar: GoMarkerOwnGrammar, Form: "// forge:hash=<sha256> (written by forge)"},
 	{Name: "forge:lint-disable", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable <rule>: <reason>"},
 	{Name: "forge:lint-disable-file", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable-file <rule>: <reason>"},

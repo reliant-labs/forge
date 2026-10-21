@@ -410,7 +410,7 @@ func TestRootsGen_LoadsAndRegistersEachConfig(t *testing.T) {
 	for i := range views {
 		views[i].TypeName = strings.ToUpper(views[i].Name[:1]) + views[i].Name[1:]
 	}
-	cmds, top := rootCommandViews(views)
+	cmds, top := rootCommandViews(views, nil)
 	inputs := processConfigsFrom(binConfigMessages(), "rbc").inputViews()
 	src, err := renderGoTemplate("roots_gen.go.tmpl", rootsGenView{Module: "example.com/rbc", Commands: cmds, Top: top, Fmt: true, ConfigInputs: inputs})
 	if err != nil {
@@ -437,7 +437,7 @@ func TestRootsGen_LoadsAndRegistersEachConfig(t *testing.T) {
 
 	// No loads: the PR 6 shape, byte for byte.
 	plain := []graphRootView{{Name: "server", TypeName: "Server", Command: []string{"server"}, HasConfig: true, Config: []ConfigLeaf{{Path: "port"}}}}
-	cmds, top = rootCommandViews(plain)
+	cmds, top = rootCommandViews(plain, nil)
 	src, err = renderGoTemplate("roots_gen.go.tmpl", rootsGenView{Module: "example.com/rbc", Commands: cmds, Top: top})
 	if err != nil {
 		t.Fatal(err)

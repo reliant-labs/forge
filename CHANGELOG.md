@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **What the owned `runRoot` reads is every root's config reach.** `generate`
+  reads `cmd/<bin>/cmd/serve.go` the way it reads compose.go: `cfg` from
+  `config.LoadReach`, `root.Configs.<Msg>`, and each config value handed to a
+  function of the command tree, by the same selector rules. A setting the
+  process policy reads under its own name (an `observability` block's
+  `OTEL_*`, `PROMETHEUS_ENABLED`, a `health_port`) is now in `ROOTS`, in
+  `pkg/config` `Roots()` (so `Validate` no longer calls it unreached) and in
+  what `LoadReach` demands; before, only forge's own serve-field names counted.
+  A database field still counts only for a root that opens the database, and
+  a tree with no runRoot keeps the scaffolded serve fields.
+- **`//forge:group <path>` declares a group command's help.** A comment of its
+  own in `internal/app`, read by the root doc's rule (first paragraph the
+  Short, the rest the Long), replaces roots_gen.go's generic "The server roots"
+  on the group command above `server api` / `server gateway`. A path no root
+  runs beneath, or a root's own command, is a generate error.
 - **`forge cloud identity` administers users, not just reads them.** New verbs,
   each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
 <id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,

@@ -98,7 +98,7 @@ func TestRootCommandViews_NestedPathsBecomeACobraTree(t *testing.T) {
 		{Name: "api", TypeName: "API", Command: []string{"serve", "api"}, Plan: "api_listener"},
 		{Name: "gateway", TypeName: "Gateway", Command: []string{"serve", "gateway"}, Plan: "daemon_listener"},
 	}
-	cmds, top := rootCommandViews(roots)
+	cmds, top := rootCommandViews(roots, nil)
 	var got []string
 	for _, c := range cmds {
 		run := "-"
@@ -140,7 +140,7 @@ func TestEmitRootCommands_WritesOneCommandPerRoot(t *testing.T) {
 		{Name: "server", TypeName: "Server", Command: []string{"server"}, Migrate: true, Fields: []graphRootFieldView{{Accessor: "APIListener"}}, Plan: "db → api_listener"},
 		{Name: "worker", TypeName: "Worker", Command: []string{"worker"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick"},
 	}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, "", nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, "", nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if warn.Len() != 0 {
@@ -214,7 +214,7 @@ type One struct{}
 	cmds, _ := rootCommandViews([]graphRootView{
 		{Name: "gateway", TypeName: "Gateway", Command: []string{"server", "gateway"}, Short: want["gateway"][0], Long: want["gateway"][1]},
 		{Name: "bare", TypeName: "Bare", Command: []string{"bare"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick"},
-	})
+	}, nil)
 	byUse := map[string]rootCmdView{}
 	for _, c := range cmds {
 		byUse[c.Use] = c
@@ -248,7 +248,7 @@ func TestEmitRootCommands_RootConfigFlagsHomedOnTheBinaryRoot(t *testing.T) {
 				t.Fatal(err)
 			}
 			var warn bytes.Buffer
-			if err := emitRootCommands(dir, "example.com/demo", roots, nil, "DemoConfig", nil, &warn); err != nil {
+			if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, "DemoConfig", nil, &warn); err != nil {
 				t.Fatal(err)
 			}
 			src, err := os.ReadFile(filepath.Join(dir, "cmd", "demo", "cmd", "roots_gen.go"))
@@ -271,7 +271,7 @@ func TestEmitRootCommands_ATreeWithoutRunRootKeepsCompiling(t *testing.T) {
 	}
 	var warn bytes.Buffer
 	roots := []graphRootView{{Name: "worker", TypeName: "Worker", Command: []string{"worker"}}}
-	if err := emitRootCommands(dir, "example.com/demo", roots, nil, "", nil, &warn); err != nil {
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, "", nil, &warn); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {

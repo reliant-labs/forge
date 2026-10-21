@@ -275,7 +275,7 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- range .ConfigInputs}}
 {{- if .Fields}}
 
-	// {{.Doc}}: its settings, in a process whose command loads it.
+	// The settings {{.Doc}} declares, in a process whose command loads it.
 	if c := configs.{{.Name}}; c != nil {
 {{- if index .Fields "Port"}}
 		skCfg.Addr = fmt.Sprintf(":%d", c.Port)

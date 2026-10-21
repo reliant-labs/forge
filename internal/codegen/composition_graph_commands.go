@@ -89,9 +89,24 @@ func graphComposeInputReads(src string, nodes []*graphNode) map[string]map[strin
 			continue
 		}
 		recv := fd.Recv.List[0].Names[0].Name
+		// g.Probes as the receiver of a method other than Front — a node
+		// adding a route (Handle) or a check (AddReadyCheck) — uses the
+		// probe surface without serving it, so it does not count as a read
+		// of "Probes" (which is what drops the root's probe listener).
+		registersOnly := map[*ast.SelectorExpr]bool{}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if outer, ok := n.(*ast.SelectorExpr); ok && outer.Sel.Name != "Front" {
+				if inner, ok := outer.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "Probes" {
+					if id, ok := inner.X.(*ast.Ident); ok && id.Name == recv {
+						registersOnly[inner] = true
+					}
+				}
+			}
+			return true
+		})
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
+			if !ok || registersOnly[sel] {
 				return true
 			}
 			if id, ok := sel.X.(*ast.Ident); ok && id.Name == recv && reservedGraphNames[sel.Sel.Name] {

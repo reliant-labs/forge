@@ -1,8 +1,8 @@
 ---
 name: v0.1.47
-description: Upgrade a project to forge v0.1.47. One section per change — (1) the interceptor chain's Deadline slot, ahead of Auth: every unary RPC is now bounded by a 30s server deadline by default and watched for slow calls, and `(forge.v1.method).timeout` is enforced through `middleware.ProcedureDeadlines`, which an owned chain builder passes as `Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. Use when cmd/<bin>/cmd/serve.go or internal/app/providers.go calls serverkit.NewChain or observe.Chain and names no Deadline, or when a project hand-wraps a timeout or watchdog interceptor around its authenticator. (2) The composition graph upgrade path: `forge fix composition-graph` converts the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition and the per-service, per-worker and per-operator subcommands to providers, compose.go constructor methods and roots, and lists — writing nothing — every shape it cannot convert without deciding for you; ServeSpec knobs become reachability (control-plane's OperatorListener, NoKubernetesAPI and WorkerLeases are the worked example); deploy binds workloads to roots. Use when internal/app declares `type Infra struct` or `func NewComponents`, or a graph project moves to binary_config.
+description: Upgrade a project to forge v0.1.47. One section per change — (1) the interceptor chain's Deadline slot, ahead of Auth: every unary RPC is now bounded by a 30s server deadline by default and watched for slow calls, and `(forge.v1.method).timeout` is enforced through `middleware.ProcedureDeadlines`, which an owned chain builder passes as `Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines}`. Use when cmd/<bin>/cmd/serve.go or internal/app/providers.go calls serverkit.NewChain or observe.Chain and names no Deadline, or when a project hand-wraps a timeout or watchdog interceptor around its authenticator. (2) The composition graph upgrade path: `forge fix composition-graph` converts the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition and the per-service, per-worker and per-operator subcommands to providers, compose.go constructor methods and roots, and lists — writing nothing — every shape it cannot convert without deciding for you; ServeSpec knobs become reachability (control-plane's OperatorListener, NoKubernetesAPI and WorkerLeases are the worked example); deploy binds workloads to roots. Use when internal/app declares `type Infra struct` or `func NewComponents`, or a graph project moves to binary_config. (3) Configurable probe paths: `serverkit.Config.Probes` (liveness_paths / readiness_paths config fields, default /healthz and /readyz), honoured by the boot probes, serverkit.Run and `serverkit.Probes.Paths`, with `Probes.Handle` for extra routes such as /flow-health, and read by the KCL lowering for the default probe. Use when cmd/<bin>/cmd/serve.go builds `&serverkit.Probes{` with no `Paths:`.
 version: v0.1.47
-detection: grep -qsE '^type Infra struct|^func NewComponents\(' internal/app/*.go && exit 0; for f in cmd/*/cmd/serve.go internal/app/providers.go; do test -f "$f" && grep -qsE 'serverkit\.NewChain|observe\.Chain\(' "$f" && ! grep -qsE 'Deadline:|ProcedureDeadlines' "$f" && exit 0; done; exit 1
+detection: grep -qsE '^type Infra struct|^func NewComponents\(' internal/app/*.go && exit 0; for f in cmd/*/cmd/serve.go internal/app/providers.go; do test -f "$f" && grep -qsE 'serverkit\.NewChain|observe\.Chain\(' "$f" && ! grep -qsE 'Deadline:|ProcedureDeadlines' "$f" && exit 0; done; for f in cmd/*/cmd/serve.go; do test -f "$f" && grep -qs '&serverkit.Probes{' "$f" && ! grep -qs 'Paths:' "$f" && exit 0; done; exit 1
 ---
 
 # Upgrading to v0.1.47
@@ -243,3 +243,60 @@ edits by hand:
    ownership, so `forge generate` will not bring it back.
 3. The scaffolded `_api` workload is rebound to a root that exists
    (`config_gen.root_of("<root>")`); rendering fails on an unknown root.
+
+## 3. Configurable probe paths
+
+Use when `cmd/<bin>/cmd/serve.go` builds `&serverkit.Probes{` with no
+`Paths:`, or when a platform probes the process on a path other than
+`/healthz` / `/readyz` (a GKE `HealthCheckPolicy`, a docker-compose
+healthcheck, an ingress health route).
+
+### What changed
+
+`serverkit.Config.Probes` (`serverkit.ProbePaths{Live, Ready []string}`) names
+the paths the process answers its probes on. Empty is `/healthz` and
+`/readyz`, so nothing changes for a project that sets none. Each list's
+first path is the canonical one; the rest are aliases served alike. The boot
+probes, `serverkit.Run`'s listener and a `serverkit.Probes` surface
+(`Probes.Paths`) all honour it, and `Config.Probes.Validate` rejects a path no
+listener can serve.
+
+The scaffold projects it from two typed config fields, `liveness_paths`
+(`LIVENESS_PATHS`, default `/healthz`) and `readiness_paths`
+(`READINESS_PATHS`, default `/readyz`), both comma-separated. The KCL lowering
+reads the same env values, together with `PORT`, for a forge-built
+workload's default probe: the first path of each, on the process's port. So
+the probe a pod is given is the one its process serves. A probe the workload
+declares is kept as declared.
+
+`serverkit.Probes.Handle(path, h)` adds a route to the probe surface, such as a
+`/flow-health` that must answer on the probe port. Add it before the
+listener that serves the probes is built. A node that only calls
+`g.Probes.Handle` or `g.Probes.AddReadyCheck` no longer counts as serving the
+probes, so its root keeps its probe listener.
+
+### What to do
+
+1. In `serve.go` (yours), hand the paths to the probe surface, or the
+   listener serves the defaults while the boot probes serve the configured
+   ones:
+
+   ```go
+   Probes: &serverkit.Probes{Drainer: drainer, Metrics: metrics,
+       Timeout: skCfg.ReadinessTimeout, Logger: logger, Paths: skCfg.Probes},
+   ```
+
+2. To configure the paths, add the two fields to `proto/config/v1/config.proto`
+   (copy them from a fresh `forge project new`), project them in
+   `serverkitConfig`:
+
+   ```go
+   skCfg.Probes.Live = serverkit.ProbePathList(cfg.LivenessPaths)
+   skCfg.Probes.Ready = serverkit.ProbePathList(cfg.ReadinessPaths)
+   ```
+
+   then set the values per env in KCL config, not as a hand-written probe.
+   Keep `/healthz` and `/readyz` as aliases (`/health,/healthz`) while
+   anything else still probes them, such as `forge doctor`.
+
+3. Run `forge generate`, then `go build ./...`.

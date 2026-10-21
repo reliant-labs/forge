@@ -40,6 +40,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -576,9 +577,21 @@ func graphRoots(views []graphRootView) []GraphRoot {
 }
 
 // GraphRoots assembles a graph-mode project's graph and returns its roots as
-// processes, writing nothing; nil for a legacy-composition project.
+// processes, writing nothing; nil for a legacy-composition project, and nil
+// for one generate has not composed yet.
+//
+// Not composed yet means no internal/app/compose.go: a fresh scaffold, or one
+// whose bootstrap generate failed. Its providers are not written either, so a
+// graph assembled from that tree is a fraction of the one generate composes —
+// a server root that reaches no database — and config_gen.k's ROOTS then
+// refused the scaffold's own workloads ("config_secrets names [DATABASE_URL],
+// which root \"server\" does not reach"), so no env rendered. nil sends the
+// caller to DefaultServerRoot: what a scaffold's server reaches.
 func GraphRoots(projectDir string) ([]GraphRoot, error) {
 	if !GraphComposition(projectDir) {
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "app", "compose.go")); err != nil {
 		return nil, nil
 	}
 	in, err := graphLintInput(projectDir)

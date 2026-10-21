@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **pgtest's shared server survives a slow moment and a long run.** An
+  attaching process probed the cross-process shared embedded server with a
+  2s connect and 3s ping and, on a miss, `pg_ctl stop -m fast`ed it — under
+  every other process using it, which failed mid-test with 57P01
+  "terminating connection due to administrator command" and 57P03 "the
+  database system is shutting down". A loaded or just-woken machine misses
+  that probe routinely (control-plane's integration lane failed that way in
+  four runs in a row). A live postmaster is now retried for 30s on the
+  monotonic clock; if it still does not answer and other processes use it,
+  the newcomer runs on a standalone server of its own and the shared one is
+  left alone. `reapStaleInstances` no longer SIGKILLs (and deletes the data
+  directory of) the pool's server while it has a live user, or a standalone
+  server while its owner lives, however old its pid file looks: a fan-out
+  outlives the 30-minute stale age, and a sleep ages every file by the wall
+  clock.
+
 ### Changed
 
 - **A Go cache budget no trim can reach is reported, not passed over.** The

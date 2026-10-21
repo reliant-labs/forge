@@ -334,7 +334,7 @@ func postgresBinary(runtimeDir string) string {
 // ceiling, not the runtime), so anything this old belongs to a process
 // that died before it could clean up. Generous enough that a live
 // concurrent run is never reaped.
-const staleInstanceAge = 30 * time.Minute
+var staleInstanceAge = 30 * time.Minute // a var so tests can age a server past it
 
 // reapStaleInstances removes forge-pgtest runtime dirs — and SIGKILLs any
 // postgres still bound to them — left behind by test binaries that were
@@ -360,8 +360,9 @@ func reapStaleInstances() {
 	if err != nil {
 		return
 	}
+	inUse := portsInUse()
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || inUse[e.Name()] {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
@@ -403,6 +404,33 @@ func reapStaleInstances() {
 		reclaimShmSegment(pidFile)
 		_ = os.RemoveAll(dir)
 	}
+}
+
+// portsInUse names the runtime dirs (by port) a live process is still using:
+// the pool's shared server while it has a live user, and every standalone
+// server whose owner is alive. Age says nothing about these. A shared server
+// serves a whole fan-out, which on a loaded machine (or across a sleep, which
+// ages every file by the wall clock) easily outlives staleInstanceAge, and
+// SIGKILLing it killed every test still using it.
+func portsInUse() map[string]bool {
+	in := map[string]bool{}
+	if st := readPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
+		in[strconv.FormatUint(uint64(st.Port), 10)] = true
+	}
+	entries, _ := os.ReadDir(filepath.Join(os.TempDir(), "forge-pgtest"))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(os.TempDir(), "forge-pgtest", e.Name(), ownerFile))
+		if err != nil {
+			continue
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && processAlive(pid) {
+			in[e.Name()] = true
+		}
+	}
+	return in
 }
 
 // shmIDFromPidfile parses the System V shared-memory segment id postgres

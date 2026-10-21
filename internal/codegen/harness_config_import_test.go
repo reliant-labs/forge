@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // writeHarnessFixture writes files (path → content) under a fresh project
@@ -209,7 +211,7 @@ func TestGenerateBootstrapTesting_NoTypedConfigCompiles(t *testing.T) {
 	// the harness lives.
 	cmd := exec.Command("go", "vet", "./internal/widget/")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, verr := cmd.CombinedOutput(); verr != nil {
 		helpers, _ := os.ReadFile(filepath.Join(root, "internal", "widget", componentTestHelperFile))
 		t.Fatalf("the harness of a project without pkg/config does not compile: %v\n%s\n---- %s ----\n%s",

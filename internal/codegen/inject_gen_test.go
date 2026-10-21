@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -1530,7 +1531,7 @@ func New(d Deps) (Service, error) { return nil, nil }
 		t.Helper()
 		cmd := exec.Command("go", "build", "./...")
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+		cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s: go build failed: %v\n%s\n--- compose.go ---\n%s",
 				stage, err, out, readInject(t, dir))
@@ -1670,7 +1671,7 @@ func TestGenerateCompose_ServiceNamedLikeAGeneratedIdentifier(t *testing.T) {
 	}
 	cmd := exec.Command("go", "build", "./internal/...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("compose.go does not compile with services named %v: %v\n%s\n--- compose.go ---\n%s", colliding, err, b, out)
 	}
@@ -1722,7 +1723,7 @@ func TestGenerateCompose_EveryTemplateIdentifierAsAComponentName(t *testing.T) {
 			}
 			cmd := exec.Command("go", "build", "./internal/...")
 			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+			cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod"))
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("compose.go does not compile with components named %v: %v\n%s\n--- compose.go ---\n%s",
 					names, err, b, readInject(t, dir))

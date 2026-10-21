@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -588,5 +589,122 @@ func TestGoCacheBudgetIsCappedByTheVolume(t *testing.T) {
 	bad.GoCacheVolumePercent = 101
 	if bad.Validate() == nil {
 		t.Fatal("go_cache_volume_percent 101 must be rejected")
+	}
+}
+
+// overBudgetCache is a 16-shard cache with a 40 000 B budget (1% of a stubbed
+// 4 MB volume): in every shard, `young` 100 B entries 30 minutes old and `old`
+// ones 5 hours old.
+func overBudgetCache(t *testing.T, young, old int) (Runner, string, *strings.Builder) {
+	t.Helper()
+	root := t.TempDir()
+	fillShards(t, root, 16, young+old, func(_, i int) time.Duration {
+		if i < young {
+			return 30 * time.Minute
+		}
+		return 5 * time.Hour
+	})
+	prev := goCacheDiskSpace
+	goCacheDiskSpace = func(path string) (Disk, error) { return Disk{Path: path, Capacity: 4_000_000}, nil }
+	t.Cleanup(func() { goCacheDiskSpace = prev })
+	out := &strings.Builder{}
+	r := goRunner(t, out)
+	r.GoCacheRoot = root
+	r.Policy.GoCacheVolumePercent = 1
+	r.Policy.DeleteRatePerSec = 1_000_000_000
+	return r, root, out
+}
+
+// TestGoCacheBudgetUnreachableInsideTheFloor is the 2026-10-21 machine: a
+// 20 GiB budget, a 152 GiB cache, and ~140 GiB of it written in the last two
+// hours. No pass can delete entries that young — a running build may be using
+// them — so the budget cannot be met, and every pass used to report itself
+// finished. The pass must still remove everything older, never anything
+// younger, and say plainly that the budget is out of reach and why.
+func TestGoCacheBudgetUnreachableInsideTheFloor(t *testing.T) {
+	// 48 000 B young against a 40 000 B budget, plus 16 000 B old.
+	r, root, out := overBudgetCache(t, 30, 10)
+
+	err := r.SharedGoCache(true)
+	var ub *BudgetUnreachableError
+	if !errors.As(err, &ub) {
+		t.Fatalf("want a BudgetUnreachableError, got %v\n%s", err, out)
+	}
+	if ub.Young != 48_000 || ub.Budget != 40_000 || ub.Floor != goCacheFloor {
+		t.Fatalf("young=%d budget=%d floor=%s, want 48000, 40000, %s", ub.Young, ub.Budget, ub.Floor, goCacheFloor)
+	}
+	if got := countEntries(root); got != 16*30 {
+		t.Fatalf("%d entries left, want the %d young ones: everything past the floor goes, nothing inside it\n%s", got, 16*30, out)
+	}
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Base(p) == "README" {
+			return nil
+		}
+		if info, _ := d.Info(); time.Since(info.ModTime()) > goCacheFloor {
+			t.Errorf("%s is past the floor and survived an over-budget pass", filepath.Base(p))
+		}
+		return nil
+	})
+	for _, want := range []string{"WARNING", "no trim can reach it", "-trimpath"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("the pass output does not say %q:\n%s", want, out)
+		}
+	}
+
+	// It is a finding, not a failure: the record says over budget, the pass OK.
+	res := NewGCResult(time.Now(), layerErr("go caches: shared build cache", err))
+	if !res.OK || len(res.FailedLayers) != 0 || len(res.OverBudget) != 1 || !strings.Contains(res.OverBudget[0], "shared go build cache") {
+		t.Fatalf("result = %+v", res)
+	}
+	if !strings.Contains(res.Summary(), "over a budget no trim can reach") {
+		t.Fatalf("summary hides the unreachable budget: %q", res.Summary())
+	}
+	if RealFailure(err) != nil {
+		t.Fatalf("an unreachable budget must not fail the pass: %v", RealFailure(err))
+	}
+}
+
+// A budget the old entries alone can satisfy is reachable: no finding.
+func TestGoCacheBudgetReachableIsSilent(t *testing.T) {
+	// 16 000 B young under a 40 000 B budget, plus 48 000 B old.
+	r, root, out := overBudgetCache(t, 10, 30)
+	if err := r.SharedGoCache(true); err != nil {
+		t.Fatalf("a reachable budget reported %v\n%s", err, out)
+	}
+	if got := countEntries(root); got > 16*20 || got < 16*10 {
+		t.Fatalf("%d entries left, want the budget's worth (160..320)\n%s", got, out)
+	}
+	if strings.Contains(out.String(), "WARNING") {
+		t.Fatalf("a reachable budget warned:\n%s", out)
+	}
+}
+
+// Through the whole Go-cache layer, as auto-gc runs it: a pass that is also
+// cut off records both, and neither is a failure.
+func TestGoCachesRecordsCutOffAndUnreachableTogether(t *testing.T) {
+	r, _, out := overBudgetCache(t, 30, 10)
+	r.GolangciCacheRoot = t.TempDir()
+	r.GoimportsRoot = t.TempDir()
+	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.FromPaths(nil), nil }
+	r.ProcessEnv = func(context.Context) (string, error) { return "x", nil }
+	err := r.GoCaches(true)
+	res := NewGCResult(time.Now(), errors.Join(err, layerErr("temp sweep", &CutOffError{Err: context.DeadlineExceeded})))
+	if !res.OK || len(res.OverBudget) != 1 || strings.Join(res.CutOffLayers, ",") != "temp sweep" {
+		t.Fatalf("result = %+v (err %v)\n%s", res, err, out)
+	}
+	both := NewGCResult(time.Now(), layerErr("go caches: shared build cache",
+		errors.Join(&CutOffError{Err: errDeleteCap}, &BudgetUnreachableError{Cache: "c", Floor: goCacheFloor})))
+	if !both.OK || len(both.OverBudget) != 1 || strings.Join(both.CutOffLayers, ",") != "go caches: shared build cache" {
+		t.Fatalf("one layer ending both ways must record both: %+v", both)
+	}
+}
+
+func TestGoCacheStatusReportsTheYoungShare(t *testing.T) {
+	r, _, out := overBudgetCache(t, 30, 10)
+	r.goCacheStatus(context.Background())
+	for _, want := range []string{"~0.0 GiB written in the last 2h0m0s", "WARNING"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("status does not say %q:\n%s", want, out)
+		}
 	}
 }

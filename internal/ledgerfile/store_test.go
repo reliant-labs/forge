@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -220,7 +221,7 @@ func main() {
 	// Built inside the module so the helper resolves the same packages.
 	cmd := exec.Command("go", "build", "-o", bin, src)
 	cmd.Dir = moduleDir(t)
-	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS="))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("cannot build the cross-process helper here: %v: %s", err, out)
 	}

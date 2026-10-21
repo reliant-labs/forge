@@ -54,6 +54,7 @@ import (
 	"io"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestE2EDirectApplyEnvInstallsNoFlux is the whole path, once: an env with no
@@ -219,7 +220,7 @@ func runForgeFluxE2E(t *testing.T, projectDir, forgeBin, ledgerHome string, args
 	t.Helper()
 	cmd := exec.Command(forgeBin, args...)
 	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(),
 		"FORGE_LEDGER_HOME="+ledgerHome,
 		"GOFLAGS=",
 		// The binary under test is a source build, and the project pins the
@@ -229,7 +230,7 @@ func runForgeFluxE2E(t *testing.T, projectDir, forgeBin, ledgerHome string, args
 		// (forge_pin_skew.go) to stop a human shipping with a stale binary;
 		// this test runs a different forge from the pin on purpose.
 		allowVersionSkewEnv+"=1",
-	)
+	))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("forge %s failed: %v\n%s", strings.Join(args, " "), err, out)

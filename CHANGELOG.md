@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A Go cache budget no trim can reach is reported, not passed over.** The
+  trim never deletes an entry used in the last 2h (a running build may need
+  it), so a cache that takes in more than its budget in that window cannot be
+  held to it — and every pass used to report itself finished while a 20 GiB
+  budget held a 152 GiB cache. The pass now prints a `no trim can reach it`
+  warning with the size written inside the floor and the fill rate, and
+  records it in the GC record's new `over_budget` list (not a failure);
+  `forge storage status` shows the same split.
+- **Child go commands that set their own GOFLAGS keep `-trimpath`.** Tool
+  installs (`forge ci` tools, golangci-lint) and the test suite's builds of
+  scaffolded projects replaced GOFLAGS (`GOFLAGS=-mod=mod`, `GOFLAGS=`), which
+  dropped the `-trimpath` default and gave every `t.TempDir()` project fresh
+  cache keys each run. They now merge through `goexec.WithTrimpath`, and
+  `TestGOFLAGSOverridesKeepTrimpath` fails on any new site that does not.
+
 - **Checks build with `-trimpath`, so worktrees and scratch copies share one
   build and test cache.** Without it Go hashes every main-module package's
   absolute directory into its cache key: a fresh worktree of the same commit

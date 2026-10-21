@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestComputeAutoStubs_StubTypeIsGoNamed: an auto-stub is named
@@ -250,7 +251,7 @@ func TestScaffoldTests_StreamingRPCsGetARunnableSkeleton(t *testing.T) {
 
 	cmd := exec.Command("go", "test", "-count=1", "-v", "-run", "TestTail_Generated|TestUpload_Generated", "./internal/handlers/feeds/")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the streaming scaffold tests must pass against forge's stubs: %v\n%s\n---- Tail ----\n%s\n---- Upload ----\n%s",

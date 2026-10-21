@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // The proto scalar vocabulary is CLOSED — protobuf defines exactly these
@@ -341,7 +343,7 @@ func fromProto(m *Wire) (*Entity, error) {
 	}
 	cmd := exec.Command("go", "build", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("the generated conversions do not compile: %v\n%s\n--- SOURCE ---\n%s", err, out, src)
 	}

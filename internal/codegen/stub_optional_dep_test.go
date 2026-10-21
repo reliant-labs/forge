@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // optionalDepHandler declares one required and one optional interface dep,
@@ -213,7 +215,7 @@ func TestOptionalNotifierThroughDeps(t *testing.T) {
 	}
 	cmd := exec.Command("go", "test", "-count=1", "./internal/handlers/relay/")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, terr := cmd.CombinedOutput(); terr != nil {
 		t.Fatalf("the generated harness does not compile or behave: %v\n%s\n---- %s ----\n%s",
 			terr, out, componentTestHelperFile, helpers)

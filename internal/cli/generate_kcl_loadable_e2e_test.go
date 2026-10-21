@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestE2EGenerateFailsOnUnrenderableDeployKCL is the end-to-end half of the
@@ -67,7 +69,7 @@ func TestE2EGenerateFailsOnUnrenderableDeployKCL(t *testing.T) {
 
 	cmd := exec.Command(forgeBin, "generate")
 	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(), "GOFLAGS=", "GOPROXY=https://proxy.golang.org,direct")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=", "GOPROXY=https://proxy.golang.org,direct"))
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("forge generate EXITED 0 on a deploy tree that does not compile — the break then surfaces at render, with nothing pointing back here:\n%s", out)

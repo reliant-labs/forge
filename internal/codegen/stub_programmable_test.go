@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // programmableStubFixture is a service whose Deps carry a local interface
@@ -218,7 +220,7 @@ func TestGenerateBootstrapTesting_StubsAreProgrammableAndRefuseUnprogrammed(t *t
 
 	cmd := exec.Command("go", "test", "-count=1", "./internal/handlers/chats/")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, terr := cmd.CombinedOutput(); terr != nil {
 		t.Fatalf("tests against the generated stubs failed: %v\n%s\n---- %s ----\n%s",
 			terr, out, componentTestHelperFile, helpers)

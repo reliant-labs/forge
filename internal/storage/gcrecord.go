@@ -46,6 +46,12 @@ type GCResult struct {
 	// EIO). Like a cut-off it retained the rest for the next pass and is not
 	// a failure, but it says the MACHINE is unwell, so it is reported apart.
 	BackedOffLayers []string `json:"backed_off_layers,omitempty"`
+	// OverBudget describes each cache the pass could not bring under its size
+	// budget because more than the budget is younger than the trim's safety
+	// floor (BudgetUnreachableError). Not a failure — the pass removed what it
+	// safely could — but a budget that is not being held, so it is reported
+	// on every pass until the fill slows.
+	OverBudget []string `json:"over_budget,omitempty"`
 }
 
 // CutOffError marks a layer that stopped at its deadline having made whatever
@@ -99,8 +105,39 @@ func NewGCResult(at time.Time, err error) GCResult {
 	seen := map[string]bool{}
 	cut := map[string]bool{}
 	backed := map[string]bool{}
+	addOnce := func(set map[string]bool, list *[]string, name string) {
+		if !set[name] {
+			set[name] = true
+			*list = append(*list, name)
+		}
+	}
 	failed := false
 	var walk func(error)
+	// classify records how one layer ended. A layer can end several ways at
+	// once (cut off AND over an unreachable budget), so a joined error is
+	// classified part by part.
+	classify := func(layer *LayerError) {
+		if joined, ok := layer.Err.(interface{ Unwrap() []error }); ok {
+			for _, inner := range joined.Unwrap() {
+				walk(&LayerError{Layer: layer.Layer, Err: inner})
+			}
+			return
+		}
+		var ub *BudgetUnreachableError
+		var bo *BackedOffError
+		var co *CutOffError
+		switch {
+		case errors.As(layer.Err, &ub):
+			r.OverBudget = append(r.OverBudget, ub.Error())
+		case errors.As(layer.Err, &bo):
+			addOnce(backed, &r.BackedOffLayers, layer.Layer)
+		case errors.As(layer.Err, &co):
+			addOnce(cut, &r.CutOffLayers, layer.Layer)
+		default:
+			failed = true
+			addOnce(seen, &r.FailedLayers, layer.Layer)
+		}
+	}
 	walk = func(e error) {
 		if e == nil {
 			return
@@ -113,29 +150,12 @@ func NewGCResult(at time.Time, err error) GCResult {
 			}
 			return
 		}
-		var layer *LayerError
-		if errors.As(e, &layer) && layer != nil {
-			var bo *BackedOffError
-			if errors.As(layer.Err, &bo) {
-				if !backed[layer.Layer] {
-					backed[layer.Layer] = true
-					r.BackedOffLayers = append(r.BackedOffLayers, layer.Layer)
-				}
-				return
-			}
-			var co *CutOffError
-			if errors.As(layer.Err, &co) {
-				if !cut[layer.Layer] {
-					cut[layer.Layer] = true
-					r.CutOffLayers = append(r.CutOffLayers, layer.Layer)
-				}
-				return
-			}
-			failed = true
-			if !seen[layer.Layer] {
-				seen[layer.Layer] = true
-				r.FailedLayers = append(r.FailedLayers, layer.Layer)
-			}
+		if layer := (*LayerError)(nil); errors.As(e, &layer) && layer != nil {
+			classify(layer)
+			return
+		}
+		if ub := (*BudgetUnreachableError)(nil); errors.As(e, &ub) {
+			r.OverBudget = append(r.OverBudget, ub.Error())
 			return
 		}
 		if bo := (*BackedOffError)(nil); errors.As(e, &bo) {
@@ -171,6 +191,14 @@ func NewGCResult(at time.Time, err error) GCResult {
 
 // Summary is one line naming what failed, for `env up` and `doctor`.
 func (r GCResult) Summary() string {
+	s := r.outcome()
+	if len(r.OverBudget) > 0 {
+		s += fmt.Sprintf("; %d cache(s) over a budget no trim can reach — filling faster than entries age past the safety floor", len(r.OverBudget))
+	}
+	return s
+}
+
+func (r GCResult) outcome() string {
 	if r.OK {
 		if len(r.BackedOffLayers) > 0 {
 			return "backed off on filesystem distress, the rest retained for the next pass (" + strings.Join(r.BackedOffLayers, ", ") + ")"

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // The scaffolded contract_test.go tells every user, verbatim, that a
@@ -145,7 +147,7 @@ func buildDepsProject(t *testing.T, root string) {
 	}
 	cmd := exec.Command("go", "build", "./...")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		mock, _ := os.ReadFile(filepath.Join(root, "internal", "pipeline", "mock_gen.go"))
 		t.Fatalf("go build of generated mock failed: %v\n%s\n---- mock_gen.go ----\n%s", err, out, mock)

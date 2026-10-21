@@ -70,18 +70,22 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           python-version: "3.12"
-      - name: Files this pull request changes
+      # Only the paths this workflow is triggered by: a Go file in the same PR
+      # is ci.yml's quick-checks job's to check, with the tools its hooks
+      # need (goimports, buf).
+      - name: Prose and skill files this pull request changes
         id: changed
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           # Deleted files have nothing for a hook to read.
-          files="$(git diff --name-only --diff-filter=d HEAD^1 HEAD | tr '\n' ' ')"
+          files="$(git diff --name-only --diff-filter=d HEAD^1 HEAD -- \
+            ':(glob)docs/**' ':(glob)*.md' ':(glob)internal/templates/project/skills/**' | tr '\n' ' ')"
           echo "files=${files}" >> "$GITHUB_OUTPUT"
           echo "${files}"
       # go-vet-mod is a whole-module hook with nothing to say about prose; it
       # runs in ci.yml's lint job whenever Go changes.
-      - name: pre-commit (changed files)
+      - name: pre-commit (changed prose and skill files)
         if: ${{ !cancelled() && steps.changed.outputs.files != '' }}
         uses: pre-commit/action@v3.0.1
         env:

@@ -71,6 +71,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       securityContext:
         runAsGroup: 65532
         runAsNonRoot: true

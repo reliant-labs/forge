@@ -18,10 +18,12 @@ import (
 var ciWorkflow = filepath.Join("..", "..", ".github", "workflows", "ci.yml")
 
 type workflow struct {
+	On   map[string]any `yaml:"on"`
 	Jobs map[string]job `yaml:"jobs"`
 }
 
 type job struct {
+	Name     string   `yaml:"name"`
 	If       string   `yaml:"if"`
 	Needs    []string `yaml:"needs"`
 	Strategy struct {
@@ -100,7 +102,7 @@ func TestShortTierShardsCoverEveryIndex(t *testing.T) {
 }
 
 // TestGateNeedsEveryJob proves `CI gate` waits on, and so reports, every other
-// job in ci.yml. It is the one check a ruleset would require; a job missing
+// job in ci.yml. It is the one check the main ruleset requires; a job missing
 // from its needs could fail while the gate stays green.
 func TestGateNeedsEveryJob(t *testing.T) {
 	wf := readWorkflow(t)
@@ -119,6 +121,60 @@ func TestGateNeedsEveryJob(t *testing.T) {
 	for _, name := range gate.Needs {
 		if _, ok := wf.Jobs[name]; !ok {
 			t.Errorf("gate needs %q, which is not a job in %s", name, ciWorkflow)
+		}
+	}
+}
+
+// requiredCheck is the status-check context the main ruleset requires and the
+// merge queue waits for. It is the gate job's `name:`, so renaming the job
+// would leave every pull request waiting on a check nothing reports.
+const requiredCheck = "CI gate"
+
+// The two tiers a job may select (ci.yml's header). A job with no `if:` runs
+// in both.
+const (
+	prTier   = "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
+	mainTier = "${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}"
+)
+
+// TestRequiredGateReportsOnEveryPullRequestAndQueueEntry proves `CI gate`
+// reports on every event the main ruleset judges a merge by.
+//
+//   - pull_request carries no path filter: a filter that skips the workflow
+//     never creates the required check, and the pull request waits on it
+//     forever.
+//   - merge_group is a trigger: without it the merge queue waits forever for
+//     a check that never starts, and every merge blocks.
+//   - every job selects a tier by one of the two spellings in ci.yml's header.
+//     A job gated on `!= 'pull_request'` (the old spelling) would also run in
+//     the merge queue, holding every merge behind the slow tier; one gated on
+//     `== 'pull_request'` alone would silently not run there.
+func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
+	wf := readWorkflow(t)
+	if gate := wf.Jobs["gate"]; gate.Name != requiredCheck {
+		t.Errorf("the gate job is named %q, want %q: that name is the main ruleset's required check", gate.Name, requiredCheck)
+	}
+	if _, ok := wf.On["merge_group"]; !ok {
+		t.Errorf("%s has no merge_group trigger: the merge queue would wait forever for %q", ciWorkflow, requiredCheck)
+	}
+	pr, ok := wf.On["pull_request"]
+	if !ok {
+		t.Fatalf("%s has no pull_request trigger", ciWorkflow)
+	}
+	if m, ok := pr.(map[string]any); ok {
+		for _, filter := range []string{"paths", "paths-ignore"} {
+			if _, ok := m[filter]; ok {
+				t.Errorf("pull_request has a %s filter: a pull request it skips never reports %q, the required check", filter, requiredCheck)
+			}
+		}
+	}
+	for name, j := range wf.Jobs {
+		switch strings.TrimSpace(j.If) {
+		case "", prTier, mainTier:
+		default:
+			if name != "gate" {
+				t.Errorf("job %q has if: %q; select a tier with exactly %q or %q (or no if: to run in both)", name, j.If, prTier, mainTier)
+			}
 		}
 	}
 }

@@ -141,6 +141,18 @@ repos:
         files: \.proto$
         pass_filenames: false
 
+  # A forge.proto edit must carry its embedded copy and regenerated
+  # pkg/forgepb/forge.pb.go (the script says why). ~1s, and only when a proto
+  # is staged; CI skips it for the verify-generated job's complete check.
+  - repo: local
+    hooks:
+      - id: proto-generated
+        name: forge.proto's derived files are current
+        entry: scripts/check-proto-generated.sh
+        language: system
+        files: ^proto/|^internal/assets/proto/|^pkg/forgepb/
+        pass_filenames: false
+
   # Conventional Commits enforcement.
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
     rev: v9.18.0

@@ -665,6 +665,12 @@ func (set *workloadSet) podSpec(w *workload, ctx Context, extraEnv []corev1.EnvV
 		Volumes:            volumes,
 		NodeSelector:       s.NodeSelector,
 		Tolerations:        tolerations(s.Tolerations),
+		// Kubernetes injects <SERVICE>_PORT=tcp://ip:port (and _SERVICE_HOST
+		// ...) for every Service in the namespace unless told not to. Those
+		// names collide with typed config (TEMPORAL_PORT parsed as an int
+		// CrashLooped a prod gateway), so the default is off; a workload
+		// that reads them says so (EnableServiceLinks).
+		EnableServiceLinks: new(s.EnableServiceLinks),
 	}
 	// Unset leaves the pod at the cluster's default priority; naming a class
 	// the cluster does not have is refused at admission, so it is the

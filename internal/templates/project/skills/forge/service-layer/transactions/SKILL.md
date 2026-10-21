@@ -279,7 +279,8 @@ Upgrading from a forge with default levels: `forge fix tx-isolation` spells
 every old call out exactly as it ran (`RunTx(ctx, fn)` →
 `orm.Serializable`; `RunTransaction(ctx, fn)` and `BeginTx(ctx, nil)` →
 `orm.ReadCommitted`) and lists each site; then review the
-`forgeconv-tx-lock-under-serializable` findings. See `migrations/v0.1.47`.
+`forgeconv-tx-lock-under-serializable` findings. See
+`migrations/v0.1.47/tx-isolation`.
 
 See also: `service-layer` for the Deps/store shape, `db/crud-overrides` for
 read-check-write inside a CRUD op override.

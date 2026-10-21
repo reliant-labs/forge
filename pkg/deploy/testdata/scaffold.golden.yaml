@@ -71,6 +71,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - command:
         - /app/demo
@@ -153,8 +154,8 @@ metadata:
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
     forge.dev/job-name: idp-provision
-    forge.dev/spec-hash: 646d2cfd21
-  name: idp-provision-646d2cfd21
+    forge.dev/spec-hash: 22e747a95d
+  name: idp-provision-22e747a95d
   namespace: demo-prod
 spec:
   backoffLimit: 6
@@ -195,6 +196,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+      enableServiceLinks: false
       initContainers:
       - command:
         - /app/demo

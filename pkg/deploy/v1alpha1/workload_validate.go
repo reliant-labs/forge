@@ -58,6 +58,7 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"tolerations":                   scheduledKinds,
 	"podAnnotations":                scheduledKinds,
 	"priorityClassName":             scheduledKinds,
+	"enableServiceLinks":            scheduledKinds,
 	"strategy":                      deploymentKinds,
 	"terminationGracePeriodSeconds": scheduledKinds,
 	"activeDeadlineSeconds":         {KindJob: true, KindCron: true},
@@ -96,6 +97,7 @@ var kindCapabilityReasons = map[string]string{
 	"tolerations":                   "a tool is never scheduled, so there is no pod to place",
 	"podAnnotations":                "a tool is never scheduled, so there is no pod to annotate",
 	"priorityClassName":             "a tool is never scheduled, so there is no pod to rank",
+	"enableServiceLinks":            "a tool is never scheduled, so there is no pod to inject service links into",
 	"strategy":                      "only a Deployment rolls its pods out; a batch kind (job/cron) replaces them by creating a new Job, and a tool is never scheduled",
 	"terminationGracePeriodSeconds": "a tool is never scheduled, so there is no pod to stop",
 	"activeDeadlineSeconds":         "a deadline bounds a run to completion; a long-running kind never completes, so use probes, and a tool is never scheduled",
@@ -142,7 +144,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 			"ports", "replicas", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
 			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
-			"priorityClassName", "strategy", "terminationGracePeriodSeconds", "activeDeadlineSeconds",
+			"priorityClassName", "enableServiceLinks", "strategy", "terminationGracePeriodSeconds", "activeDeadlineSeconds",
 			"securityContext",
 		} {
 			if s.declares(field) && !kindCapabilities[field][kind] {
@@ -315,7 +317,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 // deterministic errors.
 var gatingPodFields = []string{
 	"namespacedRBAC", "clusterRBAC", "serviceAccount", "serviceAccountAnnotations", "sidecars",
-	"volumes", "nodeSelector", "tolerations", "podAnnotations", "priorityClassName",
+	"volumes", "nodeSelector", "tolerations", "podAnnotations", "priorityClassName", "enableServiceLinks",
 	"terminationGracePeriodSeconds", "activeDeadlineSeconds", "securityContext",
 }
 
@@ -378,6 +380,8 @@ func (s WorkloadSpec) declares(field string) bool {
 		return len(s.PodAnnotations) > 0
 	case "priorityClassName":
 		return s.PriorityClassName != ""
+	case "enableServiceLinks":
+		return s.EnableServiceLinks
 	case "strategy":
 		return s.Strategy != ""
 	case "terminationGracePeriodSeconds":

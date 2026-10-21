@@ -80,6 +80,7 @@ test_jwks_manifests = lambda j: any, namespace: str, public_jwk: any -> [any] {
                 template = {
                     metadata = {labels = _labels}
                     spec = {
+                        enableServiceLinks = False
                         securityContext = {
                             runAsNonRoot = True
                             runAsUser = 65532

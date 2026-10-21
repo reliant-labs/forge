@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestE2EVerifyGeneratedNeverWritesTheCheckout runs the real
@@ -36,7 +38,7 @@ func TestE2EVerifyGeneratedNeverWritesTheCheckout(t *testing.T) {
 	verify := func() (string, error) {
 		cmd := exec.Command(forgeBin, "ci", "verify-generated")
 		cmd.Dir = projectDir
-		cmd.Env = append(os.Environ(), "GOFLAGS=", "GONOSUMCHECK=*", "GONOSUMDB=*")
+		cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=", "GONOSUMCHECK=*", "GONOSUMDB=*"))
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // The CRD loader drives controller-tools over REAL Go packages, so these tests
@@ -140,7 +142,7 @@ func writeCRDFixture(t *testing.T, extraFields string) string {
 	// because go.sum came from forge).
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Dir = root
-	tidy.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	tidy.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod"))
 	if out, err := tidy.CombinedOutput(); err != nil {
 		// FATAL, NOT SKIP. The fixture's go.sum is copied from forge's own a
 		// few lines above, so every module this tidy needs is already in the

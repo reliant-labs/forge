@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // scaffoldPackagesIn runs `forge scaffold package` for the default shape and
@@ -88,7 +90,7 @@ func TestRunPackageNew_WithoutTypedConfig(t *testing.T) {
 	// go vet type-checks each package WITH its tests.
 	vet := exec.Command("go", "vet", "./internal/...")
 	vet.Dir = dir
-	vet.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	vet.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, verr := vet.CombinedOutput(); verr != nil {
 		t.Fatalf("packages scaffolded into a project without typed config do not compile: %v\n%s", verr, out)
 	}

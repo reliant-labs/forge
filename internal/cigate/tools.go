@@ -310,7 +310,9 @@ func goInstall(ctx context.Context, t Tool, dir, toolchain string) error {
 	}
 	cmd := exec.CommandContext(ctx, "go", "install", t.Module+"@"+t.Version)
 	cmd.Dir = dir
-	cmd.Env = goexec.Env(env...)
+	// GOFLAGS= drops the caller's flags; -trimpath goes back on, so the
+	// install shares cache entries with every other trimmed build.
+	cmd.Env = goexec.WithTrimpath(goexec.Env(env...))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go install %s@%s: %w\n%s", t.Module, t.Version, err, strings.TrimSpace(string(out)))
 	}

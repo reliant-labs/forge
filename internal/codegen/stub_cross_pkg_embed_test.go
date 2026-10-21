@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // crossEmbedFiles is the inbox shape, one level deeper: the handler's
@@ -289,7 +291,7 @@ func TestEmbeddedMethodsAreProgrammable(t *testing.T) {
 	}
 	cmd := exec.Command("go", "test", "-count=1", "./internal/handlers/inbox/")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, terr := cmd.CombinedOutput(); terr != nil {
 		t.Fatalf("the generated harness does not compile or its stub is wrong: %v\n%s\n---- %s ----\n%s",
 			terr, out, componentTestHelperFile, helpers)

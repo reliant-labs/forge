@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // TestE2EFreshScaffoldLintExitsZero is the acceptance gate for the
@@ -649,7 +651,7 @@ func runFrontendLintE2E(t *testing.T, dir, name string, args ...string) (string,
 	// golangciLockIsolationEnv: `forge lint` shells out to golangci-lint, which
 	// otherwise contends on one machine-global lock with every other test's lint
 	// step. See the block comment in scaffold_e2e_test.go.
-	cmd.Env = append(os.Environ(), "GOFLAGS=", golangciLockIsolationEnv(t))
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=", golangciLockIsolationEnv(t)))
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -698,7 +700,7 @@ func runLintE2E(t *testing.T, dir, extraPathDir, name string, args ...string) (s
 	cmd.Dir = dir
 	// os/exec keeps the LAST duplicate of an env key, so appending the
 	// modified PATH after os.Environ() makes it win.
-	cmd.Env = append(os.Environ(),
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(),
 		"GOFLAGS=",
 		"GOPROXY=https://proxy.golang.org,direct",
 		"PATH="+extraPathDir+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -706,7 +708,7 @@ func runLintE2E(t *testing.T, dir, extraPathDir, name string, args ...string) (s
 		// one machine-global lock with every other test's lint step. See the
 		// block comment in scaffold_e2e_test.go.
 		golangciLockIsolationEnv(t),
-	)
+	))
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }

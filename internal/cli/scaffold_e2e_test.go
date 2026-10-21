@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -505,12 +506,12 @@ func runCmd(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GOFLAGS=",       // Clear any global GOFLAGS
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(),
+		"GOFLAGS=",       // Clear any global GOFLAGS (-trimpath goes back on)
 		"GONOSUMCHECK=*", // Don't check sums for test modules
 		"GOPROXY=https://proxy.golang.org,direct", // Ensure module proxy is set
 		"GONOSUMDB=*", // Don't verify sums for test modules
-	)
+	))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q in %s failed: %v\n%s", append([]string{name}, args...), dir, err, output)

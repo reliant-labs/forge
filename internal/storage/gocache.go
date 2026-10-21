@@ -29,6 +29,13 @@ import (
 // builds run because Go bumps an entry's mtime on use whenever it is more than
 // an hour stale: an entry older than X has been unused for at least X-1h, so
 // with a floor of 2h a live build never loses an entry it is using.
+//
+// The floor also bounds what any size budget can achieve: everything written
+// in the last goCacheFloor stays. A cache taking in more than its budget in
+// that window cannot be held to it by trimming, however often or uncapped the
+// pass runs. The pass then deletes everything older and says so
+// (BudgetUnreachableError, recorded in GCResult.OverBudget): the remedy is a
+// slower fill, usually builds that lost -trimpath.
 
 // goCacheFloor is the youngest entry the trim may ever delete, whatever the
 // policy says. It is what makes the trim safe under live builds.
@@ -476,7 +483,57 @@ func (r Runner) trimGoBuildCache(label, root string, apply bool) error {
 		status = fmt.Sprintf("%s after %d/%d shards; next pass resumes at shard %02x", why, pass.shardsCovered, pass.shardsTotal, shards[(start+pass.shardsCovered)%len(shards)])
 	}
 	r.print("%s: %s %d entries, %.1f GiB (%s)\n", label, map[bool]string{true: "removed", false: "would remove"}[apply], pass.removed, float64(pass.freed)/float64(GiB), status)
+	if young := goCacheYoungBytes(sample, len(shards)); young > budget {
+		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: goCacheFloor}
+		r.print("WARNING %v\n", unreachable)
+		return errors.Join(pass.stop, unreachable)
+	}
 	return pass.stop
+}
+
+// goCacheYoungBytes estimates the bytes of the whole cache last used inside the
+// safety floor — the part no pass may delete. The sample's entries are those
+// past the floor, so the rest of its bytes are the young ones.
+func goCacheYoungBytes(sample goCacheSample, nShards int) uint64 {
+	if sample.shards == 0 {
+		return 0
+	}
+	var old uint64
+	for _, e := range sample.entries {
+		old += uint64(e.size)
+	}
+	if old >= sample.bytes {
+		return 0
+	}
+	return uint64(float64(sample.bytes-old) * float64(nShards) / float64(sample.shards))
+}
+
+// BudgetUnreachableError marks a cache no trim can bring under its size budget,
+// because more than the budget was written inside the safety floor
+// (goCacheFloor). Entries that young may belong to a build running now, so they
+// are never deleted: the pass removed everything older and the cache still sits
+// at roughly Young. Only a slower fill fixes it.
+//
+// It is not a failure — NewGCResult records it apart, in OverBudget — but it is
+// never silent either. Before it existed a 20 GiB budget held a 152 GiB cache
+// on a machine filling at ~70 GiB/h, and every pass reported itself finished.
+type BudgetUnreachableError struct {
+	// Cache names the cache ("shared go build cache").
+	Cache string
+	// Estimated is the cache's estimated size, Budget its size budget, and
+	// Young the estimated bytes last used inside Floor, all in bytes.
+	Estimated, Budget, Young uint64
+	Floor                    time.Duration
+}
+
+func (e *BudgetUnreachableError) Error() string {
+	gib := func(b uint64) float64 { return float64(b) / float64(GiB) }
+	return fmt.Sprintf("%s is over its budget and no trim can reach it: ~%.1f GiB against %.1f GiB, of which ~%.1f GiB "+
+		"was written in the last %s (~%.0f GiB/h). Entries that young may belong to a running build, so they are never "+
+		"trimmed; the fill has to slow. The usual cause is builds without -trimpath, which compile every worktree's "+
+		"packages again: run `go env GOFLAGS` in a worktree (a go.mod toolchain line that switches to a downloaded "+
+		"toolchain drops a -trimpath set in $GOROOT/go.env)",
+		e.Cache, gib(e.Estimated), gib(e.Budget), gib(e.Young), e.Floor, gib(e.Young)/e.Floor.Hours())
 }
 
 // streamTrimGoCache walks the shards in rotated order from start, deleting
@@ -688,8 +745,13 @@ func (r Runner) goCacheStatus(ctx context.Context) {
 		return
 	}
 	est := float64(sample.bytes) * float64(len(shards)) / float64(sample.shards)
-	r.print("go build cache %s: ~%.1f GiB estimated from %d/%d shards (budget %.1f GiB, unused %s)\n", root,
-		est/float64(GiB), sample.shards, len(shards), float64(r.goCacheBudget(root))/float64(GiB), r.Policy.GoCacheUnused)
+	budget := r.goCacheBudget(root)
+	young := goCacheYoungBytes(sample, len(shards))
+	r.print("go build cache %s: ~%.1f GiB estimated from %d/%d shards (budget %.1f GiB, unused %s; ~%.1f GiB written in the last %s, which no trim deletes)\n", root,
+		est/float64(GiB), sample.shards, len(shards), float64(budget)/float64(GiB), r.Policy.GoCacheUnused, float64(young)/float64(GiB), goCacheFloor)
+	if young > budget {
+		r.print("WARNING %v\n", &BudgetUnreachableError{Cache: "go build cache", Estimated: uint64(est), Budget: budget, Young: young, Floor: goCacheFloor})
+	}
 }
 
 // ProductionGoCacheRoots resolves the machine's Go-toolchain cache locations

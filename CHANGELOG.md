@@ -364,6 +364,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives containers or dials an external host with no `testing.Short` check
   on the way; `go test -short -json ./... | forge ci test-budget` fails on
   any unmarked top-level test over `--budget` (default 2s), with file:line.
+- **`forge lint --slow-tests`: git against a repo in a temp dir is not slow
+  work.** An exec of `git` whose `Dir` (or, with none, an argument such as
+  `-C <dir>` / `init <dir>`) comes from `t.TempDir()` or `os.MkdirTemp` is
+  no longer reported: such a fixture repo reads nothing the test cache cannot
+  see and is usually milliseconds; `forge ci test-budget` still reports one
+  that is slow. The directory is followed through locals, struct fields set
+  in the same function, functions that return a temp dir, and helper
+  parameters across packages (the slow fact carries the parameter). git over
+  the checkout is still reported. Findings: forge 146 → 48, reliant
+  205 → 111, control-plane 3 → 2.
 - **The interceptor chain has a `Deadline` slot, ahead of `Auth`
   (`forge/pkg/serverkit`).** `ChainDeps.Deadline` takes a `serverkit.Deadline`
   — the slot's configuration and its interceptor in one value — and runs right

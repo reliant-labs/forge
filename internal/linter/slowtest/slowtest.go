@@ -147,10 +147,27 @@ type Declaration struct {
 
 // slowFact is exported for a function that reaches slow work without
 // checking testing.Short on the way.
-type slowFact struct{ Why string }
+// Cond is slow work it does unless the argument for a parameter is a temp
+// dir (see tempdir.go).
+type slowFact struct {
+	Why  string
+	Cond []CondParam
+}
 
-func (*slowFact) AFact()           {}
-func (f *slowFact) String() string { return "slow: " + f.Why }
+func (*slowFact) AFact() {}
+func (f *slowFact) String() string {
+	s := ""
+	if f.Why != "" {
+		s = "slow: " + f.Why
+	}
+	for _, c := range f.Cond {
+		if s != "" {
+			s += "; "
+		}
+		s += fmt.Sprintf("slow unless arg %d is a temp dir: %s", c.Index, c.Why)
+	}
+	return s
+}
 
 // markFact is exported for a function that checks testing.Short, directly or
 // through a callee: calling it marks the caller. Decls carries the
@@ -171,9 +188,21 @@ type node struct {
 	followed bool
 	marked   bool
 	// slow is why the node is slow ("execs `go` at x.go:12"), "" if it is not.
-	slow    string
+	slow string
+	// cond is slow work the node does unless the argument for parameter i
+	// is a temp dir (tempdir.go): git in a directory the caller chooses.
+	cond    map[int]string
 	decls   []Declaration
 	callees []types.Object
+	// calls are the node's calls to other functions of the package, with
+	// what it passes for each parameter, for carrying cond up.
+	calls []callSite
+}
+
+// callSite is one call to a function of the package.
+type callSite struct {
+	callee  types.Object
+	classes []dirClass
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -219,9 +248,14 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 	}
 
+	bodyOf := map[types.Object]ast.Node{}
+	for _, b := range bodies {
+		bodyOf[b.obj] = b.root
+	}
+	retTemp := tempReturners(pass, nodes, bodyOf)
 	for _, b := range bodies {
 		if nodes[b.obj].followed {
-			scan(pass, nodes, nodes[b.obj], b.root)
+			scan(pass, nodes, nodes[b.obj], b.root, retTemp)
 		}
 	}
 	propagate(nodes, order)
@@ -237,8 +271,8 @@ func run(pass *analysis.Pass) (any, error) {
 		switch {
 		case n.marked:
 			pass.ExportObjectFact(obj, &markFact{Decls: reachableDecls(nodes, obj)})
-		case n.slow != "":
-			pass.ExportObjectFact(obj, &slowFact{Why: n.slow})
+		case n.slow != "" || len(n.cond) > 0:
+			pass.ExportObjectFact(obj, &slowFact{Why: n.slow, Cond: condList(n.cond)})
 		}
 	}
 
@@ -247,8 +281,9 @@ func run(pass *analysis.Pass) (any, error) {
 
 // scan reads one body: its own markers, slow operations, testkit.Slow
 // declarations, and the functions it reaches.
-func scan(pass *analysis.Pass, nodes map[types.Object]*node, n *node, root ast.Node) {
+func scan(pass *analysis.Pass, nodes map[types.Object]*node, n *node, root ast.Node, retTemp map[types.Object]bool) {
 	seen := map[types.Object]bool{}
+	flow := newDirFlow(pass, n.obj, root, retTemp)
 	ast.Inspect(root, func(x ast.Node) bool {
 		switch x := x.(type) {
 		case *ast.CallExpr:
@@ -257,6 +292,31 @@ func scan(pass *analysis.Pass, nodes map[types.Object]*node, n *node, root ast.N
 				return true
 			}
 			fn = fn.Origin()
+			sig, _ := fn.Type().(*types.Signature)
+			if _, local := nodes[fn]; local && sig != nil {
+				n.calls = append(n.calls, callSite{callee: fn, classes: flow.argClasses(sig, x)})
+			} else if fn.Pkg() != nil && fn.Pkg() != pass.Pkg && sig != nil {
+				var slow slowFact
+				if pass.ImportObjectFact(fn, &slow) && len(slow.Cond) > 0 {
+					applyCond(n, qualifiedName(fn), slow.Cond, flow.argClasses(sig, x))
+				}
+			}
+			if bin, idx, ok := execBinary(pass, fn, x); ok && bin == "git" {
+				why := fmt.Sprintf("execs %#q at %s", bin, shortPos(pass, x.Pos()))
+				switch c := flow.gitScope(x, idx); {
+				case c.temp:
+				case c.param >= 0:
+					if n.cond == nil {
+						n.cond = map[int]string{}
+					}
+					if n.cond[c.param] == "" {
+						n.cond[c.param] = why
+					}
+				case n.slow == "":
+					n.slow = why
+				}
+				return true
+			}
 			switch {
 			case isFunc(fn, "testing", "Short"):
 				n.marked = true
@@ -291,7 +351,7 @@ func scan(pass *analysis.Pass, nodes map[types.Object]*node, n *node, root ast.N
 				return true
 			}
 			var slow slowFact
-			if pass.ImportObjectFact(fn, &slow) && n.slow == "" {
+			if pass.ImportObjectFact(fn, &slow) && slow.Why != "" && n.slow == "" {
 				n.slow = "calls " + qualifiedName(fn) + ", which " + slow.Why
 			}
 		}
@@ -316,6 +376,12 @@ func propagate(nodes map[types.Object]*node, order []types.Object) {
 				}
 				if !callee.marked && callee.slow != "" && n.slow == "" {
 					n.slow = "calls " + callee.name + ", which " + callee.slow
+					changed = true
+				}
+			}
+			for _, cs := range n.calls {
+				if callee := nodes[cs.callee]; !callee.marked && len(callee.cond) > 0 &&
+					applyCond(n, callee.name, condList(callee.cond), cs.classes) {
 					changed = true
 				}
 			}
@@ -490,20 +556,13 @@ func slowOperation(pass *analysis.Pass, fn *types.Func, call *ast.CallExpr) stri
 		return constString(pass, call.Args[i])
 	}
 
-	switch {
-	case pkg == "os/exec" && recv == "" && (fn.Name() == "Command" || fn.Name() == "CommandContext"):
-		idx := 0
-		if fn.Name() == "CommandContext" {
-			idx = 1
-		}
-		bin, ok := arg(idx)
-		if !ok {
-			return ""
-		}
-		base := strings.TrimSuffix(path.Base(filepath.ToSlash(bin)), ".exe")
+	if base, _, ok := execBinary(pass, fn, call); ok {
 		if slowBinaries[base] {
 			return fmt.Sprintf("execs %#q", base)
 		}
+		return ""
+	}
+	switch {
 	case isContainerPackage(pkg):
 		return "drives containers through " + qualifiedName(fn)
 	case pkg == "net/http" && (recv == "" || recv == "Client"):
@@ -528,6 +587,28 @@ func slowOperation(pass *analysis.Pass, fn *types.Func, call *ast.CallExpr) stri
 		}
 	}
 	return ""
+}
+
+// execBinary reports the base name of the binary an os/exec.Command or
+// CommandContext call names by a constant, and the argument index naming it.
+func execBinary(pass *analysis.Pass, fn *types.Func, call *ast.CallExpr) (base string, idx int, ok bool) {
+	if fn.Pkg() == nil || fn.Pkg().Path() != "os/exec" || (fn.Name() != "Command" && fn.Name() != "CommandContext") {
+		return "", 0, false
+	}
+	if sig, _ := fn.Type().(*types.Signature); sig == nil || sig.Recv() != nil {
+		return "", 0, false
+	}
+	if fn.Name() == "CommandContext" {
+		idx = 1
+	}
+	if idx >= len(call.Args) {
+		return "", 0, false
+	}
+	bin, ok := constString(pass, call.Args[idx])
+	if !ok {
+		return "", 0, false
+	}
+	return strings.TrimSuffix(path.Base(filepath.ToSlash(bin)), ".exe"), idx, true
 }
 
 func isContainerPackage(pkg string) bool {

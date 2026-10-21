@@ -6,7 +6,7 @@ import (
 
 const observeContractSrc = "package x\n\ntype Service interface{\n\t// forge:no-observe\n\tSkip() error\n\tKeep() error\n}\n"
 
-// TestHasConstructorMarker_OnNewDoc: the marker on func New's doc opts in.
+// TestHasConstructorMarker_OnNewDoc: the marker on func New's doc is detected.
 func TestHasConstructorMarker_OnNewDoc(t *testing.T) {
 	dir := writeObserveDir(t, map[string]string{
 		"contract.go": "package x\n\ntype Service interface{ Do() error }\n",
@@ -62,19 +62,22 @@ func TestShouldInstrumentComponent(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "marker opts in",
+			name:  "marker",
 			files: map[string]string{"contract.go": contract, "service.go": markerService},
 			ctor:  "Service", iface: "Service", want: true,
 		},
 		{
-			name:  "legacy seam opts in (no marker)",
+			name:  "seam, no marker",
 			files: map[string]string{"contract.go": contract, "service.go": plainService, "observe_chain.go": seam},
 			ctor:  "Service", iface: "Service", want: true,
 		},
 		{
-			name:  "neither marker nor seam → not instrumented",
+			// The default: instrumentation needs no opt-in. A package that
+			// predates the scaffold has neither, and was silently untraced
+			// while one was required.
+			name:  "neither marker nor seam → instrumented by default",
 			files: map[string]string{"contract.go": contract, "service.go": plainService},
-			ctor:  "Service", iface: "Service", want: false,
+			ctor:  "Service", iface: "Service", want: true,
 		},
 		{
 			name:  "package no-observe wins over marker+seam",
@@ -94,5 +97,19 @@ func TestShouldInstrumentComponent(t *testing.T) {
 				t.Fatalf("ShouldInstrumentComponent = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A package returning an interface but without contract.go gets no decorator
+// from the contracts step, so it is never instrumented; nor is one carrying
+// //forge:exclude-contract.
+func TestShouldInstrumentComponent_RequiresAContractPackage(t *testing.T) {
+	service := "package x\n\ntype Service interface{ Do() error }\ntype Deps struct{}\ntype service struct{}\n\nfunc New(d Deps) (Service, error) { return &service{}, nil }\n"
+	if ShouldInstrumentComponent(writeObserveDir(t, map[string]string{"service.go": service}), "Service", "Service") {
+		t.Error("a package with no contract.go was instrumented")
+	}
+	excluded := "//forge:exclude-contract: built elsewhere\npackage x\n\ntype Service interface{ Do() error }\n"
+	if ShouldInstrumentComponent(writeObserveDir(t, map[string]string{"contract.go": excluded, "service.go": service}), "Service", "Service") {
+		t.Error("an exclude-contract package was instrumented")
 	}
 }

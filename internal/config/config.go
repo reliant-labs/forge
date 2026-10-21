@@ -1261,21 +1261,6 @@ const (
 	EnforceTypedAccessError = "error"
 )
 
-// enforce-component-observe levels for [ConfigGuardConfig.EnforceComponentObserve].
-//
-//   - error — (default) a wired component with a Service interface + a
-//     canonical New(Deps) Service constructor that has made NO observability
-//     decision (neither `// forge:constructor` nor `// forge:no-observe`) fails
-//     `forge lint`. The forcing-function that makes the in-process
-//     observability decision discoverable instead of silently defaulted.
-//   - off   — disable the check entirely.
-//
-// Unlike enforce_typed_access there is no "warn": the whole point is a gate.
-const (
-	EnforceComponentObserveOff   = "off"
-	EnforceComponentObserveError = "error"
-)
-
 // DefaultLoaderPackage is the package path forge's config-loader codegen
 // emits into a consuming project (generated from
 // proto/config/v1/config.proto via the (forge.v1.config) annotation). It is
@@ -1318,12 +1303,6 @@ type ConfigGuardConfig struct {
 	// Empty resolves to [DefaultLoaderPackage] ("pkg/config"); use
 	// [ConfigGuardConfig.EffectiveLoaderPackage].
 	LoaderPackage string `yaml:"loader_package,omitempty"`
-	// EnforceComponentObserve selects the enforce-component-observe lint
-	// strictness: "error" (default) | "off". Empty resolves to "error" — use
-	// [ConfigGuardConfig.EffectiveEnforceComponentObserve], don't read the raw
-	// string. Unknown values are rejected at load time (validate.go). See the
-	// EnforceComponentObserve* constants for the semantics.
-	EnforceComponentObserve string `yaml:"enforce_component_observe,omitempty"`
 }
 
 // EffectiveEnforceTypedAccess returns the resolved guardrail strictness,
@@ -1362,24 +1341,6 @@ func (c ConfigGuardConfig) TypedAccessGuardEnabled() bool {
 // only in "error" mode; "warn" is advisory, "off" emits nothing).
 func (c ConfigGuardConfig) TypedAccessGuardGates() bool {
 	return c.EffectiveEnforceTypedAccess() == EnforceTypedAccessError
-}
-
-// EffectiveEnforceComponentObserve returns the resolved enforce-component-observe
-// strictness, defaulting an absent/empty value to "error" (the check is on by
-// default). Any value other than a case-insensitive "off" resolves to "error";
-// validation (validate.go) has already rejected non-empty non-{off,error}
-// values, so a typo never silently disables the gate.
-func (c ConfigGuardConfig) EffectiveEnforceComponentObserve() string {
-	if strings.EqualFold(strings.TrimSpace(c.EnforceComponentObserve), EnforceComponentObserveOff) {
-		return EnforceComponentObserveOff
-	}
-	return EnforceComponentObserveError
-}
-
-// ComponentObserveGuardEnabled reports whether the enforce-component-observe
-// lint runs at all (true unless the strictness is "off").
-func (c ConfigGuardConfig) ComponentObserveGuardEnabled() bool {
-	return c.EffectiveEnforceComponentObserve() != EnforceComponentObserveOff
 }
 
 // LintConfig holds lint-related settings.

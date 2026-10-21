@@ -1,37 +1,36 @@
 // File: internal/codegen/observe_wrap.go
 //
-// Detection for the OWNED per-package observability seam (observe_chain.go).
+// The instrument decision for a component package, and detection of its
+// OPTIONAL owned observability seam (observe_chain.go).
 //
-// `forge scaffold package` / `scaffold adapter` (and the package kinds) scaffold
-// an owned observe_chain.go next to contract.go:
+// Every contract package whose constructor returns its Service interface gets
+// the generated observability decorator (middleware_gen.go): one span, the
+// call metrics and a log line per method call, routed through an in-process
+// observe.ComponentChain. The decorator is forge-owned and regenerated from
+// the Service interface every run (contract.WriteObservedDecorator), so adding
+// a method to the contract grows the wrapper automatically.
+//
+// Instrumentation is the DEFAULT, not an opt-in. It used to be keyed on a
+// `// forge:constructor` marker or an observe_chain.go seam, which left every
+// package that predated the scaffold silently untraced — 26 of 46 in the
+// control plane, its hottest business paths among them. `// forge:no-observe`
+// on the package (or on one method) is the opt-out.
+//
+// The chain is observe.DefaultComponentChain unless the package declares the
+// owned seam
 //
 //	func newObserveChain() *observe.ComponentChain { ... }
 //
-// — the user-owned builder that assembles the in-process middleware chain
-// (span / metrics / structured logging / panic-recovery) the component's
-// GENERATED decorator (middleware_gen.go) routes every interface method
-// through. The seam is the user's from day 0 (scaffold-once) and is THE
-// extension point; the decorator that consumes it is forge-owned and
-// regenerated from the Service interface every run (contract.WriteObservedDecorator),
-// so adding a method to the contract grows the wrapper automatically — no
-// hand-maintenance.
+// (DetectObserveChainSeam), which the decorator then calls instead — the place
+// to add a middleware, drop a layer or tune logging for one package.
 //
-// The composition site opts a component into the wrapper AUTOMATICALLY when
-// two facts hold on disk:
-//
-//  1. the package declares the owned seam `func newObserveChain() ...`
-//     (DetectObserveChainSeam), and
-//  2. the constructor RETURNS the Service-contract interface
-//     (DetectConstructorType == the interface name — checked at the call
-//     site). Concrete-returning handler packages are never wrapped —
-//     otelconnect owns the RPC edge, and wrapping a *Service would change
-//     the Components field type.
-//
-// compose.go / reconcileComposeAddComponents then emit the construction in
-// wrapped form: `c.X = pkg.New<Concrete>WithForgeMiddleware(pkg.New(pkg.Deps{...}))`,
+// compose.go / reconcileComposeAddComponents emit an instrumented component's
+// construction in wrapped form: `c.X = pkg.New<Concrete>WithForgeMiddleware(pkg.New(pkg.Deps{...}))`,
 // where the wrapper constructor — named after the constructor's CONCRETE return
 // type (ResolveMiddlewareWrapper), e.g. NewServiceWithForgeMiddleware — lives in
-// the generated decorator.
+// the generated decorator. Concrete-returning handler packages are never
+// wrapped: otelconnect owns the RPC edge, and wrapping a *Service would change
+// the Components field type.
 
 package codegen
 
@@ -44,8 +43,8 @@ import (
 	"strings"
 )
 
-// observeChainSeamFunc is the owned chain-builder whose presence opts a
-// package into the generated observability decorator. Kept in sync with
+// observeChainSeamFunc is the owned chain-builder a package may declare to
+// replace observe.DefaultComponentChain. Kept in sync with
 // internal/generator/contract (observeChainSeamFunc) and the
 // observe_chain.go.tmpl scaffold.
 const observeChainSeamFunc = "newObserveChain"
@@ -53,24 +52,25 @@ const observeChainSeamFunc = "newObserveChain"
 // ShouldInstrumentComponent reports whether the component package at dir gets
 // the generated observability decorator (and, at the composition site, the
 // wrapped `pkg.New<Concrete>WithForgeMiddleware(pkg.New(...))` emission). It is THE single
-// instrument decision — the compose assembler and the generate walk both route
-// through it so they can never disagree.
+// instrument decision — the compose assembler, the generate walk and the
+// tracing lint all route through it so they can never disagree.
 //
 // ctorType is DetectConstructorType(dir); ifaceName is the component's
 // Service-contract interface name (serviceIfaceOrDefault). A package is
-// instrumented when ALL hold:
+// instrumented when all hold:
 //
 //  1. the constructor RETURNS the Service interface (ctorType == ifaceName).
 //     Handler-shaped packages return a concrete *Service and are never wrapped
 //     — otelconnect owns the RPC edge, and wrapping *Service would change the
 //     Components field type.
-//  2. it has NOT opted out via a package-level `// forge:no-observe`
-//     (HasPackageNoObserveDirective) — the opt-out wins over every opt-in.
-//  3. it has opted IN — either the Phase-2 `// forge:constructor` marker
-//     (HasConstructorMarker) OR, for backward compatibility, the legacy owned
-//     observe_chain.go seam (DetectObserveChainSeam). Scaffolds stamp the
-//     marker AND the seam, so new packages are born instrumented; the seam
-//     keeps pre-marker projects working unchanged.
+//  2. it is a contract package — a contract.go the contracts step generates
+//     from, not opted out with `//forge:exclude-contract` — because that step
+//     is what writes the decorator. A package returning an interface with no
+//     contract.go has no middleware_gen.go, and wrapping it would not compile.
+//     (A package excluded in forge.yaml's contracts.exclude is not discovered
+//     as a component at all.)
+//  3. it has NOT opted out via a package-level `// forge:no-observe`
+//     (HasPackageNoObserveDirective).
 func ShouldInstrumentComponent(dir, ctorType, ifaceName string) bool {
 	if ifaceName == "" {
 		ifaceName = "Service"
@@ -78,18 +78,19 @@ func ShouldInstrumentComponent(dir, ctorType, ifaceName string) bool {
 	if ctorType != ifaceName {
 		return false
 	}
-	marker, noObserve := observePackageDecision(dir)
-	if noObserve {
+	if _, err := os.Stat(filepath.Join(dir, "contract.go")); err != nil {
 		return false
 	}
-	return marker || DetectObserveChainSeam(dir)
+	if HasExcludeContractDirective(dir) {
+		return false
+	}
+	return !HasPackageNoObserveDirective(dir)
 }
 
 // DetectObserveChainSeam reports whether the component package at dir declares
 // the OWNED observability seam `func newObserveChain(...) ...` in a non-
-// generated, non-test source file. Its presence is the per-package opt-in
-// signal for the generated decorator (and, paired with an interface-returning
-// New, for the wrapped compose emission).
+// generated, non-test source file. When it does, the generated decorator calls
+// it for its chain; otherwise the decorator uses observe.DefaultComponentChain.
 //
 // Returns false for a missing/unparseable dir. Generated (_gen.go) and test
 // files are ignored, so the generated decorator's own reference to the seam

@@ -644,10 +644,15 @@ func reconcileComposeAddComponents(existing, freshRender string, data InjectGenD
 	// and converges wholesale.
 	existing, dropped := composeDropStaleDepsKeys(existing, data)
 	out, changed := reconcileComposeAddComponentsAfterDrop(existing, freshRender, data)
-	if changed {
-		return out, true
+	if !changed {
+		out, changed = existing, dropped
 	}
-	return existing, dropped
+	// Last, so it also corrects a construction an additive pass kept as it
+	// was: an existing component whose instrument decision changed.
+	if synced, wrapChanged := composeSyncWrapping(out, data); wrapChanged {
+		return synced, true
+	}
+	return out, changed
 }
 
 func reconcileComposeAddComponentsAfterDrop(existing, freshRender string, data InjectGenData) (string, bool) {
@@ -2248,11 +2253,7 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 		// SAME resolver the generator uses (keyed off the concrete return type).
 		// Handler services return *Service, so ShouldInstrumentComponent keeps
 		// them unwrapped (otelconnect owns the RPC edge).
-		wrapped := ShouldInstrumentComponent(res.Dir, ctorType, ifaceName)
-		middlewareCtor := ""
-		if wrapped {
-			middlewareCtor = ResolveMiddlewareWrapper(res.Dir, ifaceName).Constructor
-		}
+		middlewareCtor, wrapped := composeWrapper(res.Dir, ctorType, ifaceName)
 		comps = append(comps, BuildComponent{
 			Name:               runtimeName,
 			FieldName:          fieldName,
@@ -2293,11 +2294,7 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 			// pkg.<MiddlewareCtor>(pkg.New(...)), where MiddlewareCtor comes from
 			// the SAME resolver the generator uses (keyed off the concrete return
 			// type).
-			wrapped := ShouldInstrumentComponent(compDir, ctorType, ifaceName)
-			middlewareCtor := ""
-			if wrapped {
-				middlewareCtor = ResolveMiddlewareWrapper(compDir, ifaceName).Constructor
-			}
+			middlewareCtor, wrapped := composeWrapper(compDir, ctorType, ifaceName)
 			comps = append(comps, BuildComponent{
 				Name:               c.Name,
 				FieldName:          fieldName,
@@ -2333,4 +2330,26 @@ func assembleBuildComponents(in InjectGenInput) ([]BuildComponent, error) {
 	}
 
 	return comps, nil
+}
+
+// composeWrapper decides whether compose.go constructs the component at dir
+// through its generated decorator, and names the decorator's constructor. The
+// component must be instrumented (ShouldInstrumentComponent) AND the decorator
+// must already be declared in its middleware_gen.go: the contracts step writes
+// it before compose is assembled, so in a normal generate the two agree, and a
+// construction is never emitted against a symbol that does not exist yet (a
+// compose assembled before its contracts step — a test, a partial run — stays
+// unwrapped, and the next generate's composeSyncWrapping wraps it).
+func composeWrapper(dir, ctorType, ifaceName string) (ctor string, wrapped bool) {
+	if !ShouldInstrumentComponent(dir, ctorType, ifaceName) {
+		return "", false
+	}
+	if ifaceName == "" {
+		ifaceName = "Service"
+	}
+	w, declared := pinnedMiddlewareWrapper(dir, ifaceName)
+	if !declared {
+		return "", false
+	}
+	return w.Constructor, true
 }

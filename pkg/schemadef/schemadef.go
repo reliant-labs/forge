@@ -142,6 +142,11 @@ type Column struct {
 	// the database computes them, so they must never be written on
 	// INSERT/UPDATE (postgres rejects writes to generated columns).
 	IsGenerated bool
+	// IsIdentity is true for a GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY
+	// column. The catalog reports no column_default for one (its value comes
+	// from an implicit sequence), so Default alone cannot say the database
+	// supplies it; see DatabaseSupplied.
+	IsIdentity bool
 	// Comment is the column's catalog comment (COMMENT ON COLUMN), "" when
 	// none. It carries the `forge:*` column declarations the same way a
 	// constraint comment carries `forge:ref` — plain SQL, applied by the
@@ -470,6 +475,16 @@ var goTypeMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ColumnMarkerGoType) + `
 // the `=value` suffix) is itself a substring of the full declaration.
 func (c Column) HasMarker(marker string) bool {
 	return strings.Contains(c.Comment, marker)
+}
+
+// DatabaseSupplied reports whether the database gives the column a value
+// when an INSERT leaves it out: an identity column, or any DEFAULT — a
+// serial's nextval(...), gen_random_uuid(), a literal. It is the applied
+// schema's answer to "is this key server-allocated", which the column's
+// type does not give: `integer PRIMARY KEY` with no DEFAULT is a key the
+// caller must set.
+func (c Column) DatabaseSupplied() bool {
+	return c.IsIdentity || strings.TrimSpace(c.Default) != ""
 }
 
 // FillStrategy returns the value of a `forge:fill=<strategy>` declaration
@@ -1272,7 +1287,7 @@ func introspectTable(ctx context.Context, db Queryer, schema, name string) (Tabl
 	// the same shape introspectFKComments uses for constraint comments.
 	rows, err := db.QueryContext(ctx, `
 		SELECT column_name, data_type, udt_name, is_nullable, column_default, is_generated,
-		       character_maximum_length,
+		       is_identity, character_maximum_length,
 		       COALESCE(col_description(format('%I.%I', table_schema, table_name)::regclass,
 		                                ordinal_position), '')
 		FROM information_schema.columns
@@ -1289,10 +1304,11 @@ func introspectTable(ctx context.Context, db Queryer, schema, name string) (Tabl
 			isNullable  string
 			deflt       sql.NullString
 			isGenerated string
+			isIdentity  string
 			maxChars    sql.NullInt64
 			comment     string
 		)
-		if err := rows.Scan(&col.Name, &dataType, &udtName, &isNullable, &deflt, &isGenerated, &maxChars, &comment); err != nil {
+		if err := rows.Scan(&col.Name, &dataType, &udtName, &isNullable, &deflt, &isGenerated, &isIdentity, &maxChars, &comment); err != nil {
 			_ = rows.Close()
 			return t, err
 		}
@@ -1306,6 +1322,7 @@ func introspectTable(ctx context.Context, db Queryer, schema, name string) (Tabl
 		// is_generated is 'ALWAYS' for GENERATED ALWAYS AS (...) STORED
 		// columns, 'NEVER' otherwise.
 		col.IsGenerated = isGenerated == "ALWAYS"
+		col.IsIdentity = isIdentity == "YES"
 		if deflt.Valid {
 			col.Default = deflt.String
 		}

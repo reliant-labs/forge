@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `forge lint --tracing` rewrites the code. Run as told, it reported the same
   findings and rewrote nothing (control-plane's 46 contract constructions).
   They now say `forge lint --tracing --fix`.
+- **A primary key is server-allocated only when the schema says so.** The ORM
+  tagged every integer key `,autoincrement`, so reliant's
+  `legacy_credential_copy` (`id integer PRIMARY KEY`, no default, no sequence)
+  had its caller-set id left out of the generated `Create` and the insert
+  failed NOT NULL; each integer member of a composite key got the same guess.
+  The tag now follows the applied schema — `serial`/`bigserial`, an identity
+  column (schemadef reads `is_identity`; the catalog reports no default for
+  one), or any `DEFAULT` — so a `uuid DEFAULT gen_random_uuid()` key is the
+  database's too, where `Create` used to ULID-fill it and fail 22P02. `Create`
+  now leaves only a ZERO server-allocated key to the database; a key the
+  caller set is inserted as set.
 - **pgtest's shared server survives a slow moment and a long run.** An
   attaching process probed the cross-process shared embedded server with a
   2s connect and 3s ping and, on a miss, `pg_ctl stop -m fast`ed it — under

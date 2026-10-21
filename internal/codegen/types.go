@@ -405,6 +405,11 @@ type EntityColumn struct {
 	// IsGenerated marks GENERATED ALWAYS AS (...) STORED columns — the DB
 	// computes them, so the ORM must never write them (Bun's ,scanonly).
 	IsGenerated bool `json:",omitempty"`
+	// IsIdentity marks a GENERATED ... AS IDENTITY column (its value comes
+	// from an implicit sequence, so Default is empty). With Default it is how
+	// the projection knows a key is server-allocated (schemadef.Column.
+	// DatabaseSupplied) rather than guessing from the key's type.
+	IsIdentity bool `json:",omitempty"`
 	// Immutable marks a column declared `forge:immutable` in its catalog
 	// comment (COMMENT ON COLUMN). It projects to Bun's `skipupdate`, so a
 	// full-replace UPDATE leaves the stored value alone.

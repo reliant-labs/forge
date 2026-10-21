@@ -9,15 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`NewInstrumented`: a contract's constructor, already decorated, so every
+  construction site is one rename from traced.** `middleware_gen.go` now
+  declares `NewInstrumented` beside the decorator, with `New`'s exact
+  parameters and results, returning the decorated value. `forge generate`
+  keeps `compose.go` wrapped, but most real projects construct components in
+  `providers.go` and `*_wire.go` files too: in the control plane, after every
+  contract package gained a decorator, none of its 46 hand-wired constructions
+  used it, so its traces were unchanged. `forge-tracing-contract-uninstrumented`
+  now autofixes every such call by renaming `New` to `NewInstrumented`, which
+  is valid wherever a call can appear (including `x, err := pkg.New(…)` and
+  `return pkg.New(…)`) and changes no type, and renames a `NewInstrumented`
+  back to `New` when its package opts out. `forge lint --tracing` applies it;
+  the full sweep applies it where the rule is at error.
+
 - **Each root's process settings come from the configs its command loads,
-  and a root declares whether it migrates.** In a binary_config project
+  and a root declares whether it migrates.** In a binary*config project
   (`(forge.v1.binary_config)` `command`/`subtrees`), `rootSpec.Configs` hands
-  `runRoot` the configs a root's command loaded *before* the policy runs, and
+  `runRoot` the configs a root's command loaded \_before* the policy runs, and
   the scaffolded `serverkitConfig(cfg, root.Configs)` reads the port, drain
   budget, logging, TLS and database settings from whichever of them declares
   each (most specific last), so `server api` and `server worker` listen and
-  drain on their own command config's values. `//forge:root <name>
-  migrate=apply|wait|none` says what the process does about the schema;
+  drain on their own command config's values.
+  `//forge:root <name> migrate=apply|wait|none` says what the process does
+  about the schema;
   `wait` blocks — `/readyz` naming `schema` — until another process has
   applied the migrations (`migratekit.AwaitSchema`,
   `serverkit.AwaitMigrationsContext`). The default is unchanged: apply when
@@ -44,8 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the probes, so its root keeps its probe listener. Existing projects:
   `migrations/v0.1.47` section 3.
 - **Roots can be declared one at a time: resolution follows reach.** A
-  root's process builds only the closure its fields reach, but `forge
-  generate` demanded a provider for every Deps field of every discovered
+  root's process builds only the closure its fields reach, but
+  `forge generate` demanded a provider for every Deps field of every discovered
   component, so a project with 33 handlers could not declare a gateway root
   without first wiring all of them. Now a Deps field forge cannot fill fails
   generate only on a node some root reaches (as before, with the same
